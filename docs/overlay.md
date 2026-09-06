@@ -24,7 +24,13 @@ disappears from all of them.
 
 A corpus row cannot be changed, so an edit is stored as an overwrite of one column and a delete as
 a tombstone, and both are applied when the row is read. This is why a message the corpus shipped
-can be deleted at all.
+can be deleted at all. An edited corpus message is dropped from the corpus side of the search
+merge — its entry in the corpus index still holds the pre-edit text and cannot be removed — so it
+is found once, by what it says now.
+
+`chat.postMessage` honours `thread_ts` and posts a reply in that thread. The arguments it still
+ignores are listed in its own docstring; `backlot diff` cannot see them, because it compares query
+parameters and Slack's spec declares them as form fields.
 
 Search needed one thing more. Relevance is bm25, whose inverse document frequency is a property of
 the index a term is in — so an overlay holding a handful of rows scores everything in it at about
@@ -39,8 +45,9 @@ Two endpoints, in the `/_meta` namespace Backlot uses for its own affordances ra
 vendor's:
 
 ```bash
-curl http://localhost:8000/_meta/overlay              # every row written since the last reset
-curl -X POST http://localhost:8000/_meta/overlay/reset # throw them all away
+curl http://localhost:8000/_meta/overlay
+curl -X POST -H "Authorization: Bearer <admin token>" \
+     http://localhost:8000/_meta/overlay/reset
 ```
 
 `GET /_meta/overlay` is the read a grader makes: the documents written, the grants they carry, the
@@ -50,7 +57,9 @@ one place, without diffing the served surface against itself.
 `POST /_meta/overlay/reset` restores the corpus's own state, tombstones included, so a second
 evaluation run over the same server starts where the first one did.
 
-Both are unauthenticated, like the rest of `/_meta`.
+Reading is unauthenticated, like the rest of `/_meta`. Resetting is not: it is the one route
+here that destroys something, and an agent being graded from `/_meta/overlay` must not be able
+to erase the record of what it just did. It takes the admin token.
 
 ## What a write is attributed to
 

@@ -366,6 +366,18 @@ async def meta_openapi(source: str):
     return openapi.build_mcp_spec(app.openapi(), source)
 
 
+def _require_admin(request: Request) -> None:
+    """Refuse a caller who is not the admin/service token.
+
+    Used by the one `/_meta` route that destroys state. The rest of the namespace is open on
+    purpose — `/_meta/users` hands out every user's token — but "this server is a fixture" is an
+    argument about READS.
+    """
+    caller = app.state.acl.resolve(auth.bearer_token(request))
+    if caller is None or not caller.is_admin:
+        raise HTTPException(status_code=403, detail="admin token required")
+
+
 @app.get("/_meta/overlay")
 def meta_overlay():
     """Everything written since the last reset — the read an evaluation's grader makes.
@@ -392,19 +404,22 @@ def meta_overlay():
 
 
 @app.post("/_meta/overlay/reset")
-def meta_overlay_reset():
+def meta_overlay_reset(request: Request):
     """Throw the overlay away — an evaluation run's teardown.
 
     Every write goes, including a tombstone, so a message deleted in one run is back for the next.
     That is what makes two runs over one server comparable. The corpus is untouched either way; it
     was never opened writable.
 
-    Unauthenticated for the same reason as `/_meta/overlay` above.
+    Admin token only, unlike every other `/_meta` route — this is the one that DESTROYS
+    something. An evaluation is graded from `/_meta/overlay`, so an agent that could reach this
+    without a credential could erase the record of what it had just done, which is the one thing
+    the oracle exists to hold.
     """
+    _require_admin(request)
     overlay.reset(app.state.conn, app.state.overlay_name)
-    # The warm caches were computed against the pre-write world and are correct for it again, but
-    # only the two a write can move are dropped; `channel_acl` is rebuilt from the corpus alone.
-    app.state.doc_counts = None
+    # The per-channel member counts were computed against the pre-write corpus and are correct for
+    # it again, so the cache is rebuilt rather than left holding a written channel's number.
     app.state.channel_members = None
     return {"ok": True}
 

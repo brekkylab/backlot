@@ -1997,3 +1997,164 @@ def test_reactions_answer_over_get_too(wclient, tokens):
         ).json()["ok"]
         is True
     )
+
+
+def test_posting_again_in_the_same_second_after_a_delete(wclient, tokens):
+    # `slack_next_ts` probes for a free fraction, and a tombstoned message reads as absent — so
+    # the ts it just freed came back, and the insert hit the primary key with a 500. A
+    # post-delete-post inside one second is an ordinary agent sequence.
+    h = _uh(tokens, "ava@acme.com")
+    cid = synth.slack_channel_id("incidents")
+    first = wclient.post(
+        "/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": "one"}
+    ).json()
+    wclient.post("/slack/api/chat.delete", headers=h, data={"channel": cid, "ts": first["ts"]})
+    second = wclient.post(
+        "/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": "two"}
+    )
+    assert second.status_code == 200, second.text
+    body = second.json()
+    assert body["ok"] is True
+    assert body["ts"] != first["ts"]
+    hist = wclient.post(
+        "/slack/api/conversations.history", headers=h, data={"channel": cid, "limit": 200}
+    ).json()["messages"]
+    assert body["ts"] in [m["ts"] for m in hist]
+    assert first["ts"] not in [m["ts"] for m in hist]
+
+
+def test_editing_a_corpus_message_leaves_one_search_hit(wclient, tokens, ro_conn):
+    # A patched CORPUS row is indexed in the overlay while its entry stays in the corpus index, so
+    # search found the same document twice and count_search added it twice over. The old text must
+    # also stop matching.
+    email, channel, ts, content = ro_conn.execute(
+        "SELECT author_email, channel, ts, content FROM slack_messages "
+        "WHERE channel = 'incidents' AND thread_seq = 0 LIMIT 1"
+    ).fetchone()
+    h = _uh(tokens, email)
+    cid = synth.slack_channel_id(channel)
+    old_word = [w for w in content.split() if len(w) > 4][0].strip(".,?!")
+    wclient.post(
+        "/slack/api/chat.update",
+        headers=h,
+        data={"channel": cid, "ts": ts, "text": "zarquon replaced the body"},
+    )
+    hits = wclient.post("/slack/api/search.messages", headers=h, data={"query": "zarquon"}).json()[
+        "messages"
+    ]
+    matched = [m["ts"] for m in hits["matches"]]
+    assert matched.count(ts) == 1, f"duplicated in the page: {matched}"
+    assert hits["total"] == len(hits["matches"]), "the total contradicts the page it describes"
+    # the corpus index still holds the pre-edit text; a search for it must not return the message
+    stale = wclient.post("/slack/api/search.messages", headers=h, data={"query": old_word}).json()[
+        "messages"
+    ]
+    assert ts not in [m["ts"] for m in stale["matches"]], f"{old_word!r} still matches the old text"
+    assert stale["total"] == len(stale["matches"])
+
+
+def test_posting_with_thread_ts_replies_in_that_thread(wclient, tokens, ro_conn):
+    # Ignoring `thread_ts` gave an agent told to reply in a thread a top-level message and a
+    # `200 ok` — a wrong answer with no error in it.
+    root_ts = ro_conn.execute(
+        "SELECT ts FROM slack_messages WHERE channel = 'incidents' AND thread_seq = 0 "
+        "AND thread_ts IS NOT NULL LIMIT 1"
+    ).fetchone()[0]
+    h = _uh(tokens, "ava@acme.com")
+    cid = synth.slack_channel_id("incidents")
+    before = wclient.post(
+        "/slack/api/conversations.replies", headers=h, data={"channel": cid, "ts": root_ts}
+    ).json()["messages"]
+    posted = wclient.post(
+        "/slack/api/chat.postMessage",
+        headers=h,
+        data={"channel": cid, "text": "threaded reply", "thread_ts": root_ts},
+    ).json()
+    assert posted["ok"] is True
+    after = wclient.post(
+        "/slack/api/conversations.replies", headers=h, data={"channel": cid, "ts": root_ts}
+    ).json()["messages"]
+    assert [m["ts"] for m in after][-1] == posted["ts"]
+    assert len(after) == len(before) + 1
+    # and it is NOT a top-level message
+    hist = wclient.post(
+        "/slack/api/conversations.history", headers=h, data={"channel": cid, "limit": 200}
+    ).json()["messages"]
+    assert posted["ts"] not in [m["ts"] for m in hist]
+
+
+def test_replying_to_a_reply_lands_in_the_same_thread(wclient, tokens, ro_conn):
+    # Slack threads under the ROOT, not under whichever message was named.
+    root_ts, reply_ts = ro_conn.execute(
+        "SELECT thread_ts, ts FROM slack_messages "
+        "WHERE channel = 'incidents' AND thread_seq > 0 LIMIT 1"
+    ).fetchone()
+    h = _uh(tokens, "ava@acme.com")
+    cid = synth.slack_channel_id("incidents")
+    posted = wclient.post(
+        "/slack/api/chat.postMessage",
+        headers=h,
+        data={"channel": cid, "text": "reply to a reply", "thread_ts": reply_ts},
+    ).json()
+    assert posted["ok"] is True
+    thread = wclient.post(
+        "/slack/api/conversations.replies", headers=h, data={"channel": cid, "ts": root_ts}
+    ).json()["messages"]
+    assert posted["ts"] in [m["ts"] for m in thread]
+
+
+def test_posting_into_a_thread_that_does_not_exist_is_message_not_found(wclient, tokens):
+    h = _uh(tokens, "ava@acme.com")
+    cid = synth.slack_channel_id("incidents")
+    j = wclient.post(
+        "/slack/api/chat.postMessage",
+        headers=h,
+        data={"channel": cid, "text": "orphan", "thread_ts": "1.000001"},
+    ).json()
+    assert j == {"ok": False, "error": "message_not_found"}
+
+
+def test_a_bot_message_carries_bot_id_in_history(wclient, admin_h):
+    cid = synth.slack_channel_id("incidents")
+    ts = wclient.post(
+        "/slack/api/chat.postMessage", headers=admin_h, data={"channel": cid, "text": "ci says"}
+    ).json()["ts"]
+    hist = wclient.post(
+        "/slack/api/conversations.history", headers=admin_h, data={"channel": cid, "limit": 200}
+    ).json()["messages"]
+    msg = [m for m in hist if m["ts"] == ts][0]
+    assert msg["bot_id"] and msg["subtype"] == "bot_message"
+
+
+def test_an_author_with_a_differently_cased_address_can_edit_their_own_message(wclient, tokens):
+    # `_subscribed` already case-folds the same addresses; authorship has to agree, or a corpus
+    # that wrote an address in mixed case locks its own author out of their message.
+    h = _uh(tokens, "ava@acme.com")
+    cid = synth.slack_channel_id("incidents")
+    ts = wclient.post(
+        "/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": "mine"}
+    ).json()["ts"]
+    conn = wclient.app.state.conn
+    conn.execute(
+        "UPDATE ov.slack_messages SET author_email = ? WHERE channel = ? AND ts = ?",
+        ("Ava@Acme.com", "incidents", ts),
+    )
+    conn.commit()
+    j = wclient.post(
+        "/slack/api/chat.update", headers=h, data={"channel": cid, "ts": ts, "text": "edited"}
+    ).json()
+    assert j["ok"] is True
+
+
+def test_a_bot_messages_author_resolves_through_users_info(wclient, admin_h):
+    # `auth.test`'s docstring says a client finds its own messages by matching `user_id` against
+    # message authors; resolving that id then has to work, or the flow stops one step later.
+    cid = synth.slack_channel_id("incidents")
+    posted = wclient.post(
+        "/slack/api/chat.postMessage", headers=admin_h, data={"channel": cid, "text": "ci"}
+    ).json()
+    uid = posted["message"]["user"]
+    j = wclient.post("/slack/api/users.info", headers=admin_h, data={"user": uid}).json()
+    assert j["ok"] is True
+    assert j["user"]["id"] == uid
+    assert j["user"]["is_bot"] is True

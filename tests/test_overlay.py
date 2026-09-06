@@ -230,6 +230,17 @@ def test_meta_overlay_reports_a_patch_and_a_tombstone(oclient, sample_settings):
     assert any(d["ts"] == ts for d in j["slack_tombstone"])
 
 
+def test_meta_overlay_reset_needs_the_admin_token(oclient, sample_settings):
+    # The one `/_meta` route that DESTROYS something. An evaluation is graded from
+    # `/_meta/overlay`, so a caller who could reach this without a credential could erase the
+    # record of what it had just done — which is the one thing the oracle exists to hold.
+    h = {"Authorization": f"Bearer {_tokens(sample_settings)['ava@acme.com']}"}
+    assert oclient.post("/_meta/overlay/reset").status_code == 403
+    assert oclient.post("/_meta/overlay/reset", headers=h).status_code == 403
+    admin = {"Authorization": f"Bearer {sample_settings.admin_token}"}
+    assert oclient.post("/_meta/overlay/reset", headers=admin).json() == {"ok": True}
+
+
 def test_meta_overlay_reset_empties_it(oclient, sample_settings):
     from backlot import synth
 
@@ -238,7 +249,8 @@ def test_meta_overlay_reset_empties_it(oclient, sample_settings):
     oclient.post(
         "/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": "gone soon"}
     )
-    assert oclient.post("/_meta/overlay/reset").json() == {"ok": True}
+    admin = {"Authorization": f"Bearer {sample_settings.admin_token}"}
+    assert oclient.post("/_meta/overlay/reset", headers=admin).json() == {"ok": True}
     assert oclient.get("/_meta/overlay").json()["slack_messages"] == []
     hist = oclient.post(
         "/slack/api/conversations.history", headers=h, data={"channel": cid, "limit": 200}
@@ -261,7 +273,8 @@ def test_reset_restores_a_deleted_corpus_message(oclient, sample_settings, ro_co
         "/slack/api/conversations.history", headers=h, data={"channel": cid, "limit": 200}
     ).json()["messages"]
     assert ts not in [m["ts"] for m in gone]
-    oclient.post("/_meta/overlay/reset")
+    admin = {"Authorization": f"Bearer {sample_settings.admin_token}"}
+    oclient.post("/_meta/overlay/reset", headers=admin)
     back = oclient.post(
         "/slack/api/conversations.history", headers=h, data={"channel": cid, "limit": 200}
     ).json()["messages"]

@@ -216,6 +216,13 @@
     {
       "kind": "extra_param",
       "severity": "breaking",
+      "path": "POST /chat.postMessage?thread_ts",
+      "detail": "Backlot accepts it; the vendor's spec declares no such parameter",
+      "note": "Measured against slack.com on 2026-09-06: the real Web API reads an argument from the QUERY STRING on a POST exactly as it reads one from the form body. `POST chat.getPermalink` with no arguments answers `invalid_arguments`; with `channel` and `message_ts` in the query string it answers `channel_not_found`, the same answer it gives with them in the body. The vendor's spec documents only the body location, which is the spec being incomplete rather than Backlot inventing a parameter. Backlot reads every argument query-or-form through `_param`, so a client written against either location works against both."
+    },
+    {
+      "kind": "extra_param",
+      "severity": "breaking",
       "path": "POST /chat.update?channel",
       "detail": "Backlot accepts it; the vendor's spec declares no such parameter",
       "note": "Measured against slack.com on 2026-09-06: the real Web API reads an argument from the QUERY STRING on a POST exactly as it reads one from the form body. `POST chat.getPermalink` with no arguments answers `invalid_arguments`; with `channel` and `message_ts` in the query string it answers `channel_not_found`, the same answer it gives with them in the body. The vendor's spec documents only the body location, which is the spec being incomplete rather than Backlot inventing a parameter. Backlot reads every argument query-or-form through `_param`, so a client written against either location works against both."

@@ -18,7 +18,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
-from backlot import auth, store, synth
+from backlot import auth, overlay, store, synth
 from backlot.openapi import qp
 from backlot.acl import Caller
 from backlot.config import get_settings
@@ -1184,6 +1184,179 @@ async def chat_get_permalink(request: Request):
         "permalink": (
             f"https://{get_settings().org_name}.slack.com/archives/{cid}/p{ts.replace('.', '')}"
         ),
+    }
+
+
+def _reaction_target(request: Request, conn, caller: Caller):
+    """``(channel_name, ts, row, None)`` for a reaction's message, else an error in the last slot.
+
+    Slack addresses a reaction target three ways — `channel` + `timestamp`, `file`, or
+    `file_comment` — and answers `no_item_specified` when none is given. Backlot has no file
+    corpus (see search.files), so the two file forms resolve to nothing and are answered
+    `message_not_found` rather than a shape it cannot back.
+
+    The channel is checked before the message, so `channel_not_found` is the answer for a caller
+    outside it whether or not the ts they named is real. A ts that resolved differently would let
+    them confirm a message exists in a channel they cannot read.
+    """
+    if not _param(request, "channel") and not _param(request, "timestamp"):
+        return None, None, None, _err("no_item_specified")
+    name, err = _writable_channel(request, conn, caller)
+    if err is not None:
+        return None, None, None, err
+    ts = _param(request, "timestamp") or ""
+    row = store.document_by_key(conn, "slack", (name, ts), auth.visible_ids(request, caller))
+    if row is None:
+        return None, None, None, _err("message_not_found")
+    return name, ts, row, None
+
+
+@router.api_route("/reactions.add", methods=["GET", "POST"])
+async def reactions_add(request: Request):
+    """Add an emoji reaction to a message.
+
+    Errors quoted from `slack_web_openapi_v2.json`,
+    ``paths./reactions.add.post.responses.default``: `bad_timestamp`, `message_not_found`,
+    `no_item_specified`, `invalid_name`, `already_reacted`, `too_many_emoji`,
+    `too_many_reactions`. Backlot answers the first five; the two ceilings are workspace limits no
+    corpus states.
+
+    `reactions` is a column the corpus already carries and every message payload already serves,
+    so this is a patch to a served field rather than a new entity. The patch REPLACES the column,
+    so the existing value is read and put back — a corpus message that already carries reactions
+    keeps them.
+    """
+    conn = auth.conn(request)
+    caller, err = _caller_or_error(request)
+    if err is not None:
+        return err
+    if err := _missing_argument(request, "name"):
+        return err
+    name, ts, row, err = _reaction_target(request, conn, caller)
+    if err is not None:
+        return err
+    emoji = (_param(request, "name") or "").strip()
+    if not emoji:
+        return _err("invalid_name")
+    _author, uid, _bot = _writer(caller)
+    current = store.jcol(row, "reactions")
+    for r in current:
+        if r["name"] != emoji:
+            continue
+        if uid in r.get("users", []):
+            return _err("already_reacted")
+        r["users"] = [*r.get("users", []), uid]
+        r["count"] = len(r["users"])
+        break
+    else:
+        current.append({"name": emoji, "count": 1, "users": [uid]})
+    store.patch_document(conn, "slack", (name, ts), "reactions", json.dumps(current))
+    return {"ok": True}
+
+
+@router.api_route("/reactions.remove", methods=["GET", "POST"])
+async def reactions_remove(request: Request):
+    """Remove one of the caller's own reactions.
+
+    Errors quoted from the spec's ``default`` response: `bad_timestamp`, `file_not_found`,
+    `file_comment_not_found`, `message_not_found`, `no_item_specified`, `invalid_name`,
+    `no_reaction`.
+
+    A reaction nobody is left on is dropped from the column entirely rather than kept at count 0,
+    so a message returns to the shape `_message` gives one nobody reacted to.
+    """
+    conn = auth.conn(request)
+    caller, err = _caller_or_error(request)
+    if err is not None:
+        return err
+    if err := _missing_argument(request, "name"):
+        return err
+    name, ts, row, err = _reaction_target(request, conn, caller)
+    if err is not None:
+        return err
+    emoji = (_param(request, "name") or "").strip()
+    _author, uid, _bot = _writer(caller)
+    current = store.jcol(row, "reactions")
+    for r in current:
+        if r["name"] == emoji and uid in r.get("users", []):
+            r["users"] = [u for u in r["users"] if u != uid]
+            r["count"] = len(r["users"])
+            break
+    else:
+        return _err("no_reaction")
+    left = [r for r in current if r["count"]]
+    store.patch_document(conn, "slack", (name, ts), "reactions", json.dumps(left))
+    return {"ok": True}
+
+
+@router.api_route("/reactions.get", methods=["GET", "POST"])
+async def reactions_get(request: Request):
+    """A message with its reactions.
+
+    Errors quoted from the spec's ``default`` response: `bad_timestamp`, `file_not_found`,
+    `file_comment_not_found`, `message_not_found`, `no_item_specified`.
+
+    The message is built by `_message`, the same builder conversations.history uses, so a client
+    that reads a reaction here and the message there cannot get two shapes for one message.
+    """
+    conn = auth.conn(request)
+    caller, err = _caller_or_error(request)
+    if err is not None:
+        return err
+    name, _ts, row, err = _reaction_target(request, conn, caller)
+    if err is not None:
+        return err
+    return {
+        "ok": True,
+        "type": "message",
+        "channel": synth.slack_channel_id(name),
+        "message": _message(row),
+    }
+
+
+@router.api_route("/reactions.list", methods=["GET", "POST"])
+async def reactions_list(request: Request):
+    """Items the caller has reacted to.
+
+    Errors quoted from the spec's ``default`` response: `user_not_found`.
+
+    Only reactions left through this API are listed. A reaction the corpus shipped was written by
+    the import, and its `users` hold synthesized ids the corpus never attributed to anybody in
+    particular, so counting those would report reactions no one in this workspace left. Reading the
+    overlay's own patches is what makes the answer true.
+    """
+    conn = auth.conn(request)
+    caller, err = _caller_or_error(request)
+    if err is not None:
+        return err
+    _author, uid, _bot = _writer(caller)
+    ids = auth.visible_ids(request, caller)
+    patch = overlay.table_names("slack")["patch"]
+    items = []
+    for p in conn.execute(
+        f"SELECT channel, ts, value FROM ov.{patch} WHERE field = 'reactions' ORDER BY channel, ts"
+    ).fetchall():
+        try:
+            reactions = json.loads(p["value"] or "[]")
+        except ValueError:
+            continue
+        if not any(uid in r.get("users", []) for r in reactions):
+            continue
+        row = store.document_by_key(conn, "slack", (p["channel"], p["ts"]), ids)
+        if row is None:  # deleted, or no longer visible to this caller
+            continue
+        items.append(
+            {
+                "type": "message",
+                "channel": synth.slack_channel_id(p["channel"]),
+                "message": _message(row),
+            }
+        )
+    count = _int(request, "count", 100)
+    return {
+        "ok": True,
+        "items": items[:count],
+        "paging": {"count": count, "total": len(items), "page": 1, "pages": 1},
     }
 
 

@@ -1754,3 +1754,246 @@ def test_delete_and_update_answer_over_get_too(wclient, tokens):
         "/slack/api/chat.delete", params={"channel": cid, "ts": ts}, headers=h
     ).json()
     assert dele["ok"] is True
+
+
+def test_reaction_add_shows_up_wherever_the_message_is_served(wclient, tokens):
+    # `reactions` is a column the corpus already carries and every message payload already serves,
+    # so this is a patch to a served field rather than a new entity.
+    h = _uh(tokens, "ava@acme.com")
+    cid = synth.slack_channel_id("incidents")
+    ts = wclient.post(
+        "/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": "react to me"}
+    ).json()["ts"]
+    assert wclient.post(
+        "/slack/api/reactions.add",
+        headers=h,
+        data={"channel": cid, "timestamp": ts, "name": "tada"},
+    ).json() == {"ok": True}
+    got = wclient.post(
+        "/slack/api/reactions.get", headers=h, data={"channel": cid, "timestamp": ts}
+    ).json()
+    assert got["ok"] is True and got["channel"] == cid
+    assert [r["name"] for r in got["message"]["reactions"]] == ["tada"]
+    assert got["message"]["reactions"][0]["users"] == [synth.slack_user_id("ava@acme.com")]
+    assert got["message"]["reactions"][0]["count"] == 1
+    hist = wclient.post(
+        "/slack/api/conversations.history", headers=h, data={"channel": cid, "limit": 200}
+    ).json()["messages"]
+    msg = [m for m in hist if m["ts"] == ts][0]
+    assert "tada" in [r["name"] for r in msg["reactions"]]
+
+
+def test_a_second_person_joins_an_existing_reaction(wclient, tokens):
+    ava = _uh(tokens, "ava@acme.com")
+    bob = _uh(tokens, "bob@acme.com")
+    cid = synth.slack_channel_id("incidents")
+    ts = wclient.post(
+        "/slack/api/chat.postMessage", headers=ava, data={"channel": cid, "text": "both of us"}
+    ).json()["ts"]
+    for h in (ava, bob):
+        wclient.post(
+            "/slack/api/reactions.add",
+            headers=h,
+            data={"channel": cid, "timestamp": ts, "name": "eyes"},
+        )
+    got = wclient.post(
+        "/slack/api/reactions.get", headers=ava, data={"channel": cid, "timestamp": ts}
+    ).json()
+    reaction = got["message"]["reactions"][0]
+    assert reaction["count"] == 2
+    assert set(reaction["users"]) == {
+        synth.slack_user_id("ava@acme.com"),
+        synth.slack_user_id("bob@acme.com"),
+    }
+
+
+def test_reacting_to_an_existing_corpus_reaction_keeps_it(wclient, tokens, ro_conn):
+    # The sample corpus ships a message with reactions already on it. A patch REPLACES the column,
+    # so an add has to read what is there and put it back, not start from empty.
+    channel, ts = ro_conn.execute(
+        "SELECT channel, ts FROM slack_messages WHERE reactions IS NOT NULL AND reactions != '' "
+        "AND channel = 'incidents' LIMIT 1"
+    ).fetchone()
+    h = _uh(tokens, "ava@acme.com")
+    cid = synth.slack_channel_id(channel)
+    before = wclient.post(
+        "/slack/api/reactions.get", headers=h, data={"channel": cid, "timestamp": ts}
+    ).json()["message"]["reactions"]
+    assert before, "sample corpus should carry a message with reactions"
+    wclient.post(
+        "/slack/api/reactions.add",
+        headers=h,
+        data={"channel": cid, "timestamp": ts, "name": "rocket"},
+    )
+    after = wclient.post(
+        "/slack/api/reactions.get", headers=h, data={"channel": cid, "timestamp": ts}
+    ).json()["message"]["reactions"]
+    assert {r["name"] for r in before} < {r["name"] for r in after}
+    assert "rocket" in {r["name"] for r in after}
+
+
+def test_reacting_twice_is_already_reacted(wclient, tokens):
+    h = _uh(tokens, "ava@acme.com")
+    cid = synth.slack_channel_id("incidents")
+    ts = wclient.post(
+        "/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": "twice"}
+    ).json()["ts"]
+    wclient.post(
+        "/slack/api/reactions.add",
+        headers=h,
+        data={"channel": cid, "timestamp": ts, "name": "eyes"},
+    )
+    again = wclient.post(
+        "/slack/api/reactions.add",
+        headers=h,
+        data={"channel": cid, "timestamp": ts, "name": "eyes"},
+    ).json()
+    assert again == {"ok": False, "error": "already_reacted"}
+
+
+def test_removing_a_reaction_takes_only_the_callers_own(wclient, tokens):
+    ava = _uh(tokens, "ava@acme.com")
+    bob = _uh(tokens, "bob@acme.com")
+    cid = synth.slack_channel_id("incidents")
+    ts = wclient.post(
+        "/slack/api/chat.postMessage", headers=ava, data={"channel": cid, "text": "shared"}
+    ).json()["ts"]
+    for h in (ava, bob):
+        wclient.post(
+            "/slack/api/reactions.add",
+            headers=h,
+            data={"channel": cid, "timestamp": ts, "name": "eyes"},
+        )
+    assert wclient.post(
+        "/slack/api/reactions.remove",
+        headers=ava,
+        data={"channel": cid, "timestamp": ts, "name": "eyes"},
+    ).json() == {"ok": True}
+    got = wclient.post(
+        "/slack/api/reactions.get", headers=bob, data={"channel": cid, "timestamp": ts}
+    ).json()
+    reaction = got["message"]["reactions"][0]
+    assert reaction["count"] == 1
+    assert reaction["users"] == [synth.slack_user_id("bob@acme.com")]
+
+
+def test_the_last_person_removing_a_reaction_removes_it_entirely(wclient, tokens):
+    h = _uh(tokens, "ava@acme.com")
+    cid = synth.slack_channel_id("incidents")
+    ts = wclient.post(
+        "/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": "solo"}
+    ).json()["ts"]
+    wclient.post(
+        "/slack/api/reactions.add",
+        headers=h,
+        data={"channel": cid, "timestamp": ts, "name": "tada"},
+    )
+    wclient.post(
+        "/slack/api/reactions.remove",
+        headers=h,
+        data={"channel": cid, "timestamp": ts, "name": "tada"},
+    )
+    got = wclient.post(
+        "/slack/api/reactions.get", headers=h, data={"channel": cid, "timestamp": ts}
+    ).json()
+    # `_message` omits the key entirely when there are none, the way it always has for a message
+    # nobody reacted to.
+    assert "reactions" not in got["message"]
+
+
+def test_removing_a_reaction_nobody_left_is_no_reaction(wclient, tokens):
+    h = _uh(tokens, "ava@acme.com")
+    cid = synth.slack_channel_id("incidents")
+    ts = wclient.post(
+        "/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": "nothing here"}
+    ).json()["ts"]
+    j = wclient.post(
+        "/slack/api/reactions.remove",
+        headers=h,
+        data={"channel": cid, "timestamp": ts, "name": "tada"},
+    ).json()
+    assert j == {"ok": False, "error": "no_reaction"}
+
+
+def test_reacting_to_an_unreadable_message_does_not_reveal_it(wclient, tokens, ro_conn):
+    # The ACL decision. A caller who cannot see the channel is told it does not exist, before
+    # anything about the message is looked up — so the error cannot confirm the ts is real.
+    ts = ro_conn.execute(
+        "SELECT ts FROM slack_messages WHERE channel = 'people-confidential' LIMIT 1"
+    ).fetchone()[0]
+    h = _uh(tokens, "bob@acme.com")
+    cid = synth.slack_channel_id("people-confidential")
+    real = wclient.post(
+        "/slack/api/reactions.add",
+        headers=h,
+        data={"channel": cid, "timestamp": ts, "name": "tada"},
+    ).json()
+    invented = wclient.post(
+        "/slack/api/reactions.add",
+        headers=h,
+        data={"channel": cid, "timestamp": "1.000001", "name": "tada"},
+    ).json()
+    assert real == invented == {"ok": False, "error": "channel_not_found"}
+
+
+def test_reacting_with_no_item_is_no_item_specified(wclient, tokens):
+    h = _uh(tokens, "ava@acme.com")
+    j = wclient.post("/slack/api/reactions.add", headers=h, data={"name": "tada"}).json()
+    assert j == {"ok": False, "error": "no_item_specified"}
+
+
+def test_reactions_list_is_the_callers_own(wclient, tokens):
+    ava = _uh(tokens, "ava@acme.com")
+    bob = _uh(tokens, "bob@acme.com")
+    cid = synth.slack_channel_id("incidents")
+    mine = wclient.post(
+        "/slack/api/chat.postMessage", headers=ava, data={"channel": cid, "text": "listed"}
+    ).json()["ts"]
+    theirs = wclient.post(
+        "/slack/api/chat.postMessage", headers=ava, data={"channel": cid, "text": "not listed"}
+    ).json()["ts"]
+    wclient.post(
+        "/slack/api/reactions.add",
+        headers=ava,
+        data={"channel": cid, "timestamp": mine, "name": "rocket"},
+    )
+    wclient.post(
+        "/slack/api/reactions.add",
+        headers=bob,
+        data={"channel": cid, "timestamp": theirs, "name": "rocket"},
+    )
+    j = wclient.post("/slack/api/reactions.list", headers=ava).json()
+    assert j["ok"] is True
+    listed = [i["message"]["ts"] for i in j["items"] if i["type"] == "message"]
+    assert mine in listed and theirs not in listed
+
+
+def test_reactions_answer_over_get_too(wclient, tokens):
+    h = _uh(tokens, "ava@acme.com")
+    cid = synth.slack_channel_id("incidents")
+    ts = wclient.post(
+        "/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": "verbs"}
+    ).json()["ts"]
+    assert (
+        wclient.get(
+            "/slack/api/reactions.add",
+            params={"channel": cid, "timestamp": ts, "name": "tada"},
+            headers=h,
+        ).json()["ok"]
+        is True
+    )
+    assert (
+        wclient.get(
+            "/slack/api/reactions.get", params={"channel": cid, "timestamp": ts}, headers=h
+        ).json()["ok"]
+        is True
+    )
+    assert wclient.get("/slack/api/reactions.list", headers=h).json()["ok"] is True
+    assert (
+        wclient.get(
+            "/slack/api/reactions.remove",
+            params={"channel": cid, "timestamp": ts, "name": "tada"},
+            headers=h,
+        ).json()["ok"]
+        is True
+    )

@@ -505,8 +505,17 @@ def _label_predicate(spec: dict, *, alternatives: bool = False) -> tuple[str, li
     and: [{name: {eq: "Improvement"}}]}]}``, ``some: {or: [{name: {eq: "nope"}, and: [{}]}]}`` and
     ``some: {or: [{name: {eq: "nope"}, or: [{}]}]}`` each answered the two labelled issues, not
     every issue and not none. ``and: []`` and ``or: []`` beside a key drop out: ``some: {or: [{name:
-    {eq: "Feature"}, and: []}]}`` and the ``or: []`` twin each answered ``[Bug, Feature]`` alone. The
-    polarity of such a branch is still read from the branch as written (see `_reads_as_negation`).
+    {eq: "Feature"}, and: []}]}`` and the ``or: []`` twin each answered ``[Bug, Feature]`` alone.
+    Beside a key that constrains nothing they differ: ``some: {or: [{name: {}, and: []}]}`` answered
+    every issue (the branch is vacuous), ``some: {or: [{name: {}, or: []}]}`` the two labelled issues
+    (a predicate every label satisfies), and each kept that answer with a ``{name: {eq: "Feature"}}``
+    branch beside it. Outside an ``or`` branch none of this applies: at the top of a quantifier and in
+    an ``and`` branch the keys AND, and a key that constrains nothing is simply not read: ``some:
+    {name: {}, and: [{name: {eq: "Improvement"}}]}`` answered none, ``every: {name: {}, and: [{name:
+    {eq: "Bug"}}]}`` the ``[Bug]`` issue, ``some: {name: {eq: "Feature"}, and: [{}]}`` and ``some:
+    {and: [{name: {eq: "Feature"}, and: [{}]}]}`` the ``[Bug, Feature]`` issue, ``some: {name: {eq:
+    "Bug"}, or: [{name: {eq: "Feature"}}]}`` none. The polarity of an ``or`` branch is still read
+    from the branch as written (see `_reads_as_negation`).
 
     An empty fragment is right in two places and wrong in a third, which is what the kind is for.
     At the top of a quantifier it is right: ``some: {}`` and ``some: {name: {}}`` each answered every
@@ -549,6 +558,8 @@ def _label_predicate(spec: dict, *, alternatives: bool = False) -> tuple[str, li
         if alternatives and _VACUOUS in kinds:
             return "1", [], _REAL
         return _join(parts, "OR" if alternatives else "AND"), params, _REAL
+    if alternatives and _VACUOUS in kinds and _QUANT in kinds:
+        return "1", [], _REAL
     for kind in (_QUANT, _VACUOUS):
         if kind in kinds:
             return "", [], kind

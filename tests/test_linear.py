@@ -1382,6 +1382,34 @@ _LABEL_CELLS = [
     ('{some: {or: [{name: {eq: "nope"}, or: [{}]}]}}', {L2, L1}),
     ('{some: {or: [{name: {eq: "gateway"}, and: []}]}}', {L2}),
     ('{some: {or: [{name: {eq: "gateway"}, or: []}]}}', {L2}),
+    # ... but beside a key that constrains nothing, `and: []` leaves a vacuous branch and `or: []`
+    # a predicate every label satisfies
+    ("{some: {or: [{name: {}, and: []}]}}", EVERY),
+    ("{some: {or: [{name: {}, and: [{}]}]}}", EVERY),
+    ('{some: {or: [{name: {}, and: []}, {name: {eq: "gateway"}}]}}', EVERY),
+    ("{some: {or: [{name: {}, or: []}]}}", {L2, L1}),
+    ('{some: {or: [{name: {}, or: []}, {name: {eq: "gateway"}}]}}', {L2, L1}),
+    # outside an `or` branch, at the top of a quantifier and in an `and` branch, the keys AND and a
+    # key that constrains nothing is not read (measured 2026-09-06, same fixture)
+    ('{some: {name: {}, and: [{name: {eq: "nope"}}]}}', set()),
+    ('{some: {name: {}, or: [{name: {eq: "nope"}}]}}', set()),
+    ('{every: {name: {}, and: [{name: {eq: "bug"}}]}}', {L1}),
+    ('{every: {name: {}, or: [{name: {eq: "nope"}}]}}', set()),
+    ('{some: {name: {eq: "gateway"}, and: [{}]}}', {L2}),
+    ('{some: {name: {eq: "gateway"}, or: [{}]}}', {L2}),
+    ('{every: {name: {eq: "bug"}, and: [{}]}}', {L1}),
+    ('{some: {name: {eq: "gateway"}, and: []}}', {L2}),
+    ('{some: {name: {eq: "gateway"}, or: []}}', {L2}),
+    ('{some: {name: {eq: "nope"}, and: [{}], or: [{}]}}', set()),
+    ('{some: {and: [{name: {}, or: [{name: {eq: "nope"}}]}]}}', set()),
+    ('{some: {and: [{name: {eq: "gateway"}, and: [{}]}]}}', {L2}),
+    ('{some: {and: [{name: {}, and: [{name: {eq: "nope"}}]}, {name: {eq: "bug"}}]}}', set()),
+    ('{some: {name: {eq: "bug"}, or: [{name: {eq: "gateway"}}]}}', set()),
+    ('{some: {name: {eq: "bug"}, and: [{name: {eq: "gateway"}}]}}', set()),
+    ('{every: {name: {eq: "bug"}, or: [{name: {eq: "gateway"}}]}}', set()),
+    ('{some: {name: {neq: "gateway"}, or: [{name: {eq: "nope"}}]}}', set()),
+    ('{some: {name: {neq: "gateway"}, and: [{name: {eq: "bug"}}]}}', {L2, L1}),
+    ('{every: {name: {neq: "gateway"}, or: [{name: {eq: "bug"}}]}}', {L1}),
 ]
 
 

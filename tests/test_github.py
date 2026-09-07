@@ -19,6 +19,7 @@ import yaml
 from backlot import store, synth
 from backlot.config import Settings
 from backlot.pagination import encode_cursor
+from backlot.routers.github import PER_PAGE_DEFAULT, PER_PAGE_MAX
 from tests._helpers import (
     build_corpus,
     client_for,
@@ -2303,12 +2304,8 @@ def test_github_code_search_answers_its_refusals_in_reals_order(gh_client, gh_ad
     r = c.get(ghost, headers=gh_admin_h)
     assert r.status_code == 200 and r.json()["incomplete_results"] is True
     # the size APPLIED is what the depth is measured in: an unsent or zero size is the default and
-    # one over the cap is the cap (on real 30 and 100; here the server's own settings, which are
-    # not GitHub's, so the boundary page is computed rather than written down)
-    default, cap = (
-        Settings.model_fields["default_page_size"].default,
-        Settings.model_fields["max_page_size"].default,
-    )
+    # one over the cap is the cap, GitHub's 30 and 100
+    default, cap = PER_PAGE_DEFAULT, PER_PAGE_MAX
     for qs, served in (
         (f"page={1000 // default}", True),
         (f"page={1000 // default + 1}", False),
@@ -2362,8 +2359,8 @@ def test_github_issue_search_refuses_the_query_before_the_depth(gh_client, gh_ad
         headers=gh_admin_h,
     )
     assert r.status_code == 422 and r.json()["errors"][0]["code"] == "invalid"
-    # an unsent size is the default, and the last page it starts under 1000 is served
-    default = Settings.model_fields["default_page_size"].default
+    # an unsent size is GitHub's default, and the last page it starts under 1000 is served
+    default = PER_PAGE_DEFAULT
     last_served = (1000 - 1) // default + 1
     for page, served in ((last_served, True), (last_served + 1, False)):
         r = c.get(f"/github/search/issues?q=is:open&page={page}", headers=gh_admin_h)

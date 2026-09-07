@@ -95,9 +95,8 @@ def test_readme_stays_short():
 def test_no_prose_states_the_source_count():
     """Name a few sources and say "and more"; docs/supported-sources.md carries the generated list.
 
-    Not the README alone. The count belongs to whatever describes the project, and the manifests a
-    plugin catalog renders describe it to more readers than the README reaches — which is where the
-    two that this widening caught had settled, along with one in the docs generator itself.
+    Not the README alone. The count belongs to whatever describes the project, and a manifest a
+    plugin catalog renders describes it to more readers than the README reaches.
     """
     offenders = []
     for path, rel in _scanned_files(".md", ".py", ".json", ".toml"):

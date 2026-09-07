@@ -1,5 +1,5 @@
 # Every `uses:` in this repository is pinned to a commit SHA, which is only safe while something
-# moves the pins. That is this file's job; the pip and npm entries come along because the same
+# moves the pins. That is this file's job; the uv and npm entries come along because the same
 # updates are what the scanner and the release build read.
 version: 2
 updates:

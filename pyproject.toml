@@ -157,8 +157,9 @@ extend-exclude = ["*.md"]
 # stays over it is long string literals and measured-behaviour comment tables.
 ignore = ["E402"]  # module-level import not at top: the examples must set sys.path first
 # flake8-bandit, minus what a mock of real SaaS APIs necessarily trips: S608 composes the FTS and
-# listing queries (92 of the 123 hits under backlot/), S324 hashes etags, S104 is `--host 0.0.0.0`,
-# S101 is 4009 asserts in tests. What is left already passes, so it is a gate and not a backlog.
+# listing queries, which is most of what `--select S` finds under backlot/, S324 hashes etags, S104
+# is `--host 0.0.0.0`, S101 is every assert a test makes. What is left passes, so the selection
+# below is a gate and not a backlog.
 extend-select = [
     "S102",  # exec
     "S301",  # pickle

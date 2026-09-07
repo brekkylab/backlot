@@ -19,13 +19,16 @@ the var is unset. There are nine, and this page is all of them.
 
 | Env var | Default | What it does |
 |---|---|---|
-| `BACKLOT_DEFAULT_PAGE_SIZE` | `100` | Page size when a request names none |
-| `BACKLOT_MAX_PAGE_SIZE` | `1000` | Ceiling a request may ask for |
+| `BACKLOT_DEFAULT_PAGE_SIZE` | `100` | Page size when a request names none: Slack's `limit`, Gmail's and Drive's `maxResults` / `pageSize`, the Jira search's `maxResults` |
+| `BACKLOT_MAX_PAGE_SIZE` | `1000` | Ceiling a sent value is cut to, on Slack (`limit`, `count`, `page`) and Google |
 
-**A vendor's own cap still wins.** Where the real API documents a maximum, Backlot enforces that
-one instead: Fireflies clamps `limit` to 50 rather than erroring, and HubSpot to 100 — the value its
-official client pages at. Raising `BACKLOT_MAX_PAGE_SIZE` does not lift either, because a client
-that gets 1000 rows from a call the real API caps at 50 is a client that breaks in production.
+**A vendor's own numbers still win.** Where the real API documents or measures a page size, Backlot
+serves that one instead: GitHub pages at 30 when `per_page` is not sent and caps it at 100, on every
+listing and search (its OpenAPI declares `per-page` as "The number of results per page (max 100)."
+with default 30, and api.github.com answers exactly that); Fireflies clamps `limit` to 50 rather
+than erroring, and HubSpot to 100 — the value its official client pages at. Neither variable moves
+any of these, because a client that gets 1000 rows from a call the real API caps at 100 is a client
+that breaks in production.
 
 ## SQLite
 

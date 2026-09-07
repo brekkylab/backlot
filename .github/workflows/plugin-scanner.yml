@@ -1,0 +1,28 @@
+# HOL's plugin-scanner, which the catalogs that list Backlot score this repository with. Running it
+# here puts a finding on the pull request that introduces it, rather than in someone else's scan.
+#
+# `min_score` is HOL's own passing bar, so a score regression is a red build here rather than a
+# quieter listing later. `fail_on_severity` is `critical` where their guide pairs that bar with
+# `high`, deliberately: what the scanner calls `high` here is the product -- the fake tokens the
+# READMEs, the Linear example and the tests hand out, which a secret detector cannot tell from real
+# ones. Gating on `high` would gate on a corpus of plausible credentials. The cost of not gating is
+# that HOL's own scan reads this repository as advisory rather than passing, and that is the trade.
+name: Plugin scanner
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: hashgraph-online/ai-plugin-scanner-action@06bfa78ffae51fa0bcadf595b4d4a009bea96e42 # v1.2.626
+        with:
+          min_score: 80
+          fail_on_severity: critical

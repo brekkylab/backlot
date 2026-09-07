@@ -156,6 +156,23 @@ extend-exclude = ["*.md"]
 # Ruff's defaults (E4/E7/E9 + F). NOT E501: the formatter keeps code inside the limit, and what
 # stays over it is long string literals and measured-behaviour comment tables.
 ignore = ["E402"]  # module-level import not at top: the examples must set sys.path first
+# flake8-bandit, minus what a mock of real SaaS APIs necessarily trips: S608 composes the FTS and
+# listing queries, which is most of what `--select S` finds under backlot/, S324 hashes etags, S104
+# is `--host 0.0.0.0`, S101 is every assert a test makes. What is left passes, so the selection
+# below is a gate and not a backlog.
+extend-select = [
+    "S102",  # exec
+    "S301",  # pickle
+    "S302",  # marshal
+    "S307",  # eval
+    "S602",  # subprocess with shell=True
+    "S604",  # a call with shell=True
+    "S605",  # os.system and friends
+    "S606",  # os.exec*
+    "S609",  # a wildcard in a shell command
+    "S611",  # RawSQL
+    "S612",  # logging.config.listen
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

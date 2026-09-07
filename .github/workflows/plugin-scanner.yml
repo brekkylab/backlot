@@ -1,0 +1,29 @@
+# HOL's plugin-scanner, which the catalogs that list Backlot score this repository with. Running it
+# here puts a finding on the pull request that introduces it, rather than in someone else's scan.
+#
+# Only `critical` fails the run. Every `high` it reports today is Backlot being what it is: seven
+# HARDCODED_SECRET hits on the fake tokens the READMEs, the Linear example and the tests hand out,
+# and the `eval` in tests/test_schema.py that reads an example's own CORPUS literal. The marketplace
+# findings want Codex's object-shaped `source`, where Claude Code's marketplace.json takes a path.
+# Gating on `high` would be gating on all of that.
+name: Plugin scanner
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # By SHA rather than by tag, unlike the first-party actions the other workflows use: this one
+      # publishes several releases a week, and what it does is install a package and run it over the
+      # checkout.
+      - uses: hashgraph-online/ai-plugin-scanner-action@06bfa78ffae51fa0bcadf595b4d4a009bea96e42 # v1.2.626
+        with:
+          fail_on_severity: critical

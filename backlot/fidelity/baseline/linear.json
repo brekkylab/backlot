@@ -1,7 +1,7 @@
 {
   "source": "linear",
   "endpoint": "https://api.linear.app/graphql",
-  "measured": "2026-09-03",
+  "measured": "2026-09-06",
   "acknowledged": [
     {
       "kind": "missing_field",
@@ -3108,6 +3108,13 @@
     {
       "kind": "missing_field",
       "severity": "gap",
+      "path": "Query.inboxNotifications",
+      "detail": "vendor serves inboxNotifications: NotificationConnection!; Backlot does not",
+      "note": "The gap on `Query.notifications` covers the family; this is its newer and narrower root, and it is the one whose argument list a client cannot substitute for the other. Measured against api.linear.app on 2026-09-06: it answers the same `NotificationConnection` over the same nodes, but takes only `first`, `after` and `unreadOnly` \u2014 `filter`, `last`, `orderBy` and `includeArchived`, which `notifications` accepts, each answer 400 `GRAPHQL_VALIDATION_FAILED` here. Neither root is deprecated."
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
       "path": "Query.initiative",
       "detail": "vendor serves initiative: Initiative!; Backlot does not"
     },
@@ -3337,7 +3344,8 @@
       "kind": "missing_field",
       "severity": "gap",
       "path": "Query.notifications",
-      "detail": "vendor serves notifications: NotificationConnection!; Backlot does not"
+      "detail": "vendor serves notifications: NotificationConnection!; Backlot does not",
+      "note": "No corpus states a notification. The records carry issues, comments, teams and users and nothing that says who was told about what, when they read it, or whether it is snoozed, so the whole family is a gap \u2014 `notification`, `notifications`, `inboxNotifications`, `notificationsUnreadCount` and `notificationSubscription(s)`. Serving any one of them commits Backlot to per-viewer inbox state it would have to invent: measured against api.linear.app on 2026-09-06, `Notification` is an interface over 13 types (IssueNotification \u2026 WelcomeMessageNotification) whose 28 fields are almost all per-viewer event state \u2014 `readAt`, `emailedAt`, `snoozedUntilAt`, `unsnoozedAt`, `actor`, `groupingKey`. An empty connection is not a free stand-in either: the workspace measured has no activity beyond its own creation and still answered a `WelcomeMessageNotification` from both roots, with `notificationsUnreadCount: 1`."
     },
     {
       "kind": "missing_field",

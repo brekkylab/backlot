@@ -112,6 +112,37 @@ def qp(
     return p
 
 
+# What GitHub's own OpenAPI description declares for the two paging parameters every one of its
+# listings and searches shares: `per-page` is `{type: integer, default: 30}` and `page` is
+# `{type: integer, default: 1}` (github/rest-api-description, `components/parameters`, read
+# 2026-09-07; every route Backlot serves references those two or repeats the same numbers inline).
+GITHUB_PAGE_DEFAULTS = {"per_page": 30, "page": 1}
+
+
+def github_page_defaults(spec: dict) -> dict:
+    """``spec`` with real's declared defaults written onto every GitHub operation's `page` and
+    `per_page`, in place.
+
+    The GitHub handlers declare both as ``PageParam = None`` and have to: the handler tells an unsent
+    size from a sent one by that ``None`` (a `Link` header omits a size the caller did not send), so
+    the runtime default cannot be 30. FastAPI writes no ``default`` for a query parameter whose
+    default is ``None``, and neither ``json_schema_extra`` nor ``WithJsonSchema`` gets one past it
+    (both measured on 0.141.1 / pydantic 2.13). So the number the route applies, which is the number
+    real declares, is written here, after FastAPI has built the document. Only GitHub: the other
+    vendors' declared defaults are not measured."""
+    for path, item in spec.get("paths", {}).items():
+        if path != "/github" and not path.startswith("/github/"):
+            continue
+        for method, op in item.items():
+            if method not in _METHODS:
+                continue
+            for param in op.get("parameters", []):
+                default = GITHUB_PAGE_DEFAULTS.get(param.get("name"))
+                if default is not None and param.get("in") == "query":
+                    param["schema"]["default"] = default
+    return spec
+
+
 def slice_spec(spec: dict, prefixes: list[str]) -> dict:
     """Copy ``spec`` keeping only paths under one of ``prefixes``."""
     paths = {

@@ -1644,6 +1644,39 @@ def test_github_tolerates_the_pagination_values_real_tolerates(gh_client, gh_adm
     assert {"type": "integer"} in page["schema"]["anyOf"]
 
 
+def test_github_the_spec_declares_reals_page_defaults(gh_client):
+    """GitHub's OpenAPI description declares the shared `per-page` parameter as `{type: integer,
+    default: 30}` and `page` as `{type: integer, default: 1}` (github/rest-api-description,
+    `components/parameters`, read 2026-09-07), and every route served here references the two or
+    repeats the numbers inline. Backlot's slice declared neither default: FastAPI writes none for a
+    parameter whose runtime default is None, and the handlers keep None to tell an unsent size from a
+    sent one. The spec is what `backlot mcp` hands an agent as a tool, so a default the document does
+    not state is one the agent cannot know.
+
+    The two are written onto the served document after FastAPI builds it, on GitHub's operations
+    alone: a Slack `page` keeps the schema its router declared by hand.
+    """
+    c, _ = gh_client
+    spec = c.get("/openapi.json").json()
+    seen = 0
+    for path, item in spec["paths"].items():
+        if not path.startswith("/github/"):
+            continue
+        for op in item.values():
+            for p in op.get("parameters", []):
+                if p["name"] in ("page", "per_page"):
+                    assert p["schema"]["default"] == {"per_page": 30, "page": 1}[p["name"]], path
+                    assert {"type": "integer"} in p["schema"]["anyOf"], path  # still an integer
+                    seen += 1
+    assert seen == 2 * 17  # the seventeen routes that page, both parameters each
+    slack = spec["paths"]["/slack/api/search.messages"]["get"]["parameters"]
+    assert "default" not in next(p for p in slack if p["name"] == "page")["schema"]
+    # ...and the MCP slice, built from the same document, carries them to an agent
+    mcp = c.get("/_meta/openapi/github").json()
+    code = mcp["paths"]["/github/search/code"]["get"]["parameters"]
+    assert next(p for p in code if p["name"] == "per_page")["schema"]["default"] == 30
+
+
 def test_github_pages_at_reals_thirty_and_caps_at_its_hundred(tmp_path):
     """Real serves 30 items when `per_page` is not sent and 100 for any sent size at or above it,
     on every listing and search measured. On api.github.com on 2026-09-06, `psf/requests/issues?state=all`,

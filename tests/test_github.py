@@ -13,9 +13,8 @@ import json
 import re
 from urllib.parse import quote
 
-import yaml
-
 import pytest
+import yaml
 
 from backlot import store, synth
 from backlot.config import Settings
@@ -2112,7 +2111,7 @@ def test_github_search_pages_with_a_link_header(gh_client, gh_admin_h, path, q, 
     nxt = _link_rels(first.headers["Link"])["next"]
     second = c.get(nxt.split("testserver", 1)[1], headers=gh_admin_h)
     assert second.json()["total_count"] == total
-    ids = lambda r: {i["url"] for i in r.json()["items"]}  # noqa: E731
+    ids = lambda r: {i["url"] for i in r.json()["items"]}
     assert ids(second) and not ids(second) & ids(first)
     assert {"prev", "first"} <= set(_link_rels(second.headers["Link"]))
 
@@ -2303,7 +2302,10 @@ def test_github_code_search_answers_its_refusals_in_reals_order(gh_client, gh_ad
     # the size APPLIED is what the depth is measured in: an unsent or zero size is the default and
     # one over the cap is the cap (on real 30 and 100; here the server's own settings, which are
     # not GitHub's, so the boundary page is computed rather than written down)
-    default, cap = get_settings().default_page_size, get_settings().max_page_size
+    default, cap = (
+        Settings.model_fields["default_page_size"].default,
+        Settings.model_fields["max_page_size"].default,
+    )
     for qs, served in (
         (f"page={1000 // default}", True),
         (f"page={1000 // default + 1}", False),
@@ -2358,7 +2360,7 @@ def test_github_issue_search_refuses_the_query_before_the_depth(gh_client, gh_ad
     )
     assert r.status_code == 422 and r.json()["errors"][0]["code"] == "invalid"
     # an unsent size is the default, and the last page it starts under 1000 is served
-    default = get_settings().default_page_size
+    default = Settings.model_fields["default_page_size"].default
     last_served = (1000 - 1) // default + 1
     for page, served in ((last_served, True), (last_served + 1, False)):
         r = c.get(f"/github/search/issues?q=is:open&page={page}", headers=gh_admin_h)
@@ -2794,7 +2796,7 @@ def test_github_a_container_only_repo_reaches_the_admin_and_no_scoped_caller(tmp
         admin = {"Authorization": f"Bearer {tokens['admin_token']}"}
         ava = {"Authorization": f"Bearer {tok(tokens, 'ava@acme.com')}"}
 
-        names = lambda h, path: [r["name"] for r in c.get(path, headers=h).json()]  # noqa: E731
+        names = lambda h, path: [r["name"] for r in c.get(path, headers=h).json()]
         for listing in ("/github/user/repos", f"/github/orgs/{org}/repos"):
             assert names(admin, listing) == ["docs-site", "pipeline"], listing
             assert names(ava, listing) == ["docs-site"], listing
@@ -3365,6 +3367,7 @@ def test_github_pull_diff_reverse_applies_with_real_git(
         cwd=wt,
         capture_output=True,
         text=True,
+        check=False,
     )
     assert r.returncode == 0, f"git rejected the diff:\n{r.stderr}\n---\n{diff}"
 
@@ -3490,7 +3493,11 @@ def test_github_diff_never_emits_a_file_header_with_no_body(tmp_path):
     (wt / "ok.txt").write_text("hello\n")
     (wt / "pr.diff").write_text(diff)
     r = subprocess.run(
-        ["git", "apply", "--reverse", "--check", "pr.diff"], cwd=wt, capture_output=True, text=True
+        ["git", "apply", "--reverse", "--check", "pr.diff"],
+        cwd=wt,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     assert r.returncode == 0, r.stderr
 

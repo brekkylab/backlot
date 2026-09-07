@@ -20,10 +20,7 @@ jobs:
   scan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      # By SHA rather than by tag, unlike the first-party actions the other workflows use: this one
-      # publishes several releases a week, and what it does is install a package and run it over the
-      # checkout.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: hashgraph-online/ai-plugin-scanner-action@06bfa78ffae51fa0bcadf595b4d4a009bea96e42 # v1.2.626
         with:
           fail_on_severity: critical

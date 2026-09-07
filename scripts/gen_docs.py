@@ -67,7 +67,7 @@ GRAPHQL_ONLY = frozenset({"linear", "fireflies"})
 
 # source_type -> the docs/auth.md heading that covers it. Not derivable from SOURCES, because the
 # auth axis does not factor per source: Jira and Confluence share one Basic-auth section and the
-# five Google surfaces share one, so eleven sources come to nine headings. validate() proves each
+# Google surfaces share one, so the sources come to fewer headings than there are. validate() proves each
 # value still names a heading that is there, which is what stops a renamed section from rotting the
 # skill's links quietly.
 AUTH_SECTIONS: dict[str, str] = {

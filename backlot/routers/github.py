@@ -42,10 +42,11 @@ TREE_MAX_BYTES = 7 * 1024 * 1024
 # measured (api.github.com, 2026-09-06: `psf/requests/issues?state=all`, `/tags`, `/pulls?state=all`
 # and `/search/issues?q=repo:psf/requests+timeout` each answer 30 unsent and 100 for `per_page=100`,
 # `101` and `500` alike). GitHub's OpenAPI description declares the shared `per-page` parameter
-# "The number of results per page (max 100)." with `default: 30`. The settings stay the numbers of
-# the vendors whose own are not measured; a client sized to real's page must not get three times
-# it here and find out in production. Module level, like the tree caps, so a test can lower them:
-# no repository in the bundled corpus spans a page of 30.
+# "The number of results per page (max 100)." with `default: 30`; the served spec declares the same
+# 30 by reading this constant (`backlot/main.py`), so moving it moves both. The settings stay the
+# numbers of the vendors whose own are not measured; a client sized to real's page must not get
+# three times it here and find out in production. Module level, like the tree caps, so a test can
+# lower them: no repository in the bundled corpus spans a page of 30.
 PER_PAGE_DEFAULT = 30
 PER_PAGE_MAX = 100
 

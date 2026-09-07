@@ -18,7 +18,7 @@ import yaml
 import pytest
 
 from backlot import store, synth
-from backlot.config import get_settings
+from backlot.config import Settings
 from backlot.pagination import encode_cursor
 from tests._helpers import build_corpus, client_for, crawl_github_repo, db_count, tiny_corpus
 
@@ -1647,11 +1647,13 @@ def test_github_tolerates_the_pagination_values_real_tolerates(gh_client, gh_adm
 def test_github_the_spec_declares_reals_page_defaults(gh_client):
     """GitHub's OpenAPI description declares the shared `per-page` parameter as `{type: integer,
     default: 30}` and `page` as `{type: integer, default: 1}` (github/rest-api-description,
-    `components/parameters`, read 2026-09-07), and every route served here references the two or
-    repeats the numbers inline. Backlot's slice declared neither default: FastAPI writes none for a
-    parameter whose runtime default is None, and the handlers keep None to tell an unsent size from a
-    sent one. The spec is what `backlot mcp` hands an agent as a tool, so a default the document does
-    not state is one the agent cannot know.
+    `components/parameters`, read 2026-09-07). Sixteen of the seventeen routes served here that page
+    reference the two; the seventeenth, `GET /repos/{owner}/{repo}/statuses/{sha}`, is the legacy
+    alias the description names only in the prose of `/commits/{ref}/statuses`, which references
+    them. Backlot's slice declared neither default: FastAPI writes none for a parameter whose
+    runtime default is None, and the handlers keep None to tell an unsent size from a sent one. The
+    spec is what `backlot mcp` hands an agent as a tool, so a default the document does not state is
+    one the agent cannot know.
 
     The two are written onto the served document after FastAPI builds it, on GitHub's operations
     alone: a Slack `page` keeps the schema its router declared by hand.
@@ -1754,7 +1756,8 @@ def test_github_pages_at_reals_thirty_and_caps_at_its_hundred(tmp_path):
                 assert f"page={expected}" in _link_rels(r.headers["Link"])[rel], (path, params)
         # ...and the two numbers are real's, not the server's settings
         assert (gh.PER_PAGE_DEFAULT, gh.PER_PAGE_MAX) == (30, 100)
-        assert (get_settings().default_page_size, get_settings().max_page_size) == (100, 1000)
+        assert Settings.model_fields["default_page_size"].default == 100
+        assert Settings.model_fields["max_page_size"].default == 1000
 
 
 def test_github_a_path_parameter_it_cannot_parse_is_the_route_s_404(gh_client, gh_admin_h, gh_org):

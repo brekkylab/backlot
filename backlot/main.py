@@ -123,13 +123,17 @@ app = FastAPI(
 
 # The served spec, with what FastAPI cannot be told to declare: real's `default: 30` / `default: 1`
 # on GitHub's `per_page` / `page`, whose runtime default has to stay None (see
-# :func:`backlot.openapi.github_page_defaults`). FastAPI caches its document on the app and hands the
-# same dict back, so the edit is made in place and is the same edit each time.
+# :func:`backlot.openapi.github_page_defaults`). The 30 is the router's own constant, so the
+# document cannot declare one size while the route applies another; the 1 is the page `clamp_page`
+# starts at. FastAPI caches its document on the app and hands the same dict back, so the edit is
+# made in place and is the same edit each time.
 _fastapi_openapi = app.openapi
 
 
 def _openapi_with_github_page_defaults() -> dict:
-    return openapi.github_page_defaults(_fastapi_openapi())
+    return openapi.github_page_defaults(
+        _fastapi_openapi(), {"per_page": github.PER_PAGE_DEFAULT, "page": 1}
+    )
 
 
 app.openapi = _openapi_with_github_page_defaults

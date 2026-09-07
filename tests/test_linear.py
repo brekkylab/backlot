@@ -1135,6 +1135,141 @@ def test_issue_comments_connection_reads_an_or_branch_the_same_way(fclient):
     assert comment_bodies(fclient, two_keys, root="ENG-2") == [SECOND]
 
 
+def matched_nodes(fclient, query: str, path: tuple[str, ...], field: str) -> list[str]:
+    """``field`` of every node at ``path`` (ending at a connection) in the answer to ``query``."""
+    body = post(fclient, query).json()
+    assert "errors" not in body, body["errors"]
+    node = body["data"]
+    for step in path:
+        node = node[step]
+    return sorted(n[field] for n in node["nodes"])
+
+
+# The routes `_match_fields` evaluates in linear_resolvers.py, each as api.linear.app answered it on
+# 2026-09-07 (users: three in the workspace, A the first's name and B the second's email; teams:
+# one, `BRE`; labels: BRE-1 carrying `[Bug, Feature]`, `Improvement` nobody's; attachments: two
+# throwaway ones on BRE-1, created for the run and deleted after). The fixture stands in: users
+# Ava / bob@acme.com / Mia, teams DES and ENG, ENG-1's labels `[bug, gateway]` (`gateway` for
+# `Feature`, `nope` for `Improvement`) and ENG-1's three attachments (`CI run` for the first
+# throwaway, the Slack url for the second's). Every route reads `or` as `_issue_parts` does: the keys
+# of one branch are alternatives, a branch with nothing in it is dropped, and a branch whose key
+# constrains nothing makes the whole `or` constrain nothing.
+_USERS = ["ava@acme.com", "bob@acme.com", "mia@acme.com"]
+_USER_OR_CELLS = [
+    ('{or: [{name: {eq: "Ava"}, email: {eq: "bob@acme.com"}}]}', _USERS[:2]),
+    ('{name: {eq: "Ava"}, email: {eq: "bob@acme.com"}}', []),
+    ('{and: [{name: {eq: "Ava"}, email: {eq: "bob@acme.com"}}]}', []),
+    ('{or: [{name: {eq: "Ava"}}, {email: {eq: "bob@acme.com"}}]}', _USERS[:2]),
+    (
+        '{or: [{name: {eq: "Ava"}, email: {eq: "bob@acme.com"}}], email: {eq: "bob@acme.com"}}',
+        [_USERS[1]],
+    ),
+    ('{or: [{}, {email: {eq: "bob@acme.com"}}]}', [_USERS[1]]),
+    ('{or: [{name: null}, {email: {eq: "bob@acme.com"}}]}', [_USERS[1]]),
+    ('{or: [{name: {}}, {email: {eq: "bob@acme.com"}}]}', _USERS),
+    ('{or: [{name: {}, email: {eq: "bob@acme.com"}}]}', _USERS),
+    ("{or: [{}]}", _USERS),
+    ("{or: []}", _USERS),
+    ("{and: []}", _USERS),
+    ("{and: [{}]}", _USERS),
+    ('{or: [{or: [{}]}, {email: {eq: "bob@acme.com"}}]}', _USERS),
+    ('{or: [{and: []}, {email: {eq: "bob@acme.com"}}]}', [_USERS[1]]),
+    ('{and: [{name: {}}, {email: {eq: "bob@acme.com"}}]}', [_USERS[1]]),
+]
+_TEAMS = ["DES", "ENG"]
+_TEAM_OR_CELLS = [
+    ('{or: [{name: {eq: "nosuch"}, key: {eq: "ENG"}}]}', ["ENG"]),
+    ('{name: {eq: "nosuch"}, key: {eq: "ENG"}}', []),
+    ('{or: [{name: {eq: "nosuch"}}, {key: {eq: "ENG"}}]}', ["ENG"]),
+    ('{or: [{name: {eq: "engineering"}, key: {eq: "ZZZ"}}]}', ["ENG"]),
+    ('{or: [{}, {key: {eq: "nosuch"}}]}', []),
+    ('{or: [{name: {}}, {key: {eq: "nosuch"}}]}', _TEAMS),
+    ("{or: [{}]}", _TEAMS),
+    ("{or: []}", _TEAMS),
+]
+_ENG1_LABELS = ["bug", "gateway"]
+_ISSUE_LABELS_OR_CELLS = [
+    ('{or: [{name: {eq: "gateway"}, and: [{name: {eq: "nope"}}]}]}', ["gateway"]),
+    ('{or: [{name: {eq: "nope"}, and: [{name: {eq: "gateway"}}]}]}', ["gateway"]),
+    ('{and: [{name: {eq: "gateway"}, or: [{name: {eq: "nope"}}]}]}', []),
+    ('{name: {eq: "gateway"}, and: [{name: {eq: "nope"}}]}', []),
+    ('{or: [{name: {eq: "gateway"}}, {and: [{name: {eq: "nope"}}]}]}', ["gateway"]),
+    ('{or: [{}, {name: {eq: "gateway"}}]}', ["gateway"]),
+    ('{or: [{name: null}, {name: {eq: "gateway"}}]}', ["gateway"]),
+    ('{or: [{name: {}}, {name: {eq: "gateway"}}]}', _ENG1_LABELS),
+    ('{or: [{name: {}, and: [{name: {eq: "nope"}}]}]}', _ENG1_LABELS),
+    ("{or: [{}]}", _ENG1_LABELS),
+    ("{or: []}", _ENG1_LABELS),
+    ("{and: [{}]}", _ENG1_LABELS),
+    ('{or: [{or: [{}]}, {name: {eq: "gateway"}}]}', _ENG1_LABELS),
+    ('{or: [{and: []}, {name: {eq: "gateway"}}]}', ["gateway"]),
+    ('{or: [{name: {eq: "gateway"}, and: []}]}', ["gateway"]),
+    ('{or: [{name: {eq: "gateway"}, and: [{}]}]}', _ENG1_LABELS),
+    ('{and: [{name: {}}, {name: {eq: "gateway"}}]}', ["gateway"]),
+    ("{name: {}}", _ENG1_LABELS),
+    ("{}", _ENG1_LABELS),
+]
+_ENG1_ATTACHMENTS = ["CI run", "Réunion notes", "Spec"]
+_SLACK = "https://acme.slack.com/archives/C1/p1"
+_ATTACHMENT_OR_CELLS = [
+    ('{or: [{title: {eq: "CI run"}, url: {eq: "%s"}}]}' % _SLACK, _ENG1_ATTACHMENTS[:2]),
+    ('{title: {eq: "CI run"}, url: {eq: "%s"}}' % _SLACK, []),
+    ('{and: [{title: {eq: "CI run"}, url: {eq: "%s"}}]}' % _SLACK, []),
+    ('{or: [{title: {eq: "CI run"}}, {url: {eq: "%s"}}]}' % _SLACK, _ENG1_ATTACHMENTS[:2]),
+    (
+        '{or: [{title: {eq: "CI run"}, url: {eq: "%s"}}], url: {eq: "%s"}}' % (_SLACK, _SLACK),
+        ["Réunion notes"],
+    ),
+    ('{or: [{}, {title: {eq: "CI run"}}]}', ["CI run"]),
+    ('{or: [{title: null}, {title: {eq: "CI run"}}]}', ["CI run"]),
+    ('{or: [{title: {}}, {title: {eq: "CI run"}}]}', _ENG1_ATTACHMENTS),
+    ('{or: [{title: {}, url: {eq: "%s"}}]}' % _SLACK, _ENG1_ATTACHMENTS),
+    ("{or: [{}]}", _ENG1_ATTACHMENTS),
+    ("{or: []}", _ENG1_ATTACHMENTS),
+    ("{and: [{}]}", _ENG1_ATTACHMENTS),
+    ('{or: [{or: [{}]}, {title: {eq: "CI run"}}]}', _ENG1_ATTACHMENTS),
+    ('{or: [{and: []}, {title: {eq: "CI run"}}]}', ["CI run"]),
+    ('{and: [{title: {}}, {title: {eq: "CI run"}}]}', ["CI run"]),
+]
+
+
+@pytest.mark.parametrize("literal,expected", _USER_OR_CELLS, ids=[c[0] for c in _USER_OR_CELLS])
+def test_users_filter_or_reads_a_branch_as_linear(fclient, literal, expected):
+    """`Query.users(filter:)` is evaluated by `_match_fields`, which used to AND the keys of an `or`
+    branch: `{or: [{name: {eq: A}, email: {eq: B}}]}` answered no user where Linear answers two."""
+    q = "{ users(first: 50, filter: %s) { nodes { email } } }" % literal
+    assert matched_nodes(fclient, q, ("users",), "email") == expected
+
+
+@pytest.mark.parametrize("literal,expected", _TEAM_OR_CELLS, ids=[c[0] for c in _TEAM_OR_CELLS])
+def test_teams_filter_or_reads_a_branch_as_linear(fclient, literal, expected):
+    """`Query.teams(filter:)` goes through `_match_fields` too, where `TeamFilter` under
+    `IssueFilter.team` goes through `_sub_filter`; the two read an `or` branch the same way now."""
+    q = "{ teams(first: 50, filter: %s) { nodes { key } } }" % literal
+    assert matched_nodes(fclient, q, ("teams",), "key") == expected
+
+
+@pytest.mark.parametrize(
+    "literal,expected", _ISSUE_LABELS_OR_CELLS, ids=[c[0] for c in _ISSUE_LABELS_OR_CELLS]
+)
+def test_issue_labels_filter_or_reads_a_branch_as_linear(fclient, literal, expected):
+    """`Issue.labels(filter:)` is the second evaluator of `IssueLabelFilter`: the same object that
+    `labels: {some: …}` compiles through `_label_predicate` is evaluated here by `_match_fields`, and
+    the two answered differently on an `or` branch with two keys until both split it."""
+    q = '{ issue(id: "ENG-1") { labels(filter: %s) { nodes { name } } } }' % literal
+    assert matched_nodes(fclient, q, ("issue", "labels"), "name") == expected
+
+
+@pytest.mark.parametrize(
+    "literal,expected", _ATTACHMENT_OR_CELLS, ids=[c[0] for c in _ATTACHMENT_OR_CELLS]
+)
+def test_issue_attachments_filter_or_reads_a_branch_as_linear(fclient, literal, expected):
+    """`Issue.attachments(filter:)`, the fourth `_match_fields` route, measured over two throwaway
+    attachments on BRE-1."""
+    q = '{ issue(id: "ENG-1") { attachments(filter: %s) { nodes { title } } } }' % literal
+    assert matched_nodes(fclient, q, ("issue", "attachments"), "title") == expected
+
+
 def test_an_empty_labels_predicate_constrains_nothing_as_it_does_on_linear(fclient):
     """`labels: {}`, `labels: {some: {}}`, `labels: {every: {}}` and `labels: {some: {name: {}}}` each
     answered every issue on api.linear.app (measured 2026-09-03), the label-less ones included: an

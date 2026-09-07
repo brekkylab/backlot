@@ -247,6 +247,8 @@ input UserFilter {
   displayName: StringComparator
   email: StringComparator
   and: [UserFilter!]
+  """The keys of one branch are alternatives: `{or: [{name: {eq: A}, email: {eq: B}}]}` is the user
+  named A and the user at B, where the same object outside an `or` is neither (measured 2026-09-07)."""
   or: [UserFilter!]
 }
 
@@ -274,6 +276,8 @@ input TeamFilter {
   key: StringComparator
   name: StringComparator
   and: [TeamFilter!]
+  """The keys of one branch are alternatives: `{or: [{name: {eq: "nosuch"}, key: {eq: K}}]}` is the
+  team keyed K, where the same object outside an `or` is no team (measured 2026-09-07)."""
   or: [TeamFilter!]
 }
 
@@ -297,9 +301,9 @@ input NullableProjectFilter {
 input IssueLabelFilter {
   name: StringComparator
   and: [IssueLabelFilter!]
-  """The keys of one branch are alternatives, as on every `or` here but the label collection's:
-  `{or: [{name: {eq: A}, and: [{name: {eq: B}}]}]}` is a label named A or B, where the same object
-  under `and` is a label named both (measured 2026-09-06)."""
+  """The keys of one branch are alternatives: `{or: [{name: {eq: A}, and: [{name: {eq: B}}]}]}` is a
+  label named A or B, where the same object under `and` is a label named both (measured 2026-09-06).
+  The label collection's `or` is the exception — see `IssueLabelCollectionFilter.or`."""
   or: [IssueLabelFilter!]
 }
 
@@ -336,6 +340,9 @@ input AttachmentFilter {
   url: StringComparator
   sourceType: SourceTypeComparator
   and: [AttachmentFilter!]
+  """The keys of one branch are alternatives: `{or: [{title: {eq: A}, url: {eq: B}}]}` is the
+  attachment titled A and the one at B, where the same object outside an `or` is neither (measured
+  2026-09-07)."""
   or: [AttachmentFilter!]
 }
 
@@ -353,9 +360,9 @@ input CommentFilter {
   createdAt: DateComparator
   updatedAt: DateComparator
   and: [CommentFilter!]
-  """The keys of one branch are alternatives, as on every `or` here but the label collection's:
-  `{or: [{body: {eq: A}, id: {eq: B}}]}` is the comment with body A and the comment with id B,
-  where the same object outside an `or` is neither (measured 2026-09-06)."""
+  """The keys of one branch are alternatives: `{or: [{body: {eq: A}, id: {eq: B}}]}` is the comment
+  with body A and the comment with id B, where the same object outside an `or` is neither (measured
+  2026-09-06). The label collection's `or` is the exception — see `IssueLabelCollectionFilter.or`."""
   or: [CommentFilter!]
 }
 
@@ -383,6 +390,10 @@ input IssueFilter {
   project: NullableProjectFilter
   labels: IssueLabelCollectionFilter
   and: [IssueFilter!]
+  """The keys of one branch are alternatives: `{or: [{number: {eq: 1}, title: {eq: T}}]}` answered
+  the issue numbered 1 and the one titled T, where the same object under `and` answered none
+  (measured 2026-09-04 on api.linear.app; `number` is not declared here, the keys that are read the
+  same way)."""
   or: [IssueFilter!]
 }
 

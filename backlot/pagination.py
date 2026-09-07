@@ -86,9 +86,9 @@ def _absorb_page(v):
     listing; the same five values are a 200 on `/repos/{o}/{r}/tags`, `/user/repos`,
     `/search/issues`, `/search/repositories`, `/search/users`, `/search/commits`, `/search/labels`
     and `/search/topics`, 2026-09-06). Refusing them would hand a paginator computing an edge value a
-    hard error where production absorbs it. `/search/code` is the one surface that refuses, and
-    refuses before this validator's answer matters: see :func:`github_code_search_page_refusal`,
-    which that route asks first.
+    hard error where production absorbs it. Of those ten surfaces `/search/code` is the one that
+    refuses, and it refuses before this validator's answer matters: see
+    :func:`github_code_search_query_refusal`, which that route asks first.
 
     A `BeforeValidator` rather than a `str` annotation: the parameter stays an integer in the
     OpenAPI schema, which is what real's own spec declares, so the tolerance is in the runtime
@@ -96,6 +96,10 @@ def _absorb_page(v):
     """
     if v is None or isinstance(v, int):
         return v
+    if isinstance(v, str):
+        # Leading zeros are dropped before the parse, not by it: Python refuses to convert a
+        # string of more than 4300 digits at all, and real reads `0000…05` as 5 however many zeros.
+        v = v.lstrip("0") or "0"
     try:
         return int(v)
     except (TypeError, ValueError):
@@ -109,58 +113,111 @@ PageParam = Annotated[int | None, BeforeValidator(_absorb_page), Query()]
 
 #: How deep a GitHub search pages: real serves the first 1000 results of a search and refuses a
 #: page past them with a 422 (measured 2026-09-06 on `/search/issues`, `/search/code` and
-#: `/search/repositories`), whatever the total. Where exactly the refusal falls differs by route
-#: and is each route's own rule; this is the number both share, and what caps a `last` link.
+#: `/search/repositories`), whatever the total. Where exactly the refusal falls differs by route,
+#: see :func:`github_search_depth_refused`; this is the number both share, and what caps a `last`
+#: link, see :func:`github_search_last_page`. The one name for it, so a test that lowers it lowers
+#: the 422 and the `Link` together.
 GITHUB_SEARCH_RESULT_CAP = 1000
+
+
+def github_search_last_page(per_page: int) -> int:
+    """The deepest page a search's `last` link names, ``ceil(1000 / per_page)``.
+
+    Measured on api.github.com on 2026-09-06: an issue search of 2.8 million results links last=10
+    at `per_page=100`, 34 at 30 and 143 at 7, and a code search of 294 million the same three plus
+    1000 at `per_page=1`. Whether that page is one the route serves is the route's own rule (see
+    :func:`github_search_depth_refused`): it is for the issue search, and for code search at 30 or
+    7 a page it is the page the route refuses.
+    """
+    return -(-GITHUB_SEARCH_RESULT_CAP // per_page)
+
+
+def github_search_depth_refused(page: int, per_page: int, *, code: bool) -> bool:
+    """Whether real refuses this page of a search as past the first 1000 results.
+
+    The two search backends draw the line differently (measured 2026-09-06 on an issue search of
+    2,813,432 results and a code search of 294,649,856, and on an 846- and a 44-result search).
+    `/search/issues` refuses the page that STARTS past 1000, ``(page - 1) * per_page >= 1000``: at
+    30 a page, page 34 (results 991 to 1020) is served in full and page 35 refused; at 7 a page,
+    143 (995 to 1001) is served and 144 refused; at 100 a page, 10 is served and 11 refused, and the
+    846-result search refuses page 11 just the same after serving page 10 empty.
+    `/search/repositories` answers as the issue search does. `/search/code` refuses the page that
+    would REACH past 1000, ``page * per_page > 1000``: page 33 at 30 is served and 34 refused, 142
+    at 7 served and 143 refused, 1000 at 1 served and 1001 refused. Both take the size the route
+    APPLIES, so a `per_page` over the cap is measured at the cap. The total never enters.
+    """
+    if code:
+        return page * per_page > GITHUB_SEARCH_RESULT_CAP
+    return (page - 1) * per_page >= GITHUB_SEARCH_RESULT_CAP
+
 
 #: The largest `page` / `per_page` value real's code search parses: it deserializes both into an
 #: unsigned 32-bit integer, so 4294967295 is a 200 and 4294967296 the "number too large" refusal.
 GITHUB_CODE_SEARCH_PAGE_MAX = 4_294_967_295
 
 
-def github_code_search_page_refusal(query_params) -> str | None:
-    """The body of the 400 real's `/search/code` answers for a `page` / `per_page` it cannot parse,
-    or ``None`` when it would parse both.
+_ASCII_DIGITS = frozenset("0123456789")
 
-    Code search is the one GitHub surface that refuses a page value, and it refuses in a shape no
-    other GitHub error has: status 400, `content-type: text/plain; charset=utf-8`, no JSON envelope,
-    and a body that is a Rust deserializer's own message (measured against api.github.com on
-    2026-09-06 with `q=repo:psf/requests+def`):
 
-    * a value with anything but ASCII digits in it, `abc`, `-1`, `1.5`, `5abc`, `1e2`, ` 5` (which is
-      how `+5` arrives) and the Arabic-Indic `١` or fullwidth `１` that Python's ``int`` would read
-      as 1, is `Failed to deserialize query string: per_page: invalid digit found in string`;
+def github_code_search_query_refusal(query_params) -> str | None:
+    """The body of the 400 real's `/search/code` answers for a query string it cannot deserialize,
+    or ``None`` when it would deserialize it: a `page` / `per_page` that is not an unsigned 32-bit
+    integer, or `q`, `page` or `per_page` given twice.
+
+    Of the ten GitHub surfaces measured (see :func:`_absorb_page`) code search is the one that
+    refuses a page value, and it refuses in a shape no other GitHub error has: status 400,
+    `content-type: text/plain; charset=utf-8`, no JSON envelope, and a body that is a Rust
+    deserializer's own message (measured against api.github.com on 2026-09-06 and 2026-09-07 with
+    `q=repo:psf/requests+def`). The number is parsed as Rust parses a `u32` from a string, an
+    optional single `+` and then one or more ASCII digits:
+
+    * a value that is not that, `abc`, `-1`, `1.5`, `5abc`, `1e2`, ` 5` (which is how an unencoded
+      `+5` arrives), a `+` on its own, `++5`, and the Arabic-Indic `١` or fullwidth `１` that
+      Python's ``int`` would read as 1, is `Failed to deserialize query string: per_page: invalid
+      digit found in string`, while an encoded `%2B5` is a 200 served at 5 and `page=%2B2` is
+      page 2;
     * an empty value is `… per_page: cannot parse integer from empty string`;
-    * a value over 4294967295 is `… per_page: number too large to fit in target type`, and
-      4294967295 itself is a 200;
+    * a value over 4294967295 is `… per_page: number too large to fit in target type`, however
+      long it is (5000 digits are that line, not a length refusal), and 4294967295 itself is a
+      200; leading zeros do not count towards the size, so 5000 zeros are a 200 as `0` is;
     * the parameter given twice is `… duplicate field `per_page``, reported at the second
       occurrence, so `per_page=5&per_page=abc` is the duplicate and `per_page=abc&per_page=5` the
-      invalid digit;
+      invalid digit; `q` given twice is `duplicate field `q`` the same way, a blank `q=&q=`
+      included, where `sort` given twice changes nothing;
     * `page` answers the same lines with `page:` in place of `per_page:`.
 
     The first failure in query-string order is the one reported (`page=abc&per_page=abc` names
-    `page`, the reverse names `per_page`), it comes before `q` is looked at (a blank `q` beside
-    `per_page=abc` is this 400, not the 422), and it is only the parse: `0` and `01` are a 200, as is
-    `per_page=101` (served at the cap), and `sort=abc`, `order=abc` or an unknown parameter beside a
-    good page value change nothing. Every other GitHub route absorbs these values, which is what
-    :func:`_absorb_page` is for; that validator still runs on this route and its answer is unused
-    when this function refuses, so the parameter stays an integer in the OpenAPI slice, as real's
-    spec declares it, on this route as on the others.
+    `page`, the reverse names `per_page`, `q=a&per_page=abc&q=b` names `per_page`), it comes before
+    `q` is looked at (a blank `q` beside `per_page=abc` is this 400, not the 422), and it is only the
+    deserialization: `0` and `01` are a 200, as is `per_page=101` (served at the cap), and
+    `sort=abc`, `order=abc` or an unknown parameter beside a good page value change nothing. The
+    other nine surfaces absorb these values, which is what :func:`_absorb_page` is for; that
+    validator still runs on this route and its answer is unused when this function refuses, so the
+    parameter stays an integer in the OpenAPI slice, as real's spec declares it, on this route as on
+    the others.
     """
     seen: set[str] = set()
     for key, value in query_params.multi_items():
-        if key not in ("page", "per_page"):
+        if key not in ("q", "page", "per_page"):
             continue
         if key in seen:
             return f"Failed to deserialize query string: duplicate field `{key}`"
         seen.add(key)
+        if key == "q":
+            continue
         if value == "":
             return (
                 f"Failed to deserialize query string: {key}: cannot parse integer from empty string"
             )
-        if not all(c in "0123456789" for c in value):
+        digits = value[1:] if value.startswith("+") else value
+        if not digits or any(c not in _ASCII_DIGITS for c in digits):
             return f"Failed to deserialize query string: {key}: invalid digit found in string"
-        if int(value) > GITHUB_CODE_SEARCH_PAGE_MAX:
+        # Compared without the leading zeros, and by length first: Python will not convert a
+        # string of more than 4300 digits, and real's answer to one is this line, not a 500.
+        digits = digits.lstrip("0")
+        if len(digits) > len(str(GITHUB_CODE_SEARCH_PAGE_MAX)) or int(digits or "0") > (
+            GITHUB_CODE_SEARCH_PAGE_MAX
+        ):
             return (
                 f"Failed to deserialize query string: {key}: number too large to fit in target type"
             )
@@ -299,8 +356,7 @@ def github_code_search_link_header(
     boundary, ``page * per_page > 1000``): real's `last`, and so this one, names a page real refuses.
     Page 33 at `per_page=30` links next=34 for the same reason.
     """
-    last_page = max(1, (total + per_page - 1) // per_page)
-    last_page = min(last_page, -(-GITHUB_SEARCH_RESULT_CAP // per_page))
+    last_page = min(max(1, (total + per_page - 1) // per_page), github_search_last_page(per_page))
     if last_page <= 1:
         return None
 

@@ -22,14 +22,15 @@ from backlot import auth, store, synth
 from backlot.acl import Caller
 from backlot.config import get_settings
 from backlot.pagination import (
-    GITHUB_SEARCH_RESULT_CAP,
     PageParam,
-    github_code_search_page_refusal,
     clamp_page,
     github_code_search_link_header,
+    github_code_search_query_refusal,
     github_cursor_link_header,
     github_cursor_offset,
     github_link_header,
+    github_search_depth_refused,
+    github_search_last_page,
 )
 
 # Real GitHub caps a recursive tree at 100k entries / 7 MB and reports `truncated: true`. Module
@@ -512,7 +513,7 @@ def _search_paged(
             per_page,
             total,
             per_page_param=request.query_params.get("per_page"),
-            max_page=-(-GITHUB_SEARCH_RESULT_CAP // per_page),
+            max_page=github_search_last_page(per_page),
         )
     if link:
         response.headers["Link"] = link
@@ -556,13 +557,15 @@ async def search_issues(
         page, per_page, get_settings().default_page_size, get_settings().max_page_size
     )
     start = (page - 1) * per_page
-    # A page that STARTS past the first 1000 results is refused, whatever the total: with the
-    # default 30 a page, page 34 (results 991 to 1020) is served in full and page 35 refused, with
-    # 7 a page, page 143 (995 to 1001) is served and 144 refused, with 100 a page, 10 is served and
+    # A page that STARTS past the first 1000 results is refused, whatever the total: at real's
+    # default 30 a page, page 34 (results 991 to 1020) is served in full and page 35 refused, at
+    # 7 a page, page 143 (995 to 1001) is served and 144 refused, at 100 a page, 10 is served and
     # 11 refused, and an 846-result search refuses page 11 at 100 a page just the same, after
-    # serving page 10 empty (measured 2026-09-06). After the blank-`q` and `repo:` 422s, which real
-    # answers first on this route; `/search/code` draws its line elsewhere, see there.
-    if start >= GITHUB_SEARCH_RESULT_CAP:
+    # serving page 10 empty (measured 2026-09-06; the rule is `github_search_depth_refused`'s).
+    # After the blank-`q` and `repo:` 422s, which real answers first on this route; `/search/code`
+    # draws its line elsewhere, see there. Measured in the size THIS server applies, so with an
+    # unsent size the refusal falls at page 11 here (default 100) where real's falls at 35.
+    if github_search_depth_refused(page, per_page, code=False):
         raise _search_beyond_first_results(code=False)
     if free:
         cand = store.search_documents(conn, free, "github", ids, limit=10_000, container=container)
@@ -842,9 +845,10 @@ async def search_code(
     better reported than answered with a corpus dump. `/search/issues` above answers a blank `q`
     the same way, and for the same measured reason.
 
-    A `page` / `per_page` that will not parse is refused once the credential is, and in text/plain:
-    this is the one GitHub route that does not absorb such a value (see
-    :func:`backlot.pagination.github_code_search_page_refusal` for the measured shape). The
+    A `page` / `per_page` that is not an unsigned 32-bit integer, or a `q`, `page` or `per_page`
+    given twice, is refused once the credential is, and in text/plain: of the ten GitHub surfaces
+    measured this is the one that does not absorb such a value (see
+    :func:`backlot.pagination.github_code_search_query_refusal` for the measured shape). The
     `PageParam` validator has already absorbed it by the time this runs, so the raw query string is
     what is read. The order is real's: an unauthenticated request with `per_page=abc` is the 401,
     an authenticated one the 400, and the 400 precedes the blank-`q` 422 (measured 2026-09-06). The
@@ -857,12 +861,15 @@ async def search_code(
     served and 1001 refused, at 100 a page, 10 is served and 11 refused, and `per_page=101` is
     refused at 11 too because it is served at 100. The total does not enter: a 44-result search
     refuses page 34 at 30 a page after serving pages 3 to 33 empty. That is not `/search/issues`'s
-    line, which serves page 34 in full and refuses the page that STARTS past 1000. The refusal
-    comes after the blank-`q` 422 and before the `repo:` qualifier is read: `repo:psf/ghost-zz-9876`
-    at page 11 of 100 is this 422, not the qualifier's answer (all measured 2026-09-06).
+    line, which serves page 34 in full and refuses the page that STARTS past 1000 (both rules are
+    :func:`backlot.pagination.github_search_depth_refused`'s). The refusal comes after the blank-`q`
+    422 and before the `repo:` qualifier is read: `repo:psf/ghost-zz-9876` at page 11 of 100 is
+    this 422, not the qualifier's answer (all measured 2026-09-06). It is measured in the size THIS
+    server applies: with an unsent size the refusal falls at page 11 here (default 100) where
+    real's, at its default 30, falls at 34.
     """
     caller = _require(request)
-    refusal = github_code_search_page_refusal(request.query_params)
+    refusal = github_code_search_query_refusal(request.query_params)
     if refusal is not None:
         return PlainTextResponse(refusal, status_code=400)
     if not q.strip():
@@ -870,7 +877,7 @@ async def search_code(
     page, per_page = clamp_page(
         page, per_page, get_settings().default_page_size, get_settings().max_page_size
     )
-    if page * per_page > GITHUB_SEARCH_RESULT_CAP:
+    if github_search_depth_refused(page, per_page, code=True):
         raise _search_beyond_first_results(code=True)
     conn = auth.conn(request)
     ids = auth.visible_ids(request, caller)

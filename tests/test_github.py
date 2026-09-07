@@ -1619,8 +1619,9 @@ def test_github_documentation_url_names_the_route_that_failed(gh_client, gh_admi
 def test_github_tolerates_the_pagination_values_real_tolerates(gh_client, gh_admin_h, gh_org):
     """Real's listings refuse no pagination value. Measured on a public repository's issue listing:
     `per_page=0`, `per_page=abc`, `page=0`, `page=-1` and `page=abc` are each a 200 with the
-    defaults applied, and a per_page above the cap is a 200 at the cap. (`/search/code` is the one
-    route that refuses, and refuses in text/plain; see the code search tests.)
+    defaults applied, and a per_page above the cap is a 200 at the cap. (Of the ten surfaces
+    measured `/search/code` is the one that refuses, and refuses in text/plain; see the code search
+    tests.)
 
     Backlot declared `ge=1` and an `int` annotation, so FastAPI answered its 422 before
     `clamp_page` was reached and a paginator computing an edge value got a hard error where
@@ -2010,13 +2011,17 @@ _INVALID_DIGIT = "Failed to deserialize query string: {}: invalid digit found in
 _EMPTY = "Failed to deserialize query string: {}: cannot parse integer from empty string"
 _TOO_LARGE = "Failed to deserialize query string: {}: number too large to fit in target type"
 _DUPLICATE = "Failed to deserialize query string: duplicate field `{}`"
-# Each row is one answer api.github.com gave on 2026-09-06 to `/search/code?q=repo:psf/requests+def`
-# with the query string below appended (`+5` arrives as ` 5`, which is why it is an invalid digit).
+# Each row is one answer api.github.com gave on 2026-09-06 or 2026-09-07 to
+# `/search/code?q=repo:psf/requests+def` with the query string below appended. The number is parsed
+# as Rust parses a u32: an optional single `+` then ASCII digits, so an unencoded `+5` (which
+# arrives as ` 5`), a `+` alone and `++5` are invalid digits where `%2B5` is a 200 (tested below).
 _CODE_SEARCH_PAGE_REFUSALS = [
     ("per_page=abc", _INVALID_DIGIT.format("per_page")),
     ("per_page=-1", _INVALID_DIGIT.format("per_page")),
     ("per_page=1.5", _INVALID_DIGIT.format("per_page")),
     ("per_page=+5", _INVALID_DIGIT.format("per_page")),
+    ("per_page=%2B", _INVALID_DIGIT.format("per_page")),
+    ("per_page=%2B%2B5", _INVALID_DIGIT.format("per_page")),
     ("per_page=5abc", _INVALID_DIGIT.format("per_page")),
     ("per_page=1e2", _INVALID_DIGIT.format("per_page")),
     # digits that are not ASCII digits: Python's int() reads each of these as 1, real does not
@@ -2026,6 +2031,9 @@ _CODE_SEARCH_PAGE_REFUSALS = [
     ("per_page=", _EMPTY.format("per_page")),
     ("per_page=4294967296", _TOO_LARGE.format("per_page")),
     ("per_page=99999999999999999999", _TOO_LARGE.format("per_page")),
+    # 5000 digits: real's answer is still the too-large line, where Python's int() refuses to
+    # convert a string that long at all
+    ("per_page=" + "1" * 5000, _TOO_LARGE.format("per_page")),
     ("page=abc", _INVALID_DIGIT.format("page")),
     ("page=-1", _INVALID_DIGIT.format("page")),
     ("page=1.5", _INVALID_DIGIT.format("page")),
@@ -2037,6 +2045,11 @@ _CODE_SEARCH_PAGE_REFUSALS = [
     # a repeated parameter is refused at its second occurrence, so order decides which line
     ("per_page=5&per_page=abc", _DUPLICATE.format("per_page")),
     ("per_page=abc&per_page=5", _INVALID_DIGIT.format("per_page")),
+    # `q` repeated is the same deserializer's duplicate (the test's own `q` comes first), in
+    # query-string order with the page failures; `sort` repeated is a 200 (tested below)
+    ("q=x", _DUPLICATE.format("q")),
+    ("q=x&per_page=abc", _DUPLICATE.format("q")),
+    ("per_page=abc&q=x", _INVALID_DIGIT.format("per_page")),
     # a good page value beside an unknown or a bad other parameter is not what is refused
     ("per_page=abc&sort=abc", _INVALID_DIGIT.format("per_page")),
 ]
@@ -2048,9 +2061,10 @@ _CODE_SEARCH_PAGE_REFUSALS = [
 def test_github_code_search_refuses_an_unparseable_page_value_in_text_plain(
     gh_client, gh_admin_h, qs, body
 ):
-    """`/search/code` is the one GitHub route that refuses a `page` / `per_page` it cannot parse,
-    and it refuses in a shape no other GitHub error has: 400, `text/plain; charset=utf-8`, no
-    envelope, a Rust deserializer's own line. Every other route absorbs the same values (see
+    """Of the ten GitHub surfaces measured `/search/code` is the one that refuses a `page` /
+    `per_page` it cannot parse, or a `q`, `page` or `per_page` given twice, and it refuses in a
+    shape no other GitHub error has: 400, `text/plain; charset=utf-8`, no envelope, a Rust
+    deserializer's own line. The other nine absorb the same values (see
     `test_github_tolerates_the_pagination_values_real_tolerates`), which this route did too, so a
     client's error path for the 400 was never reached against Backlot and `.json()` on it would
     have parsed where real's answer raises."""
@@ -2065,23 +2079,44 @@ def test_github_code_search_refuses_an_unparseable_page_value_in_text_plain(
 
 def test_github_code_search_page_refusal_is_the_parse_and_comes_before_q(gh_client, gh_admin_h):
     """What is refused is the parse, not the range or the query: `0`, `01` and 4294967295 (the
-    largest value real's unsigned 32-bit parameter holds) are each a 200, `01` served as 1; a blank
-    `q` beside `per_page=abc` is this 400 and not the blank-query 422; a bad `per_page` on
-    `/search/issues` is still absorbed; and the OpenAPI slice still declares the parameter an
-    integer, since the refusal is the route's and not the validator's (all measured 2026-09-06)."""
+    largest value real's unsigned 32-bit parameter holds) are each a 200, `01` served as 1, and so
+    are an encoded `+` before the digits (`%2B5`, `page=%2B2`), 5000 leading zeros and `sort` given
+    twice; a blank `q` beside `per_page=abc` is this 400 and not the blank-query 422, as is a blank
+    `q` given twice; a bad `per_page` on `/search/issues` is still absorbed, and so is a repeated
+    `q` there; and the OpenAPI slice still declares the parameter an integer, since the refusal is
+    the route's and not the validator's (all measured 2026-09-06 and 2026-09-07)."""
     c, _ = gh_client
     full = c.get("/github/search/code?q=extension:md", headers=gh_admin_h).json()
     assert full["total_count"] >= 2
-    for qs in ("per_page=0", "page=0", "per_page=4294967295", "page=01", "foo=abc&per_page=100"):
+    for qs in (
+        "per_page=0",
+        "page=0",
+        "per_page=4294967295",
+        "page=01",
+        "page=%2B1",
+        "per_page=%2B100",
+        "page=" + "0" * 5000,
+        "per_page=" + "0" * 5000 + "100",
+        "foo=abc&per_page=100",
+        "sort=indexed&sort=indexed",
+    ):
         r = c.get(f"/github/search/code?q=extension:md&{qs}", headers=gh_admin_h)
         assert r.status_code == 200, qs
         assert r.json() == full, qs
-    one = c.get("/github/search/code?q=extension:md&per_page=01", headers=gh_admin_h).json()
-    assert one["total_count"] == full["total_count"] and len(one["items"]) == 1
+    for qs in ("per_page=01", "per_page=%2B1", "per_page=" + "0" * 5000 + "1"):
+        one = c.get(f"/github/search/code?q=extension:md&{qs}", headers=gh_admin_h).json()
+        assert one["total_count"] == full["total_count"] and len(one["items"]) == 1, qs
+    two = c.get("/github/search/code?q=extension:md&per_page=1&page=%2B2", headers=gh_admin_h)
+    assert two.json()["items"] == [full["items"][1]]
     r = c.get("/github/search/code?q=&per_page=abc", headers=gh_admin_h)
     assert (r.status_code, r.headers["content-type"]) == (400, "text/plain; charset=utf-8")
     assert r.text == _INVALID_DIGIT.format("per_page")
+    r = c.get("/github/search/code?q=&q=", headers=gh_admin_h)
+    assert (r.status_code, r.text) == (400, _DUPLICATE.format("q"))
     assert c.get("/github/search/code?q=", headers=gh_admin_h).status_code == 422
+    assert (
+        c.get("/github/search/issues?q=is:open&q=is:closed", headers=gh_admin_h).status_code == 200
+    )
     assert (
         c.get("/github/search/issues?q=is:open&per_page=abc", headers=gh_admin_h).status_code == 200
     )
@@ -2308,10 +2343,9 @@ def test_github_search_routes_wire_the_depth_into_their_link_and_their_422(
     total would say 4, and page 3 is the route's own 422 (`test_github_search_link_headers_stop_at_
     the_first_1000_results` pins the builders' arithmetic at the real depth)."""
     from backlot import pagination
-    from backlot.routers import github as gh
 
     c, _ = gh_client
-    monkeypatch.setattr(gh, "GITHUB_SEARCH_RESULT_CAP", 2)
+    # the one name both the 422 and the Link read: the router holds no copy of the number
     monkeypatch.setattr(pagination, "GITHUB_SEARCH_RESULT_CAP", 2)
     for path, q, cap in (
         ("/github/search/code", "extension:md", _CODE_CAP),

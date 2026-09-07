@@ -1045,10 +1045,16 @@ class _Resolve(ast.NodeTransformer):
                 formatted = func.value.value.format(
                     **{kw.arg: kw.value.value for kw in node.keywords}
                 )
-            except (IndexError, KeyError, ValueError):
+            except (AttributeError, IndexError, KeyError, TypeError, ValueError):
                 # A template whose fields the call does not fill. Left as the Call it is, which
                 # `literal_eval` then refuses -- the same skip as any other unreadable corpus,
                 # rather than an error out of a tree walk that runs before the try below.
+                #
+                # Five, because a field can miss in five ways and this walk must not raise on any
+                # of them: a name the call does not pass (KeyError, and so does a nested `{:{w}}`
+                # spec), a positional index (IndexError), a malformed template or format code
+                # (ValueError), an attribute the value has not got (AttributeError), and a
+                # subscript it does not take (TypeError).
                 return node
             return ast.copy_location(ast.Constant(value=formatted), node)
         return node
@@ -1088,6 +1094,35 @@ def _inline_corpora():
             if isinstance(corpus, list):
                 out.append((path.relative_to(REPO_ROOT).as_posix(), corpus))
     return out
+
+
+@pytest.mark.parametrize(
+    "template,value",
+    [
+        ("{q}", 1),  # the fold this exists for: a field the call does fill
+        ("{missing}", "Q1"),  # KeyError
+        ("{q:>{w}}", "Q1"),  # KeyError, from a spec that is itself a field
+        ("{0}", "Q1"),  # IndexError
+        ("{q:d}", "Q1"),  # ValueError
+        ("{q.y}", "Q1"),  # AttributeError
+        ("{q[0]}", 1),  # TypeError
+    ],
+)
+def test_resolving_a_corpus_never_raises_on_a_format_template(template, value):
+    """`_Resolve` runs before the `literal_eval` that is allowed to fail, so it must not raise.
+
+    A field can miss in more ways than the two an example writes, and each one reaches `str.format`
+    as a different exception. Whatever the template, the walk either folds it to a constant or
+    leaves the `Call` for `literal_eval` to refuse.
+    """
+    call = ast.parse(f"{template!r}.format(q={value!r})", mode="eval").body
+    resolved = _Resolve({}).visit(call)
+    if isinstance(resolved, ast.Constant):
+        assert resolved.value == template.format(q=value)
+        return
+    assert isinstance(resolved, ast.Call)
+    with pytest.raises(ValueError):
+        ast.literal_eval(ast.fix_missing_locations(resolved))
 
 
 def test_every_example_corpus_states_every_required_fact():

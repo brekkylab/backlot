@@ -19,8 +19,8 @@ the var is unset. There are nine, and this page is all of them.
 
 | Env var | Default | What it does |
 |---|---|---|
-| `BACKLOT_DEFAULT_PAGE_SIZE` | `100` | Page size when a request names none, on Slack, Google and Jira/Confluence |
-| `BACKLOT_MAX_PAGE_SIZE` | `1000` | Ceiling a request may ask for, on the same three |
+| `BACKLOT_DEFAULT_PAGE_SIZE` | `100` | Page size when a request names none: Slack's `limit`, Gmail's and Drive's `maxResults` / `pageSize`, the Jira search's `maxResults` |
+| `BACKLOT_MAX_PAGE_SIZE` | `1000` | Ceiling a sent size is cut to, on Slack and Google |
 
 **A vendor's own numbers still win.** Where the real API documents or measures a page size, Backlot
 serves that one instead: GitHub pages at 30 when `per_page` is not sent and caps it at 100, on every

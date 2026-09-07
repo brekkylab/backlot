@@ -1656,9 +1656,9 @@ def test_github_pages_at_reals_thirty_and_caps_at_its_hundred(tmp_path):
     Backlot sized every GitHub page from the server's `default_page_size` (100) and `max_page_size`
     (1000), the two numbers every other router reads: a client walking a 120-issue repository without
     naming a size took two pages here and five on real, and one asking for 500 got five times real's
-    page. The `Link` header was already right (#131 computes `last` from the size applied), so the
-    header said 4 pages over a page that held 100. The corpus is built here because no repository in
-    the bundled one holds more than 30 documents.
+    page. The `Link` header already paged the way real's does (#131: an unsent size omitted, `last`
+    computed from the size applied), so it described the wrong page length faithfully. The corpus is
+    built here because no repository in the bundled one holds more than 30 documents.
     """
     from backlot.routers import github as gh
 

@@ -1998,8 +1998,8 @@ def test_github_only_the_offset_surfaces_write_the_size_the_caller_spelt(
     Measured on api.github.com on 2026-09-04: `/search/code?q=…&per_page=500` on 1,808 hits links
     `per_page=100`, its own cap, and `?per_page=0` links `per_page=30`, where
     `/search/issues?…&per_page=500` links `per_page=500` and `/tags?per_page=abc` links
-    `per_page=abc`. The cap is overridden here so Backlot's own applied size differs from the value
-    sent, which is what tells the two rules apart at all.
+    `per_page=abc`. The cap is lowered here because no listing in the corpus spans a page of 100,
+    so without it neither surface links a `next` to read the size off at all.
     """
     from backlot.routers import github as gh
 

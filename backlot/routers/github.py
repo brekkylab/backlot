@@ -37,6 +37,18 @@ from backlot.pagination import (
 TREE_MAX_ENTRIES = 100_000
 TREE_MAX_BYTES = 7 * 1024 * 1024
 
+# Real's two page-size numbers, not the server's `default_page_size` / `max_page_size`: 30 when
+# `per_page` is not sent and 100 for any sent size at or above it, on every listing and search
+# measured (api.github.com, 2026-09-06: `psf/requests/issues?state=all`, `/tags`, `/pulls?state=all`
+# and `/search/issues?q=repo:psf/requests+timeout` each answer 30 unsent and 100 for `per_page=100`,
+# `101` and `500` alike). GitHub's OpenAPI description declares the shared `per-page` parameter
+# "The number of results per page (max 100)." with `default: 30`. The settings stay the numbers of
+# the vendors whose own are not measured; a client sized to real's page must not get three times
+# it here and find out in production. Module level, like the tree caps, so a test can lower them:
+# no repository in the bundled corpus spans a page of 30.
+PER_PAGE_DEFAULT = 30
+PER_PAGE_MAX = 100
+
 
 def _require(request: Request) -> Caller:
     """The caller, or real's 401 for the reason it failed.
@@ -366,6 +378,13 @@ def _link_response(link: str | None, body: list) -> Response:
     return JSONResponse(body, headers={"Link": link} if link else {})
 
 
+def _clamp(page: int | None, per_page: int | None) -> tuple[int, int]:
+    """The page and size a request pages by: `page` defaulted to 1, `per_page` to
+    :data:`PER_PAGE_DEFAULT` and capped at :data:`PER_PAGE_MAX`, real's numbers rather than the
+    server's settings."""
+    return clamp_page(page, per_page, PER_PAGE_DEFAULT, PER_PAGE_MAX)
+
+
 def _paged(
     request: Request, rows_total: int, extra: dict, body: list, page: int, per_page: int
 ) -> Response:
@@ -539,9 +558,7 @@ async def search_issues(
     else:
         cand = store.list_documents(conn, "github", container, ids, limit=10_000)
     matched = [r for r in cand if r["kind"] != "file" and _issue_qual_match(r, quals)]
-    page, per_page = clamp_page(
-        page, per_page, get_settings().default_page_size, get_settings().max_page_size
-    )
+    page, per_page = _clamp(page, per_page)
     start = (page - 1) * per_page
     ab = _api_base(request)
     items = [
@@ -838,9 +855,7 @@ async def search_code(
         and all(_code_filename_match(r["path"], v) for v in quals.get("filename", []))
         and all(_code_extension_match(r["path"], v) for v in quals.get("extension", []))
     ]
-    page, per_page = clamp_page(
-        page, per_page, get_settings().default_page_size, get_settings().max_page_size
-    )
+    page, per_page = _clamp(page, per_page)
     start = (page - 1) * per_page
     ab = _api_base(request)
     want_matches = _github_media(request, "text-match")
@@ -902,9 +917,7 @@ def _visible_repos(conn, ids) -> list[str]:
 
 def _repo_page(request, conn, owner: str, ids, page, per_page) -> Response:
     repos = _visible_repos(conn, ids)
-    page, per_page = clamp_page(
-        page, per_page, get_settings().default_page_size, get_settings().max_page_size
-    )
+    page, per_page = _clamp(page, per_page)
     start = (page - 1) * per_page
     ab = _api_base(request)
     body = [_repo_obj(conn, owner, n, ab) for n in repos[start : start + per_page]]
@@ -984,9 +997,7 @@ async def list_issues(
         if r["kind"] != "file"
     ]
     asserted = page  # kept: the page urls carry the number the caller claimed, or none at all
-    page, per_page = clamp_page(
-        page, per_page, get_settings().default_page_size, get_settings().max_page_size
-    )
+    page, per_page = _clamp(page, per_page)
     q = request.query_params
     start = github_cursor_offset(page, per_page, q.get("after"), q.get("before"))
     rows = all_rows[start : start + per_page]
@@ -1090,9 +1101,7 @@ async def issue_comments(
     # anchored=False: a line-anchored review comment belongs to /pulls/{n}/comments, and serving it
     # here too would duplicate it under a resource that means something else
     rows = store.github_comments(conn, row["repo"], row["number"], anchored=False)
-    page, per_page = clamp_page(
-        page, per_page, get_settings().default_page_size, get_settings().max_page_size
-    )
+    page, per_page = _clamp(page, per_page)
     start = (page - 1) * per_page
     ab = _api_base(request)
     body = [_gh_comment(owner, repo, number, c, ab) for c in rows[start : start + per_page]]
@@ -1118,9 +1127,7 @@ async def list_pulls(
         for r in store.list_documents(conn, "github", repo, ids, limit=10_000, state=state_filter)
         if r["kind"] == "pull_request"
     ]
-    page, per_page = clamp_page(
-        page, per_page, get_settings().default_page_size, get_settings().max_page_size
-    )
+    page, per_page = _clamp(page, per_page)
     start = (page - 1) * per_page
     ab = _api_base(request)
     # one _RepoFiles for the whole page: every PR's changeset reads through it (see _pr_files)
@@ -1179,9 +1186,7 @@ async def pull_reviews(
     number = _issue_number(row)
     sha = hashlib.sha1(_seed(row).encode()).hexdigest()[:40]
     reviews = store.jcol(row, "reviews")
-    page, per_page = clamp_page(
-        page, per_page, get_settings().default_page_size, get_settings().max_page_size
-    )
+    page, per_page = _clamp(page, per_page)
     start = (page - 1) * per_page
     out = []
     # the enumeration counts from the review's place in the WHOLE listing, not in the page: `i`
@@ -1237,9 +1242,7 @@ async def pull_review_comments(
         raise HTTPException(status_code=404, detail="Not Found")
     src = _RepoFiles(conn, repo, ids)
     resolved = _resolved_review_comments(conn, row, src)
-    page, per_page = clamp_page(
-        page, per_page, get_settings().default_page_size, get_settings().max_page_size
-    )
+    page, per_page = _clamp(page, per_page)
     start = (page - 1) * per_page
     window = resolved[start : start + per_page]
     body = []
@@ -1302,9 +1305,7 @@ async def pull_commits(
             "parents": [],  # no history is kept, so the head has no parent to name
         }
     ]
-    page, per_page = clamp_page(
-        page, per_page, get_settings().default_page_size, get_settings().max_page_size
-    )
+    page, per_page = _clamp(page, per_page)
     start = (page - 1) * per_page
     return _paged(request, len(commits), {}, commits[start : start + per_page], page, per_page)
 
@@ -1339,9 +1340,7 @@ async def commit_statuses(
     _require_repo(conn, repo, ids)  # a repo this caller cannot see must not answer for its shas
     if sha.strip("/") not in _commit_ish(conn, owner, repo, ids):
         raise HTTPException(status_code=404, detail="Not Found")
-    page, per_page = clamp_page(
-        page, per_page, get_settings().default_page_size, get_settings().max_page_size
-    )
+    page, per_page = _clamp(page, per_page)
     return _paged(request, 0, {}, [], page, per_page)
 
 
@@ -1363,9 +1362,7 @@ async def pull_files(
     if row is None or row["kind"] != "pull_request":
         raise HTTPException(status_code=404, detail="Not Found")
     files = _json_file_objects(_pr_files(conn, owner, repo, row, _api_base(request), ids))
-    page, per_page = clamp_page(
-        page, per_page, get_settings().default_page_size, get_settings().max_page_size
-    )
+    page, per_page = _clamp(page, per_page)
     start = (page - 1) * per_page
     return _paged(request, len(files), {}, files[start : start + per_page], page, per_page)
 
@@ -1697,9 +1694,7 @@ async def list_branches(
     rows = _branch_rows(conn, owner, repo, ids)
     if protected:  # an EMPTY value selects nothing, as an absent one does: real answers all 22
         rows = [b for b in rows if b["protected"] is _truthy(protected)]
-    page, per_page = clamp_page(
-        page, per_page, get_settings().default_page_size, get_settings().max_page_size
-    )
+    page, per_page = _clamp(page, per_page)
     start = (page - 1) * per_page
     sha = _repo_commit_sha(repo)
     url = f"{_api_base(request)}/repos/{owner}/{repo}/commits/{sha}"
@@ -1738,9 +1733,7 @@ async def list_tags(
     caller = _require(request)
     _require_repo(conn, repo, auth.visible_ids(request, caller))
     names = _repo_tags(conn, repo)
-    page, per_page = clamp_page(
-        page, per_page, get_settings().default_page_size, get_settings().max_page_size
-    )
+    page, per_page = _clamp(page, per_page)
     start = (page - 1) * per_page
     ab, sha = _api_base(request), _repo_commit_sha(repo)
     body = [
@@ -1935,9 +1928,7 @@ async def list_collaborators(
     if emails is None:
         emails = store.all_user_emails(conn)
     emails = sorted(emails)
-    page, per_page = clamp_page(
-        page, per_page, get_settings().default_page_size, get_settings().max_page_size
-    )
+    page, per_page = _clamp(page, per_page)
     start = (page - 1) * per_page
     ab = _api_base(request)
     body = [
@@ -1966,9 +1957,7 @@ async def list_teams(
     rows = conn.execute(
         "SELECT id, display_name FROM principals WHERE type = 'group' ORDER BY id"
     ).fetchall()
-    page, per_page = clamp_page(
-        page, per_page, get_settings().default_page_size, get_settings().max_page_size
-    )
+    page, per_page = _clamp(page, per_page)
     start = (page - 1) * per_page
     ab = _api_base(request)
     body = [
@@ -2012,9 +2001,7 @@ async def list_repo_teams(
                 "permission": "pull",
             }
         )
-    page, per_page = clamp_page(
-        page, per_page, get_settings().default_page_size, get_settings().max_page_size
-    )
+    page, per_page = _clamp(page, per_page)
     start = (page - 1) * per_page
     return _paged(request, len(teams), {}, teams[start : start + per_page], page, per_page)
 

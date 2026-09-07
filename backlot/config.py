@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     admin_token: str = "admin-service-token"
 
     # --- pagination defaults ---
+    # For the vendors whose real page sizes are not measured (Slack, Google, Jira/Confluence). A
+    # vendor whose numbers are measured carries them in its own router instead: GitHub pages at 30
+    # and caps at 100 (backlot.routers.github.PER_PAGE_DEFAULT / PER_PAGE_MAX), Notion caps at 100,
+    # Fireflies at 50, HubSpot at 100.
     default_page_size: int = 100
     max_page_size: int = 1000
 

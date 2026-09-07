@@ -573,9 +573,7 @@ async def search_issues(
     if named is not None and not named:
         raise _search_unsearchable_repo()
     container = named[-1] if named else None
-    page, per_page = clamp_page(
-        page, per_page, get_settings().default_page_size, get_settings().max_page_size
-    )
+    page, per_page = _clamp(page, per_page)
     start = (page - 1) * per_page
     # A page that STARTS past the first 1000 results is refused, whatever the total: at real's
     # default 30 a page, page 34 (results 991 to 1020) is served in full and page 35 refused, at
@@ -584,7 +582,7 @@ async def search_issues(
     # serving page 10 empty (measured 2026-09-06; the rule is `github_search_depth_refused`'s).
     # After the blank-`q` and `repo:` 422s, which real answers first on this route; `/search/code`
     # draws its line elsewhere, see there. Measured in the size THIS server applies, so with an
-    # unsent size the refusal falls at page 11 here (default 100) where real's falls at 35.
+    # unsent size the refusal falls at page 11 here (default 30) where real's falls at 35.
     if github_search_depth_refused(page, per_page, code=False):
         raise _search_beyond_first_results(code=False)
     if free:
@@ -592,8 +590,6 @@ async def search_issues(
     else:
         cand = store.list_documents(conn, "github", container, ids, limit=10_000)
     matched = [r for r in cand if r["kind"] != "file" and _issue_qual_match(r, quals)]
-    page, per_page = _clamp(page, per_page)
-    start = (page - 1) * per_page
     ab = _api_base(request)
     items = [
         _issue_obj(conn, owner, r["repo"], r, ab, _version(request))
@@ -896,9 +892,7 @@ async def search_code(
         return PlainTextResponse(refusal, status_code=400)
     if not q.strip():
         raise _search_validation_failed("q")
-    page, per_page = clamp_page(
-        page, per_page, get_settings().default_page_size, get_settings().max_page_size
-    )
+    page, per_page = _clamp(page, per_page)
     if github_search_depth_refused(page, per_page, code=True):
         raise _search_beyond_first_results(code=True)
     conn = auth.conn(request)
@@ -938,7 +932,6 @@ async def search_code(
         and all(_code_filename_match(r["path"], v) for v in quals.get("filename", []))
         and all(_code_extension_match(r["path"], v) for v in quals.get("extension", []))
     ]
-    page, per_page = _clamp(page, per_page)
     start = (page - 1) * per_page
     ab = _api_base(request)
     want_matches = _github_media(request, "text-match")

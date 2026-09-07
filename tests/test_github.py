@@ -1650,7 +1650,10 @@ def test_github_the_spec_declares_reals_page_defaults(gh_client):
     `components/parameters`, read 2026-09-07). Sixteen of the seventeen routes served here that page
     reference the two; the seventeenth, `GET /repos/{owner}/{repo}/statuses/{sha}`, is the legacy
     alias the description names only in the prose of `/commits/{ref}/statuses`, which references
-    them. Backlot's slice declared neither default: FastAPI writes none for a parameter whose
+    them. The three routes whose inline `per_page` default differs — `/notifications` at 50,
+    `/orgs/{org}/copilot/billing/seats` at 50 and `/organizations/{org}/settings/billing/budgets`
+    at 10 — are indeed unserved here; `/zen` declares no parameters at all, so it is not in that
+    set. Backlot's slice declared neither default: FastAPI writes none for a parameter whose
     runtime default is None, and the handlers keep None to tell an unsent size from a sent one. The
     spec is what `backlot mcp` hands an agent as a tool, so a default the document does not state is
     one the agent cannot know.

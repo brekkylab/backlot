@@ -33,9 +33,10 @@ ones that break the boundaries it claims to enforce:
 
 ## What does not
 
-- **The credentials in this repository are not secrets.** `admin-service-token`,
-  `xoxb-not-a-real-token`, the `AKIA…BOGUS` keys, and every per-user token the importer mints
-  authenticate against a local corpus and nothing else. They are the product, not a leak.
+- **The credentials in this repository are not secrets.** `admin-service-token`, the bot token in
+  `tests/test_slack.py`, the `AKIA…BOGUS` access keys in `tests/test_s3.py`, and every per-user
+  token the importer mints authenticate against a local corpus and nothing else. They are the
+  product, not a leak.
 - **Binding and exposure are the operator's call.** `backlot serve` is a development server; the
   defaults assume localhost. Putting one on a public interface is a deployment decision, and its
   consequences are not a vulnerability in Backlot.

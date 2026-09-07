@@ -2111,7 +2111,10 @@ def test_github_search_pages_with_a_link_header(gh_client, gh_admin_h, path, q, 
     nxt = _link_rels(first.headers["Link"])["next"]
     second = c.get(nxt.split("testserver", 1)[1], headers=gh_admin_h)
     assert second.json()["total_count"] == total
-    ids = lambda r: {i["url"] for i in r.json()["items"]}
+
+    def ids(r):
+        return {i["url"] for i in r.json()["items"]}
+
     assert ids(second) and not ids(second) & ids(first)
     assert {"prev", "first"} <= set(_link_rels(second.headers["Link"]))
 
@@ -2796,7 +2799,9 @@ def test_github_a_container_only_repo_reaches_the_admin_and_no_scoped_caller(tmp
         admin = {"Authorization": f"Bearer {tokens['admin_token']}"}
         ava = {"Authorization": f"Bearer {tok(tokens, 'ava@acme.com')}"}
 
-        names = lambda h, path: [r["name"] for r in c.get(path, headers=h).json()]
+        def names(h, path):
+            return [r["name"] for r in c.get(path, headers=h).json()]
+
         for listing in ("/github/user/repos", f"/github/orgs/{org}/repos"):
             assert names(admin, listing) == ["docs-site", "pipeline"], listing
             assert names(ava, listing) == ["docs-site"], listing

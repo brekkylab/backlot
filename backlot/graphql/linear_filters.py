@@ -502,20 +502,22 @@ def _label_predicate(spec: dict, *, alternatives: bool = False) -> tuple[str, li
     ``some: {or: [{name: {eq: "Improvement"}, and: [{name: {eq: "Feature"}}, {name: {eq: "Bug"}}]}]}``
     none too (one label cannot be both). A key that constrains nothing beside one that does makes
     the branch a predicate every label satisfies, not a vacuous branch: ``some: {or: [{name: {},
-    and: [{name: {eq: "Improvement"}}]}]}``, ``some: {or: [{name: {eq: "nope"}, and: [{}]}]}`` and
-    ``some: {or: [{name: {eq: "nope"}, or: [{}]}]}`` each answered the two labelled issues, not
-    every issue and not none. ``and: []`` and ``or: []`` beside a key drop out: ``some: {or: [{name:
-    {eq: "Feature"}, and: []}]}`` and the ``or: []`` twin each answered ``[Bug, Feature]`` alone.
-    Beside a key that constrains nothing they differ: ``some: {or: [{name: {}, and: []}]}`` answered
-    every issue (the branch is vacuous), ``some: {or: [{name: {}, or: []}]}`` the two labelled issues
-    (a predicate every label satisfies), and each kept that answer with a ``{name: {eq: "Feature"}}``
-    branch beside it. Outside an ``or`` branch none of this applies: at the top of a quantifier and in
-    an ``and`` branch the keys AND, and a key that constrains nothing is simply not read: ``some:
-    {name: {}, and: [{name: {eq: "Improvement"}}]}`` answered none, ``every: {name: {}, and: [{name:
-    {eq: "Bug"}}]}`` the ``[Bug]`` issue, ``some: {name: {eq: "Feature"}, and: [{}]}`` and ``some:
-    {and: [{name: {eq: "Feature"}, and: [{}]}]}`` the ``[Bug, Feature]`` issue, ``some: {name: {eq:
-    "Bug"}, or: [{name: {eq: "Feature"}}]}`` none. The polarity of an ``or`` branch is still read
-    from the branch as written (see `_reads_as_negation`).
+    and: [{name: {eq: "Improvement"}}]}]}``, ``some: {or: [{name: {eq: "Improvement"}, and: [{}]}]}``
+    and ``some: {or: [{name: {eq: "Improvement"}, or: [{}]}]}`` each answered the two labelled
+    issues, not every issue and not none. ``and: []`` and ``or: []`` beside a key drop out of the
+    predicate: ``some: {or: [{name: {eq: "Feature"}, and: []}]}`` and the ``or: []`` twin each
+    answered ``[Bug, Feature]`` alone (not of the polarity, see `_reads_as_negation`). Beside a key
+    that constrains nothing they differ: ``some: {or: [{name: {}, and: []}]}`` answered every issue
+    (the branch is vacuous), ``some: {or: [{name: {}, or: []}]}`` the two labelled issues (a
+    predicate every label satisfies), and each kept that answer with a ``{name: {eq: "Feature"}}``
+    branch beside it; ``some: {or: [{name: {}, or: [{}]}]}`` answered every issue, as the ``and:
+    [{}]`` twin does (measured 2026-09-07). Outside an ``or`` branch none of this applies: at the
+    top of a quantifier and in an ``and`` branch the keys AND, and a key that constrains nothing is
+    simply not read: ``some: {name: {}, and: [{name: {eq: "Improvement"}}]}`` answered none,
+    ``every: {name: {}, and: [{name: {eq: "Bug"}}]}`` the ``[Bug]`` issue, ``some: {name: {eq:
+    "Feature"}, and: [{}]}`` and ``some: {and: [{name: {eq: "Feature"}, and: [{}]}]}`` the ``[Bug,
+    Feature]`` issue, ``some: {name: {eq: "Bug"}, or: [{name: {eq: "Feature"}}]}`` none. The polarity
+    of an ``or`` branch is still read from the branch as written (see `_reads_as_negation`).
 
     An empty fragment is right in two places and wrong in a third, which is what the kind is for.
     At the top of a quantifier it is right: ``some: {}`` and ``some: {name: {}}`` each answered every
@@ -616,7 +618,14 @@ def _reads_as_negation(spec: dict | None) -> bool:
     "Feature"}, and: [{name: {eq: "Improvement"}}]}]}`` answered the two labelled issues, the
     positive reading, where ``some: {or: [{name: {neq: "Feature"}}, {and: [{name: {eq:
     "Improvement"}}]}]}`` answered every issue, the negative one; ``every`` over the same pair
-    answered the labelled issues and every issue in turn (measured 2026-09-06)."""
+    answered the labelled issues and every issue in turn (measured 2026-09-06). An empty list
+    beside a negative key drops out of the predicate but not of the polarity, by the rule above:
+    ``or: []`` (any branch of none) reads positive and ``and: []`` (every branch of none) keeps the
+    negative reading. ``some: {or: [{name: {neq: "Feature"}, or: []}]}`` answered the two labelled
+    issues where the ``and: []`` twin and the bare ``{name: {neq: "Feature"}}`` branch each answered
+    every issue; ``every`` over the two answered the ``[Bug]`` issue and, with ``and: []``, that
+    issue and the label-less ones; the same four shapes at the top of the quantifier answered the
+    same (measured 2026-09-07)."""
     parts = []
     for key, sub in (spec or {}).items():
         if sub is None:

@@ -297,9 +297,9 @@ input NullableProjectFilter {
 input IssueLabelFilter {
   name: StringComparator
   and: [IssueLabelFilter!]
-  """The keys of one branch are alternatives, as on every `or` here: `{or: [{name: {eq: A}, and:
-  [{name: {eq: B}}]}]}` is a label named A or B, where the same object under `and` is a label named
-  both (measured 2026-09-06)."""
+  """The keys of one branch are alternatives, as on every `or` here but the label collection's:
+  `{or: [{name: {eq: A}, and: [{name: {eq: B}}]}]}` is a label named A or B, where the same object
+  under `and` is a label named both (measured 2026-09-06)."""
   or: [IssueLabelFilter!]
 }
 
@@ -353,9 +353,9 @@ input CommentFilter {
   createdAt: DateComparator
   updatedAt: DateComparator
   and: [CommentFilter!]
-  """The keys of one branch are alternatives, as on every `or` here: `{or: [{body: {eq: A}, id: {eq:
-  B}}]}` is the comment with body A and the comment with id B, where the same object outside an `or`
-  is neither (measured 2026-09-06)."""
+  """The keys of one branch are alternatives, as on every `or` here but the label collection's:
+  `{or: [{body: {eq: A}, id: {eq: B}}]}` is the comment with body A and the comment with id B,
+  where the same object outside an `or` is neither (measured 2026-09-06)."""
   or: [CommentFilter!]
 }
 

@@ -1342,6 +1342,7 @@ _LABEL_CELLS = [
     # which nobody has). On the collection filter they are NOT alternatives: each branch is one
     # collection filter, read by the precedence above, key order included
     ('{or: [{length: {eq: 1}, some: {name: {eq: "gateway"}}}]}', {L1}),
+    ('{or: [{length: {eq: 1}}, {some: {name: {eq: "gateway"}}}]}', {L2, L1}),
     ('{or: [{some: {name: {eq: "gateway"}}, length: {eq: 1}}]}', {L1}),
     ('{or: [{length: {eq: 0}, name: {eq: "gateway"}}]}', {U}),
     ('{or: [{every: {name: {eq: "bug"}}, some: {name: {eq: "gateway"}}}]}', {L1}),
@@ -1415,7 +1416,6 @@ _LABEL_CELLS = [
     ('{every: {name: {}, and: [{name: {eq: "bug"}}]}}', {L1}),
     ('{every: {name: {}, or: [{name: {eq: "nope"}}]}}', set()),
     ('{some: {name: {eq: "gateway"}, and: [{}]}}', {L2}),
-    ('{some: {name: {eq: "gateway"}, or: [{}]}}', {L2}),
     ('{every: {name: {eq: "bug"}, and: [{}]}}', {L1}),
     ('{some: {name: {eq: "gateway"}, and: []}}', {L2}),
     ('{some: {name: {eq: "gateway"}, or: []}}', {L2}),
@@ -1429,6 +1429,24 @@ _LABEL_CELLS = [
     ('{some: {name: {neq: "gateway"}, or: [{name: {eq: "nope"}}]}}', set()),
     ('{some: {name: {neq: "gateway"}, and: [{name: {eq: "bug"}}]}}', {L2, L1}),
     ('{every: {name: {neq: "gateway"}, or: [{name: {eq: "bug"}}]}}', {L1}),
+    # `and: []` and `or: []` drop out of the predicate but not of the polarity: beside a negative key
+    # `or: []` (any branch of none) reads positive and `and: []` (every branch of none) keeps the
+    # negative reading, in an `or` branch and at the top alike; `or: [{}]` beside a key reads as
+    # `and: [{}]` does, a vacuous branch beside a key that constrains nothing (measured 2026-09-07,
+    # same fixture)
+    ('{some: {or: [{name: {neq: "gateway"}, or: []}]}}', {L2, L1}),
+    ('{some: {or: [{name: {neq: "gateway"}, and: []}]}}', EVERY),
+    ('{some: {or: [{name: {neq: "gateway"}}]}}', EVERY),
+    ('{every: {or: [{name: {neq: "gateway"}, or: []}]}}', {L1}),
+    ('{every: {or: [{name: {neq: "gateway"}, and: []}]}}', {L1, U}),
+    ('{some: {name: {neq: "gateway"}, or: []}}', {L2, L1}),
+    ('{some: {name: {neq: "gateway"}, and: []}}', EVERY),
+    ('{every: {name: {neq: "gateway"}, or: []}}', {L1}),
+    ('{every: {name: {neq: "gateway"}, and: []}}', {L1, U}),
+    ('{some: {or: [{name: {neq: "gateway"}, or: [{}]}]}}', EVERY),
+    ("{some: {or: [{name: {}, or: [{}]}]}}", EVERY),
+    ('{some: {or: [{name: {}, or: [{}]}, {name: {eq: "gateway"}}]}}', EVERY),
+    ("{every: {or: [{name: {}, or: [{}]}]}}", EVERY),
 ]
 
 

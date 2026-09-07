@@ -490,9 +490,34 @@ _VACUOUS = "vacuous"  # a key that constrains nothing (`name: {}`) -- makes the 
 _REAL = "real"  # a condition
 
 
-def _label_predicate(spec: dict) -> tuple[str, list, str]:
+def _label_predicate(spec: dict, *, alternatives: bool = False) -> tuple[str, list, str]:
     """One ``IssueLabelFilter`` against the ``value`` column of a ``json_each`` row, INCLUDING its
     ``and`` / ``or``. Returns ``(fragment, params, kind)``; the kind is one of the four above.
+
+    ``alternatives`` is how an ``or`` branch is read: its keys OR where every other object's keys
+    AND, as on every ``or`` Linear serves (measured 2026-09-06 over ``[Bug, Feature]`` and ``[Bug]``
+    beside two label-less issues; ``Improvement`` is a label nobody has). ``some: {or: [{name: {eq:
+    "Feature"}, and: [{name: {eq: "Improvement"}}]}]}`` answered the ``[Bug, Feature]`` issue, where
+    ``some: {and: [{name: {eq: "Feature"}, or: [{name: {eq: "Improvement"}}]}]}`` answered none, and
+    ``some: {or: [{name: {eq: "Improvement"}, and: [{name: {eq: "Feature"}}, {name: {eq: "Bug"}}]}]}``
+    none too (one label cannot be both). A key that constrains nothing beside one that does makes
+    the branch a predicate every label satisfies, not a vacuous branch: ``some: {or: [{name: {},
+    and: [{name: {eq: "Improvement"}}]}]}``, ``some: {or: [{name: {eq: "Improvement"}, and: [{}]}]}``
+    and ``some: {or: [{name: {eq: "Improvement"}, or: [{}]}]}`` each answered the two labelled
+    issues, not every issue and not none. ``and: []`` and ``or: []`` beside a key drop out of the
+    predicate: ``some: {or: [{name: {eq: "Feature"}, and: []}]}`` and the ``or: []`` twin each
+    answered ``[Bug, Feature]`` alone (not of the polarity, see `_reads_as_negation`). Beside a key
+    that constrains nothing they differ: ``some: {or: [{name: {}, and: []}]}`` answered every issue
+    (the branch is vacuous), ``some: {or: [{name: {}, or: []}]}`` the two labelled issues (a
+    predicate every label satisfies), and each kept that answer with a ``{name: {eq: "Feature"}}``
+    branch beside it; ``some: {or: [{name: {}, or: [{}]}]}`` answered every issue, as the ``and:
+    [{}]`` twin does (measured 2026-09-07). Outside an ``or`` branch none of this applies: at the
+    top of a quantifier and in an ``and`` branch the keys AND, and a key that constrains nothing is
+    simply not read: ``some: {name: {}, and: [{name: {eq: "Improvement"}}]}`` answered none,
+    ``every: {name: {}, and: [{name: {eq: "Bug"}}]}`` the ``[Bug]`` issue, ``some: {name: {eq:
+    "Feature"}, and: [{}]}`` and ``some: {and: [{name: {eq: "Feature"}, and: [{}]}]}`` the ``[Bug,
+    Feature]`` issue, ``some: {name: {eq: "Bug"}, or: [{name: {eq: "Feature"}}]}`` none. The polarity
+    of an ``or`` branch is still read from the branch as written (see `_reads_as_negation`).
 
     An empty fragment is right in two places and wrong in a third, which is what the kind is for.
     At the top of a quantifier it is right: ``some: {}`` and ``some: {name: {}}`` each answered every
@@ -532,7 +557,11 @@ def _label_predicate(spec: dict) -> tuple[str, list, str]:
             parts.append(frag)
             params.extend(p)
     if parts:
-        return _join(parts, "AND"), params, _REAL
+        if alternatives and _VACUOUS in kinds:
+            return "1", [], _REAL
+        return _join(parts, "OR" if alternatives else "AND"), params, _REAL
+    if alternatives and _VACUOUS in kinds and _QUANT in kinds:
+        return "1", [], _REAL
     for kind in (_QUANT, _VACUOUS):
         if kind in kinds:
             return "", [], kind
@@ -540,10 +569,11 @@ def _label_predicate(spec: dict) -> tuple[str, list, str]:
 
 
 def _label_branches(key: str, sub: list) -> tuple[str, list, str]:
-    """The ``and`` / ``or`` of an ``IssueLabelFilter``, by the rules in ``_label_predicate``."""
+    """The ``and`` / ``or`` of an ``IssueLabelFilter``, by the rules in ``_label_predicate``: the
+    keys of an ``or`` branch are alternatives, those of an ``and`` branch a conjunction."""
     if not sub:
         return "", [], _QUANT if key == "or" else _NONE
-    subs = [_label_predicate(x) for x in sub]
+    subs = [_label_predicate(x, alternatives=key == "or") for x in sub]
     if key == "or" and any(kind == _VACUOUS for _, _, kind in subs):
         return "", [], _VACUOUS
     real = [(f, p) for f, p, kind in subs if kind == _REAL]
@@ -581,7 +611,21 @@ _LABEL_EACH = "json_each(COALESCE(labels, '[]'))"
 
 
 def _reads_as_negation(spec: dict | None) -> bool:
-    """Whether an ``IssueLabelFilter`` is a negative predicate, by the rule above."""
+    """Whether an ``IssueLabelFilter`` is a negative predicate, by the rule above.
+
+    Read from the object as written, an ``or`` branch included: its keys are alternatives for the
+    predicate (`_label_predicate`) but a conjunction for the polarity. ``some: {or: [{name: {neq:
+    "Feature"}, and: [{name: {eq: "Improvement"}}]}]}`` answered the two labelled issues, the
+    positive reading, where ``some: {or: [{name: {neq: "Feature"}}, {and: [{name: {eq:
+    "Improvement"}}]}]}`` answered every issue, the negative one; ``every`` over the same pair
+    answered the labelled issues and every issue in turn (measured 2026-09-06). An empty list
+    beside a negative key drops out of the predicate but not of the polarity, by the rule above:
+    ``or: []`` (any branch of none) reads positive and ``and: []`` (every branch of none) keeps the
+    negative reading. ``some: {or: [{name: {neq: "Feature"}, or: []}]}`` answered the two labelled
+    issues where the ``and: []`` twin and the bare ``{name: {neq: "Feature"}}`` branch each answered
+    every issue; ``every`` over the two answered the ``[Bug]`` issue and, with ``and: []``, that
+    issue and the label-less ones; the same four shapes at the top of the quantifier answered the
+    same (measured 2026-09-07)."""
     parts = []
     for key, sub in (spec or {}).items():
         if sub is None:
@@ -693,7 +737,17 @@ def _labels_filter(spec: dict) -> tuple[str, list]:
 
 
 def _labels_branches(key: str, sub: list) -> tuple[str, list]:
-    """The ``and`` / ``or`` of an ``IssueLabelCollectionFilter``, by the rules in ``_labels_filter``."""
+    """The ``and`` / ``or`` of an ``IssueLabelCollectionFilter``, by the rules in ``_labels_filter``.
+
+    Unlike every other ``or`` Linear serves, the keys of a branch here are NOT alternatives: each
+    branch is one collection filter, read by the precedence above. ``{or: [{length: {eq: 1}, some:
+    {name: {eq: "Feature"}}}]}`` answered the one-label issue alone, as ``length`` alone does, where
+    alternatives would add the issue carrying ``Feature``; ``{or: [{length: {eq: 0}, name: {eq:
+    "Feature"}}]}`` the label-less issues, ``{or: [{every: {name: {eq: "Bug"}}, some: {name: {eq:
+    "Feature"}}}]}`` the one-label issue, ``{or: [{and: [{length: {eq: 1}}], length: {eq: 2}}]}`` the
+    same, ``{or: [{null: true, length: {eq: 1}}]}`` none and ``{or: [{null: false, length: {eq:
+    1}}]}`` the one-label issue (measured 2026-09-06 over ``[Bug, Feature]`` and ``[Bug]`` beside two
+    label-less issues; 19 shapes, key order included, every one the precedence reading)."""
     subs = [_labels_filter(x) for x in sub]
     if key == "or" and any(not f for f, _ in subs):
         return "", []
@@ -1240,37 +1294,66 @@ def _map_comment_ids(conn, spec: dict) -> dict:
 
 
 def compile_comment_filter(conn, flt: dict | None) -> tuple[str, list] | None:
-    """``CommentFilter`` -> ``(sql_fragment, params)``. Columns are on the aliased ``c`` table,
-    matching :func:`backlot.store.list_linear_comments`'s join."""
-    sql, params = _comment_filter(conn, flt or {})
+    """``CommentFilter`` -> ``(sql_fragment, params)``, or None when there is nothing to filter.
+    Columns are on the aliased ``c`` table, matching :func:`backlot.store.list_linear_comments`'s
+    join."""
+    sql, params, _ = _comment_parts(conn, flt or {})
     return (sql, params) if sql else None
 
 
-def _comment_filter(conn, flt: dict) -> tuple[str, list]:
+def _comment_parts(conn, flt: dict) -> tuple[str, list, bool]:
+    """``(fragment, params, vacuous)`` for one ``CommentFilter`` object, read as `_issue_parts` reads
+    an ``IssueFilter``: api.linear.app's ``or`` is the same on both (measured 2026-09-06 on
+    ``comments`` over two throwaway comments, ``zz-c1`` on BRE-1 and ``zz-c2`` on BRE-2, in a
+    workspace holding no others). The keys of one ``or`` branch are alternatives: ``{or: [{body:
+    {eq: A}, id: {eq: B}}]}`` answered both comments where ``{body: {eq: A}, id: {eq: B}}`` and
+    ``{and: [{body: {eq: A}, id: {eq: B}}]}`` answered none, so a branch with n keys is n branches. A
+    branch with nothing in it (``{}``, ``{and: []}``, ``{or: []}``, ``{body: null}``) is dropped:
+    ``{or: [{body: {eq: A}}, {}]}`` answered A's comment alone. A branch whose key constrains nothing
+    (``{body: {}}``, ``{id: {}}``, ``{createdAt: {}}``, or an ``or`` holding such a branch) makes the
+    whole ``or`` constrain nothing: ``{or: [{body: {}}, {id: {eq: B}}]}`` and ``{or: [{body: {}, id:
+    {eq: B}}]}`` each answered both comments, while a key beside the ``or`` still applies (``{or:
+    [{body: {}}], id: {eq: B}}`` answered B) and inside an ``and`` such a branch is dropped (``{and:
+    [{body: {}}, {id: {eq: B}}]}`` answered B). ``vacuous`` is how the empty fragment of a dropped
+    branch is told from the empty fragment of a vacuous one."""
     parts: list[str] = []
     params: list = []
+    vacuous = False
+
+    def add(frag, p):
+        nonlocal vacuous
+        if frag:
+            parts.append(frag)
+            params.extend(p)
+        else:
+            vacuous = True
+
     for key, spec in (flt or {}).items():
         if spec is None:
             continue
         if key in ("and", "or"):
-            subs = [_comment_filter(conn, s) for s in spec]
-            frags = [f for f, _ in subs if f]
-            for _, p in subs:
-                params.extend(p)
-            if frags:
-                parts.append("(" + (" AND " if key == "and" else " OR ").join(frags) + ")")
+            branches = spec
+            if key == "or":
+                branches = [{k: v} for branch in spec for k, v in (branch or {}).items()]
+            subs = [_comment_parts(conn, s) for s in branches]
+            if key == "or" and any(v for _, _, v in subs):
+                vacuous = True
+                continue
+            kept = [(f, p) for f, p, _ in subs if f]
+            if not kept:
+                vacuous = vacuous or bool(spec)
+                continue
+            parts.append("(" + (" AND " if key == "and" else " OR ").join(f for f, _ in kept) + ")")
+            params.extend(x for _, p in kept for x in p)
             continue
         if key == "id":
             # `Comment.id` is served as synth.linear_comment_id(row id), so a filter written from
             # a served id must be translated back or it can never match what the client just saw.
-            frag, p = _Comparator("c.id").render(_map_comment_ids(conn, spec))
+            add(*_Comparator("c.id").render(_map_comment_ids(conn, spec)))
         elif key == "body":
-            frag, p = _Comparator("c.body").render(spec)
+            add(*_Comparator("c.body").render(spec))
         elif key in ("createdAt", "updatedAt"):
-            frag, p = _Comparator("c.created_ts", epoch=True).render(spec)
+            add(*_Comparator("c.created_ts", epoch=True).render(spec))
         else:
             raise GraphQLError(f"unsupported comment filter field {key!r}")
-        if frag:
-            parts.append(frag)
-            params.extend(p)
-    return _join(parts, "AND"), params
+    return _join(parts, "AND"), params, vacuous

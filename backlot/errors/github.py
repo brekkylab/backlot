@@ -178,12 +178,13 @@ def validation_body(path: str, errors) -> tuple[int, dict]:
     not it.
 
     A QUERY parameter is the residue. Real's listings refuse no pagination value, which is why
-    those absorb (see :func:`backlot.pagination._absorb_page`) and never reach here; the one route
-    that does refuse one, `/search/code`, answers in `text/plain` with no envelope and is refused by
-    the route itself before validation (see :func:`backlot.pagination.github_code_search_page_refusal`),
-    so it never reaches here either. What is left is a shape real has no measured answer for, so it
-    keeps the Validation Failed envelope real uses for a parameter it does refuse, with this route's
-    anchor rather than the bare root.
+    those absorb (see :func:`backlot.pagination._absorb_page`) and never reach here; the one
+    measured route that does refuse one, `/search/code`, answers in `text/plain` with no envelope,
+    and does so from the route itself, reading the raw query string after the validator has
+    absorbed the value (see :func:`backlot.pagination.github_code_search_query_refusal`), so
+    validation never fails there and this is never reached either. What is left is a shape real has
+    no measured answer for, so it keeps the Validation Failed envelope real uses for a parameter it
+    does refuse, with this route's anchor rather than the bare root.
     """
     if any(tuple(e.get("loc", ()))[:1] == ("path",) for e in errors):
         return 404, {

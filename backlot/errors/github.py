@@ -100,9 +100,13 @@ def owns(path: str) -> bool:
 #: What real's JSON responses declare, 200 and error alike, on every GitHub route measured but one.
 JSON_MEDIA_TYPE = "application/json; charset=utf-8"
 
+#: The statuses the code search backend answers itself, and so without the charset. Its 400 is
+#: text/plain and never a JSON body; everything else on the path is the gateway's.
+_CODE_SEARCH_BACKEND_STATUSES = frozenset({200, 422})
 
-def json_media_type(path: str) -> str:
-    """The `content-type` real puts on a JSON body answered at ``path``.
+
+def json_media_type(path: str, status_code: int) -> str:
+    """The `content-type` real puts on a JSON body answered at ``path`` with ``status_code``.
 
     `application/json; charset=utf-8` everywhere: measured 2026-09-06 on api.github.com over
     thirteen responses, the 200s of `/repos/{o}/{r}/issues`, `/repos/{o}/{r}`, `/branches`,
@@ -111,6 +115,11 @@ def json_media_type(path: str) -> str:
     no credential. Code search is the exception, served by a backend that is not the rest of the
     API's: `/search/code` answers `application/json` with no charset on its 200 and on its 422s
     alike, the same backend that reads no version header (see ``routers.github.honours_api_version``).
+    The exception is the backend's and not the path's: the 401 for no credential or a bad one on
+    `/search/code` is the gateway's answer and carries the charset like every other 401 (measured
+    2026-09-07), so on this path only the statuses the backend answers, 200 and 422, go without it.
+    A wrong method on the path is Starlette's 405 here, the gateway's 404 on real, and both are
+    the gateway's shape, charset included.
 
     The parameter changes no byte of the body, JSON being UTF-8 by definition; what it changes is
     the header a client or a recorded fixture compares as a string. Imported lazily, as
@@ -118,7 +127,9 @@ def json_media_type(path: str) -> str:
     """
     from backlot.routers.github import CODE_SEARCH_PATH
 
-    return "application/json" if path == CODE_SEARCH_PATH else JSON_MEDIA_TYPE
+    if path == CODE_SEARCH_PATH and status_code in _CODE_SEARCH_BACKEND_STATUSES:
+        return "application/json"
+    return JSON_MEDIA_TYPE
 
 
 @lru_cache(maxsize=1)
@@ -176,7 +187,9 @@ def http_body(path: str, exc) -> dict | None:
     wrong method is refused by Starlette with ``http.HTTPStatus(405).phrase`` — a string no
     measurement attributes to real, which answers a wrong method per endpoint rather than
     uniformly (an unauthenticated ``POST /repos/{owner}/{repo}`` is its 401 Requires
-    authentication). Dressing Starlette's phrase in real's envelope would read as measured.
+    authentication; an authenticated ``POST`` to `/search/code` or `/search/issues` is its 404 Not
+    Found, measured 2026-09-07). Dressing Starlette's phrase in real's envelope would read as
+    measured.
     """
     body = getattr(exc, "github_body", None)
     if isinstance(body, dict):

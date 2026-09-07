@@ -3201,10 +3201,11 @@ def test_github_json_carries_the_charset_real_sends_except_on_code_search(
 ):
     """Real answers `application/json; charset=utf-8` on every GitHub JSON response measured
     (2026-09-06: eight 200s, a 404, a 422, the version 400 and a 401) and `application/json` on
-    `/search/code`, whose backend is not the rest of the API's, on its 200 and its 422s alike.
-    Backlot answered FastAPI's bare `application/json` everywhere, so a client or a recorded fixture
-    comparing the header as a string agreed with real on code search alone. The other media types
-    this router answers are not JSON and are not touched."""
+    `/search/code`, whose backend is not the rest of the API's, on its 200 and its 422s alike; the
+    401 on that path is the gateway's and carries the charset (2026-09-07), as does the answer to a
+    wrong method. Backlot answered FastAPI's bare `application/json` everywhere, so a client or a
+    recorded fixture comparing the header as a string agreed with real on code search alone. The
+    other media types this router answers are not JSON and are not touched."""
     c, _ = gh_client
     from backlot import synth
 
@@ -3229,10 +3230,14 @@ def test_github_json_carries_the_charset_real_sends_except_on_code_search(
         ("/github/user/repos", {"Authorization": "Bearer nope"}, 401, utf8),
         # the same repository asked for by id, which the middleware rewrites onto the login path
         (f"/github/repositories/{repo_id}", gh_admin_h, 200, utf8),
-        # code search: the one route where real sends no charset, on every status it answers in JSON
+        # code search: the one route where real sends no charset, on the statuses its own backend
+        # answers, the 200 and the 422s
         ("/github/search/code?q=extension:md", gh_admin_h, 200, bare),
         ("/github/search/code?q=", gh_admin_h, 422, bare),
         ("/github/search/code?q=extension:md&per_page=1&page=1001", gh_admin_h, 422, bare),
+        # ...while the 401 on the same path is the gateway's, charset and all
+        ("/github/search/code?q=extension:md", {}, 401, utf8),
+        ("/github/search/code?q=extension:md", {"Authorization": "Bearer nope"}, 401, utf8),
         # and its parse 400 is text, as before
         (
             "/github/search/code?q=extension:md&per_page=abc",
@@ -3251,6 +3256,11 @@ def test_github_json_carries_the_charset_real_sends_except_on_code_search(
     for path, headers, status, ctype in cells:
         r = c.get(path, headers=headers)
         assert (r.status_code, r.headers["content-type"]) == (status, ctype), path
+    # a wrong method is Starlette's 405 (real answers a 404 there, see `errors.github.http_body`),
+    # and it is the gateway's kind of answer on code search too: the charset stays
+    for path in ("/github/search/code?q=extension:md", f"/github/repos/{gh_org}/gateway"):
+        r = c.post(path, headers=gh_admin_h)
+        assert (r.status_code, r.headers["content-type"]) == (405, utf8), path
     # the OpenAPI document still keys the JSON body as `application/json`, as real's spec does: the
     # charset is on the wire, not in the contract `backlot diff` compares
     op = c.get("/openapi.json").json()["paths"]["/github/repos/{owner}/{repo}/issues"]["get"]

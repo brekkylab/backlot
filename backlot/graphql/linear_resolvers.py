@@ -226,24 +226,74 @@ def _match_string(value, spec: dict | None, *, absent_matches_nothing: bool = Fa
 
 def _match_fields(spec: dict | None, fields: dict, strict: frozenset[str] = frozenset()) -> bool:
     """A filter object whose keys map to already-computed values, plus ``and`` / ``or``. ``strict``
-    names the keys whose absent value matches nothing (see ``_match_string``)."""
-    if not spec:
-        return True
-    for key, sub in spec.items():
+    names the keys whose absent value matches nothing (see ``_match_string``).
+
+    This is the evaluator behind ``users(filter:)``, ``teams(filter:)`` and an issue's
+    ``labels`` / ``attachments`` / ``releases`` connections, and it reads ``and`` / ``or`` the way
+    ``linear_filters._issue_parts`` compiles them, because api.linear.app reads them the same on
+    every one of these routes (measured 2026-09-07 on ``users``, ``teams``, ``issue.labels`` over
+    ``[Bug, Feature]`` and ``issue.attachments`` over two throwaway attachments; ``releases`` is
+    not measured and follows by sharing the code). The keys of one ``or`` branch are alternatives:
+    ``users(filter: {or: [{name: {eq: A}, email: {eq: B}}]})`` answered A and B's user where the same
+    object outside an ``or`` and under ``and`` answered none, and ``issue.labels(filter: {or:
+    [{name: {eq: "Feature"}, and: [{name: {eq: "Improvement"}}]}]})`` answered ``Feature`` where
+    the same object under ``and`` answered none. A branch with nothing in it (``{}``, ``{and: []}``,
+    ``{name: null}``) is dropped: ``{or: [{}, {email: {eq: B}}]}`` and ``{or: [{and: []}, {email:
+    {eq: B}}]}`` each answered B alone. A branch whose key constrains nothing (``{name: {}}``, or
+    an ``and`` / ``or`` whose every branch is dropped) makes the whole ``or`` constrain nothing:
+    ``{or: [{name: {}}, {email: {eq: B}}]}``, ``{or: [{name: {}, email: {eq: B}}]}`` and ``{or: [{or:
+    [{}]}, {email: {eq: B}}]}`` each answered every user, and ``{or: [{name: {eq: "Feature"}, and:
+    [{}]}]}`` every label; while a key beside the ``or`` still applies (``{or: [{name: {eq: A},
+    email: {eq: B}}], email: {eq: B}}`` answered B) and under ``and`` such a branch is dropped
+    (``{and: [{name: {}}, {email: {eq: B}}]}`` answered B). ``{or: []}``, ``{or: [{}]}``, ``{and:
+    []}`` and ``{and: [{}]}`` each constrain nothing. Before 2026-09-07 the branches of an ``or``
+    were evaluated as conjunctions here while the SQL path already split them, so one
+    ``IssueLabelFilter`` had two answers on this router (#143)."""
+    _, matches, _ = _match_parts(spec, fields, strict)
+    return matches
+
+
+def _match_parts(
+    spec: dict | None, fields: dict, strict: frozenset[str]
+) -> tuple[bool, bool, bool]:
+    """``(constrains, matches, vacuous)`` for one filter object, the boolean twin of
+    ``linear_filters._issue_parts``'s ``(fragment, params, vacuous)``: ``constrains`` is whether any
+    key said something (the non-empty fragment), ``matches`` the conjunction of what the keys that
+    did said, ``vacuous`` whether a key constrained nothing, which inside an ``or`` makes the whole
+    ``or`` constrain nothing (see ``_match_fields``)."""
+    constrains = False
+    matches = True
+    vacuous = False
+    for key, sub in (spec or {}).items():
         if sub is None:
             continue
-        if key == "and":
-            if not all(_match_fields(x, fields, strict) for x in sub):
-                return False
-        elif key == "or":
-            if not any(_match_fields(x, fields, strict) for x in sub):
-                return False
+        if key in ("and", "or"):
+            branches = sub
+            if key == "or":
+                # a branch with n keys is n branches, and one with none is dropped, as in
+                # `_issue_parts`
+                branches = [{k: v} for branch in sub for k, v in (branch or {}).items()]
+            subs = [_match_parts(x, fields, strict) for x in branches]
+            if key == "or" and any(v for _, _, v in subs):
+                vacuous = True
+                continue
+            kept = [m for c, m, _ in subs if c]
+            if not kept:
+                vacuous = vacuous or bool(sub)
+                continue
+            constrains = True
+            matches = matches and (all(kept) if key == "and" else any(kept))
         elif key in fields:
-            if not _match_string(fields[key], sub, absent_matches_nothing=key in strict):
-                return False
+            if not sub or all(v is None for v in sub.values()):
+                vacuous = True  # the comparator `_match_string` reads as no condition
+                continue
+            constrains = True
+            matches = matches and _match_string(
+                fields[key], sub, absent_matches_nothing=key in strict
+            )
         else:
             raise GraphQLError(f"unsupported filter field {key!r}")
-    return True
+    return constrains, matches, vacuous
 
 
 def _match_team(container: str, spec, info) -> bool:

@@ -1048,6 +1048,228 @@ def test_comment_filter_by_the_served_id_round_trips(fclient):
     assert [n["body"] for n in got["data"]["comments"]["nodes"]] == [first["body"]]
 
 
+def comment_bodies(fclient, filter_literal, root="comments") -> list[str]:
+    """Bodies matching a CommentFilter, in a stable order. ``root`` is the `comments` root or
+    `issue(id: …) { comments … }`; the literal may name the served id of ``second note`` as ``%(B)s``."""
+    listed = post(fclient, "{ comments(first: 50) { nodes { id body } } }").json()
+    served = {n["body"]: n["id"] for n in listed["data"]["comments"]["nodes"]}
+    literal = filter_literal % {"B": served["second note"]}
+    if root == "comments":
+        q = "{ comments(first: 50, filter: %s) { nodes { body } } }" % literal
+        path = ("comments",)
+    else:
+        q = '{ issue(id: "%s") { comments(filter: %s) { nodes { body } } } }' % (root, literal)
+        path = ("issue", "comments")
+    body = post(fclient, q).json()
+    assert "errors" not in body, body["errors"]
+    node = body["data"]
+    for step in path:
+        node = node[step]
+    return sorted(n["body"] for n in node["nodes"])
+
+
+FIRST, SECOND = "first note", "second note"
+BOTH = [FIRST, SECOND]
+# Every cell is one answer api.linear.app gave over two throwaway comments (`zz-c1` on BRE-1, `zz-c2`
+# on BRE-2) in a workspace holding no others, on 2026-09-06 except the `and` row, measured 2026-09-04;
+# A is the first comment's body and B the second's id. The fixture's two comments, `first note` on ENG-1 and `second note` on ENG-2, stand in,
+# and share the substring `note` where the workspace pair shared `zz-c`.
+_COMMENT_OR_CELLS = [
+    # the keys of one `or` branch are alternatives; outside an `or`, and under `and`, they AND
+    ('{or: [{body: {eq: "first note"}, id: {eq: "%(B)s"}}]}', BOTH),
+    ('{body: {eq: "first note"}, id: {eq: "%(B)s"}}', []),
+    ('{and: [{body: {eq: "first note"}, id: {eq: "%(B)s"}}]}', []),
+    ('{or: [{body: {eq: "first note"}}, {id: {eq: "%(B)s"}}]}', BOTH),
+    ('{or: [{body: {contains: "note"}, id: {eq: "%(B)s"}}], body: {eq: "second note"}}', [SECOND]),
+    ('{or: [{or: [{body: {eq: "first note"}, id: {eq: "%(B)s"}}]}]}', BOTH),
+    ('{and: [{or: [{body: {eq: "first note"}, id: {eq: "%(B)s"}}]}]}', BOTH),
+    # a branch with nothing in it is dropped
+    ('{or: [{body: {eq: "first note"}}, {}]}', [FIRST]),
+    ('{or: [{body: {eq: "first note"}, id: {eq: "%(B)s"}}, {}]}', BOTH),
+    ('{or: [{body: {eq: "first note"}, id: null}]}', [FIRST]),
+    ('{or: [{body: null}, {id: {eq: "%(B)s"}}]}', [SECOND]),
+    ('{or: [{and: []}, {id: {eq: "%(B)s"}}]}', [SECOND]),
+    ('{or: [{or: []}, {id: {eq: "%(B)s"}}]}', [SECOND]),
+    ('{or: [{}], id: {eq: "%(B)s"}}', [SECOND]),
+    ('{and: [{}], id: {eq: "%(B)s"}}', [SECOND]),
+    # ... but an `and` / `or` whose every branch is dropped constrains nothing, and so makes an
+    # enclosing `or` constrain nothing, while a key beside it and an enclosing `and` still apply
+    ('{or: [{or: [{}]}, {id: {eq: "%(B)s"}}]}', BOTH),
+    ('{or: [{and: [{}]}, {id: {eq: "%(B)s"}}]}', BOTH),
+    ('{or: [{or: [{}]}], id: {eq: "%(B)s"}}', [SECOND]),
+    ('{or: [{and: [{}]}], id: {eq: "%(B)s"}}', [SECOND]),
+    ('{and: [{or: [{}]}, {id: {eq: "%(B)s"}}]}', [SECOND]),
+    # a branch whose key constrains nothing makes the whole `or` constrain nothing; a key beside
+    # the `or` still applies, and under `and` such a branch is dropped
+    ("{body: {}}", BOTH),
+    ("{or: [{body: {}}]}", BOTH),
+    ('{or: [{body: {}}, {id: {eq: "%(B)s"}}]}', BOTH),
+    ('{or: [{body: {}, id: {eq: "%(B)s"}}]}', BOTH),
+    ('{or: [{createdAt: {}}, {id: {eq: "%(B)s"}}]}', BOTH),
+    ('{or: [{id: {}}, {body: {eq: "first note"}}]}', BOTH),
+    ('{or: [{or: [{body: {}}]}, {id: {eq: "%(B)s"}}]}', BOTH),
+    ('{or: [{body: {}}], id: {eq: "%(B)s"}}', [SECOND]),
+    ('{or: [{body: {}, id: {eq: "%(B)s"}}], body: {eq: "second note"}}', [SECOND]),
+    ('{and: [{body: {}}, {id: {eq: "%(B)s"}}]}', [SECOND]),
+    ('{or: [{and: [{body: {}}, {body: {eq: "nosuch"}}]}, {id: {eq: "%(B)s"}}]}', [SECOND]),
+]
+
+
+@pytest.mark.parametrize(
+    "literal,expected", _COMMENT_OR_CELLS, ids=[c[0] for c in _COMMENT_OR_CELLS]
+)
+def test_comment_filter_or_reads_a_branch_as_linear(fclient, literal, expected):
+    """Linear's `or` on `CommentFilter` is the `or` `_issue_parts` compiles: the keys of one branch
+    are alternatives, a branch with nothing in it is dropped, and a branch whose key constrains
+    nothing makes the whole `or` constrain nothing. Compiling a branch as one conjunction, as this
+    router used to, answered `{or: [{body: {eq: A}, id: {eq: B}}]}` with no comment where Linear
+    answers two, and nothing in the well-formed empty list said so."""
+    assert comment_bodies(fclient, literal) == expected
+
+
+def test_issue_comments_connection_reads_an_or_branch_the_same_way(fclient):
+    """`Issue.comments(filter:)` goes through the same compiler, scoped to the issue: on the real
+    API the two-key branch answered the one comment on BRE-1 when asked under `issue(id: BRE-1)`."""
+    two_keys = '{or: [{body: {eq: "first note"}, id: {eq: "%(B)s"}}]}'
+    assert comment_bodies(fclient, two_keys, root="ENG-1") == [FIRST]
+    assert comment_bodies(fclient, two_keys, root="ENG-2") == [SECOND]
+
+
+def matched_nodes(fclient, query: str, path: tuple[str, ...], field: str) -> list[str]:
+    """``field`` of every node at ``path`` (ending at a connection) in the answer to ``query``."""
+    body = post(fclient, query).json()
+    assert "errors" not in body, body["errors"]
+    node = body["data"]
+    for step in path:
+        node = node[step]
+    return sorted(n[field] for n in node["nodes"])
+
+
+# The routes `_match_fields` evaluates in linear_resolvers.py, each as api.linear.app answered it on
+# 2026-09-07 (users: three in the workspace, A the first's name and B the second's email; teams:
+# one, `BRE`; labels: BRE-1 carrying `[Bug, Feature]`, `Improvement` nobody's; attachments: two
+# throwaway ones on BRE-1, created for the run and deleted after). The fixture stands in: users
+# Ava / bob@acme.com / Mia, teams DES and ENG, ENG-1's labels `[bug, gateway]` (`gateway` for
+# `Feature`, `nope` for `Improvement`) and ENG-1's three attachments (`CI run` for the first
+# throwaway, the Slack url for the second's). Every route reads `or` as `_issue_parts` does: the keys
+# of one branch are alternatives, a branch with nothing in it is dropped, and a branch whose key
+# constrains nothing makes the whole `or` constrain nothing.
+_USERS = ["ava@acme.com", "bob@acme.com", "mia@acme.com"]
+_USER_OR_CELLS = [
+    ('{or: [{name: {eq: "Ava"}, email: {eq: "bob@acme.com"}}]}', _USERS[:2]),
+    ('{name: {eq: "Ava"}, email: {eq: "bob@acme.com"}}', []),
+    ('{and: [{name: {eq: "Ava"}, email: {eq: "bob@acme.com"}}]}', []),
+    ('{or: [{name: {eq: "Ava"}}, {email: {eq: "bob@acme.com"}}]}', _USERS[:2]),
+    (
+        '{or: [{name: {eq: "Ava"}, email: {eq: "bob@acme.com"}}], email: {eq: "bob@acme.com"}}',
+        [_USERS[1]],
+    ),
+    ('{or: [{}, {email: {eq: "bob@acme.com"}}]}', [_USERS[1]]),
+    ('{or: [{name: null}, {email: {eq: "bob@acme.com"}}]}', [_USERS[1]]),
+    ('{or: [{name: {}}, {email: {eq: "bob@acme.com"}}]}', _USERS),
+    ('{or: [{name: {}, email: {eq: "bob@acme.com"}}]}', _USERS),
+    ("{or: [{}]}", _USERS),
+    ("{or: []}", _USERS),
+    ("{and: []}", _USERS),
+    ("{and: [{}]}", _USERS),
+    ('{or: [{or: [{}]}, {email: {eq: "bob@acme.com"}}]}', _USERS),
+    ('{or: [{and: []}, {email: {eq: "bob@acme.com"}}]}', [_USERS[1]]),
+    ('{and: [{name: {}}, {email: {eq: "bob@acme.com"}}]}', [_USERS[1]]),
+]
+_TEAMS = ["DES", "ENG"]
+_TEAM_OR_CELLS = [
+    ('{or: [{name: {eq: "nosuch"}, key: {eq: "ENG"}}]}', ["ENG"]),
+    ('{name: {eq: "nosuch"}, key: {eq: "ENG"}}', []),
+    ('{or: [{name: {eq: "nosuch"}}, {key: {eq: "ENG"}}]}', ["ENG"]),
+    ('{or: [{name: {eq: "engineering"}, key: {eq: "ZZZ"}}]}', ["ENG"]),
+    ('{or: [{}, {key: {eq: "nosuch"}}]}', []),
+    ('{or: [{name: {}}, {key: {eq: "nosuch"}}]}', _TEAMS),
+    ("{or: [{}]}", _TEAMS),
+    ("{or: []}", _TEAMS),
+]
+_ENG1_LABELS = ["bug", "gateway"]
+_ISSUE_LABELS_OR_CELLS = [
+    ('{or: [{name: {eq: "gateway"}, and: [{name: {eq: "nope"}}]}]}', ["gateway"]),
+    ('{or: [{name: {eq: "nope"}, and: [{name: {eq: "gateway"}}]}]}', ["gateway"]),
+    ('{and: [{name: {eq: "gateway"}, or: [{name: {eq: "nope"}}]}]}', []),
+    ('{name: {eq: "gateway"}, and: [{name: {eq: "nope"}}]}', []),
+    ('{or: [{name: {eq: "gateway"}}, {and: [{name: {eq: "nope"}}]}]}', ["gateway"]),
+    ('{or: [{}, {name: {eq: "gateway"}}]}', ["gateway"]),
+    ('{or: [{name: null}, {name: {eq: "gateway"}}]}', ["gateway"]),
+    ('{or: [{name: {}}, {name: {eq: "gateway"}}]}', _ENG1_LABELS),
+    ('{or: [{name: {}, and: [{name: {eq: "nope"}}]}]}', _ENG1_LABELS),
+    ("{or: [{}]}", _ENG1_LABELS),
+    ("{or: []}", _ENG1_LABELS),
+    ("{and: [{}]}", _ENG1_LABELS),
+    ('{or: [{or: [{}]}, {name: {eq: "gateway"}}]}', _ENG1_LABELS),
+    ('{or: [{and: []}, {name: {eq: "gateway"}}]}', ["gateway"]),
+    ('{or: [{name: {eq: "gateway"}, and: []}]}', ["gateway"]),
+    ('{or: [{name: {eq: "gateway"}, and: [{}]}]}', _ENG1_LABELS),
+    ('{and: [{name: {}}, {name: {eq: "gateway"}}]}', ["gateway"]),
+    ("{name: {}}", _ENG1_LABELS),
+    ("{}", _ENG1_LABELS),
+]
+_ENG1_ATTACHMENTS = ["CI run", "Réunion notes", "Spec"]
+_SLACK = "https://acme.slack.com/archives/C1/p1"
+_ATTACHMENT_OR_CELLS = [
+    ('{or: [{title: {eq: "CI run"}, url: {eq: "%s"}}]}' % _SLACK, _ENG1_ATTACHMENTS[:2]),
+    ('{title: {eq: "CI run"}, url: {eq: "%s"}}' % _SLACK, []),
+    ('{and: [{title: {eq: "CI run"}, url: {eq: "%s"}}]}' % _SLACK, []),
+    ('{or: [{title: {eq: "CI run"}}, {url: {eq: "%s"}}]}' % _SLACK, _ENG1_ATTACHMENTS[:2]),
+    (
+        '{or: [{title: {eq: "CI run"}, url: {eq: "%s"}}], url: {eq: "%s"}}' % (_SLACK, _SLACK),
+        ["Réunion notes"],
+    ),
+    ('{or: [{}, {title: {eq: "CI run"}}]}', ["CI run"]),
+    ('{or: [{title: null}, {title: {eq: "CI run"}}]}', ["CI run"]),
+    ('{or: [{title: {}}, {title: {eq: "CI run"}}]}', _ENG1_ATTACHMENTS),
+    ('{or: [{title: {}, url: {eq: "%s"}}]}' % _SLACK, _ENG1_ATTACHMENTS),
+    ("{or: [{}]}", _ENG1_ATTACHMENTS),
+    ("{or: []}", _ENG1_ATTACHMENTS),
+    ("{and: [{}]}", _ENG1_ATTACHMENTS),
+    ('{or: [{or: [{}]}, {title: {eq: "CI run"}}]}', _ENG1_ATTACHMENTS),
+    ('{or: [{and: []}, {title: {eq: "CI run"}}]}', ["CI run"]),
+    ('{and: [{title: {}}, {title: {eq: "CI run"}}]}', ["CI run"]),
+]
+
+
+@pytest.mark.parametrize("literal,expected", _USER_OR_CELLS, ids=[c[0] for c in _USER_OR_CELLS])
+def test_users_filter_or_reads_a_branch_as_linear(fclient, literal, expected):
+    """`Query.users(filter:)` is evaluated by `_match_fields`, which used to AND the keys of an `or`
+    branch: `{or: [{name: {eq: A}, email: {eq: B}}]}` answered no user where Linear answers two."""
+    q = "{ users(first: 50, filter: %s) { nodes { email } } }" % literal
+    assert matched_nodes(fclient, q, ("users",), "email") == expected
+
+
+@pytest.mark.parametrize("literal,expected", _TEAM_OR_CELLS, ids=[c[0] for c in _TEAM_OR_CELLS])
+def test_teams_filter_or_reads_a_branch_as_linear(fclient, literal, expected):
+    """`Query.teams(filter:)` goes through `_match_fields` too, where `TeamFilter` under
+    `IssueFilter.team` goes through `_sub_filter`; the two read an `or` branch the same way now."""
+    q = "{ teams(first: 50, filter: %s) { nodes { key } } }" % literal
+    assert matched_nodes(fclient, q, ("teams",), "key") == expected
+
+
+@pytest.mark.parametrize(
+    "literal,expected", _ISSUE_LABELS_OR_CELLS, ids=[c[0] for c in _ISSUE_LABELS_OR_CELLS]
+)
+def test_issue_labels_filter_or_reads_a_branch_as_linear(fclient, literal, expected):
+    """`Issue.labels(filter:)` is the second evaluator of `IssueLabelFilter`: the same object that
+    `labels: {some: …}` compiles through `_label_predicate` is evaluated here by `_match_fields`, and
+    the two answered differently on an `or` branch with two keys until both split it."""
+    q = '{ issue(id: "ENG-1") { labels(filter: %s) { nodes { name } } } }' % literal
+    assert matched_nodes(fclient, q, ("issue", "labels"), "name") == expected
+
+
+@pytest.mark.parametrize(
+    "literal,expected", _ATTACHMENT_OR_CELLS, ids=[c[0] for c in _ATTACHMENT_OR_CELLS]
+)
+def test_issue_attachments_filter_or_reads_a_branch_as_linear(fclient, literal, expected):
+    """`Issue.attachments(filter:)`, the fourth `_match_fields` route, measured over two throwaway
+    attachments on BRE-1."""
+    q = '{ issue(id: "ENG-1") { attachments(filter: %s) { nodes { title } } } }' % literal
+    assert matched_nodes(fclient, q, ("issue", "attachments"), "title") == expected
+
+
 def test_an_empty_labels_predicate_constrains_nothing_as_it_does_on_linear(fclient):
     """`labels: {}`, `labels: {some: {}}`, `labels: {every: {}}` and `labels: {some: {name: {}}}` each
     answered every issue on api.linear.app (measured 2026-09-03), the label-less ones included: an
@@ -1250,6 +1472,116 @@ _LABEL_CELLS = [
     ("{length: {eq: null}}", set()),
     ("{length: {neq: null}}", set()),
     ("{length: {eq: 2, lt: null}}", set()),
+    # the keys of one `or` branch (measured 2026-09-06 over `[Bug, Feature]` and `[Bug]` beside two
+    # label-less issues; `bug` stands for `Bug`, `gateway` for `Feature`, `nope` for `Improvement`,
+    # which nobody has). On the collection filter they are NOT alternatives: each branch is one
+    # collection filter, read by the precedence above, key order included
+    ('{or: [{length: {eq: 1}, some: {name: {eq: "gateway"}}}]}', {L1}),
+    ('{or: [{length: {eq: 1}}, {some: {name: {eq: "gateway"}}}]}', {L2, L1}),
+    ('{or: [{some: {name: {eq: "gateway"}}, length: {eq: 1}}]}', {L1}),
+    ('{or: [{length: {eq: 0}, name: {eq: "gateway"}}]}', {U}),
+    ('{or: [{every: {name: {eq: "bug"}}, some: {name: {eq: "gateway"}}}]}', {L1}),
+    ('{or: [{some: {name: {eq: "gateway"}}, every: {name: {eq: "bug"}}}]}', {L1}),
+    ("{or: [{and: [{length: {eq: 1}}], length: {eq: 2}}]}", {L1}),
+    ("{or: [{or: [{length: {eq: 1}}], length: {eq: 2}}]}", {L1}),
+    ("{or: [{null: false, length: {eq: 1}}]}", {L1}),
+    ("{or: [{null: true, length: {eq: 1}}]}", set()),
+    ("{or: [{length: {eq: 1}, null: true}]}", set()),
+    ('{or: [{length: {eq: 1}, some: {name: {eq: "gateway"}}}], length: {eq: 0}}', {L1}),
+    ('{or: [{length: {eq: 1}, some: {name: {eq: "gateway"}}}, {}]}', EVERY),
+    ("{or: [{length: {eq: 1}, some: {}}]}", {L1}),
+    ('{or: [{length: {eq: 1}, some: {name: {eq: "nope"}}}]}', {L1}),
+    ('{and: [{length: {eq: 1}, some: {name: {eq: "gateway"}}}]}', {L1}),
+    ('{and: [{some: {name: {eq: "gateway"}}, length: {eq: 1}}]}', {L1}),
+    ('{and: [{length: {eq: 0}, name: {eq: "gateway"}}]}', {U}),
+    # on the predicate (`IssueLabelFilter`) they ARE alternatives, as on every other `or`: a label
+    # named A or B, where the same object under `and` is a label named both
+    ('{some: {or: [{name: {eq: "gateway"}, and: [{name: {eq: "nope"}}]}]}}', {L2}),
+    ('{some: {or: [{name: {eq: "nope"}, and: [{name: {eq: "gateway"}}]}]}}', {L2}),
+    ('{some: {or: [{name: {eq: "gateway"}}, {and: [{name: {eq: "nope"}}]}]}}', {L2}),
+    ('{some: {or: [{name: {eq: "gateway"}, or: [{name: {eq: "nope"}}]}]}}', {L2}),
+    (
+        '{some: {or: [{name: {eq: "nope"}, or: [{name: {eq: "gateway"}}, {name: {eq: "nope"}}]}]}}',
+        {L2},
+    ),
+    ('{every: {or: [{name: {eq: "bug"}, and: [{name: {eq: "nope"}}]}]}}', {L1}),
+    ('{some: {and: [{name: {eq: "gateway"}, or: [{name: {eq: "nope"}}]}]}}', set()),
+    ('{some: {and: [{name: {eq: "bug"}, or: [{name: {eq: "gateway"}}]}]}}', set()),
+    ('{some: {and: [{name: {eq: "bug"}, or: [{name: {eq: "bug"}}]}]}}', {L2, L1}),
+    (
+        '{some: {or: [{name: {eq: "nope"}, and: [{name: {eq: "gateway"}}, {name: {eq: "bug"}}]}]}}',
+        set(),
+    ),
+    # the polarity of such a branch is read from the branch as written: negative only when every
+    # key is, where the same keys as separate branches read negative when any is
+    ('{some: {or: [{name: {neq: "gateway"}, and: [{name: {eq: "nope"}}]}]}}', {L2, L1}),
+    ('{some: {or: [{name: {neq: "gateway"}}, {and: [{name: {eq: "nope"}}]}]}}', EVERY),
+    ('{some: {or: [{name: {eq: "nope"}, and: [{name: {neq: "gateway"}}]}]}}', {L2, L1}),
+    ('{every: {or: [{name: {neq: "gateway"}, and: [{name: {eq: "nope"}}]}]}}', {L1}),
+    ('{every: {or: [{name: {neq: "bug"}, and: [{name: {eq: "bug"}}]}]}}', {L2, L1}),
+    ('{every: {or: [{name: {neq: "bug"}}, {and: [{name: {eq: "bug"}}]}]}}', EVERY),
+    # a key that constrains nothing beside one that does is a predicate every label satisfies (the
+    # quantifier still asks for a label), not a vacuous branch; `and: []` / `or: []` beside a key drop
+    ('{some: {or: [{name: {}, and: [{name: {eq: "nope"}}]}]}}', {L2, L1}),
+    ('{some: {or: [{name: {eq: "nope"}, and: [{}]}]}}', {L2, L1}),
+    ('{some: {or: [{name: {eq: "nope"}, or: [{}]}]}}', {L2, L1}),
+    ('{some: {or: [{name: {eq: "gateway"}, and: []}]}}', {L2}),
+    ('{some: {or: [{name: {eq: "gateway"}, or: []}]}}', {L2}),
+    # ... but beside a key that constrains nothing, `and: []` leaves a vacuous branch and `or: []`
+    # a predicate every label satisfies
+    ("{some: {or: [{name: {}, and: []}]}}", EVERY),
+    ("{some: {or: [{name: {}, and: [{}]}]}}", EVERY),
+    ('{some: {or: [{name: {}, and: []}, {name: {eq: "gateway"}}]}}', EVERY),
+    ("{some: {or: [{name: {}, or: []}]}}", {L2, L1}),
+    ('{some: {or: [{name: {}, or: []}, {name: {eq: "gateway"}}]}}', {L2, L1}),
+    # and such a branch still carries its polarity, read from the branch as written: with a negative
+    # key it is a negative predicate every label satisfies, so the label-less issues qualify too
+    ('{some: {or: [{name: {}, and: [{name: {neq: "gateway"}}]}]}}', EVERY),
+    ('{some: {or: [{name: {}, or: [{name: {neq: "gateway"}}]}]}}', EVERY),
+    ('{every: {or: [{name: {}, and: [{name: {neq: "gateway"}}]}]}}', EVERY),
+    ('{every: {or: [{name: {}, or: [{name: {neq: "gateway"}}]}]}}', EVERY),
+    ('{some: {or: [{name: {}, and: [{name: {neq: "nope"}}]}]}}', EVERY),
+    ('{some: {or: [{name: {neq: "nope"}, and: [{}]}]}}', EVERY),
+    ('{some: {or: [{name: {neq: "gateway"}, and: [{}]}]}}', EVERY),
+    ('{every: {or: [{name: {neq: "gateway"}, and: [{}]}]}}', EVERY),
+    # outside an `or` branch, at the top of a quantifier and in an `and` branch, the keys AND and a
+    # key that constrains nothing is not read (measured 2026-09-06, same fixture)
+    ('{some: {name: {}, and: [{name: {eq: "nope"}}]}}', set()),
+    ('{some: {name: {}, or: [{name: {eq: "nope"}}]}}', set()),
+    ('{every: {name: {}, and: [{name: {eq: "bug"}}]}}', {L1}),
+    ('{every: {name: {}, or: [{name: {eq: "nope"}}]}}', set()),
+    ('{some: {name: {eq: "gateway"}, and: [{}]}}', {L2}),
+    ('{every: {name: {eq: "bug"}, and: [{}]}}', {L1}),
+    ('{some: {name: {eq: "gateway"}, and: []}}', {L2}),
+    ('{some: {name: {eq: "gateway"}, or: []}}', {L2}),
+    ('{some: {name: {eq: "nope"}, and: [{}], or: [{}]}}', set()),
+    ('{some: {and: [{name: {}, or: [{name: {eq: "nope"}}]}]}}', set()),
+    ('{some: {and: [{name: {eq: "gateway"}, and: [{}]}]}}', {L2}),
+    ('{some: {and: [{name: {}, and: [{name: {eq: "nope"}}]}, {name: {eq: "bug"}}]}}', set()),
+    ('{some: {name: {eq: "bug"}, or: [{name: {eq: "gateway"}}]}}', set()),
+    ('{some: {name: {eq: "bug"}, and: [{name: {eq: "gateway"}}]}}', set()),
+    ('{every: {name: {eq: "bug"}, or: [{name: {eq: "gateway"}}]}}', set()),
+    ('{some: {name: {neq: "gateway"}, or: [{name: {eq: "nope"}}]}}', set()),
+    ('{some: {name: {neq: "gateway"}, and: [{name: {eq: "bug"}}]}}', {L2, L1}),
+    ('{every: {name: {neq: "gateway"}, or: [{name: {eq: "bug"}}]}}', {L1}),
+    # `and: []` and `or: []` drop out of the predicate but not of the polarity: beside a negative key
+    # `or: []` (any branch of none) reads positive and `and: []` (every branch of none) keeps the
+    # negative reading, in an `or` branch and at the top alike; `or: [{}]` beside a key reads as
+    # `and: [{}]` does, a vacuous branch beside a key that constrains nothing (measured 2026-09-07,
+    # same fixture)
+    ('{some: {or: [{name: {neq: "gateway"}, or: []}]}}', {L2, L1}),
+    ('{some: {or: [{name: {neq: "gateway"}, and: []}]}}', EVERY),
+    ('{some: {or: [{name: {neq: "gateway"}}]}}', EVERY),
+    ('{every: {or: [{name: {neq: "gateway"}, or: []}]}}', {L1}),
+    ('{every: {or: [{name: {neq: "gateway"}, and: []}]}}', {L1, U}),
+    ('{some: {name: {neq: "gateway"}, or: []}}', {L2, L1}),
+    ('{some: {name: {neq: "gateway"}, and: []}}', EVERY),
+    ('{every: {name: {neq: "gateway"}, or: []}}', {L1}),
+    ('{every: {name: {neq: "gateway"}, and: []}}', {L1, U}),
+    ('{some: {or: [{name: {neq: "gateway"}, or: [{}]}]}}', EVERY),
+    ("{some: {or: [{name: {}, or: [{}]}]}}", EVERY),
+    ('{some: {or: [{name: {}, or: [{}]}, {name: {eq: "gateway"}}]}}', EVERY),
+    ("{every: {or: [{name: {}, or: [{}]}]}}", EVERY),
 ]
 
 

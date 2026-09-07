@@ -60,13 +60,28 @@ def test_every_relative_link_resolves():
 # room, the content belongs in docs/ instead.
 _README_MAX_LINES = 180
 
-# "eleven sources", "12 SaaS APIs" — a count goes stale the next time a source is added, and the
-# generated inventory in docs/supported-sources.md already carries the real one.
+# A count OF THE SOURCES, in prose: a number against `sources`, `services`, `APIs`, `integrations`
+# or `vendors`. It goes stale the next time a source is added, and the generated inventory in
+# docs/supported-sources.md already carries the real one. No example of one here: this file is
+# scanned like any other, and an example would be a count.
 _COUNT_RE = re.compile(
     r"\b(?:eleven|twelve|thirteen|fourteen|fifteen|\d{1,2})\s+"
     r"(?:enterprise\s+)?(?:SaaS\s+)?(?:sources|services|APIs|integrations|vendors)\b",
     re.I,
 )
+
+
+def _scanned_files(*suffixes: str):
+    """Every file in the repo with one of these suffixes, generated and vendored trees dropped."""
+    for path in sorted(p for suffix in suffixes for p in REPO.rglob(f"*{suffix}")):
+        # Filtered on the path RELATIVE to the repo, never the absolute one: a checkout can itself
+        # live under a directory this list names — a git worktree under `.claude/worktrees/` does —
+        # and matching against the absolute parts then skips every file in the repo, passing the
+        # caller by finding nothing. It did.
+        rel = path.relative_to(REPO)
+        if {".git", ".venv", ".pytest_cache", ".claude", "node_modules"} & set(rel.parts):
+            continue
+        yield path, rel
 
 
 def test_readme_stays_short():
@@ -77,11 +92,21 @@ def test_readme_stays_short():
     )
 
 
-def test_readme_states_no_source_count():
-    offenders = _COUNT_RE.findall((REPO / "README.md").read_text())
+def test_no_prose_states_the_source_count():
+    """Name a few sources and say "and more"; docs/supported-sources.md carries the generated list.
+
+    Not the README alone. The count belongs to whatever describes the project, and the manifests a
+    plugin catalog renders describe it to more readers than the README reaches — which is where the
+    two that this widening caught had settled, along with one in the docs generator itself.
+    """
+    offenders = []
+    for path, rel in _scanned_files(".md", ".py", ".json", ".toml"):
+        for lineno, line in enumerate(path.read_text().splitlines(), start=1):
+            for match in _COUNT_RE.finditer(line):
+                offenders.append(f"{rel}:{lineno}: {match.group(0)!r}")
     assert not offenders, (
-        f"README.md states a source count ({offenders}) — name a few sources and say "
-        '"and more"; the full list is generated into docs/supported-sources.md'
+        "these state a source count, which goes stale the next time a source is added — name a few "
+        'sources and say "and more":\n  ' + "\n  ".join(offenders)
     )
 
 
@@ -118,14 +143,7 @@ def test_no_prose_states_the_bundled_corpus_size():
     # `.py` as well as `.md`: the count this test was written for lived in three places, and the
     # third was `backlot/server.py`'s module docstring, which a markdown-only sweep walked past.
     # A docstring describing the corpus is documentation wherever it is stored.
-    for path in sorted([*REPO.rglob("*.md"), *REPO.rglob("*.py")]):
-        # Filtered on the path RELATIVE to the repo, never the absolute one: a checkout can itself
-        # live under a directory this list names — a git worktree under `.claude/worktrees/` does —
-        # and matching against the absolute parts then skips every file in the repo, passing this
-        # test by finding nothing. It did.
-        rel = path.relative_to(REPO)
-        if {".git", ".venv", ".pytest_cache", ".claude"} & set(rel.parts):
-            continue
+    for path, rel in _scanned_files(".md", ".py"):
         for lineno, line in enumerate(path.read_text().splitlines(), start=1):
             for match in _CORPUS_COUNT_RE.finditer(line):
                 if _BUNDLED_RE.search(line) or match.group(1).replace(",", "") == records:

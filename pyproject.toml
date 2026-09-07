@@ -156,7 +156,7 @@ extend-exclude = ["*.md"]
 # Ruff's defaults (E4/E7/E9 + F). NOT E501: the formatter keeps code inside the limit, and what
 # stays over it is long string literals and measured-behaviour comment tables.
 ignore = ["E402"]  # module-level import not at top: the examples must set sys.path first
-# flake8-bandit, minus what a mock of eleven SaaS APIs necessarily trips: S608 composes the FTS and
+# flake8-bandit, minus what a mock of real SaaS APIs necessarily trips: S608 composes the FTS and
 # listing queries (92 of the 123 hits under backlot/), S324 hashes etags, S104 is `--host 0.0.0.0`,
 # S101 is 4009 asserts in tests. What is left already passes, so it is a gate and not a backlog.
 extend-select = [

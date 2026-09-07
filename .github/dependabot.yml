@@ -1,0 +1,30 @@
+# Every `uses:` in this repository is pinned to a commit SHA, which is only safe while something
+# moves the pins. That is this file's job; the uv and npm entries come along because the same
+# updates are what the scanner and the release build read.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # uv, not pip: this one moves uv.lock as well as the ranges in pyproject.toml.
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      python:
+        patterns: ["*"]
+
+  # The one TypeScript example, which CI installs, typechecks and runs.
+  - package-ecosystem: npm
+    directory: /examples/using-official-sdk/linear
+    schedule:
+      interval: weekly
+    groups:
+      linear-example:
+        patterns: ["*"]

@@ -123,11 +123,15 @@ def _claude_marketplace(data: dict) -> str:
 # plugin root; Codex's plugin.json names the skills directory itself. Both are relative to the
 # repository root, not to the manifest's own directory — the shape obra/superpowers and
 # hashicorp/agent-skills both ship.
+#
+# Those two disagree on how .agents names the root: superpowers writes {"source": "url", "url":
+# "./"} and hashicorp writes {"source": "local", "path": "./plugins/<name>"}. Only the second one
+# passes the ecosystem's own validator, which requires source.source == "local" and a "./" path.
 _MANIFESTS = {
     ".claude-plugin/marketplace.json": (_claude_marketplace, "skills/backlot/SKILL.md"),
     ".codex-plugin/plugin.json": (lambda data: data["skills"], "backlot/SKILL.md"),
     ".agents/plugins/marketplace.json": (
-        lambda data: _by_name(data)["source"]["url"],
+        lambda data: _by_name(data)["source"]["path"],
         "skills/backlot/SKILL.md",
     ),
 }

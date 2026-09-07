@@ -1,0 +1,32 @@
+# What an agent client should not pull into context when it loads this plugin: everything here is
+# generated, downloaded, or local to one machine. Mirrors .gitignore, minus the entries git alone
+# cares about.
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Corpora and databases: downloaded or built by scripts, never small.
+/data/
+/examples/import-enterpriserag-bench/data/
+
+# Build output.
+/dist/
+/build/
+node_modules/
+*.tsbuildinfo
+/examples/using-official-sdk/linear/dist/
+
+# Local secrets and scratch.
+.env
+.superpowers/
+docs/superpowers/
+.claude/worktrees/
+/experiments/
+
+# Editor / OS cruft.
+.DS_Store
+.idea/
+.vscode/

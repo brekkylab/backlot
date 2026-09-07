@@ -1,5 +1,7 @@
 """BYO corpus JSON Schema validation (backlot/schemas/ + backlot.validation)."""
 
+import ast
+import copy
 import json
 from datetime import datetime
 
@@ -998,8 +1000,6 @@ def _module_constants(tree, names) -> dict:
     """The module-level literal assignments among `names`, so a corpus is read with the values its
     own example uses. Anything not a literal -- a call, an f-string, a value built at import --
     stays absent and keeps its placeholder."""
-    import ast
-
     out = {}
     for stmt in tree.body:
         if not isinstance(stmt, ast.Assign):
@@ -1013,13 +1013,62 @@ def _module_constants(tree, names) -> dict:
     return out
 
 
+class _Resolve(ast.NodeTransformer):
+    """Rewrite the two non-literal things an example's corpus is written with into literals.
+
+    A `Name` becomes its module constant, and `"...".format(k=v)` on a string that is one by then
+    becomes the formatted string -- `examples/using-fsspec/s3.py` shares one CSV template between
+    two quarters that way, and it is the only corpus that needs the second step. Everything else is
+    left alone, so `ast.literal_eval` refuses it and the corpus is skipped rather than run.
+    """
+
+    def __init__(self, scope: dict):
+        self.scope = scope
+
+    def visit_Name(self, node):
+        if node.id not in self.scope:
+            return node
+        return ast.copy_location(ast.Constant(value=self.scope[node.id]), node)
+
+    def visit_Call(self, node):
+        self.generic_visit(node)
+        func = node.func
+        if (
+            isinstance(func, ast.Attribute)
+            and func.attr == "format"
+            and isinstance(func.value, ast.Constant)
+            and isinstance(func.value.value, str)
+            and not node.args
+            and all(kw.arg and isinstance(kw.value, ast.Constant) for kw in node.keywords)
+        ):
+            try:
+                formatted = func.value.value.format(
+                    **{kw.arg: kw.value.value for kw in node.keywords}
+                )
+            except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+                # A template whose fields the call does not fill. Left as the Call it is, which
+                # `literal_eval` then refuses -- the same skip as any other unreadable corpus,
+                # rather than an error out of a tree walk that runs before the try below.
+                #
+                # Five, because a field can miss in five ways and this walk must not raise on any
+                # of them: a name the call does not pass (KeyError, and so does a nested `{:{w}}`
+                # spec), a positional index (IndexError), a malformed template or format code
+                # (ValueError), an attribute the value has not got (AttributeError), and a
+                # subscript it does not take (TypeError).
+                return node
+            return ast.copy_location(ast.Constant(value=formatted), node)
+        return node
+
+
 def _inline_corpora():
     """Every inline `CORPUS` literal under examples/, as (path, records).
 
-    Read with `ast` rather than imported: an example's module body spins up a server.
+    Read with `ast` rather than imported: an example's module body spins up a server. Read with
+    `ast.literal_eval` rather than `eval`, over a tree `_Resolve` has flattened first, so no line
+    of an example is ever executed to be validated. A corpus assembled by calling the example's own
+    helpers -- `examples/using-fsspec/{gdrive,github}.py` build theirs from a `_doc`/`_file` -- is
+    not a literal after that and is skipped, as it was before.
     """
-    import ast
-
     from tests.conftest import REPO_ROOT
 
     out = []
@@ -1037,15 +1086,43 @@ def _inline_corpora():
             # container carries: it put an address in `repo`, where the charset refuses one, and a
             # value no example writes is a value no example is checked on.
             scope = dict.fromkeys(names, "placeholder@example.com") | _module_constants(tree, names)
+            resolved = _Resolve(scope).visit(copy.deepcopy(node.value))
             try:
-                corpus = eval(  # noqa: S307
-                    compile(ast.Expression(node.value), "<corpus>", "eval"), {}, scope
-                )
-            except Exception:
+                corpus = ast.literal_eval(ast.fix_missing_locations(resolved))
+            except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
                 continue
             if isinstance(corpus, list):
                 out.append((path.relative_to(REPO_ROOT).as_posix(), corpus))
     return out
+
+
+@pytest.mark.parametrize(
+    "template,value",
+    [
+        ("{q}", 1),  # the fold this exists for: a field the call does fill
+        ("{missing}", "Q1"),  # KeyError
+        ("{q:>{w}}", "Q1"),  # KeyError, from a spec that is itself a field
+        ("{0}", "Q1"),  # IndexError
+        ("{q:d}", "Q1"),  # ValueError
+        ("{q.y}", "Q1"),  # AttributeError
+        ("{q[0]}", 1),  # TypeError
+    ],
+)
+def test_resolving_a_corpus_never_raises_on_a_format_template(template, value):
+    """`_Resolve` runs before the `literal_eval` that is allowed to fail, so it must not raise.
+
+    A field can miss in more ways than the two an example writes, and each one reaches `str.format`
+    as a different exception. Whatever the template, the walk either folds it to a constant or
+    leaves the `Call` for `literal_eval` to refuse.
+    """
+    call = ast.parse(f"{template!r}.format(q={value!r})", mode="eval").body
+    resolved = _Resolve({}).visit(call)
+    if isinstance(resolved, ast.Constant):
+        assert resolved.value == template.format(q=value)
+        return
+    assert isinstance(resolved, ast.Call)
+    with pytest.raises(ValueError):
+        ast.literal_eval(ast.fix_missing_locations(resolved))
 
 
 def test_every_example_corpus_states_every_required_fact():

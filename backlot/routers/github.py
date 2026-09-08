@@ -581,8 +581,7 @@ async def search_issues(
     # 11 refused, and an 846-result search refuses page 11 at 100 a page just the same, after
     # serving page 10 empty (measured 2026-09-06; the rule is `github_search_depth_refused`'s).
     # After the blank-`q` and `repo:` 422s, which real answers first on this route; `/search/code`
-    # draws its line elsewhere, see there. Measured in the size THIS server applies, so with an
-    # unsent size the refusal falls at page 11 here (default 30) where real's falls at 35.
+    # draws its line elsewhere, see there.
     if github_search_depth_refused(page, per_page, code=False):
         raise _search_beyond_first_results(code=False)
     if free:

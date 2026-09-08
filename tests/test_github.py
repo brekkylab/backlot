@@ -13,14 +13,20 @@ import json
 import re
 from urllib.parse import quote
 
-import yaml
-
 import pytest
+import yaml
 
 from backlot import store, synth
 from backlot.config import Settings
 from backlot.pagination import encode_cursor
-from tests._helpers import build_corpus, client_for, crawl_github_repo, db_count, tiny_corpus
+from tests._helpers import (
+    build_corpus,
+    client_for,
+    crawl_github_repo,
+    db_count,
+    tiny_corpus,
+    tok,
+)
 
 
 def test_github_serves_a_comment_dated_at_the_epoch(tmp_path):
@@ -1610,9 +1616,11 @@ def test_github_documentation_url_names_the_route_that_failed(gh_client, gh_admi
 
 
 def test_github_tolerates_the_pagination_values_real_tolerates(gh_client, gh_admin_h, gh_org):
-    """Real refuses no pagination value at all. Measured on a public repository's issue listing:
+    """Real's listings refuse no pagination value. Measured on a public repository's issue listing:
     `per_page=0`, `per_page=abc`, `page=0`, `page=-1` and `page=abc` are each a 200 with the
-    defaults applied, and a per_page above the cap is a 200 at the cap.
+    defaults applied, and a per_page above the cap is a 200 at the cap. (Of the ten surfaces
+    measured `/search/code` is the one that refuses, and refuses in text/plain; see the code search
+    tests.)
 
     Backlot declared `ge=1` and an `int` annotation, so FastAPI answered its 422 before
     `clamp_page` was reached and a paginator computing an edge value got a hard error where
@@ -2103,12 +2111,363 @@ def test_github_search_pages_with_a_link_header(gh_client, gh_admin_h, path, q, 
     nxt = _link_rels(first.headers["Link"])["next"]
     second = c.get(nxt.split("testserver", 1)[1], headers=gh_admin_h)
     assert second.json()["total_count"] == total
-    ids = lambda r: {i["url"] for i in r.json()["items"]}  # noqa: E731
+
+    def ids(r):
+        return {i["url"] for i in r.json()["items"]}
+
     assert ids(second) and not ids(second) & ids(first)
     assert {"prev", "first"} <= set(_link_rels(second.headers["Link"]))
 
     # one page of results carries no Link at all, as real sends none
     assert "Link" not in c.get(path, headers=gh_admin_h, params={"q": q, "per_page": 100}).headers
+
+
+_INVALID_DIGIT = "Failed to deserialize query string: {}: invalid digit found in string"
+_EMPTY = "Failed to deserialize query string: {}: cannot parse integer from empty string"
+_TOO_LARGE = "Failed to deserialize query string: {}: number too large to fit in target type"
+_DUPLICATE = "Failed to deserialize query string: duplicate field `{}`"
+# Each row is one answer api.github.com gave on 2026-09-06 or 2026-09-07 to
+# `/search/code?q=repo:psf/requests+def` with the query string below appended. The number is parsed
+# as Rust parses a u32: an optional single `+` then ASCII digits, so an unencoded `+5` (which
+# arrives as ` 5`), a `+` alone and `++5` are invalid digits where `%2B5` is a 200 (tested below).
+_CODE_SEARCH_PAGE_REFUSALS = [
+    ("per_page=abc", _INVALID_DIGIT.format("per_page")),
+    ("per_page=-1", _INVALID_DIGIT.format("per_page")),
+    ("per_page=1.5", _INVALID_DIGIT.format("per_page")),
+    ("per_page=+5", _INVALID_DIGIT.format("per_page")),
+    ("per_page=%2B", _INVALID_DIGIT.format("per_page")),
+    ("per_page=%2B%2B5", _INVALID_DIGIT.format("per_page")),
+    ("per_page=5abc", _INVALID_DIGIT.format("per_page")),
+    ("per_page=1e2", _INVALID_DIGIT.format("per_page")),
+    # digits that are not ASCII digits: Python's int() reads each of these as 1, real does not
+    ("per_page=%D9%A1", _INVALID_DIGIT.format("per_page")),
+    ("page=%D9%A1", _INVALID_DIGIT.format("page")),
+    ("per_page=%EF%BC%91", _INVALID_DIGIT.format("per_page")),
+    ("per_page=", _EMPTY.format("per_page")),
+    ("per_page=4294967296", _TOO_LARGE.format("per_page")),
+    ("per_page=99999999999999999999", _TOO_LARGE.format("per_page")),
+    # 5000 digits: real's answer is still the too-large line, where Python's int() refuses to
+    # convert a string that long at all
+    ("per_page=" + "1" * 5000, _TOO_LARGE.format("per_page")),
+    ("page=abc", _INVALID_DIGIT.format("page")),
+    ("page=-1", _INVALID_DIGIT.format("page")),
+    ("page=1.5", _INVALID_DIGIT.format("page")),
+    ("page=", _EMPTY.format("page")),
+    ("page=99999999999999999999", _TOO_LARGE.format("page")),
+    # the first failure in query-string order is the one named
+    ("page=abc&per_page=abc", _INVALID_DIGIT.format("page")),
+    ("per_page=abc&page=abc", _INVALID_DIGIT.format("per_page")),
+    # a repeated parameter is refused at its second occurrence, so order decides which line
+    ("per_page=5&per_page=abc", _DUPLICATE.format("per_page")),
+    ("per_page=abc&per_page=5", _INVALID_DIGIT.format("per_page")),
+    # `q` repeated is the same deserializer's duplicate (the test's own `q` comes first), in
+    # query-string order with the page failures; `sort` repeated is a 200 (tested below)
+    ("q=x", _DUPLICATE.format("q")),
+    ("q=x&per_page=abc", _DUPLICATE.format("q")),
+    ("per_page=abc&q=x", _INVALID_DIGIT.format("per_page")),
+    # a good page value beside an unknown or a bad other parameter is not what is refused
+    ("per_page=abc&sort=abc", _INVALID_DIGIT.format("per_page")),
+]
+
+
+@pytest.mark.parametrize(
+    "qs,body", _CODE_SEARCH_PAGE_REFUSALS, ids=[r[0] for r in _CODE_SEARCH_PAGE_REFUSALS]
+)
+def test_github_code_search_refuses_an_unparseable_page_value_in_text_plain(
+    gh_client, gh_admin_h, qs, body
+):
+    """Of the ten GitHub surfaces measured `/search/code` is the one that refuses a `page` /
+    `per_page` it cannot parse, or a `q`, `page` or `per_page` given twice, and it refuses in a
+    shape no other GitHub error has: 400, `text/plain; charset=utf-8`, no envelope, a Rust
+    deserializer's own line. The other nine absorb the same values (see
+    `test_github_tolerates_the_pagination_values_real_tolerates`), which this route did too, so a
+    client's error path for the 400 was never reached against Backlot and `.json()` on it would
+    have parsed where real's answer raises."""
+    c, _ = gh_client
+    r = c.get(f"/github/search/code?q=extension:md&{qs}", headers=gh_admin_h)
+    assert r.status_code == 400
+    assert r.headers["content-type"] == "text/plain; charset=utf-8"
+    assert r.text == body
+    with pytest.raises(ValueError):
+        r.json()
+
+
+def test_github_code_search_page_refusal_is_the_parse_and_comes_before_q(gh_client, gh_admin_h):
+    """What is refused is the parse, not the range or the query: `0`, `01` and 4294967295 (the
+    largest value real's unsigned 32-bit parameter holds) are each a 200, `01` served as 1, and so
+    are an encoded `+` before the digits (`%2B5`, `page=%2B2`), 5000 leading zeros and `sort` given
+    twice; a blank `q` beside `per_page=abc` is this 400 and not the blank-query 422, as is a blank
+    `q` given twice; a bad `per_page` on `/search/issues` is still absorbed, and so is a repeated
+    `q` there; and the OpenAPI slice still declares the parameter an integer, since the refusal is
+    the route's and not the validator's (all measured 2026-09-06 and 2026-09-07)."""
+    c, _ = gh_client
+    full = c.get("/github/search/code?q=extension:md", headers=gh_admin_h).json()
+    assert full["total_count"] >= 2
+    for qs in (
+        "per_page=0",
+        "page=0",
+        "per_page=4294967295",
+        "page=01",
+        "page=%2B1",
+        "per_page=%2B100",
+        "page=" + "0" * 5000,
+        "per_page=" + "0" * 5000 + "100",
+        "foo=abc&per_page=100",
+        "sort=indexed&sort=indexed",
+    ):
+        r = c.get(f"/github/search/code?q=extension:md&{qs}", headers=gh_admin_h)
+        assert r.status_code == 200, qs
+        assert r.json() == full, qs
+    for qs in ("per_page=01", "per_page=%2B1", "per_page=" + "0" * 5000 + "1"):
+        one = c.get(f"/github/search/code?q=extension:md&{qs}", headers=gh_admin_h).json()
+        assert one["total_count"] == full["total_count"] and len(one["items"]) == 1, qs
+    two = c.get("/github/search/code?q=extension:md&per_page=1&page=%2B2", headers=gh_admin_h)
+    assert two.json()["items"] == [full["items"][1]]
+    r = c.get("/github/search/code?q=&per_page=abc", headers=gh_admin_h)
+    assert (r.status_code, r.headers["content-type"]) == (400, "text/plain; charset=utf-8")
+    assert r.text == _INVALID_DIGIT.format("per_page")
+    r = c.get("/github/search/code?q=&q=", headers=gh_admin_h)
+    assert (r.status_code, r.text) == (400, _DUPLICATE.format("q"))
+    assert c.get("/github/search/code?q=", headers=gh_admin_h).status_code == 422
+    assert (
+        c.get("/github/search/issues?q=is:open&q=is:closed", headers=gh_admin_h).status_code == 200
+    )
+    assert (
+        c.get("/github/search/issues?q=is:open&per_page=abc", headers=gh_admin_h).status_code == 200
+    )
+    spec = c.get("/openapi.json").json()["paths"]["/github/search/code"]["get"]
+    for name in ("page", "per_page"):
+        param = next(p for p in spec["parameters"] if p["name"] == name)
+        assert {"type": "integer"} in param["schema"]["anyOf"], name
+
+
+_CODE_CAP = {
+    "message": "Cannot access beyond the first 1000 results",
+    "documentation_url": "https://docs.github.com/rest/search/search#search-code",
+    "status": "422",
+}
+_ISSUES_CAP = {
+    "message": "Only the first 1000 search results are available",
+    "documentation_url": "https://docs.github.com/v3/search/",
+    "status": "422",
+}
+
+
+@pytest.mark.parametrize(
+    "qs,served",
+    [
+        # page * per_page against 1000, whatever the total (the fixture has four hits)
+        ("per_page=100&page=10", True),
+        ("per_page=100&page=11", False),
+        ("per_page=30&page=33", True),
+        ("per_page=30&page=34", False),
+        ("per_page=7&page=142", True),
+        ("per_page=7&page=143", False),
+        ("per_page=1&page=1000", True),
+        ("per_page=1&page=1001", False),
+    ],
+)
+def test_github_code_search_refuses_a_page_reaching_past_the_first_1000_results(
+    gh_client, gh_admin_h, qs, served
+):
+    """Code search serves the first 1000 results and refuses a page that would reach past them,
+    `page * per_page > 1000`, with a 422 of its own wording and its own route's anchor and no
+    `errors` array; the total does not enter, so a four-hit search refuses page 34 at 30 a page
+    after serving pages 1 to 33, the empty ones included (measured 2026-09-06 on api.github.com,
+    44 hits and 294 million). Backlot served every page of every search."""
+    c, _ = gh_client
+    r = c.get(f"/github/search/code?q=extension:md&{qs}", headers=gh_admin_h)
+    if served:
+        assert r.status_code == 200, qs
+        assert r.json()["total_count"] == 4 and r.json()["items"] == [], qs
+    else:
+        assert r.status_code == 422, qs
+        assert r.json() == _CODE_CAP, qs
+
+
+def test_github_code_search_answers_its_refusals_in_reals_order(gh_client, gh_admin_h, gh_org):
+    """Measured 2026-09-06: no credential is the 401 before anything else, a page that will not
+    parse is the text/plain 400 before a blank `q`, a blank `q` is its 422 before the depth, and the
+    depth is refused before the `repo:` qualifier is read (`repo:psf/ghost-zz-9876` at page 11 of
+    100 is the depth 422, where the same qualifier on page 1 is the empty `incomplete_results`
+    200)."""
+    c, _ = gh_client
+    assert c.get("/github/search/code?q=extension:md&per_page=abc&page=11").status_code == 401
+    r = c.get("/github/search/code?q=extension:md&per_page=abc&page=11", headers=gh_admin_h)
+    assert (r.status_code, r.headers["content-type"]) == (400, "text/plain; charset=utf-8")
+    r = c.get("/github/search/code?q=&per_page=100&page=11", headers=gh_admin_h)
+    assert r.status_code == 422 and r.json()["errors"][0]["field"] == "q"
+    ghost = f"/github/search/code?q=repo:{gh_org}/ghost-zz-9876+def"
+    r = c.get(f"{ghost}&per_page=100&page=11", headers=gh_admin_h)
+    assert (r.status_code, r.json()) == (422, _CODE_CAP)
+    r = c.get(ghost, headers=gh_admin_h)
+    assert r.status_code == 200 and r.json()["incomplete_results"] is True
+    # the size APPLIED is what the depth is measured in: an unsent or zero size is served at 30 and
+    # one over the cap at 100, real's numbers, so the boundary pages are real's (measured 2026-09-06)
+    for qs, served in (
+        ("page=33", True),
+        ("page=34", False),
+        ("per_page=0&page=33", True),
+        ("per_page=101&page=10", True),
+        ("per_page=101&page=11", False),
+    ):
+        r = c.get(f"/github/search/code?q=extension:md&{qs}", headers=gh_admin_h)
+        assert r.status_code == (200 if served else 422), qs
+
+
+@pytest.mark.parametrize(
+    "qs,served",
+    [
+        # the page's START against 1000: a page straddling it is served in full
+        ("per_page=100&page=10", True),
+        ("per_page=100&page=11", False),
+        ("per_page=30&page=34", True),
+        ("per_page=30&page=35", False),
+        ("per_page=7&page=143", True),
+        ("per_page=7&page=144", False),
+        ("per_page=1&page=1000", True),
+        ("per_page=1&page=1001", False),
+    ],
+)
+def test_github_issue_search_refuses_a_page_starting_past_the_first_1000_results(
+    gh_client, gh_admin_h, qs, served
+):
+    """Issue search draws the depth line elsewhere than code search: the page's first result
+    against 1000, so at 30 a page, page 34 (results 991 to 1020) is served in full and page 35
+    refused, at 7 a page, page 143 (995 to 1001) is served and 144 refused; the 422 is its own
+    wording with the bare `/v3/search/` anchor, and an 846-result search refuses page 11 at 100 a
+    page just the same after serving page 10 empty (measured 2026-09-06 on api.github.com,
+    `/search/repositories` answering the same). Backlot served every page."""
+    c, _ = gh_client
+    r = c.get(f"/github/search/issues?q=is:open&{qs}", headers=gh_admin_h)
+    if served:
+        assert r.status_code == 200 and r.json()["items"] == [], qs
+    else:
+        assert (r.status_code, r.json()) == (422, _ISSUES_CAP), qs
+
+
+def test_github_issue_search_refuses_the_query_before_the_depth(gh_client, gh_admin_h, gh_org):
+    """On `/search/issues` the blank-`q` and unsearchable-`repo:` 422s come before the depth's,
+    the reverse of code search's order for the qualifier (measured 2026-09-06)."""
+    c, _ = gh_client
+    r = c.get("/github/search/issues?q=&per_page=100&page=11", headers=gh_admin_h)
+    assert r.status_code == 422 and r.json()["errors"][0]["code"] == "missing"
+    r = c.get(
+        f"/github/search/issues?q=repo:{gh_org}/ghost-zz-9876&per_page=100&page=11",
+        headers=gh_admin_h,
+    )
+    assert r.status_code == 422 and r.json()["errors"][0]["code"] == "invalid"
+    # an unsent size is served at 30, real's default, so page 34 (results 991 to 1020) is the last
+    # served and 35 the first refused, as on real (measured 2026-09-06)
+    for page, served in ((34, True), (35, False)):
+        r = c.get(f"/github/search/issues?q=is:open&page={page}", headers=gh_admin_h)
+        assert r.status_code == (200 if served else 422), page
+
+
+def test_github_code_search_neither_refuses_nor_echoes_the_api_version(gh_client, gh_admin_h):
+    """Code search is served by a backend that does not read `X-GitHub-Api-Version`: a pinned
+    `1999-01-01` or `garbage` is a 200 where every other route answers the version 400, a pinned
+    `2026-03-10` is a 200, and no response from it, 200, 400 or 422, carries
+    `X-GitHub-Api-Version-Selected` (measured 2026-09-06; `/search/issues` beside it 400s the bad
+    version, see `test_github_unsupported_api_version_is_refused_ahead_of_everything`). Backlot
+    refused the bad version and echoed the good one here as everywhere else."""
+    c, _ = gh_client
+    for pinned in ("1999-01-01", "garbage", "2026-03-10", None):
+        h = {**gh_admin_h, **({"X-GitHub-Api-Version": pinned} if pinned else {})}
+        r = c.get("/github/search/code?q=extension:md", headers=h)
+        assert r.status_code == 200, pinned
+        assert "X-GitHub-Api-Version-Selected" not in r.headers, pinned
+    for qs, status in (("q=extension:md&per_page=abc", 400), ("q=", 422), ("q=x&page=34", 422)):
+        r = c.get(f"/github/search/code?{qs}", headers=gh_admin_h)
+        assert r.status_code == status and "X-GitHub-Api-Version-Selected" not in r.headers, qs
+    # ...and the route beside it still does both
+    r = c.get("/github/search/issues?q=is:open", headers=gh_admin_h)
+    assert r.headers["X-GitHub-Api-Version-Selected"] == "2022-11-28"
+
+
+def _rel_pages(link: str | None) -> list[tuple[str, int]]:
+    """`Link` as `(rel, page)` pairs in header order, for asserting against real's."""
+    from urllib.parse import parse_qs, urlparse
+
+    out = []
+    for part in (link or "").split(", "):
+        url, rel = part.split("; rel=")
+        out.append((rel.strip('"'), int(parse_qs(urlparse(url.strip("<>")).query)["page"][0])))
+    return out
+
+
+def test_github_search_link_headers_stop_at_the_first_1000_results():
+    """Measured 2026-09-06 on api.github.com. An issue search of 2,813,432 results links last=10 at
+    100 a page, 34 at 30 and 143 at 7, `ceil(1000 / per_page)` each time, and on that page carries
+    `prev, first` alone as on any last page. A code search of 294,649,856 results links last=10,
+    34, 143 and, at 1 a page, 1000 — and at 30 a page, page 33 links next=34 and last=34, a page the
+    route refuses (`test_github_code_search_refuses_a_page_reaching_past_the_first_1000_results`):
+    real's `last` names a page real does not serve, and so does this one."""
+    from backlot.pagination import github_code_search_link_header, github_link_header
+
+    def issues(page, per_page):
+        return _rel_pages(
+            github_link_header(
+                "https://api.github.com/search/issues",
+                {"q": "is:issue label:bug is:open"},
+                page,
+                per_page,
+                2_813_432,
+                per_page_param=str(per_page),
+                max_page=-(-1000 // per_page),
+            )
+        )
+
+    assert issues(1, 100) == [("next", 2), ("last", 10)]
+    assert issues(9, 100) == [("prev", 8), ("next", 10), ("last", 10), ("first", 1)]
+    assert issues(10, 100) == [("prev", 9), ("first", 1)]
+    assert issues(1, 30) == [("next", 2), ("last", 34)]
+    assert issues(33, 30) == [("prev", 32), ("next", 34), ("last", 34), ("first", 1)]
+    assert issues(34, 30) == [("prev", 33), ("first", 1)]
+    assert issues(1, 7) == [("next", 2), ("last", 143)]
+    assert issues(143, 7) == [("prev", 142), ("first", 1)]
+    # under the depth nothing changes: 846 results at 100 a page still end at 9
+    small = github_link_header("u", {"q": "x"}, 1, 100, 846, per_page_param="100", max_page=10)
+    assert _rel_pages(small) == [("next", 2), ("last", 9)]
+
+    def code(page, per_page):
+        return _rel_pages(
+            github_code_search_link_header(
+                "https://api.github.com/search/code", {"q": "def"}, page, per_page, 294_649_856
+            )
+        )
+
+    assert code(1, 100) == [("next", 2), ("first", 1), ("last", 10)]
+    assert code(1, 30) == [("next", 2), ("first", 1), ("last", 34)]
+    assert code(1, 7) == [("next", 2), ("first", 1), ("last", 143)]
+    assert code(1, 1) == [("next", 2), ("first", 1), ("last", 1000)]
+    assert code(33, 30) == [("next", 34), ("prev", 32), ("first", 1), ("last", 34)]
+    # 44 hits at 1 a page: last=44, under the depth
+    small = github_code_search_link_header("u", {"q": "def"}, 1, 1, 44)
+    assert _rel_pages(small) == [("next", 2), ("first", 1), ("last", 44)]
+
+
+def test_github_search_routes_wire_the_depth_into_their_link_and_their_422(
+    gh_client, gh_admin_h, monkeypatch
+):
+    """The fixture cannot hold a thousand results, so the depth is lowered to 2 to see that each
+    route hands it to its Link builder and its 422: at 1 a page both searches link last=2 where the
+    total would say 4, and page 3 is the route's own 422 (`test_github_search_link_headers_stop_at_
+    the_first_1000_results` pins the builders' arithmetic at the real depth)."""
+    from backlot import pagination
+
+    c, _ = gh_client
+    # the one name both the 422 and the Link read: the router holds no copy of the number
+    monkeypatch.setattr(pagination, "GITHUB_SEARCH_RESULT_CAP", 2)
+    for path, q, cap in (
+        ("/github/search/code", "extension:md", _CODE_CAP),
+        ("/github/search/issues", "is:open", _ISSUES_CAP),
+    ):
+        r = c.get(path, headers=gh_admin_h, params={"q": q, "per_page": 1})
+        assert r.json()["total_count"] >= 3, path
+        assert dict(_rel_pages(r.headers["Link"]))["last"] == 2, path
+        r = c.get(path, headers=gh_admin_h, params={"q": q, "per_page": 1, "page": 3})
+        assert (r.status_code, r.json()) == (422, cap), path
 
 
 def test_github_code_search_paginates(gh_client, gh_admin_h):
@@ -2395,6 +2754,77 @@ def test_github_raw_accept_leaves_the_json_envelope_alone(gh_client, gh_admin_h,
         headers={**gh_admin_h, "Accept": "application/vnd.github.raw"},
     )
     assert isinstance(dirs.json(), list)
+
+
+# A repo that exists only as a `subtype: repo` record, beside a repo with one readable document.
+# `github.schema.json` says the record-only repo "stays visible to a scoped caller exactly when one of
+# its documents is, and to the admin as soon as the record itself exists"; this is what pins it.
+_GH_CONTAINER_ONLY_DOCS = [
+    {"source_type": "github", "subtype": "repo", "repo": "pipeline"},
+    {
+        "source_type": "github",
+        "doc_id": "gh-docs-1",
+        "repo": "docs-site",
+        "group": "engineering",
+        "title": "Docs build is red",
+        "content": "The nightly docs build fails on the API reference page.",
+        "author_email": "ava@acme.com",
+        "author_groups": ["engineering"],
+        "visibility": "public",
+        "state": "open",
+    },
+]
+
+
+def test_github_a_container_only_repo_reaches_the_admin_and_no_scoped_caller(tmp_path):
+    """The repo visibility checks ask "can this caller see anything in the repo?" with an existence
+    read (`store.has_visible_document`) rather than by counting every document, which was #134's
+    swap on the Jira side. The one thing the swap could have lost is the admin's view of a repo
+    that holds no document at all: `has_visible_document` is False for it under every ACL, the
+    admin's included, so the `ids is None` short-circuit in `_repo_visible` and `_visible_repos` is
+    load-bearing here where it was a no-op on Jira, whose records cannot create an empty container.
+    Each route that resolves a repo goes through `_require_repo`, so one of them stands for all."""
+    from backlot.acl import Acl, Caller
+
+    settings = build_corpus(tmp_path, _GH_CONTAINER_ONLY_DOCS)
+    with client_for(settings, reload=True) as c:
+        org = c.get("/_meta/users").json()["org"]
+        tokens = yaml.safe_load(settings.tokens_path.read_text())
+        admin = {"Authorization": f"Bearer {tokens['admin_token']}"}
+        ava = {"Authorization": f"Bearer {tok(tokens, 'ava@acme.com')}"}
+
+        def names(h, path):
+            return [r["name"] for r in c.get(path, headers=h).json()]
+
+        for listing in ("/github/user/repos", f"/github/orgs/{org}/repos"):
+            assert names(admin, listing) == ["docs-site", "pipeline"], listing
+            assert names(ava, listing) == ["docs-site"], listing
+        assert c.get(f"/github/repos/{org}/pipeline", headers=admin).status_code == 200
+        assert c.get(f"/github/repos/{org}/pipeline", headers=ava).status_code == 404
+        assert c.get(f"/github/repos/{org}/pipeline/issues", headers=admin).json() == []
+        assert c.get(f"/github/repos/{org}/docs-site", headers=ava).status_code == 200
+        # the `repo:` qualifier on an issue search resolves the repo by the same rule: the admin
+        # searches the empty repo and gets nothing, a scoped caller gets the 422 a repo they cannot
+        # see shares with one that does not exist, so the record's existence is not confirmed
+        r = c.get(f"/github/search/issues?q=repo:{org}/pipeline", headers=admin)
+        assert (r.status_code, r.json()["total_count"]) == (200, 0)
+        assert c.get(f"/github/search/issues?q=repo:{org}/pipeline", headers=ava).status_code == 422
+        assert c.get(f"/github/search/issues?q=repo:{org}/nosuch", headers=ava).status_code == 422
+
+        # ...and the existence read is why the short-circuit has to stay: on the container-only
+        # repo it says False to everyone, while it agrees with the count wherever a document exists
+        conn = store.connect_ro(settings.db_path)
+        try:
+            acl = Acl.load(settings.tokens_path, settings.admin_token, settings.org_name)
+            scoped = acl.visible_ids(conn, Caller(email="ava@acme.com", is_admin=False))
+            for ids in (None, scoped, set()):
+                assert store.has_visible_document(conn, "github", "pipeline", ids) is False, ids
+                assert store.has_visible_document(conn, "github", "docs-site", ids) is (
+                    store.count_documents(conn, "github", "docs-site", ids) > 0
+                ), ids
+            assert store.has_visible_document(conn, "github", "docs-site", set()) is False
+        finally:
+            conn.close()
 
 
 # --- GET /user/repos ------------------------------------------------------
@@ -2936,6 +3366,7 @@ def test_github_pull_diff_reverse_applies_with_real_git(
         cwd=wt,
         capture_output=True,
         text=True,
+        check=False,
     )
     assert r.returncode == 0, f"git rejected the diff:\n{r.stderr}\n---\n{diff}"
 
@@ -3061,7 +3492,11 @@ def test_github_diff_never_emits_a_file_header_with_no_body(tmp_path):
     (wt / "ok.txt").write_text("hello\n")
     (wt / "pr.diff").write_text(diff)
     r = subprocess.run(
-        ["git", "apply", "--reverse", "--check", "pr.diff"], cwd=wt, capture_output=True, text=True
+        ["git", "apply", "--reverse", "--check", "pr.diff"],
+        cwd=wt,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     assert r.returncode == 0, r.stderr
 

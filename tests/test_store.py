@@ -728,6 +728,61 @@ def test_drive_usage_bytes_is_acl_scoped(tmp_path):
     assert store.drive_usage_bytes(conn, visible_ids=set()) == (0, 0)  # sees nothing
 
 
+# --- Drive: a spreadsheet's stored grid ------------------------------------------
+
+
+def _gdrive_sheets_db(tmp_path):
+    """One spreadsheet with two sheets, inserted out of index order so the accessor's ORDER BY is
+    the thing under test rather than insertion order."""
+    conn = store.connect_rw(tmp_path / "sheets.sqlite")
+    conn.execute(
+        "INSERT INTO gdrive_files (id, folder, author_email, title, content, created_ts) "
+        "VALUES ('1abc', 'sales', 'a@x.com', 'Q3 pipeline', 'Region,Deals', 1)"
+    )
+    for idx, sid, title in ((1, 562149769, "Raw"), (0, 0, "Summary")):
+        conn.execute(
+            "INSERT INTO gdrive_sheets (file_id, sheet_index, sheet_id, title, grid) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("1abc", idx, sid, title, json.dumps([["Region", "Deals"], ["EMEA", 12]])),
+        )
+    conn.commit()
+    return conn
+
+
+def test_gdrive_sheets_for_returns_sheets_in_index_order(tmp_path):
+    """`spreadsheets.get` emits sheets by `index`, so the store hands them back in it. A file with
+    no stated grid has no rows here at all -- that is how the prose path is recognised."""
+    conn = _gdrive_sheets_db(tmp_path)
+    rows = store.gdrive_sheets_for(conn, "1abc")
+    assert [(r["sheet_index"], r["sheet_id"], r["title"]) for r in rows] == [
+        (0, 0, "Summary"),
+        (1, 562149769, "Raw"),
+    ]
+    assert json.loads(rows[0]["grid"]) == [["Region", "Deals"], ["EMEA", 12]]
+    assert store.gdrive_sheets_for(conn, "1nope") == []
+
+
+def test_gdrive_replace_sheets_is_idempotent(tmp_path):
+    """An `--append` that re-imports a document upserts its `gdrive_files` row, so its sheets have
+    to be replaced wholesale rather than added to -- otherwise a workbook that lost a sheet keeps
+    serving it, and one that kept the same sheets doubles them."""
+    conn = _gdrive_sheets_db(tmp_path)
+    store.gdrive_replace_sheets(conn, "1abc", [(0, 0, "Only", "[[1]]")])
+    rows = store.gdrive_sheets_for(conn, "1abc")
+    assert [(r["sheet_index"], r["title"]) for r in rows] == [(0, "Only")]
+
+
+def test_gdrive_sheets_rejects_two_sheets_sharing_an_id_in_one_file(tmp_path):
+    """`sheetId` is what a client addresses a sheet by, so two in one workbook holding the same one
+    leaves one of them unreachable. The unique index turns that into a loud import failure."""
+    conn = _gdrive_sheets_db(tmp_path)
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO gdrive_sheets (file_id, sheet_index, sheet_id, title, grid) "
+            "VALUES ('1abc', 2, 562149769, 'Clash', '[]')"
+        )
+
+
 # --- HubSpot: polymorphic objects + associations --------------------------------
 
 

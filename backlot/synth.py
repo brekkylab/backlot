@@ -290,6 +290,23 @@ def gdrive_file_id(seed: str) -> str:
     return "1" + base64.urlsafe_b64encode(digest[:24]).decode("ascii")
 
 
+def sheet_id(file_id: str, title: str, salt: str = "") -> int:
+    """A sheet's served ``sheetId``, in ``1 .. 2**31 - 1``.
+
+    Measured on a real workbook: the sheet created with the spreadsheet is 0, and every sheet added
+    afterwards carries a large pseudo-random integer (562149769, 1609058389, 1630047375) rather
+    than its index. So the importer pins index 0 to 0 and every later sheet draws here, and nothing
+    downstream may assume ``sheetId == index``.
+
+    ZERO IS NEVER DRAWN: it belongs to index 0, and a later sheet landing on it would give one
+    workbook two sheets under the id a client addresses them by. ``salt`` is what a collision
+    within one workbook re-draws with.
+
+    Seeded on the file id AND the title, separated by a NUL: without a separator, a workbook with
+    sheets ``ab``/``c`` and one with ``a``/``bc`` would draw the same pair of ids."""
+    return 1 + hnum(f"{file_id}\x00{title}", salt="sheet-id:" + salt) % (2**31 - 1)
+
+
 # The size of the per-repo space a github issue/PR number is drawn from (1..GITHUB_NUMBER_RANGE).
 # Exported (not a private literal inside github_number) so importer.byo's probe walk and
 # exhaustion check -- both bounded to "every number this function can produce" -- read this SAME

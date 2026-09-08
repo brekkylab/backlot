@@ -15,7 +15,7 @@ from email.utils import formatdate
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, ConfigDict
 
 from backlot import auth, store, synth
@@ -25,9 +25,12 @@ from backlot.pagination import (
     PageParam,
     clamp_page,
     github_code_search_link_header,
+    github_code_search_query_refusal,
     github_cursor_link_header,
     github_cursor_offset,
     github_link_header,
+    github_search_depth_refused,
+    github_search_last_page,
 )
 
 # Real GitHub caps a recursive tree at 100k entries / 7 MB and reports `truncated: true`. Module
@@ -97,6 +100,21 @@ API_VERSIONS = ("2026-03-10", "2022-11-28")
 DEFAULT_API_VERSION = "2022-11-28"
 API_VERSION_HEADER = "X-GitHub-Api-Version"
 SELECTED_VERSION_HEADER = "X-GitHub-Api-Version-Selected"
+# The one route served by a backend that does not read the version header at all.
+CODE_SEARCH_PATH = "/github/search/code"
+
+
+def honours_api_version(request: Request) -> bool:
+    """Whether real reads `X-GitHub-Api-Version` on this request's route.
+
+    Every GitHub route does but code search, whose backend is not the rest of the API's: on
+    `/search/code` a pinned `1999-01-01` or `garbage` is a 200 where every other route answers the
+    version 400, a pinned `2026-03-10` is a 200 too, and no response from it, 200, 400 or 422,
+    carries `X-GitHub-Api-Version-Selected` (measured 2026-09-06; `/search/issues` beside it 400s
+    the bad version and echoes the good one). So that route neither refuses a version nor echoes
+    one, and `backlot.main`'s echo asks this before adding the header.
+    """
+    return request.url.path != CODE_SEARCH_PATH
 
 
 def selected_api_version(request: Request) -> str | None:
@@ -133,8 +151,12 @@ def _unsupported_version_error(pinned: str) -> HTTPException:
 
 
 def _version(request: Request) -> str:
-    """The API version to build this response for. Never ``None``: ``_validate_api_version`` is a
-    router-wide dependency, so an unsupported one never reaches a handler."""
+    """The API version to build this response for. Never ``None`` where it is asked:
+    ``_validate_api_version`` is a router-wide dependency, so on every route that honours the header
+    an unsupported version never reaches a handler. `/search/code` does let one through, since
+    real's code search does not read the header (see :func:`honours_api_version`), and nothing on
+    that route asks this; the fallback keeps the return a ``str`` and is not a case any route
+    reaches."""
     return selected_api_version(request) or DEFAULT_API_VERSION
 
 
@@ -147,7 +169,7 @@ async def _validate_api_version(request: Request) -> None:
     is what is wrong. Declared before ``_validate_path_owner`` in the router's dependency list, which
     is what puts it first.
     """
-    if selected_api_version(request) is None:
+    if honours_api_version(request) and selected_api_version(request) is None:
         # `None` is only reachable with the header present, so this read cannot miss.
         raise _unsupported_version_error(request.headers[API_VERSION_HEADER])
 
@@ -515,6 +537,7 @@ def _search_paged(
             per_page,
             total,
             per_page_param=request.query_params.get("per_page"),
+            max_page=github_search_last_page(per_page),
         )
     if link:
         response.headers["Link"] = link
@@ -554,13 +577,22 @@ async def search_issues(
     if named is not None and not named:
         raise _search_unsearchable_repo()
     container = named[-1] if named else None
+    page, per_page = _clamp(page, per_page)
+    start = (page - 1) * per_page
+    # A page that STARTS past the first 1000 results is refused, whatever the total: at real's
+    # default 30 a page, page 34 (results 991 to 1020) is served in full and page 35 refused, at
+    # 7 a page, page 143 (995 to 1001) is served and 144 refused, at 100 a page, 10 is served and
+    # 11 refused, and an 846-result search refuses page 11 at 100 a page just the same, after
+    # serving page 10 empty (measured 2026-09-06; the rule is `github_search_depth_refused`'s).
+    # After the blank-`q` and `repo:` 422s, which real answers first on this route; `/search/code`
+    # draws its line elsewhere, see there.
+    if github_search_depth_refused(page, per_page, code=False):
+        raise _search_beyond_first_results(code=False)
     if free:
         cand = store.search_documents(conn, free, "github", ids, limit=10_000, container=container)
     else:
         cand = store.list_documents(conn, "github", container, ids, limit=10_000)
     matched = [r for r in cand if r["kind"] != "file" and _issue_qual_match(r, quals)]
-    page, per_page = _clamp(page, per_page)
-    start = (page - 1) * per_page
     ab = _api_base(request)
     items = [
         _issue_obj(conn, owner, r["repo"], r, ab, _version(request))
@@ -664,7 +696,7 @@ def _qual_repos(conn, quals: dict, org: str, ids) -> list[str] | None:
             continue
         # `_visible_repos`'s rule for the one name asked about rather than for every repo in the
         # corpus: a repo with no document this caller can read is not visible to them.
-        if ids is not None and store.count_documents(conn, "github", spelled, ids) == 0:
+        if ids is not None and not store.has_visible_document(conn, "github", spelled, ids):
             continue
         names.append(spelled)
     return names
@@ -785,6 +817,24 @@ def _search_unsearchable_repo() -> HTTPException:
     return exc
 
 
+def _search_beyond_first_results(*, code: bool) -> HTTPException:
+    """Real's 422 for a search page past the first 1000 results, which is as deep as any search
+    goes whatever `total_count` says. The two search routes are served by two backends and the
+    envelope is each one's own (measured 2026-09-06): `/search/issues` and `/search/repositories`
+    answer `Only the first 1000 search results are available` with the bare `/v3/search/` anchor,
+    `/search/code` answers `Cannot access beyond the first 1000 results` with its own route's
+    anchor. Neither carries an `errors` array, unlike the two Validation Failed 422s above."""
+    if code:
+        message = "Cannot access beyond the first 1000 results"
+        docs = "https://docs.github.com/rest/search/search#search-code"
+    else:
+        message = "Only the first 1000 search results are available"
+        docs = "https://docs.github.com/v3/search/"
+    exc = HTTPException(status_code=422, detail=message)
+    exc.github_body = {"message": message, "documentation_url": docs, "status": "422"}
+    return exc
+
+
 @router.get("/search/code", response_model=GitHubCodeSearch)
 async def search_code(
     request: Request,
@@ -815,10 +865,37 @@ async def search_code(
     A blank `q` is real's 422 rather than a listing: a code search with no term is a client bug
     better reported than answered with a corpus dump. `/search/issues` above answers a blank `q`
     the same way, and for the same measured reason.
+
+    A `page` / `per_page` that is not an unsigned 32-bit integer, or a `q`, `page` or `per_page`
+    given twice, is refused once the credential is, and in text/plain: of the ten GitHub surfaces
+    measured this is the one that does not absorb such a value (see
+    :func:`backlot.pagination.github_code_search_query_refusal` for the measured shape). The
+    `PageParam` validator has already absorbed it by the time this runs, so the raw query string is
+    what is read. The order is real's: an unauthenticated request with `per_page=abc` is the 401,
+    an authenticated one the 400, and the 400 precedes the blank-`q` 422 (measured 2026-09-06). The
+    401 is the router's before any handler runs, so what this function's order settles is only
+    that the parse is refused before the query is read.
+
+    Then the depth. Code search serves the first 1000 results and refuses a page that would REACH
+    past them, `page * per_page > 1000`: at 30 a page, page 33 (results 961 to 990) is served and
+    page 34 (991 to 1020) refused, at 7 a page, 142 is served and 143 refused, at 1 a page, 1000 is
+    served and 1001 refused, at 100 a page, 10 is served and 11 refused, and `per_page=101` is
+    refused at 11 too because it is served at 100. The total does not enter: a 44-result search
+    refuses page 34 at 30 a page after serving pages 3 to 33 empty. That is not `/search/issues`'s
+    line, which serves page 34 in full and refuses the page that STARTS past 1000 (both rules are
+    :func:`backlot.pagination.github_search_depth_refused`'s). The refusal comes after the blank-`q`
+    422 and before the `repo:` qualifier is read: `repo:psf/ghost-zz-9876` at page 11 of 100 is
+    this 422, not the qualifier's answer (all measured 2026-09-06).
     """
     caller = _require(request)
+    refusal = github_code_search_query_refusal(request.query_params)
+    if refusal is not None:
+        return PlainTextResponse(refusal, status_code=400)
     if not q.strip():
         raise _search_validation_failed("q")
+    page, per_page = _clamp(page, per_page)
+    if github_search_depth_refused(page, per_page, code=True):
+        raise _search_beyond_first_results(code=True)
     conn = auth.conn(request)
     ids = auth.visible_ids(request, caller)
     free, quals = _parse_q(q, _GH_CODE_QUALS)
@@ -856,7 +933,6 @@ async def search_code(
         and all(_code_filename_match(r["path"], v) for v in quals.get("filename", []))
         and all(_code_extension_match(r["path"], v) for v in quals.get("extension", []))
     ]
-    page, per_page = _clamp(page, per_page)
     start = (page - 1) * per_page
     ab = _api_base(request)
     want_matches = _github_media(request, "text-match")
@@ -896,10 +972,16 @@ def _repo_visible(conn, repo: str, ids) -> bool:
     repo every one of whose documents is hidden from a caller is one they must not be able to
     confirm the existence of. Every repo route resolves it through here so the answer cannot drift
     between them, and it is the same predicate :func:`_visible_repos` filters the listing by.
+
+    The ``ids is None`` short-circuit is load-bearing, not a fast path: a ``subtype: repo`` record
+    creates a container holding no document, and ``github.schema.json`` says the repo "stays visible
+    to a scoped caller exactly when one of its documents is, and to the admin as soon as the record
+    itself exists". :func:`store.has_visible_document` is False for such a repo under every ACL,
+    the admin's included, so the existence read is only ever asked for a scoped caller.
     """
     if store.get_container(conn, "github", repo) is None:
         return False
-    return ids is None or store.count_documents(conn, "github", repo, ids) > 0
+    return ids is None or store.has_visible_document(conn, "github", repo, ids)
 
 
 def _require_repo(conn, repo: str, ids) -> None:
@@ -909,10 +991,16 @@ def _require_repo(conn, repo: str, ids) -> None:
 
 
 def _visible_repos(conn, ids) -> list[str]:
-    """Repo names the caller can see at all — one with no visible document is not visible."""
+    """Repo names the caller can see at all — one with no visible document is not visible.
+
+    An existence read per repo rather than a count: the listing asks "anything visible here?" once
+    per repo in the corpus, and a count walks every visible document in each to total a number
+    nothing uses. The ``ids is None`` branch keeps the container-only repo for the admin, as
+    :func:`_repo_visible` explains.
+    """
     repos = [r["name"] for r in store.list_containers(conn, "github")]
     if ids is not None:
-        repos = [n for n in repos if store.count_documents(conn, "github", n, ids) > 0]
+        repos = [n for n in repos if store.has_visible_document(conn, "github", n, ids)]
     return repos
 
 

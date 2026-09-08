@@ -30,7 +30,7 @@
     "space": {
       "type": "string",
       "minLength": 1,
-      "description": "The space this document belongs to."
+      "description": "The space this document belongs to. Every record states one, so a space exists as long as it holds a page, and stays visible to a scoped caller exactly when one of its pages is."
     },
     "group": {
       "type": [

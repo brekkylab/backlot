@@ -264,12 +264,12 @@ async def vendor_json_media_type(request: Request, call_next):
     FastAPI writes a response class's media type into the OpenAPI document as the content key, and
     real's own spec says `application/json` there: the charset is a fact about the wire, not about
     the contract, and `backlot diff` compares the contract. Only a response that is exactly
-    `application/json` is touched, so the raw, diff and text/plain answers keep their own types, and
-    the two exception handlers above are covered along with the route handlers. Registered last of
-    the middlewares, which makes it the outermost, so a JSON body another middleware returns
-    (``refuse_a_bearer_jira_cannot_read``'s 403) passes through it too rather than around it; the
-    exception handlers run inside ``ExceptionMiddleware`` and are covered from either position. The status goes
-    along with the path because the answer can depend on it: code search's own 200 and 422 carry no
+    `application/json` is touched, so the raw, diff and text/plain answers keep their own types.
+    Registered last of the middlewares, which makes it the outermost, so a JSON body another
+    middleware returns (``refuse_a_bearer_jira_cannot_read``'s 403) passes through it too rather
+    than around it; the route handlers and the two exception handlers above are covered from either
+    position, those handlers because they run inside ``ExceptionMiddleware``. The status goes along
+    with the path because the answer can depend on it: code search's own 200 and 422 carry no
     charset where the gateway's 401 on the same path does.
     """
     response = await call_next(request)

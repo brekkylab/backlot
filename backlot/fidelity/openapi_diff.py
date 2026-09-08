@@ -17,8 +17,8 @@ from backlot.fidelity.errors import FidelityError
 from backlot.fidelity.fetch import fetch_json
 from backlot.fidelity.findings import Finding
 from backlot.fidelity.operations import (
-    Operation,
     _METHODS,
+    Operation,
     _query_params,
     _resolve,
     canonical,

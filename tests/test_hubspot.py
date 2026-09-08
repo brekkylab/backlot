@@ -9,8 +9,7 @@ from __future__ import annotations
 import pytest
 
 from backlot import store
-from tests._helpers import crawl_hubspot, db_count, tiny_corpus, served_id
-
+from tests._helpers import crawl_hubspot, db_count, served_id, tiny_corpus
 
 HUBSPOT_OBJECT_TYPES = ("companies", "contacts", "notes")
 

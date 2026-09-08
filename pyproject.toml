@@ -157,7 +157,10 @@ extend-exclude = ["*.md"]
 # so an implicit `select` lets a minor bump move the gate under the repository. NOT E501: the
 # formatter keeps code inside the limit, and what stays over it is long string literals and
 # measured-behaviour comment tables.
-select = ["E4", "E7", "E9", "F"]
+select = ["E4", "E7", "E9", "F", "I"]
+# I (import sorting) coexists with the E402 ignore below rather than fighting it: isort sorts
+# within a run of consecutive imports and never lifts one over a statement, so the examples' and
+# tests' `sys.path` inserts, `importorskip` calls and shadowing guards still come first.
 ignore = ["E402"]  # module-level import not at top: the examples must set sys.path first
 # flake8-bandit, minus what a mock of real SaaS APIs necessarily trips: S608 composes the FTS and
 # listing queries, which is most of what `--select S` finds under backlot/, S324 hashes etags, S104

@@ -31,9 +31,9 @@ import argparse
 import json
 import urllib.request
 
+from _agent import run_agent
 from mcp import StdioServerParameters
 
-from _agent import run_agent
 from backlot import serve_or_connect
 
 CORPUS = [

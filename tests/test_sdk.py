@@ -66,8 +66,8 @@ def slack():
 
 # ------------------------------------------------------------------ Gmail
 def _gmail_svc():
-    from google.oauth2.credentials import Credentials
     from google.api_core.client_options import ClientOptions
+    from google.oauth2.credentials import Credentials
     from googleapiclient.discovery import build
 
     return build(
@@ -162,8 +162,8 @@ def gmail():
 
 # ------------------------------------------------------------------ Drive
 def drive():
-    from google.oauth2.credentials import Credentials
     from google.api_core.client_options import ClientOptions
+    from google.oauth2.credentials import Credentials
     from googleapiclient.discovery import build
 
     svc = build(
@@ -221,8 +221,8 @@ def sheets():
     """The Sheets read surface through its own SDK. Worth its own check because the client
     percent-encodes the A1 range into the path (`Sheet1%21A1%3AB2`) and builds the URL from the
     discovery document — neither of which an httpx test exercises."""
-    from google.oauth2.credentials import Credentials
     from google.api_core.client_options import ClientOptions
+    from google.oauth2.credentials import Credentials
     from googleapiclient.discovery import build
 
     drive = build(
@@ -386,6 +386,7 @@ def google_oauth():
     Backlot's /oauth2/token. Proves the config→token-endpoint→usr-token→ACL chain end to end."""
     import json
     import urllib.request
+
     from google.api_core.client_options import ClientOptions
     from google.oauth2 import service_account
     from google.oauth2.credentials import Credentials as UserCreds
@@ -486,6 +487,7 @@ def confluence():
 # ------------------------------------------------------------------ Notion
 def notion():
     from notion_client import Client
+
     from backlot import synth
 
     c = Client(auth=ADMIN, base_url=f"{BASE}/notion")
@@ -537,6 +539,7 @@ def test_sdk_read_coverage(live_server):
 def _s3_client(base_url, token):
     boto3 = pytest.importorskip("boto3")
     from botocore.config import Config
+
     from backlot import synth
 
     return boto3.client(

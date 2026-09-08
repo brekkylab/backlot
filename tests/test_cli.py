@@ -22,10 +22,10 @@ from pathlib import Path
 
 import pytest
 
-from tests._helpers import complete
 from backlot import cli
 from backlot.config import get_settings
 from backlot.importer import byo, erb
+from tests._helpers import complete
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 # The frame rich draws around an error or a help panel. Dropped because a message WRAPPED inside one

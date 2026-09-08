@@ -19,11 +19,11 @@ import argparse
 import os
 import subprocess
 
+from _helpers import FUSE_HELP, lines, run_mirage
 from mirage import MountMode, Workspace
 from mirage.resource.slack import SlackConfig, SlackResource
 
 from backlot import serve_or_connect
-from _helpers import FUSE_HELP, lines, run_mirage
 
 CORPUS = [  # `created` keeps the throwaway channels' dates tight (one day) rather than synthesized
     {

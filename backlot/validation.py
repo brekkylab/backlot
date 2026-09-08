@@ -10,10 +10,9 @@ touching the DB.
 from __future__ import annotations
 
 import json
+import re
 from functools import lru_cache
 from pathlib import Path
-
-import re
 
 from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema import validators as _js_validators

@@ -16,9 +16,8 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping
 from pathlib import Path
-
+from typing import Any, Callable, Mapping
 
 from backlot.fidelity import (
     google_discovery_diff,

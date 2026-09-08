@@ -11,12 +11,12 @@ import pytest
 import yaml
 
 from backlot import store, synth
-from tests._helpers import complete, served_id
 from backlot.acl import Acl
 from backlot.config import Settings, get_settings
-from backlot.routers.slack import _message
 from backlot.importer import byo
 from backlot.importer.byo import load
+from backlot.routers.slack import _message
+from tests._helpers import complete, served_id
 
 
 def _write(tmp_path, records, name="corpus.jsonl", *, raw=False):
@@ -383,6 +383,7 @@ def test_byo_created_updated_times(tmp_path):
 
     # and reach the router response
     from starlette.requests import Request
+
     from backlot.routers.atlassian import _jira_issue
 
     req = Request(
@@ -2665,6 +2666,7 @@ def test_load_records_source_documents_sums_across_sources(tmp_path):
 def test_append_accumulates_source_documents(tmp_path):
     """reset=False appends, so the count adds rather than replaces."""
     import json
+
     from backlot import store
     from backlot.config import Settings
     from backlot.importer.byo import load

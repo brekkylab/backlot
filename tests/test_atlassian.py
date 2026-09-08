@@ -6,11 +6,11 @@ or call the response builder directly.
 
 from __future__ import annotations
 
-from starlette.requests import Request
 import base64
 import re
 
 import pytest
+from starlette.requests import Request
 
 from backlot import store
 from backlot.errors import atlassian as errors_atlassian
@@ -20,8 +20,8 @@ from tests._helpers import (
     crawl_confluence,
     crawl_jira,
     db_count,
-    tiny_corpus,
     served_id,
+    tiny_corpus,
 )
 
 

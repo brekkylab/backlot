@@ -21,7 +21,7 @@ def _base_token(live_server):
 
 def test_github(live_server):
     pytest.importorskip("llama_index.readers.github")
-    from llama_index.readers.github import GitHubRepositoryIssuesReader, GitHubIssuesClient
+    from llama_index.readers.github import GitHubIssuesClient, GitHubRepositoryIssuesReader
 
     base, admin = _base_token(live_server)
     client = GitHubIssuesClient(github_token=admin, base_url=f"{base}/github", verbose=False)
@@ -84,6 +84,7 @@ def test_s3(live_server):
     pytest.importorskip("llama_index.readers.s3")
     pytest.importorskip("s3fs")
     from llama_index.readers.s3 import S3Reader
+
     from backlot import synth
     from backlot.integrations.llamaindex import patch_s3fs_walk
 
@@ -104,6 +105,7 @@ def test_s3(live_server):
 def test_notion(live_server):
     pytest.importorskip("llama_index.readers.notion")
     from llama_index.readers.notion import NotionPageReader
+
     from backlot import synth
     from backlot.integrations.llamaindex import patch_notion_at
 

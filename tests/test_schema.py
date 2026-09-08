@@ -8,10 +8,10 @@ from datetime import datetime
 import pytest
 
 from backlot import store, validation
-from tests._helpers import complete, served_id
 from backlot.config import Settings
-from backlot.validation import record_errors, validate_file
 from backlot.importer.byo import load
+from backlot.validation import record_errors, validate_file
+from tests._helpers import complete, served_id
 
 
 def _unstated(rec: dict) -> list[str]:

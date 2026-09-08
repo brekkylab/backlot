@@ -13,8 +13,8 @@ import pytest
 
 import backlot
 import backlot.server
-from tests._helpers import complete
 from backlot.server import _terminate
+from tests._helpers import complete
 
 
 def _get(url: str) -> dict:

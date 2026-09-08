@@ -23,9 +23,9 @@ import socket
 import sys
 from urllib.parse import urlparse
 
+from _agent import run_agent
 from mcp import StdioServerParameters
 
-from _agent import run_agent
 from backlot import serve_or_connect
 
 CORPUS = [

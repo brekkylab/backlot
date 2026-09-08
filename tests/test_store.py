@@ -2017,8 +2017,8 @@ def test_linear_entities_are_rebuilt_whole_so_an_append_is_resolvable(tmp_path):
     Safe to rebuild because these ids are pure hashes of a NAME and never probed: a row deleted and
     re-inserted comes back with the same id, so no id a client holds can move.
     """
-    from backlot.importer.byo import load
     from backlot.config import Settings
+    from backlot.importer.byo import load
 
     def issue(doc_id, project):
         return complete(

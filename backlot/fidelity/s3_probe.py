@@ -35,9 +35,9 @@ from urllib.parse import urlsplit
 import httpx
 
 from backlot import sigv4
-from backlot.fidelity.findings import BREAKING, GAP, Finding
 from backlot.fidelity.errors import FidelityError
 from backlot.fidelity.fetch import fetch_json
+from backlot.fidelity.findings import BREAKING, GAP, Finding
 
 _ROOT = re.compile(r"<\??[a-zA-Z]*[^>]*>\s*<([A-Za-z][\w.-]*)")
 _EMPTY_SHA = hashlib.sha256(b"").hexdigest()

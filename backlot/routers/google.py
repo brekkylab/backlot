@@ -1588,7 +1588,19 @@ async def drive_files_export(file_id: str, request: Request):
     requested = request.query_params.get("mimeType")
     if not requested:  # the real API requires an explicit target format
         raise gerr.required("mimeType")
-    # honor the requested target format; CSV/TSV keep the raw content, others prefix the title
+    # honor the requested target format; CSV/TSV serve the cells, others prefix the title.
+    #
+    # CSV needs no branch for either kind of document: a document that STATES a grid has its
+    # `content` derived from the first sheet's CSV at import, and one that does not has the text it
+    # always had. TSV is a DIFFERENT serialisation of the same cells — measured, it has no quoting
+    # mechanism and collapses an embedded newline or tab to a single space — so a stated grid
+    # re-serialises for it. A prose document exports verbatim either way: its cells ARE its lines,
+    # so there is nothing to re-serialise.
+    if requested == "text/tab-separated-values":
+        stored = store.gdrive_sheets_for(conn, file_id)
+        if stored:
+            grid = json.loads(stored[0]["grid"])
+            return PlainTextResponse(sheets_grid.to_tsv(grid), media_type=requested)
     plain = requested in ("text/csv", "text/tab-separated-values")
     body = row["content"] if plain else f"{row['title']}\n\n{row['content']}"
     return PlainTextResponse(body, media_type=requested)

@@ -8,6 +8,8 @@ splitting them would put two halves of the same contract in two places.
 from __future__ import annotations
 
 import base64
+import csv
+import io
 import json
 import re
 from urllib.parse import quote
@@ -2770,3 +2772,78 @@ def test_an_empty_sheet_omits_row_data_entirely(gc, gh, book):
         params={"includeGridData": "true", "ranges": "Blank"},
     )
     assert "rowData" not in r.json()["sheets"][0]["data"][0]
+
+
+# --- Drive export must keep agreeing with the Sheets API --------------------------------------
+
+
+def _export(gc, gh, fid, mime):
+    return gc.get(f"/drive/v3/files/{fid}/export", headers=gh, params={"mimeType": mime})
+
+
+def test_csv_export_of_a_gridded_spreadsheet_serialises_its_first_sheet(gc, gh, book):
+    """Measured: only the FIRST sheet is exported, from `formattedValue`. `content` is derived from
+    that sheet at import, so the route needs no branch for CSV."""
+    # Three fields per row, not two: rows are rectangular to the sheet's last USED column, which
+    # row 2 puts at C. `values.get` trims each row instead, so it answers ragged.
+    assert _export(gc, gh, book, "text/csv").text == "Region,Deals,\r\nEMEA,12,TRUE"
+
+
+def test_csv_export_quotes_by_rfc4180(gc, gh, hostile):
+    """Quote on a comma, a double quote or a newline; double an embedded quote; keep an embedded
+    newline bare inside the quotes."""
+    assert _export(gc, gh, hostile, "text/csv").text == (
+        '"with,comma","with""quote","with\nnewline"'
+    )
+
+
+def test_tsv_export_is_lossy_the_way_the_real_one_is(gc, gh, hostile):
+    """Measured: TSV has no quoting mechanism -- an embedded newline and an embedded tab each
+    collapse to a single space and a double quote passes through bare."""
+    assert _export(gc, gh, hostile, "text/tab-separated-values").text == (
+        'with,comma\twith"quote\twith newline'
+    )
+
+
+def test_a_prose_spreadsheet_still_exports_verbatim(gc, gh, prose):
+    for mime in ("text/csv", "text/tab-separated-values"):
+        assert _export(gc, gh, prose, mime).text == "month,revenue\nJan,120000"
+
+
+def _first_sheet_values(gc, gh, fid):
+    first = gc.get(f"/sheets/v4/spreadsheets/{fid}", headers=gh).json()["sheets"][0]["properties"][
+        "title"
+    ]
+    r = gc.get(f"/sheets/v4/spreadsheets/{fid}/values/{quote(first, safe='')}", headers=gh)
+    return r.json().get("values", [])
+
+
+@pytest.mark.parametrize("which", ["book", "hostile"])
+def test_csv_export_of_a_grid_parses_back_into_the_cells_the_sheets_api_serves(
+    gc, gh, request, which
+):
+    """The trap #35 was filed for, re-opened by the grid: the two APIs must not describe one
+    document two ways. Export rows are rectangular to the last used column while `values.get` trims
+    each row, so the comparison pads -- that difference is measured, not a disagreement."""
+    fid = request.getfixturevalue(which)
+    exported = list(csv.reader(io.StringIO(_export(gc, gh, fid, "text/csv").text)))
+    served = _first_sheet_values(gc, gh, fid)
+    width = max((len(r) for r in served), default=0)
+    assert exported == [r + [""] * (width - len(r)) for r in served]
+
+
+def test_a_prose_export_round_trips_through_its_lines_not_through_a_csv_parser(gc, gh, prose):
+    """The prose path agrees DIFFERENTLY, and asserting the gridded property over it would be
+    asserting the thing #35 refused.
+
+    A prose spreadsheet's cells are its LINES -- `_sheets_grid` splits on nothing, because 82.6% of
+    real spreadsheet records are prose and comma-splitting manufactures columns out of sentence
+    punctuation. So its export is the lines joined back, byte for byte, and running a CSV parser
+    over it would find columns the Sheets API never claimed were there. Both APIs still describe
+    one document; the shape they agree on is the line, not the field."""
+    exported = _export(gc, gh, prose, "text/csv").text
+    served = _first_sheet_values(gc, gh, prose)
+    assert all(len(row) == 1 for row in served)
+    assert exported == "\n".join(row[0] for row in served)
+    # and the parser reading really would disagree -- which is why it is not asserted above
+    assert list(csv.reader(io.StringIO(exported))) != served

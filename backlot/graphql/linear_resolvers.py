@@ -422,7 +422,7 @@ def _state(name: str, team: str, info) -> dict:
 
 
 def _project(name: str | None, info) -> dict | None:
-    """A ``Project``. The corpus knows a project only by name, so the 26 non-null fields the SDK's
+    """A ``Project``. The corpus knows a project only by name, so the 27 non-null fields the SDK's
     fragment demands take neutral values — empty history arrays, zero progress/scope — rather than
     invented burndown data. `state` is Linear's project state string; "started" is the only claim
     Backlot can make about a project it sees issues in."""
@@ -445,6 +445,7 @@ def _project(name: str | None, info) -> dict | None:
         # `Float!` the SDK's TypeScript `number` once suggested.
         "priority": 0,
         "priorityLabel": "No priority",
+        "resourceCount": 0,
         "progress": 0.0,
         "scope": 0.0,
         "sortOrder": 0.0,
@@ -660,7 +661,7 @@ def resolve_team_issue_count(team, info) -> int:
 
 
 def _team(container: str, info) -> dict:
-    """A ``Team``. 42 of its fields are non-null in the SDK's fragment; the ones Backlot cannot
+    """A ``Team``. 43 of its fields are non-null in the SDK's fragment; the ones Backlot cannot
     know take Linear's own product defaults (cycles off, 2-week duration, estimate scale
     ``notUsed``) rather than zero values that would read as configured."""
     key = _team_key(container, info)
@@ -702,6 +703,7 @@ def _team(container: str, info) -> dict:
         "issueOrderingNoPriorityFirst": False,
         "requirePriorityToLeaveTriage": False,
         "triageEnabled": False,
+        "initiativesEnabled": False,
         "groupIssueHistory": True,
         "ledInitiativeCount": 0,  # `Int!` in Linear, like `issueCount`
         "aiDiscussionSummariesEnabled": False,

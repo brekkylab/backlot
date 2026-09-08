@@ -108,7 +108,9 @@ returns the file's bytes; `…diff`/`…patch` on a pull returns a real unified 
 **`X-GitHub-Api-Version` is honoured too**, in both values real currently supports: `2026-03-10`
 drops `assignee` (issues and pulls) and `merge_commit_sha` (pulls), `2022-11-28` keeps them, an
 unpinned request gets `2022-11-28`, anything else is the real API's 400, and every response reports
-its choice in `X-GitHub-Api-Version-Selected`.
+its choice in `X-GitHub-Api-Version-Selected`. `search/code` is the one route that does neither:
+real's code search backend does not read the header, so a pinned version there is served whatever
+it says and no response from it carries the `Selected` header (measured 2026-09-06).
 
 An issue body and a pull body are the two distinct field sets real serves — a pull carries `_links`
 and its `*_url` siblings and none of the issue-only fields, `pull_request` included. A repository

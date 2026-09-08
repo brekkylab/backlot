@@ -140,10 +140,13 @@ def http_body(path: str, exc) -> dict | None:
     """Render an exception into the envelope.
 
     An error the router shaped by hand carries its own body as ``github_body`` — the version 400
-    and the search 422, both of which have an ``errors`` member no generic rendering could invent —
-    and that wins. Everything else is the three-member envelope over the exception's own detail,
-    whose wording is already real's ("Not Found", "Bad credentials") because the routers were
-    written against measured responses; only the shape around it was FastAPI's.
+    and the two Validation Failed search 422s, which have an ``errors`` member no generic rendering
+    could invent, and the two depth 422s, whose ``documentation_url`` is not the route's anchor in
+    :data:`ROUTE_DOCS` (the issue search's is the bare ``/v3/search/`` with its trailing slash, code
+    search's the ``#search-code`` anchor) — and that wins. Everything else is the three-member
+    envelope over the exception's own detail, whose wording is already real's ("Not Found", "Bad
+    credentials") because the routers were written against measured responses; only the shape
+    around it was FastAPI's.
 
     A 405 is the exception, and keeps FastAPI's ``detail``. Every route here declares GET, so a
     wrong method is refused by Starlette with ``http.HTTPStatus(405).phrase`` — a string no
@@ -177,10 +180,14 @@ def validation_body(path: str, errors) -> tuple[int, dict]:
     query parameter at once has one answer, and which of the two FastAPI happens to list first is
     not it.
 
-    A QUERY parameter is the residue. Real refuses no pagination value at all, which is why those
-    now absorb (see :func:`backlot.pagination._absorb_page`) and never reach here; what is left is
-    a shape real has no measured answer for, so it keeps the Validation Failed envelope real uses
-    for a parameter it does refuse, with this route's anchor rather than the bare root.
+    A QUERY parameter is the residue. Real's listings refuse no pagination value, which is why
+    those absorb (see :func:`backlot.pagination._absorb_page`) and never reach here; the one
+    measured route that does refuse one, `/search/code`, answers in `text/plain` with no envelope,
+    and does so from the route itself, reading the raw query string after the validator has
+    absorbed the value (see :func:`backlot.pagination.github_code_search_query_refusal`), so
+    validation never fails there and this is never reached either. What is left is a shape real has
+    no measured answer for, so it keeps the Validation Failed envelope real uses for a parameter it
+    does refuse, with this route's anchor rather than the bare root.
     """
     if any(tuple(e.get("loc", ()))[:1] == ("path",) for e in errors):
         return 404, {

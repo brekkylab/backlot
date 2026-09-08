@@ -2202,9 +2202,9 @@ def _linear_client(tmp_path):
 # Every type below is what introspection of https://api.linear.app/graphql reported on 2026-09-03,
 # copied here as literals so the suite runs offline; `backlot diff --source linear` is the live
 # re-measurement and `backlot/fidelity/baseline/linear.json` the record of the gaps it accepts.
-# Each entry was a `breaking` finding in #101: Backlot declared the same name at a different type,
-# or declared a name the vendor does not have. The behaviour tests after the tables pin that the
-# resolvers PRODUCE the corrected types -- a changed declaration on its own is not a fix.
+# Most entries were a `breaking` finding in #101: Backlot declared the same name at a different
+# type, or declared a name the vendor does not have. The behaviour tests after the tables pin that
+# the resolvers PRODUCE the corrected types -- a changed declaration on its own is not a fix.
 
 # field path -> the type Linear declares it at
 LINEAR_TYPES = {
@@ -2246,6 +2246,9 @@ LINEAR_TYPES = {
     "IssueFilter.id": "IssueIDComparator",
     "NullableProjectFilter.id": "EntityIdentifierIDComparator",
     "UserSortInput.name": "UserNameSort",
+    # selected by `@linear/sdk`'s own Team and Project fragments
+    "Team.initiativesEnabled": "Boolean!",
+    "Project.resourceCount": "Int!",
     # non-null where Backlot was nullable
     "Issue.sharedAccess": "IssueSharedAccess!",
     "Release.pipeline": "ReleasePipeline!",
@@ -2362,14 +2365,14 @@ def test_user_name_sort_defaults_nulls_to_last_as_linear_does(fclient):
 
 def test_counts_are_served_as_json_integers(fclient):
     """`Int!` on the wire is `0`, not `0.0` -- what a real issue answers for `customerTicketCount`
-    (measured 2026-09-03). Seven of the eight retyped counts are reachable from an issue;
+    (measured 2026-09-03). Eight of the nine `Int!` counts are reachable from an issue;
     `ReleaseNote.releaseCount` is not, because no corpus produces a release note."""
     r = post(
         fclient,
         """{ issue(id: "ENG-2") {
             customerTicketCount
             sharedAccess { sharedWithCount }
-            project { priority }
+            project { priority resourceCount }
             team { issueCount ledInitiativeCount }
             creator { createdIssueCount }
             releases { nodes { issueCount } }
@@ -2381,6 +2384,7 @@ def test_counts_are_served_as_json_integers(fclient):
         "Issue.customerTicketCount": d["customerTicketCount"],
         "IssueSharedAccess.sharedWithCount": d["sharedAccess"]["sharedWithCount"],
         "Project.priority": d["project"]["priority"],
+        "Project.resourceCount": d["project"]["resourceCount"],
         "Team.issueCount": d["team"]["issueCount"],
         "Team.ledInitiativeCount": d["team"]["ledInitiativeCount"],
         "User.createdIssueCount": d["creator"]["createdIssueCount"],
@@ -2388,6 +2392,19 @@ def test_counts_are_served_as_json_integers(fclient):
     }
     not_int = {k: v for k, v in counts.items() if type(v) is not int}
     assert not not_int, not_int
+
+
+def test_fields_the_sdk_fragments_select_resolve_to_what_backlot_serves(fclient):
+    """Both are non-null, so a declaration with nothing behind it voids the whole result. A real
+    team answers `initiativesEnabled: false` (measured 2026-09-07); Backlot serves no project
+    resources, so `resourceCount` is a count rather than a stand-in."""
+    r = post(
+        fclient,
+        '{ issue(id: "ENG-2") { team { initiativesEnabled } project { resourceCount } } }',
+    ).json()
+    assert "errors" not in r, r.get("errors")
+    d = r["data"]["issue"]
+    assert (d["team"]["initiativesEnabled"], d["project"]["resourceCount"]) == (False, 0)
 
 
 def test_enum_fields_serve_a_member_of_the_vendors_enum(fclient):

@@ -19,7 +19,6 @@ import yaml
 from backlot import store, synth
 from backlot.config import Settings
 from backlot.pagination import encode_cursor
-from backlot.routers.github import PER_PAGE_DEFAULT, PER_PAGE_MAX
 from tests._helpers import (
     build_corpus,
     client_for,
@@ -2303,15 +2302,14 @@ def test_github_code_search_answers_its_refusals_in_reals_order(gh_client, gh_ad
     assert (r.status_code, r.json()) == (422, _CODE_CAP)
     r = c.get(ghost, headers=gh_admin_h)
     assert r.status_code == 200 and r.json()["incomplete_results"] is True
-    # the size APPLIED is what the depth is measured in: an unsent or zero size is the default and
-    # one over the cap is the cap, GitHub's 30 and 100
-    default, cap = PER_PAGE_DEFAULT, PER_PAGE_MAX
+    # the size APPLIED is what the depth is measured in: an unsent or zero size is served at 30 and
+    # one over the cap at 100, real's numbers, so the boundary pages are real's (measured 2026-09-06)
     for qs, served in (
-        (f"page={1000 // default}", True),
-        (f"page={1000 // default + 1}", False),
-        (f"per_page=0&page={1000 // default}", True),
-        (f"per_page={cap + 1}&page={1000 // cap}", True),
-        (f"per_page={cap + 1}&page={1000 // cap + 1}", False),
+        ("page=33", True),
+        ("page=34", False),
+        ("per_page=0&page=33", True),
+        ("per_page=101&page=10", True),
+        ("per_page=101&page=11", False),
     ):
         r = c.get(f"/github/search/code?q=extension:md&{qs}", headers=gh_admin_h)
         assert r.status_code == (200 if served else 422), qs
@@ -2359,10 +2357,9 @@ def test_github_issue_search_refuses_the_query_before_the_depth(gh_client, gh_ad
         headers=gh_admin_h,
     )
     assert r.status_code == 422 and r.json()["errors"][0]["code"] == "invalid"
-    # an unsent size is GitHub's default, and the last page it starts under 1000 is served
-    default = PER_PAGE_DEFAULT
-    last_served = (1000 - 1) // default + 1
-    for page, served in ((last_served, True), (last_served + 1, False)):
+    # an unsent size is served at 30, real's default, so page 34 (results 991 to 1020) is the last
+    # served and 35 the first refused, as on real (measured 2026-09-06)
+    for page, served in ((34, True), (35, False)):
         r = c.get(f"/github/search/issues?q=is:open&page={page}", headers=gh_admin_h)
         assert r.status_code == (200 if served else 422), page
 

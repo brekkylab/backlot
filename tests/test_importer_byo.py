@@ -5492,3 +5492,134 @@ def test_two_records_that_settle_on_one_row_still_share_a_dataset_id(tmp_path):
     assert [r["title"] for r in rows] == ["two"]
     key = rows[0]["key"]
     assert json.loads(out.read_text())["documents"]["jira"] == {"same": {"key": key}}
+
+
+# --- google_drive: a spreadsheet that states a real grid ------------------------
+
+GRID_REC = {
+    "source_type": "google_drive",
+    "subtype": "spreadsheet",
+    "title": "Q3 pipeline",
+    "folder": "sales",
+    "doc_id": "gd-grid",
+    "author_email": "dana@example.com",
+    "sheets": [
+        {"title": "Summary", "grid": [["Region", "Deals"], ["EMEA", 12]]},
+        {"grid": [["id"], ["a-1"]]},
+    ],
+}
+
+
+def _load_grid(tmp_path, records, name="grid.jsonl"):
+    settings = Settings(data_dir=tmp_path)
+    load(_write(tmp_path, records, name=name), settings)
+    return store.connect_ro(settings.db_path)
+
+
+def test_a_stated_grid_lands_one_row_per_sheet(tmp_path):
+    """`sheetId` is assigned at import, not derived at serve time. Measured on a real workbook: the
+    sheet created with the spreadsheet is 0 and every later one carries a large pseudo-random
+    integer, so index 0 is pinned and the rest draw. An unnamed sheet takes the API's own default
+    name for its position."""
+    conn = _load_grid(tmp_path, [GRID_REC])
+    fid = conn.execute("SELECT id FROM gdrive_files").fetchone()["id"]
+    rows = store.gdrive_sheets_for(conn, fid)
+    assert [(r["sheet_index"], r["title"]) for r in rows] == [(0, "Summary"), (1, "Sheet2")]
+    assert rows[0]["sheet_id"] == 0
+    assert rows[1]["sheet_id"] > 0
+    assert json.loads(rows[0]["grid"]) == [["Region", "Deals"], ["EMEA", 12]]
+
+
+def test_a_stated_grid_derives_content_from_its_first_sheet(tmp_path):
+    """`files.export?mimeType=text/csv` serves `content` verbatim, so deriving it here is what
+    stops Drive and the Sheets API describing one document two ways -- and leaves FTS something to
+    index for a spreadsheet that states no prose."""
+    conn = _load_grid(tmp_path, [GRID_REC])
+    assert conn.execute("SELECT content FROM gdrive_files").fetchone()["content"] == (
+        "Region,Deals\r\nEMEA,12"
+    )
+
+
+def test_a_short_row_in_a_stated_grid_is_padded(tmp_path):
+    conn = _load_grid(tmp_path, [{**GRID_REC, "sheets": [{"grid": [["a", "b", "c"], ["d"]]}]}])
+    fid = conn.execute("SELECT id FROM gdrive_files").fetchone()["id"]
+    grid = json.loads(store.gdrive_sheets_for(conn, fid)[0]["grid"])
+    assert grid == [["a", "b", "c"], ["d", None, None]]
+
+
+def test_an_empty_sheet_imports_and_derives_empty_content(tmp_path):
+    conn = _load_grid(tmp_path, [{**GRID_REC, "sheets": [{"grid": []}]}])
+    fid = conn.execute("SELECT id FROM gdrive_files").fetchone()["id"]
+    assert json.loads(store.gdrive_sheets_for(conn, fid)[0]["grid"]) == []
+    assert conn.execute("SELECT content FROM gdrive_files").fetchone()["content"] == ""
+
+
+def test_reimporting_a_workbook_replaces_its_sheets_rather_than_adding_to_them(tmp_path):
+    """The file's own row upserts, so its sheets have to as well: a workbook that lost a sheet must
+    stop serving it, and one that kept its sheets must not double them."""
+    settings = Settings(data_dir=tmp_path)
+    load(_write(tmp_path, [GRID_REC], name="a.jsonl"), settings)
+    shrunk = {**GRID_REC, "sheets": [{"title": "Summary", "grid": [["only"]]}]}
+    load(_write(tmp_path, [shrunk], name="b.jsonl"), settings, reset=False)
+
+    conn = store.connect_ro(settings.db_path)
+    fid = conn.execute("SELECT id FROM gdrive_files").fetchone()["id"]
+    rows = store.gdrive_sheets_for(conn, fid)
+    assert [(r["sheet_index"], r["title"]) for r in rows] == [(0, "Summary")]
+    assert json.loads(rows[0]["grid"]) == [["only"]]
+
+
+@pytest.mark.parametrize(
+    "overrides,fragment",
+    [
+        ({"content": "prose"}, "drop 'content'"),
+        ({"subtype": "document"}, "subtype 'spreadsheet'"),
+        (
+            {"sheets": [{"title": "Data", "grid": []}, {"title": "data", "grid": []}]},
+            "duplicate sheet title",
+        ),
+    ],
+)
+def test_a_grid_a_record_cannot_mean_is_refused(tmp_path, overrides, fragment):
+    """Cross-field rules, refused in Python rather than by the schema: expressed as an `if`/`then`
+    each reports as a missing property at the record root, naming neither the field that put the
+    rule in force nor what is wrong with the pairing."""
+    with pytest.raises(SystemExit) as e:
+        _load_grid(tmp_path, [{**GRID_REC, **overrides}])
+    assert fragment in str(e.value)
+
+
+def test_a_prose_spreadsheet_stores_no_sheets_at_all(tmp_path):
+    """The prose path must cost nothing extra -- a document with no stated grid is recognised by
+    having no rows in gdrive_sheets, so writing one for it would make every spreadsheet gridded."""
+    conn = _load_grid(
+        tmp_path,
+        [
+            {
+                "source_type": "google_drive",
+                "subtype": "spreadsheet",
+                "title": "Notes",
+                "folder": "sales",
+                "doc_id": "gd-prose",
+                "content": "a\nb",
+                "author_email": "dana@example.com",
+            }
+        ],
+    )
+    fid = conn.execute("SELECT id FROM gdrive_files").fetchone()["id"]
+    assert store.gdrive_sheets_for(conn, fid) == []
+
+
+def test_the_shipped_example_corpus_loads(tmp_path):
+    """examples/bring-your-own-corpus/sample_corpus.jsonl carries a gridded spreadsheet, and
+    `--dry-run` validating it is not evidence that it loads -- the row build runs only on a real
+    import."""
+    from tests.conftest import REPO_ROOT
+
+    settings = Settings(data_dir=tmp_path)
+    load(REPO_ROOT / "examples" / "bring-your-own-corpus" / "sample_corpus.jsonl", settings)
+    conn = store.connect_ro(settings.db_path)
+    fid = conn.execute("SELECT id FROM gdrive_files WHERE title = 'Q1 Revenue Model'").fetchone()[
+        "id"
+    ]
+    assert [r["title"] for r in store.gdrive_sheets_for(conn, fid)] == ["Monthly", "Assumptions"]

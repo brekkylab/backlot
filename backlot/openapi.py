@@ -112,6 +112,35 @@ def qp(
     return p
 
 
+def github_page_defaults(spec: dict, defaults: dict[str, int]) -> dict:
+    """``spec`` with ``defaults``, parameter name to the number the route applies when that
+    parameter is not sent, written onto every GitHub operation's query parameter of that name, in
+    place.
+
+    The GitHub handlers declare `page` and `per_page` as ``PageParam = None`` and have to: the
+    handler tells an unsent size from a sent one by that ``None`` (a `Link` header omits a size the
+    caller did not send), so the runtime default cannot be 30. FastAPI writes no ``default`` for a
+    query parameter whose default is ``None``, and neither ``json_schema_extra`` nor
+    ``WithJsonSchema`` gets one past it (both measured on 0.141.1 / pydantic 2.13). So the numbers
+    are written here, after FastAPI has built the document, and they come from the caller rather
+    than from a constant of this module's own: the router that applies them holds them
+    (``backlot.routers.github.PER_PAGE_DEFAULT``, whose comment cites GitHub's description
+    declaring the same 30), so the document cannot declare one size while the route applies
+    another. Six routers import this module for :func:`qp`, which is why it does not import that
+    one. Only GitHub: the other vendors' declared defaults are not measured."""
+    for path, item in spec.get("paths", {}).items():
+        if path != "/github" and not path.startswith("/github/"):
+            continue
+        for method, op in item.items():
+            if method not in _METHODS:
+                continue
+            for param in op.get("parameters", []):
+                default = defaults.get(param.get("name"))
+                if default is not None and param.get("in") == "query":
+                    param["schema"]["default"] = default
+    return spec
+
+
 def slice_spec(spec: dict, prefixes: list[str]) -> dict:
     """Copy ``spec`` keeping only paths under one of ``prefixes``."""
     paths = {

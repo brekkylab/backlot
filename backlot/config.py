@@ -55,6 +55,13 @@ class Settings(BaseSettings):
     admin_token: str = "admin-service-token"
 
     # --- pagination defaults ---
+    # For the vendors whose real page sizes are not measured: Slack's `limit`, Gmail's and Drive's
+    # `maxResults` / `pageSize` and the Jira search's `maxResults` default to the first, and Slack
+    # and Google cap a sent value at the second (the Jira search caps nowhere). A vendor whose
+    # numbers are measured or documented carries them in its own router instead: GitHub pages at 30
+    # and caps at 100 (backlot.routers.github.PER_PAGE_DEFAULT / PER_PAGE_MAX), Linear at 50 and
+    # caps at 250, Notion caps at 100, Fireflies at 50, HubSpot at 100 (500 for associations), S3
+    # at 1000 either way, Confluence pages at 25.
     default_page_size: int = 100
     max_page_size: int = 1000
 

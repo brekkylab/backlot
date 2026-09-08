@@ -18,7 +18,7 @@ import yaml
 import pytest
 
 from backlot import store, synth
-from backlot.config import get_settings
+from backlot.config import Settings
 from backlot.pagination import encode_cursor
 from tests._helpers import build_corpus, client_for, crawl_github_repo, db_count, tiny_corpus
 
@@ -1635,13 +1635,132 @@ def test_github_tolerates_the_pagination_values_real_tolerates(gh_client, gh_adm
         r = c.get(base, headers=gh_admin_h, params=params)
         assert r.status_code == 200, params
         assert r.json() == full, params
-    # over the cap is still the cap, not an error
+    # over the cap is still the cap (real's 100), not an error
     assert c.get(base, headers=gh_admin_h, params={"per_page": 100_000}).status_code == 200
     # ...and the parameter is still declared an integer, as real's spec declares it
     route = "/github/repos/{owner}/{repo}/issues"
     spec = c.get("/openapi.json").json()["paths"][route]["get"]
     page = next(p for p in spec["parameters"] if p["name"] == "page")
     assert {"type": "integer"} in page["schema"]["anyOf"]
+
+
+def test_github_the_spec_declares_reals_page_defaults(gh_client):
+    """GitHub's OpenAPI description declares the shared `per-page` parameter as `{type: integer,
+    default: 30}` and `page` as `{type: integer, default: 1}` (github/rest-api-description,
+    `components/parameters`, read 2026-09-07). Sixteen of the seventeen routes served here that page
+    reference the two; the seventeenth, `GET /repos/{owner}/{repo}/statuses/{sha}`, is the legacy
+    alias the description names only in the prose of `/commits/{ref}/statuses`, which references
+    them. The three routes whose inline `per_page` default differs — `/notifications` at 50,
+    `/orgs/{org}/copilot/billing/seats` at 50 and `/organizations/{org}/settings/billing/budgets`
+    at 10 — are indeed unserved here; `/zen` declares no parameters at all, so it is not in that
+    set. Backlot's slice declared neither default: FastAPI writes none for a parameter whose
+    runtime default is None, and the handlers keep None to tell an unsent size from a sent one. The
+    spec is what `backlot mcp` hands an agent as a tool, so a default the document does not state is
+    one the agent cannot know.
+
+    The two are written onto the served document after FastAPI builds it, on GitHub's operations
+    alone: a Slack `page` keeps the schema its router declared by hand.
+    """
+    c, _ = gh_client
+    spec = c.get("/openapi.json").json()
+    seen = 0
+    for path, item in spec["paths"].items():
+        if not path.startswith("/github/"):
+            continue
+        for op in item.values():
+            for p in op.get("parameters", []):
+                if p["name"] in ("page", "per_page"):
+                    assert p["schema"]["default"] == {"per_page": 30, "page": 1}[p["name"]], path
+                    assert {"type": "integer"} in p["schema"]["anyOf"], path  # still an integer
+                    seen += 1
+    assert seen == 2 * 17  # the seventeen routes that page, both parameters each
+    slack = spec["paths"]["/slack/api/search.messages"]["get"]["parameters"]
+    assert "default" not in next(p for p in slack if p["name"] == "page")["schema"]
+    # ...and the MCP slice, built from the same document, carries them to an agent
+    mcp = c.get("/_meta/openapi/github").json()
+    code = mcp["paths"]["/github/search/code"]["get"]["parameters"]
+    assert next(p for p in code if p["name"] == "per_page")["schema"]["default"] == 30
+
+
+def test_github_pages_at_reals_thirty_and_caps_at_its_hundred(tmp_path):
+    """Real serves 30 items when `per_page` is not sent and 100 for any sent size at or above it,
+    on every listing and search measured. On api.github.com on 2026-09-06, `psf/requests/issues?state=all`,
+    `psf/requests/tags`, `psf/requests/pulls?state=all` and `/search/issues?q=repo:psf/requests+timeout`
+    each answer 30 items with no `per_page` and 100 for `per_page=100`, `101` and `500` alike;
+    `/user/repos` answers 30 unsent and its full 94 for each of the three, which is under the cap.
+    GitHub's OpenAPI description declares the shared `per-page` parameter "The number of results per
+    page (max 100)." with `default: 30`, the two numbers measured.
+
+    Backlot sized every GitHub page from the server's `default_page_size` (100) and `max_page_size`
+    (1000), the two numbers every other router reads: a client walking a 120-issue repository without
+    naming a size took two pages here and five on real, and one asking for 500 got five times real's
+    page. The `Link` header already paged the way real's does (#131: an unsent size omitted, `last`
+    computed from the size applied), so it described the wrong page length faithfully. The corpus is
+    built here because no repository in the bundled one holds more than 30 documents.
+    """
+    from backlot.routers import github as gh
+
+    issues = [
+        {
+            "source_type": "github",
+            "doc_id": f"gh-wide-{i}",
+            "repo": "wide",
+            "subtype": "issue",
+            "title": f"Issue {i}",
+            "content": "body",
+            "visibility": "public",
+            "author_email": "ava@acme.com",
+        }
+        for i in range(120)
+    ]
+    files = [
+        {
+            "source_type": "github",
+            "doc_id": f"gh-wide-file-{i}",
+            "repo": "wide",
+            "subtype": "file",
+            "path": f"src/module_{i}.py",
+            "title": f"module_{i}.py",
+            "content": "print('hi')\n",
+            "visibility": "public",
+            "author_email": "ava@acme.com",
+        }
+        for i in range(120)
+    ]
+    settings = build_corpus(tmp_path, issues + files, name="wide.jsonl")
+    with client_for(settings, reload=True) as c:
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        org = c.get("/_meta/users").json()["org"]
+        # the issue listing pages by cursor and links `next` alone; the searches link `last`, the
+        # page the size APPLIED reaches over 120 rows
+        surfaces = (
+            (f"/github/repos/{org}/wide/issues", {"state": "all"}, lambda b: b, "next"),
+            ("/github/search/issues", {"q": f"repo:{org}/wide"}, lambda b: b["items"], "last"),
+            (
+                "/github/search/code",
+                {"q": f"repo:{org}/wide extension:py"},
+                lambda b: b["items"],
+                "last",
+            ),
+        )
+        for path, base, items, rel in surfaces:
+            for sent, served in (
+                (None, 30),  # unsent: real's default
+                (30, 30),
+                (100, 100),  # at the cap
+                (101, 100),  # one over: the cap, not an error
+                (500, 100),
+            ):
+                params = dict(base) if sent is None else {**base, "per_page": sent}
+                r = c.get(path, headers=h, params=params)
+                assert r.status_code == 200, (path, params)
+                assert len(items(r.json())) == served, (path, params)
+                expected = 2 if rel == "next" else -(-120 // served)
+                assert f"page={expected}" in _link_rels(r.headers["Link"])[rel], (path, params)
+        # ...and the two numbers are real's, not the server's settings
+        assert (gh.PER_PAGE_DEFAULT, gh.PER_PAGE_MAX) == (30, 100)
+        assert Settings.model_fields["default_page_size"].default == 100
+        assert Settings.model_fields["max_page_size"].default == 1000
 
 
 def test_github_a_path_parameter_it_cannot_parse_is_the_route_s_404(gh_client, gh_admin_h, gh_org):
@@ -1885,24 +2004,21 @@ def test_github_only_the_offset_surfaces_write_the_size_the_caller_spelt(
     Measured on api.github.com on 2026-09-04: `/search/code?q=…&per_page=500` on 1,808 hits links
     `per_page=100`, its own cap, and `?per_page=0` links `per_page=30`, where
     `/search/issues?…&per_page=500` links `per_page=500` and `/tags?per_page=abc` links
-    `per_page=abc`. The cap is overridden here so Backlot's own applied size differs from the value
-    sent, which is what tells the two rules apart at all.
+    `per_page=abc`. The cap is lowered here because no listing in the corpus spans a page of 100,
+    so without it neither surface links a `next` to read the size off at all.
     """
+    from backlot.routers import github as gh
+
     c, _ = gh_client
-    monkeypatch.setenv("BACKLOT_MAX_PAGE_SIZE", "2")
-    get_settings.cache_clear()
-    try:
-        code = c.get(
-            "/github/search/code", headers=gh_admin_h, params={"q": "extension:md", "per_page": 500}
-        )
-        issues = c.get(
-            "/github/search/issues",
-            headers=gh_admin_h,
-            params={"q": "repo:diffable is:pr", "per_page": 500},
-        )
-    finally:
-        monkeypatch.undo()
-        get_settings.cache_clear()
+    monkeypatch.setattr(gh, "PER_PAGE_MAX", 2)
+    code = c.get(
+        "/github/search/code", headers=gh_admin_h, params={"q": "extension:md", "per_page": 500}
+    )
+    issues = c.get(
+        "/github/search/issues",
+        headers=gh_admin_h,
+        params={"q": "repo:diffable is:pr", "per_page": 500},
+    )
     assert "per_page=2" in _link_rels(code.headers["Link"])["next"]
     assert "per_page=500" in _link_rels(issues.headers["Link"])["next"]
 
@@ -1945,22 +2061,19 @@ def test_github_a_page_url_omits_a_page_size_the_caller_did_not_send(
     161 tags at its own default of 30, with no `per_page` anywhere, where `?per_page=1` links
     `per_page=1&page=2`. Search omits it the same way (measured on api.github.com on 2026-09-04).
 
-    The default page size is overridden here because no listing in the corpus is longer than the
-    100 rows Backlot defaults to, so nothing in it spans a page without a `per_page` to make it.
+    The default page size is lowered here because no listing in the corpus is longer than the 30
+    rows a GitHub page defaults to, so nothing in it spans a page without a `per_page` to make it.
     """
+    from backlot.routers import github as gh
+
     c, _ = gh_client
     url = f"/github/repos/{gh_org}/diffable/pulls"
-    monkeypatch.setenv("BACKLOT_DEFAULT_PAGE_SIZE", "1")
-    get_settings.cache_clear()
-    try:
-        unsent = c.get(url, headers=gh_admin_h, params={"state": "all"})
-        nxt = _link_rels(unsent.headers["Link"])["next"]
-        assert nxt.endswith("?state=all&page=2") and "per_page" not in nxt
-        sent = c.get(url, headers=gh_admin_h, params={"state": "all", "per_page": 1})
-        assert "per_page=1&page=2" in _link_rels(sent.headers["Link"])["next"]
-    finally:
-        monkeypatch.undo()
-        get_settings.cache_clear()
+    monkeypatch.setattr(gh, "PER_PAGE_DEFAULT", 1)
+    unsent = c.get(url, headers=gh_admin_h, params={"state": "all"})
+    nxt = _link_rels(unsent.headers["Link"])["next"]
+    assert nxt.endswith("?state=all&page=2") and "per_page" not in nxt
+    sent = c.get(url, headers=gh_admin_h, params={"state": "all", "per_page": 1})
+    assert "per_page=1&page=2" in _link_rels(sent.headers["Link"])["next"]
 
 
 @pytest.mark.parametrize(

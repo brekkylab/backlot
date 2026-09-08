@@ -58,7 +58,7 @@ dev = [
     "httpx2",
     # Pinned, not a lower bound: a ruff minor can change both the formatter and the lint
     # defaults. CI installs it from here, so local and CI cannot disagree.
-    "ruff~=0.15.22",
+    "ruff>=0.15.22,<0.17.0",
 ]
 # Official SDKs used by examples/using-official-sdk/, tests/test_sdk.py (one per service) + the ACL demo.
 examples = [

@@ -5610,16 +5610,35 @@ def test_a_prose_spreadsheet_stores_no_sheets_at_all(tmp_path):
     assert store.gdrive_sheets_for(conn, fid) == []
 
 
-def test_the_shipped_example_corpus_loads(tmp_path):
-    """examples/bring-your-own-corpus/sample_corpus.jsonl carries a gridded spreadsheet, and
-    `--dry-run` validating it is not evidence that it loads -- the row build runs only on a real
-    import."""
+@pytest.mark.parametrize(
+    "corpus,title,sheets,content",
+    [
+        (
+            ("examples", "bring-your-own-corpus", "sample_corpus.jsonl"),
+            "Q1 Revenue Model",
+            ["Monthly", "Assumptions"],
+            "month,revenue,cost,profitable\r\nJan,120000,80000,TRUE",
+        ),
+        (
+            ("backlot", "data", "hello.jsonl"),
+            "First Week Checklist",
+            ["Checklist", "Owners"],
+            "Task,Owner,Done\r\nLaptop setup,IT,TRUE",
+        ),
+    ],
+)
+def test_a_shipped_corpus_with_a_gridded_spreadsheet_loads(
+    tmp_path, corpus, title, sheets, content
+):
+    """Both corpora Backlot ships carry a gridded spreadsheet, and `--dry-run` validating one is
+    not evidence that it loads: the row build runs only on a real import, so a corpus can pass
+    validation and still fail to load."""
     from tests.conftest import REPO_ROOT
 
     settings = Settings(data_dir=tmp_path)
-    load(REPO_ROOT / "examples" / "bring-your-own-corpus" / "sample_corpus.jsonl", settings)
+    load(REPO_ROOT.joinpath(*corpus), settings)
     conn = store.connect_ro(settings.db_path)
-    fid = conn.execute("SELECT id FROM gdrive_files WHERE title = 'Q1 Revenue Model'").fetchone()[
-        "id"
-    ]
-    assert [r["title"] for r in store.gdrive_sheets_for(conn, fid)] == ["Monthly", "Assumptions"]
+    row = conn.execute("SELECT id, content FROM gdrive_files WHERE title = ?", [title]).fetchone()
+    assert [r["title"] for r in store.gdrive_sheets_for(conn, row["id"])] == sheets
+    # derived from the first sheet, which is what Drive's CSV export then serves verbatim
+    assert row["content"].startswith(content)

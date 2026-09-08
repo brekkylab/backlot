@@ -757,6 +757,7 @@ type Project {
   scope: Float!
   priorityLabel: String!
   priority: Int!
+  resourceCount: Int!
   color: String!
   content: String
   slugId: String!
@@ -921,6 +922,7 @@ type Team {
   slackNewIssue: Boolean!
   slackIssueStatuses: Boolean!
   triageEnabled: Boolean!
+  initiativesEnabled: Boolean!
   inviteHash: String!
   issueOrderingNoPriorityFirst: Boolean!
   issueSortOrderDefaultToBottom: Boolean!

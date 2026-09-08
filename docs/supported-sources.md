@@ -103,7 +103,10 @@ A `repo:` search qualifier resolves the same way.
 
 **Media types are honoured.** `Accept: application/vnd.github.raw` on `contents`/`readme`/`git/blobs`
 returns the file's bytes; `…diff`/`…patch` on a pull returns a real unified diff / `git am` mbox; and
-`…text-match+json` on `search/code` adds each hit's `text_matches` fragment.
+`…text-match+json` on `search/code` adds each hit's `text_matches` fragment. A JSON body is
+`application/json; charset=utf-8`, as real's is on every route measured, except on `search/code`,
+whose own 200 and 422 are the bare `application/json` real's code search backend sends; the 401
+there is the gateway's answer rather than that backend's, and carries the charset.
 
 **`X-GitHub-Api-Version` is honoured too**, in both values real currently supports: `2026-03-10`
 drops `assignee` (issues and pulls) and `merge_commit_sha` (pulls), `2022-11-28` keeps them, an

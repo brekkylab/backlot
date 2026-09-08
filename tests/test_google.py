@@ -1809,10 +1809,13 @@ def test_sheets_values_get_rejects_a_bad_enum(base, admin_h, sheet_id, params, f
     )
 
 
-def test_sheets_values_get_render_options_agree_on_this_corpus(base, admin_h, sheet_id):
-    """The corpus stores no formulas and no typed numbers — `spreadsheets.get` already declares
-    every cell a `stringValue` — so the three render options coincide here. Asserted so that a
-    future change which makes them diverge has to say so."""
+def test_sheets_values_get_render_options_agree_on_a_prose_spreadsheet(base, admin_h, sheet_id):
+    """A spreadsheet whose cells are lines of stored text holds no formulas and no typed numbers —
+    `spreadsheets.get` declares every cell a `stringValue` — so the three render options coincide
+    on one.
+
+    They do NOT coincide in general: a spreadsheet that STATES its grid distinguishes them, which
+    is what `test_the_render_options_differ_over_typed_cells` holds this against."""
     out = {
         opt: _values(base, admin_h, sheet_id, "Sheet1!A1:A3", valueRenderOption=opt).json()[
             "values"
@@ -2415,3 +2418,355 @@ def test_an_empty_grid_serialises_to_the_empty_string():
     assert sheets_grid.to_csv([]) == ""
     assert sheets_grid.to_tsv([]) == ""
     assert sheets_grid.to_csv(sheets_grid.normalise_grid([[None, None]])) == ""
+
+
+# --- a spreadsheet that states a real grid ------------------------------------------------------
+#
+# Its own corpus rather than records added to SAMPLE: SAMPLE is counted by tests across every
+# vendor file, and this workbook exists to be odd -- sheet titles that collide with a cell
+# reference, hold a bang, or name nothing at all.
+
+GRID_RECORDS = [
+    {
+        "source_type": "google_drive",
+        "doc_id": "gd-book",
+        "subtype": "spreadsheet",
+        "title": "Q3 pipeline",
+        "folder": "sales",
+        "group": "sales",
+        "visibility": "public",
+        "author_email": "dana@acme.com",
+        "created": "2026-07-01T09:00:00Z",
+        "updated": "2026-07-14T17:20:00Z",
+        "sheets": [
+            {"title": "Summary", "grid": [["Region", "Deals"], ["EMEA", 12, True]]},
+            {"title": "Second Sheet", "grid": [["plain"]]},
+            {"title": "has!bang", "grid": [["I_AM_BANG"]]},
+            {"title": "A1", "grid": [["I_AM_SHEET_A1"]]},
+            {"title": "Ragged", "grid": [["a", None, "c"]]},
+            {"title": "Blank", "grid": []},
+        ],
+    },
+    {
+        "source_type": "google_drive",
+        "doc_id": "gd-prose",
+        "subtype": "spreadsheet",
+        "title": "Prose sheet",
+        "folder": "sales",
+        "group": "sales",
+        "visibility": "public",
+        "author_email": "dana@acme.com",
+        "content": "month,revenue\nJan,120000",
+        "created": "2026-07-01T09:00:00Z",
+        "updated": "2026-07-14T17:20:00Z",
+    },
+    {
+        "source_type": "google_drive",
+        "doc_id": "gd-hostile",
+        "subtype": "spreadsheet",
+        "title": "Hostile cells",
+        "folder": "sales",
+        "group": "sales",
+        "visibility": "public",
+        "author_email": "dana@acme.com",
+        "created": "2026-07-01T09:00:00Z",
+        "updated": "2026-07-14T17:20:00Z",
+        "sheets": [{"grid": [["with,comma", 'with"quote', "with\nnewline"]]}],
+    },
+]
+
+
+@pytest.fixture(scope="module")
+def grid_settings(tmp_path_factory):
+    from tests._helpers import build_corpus
+
+    return build_corpus(tmp_path_factory.mktemp("grid"), GRID_RECORDS, raw=True)
+
+
+@pytest.fixture(scope="module")
+def gc(grid_settings):
+    """A client over the gridded corpus. ``reload`` because this module already opens one over
+    SAMPLE, and the lifespan writes its connection onto the module-level app state."""
+    from tests._helpers import client_for
+
+    with client_for(grid_settings, reload=True) as c:
+        yield c
+
+
+@pytest.fixture(scope="module")
+def gh(grid_settings):
+    data = yaml.safe_load(grid_settings.tokens_path.read_text())
+    return {"Authorization": f"Bearer {data['admin_token']}"}
+
+
+@pytest.fixture(scope="module")
+def book(grid_settings):
+    from tests._helpers import served_id
+
+    return served_id("google_drive", "gd-book")
+
+
+@pytest.fixture(scope="module")
+def prose(grid_settings):
+    from tests._helpers import served_id
+
+    return served_id("google_drive", "gd-prose")
+
+
+@pytest.fixture(scope="module")
+def hostile(grid_settings):
+    from tests._helpers import served_id
+
+    return served_id("google_drive", "gd-hostile")
+
+
+def test_a_prose_spreadsheet_is_still_one_synthesized_sheet(gc, gh, prose):
+    """The prose representation becomes one more grid rather than a second code path, so its served
+    shape must not move: one sheet, `sheetId` 0, the title Backlot has always given it."""
+    props = gc.get(f"/sheets/v4/spreadsheets/{prose}", headers=gh).json()["sheets"]
+    assert len(props) == 1
+    assert props[0]["properties"] == {
+        "sheetId": 0,
+        "title": "Sheet1",
+        "index": 0,
+        "sheetType": "GRID",
+        "gridProperties": {"rowCount": 1000, "columnCount": 26},
+    }
+
+
+def test_a_gridded_spreadsheet_reports_one_entry_per_stated_sheet(gc, gh, book):
+    """Measured on a real workbook: only the sheet created with the spreadsheet is 0, and every
+    later one carries a large pseudo-random integer -- so nothing may read `sheetId` as an index."""
+    props = [
+        s["properties"]
+        for s in gc.get(f"/sheets/v4/spreadsheets/{book}", headers=gh).json()["sheets"]
+    ]
+    assert [p["title"] for p in props] == [
+        "Summary",
+        "Second Sheet",
+        "has!bang",
+        "A1",
+        "Ragged",
+        "Blank",
+    ]
+    assert [p["index"] for p in props] == [0, 1, 2, 3, 4, 5]
+    assert props[0]["sheetId"] == 0
+    assert all(p["sheetId"] > 0 for p in props[1:])
+    assert len({p["sheetId"] for p in props}) == len(props)
+
+
+def test_a_sheet_wider_or_taller_than_the_default_grid_widens_its_grid_properties(gc, gh, book):
+    """Measured: the API refuses a write outside the grid rather than growing it, so a grid is
+    never smaller than the data it holds. The default is 1000 x 26 either way."""
+    props = {
+        s["properties"]["title"]: s["properties"]["gridProperties"]
+        for s in gc.get(f"/sheets/v4/spreadsheets/{book}", headers=gh).json()["sheets"]
+    }
+    assert props["Summary"] == {"rowCount": 1000, "columnCount": 26}
+    assert props["Blank"] == {"rowCount": 1000, "columnCount": 26}
+
+
+def _gvalues(gc, gh, book, rng, **params):
+    return gc.get(
+        f"/sheets/v4/spreadsheets/{book}/values/{quote(rng, safe='')}", headers=gh, params=params
+    )
+
+
+@pytest.mark.parametrize(
+    "spec,echo",
+    [
+        ("Summary!A1:B2", "Summary!A1:B2"),
+        ("summary!A1:B2", "Summary!A1:B2"),  # lookup is case-insensitive, the echo normalises
+        ("'Second Sheet'!A1", "'Second Sheet'!A1"),
+        ("Second Sheet!A1", "'Second Sheet'!A1"),  # an unquoted name with a space is accepted
+        ("has!bang!A1", "'has!bang'!A1"),  # the separator is the LAST bang
+        ("has!bang", "'has!bang'!A1:Z1000"),  # a bare sheet name is the whole declared grid
+        ("A1", "Summary!A1"),  # a cell reference beats a sheet named A1
+        ("'A1'!A1", "'A1'!A1"),
+        ("A1!A1", "'A1'!A1"),
+        ("Summary", "Summary!A1:Z1000"),
+        ("Summary!A:B", "Summary!A1:B1000"),  # an open range fills from gridProperties
+        ("Summary!1:2", "Summary!A1:Z2"),
+        ("Summary!B2:B1", "Summary!B1:B2"),  # reversed normalises ascending
+        ("Summary!A999:B1002", "Summary!A999:B1000"),  # the END clamps to the grid
+    ],
+)
+def test_an_a1_range_resolves_and_echoes_the_way_the_real_api_does(gc, gh, book, spec, echo):
+    r = _gvalues(gc, gh, book, spec)
+    assert r.status_code == 200, r.text
+    assert r.json()["range"] == echo
+
+
+@pytest.mark.parametrize("spec", ["Nope!A1:B2", "Nope", "!!!", "Summary!"])
+def test_an_unknown_sheet_gets_the_same_message_unparseable_garbage_gets(gc, gh, book, spec):
+    """Measured: the real API answers `Unable to parse range: <the range verbatim>` for a sheet it
+    does not have, which is the same message it gives genuine garbage. Not localised."""
+    r = _gvalues(gc, gh, book, spec)
+    assert r.status_code == 400
+    assert r.json()["error"]["message"] == f"Unable to parse range: {spec}"
+    assert r.json()["error"]["status"] == "INVALID_ARGUMENT"
+
+
+def test_an_unqualified_range_answers_from_the_sheet_at_index_zero(gc, gh, book):
+    assert _gvalues(gc, gh, book, "A1:B1").json()["values"] == [["Region", "Deals"]]
+
+
+def test_a_bare_sheet_name_reads_that_sheet_not_the_first(gc, gh, book):
+    assert _gvalues(gc, gh, book, "has!bang").json()["values"] == [["I_AM_BANG"]]
+    assert _gvalues(gc, gh, book, "'A1'!A1").json()["values"] == [["I_AM_SHEET_A1"]]
+
+
+# --- typed cells ---------------------------------------------------------------------------
+
+
+def test_a_typed_cell_carries_all_three_value_fields(gc, gh, book):
+    r = gc.get(
+        f"/sheets/v4/spreadsheets/{book}",
+        headers=gh,
+        params={"includeGridData": "true", "ranges": "Summary!A2:C2"},
+    )
+    cells = r.json()["sheets"][0]["data"][0]["rowData"][0]["values"]
+    assert cells[0] == {
+        "userEnteredValue": {"stringValue": "EMEA"},
+        "effectiveValue": {"stringValue": "EMEA"},
+        "formattedValue": "EMEA",
+    }
+    assert cells[1] == {
+        "userEnteredValue": {"numberValue": 12},
+        "effectiveValue": {"numberValue": 12},
+        "formattedValue": "12",
+    }
+    assert cells[2] == {
+        "userEnteredValue": {"boolValue": True},
+        "effectiveValue": {"boolValue": True},
+        "formattedValue": "TRUE",
+    }
+
+
+def test_an_empty_cell_carries_no_value_object(gc, gh, book):
+    r = gc.get(
+        f"/sheets/v4/spreadsheets/{book}",
+        headers=gh,
+        params={"includeGridData": "true", "ranges": "Ragged!A1:C1"},
+    )
+    assert r.json()["sheets"][0]["data"][0]["rowData"][0]["values"][1] == {}
+
+
+@pytest.mark.parametrize(
+    "render,want",
+    [
+        ("FORMATTED_VALUE", [["EMEA", "12", "TRUE"]]),
+        # measured: UNFORMATTED_VALUE returns real JSON numbers and booleans, and FORMULA returns
+        # the identical raw value for every cell that is not a formula
+        ("UNFORMATTED_VALUE", [["EMEA", 12, True]]),
+        ("FORMULA", [["EMEA", 12, True]]),
+    ],
+)
+def test_the_render_options_differ_over_typed_cells(gc, gh, book, render, want):
+    assert (
+        _gvalues(gc, gh, book, "Summary!A2:C2", valueRenderOption=render).json()["values"] == want
+    )
+
+
+@pytest.mark.parametrize("render", ["FORMATTED_VALUE", "UNFORMATTED_VALUE", "FORMULA"])
+def test_an_empty_cell_is_the_empty_string_under_every_render_option(gc, gh, book, render):
+    """Measured: a JSON string even under UNFORMATTED_VALUE, never null."""
+    got = _gvalues(gc, gh, book, "Ragged!A1:C1", valueRenderOption=render).json()["values"]
+    assert got == [["a", "", "c"]]
+
+
+def test_columns_transposes_a_real_two_dimensional_block(gc, gh, book):
+    got = _gvalues(gc, gh, book, "Summary!A1:B2", majorDimension="COLUMNS").json()["values"]
+    assert got == [["Region", "EMEA"], ["Deals", "12"]]
+
+
+def test_columns_keeps_a_fully_empty_interior_column_as_an_empty_list(gc, gh, book):
+    got = _gvalues(gc, gh, book, "Ragged!A1:C1", majorDimension="COLUMNS").json()["values"]
+    assert got == [["a"], [], ["c"]]
+
+
+def test_rows_are_trimmed_per_row_so_they_come_back_ragged(gc, gh, book):
+    got = _gvalues(gc, gh, book, "Summary!A1:C2").json()["values"]
+    assert got == [["Region", "Deals"], ["EMEA", "12", "TRUE"]]
+
+
+def test_an_entirely_empty_range_has_no_values_key(gc, gh, book):
+    assert "values" not in _gvalues(gc, gh, book, "Summary!H1:I3").json()
+    assert "values" not in _gvalues(gc, gh, book, "Blank").json()
+
+
+def test_one_unparseable_range_fails_the_whole_batch(gc, gh, book):
+    r = gc.get(
+        f"/sheets/v4/spreadsheets/{book}/values:batchGet",
+        headers=gh,
+        params={"ranges": ["Summary!A1:B2", "Nope!A1"]},
+    )
+    assert r.status_code == 400
+    assert r.json()["error"]["message"] == "Unable to parse range: Nope!A1"
+
+
+def test_batch_get_reads_several_sheets_of_one_workbook(gc, gh, book):
+    r = gc.get(
+        f"/sheets/v4/spreadsheets/{book}/values:batchGet",
+        headers=gh,
+        params={"ranges": ["Summary!A1:A1", "'Second Sheet'!A1"], "valueRenderOption": "FORMULA"},
+    )
+    assert [v["range"] for v in r.json()["valueRanges"]] == [
+        "Summary!A1",
+        "'Second Sheet'!A1",
+    ]
+
+
+# --- ranges scopes the sheets array ----------------------------------------------------------
+
+
+def test_ranges_filters_the_sheets_array_itself(gc, gh, book):
+    """Measured: a sheet no range touches is absent from the response entirely, not merely served
+    without data."""
+    r = gc.get(
+        f"/sheets/v4/spreadsheets/{book}",
+        headers=gh,
+        params={"includeGridData": "true", "ranges": "Summary!A1:B2"},
+    )
+    assert [s["properties"]["title"] for s in r.json()["sheets"]] == ["Summary"]
+
+
+def test_two_ranges_on_one_sheet_give_it_two_data_blocks(gc, gh, book):
+    r = gc.get(
+        f"/sheets/v4/spreadsheets/{book}",
+        headers=gh,
+        params={"includeGridData": "true", "ranges": ["Summary!A1:A2", "Summary!B1:C2"]},
+    )
+    sheets = r.json()["sheets"]
+    assert len(sheets) == 1
+    blocks = sheets[0]["data"]
+    assert len(blocks) == 2
+    assert "startColumn" not in blocks[0]  # proto3 drops a zero default
+    assert blocks[1]["startColumn"] == 1
+
+
+def test_ranges_across_two_sheets_returns_both_in_index_order(gc, gh, book):
+    r = gc.get(
+        f"/sheets/v4/spreadsheets/{book}",
+        headers=gh,
+        params={"includeGridData": "true", "ranges": ["'A1'!A1", "Summary!A1"]},
+    )
+    assert [s["properties"]["title"] for s in r.json()["sheets"]] == ["Summary", "A1"]
+
+
+def test_ranges_without_include_grid_data_still_filters_and_serves_no_cells(gc, gh, book):
+    r = gc.get(f"/sheets/v4/spreadsheets/{book}", headers=gh, params={"ranges": "Summary!A1:B2"})
+    sheets = r.json()["sheets"]
+    assert [s["properties"]["title"] for s in sheets] == ["Summary"]
+    assert "data" not in sheets[0]
+
+
+def test_an_empty_sheet_omits_row_data_entirely(gc, gh, book):
+    """Measured: an empty sheet's GridData block carries its metadata and no `rowData` key at all,
+    not an empty list."""
+    r = gc.get(
+        f"/sheets/v4/spreadsheets/{book}",
+        headers=gh,
+        params={"includeGridData": "true", "ranges": "Blank"},
+    )
+    assert "rowData" not in r.json()["sheets"][0]["data"][0]

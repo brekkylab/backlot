@@ -86,8 +86,8 @@ def _absorb_page(v):
     listing; the same five values are a 200 on `/repos/{o}/{r}/tags`, `/user/repos`,
     `/search/issues`, `/search/repositories`, `/search/users`, `/search/commits`, `/search/labels`
     and `/search/topics`, 2026-09-06). Refusing them would hand a paginator computing an edge value a
-    hard error where production absorbs it. Of those ten surfaces `/search/code` is the one that
-    refuses, and it refuses before this validator's answer matters: see
+    hard error where production absorbs it. The tenth measured surface, `/search/code`, is the
+    one that refuses, and it refuses before this validator's answer matters: see
     :func:`github_code_search_query_refusal`, which that route asks first.
 
     A `BeforeValidator` rather than a `str` annotation: the parameter stays an integer in the

@@ -271,7 +271,7 @@ def test_gmail_folder_query_sees_the_label_a_message_is_served_under(db):
 def test_gmail_relative_date_parse():
     # newer_than:/older_than: are operators (relative age), NOT free text — so they neither leak
     # into the FTS term nor drop the real free-text term beside them.
-    from backlot.routers.google import _parse_gmail_q, _gmail_rel_secs
+    from backlot.routers.google import _gmail_rel_secs, _parse_gmail_q
 
     free, ops = _parse_gmail_q("quarterly newer_than:5d older_than:1y")
     assert free == "quarterly"

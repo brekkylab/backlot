@@ -27,8 +27,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
 from backlot import auth, store, synth
-from backlot.routers import json_body
 from backlot.openapi import qp
+from backlot.routers import json_body
 
 router = APIRouter(prefix="/hubspot", tags=["hubspot"])
 

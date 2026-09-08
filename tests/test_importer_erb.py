@@ -14,8 +14,8 @@ import yaml
 from backlot import store, synth
 from backlot.config import get_settings
 from backlot.importer import byo, erb
-from tests._helpers import complete, served_id
 from backlot.importer.erb import Principals, canonical, grants_for
+from tests._helpers import complete, served_id
 
 C = erb
 
@@ -278,6 +278,7 @@ def test_canonical_group_unknown_team_is_its_own_group():
 
 def test_write_tokens_is_directory_only(tmp_path):
     import types
+
     import yaml as _yaml
 
     p = Principals(
@@ -333,6 +334,7 @@ def test_mint_does_not_clobber_directory_user(tmp_path):
     # an accented/titled directory name whose doc-reference doesn't canonical-match must still
     # keep its directory flag (the colliding mint must not overwrite it) → stays tokened
     import types
+
     import yaml as _yaml
 
     p = Principals(
@@ -2999,8 +3001,8 @@ def test_erb_to_byo_round_trip_writes_the_same_tokens(tmp_path):
 def test_erb_to_byo_output_validates_against_the_byo_schemas(tmp_path):
     """--dry-run has to still catch a bad corpus, so the converted artifact must pass the very
     same validator a hand-written corpus does — no private back door into the loader."""
-    from backlot.validation import validate_file
     from backlot.config import Settings
+    from backlot.validation import validate_file
 
     gen = _write_generated_data(tmp_path)
     data = tmp_path / "data"
@@ -3366,6 +3368,7 @@ def test_export_byo_shards_are_verifiable_and_reproducible(tmp_path):
     header would put the current time in every shard."""
     import gzip as _gzip
     import json as _json
+
     from backlot.config import Settings
 
     gen = _write_generated_data(tmp_path)

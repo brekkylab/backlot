@@ -26,8 +26,7 @@ from backlot.sigv4 import (
     parse_authorization,
     split_credential,
 )
-from tests._helpers import complete, client_for
-
+from tests._helpers import client_for, complete
 
 # ------------------------------------------------------------------------ S3 (SigV4/404/416 edges)
 
@@ -36,10 +35,12 @@ def _sign_get(base_url, path, token, *, tamper=False, extra_headers=None, method
     """Return (url, headers) for a SigV4-signed GET (or ``method``), using botocore (the real
     signer)."""
     pytest.importorskip("botocore")
+    from urllib.parse import parse_qsl, quote, urlencode
+
     from botocore.auth import S3SigV4Auth
     from botocore.awsrequest import AWSRequest
     from botocore.credentials import Credentials
-    from urllib.parse import parse_qsl, quote, urlencode
+
     from backlot import synth
 
     # URL-encode the path: split on ? to preserve the path part, then properly encode query params.
@@ -202,8 +203,8 @@ def _s3_big_corpus(n=3000):
 @pytest.fixture(scope="module")
 def big_bucket_settings(tmp_path_factory):
     """A DB of its own (not the shared SAMPLE) holding one bucket with ~3000 S3 objects."""
-    from backlot.importer.byo import load
     from backlot.config import Settings
+    from backlot.importer.byo import load
 
     data_dir = tmp_path_factory.mktemp("s3_big")
     settings = Settings(data_dir=data_dir)
@@ -231,10 +232,12 @@ def big_bucket_client(big_bucket_settings):
 def _s3_get(client, path, token):
     """SigV4-sign a GET (same signer as the module-level ``_sign_get``) and issue it through an
     in-process TestClient instead of a live socket."""
+    from urllib.parse import parse_qsl, quote, urlencode
+
     from botocore.auth import S3SigV4Auth
     from botocore.awsrequest import AWSRequest
     from botocore.credentials import Credentials
-    from urllib.parse import parse_qsl, quote, urlencode
+
     from backlot import synth
 
     if "?" in path:
@@ -652,7 +655,6 @@ botocore = pytest.importorskip("botocore")
 from botocore.auth import S3SigV4Auth  # noqa: E402
 from botocore.awsrequest import AWSRequest  # noqa: E402
 from botocore.credentials import Credentials  # noqa: E402
-
 
 TOKEN = "usr-7d0022af43df72b74a89"
 AK = synth.s3_access_key_id(TOKEN)

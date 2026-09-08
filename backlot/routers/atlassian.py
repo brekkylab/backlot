@@ -15,10 +15,10 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
 
 from backlot import auth, store, synth
-from backlot.openapi import qp
 from backlot.acl import Caller
 from backlot.config import get_settings
 from backlot.errors import atlassian as errors_atlassian
+from backlot.openapi import qp
 from backlot.pagination import confluence_next_link, decode_cursor, next_page_token
 
 router = APIRouter(prefix="/atlassian", tags=["atlassian"])

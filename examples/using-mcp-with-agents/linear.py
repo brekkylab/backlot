@@ -28,9 +28,9 @@ from __future__ import annotations
 import argparse
 import sys
 
+from _agent import run_agent
 from mcp import StdioServerParameters
 
-from _agent import run_agent
 from backlot import serve_or_connect
 
 CORPUS = [

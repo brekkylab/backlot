@@ -29,7 +29,6 @@ from backlot.integrations.mirage import point_google_at
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from _common.google_creds import google_oauth_user
-
 from _helpers import FUSE_HELP, lines, run_mirage
 
 CORPUS = [

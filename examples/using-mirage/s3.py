@@ -25,11 +25,11 @@ import os
 import subprocess
 import urllib.request
 
+from _helpers import FUSE_HELP, lines, run_mirage
 from mirage import MountMode, Workspace
 from mirage.resource.s3 import S3Config, S3Resource
 
 from backlot import serve_or_connect
-from _helpers import FUSE_HELP, lines, run_mirage
 
 BUCKET = "eng-artifacts"
 CORPUS = [

@@ -17,9 +17,9 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
 from backlot import auth, store, synth
-from backlot.openapi import qp
 from backlot.acl import Caller
 from backlot.config import get_settings
+from backlot.openapi import qp
 from backlot.pagination import decode_cursor_or_none, next_cursor
 
 router = APIRouter(prefix="/slack/api", tags=["slack"])

@@ -955,7 +955,7 @@ def test_slack_api_test_has_typed_response_schema(client):
 
 
 def test_slack_reply_users_and_num_members(tmp_path):
-    from backlot.routers.slack import _message, _listed_channel
+    from backlot.routers.slack import _listed_channel, _message
 
     s = tiny_corpus(
         tmp_path,

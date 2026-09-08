@@ -23,7 +23,6 @@ from starlette.testclient import TestClient
 
 from backlot.config import Settings, get_settings
 
-
 # A value for every field a schema can ask for, so `complete` can answer any of them. A field
 # missing here raises rather than guesses, which is how a new requirement announces itself.
 _FIELD_VALUES = {

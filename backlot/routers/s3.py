@@ -20,7 +20,6 @@ key-prefix convention surfaced via ListObjectsV2's ``delimiter``/``CommonPrefixe
 from __future__ import annotations
 
 import base64
-
 from xml.sax.saxutils import escape
 
 from fastapi import APIRouter, Request, Response

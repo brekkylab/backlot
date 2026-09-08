@@ -27,13 +27,12 @@ import os
 import subprocess
 import urllib.request
 
+from _helpers import FUSE_HELP, lines, run_mirage
 from mirage import MountMode, Workspace
 from mirage.resource.github import GitHubConfig, GitHubResource
 
 from backlot import serve_or_connect
 from backlot.integrations.mirage import point_github_at
-
-from _helpers import FUSE_HELP, lines, run_mirage
 
 REPO = "gateway"  # the throwaway CORPUS's repo; a --url server's own repos are discovered below
 CORPUS = [

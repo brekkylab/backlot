@@ -21,11 +21,11 @@ import argparse
 import os
 import subprocess
 
+from _helpers import FUSE_HELP, lines, run_mirage
 from mirage import MountMode, Workspace
 from mirage.resource.notion import NotionConfig, NotionResource
 
 from backlot import serve_or_connect
-from _helpers import FUSE_HELP, lines, run_mirage
 
 CORPUS = [
     {

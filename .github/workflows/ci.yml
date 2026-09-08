@@ -59,7 +59,9 @@ jobs:
         with:
           python-version: "3.13"
       - name: Install ruff
-        run: pip install "$(grep -oE 'ruff~=[0-9.]+' pyproject.toml)"
+        run: |
+          req=$(python -c 'import re, tomllib; deps = tomllib.load(open("pyproject.toml", "rb"))["project"]["optional-dependencies"]["dev"]; print(next(d for d in deps if re.split(r"[^A-Za-z0-9_.-]", d, maxsplit=1)[0] == "ruff"))')
+          pip install "$req"
       - name: ruff format --check
         run: ruff format --check .
       - name: ruff check

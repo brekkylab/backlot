@@ -881,9 +881,7 @@ async def search_code(
     line, which serves page 34 in full and refuses the page that STARTS past 1000 (both rules are
     :func:`backlot.pagination.github_search_depth_refused`'s). The refusal comes after the blank-`q`
     422 and before the `repo:` qualifier is read: `repo:psf/ghost-zz-9876` at page 11 of 100 is
-    this 422, not the qualifier's answer (all measured 2026-09-06). It is measured in the size THIS
-    server applies: with an unsent size the refusal falls at page 11 here (default 100) where
-    real's, at its default 30, falls at 34.
+    this 422, not the qualifier's answer (all measured 2026-09-06).
     """
     caller = _require(request)
     refusal = github_code_search_query_refusal(request.query_params)

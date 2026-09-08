@@ -3200,7 +3200,8 @@ def test_github_json_carries_the_charset_real_sends_except_on_code_search(
     gh_client, gh_admin_h, gh_org
 ):
     """Real answers `application/json; charset=utf-8` on every GitHub JSON response measured
-    (2026-09-06: eight 200s, a 404, a 422, the version 400 and a 401) and `application/json` on
+    (2026-09-06: nine 200s, one of them with no credential, a 404, a 422, the version 400 and a 401)
+    and `application/json` on
     `/search/code`, whose backend is not the rest of the API's, on its 200 and its 422s alike; the
     401 on that path is the gateway's and carries the charset (2026-09-07), as does the answer to a
     wrong method. Backlot answered FastAPI's bare `application/json` everywhere, so a client or a

@@ -101,7 +101,8 @@ def owns(path: str) -> bool:
 JSON_MEDIA_TYPE = "application/json; charset=utf-8"
 
 #: The statuses the code search backend answers itself, and so without the charset. Its 400 is
-#: text/plain and never a JSON body; everything else on the path is the gateway's.
+#: text/plain and never a JSON body; the 401 and the 405 this server answers on the path are the
+#: gateway's kind and keep the charset.
 _CODE_SEARCH_BACKEND_STATUSES = frozenset({200, 422})
 
 
@@ -111,10 +112,12 @@ def json_media_type(path: str, status_code: int) -> str:
     `application/json; charset=utf-8` everywhere: measured 2026-09-06 on api.github.com over
     thirteen responses, the 200s of `/repos/{o}/{r}/issues`, `/repos/{o}/{r}`, `/branches`,
     `/commits`, `/contents/{path}`, `/orgs/{org}`, `/user/repos` and `/search/issues`, the 404 for
-    a repository that does not exist, the 422 for a blank search `q`, the version 400 and the 401 for
-    no credential. Code search is the exception, served by a backend that is not the rest of the
-    API's: `/search/code` answers `application/json` with no charset on its 200 and on its 422s
-    alike, the same backend that reads no version header (see ``routers.github.honours_api_version``).
+    a repository that does not exist, the 422 for a blank search `q`, the version 400, the 401 for
+    no credential, and the 200 `/repos/{o}/{r}` answers with no credential at all (the thirteen
+    unchanged on 2026-09-08). Code search is the exception, served by a backend that is not the
+    rest of the API's: `/search/code` answers `application/json` with no charset on its 200 and on
+    its 422s alike, the same backend that reads no version header (see
+    ``routers.github.honours_api_version``).
     The exception is the backend's and not the path's: the 401 for no credential or a bad one on
     `/search/code` is the gateway's answer and carries the charset like every other 401 (measured
     2026-09-07), so on this path only the statuses the backend answers, 200 and 422, go without it.

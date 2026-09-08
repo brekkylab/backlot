@@ -172,9 +172,9 @@ async def vendor_json_media_type(request: Request, call_next):
     real's own spec says `application/json` there: the charset is a fact about the wire, not about
     the contract, and `backlot diff` compares the contract. Only a response that is exactly
     `application/json` is touched, so the raw, diff and text/plain answers keep their own types, and
-    the error handlers below are covered along with the handlers. The status goes along with the
-    path because the answer can depend on it: code search's own 200 and 422 carry no charset where
-    the gateway's 401 on the same path does.
+    the two exception handlers above are covered along with the route handlers. The status goes
+    along with the path because the answer can depend on it: code search's own 200 and 422 carry no
+    charset where the gateway's 401 on the same path does.
     """
     response = await call_next(request)
     if response.headers.get("content-type") == "application/json":

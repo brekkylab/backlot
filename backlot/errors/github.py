@@ -177,14 +177,17 @@ def docs_url(path: str) -> str:
 def http_body(path: str, exc) -> dict | None:
     """Render an exception into the envelope.
 
-    An error the router shaped by hand carries its own body as ``github_body`` — the version 400
-    and the two Validation Failed search 422s, which have an ``errors`` member no generic rendering
-    could invent, and the two depth 422s, whose ``documentation_url`` is not the route's anchor in
-    :data:`ROUTE_DOCS` (the issue search's is the bare ``/v3/search/`` with its trailing slash, code
-    search's the ``#search-code`` anchor) — and that wins. Everything else is the three-member
-    envelope over the exception's own detail, whose wording is already real's ("Not Found", "Bad
-    credentials") because the routers were written against measured responses; only the shape
-    around it was FastAPI's.
+    An error the router shaped by hand carries its own body as ``github_body``, and that wins. Six
+    sites do, each for one of three reasons no generic rendering could supply: an ``errors`` member
+    (the version 400 and the two Validation Failed search 422s); a ``documentation_url`` that is not
+    the route's anchor in :data:`ROUTE_DOCS` (the two depth 422s, the issue search's the bare
+    ``/v3/search/`` with its trailing slash and code search's the ``#search-code`` anchor, and the
+    ref 404 the contents routes raise, whose is ``/v3/repos/contents/``); or a ``message`` the
+    exception's ``detail`` does not carry, the ref echoed back (that same ref 404, and the
+    ``/commits/{sha}`` 422 of ``_no_commit_for_sha``, whose ``documentation_url`` is the route's
+    own). Everything else is the three-member envelope over the exception's own detail, whose
+    wording is already real's ("Not Found", "Bad credentials") because the routers were written
+    against measured responses; only the shape around it was FastAPI's.
 
     A 405 is the exception, and keeps FastAPI's ``detail``. Every route here declares GET, so a
     wrong method is refused by Starlette with ``http.HTTPStatus(405).phrase`` — a string no

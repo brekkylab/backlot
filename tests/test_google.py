@@ -17,7 +17,7 @@ import jwt
 import pytest
 import yaml
 
-from backlot import oauth, store
+from backlot import oauth, sheets_grid, store
 from backlot.config import Settings
 from tests._helpers import (
     client_for,
@@ -2342,3 +2342,76 @@ def test_public_key_not_exposed(creds):
     _, o = creds
     # the SA bundle handed out carries the private key (client signs) but never the public key
     assert "public_key_pem" not in o.service_account_json("http://x")
+
+
+# --- the grid behind a spreadsheet: normalising it, and serialising it the way export does ------
+
+
+@pytest.mark.parametrize(
+    "cell,want",
+    [("hello", "hello"), (42, "42"), (3.5, "3.5"), (True, "TRUE"), (False, "FALSE"), (None, "")],
+)
+def test_a_cell_formats_the_way_the_real_api_displays_it(cell, want):
+    assert sheets_grid.formatted(cell) == want
+
+
+def test_normalise_pads_short_rows_and_collapses_integral_floats():
+    """A ragged grid is padded rather than refused -- a table whose last row is short is ordinary.
+    3.0 collapses because a real sheet stores it as ``numberValue: 3``."""
+    assert sheets_grid.normalise_grid([["a", "b", "c"], ["d"], []]) == [
+        ["a", "b", "c"],
+        ["d", None, None],
+        [None, None, None],
+    ]
+    assert sheets_grid.normalise_grid([[3.0, 3.5]]) == [[3, 3.5]]
+    assert sheets_grid.normalise_grid([]) == []
+
+
+def test_normalise_keeps_a_boolean_a_boolean():
+    """`bool` is a subclass of `int`, so an unguarded numeric branch turns True into 1."""
+    assert sheets_grid.normalise_grid([[True, False]]) == [[True, False]]
+
+
+def test_used_extent_stops_at_the_last_row_and_column_holding_anything():
+    assert sheets_grid.used_extent([["a", None, None], [None, None, None]]) == (1, 1)
+    assert sheets_grid.used_extent([[None]]) == (0, 0)
+    assert sheets_grid.used_extent([]) == (0, 0)
+
+
+def test_csv_export_follows_the_measured_rfc4180_rules():
+    """Measured against a real export: quote on a comma, a double quote or a newline; double an
+    embedded quote; keep an embedded newline bare inside the quotes; leave a TAB and surrounding
+    spaces unquoted; separate rows with CRLF; emit no trailing newline."""
+    grid = sheets_grid.normalise_grid(
+        [
+            ["FIRST_SHEET_MARKER", None, None],
+            ["with,comma", 'with"quote', "with\nnewline"],
+            ["with\ttab", "trailing ", "  leading"],
+            [42, True, None],
+        ]
+    )
+    assert sheets_grid.to_csv(grid) == (
+        "FIRST_SHEET_MARKER,,\r\n"
+        '"with,comma","with""quote","with\nnewline"\r\n'
+        "with\ttab,trailing ,  leading\r\n"
+        "42,TRUE,"
+    )
+
+
+def test_tsv_export_collapses_a_newline_and_a_tab_to_a_space_and_never_quotes():
+    """Measured: TSV has no quoting mechanism at all, so the conversion is lossy. Reproducing the
+    loss is what agreeing with it means."""
+    grid = sheets_grid.normalise_grid(
+        [["with,comma", 'with"quote', "with\nnewline"], ["with\ttab", 1, None]]
+    )
+    assert sheets_grid.to_tsv(grid) == 'with,comma\twith"quote\twith newline\r\nwith tab\t1\t'
+
+
+def test_export_rows_are_rectangular_unlike_the_ragged_rows_values_get_returns():
+    assert sheets_grid.to_csv(sheets_grid.normalise_grid([["a", "b"], ["c"]])) == "a,b\r\nc,"
+
+
+def test_an_empty_grid_serialises_to_the_empty_string():
+    assert sheets_grid.to_csv([]) == ""
+    assert sheets_grid.to_tsv([]) == ""
+    assert sheets_grid.to_csv(sheets_grid.normalise_grid([[None, None]])) == ""

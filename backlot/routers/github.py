@@ -151,8 +151,12 @@ def _unsupported_version_error(pinned: str) -> HTTPException:
 
 
 def _version(request: Request) -> str:
-    """The API version to build this response for. Never ``None``: ``_validate_api_version`` is a
-    router-wide dependency, so an unsupported one never reaches a handler."""
+    """The API version to build this response for. Never ``None`` where it is asked:
+    ``_validate_api_version`` is a router-wide dependency, so on every route that honours the header
+    an unsupported version never reaches a handler. `/search/code` does let one through, since
+    real's code search does not read the header (see :func:`honours_api_version`), and nothing on
+    that route asks this; the fallback keeps the return a ``str`` and is not a case any route
+    reaches."""
     return selected_api_version(request) or DEFAULT_API_VERSION
 
 

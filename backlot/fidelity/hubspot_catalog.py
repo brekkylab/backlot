@@ -17,7 +17,8 @@ module reads a document; which document to read is one vendor's private arrangem
 
 from __future__ import annotations
 
-from typing import Any, Callable, Mapping
+from dataclasses import dataclass
+from typing import Any, Mapping
 
 from backlot.fidelity.errors import FidelityError
 
@@ -35,10 +36,27 @@ def _entry_url(catalog: Mapping[str, Any], api: str, version: str) -> str:
     raise FidelityError(f"no API named {api!r} in the catalog")
 
 
-def entry(api: str, version: str) -> Callable[[Mapping[str, Any]], str]:
-    """A ``resolve_url`` hook that picks one API's version out of HubSpot's index."""
+@dataclass(frozen=True)
+class Entry:
+    """A ``resolve_url`` hook that picks one API's version out of HubSpot's index.
 
-    def resolve(catalog: Mapping[str, Any]) -> str:
-        return _entry_url(catalog, api, version)
+    An object rather than a closure so the choice it makes is legible from outside. Every HubSpot
+    ``Spec`` carries the same ``spec_url`` — the index — and which DOCUMENT that resolves to is
+    decided here. Behind a closure, a source comparing two HubSpot APIs reports the index URL twice
+    and names neither document, which is precisely what the baseline's endpoint list exists to say.
+    """
 
-    return resolve
+    api: str
+    version: str
+
+    def __call__(self, catalog: Mapping[str, Any]) -> str:
+        return _entry_url(catalog, self.api, self.version)
+
+    def __str__(self) -> str:
+        return f"{self.api}/{self.version}"
+
+
+def entry(api: str, version: str) -> Entry:
+    """A ``resolve_url`` hook for one API's version. A function so callers read as a call, not a
+    construction: which of the two it is does not matter to them."""
+    return Entry(api, version)

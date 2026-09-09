@@ -68,6 +68,17 @@ class Spec:
     # not the simplification it appears to be.
     resolve_url: Callable[[Mapping[str, Any]], str] | None = None
 
+    @property
+    def endpoint(self) -> str:
+        """What this document is called, for the baseline's identity and the CLI's header.
+
+        ``spec_url`` alone is not always the document. HubSpot's is an INDEX, and ``resolve_url``
+        decides which of its entries to read — so two Specs over that index would otherwise report
+        the same URL twice and name neither document."""
+        if self.resolve_url is None:
+            return self.spec_url
+        return f"{self.spec_url}#{self.resolve_url}"
+
 
 @dataclass(frozen=True)
 class OpenAPIComparison:
@@ -88,7 +99,7 @@ class OpenAPIComparison:
 
     @property
     def endpoints(self) -> tuple[str, ...]:
-        return tuple(s.spec_url for s in self.specs)
+        return tuple(s.endpoint for s in self.specs)
 
     def divergences(
         self, credentials: Mapping[str, str] | None = None, *, timeout: float = 120.0
@@ -115,7 +126,7 @@ class GoogleDiscoveryComparison:
 
     @property
     def endpoints(self) -> tuple[str, ...]:
-        return tuple(s.spec_url for s in self.specs)
+        return tuple(s.endpoint for s in self.specs)
 
     def divergences(
         self, credentials: Mapping[str, str] | None = None, *, timeout: float = 120.0

@@ -238,10 +238,15 @@ def test_a_comparison_with_two_specs_reports_both_documents_findings(monkeypatch
 def test_every_comparison_names_the_documents_it_was_measured_against():
     """`endpoints` is the baseline's identity, and a source can now have more than one document
     behind it -- a single joined string could not tell a source that GAINED a document from one
-    whose document moved."""
+    whose document moved.
+
+    Each entry must be DISTINCT, which `spec_url` alone does not give: HubSpot's is an index, and
+    both of its Specs address it, so naming documents by their fetch URL reported the same string
+    twice and identified neither. `Spec.endpoint` qualifies it with what `resolve_url` selects."""
     for name, c in COMPARISONS.items():
         assert isinstance(c.endpoints, tuple) and c.endpoints, name
         assert all(e.startswith("http") for e in c.endpoints), name
+        assert len(set(c.endpoints)) == len(c.endpoints), f"{name}: {c.endpoints}"
 
 
 def test_a_baseline_round_trips_every_endpoint_it_names(tmp_path):

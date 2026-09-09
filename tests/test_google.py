@@ -2445,6 +2445,10 @@ GRID_RECORDS = [
             {"title": "Second Sheet", "grid": [["plain"]]},
             {"title": "has!bang", "grid": [["I_AM_BANG"]]},
             {"title": "A1", "grid": [["I_AM_SHEET_A1"]]},
+            # A title that is a bare COLUMN reference, not a cell one: `A1` resolves inside the
+            # default grid while `AB` is column 28 of a 26-column sheet, so the two fail
+            # differently -- one serves the wrong cells, the other 400s.
+            {"title": "AB", "grid": [["I_AM_SHEET_AB"]]},
             {"title": "Ragged", "grid": [["a", None, "c"]]},
             {"title": "Blank", "grid": []},
         ],
@@ -2548,10 +2552,11 @@ def test_a_gridded_spreadsheet_reports_one_entry_per_stated_sheet(gc, gh, book):
         "Second Sheet",
         "has!bang",
         "A1",
+        "AB",
         "Ragged",
         "Blank",
     ]
-    assert [p["index"] for p in props] == [0, 1, 2, 3, 4, 5]
+    assert [p["index"] for p in props] == [0, 1, 2, 3, 4, 5, 6]
     assert props[0]["sheetId"] == 0
     assert all(p["sheetId"] > 0 for p in props[1:])
     assert len({p["sheetId"] for p in props}) == len(props)
@@ -2731,6 +2736,30 @@ def test_batch_get_transposes_a_real_two_dimensional_block(gc, gh, book):
     got = r.json()["valueRanges"][0]
     assert got["majorDimension"] == "COLUMNS"
     assert got["values"] == [["Region", "EMEA"], ["Deals", "12"]]
+
+
+def test_include_grid_data_without_ranges_gives_every_sheet_its_own_cells(gc, gh, book):
+    """Measured: with the flag and no `ranges`, every sheet carries a block of its own.
+
+    A sheet must not be addressed by round-tripping its title back through the A1 parser -- a title
+    that reads as a cell reference (`A1`) or a column reference (`AB`) would then resolve against
+    the FIRST sheet, serving one sheet's cells under another's name, or overflowing the grid and
+    failing the whole call."""
+    r = gc.get(f"/sheets/v4/spreadsheets/{book}", headers=gh, params={"includeGridData": "true"})
+    assert r.status_code == 200, r.text
+    got = {}
+    for s in r.json()["sheets"]:
+        rows = s["data"][0].get("rowData", [])
+        # Each row is padded to the grid's width with empty cell objects, which real Sheets does
+        # too; the occupied prefix is what says which sheet answered.
+        got[s["properties"]["title"]] = [
+            [v["formattedValue"] for v in row["values"] if v] for row in rows
+        ]
+    assert got["A1"] == [["I_AM_SHEET_A1"]]
+    assert got["AB"] == [["I_AM_SHEET_AB"]]
+    assert got["has!bang"] == [["I_AM_BANG"]]
+    assert got["Summary"][0] == ["Region", "Deals"]
+    assert got["Blank"] == []
 
 
 # --- ranges scopes the sheets array ----------------------------------------------------------

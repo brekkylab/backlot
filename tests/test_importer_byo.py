@@ -5569,6 +5569,23 @@ def test_reimporting_a_workbook_replaces_its_sheets_rather_than_adding_to_them(t
     assert json.loads(rows[0]["grid"]) == [["only"]]
 
 
+def test_reimporting_a_workbook_as_prose_drops_its_sheets(tmp_path):
+    """The other direction of the same rule, and the worse one: a record that stops stating a grid
+    must stop serving one. Left behind, the stale sheets make `spreadsheets.get` answer with cells
+    that `files.export` no longer has -- one document described two ways, which is the whole thing
+    a derived `content` exists to prevent."""
+    settings = Settings(data_dir=tmp_path)
+    load(_write(tmp_path, [GRID_REC], name="a.jsonl"), settings)
+    prose = {k: v for k, v in GRID_REC.items() if k != "sheets"}
+    prose["content"] = "now prose"
+    load(_write(tmp_path, [prose], name="b.jsonl"), settings, reset=False)
+
+    conn = store.connect_ro(settings.db_path)
+    row = conn.execute("SELECT id, content FROM gdrive_files").fetchone()
+    assert row["content"] == "now prose"
+    assert store.gdrive_sheets_for(conn, row["id"]) == []
+
+
 @pytest.mark.parametrize(
     "overrides,fragment",
     [
@@ -5576,6 +5593,13 @@ def test_reimporting_a_workbook_replaces_its_sheets_rather_than_adding_to_them(t
         ({"subtype": "document"}, "subtype 'spreadsheet'"),
         (
             {"sheets": [{"title": "Data", "grid": []}, {"title": "data", "grid": []}]},
+            "duplicate sheet title",
+        ),
+        # A title nobody stated still occupies a name: sheet 0 defaults to `Sheet1`, so a sheet
+        # that spells `Sheet1` out collides with it. Comparing only STATED titles misses this and
+        # leaves the second sheet unreachable by name -- lookup answers with the first match.
+        (
+            {"sheets": [{"grid": [["x"]]}, {"title": "Sheet1", "grid": [["y"]]}]},
             "duplicate sheet title",
         ),
     ],

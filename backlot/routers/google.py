@@ -1750,8 +1750,26 @@ async def sheets_get(spreadsheet_id: str, request: Request):
     would differ between the two backends. With the flag, ``ranges`` scopes the returned rows
     (measured: 5.7 MB -> 11 KB for ``A1:B2``)."""
     row, sheets = _workbook(request, spreadsheet_id)
-    out = [
-        {
+    specs = request.query_params.getlist("ranges")
+    # Each sheet paired with the cell parts to serve for it: `("", title)` is the whole grid, which
+    # is what a sheet nobody named gets. Resolved ONCE, here — a sheet is never re-derived from its
+    # own title further down, or one titled like a cell reference (`A1`, `AB`) would come back
+    # holding the first sheet's cells, or overflow the grid and fail the whole call.
+    wanted: list[tuple[_Sheet, list[tuple[str, str]]]] = [(sh, [("", sh.title)]) for sh in sheets]
+    if specs:
+        # `ranges` filters the SHEETS ARRAY, not merely the cells: measured, a sheet no range
+        # touches is absent from the response entirely, and a sheet several ranges touch gets one
+        # `data` block per range. That holds with or without `includeGridData` — without it the
+        # sheet list is still filtered and no block is served.
+        per_sheet: dict[int, list[tuple[str, str]]] = {}
+        for spec in specs:
+            sheet, body = _a1_sheet(spec, sheets)
+            per_sheet.setdefault(sheet.index, []).append((body, spec))
+        wanted = [(sh, per_sheet[sh.index]) for sh in sheets if sh.index in per_sheet]
+    grid = (request.query_params.get("includeGridData") or "").lower() == "true"
+    out = []
+    for sh, parts in wanted:
+        entry = {
             "properties": {
                 "sheetId": sh.sheet_id,
                 "title": sh.title,
@@ -1761,26 +1779,9 @@ async def sheets_get(spreadsheet_id: str, request: Request):
                 "gridProperties": {"rowCount": sh.rows, "columnCount": sh.cols},
             }
         }
-        for sh in sheets
-    ]
-    specs = request.query_params.getlist("ranges")
-    if specs:
-        # `ranges` filters the SHEETS ARRAY, not merely the cells: measured, a sheet no range
-        # touches is absent from the response entirely, and a sheet several ranges touch gets one
-        # `data` block per range. That holds with or without `includeGridData` — without it the
-        # sheet list is still filtered and no block is served.
-        per_sheet: dict[int, list[str]] = {}
-        for spec in specs:
-            sheet, _body = _a1_sheet(spec, sheets)
-            per_sheet.setdefault(sheet.index, []).append(spec)
-        out = [e for e in out if e["properties"]["index"] in per_sheet]
-    if (request.query_params.get("includeGridData") or "").lower() == "true":
-        for entry in out:
-            index = entry["properties"]["index"]
-            entry["data"] = [
-                _sheets_grid_data(s, sheets)
-                for s in (per_sheet[index] if specs else [sheets[index].title])
-            ]
+        if grid:
+            entry["data"] = [_sheets_grid_data(sh, body, spec) for body, spec in parts]
+        out.append(entry)
     return {
         "spreadsheetId": spreadsheet_id,
         "properties": {"title": row["title"], "locale": "en_US"},
@@ -1978,21 +1979,24 @@ def _rstrip_empty(cells: list[str]) -> list[str]:
     return cells
 
 
-def _sheets_block(spec: str, sheets: list[_Sheet]):
-    """``(sheet, r0, c0, r1, c1, cells)`` for an A1 range: which sheet it named, the range as
+def _sheets_block(sheet: _Sheet, body: str, spec: str):
+    """``(r0, c0, r1, c1, cells)`` for the cell part ``body`` against ``sheet``: the range as
     resolved against that sheet's grid, and the cells it covers as STORED — trimming happens in the
-    caller, which knows how it is rendering them.
+    caller, which knows how it is rendering them. ``spec`` is only what an error echoes.
+
+    Takes an already-resolved sheet rather than re-parsing one out of a spec, so a caller that
+    knows which sheet it wants cannot have it reinterpreted: a title reading as a cell or column
+    reference (``A1``, ``AB``) would resolve against the FIRST sheet instead of itself.
 
     The bounds are the RANGE's, not the data's: callers echo them, so they must not shrink to the
     occupied cells."""
-    sheet, body = _a1_sheet(spec, sheets)
     rows = sheet.grid
     r0, c0, r1, c1 = _a1_range(spec, body, sheet)
     block = [
         [(rows[r][c] if c < len(rows[r]) else None) for c in range(c0, c1)]
         for r in range(r0, min(r1, len(rows)))
     ]
-    return sheet, r0, c0, r1, c1, block
+    return r0, c0, r1, c1, block
 
 
 def _sheets_value(cell) -> dict:
@@ -2015,7 +2019,7 @@ def _sheets_value(cell) -> dict:
     return {"stringValue": cell}
 
 
-def _sheets_grid_data(spec: str, sheets: list[_Sheet]) -> dict:
+def _sheets_grid_data(sheet: _Sheet, body: str, spec: str) -> dict:
     """One ``GridData`` block for ``spreadsheets.get?includeGridData=true``.
 
     Rows are padded to the range's width (real Sheets returns a cell object per column, empty ones
@@ -2031,7 +2035,7 @@ def _sheets_grid_data(spec: str, sheets: list[_Sheet]) -> dict:
     Two divergences, stated rather than hidden: real Sheets pads ``rowData`` to the WHOLE 1000-row
     grid and this stops at the last row holding data; and real cells carry format objects plus
     ``rowMetadata``/``columnMetadata``, none of which Backlot models."""
-    _sheet, r0, c0, _r1, c1, block = _sheets_block(spec, sheets)
+    r0, c0, _r1, c1, block = _sheets_block(sheet, body, spec)
     width = c1 - c0
     while block and all(sheets_grid.formatted(c) == "" for c in block[-1]):
         block.pop()
@@ -2086,7 +2090,8 @@ def _sheets_value_range(spec: str, sheets: list[_Sheet], major: str, render: str
 
     A range holding nothing omits ``values`` entirely — a client tests for the key's presence, so
     an empty list would claim the range exists and is blank."""
-    sheet, r0, c0, r1, c1, raw = _sheets_block(spec, sheets)
+    sheet, body = _a1_sheet(spec, sheets)
+    r0, c0, r1, c1, raw = _sheets_block(sheet, body, spec)
     block = [[_sheets_render(c, render) for c in row] for row in raw]
     out = {"range": _a1_name(sheet, r0, c0, r1, c1), "majorDimension": major}
     if major == "COLUMNS":

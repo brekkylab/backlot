@@ -892,9 +892,9 @@ def _sheets_pairing_errors(rec: dict) -> list[str]:
         msgs.append(f"'sheets' needs subtype 'spreadsheet' (this is {subtype!r})")
     first: dict[str, int] = {}
     for i, sheet in enumerate(sheets):
-        title = sheet.get("title") if isinstance(sheet, dict) else None
-        if not isinstance(title, str):
+        if not isinstance(sheet, dict):
             continue
+        title = _sheet_title(sheet, i)
         prior = first.setdefault(title.casefold(), i)
         if prior != i:
             msgs.append(
@@ -902,6 +902,18 @@ def _sheets_pairing_errors(rec: dict) -> list[str]:
                 "the real API compares them case-insensitively)"
             )
     return msgs
+
+
+def _sheet_title(sheet: dict, i: int) -> str:
+    """A sheet's title, defaulted by position when the corpus states none.
+
+    ``Sheet<n>`` is the real API's own English-locale default for a sheet at that position. Shared
+    with the duplicate check above rather than defaulted only where rows are built: a name nobody
+    typed still OCCUPIES that name, so a corpus whose first sheet is unnamed and whose second
+    spells out `Sheet1` has two sheets with one title -- and lookup answers with the first, leaving
+    the other unreachable."""
+    title = sheet.get("title")
+    return title if isinstance(title, str) and title else f"Sheet{i + 1}"
 
 
 def _sheet_rows(file_id: str, sheets: list[dict]) -> list[tuple]:
@@ -915,7 +927,7 @@ def _sheet_rows(file_id: str, sheets: list[dict]) -> list[tuple]:
     taken: set[int] = set()
     out = []
     for i, sheet in enumerate(sheets):
-        title = sheet.get("title") or f"Sheet{i + 1}"
+        title = _sheet_title(sheet, i)
         sid = 0
         if i:
             salt = ""
@@ -2321,12 +2333,19 @@ class _Loader:
             updated,
             owner_display,
         )
-        if drive_sheets is not None:
+        if src == "google_drive":
             # After `insert`, because the sheets are keyed on the file id it assigned. REPLACE and
             # not append: the file's own row upserts, so an `--append` re-importing a workbook that
             # lost a sheet must stop serving it (see `store.gdrive_replace_sheets`).
+            #
+            # Runs for EVERY drive record, not only one that states a grid. A record that stops
+            # stating one has to stop serving one: left behind, the stale sheets would have
+            # `spreadsheets.get` answer with cells the re-derived `content` -- and so
+            # `files.export` -- no longer holds, which is the one document described two ways that
+            # a derived `content` exists to rule out.
             file_id = self.keys[(src, doc_id)][0]
-            store.gdrive_replace_sheets(conn, file_id, _sheet_rows(file_id, drive_sheets))
+            rows = _sheet_rows(file_id, drive_sheets) if drive_sheets is not None else []
+            store.gdrive_replace_sheets(conn, file_id, rows)
 
         if src == "slack":
             # The root has landed, so its ts is settled — every reply below stores it as its

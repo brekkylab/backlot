@@ -1,6 +1,8 @@
 {
   "source": "s3",
-  "endpoint": "https://raw.githubusercontent.com/boto/botocore/develop/botocore/data/s3/2006-03-01/service-2.json",
+  "endpoints": [
+    "https://raw.githubusercontent.com/boto/botocore/develop/botocore/data/s3/2006-03-01/service-2.json"
+  ],
   "measured": "2026-09-03",
   "acknowledged": [
     {

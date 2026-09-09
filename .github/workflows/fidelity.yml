@@ -114,8 +114,8 @@ jobs:
           # The API refuses a body over 65536 characters, and this step runs under `bash -e`, so
           # that refusal takes the step down: the job would go red with no issue filed and the
           # report only in the run log. A vendor restructuring its document turns a whole baseline
-          # into new findings at once — measured against an empty baseline, github's report is 135k
-          # characters and jira's 69k — so the report is capped well under the limit.
+          # into new findings at once — measured against an empty baseline, jira's report is 135k
+          # characters and github's 134k — so the report is capped well under the limit.
           report=$(cat report.txt)
           if [ "${#report}" -gt 55000 ]; then
             # Sliced, not `head -c`: the test above counts characters, and cutting bytes leaves

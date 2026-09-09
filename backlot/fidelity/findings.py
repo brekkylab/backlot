@@ -37,6 +37,21 @@ class Finding:
         return d
 
 
+def _reject_one_url(value) -> None:
+    """A str is iterable, so one URL passed unwrapped spreads: `list("https://…")` writes one
+    list element per character, which loads back the same way with nothing downstream shaped
+    wrongly enough to complain."""
+    if isinstance(value, str):
+        raise TypeError(f"endpoints is a tuple of URLs, not one URL: pass ({value!r},)")
+
+
+def _endpoints(raw) -> tuple[str, ...]:
+    """What the file said, as a tuple — refusing a bare string BEFORE converting it, because
+    `tuple("https://…")` is that per-character spread rather than the one URL it looks like."""
+    _reject_one_url(raw)
+    return tuple(raw)
+
+
 @dataclass(frozen=True)
 class Baseline:
     """Divergences already read and accepted, so a run reports only what is new.
@@ -47,13 +62,18 @@ class Baseline:
     """
 
     source: str
-    endpoint: str
+    endpoints: tuple[str, ...]
     measured: str
     acknowledged: dict[str, Finding]
 
+    def __post_init__(self) -> None:
+        # Covers `empty` and `identified_as`, which construct from what a caller passed. `load`
+        # converts before constructing, so it checks the raw value itself — see `_endpoints`.
+        _reject_one_url(self.endpoints)
+
     @classmethod
-    def empty(cls, source: str, endpoint: str = "") -> "Baseline":
-        return cls(source=source, endpoint=endpoint, measured="", acknowledged={})
+    def empty(cls, source: str, endpoints: tuple[str, ...] = ()) -> "Baseline":
+        return cls(source=source, endpoints=endpoints, measured="", acknowledged={})
 
     @classmethod
     def load(cls, path: Path) -> "Baseline":
@@ -70,7 +90,7 @@ class Baseline:
             ack[f.key] = f
         return cls(
             source=raw["source"],
-            endpoint=raw.get("endpoint", ""),
+            endpoints=_endpoints(raw.get("endpoints", ())),
             measured=raw.get("measured", ""),
             acknowledged=ack,
         )
@@ -95,7 +115,7 @@ class Baseline:
             json.dumps(
                 {
                     "source": self.source,
-                    "endpoint": self.endpoint,
+                    "endpoints": list(self.endpoints),
                     "measured": measured,
                     "acknowledged": [f.as_dict() for f in kept],
                 },
@@ -104,14 +124,14 @@ class Baseline:
             + "\n"
         )
 
-    def identified_as(self, source: str, endpoint: str) -> "Baseline":
+    def identified_as(self, source: str, endpoints: tuple[str, ...]) -> "Baseline":
         """The same acknowledgements, relabelled for the comparison actually being run.
 
         A loaded baseline reports whatever the file last said it was about. That is fine until a
         source is renamed or repointed, at which point the stale name would be written back
         forever, because the file is the only thing that ever set it.
         """
-        return replace(self, source=source, endpoint=endpoint)
+        return replace(self, source=source, endpoints=endpoints)
 
     def unacknowledged(self, findings: Iterable[Finding]) -> list[Finding]:
         """Findings this baseline does not already account for.

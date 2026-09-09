@@ -30,7 +30,14 @@ from backlot.fidelity import (
     operations,
     s3_probe,
 )
-from backlot.fidelity.comparisons import COMPARISONS, GOOGLE_DISCOVERY, GRAPHQL, OPENAPI, PROBE
+from backlot.fidelity.comparisons import (
+    COMPARISONS,
+    GOOGLE_DISCOVERY,
+    GRAPHQL,
+    OPENAPI,
+    PROBE,
+    UNCOMPARED,
+)
 from backlot.fidelity.graphql_diff import backlot_schema, diff_schemas
 
 VENDOR = """
@@ -125,7 +132,7 @@ def test_the_compared_schema_is_the_sdl_the_server_builds_from():
 
 def _baseline(tmp_path, findings, note=""):
     path = tmp_path / "fireflies.json"
-    Baseline.empty("fireflies", "https://api.fireflies.ai/graphql").write(
+    Baseline.empty("fireflies", ("https://api.fireflies.ai/graphql",)).write(
         path, findings, measured="2026-09-01"
     )
     if note:
@@ -148,9 +155,12 @@ def test_rewriting_a_baseline_keeps_its_notes_and_takes_the_new_identity(tmp_pat
     known = _diff(VENDOR.replace(", title: String", ""))
     baseline = _baseline(tmp_path, known, note="deliberate: no title in the corpus")
     path = tmp_path / "fireflies.json"
-    baseline.identified_as("renamed", "https://new.invalid").write(path, known, measured="2026-10")
+    baseline.identified_as("renamed", ("https://new.invalid",)).write(
+        path, known, measured="2026-10"
+    )
     written = json.loads(path.read_text())
-    assert (written["source"], written["endpoint"]) == ("renamed", "https://new.invalid")
+    assert written["source"] == "renamed"
+    assert written["endpoints"] == ["https://new.invalid"]
     assert [e.get("note") for e in written["acknowledged"]] == [
         "deliberate: no title in the corpus"
     ]
@@ -203,8 +213,229 @@ def test_a_credential_pair_splits_on_its_first_equals(pairs, expected):
 # --------------------------------------------------------------------------- the registry
 
 
-def test_the_comparisons_are_exactly_the_sources_backlot_serves():
-    """Fidelity does not get to invent a source: `store.SOURCE_TABLE` is the canonical list, and
+def test_a_comparison_with_two_specs_reports_both_documents_findings(monkeypatch):
+    """A source published as several documents is several comparisons' worth of surface under one
+    source name, so `divergences` runs each and concatenates rather than picking one."""
+    calls = []
+
+    def fake(spec, *, timeout=120.0, seen=None):
+        calls.append(spec.spec_url)
+        return [Finding("gap", GAP, f"GET {spec.mount[0]}/x", "")]
+
+    monkeypatch.setattr(comparisons.openapi_diff, "divergences", fake)
+    c = comparisons.OpenAPIComparison(
+        name="two",
+        specs=(
+            comparisons.Spec("https://a.invalid/s.json", ("/a",)),
+            comparisons.Spec("https://b.invalid/s.json", ("/b",)),
+        ),
+    )
+    found = c.divergences()
+    assert calls == ["https://a.invalid/s.json", "https://b.invalid/s.json"]
+    assert [f.path for f in found] == ["GET /a/x", "GET /b/x"]
+
+
+def _finding(kind, path, severity=GAP):
+    return Finding(kind, severity, path, "")
+
+
+@pytest.mark.parametrize(
+    "registry,module",
+    [("OpenAPIComparison", "openapi_diff"), ("GoogleDiscoveryComparison", "google_discovery_diff")],
+)
+def test_a_finding_two_documents_both_declare_is_recorded_once(monkeypatch, registry, module):
+    """Two documents of one source can declare the SAME path. Jira's do: 11 paths sit outside
+    `/rest/api/{2,3}` -- `/rest/atlassian-connect/1/*`, `/rest/forge/1/*` and one internal worklog
+    route -- so both Atlassian documents carry them identically and `missing_operation` reports
+    each twice.
+
+    That is not the case the mirrored v2/v3 entries make: `/rest/api/2/attachment/{id}` and
+    `/rest/api/3/attachment/{id}` are different paths a client can call, and both belong in the
+    baseline. These are one path recorded twice, and a baseline keyed on `kind:path` cannot hold
+    the second -- so the file would claim more than it can load, and a genuinely new finding on
+    one of those paths would print and count twice."""
+    shared = _finding("missing_operation", "GET /rest/forge/1/app/properties")
+
+    def fake(spec, *, timeout=120.0, **kw):
+        return [shared, _finding("missing_operation", f"GET {spec.mount[0]}/own")]
+
+    monkeypatch.setattr(getattr(comparisons, module), "divergences", fake)
+    c = getattr(comparisons, registry)(
+        name="two",
+        specs=(
+            comparisons.Spec("https://a.invalid/s.json", ("/a",)),
+            comparisons.Spec("https://b.invalid/s.json", ("/b",)),
+        ),
+    )
+    found = c.divergences()
+    assert len(found) == len({f.key for f in found}), [f.path for f in found]
+    assert sorted(f.path for f in found) == [
+        "GET /a/own",
+        "GET /b/own",
+        "GET /rest/forge/1/app/properties",
+    ]
+
+
+def test_findings_from_several_documents_come_back_in_one_order(monkeypatch):
+    """`diff_operations` sorts breaking-first-then-path, and concatenating per-document results
+    loses that across documents -- which leaves the baseline file in an order `--update-baseline`
+    does not reproduce, so the next real change arrives buried in a reordering of the whole file."""
+
+    def fake(spec, *, timeout=120.0, **kw):
+        if spec.mount[0] == "/a":
+            return [
+                _finding("missing_operation", "GET /z"),
+                _finding("extra_param", "GET /a?x", BREAKING),
+            ]
+        return [
+            _finding("missing_operation", "GET /b"),
+            _finding("extra_param", "GET /b?y", BREAKING),
+        ]
+
+    monkeypatch.setattr(comparisons.openapi_diff, "divergences", fake)
+    c = comparisons.OpenAPIComparison(
+        name="two",
+        specs=(
+            comparisons.Spec("https://a.invalid/s.json", ("/a",)),
+            comparisons.Spec("https://b.invalid/s.json", ("/b",)),
+        ),
+    )
+    found = c.divergences()
+    assert [f.severity for f in found] == [BREAKING, BREAKING, GAP, GAP]
+    assert [f.path for f in found] == ["GET /a?x", "GET /b?y", "GET /b", "GET /z"]
+
+
+def test_every_comparison_names_the_documents_it_was_measured_against():
+    """`endpoints` is the baseline's identity, and a source can now have more than one document
+    behind it -- a single joined string could not tell a source that GAINED a document from one
+    whose document moved.
+
+    Each entry must be DISTINCT, which `spec_url` alone does not give: HubSpot's is an index, and
+    both of its Specs address it, so naming documents by their fetch URL reported the same string
+    twice and identified neither. `Spec.endpoint` qualifies it with what `resolve_url` selects."""
+    for name, c in COMPARISONS.items():
+        assert isinstance(c.endpoints, tuple) and c.endpoints, name
+        assert all(e.startswith("http") for e in c.endpoints), name
+        assert len(set(c.endpoints)) == len(c.endpoints), f"{name}: {c.endpoints}"
+        # And STABLE across processes: an index-addressed spec renders its resolver into this
+        # string, so one rendering as the default `<function … at 0x…>` would write a fresh memory
+        # address into the baseline on every run — churning the identity it exists to hold still.
+        assert not any(" at 0x" in e for e in c.endpoints), f"{name}: {c.endpoints}"
+
+
+def test_a_baseline_refuses_one_endpoint_passed_unwrapped(tmp_path):
+    """A str is iterable, so `list("https://…")` spreads it one element per character and writes a
+    file nothing downstream is shaped wrongly enough to complain about. The registry is guarded in
+    both directions already; a hand-built Baseline is the way around those guards.
+
+    All three construction paths, because `load` is the one that turns a FILE into the spread and
+    it converts before `__post_init__` can see a string -- so it carries its own check, and the
+    two that share a helper are not evidence for the one that does not."""
+    with pytest.raises(TypeError, match="tuple of URLs"):
+        Baseline.empty("s", "https://one.invalid")
+    with pytest.raises(TypeError, match="tuple of URLs"):
+        Baseline.empty("s", ()).identified_as("s", "https://one.invalid")
+
+    path = tmp_path / "b.json"
+    path.write_text(
+        json.dumps(
+            {"source": "s", "endpoints": "https://one.invalid", "measured": "", "acknowledged": []}
+        )
+    )
+    with pytest.raises(TypeError, match="tuple of URLs"):
+        Baseline.load(path)
+
+    # and the shapes a real file carries still load: a list, an absent key, and the legacy spelling
+    for endpoints, want in [(["https://a", "https://b"], ("https://a", "https://b")), (None, ())]:
+        raw = {"source": "s", "measured": "", "acknowledged": []}
+        if endpoints is not None:
+            raw["endpoints"] = endpoints
+        path.write_text(json.dumps(raw))
+        assert Baseline.load(path).endpoints == want
+
+
+def test_a_baseline_round_trips_every_endpoint_it_names(tmp_path):
+    p = tmp_path / "b.json"
+    ends = ("https://a.invalid", "https://b.invalid")
+    Baseline.empty("s", ends).write(p, [], measured="2026-01-01")
+    assert Baseline.load(p).endpoints == ends
+    assert json.loads(p.read_text())["endpoints"] == list(ends)
+
+
+def test_a_google_source_is_compared_against_every_api_it_is_served_through():
+    """A Drive file is also read through Docs, Sheets and Slides. Comparing only Drive left three
+    whole API families measured against nothing: a Sheets response shape could be rewritten and
+    `backlot diff --source google_drive` would still answer `0 new`."""
+    mounts = {m for s in COMPARISONS["google_drive"].specs for m in s.mount}
+    assert mounts == {"/drive/v3", "/docs/v1", "/sheets/v4", "/slides/v1"}
+
+
+def test_hubspot_compares_its_v4_associations_surface_too():
+    """Associations are their own API at their own version with their own published document. The
+    CRM v3 document does not declare them, so mounting only `crm/v3` left the association read
+    compared against nothing."""
+    mounts = {m for s in COMPARISONS["hubspot"].specs for m in s.mount}
+    assert mounts == {"/hubspot/crm/v3", "/hubspot/crm/v4"}
+
+
+def test_jira_compares_both_rest_versions_against_their_own_documents():
+    """Backlot serves `/rest/api/2` because the clients call it: `atlassian-python-api` hardcodes
+    `api_version = "2"` in its Jira constructor and the `jira` PyPI client defaults
+    `rest_api_version` to `"2"`, probing `/rest/api/2/serverInfo` on connect.
+
+    Atlassian publishes a document per version — the file naming is
+    `swagger[-<apiVersion>].<oasVersion>.json`, so the suffix-less one is the v2 API — and each is
+    compared against its own. Measured: comparing the v2 paths against the v3 document instead
+    reports all six served operations as surface Backlot invented."""
+    by_mount = {s.mount[0]: s.spec_url for s in COMPARISONS["jira"].specs}
+    assert set(by_mount) == {"/atlassian/rest/api/2", "/atlassian/rest/api/3"}
+    assert by_mount["/atlassian/rest/api/2"].endswith("/swagger.v3.json")
+    assert by_mount["/atlassian/rest/api/3"].endswith("/swagger-v3.v3.json")
+
+
+def test_specs_sharing_an_index_read_it_once_per_run(monkeypatch):
+    """HubSpot reaches every one of its documents through one index, so both of its specs address
+    the same `spec_url` and `resolve_url` picks the document out of it.
+
+    Measured: that index is 138 KB and answers in ~2.2s, so fetching it per spec spends a whole
+    extra vendor round trip on a document already in hand. Memoized per RUN and never wider -- the
+    index must be re-read every run, which is why it is not pinned (see `hubspot_catalog`)."""
+    INDEX = "https://index.invalid/specs"
+    fetched = []
+
+    def fake_fetch(url, *, timeout=120.0):
+        fetched.append(url)
+        return {"openapi": "3.0.0", "paths": {}} if url != INDEX else {"index": True}
+
+    monkeypatch.setattr(comparisons.openapi_diff, "fetch_json", fake_fetch)
+    monkeypatch.setattr(
+        comparisons.openapi_diff, "from_openapi", lambda doc: {("get", "/x"): object()}
+    )
+    monkeypatch.setattr(comparisons.openapi_diff, "from_backlot", lambda *a, **k: {})
+    monkeypatch.setattr(comparisons.openapi_diff, "diff_operations", lambda served, vendor: [])
+
+    c = comparisons.OpenAPIComparison(
+        name="two",
+        specs=(
+            comparisons.Spec(INDEX, ("/a",), resolve_url=lambda d: "https://doc.invalid/a.json"),
+            comparisons.Spec(INDEX, ("/b",), resolve_url=lambda d: "https://doc.invalid/b.json"),
+        ),
+    )
+    c.divergences()
+
+    assert fetched.count(INDEX) == 1, fetched
+    assert sorted(fetched) == sorted(
+        [INDEX, "https://doc.invalid/a.json", "https://doc.invalid/b.json"]
+    )
+
+
+def test_the_registry_names_exactly_the_source_types_backlot_serves():
+    """A VOCABULARY check, not a coverage one: this says every source_type has some comparison,
+    not that every served path is under one. `test_every_served_path_is_compared_or_says_why_not`
+    asks the second question, and `google_drive` is why they are different — one source type,
+    five vendor APIs.
+
+    Fidelity does not get to invent a source: `store.SOURCE_TABLE` is the canonical list, and
     the same `source_type` a BYO record carries.
 
     `cli.FIDELITY_SOURCES` is held to the same list. It exists so `--help` can name the sources
@@ -228,16 +459,80 @@ def test_every_comparison_is_registered_once_as_the_class_its_registry_implies()
             assert isinstance(comparison, expected), f"{name} is a {type(comparison).__name__}"
 
 
-def test_every_comparison_ships_a_baseline_and_mounts_something_to_compare():
-    """A baseline is shipped so an installed copy can be compared without the repository; a mount
-    that matches nothing would compare an empty surface and pass forever."""
+def test_every_comparison_ships_a_baseline():
+    """Shipped so an installed copy can be compared without the repository."""
+    for name in COMPARISONS:
+        assert Baseline.load(baseline_path(name)).source == name
+
+
+def test_every_mount_selects_something_backlot_serves():
+    """The converse of `test_every_served_path_is_compared_or_says_why_not`, and NOT implied by it.
+
+    That test is one-directional: every served path is under some mount. A mount matching nothing
+    escapes it whenever another mount already covers the same paths -- and such a mount diffs an
+    EMPTY served surface against a whole vendor document, which reports as nothing but
+    `missing_operation` gaps. That looks exactly like an unimplemented surface, so
+    `--update-baseline` acknowledges it in bulk and the dead mount compares nothing forever.
+
+    Per SPEC, not per comparison: a source with four documents and one bad mount would otherwise
+    pass on the strength of its other three."""
     from backlot.main import app
 
-    served = app.openapi()["paths"]
+    served = list(app.openapi()["paths"])
     for name, comparison in COMPARISONS.items():
-        assert Baseline.load(baseline_path(name)).source == name
-        if comparison in {**OPENAPI, **GOOGLE_DISCOVERY}.values():
-            assert any(p.startswith(m) for p in served for m in comparison.mount), name
+        for mount in _comparison_mounts(comparison):
+            assert any(p.startswith(mount) for p in served), f"{name}: {mount} selects nothing"
+
+
+def _comparison_mounts(comparison) -> tuple[str, ...]:
+    """Every served path prefix a comparison speaks for, whichever kind it is."""
+    specs = getattr(comparison, "specs", None)
+    if specs is not None:
+        return tuple(m for s in specs for m in s.mount)
+    return tuple(getattr(comparison, "mount", ()))
+
+
+def test_every_served_path_is_compared_or_says_why_not():
+    """The coverage guarantee the tests beside this one only appeared to give.
+
+    They count SOURCE TYPES, which is the corpus dimension. `google_drive` is one source type
+    served through five vendor APIs, so Docs, Sheets and Slides sat compared against nothing while
+    both tests passed — a Sheets response shape could be rewritten and `backlot diff` would still
+    answer `0 new`. This counts served PATHS, which is what a comparison actually covers.
+
+    Every path lands in exactly one bucket: under some document's mount, probe-compared, or
+    declared in `UNCOMPARED` with a reason. A path in none of them is a router someone added
+    without asking what checks it.
+    """
+    from backlot.main import app
+
+    mounts = [m for c in COMPARISONS.values() for m in _comparison_mounts(c)]
+    unclassified = [
+        p
+        for p in sorted(app.openapi()["paths"])
+        if not any(p.startswith(m) for m in mounts)
+        and not any(p == u or p.startswith(u + "/") for u in UNCOMPARED)
+    ]
+    assert unclassified == [], (
+        "compared against nothing, and not declared in UNCOMPARED: " + ", ".join(unclassified)
+    )
+
+
+def test_no_uncompared_declaration_outlives_its_route():
+    """An entry kept after its route is gone is a reason nobody is reading any more.
+
+    And an entry may not sit under a comparison's mount. Nothing else stops one claiming a surface
+    that IS compared — the coverage check only asks whether a path is in some bucket, not whether
+    it is in the right one — which would leave the list unreadable at face value."""
+    from backlot.main import app
+
+    served = list(app.openapi()["paths"])
+    mounts = [m for c in COMPARISONS.values() for m in _comparison_mounts(c)]
+    for prefix, reason in UNCOMPARED.items():
+        assert any(p == prefix or p.startswith(prefix + "/") for p in served), prefix
+        assert reason.strip(), prefix
+        covered = [m for m in mounts if prefix.startswith(m) or m.startswith(prefix)]
+        assert not covered, f"{prefix} is declared uncompared but sits under {covered}"
 
 
 def test_every_acknowledged_breaking_divergence_carries_its_reasoning():
@@ -340,14 +635,17 @@ def test_a_placeholders_name_is_not_a_divergence():
 
 
 def test_the_mount_comes_off_only_where_the_vendor_does_not_repeat_it():
-    """Slack's spec starts at /conversations.list so its mount comes off; Google's own document
-    already spells drive/v3, so nothing does. Jira and Confluence share /atlassian and must not
-    capture each other."""
+    """Slack's spec starts at /conversations.list so its mount comes off. Google differs per
+    DOCUMENT, which is why `strip` sits on the Spec: Drive's own document spells `drive/v3`, so
+    nothing comes off there, while the Sheets document declares an empty `servicePath` and spells
+    `v4/spreadsheets/...` itself, so its mount does. Jira and Confluence share /atlassian and must
+    not capture each other."""
     served = {
         "paths": dict.fromkeys(
             [
                 "/slack/api/conversations.list",
                 "/drive/v3/files",
+                "/sheets/v4/spreadsheets/{spreadsheet_id}",
                 "/atlassian/rest/api/3/field",
                 "/atlassian/wiki/rest/api/space",
             ],
@@ -357,10 +655,14 @@ def test_the_mount_comes_off_only_where_the_vendor_does_not_repeat_it():
 
     def mounted(name):
         c = OPENAPI.get(name) or GOOGLE_DISCOVERY[name]
-        return {p for _, p in operations.from_backlot(served, c.mount, c.strip)}
+        return {
+            p
+            for spec in c.specs
+            for _, p in operations.from_backlot(served, spec.mount, spec.strip)
+        }
 
     assert mounted("slack") == {"conversations.list"}
-    assert mounted("google_drive") == {"drive/v3/files"}
+    assert mounted("google_drive") == {"drive/v3/files", "v4/spreadsheets/{}"}
     assert mounted("jira") == {"rest/api/3/field"}
     assert mounted("confluence") == {"wiki/rest/api/space"}
 
@@ -394,7 +696,7 @@ def test_an_index_is_read_on_every_run_rather_than_pinned():
     """Measured 2026-09-01: every past HubSpot release id still serves its own frozen document, so
     a pinned URL never 404s — it reports no drift forever. Only HubSpot needs the indirection."""
     assert hubspot_catalog.entry("Custom Objects", "3")(CATALOG) == "https://example.invalid/v3"
-    assert {n for n, c in OPENAPI.items() if c.resolve_url} == {"hubspot"}
+    assert {n for n, c in OPENAPI.items() if any(s.resolve_url for s in c.specs)} == {"hubspot"}
 
 
 @pytest.mark.parametrize(

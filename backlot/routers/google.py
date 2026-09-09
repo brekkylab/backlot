@@ -1808,6 +1808,7 @@ SHEETS_GRID_COLS = 26
 
 _A1_MAJOR = ("ROWS", "COLUMNS")
 _A1_RENDER = ("FORMATTED_VALUE", "UNFORMATTED_VALUE", "FORMULA")
+_A1_DATETIME = ("SERIAL_NUMBER", "FORMATTED_STRING")
 _SHEETS_ENUM = "type.googleapis.com/google.apps.sheets.v4"
 # One endpoint of an A1 range: a full cell (`B2`), a bare column (`B`) or a bare row (`2`).
 _A1_END = re.compile(r"(?:(?P<col>[A-Za-z]{1,3})(?P<row>\d+)?|(?P<rowonly>\d+))\Z")
@@ -2141,22 +2142,55 @@ def _workbook(request: Request, spreadsheet_id: str) -> tuple:
     ]
 
 
+def _sheets_enum(request: Request, param: str, field: str, enum: str, allowed, default: str) -> str:
+    """One of the read enums, validated and canonicalised.
+
+    Measured, and identical for all three: the match is CASE-INSENSITIVE (``majorDimension=rows``
+    answers 200) and the response echoes the canonical upper-case spelling whatever the request
+    used; an unknown value 400s, naming the proto field and type and quoting the value as the
+    client sent it; and an EMPTY value is not an absent one — it 400s rather than falling back to
+    the default."""
+    raw = request.query_params.get(param)
+    if raw is None:
+        return default
+    value = raw.upper()
+    if value not in allowed:
+        raise gerr.invalid_argument(_a1_enum_error(field, enum, raw))
+    return value
+
+
 def _sheets_options(request: Request) -> tuple[str, str]:
     """Validate the read enums and return ``(majorDimension, valueRenderOption)``. Real Sheets 400s
     on an unknown value; accepting one silently would hand back ROWS-shaped data to a client that
-    asked for columns, and a silently unapplied option is worse than a refusal."""
-    major = request.query_params.get("majorDimension") or "ROWS"
-    render = request.query_params.get("valueRenderOption") or "FORMATTED_VALUE"
-    if major not in _A1_MAJOR:
-        raise gerr.invalid_argument(_a1_enum_error("major_dimension", "Dimension", major))
+    asked for columns, and a silently unapplied option is worse than a refusal.
+    """
+    major = _sheets_enum(
+        request, "majorDimension", "major_dimension", "Dimension", _A1_MAJOR, "ROWS"
+    )
     # Measured over typed cells: FORMATTED_VALUE gives the display string "12", UNFORMATTED_VALUE
     # the JSON number 12, and FORMULA the same raw value as UNFORMATTED_VALUE for every cell that
     # is not a formula. A spreadsheet whose cells are lines of stored text has only strings, so
     # all three agree on one; a spreadsheet that STATES its grid does not.
-    if render not in _A1_RENDER:
-        raise gerr.invalid_argument(
-            _a1_enum_error("value_render_option", "ValueRenderOption", render)
-        )
+    render = _sheets_enum(
+        request,
+        "valueRenderOption",
+        "value_render_option",
+        "ValueRenderOption",
+        _A1_RENDER,
+        "FORMATTED_VALUE",
+    )
+    # Validated and then unused, deliberately. It selects between a date cell's serial number and
+    # its formatted string, and a corpus states no date cells — every cell is a string, a number, a
+    # boolean or empty — so the two renderings coincide here. Leaving it unvalidated instead would
+    # accept the one thing a client can get wrong about it.
+    _sheets_enum(
+        request,
+        "dateTimeRenderOption",
+        "date_time_render_option",
+        "DateTimeRenderOption",
+        _A1_DATETIME,
+        "SERIAL_NUMBER",
+    )
     return major, render
 
 

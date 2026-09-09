@@ -1799,16 +1799,49 @@ def test_sheets_values_get_rejects_an_unusable_range(base, admin_h, sheet_id, rn
     [
         ({"majorDimension": "DIAGONAL"}, "major_dimension", "Dimension"),
         ({"valueRenderOption": "NOPE"}, "value_render_option", "ValueRenderOption"),
+        # Declared in the route's parameter list, so the discovery diff sees it as served; it has
+        # to be validated too, or the one value a client could get wrong passes silently.
+        ({"dateTimeRenderOption": "NOPE"}, "date_time_render_option", "DateTimeRenderOption"),
+        # An EMPTY value is not an absent one: measured, all three 400 on it rather than falling
+        # back to the default.
+        ({"majorDimension": ""}, "major_dimension", "Dimension"),
+        ({"valueRenderOption": ""}, "value_render_option", "ValueRenderOption"),
+        ({"dateTimeRenderOption": ""}, "date_time_render_option", "DateTimeRenderOption"),
     ],
 )
 def test_sheets_values_get_rejects_a_bad_enum(base, admin_h, sheet_id, params, field, enum):
-    """Measured message shape, not an invented one: Google names the proto field and type."""
+    """Measured message shape, not an invented one: Google names the proto field and type, and
+    echoes the value as the client spelled it."""
     r = _values(base, admin_h, sheet_id, "Sheet1!A1:A2", **params)
     assert r.status_code == 400
     bad = next(iter(params.values()))
     assert r.json()["error"]["message"] == (
         f"Invalid value at '{field}' (type.googleapis.com/google.apps.sheets.v4.{enum}), \"{bad}\""
     )
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"majorDimension": "rows"},
+        {"majorDimension": "Rows"},
+        {"majorDimension": "columns"},
+        {"valueRenderOption": "unformatted_value"},
+        {"valueRenderOption": "Unformatted_Value"},
+        {"dateTimeRenderOption": "serial_number"},
+        {"dateTimeRenderOption": "formatted_string"},
+    ],
+)
+def test_sheets_read_enums_are_case_insensitive(base, admin_h, sheet_id, params):
+    """Measured: real Sheets accepts every one of these and 400s only on a value that is not the
+    enum at all. Matching case-sensitively would refuse a request the real API answers."""
+    assert _values(base, admin_h, sheet_id, "Sheet1!A1:A2", **params).status_code == 200
+
+
+def test_sheets_values_get_echoes_the_major_dimension_upper_cased(base, admin_h, sheet_id):
+    """Measured: the echo is the canonical spelling whatever the request used."""
+    r = _values(base, admin_h, sheet_id, "Sheet1!A1:A2", majorDimension="columns")
+    assert r.json()["majorDimension"] == "COLUMNS"
 
 
 def test_sheets_values_get_render_options_agree_on_a_prose_spreadsheet(base, admin_h, sheet_id):

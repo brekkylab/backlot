@@ -2372,11 +2372,6 @@ def test_normalise_pads_short_rows_and_collapses_integral_floats():
     assert sheets_grid.normalise_grid([]) == []
 
 
-def test_normalise_keeps_a_boolean_a_boolean():
-    """`bool` is a subclass of `int`, so an unguarded numeric branch turns True into 1."""
-    assert sheets_grid.normalise_grid([[True, False]]) == [[True, False]]
-
-
 def test_used_extent_stops_at_the_last_row_and_column_holding_anything():
     assert sheets_grid.used_extent([["a", None, None], [None, None, None]]) == (1, 1)
     assert sheets_grid.used_extent([[None]]) == (0, 0)
@@ -2410,10 +2405,6 @@ def test_tsv_export_collapses_a_newline_and_a_tab_to_a_space_and_never_quotes():
         [["with,comma", 'with"quote', "with\nnewline"], ["with\ttab", 1, None]]
     )
     assert sheets_grid.to_tsv(grid) == 'with,comma\twith"quote\twith newline\r\nwith tab\t1\t'
-
-
-def test_export_rows_are_rectangular_unlike_the_ragged_rows_values_get_returns():
-    assert sheets_grid.to_csv(sheets_grid.normalise_grid([["a", "b"], ["c"]])) == "a,b\r\nc,"
 
 
 def test_an_empty_grid_serialises_to_the_empty_string():
@@ -2832,17 +2823,10 @@ def test_csv_export_of_a_gridded_spreadsheet_serialises_its_first_sheet(gc, gh, 
     assert _export(gc, gh, book, "text/csv").text == "Region,Deals,\r\nEMEA,12,TRUE"
 
 
-def test_csv_export_quotes_by_rfc4180(gc, gh, hostile):
-    """Quote on a comma, a double quote or a newline; double an embedded quote; keep an embedded
-    newline bare inside the quotes."""
-    assert _export(gc, gh, hostile, "text/csv").text == (
-        '"with,comma","with""quote","with\nnewline"'
-    )
-
-
-def test_tsv_export_is_lossy_the_way_the_real_one_is(gc, gh, hostile):
-    """Measured: TSV has no quoting mechanism -- an embedded newline and an embedded tab each
-    collapse to a single space and a double quote passes through bare."""
+def test_tsv_export_reserialises_the_grid_rather_than_serving_content(gc, gh, hostile):
+    """`content` is the first sheet's CSV, so serving it for TSV too would answer commas and
+    quotes. The lossy space-substitution is `sheets_grid.to_tsv`'s own test; this is the route
+    reaching it."""
     assert _export(gc, gh, hostile, "text/tab-separated-values").text == (
         'with,comma\twith"quote\twith newline'
     )

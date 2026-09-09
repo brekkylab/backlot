@@ -2022,19 +2022,17 @@ def _sheets_value(cell) -> dict:
 def _sheets_grid_data(sheet: _Sheet, body: str, spec: str) -> dict:
     """One ``GridData`` block for ``spreadsheets.get?includeGridData=true``.
 
-    Rows are padded to the range's width (real Sheets returns a cell object per column, empty ones
-    carrying no value) and ``startRow``/``startColumn`` are omitted when zero, which is how the
-    measured responses come back — proto3 drops defaults. ``rowData`` is trimmed to the last row
-    holding data and OMITTED ENTIRELY when the block is empty: measured, an empty sheet's block
-    carries ``rowMetadata`` and ``columnMetadata`` and no ``rowData`` key at all.
+    Measured: a cell object per column of the range, an empty one carrying no value;
+    ``startRow``/``startColumn`` omitted when zero, proto3 dropping its defaults; and no
+    ``rowData`` key at all on an empty sheet, whose block is metadata alone.
 
     ``userEnteredValue`` and ``effectiveValue`` are equal here and both absent from an empty cell.
     Measured, they differ on real Sheets only for a FORMULA cell — the formula in the first, its
     result in the second — and a corpus cannot state a formula, so there is nothing to differ over.
 
-    Two divergences, stated rather than hidden: real Sheets pads ``rowData`` to the WHOLE 1000-row
-    grid and this stops at the last row holding data; and real cells carry format objects plus
-    ``rowMetadata``/``columnMetadata``, none of which Backlot models."""
+    Two divergences, stated rather than hidden: real Sheets pads ``rowData`` out to the WHOLE
+    1000-row grid where this stops at the last row holding data, and real cells carry format
+    objects plus ``rowMetadata``/``columnMetadata``, none of which Backlot models."""
     r0, c0, _r1, c1, block = _sheets_block(sheet, body, spec)
     width = c1 - c0
     while block and all(sheets_grid.formatted(c) == "" for c in block[-1]):
@@ -2125,12 +2123,12 @@ class _Sheet(NamedTuple):
 
 
 def _workbook(request: Request, spreadsheet_id: str) -> tuple:
-    """``(row, sheets)`` — the Drive row behind a spreadsheet and the sheets it serves, which is
-    what every Sheets read resolves against, so the three calls cannot disagree about a cell.
+    """``(row, sheets)`` — the Drive row behind a spreadsheet and the sheets it serves.
 
-    A document that STATES a grid answers with its stored sheets. One that does not answers with a
-    SINGLE synthesized sheet holding ``_sheets_grid``'s line-per-cell reading — so the prose
-    representation is one more grid and there is exactly one serving path below.
+    A document that STATES a grid answers with its stored sheets; one that does not answers with a
+    SINGLE synthesized sheet holding ``_sheets_grid``'s line-per-cell reading. Prose is therefore
+    one more grid, which is what leaves a single serving path below and stops the three Sheets
+    calls disagreeing about a cell.
 
     A prose sheet's cells are strings and STAY strings. Nothing here sniffs a line for a number or
     a boolean: a cell's type is something a corpus states, never something this module infers."""

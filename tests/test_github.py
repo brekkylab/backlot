@@ -158,6 +158,84 @@ def test_github_pulls_filtered_by_state(client, admin_h, org):
     assert [p["title"] for p in all_body] == ["Fix token-bucket refill off-by-one"]
 
 
+def test_github_state_is_reals_enum_refused_on_issues_and_absorbed_on_pulls(tmp_path):
+    """GitHub's OpenAPI description declares `state` on the issue and the pull listing as
+    `{type: string, enum: [open, closed, all], default: open}`, described "Indicates the state of
+    the issues to return." on the one and "Either `open`, `closed`, or `all` to filter by state." on
+    the other (read 2026-09-09). Backlot's document declared `{type: string, default: open}` with
+    no enum and no description, so a generated client or an agent reading the MCP slice had the
+    default and nothing on what else the parameter takes.
+
+    Outside the enum the two routes part, measured on api.github.com on 2026-09-09 against
+    `psf/requests`. The issue listing refuses: `state=bogus`, `state=OPEN` and `state=` (empty) are
+    each a 422, `Validation Failed`, one `errors` entry carrying the value sent with
+    `resource: Issue`, `field: state`, `code: invalid`, `documentation_url`
+    `https://docs.github.com/v3/issues/#list-issues`, `content-type: application/json; charset=utf-8`;
+    the repository comes first, so the same value on `psf/ghost-zz-9876` is the 404 with the route's
+    own anchor. The pull listing absorbs: `pulls?state=bogus` and `?state=OPEN` answer the 87 rows
+    `state=open` answers, where `closed` and `all` answer other, larger sets. Backlot filtered on the
+    value as sent and answered an empty 200 on both routes, which is neither answer. The corpus is
+    built here because no repository in the sample holds an open pull beside a closed one, which is
+    what tells the open set from an empty one.
+    """
+    pulls = [
+        {
+            "source_type": "github",
+            "doc_id": f"gh-pr-{state}",
+            "repo": "wide",
+            "subtype": "pull_request",
+            "state": state,
+            "title": f"PR {state}",
+            "content": "body",
+            "author_email": "ava@acme.com",
+            "visibility": "public",
+            "head": f"feat/{state}",
+            "base": "main",
+        }
+        for state in ("open", "closed")
+    ]
+    settings = build_corpus(tmp_path, pulls, name="state.jsonl")
+    with client_for(settings, reload=True) as c:
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        org = c.get("/_meta/users").json()["org"]
+        spec = c.get("/openapi.json").json()
+        for route, description in (
+            ("issues", "Indicates the state of the issues to return."),
+            ("pulls", "Either `open`, `closed`, or `all` to filter by state."),
+        ):
+            params = spec["paths"][f"/github/repos/{{owner}}/{{repo}}/{route}"]["get"]["parameters"]
+            state = next(p for p in params if p["name"] == "state")
+            assert state["description"] == description, route
+            assert state["schema"]["enum"] == ["open", "closed", "all"], route
+            assert state["schema"]["default"] == "open", route
+            assert state["schema"]["type"] == "string", route
+        base = f"/github/repos/{org}/wide"
+        open_rows = c.get(f"{base}/pulls", headers=h, params={"state": "open"}).json()
+        assert [r["title"] for r in open_rows] == ["PR open"]
+        assert len(c.get(f"{base}/pulls", headers=h, params={"state": "all"}).json()) == 2
+        for value in ("bogus", "OPEN", ""):
+            issues = c.get(f"{base}/issues", headers=h, params={"state": value})
+            assert issues.status_code == 422, value
+            assert issues.headers["content-type"] == "application/json; charset=utf-8"
+            assert issues.json() == {
+                "message": "Validation Failed",
+                "errors": [
+                    {"value": value, "resource": "Issue", "field": "state", "code": "invalid"}
+                ],
+                "documentation_url": "https://docs.github.com/v3/issues/#list-issues",
+                "status": "422",
+            }, value
+            absorbed = c.get(f"{base}/pulls", headers=h, params={"state": value})
+            assert absorbed.status_code == 200, value
+            assert absorbed.json() == open_rows, value
+        # the repository is checked first
+        ghost = c.get(
+            f"/github/repos/{org}/ghost-zz-9876/issues", headers=h, params={"state": "bogus"}
+        )
+        assert ghost.status_code == 404
+        assert ghost.json()["documentation_url"].endswith("issues/issues#list-repository-issues")
+
+
 # --- github codebase serving: git tree / contents / blobs / branches / readme ---------
 #
 # These need `github` `file` docs, which the shared SAMPLE corpus (built once, session-scoped,

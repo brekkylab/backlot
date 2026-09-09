@@ -160,9 +160,9 @@ One `source_type` (`google_drive`) across four prefixes.
 | `/drive/v3/drives` | |
 | `/drive/v3/about` | `fields` **required**, as in real Google Drive; `storageQuota` is measured from the caller's visible corpus |
 | `/docs/v1/documents/{id}` | |
-| `/sheets/v4/spreadsheets/{id}` | Structure only — cells need `includeGridData=true` (+ optional `ranges`), as in real Sheets |
-| `/sheets/v4/spreadsheets/{id}/values/{range}` | A1 ranges incl. `Sheet1!A1:B2`, `A:A`, `1:3`, `A2:B`, a bare sheet name quoted or not; `majorDimension`, `valueRenderOption` |
-| `/sheets/v4/spreadsheets/{id}/values:batchGet` | As above |
+| `/sheets/v4/spreadsheets/{id}` | One entry per sheet, with its own `sheetId`, `index`, `title` and `gridProperties`. Structure only — cells need `includeGridData=true`, as in real Sheets. `ranges` filters the `sheets` array itself, and gives a sheet one `data` block per range that touches it |
+| `/sheets/v4/spreadsheets/{id}/values/{range}` | A1 ranges incl. `Summary!A1:B2`, `A:A`, `1:3`, `A2:B`, a bare sheet name quoted or not. Any sheet in the workbook, matched case-insensitively; an unqualified range answers from the sheet at index 0. `majorDimension`, `valueRenderOption` |
+| `/sheets/v4/spreadsheets/{id}/values:batchGet` | As above; one unparseable range fails the whole call |
 | `/slides/v1/presentations/{id}` | |
 
 The three editor APIs serve native-doc content for editor-aware clients, read structurally instead
@@ -171,9 +171,14 @@ of via Google Drive export.
 Folders are files here: they match `mimeType='…folder'`, project, sort and resolve permissions like
 stored rows. Trashed files are excluded unless `trashed = true` asks for them.
 
-A spreadsheet row is one stored **line**, held in a single cell verbatim — Backlot picks no column
-delimiter, so splitting (CSV, pipes, …) stays the corpus owner's decision. Reading a file of the
-wrong type through any of the three editor APIs is refused, as real Google does, not reinterpreted.
+A spreadsheet has two shapes, and the corpus record picks which. A record that states `sheets` is a
+real workbook: named sheets over a 2D grid whose cells keep the type the corpus gave them, so
+`valueRenderOption=UNFORMATTED_VALUE` answers a JSON number where `FORMATTED_VALUE` answers a
+string. A record that states only `content` keeps the older reading — one sheet, each stored **line**
+held in a single cell verbatim, with Backlot picking no column delimiter, so splitting (CSV, pipes,
+…) stays the corpus owner's decision. Either way `files.export` and the Sheets API describe the same
+cells. Reading a file of the wrong type through any of the three editor APIs is refused, as real
+Google does, not reinterpreted.
 
 #### OAuth and batch
 

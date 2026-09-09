@@ -2719,6 +2719,20 @@ def test_batch_get_reads_several_sheets_of_one_workbook(gc, gh, book):
     ]
 
 
+def test_batch_get_transposes_a_real_two_dimensional_block(gc, gh, book):
+    """`test_sheets_batch_get_honors_major_dimension` asks for COLUMNS over a single column, where
+    a transpose and a no-op that wraps the column in a list are the same answer. This is the range
+    that tells them apart."""
+    r = gc.get(
+        f"/sheets/v4/spreadsheets/{book}/values:batchGet",
+        headers=gh,
+        params={"ranges": ["Summary!A1:B2"], "majorDimension": "COLUMNS"},
+    )
+    got = r.json()["valueRanges"][0]
+    assert got["majorDimension"] == "COLUMNS"
+    assert got["values"] == [["Region", "EMEA"], ["Deals", "12"]]
+
+
 # --- ranges scopes the sheets array ----------------------------------------------------------
 
 

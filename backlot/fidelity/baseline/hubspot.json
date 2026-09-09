@@ -1,9 +1,10 @@
 {
   "source": "hubspot",
   "endpoints": [
+    "https://api.hubspot.com/public/api/spec/v1/specs",
     "https://api.hubspot.com/public/api/spec/v1/specs"
   ],
-  "measured": "2026-09-01",
+  "measured": "2026-09-09",
   "acknowledged": [
     {
       "kind": "missing_operation",
@@ -87,6 +88,60 @@
       "kind": "missing_operation",
       "severity": "gap",
       "path": "POST /crm/v3/objects/{}/merge",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "DELETE /crm/v4/objects/{}/{}/associations/{}/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /crm/v4/associations/usage/high-usage-report/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /crm/v4/associations/{}/{}/batch/archive",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /crm/v4/associations/{}/{}/batch/associate/default",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /crm/v4/associations/{}/{}/batch/create",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /crm/v4/associations/{}/{}/batch/labels/archive",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /crm/v4/associations/{}/{}/batch/read",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "PUT /crm/v4/objects/{}/{}/associations/default/{}/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "PUT /crm/v4/objects/{}/{}/associations/{}/{}",
       "detail": "the vendor serves it; Backlot does not"
     }
   ]

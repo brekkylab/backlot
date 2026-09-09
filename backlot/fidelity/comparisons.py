@@ -260,9 +260,15 @@ OPENAPI = {
                 strip="/hubspot",
                 resolve_url=hubspot_catalog.entry("Custom Objects", "3"),
             ),
-            # crm/v3 only: the v4 associations surface Backlot also serves is a SEPARATE API in
-            # HubSpot's catalog with its own document, so comparing it against this one would
-            # report it as invented.
+            # Associations are their own API at their own version, published as its own document
+            # in the same index. The CRM v3 document does not declare them, so comparing the
+            # association read against it would report it as invented.
+            Spec(
+                spec_url="https://api.hubspot.com/public/api/spec/v1/specs",
+                mount=("/hubspot/crm/v4",),
+                strip="/hubspot",
+                resolve_url=hubspot_catalog.entry("Associations", "4"),
+            ),
         ),
     ),
     # S3 is not an entry here: its contract is not a path map at all, so it is compared by asking

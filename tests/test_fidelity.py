@@ -253,6 +253,14 @@ def test_a_google_source_is_compared_against_every_api_it_is_served_through():
     assert mounts == {"/drive/v3", "/docs", "/sheets", "/slides"}
 
 
+def test_hubspot_compares_its_v4_associations_surface_too():
+    """Associations are their own API at their own version with their own published document. The
+    CRM v3 document does not declare them, so mounting only `crm/v3` left the association read
+    compared against nothing."""
+    mounts = {m for s in COMPARISONS["hubspot"].specs for m in s.mount}
+    assert mounts == {"/hubspot/crm/v3", "/hubspot/crm/v4"}
+
+
 def test_the_comparisons_are_exactly_the_sources_backlot_serves():
     """Fidelity does not get to invent a source: `store.SOURCE_TABLE` is the canonical list, and
     the same `source_type` a BYO record carries.

@@ -1839,12 +1839,112 @@ def test_github_a_wrong_method_is_not_dressed_as_a_measured_answer(gh_client, gh
     is real's 401 Requires authentication, measured).
 
     So it keeps FastAPI's `detail`, which says plainly that the mock is answering. The envelope is
-    for the errors whose wording was measured.
+    for the errors whose wording was measured. `HEAD` is not a wrong method here: real answers it
+    on each of the seven routes measured, and so does Backlot on all of its own, see
+    `test_github_a_head_is_the_get_with_the_body_left_off`.
     """
     c, _ = gh_client
     r = c.post(f"/github/repos/{gh_org}/codebase", headers=gh_admin_h)
     assert r.status_code == 405
     assert r.json() == {"detail": "Method Not Allowed"}
+
+
+def test_github_a_head_is_the_get_with_the_body_left_off(gh_client, gh_admin_h, gh_org):
+    """Real answers a `HEAD` on each GitHub route measured as the `GET` with nothing in the body: the GET's
+    status, its headers, `content-length` of the body the GET would have carried and `Link` where
+    the GET has one. Measured against api.github.com on 2026-09-07 with `curl -I`, each `HEAD`
+    beside its `GET` the same minute: `/repos/psf/requests` and `/repos/psf/requests/issues?per_page=2`
+    200, the listing at `content-length: 9038` with its `Link`; `/search/code?q=…&per_page=1` 200
+    with `Link` and code search's charset-less `application/json`; `/repos/psf/ghost-zz-9876` 404 at
+    `content-length: 132`, the length of the GET's Not Found envelope; `/user` with no credential
+    401 at 120; `/search/issues?q=` 422 at 219; `/search/code?q=…&per_page=abc` 400
+    `text/plain; charset=utf-8` at 75, the length of the deserializer's own line. Seven endpoints,
+    one rule, the errors included: they answer `HEAD` exactly as they answer `GET`, body length
+    included.
+
+    Every route here is declared `GET` alone, and FastAPI's ``APIRoute`` does not add `HEAD` to a
+    GET route the way Starlette's ``Route`` does, so a `HEAD` was Starlette's 405 with `allow: GET`
+    on all of them, whatever the GET would have answered: an existence check, `requests.head(url)`
+    or `curl -I`, could not tell the repository that exists from the one that does not. It is
+    answered by ``backlot.main.answer_head_as_the_get_without_its_body``, which runs the GET and
+    keeps its headers, so the version echo, the charset and the id-path rewrite land on a `HEAD` by
+    construction; each is asserted below so that the construction is not the only thing saying so.
+    The OpenAPI document is untouched: real's description declares no `head` operation (none in
+    the 2026-09-09 read) and neither does Backlot's, so `backlot diff` and the MCP slice see what
+    they saw. The other vendors' `HEAD` answers are not measured and stay the 405 they were.
+    """
+    c, _ = gh_client
+    codebase = f"/github/repos/{gh_org}/codebase"
+    raw = {**gh_admin_h, "Accept": "application/vnd.github.raw"}
+    repo_id = c.get(codebase, headers=gh_admin_h).json()["id"]
+    rows = (
+        (codebase, gh_admin_h, {}),
+        (f"/github/repos/{gh_org}/diffable/issues", gh_admin_h, {"state": "all", "per_page": 1}),
+        (f"{codebase}/contents/README.md", raw, {}),
+        (f"/github/repositories/{repo_id}", gh_admin_h, {}),
+        (f"/github/repos/{gh_org}/ghost-zz-9876", gh_admin_h, {}),
+        ("/github/user/repos", {}, {}),
+        ("/github/search/issues", gh_admin_h, {"q": ""}),
+        ("/github/search/code", gh_admin_h, {"q": "extension:md", "per_page": 1}),
+        ("/github/search/code", gh_admin_h, {"q": "extension:md", "per_page": "abc"}),
+        (codebase, {**gh_admin_h, "X-GitHub-Api-Version": "1999-01-01"}, {}),
+    )
+    statuses = []
+    for path, headers, params in rows:
+        get = c.get(path, headers=headers, params=params)
+        head = c.head(path, headers=headers, params=params)
+        assert head.status_code == get.status_code, (path, params)
+        assert head.content == b"", (path, params)
+        assert head.headers["content-length"] == get.headers["content-length"], (path, params)
+        assert head.headers["content-length"] == str(len(get.content)), (path, params)
+        for name in ("content-type", "link", "x-github-api-version-selected"):
+            assert head.headers.get(name) == get.headers.get(name), (path, params, name)
+        statuses.append(head.status_code)
+    assert statuses == [200, 200, 200, 200, 404, 401, 422, 200, 400, 400]
+    # ...and the headers the loop compared were there to compare: the listing's `Link` and version
+    # echo, the raw representation's own type, code search's text/plain refusal at real's length
+    listing = c.head(rows[1][0], headers=gh_admin_h, params=rows[1][2])
+    assert "next" in _link_rels(listing.headers["Link"])
+    assert listing.headers["X-GitHub-Api-Version-Selected"] == "2022-11-28"
+    assert c.head(f"{codebase}/contents/README.md", headers=raw).headers["content-type"] == (
+        "application/vnd.github.raw; charset=utf-8"
+    )
+    refused = c.head("/github/search/code", headers=gh_admin_h, params=rows[8][2])
+    assert refused.headers["content-type"] == "text/plain; charset=utf-8"
+    assert refused.headers["content-length"] == "75"
+    assert "X-GitHub-Api-Version-Selected" not in refused.headers
+    # no `head` operation was declared to get there
+    spec = c.get("/openapi.json").json()
+    assert not [
+        p for p, item in spec["paths"].items() if p.startswith("/github") and "head" in item
+    ]
+    # ...and at the ASGI layer, where the test client cannot stand in for a server: Starlette's
+    # TestClient drops a HEAD response's body itself (`testclient.py`, `if request.method != "HEAD"`),
+    # so every `head.content == b""` above holds whether or not the middleware sent one. A server
+    # cannot drop it here, because the middleware rewrote the scope's method and uvicorn reads that
+    # to decide (measured over uvicorn on the bundled corpus with a raw socket: 0 bytes after the
+    # headers as built, the repository's 1839 with the middleware passing the GET through). So the
+    # messages the app sends are read directly: the headers carry the GET's length, and no body byte
+    # follows them.
+    from starlette.testclient import TestClient
+
+    sent = []
+
+    async def recording(scope, receive, send):
+        async def record(message):
+            sent.append(message)
+            await send(message)
+
+        await c.app(scope, receive, record)
+
+    # No `with`: a second lifespan on the app would overwrite the state gh_client started.
+    assert TestClient(recording).head(codebase, headers=gh_admin_h).status_code == 200
+    start = next(m for m in sent if m["type"] == "http.response.start")
+    body = c.get(codebase, headers=gh_admin_h).content
+    assert dict(start["headers"])[b"content-length"] == str(len(body)).encode()
+    assert sum(len(m.get("body", b"")) for m in sent if m["type"] == "http.response.body") == 0
+    # a vendor whose `HEAD` is not measured is refused as before
+    assert c.head("/slack/api/auth.test", headers=gh_admin_h).status_code == 405
 
 
 def test_github_a_path_failure_decides_the_answer_whatever_order_it_is_reported_in():

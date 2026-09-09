@@ -10,7 +10,7 @@ import threading
 from contextlib import asynccontextmanager
 
 import yaml
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -205,6 +205,56 @@ async def resolve_github_id_paths(request: Request, call_next):
             request.scope["path"] = canonical
             request.scope["raw_path"] = canonical.encode()
     return await call_next(request)
+
+
+# The path prefixes whose `HEAD` is measured to be the GET with the body left off. GitHub alone:
+# none of the other vendors' `HEAD` answers is measured, so a vendor is added here once its own is,
+# rather than by a rewrite that assumes they share GitHub's.
+_HEAD_IS_THE_GET_WITHOUT_ITS_BODY = ("/github",)
+
+
+@app.middleware("http")
+async def answer_head_as_the_get_without_its_body(request: Request, call_next):
+    """Answer a GitHub `HEAD` as the `GET` with the body left off, which is how real answers one.
+
+    Every GitHub route here is declared `GET` alone, and FastAPI's ``APIRoute`` does not add `HEAD`
+    to a GET route the way Starlette's ``Route`` does, so a `HEAD` reached Starlette's 405 with
+    `allow: GET` on every route, whatever the GET would have answered. Real answers the GET's own
+    status and headers with nothing in the body: `content-length` of the body the GET would have
+    carried and `Link` where the GET has one, on the 200s, the 404 for a repository that does not
+    exist, the 401 for no credential, the 422 for a blank search `q` and code search's text/plain
+    400 alike (measured against api.github.com on 2026-09-07 with `curl -I`, each `HEAD` beside its
+    `GET` the same minute). An existence check, `requests.head(url)` or `curl -I`, is what a client
+    sends a `HEAD` for, and a 405 for both the repository that exists and the one that does not
+    cannot tell them apart.
+
+    A middleware rather than `HEAD` in each route's ``methods``: FastAPI writes a `head` operation
+    into `/openapi.json` for every method a route declares, where real's own description declares
+    no `head` operation at all, so declaring it would hand `backlot diff --source github` operations
+    real lacks and the MCP slice tools that answer nothing a GET does not. The method is rewritten
+    on the scope before routing, so the GET runs in full: the router's dependencies, the handler and
+    every middleware inside this one see a GET, and the version echo, the id-path rewrite and the
+    charset land on the answer by construction. The body is read to the end to be measured rather
+    than sent, because the `content-length` a client reads a `HEAD` for is the GET body's length and
+    computing the body is the only way to have that number; a `HEAD` costs what its GET costs, here
+    as on real. Sent by this middleware and not left to the server: uvicorn drops a response body
+    when the scope's method is `HEAD`, and the scope now says `GET`, so a GET response passed
+    through here would go out with its body after the headers (measured over uvicorn on the bundled
+    corpus with a raw socket: the repository's 1839 bytes followed the headers with the body left
+    in, none with it read here).
+    """
+    if request.method != "HEAD" or not request.url.path.startswith(
+        _HEAD_IS_THE_GET_WITHOUT_ITS_BODY
+    ):
+        return await call_next(request)
+    request.scope["method"] = "GET"
+    response = await call_next(request)
+    length = 0
+    async for chunk in response.body_iterator:
+        length += len(chunk)
+    head = Response(status_code=response.status_code, headers=response.headers)
+    head.headers["content-length"] = str(length)
+    return head
 
 
 @app.middleware("http")

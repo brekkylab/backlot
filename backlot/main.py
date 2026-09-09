@@ -235,8 +235,9 @@ async def answer_head_as_the_get_without_its_body(request: Request, call_next):
     no `head` operation at all, so declaring it would hand `backlot diff --source github` operations
     real lacks and the MCP slice tools that answer nothing a GET does not. The method is rewritten
     on the scope before routing, so the GET runs in full: the router's dependencies, the handler and
-    every middleware inside this one see a GET, and the version echo, the id-path rewrite and the
-    charset land on the answer by construction. The body is read to the end to be measured rather
+    the two middlewares inside this one, the version echo and the id-path rewrite, see a GET and
+    land on the answer by construction, and the charset middleware outside it rewrites the copied
+    `content-type` as it does the GET's. The body is read to the end to be measured rather
     than sent, because the `content-length` a client reads a `HEAD` for is the GET body's length and
     computing the body is the only way to have that number; a `HEAD` costs what its GET costs, here
     as on real. Sent by this middleware and not left to the server: uvicorn drops a response body

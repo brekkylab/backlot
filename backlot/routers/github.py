@@ -59,12 +59,12 @@ PER_PAGE_MAX = 100
 # verbatim. The description is the only place real states the cap. Its schema is a bare
 # `{type: integer}` with no `maximum`, and real serves `per_page=101` at the cap rather than
 # refusing it, so a bound in the schema would have a generated client refuse what the server
-# accepts; the prose is where the number belongs. FastAPI cannot be told to write a default or a
-# description onto a parameter whose runtime default is None (see
-# `backlot.openapi.github_page_parameters`), so `backlot/main.py` writes both onto the served
-# document from this mapping. The 100 in the prose is PER_PAGE_MAX and the 30 is PER_PAGE_DEFAULT,
-# so the document cannot state one number while the route applies another; the `page` default is
-# the 1 that `_clamp` starts a listing at.
+# accepts; the prose is where the number belongs. FastAPI cannot be told to write a default onto a
+# parameter whose runtime default is None, and the one `PageParam` annotation both parameters share
+# cannot carry two descriptions (see `backlot.openapi.github_page_parameters`), so `backlot/main.py`
+# writes both onto the served document from this mapping. The 100 in the prose is PER_PAGE_MAX and
+# the 30 is PER_PAGE_DEFAULT, so the document cannot state one number while the route applies
+# another; the `page` default is the 1 that `_clamp` starts a listing at.
 _PAGINATION_DOCS = (
     'For more information, see "[Using pagination in the REST API]'
     '(https://docs.github.com/rest/using-the-rest-api/using-pagination-in-the-rest-api)."'

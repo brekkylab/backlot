@@ -332,7 +332,7 @@ def test_backlots_own_routes_read_the_app_that_serves_them(tmp_path):
     to the second one and read its state, and once the second lifespan had ended and closed its
     connection, the first server's `/_meta/users` was `sqlite3.ProgrammingError: Cannot operate on
     a closed database` while its vendor routes, which read ``request.app``, kept answering. In the
-    suite this bit any module-scoped client whose first `/_meta/users` call came after a reload."""
+    suite this bit a module-scoped client whose first `/_meta/users` call came after a reload."""
     from tests._helpers import build_corpus, client_for
 
     def record(domain: str) -> dict:

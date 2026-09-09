@@ -47,13 +47,13 @@ class Baseline:
     """
 
     source: str
-    endpoint: str
+    endpoints: tuple[str, ...]
     measured: str
     acknowledged: dict[str, Finding]
 
     @classmethod
-    def empty(cls, source: str, endpoint: str = "") -> "Baseline":
-        return cls(source=source, endpoint=endpoint, measured="", acknowledged={})
+    def empty(cls, source: str, endpoints: tuple[str, ...] = ()) -> "Baseline":
+        return cls(source=source, endpoints=endpoints, measured="", acknowledged={})
 
     @classmethod
     def load(cls, path: Path) -> "Baseline":
@@ -70,7 +70,7 @@ class Baseline:
             ack[f.key] = f
         return cls(
             source=raw["source"],
-            endpoint=raw.get("endpoint", ""),
+            endpoints=tuple(raw.get("endpoints", ())),
             measured=raw.get("measured", ""),
             acknowledged=ack,
         )
@@ -95,7 +95,7 @@ class Baseline:
             json.dumps(
                 {
                     "source": self.source,
-                    "endpoint": self.endpoint,
+                    "endpoints": list(self.endpoints),
                     "measured": measured,
                     "acknowledged": [f.as_dict() for f in kept],
                 },
@@ -104,14 +104,14 @@ class Baseline:
             + "\n"
         )
 
-    def identified_as(self, source: str, endpoint: str) -> "Baseline":
+    def identified_as(self, source: str, endpoints: tuple[str, ...]) -> "Baseline":
         """The same acknowledgements, relabelled for the comparison actually being run.
 
         A loaded baseline reports whatever the file last said it was about. That is fine until a
         source is renamed or repointed, at which point the stale name would be written back
         forever, because the file is the only thing that ever set it.
         """
-        return replace(self, source=source, endpoint=endpoint)
+        return replace(self, source=source, endpoints=endpoints)
 
     def unacknowledged(self, findings: Iterable[Finding]) -> list[Finding]:
         """Findings this baseline does not already account for.

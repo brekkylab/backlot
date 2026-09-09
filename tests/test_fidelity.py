@@ -148,9 +148,12 @@ def test_rewriting_a_baseline_keeps_its_notes_and_takes_the_new_identity(tmp_pat
     known = _diff(VENDOR.replace(", title: String", ""))
     baseline = _baseline(tmp_path, known, note="deliberate: no title in the corpus")
     path = tmp_path / "fireflies.json"
-    baseline.identified_as("renamed", "https://new.invalid").write(path, known, measured="2026-10")
+    baseline.identified_as("renamed", ("https://new.invalid",)).write(
+        path, known, measured="2026-10"
+    )
     written = json.loads(path.read_text())
-    assert (written["source"], written["endpoint"]) == ("renamed", "https://new.invalid")
+    assert written["source"] == "renamed"
+    assert written["endpoints"] == ["https://new.invalid"]
     assert [e.get("note") for e in written["acknowledged"]] == [
         "deliberate: no title in the corpus"
     ]
@@ -203,6 +206,45 @@ def test_a_credential_pair_splits_on_its_first_equals(pairs, expected):
 # --------------------------------------------------------------------------- the registry
 
 
+def test_a_comparison_with_two_specs_reports_both_documents_findings(monkeypatch):
+    """A source published as several documents is several comparisons' worth of surface under one
+    source name, so `divergences` runs each and concatenates rather than picking one."""
+    calls = []
+
+    def fake(spec, *, timeout=120.0):
+        calls.append(spec.spec_url)
+        return [Finding("gap", GAP, f"GET {spec.mount[0]}/x", "")]
+
+    monkeypatch.setattr(comparisons.openapi_diff, "divergences", fake)
+    c = comparisons.OpenAPIComparison(
+        name="two",
+        specs=(
+            comparisons.Spec("https://a.invalid/s.json", ("/a",)),
+            comparisons.Spec("https://b.invalid/s.json", ("/b",)),
+        ),
+    )
+    found = c.divergences()
+    assert calls == ["https://a.invalid/s.json", "https://b.invalid/s.json"]
+    assert [f.path for f in found] == ["GET /a/x", "GET /b/x"]
+
+
+def test_every_comparison_names_the_documents_it_was_measured_against():
+    """`endpoints` is the baseline's identity, and a source can now have more than one document
+    behind it -- a single joined string could not tell a source that GAINED a document from one
+    whose document moved."""
+    for name, c in COMPARISONS.items():
+        assert isinstance(c.endpoints, tuple) and c.endpoints, name
+        assert all(e.startswith("http") for e in c.endpoints), name
+
+
+def test_a_baseline_round_trips_every_endpoint_it_names(tmp_path):
+    p = tmp_path / "b.json"
+    ends = ("https://a.invalid", "https://b.invalid")
+    Baseline.empty("s", ends).write(p, [], measured="2026-01-01")
+    assert Baseline.load(p).endpoints == ends
+    assert json.loads(p.read_text())["endpoints"] == list(ends)
+
+
 def test_the_comparisons_are_exactly_the_sources_backlot_serves():
     """Fidelity does not get to invent a source: `store.SOURCE_TABLE` is the canonical list, and
     the same `source_type` a BYO record carries.
@@ -237,7 +279,8 @@ def test_every_comparison_ships_a_baseline_and_mounts_something_to_compare():
     for name, comparison in COMPARISONS.items():
         assert Baseline.load(baseline_path(name)).source == name
         if comparison in {**OPENAPI, **GOOGLE_DISCOVERY}.values():
-            assert any(p.startswith(m) for p in served for m in comparison.mount), name
+            mounts = [m for s in comparison.specs for m in s.mount]
+            assert any(p.startswith(m) for p in served for m in mounts), name
 
 
 def test_every_acknowledged_breaking_divergence_carries_its_reasoning():
@@ -357,7 +400,11 @@ def test_the_mount_comes_off_only_where_the_vendor_does_not_repeat_it():
 
     def mounted(name):
         c = OPENAPI.get(name) or GOOGLE_DISCOVERY[name]
-        return {p for _, p in operations.from_backlot(served, c.mount, c.strip)}
+        return {
+            p
+            for spec in c.specs
+            for _, p in operations.from_backlot(served, spec.mount, spec.strip)
+        }
 
     assert mounted("slack") == {"conversations.list"}
     assert mounted("google_drive") == {"drive/v3/files"}
@@ -394,7 +441,7 @@ def test_an_index_is_read_on_every_run_rather_than_pinned():
     """Measured 2026-09-01: every past HubSpot release id still serves its own frozen document, so
     a pinned URL never 404s — it reports no drift forever. Only HubSpot needs the indirection."""
     assert hubspot_catalog.entry("Custom Objects", "3")(CATALOG) == "https://example.invalid/v3"
-    assert {n for n, c in OPENAPI.items() if c.resolve_url} == {"hubspot"}
+    assert {n for n, c in OPENAPI.items() if any(s.resolve_url for s in c.specs)} == {"hubspot"}
 
 
 @pytest.mark.parametrize(

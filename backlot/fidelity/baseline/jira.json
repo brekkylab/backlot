@@ -1,6 +1,8 @@
 {
   "source": "jira",
-  "endpoint": "https://developer.atlassian.com/cloud/jira/platform/swagger-v3.v3.json",
+  "endpoints": [
+    "https://developer.atlassian.com/cloud/jira/platform/swagger-v3.v3.json"
+  ],
   "measured": "2026-09-01",
   "acknowledged": [
     {

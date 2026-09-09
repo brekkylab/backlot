@@ -1,6 +1,8 @@
 {
   "source": "hubspot",
-  "endpoint": "https://api.hubspot.com/public/api/spec/v1/specs",
+  "endpoints": [
+    "https://api.hubspot.com/public/api/spec/v1/specs"
+  ],
   "measured": "2026-09-01",
   "acknowledged": [
     {

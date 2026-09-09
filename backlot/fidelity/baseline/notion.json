@@ -1,6 +1,8 @@
 {
   "source": "notion",
-  "endpoint": "https://developers.notion.com/openapi.json",
+  "endpoints": [
+    "https://developers.notion.com/openapi.json"
+  ],
   "measured": "2026-09-01",
   "acknowledged": [
     {

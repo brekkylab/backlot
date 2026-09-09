@@ -71,34 +71,29 @@ class Spec:
 
 @dataclass(frozen=True)
 class OpenAPIComparison:
-    """A source compared against the OpenAPI document its vendor publishes.
+    """A source compared against the OpenAPI document(s) its vendor publishes.
 
     Public, so this kind needs no credential, no quota and no account: the scheduled job carries no
     secret for it, and anyone can reproduce a finding locally.
 
-    Most vendors publish the document at a stable URL. One does not, and ``resolve_url`` is for
-    that: ``spec_url`` addresses an index, and the hook picks the entry out of it.
+    SEVERAL documents where a vendor publishes several: Atlassian publishes Jira's v2 and v3 REST
+    APIs separately and Backlot serves both, and HubSpot's associations are their own API at their
+    own version. Each is a :class:`Spec` with its own mount and strip, and the findings
+    concatenate.
     """
 
     name: str
-    spec_url: str
-    mount: tuple[str, ...]
-    strip: str = ""
-    # Set when ``spec_url`` addresses an INDEX rather than the document itself: given what was
-    # fetched, it returns the URL to fetch instead. A vendor that publishes one document per
-    # release needs this — see `hubspot_catalog` for why pinning the resolved URL is
-    # not the simplification it appears to be.
-    resolve_url: Callable[[Mapping[str, Any]], str] | None = None
+    specs: tuple[Spec, ...]
     credentials: tuple[Credential, ...] = ()
 
     @property
-    def endpoint(self) -> str:
-        return self.spec_url
+    def endpoints(self) -> tuple[str, ...]:
+        return tuple(s.spec_url for s in self.specs)
 
     def divergences(
         self, credentials: Mapping[str, str] | None = None, *, timeout: float = 120.0
     ) -> list[Finding]:
-        return openapi_diff.divergences(self, timeout=timeout)
+        return [f for s in self.specs for f in openapi_diff.divergences(s, timeout=timeout)]
 
 
 @dataclass(frozen=True)
@@ -109,22 +104,25 @@ class GoogleDiscoveryComparison:
     nest under resources, paths join to a ``servicePath``, and the standard query parameters are
     declared once for the whole document. A shared class would have carried a ``kind`` field that
     picked a parser, which is a type doing a type's job in a string.
+
+    SEVERAL documents where a source is served through several APIs: a Drive file is also read
+    through Docs, Sheets and Slides, each of which publishes its own discovery document.
     """
 
     name: str
-    spec_url: str
-    mount: tuple[str, ...]
-    strip: str = ""
+    specs: tuple[Spec, ...]
     credentials: tuple[Credential, ...] = ()
 
     @property
-    def endpoint(self) -> str:
-        return self.spec_url
+    def endpoints(self) -> tuple[str, ...]:
+        return tuple(s.spec_url for s in self.specs)
 
     def divergences(
         self, credentials: Mapping[str, str] | None = None, *, timeout: float = 120.0
     ) -> list[Finding]:
-        return google_discovery_diff.divergences(self, timeout=timeout)
+        return [
+            f for s in self.specs for f in google_discovery_diff.divergences(s, timeout=timeout)
+        ]
 
 
 @dataclass(frozen=True)
@@ -143,6 +141,12 @@ class GraphQLComparison:
     # Fireflies takes `Bearer <key>`, and Linear's personal API keys go in BARE — sending Linear a
     # `Bearer` prefix is answered 400, not 401.
     auth_scheme: str = "Bearer"
+
+    @property
+    def endpoints(self) -> tuple[str, ...]:
+        """One, always: introspection is a single live schema, not a set of documents. Plural so
+        every kind answers the same question and no caller needs to know which it is holding."""
+        return (self.endpoint,)
 
     def authorization(self, resolved: Mapping[str, str]) -> str:
         key = resolved["api_key"]
@@ -177,8 +181,8 @@ class ProbeComparison:
     run: Callable[[str, Mapping[str, Any], float], list[Finding]]
 
     @property
-    def endpoint(self) -> str:
-        return self.spec_url
+    def endpoints(self) -> tuple[str, ...]:
+        return (self.spec_url,)
 
     # None: a probe asks Backlot, not the vendor, and signs with the corpus's own keys. A probe
     # against a live vendor would declare what it needs here. Note that `run` is the only part a
@@ -195,46 +199,71 @@ class ProbeComparison:
 OPENAPI = {
     "slack": OpenAPIComparison(
         name="slack",
-        spec_url="https://raw.githubusercontent.com/slackapi/slack-api-specs/master/web-api/slack_web_openapi_v2.json",
-        mount=("/slack/api",),
-        strip="/slack/api",
+        specs=(
+            Spec(
+                spec_url="https://raw.githubusercontent.com/slackapi/slack-api-specs/master/web-api/slack_web_openapi_v2.json",
+                mount=("/slack/api",),
+                strip="/slack/api",
+            ),
+        ),
     ),
     "github": OpenAPIComparison(
         name="github",
-        spec_url="https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json",
-        mount=("/github",),
-        strip="/github",
+        specs=(
+            Spec(
+                spec_url="https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json",
+                mount=("/github",),
+                strip="/github",
+            ),
+        ),
     ),
     "jira": OpenAPIComparison(
         name="jira",
-        spec_url="https://developer.atlassian.com/cloud/jira/platform/swagger-v3.v3.json",
-        # v3 only. Backlot serves the `/rest/api/2` aliases too, because real Jira does, but
-        # Atlassian publishes a v3 document — comparing a v2 path against it would report Backlot
-        # inventing every one of them, which is a statement about the document, not about Jira.
-        mount=("/atlassian/rest/api/3",),
-        strip="/atlassian",
+        specs=(
+            Spec(
+                spec_url="https://developer.atlassian.com/cloud/jira/platform/swagger-v3.v3.json",
+                mount=("/atlassian/rest/api/3",),
+                strip="/atlassian",
+            ),
+            # v3 only. Backlot serves the `/rest/api/2` aliases too, because real Jira does, but
+            # Atlassian publishes a v3 document — comparing a v2 path against it would report
+            # Backlot inventing every one of them, which is a statement about the document, not
+            # about Jira.
+        ),
     ),
     "confluence": OpenAPIComparison(
         name="confluence",
-        spec_url="https://developer.atlassian.com/cloud/confluence/swagger.v3.json",
-        mount=("/atlassian/wiki",),
-        strip="/atlassian",
+        specs=(
+            Spec(
+                spec_url="https://developer.atlassian.com/cloud/confluence/swagger.v3.json",
+                mount=("/atlassian/wiki",),
+                strip="/atlassian",
+            ),
+        ),
     ),
     "notion": OpenAPIComparison(
         name="notion",
-        spec_url="https://developers.notion.com/openapi.json",
-        mount=("/notion/v1",),
-        strip="/notion",
+        specs=(
+            Spec(
+                spec_url="https://developers.notion.com/openapi.json",
+                mount=("/notion/v1",),
+                strip="/notion",
+            ),
+        ),
     ),
     "hubspot": OpenAPIComparison(
         name="hubspot",
-        spec_url="https://api.hubspot.com/public/api/spec/v1/specs",
-        # crm/v3 only: the v4 associations surface Backlot also serves is a SEPARATE API in
-        # HubSpot's catalog with its own document, so comparing it against this one would report
-        # it as invented.
-        mount=("/hubspot/crm/v3",),
-        strip="/hubspot",
-        resolve_url=hubspot_catalog.entry("Custom Objects", "3"),
+        specs=(
+            Spec(
+                spec_url="https://api.hubspot.com/public/api/spec/v1/specs",
+                mount=("/hubspot/crm/v3",),
+                strip="/hubspot",
+                resolve_url=hubspot_catalog.entry("Custom Objects", "3"),
+            ),
+            # crm/v3 only: the v4 associations surface Backlot also serves is a SEPARATE API in
+            # HubSpot's catalog with its own document, so comparing it against this one would
+            # report it as invented.
+        ),
     ),
     # S3 is not an entry here: its contract is not a path map at all, so it is compared by asking
     # a running server instead. See backlot.fidelity.s3_probe.
@@ -244,15 +273,23 @@ OPENAPI = {
 GOOGLE_DISCOVERY = {
     "gmail": GoogleDiscoveryComparison(
         name="gmail",
-        spec_url="https://gmail.googleapis.com/$discovery/rest?version=v1",
-        # Nothing stripped: Google's own document already spells `gmail/v1/...`, which is exactly
-        # where Backlot mounts it.
-        mount=("/gmail",),
+        specs=(
+            Spec(
+                spec_url="https://gmail.googleapis.com/$discovery/rest?version=v1",
+                # Nothing stripped: Google's own document already spells `gmail/v1/...`, which is
+                # exactly where Backlot mounts it.
+                mount=("/gmail",),
+            ),
+        ),
     ),
     "google_drive": GoogleDiscoveryComparison(
         name="google_drive",
-        spec_url="https://www.googleapis.com/discovery/v1/apis/drive/v3/rest",
-        mount=("/drive/v3",),
+        specs=(
+            Spec(
+                spec_url="https://www.googleapis.com/discovery/v1/apis/drive/v3/rest",
+                mount=("/drive/v3",),
+            ),
+        ),
     ),
 }
 

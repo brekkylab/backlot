@@ -1,6 +1,8 @@
 {
   "source": "github",
-  "endpoint": "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json",
+  "endpoints": [
+    "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json"
+  ],
   "measured": "2026-09-04",
   "acknowledged": [
     {

@@ -1,6 +1,8 @@
 {
   "source": "fireflies",
-  "endpoint": "https://api.fireflies.ai/graphql",
+  "endpoints": [
+    "https://api.fireflies.ai/graphql"
+  ],
   "measured": "2026-09-01",
   "acknowledged": [
     {

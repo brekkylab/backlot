@@ -1,6 +1,8 @@
 {
   "source": "google_drive",
-  "endpoint": "https://www.googleapis.com/discovery/v1/apis/drive/v3/rest",
+  "endpoints": [
+    "https://www.googleapis.com/discovery/v1/apis/drive/v3/rest"
+  ],
   "measured": "2026-09-01",
   "acknowledged": [
     {

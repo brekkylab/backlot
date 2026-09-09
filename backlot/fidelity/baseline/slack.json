@@ -1,6 +1,8 @@
 {
   "source": "slack",
-  "endpoint": "https://raw.githubusercontent.com/slackapi/slack-api-specs/master/web-api/slack_web_openapi_v2.json",
+  "endpoints": [
+    "https://raw.githubusercontent.com/slackapi/slack-api-specs/master/web-api/slack_web_openapi_v2.json"
+  ],
   "measured": "2026-09-01",
   "acknowledged": [
     {

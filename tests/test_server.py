@@ -355,7 +355,7 @@ def test_backlots_own_routes_read_the_app_that_serves_them(tmp_path):
         # the second lifespan has ended and closed its connection; the first server is still up
         assert first.get("/health").json()["status"] == "ok"
         assert first.get("/_meta/users").json()["org"] == "acme"
-        assert first.get("/_meta/credentials").status_code in (200, 404)  # 404: no credentials.yaml
+        assert first.get("/_meta/credentials").json()["org"] == "acme"
         assert "/github/search/code" in first.get("/_meta/openapi/github").json()["paths"]
 
 

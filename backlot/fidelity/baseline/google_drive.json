@@ -1037,12 +1037,6 @@
     {
       "kind": "missing_param",
       "severity": "gap",
-      "path": "GET /v4/spreadsheets/{}?excludeTablesInBandedRanges",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
       "path": "GET /v4/spreadsheets/{}?fields",
       "detail": "the vendor accepts it; Backlot does not"
     },

@@ -1737,7 +1737,11 @@ def _sheets_grid(content: str | None) -> list[list[str]]:
     return [[line] for line in (content or "").split("\n")]
 
 
-_P_SHEETS_GET = [qp("includeGridData", "boolean"), qp("ranges")]
+_P_SHEETS_GET = [
+    qp("includeGridData", "boolean"),
+    qp("ranges"),
+    qp("excludeTablesInBandedRanges", "boolean"),
+]
 
 
 @router.get("/sheets/v4/spreadsheets/{spreadsheet_id}", openapi_extra={"parameters": _P_SHEETS_GET})
@@ -1766,7 +1770,11 @@ async def sheets_get(spreadsheet_id: str, request: Request):
             sheet, body = _a1_sheet(spec, sheets)
             per_sheet.setdefault(sheet.index, []).append((body, spec))
         wanted = [(sh, per_sheet[sh.index]) for sh in sheets if sh.index in per_sheet]
-    grid = (request.query_params.get("includeGridData") or "").lower() == "true"
+    grid = _sheets_bool(request, "includeGridData", "include_grid_data")
+    # Validated and then unused, deliberately: it drops the tables that sit inside a banded range,
+    # and a corpus states neither tables nor banded ranges, so there is nothing here to exclude.
+    # Leaving it unvalidated instead would accept the one thing a client can get wrong about it.
+    _sheets_bool(request, "excludeTablesInBandedRanges", "exclude_tables_in_banded_ranges")
     out = []
     for sh, parts in wanted:
         entry = {
@@ -1784,7 +1792,12 @@ async def sheets_get(spreadsheet_id: str, request: Request):
         out.append(entry)
     return {
         "spreadsheetId": spreadsheet_id,
-        "properties": {"title": row["title"], "locale": "en_US"},
+        "properties": {
+            "title": row["title"],
+            "locale": "en_US",
+            "autoRecalc": SHEETS_AUTO_RECALC,
+            "timeZone": SHEETS_TIME_ZONE,
+        },
         "spreadsheetUrl": f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit",
         "sheets": out,
     }
@@ -1805,6 +1818,18 @@ SHEETS_SHEET_TITLE = "Sheet1"  # Backlot shapes every spreadsheet as one sheet w
 # sheet title beside it — not invented cell data, which `_sheets_grid` still refuses to manufacture.
 SHEETS_GRID_ROWS = 1000
 SHEETS_GRID_COLS = 26
+
+# A track's default size in pixels, carried by every `rowMetadata`/`columnMetadata` entry a
+# `GridData` block holds. Measured on a real workbook: every row entry is `{"pixelSize": 21}` and
+# every column entry `{"pixelSize": 100}`. A corpus states no track size, so nothing varies.
+SHEETS_ROW_PIXELS = 21
+SHEETS_COL_PIXELS = 100
+
+# `properties` fields real Sheets always carries beside `title` and `locale`. `ON_CHANGE` is the
+# recalculation setting a spreadsheet has unless someone changes it; `Etc/GMT` is the neutral zone,
+# and matches what a freshly created spreadsheet answered with.
+SHEETS_AUTO_RECALC = "ON_CHANGE"
+SHEETS_TIME_ZONE = "Etc/GMT"
 
 _A1_MAJOR = ("ROWS", "COLUMNS")
 _A1_RENDER = ("FORMATTED_VALUE", "UNFORMATTED_VALUE", "FORMULA")
@@ -1828,6 +1853,30 @@ def _a1_enum_error(field: str, enum: str, value: str) -> str:
     ``Invalid value at 'major_dimension' (…sheets.v4.Dimension), "DIAGONAL"``. Measured, because a
     client that matches on the message needs the real one."""
     return f"Invalid value at '{field}' ({_SHEETS_ENUM}.{enum}), \"{value}\""
+
+
+# A protobuf JSON boolean, as the Sheets query parser takes one. Measured: case-insensitive, and
+# `on`/`off`, a padded `" true"`, `2`, `01` and `1.0` are all refused.
+_SHEETS_TRUE = frozenset({"1", "t", "true", "y", "yes"})
+_SHEETS_FALSE = frozenset({"0", "f", "false", "n", "no"})
+
+
+def _sheets_bool(request: Request, param: str, field: str) -> bool:
+    """One of the boolean query params, parsed the way the real one is.
+
+    Measured: `1`, `t`, `y` and `yes` mean true and `0`, `f`, `n` and `no` mean false, matched
+    case-insensitively; anything else 400s as ``Invalid value at '<field>' (TYPE_BOOL), "<value>"``,
+    naming the proto TYPE rather than a message. An absent param is false; an EMPTY one is not
+    absent and 400s."""
+    raw = request.query_params.get(param)
+    if raw is None:
+        return False
+    folded = raw.casefold()
+    if folded in _SHEETS_TRUE:
+        return True
+    if folded in _SHEETS_FALSE:
+        return False
+    raise gerr.invalid_argument(f"Invalid value at '{field}' (TYPE_BOOL), \"{raw}\"")
 
 
 def _a1_endpoint(part: str, spec: str) -> tuple[int | None, int | None]:
@@ -2031,10 +2080,16 @@ def _sheets_grid_data(sheet: _Sheet, body: str, spec: str) -> dict:
     Measured, they differ on real Sheets only for a FORMULA cell — the formula in the first, its
     result in the second — and a corpus cannot state a formula, so there is nothing to differ over.
 
+    ``rowMetadata``/``columnMetadata`` cover the RANGE, one entry per row and column of it —
+    measured, 2 and 2 for ``Data!A1:B2`` against the same sheet whose unscoped block carries 1000
+    and 26. Every entry is identical (``pixelSize`` 21 for a row, 100 for a column), those being
+    the default track sizes; a corpus states no track size, so there is nothing to vary.
+
     Two divergences, stated rather than hidden: real Sheets pads ``rowData`` out to the WHOLE
-    1000-row grid where this stops at the last row holding data, and real cells carry format
-    objects plus ``rowMetadata``/``columnMetadata``, none of which Backlot models."""
-    r0, c0, _r1, c1, block = _sheets_block(sheet, body, spec)
+    1000-row grid where this stops at the last row holding data, and real cells carry an
+    ``effectiveFormat`` this does not model — cell formatting is not something a corpus can
+    state."""
+    r0, c0, r1x, c1, block = _sheets_block(sheet, body, spec)
     width = c1 - c0
     while block and all(sheets_grid.formatted(c) == "" for c in block[-1]):
         block.pop()
@@ -2043,6 +2098,8 @@ def _sheets_grid_data(sheet: _Sheet, body: str, spec: str) -> dict:
         out["startRow"] = r0
     if c0:
         out["startColumn"] = c0
+    out["rowMetadata"] = [{"pixelSize": SHEETS_ROW_PIXELS} for _ in range(r1x - r0)]
+    out["columnMetadata"] = [{"pixelSize": SHEETS_COL_PIXELS} for _ in range(width)]
     if block:
         out["rowData"] = [
             {

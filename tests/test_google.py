@@ -1446,8 +1446,15 @@ def test_sheets_get_returns_grid_when_asked(base, admin_h):
     sh = httpx.get(
         f"{base}/sheets/v4/spreadsheets/{fid}", headers=admin_h, params={"includeGridData": "true"}
     ).json()
+    # measured: real Sheets always carries these two beside title and locale
+    assert sh["properties"]["autoRecalc"] == "ON_CHANGE"
+    assert sh["properties"]["timeZone"] == "Etc/GMT"
     data = sh["sheets"][0]["data"][0]
     assert "startRow" not in data and "startColumn" not in data, "zeros are omitted, as proto3 does"
+    # one metadata entry per row and column of the RANGE, which unscoped is the whole grid, each
+    # carrying the default track size — measured
+    assert data["rowMetadata"] == [{"pixelSize": 21}] * 1000
+    assert data["columnMetadata"] == [{"pixelSize": 100}] * 26
     rows = data["rowData"]
     # a cell object per column of the range (26), the empty ones carrying no value — measured shape
     assert {len(r["values"]) for r in rows} == {26}
@@ -1818,6 +1825,52 @@ def test_sheets_values_get_rejects_a_bad_enum(base, admin_h, sheet_id, params, f
     assert r.json()["error"]["message"] == (
         f"Invalid value at '{field}' (type.googleapis.com/google.apps.sheets.v4.{enum}), \"{bad}\""
     )
+
+
+@pytest.mark.parametrize(
+    "value, included",
+    [
+        ("true", True),
+        ("TRUE", True),
+        ("TrUe", True),
+        ("1", True),
+        ("t", True),
+        ("y", True),
+        ("YES", True),
+        ("false", False),
+        ("0", False),
+        ("f", False),
+        ("n", False),
+        ("NO", False),
+    ],
+)
+def test_include_grid_data_takes_every_boolean_spelling_the_real_api_takes(
+    base, admin_h, sheet_id, value, included
+):
+    """Measured: the flag is parsed as a protobuf boolean, so `1`, `t`, `y` and `yes` mean true and
+    `0`, `f`, `n` and `no` mean false, case-insensitively. Matching only the word "true" would
+    withhold the grid from a client that asked for it with `includeGridData=1`."""
+    r = httpx.get(
+        f"{base}/sheets/v4/spreadsheets/{sheet_id}",
+        headers=admin_h,
+        params={"includeGridData": value},
+    )
+    assert r.status_code == 200
+    assert ("data" in r.json()["sheets"][0]) is included
+
+
+@pytest.mark.parametrize("param", ["includeGridData", "excludeTablesInBandedRanges"])
+@pytest.mark.parametrize("value", ["NOPE", "", "2", "01", "1.0", "on", "off", " true", "true "])
+def test_a_boolean_query_param_refuses_what_is_not_a_boolean(base, admin_h, sheet_id, param, value):
+    """Measured message shape, which names the proto type rather than a message name: `Invalid
+    value at 'include_grid_data' (TYPE_BOOL), "NOPE"`. Surrounding whitespace is not trimmed, and
+    `on`/`off` are not booleans here."""
+    field = {"includeGridData": "include_grid_data"}.get(param, "exclude_tables_in_banded_ranges")
+    r = httpx.get(
+        f"{base}/sheets/v4/spreadsheets/{sheet_id}", headers=admin_h, params={param: value}
+    )
+    assert r.status_code == 400
+    assert r.json()["error"]["message"] == f"Invalid value at '{field}' (TYPE_BOOL), \"{value}\""
 
 
 @pytest.mark.parametrize(
@@ -2812,6 +2865,10 @@ def test_two_ranges_on_one_sheet_give_it_two_data_blocks(gc, gh, book):
     assert len(blocks) == 2
     assert "startColumn" not in blocks[0]  # proto3 drops a zero default
     assert blocks[1]["startColumn"] == 1
+    # the metadata is the BLOCK's size, not the grid's, once `ranges` scopes it — measured 2 and 2
+    # for A1:B2 against a sheet whose unscoped block carries 1000 and 26
+    assert len(blocks[0]["rowMetadata"]) == 2 and len(blocks[0]["columnMetadata"]) == 1
+    assert len(blocks[1]["rowMetadata"]) == 2 and len(blocks[1]["columnMetadata"]) == 2
 
 
 def test_ranges_across_two_sheets_returns_both_in_index_order(gc, gh, book):

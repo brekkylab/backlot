@@ -199,19 +199,33 @@ each of those is compared, and a test fails if the two sets ever drift apart.
 | Linear | GraphQL introspection | `api_key` — `LINEAR_API_KEY`, sent **bare** |
 | Slack | published OpenAPI | none |
 | Gmail | Google Discovery | none |
-| Google Drive (`google_drive`) | Google Discovery | none |
+| Google Drive (`google_drive`) | Google Discovery — Drive, Docs, Sheets and Slides | none |
 | GitHub | published OpenAPI | none |
-| Jira | published OpenAPI (v3) | none |
+| Jira | published OpenAPI, v2 and v3 documents | none |
 | Confluence | published OpenAPI (v1) | none |
-| HubSpot | published OpenAPI, resolved through the API catalog | none |
+| HubSpot | published OpenAPI, CRM v3 and Associations v4, resolved through the API catalog | none |
 | Notion | published OpenAPI | none |
 | Amazon S3 | botocore service model, **probed** — see [S3 is asked, not read](#s3-is-asked-not-read) | none |
 
 The credential column is measured, not read off a page: Linear's personal API keys go in bare, and
 sending Linear a `Bearer` prefix is answered **400**, not 401.
 
-**Jira's `/rest/api/2` aliases** are served because real Jira serves them, but Atlassian publishes a
-v3 document. They are compared through their v3 twins rather than reported as invented.
+A source is compared against as many documents as its vendor publishes for the surface Backlot
+serves. Three need more than one: Jira's v2 and v3 REST APIs are separate documents, a Drive file is
+also read through Docs, Sheets and Slides, and HubSpot's associations are their own API at their own
+version.
 
-Two vendors need a second document before they are fully covered: HubSpot's v4 associations surface
-is a separate API in the same catalog, and Confluence's reads now live in a v2 document.
+**Jira's `/rest/api/2` paths** are served because the clients call them — `atlassian-python-api`
+hardcodes `api_version = "2"` in its Jira constructor, and the `jira` PyPI client defaults
+`rest_api_version` to `"2"` and probes `/rest/api/2/serverInfo` on connect. They are compared
+against Atlassian's own v2 document, which it publishes beside the v3 one: the naming is
+`swagger[-<apiVersion>].<oasVersion>.json`, so the suffix-less `swagger.v3.json` is the v2 API.
+
+Every path Backlot serves is under one of those documents' mounts, probed, or declared in
+`UNCOMPARED` with the reason no document covers it — Backlot's own `/health`, `/oauth2/token` and
+`/_meta`, and Google's `/batch`, which is one endpoint carrying requests for every Google API and so
+appears in no single discovery document. A route in none of the three fails the suite.
+
+Confluence is not yet fully covered: its reads now live in a v2 document whose paths are shaped
+differently from the v1 ones Backlot serves, so the eight reads Atlassian has removed from the v1
+document are acknowledged rather than compared.

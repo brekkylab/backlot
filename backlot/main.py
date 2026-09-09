@@ -207,15 +207,17 @@ async def resolve_github_id_paths(request: Request, call_next):
     return await call_next(request)
 
 
-# The path prefixes whose `HEAD` is measured to be the GET with the body left off. GitHub alone:
-# none of the other vendors' `HEAD` answers is measured, so a vendor is added here once its own is,
-# rather than by a rewrite that assumes they share GitHub's.
-_HEAD_IS_THE_GET_WITHOUT_ITS_BODY = ("/github",)
+# The path prefixes whose `HEAD` is the GET with the body left off. GitHub because it is measured to
+# be, and none of the other vendors' `HEAD` answers is, so a vendor is added here once its own is
+# rather than by a rewrite that assumes they share GitHub's. `/health` and `/_meta` are Backlot's
+# own routes, with no vendor to measure against: a `HEAD /health` is the shape a liveness probe
+# takes, and `FastAPI`'s `APIRoute` refused it with the same 405 for the same reason.
+_HEAD_IS_THE_GET_WITHOUT_ITS_BODY = ("/github", "/health", "/_meta")
 
 
 @app.middleware("http")
 async def answer_head_as_the_get_without_its_body(request: Request, call_next):
-    """Answer a GitHub `HEAD` as the `GET` with the body left off, which is how real answers one.
+    """Answer a `HEAD` as the `GET` with the body left off, which is how real GitHub answers one.
 
     Every GitHub route here is declared `GET` alone, and FastAPI's ``APIRoute`` does not add `HEAD`
     to a GET route the way Starlette's ``Route`` does, so a `HEAD` reached Starlette's 405 with
@@ -330,17 +332,17 @@ async def vendor_json_media_type(request: Request, call_next):
 
 
 @app.get("/health")
-async def health():
+async def health(request: Request):
     # Two counts, deliberately. `documents` sums the root-document tables only (SOURCE_TABLE, not
     # COMMENT_TABLE); `source_documents` is what the corpus OFFERED, which is smaller because
     # parsing turns one Slack transcript into many messages. Reporting only the larger inflates.
-    counts = getattr(app.state, "doc_counts", None)
-    warm_error = getattr(app.state, "warm_error", None)
+    counts = getattr(request.app.state, "doc_counts", None)
+    warm_error = getattr(request.app.state, "warm_error", None)
     # `degraded`, not a non-200: the corpus is still served correctly (see the fallbacks), so
     # failing the check would take down a working server. Only `ok` with null counts is wrong.
     body = {
         "status": "degraded" if warm_error else "ok",
-        "source_documents": getattr(app.state, "source_documents", None),
+        "source_documents": getattr(request.app.state, "source_documents", None),
     }
     if counts is not None:
         body["documents"] = sum(counts.values())
@@ -356,7 +358,7 @@ async def health():
 
 
 @app.get("/_meta/users")
-async def meta_users():
+async def meta_users(request: Request):
     """Directory of every generated user + their token, for testing per-user ACL.
 
     Not part of any emulated vendor API — a Backlot-only affordance. Present each user's
@@ -368,8 +370,8 @@ async def meta_users():
     The admin/service token bypasses all filtering. Always served: ``backlot mcp --user <email>``
     resolves a person to their whole credential set here.
     """
-    conn = app.state.conn
-    acl = app.state.acl
+    conn = request.app.state.conn
+    acl = request.app.state.acl
     tok = acl.email_to_token()
     # Only users with a token: everyone else the corpus names is display-only (an author or owner,
     # not an identity you can authenticate as).
@@ -409,12 +411,12 @@ async def meta_credentials(request: Request):
     setting ``subject=<email>``; a bare service account (no subject) resolves to the
     admin/service token. Backlot-only affordance. See ``examples/using-official-sdk/gmail.py``.
     """
-    o = getattr(app.state, "oauth", None)
+    o = getattr(request.app.state, "oauth", None)
     if o is None:
         raise HTTPException(status_code=404, detail="Not Found")
     token_uri = f"{request.url.scheme}://{request.headers.get('host', 'localhost')}/oauth2/token"
     return {
-        "org": app.state.acl.org_name,
+        "org": request.app.state.acl.org_name,
         "token_uri": token_uri,
         "oauth_client": o.client_config(),
         "service_account": o.service_account_json(token_uri),
@@ -422,7 +424,7 @@ async def meta_credentials(request: Request):
 
 
 @app.get("/_meta/openapi/{source}")
-async def meta_openapi(source: str):
+async def meta_openapi(source: str, request: Request):
     """An MCP-ready OpenAPI spec for one source: the app's own ``/openapi.json`` sliced to that
     source and with its GET/POST and v2/v3 fidelity aliases collapsed to one operation each, so an
     OpenAPI→MCP bridge can feed it straight to ``FastMCP.from_openapi()`` (see ``backlot.openapi``)."""
@@ -431,7 +433,7 @@ async def meta_openapi(source: str):
             status_code=404,
             detail=f"no MCP spec for {source!r}; one of {sorted(openapi.SOURCE_PREFIXES)}",
         )
-    return openapi.build_mcp_spec(app.openapi(), source)
+    return openapi.build_mcp_spec(request.app.openapi(), source)
 
 
 app.include_router(oauth.router)

@@ -55,23 +55,45 @@ class SpecTarget(Protocol):
     resolve_url: "Callable[[Mapping[str, Any]], str] | None"
 
 
-def fetch_spec(spec: SpecTarget, *, timeout: float = 120.0) -> dict:
-    """The vendor's published document, following an index when that is how it is addressed."""
-    doc = fetch_json(spec.spec_url, timeout=timeout)
+def fetch_spec(
+    spec: SpecTarget, *, timeout: float = 120.0, seen: dict[str, dict] | None = None
+) -> dict:
+    """The vendor's published document, following an index when that is how it is addressed.
+
+    ``seen`` memoizes by URL across the specs of ONE comparison run. HubSpot reaches every one of
+    its documents through a single index, so two of its specs address the same ``spec_url`` and
+    differ only in which entry they resolve — measured, that index is 138 KB and answers in ~2.2s,
+    so reading it per spec spends a whole extra vendor round trip on a document already in hand.
+
+    Scoped to the run and never wider: the index must be re-read on every run, which is the whole
+    reason it is not pinned (see :mod:`backlot.fidelity.hubspot_catalog`).
+    """
+
+    def read(url: str) -> dict:
+        if seen is None:
+            return fetch_json(url, timeout=timeout)
+        if url not in seen:
+            seen[url] = fetch_json(url, timeout=timeout)
+        return seen[url]
+
+    doc = read(spec.spec_url)
     if spec.resolve_url is not None:
-        return fetch_json(spec.resolve_url(doc), timeout=timeout)
+        return read(spec.resolve_url(doc))
     return doc
 
 
-def divergences(spec: SpecTarget, *, timeout: float = 120.0) -> list[Finding]:
+def divergences(
+    spec: SpecTarget, *, timeout: float = 120.0, seen: dict[str, dict] | None = None
+) -> list[Finding]:
     """This module's entry point: load both contracts and compare them.
 
     ONE document. A source published as several — Jira's v2 and v3 — is the caller's
     concatenation, not this module's: the two contracts here are a document and the paths it speaks
-    for, and a second document is a second pair with its own mount and its own strip."""
+    for, and a second document is a second pair with its own mount and its own strip. ``seen`` is
+    how that caller shares one run's fetches across them; see :func:`fetch_spec`."""
     from backlot.main import app
 
-    vendor = from_openapi(fetch_spec(spec, timeout=timeout))
+    vendor = from_openapi(fetch_spec(spec, timeout=timeout, seen=seen))
     if not vendor:
         raise FidelityError(
             f"{spec.spec_url} declared no operations; is it still an OpenAPI document?"

@@ -218,7 +218,7 @@ def test_a_comparison_with_two_specs_reports_both_documents_findings(monkeypatch
     source name, so `divergences` runs each and concatenates rather than picking one."""
     calls = []
 
-    def fake(spec, *, timeout=120.0):
+    def fake(spec, *, timeout=120.0, seen=None):
         calls.append(spec.spec_url)
         return [Finding("gap", GAP, f"GET {spec.mount[0]}/x", "")]
 
@@ -286,6 +286,42 @@ def test_jira_compares_both_rest_versions_against_their_own_documents():
     assert set(by_mount) == {"/atlassian/rest/api/2", "/atlassian/rest/api/3"}
     assert by_mount["/atlassian/rest/api/2"].endswith("/swagger.v3.json")
     assert by_mount["/atlassian/rest/api/3"].endswith("/swagger-v3.v3.json")
+
+
+def test_specs_sharing_an_index_read_it_once_per_run(monkeypatch):
+    """HubSpot reaches every one of its documents through one index, so both of its specs address
+    the same `spec_url` and `resolve_url` picks the document out of it.
+
+    Measured: that index is 138 KB and answers in ~2.2s, so fetching it per spec spends a whole
+    extra vendor round trip on a document already in hand. Memoized per RUN and never wider -- the
+    index must be re-read every run, which is why it is not pinned (see `hubspot_catalog`)."""
+    INDEX = "https://index.invalid/specs"
+    fetched = []
+
+    def fake_fetch(url, *, timeout=120.0):
+        fetched.append(url)
+        return {"openapi": "3.0.0", "paths": {}} if url != INDEX else {"index": True}
+
+    monkeypatch.setattr(comparisons.openapi_diff, "fetch_json", fake_fetch)
+    monkeypatch.setattr(
+        comparisons.openapi_diff, "from_openapi", lambda doc: {("get", "/x"): object()}
+    )
+    monkeypatch.setattr(comparisons.openapi_diff, "from_backlot", lambda *a, **k: {})
+    monkeypatch.setattr(comparisons.openapi_diff, "diff_operations", lambda served, vendor: [])
+
+    c = comparisons.OpenAPIComparison(
+        name="two",
+        specs=(
+            comparisons.Spec(INDEX, ("/a",), resolve_url=lambda d: "https://doc.invalid/a.json"),
+            comparisons.Spec(INDEX, ("/b",), resolve_url=lambda d: "https://doc.invalid/b.json"),
+        ),
+    )
+    c.divergences()
+
+    assert fetched.count(INDEX) == 1, fetched
+    assert sorted(fetched) == sorted(
+        [INDEX, "https://doc.invalid/a.json", "https://doc.invalid/b.json"]
+    )
 
 
 def test_the_registry_names_exactly_the_source_types_backlot_serves():

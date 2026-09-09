@@ -104,7 +104,12 @@ class OpenAPIComparison:
     def divergences(
         self, credentials: Mapping[str, str] | None = None, *, timeout: float = 120.0
     ) -> list[Finding]:
-        return [f for s in self.specs for f in openapi_diff.divergences(s, timeout=timeout)]
+        # One memo across this run's specs: HubSpot reaches every document through a single index,
+        # so without it a source comparing two of its APIs reads that index once per spec.
+        seen: dict[str, dict] = {}
+        return [
+            f for s in self.specs for f in openapi_diff.divergences(s, timeout=timeout, seen=seen)
+        ]
 
 
 @dataclass(frozen=True)

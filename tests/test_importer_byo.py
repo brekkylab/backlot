@@ -5580,13 +5580,21 @@ def test_reimporting_a_workbook_replaces_its_sheets_rather_than_adding_to_them(t
         ),
     ],
 )
-def test_a_grid_a_record_cannot_mean_is_refused(tmp_path, overrides, fragment):
+def test_a_grid_a_record_cannot_mean_is_refused(tmp_path, capsys, overrides, fragment):
     """Cross-field rules, refused in Python rather than by the schema: expressed as an `if`/`then`
     each reports as a missing property at the record root, naming neither the field that put the
-    rule in force nor what is wrong with the pairing."""
+    rule in force nor what is wrong with the pairing.
+
+    Asserted against BOTH passes. `--dry-run` walks the corpus itself rather than sharing the
+    loader's, so a rule reaches it only by being wired into that pass as well."""
+    corpus = _write(tmp_path, [{**GRID_REC, **overrides}])
     with pytest.raises(SystemExit) as e:
-        _load_grid(tmp_path, [{**GRID_REC, **overrides}])
+        load(corpus, Settings(data_dir=tmp_path))
     assert fragment in str(e.value)
+    # `--dry-run` reports what a load refuses, or a corpus passes the check that exists to spare
+    # the author a failed import and then fails the import.
+    assert byo.run(corpus, dry_run=True) == 1
+    assert fragment in capsys.readouterr().err
 
 
 def test_a_prose_spreadsheet_stores_no_sheets_at_all(tmp_path):

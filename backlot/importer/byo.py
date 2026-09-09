@@ -3525,6 +3525,8 @@ def run(
                 problems.append((lineno, f"invalid JSON: {e}"))
                 continue
             errs = record_errors(rec)
+            if isinstance(rec, dict) and rec.get("source_type") == "google_drive":
+                errs += _sheets_pairing_errors(rec)
             if isinstance(rec, dict) and rec.get("source_type") == "github":
                 errs += _github_pairing_errors(rec)
                 # Only from a record that is otherwise sound: its own `path` may be the thing that

@@ -23,10 +23,9 @@ HubSpot, and **Google API Discovery** documents for Gmail and the Drive family. 
 compared against as many documents as its vendor publishes for the surface Backlot serves — Jira's
 two REST versions, Drive alongside Docs, Sheets and Slides, HubSpot's CRM and associations. All
 are public, so these comparisons run with **no credential, no quota and no account**. Response
-bodies are out of scope
-here: a vendor spec describes them through deep `$ref` chains that Backlot's `response_model` set
-does not mirror shape-for-shape, so a body diff would report how two documents are written rather
-than how two servers answer.
+bodies are out of scope here: a vendor spec describes them through deep `$ref` chains that
+Backlot's `response_model` set does not mirror shape-for-shape, so a body diff would report how two
+documents are written rather than how two servers answer.
 
 Path templates are compared with placeholders flattened. The vendor calling a segment `{userId}`
 and Backlot calling it `{user_id}` is not a divergence.

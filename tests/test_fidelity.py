@@ -323,12 +323,35 @@ def test_every_comparison_names_the_documents_it_was_measured_against():
         assert not any(" at 0x" in e for e in c.endpoints), f"{name}: {c.endpoints}"
 
 
-def test_a_baseline_refuses_one_endpoint_passed_unwrapped():
-    """A str is iterable, so `list("https://…")` spreads it into single characters and writes a
-    32-element list nothing downstream is shaped wrongly enough to complain about. The registry is
-    guarded in both directions already; a hand-built Baseline is the way around those guards."""
+def test_a_baseline_refuses_one_endpoint_passed_unwrapped(tmp_path):
+    """A str is iterable, so `list("https://…")` spreads it one element per character and writes a
+    file nothing downstream is shaped wrongly enough to complain about. The registry is guarded in
+    both directions already; a hand-built Baseline is the way around those guards.
+
+    All three construction paths, because `load` is the one that turns a FILE into the spread and
+    it converts before `__post_init__` can see a string -- so it carries its own check, and the
+    two that share a helper are not evidence for the one that does not."""
     with pytest.raises(TypeError, match="tuple of URLs"):
         Baseline.empty("s", "https://one.invalid")
+    with pytest.raises(TypeError, match="tuple of URLs"):
+        Baseline.empty("s", ()).identified_as("s", "https://one.invalid")
+
+    path = tmp_path / "b.json"
+    path.write_text(
+        json.dumps(
+            {"source": "s", "endpoints": "https://one.invalid", "measured": "", "acknowledged": []}
+        )
+    )
+    with pytest.raises(TypeError, match="tuple of URLs"):
+        Baseline.load(path)
+
+    # and the shapes a real file carries still load: a list, an absent key, and the legacy spelling
+    for endpoints, want in [(["https://a", "https://b"], ("https://a", "https://b")), (None, ())]:
+        raw = {"source": "s", "measured": "", "acknowledged": []}
+        if endpoints is not None:
+            raw["endpoints"] = endpoints
+        path.write_text(json.dumps(raw))
+        assert Baseline.load(path).endpoints == want
 
 
 def test_a_baseline_round_trips_every_endpoint_it_names(tmp_path):

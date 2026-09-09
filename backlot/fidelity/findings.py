@@ -38,16 +38,16 @@ class Finding:
 
 
 def _reject_one_url(value) -> None:
-    """A str is iterable, so one URL passed unwrapped spreads: `list("https://…")` writes a
-    32-element list of single characters, which loads back the same way with nothing downstream
-    shaped wrongly enough to complain."""
+    """A str is iterable, so one URL passed unwrapped spreads: `list("https://…")` writes one
+    list element per character, which loads back the same way with nothing downstream shaped
+    wrongly enough to complain."""
     if isinstance(value, str):
         raise TypeError(f"endpoints is a tuple of URLs, not one URL: pass ({value!r},)")
 
 
 def _endpoints(raw) -> tuple[str, ...]:
     """What the file said, as a tuple — refusing a bare string BEFORE converting it, because
-    `tuple("https://…")` is the 32-character spread rather than the one URL it looks like."""
+    `tuple("https://…")` is that per-character spread rather than the one URL it looks like."""
     _reject_one_url(raw)
     return tuple(raw)
 

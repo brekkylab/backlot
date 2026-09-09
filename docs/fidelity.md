@@ -228,9 +228,9 @@ against Atlassian's own v2 document, which it publishes beside the v3 one: the n
 
 Every path Backlot **declares** in its own `/openapi.json` is under one of those documents'
 mounts, probed, or listed in `UNCOMPARED` with the reason no document covers it — Backlot's own
-`/health`, `/oauth2/token` and `/_meta`, and Google's `/batch`, which is one endpoint carrying
-requests for every Google API and so appears in no single discovery document. A declared path in
-none of the three fails the suite.
+`/health`, `/oauth2/token` and `/_meta`, and Google's `/batch` — which every discovery document
+names in its top-level `batchPath` and none declares as an operation, so there is nothing for a
+path diff to pair it with. A declared path in none of the three fails the suite.
 
 Declared, not served: six live routes are `include_in_schema=False` and so invisible to that check.
 Four are FastAPI's own (`/docs`, `/docs/oauth2-redirect`, `/openapi.json`, `/redoc`). The other two

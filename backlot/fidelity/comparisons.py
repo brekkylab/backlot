@@ -426,9 +426,10 @@ UNCOMPARED = {
         "vendor has it, by construction."
     ),
     "/batch": (
-        "Google's batch protocol is one endpoint carrying requests for every Google API, so no "
-        "single discovery document declares it: Drive's, Gmail's and the editor APIs' each "
-        "describe only their own operations."
+        "Google's batch protocol. Each discovery document names a batch endpoint in its top-level "
+        "`batchPath` — Drive's is `batch/drive/v3`, Gmail's `batch` — but none declares it as an "
+        "operation under `resources`, and operations are the only thing a path diff can pair. So "
+        "there is a documented endpoint here and nothing for this machinery to compare it against."
     ),
 }
 

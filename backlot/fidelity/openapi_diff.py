@@ -45,8 +45,8 @@ def from_openapi(spec: Mapping[str, Any]) -> dict[tuple[str, str], Operation]:
     return ops
 
 
-class OpenAPITarget(Protocol):
-    """What this module needs of a comparison. Structural, so the registry can import this module
+class SpecTarget(Protocol):
+    """What this module needs of ONE document. Structural, so the registry can import this module
     without this module importing the registry."""
 
     spec_url: str
@@ -55,22 +55,26 @@ class OpenAPITarget(Protocol):
     resolve_url: "Callable[[Mapping[str, Any]], str] | None"
 
 
-def fetch_spec(comparison: OpenAPITarget, *, timeout: float = 120.0) -> dict:
+def fetch_spec(spec: SpecTarget, *, timeout: float = 120.0) -> dict:
     """The vendor's published document, following an index when that is how it is addressed."""
-    doc = fetch_json(comparison.spec_url, timeout=timeout)
-    if comparison.resolve_url is not None:
-        return fetch_json(comparison.resolve_url(doc), timeout=timeout)
+    doc = fetch_json(spec.spec_url, timeout=timeout)
+    if spec.resolve_url is not None:
+        return fetch_json(spec.resolve_url(doc), timeout=timeout)
     return doc
 
 
-def divergences(comparison: OpenAPITarget, *, timeout: float = 120.0) -> list[Finding]:
-    """This module's entry point: load both contracts and compare them."""
+def divergences(spec: SpecTarget, *, timeout: float = 120.0) -> list[Finding]:
+    """This module's entry point: load both contracts and compare them.
+
+    ONE document. A source published as several — Jira's v2 and v3 — is the caller's
+    concatenation, not this module's: the two contracts here are a document and the paths it speaks
+    for, and a second document is a second pair with its own mount and its own strip."""
     from backlot.main import app
 
-    vendor = from_openapi(fetch_spec(comparison, timeout=timeout))
+    vendor = from_openapi(fetch_spec(spec, timeout=timeout))
     if not vendor:
         raise FidelityError(
-            f"{comparison.spec_url} declared no operations; is it still an OpenAPI document?"
+            f"{spec.spec_url} declared no operations; is it still an OpenAPI document?"
         )
-    served = from_backlot(app.openapi(), comparison.mount, comparison.strip)
+    served = from_backlot(app.openapi(), spec.mount, spec.strip)
     return diff_operations(served, vendor)

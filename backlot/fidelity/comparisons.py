@@ -46,6 +46,30 @@ class Credential:
 
 
 @dataclass(frozen=True)
+class Spec:
+    """One published document, and the served paths it speaks for.
+
+    A source is not always one document. Atlassian publishes Jira's v2 and v3 REST APIs separately
+    and Backlot serves both; a Drive file is also read through Docs, Sheets and Slides, each of
+    which publishes its own discovery document.
+
+    ``strip`` belongs HERE and not on the comparison, because how much of the mount a vendor's own
+    document repeats differs per document: measured, Backlot's ``/sheets/v4/...`` pairs against the
+    Sheets discovery document only with ``strip="/sheets"``, while Gmail's document already spells
+    ``gmail/v1/...`` and strips nothing. One ``strip`` per source cannot describe both.
+    """
+
+    spec_url: str
+    mount: tuple[str, ...]
+    strip: str = ""
+    # Set when ``spec_url`` addresses an INDEX rather than the document itself: given what was
+    # fetched, it returns the URL to fetch instead. A vendor that publishes one document per
+    # release needs this — see `hubspot_catalog` for why pinning the resolved URL is
+    # not the simplification it appears to be.
+    resolve_url: Callable[[Mapping[str, Any]], str] | None = None
+
+
+@dataclass(frozen=True)
 class OpenAPIComparison:
     """A source compared against the OpenAPI document its vendor publishes.
 

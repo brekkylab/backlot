@@ -10,6 +10,7 @@ import base64
 import re
 
 import pytest
+import yaml
 from starlette.requests import Request
 
 from backlot import store
@@ -810,3 +811,124 @@ def test_confluence_child_page_and_restriction_match_a_nonexistent_id_for_an_out
         made_up = client.get(f"/atlassian/wiki/rest/api/content/999999999/{path}", headers=h)
         assert hidden.status_code == made_up.status_code == 404
         assert hidden.content == made_up.content
+
+
+# --- Jira: a page of comments is a page -------------------------------------------------------
+#
+# Every expectation below is measured against Jira Cloud (2026-09-09) on a real issue. Parameter
+# validation runs before any comment lookup, so an issue with no comments settles the clamps, the
+# caps and the refusals; the ordering itself comes from Atlassian's own document.
+
+_COMMENTS = [
+    {"content": f"comment {i}", "author_email": "b@x.com", "created_ts": 1770000000 + i * 60}
+    for i in range(1, 8)
+]
+
+
+@pytest.fixture(scope="module")
+def paged(tmp_path_factory):
+    """One issue with seven comments, served."""
+    settings = tiny_corpus(
+        tmp_path_factory.mktemp("paged"),
+        [
+            {
+                "source_type": "jira",
+                "doc_id": "j-page",
+                "project": "payments",
+                "title": "T",
+                "content": "c",
+                "author_email": "a@x.com",
+                "visibility": "public",
+                "key": "PAY-7",
+                "comments": _COMMENTS,
+            }
+        ],
+    )
+    with client_for(settings, reload=True) as client:
+        tok = yaml.safe_load(settings.tokens_path.read_text())["admin_token"]
+        yield client, {"Authorization": f"Bearer {tok}"}
+
+
+def _page(paged, **params):
+    client, h = paged
+    r = client.get("/atlassian/rest/api/3/issue/PAY-7/comment", headers=h, params=params)
+    return r, r.json()
+
+
+def _bodies(d):
+    return [c["body"]["content"][0]["content"][0]["text"] for c in d["comments"]]
+
+
+def test_jira_comments_page_on_start_at_and_max_results(paged):
+    """The endpoint declares both, and the envelope has always claimed to be a page. Serving the
+    whole collection labelled `startAt: 0` hands a client asking for page two the contents of page
+    one, with nothing in the response to say so."""
+    r, d = _page(paged, startAt=3, maxResults=2)
+    assert r.status_code == 200
+    assert (d["startAt"], d["maxResults"], d["total"]) == (3, 2, 7)
+    assert _bodies(d) == ["comment 4", "comment 5"]
+
+
+def test_jira_comments_default_to_the_first_hundred(paged):
+    """Measured: with no parameters real Jira echoes `maxResults: 100`, not the size of the
+    collection."""
+    _r, d = _page(paged)
+    assert (d["startAt"], d["maxResults"], d["total"]) == (0, 100, 7)
+    assert len(d["comments"]) == 7
+
+
+@pytest.mark.parametrize(
+    "params,want",
+    [
+        # measured: a negative offset floors at 0, one past the end is echoed back unchanged
+        ({"startAt": -1}, (0, 100, 7)),
+        ({"startAt": 100}, (100, 100, 7)),
+        # measured: maxResults floors UP to 1 -- 0 and -1 both answer 1, not 0
+        ({"maxResults": 0}, (0, 1, 7)),
+        ({"maxResults": -1}, (0, 1, 7)),
+        # measured: capped at 100, which is the documented default AND the maximum
+        ({"maxResults": 100000}, (0, 100, 7)),
+    ],
+)
+def test_jira_comment_paging_clamps_the_way_the_real_api_does(paged, params, want):
+    _r, d = _page(paged, **params)
+    assert (d["startAt"], d["maxResults"], d["total"]) == want
+
+
+def test_jira_comments_past_the_end_are_an_empty_page_not_an_error(paged):
+    _r, d = _page(paged, startAt=100)
+    assert d["comments"] == []
+
+
+@pytest.mark.parametrize(
+    "order,want",
+    [
+        ("created", ["comment 1", "comment 2"]),
+        ("+created", ["comment 1", "comment 2"]),
+        ("-created", ["comment 7", "comment 6"]),
+    ],
+)
+def test_jira_comments_order_by_created(paged, order, want):
+    _r, d = _page(paged, orderBy=order, maxResults=2)
+    assert _bodies(d) == want
+
+
+@pytest.mark.parametrize("order", ["bogus", "updated", "-updated"])
+def test_jira_refuses_an_order_by_field_that_is_not_created(paged, order):
+    """Measured: real Jira answers 400 for any field but `created`. Accepting one silently would
+    serve corpus order to a client that asked for something else, with nothing in the response
+    saying the sort was dropped -- and would pass here while failing against Jira.
+
+    Only the status and the envelope are reproduced. Jira's own message is localised to the
+    account's language, so its wording is not portable."""
+    r, d = _page(paged, orderBy=order)
+    assert r.status_code == 400
+    assert d["errors"] == {}
+    assert order in d["errorMessages"][0]
+    assert "created" in d["errorMessages"][0]
+
+
+def test_jira_comment_paging_is_declared_so_a_client_can_discover_it(paged):
+    client, _h = paged
+    op = client.app.openapi()["paths"]["/atlassian/rest/api/3/issue/{key}/comment"]["get"]
+    assert {p["name"] for p in op["parameters"]} >= {"startAt", "maxResults", "orderBy"}

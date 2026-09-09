@@ -88,10 +88,30 @@ _X_JIRA_SEARCH = {
     },
 }
 _P_EXPAND = {"parameters": [qp("expand")]}
+_P_JIRA_COMMENTS = {
+    "parameters": [
+        qp("startAt", "integer"),
+        qp("maxResults", "integer"),
+        qp("orderBy"),
+        # Declared and not read. Measured against real Jira: it does not validate this either —
+        # `expand=bogus` answers 200 — so accepting a value and ignoring it is what the vendor
+        # does. What `expand=renderedBody` returns needs ADF-to-HTML rendering, which Backlot has
+        # not.
+        qp("expand"),
+    ]
+}
 _P_CQL = {"parameters": [qp("cql", required=True), qp("limit", "integer"), qp("start", "integer")]}
 _P_CONTENT = {
     "parameters": [qp("expand"), qp("spaceKey"), qp("limit", "integer"), qp("start", "integer")]
 }
+
+# The page a comment read serves. Measured against Jira Cloud on a real issue, which settles what
+# no document states: `maxResults` is CAPPED at 100 as well as defaulted to it, and floors UP to 1
+# (0 and -1 both answer 1). `startAt` floors at 0, and one past the end is echoed back unchanged
+# with an empty page rather than refused.
+_JIRA_COMMENT_PAGE_MAX = 100
+# The three spellings real Jira accepts, mapped to whether each reverses. Anything else is its 400.
+_JIRA_ORDER_BY = {"created": False, "+created": False, "-created": True}
 
 
 def _jira_caller(request: Request) -> Caller:
@@ -380,9 +400,28 @@ async def jira_get_issue(key: str, request: Request):
     return _jira_issue(conn, request, row, expand=request.query_params.get("expand", ""))
 
 
-@router.get("/rest/api/2/issue/{key}/comment", response_model=JiraComments)
-@router.get("/rest/api/3/issue/{key}/comment", response_model=JiraComments)
+@router.get(
+    "/rest/api/2/issue/{key}/comment",
+    response_model=JiraComments,
+    openapi_extra=_P_JIRA_COMMENTS,
+)
+@router.get(
+    "/rest/api/3/issue/{key}/comment",
+    response_model=JiraComments,
+    openapi_extra=_P_JIRA_COMMENTS,
+)
 async def jira_issue_comments(key: str, request: Request):
+    """One PAGE of an issue's comments.
+
+    `total` counts the whole collection while `startAt` and `maxResults` describe the slice, which
+    is what makes the envelope a page rather than a restatement of its own length.
+
+    Ordering is by `orderBy`, which real Jira accepts only as `created`, `+created` or `-created`
+    and answers 400 for anything else. Reproduced, because accepting one silently would serve
+    corpus order to a client that asked for something else with nothing in the response to say the
+    sort was dropped — and would pass here while failing against Jira. Its own message is localised
+    to the account's language, so the wording is not reproduced, only the refusal.
+    """
     conn = auth.conn(request)
     caller = _jira_caller(request)
     ids = auth.visible_ids(request, caller)
@@ -392,13 +431,29 @@ async def jira_issue_comments(key: str, request: Request):
             status_code=404,
             detail="Issue does not exist or you do not have permission to see it.",
         )
+    params = request.query_params
+    order = params.get("orderBy") or "created"
+    if order not in _JIRA_ORDER_BY:
+        raise HTTPException(
+            status_code=400,
+            detail=f"The field to order by must be one of [created]. Instead, : {order}",
+        )
+    start = max(0, _int(params.get("startAt"), 0))
+    limit = min(
+        _JIRA_COMMENT_PAGE_MAX, max(1, _int(params.get("maxResults"), _JIRA_COMMENT_PAGE_MAX))
+    )
+
     cs = store.doc_comments(conn, "jira", row["key"])
+    if _JIRA_ORDER_BY[order]:
+        # `seq` breaks a tie, so two comments written in the same second keep a stable order
+        # instead of one that depends on the rows coming back the same way twice.
+        cs = sorted(cs, key=lambda c: (c["created_ts"], c["seq"]), reverse=True)
     site = _site(request)
     return {
-        "startAt": 0,
-        "maxResults": len(cs),
+        "startAt": start,
+        "maxResults": limit,
         "total": len(cs),
-        "comments": [_jira_comment(c, site) for c in cs],
+        "comments": [_jira_comment(c, site) for c in cs[start : start + limit]],
     }
 
 

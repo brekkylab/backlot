@@ -13,6 +13,12 @@
       "detail": "the vendor serves it; Backlot does not"
     },
     {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "DELETE /crm/v4/objects/{}/{}/associations/{}/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
       "kind": "missing_param",
       "severity": "gap",
       "path": "GET /crm/v3/objects/{}/{}?associations",
@@ -88,12 +94,6 @@
       "kind": "missing_operation",
       "severity": "gap",
       "path": "POST /crm/v3/objects/{}/merge",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /crm/v4/objects/{}/{}/associations/{}/{}",
       "detail": "the vendor serves it; Backlot does not"
     },
     {

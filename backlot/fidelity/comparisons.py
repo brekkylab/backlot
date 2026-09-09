@@ -3,7 +3,8 @@
 Four kinds, and they differ in what each side of the comparison is. For the two GraphQL sources,
 Backlot's side is the SDL the server builds its engine from and the vendor's is a live introspection
 response, which needs a credential. For the eight document sources, Backlot's side is the app's own
-``app.openapi()`` and the vendor's is a document it publishes, which needs none. For S3, whose
+``app.openapi()`` and the vendor's is one or more documents it publishes, which needs none. For
+S3, whose
 operations are selected by query string rather than by path, both sides are answers from a running
 server that ``backlot.serve()`` starts.
 
@@ -27,7 +28,32 @@ from backlot.fidelity import (
     s3_probe,
 )
 from backlot.fidelity.errors import CredentialsMissing, FidelityError
-from backlot.fidelity.findings import Finding
+from backlot.fidelity.findings import BREAKING, Finding
+
+
+def _one_report(per_spec: list[list[Finding]]) -> list[Finding]:
+    """Several documents' findings as one source's report: de-duplicated by key, then ordered the
+    way a single document's are.
+
+    Two documents of one source can declare the SAME path. Atlassian's do: 11 paths sit outside
+    ``/rest/api/{2,3}`` — ``/rest/atlassian-connect/1/*``, ``/rest/forge/1/*`` and one internal
+    worklog route — so both Jira documents carry them and each reports as ``missing_operation``
+    twice. That is a different case from the mirrored ``/rest/api/2/...`` and ``/rest/api/3/...``
+    entries, which are distinct paths a client can call and both belong in the baseline. A
+    :class:`~backlot.fidelity.findings.Baseline` is keyed on ``kind:path`` and cannot hold the
+    second copy, so leaving it in makes the file claim more than it can load and prints a genuinely
+    new finding on such a path twice.
+
+    Ordered here rather than left concatenated because ``diff_operations`` sorts breaking-first-
+    then-path per document, and that ordering does not survive joining two. The baseline is written
+    in the order it is given, so without this the next real change lands buried in a reordering of
+    the whole file.
+    """
+    seen: dict[str, Finding] = {}
+    for findings in per_spec:
+        for f in findings:
+            seen.setdefault(f.key, f)
+    return sorted(seen.values(), key=lambda f: (f.severity != BREAKING, f.path, f.kind))
 
 
 @dataclass(frozen=True)
@@ -110,10 +136,10 @@ class OpenAPIComparison:
     ) -> list[Finding]:
         # One memo across this run's specs: HubSpot reaches every document through a single index,
         # so without it a source comparing two of its APIs reads that index once per spec.
-        seen: dict[str, dict] = {}
-        return [
-            f for s in self.specs for f in openapi_diff.divergences(s, timeout=timeout, seen=seen)
-        ]
+        fetched: dict[str, dict] = {}
+        return _one_report(
+            [openapi_diff.divergences(s, timeout=timeout, seen=fetched) for s in self.specs]
+        )
 
 
 @dataclass(frozen=True)
@@ -140,9 +166,9 @@ class GoogleDiscoveryComparison:
     def divergences(
         self, credentials: Mapping[str, str] | None = None, *, timeout: float = 120.0
     ) -> list[Finding]:
-        return [
-            f for s in self.specs for f in google_discovery_diff.divergences(s, timeout=timeout)
-        ]
+        return _one_report(
+            [google_discovery_diff.divergences(s, timeout=timeout) for s in self.specs]
+        )
 
 
 @dataclass(frozen=True)
@@ -335,19 +361,23 @@ GOOGLE_DISCOVERY = {
             # empty `servicePath` and spell the version themselves (`v4/spreadsheets/...`), where
             # Drive's document repeats `drive/v3/`. Measured — with nothing stripped, every served
             # operation reports as one Backlot invented.
+            #
+            # The version is in the mount, matching `gen_docs.SOURCES`. A bare `/docs` would also
+            # select FastAPI's own `/docs` and `/docs/oauth2-redirect`, which escape this only
+            # because `include_in_schema=False` keeps them out of `app.openapi()`.
             Spec(
                 spec_url="https://www.googleapis.com/discovery/v1/apis/docs/v1/rest",
-                mount=("/docs",),
+                mount=("/docs/v1",),
                 strip="/docs",
             ),
             Spec(
                 spec_url="https://www.googleapis.com/discovery/v1/apis/sheets/v4/rest",
-                mount=("/sheets",),
+                mount=("/sheets/v4",),
                 strip="/sheets",
             ),
             Spec(
                 spec_url="https://www.googleapis.com/discovery/v1/apis/slides/v1/rest",
-                mount=("/slides",),
+                mount=("/slides/v1",),
                 strip="/slides",
             ),
         ),
@@ -403,7 +433,7 @@ UNCOMPARED = {
     ),
 }
 
-# The three kinds differ in what a vendor gives us to compare against, not in what they are for.
+# The four kinds differ in what a vendor gives us to compare against, not in what they are for.
 Comparison = OpenAPIComparison | GoogleDiscoveryComparison | GraphQLComparison | ProbeComparison
 
 COMPARISONS: dict[str, Comparison] = {**OPENAPI, **GOOGLE_DISCOVERY, **GRAPHQL, **PROBE}

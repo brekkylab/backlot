@@ -1089,25 +1089,7 @@
     {
       "kind": "missing_operation",
       "severity": "gap",
-      "path": "DELETE /rest/atlassian-connect/1/addons/{}/properties/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
       "path": "DELETE /rest/atlassian-connect/1/app/module/dynamic",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /rest/atlassian-connect/1/app/module/dynamic",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /rest/forge/1/app/properties/{}",
       "detail": "the vendor serves it; Backlot does not"
     },
     {
@@ -1615,6 +1597,30 @@
       "detail": "the vendor serves it; Backlot does not"
     },
     {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/2/issue/{}/comment?expand",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/2/issue/{}/comment?maxResults",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/2/issue/{}/comment?orderBy",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/2/issue/{}/comment?startAt",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
       "kind": "missing_operation",
       "severity": "gap",
       "path": "GET /rest/api/2/issue/{}/editmeta",
@@ -1685,6 +1691,36 @@
       "severity": "gap",
       "path": "GET /rest/api/2/issue/{}/worklog/{}/properties/{}",
       "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/2/issue/{}?failFast",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/2/issue/{}?fields",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/2/issue/{}?fieldsByKeys",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/2/issue/{}?properties",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/2/issue/{}?updateHistory",
+      "detail": "the vendor accepts it; Backlot does not"
     },
     {
       "kind": "missing_operation",
@@ -2297,6 +2333,48 @@
       "severity": "gap",
       "path": "GET /rest/api/2/search",
       "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/2/search/jql?expand",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/2/search/jql?failFast",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/2/search/jql?fields",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/2/search/jql?fieldsByKeys",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/2/search/jql?includeArchivedProjects",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/2/search/jql?properties",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/2/search/jql?reconcileIssues",
+      "detail": "the vendor accepts it; Backlot does not"
     },
     {
       "kind": "missing_operation",
@@ -3199,6 +3277,30 @@
       "detail": "the vendor serves it; Backlot does not"
     },
     {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/3/issue/{}/comment?expand",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/3/issue/{}/comment?maxResults",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/3/issue/{}/comment?orderBy",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/3/issue/{}/comment?startAt",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
       "kind": "missing_operation",
       "severity": "gap",
       "path": "GET /rest/api/3/issue/{}/editmeta",
@@ -3269,6 +3371,36 @@
       "severity": "gap",
       "path": "GET /rest/api/3/issue/{}/worklog/{}/properties/{}",
       "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/3/issue/{}?failFast",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/3/issue/{}?fields",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/3/issue/{}?fieldsByKeys",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/3/issue/{}?properties",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/3/issue/{}?updateHistory",
+      "detail": "the vendor accepts it; Backlot does not"
     },
     {
       "kind": "missing_operation",
@@ -3601,6 +3733,84 @@
       "detail": "the vendor serves it; Backlot does not"
     },
     {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/3/project/search?action",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/3/project/search?categoryId",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/3/project/search?expand",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/3/project/search?id",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/3/project/search?keys",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/3/project/search?maxResults",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/3/project/search?orderBy",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/3/project/search?properties",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/3/project/search?propertyQuery",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/3/project/search?query",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/3/project/search?startAt",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/3/project/search?status",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/3/project/search?typeKey",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
       "kind": "missing_operation",
       "severity": "gap",
       "path": "GET /rest/api/3/project/type",
@@ -3707,6 +3917,12 @@
       "severity": "gap",
       "path": "GET /rest/api/3/project/{}/properties/{}",
       "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/3/project/{}/role/{}?excludeInactiveUsers",
+      "detail": "the vendor accepts it; Backlot does not"
     },
     {
       "kind": "missing_operation",
@@ -3857,6 +4073,48 @@
       "severity": "gap",
       "path": "GET /rest/api/3/search",
       "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/3/search/jql?expand",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/3/search/jql?failFast",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/3/search/jql?fields",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/3/search/jql?fieldsByKeys",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/3/search/jql?includeArchivedProjects",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/3/search/jql?properties",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /rest/api/3/search/jql?reconcileIssues",
+      "detail": "the vendor accepts it; Backlot does not"
     },
     {
       "kind": "missing_operation",
@@ -4251,25 +4509,7 @@
     {
       "kind": "missing_operation",
       "severity": "gap",
-      "path": "GET /rest/atlassian-connect/1/addons/{}/properties",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
       "path": "GET /rest/atlassian-connect/1/addons/{}/properties/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /rest/atlassian-connect/1/addons/{}/properties/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /rest/atlassian-connect/1/app/module/dynamic",
       "detail": "the vendor serves it; Backlot does not"
     },
     {
@@ -4287,18 +4527,6 @@
     {
       "kind": "missing_operation",
       "severity": "gap",
-      "path": "GET /rest/atlassian-connect/1/migration/{}/{}/task",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /rest/atlassian-connect/1/service-registry",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
       "path": "GET /rest/atlassian-connect/1/service-registry",
       "detail": "the vendor serves it; Backlot does not"
     },
@@ -4306,18 +4534,6 @@
       "kind": "missing_operation",
       "severity": "gap",
       "path": "GET /rest/forge/1/app/properties",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /rest/forge/1/app/properties",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /rest/forge/1/app/properties/{}",
       "detail": "the vendor serves it; Backlot does not"
     },
     {
@@ -5847,18 +6063,6 @@
     {
       "kind": "missing_operation",
       "severity": "gap",
-      "path": "POST /rest/atlassian-connect/1/app/module/dynamic",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /rest/atlassian-connect/1/migration/workflow/rule/search",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
       "path": "POST /rest/atlassian-connect/1/migration/workflow/rule/search",
       "detail": "the vendor serves it; Backlot does not"
     },
@@ -5866,18 +6070,6 @@
       "kind": "missing_operation",
       "severity": "gap",
       "path": "POST /rest/atlassian-connect/1/migration/{}/{}/task",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /rest/atlassian-connect/1/migration/{}/{}/task",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /rest/internal/api/latest/worklog/bulk",
       "detail": "the vendor serves it; Backlot does not"
     },
     {
@@ -7263,25 +7455,7 @@
     {
       "kind": "missing_operation",
       "severity": "gap",
-      "path": "PUT /rest/atlassian-connect/1/addons/{}/properties/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
       "path": "PUT /rest/atlassian-connect/1/migration/field",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PUT /rest/atlassian-connect/1/migration/field",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PUT /rest/atlassian-connect/1/migration/properties/{}",
       "detail": "the vendor serves it; Backlot does not"
     },
     {
@@ -7295,288 +7469,6 @@
       "severity": "gap",
       "path": "PUT /rest/forge/1/app/properties/{}",
       "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PUT /rest/forge/1/app/properties/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/2/issue/{}/comment?expand",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/2/issue/{}/comment?maxResults",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/2/issue/{}/comment?orderBy",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/2/issue/{}/comment?startAt",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/2/issue/{}?failFast",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/2/issue/{}?fields",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/2/issue/{}?fieldsByKeys",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/2/issue/{}?properties",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/2/issue/{}?updateHistory",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/2/search/jql?expand",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/2/search/jql?failFast",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/2/search/jql?fields",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/2/search/jql?fieldsByKeys",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/2/search/jql?includeArchivedProjects",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/2/search/jql?properties",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/2/search/jql?reconcileIssues",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/3/issue/{}/comment?expand",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/3/issue/{}/comment?maxResults",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/3/issue/{}/comment?orderBy",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/3/issue/{}/comment?startAt",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/3/issue/{}?failFast",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/3/issue/{}?fields",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/3/issue/{}?fieldsByKeys",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/3/issue/{}?properties",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/3/issue/{}?updateHistory",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/3/project/search?action",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/3/project/search?categoryId",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/3/project/search?expand",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/3/project/search?id",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/3/project/search?keys",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/3/project/search?maxResults",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/3/project/search?orderBy",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/3/project/search?properties",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/3/project/search?propertyQuery",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/3/project/search?query",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/3/project/search?startAt",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/3/project/search?status",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/3/project/search?typeKey",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/3/project/{}/role/{}?excludeInactiveUsers",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/3/search/jql?expand",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/3/search/jql?failFast",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/3/search/jql?fields",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/3/search/jql?fieldsByKeys",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/3/search/jql?includeArchivedProjects",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/3/search/jql?properties",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/3/search/jql?reconcileIssues",
-      "detail": "the vendor accepts it; Backlot does not"
     }
   ]
 }

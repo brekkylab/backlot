@@ -132,7 +132,7 @@ def test_the_compared_schema_is_the_sdl_the_server_builds_from():
 
 def _baseline(tmp_path, findings, note=""):
     path = tmp_path / "fireflies.json"
-    Baseline.empty("fireflies", "https://api.fireflies.ai/graphql").write(
+    Baseline.empty("fireflies", ("https://api.fireflies.ai/graphql",)).write(
         path, findings, measured="2026-09-01"
     )
     if note:
@@ -235,6 +235,76 @@ def test_a_comparison_with_two_specs_reports_both_documents_findings(monkeypatch
     assert [f.path for f in found] == ["GET /a/x", "GET /b/x"]
 
 
+def _finding(kind, path, severity=GAP):
+    return Finding(kind, severity, path, "")
+
+
+@pytest.mark.parametrize(
+    "registry,module",
+    [("OpenAPIComparison", "openapi_diff"), ("GoogleDiscoveryComparison", "google_discovery_diff")],
+)
+def test_a_finding_two_documents_both_declare_is_recorded_once(monkeypatch, registry, module):
+    """Two documents of one source can declare the SAME path. Jira's do: 11 paths sit outside
+    `/rest/api/{2,3}` -- `/rest/atlassian-connect/1/*`, `/rest/forge/1/*` and one internal worklog
+    route -- so both Atlassian documents carry them identically and `missing_operation` reports
+    each twice.
+
+    That is not the case the mirrored v2/v3 entries make: `/rest/api/2/attachment/{id}` and
+    `/rest/api/3/attachment/{id}` are different paths a client can call, and both belong in the
+    baseline. These are one path recorded twice, and a baseline keyed on `kind:path` cannot hold
+    the second -- so the file would claim more than it can load, and a genuinely new finding on
+    one of those paths would print and count twice."""
+    shared = _finding("missing_operation", "GET /rest/forge/1/app/properties")
+
+    def fake(spec, *, timeout=120.0, **kw):
+        return [shared, _finding("missing_operation", f"GET {spec.mount[0]}/own")]
+
+    monkeypatch.setattr(getattr(comparisons, module), "divergences", fake)
+    c = getattr(comparisons, registry)(
+        name="two",
+        specs=(
+            comparisons.Spec("https://a.invalid/s.json", ("/a",)),
+            comparisons.Spec("https://b.invalid/s.json", ("/b",)),
+        ),
+    )
+    found = c.divergences()
+    assert len(found) == len({f.key for f in found}), [f.path for f in found]
+    assert sorted(f.path for f in found) == [
+        "GET /a/own",
+        "GET /b/own",
+        "GET /rest/forge/1/app/properties",
+    ]
+
+
+def test_findings_from_several_documents_come_back_in_one_order(monkeypatch):
+    """`diff_operations` sorts breaking-first-then-path, and concatenating per-document results
+    loses that across documents -- which leaves the baseline file in an order `--update-baseline`
+    does not reproduce, so the next real change arrives buried in a reordering of the whole file."""
+
+    def fake(spec, *, timeout=120.0, **kw):
+        if spec.mount[0] == "/a":
+            return [
+                _finding("missing_operation", "GET /z"),
+                _finding("extra_param", "GET /a?x", BREAKING),
+            ]
+        return [
+            _finding("missing_operation", "GET /b"),
+            _finding("extra_param", "GET /b?y", BREAKING),
+        ]
+
+    monkeypatch.setattr(comparisons.openapi_diff, "divergences", fake)
+    c = comparisons.OpenAPIComparison(
+        name="two",
+        specs=(
+            comparisons.Spec("https://a.invalid/s.json", ("/a",)),
+            comparisons.Spec("https://b.invalid/s.json", ("/b",)),
+        ),
+    )
+    found = c.divergences()
+    assert [f.severity for f in found] == [BREAKING, BREAKING, GAP, GAP]
+    assert [f.path for f in found] == ["GET /a?x", "GET /b?y", "GET /b", "GET /z"]
+
+
 def test_every_comparison_names_the_documents_it_was_measured_against():
     """`endpoints` is the baseline's identity, and a source can now have more than one document
     behind it -- a single joined string could not tell a source that GAINED a document from one
@@ -253,6 +323,14 @@ def test_every_comparison_names_the_documents_it_was_measured_against():
         assert not any(" at 0x" in e for e in c.endpoints), f"{name}: {c.endpoints}"
 
 
+def test_a_baseline_refuses_one_endpoint_passed_unwrapped():
+    """A str is iterable, so `list("https://…")` spreads it into single characters and writes a
+    32-element list nothing downstream is shaped wrongly enough to complain about. The registry is
+    guarded in both directions already; a hand-built Baseline is the way around those guards."""
+    with pytest.raises(TypeError, match="tuple of URLs"):
+        Baseline.empty("s", "https://one.invalid")
+
+
 def test_a_baseline_round_trips_every_endpoint_it_names(tmp_path):
     p = tmp_path / "b.json"
     ends = ("https://a.invalid", "https://b.invalid")
@@ -266,7 +344,7 @@ def test_a_google_source_is_compared_against_every_api_it_is_served_through():
     whole API families measured against nothing: a Sheets response shape could be rewritten and
     `backlot diff --source google_drive` would still answer `0 new`."""
     mounts = {m for s in COMPARISONS["google_drive"].specs for m in s.mount}
-    assert mounts == {"/drive/v3", "/docs", "/sheets", "/slides"}
+    assert mounts == {"/drive/v3", "/docs/v1", "/sheets/v4", "/slides/v1"}
 
 
 def test_hubspot_compares_its_v4_associations_surface_too():
@@ -418,13 +496,20 @@ def test_every_served_path_is_compared_or_says_why_not():
 
 
 def test_no_uncompared_declaration_outlives_its_route():
-    """An entry kept after its route is gone is a reason nobody is reading any more."""
+    """An entry kept after its route is gone is a reason nobody is reading any more.
+
+    And an entry may not sit under a comparison's mount. Nothing else stops one claiming a surface
+    that IS compared — the coverage check only asks whether a path is in some bucket, not whether
+    it is in the right one — which would leave the list unreadable at face value."""
     from backlot.main import app
 
     served = list(app.openapi()["paths"])
+    mounts = [m for c in COMPARISONS.values() for m in _comparison_mounts(c)]
     for prefix, reason in UNCOMPARED.items():
         assert any(p == prefix or p.startswith(prefix + "/") for p in served), prefix
         assert reason.strip(), prefix
+        covered = [m for m in mounts if prefix.startswith(m) or m.startswith(prefix)]
+        assert not covered, f"{prefix} is declared uncompared but sits under {covered}"
 
 
 def test_every_acknowledged_breaking_divergence_carries_its_reasoning():

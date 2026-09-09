@@ -717,174 +717,6 @@
       "detail": "the vendor serves it; Backlot does not"
     },
     {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PATCH /drive/v3/drives/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PATCH /drive/v3/files/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PATCH /drive/v3/files/{}/comments/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PATCH /drive/v3/files/{}/comments/{}/replies/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PATCH /drive/v3/files/{}/permissions/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PATCH /drive/v3/files/{}/revisions/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PATCH /drive/v3/teamdrives/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /drive/v3/changes/watch",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /drive/v3/channels/stop",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /drive/v3/drives",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /drive/v3/drives/{}/hide",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /drive/v3/drives/{}/unhide",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /drive/v3/files",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /drive/v3/files/{}/accessproposals/{}:resolve",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /drive/v3/files/{}/approvals/{}:approve",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /drive/v3/files/{}/approvals/{}:cancel",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /drive/v3/files/{}/approvals/{}:comment",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /drive/v3/files/{}/approvals/{}:decline",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /drive/v3/files/{}/approvals/{}:reassign",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /drive/v3/files/{}/approvals:start",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /drive/v3/files/{}/comments",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /drive/v3/files/{}/comments/{}/replies",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /drive/v3/files/{}/copy",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /drive/v3/files/{}/download",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /drive/v3/files/{}/modifyLabels",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /drive/v3/files/{}/permissions",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /drive/v3/files/{}/watch",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /drive/v3/teamdrives",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
       "kind": "missing_param",
       "severity": "gap",
       "path": "GET /v1/documents/{}?$.xgafv",
@@ -965,14 +797,80 @@
     {
       "kind": "missing_operation",
       "severity": "gap",
-      "path": "POST /v1/documents",
+      "path": "GET /v1/presentations/{}/pages/{}",
       "detail": "the vendor serves it; Backlot does not"
     },
     {
       "kind": "missing_operation",
       "severity": "gap",
-      "path": "POST /v1/documents/{}:batchUpdate",
+      "path": "GET /v1/presentations/{}/pages/{}/thumbnail",
       "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /v1/presentations/{}?$.xgafv",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /v1/presentations/{}?access_token",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /v1/presentations/{}?alt",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /v1/presentations/{}?callback",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /v1/presentations/{}?fields",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /v1/presentations/{}?key",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /v1/presentations/{}?oauth_token",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /v1/presentations/{}?prettyPrint",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /v1/presentations/{}?quotaUser",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /v1/presentations/{}?uploadType",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /v1/presentations/{}?upload_protocol",
+      "detail": "the vendor accepts it; Backlot does not"
     },
     {
       "kind": "missing_operation",
@@ -1187,6 +1085,198 @@
     {
       "kind": "missing_operation",
       "severity": "gap",
+      "path": "PATCH /drive/v3/drives/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "PATCH /drive/v3/files/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "PATCH /drive/v3/files/{}/comments/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "PATCH /drive/v3/files/{}/comments/{}/replies/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "PATCH /drive/v3/files/{}/permissions/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "PATCH /drive/v3/files/{}/revisions/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "PATCH /drive/v3/teamdrives/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /drive/v3/changes/watch",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /drive/v3/channels/stop",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /drive/v3/drives",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /drive/v3/drives/{}/hide",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /drive/v3/drives/{}/unhide",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /drive/v3/files",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /drive/v3/files/{}/accessproposals/{}:resolve",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /drive/v3/files/{}/approvals/{}:approve",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /drive/v3/files/{}/approvals/{}:cancel",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /drive/v3/files/{}/approvals/{}:comment",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /drive/v3/files/{}/approvals/{}:decline",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /drive/v3/files/{}/approvals/{}:reassign",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /drive/v3/files/{}/approvals:start",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /drive/v3/files/{}/comments",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /drive/v3/files/{}/comments/{}/replies",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /drive/v3/files/{}/copy",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /drive/v3/files/{}/download",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /drive/v3/files/{}/modifyLabels",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /drive/v3/files/{}/permissions",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /drive/v3/files/{}/watch",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /drive/v3/teamdrives",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /v1/documents",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /v1/documents/{}:batchUpdate",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /v1/presentations",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /v1/presentations/{}:batchUpdate",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
       "path": "POST /v4/spreadsheets",
       "detail": "the vendor serves it; Backlot does not"
     },
@@ -1260,96 +1350,6 @@
       "kind": "missing_operation",
       "severity": "gap",
       "path": "PUT /v4/spreadsheets/{}/values/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /v1/presentations/{}/pages/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /v1/presentations/{}/pages/{}/thumbnail",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /v1/presentations/{}?$.xgafv",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /v1/presentations/{}?access_token",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /v1/presentations/{}?alt",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /v1/presentations/{}?callback",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /v1/presentations/{}?fields",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /v1/presentations/{}?key",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /v1/presentations/{}?oauth_token",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /v1/presentations/{}?prettyPrint",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /v1/presentations/{}?quotaUser",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /v1/presentations/{}?uploadType",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /v1/presentations/{}?upload_protocol",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /v1/presentations",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /v1/presentations/{}:batchUpdate",
       "detail": "the vendor serves it; Backlot does not"
     }
   ]

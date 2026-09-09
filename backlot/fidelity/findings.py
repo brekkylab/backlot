@@ -51,6 +51,16 @@ class Baseline:
     measured: str
     acknowledged: dict[str, Finding]
 
+    def __post_init__(self) -> None:
+        # A str is iterable, so a caller passing one URL unwrapped writes `list("https://…")` —
+        # the file takes a 32-element list of single characters and loads it back the same way,
+        # with nothing downstream shaped wrongly enough to complain. Refused at construction
+        # because that covers `empty`, `load` and `identified_as` alike.
+        if isinstance(self.endpoints, str):
+            raise TypeError(
+                f"endpoints is a tuple of URLs, not one URL: pass ({self.endpoints!r},)"
+            )
+
     @classmethod
     def empty(cls, source: str, endpoints: tuple[str, ...] = ()) -> "Baseline":
         return cls(source=source, endpoints=endpoints, measured="", acknowledged={})

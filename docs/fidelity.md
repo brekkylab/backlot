@@ -18,8 +18,11 @@ response, which needs a credential.
 For a source compared against a **document its vendor publishes**, the request surface — which
 operations exist, and which query parameters each accepts. Backlot's side is the app's own
 `/openapi.json`. The vendor's side comes in two formats, read by two parsers, because Google does
-not publish OpenAPI: an **OpenAPI** document for GitHub, Slack, Jira, Confluence, Notion and
-HubSpot, and a **Google API Discovery** document for Gmail and Drive. Both are public, so these
+not publish OpenAPI: **OpenAPI** documents for GitHub, Slack, Jira, Confluence, Notion and
+HubSpot, and **Google API Discovery** documents for Gmail and the Drive family. A source is
+compared against as many documents as its vendor publishes for the surface Backlot serves — Jira's
+two REST versions, Drive alongside Docs, Sheets and Slides, HubSpot's CRM and associations. All are
+public, so these
 comparisons run with **no credential, no quota and no account**. Response bodies are out of scope
 here: a vendor spec describes them through deep `$ref` chains that Backlot's `response_model` set
 does not mirror shape-for-shape, so a body diff would report how two documents are written rather
@@ -50,7 +53,8 @@ redirected run or a CI log stays plain text.
 backlot diff --source linear --json | jq '.new[] | select(.severity == "breaking") | .path'
 ```
 
-It carries `source`, `endpoint`, `total`, `new` and `resolved` — or, with `--update-baseline`,
+It carries `source`, `endpoints` (a list, one per document), `total`, `new` and `resolved` —
+or, with `--update-baseline`,
 `acknowledged`, `unacknowledged` and the `baseline` path. Exit codes are the same either way.
 
 Each source **declares** the credentials it needs, by a logical name and the environment variable
@@ -221,10 +225,17 @@ hardcodes `api_version = "2"` in its Jira constructor, and the `jira` PyPI clien
 against Atlassian's own v2 document, which it publishes beside the v3 one: the naming is
 `swagger[-<apiVersion>].<oasVersion>.json`, so the suffix-less `swagger.v3.json` is the v2 API.
 
-Every path Backlot serves is under one of those documents' mounts, probed, or declared in
-`UNCOMPARED` with the reason no document covers it — Backlot's own `/health`, `/oauth2/token` and
-`/_meta`, and Google's `/batch`, which is one endpoint carrying requests for every Google API and so
-appears in no single discovery document. A route in none of the three fails the suite.
+Every path Backlot **declares** in its own `/openapi.json` is under one of those documents'
+mounts, probed, or listed in `UNCOMPARED` with the reason no document covers it — Backlot's own
+`/health`, `/oauth2/token` and `/_meta`, and Google's `/batch`, which is one endpoint carrying
+requests for every Google API and so appears in no single discovery document. A declared path in
+none of the three fails the suite.
+
+Declared, not served: six live routes are `include_in_schema=False` and so invisible to that check.
+Four are FastAPI's own (`/docs`, `/docs/oauth2-redirect`, `/openapi.json`, `/redoc`). The other two
+are the GraphQL POSTs at `/fireflies/graphql` and `/linear/graphql`, which their own comparison
+covers — introspection, not a path map, so there is no mount to say so. Walking `app.routes`
+instead was ruled out for `gen_docs.py`, and the same reasoning holds here.
 
 Confluence is not yet fully covered: its reads now live in a v2 document whose paths are shaped
 differently from the v1 ones Backlot serves, so the eight reads Atlassian has removed from the v1

@@ -1652,23 +1652,58 @@ def test_github_tolerates_the_pagination_values_real_tolerates(gh_client, gh_adm
     assert {"type": "integer"} in page["schema"]["anyOf"]
 
 
-def test_github_the_spec_declares_reals_page_defaults(gh_client):
+#: GitHub's OpenAPI description, `components/parameters` `per-page` and `page`, read 2026-09-09
+#: (github/rest-api-description, `descriptions/api.github.com/api.github.com.json`), verbatim.
+_REAL_PAGE_PARAMETER_DESCRIPTIONS = {
+    "per_page": (
+        "The number of results per page (max 100). For more information, see "
+        '"[Using pagination in the REST API]'
+        '(https://docs.github.com/rest/using-the-rest-api/using-pagination-in-the-rest-api)."'
+    ),
+    "page": (
+        "The page number of the results to fetch. For more information, see "
+        '"[Using pagination in the REST API]'
+        '(https://docs.github.com/rest/using-the-rest-api/using-pagination-in-the-rest-api)."'
+    ),
+}
+
+
+def _schema_bounds(schema: dict) -> set[str]:
+    """The upper-bound keywords a parameter schema declares, at its top level or in any `anyOf`
+    branch, which is where FastAPI puts the integer half of an `int | None` parameter."""
+    keys = set(schema) | set().union(*(set(branch) for branch in schema.get("anyOf", [])))
+    return keys & {"maximum", "exclusiveMaximum"}
+
+
+def test_github_the_spec_declares_reals_page_parameters(gh_client):
     """GitHub's OpenAPI description declares the shared `per-page` parameter as `{type: integer,
     default: 30}` and `page` as `{type: integer, default: 1}` (github/rest-api-description,
-    `components/parameters`, read 2026-09-07). Sixteen of the seventeen routes served here that page
-    reference the two; the seventeenth, `GET /repos/{owner}/{repo}/statuses/{sha}`, is the legacy
-    alias the description names only in the prose of `/commits/{ref}/statuses`, which references
-    them. The three routes whose inline `per_page` default differs — `/notifications` at 50,
+    `components/parameters`, read 2026-09-07 and again 2026-09-09), each under a description on the
+    parameter itself. Sixteen of the seventeen routes served here that page reference the two; the
+    seventeenth, `GET /repos/{owner}/{repo}/statuses/{sha}`, is the legacy alias the description
+    names only in the prose of `/commits/{ref}/statuses`, which references them. The three routes
+    whose inline `per_page` default differs — `/notifications` at 50,
     `/orgs/{org}/copilot/billing/seats` at 50 and `/organizations/{org}/settings/billing/budgets`
     at 10 — are indeed unserved here; `/zen` declares no parameters at all, so it is not in that
-    set. Backlot's slice declared neither default: FastAPI writes none for a parameter whose
-    runtime default is None, and the handlers keep None to tell an unsent size from a sent one. The
-    spec is what `backlot mcp` hands an agent as a tool, so a default the document does not state is
-    one the agent cannot know.
+    set. Backlot's slice declared neither default and neither description: FastAPI writes no default
+    for a parameter whose runtime default is None, and the handlers keep None to tell an unsent size
+    from a sent one. The spec is what `backlot mcp` hands an agent as a tool, so a default the
+    document does not state is one the agent cannot know.
 
-    The two are written onto the served document after FastAPI builds it, on GitHub's operations
+    The description matters for one number: "(max 100)" is the ONLY place real states `per_page`'s
+    cap. Its schema is a bare `{type: integer}` with no `maximum`, and that absence is a
+    declaration, not an oversight: real serves `per_page=101` at the cap rather than refusing it
+    (`test_github_pages_at_reals_thirty_and_caps_at_its_hundred`), so a schema bound would have a
+    generated client refuse what the server accepts. A served document that declared `default: 30`
+    with no ceiling left 500 looking legal when 500 comes back as 100. So this test holds the
+    description to real's text and the schema to no bound, and it holds the 100 in the prose to the
+    100 the route applies, since the text is built from that constant rather than spelled out twice.
+
+    Both are written onto the served document after FastAPI builds it, on GitHub's operations
     alone: a Slack `page` keeps the schema its router declared by hand.
     """
+    from backlot.routers import github as gh
+
     c, _ = gh_client
     spec = c.get("/openapi.json").json()
     seen = 0
@@ -1680,14 +1715,21 @@ def test_github_the_spec_declares_reals_page_defaults(gh_client):
                 if p["name"] in ("page", "per_page"):
                     assert p["schema"]["default"] == {"per_page": 30, "page": 1}[p["name"]], path
                     assert {"type": "integer"} in p["schema"]["anyOf"], path  # still an integer
+                    assert p["description"] == _REAL_PAGE_PARAMETER_DESCRIPTIONS[p["name"]], path
+                    assert not _schema_bounds(p["schema"]), path  # the cap is prose, as on real
                     seen += 1
     assert seen == 2 * 17  # the seventeen routes that page, both parameters each
+    # the cap the prose states is the cap the route applies, read from the one constant
+    assert f"(max {gh.PER_PAGE_MAX})" in gh.PAGE_PARAMETERS["per_page"][1]
+    assert gh.PAGE_PARAMETERS["per_page"][0] == gh.PER_PAGE_DEFAULT
     slack = spec["paths"]["/slack/api/search.messages"]["get"]["parameters"]
     assert "default" not in next(p for p in slack if p["name"] == "page")["schema"]
     # ...and the MCP slice, built from the same document, carries them to an agent
     mcp = c.get("/_meta/openapi/github").json()
     code = mcp["paths"]["/github/search/code"]["get"]["parameters"]
-    assert next(p for p in code if p["name"] == "per_page")["schema"]["default"] == 30
+    per_page = next(p for p in code if p["name"] == "per_page")
+    assert per_page["schema"]["default"] == 30
+    assert per_page["description"] == _REAL_PAGE_PARAMETER_DESCRIPTIONS["per_page"]
 
 
 def test_github_pages_at_reals_thirty_and_caps_at_its_hundred(tmp_path):

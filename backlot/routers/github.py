@@ -46,12 +46,36 @@ TREE_MAX_BYTES = 7 * 1024 * 1024
 # and `/search/issues?q=repo:psf/requests+timeout` each answer 30 unsent and 100 for `per_page=100`,
 # `101` and `500` alike). GitHub's OpenAPI description declares the shared `per-page` parameter
 # "The number of results per page (max 100)." with `default: 30`; the served spec declares the same
-# 30 by reading this constant (`backlot/main.py`), so moving it moves both. The settings stay the
-# numbers of the vendors whose own are not measured; a client sized to real's page must not get
-# three times it here and find out in production. Module level, like the tree caps, so a test can
-# lower them: no repository in the bundled corpus spans a page of 30.
+# 30 and the same cap by reading these constants (`PAGE_PARAMETERS` below, written onto the
+# document by `backlot/main.py`), so moving one moves both. The settings stay the numbers of the
+# vendors whose own are not measured; a client sized to real's page must not get three times it
+# here and find out in production. Module level, like the tree caps, so a test can lower them: no
+# repository in the bundled corpus spans a page of 30.
 PER_PAGE_DEFAULT = 30
 PER_PAGE_MAX = 100
+
+# The two shared parameters as real's description declares them, `components/parameters` `per-page`
+# and `page` (github/rest-api-description, read 2026-09-09): each one's default and its description,
+# verbatim. The description is the only place real states the cap. Its schema is a bare
+# `{type: integer}` with no `maximum`, and real serves `per_page=101` at the cap rather than
+# refusing it, so a bound in the schema would have a generated client refuse what the server
+# accepts; the prose is where the number belongs. FastAPI cannot be told to write a default or a
+# description onto a parameter whose runtime default is None (see
+# `backlot.openapi.github_page_parameters`), so `backlot/main.py` writes both onto the served
+# document from this mapping. The 100 in the prose is PER_PAGE_MAX and the 30 is PER_PAGE_DEFAULT,
+# so the document cannot state one number while the route applies another; the `page` default is
+# the 1 that `_clamp` starts a listing at.
+_PAGINATION_DOCS = (
+    'For more information, see "[Using pagination in the REST API]'
+    '(https://docs.github.com/rest/using-the-rest-api/using-pagination-in-the-rest-api)."'
+)
+PAGE_PARAMETERS: dict[str, tuple[int, str]] = {
+    "per_page": (
+        PER_PAGE_DEFAULT,
+        f"The number of results per page (max {PER_PAGE_MAX}). {_PAGINATION_DOCS}",
+    ),
+    "page": (1, f"The page number of the results to fetch. {_PAGINATION_DOCS}"),
+}
 
 
 def _require(request: Request) -> Caller:

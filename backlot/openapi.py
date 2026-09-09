@@ -112,22 +112,27 @@ def qp(
     return p
 
 
-def github_page_defaults(spec: dict, defaults: dict[str, int]) -> dict:
-    """``spec`` with ``defaults``, parameter name to the number the route applies when that
-    parameter is not sent, written onto every GitHub operation's query parameter of that name, in
-    place.
+def github_page_parameters(spec: dict, parameters: dict[str, tuple[int, str]]) -> dict:
+    """``spec`` with ``parameters``, parameter name to the ``(default, description)`` real declares
+    for it, written onto every GitHub operation's query parameter of that name, in place: the
+    default into the parameter's schema and the description onto the parameter itself, which is
+    where real's own document carries each (``components/parameters``, `per-page` and `page`, a
+    `{type: integer, default: N}` schema under a described parameter). The description is the only
+    place real states `per_page`'s cap; the schema declares no `maximum`, and none is written here.
 
     The GitHub handlers declare `page` and `per_page` as ``PageParam = None`` and have to: the
     handler tells an unsent size from a sent one by that ``None`` (a `Link` header omits a size the
     caller did not send), so the runtime default cannot be 30. FastAPI writes no ``default`` for a
     query parameter whose default is ``None``, and neither ``json_schema_extra`` nor
-    ``WithJsonSchema`` gets one past it (both measured on 0.141.1 / pydantic 2.13). So the numbers
-    are written here, after FastAPI has built the document, and they come from the caller rather
-    than from a constant of this module's own: the router that applies them holds them
-    (``backlot.routers.github.PER_PAGE_DEFAULT``, whose comment cites GitHub's description
-    declaring the same 30), so the document cannot declare one size while the route applies
-    another. Six routers import this module for :func:`qp`, which is why it does not import that
-    one. Only GitHub: the other vendors' declared defaults are not measured."""
+    ``WithJsonSchema`` gets one past it (both measured on 0.141.1 / pydantic 2.13); the two
+    parameters' descriptions differ, so ``Query(description=...)`` on the one shared annotation
+    cannot carry them either. So both are written here, after FastAPI has built the document, and
+    they come from the caller rather than from constants of this module's own: the router that
+    applies the numbers holds them (``backlot.routers.github.PAGE_PARAMETERS``, whose prose is built
+    from the same ``PER_PAGE_DEFAULT`` and ``PER_PAGE_MAX`` its routes apply), so the document cannot
+    declare one size while the route applies another. Six routers import this module for
+    :func:`qp`, which is why it does not import that one. Only GitHub: the other vendors' declared
+    defaults are not measured."""
     for path, item in spec.get("paths", {}).items():
         if path != "/github" and not path.startswith("/github/"):
             continue
@@ -135,9 +140,11 @@ def github_page_defaults(spec: dict, defaults: dict[str, int]) -> dict:
             if method not in _METHODS:
                 continue
             for param in op.get("parameters", []):
-                default = defaults.get(param.get("name"))
-                if default is not None and param.get("in") == "query":
+                declared = parameters.get(param.get("name"))
+                if declared is not None and param.get("in") == "query":
+                    default, description = declared
                     param["schema"]["default"] = default
+                    param["description"] = description
     return spec
 
 

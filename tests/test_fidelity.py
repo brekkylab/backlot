@@ -245,6 +245,14 @@ def test_a_baseline_round_trips_every_endpoint_it_names(tmp_path):
     assert json.loads(p.read_text())["endpoints"] == list(ends)
 
 
+def test_a_google_source_is_compared_against_every_api_it_is_served_through():
+    """A Drive file is also read through Docs, Sheets and Slides. Comparing only Drive left three
+    whole API families measured against nothing: a Sheets response shape could be rewritten and
+    `backlot diff --source google_drive` would still answer `0 new`."""
+    mounts = {m for s in COMPARISONS["google_drive"].specs for m in s.mount}
+    assert mounts == {"/drive/v3", "/docs", "/sheets", "/slides"}
+
+
 def test_the_comparisons_are_exactly_the_sources_backlot_serves():
     """Fidelity does not get to invent a source: `store.SOURCE_TABLE` is the canonical list, and
     the same `source_type` a BYO record carries.

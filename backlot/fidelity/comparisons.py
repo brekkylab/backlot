@@ -289,6 +289,26 @@ GOOGLE_DISCOVERY = {
                 spec_url="https://www.googleapis.com/discovery/v1/apis/drive/v3/rest",
                 mount=("/drive/v3",),
             ),
+            # A Drive file is also read through the editor APIs, and each publishes its own
+            # discovery document. Each strips its own mount, unlike Drive: these three declare an
+            # empty `servicePath` and spell the version themselves (`v4/spreadsheets/...`), where
+            # Drive's document repeats `drive/v3/`. Measured — with nothing stripped, every served
+            # operation reports as one Backlot invented.
+            Spec(
+                spec_url="https://www.googleapis.com/discovery/v1/apis/docs/v1/rest",
+                mount=("/docs",),
+                strip="/docs",
+            ),
+            Spec(
+                spec_url="https://www.googleapis.com/discovery/v1/apis/sheets/v4/rest",
+                mount=("/sheets",),
+                strip="/sheets",
+            ),
+            Spec(
+                spec_url="https://www.googleapis.com/discovery/v1/apis/slides/v1/rest",
+                mount=("/slides",),
+                strip="/slides",
+            ),
         ),
     ),
 }

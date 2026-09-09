@@ -66,7 +66,11 @@ class Spec:
     # fetched, it returns the URL to fetch instead. A vendor that publishes one document per
     # release needs this — see `hubspot_catalog` for why pinning the resolved URL is
     # not the simplification it appears to be.
-    resolve_url: Callable[[Mapping[str, Any]], str] | None = None
+    #
+    # Typed as the resolver CLASS and not as a bare callable, because `endpoint` below renders it
+    # into the baseline's identity: a lambda would render as `<function … at 0x…>` and write a
+    # fresh memory address into the file on every run.
+    resolve_url: hubspot_catalog.Entry | None = None
 
     @property
     def endpoint(self) -> str:

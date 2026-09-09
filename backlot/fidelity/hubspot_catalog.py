@@ -44,6 +44,12 @@ class Entry:
     ``Spec`` carries the same ``spec_url`` — the index — and which DOCUMENT that resolves to is
     decided here. Behind a closure, a source comparing two HubSpot APIs reports the index URL twice
     and names neither document, which is precisely what the baseline's endpoint list exists to say.
+
+    ``__str__`` is the half a caller relies on, and it has to be STABLE ACROSS PROCESSES: it lands
+    in the baseline as part of the source's identity, so a resolver rendering as the default
+    ``<function … at 0x…>`` would write a fresh memory address into the file on every run. That is
+    why :class:`~backlot.fidelity.comparisons.Spec` types its hook as this class rather than as a
+    bare callable.
     """
 
     api: str

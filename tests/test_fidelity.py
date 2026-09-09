@@ -247,6 +247,10 @@ def test_every_comparison_names_the_documents_it_was_measured_against():
         assert isinstance(c.endpoints, tuple) and c.endpoints, name
         assert all(e.startswith("http") for e in c.endpoints), name
         assert len(set(c.endpoints)) == len(c.endpoints), f"{name}: {c.endpoints}"
+        # And STABLE across processes: an index-addressed spec renders its resolver into this
+        # string, so one rendering as the default `<function … at 0x…>` would write a fresh memory
+        # address into the baseline on every run — churning the identity it exists to hold still.
+        assert not any(" at 0x" in e for e in c.endpoints), f"{name}: {c.endpoints}"
 
 
 def test_a_baseline_round_trips_every_endpoint_it_names(tmp_path):
@@ -358,6 +362,25 @@ def test_every_comparison_ships_a_baseline():
     """Shipped so an installed copy can be compared without the repository."""
     for name in COMPARISONS:
         assert Baseline.load(baseline_path(name)).source == name
+
+
+def test_every_mount_selects_something_backlot_serves():
+    """The converse of `test_every_served_path_is_compared_or_says_why_not`, and NOT implied by it.
+
+    That test is one-directional: every served path is under some mount. A mount matching nothing
+    escapes it whenever another mount already covers the same paths -- and such a mount diffs an
+    EMPTY served surface against a whole vendor document, which reports as nothing but
+    `missing_operation` gaps. That looks exactly like an unimplemented surface, so
+    `--update-baseline` acknowledges it in bulk and the dead mount compares nothing forever.
+
+    Per SPEC, not per comparison: a source with four documents and one bad mount would otherwise
+    pass on the strength of its other three."""
+    from backlot.main import app
+
+    served = list(app.openapi()["paths"])
+    for name, comparison in COMPARISONS.items():
+        for mount in _comparison_mounts(comparison):
+            assert any(p.startswith(mount) for p in served), f"{name}: {mount} selects nothing"
 
 
 def _comparison_mounts(comparison) -> tuple[str, ...]:

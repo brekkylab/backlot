@@ -1737,10 +1737,184 @@ def _sheets_grid(content: str | None) -> list[list[str]]:
     return [[line] for line in (content or "").split("\n")]
 
 
+# --- the standard query parameters every Sheets read accepts ---------------------------------
+#
+# Measured on the live API, all on `values.get` unless noted:
+#
+#   fields           a partial-response mask; see `_gmask`
+#   prettyPrint      DEFAULT TRUE -- the body is 2-space indented unless `false` says otherwise,
+#                    and an unparseable value is treated as true rather than refused
+#   alt              `json` only; `media` is 400 "Unsupported alt type ... for non byte stream
+#                    request." and anything else 400 "Invalid value ... for query parameter 'alt'"
+#   callback         JSONP: the body is wrapped and the type becomes text/javascript
+#   quotaUser        a rate-limit bucket label; any string, including empty, and no effect on the
+#                    response -- Backlot enforces no quota, so there is nothing for it to select
+#   upload_protocol  accepted and ignored on a read
+#
+# `key`, `access_token` and `oauth_token` are NOT here: each is an alternative way to authenticate,
+# and honouring one means a second credential path through `backlot.auth` rather than a parameter
+# this module can read. `uploadType` is not here either -- measured, the real API REFUSES it on a
+# read ("Cannot bind query parameter"), so the baseline's "the vendor accepts it" is not what the
+# vendor does.
+_P_SHEETS_STD = [
+    qp("fields"),
+    qp("prettyPrint", "boolean"),
+    qp("alt"),
+    qp("callback"),
+    qp("quotaUser"),
+    qp("upload_protocol"),
+]
+
+
+def _gmask_parse(mask: str) -> dict:
+    """A ``fields`` mask as a nested selection tree; ``{}`` at a leaf means "this whole subtree".
+
+    Measured grammar: ``.`` and ``/`` both descend, ``a(b,c)`` groups a sub-selection, ``,``
+    separates siblings, ``*`` selects everything, and a trailing comma is tolerated. A name is
+    matched case-sensitively and is not trimmed -- `` spreadsheetId`` with a leading space 400s."""
+    tree: dict = {}
+    # (node, key-so-far) as the parser descends into a group
+    stack, cur, token = [], tree, ""
+
+    def land(node, name, sub=None):
+        if not name:
+            return node
+        head, _, rest = name.replace("/", ".").partition(".")
+        child = node.setdefault(head, {})
+        while rest:
+            head, _, rest = rest.partition(".")
+            child = child.setdefault(head, {})
+        if sub is not None:
+            child.update(sub)
+        return child
+
+    for ch in mask:
+        if ch == "(":
+            stack.append((cur, token))
+            cur, token = land(cur, token), ""
+        elif ch == ")":
+            if not stack:
+                raise gerr.bad_field_mask(mask)
+            land(cur, token)
+            cur, token = stack.pop()[0], ""
+        elif ch == ",":
+            land(cur, token)
+            token = ""
+        else:
+            token += ch
+    if stack:
+        raise gerr.bad_field_mask(mask)
+    land(cur, token)
+    return tree
+
+
+def _gmask_check(tree: dict, allowed: dict, path: str = "") -> None:
+    """Refuse a name the response has no field for, naming the full path as the real API does.
+
+    Validated against the fields Backlot CAN emit rather than against the whole Sheets schema:
+    a mask naming a real field this module does not model -- a cell's `effectiveFormat`, say --
+    400s here where the real API answers 200. Stated rather than hidden; the alternative is to
+    accept any name at all, which is how a typo becomes a silently empty response."""
+    for name, sub in tree.items():
+        if name == "*":
+            continue
+        full = f"{path}.{name}" if path else name
+        if name not in allowed:
+            raise gerr.bad_field_mask(full)
+        if sub:
+            _gmask_check(sub, allowed[name], full)
+
+
+def _gmask_apply(tree: dict, value):
+    """Project ``value`` through a selection tree, mapping over a list rather than indexing it —
+    which is what lets ``sheets.properties.title`` reach into every sheet."""
+    if not tree or "*" in tree:
+        return value
+    if isinstance(value, list):
+        return [_gmask_apply(tree, v) for v in value]
+    if not isinstance(value, dict):
+        return value
+    out = {}
+    for name, sub in tree.items():
+        if name in value:
+            out[name] = _gmask_apply(sub, value[name])
+    return out
+
+
+def _sheets_respond(request: Request, body: dict, allowed: dict) -> Response:
+    """One Sheets response, with the standard query parameters applied.
+
+    Order matters and is measured: `fields` narrows the body, then `prettyPrint` decides the
+    indentation, then `callback` wraps what is left."""
+    alt = request.query_params.get("alt")
+    if alt is not None and alt != "json":
+        # Measured: `media` gets its own sentence, everything else the generic one.
+        raise gerr.invalid_argument(
+            f'Unsupported alt type "{alt}" for non byte stream request.'
+            if alt == "media"
+            else f"Invalid value \"{alt}\" for query parameter 'alt'"
+        )
+    mask = request.query_params.get("fields")
+    if mask:
+        tree = _gmask_parse(mask)
+        _gmask_check(tree, allowed)
+        body = _gmask_apply(tree, body)
+    # Measured: indented by default, and only the literal `false` spellings turn it off -- an
+    # unparseable value is treated as true rather than refused, unlike the other booleans.
+    compact = (request.query_params.get("prettyPrint") or "").casefold() in _SHEETS_FALSE
+    # Measured to the byte: compact puts no space after `:` or `,` and ends without a newline,
+    # while the indented form is two spaces deep and DOES end with one. Non-ASCII stays raw.
+    text = (
+        json.dumps(body, ensure_ascii=False, separators=(",", ":"))
+        if compact
+        else json.dumps(body, ensure_ascii=False, indent=2) + "\n"
+    )
+    callback = request.query_params.get("callback")
+    if callback:
+        return Response(
+            f"// API callback\n{callback}({text});", media_type="text/javascript; charset=UTF-8"
+        )
+    return Response(text, media_type="application/json; charset=UTF-8")
+
+
+# What a `fields` mask may name, per response — the fields these routes actually build. A cell's
+# value objects are leaves: their members are the one-of `stringValue`/`numberValue`/`boolValue`,
+# which a mask reaches by naming the value itself.
+_F_CELL = {
+    "userEnteredValue": {"stringValue": {}, "numberValue": {}, "boolValue": {}},
+    "effectiveValue": {"stringValue": {}, "numberValue": {}, "boolValue": {}},
+    "formattedValue": {},
+}
+_F_GRID_DATA = {
+    "startRow": {},
+    "startColumn": {},
+    "rowData": {"values": _F_CELL},
+    "rowMetadata": {"pixelSize": {}},
+    "columnMetadata": {"pixelSize": {}},
+}
+_F_SPREADSHEET = {
+    "spreadsheetId": {},
+    "spreadsheetUrl": {},
+    "properties": {"title": {}, "locale": {}, "autoRecalc": {}, "timeZone": {}},
+    "sheets": {
+        "properties": {
+            "sheetId": {},
+            "title": {},
+            "index": {},
+            "sheetType": {},
+            "gridProperties": {"rowCount": {}, "columnCount": {}},
+        },
+        "data": _F_GRID_DATA,
+    },
+}
+_F_VALUE_RANGE = {"range": {}, "majorDimension": {}, "values": {}}
+_F_BATCH_VALUES = {"spreadsheetId": {}, "valueRanges": _F_VALUE_RANGE}
+
 _P_SHEETS_GET = [
     qp("includeGridData", "boolean"),
     qp("ranges"),
     qp("excludeTablesInBandedRanges", "boolean"),
+    *_P_SHEETS_STD,
 ]
 
 
@@ -1790,17 +1964,21 @@ async def sheets_get(spreadsheet_id: str, request: Request):
         if grid:
             entry["data"] = [_sheets_grid_data(sh, body, spec) for body, spec in parts]
         out.append(entry)
-    return {
-        "spreadsheetId": spreadsheet_id,
-        "properties": {
-            "title": row["title"],
-            "locale": "en_US",
-            "autoRecalc": SHEETS_AUTO_RECALC,
-            "timeZone": SHEETS_TIME_ZONE,
+    return _sheets_respond(
+        request,
+        {
+            "spreadsheetId": spreadsheet_id,
+            "properties": {
+                "title": row["title"],
+                "locale": "en_US",
+                "autoRecalc": SHEETS_AUTO_RECALC,
+                "timeZone": SHEETS_TIME_ZONE,
+            },
+            "spreadsheetUrl": f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit",
+            "sheets": out,
         },
-        "spreadsheetUrl": f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit",
-        "sheets": out,
-    }
+        _F_SPREADSHEET,
+    )
 
 
 # --- Sheets `values` reads ------------------------------------------------------------------
@@ -2251,7 +2429,12 @@ def _sheets_options(request: Request) -> tuple[str, str]:
     return major, render
 
 
-_P_SHEETS_VALUES = [qp("majorDimension"), qp("valueRenderOption"), qp("dateTimeRenderOption")]
+_P_SHEETS_VALUES = [
+    qp("majorDimension"),
+    qp("valueRenderOption"),
+    qp("dateTimeRenderOption"),
+    *_P_SHEETS_STD,
+]
 _P_SHEETS_BATCH = [qp("ranges"), *_P_SHEETS_VALUES]
 
 
@@ -2275,7 +2458,7 @@ async def sheets_values_batch_get(spreadsheet_id: str, request: Request):
     body = {"spreadsheetId": spreadsheet_id}
     if ranges:
         body["valueRanges"] = [_sheets_value_range(r, sheets, major, render) for r in ranges]
-    return body
+    return _sheets_respond(request, body, _F_BATCH_VALUES)
 
 
 @router.get(
@@ -2286,7 +2469,9 @@ async def sheets_values_get(spreadsheet_id: str, a1_range: str, request: Request
     """One range of a spreadsheet, ACL-enforced through the same lookup as ``spreadsheets.get``."""
     _row, sheets = _workbook(request, spreadsheet_id)
     major, render = _sheets_options(request)
-    return _sheets_value_range(a1_range, sheets, major, render)
+    return _sheets_respond(
+        request, _sheets_value_range(a1_range, sheets, major, render), _F_VALUE_RANGE
+    )
 
 
 @router.get("/slides/v1/presentations/{presentation_id}")

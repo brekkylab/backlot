@@ -2964,3 +2964,129 @@ def test_a_prose_export_round_trips_through_its_lines_not_through_a_csv_parser(g
     assert exported == "\n".join(row[0] for row in served)
     # and the parser reading really would disagree -- which is why it is not asserted above
     assert list(csv.reader(io.StringIO(exported))) != served
+
+
+# --- the standard query parameters every Sheets read accepts ------------------------------------
+
+
+@pytest.mark.parametrize(
+    "mask, want",
+    [
+        ("range", {"range": "Summary!A1:B2"}),
+        ("majorDimension", {"majorDimension": "ROWS"}),
+        ("range,majorDimension", {"range": "Summary!A1:B2", "majorDimension": "ROWS"}),
+        # a trailing comma is tolerated, measured
+        ("range,", {"range": "Summary!A1:B2"}),
+        ("*", None),
+    ],
+)
+def test_fields_narrows_a_value_range(gc, gh, book, mask, want):
+    r = gc.get(
+        f"/sheets/v4/spreadsheets/{book}/values/Summary!A1:B2", headers=gh, params={"fields": mask}
+    )
+    assert r.status_code == 200
+    assert r.json() == (want if want is not None else r.json()) and (
+        want is None or set(r.json()) == set(want)
+    )
+
+
+@pytest.mark.parametrize(
+    "mask, want",
+    [
+        ("spreadsheetId", ["spreadsheetId"]),
+        ("properties.title", ["properties"]),
+        # `.` and `/` both descend, and `a(b,c)` groups — measured, all three spellings work
+        ("properties/title", ["properties"]),
+        ("properties(title)", ["properties"]),
+        ("spreadsheetId,sheets.properties.index", ["spreadsheetId", "sheets"]),
+    ],
+)
+def test_fields_narrows_a_spreadsheet(gc, gh, book, mask, want):
+    r = gc.get(f"/sheets/v4/spreadsheets/{book}", headers=gh, params={"fields": mask})
+    assert r.status_code == 200
+    assert sorted(r.json()) == sorted(want)
+
+
+def test_fields_reaches_through_the_sheets_list(gc, gh, book):
+    """A mask projects over a list rather than indexing it, so one path reaches every sheet."""
+    r = gc.get(
+        f"/sheets/v4/spreadsheets/{book}",
+        headers=gh,
+        params={"fields": "sheets(properties(title,index))"},
+    )
+    got = r.json()["sheets"]
+    assert got[0] == {"properties": {"title": "Summary", "index": 0}}
+    assert all(set(s["properties"]) == {"title", "index"} for s in got)
+
+
+@pytest.mark.parametrize("mask", ["nope", "sheets.properties.nope", "SpreadsheetId"])
+def test_a_fields_mask_naming_no_field_is_refused(gc, gh, book, mask):
+    """Measured: the top-level message is generic and the failing PATH is named only inside a
+    google.rpc.BadRequest detail. Matching is case-sensitive."""
+    r = gc.get(f"/sheets/v4/spreadsheets/{book}", headers=gh, params={"fields": mask})
+    assert r.status_code == 400
+    err = r.json()["error"]
+    assert err["message"] == "Request contains an invalid argument."
+    assert err["status"] == "INVALID_ARGUMENT"
+    assert err["details"] == [
+        {
+            "@type": "type.googleapis.com/google.rpc.BadRequest",
+            "fieldViolations": [
+                {
+                    "field": mask,
+                    "description": (
+                        "Error expanding 'fields' parameter. Cannot find matching fields for "
+                        f"path '{mask}'."
+                    ),
+                }
+            ],
+        }
+    ]
+
+
+def test_pretty_print_is_on_by_default_and_only_false_turns_it_off(gc, gh, book):
+    """Measured to the byte: indented two spaces and newline-terminated by default; compact with
+    no space after `:` or `,` and no trailing newline when off. An unparseable value is treated as
+    true rather than refused, unlike the other booleans."""
+    url = f"/sheets/v4/spreadsheets/{book}/values/Summary!A1:A1"
+    assert gc.get(url, headers=gh).text.endswith("\n")
+    assert '"range": "Summary!A1"' in gc.get(url, headers=gh).text
+    off = gc.get(url, headers=gh, params={"prettyPrint": "false"}).text
+    assert off.startswith('{"range":"Summary!A1"') and not off.endswith("\n")
+    assert gc.get(url, headers=gh, params={"prettyPrint": "NOPE"}).status_code == 200
+
+
+@pytest.mark.parametrize(
+    "alt, message",
+    [
+        ("media", 'Unsupported alt type "media" for non byte stream request.'),
+        ("NOPE", "Invalid value \"NOPE\" for query parameter 'alt'"),
+    ],
+)
+def test_alt_serves_json_and_refuses_anything_else(gc, gh, book, alt, message):
+    url = f"/sheets/v4/spreadsheets/{book}/values/Summary!A1:A1"
+    assert gc.get(url, headers=gh, params={"alt": "json"}).status_code == 200
+    r = gc.get(url, headers=gh, params={"alt": alt})
+    assert r.status_code == 400
+    assert r.json()["error"]["message"] == message
+
+
+def test_callback_wraps_the_body_as_jsonp(gc, gh, book):
+    r = gc.get(
+        f"/sheets/v4/spreadsheets/{book}/values/Summary!A1:A1",
+        headers=gh,
+        params={"callback": "cb"},
+    )
+    assert r.headers["content-type"].startswith("text/javascript")
+    assert r.text.startswith("// API callback\ncb({") and r.text.endswith(");")
+
+
+@pytest.mark.parametrize("param", ["quotaUser", "upload_protocol"])
+@pytest.mark.parametrize("value", ["x", ""])
+def test_a_param_with_no_effect_here_is_still_accepted(gc, gh, book, param, value):
+    """`quotaUser` picks a rate-limit bucket and `upload_protocol` belongs to uploads; neither
+    changes a read's answer, and measured, the real API takes both without complaint."""
+    r = gc.get(
+        f"/sheets/v4/spreadsheets/{book}/values/Summary!A1:A1", headers=gh, params={param: value}
+    )
+    assert r.status_code == 200

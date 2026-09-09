@@ -86,6 +86,7 @@ class GoogleError(HTTPException):
         location_type: str = "parameter",
         status: str | None = None,
         short: str | None = None,
+        details: list | None = None,
     ):
         super().__init__(status_code=status_code, detail=message)
         self.message = message
@@ -94,6 +95,7 @@ class GoogleError(HTTPException):
         self.location_type = location_type
         self.status = status
         self.short = short
+        self.details = details
 
 
 # --- constructors: the call site names the KIND of failure, which is what only it knows ---------
@@ -146,6 +148,34 @@ def not_downloadable() -> GoogleError:
 def invalid_argument(message: str) -> GoogleError:
     """The editor APIs' generic 400."""
     return GoogleError(400, message, reason="invalidArgument", status="INVALID_ARGUMENT")
+
+
+def bad_field_mask(path: str) -> GoogleError:
+    """A ``fields`` mask naming something the response has no field for.
+
+    Measured on Sheets: the top-level message is the generic ``Request contains an invalid
+    argument.`` and the path that failed is named only inside a ``google.rpc.BadRequest`` detail —
+    so a client that wants to know WHICH path was wrong has to read `details`."""
+    return GoogleError(
+        400,
+        "Request contains an invalid argument.",
+        reason="invalidArgument",
+        status="INVALID_ARGUMENT",
+        details=[
+            {
+                "@type": "type.googleapis.com/google.rpc.BadRequest",
+                "fieldViolations": [
+                    {
+                        "field": path,
+                        "description": (
+                            "Error expanding 'fields' parameter. Cannot find matching fields for "
+                            f"path '{path}'."
+                        ),
+                    }
+                ],
+            }
+        ],
+    )
 
 
 def invalid_id_value() -> GoogleError:
@@ -221,6 +251,12 @@ def http_body(path: str, exc: HTTPException) -> dict:
     status = getattr(exc, "status", None)
     if status:
         err["status"] = status
+    # `details` carries the google.rpc payloads a few failures add under the message — measured on
+    # a mistyped Sheets `fields` mask, whose BadRequest names the path that could not be expanded.
+    # After `status`, which is the order the measured bodies come back in.
+    details = getattr(exc, "details", None)
+    if details:
+        err["details"] = details
     return {"error": err}
 
 

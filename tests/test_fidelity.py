@@ -30,7 +30,14 @@ from backlot.fidelity import (
     operations,
     s3_probe,
 )
-from backlot.fidelity.comparisons import COMPARISONS, GOOGLE_DISCOVERY, GRAPHQL, OPENAPI, PROBE
+from backlot.fidelity.comparisons import (
+    COMPARISONS,
+    GOOGLE_DISCOVERY,
+    GRAPHQL,
+    OPENAPI,
+    PROBE,
+    UNCOMPARED,
+)
 from backlot.fidelity.graphql_diff import backlot_schema, diff_schemas
 
 VENDOR = """
@@ -276,8 +283,13 @@ def test_jira_compares_both_rest_versions_against_their_own_documents():
     assert by_mount["/atlassian/rest/api/3"].endswith("/swagger-v3.v3.json")
 
 
-def test_the_comparisons_are_exactly_the_sources_backlot_serves():
-    """Fidelity does not get to invent a source: `store.SOURCE_TABLE` is the canonical list, and
+def test_the_registry_names_exactly_the_source_types_backlot_serves():
+    """A VOCABULARY check, not a coverage one: this says every source_type has some comparison,
+    not that every served path is under one. `test_every_served_path_is_compared_or_says_why_not`
+    asks the second question, and `google_drive` is why they are different — one source type,
+    five vendor APIs.
+
+    Fidelity does not get to invent a source: `store.SOURCE_TABLE` is the canonical list, and
     the same `source_type` a BYO record carries.
 
     `cli.FIDELITY_SOURCES` is held to the same list. It exists so `--help` can name the sources
@@ -301,17 +313,54 @@ def test_every_comparison_is_registered_once_as_the_class_its_registry_implies()
             assert isinstance(comparison, expected), f"{name} is a {type(comparison).__name__}"
 
 
-def test_every_comparison_ships_a_baseline_and_mounts_something_to_compare():
-    """A baseline is shipped so an installed copy can be compared without the repository; a mount
-    that matches nothing would compare an empty surface and pass forever."""
+def test_every_comparison_ships_a_baseline():
+    """Shipped so an installed copy can be compared without the repository."""
+    for name in COMPARISONS:
+        assert Baseline.load(baseline_path(name)).source == name
+
+
+def _comparison_mounts(comparison) -> tuple[str, ...]:
+    """Every served path prefix a comparison speaks for, whichever kind it is."""
+    specs = getattr(comparison, "specs", None)
+    if specs is not None:
+        return tuple(m for s in specs for m in s.mount)
+    return tuple(getattr(comparison, "mount", ()))
+
+
+def test_every_served_path_is_compared_or_says_why_not():
+    """The coverage guarantee the tests beside this one only appeared to give.
+
+    They count SOURCE TYPES, which is the corpus dimension. `google_drive` is one source type
+    served through five vendor APIs, so Docs, Sheets and Slides sat compared against nothing while
+    both tests passed — a Sheets response shape could be rewritten and `backlot diff` would still
+    answer `0 new`. This counts served PATHS, which is what a comparison actually covers.
+
+    Every path lands in exactly one bucket: under some document's mount, probe-compared, or
+    declared in `UNCOMPARED` with a reason. A path in none of them is a router someone added
+    without asking what checks it.
+    """
     from backlot.main import app
 
-    served = app.openapi()["paths"]
-    for name, comparison in COMPARISONS.items():
-        assert Baseline.load(baseline_path(name)).source == name
-        if comparison in {**OPENAPI, **GOOGLE_DISCOVERY}.values():
-            mounts = [m for s in comparison.specs for m in s.mount]
-            assert any(p.startswith(m) for p in served for m in mounts), name
+    mounts = [m for c in COMPARISONS.values() for m in _comparison_mounts(c)]
+    unclassified = [
+        p
+        for p in sorted(app.openapi()["paths"])
+        if not any(p.startswith(m) for m in mounts)
+        and not any(p == u or p.startswith(u + "/") for u in UNCOMPARED)
+    ]
+    assert unclassified == [], (
+        "compared against nothing, and not declared in UNCOMPARED: " + ", ".join(unclassified)
+    )
+
+
+def test_no_uncompared_declaration_outlives_its_route():
+    """An entry kept after its route is gone is a reason nobody is reading any more."""
+    from backlot.main import app
+
+    served = list(app.openapi()["paths"])
+    for prefix, reason in UNCOMPARED.items():
+        assert any(p == prefix or p.startswith(prefix + "/") for p in served), prefix
+        assert reason.strip(), prefix
 
 
 def test_every_acknowledged_breaking_divergence_carries_its_reasoning():

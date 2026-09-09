@@ -184,6 +184,11 @@ class ProbeComparison:
     def endpoints(self) -> tuple[str, ...]:
         return (self.spec_url,)
 
+    # Which served paths this comparison speaks for. Every kind answers that question; only a
+    # probe was never asked it, because it needs no mount to select paths out of a document — it
+    # asks a running server instead. The prober does not read this; what does is the check that
+    # every served path is compared by something.
+    mount: tuple[str, ...] = ()
     # None: a probe asks Backlot, not the vendor, and signs with the corpus's own keys. A probe
     # against a live vendor would declare what it needs here. Note that `run` is the only part a
     # probe supplies: fetching the model and starting the server are `s3_probe.divergences`, and
@@ -348,7 +353,33 @@ PROBE = {
     "s3": ProbeComparison(
         name="s3",
         spec_url="https://raw.githubusercontent.com/boto/botocore/develop/botocore/data/s3/2006-03-01/service-2.json",
+        mount=("/s3",),
         run=s3_probe.run,
+    ),
+}
+
+
+# Served paths no published document covers, and why. Matched by prefix, so `/batch` covers
+# `/batch/{api}/{version}`.
+#
+# The escape hatch the coverage check is built around, and deliberately narrow: an entry here is a
+# reason a reviewer reads, not a silence. Two kinds qualify — Backlot's own surface, which no
+# vendor publishes because it is not a vendor's, and a vendor surface that genuinely has no
+# document to compare against.
+UNCOMPARED = {
+    "/health": "Backlot's own liveness endpoint, not a vendor's surface",
+    "/oauth2/token": (
+        "Backlot's own token exchange. The vendors' own auth surfaces are compared under their "
+        "mounts; this one is how a caller gets a token for Backlot itself."
+    ),
+    "/_meta": (
+        "Backlot's own introspection — the corpus's principals and the per-source OpenAPI. No "
+        "vendor has it, by construction."
+    ),
+    "/batch": (
+        "Google's batch protocol is one endpoint carrying requests for every Google API, so no "
+        "single discovery document declares it: Drive's, Gmail's and the editor APIs' each "
+        "describe only their own operations."
     ),
 }
 

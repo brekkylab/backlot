@@ -1908,6 +1908,13 @@ _F_SPREADSHEET = {
     },
 }
 _F_VALUE_RANGE = {"range": {}, "majorDimension": {}, "values": {}}
+_F_BATCH_BY_FILTER = {
+    "spreadsheetId": {},
+    "valueRanges": {
+        "valueRange": {"range": {}, "majorDimension": {}, "values": {}},
+        "dataFilters": {"a1Range": {}, "gridRange": {}},
+    },
+}
 _F_BATCH_VALUES = {"spreadsheetId": {}, "valueRanges": _F_VALUE_RANGE}
 
 _P_SHEETS_GET = [
@@ -1928,27 +1935,38 @@ async def sheets_get(spreadsheet_id: str, request: Request):
     would differ between the two backends. With the flag, ``ranges`` scopes the returned rows
     (measured: 5.7 MB -> 11 KB for ``A1:B2``)."""
     row, sheets = _workbook(request, spreadsheet_id)
-    specs = request.query_params.getlist("ranges")
+    grid = _sheets_bool(request, "includeGridData", "include_grid_data")
+    # Validated and then unused, deliberately: it drops the tables that sit inside a banded range,
+    # and a corpus states neither tables nor banded ranges, so there is nothing here to exclude.
+    # Leaving it unvalidated instead would accept the one thing a client can get wrong about it.
+    _sheets_bool(request, "excludeTablesInBandedRanges", "exclude_tables_in_banded_ranges")
+    return _sheets_respond(
+        request,
+        _sheets_book(spreadsheet_id, row, sheets, request.query_params.getlist("ranges"), grid),
+        _F_SPREADSHEET,
+    )
+
+
+def _sheets_book(spreadsheet_id: str, row, sheets: list[_Sheet], specs: list[str], grid: bool):
+    """The `Spreadsheet` body both `spreadsheets.get` and `:getByDataFilter` answer with.
+
+    ``specs`` is the A1 ranges selecting what to serve — from `ranges` for one and from the data
+    filters for the other; empty means every sheet, whole."""
     # Each sheet paired with the cell parts to serve for it: `("", title)` is the whole grid, which
     # is what a sheet nobody named gets. Resolved ONCE, here — a sheet is never re-derived from its
     # own title further down, or one titled like a cell reference (`A1`, `AB`) would come back
     # holding the first sheet's cells, or overflow the grid and fail the whole call.
     wanted: list[tuple[_Sheet, list[tuple[str, str]]]] = [(sh, [("", sh.title)]) for sh in sheets]
     if specs:
-        # `ranges` filters the SHEETS ARRAY, not merely the cells: measured, a sheet no range
-        # touches is absent from the response entirely, and a sheet several ranges touch gets one
-        # `data` block per range. That holds with or without `includeGridData` — without it the
-        # sheet list is still filtered and no block is served.
+        # A range filters the SHEETS ARRAY, not merely the cells: measured, a sheet none touches is
+        # absent from the response entirely, and a sheet several touch gets one `data` block each.
+        # That holds with or without `includeGridData` — without it the sheet list is still
+        # filtered and no block is served.
         per_sheet: dict[int, list[tuple[str, str]]] = {}
         for spec in specs:
             sheet, body = _a1_sheet(spec, sheets)
             per_sheet.setdefault(sheet.index, []).append((body, spec))
         wanted = [(sh, per_sheet[sh.index]) for sh in sheets if sh.index in per_sheet]
-    grid = _sheets_bool(request, "includeGridData", "include_grid_data")
-    # Validated and then unused, deliberately: it drops the tables that sit inside a banded range,
-    # and a corpus states neither tables nor banded ranges, so there is nothing here to exclude.
-    # Leaving it unvalidated instead would accept the one thing a client can get wrong about it.
-    _sheets_bool(request, "excludeTablesInBandedRanges", "exclude_tables_in_banded_ranges")
     out = []
     for sh, parts in wanted:
         entry = {
@@ -1964,21 +1982,17 @@ async def sheets_get(spreadsheet_id: str, request: Request):
         if grid:
             entry["data"] = [_sheets_grid_data(sh, body, spec) for body, spec in parts]
         out.append(entry)
-    return _sheets_respond(
-        request,
-        {
-            "spreadsheetId": spreadsheet_id,
-            "properties": {
-                "title": row["title"],
-                "locale": "en_US",
-                "autoRecalc": SHEETS_AUTO_RECALC,
-                "timeZone": SHEETS_TIME_ZONE,
-            },
-            "spreadsheetUrl": f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit",
-            "sheets": out,
+    return {
+        "spreadsheetId": spreadsheet_id,
+        "properties": {
+            "title": row["title"],
+            "locale": "en_US",
+            "autoRecalc": SHEETS_AUTO_RECALC,
+            "timeZone": SHEETS_TIME_ZONE,
         },
-        _F_SPREADSHEET,
-    )
+        "spreadsheetUrl": f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit",
+        "sheets": out,
+    }
 
 
 # --- Sheets `values` reads ------------------------------------------------------------------
@@ -2471,6 +2485,133 @@ async def sheets_values_get(spreadsheet_id: str, a1_range: str, request: Request
     major, render = _sheets_options(request)
     return _sheets_respond(
         request, _sheets_value_range(a1_range, sheets, major, render), _F_VALUE_RANGE
+    )
+
+
+# --- the two reads issued over POST ------------------------------------------------------------
+#
+# A DataFilter selects the same cells an A1 range does, by range or by grid indices. Measured, the
+# two endpoints disagree about an ABSENT filter list: `values:batchGetByDataFilter` refuses it
+# ("Must specify at least one dataFilter.") while `spreadsheets:getByDataFilter` treats it as
+# "every sheet". They also word a bad range differently — only the values one prefixes
+# `Invalid dataFilter[N]: `.
+
+
+def _sheets_filter_spec(f: dict, sheets: list[_Sheet]) -> str:
+    """One DataFilter as an A1 spec.
+
+    A `gridRange` is turned into A1 through :func:`_a1_name`, whose output is quoted where the
+    title needs it — which is what makes handing it back to the parser safe, unlike a bare title.
+    Half-open indices, and an omitted bound means that edge of the grid."""
+    if isinstance(f.get("a1Range"), str):
+        return f["a1Range"]
+    grid = f.get("gridRange")
+    if not isinstance(grid, dict):
+        raise gerr.invalid_argument("dataFilter.filter must be specified.")
+    sheet = next((s for s in sheets if s.sheet_id == grid.get("sheetId", 0)), None)
+    if sheet is None:
+        raise gerr.invalid_argument(f"No sheet with id: {grid.get('sheetId', 0)}")
+    r0 = int(grid.get("startRowIndex") or 0)
+    c0 = int(grid.get("startColumnIndex") or 0)
+    r1 = int(grid["endRowIndex"]) if grid.get("endRowIndex") is not None else sheet.rows
+    c1 = int(grid["endColumnIndex"]) if grid.get("endColumnIndex") is not None else sheet.cols
+    return _a1_name(sheet, r0, c0, r1, c1)
+
+
+async def _sheets_filters(request: Request, sheets: list[_Sheet], *, required: bool, indexed: bool):
+    """``(body, specs)`` for a by-data-filter read: the parsed request body and one A1 spec per
+    filter, in the order they were sent.
+
+    ``indexed`` says whether a bad filter is reported behind an ``Invalid dataFilter[N]: `` prefix.
+    Measured, the two endpoints differ: the values-level one names the index, the spreadsheet-level
+    one gives the bare parse error."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    filters = body.get("dataFilters") or []
+    if not filters:
+        if required:
+            raise gerr.invalid_argument("Must specify at least one dataFilter.")
+        return body, []
+    specs = []
+    for i, f in enumerate(filters):
+        try:
+            spec = _sheets_filter_spec(f if isinstance(f, dict) else {}, sheets)
+            # Resolved HERE, not left to the read below, so a range that names no sheet is
+            # reported against the filter that carried it — measured, the message is the usual
+            # `Unable to parse range` behind an `Invalid dataFilter[N]: ` prefix.
+            _a1_sheet(spec, sheets)
+        except Exception as exc:  # noqa: BLE001 — re-raised with the index the API names
+            message = getattr(exc, "message", None)
+            if message is None:
+                raise
+            raise gerr.invalid_argument(
+                f"Invalid dataFilter[{i}]: {message}" if indexed else message
+            ) from None
+        specs.append(spec)
+    return body, specs
+
+
+@router.post(
+    "/sheets/v4/spreadsheets/{spreadsheet_id}/values:batchGetByDataFilter",
+    openapi_extra={"parameters": _P_SHEETS_STD},
+)
+async def sheets_values_batch_get_by_data_filter(spreadsheet_id: str, request: Request):
+    """``values:batchGet`` addressed by DataFilter rather than by A1 string.
+
+    A read, issued over POST because the filters do not fit in a query string. Each entry carries
+    the ``valueRange`` AND the filter that selected it — measured — so a caller that sent several
+    can tell which answer belongs to which."""
+    _row, sheets = _workbook(request, spreadsheet_id)
+    body, specs = await _sheets_filters(request, sheets, required=True, indexed=True)
+    major = str(body.get("majorDimension") or "ROWS").upper()
+    render = str(body.get("valueRenderOption") or "FORMATTED_VALUE").upper()
+    if major not in _A1_MAJOR:
+        raise gerr.invalid_argument(_a1_enum_error("major_dimension", "Dimension", major))
+    if render not in _A1_RENDER:
+        raise gerr.invalid_argument(
+            _a1_enum_error("value_render_option", "ValueRenderOption", render)
+        )
+
+    # NOT the order the filters arrived in. Measured: the answers come back sorted by where each
+    # range starts, column before row — `Data!A2` precedes `Data!B1`, `Data!B9` precedes
+    # `Data!B10`, a shorter range precedes the one that extends it, and a sheet earlier in the
+    # workbook comes first. Each entry still carries the filter that selected it, so a caller pairs
+    # by that rather than by position.
+    def where(i: int):
+        sheet, part = _a1_sheet(specs[i], sheets)
+        r0, c0, r1, c1 = _a1_range(specs[i], part, sheet)
+        return (sheet.index, c0, r0, c1, r1)
+
+    out = {
+        "spreadsheetId": spreadsheet_id,
+        "valueRanges": [
+            {
+                "valueRange": _sheets_value_range(specs[i], sheets, major, render),
+                "dataFilters": [body["dataFilters"][i]],
+            }
+            for i in sorted(range(len(specs)), key=where)
+        ],
+    }
+    return _sheets_respond(request, out, _F_BATCH_BY_FILTER)
+
+
+@router.post(
+    "/sheets/v4/spreadsheets/{spreadsheet_id}:getByDataFilter",
+    openapi_extra={"parameters": _P_SHEETS_STD},
+)
+async def sheets_get_by_data_filter(spreadsheet_id: str, request: Request):
+    """``spreadsheets.get`` addressed by DataFilter. Same response, and the filters scope the
+    ``sheets`` array exactly as ``ranges`` does — measured, including that NO filter means every
+    sheet rather than the refusal its values-level sibling gives."""
+    row, sheets = _workbook(request, spreadsheet_id)
+    body, specs = await _sheets_filters(request, sheets, required=False, indexed=False)
+    grid = bool(body.get("includeGridData"))
+    return _sheets_respond(
+        request, _sheets_book(spreadsheet_id, row, sheets, specs, grid), _F_SPREADSHEET
     )
 
 

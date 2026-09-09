@@ -1203,10 +1203,34 @@
       "detail": "the vendor serves it; Backlot does not"
     },
     {
-      "kind": "missing_operation",
+      "kind": "missing_param",
       "severity": "gap",
-      "path": "POST /v4/spreadsheets/{}/values:batchGetByDataFilter",
-      "detail": "the vendor serves it; Backlot does not"
+      "path": "POST /v4/spreadsheets/{}/values:batchGetByDataFilter?$.xgafv",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "POST /v4/spreadsheets/{}/values:batchGetByDataFilter?access_token",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "POST /v4/spreadsheets/{}/values:batchGetByDataFilter?key",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "POST /v4/spreadsheets/{}/values:batchGetByDataFilter?oauth_token",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "POST /v4/spreadsheets/{}/values:batchGetByDataFilter?uploadType",
+      "detail": "the vendor accepts it; Backlot does not"
     },
     {
       "kind": "missing_operation",
@@ -1227,10 +1251,34 @@
       "detail": "the vendor serves it; Backlot does not"
     },
     {
-      "kind": "missing_operation",
+      "kind": "missing_param",
       "severity": "gap",
-      "path": "POST /v4/spreadsheets/{}:getByDataFilter",
-      "detail": "the vendor serves it; Backlot does not"
+      "path": "POST /v4/spreadsheets/{}:getByDataFilter?$.xgafv",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "POST /v4/spreadsheets/{}:getByDataFilter?access_token",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "POST /v4/spreadsheets/{}:getByDataFilter?key",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "POST /v4/spreadsheets/{}:getByDataFilter?oauth_token",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "POST /v4/spreadsheets/{}:getByDataFilter?uploadType",
+      "detail": "the vendor accepts it; Backlot does not"
     },
     {
       "kind": "missing_operation",

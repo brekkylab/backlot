@@ -3090,3 +3090,125 @@ def test_a_param_with_no_effect_here_is_still_accepted(gc, gh, book, param, valu
         f"/sheets/v4/spreadsheets/{book}/values/Summary!A1:A1", headers=gh, params={param: value}
     )
     assert r.status_code == 200
+
+
+# --- the two reads issued over POST -------------------------------------------------------------
+
+
+def _by_filter(gc, gh, book, body):
+    return gc.post(
+        f"/sheets/v4/spreadsheets/{book}/values:batchGetByDataFilter", headers=gh, json=body
+    )
+
+
+def test_batch_get_by_data_filter_answers_each_filter_with_the_filter_beside_it(gc, gh, book):
+    """Measured: each entry carries the `valueRange` AND the filter that selected it, so a caller
+    that sent several pairs by the filter rather than by position."""
+    r = _by_filter(gc, gh, book, {"dataFilters": [{"a1Range": "Summary!A1:B2"}]})
+    assert r.status_code == 200, r.text
+    assert r.json() == {
+        "spreadsheetId": book,
+        "valueRanges": [
+            {
+                "valueRange": {
+                    "range": "Summary!A1:B2",
+                    "majorDimension": "ROWS",
+                    "values": [["Region", "Deals"], ["EMEA", "12"]],
+                },
+                "dataFilters": [{"a1Range": "Summary!A1:B2"}],
+            }
+        ],
+    }
+
+
+def test_a_data_filter_may_name_a_grid_range_instead_of_an_a1_string(gc, gh, book):
+    sheet_id = gc.get(f"/sheets/v4/spreadsheets/{book}", headers=gh).json()["sheets"][0][
+        "properties"
+    ]["sheetId"]
+    grid = {
+        "sheetId": sheet_id,
+        "startRowIndex": 0,
+        "endRowIndex": 2,
+        "startColumnIndex": 0,
+        "endColumnIndex": 2,
+    }
+    r = _by_filter(gc, gh, book, {"dataFilters": [{"gridRange": grid}]})
+    assert r.status_code == 200
+    got = r.json()["valueRanges"][0]
+    assert got["valueRange"]["range"] == "Summary!A1:B2"
+    assert got["dataFilters"] == [{"gridRange": grid}]
+
+
+def test_the_answers_come_back_sorted_by_where_each_range_starts(gc, gh, book):
+    """NOT the order the filters arrived in. Measured: column before row, so `A2` precedes `B1`,
+    and a row number sorts numerically, so `B9` precedes `B10`."""
+    r = _by_filter(
+        gc,
+        gh,
+        book,
+        {"dataFilters": [{"a1Range": "Summary!B1"}, {"a1Range": "Summary!A2"}]},
+    )
+    assert [v["valueRange"]["range"] for v in r.json()["valueRanges"]] == [
+        "Summary!A2",
+        "Summary!B1",
+    ]
+    r = _by_filter(
+        gc,
+        gh,
+        book,
+        {"dataFilters": [{"a1Range": "Summary!B10"}, {"a1Range": "Summary!B9"}]},
+    )
+    assert [v["valueRange"]["range"] for v in r.json()["valueRanges"]] == [
+        "Summary!B9",
+        "Summary!B10",
+    ]
+
+
+@pytest.mark.parametrize(
+    "body, message",
+    [
+        ({}, "Must specify at least one dataFilter."),
+        ({"dataFilters": []}, "Must specify at least one dataFilter."),
+        (
+            {"dataFilters": [{"a1Range": "Nope!A1"}]},
+            "Invalid dataFilter[0]: Unable to parse range: Nope!A1",
+        ),
+        ({"dataFilters": [{}]}, "Invalid dataFilter[0]: dataFilter.filter must be specified."),
+    ],
+)
+def test_a_values_data_filter_read_refuses_what_it_cannot_use(gc, gh, book, body, message):
+    r = _by_filter(gc, gh, book, body)
+    assert r.status_code == 400
+    assert r.json()["error"]["message"] == message
+
+
+def test_get_by_data_filter_scopes_the_sheets_array_like_ranges_does(gc, gh, book):
+    r = gc.post(
+        f"/sheets/v4/spreadsheets/{book}:getByDataFilter",
+        headers=gh,
+        json={"dataFilters": [{"a1Range": "Summary!A1:B2"}], "includeGridData": True},
+    )
+    assert r.status_code == 200
+    sheets = r.json()["sheets"]
+    assert [s["properties"]["title"] for s in sheets] == ["Summary"]
+    assert len(sheets[0]["data"]) == 1
+
+
+def test_get_by_data_filter_takes_no_filters_to_mean_every_sheet(gc, gh, book):
+    """Where its values-level sibling refuses an empty filter list, this one reads it as "all" —
+    measured, and the two really do differ."""
+    r = gc.post(f"/sheets/v4/spreadsheets/{book}:getByDataFilter", headers=gh, json={})
+    assert r.status_code == 200
+    assert len(r.json()["sheets"]) == 7
+
+
+def test_get_by_data_filter_reports_a_bad_range_without_the_filter_index(gc, gh, book):
+    """The other half of the same measurement: only the values-level endpoint prefixes
+    `Invalid dataFilter[N]: `."""
+    r = gc.post(
+        f"/sheets/v4/spreadsheets/{book}:getByDataFilter",
+        headers=gh,
+        json={"dataFilters": [{"a1Range": "Nope!A1"}]},
+    )
+    assert r.status_code == 400
+    assert r.json()["error"]["message"] == "Unable to parse range: Nope!A1"

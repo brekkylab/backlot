@@ -37,6 +37,21 @@ class Finding:
         return d
 
 
+def _reject_one_url(value) -> None:
+    """A str is iterable, so one URL passed unwrapped spreads: `list("https://…")` writes a
+    32-element list of single characters, which loads back the same way with nothing downstream
+    shaped wrongly enough to complain."""
+    if isinstance(value, str):
+        raise TypeError(f"endpoints is a tuple of URLs, not one URL: pass ({value!r},)")
+
+
+def _endpoints(raw) -> tuple[str, ...]:
+    """What the file said, as a tuple — refusing a bare string BEFORE converting it, because
+    `tuple("https://…")` is the 32-character spread rather than the one URL it looks like."""
+    _reject_one_url(raw)
+    return tuple(raw)
+
+
 @dataclass(frozen=True)
 class Baseline:
     """Divergences already read and accepted, so a run reports only what is new.
@@ -52,14 +67,9 @@ class Baseline:
     acknowledged: dict[str, Finding]
 
     def __post_init__(self) -> None:
-        # A str is iterable, so a caller passing one URL unwrapped writes `list("https://…")` —
-        # the file takes a 32-element list of single characters and loads it back the same way,
-        # with nothing downstream shaped wrongly enough to complain. Refused at construction
-        # because that covers `empty`, `load` and `identified_as` alike.
-        if isinstance(self.endpoints, str):
-            raise TypeError(
-                f"endpoints is a tuple of URLs, not one URL: pass ({self.endpoints!r},)"
-            )
+        # Covers `empty` and `identified_as`, which construct from what a caller passed. `load`
+        # converts before constructing, so it checks the raw value itself — see `_endpoints`.
+        _reject_one_url(self.endpoints)
 
     @classmethod
     def empty(cls, source: str, endpoints: tuple[str, ...] = ()) -> "Baseline":
@@ -80,7 +90,7 @@ class Baseline:
             ack[f.key] = f
         return cls(
             source=raw["source"],
-            endpoints=tuple(raw.get("endpoints", ())),
+            endpoints=_endpoints(raw.get("endpoints", ())),
             measured=raw.get("measured", ""),
             acknowledged=ack,
         )

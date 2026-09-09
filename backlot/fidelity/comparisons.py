@@ -4,9 +4,8 @@ Four kinds, and they differ in what each side of the comparison is. For the two 
 Backlot's side is the SDL the server builds its engine from and the vendor's is a live introspection
 response, which needs a credential. For the eight document sources, Backlot's side is the app's own
 ``app.openapi()`` and the vendor's is one or more documents it publishes, which needs none. For
-S3, whose
-operations are selected by query string rather than by path, both sides are answers from a running
-server that ``backlot.serve()`` starts.
+S3, whose operations are selected by query string rather than by path, both sides are answers from
+a running server that ``backlot.serve()`` starts.
 
 Nine of the eleven need no credential. All eleven run on a schedule and never on a pull request:
 drift is this project's bug, but it is never the bug of whichever pull request happens to be open

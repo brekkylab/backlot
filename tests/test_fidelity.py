@@ -612,14 +612,17 @@ def test_a_placeholders_name_is_not_a_divergence():
 
 
 def test_the_mount_comes_off_only_where_the_vendor_does_not_repeat_it():
-    """Slack's spec starts at /conversations.list so its mount comes off; Google's own document
-    already spells drive/v3, so nothing does. Jira and Confluence share /atlassian and must not
-    capture each other."""
+    """Slack's spec starts at /conversations.list so its mount comes off. Google differs per
+    DOCUMENT, which is why `strip` sits on the Spec: Drive's own document spells `drive/v3`, so
+    nothing comes off there, while the Sheets document declares an empty `servicePath` and spells
+    `v4/spreadsheets/...` itself, so its mount does. Jira and Confluence share /atlassian and must
+    not capture each other."""
     served = {
         "paths": dict.fromkeys(
             [
                 "/slack/api/conversations.list",
                 "/drive/v3/files",
+                "/sheets/v4/spreadsheets/{spreadsheet_id}",
                 "/atlassian/rest/api/3/field",
                 "/atlassian/wiki/rest/api/space",
             ],
@@ -636,7 +639,7 @@ def test_the_mount_comes_off_only_where_the_vendor_does_not_repeat_it():
         }
 
     assert mounted("slack") == {"conversations.list"}
-    assert mounted("google_drive") == {"drive/v3/files"}
+    assert mounted("google_drive") == {"drive/v3/files", "v4/spreadsheets/{}"}
     assert mounted("jira") == {"rest/api/3/field"}
     assert mounted("confluence") == {"wiki/rest/api/space"}
 

@@ -21,9 +21,9 @@ operations exist, and which query parameters each accepts. Backlot's side is the
 not publish OpenAPI: **OpenAPI** documents for GitHub, Slack, Jira, Confluence, Notion and
 HubSpot, and **Google API Discovery** documents for Gmail and the Drive family. A source is
 compared against as many documents as its vendor publishes for the surface Backlot serves — Jira's
-two REST versions, Drive alongside Docs, Sheets and Slides, HubSpot's CRM and associations. All are
-public, so these
-comparisons run with **no credential, no quota and no account**. Response bodies are out of scope
+two REST versions, Drive alongside Docs, Sheets and Slides, HubSpot's CRM and associations. All
+are public, so these comparisons run with **no credential, no quota and no account**. Response
+bodies are out of scope
 here: a vendor spec describes them through deep `$ref` chains that Backlot's `response_model` set
 does not mirror shape-for-shape, so a body diff would report how two documents are written rather
 than how two servers answer.
@@ -53,9 +53,10 @@ redirected run or a CI log stays plain text.
 backlot diff --source linear --json | jq '.new[] | select(.severity == "breaking") | .path'
 ```
 
-It carries `source`, `endpoints` (a list, one per document), `total`, `new` and `resolved` —
-or, with `--update-baseline`,
-`acknowledged`, `unacknowledged` and the `baseline` path. Exit codes are the same either way.
+It carries `source`, `endpoints` (a list, one per compared contract — a published document, or
+the URL introspection was read from), `total`, `new` and `resolved` — or, with
+`--update-baseline`, `acknowledged`, `unacknowledged` and the `baseline` path. Exit codes are the
+same either way.
 
 Each source **declares** the credentials it needs, by a logical name and the environment variable
 it is read from, and `--credential NAME=VALUE` repeats for as many as a source declares. A single

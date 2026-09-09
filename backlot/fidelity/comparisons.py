@@ -225,10 +225,20 @@ OPENAPI = {
                 mount=("/atlassian/rest/api/3",),
                 strip="/atlassian",
             ),
-            # v3 only. Backlot serves the `/rest/api/2` aliases too, because real Jira does, but
-            # Atlassian publishes a v3 document — comparing a v2 path against it would report
-            # Backlot inventing every one of them, which is a statement about the document, not
-            # about Jira.
+            # Backlot serves the `/rest/api/2` paths because the clients call them: measured,
+            # `atlassian-python-api` and the `jira` PyPI client both use v2 exclusively at their
+            # default settings, the latter probing `/rest/api/2/serverInfo` on connect.
+            #
+            # Its OWN document, not the v3 one. Atlassian names these
+            # `swagger[-<apiVersion>].<oasVersion>.json`, so the suffix-less file is the v2 API —
+            # 403 `/rest/api/2` paths, none of them v3. Measured against the v3 document instead,
+            # all six served v2 operations report as surface Backlot invented, which is a
+            # statement about the document rather than about Jira.
+            Spec(
+                spec_url="https://developer.atlassian.com/cloud/jira/platform/swagger.v3.json",
+                mount=("/atlassian/rest/api/2",),
+                strip="/atlassian",
+            ),
         ),
     ),
     "confluence": OpenAPIComparison(

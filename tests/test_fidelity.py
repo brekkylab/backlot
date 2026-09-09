@@ -261,6 +261,21 @@ def test_hubspot_compares_its_v4_associations_surface_too():
     assert mounts == {"/hubspot/crm/v3", "/hubspot/crm/v4"}
 
 
+def test_jira_compares_both_rest_versions_against_their_own_documents():
+    """Backlot serves `/rest/api/2` because the clients call it: `atlassian-python-api` hardcodes
+    `api_version = "2"` in its Jira constructor and the `jira` PyPI client defaults
+    `rest_api_version` to `"2"`, probing `/rest/api/2/serverInfo` on connect.
+
+    Atlassian publishes a document per version — the file naming is
+    `swagger[-<apiVersion>].<oasVersion>.json`, so the suffix-less one is the v2 API — and each is
+    compared against its own. Measured: comparing the v2 paths against the v3 document instead
+    reports all six served operations as surface Backlot invented."""
+    by_mount = {s.mount[0]: s.spec_url for s in COMPARISONS["jira"].specs}
+    assert set(by_mount) == {"/atlassian/rest/api/2", "/atlassian/rest/api/3"}
+    assert by_mount["/atlassian/rest/api/2"].endswith("/swagger.v3.json")
+    assert by_mount["/atlassian/rest/api/3"].endswith("/swagger-v3.v3.json")
+
+
 def test_the_comparisons_are_exactly_the_sources_backlot_serves():
     """Fidelity does not get to invent a source: `store.SOURCE_TABLE` is the canonical list, and
     the same `source_type` a BYO record carries.

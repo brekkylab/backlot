@@ -1433,10 +1433,9 @@ async def get_rate_limit(request: Request):
         )
         for resource, limits in RATE_LIMITS.items()
     }
-    body: dict = {"resources": resources}
-    if _version(request) in _HAS_RATE_ALIAS:
-        body["rate"] = resources["core"]
-    return body
+    if _version(request) not in _HAS_RATE_ALIAS:
+        return {"resources": resources}
+    return {"rate": resources["core"], "resources": resources}
 
 
 def _repo_visible(conn, repo: str, ids) -> bool:

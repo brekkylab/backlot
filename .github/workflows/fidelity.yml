@@ -8,7 +8,9 @@ name: Fidelity
 
 on:
   schedule:
-    - cron: "17 6 * * *"
+    # 01:00 UTC is 18:00 the previous day in Pacific daylight time and 17:00 in standard time — the
+    # end of a Silicon Valley day either way — and 10:00 the same morning in Seoul.
+    - cron: "0 1 * * *"
   workflow_dispatch:
     inputs:
       source:
@@ -53,7 +55,7 @@ jobs:
   compare:
     needs: sources
     runs-on: ubuntu-latest
-    # Two runs of one source would both create the issue: GitHub indexes issue search asynchronously.
+    # Two runs of one source would both find no open issue of its own and both open one.
     concurrency:
       group: fidelity-${{ matrix.source }}
       cancel-in-progress: false
@@ -105,12 +107,23 @@ jobs:
           SOURCE: ${{ matrix.source }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          TITLE="Fidelity: $SOURCE diverges from its vendor"
-          export TITLE
-          # `in:title` is a word search, so the title is matched exactly; `is_bot` leaves a person's own issue alone.
-          existing=$(gh issue list --state all --search "$TITLE in:title" \
-            --json number,title,author,state \
-            --jq 'first(.[] | select(.title == env.TITLE and .author.is_bot)) // empty')
+          PREFIX="Fidelity: $SOURCE diverges from its vendor"
+          export PREFIX
+          # Only the open issue. A closed one is the finished account of the divergences that were
+          # triaged on it, and a later run writing its own report over that body would leave the
+          # comments answering a report nobody can read any more. `is_bot` leaves a person's own
+          # issue alone. Listed under the label rather than searched, because GitHub indexes issue
+          # search asynchronously and an issue opened this morning may not be found by tonight.
+          number=$(gh issue list --state open --label fidelity --limit 100 \
+            --json number,title,author \
+            --jq 'first(.[] | select(.author.is_bot and (.title | startswith(env.PREFIX))) | .number) // empty')
+          # The body is rewritten on every run, so this has to answer the same way on every run or
+          # each run would rewrite the last one's body and comment about the rewrite. Searching this
+          # source's own titles keeps the set to the issues this step has opened for it, which grows
+          # only when the open one is closed.
+          previous=$(gh issue list --state closed --search "$PREFIX in:title" --limit 50 \
+            --json number,title,author \
+            --jq '[.[] | select(.author.is_bot and (.title | startswith(env.PREFIX))) | .number] | max // empty')
           # The API refuses a body over 65536 characters, and this step runs under `bash -e`, so
           # that refusal takes the step down: the job would go red with no issue filed and the
           # report only in the run log. A vendor restructuring its document turns a whole baseline
@@ -123,16 +136,16 @@ jobs:
             report="$(printf '%s\n… truncated at 55000 of %d characters. The whole report is in the run log: %s' \
               "${report:0:55000}" "${#report}" "$RUN_URL")"
           fi
-          body=$(printf '%s\n\n```\n%s\n```\n' \
-            "\`backlot diff --source $SOURCE\` reports divergences the baseline does not acknowledge. Each is either a bug in Backlot or a deliberate gap; a gap gets a note and an entry via \`backlot diff --source $SOURCE --update-baseline\`. This body is the latest scheduled run's report, rewritten in place." \
-            "$report")
-          if [ -z "$existing" ]; then
-            gh issue create --title "$TITLE" --label fidelity --body "$body"
-            exit 0
+          intro="\`backlot diff --source $SOURCE\` reports divergences the baseline does not acknowledge. Each is either a bug in Backlot or a deliberate gap; a gap gets a note and an entry via \`backlot diff --source $SOURCE --update-baseline\`. This body is the latest scheduled run's report, rewritten in place. Closing this issue keeps it as the account of what was triaged; a run that still diverges opens a new one."
+          if [ -n "$previous" ]; then
+            intro="$intro Previously reported in #$previous."
           fi
-          number=$(printf '%s' "$existing" | jq -r .number)
-          if [ "$(printf '%s' "$existing" | jq -r .state)" = "CLOSED" ]; then
-            gh issue reopen "$number" --comment "Still diverging on the scheduled run, so this is open again."
+          body=$(printf '%s\n\n```\n%s\n```\n' "$intro" "$report")
+          if [ -z "$number" ]; then
+            # The date the divergence was first seen, so this issue and the closed ones before it
+            # are told apart in a listing.
+            gh issue create --title "$PREFIX (first seen $(date -u +%F))" --label fidelity --body "$body"
+            exit 0
           fi
           if [ "$(gh issue view "$number" --json body --jq .body)" != "$body" ]; then
             gh issue edit "$number" --body "$body"

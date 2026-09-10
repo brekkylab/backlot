@@ -185,11 +185,15 @@ but it is never the bug of whichever pull request happens to be open when a vend
 and a contributor fixing a typo must not be blocked by it. A new divergence opens an issue and
 turns the scheduled run red instead.
 
-A source has one issue for the life of the repository. It is opened under the `fidelity` label —
-the vendor API defines the right answer, so closing one needs a measurement against it — and found
-again on later runs whether it is open or closed, so triaging one does not produce a duplicate the
-next morning. Its body carries the latest run's report, and a comment is posted only when that
-report is not the one already there.
+A source has one open issue at a time. It is opened under the `fidelity` label — the vendor API
+defines the right answer, so closing one needs a measurement against it — titled with the date the
+divergence was first seen, and found again on later runs so triaging one does not produce a
+duplicate the next morning. Its body carries the latest run's report, and a comment is posted only
+when that report is not the one already there.
+
+Closing it closes the record. The body and the comments stay as the account of what was triaged,
+and a source still diverging the next morning gets a new issue that links back to the last one — a
+closed issue is never reopened and never written over.
 
 ## Coverage
 

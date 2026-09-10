@@ -265,6 +265,7 @@ virtual-hosted client looks for `acme-artifacts.localhost:8000` and finds nothin
 | `ListBuckets` | |
 | `HeadBucket` | |
 | `GetBucketLocation` | |
+| `ListMultipartUploads` | Always the empty page, since data enters through `backlot import` and no upload is ever in progress; `prefix`, `delimiter`, `key-marker`, `max-uploads` and `encoding-type` are echoed and validated as real does |
 | `ListObjectsV2` | `prefix`, `delimiter`, `continuation-token` |
 | `GetObject` | `Range` |
 | `HeadObject` | |

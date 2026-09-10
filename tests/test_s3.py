@@ -442,11 +442,12 @@ def test_list_objects_v2_delimiter_common_prefixes(live_server):
 
 # ------------------------------------------------------------ sub-resources Backlot does not serve
 # S3 dispatches on the query string: `?versioning`, `?acl`, `?tagging` and the rest each select an
-# operation of their own at a bucket's or an object's path. Backlot implements none of them and used
-# to answer every one with the listing or the object's bytes under a 200. Every claim about real
-# S3 below was measured against a general purpose bucket: each selector is answered as its own
-# operation, an unknown key (`?foo=bar`, `?x-id=…`) is ignored, the match is
-# case-sensitive, two selectors conflict, and HEAD with a selector is 405.
+# operation of their own at a bucket's or an object's path. Backlot implements two of them at a
+# bucket's path (`?location` and `?uploads`, below) and used to answer every one with the listing or
+# the object's bytes under a 200. Every claim about real S3 below was measured against a general
+# purpose bucket: each selector is answered as its own operation, an unknown key (`?foo=bar`,
+# `?x-id=…`) is ignored, the match is case-sensitive, two selectors conflict, and HEAD with a
+# selector is 405.
 
 BUCKET_SUBRESOURCES = [
     "abac",
@@ -471,7 +472,6 @@ BUCKET_SUBRESOURCES = [
     "replication",
     "requestPayment",
     "tagging",
-    "uploads",
     "versioning",
     "versions",
     "website",
@@ -551,9 +551,11 @@ def test_two_subresources_at_once_conflict_the_way_real_s3_conflicts_them(live_s
         assert (
             b"<ArgumentName>ResourceType</ArgumentName><ArgumentValue>acl</ArgumentValue>" in body
         )
-    # `location`, the one bucket sub-resource Backlot serves, conflicts like any other.
+    # `location` and `uploads`, the two bucket sub-resources Backlot serves, conflict like any other.
     err = _refused(base_url, "/s3/eng-artifacts?location&versioning", settings.admin_token)
     assert err.code == 400 and b"location, versioning" in err.read()
+    err = _refused(base_url, "/s3/eng-artifacts?versioning&uploads", settings.admin_token)
+    assert err.code == 400 and b"uploads, versioning" in err.read()
     err = _refused(base_url, f"{OBJECT_PATH}?tagging&acl", settings.admin_token)
     assert err.code == 400 and b"acl, tagging" in err.read()
     # The conflict is reported before the bucket or the key is looked up.
@@ -596,6 +598,7 @@ def test_head_with_a_subresource_is_405_and_a_bare_head_still_answers(live_serve
     token = settings.admin_token
     for path in (
         "/s3/eng-artifacts?versioning",
+        "/s3/eng-artifacts?uploads",  # served on a GET, and still no HEAD form
         f"{OBJECT_PATH}?acl",
         f"{OBJECT_PATH}?uploadId=x",
         # Before the bucket or the key is looked up, as on real S3.
@@ -611,6 +614,200 @@ def test_head_with_a_subresource_is_405_and_a_bare_head_still_answers(live_serve
             urllib.request.Request(url, headers=headers, method="HEAD")
         ) as r:
             assert r.status == 200, path
+
+
+# ------------------------------------------------------------------------ ListMultipartUploads
+# Every real S3 answer below was measured on 2026-09-10 against a general purpose bucket in
+# ap-northeast-2 with no upload in progress, path-style, SigV4, the request built by the same
+# `_sign_get` these tests use (so a `+` or `%25` in a value reaches the server the way it does here).
+
+_EMPTY_UPLOADS_PAGE = (
+    b'<?xml version="1.0" encoding="UTF-8"?>\n'
+    b'<ListMultipartUploadsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+    b"<Bucket>eng-artifacts</Bucket><KeyMarker></KeyMarker><UploadIdMarker></UploadIdMarker>"
+    b"<NextKeyMarker></NextKeyMarker><NextUploadIdMarker></NextUploadIdMarker>"
+    b"<MaxUploads>1000</MaxUploads><IsTruncated>false</IsTruncated></ListMultipartUploadsResult>"
+)
+
+
+def _get_raw(base_url, path, token):
+    url, headers = _sign_get(base_url, path, token)
+    with urllib.request.urlopen(urllib.request.Request(url, headers=headers)) as r:
+        return r.status, r.headers, r.read()
+
+
+def test_list_multipart_uploads_is_the_empty_page_real_serves_byte_for_byte(live_server):
+    """#169: Cyberduck sends `?uploads` after every ListObjectsV2, unprompted, and got a 501 where
+    real answers 200. The body is real's for a bucket with no upload in progress, with the bucket's
+    name swapped in: the two markers and the two next-markers present and empty, MaxUploads at the
+    default, IsTruncated false, no Upload element — and no Prefix, Delimiter or EncodingType when
+    none was sent."""
+    base_url, settings = live_server
+    for query in ("?uploads", "?uploads="):  # Cyberduck sends the `=`; real treats both alike
+        status, headers, body = _get_raw(
+            base_url, f"/s3/eng-artifacts{query}", settings.admin_token
+        )
+        assert status == 200 and headers.get("Content-Type") == "application/xml", query
+        assert body == _EMPTY_UPLOADS_PAGE, query
+
+
+def _uploads_fields(base_url, query, token):
+    """The result's children as (tag, text) in document order, tags without the namespace."""
+    root = _get_xml(base_url, f"/s3/eng-artifacts?{query}", token)
+    assert root.tag == f"{NS}ListMultipartUploadsResult"
+    return [(child.tag[len(NS) :], child.text or "") for child in root]
+
+
+def test_list_multipart_uploads_echoes_what_was_sent_in_reals_order(live_server):
+    base_url, settings = live_server
+    token = settings.admin_token
+    fixed_head = [
+        ("Bucket", "eng-artifacts"),
+        ("KeyMarker", ""),
+        ("UploadIdMarker", ""),
+        ("NextKeyMarker", ""),
+        ("NextUploadIdMarker", ""),
+    ]
+    # Cyberduck's own pair from #169: a folder listing's `?uploads` carries the delimiter, and a
+    # prefix's carries both. Delimiter comes before Prefix on real, and both come before MaxUploads.
+    assert _uploads_fields(base_url, "delimiter=%2F&uploads=", token) == fixed_head + [
+        ("Delimiter", "/"),
+        ("MaxUploads", "1000"),
+        ("IsTruncated", "false"),
+    ]
+    assert _uploads_fields(
+        base_url, "encoding-type=url&prefix=runbooks%2F&delimiter=%2F&uploads=", token
+    ) == fixed_head + [
+        ("Delimiter", "/"),
+        ("Prefix", "runbooks/"),
+        ("MaxUploads", "1000"),
+        ("EncodingType", "url"),
+        ("IsTruncated", "false"),
+    ]
+    # An empty prefix, delimiter or key-marker is not echoed, as if it had not been sent.
+    assert _uploads_fields(base_url, "uploads&prefix=&delimiter=&key-marker=", token) == (
+        fixed_head + [("MaxUploads", "1000"), ("IsTruncated", "false")]
+    )
+    # key-marker is echoed; upload-id-marker alone is ignored, as the API reference says.
+    assert _uploads_fields(base_url, "uploads&key-marker=abc", token)[1] == ("KeyMarker", "abc")
+    assert _uploads_fields(base_url, "uploads&upload-id-marker=xyz", token) == fixed_head + [
+        ("MaxUploads", "1000"),
+        ("IsTruncated", "false"),
+    ]
+    # max-uploads: taken as sent, leading zero and 0 included, and served at 1000 past it.
+    for sent, echoed in (("5", "5"), ("05", "5"), ("0", "0"), ("1001", "1000"), ("2000", "1000")):
+        fields = dict(_uploads_fields(base_url, f"uploads&max-uploads={sent}", token))
+        assert fields["MaxUploads"] == echoed, sent
+
+
+def test_list_multipart_uploads_encodes_under_encoding_type_url_as_real_does(live_server):
+    base_url, settings = live_server
+    token = settings.admin_token
+    # Without encoding-type the values come back as received, `+` and `%25` decoded by the server.
+    fields = dict(
+        _uploads_fields(base_url, "uploads&prefix=run books/x+y%25z&key-marker=k m", token)
+    )
+    assert fields["Prefix"] == "run books/x y%z" and fields["KeyMarker"] == "k m"
+    # With it: space is `+`, `/` `-` `_` `.` `*` stay, the other punctuation sent is `%XX` in upper
+    # case, and `encoding-type` is echoed as sent, in whatever case it came.
+    fields = dict(
+        _uploads_fields(
+            base_url,
+            "uploads&prefix=run books/x+y%25z!*'()~-_.,;:@=&key-marker=k m&delimiter=|"
+            "&encoding-type=URL",
+            token,
+        )
+    )
+    assert fields["Prefix"] == "run+books/x+y%25z%21*%27%28%29%7E-_.%2C%3B%3A%40%3D"
+    assert fields["KeyMarker"] == "k+m"
+    assert fields["Delimiter"] == "%7C"
+    assert fields["EncodingType"] == "URL"
+    fields = dict(_uploads_fields(base_url, "uploads&prefix=한글/&encoding-type=url", token))
+    assert fields["Prefix"] == "%ED%95%9C%EA%B8%80/"
+
+
+def _invalid_argument(err: urllib.error.HTTPError, message: str, name: str, value: str) -> None:
+    body = err.read()
+    assert err.code == 400, body
+    assert b"<Code>InvalidArgument</Code>" in body
+    assert f"<Message>{message}</Message>".encode() in body, body
+    assert (
+        f"<ArgumentName>{name}</ArgumentName><ArgumentValue>{value}</ArgumentValue>".encode()
+        in body
+    ), body
+
+
+def test_list_multipart_uploads_refuses_what_real_refuses_with_reals_messages(live_server):
+    base_url, settings = live_server
+    token = settings.admin_token
+    bucket = "/s3/eng-artifacts?uploads"
+    # max-uploads: not `int()`, which would take ` 5` and any size. (A `+5` on the wire is ` 5` by
+    # the time it is parsed, on real and here alike: `_sign_get` decodes it as the form encoding.)
+    not_an_integer = "Provided max-uploads not an integer or within integer range"
+    for value in ("abc", "2147483648", " 5"):
+        err = _refused(base_url, f"{bucket}&max-uploads={value}", token)
+        _invalid_argument(err, not_an_integer, "max-uploads", value)
+    err = _refused(base_url, f"{bucket}&max-uploads=-1", token)
+    _invalid_argument(
+        err, "Argument max-uploads must be an integer between 0 and 2147483647", "max-uploads", "-1"
+    )
+    # encoding-type: anything but `url`, the empty value included.
+    for value in ("bogus", ""):
+        err = _refused(base_url, f"{bucket}&encoding-type={value}", token)
+        _invalid_argument(
+            err, "Invalid Encoding Method specified in Request", "encoding-type", value
+        )
+    # upload-id-marker beside a key-marker: no id names an upload here, so every one is refused.
+    err = _refused(base_url, f"{bucket}&key-marker=abc&upload-id-marker=xyz", token)
+    _invalid_argument(err, "Invalid uploadId marker", "upload-id-marker", "xyz")
+    # In real's order: max-uploads is checked before the bucket is looked up, encoding-type and the
+    # markers after it, and encoding-type before the markers.
+    err = _refused(base_url, "/s3/no-such-bucket?uploads&max-uploads=abc", token)
+    _invalid_argument(err, not_an_integer, "max-uploads", "abc")
+    for query in ("encoding-type=bogus", "key-marker=a&upload-id-marker=b"):
+        err = _refused(base_url, f"/s3/no-such-bucket?uploads&{query}", token)
+        assert err.code == 404 and b"NoSuchBucket" in err.read(), query
+    err = _refused(base_url, f"{bucket}&encoding-type=bogus&key-marker=a&upload-id-marker=b", token)
+    _invalid_argument(err, "Invalid Encoding Method specified in Request", "encoding-type", "bogus")
+    err = _refused(base_url, f"{bucket}&max-uploads=abc&encoding-type=bogus", token)
+    _invalid_argument(err, not_an_integer, "max-uploads", "abc")
+
+
+def test_list_multipart_uploads_on_a_bucket_the_caller_cannot_see_is_no_such_bucket(live_server):
+    """The listing and `?uploads` agree about which buckets exist: `people-vault` holds one
+    group-visible object, so an engineer is told it does not exist, as the listing tells them."""
+    base_url, settings = live_server
+    tokens = {
+        u["email"]: u["token"] for u in yaml.safe_load(settings.tokens_path.read_text())["users"]
+    }
+    assert _get_xml(base_url, "/s3/people-vault?uploads", settings.admin_token).tag == (
+        f"{NS}ListMultipartUploadsResult"
+    )
+    err = _refused(base_url, "/s3/people-vault?uploads", tokens["ava@acme.com"])
+    assert err.code == 404 and b"NoSuchBucket" in err.read()
+    assert _get_xml(base_url, "/s3/eng-artifacts?uploads", tokens["ava@acme.com"]).tag == (
+        f"{NS}ListMultipartUploadsResult"
+    )
+
+
+def test_boto3_list_multipart_uploads_is_an_empty_page_not_a_client_error(live_server):
+    boto3 = pytest.importorskip("boto3")
+    from botocore.config import Config
+
+    base_url, settings = live_server
+    s3 = boto3.client(
+        "s3",
+        endpoint_url=f"{base_url}/s3",
+        aws_access_key_id=synth.s3_access_key_id(settings.admin_token),
+        aws_secret_access_key=synth.s3_secret_access_key(settings.admin_token),
+        region_name="us-east-1",
+        config=Config(s3={"addressing_style": "path"}),
+    )
+    page = s3.list_multipart_uploads(Bucket="eng-artifacts", Prefix="runbooks/", Delimiter="/")
+    assert page["ResponseMetadata"]["HTTPStatusCode"] == 200
+    assert page["Bucket"] == "eng-artifacts" and page["Prefix"] == "runbooks/"
+    assert page["Delimiter"] == "/" and page["MaxUploads"] == 1000
+    assert page["IsTruncated"] is False and "Uploads" not in page
 
 
 def test_boto3_gets_one_client_error_instead_of_an_empty_answer_or_a_retried_500(live_server):

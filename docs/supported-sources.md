@@ -75,10 +75,10 @@ Field names are snake_case, as Fireflies' own schema has them. Full introspectio
 | `orgs/{org}/teams` | |
 | `user/repos` | The token's own reach |
 | `repos/{o}/{r}` | |
-| `repos/{o}/{r}/issues[/{n}]` | |
+| `repos/{o}/{r}/issues[/{n}]` | `state` on the listing: `open`\|`closed`\|`all`; any other value is real's 422, and the repository is checked first, so an unknown repo is the 404 instead |
 | `repos/{o}/{r}/issues/{n}/comments` | |
 | `repos/{o}/{r}/issues/comments/{id}` | |
-| `repos/{o}/{r}/pulls[/{n}]` | |
+| `repos/{o}/{r}/pulls[/{n}]` | `state` on the listing: `open`\|`closed`\|`all`; any other value is served as `open`, which is what real does here where the issue listing refuses it |
 | `repos/{o}/{r}/pulls/{n}/reviews` | |
 | `repos/{o}/{r}/pulls/{n}/comments` | |
 | `repos/{o}/{r}/pulls/{n}/files` | |

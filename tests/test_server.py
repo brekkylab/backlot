@@ -372,3 +372,40 @@ def test_backlots_own_routes_answer_head_as_the_get(client, admin_h):
         assert head.headers["content-length"] == str(len(get.content)), path
         assert head.content == b"", path
     assert client.get("/_meta/openapi/nope").status_code == 404  # the 404 cell was a 404
+
+
+def test_serving_a_db_older_than_a_table_says_so_and_says_to_re_import(tmp_path):
+    """Rather than an OperationalError per Sheets read. There is no migration -- a corpus is
+    re-imported, not upgraded in place -- so naming the gap is the whole remedy."""
+    import sqlite3
+
+    import pytest
+
+    from backlot import store
+    from tests._helpers import build_corpus, client_for
+
+    settings = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "google_drive",
+                "doc_id": "gd-old",
+                "subtype": "spreadsheet",
+                "title": "Prose",
+                "folder": "sales",
+                "content": "a\nb",
+                "author_email": "d@acme.com",
+            }
+        ],
+    )
+    conn = sqlite3.connect(settings.db_path)
+    conn.execute("DROP TABLE gdrive_sheets")
+    conn.commit()
+    conn.close()
+    assert store.missing_tables(sqlite3.connect(settings.db_path)) == ["gdrive_sheets"]
+
+    with pytest.raises(RuntimeError) as e:
+        with client_for(settings, reload=True):
+            pass
+    assert "gdrive_sheets" in str(e.value)
+    assert "backlot import" in str(e.value)

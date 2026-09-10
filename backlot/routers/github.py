@@ -810,7 +810,7 @@ def _updated_ts(row) -> int:
     return row["updated_ts"] or _created_ts(row) + 3600
 
 
-def _issue_sort_keys(conn, repo: str, sort: str) -> dict[str, Callable]:
+def _issue_sort_keys(conn, repo: str, sort: str, ids) -> dict[str, Callable]:
     """The sort keys of the issue and pull listings, over the store's rows.
 
     The timestamps are the ones the bodies serve (:func:`_shared_obj` reads the same two
@@ -818,8 +818,13 @@ def _issue_sort_keys(conn, repo: str, sort: str) -> dict[str, Callable]:
     `popularity` are one key: both order by the conversation and review comments added together,
     which is the count real orders by (see :data:`_ISSUE_ORDERING`), read in one query for the
     repository and only when asked for. `long-running` is `created` with no filter (see
-    :data:`_PULL_ORDERING`)."""
-    counts = store.github_comment_counts(conn, repo) if sort in ("comments", "popularity") else {}
+    :data:`_PULL_ORDERING`).
+
+    ``ids`` scopes that count to the comments the caller is served, so a row's position is the
+    position its own served numbers put it in (see :func:`store.github_comment_counts`)."""
+    counts = (
+        store.github_comment_counts(conn, repo, ids) if sort in ("comments", "popularity") else {}
+    )
 
     def created(row):
         return _created_ts(row), row["number"]
@@ -1693,7 +1698,7 @@ async def list_issues(
     ]
     sort, descending = _order(request, _ISSUE_ORDERING)
     all_rows = _ordered(
-        all_rows, _issue_sort_keys(conn, repo, sort), _ISSUE_ORDERING, sort, descending
+        all_rows, _issue_sort_keys(conn, repo, sort, ids), _ISSUE_ORDERING, sort, descending
     )
     asserted = page  # kept: the page urls carry the number the caller claimed, or none at all
     page, per_page = _clamp(page, per_page)
@@ -1839,7 +1844,7 @@ async def list_pulls(
         if r["kind"] == "pull_request"
     ]
     sort, descending = _order(request, _PULL_ORDERING)
-    prs = _ordered(prs, _issue_sort_keys(conn, repo, sort), _PULL_ORDERING, sort, descending)
+    prs = _ordered(prs, _issue_sort_keys(conn, repo, sort, ids), _PULL_ORDERING, sort, descending)
     page, per_page = _clamp(page, per_page)
     start = (page - 1) * per_page
     ab = _api_base(request)

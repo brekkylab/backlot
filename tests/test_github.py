@@ -4078,7 +4078,9 @@ def test_github_comment_counts_match_the_lists_they_describe(
 
     `review_comments` counts what the LIST returns, which drops a comment anchored to a file the
     caller cannot read: counting the raw rows made the two contradict each other, never terminated a
-    client paging until it had that many, and leaked that a hidden file carries a comment."""
+    client paging until it had that many, and leaked that a hidden file carries a comment.
+
+    `sort=comments` orders by that same served count, so a row sits where its own numbers put it."""
     c, _ = gh_client
     from backlot import synth
 
@@ -4097,6 +4099,30 @@ def test_github_comment_counts_match_the_lists_they_describe(
         obj = c.get(f"/github/repos/{gh_org}/diffable/pulls/{unres}", headers=headers).json()
         assert [x["path"] for x in body.json()] == expected
         assert obj["review_comments"] == len(expected)
+
+    # The listing orders by the count the caller is SERVED. When the key counted the raw rows, the
+    # comment on `secret/keys.txt` counted for everyone: bob's `sort=comments&direction=asc` put
+    # the unresolvable pull ahead of the declared one, two rows whose own counts then DESCENDED
+    # 3, 1, and that position was the one place a hidden file's comment still showed.
+    for headers, tail in ((gh_admin_h, [(unres, 2), (num, 3)]), (bob, [(unres, 1), (num, 3)])):
+        rows = c.get(
+            f"/github/repos/{gh_org}/diffable/issues",
+            params={"sort": "comments", "direction": "asc", "per_page": 100},
+            headers=headers,
+        ).json()
+        served = [
+            (
+                r["number"],
+                r["comments"]
+                + c.get(f"/github/repos/{gh_org}/diffable/pulls/{r['number']}", headers=headers)
+                .json()
+                .get("review_comments", 0),
+            )
+            for r in rows
+        ]
+        counts = [n for _, n in served]
+        assert counts == sorted(counts), counts
+        assert served[-2:] == tail
 
 
 def test_hunk_position_indexes_into_the_hunk():
@@ -4475,6 +4501,23 @@ def test_github_sort_and_direction_order_the_issue_and_pull_listings_as_measured
             **({"head": f"feat/{n}", "base": "main"} if n in pulls else {}),
         }
         for n in range(1, 7)
+    ]
+    # The two paths document 2's review comments anchor to are files of this repo, so the comments
+    # resolve and are served. `sort=comments` orders by the count the caller is served, and a
+    # comment on a path no file answers is not one of them (see `store.github_comment_counts`).
+    docs += [
+        {
+            "source_type": "github",
+            "doc_id": f"gh-sorted-file-{path.replace('/', '-')}",
+            "repo": "sorted",
+            "subtype": "file",
+            "path": path,
+            "title": path,
+            "content": "x = 1\n",
+            "author_email": "bob@acme.com",
+            "visibility": "public",
+        }
+        for path in ("src/a.py", "src/b.py")
     ]
     settings = build_corpus(tmp_path, docs, name="sorted.jsonl")
     with client_for(settings, reload=True) as c:

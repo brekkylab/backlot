@@ -2815,17 +2815,28 @@ def github_comments(conn, repo, number, *, anchored: bool | None = None) -> list
     ).fetchall()
 
 
-def github_comment_counts(conn, repo) -> dict[int, int]:
-    """Document number -> how many ``github_comments`` rows it has, conversation and review
+def github_comment_counts(conn, repo, visible_ids=None) -> dict[int, int]:
+    """Document number -> how many comments this caller is served on it, conversation and review
     comments together, for every document of one repo.
 
     One GROUP BY rather than a :func:`github_comments` call per row: the issue and pull listings
     order a whole repository by this number when asked to (`sort=comments`, `sort=popularity`),
     and the count real orders by is the two kinds added, which is why ``anchored`` is not a
-    parameter here (see ``routers.github._issue_sort_keys``)."""
+    parameter here (see ``routers.github._issue_sort_keys``).
+
+    A review comment whose ``path`` names no file this caller can read is not counted, because it
+    is not a comment they are served: ``routers.github._resolved_review_comments`` drops it from
+    the list and from the pull's ``review_comments``. Counting it would order the listing by a
+    number the caller is never shown (an ascending sort whose own counts descend) and put a
+    row where a hidden file's comment placed it, which is the leak that resolution closed.
+    """
+    clause, cp = _acl_clause("github", tbl="t", visible_ids=visible_ids)
     return dict(
         conn.execute(
-            "SELECT number, COUNT(*) FROM github_comments WHERE repo = ? GROUP BY number", (repo,)
+            "SELECT c.number, COUNT(*) FROM github_comments c WHERE c.repo = ?"
+            " AND (c.path IS NULL OR EXISTS (SELECT 1 FROM github_items t WHERE t.repo = c.repo"
+            " AND t.kind = 'file' AND t.path = c.path" + clause + ")) GROUP BY c.number",
+            [repo, *cp],
         ).fetchall()
     )
 

@@ -1880,28 +1880,32 @@ def _sheets_respond(request: Request, body: dict, allowed: dict) -> Response:
 # What a `fields` mask may name, per response — the fields these routes actually build. A cell's
 # value objects are leaves: their members are the one-of `stringValue`/`numberValue`/`boolValue`,
 # which a mask reaches by naming the value itself.
+# Google's Color, whose members a mask may name. Spelled out rather than left a leaf: an empty
+# subtree would make `...rgbColor.red` a refusal where the real API answers it.
+_F_COLOR = {"red": {}, "green": {}, "blue": {}, "alpha": {}}
+_F_TEXT_FORMAT = {
+    "foregroundColor": _F_COLOR,
+    "fontFamily": {},
+    "fontSize": {},
+    "bold": {},
+    "italic": {},
+    "strikethrough": {},
+    "underline": {},
+    "foregroundColorStyle": {"rgbColor": _F_COLOR},
+}
 _F_CELL = {
     "userEnteredValue": {"stringValue": {}, "numberValue": {}, "boolValue": {}},
     "effectiveValue": {"stringValue": {}, "numberValue": {}, "boolValue": {}},
     "formattedValue": {},
     "effectiveFormat": {
-        "backgroundColor": {"red": {}, "green": {}, "blue": {}},
+        "backgroundColor": _F_COLOR,
         "padding": {"top": {}, "right": {}, "bottom": {}, "left": {}},
         "horizontalAlignment": {},
         "verticalAlignment": {},
         "wrapStrategy": {},
-        "textFormat": {
-            "foregroundColor": {},
-            "fontFamily": {},
-            "fontSize": {},
-            "bold": {},
-            "italic": {},
-            "strikethrough": {},
-            "underline": {},
-            "foregroundColorStyle": {"rgbColor": {}},
-        },
+        "textFormat": _F_TEXT_FORMAT,
         "hyperlinkDisplayType": {},
-        "backgroundColorStyle": {"rgbColor": {"red": {}, "green": {}, "blue": {}}},
+        "backgroundColorStyle": {"rgbColor": _F_COLOR},
     },
 }
 _F_GRID_DATA = {
@@ -1920,28 +1924,16 @@ _F_SPREADSHEET = {
         "autoRecalc": {},
         "timeZone": {},
         "defaultFormat": {
-            "backgroundColor": {"red": {}, "green": {}, "blue": {}},
+            "backgroundColor": _F_COLOR,
             "padding": {"top": {}, "right": {}, "bottom": {}, "left": {}},
             "verticalAlignment": {},
             "wrapStrategy": {},
-            "textFormat": {
-                "foregroundColor": {},
-                "fontFamily": {},
-                "fontSize": {},
-                "bold": {},
-                "italic": {},
-                "strikethrough": {},
-                "underline": {},
-                "foregroundColorStyle": {"rgbColor": {"red": {}, "green": {}, "blue": {}}},
-            },
-            "backgroundColorStyle": {"rgbColor": {"red": {}, "green": {}, "blue": {}}},
+            "textFormat": _F_TEXT_FORMAT,
+            "backgroundColorStyle": {"rgbColor": _F_COLOR},
         },
         "spreadsheetTheme": {
             "primaryFontFamily": {},
-            "themeColors": {
-                "colorType": {},
-                "color": {"rgbColor": {"red": {}, "green": {}, "blue": {}}},
-            },
+            "themeColors": {"colorType": {}, "color": {"rgbColor": _F_COLOR}},
         },
     },
     "sheets": {
@@ -2061,9 +2053,6 @@ SHEETS_SHEET_TITLE = "Sheet1"  # Backlot shapes every spreadsheet as one sheet w
 SHEETS_GRID_ROWS = 1000
 SHEETS_GRID_COLS = 26
 
-# A track's default size in pixels, carried by every `rowMetadata`/`columnMetadata` entry a
-# `GridData` block holds. Measured on a real workbook: every row entry is `{"pixelSize": 21}` and
-# every column entry `{"pixelSize": 100}`. A corpus states no track size, so nothing varies.
 # A cell's `effectiveFormat`, in the order real emits it. Measured: across every cell type a
 # corpus can state it varies in ONE field, `horizontalAlignment` -- a string sits left, a number
 # right, a boolean centred -- and the rest is the spreadsheet's default format, which nothing in a
@@ -2112,12 +2101,12 @@ def _sheets_format(cell) -> dict:
     }
 
 
+# A track's default size in pixels, carried by every `rowMetadata`/`columnMetadata` entry a
+# `GridData` block holds. Measured on a real workbook: every row entry is `{"pixelSize": 21}` and
+# every column entry `{"pixelSize": 100}`. A corpus states no track size, so nothing varies.
 SHEETS_ROW_PIXELS = 21
 SHEETS_COL_PIXELS = 100
 
-# `properties` fields real Sheets always carries beside `title` and `locale`. `ON_CHANGE` is the
-# recalculation setting a spreadsheet has unless someone changes it; `Etc/GMT` is the neutral zone,
-# and matches what a freshly created spreadsheet answered with.
 # The spreadsheet-level format a freshly created workbook carries. Unlike a cell's
 # `effectiveFormat`, which the cell's own type decides, these two are SETTINGS: measured across six
 # real workbooks they came in three variants, differing where someone had applied a theme or the
@@ -2181,6 +2170,9 @@ SHEETS_THEME = {
     ],
 }
 
+# `properties` fields real Sheets always carries beside `title` and `locale`. `ON_CHANGE` is the
+# recalculation setting a spreadsheet has unless someone changes it; `Etc/GMT` is the neutral zone,
+# and matches what a freshly created spreadsheet answered with.
 SHEETS_AUTO_RECALC = "ON_CHANGE"
 SHEETS_TIME_ZONE = "Etc/GMT"
 

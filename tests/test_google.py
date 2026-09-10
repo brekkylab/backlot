@@ -3437,3 +3437,25 @@ def test_a_fields_mask_may_now_name_the_spreadsheet_format(gc, gh, book):
             "spreadsheetTheme": {"primaryFontFamily": "Arial"},
         }
     }
+
+
+@pytest.mark.parametrize(
+    "mask",
+    [
+        "properties.defaultFormat.textFormat.foregroundColorStyle.rgbColor.red",
+        "properties.defaultFormat.backgroundColorStyle.rgbColor.blue",
+        "properties.spreadsheetTheme.themeColors.color.rgbColor.green",
+        "sheets.data.rowData.values.effectiveFormat.textFormat.foregroundColorStyle.rgbColor.red",
+        "sheets.data.rowData.values.effectiveFormat.backgroundColor.alpha",
+    ],
+)
+def test_a_mask_may_name_a_colour_component_wherever_a_colour_appears(gc, gh, book, mask):
+    """Every Color in the response takes the same mask depth. Left as a leaf in one tree and spelled
+    out in another, `...rgbColor.red` was refused under a cell and answered under the spreadsheet —
+    where the real API answers both."""
+    r = gc.get(
+        f"/sheets/v4/spreadsheets/{book}",
+        headers=gh,
+        params={"includeGridData": "true", "ranges": "Summary!A1:A1", "fields": mask},
+    )
+    assert r.status_code == 200, r.text

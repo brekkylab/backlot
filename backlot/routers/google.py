@@ -1914,7 +1914,36 @@ _F_GRID_DATA = {
 _F_SPREADSHEET = {
     "spreadsheetId": {},
     "spreadsheetUrl": {},
-    "properties": {"title": {}, "locale": {}, "autoRecalc": {}, "timeZone": {}},
+    "properties": {
+        "title": {},
+        "locale": {},
+        "autoRecalc": {},
+        "timeZone": {},
+        "defaultFormat": {
+            "backgroundColor": {"red": {}, "green": {}, "blue": {}},
+            "padding": {"top": {}, "right": {}, "bottom": {}, "left": {}},
+            "verticalAlignment": {},
+            "wrapStrategy": {},
+            "textFormat": {
+                "foregroundColor": {},
+                "fontFamily": {},
+                "fontSize": {},
+                "bold": {},
+                "italic": {},
+                "strikethrough": {},
+                "underline": {},
+                "foregroundColorStyle": {"rgbColor": {"red": {}, "green": {}, "blue": {}}},
+            },
+            "backgroundColorStyle": {"rgbColor": {"red": {}, "green": {}, "blue": {}}},
+        },
+        "spreadsheetTheme": {
+            "primaryFontFamily": {},
+            "themeColors": {
+                "colorType": {},
+                "color": {"rgbColor": {"red": {}, "green": {}, "blue": {}}},
+            },
+        },
+    },
     "sheets": {
         "properties": {
             "sheetId": {},
@@ -2008,6 +2037,8 @@ def _sheets_book(spreadsheet_id: str, row, sheets: list[_Sheet], specs: list[str
             "locale": "en_US",
             "autoRecalc": SHEETS_AUTO_RECALC,
             "timeZone": SHEETS_TIME_ZONE,
+            "defaultFormat": SHEETS_DEFAULT_FORMAT,
+            "spreadsheetTheme": SHEETS_THEME,
         },
         "spreadsheetUrl": f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit",
         "sheets": out,
@@ -2080,6 +2111,69 @@ SHEETS_COL_PIXELS = 100
 # `properties` fields real Sheets always carries beside `title` and `locale`. `ON_CHANGE` is the
 # recalculation setting a spreadsheet has unless someone changes it; `Etc/GMT` is the neutral zone,
 # and matches what a freshly created spreadsheet answered with.
+# The spreadsheet-level format a freshly created workbook carries. Unlike a cell's
+# `effectiveFormat`, which the cell's own type decides, these two are SETTINGS: measured across six
+# real workbooks they came in three variants, differing where someone had applied a theme or the
+# document had been imported from .xlsx (Malgun Gothic, 11pt, MIDDLE alignment). A corpus states
+# none of that, so what is served is the variant a new spreadsheet has -- the same footing as
+# `locale`, `autoRecalc`, `timeZone` and the 1000x26 grid beside them.
+#
+# `foregroundColor: {}` and the TEXT theme colour's `rgbColor: {}` are black: proto3 drops a zero,
+# so an all-zero colour is the empty object rather than three zeroes.
+SHEETS_DEFAULT_FORMAT = {
+    "backgroundColor": {"red": 1, "green": 1, "blue": 1},
+    "padding": {"top": 2, "right": 3, "bottom": 2, "left": 3},
+    "verticalAlignment": "BOTTOM",
+    "wrapStrategy": "OVERFLOW_CELL",
+    "textFormat": {
+        "foregroundColor": {},
+        # the CSS stack, where a CELL's textFormat resolves to the single family "Arial"
+        "fontFamily": "arial,sans,sans-serif",
+        "fontSize": 10,
+        "bold": False,
+        "italic": False,
+        "strikethrough": False,
+        "underline": False,
+        "foregroundColorStyle": {"rgbColor": {}},
+    },
+    "backgroundColorStyle": {"rgbColor": {"red": 1, "green": 1, "blue": 1}},
+}
+SHEETS_THEME = {
+    "primaryFontFamily": "Arial",
+    "themeColors": [
+        {"colorType": "TEXT", "color": {"rgbColor": {}}},
+        {"colorType": "BACKGROUND", "color": {"rgbColor": {"red": 1, "green": 1, "blue": 1}}},
+        {
+            "colorType": "ACCENT1",
+            "color": {"rgbColor": {"red": 0.25882354, "green": 0.52156866, "blue": 0.95686275}},
+        },
+        {
+            "colorType": "ACCENT2",
+            "color": {"rgbColor": {"red": 0.91764706, "green": 0.2627451, "blue": 0.20784314}},
+        },
+        {
+            "colorType": "ACCENT3",
+            "color": {"rgbColor": {"red": 0.9843137, "green": 0.7372549, "blue": 0.015686275}},
+        },
+        {
+            "colorType": "ACCENT4",
+            "color": {"rgbColor": {"red": 0.20392157, "green": 0.65882355, "blue": 0.3254902}},
+        },
+        {
+            "colorType": "ACCENT5",
+            "color": {"rgbColor": {"red": 1, "green": 0.42745098, "blue": 0.003921569}},
+        },
+        {
+            "colorType": "ACCENT6",
+            "color": {"rgbColor": {"red": 0.27450982, "green": 0.7411765, "blue": 0.7764706}},
+        },
+        {
+            "colorType": "LINK",
+            "color": {"rgbColor": {"red": 0.06666667, "green": 0.33333334, "blue": 0.8}},
+        },
+    ],
+}
+
 SHEETS_AUTO_RECALC = "ON_CHANGE"
 SHEETS_TIME_ZONE = "Etc/GMT"
 

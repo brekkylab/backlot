@@ -3350,3 +3350,90 @@ def test_a_fields_mask_may_now_name_the_cell_format(gc, gh, book):
     assert r.json()["sheets"][0]["data"][0]["rowData"][0]["values"][0] == {
         "effectiveFormat": {"horizontalAlignment": "LEFT"}
     }
+
+
+def test_the_spreadsheet_carries_the_default_format_and_theme_a_fresh_one_has(gc, gh, book):
+    """`properties.defaultFormat` and `properties.spreadsheetTheme` are per-workbook SETTINGS, not
+    derivations — measured across six real workbooks they came in three variants, differing where
+    someone had applied a theme or imported from .xlsx (Malgun Gothic, MIDDLE alignment).
+
+    A corpus states none of that, so what is served is the variant a freshly created spreadsheet
+    has, on the same footing as `locale`, `autoRecalc`, `timeZone` and the 1000x26 grid: the value
+    a document nobody customised carries. Serving nothing instead would withhold a field real
+    always sends."""
+    props = gc.get(f"/sheets/v4/spreadsheets/{book}", headers=gh).json()["properties"]
+    assert props["defaultFormat"] == {
+        "backgroundColor": {"red": 1, "green": 1, "blue": 1},
+        "padding": {"top": 2, "right": 3, "bottom": 2, "left": 3},
+        "verticalAlignment": "BOTTOM",
+        "wrapStrategy": "OVERFLOW_CELL",
+        "textFormat": {
+            "foregroundColor": {},
+            # the spreadsheet default is the CSS stack; a cell's own textFormat says "Arial"
+            "fontFamily": "arial,sans,sans-serif",
+            "fontSize": 10,
+            "bold": False,
+            "italic": False,
+            "strikethrough": False,
+            "underline": False,
+            "foregroundColorStyle": {"rgbColor": {}},
+        },
+        "backgroundColorStyle": {"rgbColor": {"red": 1, "green": 1, "blue": 1}},
+    }
+    theme = props["spreadsheetTheme"]
+    assert theme["primaryFontFamily"] == "Arial"
+    assert [c["colorType"] for c in theme["themeColors"]] == [
+        "TEXT",
+        "BACKGROUND",
+        "ACCENT1",
+        "ACCENT2",
+        "ACCENT3",
+        "ACCENT4",
+        "ACCENT5",
+        "ACCENT6",
+        "LINK",
+    ]
+    # TEXT is the one whose rgbColor is empty — proto3 drops a zero, so black is `{}`
+    assert theme["themeColors"][0]["color"] == {"rgbColor": {}}
+    assert theme["themeColors"][2]["color"]["rgbColor"] == {
+        "red": 0.25882354,
+        "green": 0.52156866,
+        "blue": 0.95686275,
+    }
+
+
+def test_the_properties_are_emitted_in_the_order_real_sends_them(gc, gh, book):
+    props = gc.get(f"/sheets/v4/spreadsheets/{book}", headers=gh).json()["properties"]
+    assert list(props) == [
+        "title",
+        "locale",
+        "autoRecalc",
+        "timeZone",
+        "defaultFormat",
+        "spreadsheetTheme",
+    ]
+    assert list(props["defaultFormat"]) == [
+        "backgroundColor",
+        "padding",
+        "verticalAlignment",
+        "wrapStrategy",
+        "textFormat",
+        "backgroundColorStyle",
+    ]
+
+
+def test_a_fields_mask_may_now_name_the_spreadsheet_format(gc, gh, book):
+    r = gc.get(
+        f"/sheets/v4/spreadsheets/{book}",
+        headers=gh,
+        params={
+            "fields": "properties(defaultFormat.textFormat.fontSize,spreadsheetTheme.primaryFontFamily)"
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert r.json() == {
+        "properties": {
+            "defaultFormat": {"textFormat": {"fontSize": 10}},
+            "spreadsheetTheme": {"primaryFontFamily": "Arial"},
+        }
+    }

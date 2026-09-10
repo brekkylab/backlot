@@ -9,7 +9,10 @@ exception CLASS off the body's ``message``, so the same wrong token raises
 
 ``documentation_url`` is per-ENDPOINT and measured, not derived: requesting each route shape against
 a repository that does not exist returns that route's own docs anchor, which is where
-:data:`ROUTE_DOCS` comes from (every route below, none inferred from another).
+:data:`ROUTE_DOCS` comes from (every route below but one, none inferred from another). The one is
+`/rate_limit`, which names no repository and whose only error on the wire is the credential 401
+with the root below; its entry is the `externalDocs` url real's description gives the operation,
+and no answer Backlot gives on that route reaches it.
 
 An authentication failure is the exception to that: real answers those with the bare
 ``https://docs.github.com/rest``, measured on a bad bearer at
@@ -39,6 +42,9 @@ ROUTE_DOCS: dict[str, str] = {
     "/github/search/issues": "https://docs.github.com/v3/search",
     "/github/search/code": "https://docs.github.com/v3/search",
     "/github/orgs/{org}": _DOCS + "orgs/orgs#get-an-organization",
+    "/github/rate_limit": (
+        _DOCS + "rate-limit/rate-limit#get-rate-limit-status-for-the-authenticated-user"
+    ),
     "/github/orgs/{org}/repos": _DOCS + "repos/repos#list-organization-repositories",
     "/github/user/repos": _DOCS + "repos/repos#list-repositories-for-the-authenticated-user",
     "/github/repos/{owner}/{repo}": _DOCS + "repos/repos#get-a-repository",

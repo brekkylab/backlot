@@ -3013,7 +3013,9 @@ def test_github_a_container_only_repo_reaches_the_admin_and_no_scoped_caller(tmp
         ava = {"Authorization": f"Bearer {tok(tokens, 'ava@acme.com')}"}
 
         def names(h, path):
-            return [r["name"] for r in c.get(path, headers=h).json()]
+            # sorted: the two listings order differently with nothing sent (see `_ORG_REPO_ORDERING`
+            # and `_USER_REPO_ORDERING`), and the question here is who sees what, not in what order
+            return sorted(r["name"] for r in c.get(path, headers=h).json())
 
         for listing in ("/github/user/repos", f"/github/orgs/{org}/repos"):
             assert names(admin, listing) == ["docs-site", "pipeline"], listing
@@ -4405,3 +4407,454 @@ def test_github_comment_reactions(tmp_path):
     assert obj["reactions"]["heart"] == 2 and obj["node_id"] and obj["url"]
     assert obj["reactions"]["total_count"] == 2
     assert obj["id"] == c["id"]
+
+
+# --- sort, direction and the repository filters ---------------------------------------
+
+
+def _ratelimit(response) -> dict[str, str]:
+    """The five `x-ratelimit-*` headers of a response, keyed without the prefix."""
+    names = ("limit", "remaining", "used", "reset", "resource")
+    return {n: response.headers[f"x-ratelimit-{n}"] for n in names}
+
+
+def _numbers(c, path: str, h: dict, **params) -> list[int]:
+    r = c.get(path, headers=h, params=params)
+    assert r.status_code == 200, (path, params, r.text)
+    return [x["number"] for x in r.json()]
+
+
+def _sort_param(spec: dict, path: str, name: str) -> dict:
+    params = spec["paths"][path]["get"]["parameters"]
+    return next(p for p in params if p["name"] == name)
+
+
+def test_github_sort_and_direction_order_the_issue_and_pull_listings_as_measured(tmp_path):
+    """GitHub's OpenAPI description declares `sort` and `direction` on both listings with an enum
+    and a default (issues `[created, updated, comments]` / `created` and `[asc, desc]` / `desc`;
+    pulls `[created, updated, popularity, long-running]` / `created` and `[asc, desc]` with no
+    default, read 2026-09-10); Backlot declared neither, read neither, and answered every request
+    in the store's number order, so `?sort=updated` fetched the same rows as nothing at all.
+
+    Each cell below is what api.github.com answered on 2026-09-09 and 2026-09-10 against
+    `psf/requests` (the numbers are in `_ISSUE_ORDERING` and `_PULL_ORDERING`); the corpus here
+    is six documents whose creation, update and comment orders all differ, so every cell tells the
+    key it names from the others. The wire departs from the description in three places this
+    corpus shows: a pull listing with `sort=created` sent is the REVERSE of one without (oldest
+    first, where the prose says `desc`); `long-running` orders by creation and filters nothing
+    (closed pulls from 2016 answered it); and `comments` and `popularity` order by a pull's
+    conversation and review comments added together, a number no served member carries (5797's
+    `comments: 105` sat between 211 and 122). A value outside either enum is absorbed and answers
+    200 everywhere, in a different order per listing and per parameter, each measured.
+    """
+    when = {1: "01-10", 2: "02-10", 3: "03-10", 4: "04-10", 5: "05-10", 6: "06-10"}
+    updated = {1: "06-20", 2: "02-11", 3: "03-11", 4: "07-01", 5: "05-11", 6: "06-12"}
+    pulls = {2, 4, 6}
+    ava = {"content": "c", "author_email": "ava@acme.com"}
+    comments = {
+        2: [ava, {**ava, "path": "src/a.py", "line": 1}, {**ava, "path": "src/b.py", "line": 2}],
+        3: [ava, ava],
+        5: [ava],
+        6: [ava],
+    }
+    docs = [
+        {
+            "source_type": "github",
+            "doc_id": f"gh-sorted-{n}",
+            "repo": "sorted",
+            "subtype": "pull_request" if n in pulls else "issue",
+            "number": n,
+            "title": f"Document {n}",
+            "content": "body",
+            "author_email": "bob@acme.com",
+            "visibility": "public",
+            "state": "open",
+            "created": f"2026-{when[n]}T00:00:00Z",
+            "updated": f"2026-{updated[n]}T00:00:00Z",
+            "comments": comments.get(n, []),
+            **({"head": f"feat/{n}", "base": "main"} if n in pulls else {}),
+        }
+        for n in range(1, 7)
+    ]
+    settings = build_corpus(tmp_path, docs, name="sorted.jsonl")
+    with client_for(settings, reload=True) as c:
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        org = c.get("/_meta/users").json()["org"]
+        spec = c.get("/openapi.json").json()
+        issues_path = "/github/repos/{owner}/{repo}/issues"
+        pulls_path = "/github/repos/{owner}/{repo}/pulls"
+        sort = _sort_param(spec, issues_path, "sort")
+        assert sort["description"] == "What to sort results by."
+        assert sort["schema"]["enum"] == ["created", "updated", "comments"]
+        assert sort["schema"]["default"] == "created" and sort["schema"]["type"] == "string"
+        direction = _sort_param(spec, issues_path, "direction")
+        assert direction["description"] == "The direction to sort the results by."
+        assert direction["schema"]["enum"] == ["asc", "desc"]
+        assert direction["schema"]["default"] == "desc"
+        sort = _sort_param(spec, pulls_path, "sort")
+        assert sort["description"].startswith("What to sort results by. `popularity` will sort by")
+        assert sort["schema"]["enum"] == ["created", "updated", "popularity", "long-running"]
+        assert sort["schema"]["default"] == "created"
+        direction = _sort_param(spec, pulls_path, "direction")
+        assert direction["description"] == (
+            "The direction of the sort. Default: `desc` when sort is `created` or sort is not "
+            "specified, otherwise `asc`."
+        )
+        assert direction["schema"]["enum"] == ["asc", "desc"]
+        assert "default" not in direction["schema"]
+
+        issues = f"/github/repos/{org}/sorted/issues"
+        # the unsent order is `sort=created`'s, newest first, and every sort descends by default
+        assert _numbers(c, issues, h) == [6, 5, 4, 3, 2, 1]
+        assert _numbers(c, issues, h, sort="created") == [6, 5, 4, 3, 2, 1]
+        assert _numbers(c, issues, h, sort="updated") == [4, 1, 6, 5, 3, 2]
+        # 2 has one conversation comment and two review comments, and orders as three; a tie
+        # keeps the unsent order whatever the direction (6 before 5 at one comment each, 4 before
+        # 1 at none)
+        assert _numbers(c, issues, h, sort="comments") == [2, 3, 6, 5, 4, 1]
+        assert _numbers(c, issues, h, sort="comments", direction="asc") == [4, 1, 6, 5, 3, 2]
+        (two,) = [x for x in c.get(issues, headers=h).json() if x["number"] == 2]
+        assert two["comments"] == 1  # the served member counts the conversation alone
+        assert _numbers(c, issues, h, direction="asc") == [1, 2, 3, 4, 5, 6]
+        assert _numbers(c, issues, h, sort="updated", direction="asc") == [2, 3, 5, 6, 1, 4]
+        # a value outside either enum drops the other parameter too, on this listing
+        for absorbed in (
+            {"sort": "bogus"},
+            {"sort": "bogus", "direction": "asc"},
+            {"direction": "bogus"},
+            {"sort": "updated", "direction": "bogus"},
+        ):
+            assert _numbers(c, issues, h, **absorbed) == [6, 5, 4, 3, 2, 1], absorbed
+
+        pulls = f"/github/repos/{org}/sorted/pulls"
+        # newest first unsent, oldest first the moment a sort is sent, `created` included
+        assert _numbers(c, pulls, h) == [6, 4, 2]
+        assert _numbers(c, pulls, h, sort="created") == [2, 4, 6]
+        assert _numbers(c, pulls, h, sort="updated") == [2, 6, 4]
+        assert _numbers(c, pulls, h, sort="updated", direction="desc") == [4, 6, 2]
+        assert _numbers(c, pulls, h, sort="popularity") == [4, 6, 2]
+        assert _numbers(c, pulls, h, sort="popularity", direction="desc") == [2, 6, 4]
+        assert _numbers(c, pulls, h, sort="long-running") == [2, 4, 6]  # no filter, see above
+        assert _numbers(c, pulls, h, direction="asc") == [2, 4, 6]
+        assert _numbers(c, pulls, h, direction="desc") == [6, 4, 2]
+        # an unknown sort is read as `created` with the direction honoured; an unknown direction
+        # is `desc` with the sort kept
+        assert _numbers(c, pulls, h, sort="bogus") == [2, 4, 6]
+        assert _numbers(c, pulls, h, sort="bogus", direction="desc") == [6, 4, 2]
+        assert _numbers(c, pulls, h, direction="bogus") == [6, 4, 2]
+        assert _numbers(c, pulls, h, sort="updated", direction="bogus") == [4, 6, 2]
+
+        # the page urls carry the caller's own parameters and none the handler applied
+        link = c.get(issues, headers=h, params={"sort": "updated", "per_page": 2}).headers["Link"]
+        assert "sort=updated" in link and "direction=" not in link
+        assert _numbers(c, issues, h, sort="updated", per_page=2, page=2) == [6, 5]
+        link = c.get(pulls, headers=h, params={"per_page": 1}).headers["Link"]
+        assert "sort=" not in link and "direction=" not in link
+        assert _numbers(c, pulls, h, sort="created", per_page=1, page=2) == [4]
+
+
+def test_github_type_visibility_sort_and_direction_on_the_repository_listings(tmp_path):
+    """`GET /orgs/{org}/repos` takes `type`, `sort` and `direction` and `GET /user/repos`
+    `visibility`, `sort` and `direction`, each declared in GitHub's OpenAPI description with an
+    enum and a default (`type` `[all, public, private, forks, sources, member]` / `all`;
+    `visibility` `[all, public, private]` / `all`; `sort` `[created, updated, pushed, full_name]`
+    with `created` the default on the one and `full_name` on the other; `direction` with none),
+    read 2026-09-10. Backlot declared none of the six and answered every request in name order.
+
+    The orders are the cells `_ORG_REPO_ORDERING` and `_USER_REPO_ORDERING` carry, measured on
+    api.github.com on 2026-09-09 and 2026-09-10 against the `psf` organization and the token's own
+    repositories: an organization's repositories come OLDEST first with no sort and newest first
+    with `sort=created` sent; `full_name` is the one sort that ascends by default; an unknown
+    direction is `asc` on the organization listing and `desc` on the token's own. `type` selects
+    on the one fact a corpus states about a repository's kind, its ACL: `public` and `private` are
+    the org-wide grant or its absence, `forks` and `member` answer nothing (every repository here is
+    the organization's own and `fork: false`, as `type=member` answered `[]` for `psf`), `sources`
+    and a value outside the enum answer every repository. `type` and `affiliation` on
+    `/user/repos` select on what the caller is to each repository, which no corpus states, and stay
+    undeclared. The three names are chosen so the derived creation order is not the name order,
+    which the precondition below holds.
+    """
+    names = ("gateway", "ledger", "portal")
+    by_created = sorted(names, key=lambda n: synth.epoch("repo:" + n))
+    assert by_created != sorted(names), "pick names whose derived order differs from name order"
+    docs = [
+        {
+            "source_type": "github",
+            "doc_id": f"gh-{name}-issue",
+            "repo": name,
+            "title": f"{name} issue",
+            "content": "body",
+            "author_email": "bob@acme.com",
+            "author_groups": ["engineering"],
+            "group": "engineering",
+            # `ledger` has no org-wide grant on any document, so it is the private repository
+            "visibility": "group" if name == "ledger" else "public",
+        }
+        for name in names
+    ]
+    settings = build_corpus(tmp_path, docs, name="repos.jsonl")
+    with client_for(settings, reload=True) as c:
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        org = c.get("/_meta/users").json()["org"]
+        spec = c.get("/openapi.json").json()
+        org_path, user_path = "/github/orgs/{org}/repos", "/github/user/repos"
+        kind = _sort_param(spec, org_path, "type")
+        assert kind["description"] == "Specifies the types of repositories you want returned."
+        assert kind["schema"]["enum"] == ["all", "public", "private", "forks", "sources", "member"]
+        assert kind["schema"]["default"] == "all"
+        visibility = _sort_param(spec, user_path, "visibility")
+        assert visibility["description"] == (
+            "Limit results to repositories with the specified visibility."
+        )
+        assert visibility["schema"]["enum"] == ["all", "public", "private"]
+        assert visibility["schema"]["default"] == "all"
+        for path, default in ((org_path, "created"), (user_path, "full_name")):
+            sort = _sort_param(spec, path, "sort")
+            assert sort["description"] == "The property to sort the results by.", path
+            assert sort["schema"]["enum"] == ["created", "updated", "pushed", "full_name"], path
+            assert sort["schema"]["default"] == default, path
+            direction = _sort_param(spec, path, "direction")
+            assert direction["description"] == (
+                "The order to sort by. Default: `asc` when using `full_name`, otherwise `desc`."
+            ), path
+            assert direction["schema"]["enum"] == ["asc", "desc"] and (
+                "default" not in direction["schema"]
+            ), path
+        declared = {p["name"] for p in spec["paths"][user_path]["get"]["parameters"]}
+        assert declared == {"visibility", "sort", "direction", "page", "per_page"}
+
+        def listed(path, **params):
+            r = c.get(path, headers=h, params=params)
+            assert r.status_code == 200, (path, params, r.text)
+            return [x["name"] for x in r.json()]
+
+        by_name = sorted(names)
+        newest_first = list(reversed(by_created))
+        org_repos = f"/github/orgs/{org}/repos"
+        assert listed(org_repos) == by_created
+        assert listed(org_repos, sort="created") == newest_first
+        assert listed(org_repos, sort="updated") == newest_first
+        assert listed(org_repos, sort="pushed") == newest_first
+        assert listed(org_repos, sort="full_name") == by_name
+        assert listed(org_repos, sort="full_name", direction="desc") == by_name[::-1]
+        assert listed(org_repos, direction="desc") == newest_first
+        assert listed(org_repos, direction="asc") == by_created
+        assert listed(org_repos, sort="bogus") == newest_first
+        assert listed(org_repos, direction="bogus") == by_created
+        assert listed(org_repos, sort="pushed", direction="bogus") == by_created
+        assert listed(org_repos, sort="full_name", direction="bogus") == by_name
+        assert listed(org_repos, type="private") == ["ledger"]
+        assert listed(org_repos, type="public") == [n for n in by_created if n != "ledger"]
+        assert listed(org_repos, type="forks") == [] and listed(org_repos, type="member") == []
+        for every in ("all", "sources", "bogus"):
+            assert listed(org_repos, type=every) == by_created, every
+        (ledger,) = [x for x in c.get(org_repos, headers=h).json() if x["name"] == "ledger"]
+        assert ledger["private"] is True and ledger["visibility"] == "private"
+
+        user_repos = "/github/user/repos"
+        assert listed(user_repos) == by_name
+        assert listed(user_repos, sort="full_name") == by_name
+        assert listed(user_repos, sort="created") == newest_first
+        assert listed(user_repos, sort="created", direction="asc") == by_created
+        assert listed(user_repos, direction="desc") == by_name[::-1]
+        assert listed(user_repos, sort="bogus") == newest_first
+        assert listed(user_repos, sort="created", direction="bogus") == newest_first
+        assert listed(user_repos, visibility="private") == ["ledger"]
+        assert listed(user_repos, visibility="public") == ["gateway", "portal"]
+        assert listed(user_repos, visibility="bogus") == by_name
+        # `type` is not declared on this listing and does not select either
+        assert listed(user_repos, type="private") == by_name
+
+        # the page urls carry the caller's own filters
+        link = c.get(org_repos, headers=h, params={"type": "public", "per_page": 1}).headers["Link"]
+        assert "type=public" in link and "sort=" not in link
+        assert (
+            listed(org_repos, type="public", per_page=1, page=2)
+            == [n for n in by_created if n != "ledger"][1:]
+        )
+        link = c.get(user_repos, headers=h, params={"sort": "created", "per_page": 1}).headers[
+            "Link"
+        ]
+        assert "sort=created" in link and "visibility=" not in link
+
+
+# --- rate limits ------------------------------------------------------------------
+
+
+def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit_reports_them(
+    tmp_path, monkeypatch
+):
+    """Real puts five `x-ratelimit-*` headers on every response it gives and serves
+    `GET /rate_limit`; Backlot sent none of the five on any response and answered the route 404,
+    so a client that paces by `remaining` and sleeps until `reset` never ran that path here, and
+    PyGithub's `get_rate_limit()` raised before a crawl's first request.
+
+    Measured against api.github.com on 2026-09-09 and 2026-09-10 (curl unauthenticated, `gh api`
+    authenticated): `limit: 60` on `core` and `10` on `search` for a caller with no credential,
+    `5000`, `30` and `10` on `core`, `search` and `code_search` for a token; the five on the 200s,
+    on the 404 for a repository that does not exist, on the 401s, on the blank-`q` 422 (against
+    `search`) and on the version 400; a `HEAD` counted once (`remaining` 46 → 45); the 401 an
+    anonymous code search gets counted against `core`, not `code_search`; `reset` in epoch
+    seconds, the same on every answer inside a window; `GET /rate_limit` 200 with
+    `resources.core`, `.search`, `.code_search` each `{limit, used, remaining, reset}` and `rate`
+    beside them under `2022-11-28` and not under `2026-03-10`, carrying the five itself and not
+    counting (two reads in a row both `used: 0`); a bad bearer on it the 401. What real's route
+    reports is a fresh window rather than the headers' (see the route's docstring); Backlot reports
+    the headers'. Exhaustion is not measured and nothing here refuses: `remaining` stops at 0 and
+    `used` keeps counting.
+    """
+    from backlot.routers import github as gh
+
+    settings = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "github",
+                "doc_id": "gh-rl-issue",
+                "repo": "rl",
+                "title": "Paced",
+                "content": "body",
+                "author_email": "bob@acme.com",
+                "visibility": "public",
+            },
+            {
+                "source_type": "github",
+                "doc_id": "gh-rl-file",
+                "repo": "rl",
+                "subtype": "file",
+                "path": "README.md",
+                "title": "README.md",
+                "content": "# rl\n",
+                "author_email": "bob@acme.com",
+                "visibility": "public",
+            },
+        ],
+        name="rl.jsonl",
+    )
+    with client_for(settings, reload=True) as c:
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        users = c.get("/_meta/users").json()
+        org, bob = users["org"], {"Authorization": f"Bearer {users['users'][0]['token']}"}
+        repo = f"/github/repos/{org}/rl"
+
+        first = c.get(repo, headers=h)
+        assert first.status_code == 200
+        five = _ratelimit(first)
+        assert five == {
+            "limit": "5000",
+            "remaining": "4999",
+            "used": "1",
+            "reset": five["reset"],
+            "resource": "core",
+        }
+        reset = int(five["reset"])
+        # the HEAD counts once and carries the five with the rest of the GET's headers
+        head = c.head(repo, headers=h)
+        assert head.content == b"" and _ratelimit(head)["used"] == "2"
+        # the errors count against `core` too: the 404, the version 400
+        ghost = c.get(f"/github/repos/{org}/ghost-zz-9876", headers=h)
+        assert (ghost.status_code, _ratelimit(ghost)["used"]) == (404, "3")
+        bad_version = c.get(repo, headers={**h, "X-GitHub-Api-Version": "1999-01-01"})
+        assert (bad_version.status_code, _ratelimit(bad_version)["used"]) == (400, "4")
+        assert _ratelimit(bad_version)["reset"] == str(reset)  # the window stays put
+        # search and code search are their own resources at their own limits
+        found = c.get("/github/search/issues", headers=h, params={"q": f"repo:{org}/rl"})
+        assert found.status_code == 200
+        assert _ratelimit(found) == {
+            "limit": "30",
+            "remaining": "29",
+            "used": "1",
+            "reset": _ratelimit(found)["reset"],
+            "resource": "search",
+        }
+        blank = c.get("/github/search/issues", headers=h, params={"q": ""})
+        assert (blank.status_code, _ratelimit(blank)["used"]) == (422, "2")
+        code = c.get("/github/search/code", headers=h, params={"q": "extension:md"})
+        assert code.status_code == 200
+        assert (_ratelimit(code)["limit"], _ratelimit(code)["resource"]) == ("10", "code_search")
+        # a caller with no credential is counted by address at 60, the anonymous code search's
+        # 401 against `core`
+        anonymous = c.get("/github/user/repos")
+        assert anonymous.status_code == 401
+        assert _ratelimit(anonymous) == {
+            "limit": "60",
+            "remaining": "59",
+            "used": "1",
+            "reset": _ratelimit(anonymous)["reset"],
+            "resource": "core",
+        }
+        anonymous_code = c.get("/github/search/code", params={"q": "extension:md"})
+        assert anonymous_code.status_code == 401
+        assert (_ratelimit(anonymous_code)["resource"], _ratelimit(anonymous_code)["used"]) == (
+            "core",
+            "2",
+        )
+        # another token is another window
+        assert _ratelimit(c.get(repo, headers=bob))["used"] == "1"
+
+        # the route reports the windows the headers report, and does not count
+        status = c.get("/github/rate_limit", headers=h)
+        assert status.status_code == 200
+        assert status.headers["content-type"] == "application/json; charset=utf-8"
+        core = {"limit": 5000, "used": 4, "remaining": 4996, "reset": reset}
+        assert status.json() == {
+            "resources": {
+                "core": core,
+                "search": {
+                    "limit": 30,
+                    "used": 2,
+                    "remaining": 28,
+                    "reset": int(_ratelimit(found)["reset"]),
+                },
+                "code_search": {
+                    "limit": 10,
+                    "used": 1,
+                    "remaining": 9,
+                    "reset": int(_ratelimit(code)["reset"]),
+                },
+            },
+            "rate": core,
+        }
+        assert _ratelimit(status) == {**five, "remaining": "4996", "used": "4"}
+        again = c.get("/github/rate_limit", headers=h)
+        assert again.json() == status.json() and _ratelimit(again)["used"] == "4"
+        assert (
+            "rate"
+            not in c.get(
+                "/github/rate_limit", headers={**h, "X-GitHub-Api-Version": "2026-03-10"}
+            ).json()
+        )
+        # no credential is answered at the anonymous limits; a bad one is the 401
+        unauthenticated = c.get("/github/rate_limit")
+        assert unauthenticated.status_code == 200
+        resources = unauthenticated.json()["resources"]
+        assert (resources["core"]["limit"], resources["core"]["used"]) == (60, 2)
+        assert (resources["search"]["limit"], resources["code_search"]["limit"]) == (10, 10)
+        assert _ratelimit(unauthenticated)["limit"] == "60"
+        refused = c.get("/github/rate_limit", headers={"Authorization": "Bearer nope"})
+        assert refused.status_code == 401
+        assert refused.json() == {
+            "message": "Bad credentials",
+            "documentation_url": "https://docs.github.com/rest",
+            "status": "401",
+        }
+        assert _ratelimit(refused)["limit"] == "60"  # counted with the anonymous callers
+
+        # an hour on, the window is a new one: `used` starts over and `reset` moves by the hour
+        windows = c.app.state.github_rate_limits
+        now = windows.clock()
+        windows.clock = lambda: now + gh.RATE_LIMIT_WINDOW + 1
+        rolled = _ratelimit(c.get(repo, headers=h))
+        assert (rolled["used"], rolled["remaining"]) == ("1", "4999")
+        assert int(rolled["reset"]) == int(now) + gh.RATE_LIMIT_WINDOW + 1 + gh.RATE_LIMIT_WINDOW
+        # past the limit nothing is refused: `remaining` stops at 0 and `used` keeps counting
+        monkeypatch.setitem(gh.RATE_LIMITS, "core", gh._HourlyLimit(60, 2))
+        assert _ratelimit(c.get(repo, headers=h)) == {
+            **rolled,
+            "limit": "2",
+            "remaining": "0",
+            "used": "2",
+        }
+        over = c.get(repo, headers=h)
+        assert over.status_code == 200
+        assert (_ratelimit(over)["remaining"], _ratelimit(over)["used"]) == ("0", "3")

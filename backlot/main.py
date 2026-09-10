@@ -190,6 +190,27 @@ async def echo_github_api_version(request: Request, call_next):
 
 
 @app.middleware("http")
+async def report_github_rate_limit(request: Request, call_next):
+    """Put the five `x-ratelimit-*` headers on every `/github` answer and count it against the
+    caller's hourly window, as real does on every response it gives, 200 and error alike (see
+    ``backlot.routers.github.rate_limit_headers``).
+
+    Middleware for the reason the version echo is: the headers ride on answers no route handler
+    builds, the exception handlers' 401s and 404s and the raw and diff media types' own responses
+    among them, and a client paces by them on every one. Registered inside the `HEAD` middleware,
+    so a `HEAD` runs through here as the GET it is rewritten to and counts once, as it does on real
+    (`remaining` 46 → 45 across one `HEAD`, measured 2026-09-09), and the head copies the five
+    with the rest of the GET's headers. A path outside `/github` gets nothing: the other vendors'
+    rate-limit answers are not measured.
+    """
+    response = await call_next(request)
+    if request.url.path.startswith("/github"):
+        for name, value in github.rate_limit_headers(request, response.status_code).items():
+            response.headers[name] = value
+    return response
+
+
+@app.middleware("http")
 async def resolve_github_id_paths(request: Request, call_next):
     """Serve `/github/repositories/{id}/…` and `/github/organizations/{id}/…` as what the
     login-keyed paths serve, because that is the form real's page urls take (see
@@ -242,9 +263,10 @@ async def answer_head_as_the_get_without_its_body(request: Request, call_next):
     no `head` operation at all, so declaring it would hand `backlot diff --source github` operations
     real lacks and the MCP slice tools that answer nothing a GET does not. The method is rewritten
     on the scope before routing, so the GET runs in full: the router's dependencies, the handler and
-    the two middlewares inside this one, the version echo and the id-path rewrite, see a GET and
-    land on the answer by construction, and the charset middleware outside it rewrites the copied
-    `content-type` as it does the GET's. The body is read to the end to be measured rather
+    the three middlewares inside this one, the version echo, the rate-limit count and the id-path
+    rewrite, see a GET and land on the answer by construction, and the charset middleware outside
+    it rewrites the copied `content-type` as it does the GET's. The body is read to the end to be
+    measured rather
     than sent, because the `content-length` a client reads a `HEAD` for is the GET body's length and
     computing the body is the only way to have that number; a `HEAD` costs what its GET costs, here
     as on real. The method goes back to `HEAD` on the scope once the GET has answered, because the

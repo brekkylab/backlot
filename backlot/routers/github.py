@@ -11,7 +11,10 @@ import base64
 import hashlib
 import json
 import re
+import time
+from collections.abc import Callable
 from email.utils import formatdate
+from typing import NamedTuple
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -90,8 +93,9 @@ def _require(request: Request) -> Caller:
     Header PRESENT but not a scheme this API takes is the second case, not the first: real ignores
     an `Authorization` it cannot parse and serves the request anonymously (measured: `Basic …` and a
     scheme-less value both answer 200 on a public repo), so the caller reaches an auth-required
-    route with no credential rather than with a rejected one. Backlot serves nothing anonymously,
-    which is why that lands here as the missing-credential 401 rather than as a public read.
+    route with no credential rather than with a rejected one. Backlot serves no document
+    anonymously, which is why that lands here as the missing-credential 401 rather than as a public
+    read (`/rate_limit`, which serves none, is the exception — see :func:`_validate_path_owner`).
     """
     if auth.bearer_token(request) is None:
         raise HTTPException(status_code=401, detail="Requires authentication")
@@ -206,7 +210,10 @@ async def _validate_path_owner(request: Request) -> None:
     client's owner-handling bug pass against Backlot and fail in production. A router-wide
     dependency rather than a call in each handler so a route added later cannot forget it — routes
     with neither path param (``/search/issues``, ``/user/repos``) are unaffected. Credentials are
-    checked first, so a bad token still reports 401 rather than the owner's 404.
+    checked first, so a bad token still reports 401 rather than the owner's 404. `/rate_limit` is
+    the one route a caller with no credential is served, as real serves it (200 at the anonymous
+    limits, measured 2026-09-10); it names no owner and reads no document, and it checks the
+    credential it is given itself (see :func:`get_rate_limit`).
 
     The match is case-insensitive, as GitHub logins are, and real then answers in the canonical
     spelling whatever case was asked for: `/repos/PSF/REQUESTS` answers `full_name: psf/requests`
@@ -223,7 +230,8 @@ async def _validate_path_owner(request: Request) -> None:
     day), and :func:`_page_base_url` hashes the settled spelling rather than the one the request
     arrived with — this dependency's for the org, :func:`_canonical_path_repo`'s for the repo.
     """
-    _require(request)
+    if request.url.path != RATE_LIMIT_PATH:
+        _require(request)
     key = "owner" if "owner" in request.path_params else "org"
     owner = request.path_params.get(key)
     if owner is None:
@@ -251,6 +259,143 @@ async def _canonical_path_repo(request: Request) -> None:
     spelled = store.container_spelling(auth.conn(request), "github", repo)
     if spelled is not None:
         request.path_params["repo"] = spelled
+
+
+# --- rate limits ----------------------------------------------------------------
+#
+# Real puts five `x-ratelimit-*` headers on every response it gives, 200 and error alike, and
+# serves `GET /rate_limit`. Measured against api.github.com on 2026-09-09 and 2026-09-10,
+# unauthenticated with curl and authenticated with `gh api`: an anonymous caller has `limit: 60`
+# on `core` and `10` on `search`, a token `5000`, `30` and `10` on `core`, `search` and
+# `code_search`; the 404 for a repository that does not exist, the 401s, the blank-`q` 422 and the
+# version 400 each carry the five and count (`remaining` 46, 45, 44 across a GET, a HEAD and a 404
+# in a row); `reset` is epoch seconds and stayed put across every answer inside one window. The
+# docs page "Rate limits for the REST API" states the 60 and the 5,000 and the five headers'
+# meanings; the numbers below are the wire's. Nothing here refuses a request, see
+# :class:`RateLimitWindows`.
+
+RATE_LIMIT_PATH = "/github/rate_limit"
+RATE_LIMIT_WINDOW = 3600
+
+
+class _HourlyLimit(NamedTuple):
+    anonymous: int
+    authenticated: int
+
+
+#: resource -> the requests an hour real allows a caller with no credential and one with a token
+RATE_LIMITS: dict[str, _HourlyLimit] = {
+    "core": _HourlyLimit(60, 5000),
+    "search": _HourlyLimit(10, 30),
+    "code_search": _HourlyLimit(10, 10),
+}
+
+
+def rate_limit_resource(path: str, status_code: int) -> str:
+    """The resource a request to ``path`` answered with ``status_code`` counts against.
+
+    `code_search` for code search, `search` for the other search route and `core` for everything
+    else, including the 401 code search answers a caller with no credential: that refusal is the
+    gateway's, not the code search backend's, and counts against `core` (measured: `limit: 60`,
+    `resource: core` on it, where the same route authenticated answers `limit: 10`,
+    `resource: code_search`), the same split ``errors.github.json_media_type`` draws for the
+    charset."""
+    if path == CODE_SEARCH_PATH:
+        return "core" if status_code == 401 else "code_search"
+    if path.startswith("/github/search/"):
+        return "search"
+    return "core"
+
+
+class RateLimitWindows:
+    """The requests counted so far, per credential and per resource, in hourly windows.
+
+    A window opens at the first request counted or reported under a `(credential, resource)` and
+    closes an hour later; `reset` is its closing second, the same on every answer inside it. The
+    windows measured stayed put across the requests inside them and differed between credentials
+    and between resources (an anonymous caller's `core` and `search` resets 1552 seconds apart),
+    which is a
+    window per pair opened by use rather than one clock hour shared by all. `remaining` stops at 0
+    and `used` keeps counting past the limit: nothing here refuses a request, because a test
+    suite's own volume drives an anonymous client past 60 in an hour, and a mock answering the
+    61st request with the 403 or 429 the docs describe fails that suite for pacing it never asked
+    for. Exhaustion is docs only; nothing was driven to it. ``clock`` is `time.time` unless a test
+    hands in another to move a window."""
+
+    def __init__(self, clock: Callable[[], float] = time.time):
+        self.clock = clock
+        self._windows: dict[tuple[str, str], list[int]] = {}
+
+    def _window(self, key: str, resource: str) -> list[int]:
+        now = int(self.clock())
+        window = self._windows.get((key, resource))
+        if window is None or now >= window[0] + RATE_LIMIT_WINDOW:
+            window = self._windows[(key, resource)] = [now, 0]
+        return window
+
+    def count(self, key: str, resource: str, limit: int) -> dict[str, int]:
+        """The window after counting one more request in it."""
+        window = self._window(key, resource)
+        window[1] += 1
+        return self._status(window, limit)
+
+    def status(self, key: str, resource: str, limit: int) -> dict[str, int]:
+        """The window as it stands, nothing counted."""
+        return self._status(self._window(key, resource), limit)
+
+    @staticmethod
+    def _status(window: list[int], limit: int) -> dict[str, int]:
+        start, used = window
+        return {
+            "limit": limit,
+            "used": used,
+            "remaining": max(limit - used, 0),
+            "reset": start + RATE_LIMIT_WINDOW,
+        }
+
+
+def _rate_limit_windows(app) -> RateLimitWindows:
+    """The app's windows, opened on first use so a request needs no lifespan step to be counted."""
+    windows = getattr(app.state, "github_rate_limits", None)
+    if windows is None:
+        windows = app.state.github_rate_limits = RateLimitWindows()
+    return windows
+
+
+def rate_limit_caller(request: Request) -> tuple[str, bool]:
+    """Whose requests these are for counting, and whether that is a credential.
+
+    The token when it resolves; the client's address otherwise, which is how real counts a caller
+    with no credential (the docs' 60 an hour "for unauthenticated requests", measured at
+    `limit: 60` on every anonymous answer measured). A bearer that does not resolve is counted with the
+    anonymous callers from its address: real's answer for one is a 401 carrying the five, and which
+    window it counts against is not measured."""
+    token = auth.bearer_token(request)
+    if token is not None and auth.resolve_bearer(request) is not None:
+        return f"token:{token}", True
+    host = request.client.host if request.client is not None else "anonymous"
+    return f"host:{host}", False
+
+
+def rate_limit_headers(request: Request, status_code: int) -> dict[str, str]:
+    """The five `x-ratelimit-*` headers for a `/github` answer, counting it, except on
+    :data:`RATE_LIMIT_PATH`, which reports its window without counting: two `GET /rate_limit` in
+    a row both answered `remaining: 5000`, `used: 0`, each carrying the five with `resource: core`,
+    and the description's own note says the route does not count."""
+    key, authenticated = rate_limit_caller(request)
+    resource = rate_limit_resource(request.url.path, status_code)
+    limits = RATE_LIMITS[resource]
+    limit = limits.authenticated if authenticated else limits.anonymous
+    windows = _rate_limit_windows(request.app)
+    read = windows.status if request.url.path == RATE_LIMIT_PATH else windows.count
+    window = read(key, resource, limit)
+    return {
+        "x-ratelimit-limit": str(window["limit"]),
+        "x-ratelimit-remaining": str(window["remaining"]),
+        "x-ratelimit-used": str(window["used"]),
+        "x-ratelimit-reset": str(window["reset"]),
+        "x-ratelimit-resource": resource,
+    }
 
 
 router = APIRouter(
@@ -476,6 +621,262 @@ def _echo(request: Request, **params) -> dict:
     the caller's own spelling of the size when they named one, and nothing at all when they did not.
     """
     return {k: v for k, v in params.items() if k in request.query_params}
+
+
+def _sent(request: Request, *names: str) -> dict:
+    """The caller's own spelling of each of ``names`` it sent, for :func:`_echo`."""
+    q = request.query_params
+    return {n: q[n] for n in names if n in q}
+
+
+def _enum_param(default: str | None, description: str, values: tuple[str, ...]):
+    """A query parameter declared as real's description declares it: `{type: string, enum: […]}`
+    with the default real states, or none, under the route's own description.
+
+    Written into the schema by hand rather than as a `Literal`: a `Literal` has FastAPI refuse a
+    value outside it before the handler runs, and real refuses none of these parameters' values on
+    any of the routes measured (see :data:`_ISSUE_ORDERING` and its siblings, and
+    :func:`_invalid_issue_state` for the one parameter one route does refuse)."""
+    return Query(default, description=description, json_schema_extra={"enum": list(values)})
+
+
+# --- sort and direction -------------------------------------------------------------
+#
+# Four listings take `sort` and `direction` (a repository's issues and its pulls, an organization's
+# repositories and the token's own). GitHub's OpenAPI description declares each pair with an enum
+# and a default, states the pull and repository listings' direction default in prose ("`desc` when
+# sort is `created` or sort is not specified, otherwise `asc`"; "`asc` when using `full_name`,
+# otherwise `desc`"), and is not what the wire answers in several cells. The wire is what a client
+# meets, so each listing carries an `_Ordering` measured cell by cell against api.github.com on
+# 2026-09-09 and 2026-09-10, three rows a page, against `psf/requests`, the `psf` organization and
+# the token's own repositories; the cells the description gets right are not repeated below, the
+# ones it does not are. Every value outside an enum was absorbed and answered 200 on every route
+# measured; which order an absorbed value yields is the listing's own, and the last two fields of
+# each `_Ordering` state it.
+
+_DIRECTIONS = ("asc", "desc")
+
+
+class _Ordering(NamedTuple):
+    """How one listing reads `sort` and `direction`, as measured."""
+
+    #: real's enum, in real's order
+    sorts: tuple[str, ...]
+    #: real's declared default, which is also the key of the order a request with no `sort` and no
+    #: `direction` gets
+    default: str
+    #: whether that unsent order descends
+    unsent_descending: bool
+    #: the sorts that descend when sent with no `direction`; the rest ascend
+    descends_when_sent: frozenset[str]
+    #: what a `sort` outside the enum is read as: a sort name, applied with `direction` read as
+    #: usual, or "unsent" for the unsent order with `direction` ignored
+    unknown_sort: str
+    #: what a `direction` outside the enum yields, `sort` kept: "asc", "desc", or "unsent" for the
+    #: unsent order with `sort` dropped too
+    unknown_direction: str
+
+
+#: Issues: every sort descends unless told otherwise, so the unsent order is `sort=created`'s
+#: (7620, 7619, 7618; `sort=updated` 7620, 7619, 7610 by `updated_at`; `sort=comments` 2966, 5797,
+#: 1573; `direction=asc` 1, 2, 3; `sort=updated&direction=asc` 482, 2117, 1812 by `updated_at`
+#: ascending). `sort=bogus`, `sort=bogus&direction=asc`, `direction=bogus` and
+#: `sort=updated&direction=bogus` each answer the unsent order, so here an unknown value in either
+#: parameter drops the other. `comments` orders by the issue's conversation comments AND, for a
+#: pull seen through this listing, its review comments: 5797 (`comments: 105`, `review_comments:
+#: 25`) sits between 2966 (211) and 1573 (122), which no single member orders. Ties keep the
+#: unsent order whatever the direction: `sort=comments&direction=asc` answers 7620, 7619, 7618,
+#: three rows at 0 comments, newest first.
+_ISSUE_ORDERING = _Ordering(
+    sorts=("created", "updated", "comments"),
+    default="created",
+    unsent_descending=True,
+    descends_when_sent=frozenset({"created", "updated", "comments"}),
+    unknown_sort="unsent",
+    unknown_direction="unsent",
+)
+
+#: Pulls: newest first with no `sort` (7619, 7616, 7609), and OLDEST first the moment one is sent —
+#: `sort=created` 4, 8, 10, where the description says `desc` for exactly that case; `sort=updated`
+#: 519, 929, 1350 by `updated_at` ascending; `sort=popularity` 10, 15, 42, each at 0 comments, and
+#: `direction=desc` with it 5797, 3014, 2567, the same conversation-plus-review count the issue
+#: listing's `comments` orders by; `sort=long-running` 3335, 3443, 3900, closed pulls from 2016 in
+#: `created_at` order with `state=all`, and 5922, 6166, 6185 with `state=open`, pulls with no
+#: activity since 2021, so the filter the description attaches to it ("open for more than a month
+#: and have had activity within the past month") is not applied on the wire and is not applied
+#: here. `direction=asc` alone 4, 8, 10. `sort=bogus` 4, 8, 10 and `sort=bogus&direction=desc`
+#: 7619, 7616, 7609, so an unknown sort is read as `created` with the direction honoured;
+#: `direction=bogus` alone the unsent order and `sort=updated&direction=bogus` 7025, 7026, 6675,
+#: the `direction=desc` order, so an unknown direction is `desc` with the sort kept.
+_PULL_ORDERING = _Ordering(
+    sorts=("created", "updated", "popularity", "long-running"),
+    default="created",
+    unsent_descending=True,
+    descends_when_sent=frozenset(),
+    unknown_sort="created",
+    unknown_direction="desc",
+)
+
+#: An organization's repositories: OLDEST first with no `sort` (`requests`, `cachecontrol`,
+#: `pyperf`, created 2011, 2013, 2016, the `sort=created&direction=asc` order), newest first the
+#: moment `sort=created` is sent (`wiki`, `blog`, `organizer-toolkit`), as `direction=desc` alone
+#: is; `sort=updated` and `sort=pushed` descend (`black`, `requests`, `advisory-database` by
+#: `updated_at`; `advisory-database`, `cachecontrol`, `requests` by `pushed_at`); `sort=full_name`
+#: ascends (`.github`, `advisory-database`, `black`) and `direction=desc` reverses it (`wiki`,
+#: `webassembly`, `user-success-wg`). `sort=bogus` answers the `sort=created` order;
+#: `direction=bogus` alone the unsent order, `sort=pushed&direction=bogus` `bpo-django-gae2django`,
+#: `bpo-rietveld`, `packaging-wg`, the least recently pushed, and `sort=full_name&direction=bogus`
+#: `.github`, `advisory-database`, `black`, so an unknown direction is `asc` with the sort kept.
+_ORG_REPO_ORDERING = _Ordering(
+    sorts=("created", "updated", "pushed", "full_name"),
+    default="created",
+    unsent_descending=False,
+    descends_when_sent=frozenset({"created", "updated", "pushed"}),
+    unknown_sort="created",
+    unknown_direction="asc",
+)
+
+#: The token's own repositories: the description declares `default: full_name`, and with no `sort`
+#: real answers an order that is neither the names' nor `created_at`'s nor `pushed_at`'s (`bsk`,
+#: `bsk_check`, `agent-k`, `agent-zoo`, created 2026-07, 2026-09, 2026-03, 2026-08, pushed 09-02,
+#: 09-05, 08-15, 08-31), and `sort=full_name` the same first three names, which are not in
+#: full-name order either; Backlot answers the declared default, name order, for both. `sort=created` newest first; `sort=bogus` the same;
+#: `sort=created&direction=bogus` newest first too, so an unknown direction is read as `desc` (one
+#: sort measured). `type=bogus` and `visibility=bogus` keep every repository.
+_USER_REPO_ORDERING = _Ordering(
+    sorts=("created", "updated", "pushed", "full_name"),
+    default="full_name",
+    unsent_descending=False,
+    descends_when_sent=frozenset({"created", "updated", "pushed"}),
+    unknown_sort="created",
+    unknown_direction="desc",
+)
+
+
+def _order(request: Request, spec: _Ordering) -> tuple[str, bool]:
+    """The `(sort, descending)` a listing applies to the request, read off the query as sent.
+
+    Read off the query rather than off the declared parameters because sent and unsent differ on
+    the wire (a pull listing with `sort=created` is the reverse of one without), and FastAPI hands
+    the handler the default for both."""
+    q = request.query_params
+    sort, direction = q.get("sort"), q.get("direction")
+    unsent = (spec.default, spec.unsent_descending)
+    if direction is not None and direction not in _DIRECTIONS:
+        if spec.unknown_direction == "unsent":
+            return unsent
+        if sort is None:
+            key = spec.default
+        elif sort in spec.sorts:
+            key = sort
+        else:
+            key = spec.unknown_sort
+        return key, spec.unknown_direction == "desc"
+    if sort is not None and sort not in spec.sorts:
+        if spec.unknown_sort == "unsent":
+            return unsent
+        sort = spec.unknown_sort
+    if sort is None:
+        if direction is None:
+            return unsent
+        return spec.default, direction == "desc"
+    if direction is not None:
+        return sort, direction == "desc"
+    return sort, sort in spec.descends_when_sent
+
+
+def _ordered(items: list, keys: dict[str, Callable], spec: _Ordering, sort: str, descending: bool):
+    """``items`` in the unsent order, then stably by the sort asked for: a tie under the sort keeps
+    the unsent order whatever the direction, as measured on the issue listing (see
+    :data:`_ISSUE_ORDERING`)."""
+    rows = sorted(items, key=keys[spec.default], reverse=spec.unsent_descending)
+    rows.sort(key=keys[sort], reverse=descending)
+    return rows
+
+
+def _created_ts(row) -> int:
+    return row["created_ts"] or synth.epoch(_seed(row))
+
+
+def _updated_ts(row) -> int:
+    return row["updated_ts"] or _created_ts(row) + 3600
+
+
+def _issue_sort_keys(conn, repo: str, sort: str) -> dict[str, Callable]:
+    """The sort keys of the issue and pull listings, over the store's rows.
+
+    The timestamps are the ones the bodies serve (:func:`_shared_obj` reads the same two
+    functions), and the number breaks a tie the way real's monotonic ids do. `comments` and
+    `popularity` are one key: both order by the conversation and review comments added together,
+    which is the count real orders by (see :data:`_ISSUE_ORDERING`), read in one query for the
+    repository and only when asked for. `long-running` is `created` with no filter (see
+    :data:`_PULL_ORDERING`)."""
+    counts = store.github_comment_counts(conn, repo) if sort in ("comments", "popularity") else {}
+
+    def created(row):
+        return _created_ts(row), row["number"]
+
+    def updated(row):
+        return _updated_ts(row), row["number"]
+
+    def comments(row):
+        return counts.get(row["number"], 0)
+
+    return {
+        "created": created,
+        "updated": updated,
+        "comments": comments,
+        "popularity": comments,
+        "long-running": created,
+    }
+
+
+def _repo_timestamps(name: str) -> tuple[int, int, int]:
+    """A repository's `(created, updated, pushed)`, derived as :func:`_repo_obj` has always derived
+    them: the epoch of the name and two fixed offsets from it, so the three orders they give are
+    one order."""
+    ts = synth.epoch("repo:" + name)
+    return ts, ts + 3600, ts + 7200
+
+
+def _repo_sort_keys(owner: str) -> dict[str, Callable]:
+    """The sort keys of the two repository listings, over repository names."""
+    return {
+        "created": lambda name: (_repo_timestamps(name)[0], name),
+        "updated": lambda name: (_repo_timestamps(name)[1], name),
+        "pushed": lambda name: (_repo_timestamps(name)[2], name),
+        "full_name": lambda name: f"{owner}/{name}",
+    }
+
+
+#: `type` on an organization's repositories and `visibility` on the token's own, as the description
+#: declares them (`enum` in its order, `default: all`, read 2026-09-10). `type=forks` answers the
+#: forks alone (`matterbridge-configuration`, `httpbin`, `plausible-analytics` for `psf`, each
+#: `fork: true`), `type=member` answers `[]` for `psf`, `type=sources` and `type=bogus` every
+#: repository, measured the same days as the orders above.
+_ORG_REPO_TYPES = ("all", "public", "private", "forks", "sources", "member")
+_USER_REPO_VISIBILITIES = ("all", "public", "private")
+
+
+def _repo_type_keeps(value: str | None, private: bool) -> bool:
+    """Whether `type=value` keeps a repository that is or is not private.
+
+    `public` and `private` select on the one fact a corpus states about a repository's kind, the
+    ACL (see :func:`_repo_obj`). Every repository here is one the organization owns outright and
+    none is a fork, which the repository object says of each (`fork: false`), so `forks` and
+    `member` keep none and `sources` keeps every one; `all`, no value and a value outside the enum
+    keep every one too, as measured."""
+    if value in ("public", "private"):
+        return private == (value == "private")
+    return value not in ("forks", "member")
+
+
+def _repo_visibility_keeps(value: str | None, private: bool) -> bool:
+    """Whether `visibility=value` keeps a repository that is or is not private; `all`, no value and
+    a value outside the enum keep every one."""
+    if value in ("public", "private"):
+        return private == (value == "private")
+    return True
 
 
 _GH_OP = re.compile(r'(\w+):("[^"]*"|\S+)')
@@ -989,6 +1390,44 @@ async def get_org(org: str, request: Request):
     }
 
 
+@router.get("/rate_limit")
+async def get_rate_limit(request: Request):
+    """The caller's rate limit status, as real's `GET /rate_limit` serves it: `resources.core`,
+    `.search` and `.code_search`, each `{limit, used, remaining, reset}`, read from the windows the
+    `x-ratelimit-*` headers report (:class:`RateLimitWindows`) without counting the read.
+
+    The three resources are the ones Backlot counts, of the fifteen real's authenticated answer
+    carries (`graphql`, `integration_manifest`, `scim`, …) and the five its anonymous one does:
+    the rule ``_repo_obj`` applies to url templates, a member iff the resource. `rate`, `core` under
+    the name the description calls closing down, is served to `2022-11-28` and not to
+    `2026-03-10`, which removed it (measured 2026-09-10: the body's keys are `rate`, `resources`
+    under the one and `resources` alone under the other). A caller with no credential is answered
+    at the anonymous limits, as real answers one; a bearer that does not resolve is real's 401
+    (measured), so a credential is checked when it is there and not required.
+
+    Which window real's route reports is not the one its headers had just reported: a minute after
+    answers carrying `remaining: 4994`, `used: 6`, `reset: 1789020007`, the route answered
+    `remaining: 5000`, `used: 0`, `reset: 1789020728`, on 2026-09-10 as on 2026-09-09. The docs
+    page says the route is how a client checks "your current rate limit status", and a client asks
+    it to learn what the headers would say, so this reports the headers' window; the fresh window
+    real answered could only be reproduced by reporting a window nothing counts against.
+    """
+    if auth.bearer_token(request) is not None:
+        auth.require_bearer(request, "Bad credentials")
+    key, authenticated = rate_limit_caller(request)
+    windows = _rate_limit_windows(request.app)
+    resources = {
+        resource: windows.status(
+            key, resource, limits.authenticated if authenticated else limits.anonymous
+        )
+        for resource, limits in RATE_LIMITS.items()
+    }
+    body: dict = {"resources": resources}
+    if _version(request) in _HAS_RATE_ALIAS:
+        body["rate"] = resources["core"]
+    return body
+
+
 def _repo_visible(conn, repo: str, ids) -> bool:
     """Whether the caller can see this repo at all. One with no visible document is not visible.
 
@@ -1028,30 +1467,80 @@ def _visible_repos(conn, ids) -> list[str]:
     return repos
 
 
-def _repo_page(request, conn, owner: str, ids, page, per_page) -> Response:
+def _repo_page(
+    request,
+    conn,
+    owner: str,
+    ids,
+    page,
+    per_page,
+    *,
+    ordering: _Ordering,
+    keeps: Callable[[bool], bool],
+    echoed: tuple[str, ...],
+) -> Response:
+    """One page of a repository listing: the visible repositories ``keeps`` keeps, in the order
+    ``ordering`` reads off the request, paged after both so a `Link` walk sees one sequence."""
     repos = _visible_repos(conn, ids)
+    private = {n: not store.container_has_public(conn, "github", n) for n in repos}
+    repos = [n for n in repos if keeps(private[n])]
+    sort, descending = _order(request, ordering)
+    repos = _ordered(repos, _repo_sort_keys(owner), ordering, sort, descending)
     page, per_page = _clamp(page, per_page)
     start = (page - 1) * per_page
     ab = _api_base(request)
-    body = [_repo_obj(conn, owner, n, ab) for n in repos[start : start + per_page]]
-    return _paged(request, len(repos), {}, body, page, per_page)
+    body = [
+        _repo_obj(conn, owner, n, ab, private=private[n]) for n in repos[start : start + per_page]
+    ]
+    return _paged(request, len(repos), _sent(request, *echoed), body, page, per_page)
+
+
+_REPO_SORT_DESCRIPTION = "The property to sort the results by."
+_REPO_DIRECTION_DESCRIPTION = (
+    "The order to sort by. Default: `asc` when using `full_name`, otherwise `desc`."
+)
 
 
 @router.get("/orgs/{org}/repos")
 async def list_repos(
     org: str,
     request: Request,
+    type: str = _enum_param(
+        "all", "Specifies the types of repositories you want returned.", _ORG_REPO_TYPES
+    ),
+    sort: str = _enum_param("created", _REPO_SORT_DESCRIPTION, _ORG_REPO_ORDERING.sorts),
+    direction: str = _enum_param(None, _REPO_DIRECTION_DESCRIPTION, _DIRECTIONS),
     page: PageParam = None,
     per_page: PageParam = None,
 ):
+    """The organization's repositories, filtered by `type` and ordered by `sort` and `direction`
+    as measured (:data:`_ORG_REPO_ORDERING`, :func:`_repo_type_keeps`). The three are declared for
+    the document and read off the query by :func:`_order`."""
     conn = auth.conn(request)
     caller = _require(request)
-    return _repo_page(request, conn, org, auth.visible_ids(request, caller), page, per_page)
+    return _repo_page(
+        request,
+        conn,
+        org,
+        auth.visible_ids(request, caller),
+        page,
+        per_page,
+        ordering=_ORG_REPO_ORDERING,
+        keeps=lambda private: _repo_type_keeps(request.query_params.get("type"), private),
+        echoed=("type", "sort", "direction"),
+    )
 
 
 @router.get("/user/repos")
 async def list_user_repos(
     request: Request,
+    visibility: str = _enum_param(
+        "all",
+        "Limit results to repositories with the specified visibility.",
+        _USER_REPO_VISIBILITIES,
+    ),
+    sort: str = _enum_param("full_name", _REPO_SORT_DESCRIPTION, _USER_REPO_ORDERING.sorts),
+    direction: str = _enum_param(None, _REPO_DIRECTION_DESCRIPTION, _DIRECTIONS),
     page: PageParam = None,
     per_page: PageParam = None,
 ):
@@ -1062,14 +1551,31 @@ async def list_user_repos(
     view of the world. This is the endpoint a credential uses to discover its own reach, and
     without it a client has to be configured with an explicit repo name per mount.
 
-    Real GitHub also takes ``visibility``/``affiliation``/``type``/``sort``; Backlot serves a
-    single org whose repos are all owned by it, so those would have nothing to select between and
-    are left out rather than accepted and ignored.
+    `visibility`, `sort` and `direction` select on facts a corpus states (the ACL, the name) or on
+    what Backlot derives (the timestamps), and are read as measured (:data:`_USER_REPO_ORDERING`,
+    :func:`_repo_visibility_keeps`). Real also takes ``type`` and ``affiliation``, which select on
+    what the caller is to each repository — its owner, a collaborator, a member of the owning
+    organization — and a corpus states no such fact: Backlot serves a single org whose repos are
+    all its own, so both are left out rather than declared and ignored (the rule
+    ``backlot.openapi.qp`` states), and the 422 real answers for ``type`` beside ``visibility`` is
+    not reachable here.
     """
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    return _repo_page(request, conn, _org(request), ids, page, per_page)
+    return _repo_page(
+        request,
+        conn,
+        _org(request),
+        ids,
+        page,
+        per_page,
+        ordering=_USER_REPO_ORDERING,
+        keeps=lambda private: _repo_visibility_keeps(
+            request.query_params.get("visibility"), private
+        ),
+        echoed=("visibility", "sort", "direction"),
+    )
 
 
 @router.get("/repos/{owner}/{repo}")
@@ -1092,7 +1598,20 @@ _PULL_STATE_DESCRIPTION = "Either `open`, `closed`, or `all` to filter by state.
 
 
 def _state_param(description: str):
-    return Query("open", description=description, json_schema_extra={"enum": list(ISSUE_STATES)})
+    return _enum_param("open", description, ISSUE_STATES)
+
+
+_ISSUE_SORT_DESCRIPTION = "What to sort results by."
+_ISSUE_DIRECTION_DESCRIPTION = "The direction to sort the results by."
+_PULL_SORT_DESCRIPTION = (
+    "What to sort results by. `popularity` will sort by the number of comments. `long-running` "
+    "will sort by date created and will limit the results to pull requests that have been open "
+    "for more than a month and have had activity within the past month."
+)
+_PULL_DIRECTION_DESCRIPTION = (
+    "The direction of the sort. Default: `desc` when sort is `created` or sort is not specified, "
+    "otherwise `asc`."
+)
 
 
 def _invalid_issue_state(value: str) -> HTTPException:
@@ -1125,15 +1644,20 @@ async def list_issues(
     repo: str,
     request: Request,
     state: str = _state_param(_ISSUE_STATE_DESCRIPTION),
+    sort: str = _enum_param("created", _ISSUE_SORT_DESCRIPTION, _ISSUE_ORDERING.sorts),
+    direction: str = _enum_param("desc", _ISSUE_DIRECTION_DESCRIPTION, _DIRECTIONS),
     page: PageParam = None,
     per_page: PageParam = None,
 ):
-    """The repo's issues AND pulls, cursor-paged the way real pages this one listing.
+    """The repo's issues AND pulls, ordered by `sort` and `direction` as measured
+    (:data:`_ISSUE_ORDERING`) and cursor-paged the way real pages this one listing.
 
     `after`/`before` are read off the query rather than declared: GitHub's published OpenAPI
     declares neither for this operation, so a declared parameter would put in Backlot's contract —
     and in the tool `backlot mcp` builds from it — an argument the vendor's spec does not have. The
     live API both emits and honours them (see :func:`backlot.pagination.github_cursor_offset`).
+    `sort` and `direction` are declared, for the document, and read off the query too, by
+    :func:`_order`.
     """
     conn = auth.conn(request)
     caller = _require(request)
@@ -1149,6 +1673,10 @@ async def list_issues(
         for r in store.list_documents(conn, "github", repo, ids, limit=10_000, state=state_filter)
         if r["kind"] != "file"
     ]
+    sort, descending = _order(request, _ISSUE_ORDERING)
+    all_rows = _ordered(
+        all_rows, _issue_sort_keys(conn, repo, sort), _ISSUE_ORDERING, sort, descending
+    )
     asserted = page  # kept: the page urls carry the number the caller claimed, or none at all
     page, per_page = _clamp(page, per_page)
     q = request.query_params
@@ -1166,7 +1694,13 @@ async def list_issues(
     ab = _api_base(request)
     body = [_issue_obj(conn, owner, repo, r, ab, _version(request)) for r in rows]
     return _paged_by_cursor(
-        request, len(all_rows), _echo(request, state=state), body, link_page, per_page, start
+        request,
+        len(all_rows),
+        _echo(request, state=state, **_sent(request, "sort", "direction")),
+        body,
+        link_page,
+        per_page,
+        start,
     )
 
 
@@ -1267,9 +1801,13 @@ async def list_pulls(
     repo: str,
     request: Request,
     state: str = _state_param(_PULL_STATE_DESCRIPTION),
+    sort: str = _enum_param("created", _PULL_SORT_DESCRIPTION, _PULL_ORDERING.sorts),
+    direction: str = _enum_param(None, _PULL_DIRECTION_DESCRIPTION, _DIRECTIONS),
     page: PageParam = None,
     per_page: PageParam = None,
 ):
+    """The repo's pulls, ordered by `sort` and `direction` as measured (:data:`_PULL_ORDERING`);
+    both are declared for the document and read off the query by :func:`_order`."""
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
@@ -1282,6 +1820,8 @@ async def list_pulls(
         for r in store.list_documents(conn, "github", repo, ids, limit=10_000, state=state_filter)
         if r["kind"] == "pull_request"
     ]
+    sort, descending = _order(request, _PULL_ORDERING)
+    prs = _ordered(prs, _issue_sort_keys(conn, repo, sort), _PULL_ORDERING, sort, descending)
     page, per_page = _clamp(page, per_page)
     start = (page - 1) * per_page
     ab = _api_base(request)
@@ -1291,7 +1831,14 @@ async def list_pulls(
         _pr_obj(conn, owner, repo, r, ab, ids=ids, repo_files=repo_files, version=_version(request))
         for r in prs[start : start + per_page]
     ]
-    return _paged(request, len(prs), _echo(request, state=state), body, page, per_page)
+    return _paged(
+        request,
+        len(prs),
+        _echo(request, state=state, **_sent(request, "sort", "direction")),
+        body,
+        page,
+        per_page,
+    )
 
 
 @router.get("/repos/{owner}/{repo}/pulls/{number}")
@@ -2461,8 +3008,14 @@ def _reactions(val, api_url: str = "") -> dict:
     return {"url": f"{api_url}/reactions", "total_count": total, **roll}
 
 
-def _repo_obj(conn, owner: str, name: str, api_base: str = "") -> dict:
+def _repo_obj(
+    conn, owner: str, name: str, api_base: str = "", *, private: bool | None = None
+) -> dict:
     """A repository, carrying a URL template for each sub-resource Backlot serves.
+
+    ``private`` is the ACL fact the object reports (no org-wide grant on any of the repository's
+    documents), passed in by the listings, which have read it once per repository to filter on;
+    the single-repository routes leave it to be read here.
 
     The templates are how an SDK completes a repository lazily — PyGithub expands them for the
     example this repo ships — so without them the client assembles the URLs from parts, which is the
@@ -2478,9 +3031,10 @@ def _repo_obj(conn, owner: str, name: str, api_base: str = "") -> dict:
     The git-protocol URLs are the exception: they name github.com rather than Backlot, so they
     promise it nothing and cost nothing to state.
     """
-    private = not store.container_has_public(conn, "github", name)
+    if private is None:
+        private = not store.container_has_public(conn, "github", name)
     rid = synth.github_user_id(name)
-    ts = synth.epoch("repo:" + name)
+    created, updated, pushed = _repo_timestamps(name)
     repo_url = f"{api_base}/repos/{owner}/{name}"
     return {
         "id": rid,
@@ -2496,9 +3050,9 @@ def _repo_obj(conn, owner: str, name: str, api_base: str = "") -> dict:
         "fork": False,
         "archived": False,
         "disabled": False,
-        "created_at": synth.rfc3339(ts),
-        "updated_at": synth.rfc3339(ts + 3600),
-        "pushed_at": synth.rfc3339(ts + 7200),
+        "created_at": synth.rfc3339(created),
+        "updated_at": synth.rfc3339(updated),
+        "pushed_at": synth.rfc3339(pushed),
         "default_branch": _default_branch(conn, name),
         "issues_url": f"{repo_url}/issues{{/number}}",
         "pulls_url": f"{repo_url}/pulls{{/number}}",
@@ -2561,6 +3115,7 @@ def _issue_number(row) -> int:
 # answer from whichever side the condition happened to be written on.
 _HAS_SINGULAR_ASSIGNEE = frozenset({"2022-11-28"})  # 2026-03-10: superseded by `assignees`
 _HAS_MERGE_COMMIT_SHA = frozenset({"2022-11-28"})  # 2026-03-10: removed from every pull body
+_HAS_RATE_ALIAS = frozenset({"2022-11-28"})  # 2026-03-10: `rate` removed from `/rate_limit`
 
 
 def _shared_obj(conn, owner: str, repo: str, row, api_base: str, version: str) -> dict:
@@ -2574,8 +3129,7 @@ def _shared_obj(conn, owner: str, repo: str, row, api_base: str, version: str) -
     ``comments_url`` is shared and shared in VALUE too: a pull's conversation comments are the
     issue's, and real points both objects at the same collection.
     """
-    created = row["created_ts"] or synth.epoch(_seed(row))
-    updated = row["updated_ts"] or created + 3600
+    created, updated = _created_ts(row), _updated_ts(row)
     number = _issue_number(row)
     iid = synth.jira_numeric_id(_seed(row))  # a stable large numeric db id (≠ number)
     is_pr = row["kind"] == "pull_request"

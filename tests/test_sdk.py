@@ -346,6 +346,11 @@ def github():
     check("GitHub", "get_readme")(lambda: repo.get_readme().name)
     sr = gh.search_issues(query="refill")
     check("GitHub", "search_issues")(lambda: f"{sr.totalCount} hits" if sr.totalCount else 1 / 0)
+    # what a client asks before a crawl: a 404 here raised UnknownObjectException before the first
+    # real request, and the answer is the same windows the x-ratelimit-* headers report
+    check("GitHub", "get_rate_limit")(
+        lambda: f"core {gh.get_rate_limit().resources.core.remaining}/5000"
+    )
 
     # The error path, which is load-bearing rather than decorative: PyGithub picks its exception
     # CLASS off the body's `message`, so an error in FastAPI's `{"detail": …}` reaches the caller as

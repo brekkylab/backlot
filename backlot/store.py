@@ -2815,6 +2815,21 @@ def github_comments(conn, repo, number, *, anchored: bool | None = None) -> list
     ).fetchall()
 
 
+def github_comment_counts(conn, repo) -> dict[int, int]:
+    """Document number -> how many ``github_comments`` rows it has, conversation and review
+    comments together, for every document of one repo.
+
+    One GROUP BY rather than a :func:`github_comments` call per row: the issue and pull listings
+    order a whole repository by this number when asked to (`sort=comments`, `sort=popularity`),
+    and the count real orders by is the two kinds added, which is why ``anchored`` is not a
+    parameter here (see ``routers.github._issue_sort_keys``)."""
+    return dict(
+        conn.execute(
+            "SELECT number, COUNT(*) FROM github_comments WHERE repo = ? GROUP BY number", (repo,)
+        ).fetchall()
+    )
+
+
 def count_repo_files(conn, repo, visible_ids=None) -> int:
     clause, cp = _acl_clause("github", tbl="t", visible_ids=visible_ids)
     head, hp = _file_head_clause(visible_ids)

@@ -2564,24 +2564,6 @@
       "detail": "the vendor serves it; Backlot does not"
     },
     {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /orgs/{}/repos?direction",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /orgs/{}/repos?sort",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /orgs/{}/repos?type",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
       "kind": "missing_operation",
       "severity": "gap",
       "path": "GET /orgs/{}/rulesets",
@@ -2724,12 +2706,6 @@
       "severity": "gap",
       "path": "GET /orgs/{}/teams?team_type",
       "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /rate_limit",
-      "detail": "the vendor serves it; Backlot does not"
     },
     {
       "kind": "missing_operation",
@@ -3838,12 +3814,6 @@
     {
       "kind": "missing_param",
       "severity": "gap",
-      "path": "GET /repos/{}/{}/issues?direction",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
       "path": "GET /repos/{}/{}/issues?issue_field_values",
       "detail": "the vendor accepts it; Backlot does not"
     },
@@ -3869,12 +3839,6 @@
       "kind": "missing_param",
       "severity": "gap",
       "path": "GET /repos/{}/{}/issues?since",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /repos/{}/{}/issues?sort",
       "detail": "the vendor accepts it; Backlot does not"
     },
     {
@@ -4060,19 +4024,7 @@
     {
       "kind": "missing_param",
       "severity": "gap",
-      "path": "GET /repos/{}/{}/pulls?direction",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
       "path": "GET /repos/{}/{}/pulls?head",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /repos/{}/{}/pulls?sort",
       "detail": "the vendor accepts it; Backlot does not"
     },
     {
@@ -4692,31 +4644,13 @@
     {
       "kind": "missing_param",
       "severity": "gap",
-      "path": "GET /user/repos?direction",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
       "path": "GET /user/repos?since",
       "detail": "the vendor accepts it; Backlot does not"
     },
     {
       "kind": "missing_param",
       "severity": "gap",
-      "path": "GET /user/repos?sort",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
       "path": "GET /user/repos?type",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /user/repos?visibility",
       "detail": "the vendor accepts it; Backlot does not"
     },
     {

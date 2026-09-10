@@ -314,13 +314,13 @@ class RateLimitWindows:
     closes an hour later; `reset` is its closing second, the same on every answer inside it. The
     windows measured stayed put across the requests inside them and differed between credentials
     and between resources (an anonymous caller's `core` and `search` resets 1552 seconds apart),
-    which is a
-    window per pair opened by use rather than one clock hour shared by all. `remaining` stops at 0
-    and `used` keeps counting past the limit: nothing here refuses a request, because a test
-    suite's own volume drives an anonymous client past 60 in an hour, and a mock answering the
+    which is a window per pair opened by use rather than one clock hour shared by all. `remaining`
+    stops at 0 and `used` keeps counting past the limit: nothing here refuses a request, because a
+    test suite's own volume drives an anonymous client past 60 in an hour, and a mock answering the
     61st request with the 403 or 429 the docs describe fails that suite for pacing it never asked
-    for. Exhaustion is docs only; nothing was driven to it. ``clock`` is `time.time` unless a test
-    hands in another to move a window."""
+    for. Exhaustion is docs only; nothing was driven to it. One process, one set of windows: the
+    server runs a single worker, and a client run against several would see each one's count.
+    ``clock`` is `time.time` unless a test hands in another to move a window."""
 
     def __init__(self, clock: Callable[[], float] = time.time):
         self.clock = clock
@@ -366,10 +366,10 @@ def rate_limit_caller(request: Request) -> tuple[str, bool]:
     """Whose requests these are for counting, and whether that is a credential.
 
     The token when it resolves; the client's address otherwise, which is how real counts a caller
-    with no credential (the docs' 60 an hour "for unauthenticated requests", measured at
-    `limit: 60` on every anonymous answer measured). A bearer that does not resolve is counted with the
-    anonymous callers from its address: real's answer for one is a 401 carrying the five, and which
-    window it counts against is not measured."""
+    with no credential (the docs' 60 an hour "for unauthenticated requests", `limit: 60` on every
+    anonymous answer measured). A bearer that does not resolve is counted with the anonymous
+    callers from its address: real's answer for one is a 401 carrying the five, and which window it
+    counts against is not measured."""
     token = auth.bearer_token(request)
     if token is not None and auth.resolve_bearer(request) is not None:
         return f"token:{token}", True
@@ -629,15 +629,20 @@ def _sent(request: Request, *names: str) -> dict:
     return {n: q[n] for n in names if n in q}
 
 
-def _enum_param(default: str | None, description: str, values: tuple[str, ...]):
+def _enum_param(
+    default: str | None, description: str, values: tuple[str, ...], *, alias: str | None = None
+):
     """A query parameter declared as real's description declares it: `{type: string, enum: […]}`
     with the default real states, or none, under the route's own description.
 
     Written into the schema by hand rather than as a `Literal`: a `Literal` has FastAPI refuse a
     value outside it before the handler runs, and real refuses none of these parameters' values on
     any of the routes measured (see :data:`_ISSUE_ORDERING` and its siblings, and
-    :func:`_invalid_issue_state` for the one parameter one route does refuse)."""
-    return Query(default, description=description, json_schema_extra={"enum": list(values)})
+    :func:`_invalid_issue_state` for the one parameter one route does refuse). ``alias`` is the
+    wire name when the Python name cannot be it (`type`)."""
+    return Query(
+        default, alias=alias, description=description, json_schema_extra={"enum": list(values)}
+    )
 
 
 # --- sort and direction -------------------------------------------------------------
@@ -696,7 +701,7 @@ _ISSUE_ORDERING = _Ordering(
     unknown_direction="unsent",
 )
 
-#: Pulls: newest first with no `sort` (7619, 7616, 7609), and OLDEST first the moment one is sent —
+#: Pulls: newest first with no `sort` (7619, 7616, 7609), and OLDEST first the moment one is sent:
 #: `sort=created` 4, 8, 10, where the description says `desc` for exactly that case; `sort=updated`
 #: 519, 929, 1350 by `updated_at` ascending; `sort=popularity` 10, 15, 42, each at 0 comments, and
 #: `direction=desc` with it 5797, 3014, 2567, the same conversation-plus-review count the issue
@@ -740,9 +745,10 @@ _ORG_REPO_ORDERING = _Ordering(
 #: real answers an order that is neither the names' nor `created_at`'s nor `pushed_at`'s (`bsk`,
 #: `bsk_check`, `agent-k`, `agent-zoo`, created 2026-07, 2026-09, 2026-03, 2026-08, pushed 09-02,
 #: 09-05, 08-15, 08-31), and `sort=full_name` the same first three names, which are not in
-#: full-name order either; Backlot answers the declared default, name order, for both. `sort=created` newest first; `sort=bogus` the same;
-#: `sort=created&direction=bogus` newest first too, so an unknown direction is read as `desc` (one
-#: sort measured). `type=bogus` and `visibility=bogus` keep every repository.
+#: full-name order either; Backlot answers the declared default, name order, for both.
+#: `sort=created` newest first; `sort=bogus` the same; `sort=created&direction=bogus` newest first
+#: too, so an unknown direction is read as `desc` (one sort measured). `type=bogus` and
+#: `visibility=bogus` keep every repository.
 _USER_REPO_ORDERING = _Ordering(
     sorts=("created", "updated", "pushed", "full_name"),
     default="full_name",
@@ -769,6 +775,8 @@ def _order(request: Request, spec: _Ordering) -> tuple[str, bool]:
             key = spec.default
         elif sort in spec.sorts:
             key = sort
+        elif spec.unknown_sort == "unsent":
+            return unsent
         else:
             key = spec.unknown_sort
         return key, spec.unknown_direction == "desc"
@@ -858,8 +866,9 @@ _ORG_REPO_TYPES = ("all", "public", "private", "forks", "sources", "member")
 _USER_REPO_VISIBILITIES = ("all", "public", "private")
 
 
-def _repo_type_keeps(value: str | None, private: bool) -> bool:
-    """Whether `type=value` keeps a repository that is or is not private.
+def _repo_type_keeps(value: str | None) -> Callable[[bool], bool] | None:
+    """The filter `type=value` applies to a repository's `private` flag, or ``None`` for one that
+    keeps every repository.
 
     `public` and `private` select on the one fact a corpus states about a repository's kind, the
     ACL (see :func:`_repo_obj`). Every repository here is one the organization owns outright and
@@ -867,16 +876,18 @@ def _repo_type_keeps(value: str | None, private: bool) -> bool:
     `member` keep none and `sources` keeps every one; `all`, no value and a value outside the enum
     keep every one too, as measured."""
     if value in ("public", "private"):
-        return private == (value == "private")
-    return value not in ("forks", "member")
+        return lambda private: private == (value == "private")
+    if value in ("forks", "member"):
+        return lambda private: False
+    return None
 
 
-def _repo_visibility_keeps(value: str | None, private: bool) -> bool:
-    """Whether `visibility=value` keeps a repository that is or is not private; `all`, no value and
-    a value outside the enum keep every one."""
+def _repo_visibility_keeps(value: str | None) -> Callable[[bool], bool] | None:
+    """The filter `visibility=value` applies to a repository's `private` flag, or ``None`` for
+    `all`, no value and a value outside the enum, which keep every repository."""
     if value in ("public", "private"):
-        return private == (value == "private")
-    return True
+        return lambda private: private == (value == "private")
+    return None
 
 
 _GH_OP = re.compile(r'(\w+):("[^"]*"|\S+)')
@@ -1476,21 +1487,28 @@ def _repo_page(
     per_page,
     *,
     ordering: _Ordering,
-    keeps: Callable[[bool], bool],
+    keeps: Callable[[bool], bool] | None,
     echoed: tuple[str, ...],
 ) -> Response:
     """One page of a repository listing: the visible repositories ``keeps`` keeps, in the order
-    ``ordering`` reads off the request, paged after both so a `Link` walk sees one sequence."""
+    ``ordering`` reads off the request, paged after both so a `Link` walk sees one sequence.
+
+    ``keeps`` is ``None`` when the request selects on nothing, so the ACL read that decides
+    `private` happens once per repository on the page, as before, and once per visible repository
+    only when a `type` or `visibility` value asks it of every one."""
     repos = _visible_repos(conn, ids)
-    private = {n: not store.container_has_public(conn, "github", n) for n in repos}
-    repos = [n for n in repos if keeps(private[n])]
+    private: dict[str, bool] = {}
+    if keeps is not None:
+        private = {n: not store.container_has_public(conn, "github", n) for n in repos}
+        repos = [n for n in repos if keeps(private[n])]
     sort, descending = _order(request, ordering)
     repos = _ordered(repos, _repo_sort_keys(owner), ordering, sort, descending)
     page, per_page = _clamp(page, per_page)
     start = (page - 1) * per_page
     ab = _api_base(request)
     body = [
-        _repo_obj(conn, owner, n, ab, private=private[n]) for n in repos[start : start + per_page]
+        _repo_obj(conn, owner, n, ab, private=private.get(n))
+        for n in repos[start : start + per_page]
     ]
     return _paged(request, len(repos), _sent(request, *echoed), body, page, per_page)
 
@@ -1505,8 +1523,11 @@ _REPO_DIRECTION_DESCRIPTION = (
 async def list_repos(
     org: str,
     request: Request,
-    type: str = _enum_param(
-        "all", "Specifies the types of repositories you want returned.", _ORG_REPO_TYPES
+    type_: str = _enum_param(
+        "all",
+        "Specifies the types of repositories you want returned.",
+        _ORG_REPO_TYPES,
+        alias="type",
     ),
     sort: str = _enum_param("created", _REPO_SORT_DESCRIPTION, _ORG_REPO_ORDERING.sorts),
     direction: str = _enum_param(None, _REPO_DIRECTION_DESCRIPTION, _DIRECTIONS),
@@ -1526,7 +1547,7 @@ async def list_repos(
         page,
         per_page,
         ordering=_ORG_REPO_ORDERING,
-        keeps=lambda private: _repo_type_keeps(request.query_params.get("type"), private),
+        keeps=_repo_type_keeps(request.query_params.get("type")),
         echoed=("type", "sort", "direction"),
     )
 
@@ -1571,9 +1592,7 @@ async def list_user_repos(
         page,
         per_page,
         ordering=_USER_REPO_ORDERING,
-        keeps=lambda private: _repo_visibility_keeps(
-            request.query_params.get("visibility"), private
-        ),
+        keeps=_repo_visibility_keeps(request.query_params.get("visibility")),
         echoed=("visibility", "sort", "direction"),
     )
 
@@ -3014,8 +3033,8 @@ def _repo_obj(
     """A repository, carrying a URL template for each sub-resource Backlot serves.
 
     ``private`` is the ACL fact the object reports (no org-wide grant on any of the repository's
-    documents), passed in by the listings, which have read it once per repository to filter on;
-    the single-repository routes leave it to be read here.
+    documents), passed in by a listing that has already read it to filter on (see
+    :func:`_repo_page`); every other caller leaves it to be read here.
 
     The templates are how an SDK completes a repository lazily — PyGithub expands them for the
     example this repo ships — so without them the client assembles the URLs from parts, which is the

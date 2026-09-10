@@ -432,8 +432,11 @@ async def jira_issue_comments(key: str, request: Request):
             detail="Issue does not exist or you do not have permission to see it.",
         )
     params = request.query_params
-    order = params.get("orderBy") or "created"
-    if order not in _JIRA_ORDER_BY:
+    # An absent or empty `orderBy` is "not asked", and leaves the corpus's own order alone. What
+    # real Jira returns without one is NOT measured — the site available had no issue carrying a
+    # comment — so sorting by default would be inventing an order rather than reproducing one.
+    order = params.get("orderBy") or ""
+    if order and order not in _JIRA_ORDER_BY:
         raise HTTPException(
             status_code=400,
             detail=f"The field to order by must be one of [created]. Instead, : {order}",
@@ -444,10 +447,15 @@ async def jira_issue_comments(key: str, request: Request):
     )
 
     cs = store.doc_comments(conn, "jira", row["key"])
-    if _JIRA_ORDER_BY[order]:
+    if order:
+        # Sorted for BOTH directions, not only the descending one: `store.doc_comments` orders by
+        # `seq`, the comment's position in the corpus record, and a corpus is free to list
+        # comments in an order its own timestamps contradict. Passing those rows through for
+        # `created` would accept the parameter and apply nothing.
+        #
         # `seq` breaks a tie, so two comments written in the same second keep a stable order
         # instead of one that depends on the rows coming back the same way twice.
-        cs = sorted(cs, key=lambda c: (c["created_ts"], c["seq"]), reverse=True)
+        cs = sorted(cs, key=lambda c: (c["created_ts"], c["seq"]), reverse=_JIRA_ORDER_BY[order])
     site = _site(request)
     return {
         "startAt": start,

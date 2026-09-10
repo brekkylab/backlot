@@ -819,8 +819,12 @@ def test_confluence_child_page_and_restriction_match_a_nonexistent_id_for_an_out
 # validation runs before any comment lookup, so an issue with no comments settles the clamps, the
 # caps and the refusals; the ordering itself comes from Atlassian's own document.
 
+# The corpus lists these OUT of chronological order on purpose: `comment 1` is the newest and
+# `comment 7` the oldest. A fixture whose array order matches its clock cannot tell a real sort
+# from `store.doc_comments`' `ORDER BY seq`, so every ascending assertion below would pass against
+# an implementation that ignores `orderBy` altogether.
 _COMMENTS = [
-    {"content": f"comment {i}", "author_email": "b@x.com", "created_ts": 1770000000 + i * 60}
+    {"content": f"comment {i}", "author_email": "b@x.com", "created_ts": 1770000000 + (8 - i) * 60}
     for i in range(1, 8)
 ]
 
@@ -903,14 +907,26 @@ def test_jira_comments_past_the_end_are_an_empty_page_not_an_error(paged):
 @pytest.mark.parametrize(
     "order,want",
     [
-        ("created", ["comment 1", "comment 2"]),
-        ("+created", ["comment 1", "comment 2"]),
-        ("-created", ["comment 7", "comment 6"]),
+        # `comment 7` is the OLDEST in this corpus and `comment 1` the newest, so an ascending
+        # sort has to reorder the rows rather than pass them through.
+        ("created", ["comment 7", "comment 6"]),
+        ("+created", ["comment 7", "comment 6"]),
+        ("-created", ["comment 1", "comment 2"]),
     ],
 )
 def test_jira_comments_order_by_created(paged, order, want):
     _r, d = _page(paged, orderBy=order, maxResults=2)
     assert _bodies(d) == want
+
+
+def test_jira_comments_without_order_by_keep_the_order_the_corpus_states(paged):
+    """What real Jira returns with no `orderBy` is NOT measured: the site available for measuring
+    had no issue carrying a comment, and creating one is a write to a live instance. So the corpus
+    keeps whatever order it stated, rather than this inventing a default sort.
+
+    The fixture lists its comments newest-first, so a default sort would be visible here."""
+    _r, d = _page(paged, maxResults=3)
+    assert _bodies(d) == ["comment 1", "comment 2", "comment 3"]
 
 
 @pytest.mark.parametrize("order", ["bogus", "updated", "-updated"])

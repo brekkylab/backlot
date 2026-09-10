@@ -387,7 +387,7 @@ def rate_limit_headers(request: Request, status_code: int) -> dict[str, str]:
     limits = RATE_LIMITS[resource]
     limit = limits.authenticated if authenticated else limits.anonymous
     windows = _rate_limit_windows(request.app)
-    read = windows.status if request.url.path == RATE_LIMIT_PATH else windows.count
+    read = windows.status if request.url.path.rstrip("/") == RATE_LIMIT_PATH else windows.count
     window = read(key, resource, limit)
     return {
         "x-ratelimit-limit": str(window["limit"]),

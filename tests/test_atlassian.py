@@ -815,9 +815,11 @@ def test_confluence_child_page_and_restriction_match_a_nonexistent_id_for_an_out
 
 # --- Jira: a page of comments is a page -------------------------------------------------------
 #
-# Every expectation below is measured against Jira Cloud (2026-09-09) on a real issue. Parameter
-# validation runs before any comment lookup, so an issue with no comments settles the clamps, the
-# caps and the refusals; the ordering itself comes from Atlassian's own document.
+# The clamps, the caps, the accepted and refused `orderBy` spellings and the 400-before-404
+# order below are measured against Jira Cloud (2026-09-09): parameter validation runs before
+# the issue is resolved, so an issue with no comments settles all of them. What `-created`
+# does to a non-empty list comes from Atlassian's document rather than from a call, and the
+# no-`orderBy` case from neither — see that test's own docstring.
 
 # The corpus lists these OUT of chronological order on purpose: `comment 1` is the newest and
 # `comment 7` the oldest. A fixture whose array order matches its clock cannot tell a real sort
@@ -929,6 +931,95 @@ def test_jira_comments_without_order_by_keep_the_order_the_corpus_states(paged):
     assert _bodies(d) == ["comment 1", "comment 2", "comment 3"]
 
 
+@pytest.mark.parametrize(
+    "query,want",
+    [
+        # Atlassian's own document writes the ascending form as `+created`, and a literal `+` in a
+        # query string decodes to a space. Real Jira answers 200 to every one of these.
+        ("orderBy=+created", ["comment 7", "comment 6"]),
+        ("orderBy=%2Bcreated", ["comment 7", "comment 6"]),
+        ("orderBy=%20created", ["comment 7", "comment 6"]),
+        ("orderBy=created%20", ["comment 7", "comment 6"]),
+        ("orderBy=Created", ["comment 7", "comment 6"]),
+        ("orderBy=CREATED", ["comment 7", "comment 6"]),
+        ("orderBy=-Created", ["comment 1", "comment 2"]),
+        ("orderBy=-%20created", ["comment 1", "comment 2"]),
+    ],
+)
+def test_jira_order_by_takes_the_spellings_the_real_api_takes(paged, query, want):
+    """Sent as a RAW query string, not through `params=`, which would percent-encode the `+` and
+    never exercise the spelling Atlassian's document actually writes.
+
+    Measured against Jira Cloud: one leading `+` or `-` is the direction sigil, whitespace around
+    it is ignored, and the field is matched case-insensitively."""
+    client, h = paged
+    d = client.get(f"/atlassian/rest/api/3/issue/PAY-7/comment?{query}&maxResults=2", headers=h)
+    assert d.status_code == 200, d.text
+    assert _bodies(d.json()) == want
+
+
+@pytest.mark.parametrize("query", ["orderBy=--created", "orderBy=%2B-created", "orderBy="])
+def test_jira_refuses_the_spellings_the_real_api_refuses(paged, query):
+    """Measured: exactly ONE sigil is stripped, so `--created` leaves `-created`, which is not a
+    field — real Jira's own message echoes `-created`, not `--created`. An empty value is refused
+    for the same reason: the field is the empty string."""
+    client, h = paged
+    r = client.get(f"/atlassian/rest/api/3/issue/PAY-7/comment?{query}", headers=h)
+    assert r.status_code == 400, r.text
+
+
+def test_jira_validates_order_by_before_resolving_the_issue(paged):
+    """Measured: `GET /issue/NOPE-1/comment?orderBy=bogus` is 400 on real Jira while the same key
+    without the parameter is 404, so the parameter is validated first.
+
+    It leaks nothing: the 400 is identical whether the key exists, is hidden, or was never a key,
+    so it separates none of the three."""
+    client, h = paged
+    assert client.get("/atlassian/rest/api/3/issue/NOPE-1/comment", headers=h).status_code == 404
+    r = client.get("/atlassian/rest/api/3/issue/NOPE-1/comment?orderBy=bogus", headers=h)
+    assert r.status_code == 400
+
+
+def test_jira_sorts_the_whole_collection_before_slicing_it(paged):
+    """A sort applied to the page instead of the collection passes every case that leaves `startAt`
+    at 0, so the two are only told apart off the first page."""
+    _r, d = _page(paged, orderBy="-created", startAt=2, maxResults=2)
+    assert _bodies(d) == ["comment 3", "comment 4"]
+
+
+def test_jira_orders_comments_sharing_a_timestamp_by_seq(tmp_path):
+    """The tie-break the router promises. Two comments written in the same second come back in
+    `seq` order ascending and reversed descending, rather than in whatever order the rows arrive
+    in twice."""
+    settings = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "jira",
+                "doc_id": "j-tie",
+                "project": "payments",
+                "title": "T",
+                "content": "c",
+                "author_email": "a@x.com",
+                "visibility": "public",
+                "key": "PAY-9",
+                "comments": [
+                    {"content": "same A", "author_email": "b@x.com", "created_ts": 1770000000},
+                    {"content": "same B", "author_email": "b@x.com", "created_ts": 1770000000},
+                ],
+            }
+        ],
+    )
+    with client_for(settings, reload=True) as client:
+        tok = yaml.safe_load(settings.tokens_path.read_text())["admin_token"]
+        h = {"Authorization": f"Bearer {tok}"}
+        url = "/atlassian/rest/api/3/issue/PAY-9/comment"
+        asc = client.get(url, headers=h, params={"orderBy": "created"}).json()
+        desc = client.get(url, headers=h, params={"orderBy": "-created"}).json()
+        assert _bodies(asc) == ["same A", "same B"]
+        assert _bodies(desc) == ["same B", "same A"]
+
+
 @pytest.mark.parametrize("order", ["bogus", "updated", "-updated"])
 def test_jira_refuses_an_order_by_field_that_is_not_created(paged, order):
     """Measured: real Jira answers 400 for any field but `created`. Accepting one silently would
@@ -940,11 +1031,17 @@ def test_jira_refuses_an_order_by_field_that_is_not_created(paged, order):
     r, d = _page(paged, orderBy=order)
     assert r.status_code == 400
     assert d["errors"] == {}
-    assert order in d["errorMessages"][0]
-    assert "created" in d["errorMessages"][0]
+    # The message names the field AFTER the direction sigil is stripped, which is what real Jira
+    # echoes: `--created` there reports `-created`, not what was sent.
+    assert d["errorMessages"][0].endswith(f"Instead: {order.lstrip('-+')}")
+    assert "[created]" in d["errorMessages"][0]
 
 
 def test_jira_comment_paging_is_declared_so_a_client_can_discover_it(paged):
     client, _h = paged
     op = client.app.openapi()["paths"]["/atlassian/rest/api/3/issue/{key}/comment"]["get"]
-    assert {p["name"] for p in op["parameters"]} >= {"startAt", "maxResults", "orderBy"}
+    declared = {p["name"] for p in op["parameters"]}
+    assert {"startAt", "maxResults", "orderBy"} <= declared
+    # `expand` is deliberately absent: real Jira takes one, Backlot does not honour it, and `qp`
+    # is for parameters Backlot honours. `backlot diff --source jira` is where that gap is read.
+    assert "expand" not in declared

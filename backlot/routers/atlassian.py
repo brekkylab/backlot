@@ -88,17 +88,13 @@ _X_JIRA_SEARCH = {
     },
 }
 _P_EXPAND = {"parameters": [qp("expand")]}
+# `expand` is NOT declared here. The endpoint takes one on real Jira, and `expand=renderedBody`
+# returns each comment's body as HTML, which Backlot does not produce — and `qp` exists only for
+# parameters Backlot honours, because advertising one it ignores makes a client ask for data that
+# never arrives. The gap stays where it is legible: `backlot diff --source jira` reports it, and
+# the baseline acknowledges it as "the vendor accepts it; Backlot does not".
 _P_JIRA_COMMENTS = {
-    "parameters": [
-        qp("startAt", "integer"),
-        qp("maxResults", "integer"),
-        qp("orderBy"),
-        # Declared and not read. Measured against real Jira: it does not validate this either —
-        # `expand=bogus` answers 200 — so accepting a value and ignoring it is what the vendor
-        # does. What `expand=renderedBody` returns needs ADF-to-HTML rendering, which Backlot has
-        # not.
-        qp("expand"),
-    ]
+    "parameters": [qp("startAt", "integer"), qp("maxResults", "integer"), qp("orderBy")]
 }
 _P_CQL = {"parameters": [qp("cql", required=True), qp("limit", "integer"), qp("start", "integer")]}
 _P_CONTENT = {
@@ -110,8 +106,37 @@ _P_CONTENT = {
 # (0 and -1 both answer 1). `startAt` floors at 0, and one past the end is echoed back unchanged
 # with an empty page rather than refused.
 _JIRA_COMMENT_PAGE_MAX = 100
-# The three spellings real Jira accepts, mapped to whether each reverses. Anything else is its 400.
-_JIRA_ORDER_BY = {"created": False, "+created": False, "-created": True}
+_JIRA_ORDER_FIELD = "created"
+
+
+def _jira_order_desc(raw: str) -> bool:
+    """Whether ``orderBy`` asks for the reverse, or Jira's 400 for a field it does not order by.
+
+    Measured against Jira Cloud (2026-09-09). Exactly ONE leading sigil is stripped: `--created`
+    keeps a `-created` that is no field, and Jira's own message echoes `-created` rather than what
+    was sent. Whitespace around the sigil is ignored (`%20created`, `created%20`, `-%20created`
+    are each 200) and the field matches case-insensitively (`Created`, `CREATED`).
+
+    Whitespace matters because a literal `+` in a query string decodes to a space, so `+created` —
+    the ascending spelling Atlassian's own document writes — arrives here as `" created"`. Real
+    Jira answers 200 to it, so stripping is what matches rather than a special case for `+`.
+
+    An EMPTY value is refused, not read as absent: the field it leaves is the empty string, and
+    real Jira answers 400 to `?orderBy=`.
+    """
+    field = raw.strip()
+    desc = False
+    if field[:1] in ("+", "-"):
+        desc = field[0] == "-"
+        field = field[1:].strip()
+    if field.casefold() != _JIRA_ORDER_FIELD:
+        # Backlot's own sentence, not a transcription: Jira localises this one to the account's
+        # language, and the account it was measured against answers in Korean.
+        raise HTTPException(
+            status_code=400,
+            detail=f"The field to order by must be one of [{_JIRA_ORDER_FIELD}]. Instead: {field}",
+        )
+    return desc
 
 
 def _jira_caller(request: Request) -> Caller:
@@ -422,6 +447,21 @@ async def jira_issue_comments(key: str, request: Request):
     sort was dropped — and would pass here while failing against Jira. Its own message is localised
     to the account's language, so the wording is not reproduced, only the refusal.
     """
+    params = request.query_params
+    # BEFORE the issue is resolved. Measured: `GET /issue/NOPE-1/comment?orderBy=bogus` is 400 on
+    # real Jira where the same key without the parameter is 404, so the parameter is checked
+    # first. It separates nothing a caller could not already tell — the 400 is identical for a key
+    # that exists, one hidden from the caller, and one that never existed.
+    #
+    # An ABSENT `orderBy` is "not asked" and leaves the corpus's own order alone. What real Jira
+    # returns without one is not established: its REST intro says responses are "listed in
+    # ascending order by default", but that is a general statement its own operations contradict
+    # (project classification: "If not provided, values will not be sorted"), and the site
+    # available for measuring had no issue carrying a comment. Sorting on that would be picking a
+    # default, not reproducing one.
+    raw_order = params.get("orderBy")
+    desc = _jira_order_desc(raw_order) if raw_order is not None else None
+
     conn = auth.conn(request)
     caller = _jira_caller(request)
     ids = auth.visible_ids(request, caller)
@@ -431,31 +471,24 @@ async def jira_issue_comments(key: str, request: Request):
             status_code=404,
             detail="Issue does not exist or you do not have permission to see it.",
         )
-    params = request.query_params
-    # An absent or empty `orderBy` is "not asked", and leaves the corpus's own order alone. What
-    # real Jira returns without one is NOT measured — the site available had no issue carrying a
-    # comment — so sorting by default would be inventing an order rather than reproducing one.
-    order = params.get("orderBy") or ""
-    if order and order not in _JIRA_ORDER_BY:
-        raise HTTPException(
-            status_code=400,
-            detail=f"The field to order by must be one of [created]. Instead, : {order}",
-        )
     start = max(0, _int(params.get("startAt"), 0))
     limit = min(
         _JIRA_COMMENT_PAGE_MAX, max(1, _int(params.get("maxResults"), _JIRA_COMMENT_PAGE_MAX))
     )
 
     cs = store.doc_comments(conn, "jira", row["key"])
-    if order:
+    if desc is not None:
         # Sorted for BOTH directions, not only the descending one: `store.doc_comments` orders by
         # `seq`, the comment's position in the corpus record, and a corpus is free to list
         # comments in an order its own timestamps contradict. Passing those rows through for
         # `created` would accept the parameter and apply nothing.
         #
+        # The whole collection, before the slice below — sorting a page instead would answer
+        # correctly only while `startAt` is 0.
+        #
         # `seq` breaks a tie, so two comments written in the same second keep a stable order
         # instead of one that depends on the rows coming back the same way twice.
-        cs = sorted(cs, key=lambda c: (c["created_ts"], c["seq"]), reverse=_JIRA_ORDER_BY[order])
+        cs = sorted(cs, key=lambda c: (c["created_ts"], c["seq"]), reverse=desc)
     site = _site(request)
     return {
         "startAt": start,

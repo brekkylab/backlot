@@ -710,7 +710,7 @@ def test_list_multipart_uploads_encodes_under_encoding_type_url_as_real_does(liv
     )
     assert fields["Prefix"] == "run books/x y%z" and fields["KeyMarker"] == "k m"
     # With it: space is `+`, `/` `-` `_` `.` `*` stay, the other punctuation sent is `%XX` in upper
-    # case, and `encoding-type` is echoed as sent, in whatever case it came.
+    # case, and `URL` is taken like `url` and echoed as sent.
     fields = dict(
         _uploads_fields(
             base_url,

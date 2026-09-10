@@ -90,7 +90,7 @@ _P_BUCKET_GET = [
     qp(
         "uploads",
         description="present, at any value: answer ListMultipartUploads instead of a listing — "
-        "always the empty page, since data enters through `backlot import` and no upload is "
+        "always the empty page, since data enters through backlot import and no upload is "
         "ever in progress",
     ),
 ]
@@ -585,9 +585,9 @@ def _list_multipart_uploads(request: Request, bucket: str, max_uploads: int) -> 
     measured with two ids on a bucket with none in progress — whether real would also refuse an id
     that does name one could not be told apart there, and on Backlot no id ever does, so every such
     request takes the refusal. ``encoding-type`` is checked before the markers and refused unless it
-    is ``url`` in any case, echoed as sent; under it ``KeyMarker``, ``Delimiter`` and ``Prefix``
-    come back encoded (see ``_url_encode``); ``Bucket`` as it is, a bucket name holding nothing the
-    encoding touches.
+    is ``url``, compared without case since real takes ``URL`` too and echoes it as ``URL`` (the two
+    spellings measured); under it ``KeyMarker``, ``Delimiter`` and ``Prefix`` come back encoded (see
+    ``_url_encode``); ``Bucket`` as it is, a bucket name holding nothing the encoding touches.
     """
     q = request.query_params
     resource = f"/{bucket}"

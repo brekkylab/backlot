@@ -58,12 +58,17 @@ _URL_ENCODING_SAFE = frozenset(
 )
 
 # Read off the raw request rather than through FastAPI signatures, so each has to be declared by
-# hand (see openapi.qp). Only what _list_objects_v2 and bucket_get actually read: `list-type` is
-# absent because Backlot answers the V2 shape whether or not a caller asks for it, and advertising
-# a parameter that changes nothing is worse than not offering it. ListMultipartUploads' own
-# parameters (`max-uploads`, `key-marker`, `upload-id-marker`, `encoding-type`) are absent for the
-# same reason: _max_uploads and _list_multipart_uploads read them to validate and echo them as real
-# S3 does, but the page they would shape is always empty, so none changes what a caller gets.
+# hand (see openapi.qp). What is declared is what selects an operation or decides which keys come
+# back: `list-type` is absent because Backlot answers the V2 shape whether or not a caller asks for
+# it, and advertising a parameter that changes nothing is worse than not offering it.
+# ListMultipartUploads' own parameters (`max-uploads`, `key-marker`, `upload-id-marker`,
+# `encoding-type`) are absent for a different reason. They are not inert: _max_uploads and
+# _list_multipart_uploads read all four, `max-uploads`, `key-marker` and `encoding-type` come back
+# echoed, and `max-uploads`, `encoding-type` and `upload-id-marker` can each turn the 200 into an
+# InvalidArgument. What none of them does is decide which uploads a caller gets, because there are
+# never any — all they shape is an echo of the caller's own input on a page that is always empty.
+# Declaring them would advertise a paging surface, a marker to resume from and a page size, over a
+# listing that never has a second page.
 _P_BUCKET_GET = [
     qp("prefix"),
     qp(
@@ -196,16 +201,30 @@ def _selected(q, selectors: frozenset[str]) -> list[str]:
     return sorted(k for k in q.keys() if k in selectors)
 
 
-def _conflict(selected: list[str], resource: str) -> Response:
-    """Two selectors at once, refused as real S3 refuses them (measured)."""
+def _argument_error(message: str, name: str, value: str, resource: str) -> Response:
+    """Real S3's ``InvalidArgument`` for one query parameter: the message beside the parameter's
+    name and the value as sent, in ``ArgumentName`` and ``ArgumentValue`` (measured)."""
     return _error(
         "InvalidArgument",
-        "Conflicting query string parameters: " + ", ".join(selected),
+        message,
         resource,
         extra=(
-            "<ArgumentName>ResourceType</ArgumentName>"
-            f"<ArgumentValue>{escape(selected[0])}</ArgumentValue>"
+            f"<ArgumentName>{escape(name)}</ArgumentName>"
+            f"<ArgumentValue>{escape(value)}</ArgumentValue>"
         ),
+    )
+
+
+def _conflict(selected: list[str], resource: str) -> Response:
+    """Two selectors at once, refused as real S3 refuses them (measured).
+
+    The name real reports here is ``ResourceType`` rather than a parameter's, and the value is the
+    first selector it names in the message."""
+    return _argument_error(
+        "Conflicting query string parameters: " + ", ".join(selected),
+        "ResourceType",
+        selected[0],
+        resource,
     )
 
 
@@ -356,8 +375,9 @@ async def bucket_get(request: Request, bucket: str):
 
     Filtered by ``prefix``, rolled up by ``delimiter``, and bounded by ``max-keys``; a page whose
     ``IsTruncated`` is true carries a ``NextContinuationToken`` to pass back as
-    ``continuation-token``. With ``location`` present it answers GetBucketLocation instead, S3's
-    other GET on this same path."""
+    ``continuation-token``. Two other GETs share this path and are selected the same way: with
+    ``location`` present it answers GetBucketLocation, and with ``uploads`` present
+    ListMultipartUploads, always the empty page because no upload is ever in progress."""
     caller, visible, err = _auth(request)
     if err:
         return err
@@ -518,20 +538,6 @@ def _url_encode(value: str) -> str:
         else:
             out.append(f"%{b:02X}")
     return "".join(out)
-
-
-def _argument_error(message: str, name: str, value: str, resource: str) -> Response:
-    """Real S3's ``InvalidArgument`` for one query parameter: the message beside the parameter's
-    name and the value as sent, in ``ArgumentName`` and ``ArgumentValue`` (measured)."""
-    return _error(
-        "InvalidArgument",
-        message,
-        resource,
-        extra=(
-            f"<ArgumentName>{escape(name)}</ArgumentName>"
-            f"<ArgumentValue>{escape(value)}</ArgumentValue>"
-        ),
-    )
 
 
 def _max_uploads(q, resource: str) -> tuple[int, Response | None]:

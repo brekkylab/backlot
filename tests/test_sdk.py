@@ -351,6 +351,11 @@ def github():
     check("GitHub", "get_rate_limit")(
         lambda: f"core {gh.get_rate_limit().resources.core.remaining}/5000"
     )
+    # ...and the headers themselves, through PyGithub's own parser: `rate_limiting` is the
+    # `(remaining, limit)` it read off the last response's x-ratelimit-* headers
+    check("GitHub", "x-ratelimit headers")(
+        lambda: f"{gh.rate_limiting}" if gh.rate_limiting[1] == 5000 else 1 / 0
+    )
 
     # The error path, which is load-bearing rather than decorative: PyGithub picks its exception
     # CLASS off the body's `message`, so an error in FastAPI's `{"detail": …}` reaches the caller as

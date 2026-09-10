@@ -74,7 +74,7 @@ Field names are snake_case, as Fireflies' own schema has them. Full introspectio
 | `orgs/{org}/repos` | `type`, `sort`, `direction`: real's enums and defaults, each order as measured |
 | `orgs/{org}/teams` | |
 | `user/repos` | The token's own reach. `visibility`, `sort`, `direction`; `type` and `affiliation` select on what the caller is to a repository, which a corpus does not state, and stay undeclared |
-| `rate_limit` | The windows the `x-ratelimit-*` headers report, `core`, `search` and `code_search`; a read of it does not count |
+| `rate_limit` | The windows the `x-ratelimit-*` headers report, `core`, `search` and `code_search`; a read of it does not count, and it answers with no credential at the anonymous limits, the one route here that does |
 | `repos/{o}/{r}` | |
 | `repos/{o}/{r}/issues[/{n}]` | `state` on the listing: `open`\|`closed`\|`all`; any other value is real's 422, and the repository is checked first, so an unknown repo is the 404 instead. `sort`, `direction`: real's enums and defaults, each order as measured |
 | `repos/{o}/{r}/issues/{n}/comments` | |

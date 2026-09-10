@@ -4867,6 +4867,14 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
         assert _ratelimit(status) == {**five, "remaining": "4996", "used": "4"}
         again = c.get("/github/rate_limit", headers=h)
         assert again.json() == status.json() and _ratelimit(again)["used"] == "4"
+        # `rate` is the FIRST key on the wire under this version, which a dict comparison does not
+        # see; real answers it before `resources`.
+        assert list(status.json()) == ["rate", "resources"]
+        # A trailing slash is FastAPI's 307 to the same route. That answer does not count either:
+        # it is a read of the route under another spelling, not a request behind it.
+        redirect = c.get("/github/rate_limit/", headers=h, follow_redirects=False)
+        assert redirect.status_code == 307
+        assert _ratelimit(redirect)["used"] == "4"
         assert (
             "rate"
             not in c.get(

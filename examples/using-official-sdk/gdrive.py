@@ -3,7 +3,7 @@
 Google **service-account** credential, the way a real connector does, rather than a raw token.
 Self-contained.
 
-    pip install -e ".[examples]"
+    pip install -e ".[official-sdk]"
     python examples/using-official-sdk/gdrive.py                          # bare SA → admin, sees all
     python examples/using-official-sdk/gdrive.py --user mia@acme.com      # impersonate a user (ACL)
     python examples/using-official-sdk/gdrive.py --url http://localhost:8000 --user <email>

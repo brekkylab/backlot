@@ -67,7 +67,7 @@ file with them:
 
 | Needs | Sits out without it |
 |---|---|
-| `.[examples]` — the vendor SDKs | all of `tests/test_sdk.py` and all of `tests/test_s3.py`, plus the `googleapiclient` tests in `tests/test_integrations.py` |
+| `.[official-sdk]` — the vendor SDKs | all of `tests/test_sdk.py` and all of `tests/test_s3.py`, plus the `googleapiclient` tests in `tests/test_integrations.py` |
 | `.[llamaindex]` — the official readers | all of `tests/test_llamaindex.py`, plus the reader tests in `tests/test_integrations.py` |
 | `llama-index-readers-hubspot`, which no extra carries | the HubSpot reader test in `tests/test_llamaindex.py` |
 | `.[mcp]` | all of `tests/test_mcp.py` |

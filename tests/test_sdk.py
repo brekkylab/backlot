@@ -5,7 +5,7 @@ carries the +α surface) — the official SDKs make real HTTP calls, so they nee
 port rather than the in-process ``TestClient``. Exercises every service's SDK read methods — Slack (slack_sdk),
 Gmail+Drive+Sheets (google-api-python-client), GitHub (PyGithub), Jira+Confluence
 (atlassian-python-api) — asserting all return shape-correct data. Skipped unless the optional
-SDKs (``.[examples]``) are installed.
+SDKs (``.[official-sdk]``) are installed.
 """
 
 from __future__ import annotations
@@ -532,7 +532,7 @@ def test_sdk_read_coverage(live_server):
     fns = [slack, gmail, drive, sheets, github, jira, confluence, google_oauth]
     import importlib.util
 
-    if importlib.util.find_spec("notion_client"):  # optional; only when .[examples] is installed
+    if importlib.util.find_spec("notion_client"):  # optional; only on .[official-sdk]
         fns.append(notion)
     for fn in fns:
         try:

@@ -5,7 +5,7 @@ HubspotReader takes only an access token and constructs the SDK client itself, s
 point_hubspot_at() rebinds `hubspot.HubSpot` to inject Backlot's host before the reader runs.
 
 The reader is deliberately NOT in the [llamaindex] extra: it pins hubspot-api-client<9, which no
-resolver can reconcile with the >=12 that [examples] needs. The pin is over-restrictive — the reader
+resolver can reconcile with the >=12 that [official-sdk] needs. The pin is over-restrictive — the reader
 only calls HubSpot(access_token=...) and crm.{deals,contacts,companies}.get_all(), all present in
 12.x — so install it past its own pin:
 

@@ -5,7 +5,7 @@ One runnable, **self-contained** script per service — each spins up its own se
 what it read. The only change from talking to the real service is the base URL.
 
 ```bash
-pip install -e ".[examples]"
+pip install -e ".[official-sdk]"
 python examples/using-official-sdk/slack.py     # or gmail.py, gdrive.py, github.py, jira.py, confluence.py, notion.py, s3.py, hubspot.py, fireflies.py
 ```
 

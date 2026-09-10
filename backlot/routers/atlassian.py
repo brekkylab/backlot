@@ -101,10 +101,10 @@ _P_CONTENT = {
     "parameters": [qp("expand"), qp("spaceKey"), qp("limit", "integer"), qp("start", "integer")]
 }
 
-# The page a comment read serves. Measured against Jira Cloud on a real issue, which settles what
-# no document states: `maxResults` is CAPPED at 100 as well as defaulted to it, and floors UP to 1
-# (0 and -1 both answer 1). `startAt` floors at 0, and one past the end is echoed back unchanged
-# with an empty page rather than refused.
+# The page a comment read serves. Measured against Jira Cloud (2026-09-09) on a real issue,
+# which settles what no document states: `maxResults` is CAPPED at 100 as well as defaulted
+# to it, and floors UP to 1 (0 and -1 both answer 1). `startAt` floors at 0, and one past the
+# end is echoed back unchanged with an empty page rather than refused.
 _JIRA_COMMENT_PAGE_MAX = 100
 _JIRA_ORDER_FIELD = "created"
 
@@ -112,7 +112,7 @@ _JIRA_ORDER_FIELD = "created"
 def _jira_order_desc(raw: str) -> bool:
     """Whether ``orderBy`` asks for the reverse, or Jira's 400 for a field it does not order by.
 
-    Measured against Jira Cloud (2026-09-09). Exactly ONE leading sigil is stripped: `--created`
+    Measured against Jira Cloud (2026-09-10). Exactly ONE leading sigil is stripped: `--created`
     keeps a `-created` that is no field, and Jira's own message echoes `-created` rather than what
     was sent. Whitespace around the sigil is ignored (`%20created`, `created%20`, `-%20created`
     are each 200) and the field matches case-insensitively (`Created`, `CREATED`).
@@ -441,17 +441,19 @@ async def jira_issue_comments(key: str, request: Request):
     `total` counts the whole collection while `startAt` and `maxResults` describe the slice, which
     is what makes the envelope a page rather than a restatement of its own length.
 
-    Ordering is by `orderBy`, which real Jira accepts only as `created`, `+created` or `-created`
-    and answers 400 for anything else. Reproduced, because accepting one silently would serve
-    corpus order to a client that asked for something else with nothing in the response to say the
-    sort was dropped — and would pass here while failing against Jira. Its own message is localised
-    to the account's language, so the wording is not reproduced, only the refusal.
+    Ordering is by `orderBy`, which real Jira accepts as `created` with an optional single leading
+    `+`/`-`, case-insensitively and ignoring whitespace — see :func:`_jira_order_desc` — and
+    answers 400 for anything else. Reproduced, because accepting one silently would serve corpus
+    order to a client that asked for something else with nothing in the response to say the sort
+    was dropped — and would pass here while failing against Jira. Its own message is localised to
+    the account's language, so the wording is not reproduced, only the refusal.
     """
     params = request.query_params
-    # BEFORE the issue is resolved. Measured: `GET /issue/NOPE-1/comment?orderBy=bogus` is 400 on
-    # real Jira where the same key without the parameter is 404, so the parameter is checked
-    # first. It separates nothing a caller could not already tell — the 400 is identical for a key
-    # that exists, one hidden from the caller, and one that never existed.
+    # BEFORE the issue is resolved. Measured 2026-09-10: a bad `orderBy` on a key that does
+    # not exist is 400 on real Jira where the same key without the parameter is 404, so the
+    # parameter is checked first. It separates nothing a caller could not already tell — the
+    # 400 is identical for a key that exists, one hidden from the caller, and one that never
+    # existed.
     #
     # An ABSENT `orderBy` is "not asked" and leaves the corpus's own order alone. What real Jira
     # returns without one is not established: its REST intro says responses are "listed in

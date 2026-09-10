@@ -815,11 +815,15 @@ def test_confluence_child_page_and_restriction_match_a_nonexistent_id_for_an_out
 
 # --- Jira: a page of comments is a page -------------------------------------------------------
 #
-# The clamps, the caps, the accepted and refused `orderBy` spellings and the 400-before-404
-# order below are measured against Jira Cloud (2026-09-09): parameter validation runs before
-# the issue is resolved, so an issue with no comments settles all of them. What `-created`
-# does to a non-empty list comes from Atlassian's document rather than from a call, and the
-# no-`orderBy` case from neither — see that test's own docstring.
+# Measured against Jira Cloud on an issue with no comments, which settles every one of these:
+# parameter validation runs before the issue is resolved. The dates differ and say which instance
+# state each claim reflects — 2026-09-09 for the defaults, the clamps, the caps and `created` /
+# `+created` / `-created` against `bogus`; 2026-09-10 for the rest of the `orderBy` grammar (one
+# leading sigil, whitespace ignored, field case-insensitive), for the empty value being refused
+# rather than read as absent, and for the 400 arriving before the 404.
+#
+# What `-created` does to a non-empty list comes from Atlassian's document rather than from a
+# call, and the no-`orderBy` case from neither — see that test's own docstring.
 
 # The corpus lists these OUT of chronological order on purpose: `comment 1` is the newest and
 # `comment 7` the oldest. A fixture whose array order matches its clock cannot tell a real sort

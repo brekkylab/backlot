@@ -695,8 +695,22 @@ def test_list_multipart_uploads_echoes_what_was_sent_in_reals_order(live_server)
         ("MaxUploads", "1000"),
         ("IsTruncated", "false"),
     ]
-    # max-uploads: taken as sent, leading zero and 0 included, and served at 1000 past it.
-    for sent, echoed in (("5", "5"), ("05", "5"), ("0", "0"), ("1001", "1000"), ("2000", "1000")):
+    # max-uploads: read for its value and served at 1000 past it. Real judges the value and not
+    # the length of the digits, so any run of leading zeros comes off first — twenty of them ahead
+    # of a 5 is 5, five thousand of them alone is 0, and `00002147483647` is in range where
+    # `00002147483648` is refused below (all measured).
+    for sent, echoed in (
+        ("5", "5"),
+        ("05", "5"),
+        ("0", "0"),
+        ("00000000005", "5"),
+        ("0" * 20 + "5", "5"),
+        ("0" * 5000, "0"),
+        ("0000000000", "0"),
+        ("00002147483647", "1000"),
+        ("1001", "1000"),
+        ("2000", "1000"),
+    ):
         fields = dict(_uploads_fields(base_url, f"uploads&max-uploads={sent}", token))
         assert fields["MaxUploads"] == echoed, sent
 
@@ -745,7 +759,7 @@ def test_list_multipart_uploads_refuses_what_real_refuses_with_reals_messages(li
     # max-uploads: not `int()`, which would take ` 5` and any size. (A `+5` on the wire is ` 5` by
     # the time it is parsed, on real and here alike: `_sign_get` decodes it as the form encoding.)
     not_an_integer = "Provided max-uploads not an integer or within integer range"
-    for value in ("abc", "2147483648", " 5", "9" * 5000):
+    for value in ("abc", "2147483648", "00002147483648", " 5", "9" * 5000):
         err = _refused(base_url, f"{uploads}&max-uploads={value}", token)
         _invalid_argument(err, not_an_integer, "max-uploads", value)
     err = _refused(base_url, f"{uploads}&max-uploads=-1", token)

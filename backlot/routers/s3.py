@@ -537,11 +537,13 @@ def _argument_error(message: str, name: str, value: str, resource: str) -> Respo
 def _max_uploads(q, resource: str) -> tuple[int, Response | None]:
     """ListMultipartUploads' ``max-uploads``, parsed the way real S3 parses it (measured).
 
-    Absent or empty is the default; a run of digits is taken as sent (``05`` is 5, ``0`` is 0) and
-    served at ``_MAX_UPLOADS`` past it; a value with a leading ``-`` draws "Argument max-uploads
-    must be an integer between 0 and 2147483647"; anything else — a word, a leading space, a value
-    past 2147483647 — draws "Provided max-uploads not an integer or within integer range". Not
-    ``int()``, which accepts `` 5`` and ``+5`` and has no ceiling.
+    Absent or empty is the default; a run of digits is read for its value, leading zeros and all
+    (``05`` and ``00000000005`` are both 5, twenty zeros and a 5 is 5, five thousand zeros is 0),
+    and served at ``_MAX_UPLOADS`` past it; a value with a leading ``-`` draws "Argument
+    max-uploads must be an integer between 0 and 2147483647"; anything else — a word, a leading
+    space, a value whose digits come to more than 2147483647 — draws "Provided max-uploads not an
+    integer or within integer range". Not ``int()``, which accepts `` 5`` and ``+5`` and has no
+    ceiling.
     """
     raw = q.get("max-uploads", "")
     if raw == "":
@@ -553,16 +555,19 @@ def _max_uploads(q, resource: str) -> tuple[int, Response | None]:
             raw,
             resource,
         )
-    # The length check first: a run of thousands of digits is "within integer range" for neither
-    # side, and Python's int() refuses to parse one past 4300 digits at all.
-    if not re.fullmatch(r"[0-9]+", raw) or len(raw) > 10 or int(raw) > _INT32_MAX:
+    # Leading zeros come off before the range is judged, because real judges the value and not the
+    # length: `00002147483647` is served and `00002147483648` refused, and five thousand zeros is 0
+    # where five thousand nines is refused (measured). Stripping them is also what keeps `int()`
+    # off a run of digits it will not parse at all, which it refuses past 4300 of them.
+    digits = raw.lstrip("0") or "0"
+    if not re.fullmatch(r"[0-9]+", raw) or len(digits) > 10 or int(digits) > _INT32_MAX:
         return 0, _argument_error(
             "Provided max-uploads not an integer or within integer range",
             "max-uploads",
             raw,
             resource,
         )
-    return min(int(raw), _MAX_UPLOADS), None
+    return min(int(digits), _MAX_UPLOADS), None
 
 
 def _list_multipart_uploads(request: Request, bucket: str, max_uploads: int) -> Response:

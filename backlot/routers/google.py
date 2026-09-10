@@ -1884,6 +1884,25 @@ _F_CELL = {
     "userEnteredValue": {"stringValue": {}, "numberValue": {}, "boolValue": {}},
     "effectiveValue": {"stringValue": {}, "numberValue": {}, "boolValue": {}},
     "formattedValue": {},
+    "effectiveFormat": {
+        "backgroundColor": {"red": {}, "green": {}, "blue": {}},
+        "padding": {"top": {}, "right": {}, "bottom": {}, "left": {}},
+        "horizontalAlignment": {},
+        "verticalAlignment": {},
+        "wrapStrategy": {},
+        "textFormat": {
+            "foregroundColor": {},
+            "fontFamily": {},
+            "fontSize": {},
+            "bold": {},
+            "italic": {},
+            "strikethrough": {},
+            "underline": {},
+            "foregroundColorStyle": {"rgbColor": {}},
+        },
+        "hyperlinkDisplayType": {},
+        "backgroundColorStyle": {"rgbColor": {"red": {}, "green": {}, "blue": {}}},
+    },
 }
 _F_GRID_DATA = {
     "startRow": {},
@@ -2014,6 +2033,47 @@ SHEETS_GRID_COLS = 26
 # A track's default size in pixels, carried by every `rowMetadata`/`columnMetadata` entry a
 # `GridData` block holds. Measured on a real workbook: every row entry is `{"pixelSize": 21}` and
 # every column entry `{"pixelSize": 100}`. A corpus states no track size, so nothing varies.
+# A cell's `effectiveFormat`, in the order real emits it. Measured: across every cell type a
+# corpus can state it varies in ONE field, `horizontalAlignment` -- a string sits left, a number
+# right, a boolean centred -- and the rest is the spreadsheet's default format, which nothing in a
+# corpus can change. So the whole object is derived rather than stored, the way `formattedValue`
+# is. (A cell's `userEnteredFormat` is NOT derivable and is not emitted: real carries it only where
+# the input implied a format, which for a corpus means never.)
+_CELL_FORMAT_ALIGN = {"str": "LEFT", "num": "RIGHT", "bool": "CENTER"}
+_CELL_FORMAT_REST = {
+    "verticalAlignment": "BOTTOM",
+    "wrapStrategy": "OVERFLOW_CELL",
+    "textFormat": {
+        "foregroundColor": {},
+        "fontFamily": "Arial",
+        "fontSize": 10,
+        "bold": False,
+        "italic": False,
+        "strikethrough": False,
+        "underline": False,
+        "foregroundColorStyle": {"rgbColor": {}},
+    },
+    "hyperlinkDisplayType": "PLAIN_TEXT",
+    "backgroundColorStyle": {"rgbColor": {"red": 1, "green": 1, "blue": 1}},
+}
+
+
+def _sheets_format(cell) -> dict:
+    """The `effectiveFormat` a cell of this type carries."""
+    if isinstance(cell, bool):
+        align = _CELL_FORMAT_ALIGN["bool"]
+    elif isinstance(cell, (int, float)):
+        align = _CELL_FORMAT_ALIGN["num"]
+    else:
+        align = _CELL_FORMAT_ALIGN["str"]
+    return {
+        "backgroundColor": {"red": 1, "green": 1, "blue": 1},
+        "padding": {"top": 2, "right": 3, "bottom": 2, "left": 3},
+        "horizontalAlignment": align,
+        **_CELL_FORMAT_REST,
+    }
+
+
 SHEETS_ROW_PIXELS = 21
 SHEETS_COL_PIXELS = 100
 
@@ -2301,6 +2361,7 @@ def _sheets_grid_data(sheet: _Sheet, body: str, spec: str) -> dict:
                             "userEnteredValue": v,
                             "effectiveValue": v,
                             "formattedValue": sheets_grid.formatted(row[i]),
+                            "effectiveFormat": _sheets_format(row[i]),
                         }
                         if i < len(row) and (v := _sheets_value(row[i]))
                         else {}

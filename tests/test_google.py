@@ -2710,20 +2710,24 @@ def test_a_typed_cell_carries_all_three_value_fields(gc, gh, book):
         params={"includeGridData": "true", "ranges": "Summary!A2:C2"},
     )
     cells = r.json()["sheets"][0]["data"][0]["rowData"][0]["values"]
+    # the format each type carries is its own test; here the three VALUE fields are the subject
     assert cells[0] == {
         "userEnteredValue": {"stringValue": "EMEA"},
         "effectiveValue": {"stringValue": "EMEA"},
         "formattedValue": "EMEA",
+        "effectiveFormat": {**_CELL_FORMAT, "horizontalAlignment": "LEFT"},
     }
     assert cells[1] == {
         "userEnteredValue": {"numberValue": 12},
         "effectiveValue": {"numberValue": 12},
         "formattedValue": "12",
+        "effectiveFormat": {**_CELL_FORMAT, "horizontalAlignment": "RIGHT"},
     }
     assert cells[2] == {
         "userEnteredValue": {"boolValue": True},
         "effectiveValue": {"boolValue": True},
         "formattedValue": "TRUE",
+        "effectiveFormat": {**_CELL_FORMAT, "horizontalAlignment": "CENTER"},
     }
 
 
@@ -3242,3 +3246,107 @@ def test_a_read_enum_carried_in_the_body_follows_the_query_strings_rule(
 def test_a_read_enum_in_the_body_is_matched_case_insensitively(gc, gh, book, key, value):
     r = _by_filter(gc, gh, book, {"dataFilters": [{"a1Range": "Summary!A1:B2"}], key: value})
     assert r.status_code == 200, r.text
+
+
+# --- a cell's effectiveFormat -------------------------------------------------------------------
+
+_CELL_FORMAT = {
+    "backgroundColor": {"red": 1, "green": 1, "blue": 1},
+    "padding": {"top": 2, "right": 3, "bottom": 2, "left": 3},
+    "verticalAlignment": "BOTTOM",
+    "wrapStrategy": "OVERFLOW_CELL",
+    "textFormat": {
+        "foregroundColor": {},
+        "fontFamily": "Arial",
+        "fontSize": 10,
+        "bold": False,
+        "italic": False,
+        "strikethrough": False,
+        "underline": False,
+        "foregroundColorStyle": {"rgbColor": {}},
+    },
+    "hyperlinkDisplayType": "PLAIN_TEXT",
+    "backgroundColorStyle": {"rgbColor": {"red": 1, "green": 1, "blue": 1}},
+}
+
+
+def _cells(gc, gh, book, rng):
+    r = gc.get(
+        f"/sheets/v4/spreadsheets/{book}",
+        headers=gh,
+        params={"includeGridData": "true", "ranges": rng},
+    )
+    assert r.status_code == 200, r.text
+    return r.json()["sheets"][0]["data"][0]["rowData"]
+
+
+@pytest.mark.parametrize(
+    "rng, align",
+    [
+        ("Summary!A1:A1", "LEFT"),  # a string
+        ("Summary!B2:B2", "RIGHT"),  # a number
+        ("Summary!C2:C2", "CENTER"),  # a boolean
+    ],
+)
+def test_a_cell_carries_the_format_its_type_gives_it(gc, gh, book, rng, align):
+    """Measured: `effectiveFormat` is the spreadsheet's default plus a `horizontalAlignment` the
+    cell's TYPE decides — a string left, a number right, a boolean centred. Nothing else varies
+    across the types a corpus can state, so the rest is a constant."""
+    cell = _cells(gc, gh, book, rng)[0]["values"][0]
+    assert cell["effectiveFormat"] == {**_CELL_FORMAT, "horizontalAlignment": align}
+
+
+def test_an_empty_cell_carries_no_format_either(gc, gh, book):
+    """A corpus states a cell as `null` meaning nothing is there, which is real's never-written
+    cell — and measured, that one comes back as `{}` with no format. (Real distinguishes a cell
+    someone wrote an empty string into, which keeps a format and loses its value; a corpus has no
+    way to say that, so there is nothing to reproduce.)"""
+    assert _cells(gc, gh, book, "Ragged!A1:C1")[0]["values"][1] == {}
+
+
+def test_the_cell_format_is_emitted_in_the_order_real_sends_it(gc, gh, book):
+    """A client diffing two backends byte for byte sees key order, and proto3 fixes it."""
+    r = gc.get(
+        f"/sheets/v4/spreadsheets/{book}",
+        headers=gh,
+        params={"includeGridData": "true", "ranges": "Summary!A1:A1"},
+    )
+    fmt = r.json()["sheets"][0]["data"][0]["rowData"][0]["values"][0]["effectiveFormat"]
+    assert list(fmt) == [
+        "backgroundColor",
+        "padding",
+        "horizontalAlignment",
+        "verticalAlignment",
+        "wrapStrategy",
+        "textFormat",
+        "hyperlinkDisplayType",
+        "backgroundColorStyle",
+    ]
+    assert list(fmt["textFormat"]) == [
+        "foregroundColor",
+        "fontFamily",
+        "fontSize",
+        "bold",
+        "italic",
+        "strikethrough",
+        "underline",
+        "foregroundColorStyle",
+    ]
+
+
+def test_a_fields_mask_may_now_name_the_cell_format(gc, gh, book):
+    """The caveat this closes: a mask reaching into `effectiveFormat` was refused while the real
+    API answered it."""
+    r = gc.get(
+        f"/sheets/v4/spreadsheets/{book}",
+        headers=gh,
+        params={
+            "includeGridData": "true",
+            "ranges": "Summary!A1:A1",
+            "fields": "sheets.data.rowData.values.effectiveFormat.horizontalAlignment",
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["sheets"][0]["data"][0]["rowData"][0]["values"][0] == {
+        "effectiveFormat": {"horizontalAlignment": "LEFT"}
+    }

@@ -127,7 +127,8 @@ process.)
 
 **Requirements:**
 
-- `pip install -e ".[mirage]"` already pulls `mirage-ai[fuse]` (the `mfusepy` binding).
+- `pip install -e ".[mirage]"` already pulls `mirage-ai[fuse,s3]` (the `mfusepy` binding, and the
+  `aioboto3` that `s3.py`'s backend imports).
 - An **OS FUSE driver**: [macFUSE](https://macfuse.io) on macOS, `fuse3` on Linux. Without it,
   `--fuse` prints install guidance and exits cleanly (the non-`--fuse` path needs no driver).
 

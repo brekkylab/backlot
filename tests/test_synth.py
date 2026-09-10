@@ -210,6 +210,23 @@ def test_gdrive_file_id_is_stable_and_distinct():
     assert synth.gdrive_file_id(DOC) != synth.gdrive_file_id(DOC2)
 
 
+def test_sheet_id_is_stable_distinct_and_never_zero():
+    """A sheet's served `sheetId`. Measured on a real workbook: the sheet created with the
+    spreadsheet is 0 and every sheet added afterwards carries a large pseudo-random integer, so the
+    importer pins index 0 to 0 and every later sheet draws here.
+
+    ZERO IS NEVER DRAWN. It belongs to index 0, and a later sheet landing on it would give one
+    workbook two sheets a client cannot tell apart -- which the unique index on
+    ``gdrive_sheets(file_id, sheet_id)`` would turn into an import failure."""
+    assert synth.sheet_id("1abc", "Summary") == synth.sheet_id("1abc", "Summary")
+    assert synth.sheet_id("1abc", "Summary") != synth.sheet_id("1abc", "Raw")
+    assert synth.sheet_id("1abc", "Summary") != synth.sheet_id("1def", "Summary")
+    # the salt is what an id collision within one workbook re-draws with
+    assert synth.sheet_id("1abc", "Summary") != synth.sheet_id("1abc", "Summary", salt="!")
+    for i in range(2000):
+        assert 1 <= synth.sheet_id(f"1f{i}", "S") <= 2**31 - 1
+
+
 def test_gdrive_file_id_never_collides_with_a_folder_id():
     """A file id and a folder id must be disjoint spaces: `routers.google._drive_folder_name_by_id`
     tries every container name's `drive_folder_id` against an incoming id, and a file id that also

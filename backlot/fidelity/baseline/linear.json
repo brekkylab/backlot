@@ -1,6 +1,8 @@
 {
   "source": "linear",
-  "endpoint": "https://api.linear.app/graphql",
+  "endpoints": [
+    "https://api.linear.app/graphql"
+  ],
   "measured": "2026-09-07",
   "acknowledged": [
     {

@@ -81,7 +81,7 @@ def _echo_findings(heading: str, findings: list, colour: str) -> None:
             typer.echo(typer.style(f"       {line}", dim=True), err=True)
 
 
-def _emit_json(source: str, endpoint: str, findings: list, **groups) -> None:
+def _emit_json(source: str, endpoints: tuple[str, ...], findings: list, **groups) -> None:
     """The same result as a JSON object on stdout, and nothing else there.
 
     Nothing else, so the output pipes: the human form writes its findings to stderr and its summary
@@ -91,7 +91,7 @@ def _emit_json(source: str, endpoint: str, findings: list, **groups) -> None:
 
     payload = {
         "source": source,
-        "endpoint": endpoint,
+        "endpoints": list(endpoints),
         "total": len(findings),
         **{name: [f.as_dict() for f in group] for name, group in groups.items() if name != "path"},
     }
@@ -736,9 +736,9 @@ def diff(
 
     path = (baseline_dir / f"{source}.json") if baseline_dir else baseline_path(source)
     baseline = (
-        Baseline.load(path).identified_as(source, spec.endpoint)
+        Baseline.load(path).identified_as(source, spec.endpoints)
         if path.exists()
-        else Baseline.empty(source, spec.endpoint)
+        else Baseline.empty(source, spec.endpoints)
     )
     stale = baseline.resolved(findings)
     fresh = baseline.unacknowledged(findings)
@@ -758,7 +758,7 @@ def diff(
         if as_json:
             _emit_json(
                 source,
-                spec.endpoint,
+                spec.endpoints,
                 findings,
                 acknowledged=kept,
                 unacknowledged=breaking,
@@ -788,13 +788,15 @@ def diff(
         return
 
     if as_json:
-        _emit_json(source, spec.endpoint, findings, new=fresh, resolved=stale)
+        _emit_json(source, spec.endpoints, findings, new=fresh, resolved=stale)
         if fresh:
             raise typer.Exit(1)
         return
 
     typer.echo(
-        "🔍 " + typer.style(source, bold=True) + typer.style(f" · {spec.endpoint}", dim=True)
+        "🔍 "
+        + typer.style(source, bold=True)
+        + typer.style(" · " + ", ".join(spec.endpoints), dim=True)
     )
     # The count that decides whether this run passed is the one worth colouring.
     new_count = typer.style(f"{len(fresh)} new", fg="red" if fresh else "green", bold=True)

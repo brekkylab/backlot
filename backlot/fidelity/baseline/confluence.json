@@ -1,6 +1,8 @@
 {
   "source": "confluence",
-  "endpoint": "https://developer.atlassian.com/cloud/confluence/swagger.v3.json",
+  "endpoints": [
+    "https://developer.atlassian.com/cloud/confluence/swagger.v3.json"
+  ],
   "measured": "2026-09-01",
   "acknowledged": [
     {

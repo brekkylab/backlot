@@ -367,6 +367,31 @@ CREATE TABLE IF NOT EXISTS gdrive_files (
 CREATE INDEX IF NOT EXISTS idx_gdrive_folder ON gdrive_files(folder);
 DROP INDEX IF EXISTS idx_gdrive_served;
 
+-- One row per sheet of a spreadsheet that STATES a real grid; a document whose cells are its
+-- stored text has no rows here at all, and that absence is how the two are told apart.
+--
+-- A separate table rather than a JSON column on gdrive_files because every Drive listing reads
+-- `SELECT * FROM gdrive_files` -- a grid column there would drag a JSON blob into every listing,
+-- every files.get and every search hit, none of which serve a cell. One row per SHEET, with the
+-- grid as JSON inside it, is the granularity every read wants: a whole sheet or a slice of one,
+-- never a cell on its own.
+--
+-- `sheet_id` is what the Sheets API emits, assigned at import (see backlot.importer.byo) rather
+-- than derived from the index at serve time. Measured on a real workbook: the sheet created with
+-- the spreadsheet is 0 and every sheet added afterwards carries a large pseudo-random integer
+-- (562149769, 1609058389, ...), so `sheet_id == sheet_index` is never a safe assumption. UNIQUE
+-- per file because it is what a client addresses a sheet by -- two sharing one would leave the
+-- loser unreachable -- and a collision here is a loud import failure instead of a silent shadow.
+--
+-- A cell in `grid` is a JSON scalar, so the type a corpus stated survives the round trip and
+-- `valueRenderOption` has something to distinguish.
+CREATE TABLE IF NOT EXISTS gdrive_sheets (
+    file_id TEXT NOT NULL, sheet_index INTEGER NOT NULL,
+    sheet_id INTEGER NOT NULL, title TEXT NOT NULL, grid TEXT NOT NULL,
+    PRIMARY KEY (file_id, sheet_index)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_gdrive_sheets_id ON gdrive_sheets(file_id, sheet_id);
+
 -- `path` names the file THIS row is (only kind='file' rows have one). `changed_paths` is the other
 -- direction: a JSON list of the paths a PULL touched, so a corpus can state which files a pull
 -- changed instead of leaving the router to pick deterministically. See backlot.routers.github's
@@ -866,6 +891,21 @@ SCHEMA += "".join(
     f"CREATE INDEX IF NOT EXISTS idx_{t}_pid ON {t}(principal_id);\n"
     for src, t in ACL_TABLE.items()
 )
+
+
+def missing_tables(conn: sqlite3.Connection) -> list[str]:
+    """Tables this build's :data:`SCHEMA` declares that the open DB does not have.
+
+    A DB is built by ``backlot import`` and served READ-ONLY, so the ``CREATE TABLE IF NOT
+    EXISTS`` above never runs against one that predates a table. Without this the first read that
+    touches the new table raises a bare ``OperationalError`` per request; the server calls it once
+    at startup instead and says which table and what to do. There is no migration here on purpose
+    -- a corpus is re-imported, not upgraded in place -- so naming the gap IS the remedy."""
+    have = {
+        r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+    }
+    want = re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)", SCHEMA)
+    return [t for t in dict.fromkeys(want) if t not in have]
 
 
 def connect_rw(path: Path, *, busy_ms: int = 60_000) -> sqlite3.Connection:
@@ -1749,6 +1789,32 @@ def gdrive_by_id(conn, file_id, visible_ids=None) -> sqlite3.Row | None:
     return conn.execute(
         f"SELECT * FROM gdrive_files WHERE id = ?{clause}", [file_id, *cp]
     ).fetchone()
+
+
+def gdrive_sheets_for(conn, file_id: str) -> list[sqlite3.Row]:
+    """A spreadsheet's stored sheets in index order, or an empty list when it states no grid.
+
+    No ACL clause: every caller has already resolved the file through :func:`gdrive_by_id`, which
+    enforces visibility, and a sheet is not separately grantable -- reading one is reading the file
+    it belongs to."""
+    return conn.execute(
+        "SELECT * FROM gdrive_sheets WHERE file_id = ? ORDER BY sheet_index", [file_id]
+    ).fetchall()
+
+
+def gdrive_replace_sheets(conn, file_id: str, rows) -> None:
+    """Set a file's sheets to exactly ``rows`` -- ``(sheet_index, sheet_id, title, grid)`` each.
+
+    DELETE then INSERT, because the file's own row upserts: an ``--append`` re-importing a document
+    leaves the gdrive_files row updated in place, so adding to the sheets would double a workbook
+    that kept its sheets and would keep serving one that lost a sheet. Replacing wholesale makes a
+    re-import idempotent, which is the same guarantee the row-level upsert gives."""
+    conn.execute("DELETE FROM gdrive_sheets WHERE file_id = ?", [file_id])
+    conn.executemany(
+        "INSERT INTO gdrive_sheets (file_id, sheet_index, sheet_id, title, grid) "
+        "VALUES (?, ?, ?, ?, ?)",
+        [(file_id, *r) for r in rows],
+    )
 
 
 # A Gmail thread is listed once, under its root. ``thread_id`` holds the ROOT'S OWN served id (see

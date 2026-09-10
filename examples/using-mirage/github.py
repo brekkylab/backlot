@@ -11,7 +11,7 @@ seam cannot work at all — see ``backlot.integrations.mirage``).
 mirage's GitHub connector only mirrors the *file tree* (git ``trees``/``blobs``), not issues/PRs —
 use `examples/using-official-sdk/github.py` for those.
 
-    pip install -e ".[examples,mirage]"
+    uv pip install -e ".[examples,mirage]"
     python examples/using-mirage/github.py                                  # local throwaway server
     python examples/using-mirage/github.py --url http://localhost:8000
     python examples/using-mirage/github.py --url http://localhost:8000 --token <usr-token>
@@ -124,9 +124,9 @@ def discover_repo(base_url: str, token: str) -> tuple[str, str] | None:
 
 
 def build(s, token, owner, repo):
-    # GitHubConfig has no base_url field — redirect the hardcoded API_BASE constant first, then
-    # construct the resource (its __init__ makes synchronous HTTP calls to fetch the default
-    # branch and the recursive tree).
+    # Redirect the API_BASE constant first, then construct the resource: its __init__ makes
+    # synchronous HTTP calls to fetch the default branch and the recursive tree, so a resource
+    # built before the rebind would already have talked to api.github.com.
     point_github_at(s.base_url)
     return GitHubResource(GitHubConfig(token=token, owner=owner, repo=repo, ref="main"))
 

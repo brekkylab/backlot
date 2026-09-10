@@ -17,19 +17,26 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
-          cache: pip
-          cache-dependency-path: pyproject.toml
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
           cache: npm
           cache-dependency-path: examples/using-official-sdk/linear/package-lock.json
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
 
+      # `uv sync`, not `pip install -e ".[all]"`: mirage's S3 backend needs aioboto3, whose newest
+      # release hard-pins `aiobotocore[boto3]==2.25.1` and so admits only botocore 1.40.46-1.40.61,
+      # while `boto3>=1.40` here has no upper bound. pip starts at the newest boto3 and backtracks
+      # through 215 releases toward that window, giving up with `resolution-too-deep`; uv derives
+      # the conflict instead of searching for it and resolves in seconds. `--locked` fails the run
+      # when uv.lock and pyproject.toml disagree, so the lock cannot drift unnoticed, and
+      # `--all-extras` is what keeps every gated test installed.
       - name: Install
-        run: pip install -e ".[all]"
+        run: uv sync --all-extras --locked --python ${{ matrix.python-version }}
       - name: Install the HubSpot reader past its stale pin
-        run: pip install --no-deps "llama-index-readers-hubspot<0.6"
+        run: uv pip install --no-deps "llama-index-readers-hubspot<0.6"
       - name: Fetch the AWS MCP server the S3 test drives
         # tests/test_mcp.py runs this through `uvx …@latest`, which is the point — Backlot is
         # proved against the server awslabs ships today. Downloading it here rather than there
@@ -37,7 +44,7 @@ jobs:
         # that has not seen this version otherwise loses.
         run: uv tool install --with "mcp<2" "awslabs.aws-api-mcp-server@latest"
       - name: Unit tests
-        run: pytest -rs
+        run: uv run --no-sync pytest -rs
 
       - name: Install the Linear example's dependencies
         working-directory: examples/using-official-sdk/linear
@@ -48,7 +55,9 @@ jobs:
       - name: Run the Linear example against a server it starts itself
         working-directory: examples/using-official-sdk/linear
         env:
-          PYTHON: python
+          # The interpreter `uv sync` installed backlot into, not whatever `python` resolves to:
+          # index.ts spawns this to run `-m backlot import`, and the venv is never on PATH here.
+          PYTHON: ${{ github.workspace }}/.venv/bin/python
         run: npx tsx index.ts
 
   lint:

@@ -77,16 +77,21 @@ file with them:
 | `git` | the tests in `tests/test_github.py` that build a real repo |
 
 Install what covers the surface you touched, or all of it at once, and let `-rs` confirm nothing
-you meant to run skipped. The zero-skip install is two commands, the way CI's is — `.[all]`
-is every extra above, kept in step with them by `tests/test_packaging.py`, and the HubSpot
-reader pins `hubspot-api-client<9` against the `>=12` that `examples` needs — over-restrictive
-rather than a real incompatibility, so it goes in past its own dependencies, at the version CI
-installs:
+you meant to run skipped. The zero-skip install is two commands, the way CI's is — `--all-extras`
+is every extra above, and the HubSpot reader pins `hubspot-api-client<9` against the `>=12` that
+`examples` needs — over-restrictive rather than a real incompatibility, so it goes in past its own
+dependencies, at the version CI installs:
 
 ```bash
-uv pip install -e ".[all]"
+uv sync --all-extras
 uv pip install --no-deps "llama-index-readers-hubspot<0.6"
 ```
+
+uv rather than pip, and this is not a preference: `mirage-ai[s3]` brings aioboto3, which pins
+`aiobotocore[boto3]==2.25.1` and so admits only botocore 1.40.46-1.40.61, while `boto3>=1.40` here
+has no upper bound. pip backtracks toward that window through 215 boto3 releases and exits
+`resolution-too-deep`; uv derives the conflict instead. `.[all]` remains the one-shot install for
+anyone taking Backlot off PyPI, and `tests/test_packaging.py` keeps it naming every extra.
 
 CI runs the suite, ruff, and the Linear example on every push to `main` and every pull request
 (see `.github/workflows/ci.yml`).

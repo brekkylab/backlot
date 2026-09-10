@@ -6,7 +6,7 @@ agents**: it mounts a SaaS backend and lets you read it with plain bash — `ls`
 agent over a corpus **you** supply, entirely offline.
 
 ```bash
-pip install -e ".[examples,mirage]"
+uv pip install -e ".[examples,mirage]"
 python examples/using-mirage/slack.py       # or gmail.py, gdrive.py, notion.py, s3.py, github.py, unified.py
 ```
 
@@ -98,10 +98,11 @@ point_github_at(s.base_url)                       # api.github.com  ->  Backlot
 repo = GitHubResource(GitHubConfig(token=T, owner="acme", repo="gateway"))
 ```
 
-Unlike Google's constants, nothing else in mirage imports `API_BASE` by value — every consumer
-calls the client's `github_get`/`github_get_sync` functions, which read the module global at call
-time — so the single patch is enough in practice; the copy-sweep is kept for parity with
-`point_google_at` and future-proofing.
+The copy-sweep matters here for the same reason it does for Google: `mirage/core/github/client.py`
+imports `API_BASE` by value and reads that copy in `github_url`, so patching only the constants
+module would leave every request pointed at api.github.com. What differs from Google is that
+`GitHubConfig.base_url` is a real seam — mirage threads it to every call site — so the rebind is
+what redirects a resource built without that field, rather than the only way in.
 
 ## FUSE mode (`--fuse`)
 
@@ -127,8 +128,10 @@ process.)
 
 **Requirements:**
 
-- `pip install -e ".[mirage]"` already pulls `mirage-ai[fuse,s3]` (the `mfusepy` binding, and the
-  `aioboto3` that `s3.py`'s backend imports).
+- `uv pip install -e ".[mirage]"` already pulls `mirage-ai[fuse,s3]` (the `mfusepy` binding, and
+  the `aioboto3` that `s3.py`'s backend imports). Use uv rather than pip: aioboto3 pins
+  `aiobotocore==2.25.1`, which admits only botocore 1.40.46-1.40.61, and pip backtracks toward that
+  window through 215 boto3 releases before giving up with `resolution-too-deep`.
 - An **OS FUSE driver**: [macFUSE](https://macfuse.io) on macOS, `fuse3` on Linux. Without it,
   `--fuse` prints install guidance and exits cleanly (the non-`--fuse` path needs no driver).
 

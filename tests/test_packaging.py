@@ -219,29 +219,53 @@ def _importorskip_modules() -> dict[str, list[str]]:
 
 
 def test_the_all_extra_aggregates_every_other_one():
-    """`.[all]` is what CI installs, so it is what decides whether a gated test runs at all.
+    """`.[all]` is the one-shot install for anyone taking Backlot off PyPI, so it has to name every
+    extra: one left out of the aggregate is one such a reader never gets.
 
     It is one of three places that enumerate the extras — `pyproject.toml` defines them,
-    CONTRIBUTING's table names them, this aggregate installs them — and the one that silently
-    costs coverage: an extra added to the other two but left out here installs nowhere, so every
-    test behind it skips forever and `-rs` reports that without failing. The table and the
-    definitions are held to each other by the test below; this holds the copy CI acts on.
+    CONTRIBUTING's table names them, this aggregate installs them. The table and the definitions
+    are held to each other by the test below; this holds the aggregate.
 
-    An aggregate rather than a flag because pip has no `--all-extras` (measured on pip 26.2.1),
-    and a self-reference rather than a duplicated list because pip resolves `backlot[...]` to the
+    A self-reference rather than a duplicated list because a resolver reads `backlot[...]` as the
     directory being installed: the resolution report names a `file://` url for it and marks it
     direct, so the release on PyPI is never consulted.
+
+    What CI installs is asserted separately, below. It is `uv sync --all-extras` and not this
+    aggregate, so `all` no longer decides whether a gated test runs.
     """
     extras = _extras()
-    assert "all" in extras, "the aggregate CI installs is gone; ci.yml still names `.[all]`"
-    assert '".[all]"' in (REPO_ROOT / ".github/workflows/ci.yml").read_text()
+    assert "all" in extras, "the one-shot install for PyPI readers is gone"
     (aggregate,) = pyproject_optional_dependencies()["all"]
     named = set(
         re.search(r"backlot\[([\w,\s-]+)\]", aggregate).group(1).replace(" ", "").split(",")
     )
     assert named == set(extras) - {"all"}, (
         f"`all` installs {sorted(named)} but the extras are {sorted(set(extras) - {'all'})} — "
-        "an extra missing here is one CI never installs"
+        "an extra missing here is one a `backlot[all]` reader never gets"
+    )
+
+
+def test_ci_installs_every_extra_from_the_lock():
+    """The install step decides whether a gated test runs at all, so it is asserted here rather
+    than left to review: an extra that installs nowhere leaves every test behind it skipping
+    forever, and `-rs` reports that without failing.
+
+    `--all-extras` rather than `.[all]`, and `uv` rather than `pip`, because the two facts are
+    load-bearing together. mirage's S3 backend needs aioboto3, whose newest release hard-pins
+    `aiobotocore[boto3]==2.25.1` and so admits only botocore 1.40.46-1.40.61 against a `boto3>=1.40`
+    with no upper bound here; pip backtracks toward that window through 215 boto3 releases and exits
+    `resolution-too-deep`, where uv derives the conflict. `--locked` then holds uv.lock and
+    pyproject.toml to each other, which is the check that a green `uv sync` would otherwise hide by
+    silently relocking.
+    """
+    ci = (REPO_ROOT / ".github/workflows/ci.yml").read_text()
+    # The `run:` line, not any line mentioning `uv sync` — the comment above it names the command
+    # too, and a match on that would pass while the step itself said anything at all.
+    install = next(s for s in ci.splitlines() if s.strip().startswith("run:") and "uv sync" in s)
+    for flag in ("--all-extras", "--locked"):
+        assert flag in install, f"ci.yml's install step dropped {flag}: {install.strip()}"
+    assert any(s.strip().startswith("run:") and "uv run" in s for s in ci.splitlines()), (
+        "no ci.yml step runs through `uv run`, so the suite may execute outside the synced venv"
     )
 
 

@@ -7,7 +7,7 @@ Google authorized-user credential (client_id/secret + refresh token); the only m
 glue is ``point_google_at`` (mirage's Google connectors have no host config, so we patch the
 module constants; Backlot's ``/oauth2/token`` honors the refresh).
 
-    pip install -e ".[examples,mirage]"
+    uv pip install -e ".[examples,mirage]"
     python examples/using-mirage/gmail.py                                  # the mailbox owner
     python examples/using-mirage/gmail.py --url http://localhost:8000 --user ceo@acme.com
     python examples/using-mirage/gmail.py --url http://localhost:8000 --fuse   # real OS mount

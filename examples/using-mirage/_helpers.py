@@ -17,7 +17,7 @@ __all__ = ["lines", "run_mirage", "FUSE_HELP"]
 # Shown when a --fuse run can't mount, so the example exits with guidance instead of a traceback.
 FUSE_HELP = (
     "FUSE mount unavailable ({err}).\n"
-    "  1. pip install -e '.[mirage]'   (installs mirage-ai[fuse] → mfusepy)\n"
+    "  1. uv pip install -e '.[mirage]'   (installs mirage-ai[fuse,s3] → mfusepy, aioboto3)\n"
     "  2. install the OS FUSE driver: macFUSE (macOS, https://macfuse.io) or fuse3 (Linux).\n"
     "  Then re-run with --fuse. Without --fuse the example runs in-process (no driver needed)."
 )

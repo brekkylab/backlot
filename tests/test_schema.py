@@ -1475,3 +1475,68 @@ def test_a_label_stays_on_one_line_and_admits_being_cut():
     cut = record_errors({"source_type": "github", "content": "c", "doc_id": "d" * 80})
     label = cut[0].split(":")[0]
     assert len(label) == 60 and label.endswith("…")
+
+
+# --- google_drive: a spreadsheet may state a real grid --------------------------
+
+
+def _drive(**kw):
+    """A complete drive record built BY HAND, not through `complete()`: these tests are about the
+    contract, and a helper that reads the contract cannot also be evidence for it."""
+    return {
+        "source_type": "google_drive",
+        "title": "Q3 pipeline",
+        "folder": "sales",
+        "author_email": "dana@example.com",
+        "created": "2026-07-01T09:00:00Z",
+        "updated": "2026-07-14T17:20:00Z",
+        **kw,
+    }
+
+
+def test_a_spreadsheet_may_state_its_cells_as_a_grid_instead_of_content():
+    assert (
+        record_errors(
+            _drive(
+                subtype="spreadsheet",
+                sheets=[{"title": "Summary", "grid": [["Region", "Deals"], ["EMEA", 12]]}],
+            )
+        )
+        == []
+    )
+
+
+def test_a_grid_cell_may_be_any_json_scalar_and_a_sheet_may_be_empty():
+    """A cell's type is what the corpus states -- which is what gives `valueRenderOption` something
+    to distinguish. An empty sheet is a real thing a workbook holds."""
+    rec = _drive(
+        subtype="spreadsheet", sheets=[{"grid": [["s", 1, 2.5, True, None]]}, {"grid": []}]
+    )
+    assert record_errors(rec) == []
+
+
+@pytest.mark.parametrize(
+    "sheets",
+    [
+        [{"grid": [[{"v": 1}]]}],  # an object cell -- there is no object cell form
+        [{"grid": [[["nested"]]]}],
+        [{"grid": [[]]}],  # a row with no cells; an empty SHEET is spelled grid: []
+        [{"title": "", "grid": []}],  # omit the title to get one, do not write a blank
+        [{"title": "x" * 101, "grid": []}],  # measured: a real sheet title caps at 100
+        [],  # a document with no sheets is one that should use `content`
+        [{"grid": [["a"]], "rows": 2}],  # no unknown keys on a sheet
+        [{"title": "T"}],  # a sheet without a grid states nothing
+    ],
+)
+def test_a_malformed_grid_is_refused(sheets):
+    assert record_errors(_drive(subtype="spreadsheet", sheets=sheets)) != []
+
+
+def test_content_is_required_only_when_no_grid_is_stated():
+    """The requirement moves rather than disappearing, and it keeps its wording -- `complete()`
+    reads that message to fill a record, so a differently-phrased rule would silently stop
+    supplying `content` to every drive test in the suite."""
+    assert record_errors(_drive()) == [
+        "Q3 pipeline: 'content' is a required property when sheets is absent"
+    ]
+    assert record_errors(_drive(subtype="spreadsheet", sheets=[{"grid": [["a"]]}])) == []

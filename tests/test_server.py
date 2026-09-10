@@ -322,3 +322,40 @@ def test_serve_or_connect_reports_on_stderr_not_stdout(capsys):
     out, err = capsys.readouterr()
     assert out == ""
     assert "using Backlot at" in err and "falling back to a local server" in err
+
+
+def test_serving_a_db_older_than_a_table_says_so_and_says_to_re_import(tmp_path):
+    """Rather than an OperationalError per Sheets read. There is no migration -- a corpus is
+    re-imported, not upgraded in place -- so naming the gap is the whole remedy."""
+    import sqlite3
+
+    import pytest
+
+    from backlot import store
+    from tests._helpers import build_corpus, client_for
+
+    settings = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "google_drive",
+                "doc_id": "gd-old",
+                "subtype": "spreadsheet",
+                "title": "Prose",
+                "folder": "sales",
+                "content": "a\nb",
+                "author_email": "d@acme.com",
+            }
+        ],
+    )
+    conn = sqlite3.connect(settings.db_path)
+    conn.execute("DROP TABLE gdrive_sheets")
+    conn.commit()
+    conn.close()
+    assert store.missing_tables(sqlite3.connect(settings.db_path)) == ["gdrive_sheets"]
+
+    with pytest.raises(RuntimeError) as e:
+        with client_for(settings, reload=True):
+            pass
+    assert "gdrive_sheets" in str(e.value)
+    assert "backlot import" in str(e.value)

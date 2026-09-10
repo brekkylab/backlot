@@ -67,6 +67,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import math
 import re
 import sys
 from collections.abc import Iterator
@@ -74,7 +75,7 @@ from pathlib import Path
 
 import yaml
 
-from backlot import store, synth
+from backlot import sheets_grid, store, synth
 from backlot.config import Settings, get_settings, infer_org
 from backlot.validation import record_errors
 
@@ -141,10 +142,14 @@ _UNCLAIMED = object()
 def _doc_id(rec: dict) -> str:
     if rec.get("doc_id"):
         return str(rec["doc_id"])
-    h = hashlib.sha256(
-        (rec["source_type"] + rec.get("title", "") + rec["content"]).encode()
-    ).hexdigest()
-    return "dsid_" + h[:32]
+    seed = rec["source_type"] + rec.get("title", "") + rec["content"]
+    # A gridded spreadsheet's `content` is its FIRST sheet alone (see the derivation in
+    # `_Loader.add`), so the rest of the workbook has to enter the seed as well. Without it two
+    # records agreeing on a title and a first sheet -- a Summary tab shared across workbooks is
+    # ordinary -- resolve to one id, and the row-level upsert leaves only the later one.
+    if rec.get("sheets") is not None:
+        seed += _j(rec["sheets"])
+    return "dsid_" + hashlib.sha256(seed.encode()).hexdigest()[:32]
 
 
 def _user_token(email: str) -> str:
@@ -854,6 +859,106 @@ def _github_pairing_errors(rec: dict) -> list[str]:
                 f"{subtype or 'issue'!r})"
             )
     return msgs
+
+
+# --- google_drive: what a stated grid may and may not sit beside -----------------------------
+#
+# The single-field half of the contract is in the schema: `content` is required when `sheets` is
+# absent, expressed as an `if`/`then` so jsonschema reports it as the same missing-property error
+# it always did (which `tests._helpers.complete` reads to fill a record). What is HERE is the
+# cross-field half, for the reason recorded above `_github_pairing_errors`: written as a schema
+# conditional, "sheets means no content" and "sheets means subtype spreadsheet" both report as a
+# missing property at the record root, naming neither the field that put the rule in force nor
+# what is wrong with the pairing.
+#
+# The two sheet-level rules are measured against the real API: it rejects a duplicate title
+# case-insensitively, and caps a title at 100 characters. Its own messages for both come back
+# localised to the account, so only the refusal is reproduced, not the vendor's wording.
+
+
+def _sheets_pairing_errors(rec: dict) -> list[str]:
+    """What a `google_drive` record's `sheets` may not sit beside, and what its sheets may not say.
+
+    Returned rather than raised, so the one rule serves both the load and ``--dry-run`` — a corpus
+    must never pass the check that exists to spare the author a failed import and then fail the
+    import. ``where`` is prefixed by the caller."""
+    sheets = rec.get("sheets")
+    if not isinstance(sheets, list):
+        # Absent, or a type the schema has already reported. `--dry-run` calls this beside
+        # `record_errors` to REPORT rather than fail, so iterating a non-list here would end the
+        # run in a traceback on the one path whose job is not to.
+        return []
+    msgs = []
+    if rec.get("content") is not None:
+        msgs.append(
+            "'sheets' and 'content' state the same document two ways; drop 'content' — it is "
+            "derived from the first sheet at import, so Drive's CSV export and the Sheets API "
+            "cannot disagree about what a cell holds"
+        )
+    subtype = rec.get("subtype") or "document"
+    if subtype != "spreadsheet":
+        msgs.append(f"'sheets' needs subtype 'spreadsheet' (this is {subtype!r})")
+    # `json.loads` accepts `Infinity`, `NaN` and an overflowing `1e400`, and jsonschema's `number`
+    # takes all three -- so without this a corpus states a cell RFC 8259 has no literal for, the
+    # response carries a bare `Infinity`, and `JSON.parse` on the client fails on the body.
+    for i, sheet in enumerate(sheets):
+        if not isinstance(sheet, dict):
+            continue
+        for r, row in enumerate(sheet.get("grid") or []):
+            if not isinstance(row, list):
+                continue
+            for c, cell in enumerate(row):
+                if isinstance(cell, float) and not math.isfinite(cell):
+                    msgs.append(
+                        f"sheets[{i}].grid[{r}][{c}]: {cell} is not a number JSON can carry "
+                        "(RFC 8259 has no Infinity or NaN literal)"
+                    )
+    first: dict[str, int] = {}
+    for i, sheet in enumerate(sheets):
+        if not isinstance(sheet, dict):
+            continue
+        title = _sheet_title(sheet, i)
+        prior = first.setdefault(title.casefold(), i)
+        if prior != i:
+            msgs.append(
+                f"sheets[{i}]: duplicate sheet title {title!r} (sheets[{prior}] has it too, and "
+                "the real API compares them case-insensitively)"
+            )
+    return msgs
+
+
+def _sheet_title(sheet: dict, i: int) -> str:
+    """A sheet's title, defaulted by position when the corpus states none.
+
+    ``Sheet<n>`` is the real API's own English-locale default for a sheet at that position. Shared
+    with the duplicate check above rather than defaulted only where rows are built: a name nobody
+    typed still OCCUPIES that name, so a corpus whose first sheet is unnamed and whose second
+    spells out `Sheet1` has two sheets with one title -- and lookup answers with the first, leaving
+    the other unreachable."""
+    title = sheet.get("title")
+    return title if isinstance(title, str) and title else f"Sheet{i + 1}"
+
+
+def _sheet_rows(file_id: str, sheets: list[dict]) -> list[tuple]:
+    """``(sheet_index, sheet_id, title, grid_json)`` per sheet, ready for
+    :func:`store.gdrive_replace_sheets`.
+
+    Index 0 takes `sheetId` 0 and every later sheet draws one, which is what the real API does (see
+    `synth.sheet_id`) and which leaves a prose-backed spreadsheet's served id unchanged. An id
+    already taken by a sibling re-draws with a salt: `gdrive_sheets` is UNIQUE on (file, sheet_id)
+    because two sheets sharing one leaves the loser unaddressable."""
+    taken: set[int] = set()
+    out = []
+    for i, sheet in enumerate(sheets):
+        title = _sheet_title(sheet, i)
+        sid = 0
+        if i:
+            salt = ""
+            while (sid := synth.sheet_id(file_id, title, salt)) in taken:
+                salt += "!"
+        taken.add(sid)
+        out.append((i, sid, title, _j(sheets_grid.normalise_grid(sheet["grid"]))))
+    return out
 
 
 def _open_pull_base(rec: dict) -> str | None:
@@ -1645,6 +1750,8 @@ class _Loader:
         # get a pull-only field onto an issue correctly than a hand-written one.
         if src == "github" and (bad := _github_pairing_errors(rec)):
             raise SystemExit(f"{where}: " + "; ".join(bad))
+        if src == "google_drive" and (bad := _sheets_pairing_errors(rec)):
+            raise SystemExit(f"{where}: " + "; ".join(bad))
         gcol = store.grouping_col(src)
         container = str(rec[gcol])  # channel / mailbox / folder / repo / project / space
         # An explicit `"group": null` means the container owns NO ACL group — which is a real
@@ -1710,6 +1817,21 @@ class _Loader:
                 if s.get("speaker_id") is None:
                     s["speaker_id"] = ordinals[s["speaker_name"] or ""]
             rec = {**rec, "content": synth.fireflies_transcript_text(sentences)}
+
+        # google_drive: a stated grid IS the document, so `content` is DERIVED from the first sheet
+        # rather than supplied. `files.export?mimeType=text/csv` serves `content` verbatim, so this
+        # is what stops Drive and the Sheets API describing one document two ways -- and it leaves
+        # FTS text to index for a spreadsheet that states no prose. Like fireflies above, it runs
+        # before `_doc_id` so the derived content is what gets hashed; the REST of the workbook
+        # reaches the id separately, because `_doc_id` folds `sheets` in when a record states one.
+        # Content alone would cover the first sheet and nothing else.
+        drive_sheets = None
+        if src == "google_drive" and rec.get("sheets") is not None:
+            drive_sheets = rec["sheets"]
+            rec = {
+                **rec,
+                "content": sheets_grid.to_csv(sheets_grid.normalise_grid(drive_sheets[0]["grid"])),
+            }
 
         doc_id = _doc_id(rec)
         # Recorded, not deduplicated: `seen` answers "is this document in the corpus" for the
@@ -2236,6 +2358,20 @@ class _Loader:
             updated,
             owner_display,
         )
+        if src == "google_drive":
+            # After `insert`, because the sheets are keyed on the file id it assigned. REPLACE and
+            # not append: the file's own row upserts, so an `--append` re-importing a workbook that
+            # lost a sheet must stop serving it (see `store.gdrive_replace_sheets`).
+            #
+            # Runs for EVERY drive record, not only one that states a grid. A record that stops
+            # stating one has to stop serving one: left behind, the stale sheets would have
+            # `spreadsheets.get` answer with cells the re-derived `content` -- and so
+            # `files.export` -- no longer holds, which is the one document described two ways that
+            # a derived `content` exists to rule out.
+            file_id = self.keys[(src, doc_id)][0]
+            rows = _sheet_rows(file_id, drive_sheets) if drive_sheets is not None else []
+            store.gdrive_replace_sheets(conn, file_id, rows)
+
         if src == "slack":
             # The root has landed, so its ts is settled — every reply below stores it as its
             # `thread_ts`. `store.id_columns("slack")` is (channel, ts), so the ts is the second.
@@ -3433,6 +3569,8 @@ def run(
                 problems.append((lineno, f"invalid JSON: {e}"))
                 continue
             errs = record_errors(rec)
+            if isinstance(rec, dict) and rec.get("source_type") == "google_drive":
+                errs += _sheets_pairing_errors(rec)
             if isinstance(rec, dict) and rec.get("source_type") == "github":
                 errs += _github_pairing_errors(rec)
                 # Only from a record that is otherwise sound: its own `path` may be the thing that

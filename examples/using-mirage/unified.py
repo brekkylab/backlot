@@ -2,7 +2,7 @@
 """Mount Slack, Gmail, and Drive as ONE filesystem and search across them — mirage's core
 value: many backends, one set of bash commands. Self-contained: run it directly.
 
-    uv pip install -e ".[examples,mirage]"
+    uv sync --all-extras --locked
     python examples/using-mirage/unified.py                                # local throwaway server
     python examples/using-mirage/unified.py --url http://localhost:8000 --token xoxb-... --user ava@acme.com
     python examples/using-mirage/unified.py --fuse                          # all three as one OS mount

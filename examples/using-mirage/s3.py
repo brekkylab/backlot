@@ -10,7 +10,7 @@ server) ``--access-key``/``--secret-key`` are **required** — pass real AWS key
 ``s3_secret_access_key`` there). Without ``--url`` the local throwaway server uses its own admin
 keypair.
 
-    uv pip install -e ".[examples,mirage]"
+    uv sync --all-extras --locked
     python examples/using-mirage/s3.py                              # local throwaway server
     python examples/using-mirage/s3.py --url http://localhost:8000 --access-key <AKIA...> --secret-key <secret>
     python examples/using-mirage/s3.py --url http://localhost:8000 --access-key <AKIA...> --secret-key <secret> --fuse   # real OS mount

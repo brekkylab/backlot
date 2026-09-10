@@ -11,7 +11,7 @@ seam cannot work at all — see ``backlot.integrations.mirage``).
 mirage's GitHub connector only mirrors the *file tree* (git ``trees``/``blobs``), not issues/PRs —
 use `examples/using-official-sdk/github.py` for those.
 
-    uv pip install -e ".[examples,mirage]"
+    uv sync --all-extras --locked
     python examples/using-mirage/github.py                                  # local throwaway server
     python examples/using-mirage/github.py --url http://localhost:8000
     python examples/using-mirage/github.py --url http://localhost:8000 --token <usr-token>

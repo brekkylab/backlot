@@ -6,7 +6,7 @@ agents**: it mounts a SaaS backend and lets you read it with plain bash — `ls`
 agent over a corpus **you** supply, entirely offline.
 
 ```bash
-uv pip install -e ".[examples,mirage]"
+uv sync --all-extras --locked
 python examples/using-mirage/slack.py       # or gmail.py, gdrive.py, notion.py, s3.py, github.py, unified.py
 ```
 
@@ -128,10 +128,8 @@ process.)
 
 **Requirements:**
 
-- `uv pip install -e ".[mirage]"` already pulls `mirage-ai[fuse,s3]` (the `mfusepy` binding, and
-  the `aioboto3` that `s3.py`'s backend imports). Use uv rather than pip: aioboto3 pins
-  `aiobotocore==2.25.1`, which admits only botocore 1.40.46-1.40.61, and pip backtracks toward that
-  window through 215 boto3 releases before giving up with `resolution-too-deep`.
+- `uv sync --all-extras --locked` already pulls `mirage-ai[fuse,s3]` — the `mfusepy` binding, and
+  the `aioboto3` that `s3.py`'s backend imports.
 - An **OS FUSE driver**: [macFUSE](https://macfuse.io) on macOS, `fuse3` on Linux. Without it,
   `--fuse` prints install guidance and exits cleanly (the non-`--fuse` path needs no driver).
 

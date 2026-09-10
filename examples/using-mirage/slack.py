@@ -5,7 +5,7 @@ Mirage mounts Backlot's Slack API as a filesystem — channels, dates, and a ``c
 day — so an agent reads it with plain ``ls`` / ``cat``. Slack's API host is a config knob
 (``SlackConfig(base_url=...)``), so we point it straight at Backlot — no monkeypatch.
 
-    uv pip install -e ".[examples,mirage]"
+    uv sync --all-extras --locked
     python examples/using-mirage/slack.py                                  # local throwaway server
     python examples/using-mirage/slack.py --url http://localhost:8000
     python examples/using-mirage/slack.py --url http://localhost:8000 --token <usr-token>

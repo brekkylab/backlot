@@ -41,8 +41,8 @@ router = APIRouter(prefix="/s3", tags=["s3"])
 NS = "http://s3.amazonaws.com/doc/2006-03-01/"
 _MAX_KEYS = 1000
 # ListMultipartUploads' own ceiling, which is also its default: "The limit of 1,000 multipart uploads
-# is also the default value" (botocore's S3 service model, the operation's documentation). A larger
-# `max-uploads` is served at the cap rather than refused (measured: 1001 and 2000 both echo 1000).
+# is also the default value" (the S3 API reference on ListMultipartUploads). A larger `max-uploads`
+# is served at the cap rather than refused (measured: 1001 and 2000 both echo 1000).
 _MAX_UPLOADS = 1000
 # The widest `max-uploads` real S3 parses: "Argument max-uploads must be an integer between 0 and
 # 2147483647" is its own message for a negative value (measured).
@@ -62,8 +62,8 @@ _URL_ENCODING_SAFE = frozenset(
 # absent because Backlot answers the V2 shape whether or not a caller asks for it, and advertising
 # a parameter that changes nothing is worse than not offering it. ListMultipartUploads' own
 # parameters (`max-uploads`, `key-marker`, `upload-id-marker`, `encoding-type`) are absent for the
-# same reason: _list_multipart_uploads reads them to echo and validate them as real S3 does, but the
-# page they would shape is always empty, so none changes what a caller gets.
+# same reason: _max_uploads and _list_multipart_uploads read them to validate and echo them as real
+# S3 does, but the page they would shape is always empty, so none changes what a caller gets.
 _P_BUCKET_GET = [
     qp("prefix"),
     qp(
@@ -527,7 +527,10 @@ def _argument_error(message: str, name: str, value: str, resource: str) -> Respo
         "InvalidArgument",
         message,
         resource,
-        extra=f"<ArgumentName>{escape(name)}</ArgumentName><ArgumentValue>{escape(value)}</ArgumentValue>",
+        extra=(
+            f"<ArgumentName>{escape(name)}</ArgumentName>"
+            f"<ArgumentValue>{escape(value)}</ArgumentValue>"
+        ),
     )
 
 
@@ -550,7 +553,9 @@ def _max_uploads(q, resource: str) -> tuple[int, Response | None]:
             raw,
             resource,
         )
-    if not re.fullmatch(r"[0-9]+", raw) or int(raw) > _INT32_MAX:
+    # The length check first: a run of thousands of digits is "within integer range" for neither
+    # side, and Python's int() refuses to parse one past 4300 digits at all.
+    if not re.fullmatch(r"[0-9]+", raw) or len(raw) > 10 or int(raw) > _INT32_MAX:
         return 0, _argument_error(
             "Provided max-uploads not an integer or within integer range",
             "max-uploads",

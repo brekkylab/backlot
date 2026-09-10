@@ -443,11 +443,11 @@ def test_list_objects_v2_delimiter_common_prefixes(live_server):
 # ------------------------------------------------------------ sub-resources Backlot does not serve
 # S3 dispatches on the query string: `?versioning`, `?acl`, `?tagging` and the rest each select an
 # operation of their own at a bucket's or an object's path. Backlot implements two of them at a
-# bucket's path (`?location` and `?uploads`, below) and used to answer every one with the listing or
-# the object's bytes under a 200. Every claim about real S3 below was measured against a general
-# purpose bucket: each selector is answered as its own operation, an unknown key (`?foo=bar`,
-# `?x-id=…`) is ignored, the match is case-sensitive, two selectors conflict, and HEAD with a
-# selector is 405.
+# bucket's path (`?location` and `?uploads`, below), refuses the rest, and used to answer every one
+# with the listing or the object's bytes under a 200. Every claim about real S3 below was measured
+# against a general purpose bucket: each selector is answered as its own operation, an unknown key
+# (`?foo=bar`, `?x-id=…`) is ignored, the match is case-sensitive, two selectors conflict, and HEAD
+# with a selector is 405.
 
 BUCKET_SUBRESOURCES = [
     "abac",
@@ -618,8 +618,9 @@ def test_head_with_a_subresource_is_405_and_a_bare_head_still_answers(live_serve
 
 # ------------------------------------------------------------------------ ListMultipartUploads
 # Every real S3 answer below was measured on 2026-09-10 against a general purpose bucket in
-# ap-northeast-2 with no upload in progress, path-style, SigV4, the request built by the same
-# `_sign_get` these tests use (so a `+` or `%25` in a value reaches the server the way it does here).
+# ap-northeast-2 with no upload in progress, path-style, SigV4, the query encoded the way `_sign_get`
+# encodes it (form-decoded, then `quote`d), so a `+` or `%25` in a value reached real the way it
+# reaches the server here.
 
 _EMPTY_UPLOADS_PAGE = (
     b'<?xml version="1.0" encoding="UTF-8"?>\n'
@@ -740,25 +741,25 @@ def _invalid_argument(err: urllib.error.HTTPError, message: str, name: str, valu
 def test_list_multipart_uploads_refuses_what_real_refuses_with_reals_messages(live_server):
     base_url, settings = live_server
     token = settings.admin_token
-    bucket = "/s3/eng-artifacts?uploads"
+    uploads = "/s3/eng-artifacts?uploads"
     # max-uploads: not `int()`, which would take ` 5` and any size. (A `+5` on the wire is ` 5` by
     # the time it is parsed, on real and here alike: `_sign_get` decodes it as the form encoding.)
     not_an_integer = "Provided max-uploads not an integer or within integer range"
-    for value in ("abc", "2147483648", " 5"):
-        err = _refused(base_url, f"{bucket}&max-uploads={value}", token)
+    for value in ("abc", "2147483648", " 5", "9" * 5000):
+        err = _refused(base_url, f"{uploads}&max-uploads={value}", token)
         _invalid_argument(err, not_an_integer, "max-uploads", value)
-    err = _refused(base_url, f"{bucket}&max-uploads=-1", token)
+    err = _refused(base_url, f"{uploads}&max-uploads=-1", token)
     _invalid_argument(
         err, "Argument max-uploads must be an integer between 0 and 2147483647", "max-uploads", "-1"
     )
     # encoding-type: anything but `url`, the empty value included.
     for value in ("bogus", ""):
-        err = _refused(base_url, f"{bucket}&encoding-type={value}", token)
+        err = _refused(base_url, f"{uploads}&encoding-type={value}", token)
         _invalid_argument(
             err, "Invalid Encoding Method specified in Request", "encoding-type", value
         )
     # upload-id-marker beside a key-marker: no id names an upload here, so every one is refused.
-    err = _refused(base_url, f"{bucket}&key-marker=abc&upload-id-marker=xyz", token)
+    err = _refused(base_url, f"{uploads}&key-marker=abc&upload-id-marker=xyz", token)
     _invalid_argument(err, "Invalid uploadId marker", "upload-id-marker", "xyz")
     # In real's order: max-uploads is checked before the bucket is looked up, encoding-type and the
     # markers after it, and encoding-type before the markers.
@@ -767,9 +768,11 @@ def test_list_multipart_uploads_refuses_what_real_refuses_with_reals_messages(li
     for query in ("encoding-type=bogus", "key-marker=a&upload-id-marker=b"):
         err = _refused(base_url, f"/s3/no-such-bucket?uploads&{query}", token)
         assert err.code == 404 and b"NoSuchBucket" in err.read(), query
-    err = _refused(base_url, f"{bucket}&encoding-type=bogus&key-marker=a&upload-id-marker=b", token)
+    err = _refused(
+        base_url, f"{uploads}&encoding-type=bogus&key-marker=a&upload-id-marker=b", token
+    )
     _invalid_argument(err, "Invalid Encoding Method specified in Request", "encoding-type", "bogus")
-    err = _refused(base_url, f"{bucket}&max-uploads=abc&encoding-type=bogus", token)
+    err = _refused(base_url, f"{uploads}&max-uploads=abc&encoding-type=bogus", token)
     _invalid_argument(err, not_an_integer, "max-uploads", "abc")
 
 

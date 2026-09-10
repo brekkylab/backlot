@@ -4,7 +4,7 @@
     "https://developer.atlassian.com/cloud/jira/platform/swagger-v3.v3.json",
     "https://developer.atlassian.com/cloud/jira/platform/swagger.v3.json"
   ],
-  "measured": "2026-09-09",
+  "measured": "2026-09-10",
   "acknowledged": [
     {
       "kind": "extra_param",
@@ -1600,24 +1600,6 @@
       "kind": "missing_param",
       "severity": "gap",
       "path": "GET /rest/api/2/issue/{}/comment?expand",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/2/issue/{}/comment?maxResults",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/2/issue/{}/comment?orderBy",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/2/issue/{}/comment?startAt",
       "detail": "the vendor accepts it; Backlot does not"
     },
     {
@@ -3280,24 +3262,6 @@
       "kind": "missing_param",
       "severity": "gap",
       "path": "GET /rest/api/3/issue/{}/comment?expand",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/3/issue/{}/comment?maxResults",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/3/issue/{}/comment?orderBy",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /rest/api/3/issue/{}/comment?startAt",
       "detail": "the vendor accepts it; Backlot does not"
     },
     {

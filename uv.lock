@@ -449,7 +449,7 @@ requires-dist = [
     { name = "llama-index-readers-s3", marker = "extra == 'llamaindex'", specifier = ">=0.6" },
     { name = "llama-index-readers-slack", marker = "extra == 'llamaindex'", specifier = ">=0.5" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=2" },
-    { name = "mirage-ai", extras = ["fuse"], marker = "extra == 'mirage'", specifier = "~=0.0.5" },
+    { name = "mirage-ai", extras = ["fuse"], marker = "extra == 'mirage'", specifier = ">=0.0.6" },
     { name = "notion-client", marker = "extra == 'examples'", specifier = ">=3.1" },
     { name = "openai", marker = "extra == 'mcp'", specifier = ">=1.40" },
     { name = "openai-agents", marker = "extra == 'mcp'", specifier = ">=0.1" },

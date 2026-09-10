@@ -2,11 +2,11 @@
 """Read a GitHub repo's code through mirage's virtual filesystem. Self-contained: run it directly.
 
 Mirage mounts a repo's git file tree as a filesystem — read it with plain ``ls`` / ``cat`` /
-``grep``, same as the S3/Notion examples. Unlike Slack/Notion/S3, ``GitHubConfig`` (mirage 0.0.3)
-has no ``base_url`` knob: the connector hardcodes ``mirage.core.github._client.API_BASE =
-"https://api.github.com"``, so ``point_github_at`` monkeypatches that module constant before the
-resource is built (mirrors ``point_google_at``'s approach for Google — see
-``backlot.integrations.mirage``).
+``grep``, same as the S3/Notion examples. The host comes from a module constant,
+``mirage.core.github.constants.API_BASE = "https://api.github.com"``, which ``github_url`` falls
+back to whenever ``GitHubConfig.base_url`` is unset — so ``point_github_at`` rebinds that constant
+before the resource is built, the same way ``point_google_at`` does for Google (where the config
+seam cannot work at all — see ``backlot.integrations.mirage``).
 
 mirage's GitHub connector only mirrors the *file tree* (git ``trees``/``blobs``), not issues/PRs —
 use `examples/using-official-sdk/github.py` for those.

@@ -132,8 +132,7 @@ _IMPORT_TO_DIST_EXCEPTIONS = {
     "atlassian": "atlassian-python-api",
     "botocore": "boto3",  # carried transitively: boto3 pins it
     "hubspot": "hubspot-api-client",
-    "mirage.core.github._client": "mirage-ai",
-    "mirage.core.google._client": "mirage-ai",
+    "mirage": "mirage-ai",
 }
 
 # Gates whose distribution deliberately has no extra — CONTRIBUTING's "which no extra carries"

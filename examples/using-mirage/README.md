@@ -87,10 +87,10 @@ exactly as in the `using-official-sdk` examples: `serve_or_connect` comes from `
 and `google_oauth_user` (Backlot-specific OAuth glue, not general API) from
 [`examples/_common/google_creds.py`](../_common/google_creds.py).
 
-**GitHub** is the same shape as Google, but with one constant: `GitHubConfig` has no `base_url`
-field, and mirage hardcodes `mirage.core.github._client.API_BASE = "https://api.github.com"`.
-`point_github_at(base_url)` patches that constant (and any already-imported copy) before the
-resource is built:
+**GitHub** is the same shape as Google, but with one constant:
+`mirage.core.github.constants.API_BASE = "https://api.github.com"`, which mirage falls back to
+whenever `GitHubConfig.base_url` is unset. `point_github_at(base_url)` rebinds that constant (and
+any already-imported copy) before the resource is built:
 
 ```python
 from backlot.integrations.mirage import point_github_at

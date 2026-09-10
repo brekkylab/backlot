@@ -153,6 +153,21 @@ def test_google_build_registry_does_not_survive_a_direct_uninstall():
         discovery.build = original
 
 
+def _mirage_constant_modules():
+    """The two mirage modules the patchers rebind, imported for real.
+
+    ``importorskip`` gates the DISTRIBUTION, because mirage is an optional extra. It deliberately
+    does NOT gate the two seam modules, which is the whole point: their paths are what the tests
+    below check, so an ``importorskip`` on them reports the subject under test as the reason to sit
+    out, and a mirage release that moves a module skips instead of failing. A hard import fails.
+    """
+    pytest.importorskip("mirage")
+    from mirage.core.github import constants as github_constants
+    from mirage.core.google import constants as google_constants
+
+    return google_constants, github_constants
+
+
 def _isolate_mirage(monkeypatch, modules: dict[str, dict[str, str]]):
     """Replace every imported ``mirage*`` module with the given stand-ins, for this test only.
 
@@ -187,10 +202,10 @@ def test_mirage_patchers_raise_when_a_constant_is_renamed(monkeypatch):
     mods = _isolate_mirage(
         monkeypatch,
         {
-            "mirage.core.google._client": {
+            "mirage.core.google.constants": {
                 "GMAIL_BASE_URL": "https://gmail.googleapis.com/gmail/v1"
             },
-            "mirage.core.github._client": {"GITHUB_API_ROOT": "https://api.github.com"},
+            "mirage.core.github.constants": {"GITHUB_API_ROOT": "https://api.github.com"},
         },
     )
     for fn in (point_google_at, point_github_at):
@@ -208,8 +223,7 @@ def test_mirage_patchers_rebind_every_constant_they_name(monkeypatch):
     declares must land, since the raise above is only as good as the set it checks."""
     from backlot.integrations.mirage import point_github_at, point_google_at
 
-    real = pytest.importorskip("mirage.core.google._client")
-    real_github = pytest.importorskip("mirage.core.github._client")
+    real, real_github = _mirage_constant_modules()
     google_names = [n for n in vars(real) if n.isupper() and isinstance(getattr(real, n), str)]
     github_names = [
         n for n in vars(real_github) if n.isupper() and isinstance(getattr(real_github, n), str)
@@ -218,8 +232,8 @@ def test_mirage_patchers_rebind_every_constant_they_name(monkeypatch):
     mods = _isolate_mirage(
         monkeypatch,
         {
-            "mirage.core.google._client": {n: getattr(real, n) for n in google_names},
-            "mirage.core.github._client": {n: getattr(real_github, n) for n in github_names},
+            "mirage.core.google.constants": {n: getattr(real, n) for n in google_names},
+            "mirage.core.github.constants": {n: getattr(real_github, n) for n in github_names},
         },
     )
     point_google_at("http://127.0.0.1:9999")
@@ -241,8 +255,7 @@ def test_mirage_patchers_name_every_host_constant_mirage_ships(monkeypatch):
     the real vendor — silently, because the raise above only covers names we already name. Fails
     when mirage grows one, which is the moment to decide whether Backlot serves it.
     """
-    real = pytest.importorskip("mirage.core.google._client")
-    real_github = pytest.importorskip("mirage.core.github._client")
+    real, real_github = _mirage_constant_modules()
 
     from backlot.integrations import mirage as shim
 

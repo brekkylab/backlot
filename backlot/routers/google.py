@@ -1776,7 +1776,7 @@ def _gmask_parse(mask: str) -> dict:
     # (node, key-so-far) as the parser descends into a group
     stack, cur, token = [], tree, ""
 
-    def land(node, name, sub=None):
+    def land(node, name):
         if not name:
             return node
         head, _, rest = name.replace("/", ".").partition(".")
@@ -1784,8 +1784,6 @@ def _gmask_parse(mask: str) -> dict:
         while rest:
             head, _, rest = rest.partition(".")
             child = child.setdefault(head, {})
-        if sub is not None:
-            child.update(sub)
         return child
 
     for ch in mask:

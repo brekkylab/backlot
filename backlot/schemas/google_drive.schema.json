@@ -140,7 +140,7 @@
           },
           "grid": {
             "type": "array",
-            "description": "Rows of cells. A cell is a JSON scalar -- a string, a number, a boolean, or null for an empty cell -- so the type the corpus states is the type the API serves. Short rows are padded at import. An empty array is an empty sheet.",
+            "description": "Rows of cells. A cell is a JSON scalar -- a string, a number, a boolean, or null for an empty cell -- so the type the corpus states is the type the API serves. Short rows are padded at import. An empty array is an empty sheet, which a workbook really has; a row with no cells at all (`[[]]`) is a typo rather than a shape a corpus means, so `minItems` refuses it.",
             "items": {
               "type": "array",
               "minItems": 1,

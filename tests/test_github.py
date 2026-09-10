@@ -4608,14 +4608,15 @@ def test_github_type_visibility_sort_and_direction_on_the_repository_listings(tm
     api.github.com on 2026-09-09 and 2026-09-10 against the `psf` organization and the token's own
     repositories: an organization's repositories come OLDEST first with no sort and newest first
     with `sort=created` sent; `full_name` is the one sort that ascends by default; an unknown
-    direction is `asc` on the organization listing and `desc` on the token's own. `type` selects
-    on the one fact a corpus states about a repository's kind, its ACL: `public` and `private` are
-    the org-wide grant or its absence, `forks` and `member` answer nothing (every repository here is
-    the organization's own and `fork: false`, as `type=member` answered `[]` for `psf`), `sources`
-    and a value outside the enum answer every repository. `type` and `affiliation` on
-    `/user/repos` select on what the caller is to each repository, which no corpus states, and stay
-    undeclared. The three names are chosen so the derived creation order is not the name order,
-    which the precondition below holds.
+    direction is `asc` on the organization listing and `desc` on the token's own, which makes the
+    token's own the one listing here whose bare unknown direction is not its unsent order. `type`
+    selects on the one fact a corpus states about a repository's kind, its ACL: `public` and
+    `private` are the org-wide grant or its absence, `forks` and `member` answer nothing (every
+    repository here is the organization's own and `fork: false`, as `type=member` answered `[]` for
+    `psf`), `sources` and a value outside the enum answer every repository. `type` and
+    `affiliation` on `/user/repos` select on what the caller is to each repository, which no corpus
+    states, and stay undeclared. The three names are chosen so the derived creation order is not
+    the name order, which the precondition below holds.
     """
     names = ("gateway", "ledger", "portal")
     by_created = sorted(names, key=lambda n: synth.epoch("repo:" + n))
@@ -4700,8 +4701,13 @@ def test_github_type_visibility_sort_and_direction_on_the_repository_listings(tm
         assert listed(user_repos, sort="created") == newest_first
         assert listed(user_repos, sort="created", direction="asc") == by_created
         assert listed(user_repos, direction="desc") == by_name[::-1]
+        assert listed(user_repos, direction="asc") == by_name
         assert listed(user_repos, sort="bogus") == newest_first
         assert listed(user_repos, sort="created", direction="bogus") == newest_first
+        # A bare unknown direction is `desc` here, the reverse of the unsent order, where the org
+        # listing above answers its unsent order for the same request. Measured with no sort as
+        # well as beside one, since the two listings part company on exactly this cell.
+        assert listed(user_repos, direction="bogus") == by_name[::-1]
         assert listed(user_repos, visibility="private") == ["ledger"]
         assert listed(user_repos, visibility="public") == ["gateway", "portal"]
         assert listed(user_repos, visibility="bogus") == by_name

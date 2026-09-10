@@ -742,13 +742,17 @@ _ORG_REPO_ORDERING = _Ordering(
 )
 
 #: The token's own repositories: the description declares `default: full_name`, and with no `sort`
-#: real answers an order that is neither the names' nor `created_at`'s nor `pushed_at`'s (`bsk`,
-#: `bsk_check`, `agent-k`, `agent-zoo`, created 2026-07, 2026-09, 2026-03, 2026-08, pushed 09-02,
-#: 09-05, 08-15, 08-31), and `sort=full_name` the same first three names, which are not in
-#: full-name order either; Backlot answers the declared default, name order, for both.
-#: `sort=created` newest first; `sort=bogus` the same; `sort=created&direction=bogus` newest first
-#: too, so an unknown direction is read as `desc` (one sort measured). `type=bogus` and
-#: `visibility=bogus` keep every repository.
+#: real answers an order that is neither the names' nor `created_at`'s nor `pushed_at`'s (the first
+#: four created 2026-07, 2026-09, 2026-03, 2026-08 and pushed 09-02, 09-05, 08-15, 08-31), and
+#: `sort=full_name` the same first three, which are not in full-name order either; Backlot answers
+#: the declared default, name order, for both. `sort=created` newest first; `sort=bogus` the same;
+#: `sort=created&direction=bogus` newest first too. `direction=bogus` alone answers what
+#: `direction=desc` answers, the REVERSE of the unsent order, and a second unknown value answers
+#: the same, so an unknown direction is read as `desc` whether or not a sort was sent. That is this
+#: listing alone: the three above answer their unsent order for a bare unknown direction, which is
+#: why the cell is measured here rather than carried over. `type=bogus` and `visibility=bogus` keep
+#: every repository. The names are left out because this listing is one token's own: a reader
+#: cannot reach it with them, and the dates carry the claim on their own.
 _USER_REPO_ORDERING = _Ordering(
     sorts=("created", "updated", "pushed", "full_name"),
     default="full_name",

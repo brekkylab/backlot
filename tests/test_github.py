@@ -158,6 +158,84 @@ def test_github_pulls_filtered_by_state(client, admin_h, org):
     assert [p["title"] for p in all_body] == ["Fix token-bucket refill off-by-one"]
 
 
+def test_github_state_is_reals_enum_refused_on_issues_and_absorbed_on_pulls(tmp_path):
+    """GitHub's OpenAPI description declares `state` on the issue and the pull listing as
+    `{type: string, enum: [open, closed, all], default: open}`, described "Indicates the state of
+    the issues to return." on the one and "Either `open`, `closed`, or `all` to filter by state." on
+    the other (read 2026-09-09). Backlot's document declared `{type: string, default: open}` with
+    no enum and no description, so a generated client or an agent reading the MCP slice had the
+    default and nothing on what else the parameter takes.
+
+    Outside the enum the two routes part, measured on api.github.com on 2026-09-09 against
+    `psf/requests`. The issue listing refuses: `state=bogus`, `state=OPEN` and `state=` (empty) are
+    each a 422, `Validation Failed`, one `errors` entry carrying the value sent with
+    `resource: Issue`, `field: state`, `code: invalid`, `documentation_url`
+    `https://docs.github.com/v3/issues/#list-issues`, `content-type: application/json; charset=utf-8`;
+    the repository comes first, so the same value on `psf/ghost-zz-9876` is the 404 with the route's
+    own anchor. The pull listing absorbs: `pulls?state=bogus` and `?state=OPEN` answer the 87 rows
+    `state=open` answers, where `closed` and `all` answer other, larger sets. Backlot filtered on the
+    value as sent and answered an empty 200 on both routes, which is neither answer. The corpus is
+    built here because no repository in the sample holds an open pull beside a closed one, which is
+    what tells the open set from an empty one.
+    """
+    pulls = [
+        {
+            "source_type": "github",
+            "doc_id": f"gh-pr-{state}",
+            "repo": "wide",
+            "subtype": "pull_request",
+            "state": state,
+            "title": f"PR {state}",
+            "content": "body",
+            "author_email": "ava@acme.com",
+            "visibility": "public",
+            "head": f"feat/{state}",
+            "base": "main",
+        }
+        for state in ("open", "closed")
+    ]
+    settings = build_corpus(tmp_path, pulls, name="state.jsonl")
+    with client_for(settings, reload=True) as c:
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        org = c.get("/_meta/users").json()["org"]
+        spec = c.get("/openapi.json").json()
+        for route, description in (
+            ("issues", "Indicates the state of the issues to return."),
+            ("pulls", "Either `open`, `closed`, or `all` to filter by state."),
+        ):
+            params = spec["paths"][f"/github/repos/{{owner}}/{{repo}}/{route}"]["get"]["parameters"]
+            state = next(p for p in params if p["name"] == "state")
+            assert state["description"] == description, route
+            assert state["schema"]["enum"] == ["open", "closed", "all"], route
+            assert state["schema"]["default"] == "open", route
+            assert state["schema"]["type"] == "string", route
+        base = f"/github/repos/{org}/wide"
+        open_rows = c.get(f"{base}/pulls", headers=h, params={"state": "open"}).json()
+        assert [r["title"] for r in open_rows] == ["PR open"]
+        assert len(c.get(f"{base}/pulls", headers=h, params={"state": "all"}).json()) == 2
+        for value in ("bogus", "OPEN", ""):
+            issues = c.get(f"{base}/issues", headers=h, params={"state": value})
+            assert issues.status_code == 422, value
+            assert issues.headers["content-type"] == "application/json; charset=utf-8"
+            assert issues.json() == {
+                "message": "Validation Failed",
+                "errors": [
+                    {"value": value, "resource": "Issue", "field": "state", "code": "invalid"}
+                ],
+                "documentation_url": "https://docs.github.com/v3/issues/#list-issues",
+                "status": "422",
+            }, value
+            absorbed = c.get(f"{base}/pulls", headers=h, params={"state": value})
+            assert absorbed.status_code == 200, value
+            assert absorbed.json() == open_rows, value
+        # the repository is checked first
+        ghost = c.get(
+            f"/github/repos/{org}/ghost-zz-9876/issues", headers=h, params={"state": "bogus"}
+        )
+        assert ghost.status_code == 404
+        assert ghost.json()["documentation_url"].endswith("issues/issues#list-repository-issues")
+
+
 # --- github codebase serving: git tree / contents / blobs / branches / readme ---------
 #
 # These need `github` `file` docs, which the shared SAMPLE corpus (built once, session-scoped,
@@ -1652,23 +1730,58 @@ def test_github_tolerates_the_pagination_values_real_tolerates(gh_client, gh_adm
     assert {"type": "integer"} in page["schema"]["anyOf"]
 
 
-def test_github_the_spec_declares_reals_page_defaults(gh_client):
+#: GitHub's OpenAPI description, `components/parameters` `per-page` and `page`, read 2026-09-09
+#: (github/rest-api-description, `descriptions/api.github.com/api.github.com.json`), verbatim.
+_REAL_PAGE_PARAMETER_DESCRIPTIONS = {
+    "per_page": (
+        "The number of results per page (max 100). For more information, see "
+        '"[Using pagination in the REST API]'
+        '(https://docs.github.com/rest/using-the-rest-api/using-pagination-in-the-rest-api)."'
+    ),
+    "page": (
+        "The page number of the results to fetch. For more information, see "
+        '"[Using pagination in the REST API]'
+        '(https://docs.github.com/rest/using-the-rest-api/using-pagination-in-the-rest-api)."'
+    ),
+}
+
+
+def _schema_bounds(schema: dict) -> set[str]:
+    """The upper-bound keywords a parameter schema declares, at its top level or in any `anyOf`
+    branch, which is where FastAPI puts the integer half of an `int | None` parameter."""
+    keys = set(schema) | set().union(*(set(branch) for branch in schema.get("anyOf", [])))
+    return keys & {"maximum", "exclusiveMaximum"}
+
+
+def test_github_the_spec_declares_reals_page_parameters(gh_client):
     """GitHub's OpenAPI description declares the shared `per-page` parameter as `{type: integer,
     default: 30}` and `page` as `{type: integer, default: 1}` (github/rest-api-description,
-    `components/parameters`, read 2026-09-07). Sixteen of the seventeen routes served here that page
-    reference the two; the seventeenth, `GET /repos/{owner}/{repo}/statuses/{sha}`, is the legacy
-    alias the description names only in the prose of `/commits/{ref}/statuses`, which references
-    them. The three routes whose inline `per_page` default differs — `/notifications` at 50,
+    `components/parameters`, read 2026-09-07 and again 2026-09-09), each under a description on the
+    parameter itself. Sixteen of the seventeen routes served here that page reference the two; the
+    seventeenth, `GET /repos/{owner}/{repo}/statuses/{sha}`, is the legacy alias the description
+    names only in the prose of `/commits/{ref}/statuses`, which references them. The three routes
+    whose inline `per_page` default differs — `/notifications` at 50,
     `/orgs/{org}/copilot/billing/seats` at 50 and `/organizations/{org}/settings/billing/budgets`
     at 10 — are indeed unserved here; `/zen` declares no parameters at all, so it is not in that
-    set. Backlot's slice declared neither default: FastAPI writes none for a parameter whose
-    runtime default is None, and the handlers keep None to tell an unsent size from a sent one. The
-    spec is what `backlot mcp` hands an agent as a tool, so a default the document does not state is
-    one the agent cannot know.
+    set. Backlot's slice declared neither default and neither description: FastAPI writes no default
+    for a parameter whose runtime default is None, and the handlers keep None to tell an unsent size
+    from a sent one. The spec is what `backlot mcp` hands an agent as a tool, so a default the
+    document does not state is one the agent cannot know.
 
-    The two are written onto the served document after FastAPI builds it, on GitHub's operations
+    The description matters for one number: "(max 100)" is the ONLY place real states `per_page`'s
+    cap. Its schema is a bare `{type: integer}` with no `maximum`, and that absence is a
+    declaration, not an oversight: real serves `per_page=101` at the cap rather than refusing it
+    (`test_github_pages_at_reals_thirty_and_caps_at_its_hundred`), so a schema bound would have a
+    generated client refuse what the server accepts. A served document that declared `default: 30`
+    with no ceiling left 500 looking legal when 500 comes back as 100. So this test holds the
+    description to real's text and the schema to no bound, and it holds the 100 in the prose to the
+    100 the route applies, since the text is built from that constant rather than spelled out twice.
+
+    Both are written onto the served document after FastAPI builds it, on GitHub's operations
     alone: a Slack `page` keeps the schema its router declared by hand.
     """
+    from backlot.routers import github as gh
+
     c, _ = gh_client
     spec = c.get("/openapi.json").json()
     seen = 0
@@ -1680,14 +1793,21 @@ def test_github_the_spec_declares_reals_page_defaults(gh_client):
                 if p["name"] in ("page", "per_page"):
                     assert p["schema"]["default"] == {"per_page": 30, "page": 1}[p["name"]], path
                     assert {"type": "integer"} in p["schema"]["anyOf"], path  # still an integer
+                    assert p["description"] == _REAL_PAGE_PARAMETER_DESCRIPTIONS[p["name"]], path
+                    assert not _schema_bounds(p["schema"]), path  # the cap is prose, as on real
                     seen += 1
     assert seen == 2 * 17  # the seventeen routes that page, both parameters each
+    # the cap the prose states is the cap the route applies, read from the one constant
+    assert f"(max {gh.PER_PAGE_MAX})" in gh.PAGE_PARAMETERS["per_page"][1]
+    assert gh.PAGE_PARAMETERS["per_page"][0] == gh.PER_PAGE_DEFAULT
     slack = spec["paths"]["/slack/api/search.messages"]["get"]["parameters"]
     assert "default" not in next(p for p in slack if p["name"] == "page")["schema"]
     # ...and the MCP slice, built from the same document, carries them to an agent
     mcp = c.get("/_meta/openapi/github").json()
     code = mcp["paths"]["/github/search/code"]["get"]["parameters"]
-    assert next(p for p in code if p["name"] == "per_page")["schema"]["default"] == 30
+    per_page = next(p for p in code if p["name"] == "per_page")
+    assert per_page["schema"]["default"] == 30
+    assert per_page["description"] == _REAL_PAGE_PARAMETER_DESCRIPTIONS["per_page"]
 
 
 def test_github_pages_at_reals_thirty_and_caps_at_its_hundred(tmp_path):
@@ -1797,12 +1917,111 @@ def test_github_a_wrong_method_is_not_dressed_as_a_measured_answer(gh_client, gh
     is real's 401 Requires authentication, measured).
 
     So it keeps FastAPI's `detail`, which says plainly that the mock is answering. The envelope is
-    for the errors whose wording was measured.
+    for the errors whose wording was measured. `HEAD` is not a wrong method here: real answers it
+    on each of the seven routes measured, and so does Backlot on all of its own, see
+    `test_github_a_head_is_the_get_with_the_body_left_off`.
     """
     c, _ = gh_client
     r = c.post(f"/github/repos/{gh_org}/codebase", headers=gh_admin_h)
     assert r.status_code == 405
     assert r.json() == {"detail": "Method Not Allowed"}
+
+
+def test_github_a_head_is_the_get_with_the_body_left_off(gh_client, gh_admin_h, gh_org):
+    """Real answers a `HEAD` on each GitHub route measured as the `GET` with nothing in the body: the GET's
+    status, its headers, `content-length` of the body the GET would have carried and `Link` where
+    the GET has one. Measured against api.github.com on 2026-09-07 with `curl -I`, each `HEAD`
+    beside its `GET` the same minute: `/repos/psf/requests` and `/repos/psf/requests/issues?per_page=2`
+    200, the listing at `content-length: 9038` with its `Link`; `/search/code?q=…&per_page=1` 200
+    with `Link` and code search's charset-less `application/json`; `/repos/psf/ghost-zz-9876` 404 at
+    `content-length: 132`, the length of the GET's Not Found envelope; `/user` with no credential
+    401 at 120; `/search/issues?q=` 422 at 219; `/search/code?q=…&per_page=abc` 400
+    `text/plain; charset=utf-8` at 75, the length of the deserializer's own line. Seven endpoints,
+    one rule, the errors included: they answer `HEAD` exactly as they answer `GET`, body length
+    included.
+
+    Every route here is declared `GET` alone, and FastAPI's ``APIRoute`` does not add `HEAD` to a
+    GET route the way Starlette's ``Route`` does, so a `HEAD` was Starlette's 405 with `allow: GET`
+    on all of them, whatever the GET would have answered: an existence check, `requests.head(url)`
+    or `curl -I`, could not tell the repository that exists from the one that does not. It is
+    answered by ``backlot.main.answer_head_as_the_get_without_its_body``, which runs the GET and
+    keeps its headers, so the version echo, the charset and the id-path rewrite land on a `HEAD` by
+    construction; each is asserted below so that the construction is not the only thing saying so.
+    The OpenAPI document is untouched: real's description declares no `head` operation (none in
+    the 2026-09-09 read) and neither does Backlot's, so `backlot diff` and the MCP slice see what
+    they saw. The other vendors' `HEAD` answers are not measured and stay the 405 they were.
+    """
+    c, _ = gh_client
+    codebase = f"/github/repos/{gh_org}/codebase"
+    raw = {**gh_admin_h, "Accept": "application/vnd.github.raw"}
+    repo_id = c.get(codebase, headers=gh_admin_h).json()["id"]
+    rows = (
+        (codebase, gh_admin_h, {}),
+        (f"/github/repos/{gh_org}/diffable/issues", gh_admin_h, {"state": "all", "per_page": 1}),
+        (f"{codebase}/contents/README.md", raw, {}),
+        (f"/github/repositories/{repo_id}", gh_admin_h, {}),
+        (f"/github/repos/{gh_org}/ghost-zz-9876", gh_admin_h, {}),
+        ("/github/user/repos", {}, {}),
+        ("/github/search/issues", gh_admin_h, {"q": ""}),
+        ("/github/search/code", gh_admin_h, {"q": "extension:md", "per_page": 1}),
+        ("/github/search/code", gh_admin_h, {"q": "extension:md", "per_page": "abc"}),
+        (codebase, {**gh_admin_h, "X-GitHub-Api-Version": "1999-01-01"}, {}),
+    )
+    statuses = []
+    for path, headers, params in rows:
+        get = c.get(path, headers=headers, params=params)
+        head = c.head(path, headers=headers, params=params)
+        assert head.status_code == get.status_code, (path, params)
+        assert head.content == b"", (path, params)
+        assert head.headers["content-length"] == get.headers["content-length"], (path, params)
+        assert head.headers["content-length"] == str(len(get.content)), (path, params)
+        for name in ("content-type", "link", "x-github-api-version-selected"):
+            assert head.headers.get(name) == get.headers.get(name), (path, params, name)
+        statuses.append(head.status_code)
+    assert statuses == [200, 200, 200, 200, 404, 401, 422, 200, 400, 400]
+    # ...and the headers the loop compared were there to compare: the listing's `Link` and version
+    # echo, the raw representation's own type, code search's text/plain refusal at real's length
+    listing = c.head(rows[1][0], headers=gh_admin_h, params=rows[1][2])
+    assert "next" in _link_rels(listing.headers["Link"])
+    assert listing.headers["X-GitHub-Api-Version-Selected"] == "2022-11-28"
+    assert c.head(f"{codebase}/contents/README.md", headers=raw).headers["content-type"] == (
+        "application/vnd.github.raw; charset=utf-8"
+    )
+    refused = c.head("/github/search/code", headers=gh_admin_h, params=rows[8][2])
+    assert refused.headers["content-type"] == "text/plain; charset=utf-8"
+    assert refused.headers["content-length"] == "75"
+    assert "X-GitHub-Api-Version-Selected" not in refused.headers
+    # no `head` operation was declared to get there
+    spec = c.get("/openapi.json").json()
+    assert not [
+        p for p, item in spec["paths"].items() if p.startswith("/github") and "head" in item
+    ]
+    # ...and at the ASGI layer, where the test client cannot stand in for a server: Starlette's
+    # TestClient drops a HEAD response's body itself (`testclient.py`, `if request.method != "HEAD"`),
+    # so every `head.content == b""` above holds whether or not the middleware sent one, and it also
+    # never frames a response by the scope's method the way uvicorn does (see the middleware's
+    # docstring for what that framing did while the scope was left saying `GET`). So the messages
+    # the app sends are read directly: the headers carry the GET's length, and no body byte follows
+    # them.
+    from starlette.testclient import TestClient
+
+    sent = []
+
+    async def recording(scope, receive, send):
+        async def record(message):
+            sent.append(message)
+            await send(message)
+
+        await c.app(scope, receive, record)
+
+    # No `with`: a second lifespan on the app would overwrite the state gh_client started.
+    assert TestClient(recording).head(codebase, headers=gh_admin_h).status_code == 200
+    start = next(m for m in sent if m["type"] == "http.response.start")
+    body = c.get(codebase, headers=gh_admin_h).content
+    assert dict(start["headers"])[b"content-length"] == str(len(body)).encode()
+    assert sum(len(m.get("body", b"")) for m in sent if m["type"] == "http.response.body") == 0
+    # a vendor whose `HEAD` is not measured is refused as before
+    assert c.head("/slack/api/auth.test", headers=gh_admin_h).status_code == 405
 
 
 def test_github_a_path_failure_decides_the_answer_whatever_order_it_is_reported_in():

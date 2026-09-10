@@ -46,12 +46,36 @@ TREE_MAX_BYTES = 7 * 1024 * 1024
 # and `/search/issues?q=repo:psf/requests+timeout` each answer 30 unsent and 100 for `per_page=100`,
 # `101` and `500` alike). GitHub's OpenAPI description declares the shared `per-page` parameter
 # "The number of results per page (max 100)." with `default: 30`; the served spec declares the same
-# 30 by reading this constant (`backlot/main.py`), so moving it moves both. The settings stay the
-# numbers of the vendors whose own are not measured; a client sized to real's page must not get
-# three times it here and find out in production. Module level, like the tree caps, so a test can
-# lower them: no repository in the bundled corpus spans a page of 30.
+# 30 and the same cap by reading these constants (`PAGE_PARAMETERS` below, written onto the
+# document by `backlot/main.py`), so moving one moves both. The settings stay the numbers of the
+# vendors whose own are not measured; a client sized to real's page must not get three times it
+# here and find out in production. Module level, like the tree caps, so a test can lower them: no
+# repository in the bundled corpus spans a page of 30.
 PER_PAGE_DEFAULT = 30
 PER_PAGE_MAX = 100
+
+# The two shared parameters as real's description declares them, `components/parameters` `per-page`
+# and `page` (github/rest-api-description, read 2026-09-09): each one's default and its description,
+# verbatim. The description is the only place real states the cap. Its schema is a bare
+# `{type: integer}` with no `maximum`, and real serves `per_page=101` at the cap rather than
+# refusing it, so a bound in the schema would have a generated client refuse what the server
+# accepts; the prose is where the number belongs. FastAPI cannot be told to write a default onto a
+# parameter whose runtime default is None, and the one `PageParam` annotation both parameters share
+# cannot carry two descriptions (see `backlot.openapi.github_page_parameters`), so `backlot/main.py`
+# writes both onto the served document from this mapping. The 100 in the prose is PER_PAGE_MAX and
+# the 30 is PER_PAGE_DEFAULT, so the document cannot state one number while the route applies
+# another; the `page` default is the 1 that `_clamp` starts a listing at.
+_PAGINATION_DOCS = (
+    'For more information, see "[Using pagination in the REST API]'
+    '(https://docs.github.com/rest/using-the-rest-api/using-pagination-in-the-rest-api)."'
+)
+PAGE_PARAMETERS: dict[str, tuple[int, str]] = {
+    "per_page": (
+        PER_PAGE_DEFAULT,
+        f"The number of results per page (max {PER_PAGE_MAX}). {_PAGINATION_DOCS}",
+    ),
+    "page": (1, f"The page number of the results to fetch. {_PAGINATION_DOCS}"),
+}
 
 
 def _require(request: Request) -> Caller:
@@ -1057,12 +1081,50 @@ async def get_repo(owner: str, repo: str, request: Request):
     return _repo_obj(conn, owner, repo, _api_base(request))
 
 
+#: The values `state` takes on the issue and pull listings, as GitHub's OpenAPI description declares
+#: them on both routes (`enum: [open, closed, all]`, `default: open`, read 2026-09-09), each with the
+#: description its route carries. Written into the schema by hand rather than as a `Literal`: a
+#: `Literal` has FastAPI refuse a value outside it before the handler runs, with one answer for both
+#: routes, and real's two routes answer differently (see :func:`_invalid_issue_state`).
+ISSUE_STATES = ("open", "closed", "all")
+_ISSUE_STATE_DESCRIPTION = "Indicates the state of the issues to return."
+_PULL_STATE_DESCRIPTION = "Either `open`, `closed`, or `all` to filter by state."
+
+
+def _state_param(description: str):
+    return Query("open", description=description, json_schema_extra={"enum": list(ISSUE_STATES)})
+
+
+def _invalid_issue_state(value: str) -> HTTPException:
+    """Real's 422 for a `state` the issue listing does not take.
+
+    Measured on api.github.com on 2026-09-09 against `psf/requests/issues`: `state=bogus`,
+    `state=OPEN` and `state=` (empty) each answer `Validation Failed` with one `errors` entry
+    carrying the value sent, `resource: Issue`, `field: state` and `code: invalid`, under a
+    `documentation_url` that is not the route's anchor in ``errors.github.ROUTE_DOCS``
+    (`/v3/issues/#list-issues`, where the 404 on this route names
+    `issues/issues#list-repository-issues`); the repository is checked first, so the same value on
+    a repository that does not exist is that 404. The pull listing does not refuse: `pulls?state=bogus`
+    and `?state=OPEN` answer the open set, the 87 rows `state=open` answers there, where `closed`
+    and `all` each answer a different, larger set (same day). So the pull listing applies `open`
+    for a value it does not know, and this exception is the issue listing's alone.
+    """
+    exc = HTTPException(status_code=422, detail="Validation Failed")
+    exc.github_body = {
+        "message": "Validation Failed",
+        "errors": [{"value": value, "resource": "Issue", "field": "state", "code": "invalid"}],
+        "documentation_url": "https://docs.github.com/v3/issues/#list-issues",
+        "status": "422",
+    }
+    return exc
+
+
 @router.get("/repos/{owner}/{repo}/issues", response_model=list[GitHubIssue])
 async def list_issues(
     owner: str,
     repo: str,
     request: Request,
-    state: str = Query("open"),
+    state: str = _state_param(_ISSUE_STATE_DESCRIPTION),
     page: PageParam = None,
     per_page: PageParam = None,
 ):
@@ -1077,6 +1139,8 @@ async def list_issues(
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     _require_repo(conn, repo, ids)
+    if state not in ISSUE_STATES:
+        raise _invalid_issue_state(state)
     state_filter = state if state != "all" else None
     # kind='file' docs (source code, not issues/PRs) never appear here — fetch generously and
     # filter+paginate in Python, mirroring list_pulls below.
@@ -1202,7 +1266,7 @@ async def list_pulls(
     owner: str,
     repo: str,
     request: Request,
-    state: str = Query("open"),
+    state: str = _state_param(_PULL_STATE_DESCRIPTION),
     page: PageParam = None,
     per_page: PageParam = None,
 ):
@@ -1210,7 +1274,9 @@ async def list_pulls(
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     _require_repo(conn, repo, ids)
-    state_filter = state if state != "all" else None
+    # a value real does not know is served as `open`, the default (see `_invalid_issue_state`)
+    applied = state if state in ISSUE_STATES else "open"
+    state_filter = applied if applied != "all" else None
     prs = [
         r
         for r in store.list_documents(conn, "github", repo, ids, limit=10_000, state=state_filter)

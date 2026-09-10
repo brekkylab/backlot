@@ -10,7 +10,7 @@ import threading
 from contextlib import asynccontextmanager
 
 import yaml
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -129,21 +129,20 @@ app = FastAPI(
 )
 
 # The served spec, with what FastAPI cannot be told to declare: real's `default: 30` / `default: 1`
-# on GitHub's `per_page` / `page`, whose runtime default has to stay None (see
-# :func:`backlot.openapi.github_page_defaults`). The 30 is the router's own constant, so the
-# document cannot declare one size while the route applies another; the 1 is the page `clamp_page`
-# starts at. FastAPI caches its document on the app and hands the same dict back, so the edit is
-# made in place and is the same edit each time.
+# on GitHub's `per_page` / `page`, whose runtime default has to stay None, and real's description
+# of each, which is the one place the `per_page` cap is stated (see
+# :func:`backlot.openapi.github_page_parameters`). Both come from the router that applies the
+# numbers (`github.PAGE_PARAMETERS`, built from its `PER_PAGE_DEFAULT` and `PER_PAGE_MAX`), so the
+# document cannot declare one size while the route applies another. FastAPI caches its document on
+# the app and hands the same dict back, so the edit is made in place and is the same edit each time.
 _fastapi_openapi = app.openapi
 
 
-def _openapi_with_github_page_defaults() -> dict:
-    return openapi.github_page_defaults(
-        _fastapi_openapi(), {"per_page": github.PER_PAGE_DEFAULT, "page": 1}
-    )
+def _openapi_with_github_page_parameters() -> dict:
+    return openapi.github_page_parameters(_fastapi_openapi(), github.PAGE_PARAMETERS)
 
 
-app.openapi = _openapi_with_github_page_defaults
+app.openapi = _openapi_with_github_page_parameters
 
 
 # Per-vendor error envelopes live in ``backlot/errors/``. Both handlers ask that package and fall
@@ -213,6 +212,63 @@ async def resolve_github_id_paths(request: Request, call_next):
             request.scope["path"] = canonical
             request.scope["raw_path"] = canonical.encode()
     return await call_next(request)
+
+
+# The path prefixes whose `HEAD` is the GET with the body left off. GitHub because it is measured to
+# be, and none of the other vendors' `HEAD` answers is, so a vendor is added here once its own is
+# rather than by a rewrite that assumes they share GitHub's. `/health` and `/_meta` are Backlot's
+# own routes, with no vendor to measure against: a `HEAD /health` is the shape a liveness probe
+# takes, and `FastAPI`'s `APIRoute` refused it with the same 405 for the same reason.
+_HEAD_IS_THE_GET_WITHOUT_ITS_BODY = ("/github", "/health", "/_meta")
+
+
+@app.middleware("http")
+async def answer_head_as_the_get_without_its_body(request: Request, call_next):
+    """Answer a `HEAD` as the `GET` with the body left off, which is how real GitHub answers one.
+
+    Every GitHub route here is declared `GET` alone, and FastAPI's ``APIRoute`` does not add `HEAD`
+    to a GET route the way Starlette's ``Route`` does, so a `HEAD` reached Starlette's 405 with
+    `allow: GET` on every route, whatever the GET would have answered. Real answers the GET's own
+    status and headers with nothing in the body: `content-length` of the body the GET would have
+    carried and `Link` where the GET has one, on the 200s, the 404 for a repository that does not
+    exist, the 401 for no credential, the 422 for a blank search `q` and code search's text/plain
+    400 alike (measured against api.github.com on 2026-09-07 with `curl -I`, each `HEAD` beside its
+    `GET` the same minute). An existence check, `requests.head(url)` or `curl -I`, is what a client
+    sends a `HEAD` for, and a 405 for both the repository that exists and the one that does not
+    cannot tell them apart.
+
+    A middleware rather than `HEAD` in each route's ``methods``: FastAPI writes a `head` operation
+    into `/openapi.json` for every method a route declares, where real's own description declares
+    no `head` operation at all, so declaring it would hand `backlot diff --source github` operations
+    real lacks and the MCP slice tools that answer nothing a GET does not. The method is rewritten
+    on the scope before routing, so the GET runs in full: the router's dependencies, the handler and
+    the two middlewares inside this one, the version echo and the id-path rewrite, see a GET and
+    land on the answer by construction, and the charset middleware outside it rewrites the copied
+    `content-type` as it does the GET's. The body is read to the end to be measured rather
+    than sent, because the `content-length` a client reads a `HEAD` for is the GET body's length and
+    computing the body is the only way to have that number; a `HEAD` costs what its GET costs, here
+    as on real. The method goes back to `HEAD` on the scope once the GET has answered, because the
+    server frames the response by it: uvicorn's httptools protocol reads ``scope["method"]`` when it
+    writes the body, sends nothing for a `HEAD`, and for a `GET` holds the body to the declared
+    `content-length`, so with the scope left saying `GET` the empty body this middleware sends was
+    `RuntimeError: Response content shorter than Content-Length` in the server log and a reset
+    connection for the client's next request (measured over uvicorn on a one-record corpus: a
+    `requests.Session` that sent a `HEAD` had its following `GET /health` fail with
+    `ConnectionResetError`; with the method restored that request is a 200 and the log is clean).
+    """
+    if request.method != "HEAD" or not request.url.path.startswith(
+        _HEAD_IS_THE_GET_WITHOUT_ITS_BODY
+    ):
+        return await call_next(request)
+    request.scope["method"] = "GET"
+    response = await call_next(request)
+    request.scope["method"] = "HEAD"
+    length = 0
+    async for chunk in response.body_iterator:
+        length += len(chunk)
+    head = Response(status_code=response.status_code, headers=response.headers)
+    head.headers["content-length"] = str(length)
+    return head
 
 
 @app.middleware("http")
@@ -288,17 +344,17 @@ async def vendor_json_media_type(request: Request, call_next):
 
 
 @app.get("/health")
-async def health():
+async def health(request: Request):
     # Two counts, deliberately. `documents` sums the root-document tables only (SOURCE_TABLE, not
     # COMMENT_TABLE); `source_documents` is what the corpus OFFERED, which is smaller because
     # parsing turns one Slack transcript into many messages. Reporting only the larger inflates.
-    counts = getattr(app.state, "doc_counts", None)
-    warm_error = getattr(app.state, "warm_error", None)
+    counts = getattr(request.app.state, "doc_counts", None)
+    warm_error = getattr(request.app.state, "warm_error", None)
     # `degraded`, not a non-200: the corpus is still served correctly (see the fallbacks), so
     # failing the check would take down a working server. Only `ok` with null counts is wrong.
     body = {
         "status": "degraded" if warm_error else "ok",
-        "source_documents": getattr(app.state, "source_documents", None),
+        "source_documents": getattr(request.app.state, "source_documents", None),
     }
     if counts is not None:
         body["documents"] = sum(counts.values())
@@ -314,7 +370,7 @@ async def health():
 
 
 @app.get("/_meta/users")
-async def meta_users():
+async def meta_users(request: Request):
     """Directory of every generated user + their token, for testing per-user ACL.
 
     Not part of any emulated vendor API — a Backlot-only affordance. Present each user's
@@ -326,8 +382,8 @@ async def meta_users():
     The admin/service token bypasses all filtering. Always served: ``backlot mcp --user <email>``
     resolves a person to their whole credential set here.
     """
-    conn = app.state.conn
-    acl = app.state.acl
+    conn = request.app.state.conn
+    acl = request.app.state.acl
     tok = acl.email_to_token()
     # Only users with a token: everyone else the corpus names is display-only (an author or owner,
     # not an identity you can authenticate as).
@@ -367,12 +423,12 @@ async def meta_credentials(request: Request):
     setting ``subject=<email>``; a bare service account (no subject) resolves to the
     admin/service token. Backlot-only affordance. See ``examples/using-official-sdk/gmail.py``.
     """
-    o = getattr(app.state, "oauth", None)
+    o = getattr(request.app.state, "oauth", None)
     if o is None:
         raise HTTPException(status_code=404, detail="Not Found")
     token_uri = f"{request.url.scheme}://{request.headers.get('host', 'localhost')}/oauth2/token"
     return {
-        "org": app.state.acl.org_name,
+        "org": request.app.state.acl.org_name,
         "token_uri": token_uri,
         "oauth_client": o.client_config(),
         "service_account": o.service_account_json(token_uri),
@@ -380,7 +436,7 @@ async def meta_credentials(request: Request):
 
 
 @app.get("/_meta/openapi/{source}")
-async def meta_openapi(source: str):
+async def meta_openapi(source: str, request: Request):
     """An MCP-ready OpenAPI spec for one source: the app's own ``/openapi.json`` sliced to that
     source and with its GET/POST and v2/v3 fidelity aliases collapsed to one operation each, so an
     OpenAPI→MCP bridge can feed it straight to ``FastMCP.from_openapi()`` (see ``backlot.openapi``)."""
@@ -389,7 +445,7 @@ async def meta_openapi(source: str):
             status_code=404,
             detail=f"no MCP spec for {source!r}; one of {sorted(openapi.SOURCE_PREFIXES)}",
         )
-    return openapi.build_mcp_spec(app.openapi(), source)
+    return openapi.build_mcp_spec(request.app.openapi(), source)
 
 
 app.include_router(oauth.router)

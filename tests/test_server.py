@@ -322,3 +322,90 @@ def test_serve_or_connect_reports_on_stderr_not_stdout(capsys):
     out, err = capsys.readouterr()
     assert out == ""
     assert "using Backlot at" in err and "falling back to a local server" in err
+
+
+def test_backlots_own_routes_read_the_app_that_serves_them(tmp_path):
+    """`/health`, `/_meta/users`, `/_meta/credentials` and `/_meta/openapi/{source}` read the app
+    off the request, not the module-level ``app``. The difference shows when ``backlot.main`` is
+    re-imported while a first server is still up, which ``client_for(reload=True)`` does: a reload
+    re-executes the module in the same namespace, so the first app's handlers found ``app`` rebound
+    to the second one and read its state, and once the second lifespan had ended and closed its
+    connection, the first server's `/_meta/users` was `sqlite3.ProgrammingError: Cannot operate on
+    a closed database` while its vendor routes, which read ``request.app``, kept answering. In the
+    suite this bit a module-scoped client whose first `/_meta/users` call came after a reload."""
+    from tests._helpers import build_corpus, client_for
+
+    def record(domain: str) -> dict:
+        return {
+            "source_type": "github",
+            "doc_id": "gh-1",
+            "repo": "one",
+            "title": "Issue",
+            "content": "body",
+            "author_email": f"ava@{domain}",
+            "visibility": "public",
+        }
+
+    first_settings = build_corpus(tmp_path / "first", [record("acme.com")])
+    second_settings = build_corpus(tmp_path / "second", [record("other.com")])
+    with client_for(first_settings) as first:
+        assert first.get("/_meta/users").json()["org"] == "acme"
+        with client_for(second_settings, reload=True) as second:
+            assert second.get("/_meta/users").json()["org"] == "other"
+        # the second lifespan has ended and closed its connection; the first server is still up
+        assert first.get("/health").json()["status"] == "ok"
+        assert first.get("/_meta/users").json()["org"] == "acme"
+        assert first.get("/_meta/credentials").json()["org"] == "acme"
+        assert "/github/search/code" in first.get("/_meta/openapi/github").json()["paths"]
+
+
+def test_backlots_own_routes_answer_head_as_the_get(client, admin_h):
+    """`HEAD /health` is the shape a liveness probe takes, and FastAPI's ``APIRoute`` refused it with
+    the 405 the GitHub routes earned for the same reason (see
+    ``backlot.main.answer_head_as_the_get_without_its_body``). These are Backlot's own routes, with
+    no vendor to measure against, so the answer is Backlot's to choose: the GET's status and
+    headers, the GET body's length, and no body, the same rule as GitHub's."""
+    client.app.state.warm_thread.join()  # `/health` grows once the counts land; hold it still
+    for path in ("/health", "/_meta/users", "/_meta/openapi/github", "/_meta/openapi/nope"):
+        get, head = client.get(path, headers=admin_h), client.head(path, headers=admin_h)
+        assert head.status_code == get.status_code, path
+        assert head.headers["content-length"] == str(len(get.content)), path
+        assert head.content == b"", path
+    assert client.get("/_meta/openapi/nope").status_code == 404  # the 404 cell was a 404
+
+
+def test_serving_a_db_older_than_a_table_says_so_and_says_to_re_import(tmp_path):
+    """Rather than an OperationalError per Sheets read. There is no migration -- a corpus is
+    re-imported, not upgraded in place -- so naming the gap is the whole remedy."""
+    import sqlite3
+
+    import pytest
+
+    from backlot import store
+    from tests._helpers import build_corpus, client_for
+
+    settings = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "google_drive",
+                "doc_id": "gd-old",
+                "subtype": "spreadsheet",
+                "title": "Prose",
+                "folder": "sales",
+                "content": "a\nb",
+                "author_email": "d@acme.com",
+            }
+        ],
+    )
+    conn = sqlite3.connect(settings.db_path)
+    conn.execute("DROP TABLE gdrive_sheets")
+    conn.commit()
+    conn.close()
+    assert store.missing_tables(sqlite3.connect(settings.db_path)) == ["gdrive_sheets"]
+
+    with pytest.raises(RuntimeError) as e:
+        with client_for(settings, reload=True):
+            pass
+    assert "gdrive_sheets" in str(e.value)
+    assert "backlot import" in str(e.value)

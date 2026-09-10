@@ -1232,6 +1232,43 @@ def test_drive_doc_type_maps_onto_drive_mime_types():
         assert _drive_file(conn, row)["mimeType"] == mime, doc_type
 
 
+def test_a_converted_spreadsheet_serves_on_the_prose_path_even_when_the_bench_names_columns():
+    """The bench states a `columns` header on some sheet rows, and its `rows` are CSV-quoted — so a
+    grid looks recoverable. It is not: measured over the 1,875 bench spreadsheets, the 25 whose rows
+    parse to exactly the stated header width ALL carry further content fields beside the table.
+    `sheets` forbids `content`, so converting would drop that prose from search and from export.
+
+    Pinned here because the tempting change is a one-line delimiter split, and nothing else would
+    fail if someone made it."""
+    from backlot.importer.erb import _byo_drive
+    from backlot.routers.google import _sheets_grid
+
+    conn = _conn()
+    P = Principals([], "redwoodinference.com")
+    raw = {
+        "title_field_name": "title",
+        "content_field_names": ["description", "columns", "rows"],
+        "title": "Renewal tracker",
+        "doc_type": "sheet",
+        "description": "Working notebook for renewals; the table below is one part of it.",
+        "columns": ["Account", "ARR (USD)", "Notes"],
+        "rows": ['AsterHealth, 185000, "usage dipped, wants a QBR"'],
+        "owner": "Maya Chen",
+        "team": "research-applied-ml",
+        "created_at": "2025-09-18",
+    }
+    recs, _bundle = _byo_drive("dsid_grid", raw, P)
+    assert "sheets" not in recs[0]
+    # the description survives, which is the whole reason not to convert
+    assert "Working notebook" in recs[0]["content"]
+
+    _load_one(conn, "google_drive", "dsid_grid", raw, P)
+    row = store.get_document(conn, "google_drive", served_id("google_drive", "dsid_grid"))
+    assert store.gdrive_sheets_for(conn, row["id"]) == []
+    # every cell is a whole line, so no row was split into columns
+    assert all(len(cells) == 1 for cells in _sheets_grid(row["content"]))
+
+
 def test_drive_unknown_doc_type_falls_back_to_the_title_extension():
     from backlot.routers.google import _drive_file
 

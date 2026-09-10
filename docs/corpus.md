@@ -85,6 +85,33 @@ The schemas double as the contract for **LLM dataset generation**: hand one to a
 structured-output schema, generate records, then `--dry-run` before loading. See
 [`backlot/schemas/README.md`](../backlot/schemas/README.md).
 
+### Spreadsheets
+
+A `subtype: "spreadsheet"` record states its cells one of two ways.
+
+Without `sheets`, `content` is the document, and the Sheets API serves one sheet whose every cell
+is a whole line of it. That is the right shape for a spreadsheet that is really prose, which most
+exported ones are — splitting such a document on a comma manufactures columns out of sentence
+punctuation.
+
+With `sheets`, the record states a real grid and `content` must be **absent**. It is derived from
+the first sheet at import, so `files.export?mimeType=text/csv` and the Sheets API cannot describe
+one document two ways.
+
+```json
+{"source_type": "google_drive", "subtype": "spreadsheet", "title": "Q3 pipeline", "folder": "sales", "author_email": "dana@acme.com", "created": "2026-07-01T09:00:00Z", "updated": "2026-07-14T17:20:00Z", "sheets": [{"title": "Summary", "grid": [["Region", "Deals", "Won"], ["EMEA", 12, true]]}, {"grid": [["id", "amount"], ["a-1", 1250.5]]}]}
+```
+
+A cell is a JSON scalar — a string, a number, a boolean, or `null` for an empty cell — and the type
+survives to the API: `valueRenderOption=UNFORMATTED_VALUE` answers `12`, `FORMATTED_VALUE` answers
+`"12"`. A sheet's `title` defaults to `Sheet<n>` by position and must be unique within the workbook,
+compared case-insensitively; short rows are padded. Dates, formulas and error cells have no
+representation — a corpus states what a cell holds, and JSON has no date.
+
+`content` is derived from the **first** sheet, and Drive's full-text search reads `content` — so a
+word held only on a later sheet does not make the file a hit for `q=fullText contains`. Put what
+should be findable on the first sheet.
+
 ## Load a public dataset
 
 [EnterpriseRAG-Bench](https://github.com/onyx-dot-app/EnterpriseRAG-Bench) is ~500k synthetic

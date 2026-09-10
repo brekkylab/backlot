@@ -214,7 +214,7 @@ than there being a set per type.
 |---|---|
 | `search/jql` | `GET` or `POST`. JQL `project =`, `text`\|`summary`\|`description` `~` |
 | `issue/{key}` | |
-| `issue/{key}/comment` | |
+| `issue/{key}/comment` | `startAt`, `maxResults` (max 100), `orderBy` `created`/`+created`/`-created` |
 | `field` | |
 | `issueLinkType` | |
 | `project/search` | |

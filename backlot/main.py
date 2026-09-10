@@ -252,6 +252,7 @@ async def answer_head_as_the_get_without_its_body(request: Request, call_next):
         return await call_next(request)
     request.scope["method"] = "GET"
     response = await call_next(request)
+    request.scope["method"] = "HEAD"
     length = 0
     async for chunk in response.body_iterator:
         length += len(chunk)

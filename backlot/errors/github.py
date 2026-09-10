@@ -10,8 +10,8 @@ exception CLASS off the body's ``message``, so the same wrong token raises
 ``documentation_url`` is per-ENDPOINT and measured, not derived: requesting each route shape against
 a repository that does not exist returns that route's own docs anchor, which is where
 :data:`ROUTE_DOCS` comes from (every route below but one, none inferred from another). The one is
-`/rate_limit`, which names no repository and whose only error on the wire is the credential 401
-with the root below; its entry is the `externalDocs` url real's description gives the operation,
+``/rate_limit``, which names no repository and whose only error on the wire is the credential 401
+with the root below; its entry is the ``externalDocs`` url real's description gives the operation,
 and no answer Backlot gives on that route reaches it.
 
 An authentication failure is the exception to that: real answers those with the bare

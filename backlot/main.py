@@ -266,10 +266,10 @@ async def answer_head_as_the_get_without_its_body(request: Request, call_next):
     the three middlewares inside this one, the version echo, the rate-limit count and the id-path
     rewrite, see a GET and land on the answer by construction, and the charset middleware outside
     it rewrites the copied `content-type` as it does the GET's. The body is read to the end to be
-    measured rather
-    than sent, because the `content-length` a client reads a `HEAD` for is the GET body's length and
-    computing the body is the only way to have that number; a `HEAD` costs what its GET costs, here
-    as on real. The method goes back to `HEAD` on the scope once the GET has answered, because the
+    measured rather than sent, because the `content-length` a client reads a `HEAD` for is the GET
+    body's length and computing the body is the only way to have that number; a `HEAD` costs what
+    its GET costs, here as on real. The method goes back to `HEAD` on the scope once the GET has
+    answered, because the
     server frames the response by it: uvicorn's httptools protocol reads ``scope["method"]`` when it
     writes the body, sends nothing for a `HEAD`, and for a `GET` holds the body to the declared
     `content-length`, so with the scope left saying `GET` the empty body this middleware sends was

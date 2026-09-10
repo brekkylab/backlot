@@ -1822,7 +1822,9 @@ class _Loader:
         # rather than supplied. `files.export?mimeType=text/csv` serves `content` verbatim, so this
         # is what stops Drive and the Sheets API describing one document two ways -- and it leaves
         # FTS text to index for a spreadsheet that states no prose. Like fireflies above, it runs
-        # before `_doc_id`, which hashes the content, so the id covers the grid.
+        # before `_doc_id` so the derived content is what gets hashed; the REST of the workbook
+        # reaches the id separately, because `_doc_id` folds `sheets` in when a record states one.
+        # Content alone would cover the first sheet and nothing else.
         drive_sheets = None
         if src == "google_drive" and rec.get("sheets") is not None:
             drive_sheets = rec["sheets"]

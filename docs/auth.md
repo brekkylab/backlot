@@ -144,7 +144,9 @@ curl -s localhost:8000/github/user/repos \
 ```
 
 Both schemes are accepted, as GitHub accepts both. `user/repos` is the token's own reach, so it is
-the quickest check that an identity resolves.
+the quickest check that an identity resolves. `rate_limit` is the one route that answers with no
+credential at all, at the anonymous limits, as real serves it; a bearer that does not resolve is
+still the 401 there.
 
 ### Jira and Confluence — Basic, or `Bearer`
 

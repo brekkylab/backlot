@@ -185,11 +185,15 @@ but it is never the bug of whichever pull request happens to be open when a vend
 and a contributor fixing a typo must not be blocked by it. A new divergence opens an issue and
 turns the scheduled run red instead.
 
-A source has one issue for the life of the repository. It is opened under the `fidelity` label —
-the vendor API defines the right answer, so closing one needs a measurement against it — and found
-again on later runs whether it is open or closed, so triaging one does not produce a duplicate the
-next morning. Its body carries the latest run's report, and a comment is posted only when that
-report is not the one already there.
+A source has one open issue at a time. It is opened under the `fidelity` label — the vendor API
+defines the right answer, so closing one needs a measurement against it — titled with the date the
+divergence was first seen, and found again on later runs so triaging one does not produce a
+duplicate the next morning. Its body carries the latest run's report, and a comment is posted only
+when that report is not the one already there.
+
+Closing it closes the record. The body and the comments stay as the account of what was triaged,
+and a source still diverging the next morning gets a new issue that links back to the last one — a
+closed issue is never reopened and never written over.
 
 ## Coverage
 
@@ -244,6 +248,12 @@ that way on every route measured, so the divergence was the method missing, not 
 undocumented. But a path diff reads methods off the two documents, and neither mentions this one,
 so nothing here would catch it going away. The middleware's prefix tuple is the record of which
 vendors it covers; a vendor joins it once its own `HEAD` is measured.
+
+The five `x-ratelimit-*` headers are the same kind of gap. Every `/github` answer carries them
+(`backlot.main.report_github_rate_limit`), as every answer real gives does, but the comparison reads
+parameters and operations off the two documents and never a response header; real's description
+declares three of the five, on `GET /rate_limit`'s 200 alone, and Backlot's document declares none.
+The tests are the record here (`tests/test_github.py`, the rate-limit test), not the baseline.
 
 Confluence is not yet fully covered: its reads now live in a v2 document whose paths are shaped
 differently from the v1 ones Backlot serves, so the eight reads Atlassian has removed from the v1

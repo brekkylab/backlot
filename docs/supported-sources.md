@@ -17,7 +17,7 @@ Generated from `backlot/schemas/*.schema.json` and the app's own `/openapi.json`
 |---|---|---|---|---|---|
 | `confluence` | Confluence | `/atlassian/wiki/rest/api` | 10 | [`confluence.schema.json`](../backlot/schemas/confluence.schema.json) | A Confluence page or blogpost. |
 | `fireflies` | Fireflies | `/fireflies/graphql` | GraphQL (one `POST`) | [`fireflies.schema.json`](../backlot/schemas/fireflies.schema.json) | A Fireflies.ai meeting transcript. |
-| `github` | GitHub | `/github` | 32 | [`github.schema.json`](../backlot/schemas/github.schema.json) | A GitHub issue, pull request, file, or the repository itself. |
+| `github` | GitHub | `/github` | 33 | [`github.schema.json`](../backlot/schemas/github.schema.json) | A GitHub issue, pull request, file, or the repository itself. |
 | `gmail` | Gmail | `/gmail/v1` | 8 | [`gmail.schema.json`](../backlot/schemas/gmail.schema.json) | A Gmail message. |
 | `google_drive` | Google Drive, Docs, Sheets, Slides | `/drive/v3` `/docs/v1` `/sheets/v4` `/slides/v1` | 13 | [`google_drive.schema.json`](../backlot/schemas/google_drive.schema.json) | A Google Drive file. |
 | `hubspot` | HubSpot | `/hubspot` | 5 | [`hubspot.schema.json`](../backlot/schemas/hubspot.schema.json) | A HubSpot CRM record (contact, company, deal, ticket, note, …). |
@@ -71,14 +71,15 @@ Field names are snake_case, as Fireflies' own schema has them. Full introspectio
 | `search/issues` | `q`: free text + `repo:` `is:` `state:` `type:` `label:` `author:` |
 | `search/code` | `q`: free text over a file's body and path + `repo:` `path:` `filename:` `extension:` `in:file`/`in:path` |
 | `orgs/{org}` | |
-| `orgs/{org}/repos` | |
+| `orgs/{org}/repos` | `type`, `sort`, `direction`: real's enums and defaults, each direction as measured; `created`, `updated` and `pushed` are one derived order here |
 | `orgs/{org}/teams` | |
-| `user/repos` | The token's own reach |
+| `user/repos` | The token's own reach. `visibility`, `sort`, `direction`; `type` and `affiliation` select on what the caller is to a repository, which a corpus does not state, and stay undeclared |
+| `rate_limit` | The windows the `x-ratelimit-*` headers report, `core`, `search` and `code_search`; a read of it does not count, and it answers with no credential at the anonymous limits, the one route here that does |
 | `repos/{o}/{r}` | |
-| `repos/{o}/{r}/issues[/{n}]` | `state` on the listing: `open`\|`closed`\|`all`; any other value is real's 422, and the repository is checked first, so an unknown repo is the 404 instead |
+| `repos/{o}/{r}/issues[/{n}]` | `state` on the listing: `open`\|`closed`\|`all`; any other value is real's 422, and the repository is checked first, so an unknown repo is the 404 instead. `sort`, `direction`: real's enums and defaults, each order as measured |
 | `repos/{o}/{r}/issues/{n}/comments` | |
 | `repos/{o}/{r}/issues/comments/{id}` | |
-| `repos/{o}/{r}/pulls[/{n}]` | `state` on the listing: `open`\|`closed`\|`all`; any other value is served as `open`, which is what real does here where the issue listing refuses it |
+| `repos/{o}/{r}/pulls[/{n}]` | `state` on the listing: `open`\|`closed`\|`all`; any other value is served as `open`, which is what real does here where the issue listing refuses it. `sort`, `direction` as on issues; `long-running` orders by creation and filters nothing, as it does on the wire |
 | `repos/{o}/{r}/pulls/{n}/reviews` | |
 | `repos/{o}/{r}/pulls/{n}/comments` | |
 | `repos/{o}/{r}/pulls/{n}/files` | |
@@ -114,6 +115,15 @@ unpinned request gets `2022-11-28`, anything else is the real API's 400, and eve
 its choice in `X-GitHub-Api-Version-Selected`. `search/code` is the one route that does neither:
 real's code search backend does not read the header, so a pinned version there is served whatever
 it says and no response from it carries the `Selected` header (measured 2026-09-06).
+
+**Every response carries the five `x-ratelimit-*` headers** real puts on every answer, the errors
+included: `limit` at real's numbers (60 an hour for a caller with no credential, 5000 for a token,
+30 and 10 for `search` and `code_search`), `remaining` and `used` counted per credential and per
+resource in an hourly window, `reset` the second that window closes, `resource` the one the request
+counted against. Nothing is refused when a window runs out: `remaining` stops at 0 and `used` keeps
+counting, so a client that paces by the headers sees its real pace and a test suite is never failed
+for its own volume. `GET /rate_limit` reports the same windows and does not count (measured
+2026-09-10).
 
 An issue body and a pull body are the two distinct field sets real serves — a pull carries `_links`
 and its `*_url` siblings and none of the issue-only fields, `pull_request` included. A repository

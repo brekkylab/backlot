@@ -108,6 +108,10 @@ survives to the API: `valueRenderOption=UNFORMATTED_VALUE` answers `12`, `FORMAT
 compared case-insensitively; short rows are padded. Dates, formulas and error cells have no
 representation — a corpus states what a cell holds, and JSON has no date.
 
+`content` is derived from the **first** sheet, and Drive's full-text search reads `content` — so a
+word held only on a later sheet does not make the file a hit for `q=fullText contains`. Put what
+should be findable on the first sheet.
+
 ## Load a public dataset
 
 [EnterpriseRAG-Bench](https://github.com/onyx-dot-app/EnterpriseRAG-Bench) is ~500k synthetic

@@ -1812,7 +1812,7 @@ def _gmask_check(tree: dict, allowed: dict, path: str = "") -> None:
     """Refuse a name the response has no field for, naming the full path as the real API does.
 
     Validated against the fields Backlot CAN emit rather than against the whole Sheets schema:
-    a mask naming a real field this module does not model -- a cell's `effectiveFormat`, say --
+    a mask naming a real field this module does not model -- a cell's `userEnteredFormat`, say --
     400s here where the real API answers 200. Stated rather than hidden; the alternative is to
     accept any name at all, which is how a typo becomes a silently empty response."""
     for name, sub in tree.items():
@@ -1823,6 +1823,21 @@ def _gmask_check(tree: dict, allowed: dict, path: str = "") -> None:
             raise gerr.bad_field_mask(full)
         if sub:
             _gmask_check(sub, allowed[name], full)
+
+
+def _gmask_wants_grid(mask: str | None) -> bool:
+    """Whether a `fields` mask reaches the cells, which is what decides the grid when one is set.
+
+    The discovery document says of `includeGridData`, on both methods that take it: "This parameter
+    is ignored if a field mask was set in the request." Measured, that is narrower than it reads --
+    the mask has to reach `sheets.data`. `fields=sheets` and `fields=sheets.data...` build the
+    grid; `fields=*` and `fields=sheets.properties.title` do not, even though the first of those
+    selects everything."""
+    if not mask:
+        return False
+    tree = _gmask_parse(mask)
+    under = tree.get("sheets")
+    return under is not None and (not under or "data" in under)
 
 
 def _gmask_apply(tree: dict, value):
@@ -1975,7 +1990,12 @@ async def sheets_get(spreadsheet_id: str, request: Request):
     would differ between the two backends. With the flag, ``ranges`` scopes the returned rows
     (measured: 5.7 MB -> 11 KB for ``A1:B2``)."""
     row, sheets = _workbook(request, spreadsheet_id)
+    mask = request.query_params.get("fields")
+    # A mask that reaches the cells decides the grid, and `includeGridData` is then ignored rather
+    # than consulted -- the vendor's own wording. Still parsed, so a bad value is still refused.
     grid = _sheets_bool(request, "includeGridData", "include_grid_data")
+    if mask:
+        grid = _gmask_wants_grid(mask)
     # Validated and then unused, deliberately: it drops the tables that sit inside a banded range,
     # and a corpus states neither tables nor banded ranges, so there is nothing here to exclude.
     # Leaving it unvalidated instead would accept the one thing a client can get wrong about it.
@@ -2207,16 +2227,25 @@ _SHEETS_FALSE = frozenset({"0", "f", "false", "n", "no"})
 
 
 def _sheets_bool(request: Request, param: str, field: str) -> bool:
-    """One of the boolean query params, parsed the way the real one is.
+    """One of the boolean query params, parsed the way the real one is."""
+    return _sheets_bool_value(request.query_params.get(param), field)
+
+
+def _sheets_bool_value(raw, field: str) -> bool:
+    """The rule itself, so a read that carries the flag in a JSON BODY applies the same one.
 
     Measured: `1`, `t`, `y` and `yes` mean true and `0`, `f`, `n` and `no` mean false, matched
     case-insensitively; anything else 400s as ``Invalid value at '<field>' (TYPE_BOOL), "<value>"``,
-    naming the proto TYPE rather than a message. An absent param is false; an EMPTY one is not
-    absent and 400s."""
-    raw = request.query_params.get(param)
+    naming the proto TYPE rather than a message. An absent flag is false; an EMPTY one is not
+    absent and 400s.
+
+    A JSON body may carry a real boolean, which is taken as itself -- `bool()` on the raw value
+    would otherwise make the STRING "false" true, which under no reading it is."""
     if raw is None:
         return False
-    folded = raw.casefold()
+    if isinstance(raw, bool):
+        return raw
+    folded = str(raw).casefold()
     if folded in _SHEETS_TRUE:
         return True
     if folded in _SHEETS_FALSE:
@@ -2430,10 +2459,8 @@ def _sheets_grid_data(sheet: _Sheet, body: str, spec: str) -> dict:
     and 26. Every entry is identical (``pixelSize`` 21 for a row, 100 for a column), those being
     the default track sizes; a corpus states no track size, so there is nothing to vary.
 
-    Two divergences, stated rather than hidden: real Sheets pads ``rowData`` out to the WHOLE
-    1000-row grid where this stops at the last row holding data, and real cells carry an
-    ``effectiveFormat`` this does not model — cell formatting is not something a corpus can
-    state."""
+    One divergence, stated rather than hidden: real Sheets pads ``rowData`` out to the WHOLE
+    1000-row grid where this stops at the last row holding data."""
     r0, c0, r1x, c1, block = _sheets_block(sheet, body, spec)
     width = c1 - c0
     while block and all(sheets_grid.formatted(c) == "" for c in block[-1]):
@@ -2668,14 +2695,53 @@ def _sheets_filter_spec(f: dict, sheets: list[_Sheet]) -> str:
     grid = f.get("gridRange")
     if not isinstance(grid, dict):
         raise gerr.invalid_argument("dataFilter.filter must be specified.")
-    sheet = next((s for s in sheets if s.sheet_id == grid.get("sheetId", 0)), None)
+    sheet_id = _sheets_int32(grid.get("sheetId"), "sheetId", 0)
+    sheet = next((s for s in sheets if s.sheet_id == sheet_id), None)
     if sheet is None:
-        raise gerr.invalid_argument(f"No sheet with id: {grid.get('sheetId', 0)}")
-    r0 = int(grid.get("startRowIndex") or 0)
-    c0 = int(grid.get("startColumnIndex") or 0)
-    r1 = int(grid["endRowIndex"]) if grid.get("endRowIndex") is not None else sheet.rows
-    c1 = int(grid["endColumnIndex"]) if grid.get("endColumnIndex") is not None else sheet.cols
+        raise gerr.invalid_argument(f"No sheet with id: {sheet_id}")
+    r0 = _sheets_int32(grid.get("startRowIndex"), "startRowIndex", 0)
+    c0 = _sheets_int32(grid.get("startColumnIndex"), "startColumnIndex", 0)
+    r1 = _sheets_int32(grid.get("endRowIndex"), "endRowIndex", sheet.rows)
+    c1 = _sheets_int32(grid.get("endColumnIndex"), "endColumnIndex", sheet.cols)
+    # Half-open and ascending. An end at or before its start selects nothing, and letting it
+    # through builds an A1 name with a row 0 in it -- `Data!A1:Z0` -- which the parser then reads
+    # back as a start row of -1 and answers a range nobody asked for.
+    if r1 <= r0 or c1 <= c0:
+        raise gerr.invalid_argument(
+            f"Invalid gridRange: end must be greater than start, got rows [{r0}, {r1}) "
+            f"and columns [{c0}, {c1})"
+        )
     return _a1_name(sheet, r0, c0, r1, c1)
+
+
+def _sheets_int32(raw, field: str, default: int) -> int:
+    """One int32 member of a `gridRange`.
+
+    The discovery document declares these `int32`, and proto3's JSON mapping takes a number or a
+    decimal string for one, so `"0"` resolves like `0`. What it does not take is a float with a
+    fraction, a non-numeric string or a negative index -- each of which reached `_a1_name`
+    unchecked before, turning a client's typo into a 500 or into a silently truncated index.
+
+    Backlot's own wording: the real API's message for these was not measured."""
+    if raw is None:
+        return default
+    if isinstance(raw, bool):
+        raise gerr.invalid_argument(f"Invalid value at '{field}' (TYPE_INT32), \"{raw}\"")
+    value = raw
+    if isinstance(value, str):
+        try:
+            value = int(value, 10)
+        except ValueError:
+            raise gerr.invalid_argument(
+                f"Invalid value at '{field}' (TYPE_INT32), \"{raw}\""
+            ) from None
+    if isinstance(value, float):
+        if not value.is_integer():
+            raise gerr.invalid_argument(f"Invalid value at '{field}' (TYPE_INT32), \"{raw}\"")
+        value = int(value)
+    if not isinstance(value, int) or value < 0:
+        raise gerr.invalid_argument(f"Invalid value at '{field}' (TYPE_INT32), \"{raw}\"")
+    return value
 
 
 async def _sheets_filters(request: Request, sheets: list[_Sheet], *, required: bool, indexed: bool):
@@ -2781,7 +2847,9 @@ async def sheets_get_by_data_filter(spreadsheet_id: str, request: Request):
     sheet rather than the refusal its values-level sibling gives."""
     row, sheets = _workbook(request, spreadsheet_id)
     body, specs = await _sheets_filters(request, sheets, required=False, indexed=False)
-    grid = bool(body.get("includeGridData"))
+    grid = _sheets_bool_value(body.get("includeGridData"), "include_grid_data")
+    if mask := request.query_params.get("fields"):
+        grid = _gmask_wants_grid(mask)
     return _sheets_respond(
         request, _sheets_book(spreadsheet_id, row, sheets, specs, grid), _F_SPREADSHEET
     )

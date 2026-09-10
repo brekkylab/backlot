@@ -124,7 +124,7 @@
     "sheets": {
       "type": "array",
       "minItems": 1,
-      "description": "A real grid, for a `spreadsheet`. Authoritative when present, and then `content` must be ABSENT: content is derived from the first sheet at import, so a record stating both would let Drive search find words no cell holds. Omit `sheets` and `content` keeps its meaning unchanged -- one sheet whose every cell is a whole line of it.",
+      "description": "A real grid, for a `spreadsheet`. Authoritative when present, and then `content` must be ABSENT: content is derived from the FIRST sheet at import, so a record stating both would let Drive search find words no cell holds. The same derivation is why Drive's full-text search reaches only the first sheet -- a word held on a later one is in no cell `content` carries, so `files.list?q=fullText contains` will not find the file by it. Omit `sheets` and `content` keeps its meaning unchanged -- one sheet whose every cell is a whole line of it.",
       "items": {
         "type": "object",
         "additionalProperties": false,

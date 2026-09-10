@@ -2413,3 +2413,14 @@ def test_write_meta_commits_the_entire_transaction(tmp_path):
     )
     assert store.read_meta(check_conn, "test_key") == "test_value"
     check_conn.close()
+
+
+def test_missing_tables_names_what_an_older_db_lacks(tmp_path):
+    """A DB is built by `backlot import` and served READ-ONLY, so `CREATE TABLE IF NOT EXISTS`
+    never runs against one that predates a table — every read touching it would raise a bare
+    OperationalError. The server asks this once at startup and names the gap instead."""
+    conn = store.connect_rw(tmp_path / "old.sqlite")
+    assert store.missing_tables(conn) == []
+    conn.execute("DROP TABLE gdrive_sheets")
+    conn.commit()
+    assert store.missing_tables(conn) == ["gdrive_sheets"]

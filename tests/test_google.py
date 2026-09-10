@@ -3459,3 +3459,63 @@ def test_a_mask_may_name_a_colour_component_wherever_a_colour_appears(gc, gh, bo
         params={"includeGridData": "true", "ranges": "Summary!A1:A1", "fields": mask},
     )
     assert r.status_code == 200, r.text
+
+
+@pytest.mark.parametrize(
+    "mask, wants_grid",
+    [
+        ("sheets.data.rowData.values.formattedValue", True),
+        ("sheets", True),
+        ("sheets.properties.title", False),
+        # measured: `*` selects everything and still does NOT build the grid
+        ("*", False),
+        ("spreadsheetId", False),
+    ],
+)
+def test_a_field_mask_decides_the_grid_when_one_is_set(gc, gh, book, mask, wants_grid):
+    """The vendor's own wording for `includeGridData`: "This parameter is ignored if a field mask
+    was set in the request." Measured, that is narrower than it reads — the mask has to reach
+    `sheets.data`, which `*` does not."""
+    r = gc.get(
+        f"/sheets/v4/spreadsheets/{book}",
+        headers=gh,
+        params={"fields": mask, "ranges": "Summary!A1:A1"},
+    )
+    assert r.status_code == 200, r.text
+    sheets = r.json().get("sheets") or [{}]
+    assert ("data" in sheets[0]) is wants_grid
+
+
+@pytest.mark.parametrize(
+    "value, grid",
+    [("false", False), ("no", False), ("0", False), (False, False), ("true", True), (1, True)],
+)
+def test_include_grid_data_in_the_body_follows_the_query_strings_rule(gc, gh, book, value, grid):
+    """`bool()` on the raw body value made the STRING "false" true."""
+    r = gc.post(
+        f"/sheets/v4/spreadsheets/{book}:getByDataFilter",
+        headers=gh,
+        json={"dataFilters": [{"a1Range": "Summary!A1"}], "includeGridData": value},
+    )
+    assert r.status_code == 200, r.text
+    assert ("data" in r.json()["sheets"][0]) is grid
+
+
+@pytest.mark.parametrize(
+    "grid_range, status",
+    [
+        ({"sheetId": 0, "startRowIndex": "abc"}, 400),  # was a 500
+        ({"sheetId": 0, "startRowIndex": 1.7}, 400),  # was silently 1
+        ({"sheetId": 0, "startRowIndex": -1}, 400),
+        ({"sheetId": 0, "startRowIndex": 2, "endRowIndex": 1}, 400),  # answered 3 rows
+        ({"sheetId": 0, "startRowIndex": 0, "endRowIndex": 0}, 400),
+        # proto3's JSON mapping takes a decimal string for an int32
+        ({"sheetId": "0", "startRowIndex": 0, "endRowIndex": 1}, 200),
+        ({"sheetId": 0, "startRowIndex": 0, "endRowIndex": 2}, 200),
+    ],
+)
+def test_a_grid_range_member_is_checked_before_it_reaches_the_parser(
+    gc, gh, book, grid_range, status
+):
+    r = _by_filter(gc, gh, book, {"dataFilters": [{"gridRange": grid_range}]})
+    assert r.status_code == status, r.text

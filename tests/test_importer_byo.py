@@ -5674,3 +5674,45 @@ def test_a_shipped_corpus_with_a_gridded_spreadsheet_loads(
     assert [r["title"] for r in store.gdrive_sheets_for(conn, row["id"])] == sheets
     # derived from the first sheet, which is what Drive's CSV export then serves verbatim
     assert row["content"].startswith(content)
+
+
+def test_two_workbooks_sharing_a_title_and_a_first_sheet_are_two_documents(tmp_path):
+    """`_doc_id` hashes the content, and a gridded record's content is only its FIRST sheet — so
+    without the rest of the grid in the seed, two workbooks that agree on a title and a Summary
+    sheet resolve to one id and the later silently replaces the earlier. A shared first sheet is
+    ordinary; the documents are not the same document."""
+    recs = [
+        {
+            **{k: v for k, v in GRID_REC.items() if k != "doc_id"},
+            "title": "Twin",
+            "sheets": [{"grid": [["a"]]}, {"title": "S2", "grid": [["first"]]}],
+        },
+        {
+            **{k: v for k, v in GRID_REC.items() if k != "doc_id"},
+            "title": "Twin",
+            "sheets": [{"grid": [["a"]]}, {"title": "S2", "grid": [["second"]]}],
+        },
+    ]
+    conn = _load_grid(tmp_path, recs)
+    rows = conn.execute("SELECT id FROM gdrive_files").fetchall()
+    assert len(rows) == 2
+    seconds = {json.loads(store.gdrive_sheets_for(conn, r["id"])[1]["grid"])[0][0] for r in rows}
+    assert seconds == {"first", "second"}
+
+
+@pytest.mark.parametrize("sheets", [5, True, "abc", {"a": 1}])
+def test_a_sheets_value_that_is_not_a_list_is_reported_not_raised(tmp_path, capsys, sheets):
+    """`--dry-run` exists to report instead of failing, so a type the schema has already named must
+    not end the run in a traceback on the way past."""
+    corpus = _write(tmp_path, [{**GRID_REC, "sheets": sheets}], raw=True)
+    assert byo.run(corpus, dry_run=True) == 1
+    assert "sheets" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("cell", [float("inf"), float("-inf"), float("nan")])
+def test_a_cell_json_cannot_carry_is_refused_at_import(tmp_path, cell):
+    """`json.loads` takes `Infinity`/`NaN` and jsonschema's `number` does not refuse them, so
+    without this the served body carries a literal RFC 8259 has none of and `JSON.parse` fails."""
+    with pytest.raises(SystemExit) as e:
+        _load_grid(tmp_path, [{**GRID_REC, "sheets": [{"grid": [[cell]]}]}])
+    assert "RFC 8259" in str(e.value)

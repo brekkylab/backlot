@@ -67,6 +67,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import math
 import re
 import sys
 from collections.abc import Iterator
@@ -141,10 +142,14 @@ _UNCLAIMED = object()
 def _doc_id(rec: dict) -> str:
     if rec.get("doc_id"):
         return str(rec["doc_id"])
-    h = hashlib.sha256(
-        (rec["source_type"] + rec.get("title", "") + rec["content"]).encode()
-    ).hexdigest()
-    return "dsid_" + h[:32]
+    seed = rec["source_type"] + rec.get("title", "") + rec["content"]
+    # A gridded spreadsheet's `content` is its FIRST sheet alone (see the derivation in
+    # `_Loader.add`), so the rest of the workbook has to enter the seed as well. Without it two
+    # records agreeing on a title and a first sheet -- a Summary tab shared across workbooks is
+    # ordinary -- resolve to one id, and the row-level upsert leaves only the later one.
+    if rec.get("sheets") is not None:
+        seed += _j(rec["sheets"])
+    return "dsid_" + hashlib.sha256(seed.encode()).hexdigest()[:32]
 
 
 def _user_token(email: str) -> str:
@@ -878,7 +883,10 @@ def _sheets_pairing_errors(rec: dict) -> list[str]:
     must never pass the check that exists to spare the author a failed import and then fail the
     import. ``where`` is prefixed by the caller."""
     sheets = rec.get("sheets")
-    if sheets is None:
+    if not isinstance(sheets, list):
+        # Absent, or a type the schema has already reported. `--dry-run` calls this beside
+        # `record_errors` to REPORT rather than fail, so iterating a non-list here would end the
+        # run in a traceback on the one path whose job is not to.
         return []
     msgs = []
     if rec.get("content") is not None:
@@ -890,6 +898,21 @@ def _sheets_pairing_errors(rec: dict) -> list[str]:
     subtype = rec.get("subtype") or "document"
     if subtype != "spreadsheet":
         msgs.append(f"'sheets' needs subtype 'spreadsheet' (this is {subtype!r})")
+    # `json.loads` accepts `Infinity`, `NaN` and an overflowing `1e400`, and jsonschema's `number`
+    # takes all three -- so without this a corpus states a cell RFC 8259 has no literal for, the
+    # response carries a bare `Infinity`, and `JSON.parse` on the client fails on the body.
+    for i, sheet in enumerate(sheets):
+        if not isinstance(sheet, dict):
+            continue
+        for r, row in enumerate(sheet.get("grid") or []):
+            if not isinstance(row, list):
+                continue
+            for c, cell in enumerate(row):
+                if isinstance(cell, float) and not math.isfinite(cell):
+                    msgs.append(
+                        f"sheets[{i}].grid[{r}][{c}]: {cell} is not a number JSON can carry "
+                        "(RFC 8259 has no Infinity or NaN literal)"
+                    )
     first: dict[str, int] = {}
     for i, sheet in enumerate(sheets):
         if not isinstance(sheet, dict):

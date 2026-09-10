@@ -893,6 +893,21 @@ SCHEMA += "".join(
 )
 
 
+def missing_tables(conn: sqlite3.Connection) -> list[str]:
+    """Tables this build's :data:`SCHEMA` declares that the open DB does not have.
+
+    A DB is built by ``backlot import`` and served READ-ONLY, so the ``CREATE TABLE IF NOT
+    EXISTS`` above never runs against one that predates a table. Without this the first read that
+    touches the new table raises a bare ``OperationalError`` per request; the server calls it once
+    at startup instead and says which table and what to do. There is no migration here on purpose
+    -- a corpus is re-imported, not upgraded in place -- so naming the gap IS the remedy."""
+    have = {
+        r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+    }
+    want = re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)", SCHEMA)
+    return [t for t in dict.fromkeys(want) if t not in have]
+
+
 def connect_rw(path: Path, *, busy_ms: int = 60_000) -> sqlite3.Connection:
     path = Path(path)  # accept a str path too
     path.parent.mkdir(parents=True, exist_ok=True)

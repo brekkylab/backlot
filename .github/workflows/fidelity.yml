@@ -8,7 +8,9 @@ name: Fidelity
 
 on:
   schedule:
-    - cron: "17 6 * * *"
+    # 01:00 UTC is 18:00 the previous day in Pacific daylight time and 17:00 in standard time — the
+    # end of a Silicon Valley day either way — and 10:00 the same morning in Seoul.
+    - cron: "0 1 * * *"
   workflow_dispatch:
     inputs:
       source:

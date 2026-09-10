@@ -3212,3 +3212,33 @@ def test_get_by_data_filter_reports_a_bad_range_without_the_filter_index(gc, gh,
     )
     assert r.status_code == 400
     assert r.json()["error"]["message"] == "Unable to parse range: Nope!A1"
+
+
+@pytest.mark.parametrize(
+    "key, field, enum",
+    [
+        ("majorDimension", "major_dimension", "Dimension"),
+        ("valueRenderOption", "value_render_option", "ValueRenderOption"),
+        ("dateTimeRenderOption", "date_time_render_option", "DateTimeRenderOption"),
+    ],
+)
+@pytest.mark.parametrize("value", ["NOPE", ""])
+def test_a_read_enum_carried_in_the_body_follows_the_query_strings_rule(
+    gc, gh, book, key, field, enum, value
+):
+    """The by-data-filter read takes its enums in the request body, and the rule must not fork:
+    case-insensitive, an empty value refused rather than defaulted, and `dateTimeRenderOption`
+    validated even though a corpus states no date cell for it to render."""
+    r = _by_filter(gc, gh, book, {"dataFilters": [{"a1Range": "Summary!A1"}], key: value})
+    assert r.status_code == 400, r.text
+    assert r.json()["error"]["message"] == (
+        f"Invalid value at '{field}' (type.googleapis.com/google.apps.sheets.v4.{enum}), \"{value}\""
+    )
+
+
+@pytest.mark.parametrize(
+    "key, value", [("majorDimension", "columns"), ("valueRenderOption", "unformatted_value")]
+)
+def test_a_read_enum_in_the_body_is_matched_case_insensitively(gc, gh, book, key, value):
+    r = _by_filter(gc, gh, book, {"dataFilters": [{"a1Range": "Summary!A1:B2"}], key: value})
+    assert r.status_code == 200, r.text

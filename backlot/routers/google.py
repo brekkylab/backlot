@@ -2399,10 +2399,16 @@ def _sheets_enum(request: Request, param: str, field: str, enum: str, allowed, d
     used; an unknown value 400s, naming the proto field and type and quoting the value as the
     client sent it; and an EMPTY value is not an absent one — it 400s rather than falling back to
     the default."""
-    raw = request.query_params.get(param)
+    return _sheets_enum_value(request.query_params.get(param), field, enum, allowed, default)
+
+
+def _sheets_enum_value(raw, field: str, enum: str, allowed, default: str) -> str:
+    """The rule itself, so a read that carries its enums in a JSON BODY applies the same one.
+
+    Absent means the default; present means validated, and an empty string is present."""
     if raw is None:
         return default
-    value = raw.upper()
+    value = str(raw).upper()
     if value not in allowed:
         raise gerr.invalid_argument(_a1_enum_error(field, enum, raw))
     return value
@@ -2567,14 +2573,26 @@ async def sheets_values_batch_get_by_data_filter(spreadsheet_id: str, request: R
     can tell which answer belongs to which."""
     _row, sheets = _workbook(request, spreadsheet_id)
     body, specs = await _sheets_filters(request, sheets, required=True, indexed=True)
-    major = str(body.get("majorDimension") or "ROWS").upper()
-    render = str(body.get("valueRenderOption") or "FORMATTED_VALUE").upper()
-    if major not in _A1_MAJOR:
-        raise gerr.invalid_argument(_a1_enum_error("major_dimension", "Dimension", major))
-    if render not in _A1_RENDER:
-        raise gerr.invalid_argument(
-            _a1_enum_error("value_render_option", "ValueRenderOption", render)
-        )
+    # The same three enums the query-string reads take, and the same rule for them — including
+    # that an empty value is not an absent one, and that `dateTimeRenderOption` is validated even
+    # though a corpus states no date cell for it to render.
+    major = _sheets_enum_value(
+        body.get("majorDimension"), "major_dimension", "Dimension", _A1_MAJOR, "ROWS"
+    )
+    render = _sheets_enum_value(
+        body.get("valueRenderOption"),
+        "value_render_option",
+        "ValueRenderOption",
+        _A1_RENDER,
+        "FORMATTED_VALUE",
+    )
+    _sheets_enum_value(
+        body.get("dateTimeRenderOption"),
+        "date_time_render_option",
+        "DateTimeRenderOption",
+        _A1_DATETIME,
+        "SERIAL_NUMBER",
+    )
 
     # NOT the order the filters arrived in. Measured: the answers come back sorted by where each
     # range starts, column before row — `Data!A2` precedes `Data!B1`, `Data!B9` precedes

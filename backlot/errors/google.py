@@ -12,10 +12,18 @@ envelope is NOT uniform — three families differ in which optional members they
     ------------------------------|---------|----------------------|------------------------
     Drive v3                      | always  | auth failures only   | 403 PERMISSION_DENIED
     Gmail v1                      | always  | always               | 401 UNAUTHENTICATED
-    Docs v1 / Sheets v4 / Slides  | never   | always               | 401 UNAUTHENTICATED
+    Docs v1 / Slides v1           | never   | always               | 401 UNAUTHENTICATED
+    Sheets v4                     | never   | always               | 403 PERMISSION_DENIED
 
-A present-but-invalid bearer token is 401 UNAUTHENTICATED in every family, which is why a missing
-header and a bad token are separate constructors here rather than one "unauthorized".
+Sheets parts from the other two editor APIs on that last column: measured, a request with no
+Authorization header is 403 PERMISSION_DENIED with the unregistered-caller sentence, where Docs
+answers 401 UNAUTHENTICATED with the missing-credential one. A present-but-invalid token is 401
+UNAUTHENTICATED in every family, which is why a missing header and a bad token are separate
+constructors here rather than one "unauthorized".
+
+`errors[]` is what `$.xgafv` selects for the editor families -- `1` adds it, `2` and an absent
+parameter leave it off -- which is the column's "never" here, since nothing reads that parameter
+yet.
 """
 
 from __future__ import annotations

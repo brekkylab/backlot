@@ -3,7 +3,7 @@
   "endpoints": [
     "https://api.linear.app/graphql"
   ],
-  "measured": "2026-09-07",
+  "measured": "2026-09-10",
   "acknowledged": [
     {
       "kind": "missing_field",
@@ -2829,13 +2829,21 @@
       "kind": "missing_field",
       "severity": "gap",
       "path": "Query.agentSession",
-      "detail": "vendor serves agentSession: AgentSession!; Backlot does not"
+      "detail": "vendor serves agentSession: AgentSession!; Backlot does not",
+      "note": "No corpus states an agent session. A Linear record here is an issue with its team, its comments and the people on it; nothing in it says an agent was delegated a piece of work, what it did while it held it, or what machine it ran on, so the whole family is a gap \u2014 `agentSession`, `agentSessions`, `agentSessionSandbox`, `agentSessionSshAddress`, `agentActivity`, `agentActivities`, `agentSkill` and `agentSkills`. Backlot states that absence rather than leaving it open: `User.supportsAgentSessions` resolves to `false` and `Comment.agentSession` to null, and `AgentSession` itself is the id-only stub that field and the `@linear/sdk` fragments need in order to validate. Measured against api.linear.app on 2026-09-10, the vendor's `AgentSession` carries 26 fields, most of them live session state (`status`, `startedAt`, `endedAt`, `summary`, `plan`, `context`, `sourceMetadata`, `activities`, `codingHarnessModelLabel`), over `AgentSessionStatus`, `AgentActivityConnection`, `PullRequest` and `AgentSessionToPullRequestConnection`, none of which this schema declares."
     },
     {
       "kind": "missing_field",
       "severity": "gap",
       "path": "Query.agentSessionSandbox",
       "detail": "vendor serves agentSessionSandbox: CodingAgentSandboxPayload; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.agentSessionSshAddress",
+      "detail": "vendor serves agentSessionSshAddress: String; Backlot does not",
+      "note": "Linear's own description marks it internal: \"[Internal] SSH address of the current user's running coding sandbox for this agent session.\" It joins the family whose gap is recorded on `Query.agentSession`, and it is the member that addresses a running machine rather than a stored record, so there is no answer Backlot could give that it had not invented. Measured against api.linear.app on 2026-09-10: it takes one argument, `agentSessionId: String!`, it is not deprecated, and it answers `null` with no `errors` member for an unknown UUID, for a string that is not a UUID, and for the empty string alike \u2014 a client reading it cannot tell a session it may not see from one with no sandbox running."
     },
     {
       "kind": "missing_field",
@@ -3714,6 +3722,13 @@
       "severity": "gap",
       "path": "Query.userSettings",
       "detail": "vendor serves userSettings: UserSettings!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.userViewPreferences",
+      "detail": "vendor serves userViewPreferences: ViewPreferences; Backlot does not",
+      "note": "Per-viewer UI state, which no corpus states. Linear's own description: \"The authenticated user's workspace-level view display preferences for a view type. Returns the user-type preferences that are not scoped to a team, project, or other entity. Null if the user has not customized the view.\" Measured against api.linear.app on 2026-09-10: it takes `viewType: ViewType!`, an enum of 70 values, and answers a `ViewPreferences` whose `preferences` is a `ViewPreferencesValues!` of 243 display settings, 142 of them per-column toggles (`fieldAssignee`, `projectFieldLead`, `initiativeFieldOwner`) and the rest view-wide (`layout`, `issueGrouping`, `showCompletedIssues`). This schema declares none of `ViewType`, `ViewPreferences`, `ViewPreferencesValues` or `CustomView`, whose own `userViewPreferences` and `organizationViewPreferences` reach the same record. The workspace measured answered `null` for each of the five view types tried (`myIssues`, `board`, `triage`, `activeIssues`, `inbox`), which is what the description says an uncustomized view answers, so serving a constant `null` would match today's measurement and state nothing."
     },
     {
       "kind": "missing_field",

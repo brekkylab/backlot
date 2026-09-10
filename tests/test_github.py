@@ -1334,8 +1334,8 @@ def test_github_a_type_that_keeps_nothing_reads_no_repository_acl(gh_client, gh_
     visible repository whose every row is then discarded. `type=public` reads all of them because
     its answer does depend on the flag, and a request selecting on nothing reads the page alone.
 
-    Counted rather than described: the page these three answer is the same either way, so nothing
-    else in the suite fails when the reads come back.
+    Counted rather than described: the page is the same either way, so nothing else in the suite
+    fails when the reads come back.
     """
     c, _ = gh_client
     conn = c.app.state.conn
@@ -4137,7 +4137,7 @@ def test_github_comment_counts_match_the_lists_they_describe(
     # The listing orders by the count the caller is SERVED. When the key counted the raw rows, the
     # comment on `secret/keys.txt` counted for everyone: bob's `sort=comments&direction=asc` put
     # the unresolvable pull ahead of the declared one, two rows whose own counts then DESCENDED
-    # 3, 1, and that position was the one place a hidden file's comment still showed.
+    # 3, 1, and that position was where a hidden file's comment still showed.
     for headers, tail in ((gh_admin_h, [(unres, 2), (num, 3)]), (bob, [(unres, 1), (num, 3)])):
         rows = c.get(
             f"/github/repos/{gh_org}/diffable/issues",

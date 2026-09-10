@@ -179,11 +179,11 @@ def http_body(path: str, exc) -> dict | None:
 
     An error the router shaped by hand carries its own body as ``github_body``, and that wins. Seven
     sites do, each for one of three reasons no generic rendering could supply: an ``errors`` member
-    (the version 400, the two Validation Failed search 422s and the issue listing's `state` 422); a
-    ``documentation_url`` that is not the route's anchor in :data:`ROUTE_DOCS` (the two depth 422s,
-    the issue search's the bare ``/v3/search/`` with its trailing slash and code search's the
+    (the version 400, the two Validation Failed search 422s and the issue listing's ``state`` 422);
+    a ``documentation_url`` that is not the route's anchor in :data:`ROUTE_DOCS` (the two depth
+    422s, the issue search's the bare ``/v3/search/`` with its trailing slash and code search's the
     ``#search-code`` anchor, the ref 404 the contents routes raise, whose is ``/v3/repos/contents/``,
-    and that `state` 422 again, whose is ``/v3/issues/#list-issues``); or a ``message`` the
+    and that ``state`` 422 again, whose is ``/v3/issues/#list-issues``); or a ``message`` the
     exception's ``detail`` does not carry, the ref echoed back (that same ref 404, and the
     ``/commits/{sha}`` 422 of ``_no_commit_for_sha``, whose ``documentation_url`` is the route's
     own). Everything else is the three-member envelope over the exception's own detail, whose

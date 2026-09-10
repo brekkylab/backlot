@@ -250,7 +250,7 @@ def test_mirage_patchers_rebind_every_constant_they_name(monkeypatch):
     )
 
 
-def test_mirage_patchers_name_every_host_constant_mirage_ships(monkeypatch):
+def test_mirage_patchers_name_every_host_constant_mirage_ships():
     """A constant mirage adds later is one the patchers do not know about, so it keeps pointing at
     the real vendor — silently, because the raise above only covers names we already name. Fails
     when mirage grows one, which is the moment to decide whether Backlot serves it.

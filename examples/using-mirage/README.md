@@ -70,9 +70,11 @@ uses an AWS keypair (not a bearer token): `--access-key`/`--secret-key` are **re
 `--url`** (real AWS keys, or a pair from `GET <url>/_meta/users` — the keys the SigV4 verifier
 accepts); without `--url` the local throwaway server uses its own admin keypair.
 
-**Google** has no such knob — its connectors read the API host from module constants that the
-base helpers return verbatim. So `backlot.integrations.mirage` exposes `point_google_at(base_url)`,
-which rewrites those constants to Backlot before the Google resources are built:
+**Google** has a knob, `GoogleConfig.api_base`, and it is the *single* that rules it out rather
+than its absence: mirage composes Docs, Slides and Forms alike as `{api_base}/v1`, while Backlot
+serves docs at `/docs/v1` and slides at `/slides/v1`, so all three would arrive on one prefix it
+cannot route apart. So `backlot.integrations.mirage` exposes `point_google_at(base_url)`, which
+rewrites the per-API constants the helpers fall back to when `api_base` is unset:
 
 ```python
 from backlot.integrations.mirage import point_google_at

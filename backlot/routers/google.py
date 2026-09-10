@@ -2068,8 +2068,15 @@ SHEETS_GRID_COLS = 26
 # corpus can state it varies in ONE field, `horizontalAlignment` -- a string sits left, a number
 # right, a boolean centred -- and the rest is the spreadsheet's default format, which nothing in a
 # corpus can change. So the whole object is derived rather than stored, the way `formattedValue`
-# is. (A cell's `userEnteredFormat` is NOT derivable and is not emitted: real carries it only where
-# the input implied a format, which for a corpus means never.)
+# is.
+#
+# `userEnteredFormat` is the other half of the pair and is NOT emitted. Measured, it carries only
+# what was explicitly set on that cell -- a strict subset of `effectiveFormat`, absent entirely
+# from a cell nobody formatted. Of 17 typed cells the only ones that had one were the percent,
+# date, datetime, time and scientific cells, each carrying a lone `numberFormat` that Sheets
+# INFERRED from what was typed. A corpus states no formatting and none of those value types, so no
+# cell it can describe has anything to put there -- not because the field resists derivation, but
+# because nothing a corpus says would trigger one.
 _CELL_FORMAT_ALIGN = {"str": "LEFT", "num": "RIGHT", "bool": "CENTER"}
 _CELL_FORMAT_REST = {
     "verticalAlignment": "BOTTOM",

@@ -237,6 +237,14 @@ are the GraphQL POSTs at `/fireflies/graphql` and `/linear/graphql`, which their
 covers — introspection, not a path map, so there is no mount to say so. Walking `app.routes`
 instead was ruled out for `gen_docs.py`, and the same reasoning holds here.
 
+Served, not declared: a `HEAD` under `/github`, `/health` or `/_meta` is answered as the `GET` with
+the body left off (`backlot.main.answer_head_as_the_get_without_its_body`), and no `head` operation
+is written for it, because real's own description declares none either. Real GitHub answers a `HEAD`
+that way on every route measured, so the divergence was the method missing, not the method being
+undocumented. But a path diff reads methods off the two documents, and neither mentions this one,
+so nothing here would catch it going away. The middleware's prefix tuple is the record of which
+vendors it covers; a vendor joins it once its own `HEAD` is measured.
+
 Confluence is not yet fully covered: its reads now live in a v2 document whose paths are shaped
 differently from the v1 ones Backlot serves, so the eight reads Atlassian has removed from the v1
 document are acknowledged rather than compared.

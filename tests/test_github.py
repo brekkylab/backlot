@@ -1998,12 +1998,11 @@ def test_github_a_head_is_the_get_with_the_body_left_off(gh_client, gh_admin_h, 
     ]
     # ...and at the ASGI layer, where the test client cannot stand in for a server: Starlette's
     # TestClient drops a HEAD response's body itself (`testclient.py`, `if request.method != "HEAD"`),
-    # so every `head.content == b""` above holds whether or not the middleware sent one. A server
-    # cannot drop it here, because the middleware rewrote the scope's method and uvicorn reads that
-    # to decide (measured over uvicorn on the bundled corpus with a raw socket: 0 bytes after the
-    # headers as built, the repository's 1839 with the middleware passing the GET through). So the
-    # messages the app sends are read directly: the headers carry the GET's length, and no body byte
-    # follows them.
+    # so every `head.content == b""` above holds whether or not the middleware sent one, and it also
+    # never frames a response by the scope's method the way uvicorn does (see the middleware's
+    # docstring for what that framing did while the scope was left saying `GET`). So the messages
+    # the app sends are read directly: the headers carry the GET's length, and no body byte follows
+    # them.
     from starlette.testclient import TestClient
 
     sent = []

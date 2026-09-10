@@ -247,11 +247,14 @@ async def answer_head_as_the_get_without_its_body(request: Request, call_next):
     `content-type` as it does the GET's. The body is read to the end to be measured rather
     than sent, because the `content-length` a client reads a `HEAD` for is the GET body's length and
     computing the body is the only way to have that number; a `HEAD` costs what its GET costs, here
-    as on real. Sent by this middleware and not left to the server: uvicorn drops a response body
-    when the scope's method is `HEAD`, and the scope now says `GET`, so a GET response passed
-    through here would go out with its body after the headers (measured over uvicorn on the bundled
-    corpus with a raw socket: the repository's 1839 bytes followed the headers with the body left
-    in, none with it read here).
+    as on real. The method goes back to `HEAD` on the scope once the GET has answered, because the
+    server frames the response by it: uvicorn's httptools protocol reads ``scope["method"]`` when it
+    writes the body, sends nothing for a `HEAD`, and for a `GET` holds the body to the declared
+    `content-length`, so with the scope left saying `GET` the empty body this middleware sends was
+    `RuntimeError: Response content shorter than Content-Length` in the server log and a reset
+    connection for the client's next request (measured over uvicorn on a one-record corpus: a
+    `requests.Session` that sent a `HEAD` had its following `GET /health` fail with
+    `ConnectionResetError`; with the method restored that request is a 200 and the log is clean).
     """
     if request.method != "HEAD" or not request.url.path.startswith(
         _HEAD_IS_THE_GET_WITHOUT_ITS_BODY

@@ -3,6 +3,12 @@ export does.
 
 One module because two callers must agree: the importer derives ``gdrive_files.content`` from the
 first sheet, and the export route serves TSV from the grid.
+
+HERE rather than inside ``routers.google``, even though only Google reads a spreadsheet, because
+the importer is the other caller and the two layers do not import each other -- an importer that
+reached into a router would pull the whole web layer into ``backlot import``. A vendor-specific
+pure helper that more than one layer needs lives at this level: ``sigv4`` is the S3 router's, and
+``synth`` is every source's.
 """
 
 Cell = str | int | float | bool | None

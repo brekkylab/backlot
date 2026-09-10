@@ -875,6 +875,16 @@ _ORG_REPO_TYPES = ("all", "public", "private", "forks", "sources", "member")
 _USER_REPO_VISIBILITIES = ("all", "public", "private")
 
 
+def _keeps_nothing(private: bool) -> bool:
+    """A filter that keeps no repository at all.
+
+    A named function rather than a lambda so :func:`_repo_page` can recognise it: this filter's
+    answer does not depend on `private`, so reading the ACL to compute one would be a query per
+    visible repository whose every row is then discarded.
+    """
+    return False
+
+
 def _repo_type_keeps(value: str | None) -> Callable[[bool], bool] | None:
     """The filter `type=value` applies to a repository's `private` flag, or ``None`` for one that
     keeps every repository.
@@ -887,7 +897,7 @@ def _repo_type_keeps(value: str | None) -> Callable[[bool], bool] | None:
     if value in ("public", "private"):
         return lambda private: private == (value == "private")
     if value in ("forks", "member"):
-        return lambda private: False
+        return _keeps_nothing
     return None
 
 
@@ -1503,10 +1513,13 @@ def _repo_page(
 
     ``keeps`` is ``None`` when the request selects on nothing, so the ACL read that decides
     `private` happens once per repository on the page, as before, and once per visible repository
-    only when a `type` or `visibility` value asks it of every one."""
+    only when a `type` or `visibility` value asks it of every one. :func:`_keeps_nothing` asks it
+    of none: its answer is the same for both flags, so the page is empty without a single read."""
     repos = _visible_repos(conn, ids)
     private: dict[str, bool] = {}
-    if keeps is not None:
+    if keeps is _keeps_nothing:
+        repos = []
+    elif keeps is not None:
         private = {n: not store.container_has_public(conn, "github", n) for n in repos}
         repos = [n for n in repos if keeps(private[n])]
     sort, descending = _order(request, ordering)

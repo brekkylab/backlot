@@ -1326,6 +1326,40 @@ def test_github_a_ref_check_reads_the_repos_pulls_once(gh_client, gh_admin_h, gh
     assert pull_scans("/contents/app.py", params={"ref": "main"}) == 1
 
 
+def test_github_a_type_that_keeps_nothing_reads_no_repository_acl(gh_client, gh_admin_h, gh_org):
+    """`type=forks` and `type=member` answer an empty page without reading one repository's ACL.
+
+    The two keep nothing here (every repository is the organization's own, `fork: false`), and
+    their filter does not look at the flag the ACL read computes, so reading it is a query per
+    visible repository whose every row is then discarded. `type=public` reads all of them because
+    its answer does depend on the flag, and a request selecting on nothing reads the page alone.
+
+    Counted rather than described: the page these three answer is the same either way, so nothing
+    else in the suite fails when the reads come back.
+    """
+    c, _ = gh_client
+    conn = c.app.state.conn
+    listing = f"/github/orgs/{gh_org}/repos"
+
+    def acl_reads(**params) -> tuple[int, int]:
+        statements: list[str] = []
+        conn.set_trace_callback(statements.append)
+        try:
+            r = c.get(listing, headers=gh_admin_h, params={"per_page": 2, **params})
+            assert r.status_code == 200, r.text
+        finally:
+            conn.set_trace_callback(None)
+        return len(r.json()), sum("a.principal_type = 'org'" in q for q in statements)
+
+    visible = len(c.get(listing, headers=gh_admin_h, params={"per_page": 100}).json())
+    assert visible > 2, visible  # else a per-page read and a per-repository one cannot differ
+    assert acl_reads() == (2, 2)
+    assert acl_reads(type="sources") == (2, 2)
+    assert acl_reads(type="public") == (2, visible)
+    assert acl_reads(type="forks") == (0, 0)
+    assert acl_reads(type="member") == (0, 0)
+
+
 def test_github_branch_and_commit_resolve_tree(gh_client, gh_admin_h, gh_org):
     c, _ = gh_client
     branch = c.get(f"/github/repos/{gh_org}/codebase/branches/main", headers=gh_admin_h).json()

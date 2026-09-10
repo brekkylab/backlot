@@ -249,6 +249,12 @@ undocumented. But a path diff reads methods off the two documents, and neither m
 so nothing here would catch it going away. The middleware's prefix tuple is the record of which
 vendors it covers; a vendor joins it once its own `HEAD` is measured.
 
+The five `x-ratelimit-*` headers are the same kind of gap. Every `/github` answer carries them
+(`backlot.main.report_github_rate_limit`), as every answer real gives does, but the comparison reads
+parameters and operations off the two documents and never a response header; real's description
+declares three of the five, on `GET /rate_limit`'s 200 alone, and Backlot's document declares none.
+The tests are the record here (`tests/test_github.py`, the rate-limit test), not the baseline.
+
 Confluence is not yet fully covered: its reads now live in a v2 document whose paths are shaped
 differently from the v1 ones Backlot serves, so the eight reads Atlassian has removed from the v1
 document are acknowledged rather than compared.

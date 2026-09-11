@@ -3,7 +3,7 @@
   "endpoints": [
     "https://api.linear.app/graphql"
   ],
-  "measured": "2026-09-10",
+  "measured": "2026-09-11",
   "acknowledged": [
     {
       "kind": "missing_field",
@@ -2786,6 +2786,13 @@
     {
       "kind": "missing_field",
       "severity": "gap",
+      "path": "ProjectUpdate.shortSummary",
+      "detail": "vendor serves shortSummary: String; Backlot does not",
+      "note": "It joins the family whose gap is recorded on `Query.projectUpdates`, and it carries a note of its own because the 2026-09-11 scheduled run read it as new surface: it is the newest field on the type, added after the 2026-09-10 measurement. Linear's own description: \"A short AI-generated summary of the project update. Null if no short summary is available.\" It takes no argument. What it answers for an update that has a summary is unmeasured, since the workspace measured has none; a constant `null` would match the description's own case for an update without one and state nothing."
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
       "path": "ProjectUpdate.slugId",
       "detail": "vendor serves slugId: String!; Backlot does not"
     },
@@ -3499,7 +3506,8 @@
       "kind": "missing_field",
       "severity": "gap",
       "path": "Query.projectUpdates",
-      "detail": "vendor serves projectUpdates: ProjectUpdateConnection!; Backlot does not"
+      "detail": "vendor serves projectUpdates: ProjectUpdateConnection!; Backlot does not",
+      "note": "No corpus states a project update. A Linear record here is an issue with its team, its comments and the people on it; nothing in it says how a project stood on a given day or who wrote that up, so `ProjectUpdate` is one of the id-only stubs at the top of `backlot/graphql/linear.graphql`: `Project.lastUpdate` and `Comment.projectUpdate` resolve to null, `Reaction.projectUpdate` is never reached because `reactions` is an empty list on every issue and comment, and `Query.projectUpdate`, `Project.projectUpdates` and this root are gaps in this file. Measured against api.linear.app on 2026-09-11 with a personal API key: the vendor's `ProjectUpdate` carries 22 fields, none deprecated, and the 21 beyond `id` are the `ProjectUpdate.*` entries here. The workspace measured has no project and no update, so this root answers an empty connection there."
     },
     {
       "kind": "missing_field",

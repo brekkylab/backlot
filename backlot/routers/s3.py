@@ -551,7 +551,7 @@ def _max_uploads(q, resource: str) -> tuple[int, Response | None]:
     integer or within integer range". Not ``int()``, which accepts `` 5`` and ``+5`` and has no
     ceiling.
     """
-    raw = q.get("max-uploads", "")
+    raw = next(iter(q.getlist("max-uploads")), "")
     if raw == "":
         return _MAX_UPLOADS, None
     if re.fullmatch(r"-[0-9]+", raw):

@@ -5,7 +5,7 @@ carries the +α surface) — the official SDKs make real HTTP calls, so they nee
 port rather than the in-process ``TestClient``. Exercises every service's SDK read methods — Slack (slack_sdk),
 Gmail+Drive+Sheets (google-api-python-client), GitHub (PyGithub), Jira+Confluence
 (atlassian-python-api) — asserting all return shape-correct data. Skipped unless the optional
-SDKs (``.[examples]``) are installed.
+SDKs (``.[official-sdk]``) are installed.
 """
 
 from __future__ import annotations
@@ -66,8 +66,8 @@ def slack():
 
 # ------------------------------------------------------------------ Gmail
 def _gmail_svc():
-    from google.oauth2.credentials import Credentials
     from google.api_core.client_options import ClientOptions
+    from google.oauth2.credentials import Credentials
     from googleapiclient.discovery import build
 
     return build(
@@ -162,8 +162,8 @@ def gmail():
 
 # ------------------------------------------------------------------ Drive
 def drive():
-    from google.oauth2.credentials import Credentials
     from google.api_core.client_options import ClientOptions
+    from google.oauth2.credentials import Credentials
     from googleapiclient.discovery import build
 
     svc = build(
@@ -221,8 +221,8 @@ def sheets():
     """The Sheets read surface through its own SDK. Worth its own check because the client
     percent-encodes the A1 range into the path (`Sheet1%21A1%3AB2`) and builds the URL from the
     discovery document — neither of which an httpx test exercises."""
-    from google.oauth2.credentials import Credentials
     from google.api_core.client_options import ClientOptions
+    from google.oauth2.credentials import Credentials
     from googleapiclient.discovery import build
 
     drive = build(
@@ -346,6 +346,16 @@ def github():
     check("GitHub", "get_readme")(lambda: repo.get_readme().name)
     sr = gh.search_issues(query="refill")
     check("GitHub", "search_issues")(lambda: f"{sr.totalCount} hits" if sr.totalCount else 1 / 0)
+    # what a client asks before a crawl: a 404 here raised UnknownObjectException before the first
+    # real request, and the answer is the same windows the x-ratelimit-* headers report
+    check("GitHub", "get_rate_limit")(
+        lambda: f"core {gh.get_rate_limit().resources.core.remaining}/5000"
+    )
+    # ...and the headers themselves, through PyGithub's own parser: `rate_limiting` is the
+    # `(remaining, limit)` it read off the last response's x-ratelimit-* headers
+    check("GitHub", "x-ratelimit headers")(
+        lambda: f"{gh.rate_limiting}" if gh.rate_limiting[1] == 5000 else 1 / 0
+    )
 
     # The error path, which is load-bearing rather than decorative: PyGithub picks its exception
     # CLASS off the body's `message`, so an error in FastAPI's `{"detail": …}` reaches the caller as
@@ -386,6 +396,7 @@ def google_oauth():
     Backlot's /oauth2/token. Proves the config→token-endpoint→usr-token→ACL chain end to end."""
     import json
     import urllib.request
+
     from google.api_core.client_options import ClientOptions
     from google.oauth2 import service_account
     from google.oauth2.credentials import Credentials as UserCreds
@@ -486,6 +497,7 @@ def confluence():
 # ------------------------------------------------------------------ Notion
 def notion():
     from notion_client import Client
+
     from backlot import synth
 
     c = Client(auth=ADMIN, base_url=f"{BASE}/notion")
@@ -520,7 +532,7 @@ def test_sdk_read_coverage(live_server):
     fns = [slack, gmail, drive, sheets, github, jira, confluence, google_oauth]
     import importlib.util
 
-    if importlib.util.find_spec("notion_client"):  # optional; only when .[examples] is installed
+    if importlib.util.find_spec("notion_client"):  # optional; only on .[official-sdk]
         fns.append(notion)
     for fn in fns:
         try:
@@ -537,6 +549,7 @@ def test_sdk_read_coverage(live_server):
 def _s3_client(base_url, token):
     boto3 = pytest.importorskip("boto3")
     from botocore.config import Config
+
     from backlot import synth
 
     return boto3.client(

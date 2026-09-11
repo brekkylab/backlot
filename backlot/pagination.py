@@ -14,7 +14,6 @@ from urllib.parse import quote
 from fastapi import Query
 from pydantic import BeforeValidator
 
-
 # --- opaque offset cursor (Slack next_cursor, Gmail/Drive pageToken, Jira token) ---
 
 

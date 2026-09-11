@@ -3,7 +3,7 @@
 Google **service-account** credential, the way a real connector does, rather than a raw token.
 Self-contained.
 
-    pip install -e ".[examples]"
+    pip install -e ".[official-sdk]"
     python examples/using-official-sdk/gdrive.py                          # bare SA → admin, sees all
     python examples/using-official-sdk/gdrive.py --user mia@acme.com      # impersonate a user (ACL)
     python examples/using-official-sdk/gdrive.py --url http://localhost:8000 --user <email>
@@ -39,7 +39,19 @@ CORPUS = [
         "source_type": "google_drive",
         "folder": "finance",
         "title": "Q1 Revenue Model",
-        "content": "month,revenue\nJan,120000\nFeb,135000",
+        # A real grid, so the Sheets API below can serve typed cells. Stating `sheets` means
+        # stating no `content` — it is derived from the first sheet at import.
+        "sheets": [
+            {
+                "title": "Monthly",
+                "grid": [
+                    ["month", "revenue", "cost", "profitable"],
+                    ["Jan", 120000, 80000, True],
+                    ["Feb", 135000, 82000, True],
+                ],
+            },
+            {"title": "Assumptions", "grid": [["input", "value"], ["headcount", 42]]},
+        ],
         "subtype": "spreadsheet",
         "author_email": "cfo@acme.com",
     },
@@ -95,3 +107,37 @@ with serve_or_connect(CORPUS, url=args.url) as s:
             print(f"  - {f['name']}")
         print(f"\nExported '{files[0]['name']}' as text/plain ({len(text)} bytes):")
         print(f"  {text.splitlines()[0]}")
+
+    # The same credential drives Sheets v4. A spreadsheet whose corpus record states a grid serves
+    # named sheets over typed cells, so UNFORMATTED_VALUE gives back 120000 and True rather than
+    # "120000" and "TRUE".
+    sheets = build(
+        "sheets",
+        "v4",
+        credentials=creds,
+        static_discovery=True,
+        # No `/v4` here, unlike Drive above: the Sheets discovery document carries the version in
+        # its own servicePath, so the client appends it to whatever endpoint it is given.
+        client_options=ClientOptions(api_endpoint=f"{s.base_url}/sheets"),
+    )
+    book = next((f for f in files if f["name"] == "Q1 Revenue Model"), None)
+    if book:
+        meta = sheets.spreadsheets().get(spreadsheetId=book["id"]).execute()
+        print(f"\n'{meta['properties']['title']}' has {len(meta['sheets'])} sheets:")
+        for sh in meta["sheets"]:
+            p = sh["properties"]
+            print(f"  - [{p['index']}] {p['title']} (sheetId {p['sheetId']})")
+        rows = (
+            sheets.spreadsheets()
+            .values()
+            .get(
+                spreadsheetId=book["id"],
+                range="Monthly",
+                valueRenderOption="UNFORMATTED_VALUE",
+            )
+            .execute()
+            .get("values", [])
+        )
+        print("\nMonthly, unformatted:")
+        for row in rows:
+            print(f"  {row}")

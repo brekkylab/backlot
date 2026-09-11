@@ -15,7 +15,6 @@ from backlot import store
 from backlot.graphql import mcp_tools
 from tests._helpers import client_for, corpus_client, gql, served_id, tiny_corpus
 
-
 # --- fireflies: POST /fireflies/graphql -----------------------------------------
 # Fireflies has no SDK and no LlamaIndex reader; the vendor's own quickstart is a raw HTTP POST,
 # so this IS the client story rather than a fallback for one.

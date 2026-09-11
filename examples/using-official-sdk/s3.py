@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Read S3 through the official AWS SDK (boto3). Self-contained: run it directly.
 
-    pip install -e ".[examples]"
+    pip install -e ".[official-sdk]"
     python examples/using-official-sdk/s3.py            # local server, uses its admin keypair
     python examples/using-official-sdk/s3.py --url http://localhost:8000 \
         --access-key <AKIA...> --secret-key <secret>    # AWS keys, e.g. from GET /_meta/users

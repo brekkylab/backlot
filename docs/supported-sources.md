@@ -17,9 +17,9 @@ Generated from `backlot/schemas/*.schema.json` and the app's own `/openapi.json`
 |---|---|---|---|---|---|
 | `confluence` | Confluence | `/atlassian/wiki/rest/api` | 10 | [`confluence.schema.json`](../backlot/schemas/confluence.schema.json) | A Confluence page or blogpost. |
 | `fireflies` | Fireflies | `/fireflies/graphql` | GraphQL (one `POST`) | [`fireflies.schema.json`](../backlot/schemas/fireflies.schema.json) | A Fireflies.ai meeting transcript. |
-| `github` | GitHub | `/github` | 32 | [`github.schema.json`](../backlot/schemas/github.schema.json) | A GitHub issue, pull request, file, or the repository itself. |
+| `github` | GitHub | `/github` | 33 | [`github.schema.json`](../backlot/schemas/github.schema.json) | A GitHub issue, pull request, file, or the repository itself. |
 | `gmail` | Gmail | `/gmail/v1` | 8 | [`gmail.schema.json`](../backlot/schemas/gmail.schema.json) | A Gmail message. |
-| `google_drive` | Google Drive, Docs, Sheets, Slides | `/drive/v3` `/docs/v1` `/sheets/v4` `/slides/v1` | 11 | [`google_drive.schema.json`](../backlot/schemas/google_drive.schema.json) | A Google Drive file. |
+| `google_drive` | Google Drive, Docs, Sheets, Slides | `/drive/v3` `/docs/v1` `/sheets/v4` `/slides/v1` | 13 | [`google_drive.schema.json`](../backlot/schemas/google_drive.schema.json) | A Google Drive file. |
 | `hubspot` | HubSpot | `/hubspot` | 5 | [`hubspot.schema.json`](../backlot/schemas/hubspot.schema.json) | A HubSpot CRM record (contact, company, deal, ticket, note, …). |
 | `jira` | Jira | `/atlassian/rest/api` | 14 | [`jira.schema.json`](../backlot/schemas/jira.schema.json) | A Jira issue. |
 | `linear` | Linear | `/linear/graphql` | GraphQL (one `POST`) | [`linear.schema.json`](../backlot/schemas/linear.schema.json) | A Linear issue. |
@@ -71,14 +71,15 @@ Field names are snake_case, as Fireflies' own schema has them. Full introspectio
 | `search/issues` | `q`: free text + `repo:` `is:` `state:` `type:` `label:` `author:` |
 | `search/code` | `q`: free text over a file's body and path + `repo:` `path:` `filename:` `extension:` `in:file`/`in:path` |
 | `orgs/{org}` | |
-| `orgs/{org}/repos` | |
+| `orgs/{org}/repos` | `type`, `sort`, `direction`: real's enums and defaults, each direction as measured; `created`, `updated` and `pushed` are one derived order here |
 | `orgs/{org}/teams` | |
-| `user/repos` | The token's own reach |
+| `user/repos` | The token's own reach. `visibility`, `sort`, `direction`; `type` and `affiliation` select on what the caller is to a repository, which a corpus does not state, and stay undeclared |
+| `rate_limit` | The windows the `x-ratelimit-*` headers report, `core`, `search` and `code_search`; a read of it does not count, and it answers with no credential at the anonymous limits, the one route here that does |
 | `repos/{o}/{r}` | |
-| `repos/{o}/{r}/issues[/{n}]` | |
+| `repos/{o}/{r}/issues[/{n}]` | `state` on the listing: `open`\|`closed`\|`all`; any other value is real's 422, and the repository is checked first, so an unknown repo is the 404 instead. `sort`, `direction`: real's enums and defaults, each order as measured |
 | `repos/{o}/{r}/issues/{n}/comments` | |
 | `repos/{o}/{r}/issues/comments/{id}` | |
-| `repos/{o}/{r}/pulls[/{n}]` | |
+| `repos/{o}/{r}/pulls[/{n}]` | `state` on the listing: `open`\|`closed`\|`all`; any other value is served as `open`, which is what real does here where the issue listing refuses it. `sort`, `direction` as on issues; `long-running` orders by creation and filters nothing, as it does on the wire |
 | `repos/{o}/{r}/pulls/{n}/reviews` | |
 | `repos/{o}/{r}/pulls/{n}/comments` | |
 | `repos/{o}/{r}/pulls/{n}/files` | |
@@ -103,7 +104,10 @@ A `repo:` search qualifier resolves the same way.
 
 **Media types are honoured.** `Accept: application/vnd.github.raw` on `contents`/`readme`/`git/blobs`
 returns the file's bytes; `…diff`/`…patch` on a pull returns a real unified diff / `git am` mbox; and
-`…text-match+json` on `search/code` adds each hit's `text_matches` fragment.
+`…text-match+json` on `search/code` adds each hit's `text_matches` fragment. A JSON body is
+`application/json; charset=utf-8`, as real's is on every route measured, except on `search/code`,
+whose own 200 and 422 are the bare `application/json` real's code search backend sends; the 401
+there is the gateway's answer rather than that backend's, and carries the charset.
 
 **`X-GitHub-Api-Version` is honoured too**, in both values real currently supports: `2026-03-10`
 drops `assignee` (issues and pulls) and `merge_commit_sha` (pulls), `2022-11-28` keeps them, an
@@ -111,6 +115,15 @@ unpinned request gets `2022-11-28`, anything else is the real API's 400, and eve
 its choice in `X-GitHub-Api-Version-Selected`. `search/code` is the one route that does neither:
 real's code search backend does not read the header, so a pinned version there is served whatever
 it says and no response from it carries the `Selected` header (measured 2026-09-06).
+
+**Every response carries the five `x-ratelimit-*` headers** real puts on every answer, the errors
+included: `limit` at real's numbers (60 an hour for a caller with no credential, 5000 for a token,
+30 and 10 for `search` and `code_search`), `remaining` and `used` counted per credential and per
+resource in an hourly window, `reset` the second that window closes, `resource` the one the request
+counted against. Nothing is refused when a window runs out: `remaining` stops at 0 and `used` keeps
+counting, so a client that paces by the headers sees its real pace and a test suite is never failed
+for its own volume. `GET /rate_limit` reports the same windows and does not count (measured
+2026-09-10).
 
 An issue body and a pull body are the two distinct field sets real serves — a pull carries `_links`
 and its `*_url` siblings and none of the issue-only fields, `pull_request` included. A repository
@@ -157,9 +170,11 @@ One `source_type` (`google_drive`) across four prefixes.
 | `/drive/v3/drives` | |
 | `/drive/v3/about` | `fields` **required**, as in real Google Drive; `storageQuota` is measured from the caller's visible corpus |
 | `/docs/v1/documents/{id}` | |
-| `/sheets/v4/spreadsheets/{id}` | Structure only — cells need `includeGridData=true` (+ optional `ranges`), as in real Sheets |
-| `/sheets/v4/spreadsheets/{id}/values/{range}` | A1 ranges incl. `Sheet1!A1:B2`, `A:A`, `1:3`, `A2:B`, a bare sheet name quoted or not; `majorDimension`, `valueRenderOption` |
-| `/sheets/v4/spreadsheets/{id}/values:batchGet` | As above |
+| `/sheets/v4/spreadsheets/{id}` | One entry per sheet, with its own `sheetId`, `index`, `title` and `gridProperties`. Structure only — cells need `includeGridData=true`, as in real Sheets. `ranges` filters the `sheets` array itself, and gives a sheet one `data` block per range that touches it |
+| `/sheets/v4/spreadsheets/{id}/values/{range}` | A1 ranges incl. `Summary!A1:B2`, `A:A`, `1:3`, `A2:B`, a bare sheet name quoted or not. Any sheet in the workbook, matched case-insensitively; an unqualified range answers from the sheet at index 0. `majorDimension`, `valueRenderOption` |
+| `/sheets/v4/spreadsheets/{id}/values:batchGet` | As above; one unparseable range fails the whole call |
+| `/sheets/v4/spreadsheets/{id}:getByDataFilter` | The same read addressed by `DataFilter` (an `a1Range` or a `gridRange`) instead of `ranges`. A read, over POST because the filters do not fit in a query string; no filter means every sheet |
+| `/sheets/v4/spreadsheets/{id}/values:batchGetByDataFilter` | Likewise for values. Each entry carries the filter that selected it, and the entries come back ordered by where each range starts rather than as sent |
 | `/slides/v1/presentations/{id}` | |
 
 The three editor APIs serve native-doc content for editor-aware clients, read structurally instead
@@ -168,9 +183,14 @@ of via Google Drive export.
 Folders are files here: they match `mimeType='…folder'`, project, sort and resolve permissions like
 stored rows. Trashed files are excluded unless `trashed = true` asks for them.
 
-A spreadsheet row is one stored **line**, held in a single cell verbatim — Backlot picks no column
-delimiter, so splitting (CSV, pipes, …) stays the corpus owner's decision. Reading a file of the
-wrong type through any of the three editor APIs is refused, as real Google does, not reinterpreted.
+A spreadsheet has two shapes, and the corpus record picks which. A record that states `sheets` is a
+real workbook: named sheets over a 2D grid whose cells keep the type the corpus gave them, so
+`valueRenderOption=UNFORMATTED_VALUE` answers a JSON number where `FORMATTED_VALUE` answers a
+string. A record that states only `content` keeps the older reading — one sheet, each stored **line**
+held in a single cell verbatim, with Backlot picking no column delimiter, so splitting (CSV, pipes,
+…) stays the corpus owner's decision. Either way `files.export` and the Sheets API describe the same
+cells. Reading a file of the wrong type through any of the three editor APIs is refused, as real
+Google does, not reinterpreted.
 
 #### OAuth and batch
 
@@ -204,7 +224,7 @@ than there being a set per type.
 |---|---|
 | `search/jql` | `GET` or `POST`. JQL `project =`, `text`\|`summary`\|`description` `~` |
 | `issue/{key}` | |
-| `issue/{key}/comment` | |
+| `issue/{key}/comment` | `startAt`, `maxResults` (max 100), `orderBy` `created`/`+created`/`-created` |
 | `field` | |
 | `issueLinkType` | |
 | `project/search` | |
@@ -262,6 +282,7 @@ virtual-hosted client looks for `acme-artifacts.localhost:8000` and finds nothin
 | `ListBuckets` | |
 | `HeadBucket` | |
 | `GetBucketLocation` | |
+| `ListMultipartUploads` | Always the empty page, since data enters through `backlot import` and no upload is ever in progress. `prefix`, `delimiter` and `key-marker` are echoed, `max-uploads` and `encoding-type` validated and echoed, as real does |
 | `ListObjectsV2` | `prefix`, `delimiter`, `continuation-token` |
 | `GetObject` | `Range` |
 | `HeadObject` | |

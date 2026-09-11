@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Read Fireflies.ai meeting transcripts over raw HTTP. Self-contained: run it directly.
 
-    pip install -e ".[examples]"
+    pip install -e ".[official-sdk]"
     python examples/using-official-sdk/fireflies.py          # or: --url http://localhost:8000
     python examples/using-official-sdk/fireflies.py --url http://localhost:8000 --token <usr-token>
 
@@ -19,6 +19,7 @@ import argparse
 import json
 
 import httpx
+
 from backlot import serve_or_connect
 
 # Two meetings in one channel. The second supplies only a `content` body — a plain

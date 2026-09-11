@@ -15,10 +15,10 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
 
 from backlot import auth, store, synth
-from backlot.openapi import qp
 from backlot.acl import Caller
 from backlot.config import get_settings
 from backlot.errors import atlassian as errors_atlassian
+from backlot.openapi import qp
 from backlot.pagination import confluence_next_link, decode_cursor, next_page_token
 
 router = APIRouter(prefix="/atlassian", tags=["atlassian"])
@@ -88,10 +88,55 @@ _X_JIRA_SEARCH = {
     },
 }
 _P_EXPAND = {"parameters": [qp("expand")]}
+# `expand` is NOT declared here. The endpoint takes one on real Jira, and `expand=renderedBody`
+# returns each comment's body as HTML, which Backlot does not produce — and `qp` exists only for
+# parameters Backlot honours, because advertising one it ignores makes a client ask for data that
+# never arrives. The gap stays where it is legible: `backlot diff --source jira` reports it, and
+# the baseline acknowledges it as "the vendor accepts it; Backlot does not".
+_P_JIRA_COMMENTS = {
+    "parameters": [qp("startAt", "integer"), qp("maxResults", "integer"), qp("orderBy")]
+}
 _P_CQL = {"parameters": [qp("cql", required=True), qp("limit", "integer"), qp("start", "integer")]}
 _P_CONTENT = {
     "parameters": [qp("expand"), qp("spaceKey"), qp("limit", "integer"), qp("start", "integer")]
 }
+
+# The page a comment read serves. Measured against Jira Cloud (2026-09-09) on a real issue,
+# which settles what no document states: `maxResults` is CAPPED at 100 as well as defaulted
+# to it, and floors UP to 1 (0 and -1 both answer 1). `startAt` floors at 0, and one past the
+# end is echoed back unchanged with an empty page rather than refused.
+_JIRA_COMMENT_PAGE_MAX = 100
+_JIRA_ORDER_FIELD = "created"
+
+
+def _jira_order_desc(raw: str) -> bool:
+    """Whether ``orderBy`` asks for the reverse, or Jira's 400 for a field it does not order by.
+
+    Measured against Jira Cloud (2026-09-10). Exactly ONE leading sigil is stripped: `--created`
+    keeps a `-created` that is no field, and Jira's own message echoes `-created` rather than what
+    was sent. Whitespace around the sigil is ignored (`%20created`, `created%20`, `-%20created`
+    are each 200) and the field matches case-insensitively (`Created`, `CREATED`).
+
+    Whitespace matters because a literal `+` in a query string decodes to a space, so `+created` —
+    the ascending spelling Atlassian's own document writes — arrives here as `" created"`. Real
+    Jira answers 200 to it, so stripping is what matches rather than a special case for `+`.
+
+    An EMPTY value is refused, not read as absent: the field it leaves is the empty string, and
+    real Jira answers 400 to `?orderBy=`.
+    """
+    field = raw.strip()
+    desc = False
+    if field[:1] in ("+", "-"):
+        desc = field[0] == "-"
+        field = field[1:].strip()
+    if field.casefold() != _JIRA_ORDER_FIELD:
+        # Backlot's own sentence, not a transcription: Jira localises this one to the account's
+        # language, and the account it was measured against answers in Korean.
+        raise HTTPException(
+            status_code=400,
+            detail=f"The field to order by must be one of [{_JIRA_ORDER_FIELD}]. Instead: {field}",
+        )
+    return desc
 
 
 def _jira_caller(request: Request) -> Caller:
@@ -380,9 +425,45 @@ async def jira_get_issue(key: str, request: Request):
     return _jira_issue(conn, request, row, expand=request.query_params.get("expand", ""))
 
 
-@router.get("/rest/api/2/issue/{key}/comment", response_model=JiraComments)
-@router.get("/rest/api/3/issue/{key}/comment", response_model=JiraComments)
+@router.get(
+    "/rest/api/2/issue/{key}/comment",
+    response_model=JiraComments,
+    openapi_extra=_P_JIRA_COMMENTS,
+)
+@router.get(
+    "/rest/api/3/issue/{key}/comment",
+    response_model=JiraComments,
+    openapi_extra=_P_JIRA_COMMENTS,
+)
 async def jira_issue_comments(key: str, request: Request):
+    """One PAGE of an issue's comments.
+
+    `total` counts the whole collection while `startAt` and `maxResults` describe the slice, which
+    is what makes the envelope a page rather than a restatement of its own length.
+
+    Ordering is by `orderBy`, which real Jira accepts as `created` with an optional single leading
+    `+`/`-`, case-insensitively and ignoring whitespace — see :func:`_jira_order_desc` — and
+    answers 400 for anything else. Reproduced, because accepting one silently would serve corpus
+    order to a client that asked for something else with nothing in the response to say the sort
+    was dropped — and would pass here while failing against Jira. Its own message is localised to
+    the account's language, so the wording is not reproduced, only the refusal.
+    """
+    params = request.query_params
+    # BEFORE the issue is resolved. Measured 2026-09-10: a bad `orderBy` on a key that does
+    # not exist is 400 on real Jira where the same key without the parameter is 404, so the
+    # parameter is checked first. It separates nothing a caller could not already tell — the
+    # 400 is identical for a key that exists, one hidden from the caller, and one that never
+    # existed.
+    #
+    # An ABSENT `orderBy` is "not asked" and leaves the corpus's own order alone. What real Jira
+    # returns without one is not established: its REST intro says responses are "listed in
+    # ascending order by default", but that is a general statement its own operations contradict
+    # (project classification: "If not provided, values will not be sorted"), and the site
+    # available for measuring had no issue carrying a comment. Sorting on that would be picking a
+    # default, not reproducing one.
+    raw_order = params.get("orderBy")
+    desc = _jira_order_desc(raw_order) if raw_order is not None else None
+
     conn = auth.conn(request)
     caller = _jira_caller(request)
     ids = auth.visible_ids(request, caller)
@@ -392,13 +473,30 @@ async def jira_issue_comments(key: str, request: Request):
             status_code=404,
             detail="Issue does not exist or you do not have permission to see it.",
         )
+    start = max(0, _int(params.get("startAt"), 0))
+    limit = min(
+        _JIRA_COMMENT_PAGE_MAX, max(1, _int(params.get("maxResults"), _JIRA_COMMENT_PAGE_MAX))
+    )
+
     cs = store.doc_comments(conn, "jira", row["key"])
+    if desc is not None:
+        # Sorted for BOTH directions, not only the descending one: `store.doc_comments` orders by
+        # `seq`, the comment's position in the corpus record, and a corpus is free to list
+        # comments in an order its own timestamps contradict. Passing those rows through for
+        # `created` would accept the parameter and apply nothing.
+        #
+        # The whole collection, before the slice below — sorting a page instead would answer
+        # correctly only while `startAt` is 0.
+        #
+        # `seq` breaks a tie, so two comments written in the same second keep a stable order
+        # instead of one that depends on the rows coming back the same way twice.
+        cs = sorted(cs, key=lambda c: (c["created_ts"], c["seq"]), reverse=desc)
     site = _site(request)
     return {
-        "startAt": 0,
-        "maxResults": len(cs),
+        "startAt": start,
+        "maxResults": limit,
         "total": len(cs),
-        "comments": [_jira_comment(c, site) for c in cs],
+        "comments": [_jira_comment(c, site) for c in cs[start : start + limit]],
     }
 
 
@@ -837,12 +935,47 @@ def _space_container_for_key(conn, space_key: str) -> str | None:
     return None
 
 
+def _reachable_spaces(conn, ids) -> list:
+    """The spaces the caller can reach, as container rows — `_reachable_projects` for Confluence.
+
+    A space is listed when the caller can read a page in it: the ACL grants per document, so there
+    is nothing else to read "can view this space" off. NOT measured — Confluence 403s an anonymous
+    request before resolving a space, and a scoped measurement needs two accounts and a space
+    permission scheme on a live site. Real Confluence lists by space permission, which can grant
+    `read` while showing the caller no page, so a real listing can hold a space this one drops.
+    """
+    rows = store.list_containers(conn, "confluence")
+    if ids is None:
+        return rows
+    return [r for r in rows if store.has_visible_document(conn, "confluence", r["name"], ids)]
+
+
+def _require_space(request: Request, conn, key: str) -> str:
+    """The container behind a space key the caller can reach — `_require_project` for Confluence.
+
+    Both space reads answer an unreachable key with the SAME ``404 {"message": "No space with the
+    given key exists"}`` a key naming nothing gets, so neither confirms the space exists — the
+    roster on ``.../permission`` is what makes that worth withholding, since it names who reads a
+    space the caller cannot open. Unmeasured for a scoped caller, see :func:`_reachable_spaces`.
+    """
+    ids = auth.visible_ids(request, _confluence_caller(request))
+    container = _space_container_for_key(conn, key)
+    # The `ids is None` short-circuit is load-bearing only on GitHub (see `_require_project`'s
+    # note): `confluence.schema.json` requires `space` on every record, so no space exists
+    # without a page, and here it keeps the readers of the two APIs alike.
+    if container is not None and (
+        ids is None or store.has_visible_document(conn, "confluence", container, ids)
+    ):
+        return container
+    raise HTTPException(status_code=404, detail="No space with the given key exists")
+
+
 @router.get("/wiki/rest/api/space", response_model=ConfluenceResults)
 async def confluence_spaces(request: Request):
     conn = auth.conn(request)
-    _confluence_caller(request)
+    ids = auth.visible_ids(request, _confluence_caller(request))
     results = []
-    for r in store.list_containers(conn, "confluence"):
+    for r in _reachable_spaces(conn, ids):
         key = synth.confluence_space_key(r["name"])
         results.append(
             {
@@ -859,45 +992,35 @@ async def confluence_spaces(request: Request):
 @router.get("/wiki/rest/api/space/{key}/permission")
 async def confluence_space_permission(key: str, request: Request):
     conn = auth.conn(request)
-    _confluence_caller(request)
-    container = _space_container_for_key(conn, key)
-    perms = []
-    if container:
-        emails = store.container_member_emails(conn, "confluence", container)
-        if emails is None:
-            perms.append(
-                {
-                    "operation": {"operation": "read", "targetType": "space"},
-                    "subjects": {"user": {"results": []}},
-                    "anonymousAccess": True,
+    container = _require_space(request, conn, key)
+    emails = store.container_member_emails(conn, "confluence", container)
+    if emails is None:
+        perm = {
+            "operation": {"operation": "read", "targetType": "space"},
+            "subjects": {"user": {"results": []}},
+            "anonymousAccess": True,
+        }
+    else:
+        perm = {
+            "operation": {"operation": "read", "targetType": "space"},
+            "subjects": {
+                "user": {
+                    "results": [
+                        {"accountId": synth.atlassian_account_id(e), "email": e}
+                        for e in sorted(emails)
+                    ]
                 }
-            )
-        else:
-            perms.append(
-                {
-                    "operation": {"operation": "read", "targetType": "space"},
-                    "subjects": {
-                        "user": {
-                            "results": [
-                                {"accountId": synth.atlassian_account_id(e), "email": e}
-                                for e in sorted(emails)
-                            ]
-                        }
-                    },
-                }
-            )
-    return {"results": perms}
+            },
+        }
+    return {"results": [perm]}
 
 
 @router.get("/wiki/rest/api/space/{key}", response_model=ConfluencePage, openapi_extra=_P_EXPAND)
 async def confluence_space_get(key: str, request: Request):
     """Single-space fetch (atlassian-python-api's ``get_space`` / mcp-atlassian result enrichment).
-    404s (Atlassian-shaped) for an unknown key."""
+    404s (Atlassian-shaped) for a key naming no space the caller can reach (:func:`_require_space`)."""
     conn = auth.conn(request)
-    _confluence_caller(request)
-    container = _space_container_for_key(conn, key)
-    if container is None:
-        raise HTTPException(status_code=404, detail="No space with the given key exists")
+    container = _require_space(request, conn, key)
     space = {
         "id": synth.github_user_id(container),
         "key": key,

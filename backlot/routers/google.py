@@ -12,19 +12,21 @@ from __future__ import annotations
 import base64
 import datetime
 import hashlib
+import json
 import re
 from email.parser import BytesParser
 from http import HTTPStatus
+from typing import NamedTuple
 
 from fastapi import APIRouter, Request
 from fastapi.responses import PlainTextResponse, Response
 from pydantic import BaseModel, ConfigDict
 
-from backlot import auth, store, synth
-from backlot.errors import google as gerr
-from backlot.openapi import qp
+from backlot import auth, sheets_grid, store, synth
 from backlot.acl import Caller
 from backlot.config import get_settings
+from backlot.errors import google as gerr
+from backlot.openapi import qp
 from backlot.pagination import decode_cursor, next_page_token
 
 router = APIRouter(tags=["google"])
@@ -1586,7 +1588,19 @@ async def drive_files_export(file_id: str, request: Request):
     requested = request.query_params.get("mimeType")
     if not requested:  # the real API requires an explicit target format
         raise gerr.required("mimeType")
-    # honor the requested target format; CSV/TSV keep the raw content, others prefix the title
+    # honor the requested target format; CSV/TSV serve the cells, others prefix the title.
+    #
+    # CSV needs no branch for either kind of document: a document that STATES a grid has its
+    # `content` derived from the first sheet's CSV at import, and one that does not has the text it
+    # always had. TSV is a DIFFERENT serialisation of the same cells — measured, it has no quoting
+    # mechanism and collapses an embedded newline or tab to a single space — so a stated grid
+    # re-serialises for it. A prose document exports verbatim either way: its cells ARE its lines,
+    # so there is nothing to re-serialise.
+    if requested == "text/tab-separated-values":
+        stored = store.gdrive_sheets_for(conn, file_id)
+        if stored:
+            grid = json.loads(stored[0]["grid"])
+            return PlainTextResponse(sheets_grid.to_tsv(grid), media_type=requested)
     plain = requested in ("text/csv", "text/tab-separated-values")
     body = row["content"] if plain else f"{row['title']}\n\n{row['content']}"
     return PlainTextResponse(body, media_type=requested)
@@ -1723,7 +1737,245 @@ def _sheets_grid(content: str | None) -> list[list[str]]:
     return [[line] for line in (content or "").split("\n")]
 
 
-_P_SHEETS_GET = [qp("includeGridData", "boolean"), qp("ranges")]
+# --- the standard query parameters every Sheets read accepts ---------------------------------
+#
+# Measured on the live API, all on `values.get` unless noted:
+#
+#   fields           a partial-response mask; see `_gmask`
+#   prettyPrint      DEFAULT TRUE -- the body is 2-space indented unless `false` says otherwise,
+#                    and an unparseable value is treated as true rather than refused
+#   alt              `json` only; `media` is 400 "Unsupported alt type ... for non byte stream
+#                    request." and anything else 400 "Invalid value ... for query parameter 'alt'"
+#   callback         JSONP: the body is wrapped and the type becomes text/javascript
+#   quotaUser        a rate-limit bucket label; any string, including empty, and no effect on the
+#                    response -- Backlot enforces no quota, so there is nothing for it to select
+#   upload_protocol  accepted and ignored on a read
+#
+# `key`, `access_token` and `oauth_token` are NOT here: each is an alternative way to authenticate,
+# and honouring one means a second credential path through `backlot.auth` rather than a parameter
+# this module can read. `uploadType` is not here either -- measured, the real API REFUSES it on a
+# read ("Cannot bind query parameter"), so the baseline's "the vendor accepts it" is not what the
+# vendor does.
+_P_SHEETS_STD = [
+    qp("fields"),
+    qp("prettyPrint", "boolean"),
+    qp("alt"),
+    qp("callback"),
+    qp("quotaUser"),
+    qp("upload_protocol"),
+]
+
+
+def _gmask_parse(mask: str) -> dict:
+    """A ``fields`` mask as a nested selection tree; ``{}`` at a leaf means "this whole subtree".
+
+    Measured grammar: ``.`` and ``/`` both descend, ``a(b,c)`` groups a sub-selection, ``,``
+    separates siblings, ``*`` selects everything, and a trailing comma is tolerated. A name is
+    matched case-sensitively and is not trimmed -- `` spreadsheetId`` with a leading space 400s."""
+    tree: dict = {}
+    # (node, key-so-far) as the parser descends into a group
+    stack, cur, token = [], tree, ""
+
+    def land(node, name):
+        if not name:
+            return node
+        head, _, rest = name.replace("/", ".").partition(".")
+        child = node.setdefault(head, {})
+        while rest:
+            head, _, rest = rest.partition(".")
+            child = child.setdefault(head, {})
+        return child
+
+    for ch in mask:
+        if ch == "(":
+            stack.append((cur, token))
+            cur, token = land(cur, token), ""
+        elif ch == ")":
+            if not stack:
+                raise gerr.bad_field_mask(mask)
+            land(cur, token)
+            cur, token = stack.pop()[0], ""
+        elif ch == ",":
+            land(cur, token)
+            token = ""
+        else:
+            token += ch
+    if stack:
+        raise gerr.bad_field_mask(mask)
+    land(cur, token)
+    return tree
+
+
+def _gmask_check(tree: dict, allowed: dict, path: str = "") -> None:
+    """Refuse a name the response has no field for, naming the full path as the real API does.
+
+    Validated against the fields Backlot CAN emit rather than against the whole Sheets schema:
+    a mask naming a real field this module does not model -- a cell's `userEnteredFormat`, say --
+    400s here where the real API answers 200. Stated rather than hidden; the alternative is to
+    accept any name at all, which is how a typo becomes a silently empty response."""
+    for name, sub in tree.items():
+        if name == "*":
+            continue
+        full = f"{path}.{name}" if path else name
+        if name not in allowed:
+            raise gerr.bad_field_mask(full)
+        if sub:
+            _gmask_check(sub, allowed[name], full)
+
+
+def _gmask_wants_grid(mask: str | None) -> bool:
+    """Whether a `fields` mask reaches the cells, which is what decides the grid when one is set.
+
+    The discovery document says of `includeGridData`, on both methods that take it: "This parameter
+    is ignored if a field mask was set in the request." Measured, that is narrower than it reads --
+    the mask has to reach `sheets.data`. `fields=sheets` and `fields=sheets.data...` build the
+    grid; `fields=*` and `fields=sheets.properties.title` do not, even though the first of those
+    selects everything."""
+    if not mask:
+        return False
+    tree = _gmask_parse(mask)
+    under = tree.get("sheets")
+    return under is not None and (not under or "data" in under)
+
+
+def _gmask_apply(tree: dict, value):
+    """Project ``value`` through a selection tree, mapping over a list rather than indexing it —
+    which is what lets ``sheets.properties.title`` reach into every sheet."""
+    if not tree or "*" in tree:
+        return value
+    if isinstance(value, list):
+        return [_gmask_apply(tree, v) for v in value]
+    if not isinstance(value, dict):
+        return value
+    out = {}
+    for name, sub in tree.items():
+        if name in value:
+            out[name] = _gmask_apply(sub, value[name])
+    return out
+
+
+def _sheets_respond(request: Request, body: dict, allowed: dict) -> Response:
+    """One Sheets response, with the standard query parameters applied.
+
+    Order matters and is measured: `fields` narrows the body, then `prettyPrint` decides the
+    indentation, then `callback` wraps what is left."""
+    alt = request.query_params.get("alt")
+    if alt is not None and alt != "json":
+        # Measured: `media` gets its own sentence, everything else the generic one.
+        raise gerr.invalid_argument(
+            f'Unsupported alt type "{alt}" for non byte stream request.'
+            if alt == "media"
+            else f"Invalid value \"{alt}\" for query parameter 'alt'"
+        )
+    mask = request.query_params.get("fields")
+    if mask:
+        tree = _gmask_parse(mask)
+        _gmask_check(tree, allowed)
+        body = _gmask_apply(tree, body)
+    # Measured: indented by default, and only the literal `false` spellings turn it off -- an
+    # unparseable value is treated as true rather than refused, unlike the other booleans.
+    compact = (request.query_params.get("prettyPrint") or "").casefold() in _SHEETS_FALSE
+    # Measured to the byte: compact puts no space after `:` or `,` and ends without a newline,
+    # while the indented form is two spaces deep and DOES end with one. Non-ASCII stays raw.
+    text = (
+        json.dumps(body, ensure_ascii=False, separators=(",", ":"))
+        if compact
+        else json.dumps(body, ensure_ascii=False, indent=2) + "\n"
+    )
+    callback = request.query_params.get("callback")
+    if callback:
+        return Response(
+            f"// API callback\n{callback}({text});", media_type="text/javascript; charset=UTF-8"
+        )
+    return Response(text, media_type="application/json; charset=UTF-8")
+
+
+# What a `fields` mask may name, per response — the fields these routes actually build. A cell's
+# value objects are leaves: their members are the one-of `stringValue`/`numberValue`/`boolValue`,
+# which a mask reaches by naming the value itself.
+# Google's Color, whose members a mask may name. Spelled out rather than left a leaf: an empty
+# subtree would make `...rgbColor.red` a refusal where the real API answers it.
+_F_COLOR = {"red": {}, "green": {}, "blue": {}, "alpha": {}}
+_F_TEXT_FORMAT = {
+    "foregroundColor": _F_COLOR,
+    "fontFamily": {},
+    "fontSize": {},
+    "bold": {},
+    "italic": {},
+    "strikethrough": {},
+    "underline": {},
+    "foregroundColorStyle": {"rgbColor": _F_COLOR},
+}
+_F_CELL = {
+    "userEnteredValue": {"stringValue": {}, "numberValue": {}, "boolValue": {}},
+    "effectiveValue": {"stringValue": {}, "numberValue": {}, "boolValue": {}},
+    "formattedValue": {},
+    "effectiveFormat": {
+        "backgroundColor": _F_COLOR,
+        "padding": {"top": {}, "right": {}, "bottom": {}, "left": {}},
+        "horizontalAlignment": {},
+        "verticalAlignment": {},
+        "wrapStrategy": {},
+        "textFormat": _F_TEXT_FORMAT,
+        "hyperlinkDisplayType": {},
+        "backgroundColorStyle": {"rgbColor": _F_COLOR},
+    },
+}
+_F_GRID_DATA = {
+    "startRow": {},
+    "startColumn": {},
+    "rowData": {"values": _F_CELL},
+    "rowMetadata": {"pixelSize": {}},
+    "columnMetadata": {"pixelSize": {}},
+}
+_F_SPREADSHEET = {
+    "spreadsheetId": {},
+    "spreadsheetUrl": {},
+    "properties": {
+        "title": {},
+        "locale": {},
+        "autoRecalc": {},
+        "timeZone": {},
+        "defaultFormat": {
+            "backgroundColor": _F_COLOR,
+            "padding": {"top": {}, "right": {}, "bottom": {}, "left": {}},
+            "verticalAlignment": {},
+            "wrapStrategy": {},
+            "textFormat": _F_TEXT_FORMAT,
+            "backgroundColorStyle": {"rgbColor": _F_COLOR},
+        },
+        "spreadsheetTheme": {
+            "primaryFontFamily": {},
+            "themeColors": {"colorType": {}, "color": {"rgbColor": _F_COLOR}},
+        },
+    },
+    "sheets": {
+        "properties": {
+            "sheetId": {},
+            "title": {},
+            "index": {},
+            "sheetType": {},
+            "gridProperties": {"rowCount": {}, "columnCount": {}},
+        },
+        "data": _F_GRID_DATA,
+    },
+}
+_F_VALUE_RANGE = {"range": {}, "majorDimension": {}, "values": {}}
+_F_BATCH_BY_FILTER = {
+    "spreadsheetId": {},
+    "valueRanges": {
+        "valueRange": {"range": {}, "majorDimension": {}, "values": {}},
+        "dataFilters": {"a1Range": {}, "gridRange": {}},
+    },
+}
+_F_BATCH_VALUES = {"spreadsheetId": {}, "valueRanges": _F_VALUE_RANGE}
+
+_P_SHEETS_GET = [
+    qp("includeGridData", "boolean"),
+    qp("ranges"),
+    qp("excludeTablesInBandedRanges", "boolean"),
+    *_P_SHEETS_STD,
+]
 
 
 @router.get("/sheets/v4/spreadsheets/{spreadsheet_id}", openapi_extra={"parameters": _P_SHEETS_GET})
@@ -1735,26 +1987,71 @@ async def sheets_get(spreadsheet_id: str, request: Request):
     whole grid would hand a reader cells the real API never would, so the document it assembles
     would differ between the two backends. With the flag, ``ranges`` scopes the returned rows
     (measured: 5.7 MB -> 11 KB for ``A1:B2``)."""
-    row = _editor_doc(request, spreadsheet_id, expect="spreadsheet")
-    sheet = {
-        "properties": {
-            "sheetId": 0,
-            "title": SHEETS_SHEET_TITLE,
-            "index": 0,
-            "sheetType": "GRID",
-            # the grid, not the data extent — see SHEETS_GRID_ROWS
-            "gridProperties": {"rowCount": SHEETS_GRID_ROWS, "columnCount": SHEETS_GRID_COLS},
+    row, sheets = _workbook(request, spreadsheet_id)
+    mask = request.query_params.get("fields")
+    # A mask that reaches the cells decides the grid, and `includeGridData` is then ignored rather
+    # than consulted -- the vendor's own wording. Still parsed, so a bad value is still refused.
+    grid = _sheets_bool(request, "includeGridData", "include_grid_data")
+    if mask:
+        grid = _gmask_wants_grid(mask)
+    # Validated and then unused, deliberately: it drops the tables that sit inside a banded range,
+    # and a corpus states neither tables nor banded ranges, so there is nothing here to exclude.
+    # Leaving it unvalidated instead would accept the one thing a client can get wrong about it.
+    _sheets_bool(request, "excludeTablesInBandedRanges", "exclude_tables_in_banded_ranges")
+    return _sheets_respond(
+        request,
+        _sheets_book(spreadsheet_id, row, sheets, request.query_params.getlist("ranges"), grid),
+        _F_SPREADSHEET,
+    )
+
+
+def _sheets_book(spreadsheet_id: str, row, sheets: list[_Sheet], specs: list[str], grid: bool):
+    """The `Spreadsheet` body both `spreadsheets.get` and `:getByDataFilter` answer with.
+
+    ``specs`` is the A1 ranges selecting what to serve — from `ranges` for one and from the data
+    filters for the other; empty means every sheet, whole."""
+    # Each sheet paired with the cell parts to serve for it: `("", title)` is the whole grid, which
+    # is what a sheet nobody named gets. Resolved ONCE, here — a sheet is never re-derived from its
+    # own title further down, or one titled like a cell reference (`A1`, `AB`) would come back
+    # holding the first sheet's cells, or overflow the grid and fail the whole call.
+    wanted: list[tuple[_Sheet, list[tuple[str, str]]]] = [(sh, [("", sh.title)]) for sh in sheets]
+    if specs:
+        # A range filters the SHEETS ARRAY, not merely the cells: measured, a sheet none touches is
+        # absent from the response entirely, and a sheet several touch gets one `data` block each.
+        # That holds with or without `includeGridData` — without it the sheet list is still
+        # filtered and no block is served.
+        per_sheet: dict[int, list[tuple[str, str]]] = {}
+        for spec in specs:
+            sheet, body = _a1_sheet(spec, sheets)
+            per_sheet.setdefault(sheet.index, []).append((body, spec))
+        wanted = [(sh, per_sheet[sh.index]) for sh in sheets if sh.index in per_sheet]
+    out = []
+    for sh, parts in wanted:
+        entry = {
+            "properties": {
+                "sheetId": sh.sheet_id,
+                "title": sh.title,
+                "index": sh.index,
+                "sheetType": "GRID",
+                # the grid, not the data extent — see SHEETS_GRID_ROWS
+                "gridProperties": {"rowCount": sh.rows, "columnCount": sh.cols},
+            }
         }
-    }
-    if (request.query_params.get("includeGridData") or "").lower() == "true":
-        rows = _sheets_grid(row["content"])
-        specs = request.query_params.getlist("ranges") or [SHEETS_SHEET_TITLE]
-        sheet["data"] = [_sheets_grid_data(rows, s) for s in specs]
+        if grid:
+            entry["data"] = [_sheets_grid_data(sh, body, spec) for body, spec in parts]
+        out.append(entry)
     return {
         "spreadsheetId": spreadsheet_id,
-        "properties": {"title": row["title"], "locale": "en_US"},
+        "properties": {
+            "title": row["title"],
+            "locale": "en_US",
+            "autoRecalc": SHEETS_AUTO_RECALC,
+            "timeZone": SHEETS_TIME_ZONE,
+            "defaultFormat": SHEETS_DEFAULT_FORMAT,
+            "spreadsheetTheme": SHEETS_THEME,
+        },
         "spreadsheetUrl": f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit",
-        "sheets": [sheet],
+        "sheets": out,
     }
 
 
@@ -1774,8 +2071,132 @@ SHEETS_SHEET_TITLE = "Sheet1"  # Backlot shapes every spreadsheet as one sheet w
 SHEETS_GRID_ROWS = 1000
 SHEETS_GRID_COLS = 26
 
+# A cell's `effectiveFormat`, in the order real emits it. Measured: across every cell type a
+# corpus can state it varies in ONE field, `horizontalAlignment` -- a string sits left, a number
+# right, a boolean centred -- and the rest is the spreadsheet's default format, which nothing in a
+# corpus can change. So the whole object is derived rather than stored, the way `formattedValue`
+# is.
+#
+# `userEnteredFormat` is the other half of the pair and is NOT emitted. Measured, it carries only
+# what was explicitly set on that cell -- a strict subset of `effectiveFormat`, absent entirely
+# from a cell nobody formatted. Of 17 typed cells the only ones that had one were the percent,
+# date, datetime, time and scientific cells, each carrying a lone `numberFormat` that Sheets
+# INFERRED from what was typed. A corpus states no formatting and none of those value types, so no
+# cell it can describe has anything to put there -- not because the field resists derivation, but
+# because nothing a corpus says would trigger one.
+_CELL_FORMAT_ALIGN = {"str": "LEFT", "num": "RIGHT", "bool": "CENTER"}
+_CELL_FORMAT_REST = {
+    "verticalAlignment": "BOTTOM",
+    "wrapStrategy": "OVERFLOW_CELL",
+    "textFormat": {
+        "foregroundColor": {},
+        "fontFamily": "Arial",
+        "fontSize": 10,
+        "bold": False,
+        "italic": False,
+        "strikethrough": False,
+        "underline": False,
+        "foregroundColorStyle": {"rgbColor": {}},
+    },
+    "hyperlinkDisplayType": "PLAIN_TEXT",
+    "backgroundColorStyle": {"rgbColor": {"red": 1, "green": 1, "blue": 1}},
+}
+
+
+def _sheets_format(cell) -> dict:
+    """The `effectiveFormat` a cell of this type carries."""
+    if isinstance(cell, bool):
+        align = _CELL_FORMAT_ALIGN["bool"]
+    elif isinstance(cell, (int, float)):
+        align = _CELL_FORMAT_ALIGN["num"]
+    else:
+        align = _CELL_FORMAT_ALIGN["str"]
+    return {
+        "backgroundColor": {"red": 1, "green": 1, "blue": 1},
+        "padding": {"top": 2, "right": 3, "bottom": 2, "left": 3},
+        "horizontalAlignment": align,
+        **_CELL_FORMAT_REST,
+    }
+
+
+# A track's default size in pixels, carried by every `rowMetadata`/`columnMetadata` entry a
+# `GridData` block holds. Measured on a real workbook: every row entry is `{"pixelSize": 21}` and
+# every column entry `{"pixelSize": 100}`. A corpus states no track size, so nothing varies.
+SHEETS_ROW_PIXELS = 21
+SHEETS_COL_PIXELS = 100
+
+# The spreadsheet-level format a freshly created workbook carries. Unlike a cell's
+# `effectiveFormat`, which the cell's own type decides, these two are SETTINGS: measured across six
+# real workbooks they came in three variants, differing where someone had applied a theme or the
+# document had been imported from .xlsx (Malgun Gothic, 11pt, MIDDLE alignment). A corpus states
+# none of that, so what is served is the variant a new spreadsheet has -- the same footing as
+# `locale`, `autoRecalc`, `timeZone` and the 1000x26 grid beside them.
+#
+# `foregroundColor: {}` and the TEXT theme colour's `rgbColor: {}` are black: proto3 drops a zero,
+# so an all-zero colour is the empty object rather than three zeroes.
+SHEETS_DEFAULT_FORMAT = {
+    "backgroundColor": {"red": 1, "green": 1, "blue": 1},
+    "padding": {"top": 2, "right": 3, "bottom": 2, "left": 3},
+    "verticalAlignment": "BOTTOM",
+    "wrapStrategy": "OVERFLOW_CELL",
+    "textFormat": {
+        "foregroundColor": {},
+        # the CSS stack, where a CELL's textFormat resolves to the single family "Arial"
+        "fontFamily": "arial,sans,sans-serif",
+        "fontSize": 10,
+        "bold": False,
+        "italic": False,
+        "strikethrough": False,
+        "underline": False,
+        "foregroundColorStyle": {"rgbColor": {}},
+    },
+    "backgroundColorStyle": {"rgbColor": {"red": 1, "green": 1, "blue": 1}},
+}
+SHEETS_THEME = {
+    "primaryFontFamily": "Arial",
+    "themeColors": [
+        {"colorType": "TEXT", "color": {"rgbColor": {}}},
+        {"colorType": "BACKGROUND", "color": {"rgbColor": {"red": 1, "green": 1, "blue": 1}}},
+        {
+            "colorType": "ACCENT1",
+            "color": {"rgbColor": {"red": 0.25882354, "green": 0.52156866, "blue": 0.95686275}},
+        },
+        {
+            "colorType": "ACCENT2",
+            "color": {"rgbColor": {"red": 0.91764706, "green": 0.2627451, "blue": 0.20784314}},
+        },
+        {
+            "colorType": "ACCENT3",
+            "color": {"rgbColor": {"red": 0.9843137, "green": 0.7372549, "blue": 0.015686275}},
+        },
+        {
+            "colorType": "ACCENT4",
+            "color": {"rgbColor": {"red": 0.20392157, "green": 0.65882355, "blue": 0.3254902}},
+        },
+        {
+            "colorType": "ACCENT5",
+            "color": {"rgbColor": {"red": 1, "green": 0.42745098, "blue": 0.003921569}},
+        },
+        {
+            "colorType": "ACCENT6",
+            "color": {"rgbColor": {"red": 0.27450982, "green": 0.7411765, "blue": 0.7764706}},
+        },
+        {
+            "colorType": "LINK",
+            "color": {"rgbColor": {"red": 0.06666667, "green": 0.33333334, "blue": 0.8}},
+        },
+    ],
+}
+
+# `properties` fields real Sheets always carries beside `title` and `locale`. `ON_CHANGE` is the
+# recalculation setting a spreadsheet has unless someone changes it; `Etc/GMT` is the neutral zone,
+# and matches what a freshly created spreadsheet answered with.
+SHEETS_AUTO_RECALC = "ON_CHANGE"
+SHEETS_TIME_ZONE = "Etc/GMT"
+
 _A1_MAJOR = ("ROWS", "COLUMNS")
 _A1_RENDER = ("FORMATTED_VALUE", "UNFORMATTED_VALUE", "FORMULA")
+_A1_DATETIME = ("SERIAL_NUMBER", "FORMATTED_STRING")
 _SHEETS_ENUM = "type.googleapis.com/google.apps.sheets.v4"
 # One endpoint of an A1 range: a full cell (`B2`), a bare column (`B`) or a bare row (`2`).
 _A1_END = re.compile(r"(?:(?P<col>[A-Za-z]{1,3})(?P<row>\d+)?|(?P<rowonly>\d+))\Z")
@@ -1797,6 +2218,39 @@ def _a1_enum_error(field: str, enum: str, value: str) -> str:
     return f"Invalid value at '{field}' ({_SHEETS_ENUM}.{enum}), \"{value}\""
 
 
+# A protobuf JSON boolean, as the Sheets query parser takes one. Measured: case-insensitive, and
+# `on`/`off`, a padded `" true"`, `2`, `01` and `1.0` are all refused.
+_SHEETS_TRUE = frozenset({"1", "t", "true", "y", "yes"})
+_SHEETS_FALSE = frozenset({"0", "f", "false", "n", "no"})
+
+
+def _sheets_bool(request: Request, param: str, field: str) -> bool:
+    """One of the boolean query params, parsed the way the real one is."""
+    return _sheets_bool_value(request.query_params.get(param), field)
+
+
+def _sheets_bool_value(raw, field: str) -> bool:
+    """The rule itself, so a read that carries the flag in a JSON BODY applies the same one.
+
+    Measured: `1`, `t`, `y` and `yes` mean true and `0`, `f`, `n` and `no` mean false, matched
+    case-insensitively; anything else 400s as ``Invalid value at '<field>' (TYPE_BOOL), "<value>"``,
+    naming the proto TYPE rather than a message. An absent flag is false; an EMPTY one is not
+    absent and 400s.
+
+    A JSON body may carry a real boolean, which is taken as itself -- `bool()` on the raw value
+    would otherwise make the STRING "false" true, which under no reading it is."""
+    if raw is None:
+        return False
+    if isinstance(raw, bool):
+        return raw
+    folded = str(raw).casefold()
+    if folded in _SHEETS_TRUE:
+        return True
+    if folded in _SHEETS_FALSE:
+        return False
+    raise gerr.invalid_argument(f"Invalid value at '{field}' (TYPE_BOOL), \"{raw}\"")
+
+
 def _a1_endpoint(part: str, spec: str) -> tuple[int | None, int | None]:
     """``(row, col)`` 0-based for one side of a range; ``None`` means that axis is unbounded.
 
@@ -1811,48 +2265,72 @@ def _a1_endpoint(part: str, spec: str) -> tuple[int | None, int | None]:
     return (int(row) - 1 if row else None), _a1_col(m.group("col"))
 
 
-def _a1_range(spec: str, rows: list[list[str]]) -> tuple[int, int, int, int]:
-    """Resolve an A1 range to half-open ``(r0, c0, r1, c1)`` against this grid.
+def _a1_find(title: str, sheets: list[_Sheet]) -> _Sheet | None:
+    """The sheet a title names, or None.
 
-    Handles every form a client may send: ``Sheet1!A1:B2``, ``A1:B2`` (sheet omitted), ``Sheet1``
-    (the whole sheet), ``B2`` (one cell), ``A:B`` / ``1:3`` (whole columns / rows), ``A2:B`` (one
-    edge unbounded) and ``'Sheet1'!A1`` (quoted title). Everything resolves against the GRID, so a
-    range may be wider than the data — the caller trims.
+    Measured: lookup is CASE-INSENSITIVE (`data!B1:B3` answers from `Data`), quoting is optional
+    even for a title holding a space, a colon, brackets or a bang, and inside quotes a doubled
+    apostrophe is one apostrophe."""
+    if title[:1] == "'" and title[-1:] == "'":
+        title = title[1:-1].replace("''", "'")
+    fold = title.casefold()
+    return next((s for s in sheets if s.title.casefold() == fold), None)
+
+
+def _a1_looks_like_a_range(body: str) -> bool:
+    return all(_A1_END.fullmatch(part.strip()) for part in body.split(":", 1))
+
+
+def _a1_sheet(spec: str, sheets: list[_Sheet]) -> tuple[_Sheet, str]:
+    """``(sheet, body)`` — which sheet a spec addresses, and the cell part left over (``""`` for a
+    bare sheet name, meaning the whole grid).
+
+    Measured against a real multi-sheet workbook:
+
+    * the separator is the LAST bang, not the first — `has!bang!A1` addresses the sheet `has!bang`,
+      and splitting at the first would leave `bang!A1` as the cell part
+    * a spec with NO bang is parsed as a range FIRST and only then as a sheet name, so bare `A1` is
+      cell A1 of the first sheet even in a workbook that has a sheet named `A1`, while bare `Data`
+      is the sheet because four letters cannot be a cell reference
+    * an unqualified range answers from the sheet at index 0
+    * a name no sheet has 400s with the same `Unable to parse range` message unparseable garbage
+      gets — resolving to an empty grid instead would be indistinguishable from an empty range
+    """
+    bare = spec.strip()
+    if "!" in bare:
+        title, _, body = bare.rpartition("!")
+        found = _a1_find(title.strip(), sheets)
+        if found is not None and body.strip():
+            return found, body.strip()
+        # A title that itself holds a bang, named bare: `has!bang` is the WHOLE sheet, so the
+        # split above leaves `has` (no such sheet) over `bang` (no such range). Measured.
+        # `Sheet1!` with nothing after it falls here too, and is malformed either way.
+        whole = _a1_find(bare, sheets)
+        if whole is None:
+            raise gerr.invalid_argument(f"Unable to parse range: {spec}")
+        return whole, ""
+    if _a1_looks_like_a_range(bare):
+        return sheets[0], bare
+    found = _a1_find(bare, sheets)
+    if found is None:
+        raise gerr.invalid_argument(f"Unable to parse range: {spec}")
+    return found, ""
+
+
+def _a1_range(spec: str, body: str, sheet: _Sheet) -> tuple[int, int, int, int]:
+    """Resolve the cell part of an A1 range to half-open ``(r0, c0, r1, c1)`` against this sheet.
+
+    Handles every form a client may send: ``A1:B2``, ``B2`` (one cell), ``A:B`` / ``1:3`` (whole
+    columns / rows), ``A2:B`` (one edge unbounded) and ``""`` (the whole sheet, which is what a
+    bare sheet name resolves to). Everything resolves against the GRID, so a range may be wider
+    than the data — the caller trims.
 
     Two boundary rules, measured against a real spreadsheet: the range's END may overflow and is
-    CLAMPED (``A1:AA5`` on a 26-column sheet returns ``A1:Z5``), its START may not. Anything
-    unparseable, or naming a sheet this spreadsheet lacks, 400s with Google's ``Unable to parse
-    range`` — resolving to an empty grid instead would be indistinguishable from a genuinely empty
-    range.
+    CLAMPED (``A1:AA5`` on a 26-column sheet returns ``A1:Z5``), its START may not.
     """
-    nrows, ncols = SHEETS_GRID_ROWS, SHEETS_GRID_COLS
-    whole = (0, 0, nrows, ncols)
-    if "!" not in spec:
-        # A BARE name — no cell part at all — means every cell in that sheet. Measured: real Sheets
-        # takes it quoted or unquoted and answers the full grid, and this is the only form that says
-        # "the whole sheet" without naming bounds, so a client reading an unknown sheet sends it.
-        bare = spec.strip()
-        if bare[:1] == "'" and bare[-1:] == "'":
-            # Quoting makes it unambiguously a sheet NAME, so there is no cell-reference fallback:
-            # measured, `'A1'` 400s rather than resolving to cell A1, while bare `A1` IS cell A1.
-            # That is exactly why a client cannot drop the quotes — unquoted, a tab named like a
-            # cell reference would silently read the wrong tab's cells.
-            if bare[1:-1] != SHEETS_SHEET_TITLE:
-                raise gerr.invalid_argument(f"Unable to parse range: {spec}")
-            return whole
-        if bare == SHEETS_SHEET_TITLE:
-            return whole
-        body = bare
-    else:
-        title, _, body = spec.partition("!")
-        title = title.strip()
-        if title[:1] == "'" and title[-1:] == "'":
-            title = title[1:-1]
-        if title != SHEETS_SHEET_TITLE:
-            raise gerr.invalid_argument(f"Unable to parse range: {spec}")
-        body = body.strip()
-        if not body:  # `Sheet1!` with nothing after it is malformed
-            raise gerr.invalid_argument(f"Unable to parse range: {spec}")
+    nrows, ncols = sheet.rows, sheet.cols
+    if not body:
+        return 0, 0, nrows, ncols
     start, sep, end = body.partition(":")
     r0, c0 = _a1_endpoint(start, spec)
     if not sep:  # a single reference: one cell, one whole row, one column
@@ -1874,14 +2352,29 @@ def _a1_range(spec: str, rows: list[list[str]]) -> tuple[int, int, int, int]:
         # The START is outside the grid — refused, with the range echoed back unclamped.
         raise gerr.invalid_argument(
             (
-                f"Range ({_a1_name(r0f, c0f, r1, c1)}) exceeds grid limits. "
+                f"Range ({_a1_name(sheet, r0f, c0f, r1, c1)}) exceeds grid limits. "
                 f"Max rows: {nrows}, max columns: {ncols}"
             )
         )
     return r0f, c0f, min(r1, nrows), min(c1, ncols)
 
 
-def _a1_name(r0: int, c0: int, r1: int, c1: int) -> str:
+# A title the echo may spell without quotes. Measured: `Data` echoes bare while `'Second Sheet'`,
+# `'2024'`, `'Bob''s Sheet'`, `'a:b'`, `'a[b]'`, `'has!bang'` and `'A1'` echo quoted. This pattern
+# (plus the A1-reference exclusion below) is INFERRED from that sample rather than measured: it
+# accounts for every title measured, but a title the sample does not cover could contradict it.
+_A1_PLAIN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+
+
+def _a1_title(title: str) -> str:
+    """A sheet title as the echoed ``range`` spells it, quoted unless it is a plain identifier that
+    is not itself a cell reference. An embedded apostrophe doubles."""
+    if _A1_PLAIN.fullmatch(title) and not _A1_END.fullmatch(title):
+        return title
+    return "'" + title.replace("'", "''") + "'"
+
+
+def _a1_name(sheet: _Sheet, r0: int, c0: int, r1: int, c1: int) -> str:
     """The resolved range in A1 form, which is what the response echoes.
 
     A single cell echoes as a bare reference (``Sheet1!A1``), not as ``A1:A1`` — measured: real
@@ -1895,10 +2388,11 @@ def _a1_name(r0: int, c0: int, r1: int, c1: int) -> str:
             s = chr(65 + rem) + s
         return s
 
+    title = _a1_title(sheet.title)
     start = f"{col(c0)}{r0 + 1}"
     if r1 - r0 == 1 and c1 - c0 == 1:
-        return f"{SHEETS_SHEET_TITLE}!{start}"
-    return f"{SHEETS_SHEET_TITLE}!{start}:{col(c1 - 1)}{r1}"
+        return f"{title}!{start}"
+    return f"{title}!{start}:{col(c1 - 1)}{r1}"
 
 
 def _rstrip_empty(cells: list[str]) -> list[str]:
@@ -1907,99 +2401,239 @@ def _rstrip_empty(cells: list[str]) -> list[str]:
     return cells
 
 
-def _sheets_block(rows: list[list[str]], spec: str):
-    """``(r0, c0, r1, c1, cells)`` for an A1 range: the range as resolved against the grid, plus the
-    cells it covers with trailing empties trimmed off each row and off the block. The bounds are the
-    RANGE's, not the data's — callers echo them, so they must not shrink to the occupied cells."""
-    r0, c0, r1, c1 = _a1_range(spec, rows)
+def _sheets_block(sheet: _Sheet, body: str, spec: str):
+    """``(r0, c0, r1, c1, cells)`` for the cell part ``body`` against ``sheet``: the range as
+    resolved against that sheet's grid, and the cells it covers as STORED — trimming happens in the
+    caller, which knows how it is rendering them. ``spec`` is only what an error echoes.
+
+    Takes an already-resolved sheet rather than re-parsing one out of a spec, so a caller that
+    knows which sheet it wants cannot have it reinterpreted: a title reading as a cell or column
+    reference (``A1``, ``AB``) would resolve against the FIRST sheet instead of itself.
+
+    The bounds are the RANGE's, not the data's: callers echo them, so they must not shrink to the
+    occupied cells."""
+    rows = sheet.grid
+    r0, c0, r1, c1 = _a1_range(spec, body, sheet)
     block = [
-        [(rows[r][c] if c < len(rows[r]) else "") for c in range(c0, c1)]
+        [(rows[r][c] if c < len(rows[r]) else None) for c in range(c0, c1)]
         for r in range(r0, min(r1, len(rows)))
     ]
-    block = [_rstrip_empty(row) for row in block]
-    while block and not block[-1]:
-        block.pop()
     return r0, c0, r1, c1, block
 
 
-def _sheets_grid_data(rows: list[list[str]], spec: str) -> dict:
+def _sheets_value(cell) -> dict:
+    """A cell's ``ExtendedValue``.
+
+    Measured: a string is ``stringValue``, a number ``numberValue``, a boolean ``boolValue``, and
+    an empty cell carries no value object at all.
+
+    ``bool`` is tested BEFORE the numeric branch because it is a subclass of ``int`` in Python —
+    unguarded, TRUE would serve as ``numberValue: 1``.
+
+    A real cell may also hold ``formulaValue`` (in ``userEnteredValue``) or ``errorValue`` (in
+    ``effectiveValue``). A corpus states neither, so neither is emitted."""
+    if cell is None or cell == "":
+        return {}
+    if isinstance(cell, bool):
+        return {"boolValue": cell}
+    if isinstance(cell, (int, float)):
+        return {"numberValue": cell}
+    return {"stringValue": cell}
+
+
+def _sheets_grid_data(sheet: _Sheet, body: str, spec: str) -> dict:
     """One ``GridData`` block for ``spreadsheets.get?includeGridData=true``.
 
-    Rows are padded to the range's width (real Sheets returns a cell object per column, empty ones
-    carrying no value) and ``startRow``/``startColumn`` are omitted when zero, which is how the
-    measured responses come back — proto3 drops defaults.
+    Measured: a cell object per column of the range, an empty one carrying no value;
+    ``startRow``/``startColumn`` omitted when zero, proto3 dropping its defaults; and no
+    ``rowData`` key at all on an empty sheet, whose block is metadata alone.
 
-    Two divergences, stated rather than hidden: real Sheets pads ``rowData`` to the WHOLE 1000-row
-    grid and this stops at the last row holding data; and real cells carry format objects plus
-    ``rowMetadata``/``columnMetadata``, none of which Backlot models."""
-    r0, c0, _r1, c1, block = _sheets_block(rows, spec)
+    ``userEnteredValue`` and ``effectiveValue`` are equal here and both absent from an empty cell.
+    Measured, they differ on real Sheets only for a FORMULA cell — the formula in the first, its
+    result in the second — and a corpus cannot state a formula, so there is nothing to differ over.
+
+    ``rowMetadata``/``columnMetadata`` cover the RANGE, one entry per row and column of it —
+    measured, 2 and 2 for ``Data!A1:B2`` against the same sheet whose unscoped block carries 1000
+    and 26. Every entry is identical (``pixelSize`` 21 for a row, 100 for a column), those being
+    the default track sizes; a corpus states no track size, so there is nothing to vary.
+
+    One divergence, stated rather than hidden: real Sheets pads ``rowData`` out to the WHOLE
+    1000-row grid where this stops at the last row holding data."""
+    r0, c0, r1x, c1, block = _sheets_block(sheet, body, spec)
     width = c1 - c0
+    while block and all(sheets_grid.formatted(c) == "" for c in block[-1]):
+        block.pop()
     out: dict = {}
     if r0:
         out["startRow"] = r0
     if c0:
         out["startColumn"] = c0
-    out["rowData"] = [
-        {
-            "values": [
-                (
-                    {"formattedValue": row[i], "effectiveValue": {"stringValue": row[i]}}
-                    if i < len(row) and row[i] != ""
-                    else {}
-                )
-                for i in range(width)
-            ]
-        }
-        for row in block
-    ]
+    out["rowMetadata"] = [{"pixelSize": SHEETS_ROW_PIXELS} for _ in range(r1x - r0)]
+    out["columnMetadata"] = [{"pixelSize": SHEETS_COL_PIXELS} for _ in range(width)]
+    if block:
+        out["rowData"] = [
+            {
+                "values": [
+                    (
+                        {
+                            "userEnteredValue": v,
+                            "effectiveValue": v,
+                            "formattedValue": sheets_grid.formatted(row[i]),
+                            "effectiveFormat": _sheets_format(row[i]),
+                        }
+                        if i < len(row) and (v := _sheets_value(row[i]))
+                        else {}
+                    )
+                    for i in range(width)
+                ]
+            }
+            for row in block
+        ]
     return out
 
 
-def _sheets_value_range(rows: list[list[str]], spec: str, major: str) -> dict:
-    """One ``ValueRange``. Trailing empty cells and trailing empty rows are dropped rather than
-    padded out to the requested bounds (real Sheets does the same), and a range holding nothing
-    omits ``values`` entirely — a client tests for the key's presence, so an empty list would
-    claim the range exists and is blank."""
-    r0, c0, r1, c1, block = _sheets_block(rows, spec)
-    out = {"range": _a1_name(r0, c0, r1, c1), "majorDimension": major}
+def _sheets_render(cell, render: str):
+    """One cell as ``values.get`` returns it under ``render``.
+
+    Measured: ``FORMATTED_VALUE`` gives the display string, while ``UNFORMATTED_VALUE`` and
+    ``FORMULA`` both give the raw typed value — a JSON number for a number, a JSON boolean for a
+    boolean. The two agree for every NON-FORMULA cell on the real API, and a corpus states no
+    formulas, so they agree here for every cell.
+
+    An empty cell is ``""`` under every option, measured — a JSON string even under
+    ``UNFORMATTED_VALUE``, never null."""
+    if cell is None:
+        return ""
+    return sheets_grid.formatted(cell) if render == "FORMATTED_VALUE" else cell
+
+
+def _sheets_value_range(spec: str, sheets: list[_Sheet], major: str, render: str) -> dict:
+    """One ``ValueRange``.
+
+    Trailing empty cells are dropped PER ROW rather than padded out to the requested bounds, so
+    rows come back ragged; an interior gap stays ``""``; trailing empty rows are dropped
+    altogether. Under ``COLUMNS`` the same rule applies per column, and a fully empty INTERIOR
+    column comes back as ``[]`` rather than being dropped. All measured.
+
+    A range holding nothing omits ``values`` entirely — a client tests for the key's presence, so
+    an empty list would claim the range exists and is blank."""
+    sheet, body = _a1_sheet(spec, sheets)
+    r0, c0, r1, c1, raw = _sheets_block(sheet, body, spec)
+    block = [[_sheets_render(c, render) for c in row] for row in raw]
+    out = {"range": _a1_name(sheet, r0, c0, r1, c1), "majorDimension": major}
     if major == "COLUMNS":
         width = max((len(r) for r in block), default=0)
         block = [_rstrip_empty([(r[i] if i < len(r) else "") for r in block]) for i in range(width)]
-        while block and not block[-1]:
-            block.pop()
+    else:
+        block = [_rstrip_empty(row) for row in block]
+    while block and not block[-1]:
+        block.pop()
     if block:
         out["values"] = block
     return out
 
 
-def _sheets_rows(request: Request, spreadsheet_id: str) -> list[list[str]]:
-    """The grid behind a values read — the same ``_sheets_grid`` ``spreadsheets.get`` serves, so a
-    cell reads the same whichever of the three calls asked for it."""
+class _Sheet(NamedTuple):
+    """One sheet of a workbook, however the corpus stated it."""
+
+    sheet_id: int
+    index: int
+    title: str
+    grid: list[list]
+
+    @property
+    def rows(self) -> int:
+        """The declared grid's height — never smaller than the data, and at least the default."""
+        return max(SHEETS_GRID_ROWS, len(self.grid))
+
+    @property
+    def cols(self) -> int:
+        return max(SHEETS_GRID_COLS, max((len(r) for r in self.grid), default=0))
+
+
+def _workbook(request: Request, spreadsheet_id: str) -> tuple:
+    """``(row, sheets)`` — the Drive row behind a spreadsheet and the sheets it serves.
+
+    A document that STATES a grid answers with its stored sheets; one that does not answers with a
+    SINGLE synthesized sheet holding ``_sheets_grid``'s line-per-cell reading. Prose is therefore
+    one more grid, which is what leaves a single serving path below and stops the three Sheets
+    calls disagreeing about a cell.
+
+    A prose sheet's cells are strings and STAY strings. Nothing here sniffs a line for a number or
+    a boolean: a cell's type is something a corpus states, never something this module infers."""
     row = _editor_doc(request, spreadsheet_id, expect="spreadsheet")
-    return _sheets_grid(row["content"])
+    stored = store.gdrive_sheets_for(auth.conn(request), spreadsheet_id)
+    if not stored:
+        return row, [_Sheet(0, 0, SHEETS_SHEET_TITLE, _sheets_grid(row["content"]))]
+    return row, [
+        _Sheet(s["sheet_id"], s["sheet_index"], s["title"], json.loads(s["grid"])) for s in stored
+    ]
 
 
-def _sheets_options(request: Request) -> str:
-    """Validate the read enums and return the major dimension. Real Sheets 400s on an unknown
-    value; accepting one silently would hand back ROWS-shaped data to a client that asked for
-    columns, and a silently unapplied option is worse than a refusal."""
-    major = request.query_params.get("majorDimension") or "ROWS"
-    render = request.query_params.get("valueRenderOption") or "FORMATTED_VALUE"
-    if major not in _A1_MAJOR:
-        raise gerr.invalid_argument(_a1_enum_error("major_dimension", "Dimension", major))
-    # On a real spreadsheet these three genuinely differ — measured on one holding formulas and
-    # currency: FORMATTED_VALUE gives "₩4,000,000", UNFORMATTED_VALUE gives the JSON number
-    # 4000000, FORMULA gives "=B2/12". This corpus has none of that: a cell is one line of stored
-    # text, so all three return the same string. The value is still validated, so a client's typo
-    # fails here exactly as it would against real Sheets.
-    if render not in _A1_RENDER:
-        raise gerr.invalid_argument(
-            _a1_enum_error("value_render_option", "ValueRenderOption", render)
-        )
-    return major
+def _sheets_enum(request: Request, param: str, field: str, enum: str, allowed, default: str) -> str:
+    """One of the read enums, validated and canonicalised.
+
+    Measured, and identical for all three: the match is CASE-INSENSITIVE (``majorDimension=rows``
+    answers 200) and the response echoes the canonical upper-case spelling whatever the request
+    used; an unknown value 400s, naming the proto field and type and quoting the value as the
+    client sent it; and an EMPTY value is not an absent one — it 400s rather than falling back to
+    the default."""
+    return _sheets_enum_value(request.query_params.get(param), field, enum, allowed, default)
 
 
-_P_SHEETS_VALUES = [qp("majorDimension"), qp("valueRenderOption"), qp("dateTimeRenderOption")]
+def _sheets_enum_value(raw, field: str, enum: str, allowed, default: str) -> str:
+    """The rule itself, so a read that carries its enums in a JSON BODY applies the same one.
+
+    Absent means the default; present means validated, and an empty string is present."""
+    if raw is None:
+        return default
+    value = str(raw).upper()
+    if value not in allowed:
+        raise gerr.invalid_argument(_a1_enum_error(field, enum, raw))
+    return value
+
+
+def _sheets_options(request: Request) -> tuple[str, str]:
+    """Validate the read enums and return ``(majorDimension, valueRenderOption)``. Real Sheets 400s
+    on an unknown value; accepting one silently would hand back ROWS-shaped data to a client that
+    asked for columns, and a silently unapplied option is worse than a refusal.
+    """
+    major = _sheets_enum(
+        request, "majorDimension", "major_dimension", "Dimension", _A1_MAJOR, "ROWS"
+    )
+    # Measured over typed cells: FORMATTED_VALUE gives the display string "12", UNFORMATTED_VALUE
+    # the JSON number 12, and FORMULA the same raw value as UNFORMATTED_VALUE for every cell that
+    # is not a formula. A spreadsheet whose cells are lines of stored text has only strings, so
+    # all three agree on one; a spreadsheet that STATES its grid does not.
+    render = _sheets_enum(
+        request,
+        "valueRenderOption",
+        "value_render_option",
+        "ValueRenderOption",
+        _A1_RENDER,
+        "FORMATTED_VALUE",
+    )
+    # Validated and then unused, deliberately. It selects between a date cell's serial number and
+    # its formatted string, and a corpus states no date cells — every cell is a string, a number, a
+    # boolean or empty — so the two renderings coincide here. Leaving it unvalidated instead would
+    # accept the one thing a client can get wrong about it.
+    _sheets_enum(
+        request,
+        "dateTimeRenderOption",
+        "date_time_render_option",
+        "DateTimeRenderOption",
+        _A1_DATETIME,
+        "SERIAL_NUMBER",
+    )
+    return major, render
+
+
+_P_SHEETS_VALUES = [
+    qp("majorDimension"),
+    qp("valueRenderOption"),
+    qp("dateTimeRenderOption"),
+    *_P_SHEETS_STD,
+]
 _P_SHEETS_BATCH = [qp("ranges"), *_P_SHEETS_VALUES]
 
 
@@ -2017,13 +2651,13 @@ async def sheets_values_batch_get(spreadsheet_id: str, request: Request):
     With no ``ranges`` at all, nothing is selected and ``valueRanges`` is omitted. NOTE: that is
     the natural reading of a parameter with no default, NOT a response diffed against real
     Sheets — unlike the rest of this module's behaviour, it is unverified."""
-    rows = _sheets_rows(request, spreadsheet_id)
-    major = _sheets_options(request)
+    _row, sheets = _workbook(request, spreadsheet_id)
+    major, render = _sheets_options(request)
     ranges = request.query_params.getlist("ranges")
     body = {"spreadsheetId": spreadsheet_id}
     if ranges:
-        body["valueRanges"] = [_sheets_value_range(rows, r, major) for r in ranges]
-    return body
+        body["valueRanges"] = [_sheets_value_range(r, sheets, major, render) for r in ranges]
+    return _sheets_respond(request, body, _F_BATCH_VALUES)
 
 
 @router.get(
@@ -2032,9 +2666,191 @@ async def sheets_values_batch_get(spreadsheet_id: str, request: Request):
 )
 async def sheets_values_get(spreadsheet_id: str, a1_range: str, request: Request):
     """One range of a spreadsheet, ACL-enforced through the same lookup as ``spreadsheets.get``."""
-    rows = _sheets_rows(request, spreadsheet_id)
-    major = _sheets_options(request)
-    return _sheets_value_range(rows, a1_range, major)
+    _row, sheets = _workbook(request, spreadsheet_id)
+    major, render = _sheets_options(request)
+    return _sheets_respond(
+        request, _sheets_value_range(a1_range, sheets, major, render), _F_VALUE_RANGE
+    )
+
+
+# --- the two reads issued over POST ------------------------------------------------------------
+#
+# A DataFilter selects the same cells an A1 range does, by range or by grid indices. Measured, the
+# two endpoints disagree about an ABSENT filter list: `values:batchGetByDataFilter` refuses it
+# ("Must specify at least one dataFilter.") while `spreadsheets:getByDataFilter` treats it as
+# "every sheet". They also word a bad range differently — only the values one prefixes
+# `Invalid dataFilter[N]: `.
+
+
+def _sheets_filter_spec(f: dict, sheets: list[_Sheet]) -> str:
+    """One DataFilter as an A1 spec.
+
+    A `gridRange` is turned into A1 through :func:`_a1_name`, whose output is quoted where the
+    title needs it — which is what makes handing it back to the parser safe, unlike a bare title.
+    Half-open indices, and an omitted bound means that edge of the grid."""
+    if isinstance(f.get("a1Range"), str):
+        return f["a1Range"]
+    grid = f.get("gridRange")
+    if not isinstance(grid, dict):
+        raise gerr.invalid_argument("dataFilter.filter must be specified.")
+    sheet_id = _sheets_int32(grid.get("sheetId"), "sheetId", 0)
+    sheet = next((s for s in sheets if s.sheet_id == sheet_id), None)
+    if sheet is None:
+        raise gerr.invalid_argument(f"No sheet with id: {sheet_id}")
+    r0 = _sheets_int32(grid.get("startRowIndex"), "startRowIndex", 0)
+    c0 = _sheets_int32(grid.get("startColumnIndex"), "startColumnIndex", 0)
+    r1 = _sheets_int32(grid.get("endRowIndex"), "endRowIndex", sheet.rows)
+    c1 = _sheets_int32(grid.get("endColumnIndex"), "endColumnIndex", sheet.cols)
+    # Half-open and ascending. An end at or before its start selects nothing, and letting it
+    # through builds an A1 name with a row 0 in it -- `Data!A1:Z0` -- which the parser then reads
+    # back as a start row of -1 and answers a range nobody asked for.
+    if r1 <= r0 or c1 <= c0:
+        raise gerr.invalid_argument(
+            f"Invalid gridRange: end must be greater than start, got rows [{r0}, {r1}) "
+            f"and columns [{c0}, {c1})"
+        )
+    return _a1_name(sheet, r0, c0, r1, c1)
+
+
+def _sheets_int32(raw, field: str, default: int) -> int:
+    """One int32 member of a `gridRange`.
+
+    The discovery document declares these `int32`, and proto3's JSON mapping takes a number or a
+    decimal string for one, so `"0"` resolves like `0`. What it does not take is a float with a
+    fraction, a non-numeric string or a negative index -- each of which reached `_a1_name`
+    unchecked before, turning a client's typo into a 500 or into a silently truncated index.
+
+    Backlot's own wording: the real API's message for these was not measured."""
+    if raw is None:
+        return default
+    if isinstance(raw, bool):
+        raise gerr.invalid_argument(f"Invalid value at '{field}' (TYPE_INT32), \"{raw}\"")
+    value = raw
+    if isinstance(value, str):
+        try:
+            value = int(value, 10)
+        except ValueError:
+            raise gerr.invalid_argument(
+                f"Invalid value at '{field}' (TYPE_INT32), \"{raw}\""
+            ) from None
+    if isinstance(value, float):
+        if not value.is_integer():
+            raise gerr.invalid_argument(f"Invalid value at '{field}' (TYPE_INT32), \"{raw}\"")
+        value = int(value)
+    if not isinstance(value, int) or value < 0:
+        raise gerr.invalid_argument(f"Invalid value at '{field}' (TYPE_INT32), \"{raw}\"")
+    return value
+
+
+async def _sheets_filters(request: Request, sheets: list[_Sheet], *, required: bool, indexed: bool):
+    """``(body, specs)`` for a by-data-filter read: the parsed request body and one A1 spec per
+    filter, in the order they were sent.
+
+    ``indexed`` says whether a bad filter is reported behind an ``Invalid dataFilter[N]: `` prefix.
+    Measured, the two endpoints differ: the values-level one names the index, the spreadsheet-level
+    one gives the bare parse error."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    filters = body.get("dataFilters") or []
+    if not filters:
+        if required:
+            raise gerr.invalid_argument("Must specify at least one dataFilter.")
+        return body, []
+    specs = []
+    for i, f in enumerate(filters):
+        try:
+            spec = _sheets_filter_spec(f if isinstance(f, dict) else {}, sheets)
+            # Resolved HERE, not left to the read below, so a range that names no sheet is
+            # reported against the filter that carried it — measured, the message is the usual
+            # `Unable to parse range` behind an `Invalid dataFilter[N]: ` prefix.
+            _a1_sheet(spec, sheets)
+        except Exception as exc:  # noqa: BLE001 — re-raised with the index the API names
+            message = getattr(exc, "message", None)
+            if message is None:
+                raise
+            raise gerr.invalid_argument(
+                f"Invalid dataFilter[{i}]: {message}" if indexed else message
+            ) from None
+        specs.append(spec)
+    return body, specs
+
+
+@router.post(
+    "/sheets/v4/spreadsheets/{spreadsheet_id}/values:batchGetByDataFilter",
+    openapi_extra={"parameters": _P_SHEETS_STD},
+)
+async def sheets_values_batch_get_by_data_filter(spreadsheet_id: str, request: Request):
+    """``values:batchGet`` addressed by DataFilter rather than by A1 string.
+
+    A read, issued over POST because the filters do not fit in a query string. Each entry carries
+    the ``valueRange`` AND the filter that selected it — measured — so a caller that sent several
+    can tell which answer belongs to which."""
+    _row, sheets = _workbook(request, spreadsheet_id)
+    body, specs = await _sheets_filters(request, sheets, required=True, indexed=True)
+    # The same three enums the query-string reads take, and the same rule for them — including
+    # that an empty value is not an absent one, and that `dateTimeRenderOption` is validated even
+    # though a corpus states no date cell for it to render.
+    major = _sheets_enum_value(
+        body.get("majorDimension"), "major_dimension", "Dimension", _A1_MAJOR, "ROWS"
+    )
+    render = _sheets_enum_value(
+        body.get("valueRenderOption"),
+        "value_render_option",
+        "ValueRenderOption",
+        _A1_RENDER,
+        "FORMATTED_VALUE",
+    )
+    _sheets_enum_value(
+        body.get("dateTimeRenderOption"),
+        "date_time_render_option",
+        "DateTimeRenderOption",
+        _A1_DATETIME,
+        "SERIAL_NUMBER",
+    )
+
+    # NOT the order the filters arrived in. Measured: the answers come back sorted by where each
+    # range starts, column before row — `Data!A2` precedes `Data!B1`, `Data!B9` precedes
+    # `Data!B10`, a shorter range precedes the one that extends it, and a sheet earlier in the
+    # workbook comes first. Each entry still carries the filter that selected it, so a caller pairs
+    # by that rather than by position.
+    def where(i: int):
+        sheet, part = _a1_sheet(specs[i], sheets)
+        r0, c0, r1, c1 = _a1_range(specs[i], part, sheet)
+        return (sheet.index, c0, r0, c1, r1)
+
+    out = {
+        "spreadsheetId": spreadsheet_id,
+        "valueRanges": [
+            {
+                "valueRange": _sheets_value_range(specs[i], sheets, major, render),
+                "dataFilters": [body["dataFilters"][i]],
+            }
+            for i in sorted(range(len(specs)), key=where)
+        ],
+    }
+    return _sheets_respond(request, out, _F_BATCH_BY_FILTER)
+
+
+@router.post(
+    "/sheets/v4/spreadsheets/{spreadsheet_id}:getByDataFilter",
+    openapi_extra={"parameters": _P_SHEETS_STD},
+)
+async def sheets_get_by_data_filter(spreadsheet_id: str, request: Request):
+    """``spreadsheets.get`` addressed by DataFilter. Same response, and the filters scope the
+    ``sheets`` array exactly as ``ranges`` does — measured, including that NO filter means every
+    sheet rather than the refusal its values-level sibling gives."""
+    row, sheets = _workbook(request, spreadsheet_id)
+    body, specs = await _sheets_filters(request, sheets, required=False, indexed=False)
+    grid = _sheets_bool_value(body.get("includeGridData"), "include_grid_data")
+    if mask := request.query_params.get("fields"):
+        grid = _gmask_wants_grid(mask)
+    return _sheets_respond(
+        request, _sheets_book(spreadsheet_id, row, sheets, specs, grid), _F_SPREADSHEET
+    )
 
 
 @router.get("/slides/v1/presentations/{presentation_id}")

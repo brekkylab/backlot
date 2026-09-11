@@ -1,7 +1,9 @@
 {
   "source": "s3",
-  "endpoint": "https://raw.githubusercontent.com/boto/botocore/develop/botocore/data/s3/2006-03-01/service-2.json",
-  "measured": "2026-09-03",
+  "endpoints": [
+    "https://raw.githubusercontent.com/boto/botocore/develop/botocore/data/s3/2006-03-01/service-2.json"
+  ],
+  "measured": "2026-09-10",
   "acknowledged": [
     {
       "kind": "silent_fallthrough",
@@ -275,13 +277,6 @@
       "path": "ListBucketMetricsConfigurations: GET /{bucket}?metrics",
       "detail": "ListBucketMetricsConfigurations is refused (501), which is an honest answer for an operation Backlot does not serve",
       "note": "Refused with NotImplemented (501) rather than answered with the listing. Real S3 answers 200 <ListMetricsConfigurationsResult>, empty (measured in us-east-1 and ap-northeast-2 against a general purpose bucket with none of this configured)."
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "ListMultipartUploads: GET /{bucket}?uploads",
-      "detail": "ListMultipartUploads is refused (501), which is an honest answer for an operation Backlot does not serve",
-      "note": "Refused with NotImplemented (501) rather than answered with the listing. Real S3 answers 200 <ListMultipartUploadsResult> (measured in us-east-1 and ap-northeast-2 against a general purpose bucket with none of this configured)."
     },
     {
       "kind": "missing_operation",

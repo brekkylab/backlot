@@ -8,9 +8,11 @@ Responses are S3 XML (namespace ``http://s3.amazonaws.com/doc/2006-03-01/``) or 
 errors use the S3 ``<Error>`` envelope.
 
 S3 dispatches on the query string: ``?acl``, ``?versioning``, ``?tagging`` and the rest each select a
-different operation at the same path. The ones Backlot does not implement are refused with
-``NotImplemented`` (501) rather than answered with the listing or the object's bytes, so a caller
-gets an error to handle instead of another operation's body to parse.
+different operation at the same path. Two of them are answered at a bucket's path, ``?location``
+(GetBucketLocation) and ``?uploads`` (ListMultipartUploads, always the empty page, since data
+enters through ``backlot import`` and no upload is ever in progress). The ones Backlot does not
+implement are refused with ``NotImplemented`` (501) rather than answered with the listing or the
+object's bytes, so a caller gets an error to handle instead of another operation's body to parse.
 
 Object model: a bucket is the grouping/ACL unit (``s3_buckets``); an object is one doc
 (``s3_objects``), ``key`` is its address and ``content`` its verbatim body. "Folders" are pure
@@ -20,7 +22,7 @@ key-prefix convention surfaced via ListObjectsV2's ``delimiter``/``CommonPrefixe
 from __future__ import annotations
 
 import base64
-
+import re
 from xml.sax.saxutils import escape
 
 from fastapi import APIRouter, Request, Response
@@ -38,11 +40,35 @@ router = APIRouter(prefix="/s3", tags=["s3"])
 
 NS = "http://s3.amazonaws.com/doc/2006-03-01/"
 _MAX_KEYS = 1000
+# ListMultipartUploads' own ceiling, which is also its default: "The limit of 1,000 multipart uploads
+# is also the default value" (the S3 API reference on ListMultipartUploads). A larger `max-uploads`
+# is served at the cap rather than refused (measured: 1001 and 2000 both echo 1000).
+_MAX_UPLOADS = 1000
+# The widest `max-uploads` real S3 parses: "Argument max-uploads must be an integer between 0 and
+# 2147483647" is its own message for a negative value (measured).
+_INT32_MAX = 2147483647
+# What `encoding-type=url` leaves as it is. Measured on real S3 against ListMultipartUploads: letters,
+# digits, `-`, `_`, `.`, `*` and `/` come back unchanged, a space comes back as `+`, and each of the
+# other bytes sent — `!'()~,;:@="<>|%` and the UTF-8 of `한글` — as `%XX` in upper case (`!` is `%21`,
+# `~` is `%7E`, `|` is `%7C`, `한글` is `%ED%95%9C%EA%B8%80`). That is Java's URLEncoder with `/` added
+# to its safe set, which is the rule applied to the bytes not sent; Python's `quote_plus` is not it,
+# keeping `~` and encoding `*`.
+_URL_ENCODING_SAFE = frozenset(
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.*/"
+)
 
 # Read off the raw request rather than through FastAPI signatures, so each has to be declared by
-# hand (see openapi.qp). Only what _list_objects_v2 and bucket_get actually read: `list-type` is
-# absent because Backlot answers the V2 shape whether or not a caller asks for it, and advertising
-# a parameter that changes nothing is worse than not offering it.
+# hand (see openapi.qp). What is declared is what selects an operation or decides which keys come
+# back: `list-type` is absent because Backlot answers the V2 shape whether or not a caller asks for
+# it, and advertising a parameter that changes nothing is worse than not offering it.
+# ListMultipartUploads' own parameters (`max-uploads`, `key-marker`, `upload-id-marker`,
+# `encoding-type`) are absent for a different reason. They are not inert: _max_uploads and
+# _list_multipart_uploads read all four, `max-uploads`, `key-marker` and `encoding-type` come back
+# echoed, and `max-uploads`, `encoding-type` and `upload-id-marker` can each turn the 200 into an
+# InvalidArgument. What none of them does is decide which uploads a caller gets, because there are
+# never any — all they shape is an echo of the caller's own input on a page that is always empty.
+# Declaring them would advertise a paging surface, a marker to resume from and a page size, over a
+# listing that never has a second page.
 _P_BUCKET_GET = [
     qp("prefix"),
     qp(
@@ -65,6 +91,12 @@ _P_BUCKET_GET = [
         "location",
         description="present, at any value: answer the bucket's LocationConstraint "
         "instead of a listing",
+    ),
+    qp(
+        "uploads",
+        description="present, at any value: answer ListMultipartUploads instead of a listing — "
+        "always the empty page, since data enters through backlot import and no upload is "
+        "ever in progress",
     ),
 ]
 _ERR_STATUS = {
@@ -98,8 +130,9 @@ _ERR_STATUS = {
 #
 # `session` is absent on purpose: CreateSession exists for directory buckets only, and real S3
 # answers `GET /{bucket}?session` on a general purpose bucket with the listing (same measurement),
-# so the listing IS the faithful answer. `location` is implemented below; it is in the set so that
-# pairing it with another selector conflicts the way real S3 conflicts it.
+# so the listing IS the faithful answer. `location` and `uploads` are implemented below; they are in
+# the set so that pairing either with another selector conflicts the way real S3 conflicts it
+# (`?uploads&versioning` is "Conflicting query string parameters: uploads, versioning", measured).
 _BUCKET_SELECTORS = frozenset(
     {
         "abac",
@@ -168,16 +201,39 @@ def _selected(q, selectors: frozenset[str]) -> list[str]:
     return sorted(k for k in q.keys() if k in selectors)
 
 
-def _conflict(selected: list[str], resource: str) -> Response:
-    """Two selectors at once, refused as real S3 refuses them (measured)."""
+def _first(q, name: str, default: str | None = "") -> str | None:
+    """The FIRST of a repeated query parameter, which is the one real S3 reads (measured
+    2026-09-11): ``?uploads&max-uploads=1&max-uploads=abc`` is the page at 1 and the same two
+    values the other way round the refusal of ``abc``, and ``encoding-type``, ``upload-id-marker``
+    and ``prefix`` go the same way. Starlette's ``QueryParams.get`` returns the last."""
+    values = q.getlist(name)
+    return values[0] if values else default
+
+
+def _argument_error(message: str, name: str, value: str, resource: str) -> Response:
+    """Real S3's ``InvalidArgument`` for one query parameter: the message beside the parameter's
+    name and the value as sent, in ``ArgumentName`` and ``ArgumentValue`` (measured)."""
     return _error(
         "InvalidArgument",
-        "Conflicting query string parameters: " + ", ".join(selected),
+        message,
         resource,
         extra=(
-            "<ArgumentName>ResourceType</ArgumentName>"
-            f"<ArgumentValue>{escape(selected[0])}</ArgumentValue>"
+            f"<ArgumentName>{escape(name)}</ArgumentName>"
+            f"<ArgumentValue>{escape(value)}</ArgumentValue>"
         ),
+    )
+
+
+def _conflict(selected: list[str], resource: str) -> Response:
+    """Two selectors at once, refused as real S3 refuses them (measured).
+
+    The name real reports here is ``ResourceType`` rather than a parameter's, and the value is the
+    first selector it names in the message."""
+    return _argument_error(
+        "Conflicting query string parameters: " + ", ".join(selected),
+        "ResourceType",
+        selected[0],
+        resource,
     )
 
 
@@ -328,8 +384,9 @@ async def bucket_get(request: Request, bucket: str):
 
     Filtered by ``prefix``, rolled up by ``delimiter``, and bounded by ``max-keys``; a page whose
     ``IsTruncated`` is true carries a ``NextContinuationToken`` to pass back as
-    ``continuation-token``. With ``location`` present it answers GetBucketLocation instead, S3's
-    other GET on this same path."""
+    ``continuation-token``. Two other GETs share this path and are selected the same way: with
+    ``location`` present it answers GetBucketLocation, and with ``uploads`` present
+    ListMultipartUploads, always the empty page because no upload is ever in progress."""
     caller, visible, err = _auth(request)
     if err:
         return err
@@ -339,11 +396,22 @@ async def bucket_get(request: Request, bucket: str):
         # Before the bucket is looked up: real S3 reports the conflict for a bucket that does not
         # exist too (measured).
         return _conflict(selected, f"/{bucket}")
+    max_uploads = _MAX_UPLOADS
+    if selected == ["uploads"]:
+        # Also before the bucket is looked up: `?uploads&max-uploads=abc` on a bucket that does not
+        # exist is the 400, not NoSuchBucket, where `?uploads&max-uploads=-1` on it is NoSuchBucket:
+        # the value is parsed here and judged against the range after the lookup (measured). The
+        # other parameters are read after it too.
+        max_uploads, err = _max_uploads(request.query_params, f"/{bucket}")
+        if err:
+            return err
     if not _bucket_visible(conn, bucket, visible):
         return _error("NoSuchBucket", "The specified bucket does not exist", bucket)
     if selected == ["location"]:
         # us-east-1 is represented by an *empty* LocationConstraint element on real S3.
         return _xml(f'<LocationConstraint xmlns="{NS}"></LocationConstraint>')
+    if selected == ["uploads"]:
+        return _list_multipart_uploads(request, bucket, max_uploads)
     if selected:
         return _not_implemented(selected[0], f"/{bucket}")
     return _list_objects_v2(request, conn, bucket, visible)
@@ -467,6 +535,122 @@ def _list_objects_v2(request: Request, conn, bucket: str, visible) -> Response:
                 f"<StorageClass>{escape(r['subtype'] or 'STANDARD')}</StorageClass></Contents>"
             )
     body.append("</ListBucketResult>")
+    return _xml("".join(body))
+
+
+def _url_encode(value: str) -> str:
+    """``value`` as real S3 echoes it under ``encoding-type=url`` (see ``_URL_ENCODING_SAFE``)."""
+    out = []
+    for b in value.encode("utf-8"):
+        if b in _URL_ENCODING_SAFE:
+            out.append(chr(b))
+        elif b == 0x20:
+            out.append("+")
+        else:
+            out.append(f"%{b:02X}")
+    return "".join(out)
+
+
+def _max_uploads(q, resource: str) -> tuple[int, Response | None]:
+    """ListMultipartUploads' ``max-uploads``, parsed the way real S3 parses it (measured).
+
+    Absent or empty is the default; a run of digits, with or without a leading ``-``, is read for
+    its value, leading zeros and all (``05`` and ``00000000005`` are both 5, twenty zeros and a 5 is
+    5, five thousand zeros is 0, ``-0`` is 0) and returned as parsed, ``_MAX_UPLOADS`` and the
+    range left to ``_list_multipart_uploads``: a value that fits an int32 but comes to less than 0
+    (``-1``, ``-2147483648``) is refused there, after the bucket lookup, with "Argument max-uploads
+    must be an integer between 0 and 2147483647". Anything else — a word, a leading space, a value
+    whose digits do not fit an int32 in either direction (``2147483648``, ``-2147483649``) — is
+    refused here, before the lookup, with "Provided max-uploads not an integer or within integer
+    range". Not ``int()``, which accepts `` 5`` and ``+5`` and has no ceiling.
+    """
+    raw = _first(q, "max-uploads")
+    if raw == "":
+        return _MAX_UPLOADS, None
+    negative = raw.startswith("-")
+    # Leading zeros come off before the range is judged, because real judges the value and not the
+    # length or the sign: `00002147483647` is served and `00002147483648` refused, five thousand
+    # zeros is 0 where five thousand nines is refused, and `-0` is 0 where `-1` is out of range
+    # (measured). Stripping them is also what keeps `int()` off a run of digits it will not parse
+    # at all, which it refuses past 4300 of them.
+    digits = (raw[1:] if negative else raw).lstrip("0") or "0"
+    # An int32 reaches one further below zero than above it, so `-2147483648` is a value out of
+    # range where `-2147483649` is not an integer at all (measured 2026-09-11).
+    ceiling = _INT32_MAX + 1 if negative else _INT32_MAX
+    if not re.fullmatch(r"-?[0-9]+", raw) or len(digits) > 10 or int(digits) > ceiling:
+        return 0, _argument_error(
+            "Provided max-uploads not an integer or within integer range",
+            "max-uploads",
+            raw,
+            resource,
+        )
+    return -int(digits) if negative else int(digits), None
+
+
+def _list_multipart_uploads(request: Request, bucket: str, max_uploads: int) -> Response:
+    """ListMultipartUploads — the page real S3 serves for a bucket with no upload in progress.
+
+    Backlot never has one: data enters through ``backlot import`` and never through the served API,
+    so the faithful answer is always the empty page, and a browsing client that sends ``?uploads``
+    after every ListObjectsV2 gets the 200 it gets from real.
+
+    The shape is real's, measured against a general purpose bucket with no upload in progress:
+    ``Bucket``, then ``KeyMarker``, ``UploadIdMarker``, ``NextKeyMarker`` and ``NextUploadIdMarker``
+    present and empty, then ``Delimiter`` and ``Prefix`` (in that order) each only when sent
+    non-empty, ``MaxUploads``, ``EncodingType`` only when sent, and ``IsTruncated`` false. No
+    ``Upload`` and no ``CommonPrefixes``: "A response can contain zero or more Upload elements"
+    (the S3 API reference on ListMultipartUploads).
+
+    ``key-marker`` is echoed. ``upload-id-marker`` alone is ignored, as the API reference says ("If
+    key-marker is not specified, the upload-id-marker parameter is ignored"); beside a ``key-marker``
+    real refuses it with "Invalid uploadId marker" when it names no upload in the bucket, which was
+    measured with two ids on a bucket with none in progress — whether real would also refuse an id
+    that does name one could not be told apart there, and on Backlot no id ever does, so every such
+    request takes the refusal. ``encoding-type`` is checked before the markers and refused unless it
+    is ``url``, compared without case since real takes ``URL`` too and echoes it as ``URL`` (the two
+    spellings measured); under it ``KeyMarker``, ``Delimiter`` and ``Prefix`` come back encoded (see
+    ``_url_encode``); ``Bucket`` as it is, a bucket name holding nothing the encoding touches. Each
+    parameter is read as real reads it, the first value when one is sent twice (see ``_first``).
+
+    ``max_uploads`` arrives parsed from ``_max_uploads``, negative included: real judges the range
+    after the bucket lookup and after ``encoding-type``, before the markers, and names the value as
+    parsed, ``-01`` as ``-1`` (measured 2026-09-11). Past ``_MAX_UPLOADS`` it is served at the cap.
+    """
+    q = request.query_params
+    resource = f"/{bucket}"
+    encoding_type = _first(q, "encoding-type", None)
+    if encoding_type is not None and encoding_type.lower() != "url":
+        return _argument_error(
+            "Invalid Encoding Method specified in Request", "encoding-type", encoding_type, resource
+        )
+    if max_uploads < 0:
+        return _argument_error(
+            f"Argument max-uploads must be an integer between 0 and {_INT32_MAX}",
+            "max-uploads",
+            str(max_uploads),
+            resource,
+        )
+    key_marker = _first(q, "key-marker")
+    upload_id_marker = _first(q, "upload-id-marker")
+    if key_marker and upload_id_marker:
+        return _argument_error(
+            "Invalid uploadId marker", "upload-id-marker", upload_id_marker, resource
+        )
+    prefix = _first(q, "prefix")
+    delimiter = _first(q, "delimiter")
+    enc = _url_encode if encoding_type is not None else (lambda v: v)
+    body = [
+        f'<ListMultipartUploadsResult xmlns="{NS}"><Bucket>{escape(bucket)}</Bucket>',
+        f"<KeyMarker>{escape(enc(key_marker))}</KeyMarker><UploadIdMarker></UploadIdMarker>",
+        "<NextKeyMarker></NextKeyMarker><NextUploadIdMarker></NextUploadIdMarker>",
+        f"<Delimiter>{escape(enc(delimiter))}</Delimiter>" if delimiter else "",
+        f"<Prefix>{escape(enc(prefix))}</Prefix>" if prefix else "",
+        f"<MaxUploads>{min(max_uploads, _MAX_UPLOADS)}</MaxUploads>",
+        f"<EncodingType>{escape(encoding_type)}</EncodingType>"
+        if encoding_type is not None
+        else "",
+        "<IsTruncated>false</IsTruncated></ListMultipartUploadsResult>",
+    ]
     return _xml("".join(body))
 
 

@@ -4,10 +4,11 @@
 Mirage mounts Backlot's Gmail API as a filesystem — a directory per label, then per day, then
 a file per message — so an agent reads mail with plain ``ls`` / ``cat``. Auth is an ordinary
 Google authorized-user credential (client_id/secret + refresh token); the only mirage-specific
-glue is ``point_google_at`` (mirage's Google connectors have no host config, so we patch the
-module constants; Backlot's ``/oauth2/token`` honors the refresh).
+glue is ``point_google_at`` (mirage's one ``GoogleConfig.api_base`` cannot give each Google API
+its own Backlot prefix, so we rebind the per-API constants; Backlot's ``/oauth2/token`` honors the
+refresh).
 
-    pip install -e ".[examples,mirage]"
+    uv sync --all-extras --locked
     python examples/using-mirage/gmail.py                                  # the mailbox owner
     python examples/using-mirage/gmail.py --url http://localhost:8000 --user ceo@acme.com
     python examples/using-mirage/gmail.py --url http://localhost:8000 --fuse   # real OS mount
@@ -30,7 +31,6 @@ from backlot.integrations.mirage import point_google_at
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from _common.google_creds import google_oauth_user
-
 from _helpers import FUSE_HELP, lines, run_mirage
 
 # `users/me/messages` serves the CALLER's mailbox, as real Gmail does — so the identity this runs

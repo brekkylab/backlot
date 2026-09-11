@@ -21,15 +21,14 @@ from backlot.fidelity.graphql_diff import backlot_schema
 from backlot.graphql import linear_filters, mcp_tools
 from tests._helpers import (
     build_corpus,
-    complete,
     client_for,
+    complete,
     corpus_client,
     db_count,
     selected_field_count,
     selected_fields,
     served_id,
 )
-
 
 # --- Linear (GraphQL) -------------------------------------------------------------
 # Linear is GraphQL-only, so there is no REST surface to crawl. What matters instead is that the

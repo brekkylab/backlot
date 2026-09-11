@@ -1,7 +1,9 @@
 {
   "source": "github",
-  "endpoint": "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json",
-  "measured": "2026-09-04",
+  "endpoints": [
+    "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json"
+  ],
+  "measured": "2026-09-10",
   "acknowledged": [
     {
       "kind": "extra_operation",
@@ -1994,6 +1996,13 @@
     {
       "kind": "missing_operation",
       "severity": "gap",
+      "path": "GET /orgs/{}/code-scanning/ai-scan",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "No corpus record states a scanning posture, so these four \u2014 `GET` and `PATCH`, per organization and per repository \u2014 404 like the rest of the code-scanning family rather than answer an invented `pr_scan`, and both `PATCH`es are writes besides. The vendor marked all four public preview, subject to change, when this was read on 2026-09-10."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
       "path": "GET /orgs/{}/code-scanning/alerts",
       "detail": "the vendor serves it; Backlot does not"
     },
@@ -2562,24 +2571,6 @@
       "detail": "the vendor serves it; Backlot does not"
     },
     {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /orgs/{}/repos?direction",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /orgs/{}/repos?sort",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /orgs/{}/repos?type",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
       "kind": "missing_operation",
       "severity": "gap",
       "path": "GET /orgs/{}/rulesets",
@@ -2722,12 +2713,6 @@
       "severity": "gap",
       "path": "GET /orgs/{}/teams?team_type",
       "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /rate_limit",
-      "detail": "the vendor serves it; Backlot does not"
     },
     {
       "kind": "missing_operation",
@@ -3190,6 +3175,13 @@
       "severity": "gap",
       "path": "GET /repos/{}/{}/code-quality/setup",
       "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /repos/{}/{}/code-scanning/ai-scan",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "No corpus record states a scanning posture, so these four \u2014 `GET` and `PATCH`, per organization and per repository \u2014 404 like the rest of the code-scanning family rather than answer an invented `pr_scan`, and both `PATCH`es are writes besides. The vendor marked all four public preview, subject to change, when this was read on 2026-09-10."
     },
     {
       "kind": "missing_operation",
@@ -3836,12 +3828,6 @@
     {
       "kind": "missing_param",
       "severity": "gap",
-      "path": "GET /repos/{}/{}/issues?direction",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
       "path": "GET /repos/{}/{}/issues?issue_field_values",
       "detail": "the vendor accepts it; Backlot does not"
     },
@@ -3867,12 +3853,6 @@
       "kind": "missing_param",
       "severity": "gap",
       "path": "GET /repos/{}/{}/issues?since",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /repos/{}/{}/issues?sort",
       "detail": "the vendor accepts it; Backlot does not"
     },
     {
@@ -4058,19 +4038,7 @@
     {
       "kind": "missing_param",
       "severity": "gap",
-      "path": "GET /repos/{}/{}/pulls?direction",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
       "path": "GET /repos/{}/{}/pulls?head",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /repos/{}/{}/pulls?sort",
       "detail": "the vendor accepts it; Backlot does not"
     },
     {
@@ -4690,31 +4658,13 @@
     {
       "kind": "missing_param",
       "severity": "gap",
-      "path": "GET /user/repos?direction",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
       "path": "GET /user/repos?since",
       "detail": "the vendor accepts it; Backlot does not"
     },
     {
       "kind": "missing_param",
       "severity": "gap",
-      "path": "GET /user/repos?sort",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
       "path": "GET /user/repos?type",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /user/repos?visibility",
       "detail": "the vendor accepts it; Backlot does not"
     },
     {
@@ -5134,6 +5084,13 @@
     {
       "kind": "missing_operation",
       "severity": "gap",
+      "path": "PATCH /orgs/{}/code-scanning/ai-scan",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "No corpus record states a scanning posture, so these four \u2014 `GET` and `PATCH`, per organization and per repository \u2014 404 like the rest of the code-scanning family rather than answer an invented `pr_scan`, and both `PATCH`es are writes besides. The vendor marked all four public preview, subject to change, when this was read on 2026-09-10."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
       "path": "PATCH /orgs/{}/code-security/configurations/{}",
       "detail": "the vendor serves it; Backlot does not"
     },
@@ -5262,6 +5219,13 @@
       "severity": "gap",
       "path": "PATCH /repos/{}/{}/code-quality/setup",
       "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "PATCH /repos/{}/{}/code-scanning/ai-scan",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "No corpus record states a scanning posture, so these four \u2014 `GET` and `PATCH`, per organization and per repository \u2014 404 like the rest of the code-scanning family rather than answer an invented `pr_scan`, and both `PATCH`es are writes besides. The vendor marked all four public preview, subject to change, when this was read on 2026-09-10."
     },
     {
       "kind": "missing_operation",

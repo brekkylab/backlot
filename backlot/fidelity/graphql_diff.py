@@ -37,10 +37,9 @@ from graphql import (
     is_input_object_type,
     is_interface_type,
     is_object_type,
-    is_union_type,
     is_specified_scalar_type,
+    is_union_type,
 )
-
 
 import backlot.graphql
 from backlot.fidelity.errors import FidelityError

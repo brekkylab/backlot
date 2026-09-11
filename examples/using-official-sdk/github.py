@@ -5,7 +5,7 @@ Finds its repo via `get_user().get_repos()`, reads a pull request (`get_files()`
 `get_review_comments()` vs `get_issue_comments()`), then crawls the code: `get_git_ref()`,
 `get_git_tree(..., recursive=True)`, `get_contents()` and `get_readme()`.
 
-    pip install -e ".[examples]"
+    pip install -e ".[official-sdk]"
     python examples/using-official-sdk/github.py            # or: --url http://localhost:8000
     python examples/using-official-sdk/github.py --url http://localhost:8000 --token <usr-token>
 """

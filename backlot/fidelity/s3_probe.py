@@ -4,10 +4,10 @@ Every other source declares one path per operation in the spec its vendor publis
 the paths on each side and diffing them says something. S3 does not: it dispatches on the QUERY STRING. ``GET /{Bucket}`` is
 ListObjects, ``GET /{Bucket}?list-type=2`` is ListObjectsV2, ``GET /{Bucket}?location`` is
 GetBucketLocation, and ``?acl``, ``?policy``, ``?versioning`` and ninety more are each a different
-operation at the same path. Backlot serves all of them from four catch-all routes that declare no
-query parameters and read the string themselves, so a path-and-parameter diff pairs every S3
-operation with the same route and reports a clean match every time — a green check that means
-nothing, which is worse than not checking at all.
+operation at the same path. Backlot serves all of them from four catch-all routes that read the
+query string themselves, so a path-and-parameter diff pairs every S3 operation with the same route
+and reports a clean match every time — a green check that means nothing, which is worse than not
+checking at all.
 
 What can be asked instead is what the server actually answers. An operation Backlot does not
 implement should be REFUSED. The failure this looks for is the third possibility: answering it with
@@ -35,9 +35,9 @@ from urllib.parse import urlsplit
 import httpx
 
 from backlot import sigv4
-from backlot.fidelity.findings import BREAKING, GAP, Finding
 from backlot.fidelity.errors import FidelityError
 from backlot.fidelity.fetch import fetch_json
+from backlot.fidelity.findings import BREAKING, GAP, Finding
 
 _ROOT = re.compile(r"<\??[a-zA-Z]*[^>]*>\s*<([A-Za-z][\w.-]*)")
 _EMPTY_SHA = hashlib.sha256(b"").hexdigest()

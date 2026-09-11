@@ -132,8 +132,7 @@ _IMPORT_TO_DIST_EXCEPTIONS = {
     "atlassian": "atlassian-python-api",
     "botocore": "boto3",  # carried transitively: boto3 pins it
     "hubspot": "hubspot-api-client",
-    "mirage.core.github._client": "mirage-ai",
-    "mirage.core.google._client": "mirage-ai",
+    "mirage": "mirage-ai",
 }
 
 # Gates whose distribution deliberately has no extra — CONTRIBUTING's "which no extra carries"
@@ -220,29 +219,26 @@ def _importorskip_modules() -> dict[str, list[str]]:
 
 
 def test_the_all_extra_aggregates_every_other_one():
-    """`.[all]` is what CI installs, so it is what decides whether a gated test runs at all.
+    """`.[all]` is the one-shot install for anyone taking Backlot off PyPI, so it has to name every
+    extra: one left out of the aggregate is one such a reader never gets.
 
     It is one of three places that enumerate the extras — `pyproject.toml` defines them,
-    CONTRIBUTING's table names them, this aggregate installs them — and the one that silently
-    costs coverage: an extra added to the other two but left out here installs nowhere, so every
-    test behind it skips forever and `-rs` reports that without failing. The table and the
-    definitions are held to each other by the test below; this holds the copy CI acts on.
+    CONTRIBUTING's table names them, this aggregate installs them. The table and the definitions
+    are held to each other by the test below; this holds the aggregate.
 
-    An aggregate rather than a flag because pip has no `--all-extras` (measured on pip 26.2.1),
-    and a self-reference rather than a duplicated list because pip resolves `backlot[...]` to the
+    A self-reference rather than a duplicated list because a resolver reads `backlot[...]` as the
     directory being installed: the resolution report names a `file://` url for it and marks it
     direct, so the release on PyPI is never consulted.
     """
     extras = _extras()
-    assert "all" in extras, "the aggregate CI installs is gone; ci.yml still names `.[all]`"
-    assert '".[all]"' in (REPO_ROOT / ".github/workflows/ci.yml").read_text()
+    assert "all" in extras, "the one-shot install for PyPI readers is gone"
     (aggregate,) = pyproject_optional_dependencies()["all"]
     named = set(
         re.search(r"backlot\[([\w,\s-]+)\]", aggregate).group(1).replace(" ", "").split(",")
     )
     assert named == set(extras) - {"all"}, (
         f"`all` installs {sorted(named)} but the extras are {sorted(set(extras) - {'all'})} — "
-        "an extra missing here is one CI never installs"
+        "an extra missing here is one a `backlot[all]` reader never gets"
     )
 
 
@@ -309,3 +305,42 @@ def test_every_optional_import_gate_is_reachable_from_an_extra():
         assert _norm(dist) not in provided, (
             f"{dist} is now carried by an extra; {module} is no longer a documented absence"
         )
+
+
+def _tracked_files() -> list[Path]:
+    out = subprocess.run(
+        ["git", "ls-files"], cwd=REPO_ROOT, capture_output=True, text=True, check=True
+    ).stdout
+    return [REPO_ROOT / line for line in out.splitlines() if line]
+
+
+def test_no_tracked_file_installs_an_extra_pyproject_does_not_define():
+    """Every ``.[...]`` in the repository is an install line somebody runs: the READMEs', each
+    example's header, CONTRIBUTING's table. The two tests above hold the triangle of
+    ``pyproject.toml``, the ``all`` aggregate and CONTRIBUTING; nothing held the rest, and an
+    extra renamed in pyproject left them naming one that no longer exists.
+
+    That failure is quiet at install time and loud later: pip and uv answer an unknown extra with
+    a warning and install the base package anyway, exit 0, so the script the line belongs to dies
+    on the import the extra was carrying — ``examples/using-llamaindex-readers/hubspot.py`` on
+    ``hubspot``, whose ``hubspot-api-client`` only ``[official-sdk]`` has.
+    """
+    with open(REPO_ROOT / "pyproject.toml", "rb") as f:
+        extras = set(tomllib.load(f)["project"]["optional-dependencies"])
+
+    undefined = []
+    for path in _tracked_files():
+        try:
+            text = path.read_text()
+        except (UnicodeDecodeError, FileNotFoundError):
+            continue  # an asset, or a path this checkout does not materialise
+        for lineno, line in enumerate(text.splitlines(), 1):
+            for group in re.findall(r"\.\[([\w,\s-]+)\]", line):
+                for name in (e.strip() for e in group.split(",")):
+                    if name and name not in extras:
+                        rel = path.relative_to(REPO_ROOT)
+                        undefined.append(f"{rel}:{lineno} installs `{name}`")
+    assert undefined == [], (
+        "these lines install an extra pyproject.toml does not define, which pip warns about and "
+        f"then ignores: {undefined}"
+    )

@@ -10,7 +10,7 @@ server) ``--access-key``/``--secret-key`` are **required** — pass real AWS key
 ``s3_secret_access_key`` there). Without ``--url`` the local throwaway server uses its own admin
 keypair.
 
-    pip install -e ".[examples,mirage]"
+    uv sync --all-extras --locked
     python examples/using-mirage/s3.py                              # local throwaway server
     python examples/using-mirage/s3.py --url http://localhost:8000 --access-key <AKIA...> --secret-key <secret>
     python examples/using-mirage/s3.py --url http://localhost:8000 --access-key <AKIA...> --secret-key <secret> --fuse   # real OS mount
@@ -25,11 +25,11 @@ import os
 import subprocess
 import urllib.request
 
+from _helpers import FUSE_HELP, lines, run_mirage
 from mirage import MountMode, Workspace
 from mirage.resource.s3 import S3Config, S3Resource
 
 from backlot import serve_or_connect
-from _helpers import FUSE_HELP, lines, run_mirage
 
 BUCKET = "eng-artifacts"
 CORPUS = [

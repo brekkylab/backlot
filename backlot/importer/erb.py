@@ -2046,6 +2046,15 @@ def _byo_drive(dsid, raw, P):
     # Workspace subtype or a binary's mime, and re-deriving it on load would need `_ATT_MIME` and the
     # title's extension inside `byo.py`. So the converted record carries the resolved pair.
     subtype, mime_type = _drive_type(raw, title)
+    # A converted spreadsheet NEVER states `sheets`, so it serves on the prose path: one sheet whose
+    # every cell is a whole line. Measured over the bench's 1,875 spreadsheet rows -- 223 carry a
+    # structural key (`columns`, `rows`, `table_headers`, `table_rows`, `sheet_rows`, `sheet_data`,
+    # `sheet_tabs`), and 25 of those state a header whose rows parse to exactly the header width.
+    # NONE of the 25 is the table alone: each lists 1-13 further content fields, 23 of them 500+
+    # characters of prose. `sheets` is authoritative and forbids `content`, so converting even the
+    # cleanest of them would drop the document's own description, notes and recommendations from
+    # `content` -- and so from search and from `files.export`. A bench spreadsheet is prose that
+    # CONTAINS a table, which that representation cannot hold without discarding the prose.
     created = to_epoch(raw.get("created_at")) or synth.epoch(dsid)
     rec = _rec(
         source_type="google_drive",

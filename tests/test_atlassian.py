@@ -6,11 +6,12 @@ or call the response builder directly.
 
 from __future__ import annotations
 
-from starlette.requests import Request
 import base64
 import re
 
 import pytest
+import yaml
+from starlette.requests import Request
 
 from backlot import store
 from backlot.errors import atlassian as errors_atlassian
@@ -20,8 +21,8 @@ from tests._helpers import (
     crawl_confluence,
     crawl_jira,
     db_count,
-    tiny_corpus,
     served_id,
+    tiny_corpus,
 )
 
 
@@ -76,12 +77,13 @@ def test_jira_serves_its_field_metadata_to_an_anonymous_caller(client, path):
     assert client.get(f"/atlassian{path}", headers=FAILED_PAIR).status_code == 200
 
 
-def test_jira_lists_only_the_projects_the_caller_can_open(tmp_path):
+def test_atlassian_lists_only_the_containers_the_caller_can_open(tmp_path):
     """The anonymous listing is empty because a project is listed when the caller can see an issue
     in it, and that rule is not anonymous-only: a scoped caller who can open nothing in a project
     does not get it either. Backlot grants per document, so the projects have to be read off the
     issues — listing every one of them to everybody was how an empty anonymous listing could not
-    be told from a full one."""
+    be told from a full one. A Confluence space is the same container under another vendor's name,
+    so one corpus carries the split in both."""
     corpus = [
         {
             "source_type": "jira",
@@ -101,10 +103,30 @@ def test_jira_lists_only_the_projects_the_caller_can_open(tmp_path):
             "author_email": "bob@acme.com",
             "visibility": "private",
         },
+        {
+            "source_type": "confluence",
+            "doc_id": "c-open",
+            "space": "engineering",
+            "title": "Runbook",
+            "content": "Body.",
+            "author_email": "ava@acme.com",
+            "visibility": "public",
+        },
+        {
+            "source_type": "confluence",
+            "doc_id": "c-shut",
+            "space": "secrets",
+            "title": "Key rotation",
+            "content": "Body.",
+            "author_email": "bob@acme.com",
+            "visibility": "private",
+        },
     ]
     settings = tiny_corpus(tmp_path, corpus)
     with client_for(settings, reload=True) as c:
         import yaml
+
+        from backlot import synth
 
         written = yaml.safe_load(settings.tokens_path.read_text())
         tokens = {u["email"]: u["token"] for u in written["users"]}
@@ -114,6 +136,10 @@ def test_jira_lists_only_the_projects_the_caller_can_open(tmp_path):
             listing = c.get("/atlassian/rest/api/3/project/search", headers=headers).json()
             return sorted(p["name"] for p in listing["values"])
 
+        def spaces(headers):
+            listing = c.get("/atlassian/wiki/rest/api/space", headers=headers).json()
+            return sorted(s["name"] for s in listing["results"])
+
         assert keys({"Authorization": f"Bearer {tokens['admin']}"}) == ["payments", "secrets"]
         assert keys({"Authorization": f"Bearer {tokens['bob@acme.com']}"}) == [
             "payments",
@@ -121,6 +147,34 @@ def test_jira_lists_only_the_projects_the_caller_can_open(tmp_path):
         ]
         assert keys({"Authorization": f"Bearer {tokens['ava@acme.com']}"}) == ["payments"]
         assert keys({}) == []
+
+        assert spaces({"Authorization": f"Bearer {tokens['admin']}"}) == ["engineering", "secrets"]
+        assert spaces({"Authorization": f"Bearer {tokens['bob@acme.com']}"}) == [
+            "engineering",
+            "secrets",
+        ]
+        assert spaces({"Authorization": f"Bearer {tokens['ava@acme.com']}"}) == ["engineering"]
+        # No anonymous row: `_confluence_caller` refuses before a space is resolved.
+
+        # The space ava reaches no page in is absent on both space-scoped reads, as an unopenable
+        # project is on `project/{key}/role`. Bob, who authored the page in it, reads both. Under
+        # both spellings `_space_container_for_key` resolves: the synthesized key and the name.
+        shut = synth.confluence_space_key("secrets")
+        ava = {"Authorization": f"Bearer {tokens['ava@acme.com']}"}
+        bob = {"Authorization": f"Bearer {tokens['bob@acme.com']}"}
+        for spelling in (shut, "secrets"):
+            for path in (
+                f"/wiki/rest/api/space/{spelling}",
+                f"/wiki/rest/api/space/{spelling}/permission",
+            ):
+                refused = c.get(f"/atlassian{path}", headers=ava)
+                assert refused.status_code == 404, path
+                assert refused.json()["message"] == "No space with the given key exists"
+                assert c.get(f"/atlassian{path}", headers=bob).status_code == 200, path
+        # ... and the roster she is refused names bob against that space.
+        roster = c.get(f"/atlassian/wiki/rest/api/space/{shut}/permission", headers=bob).json()
+        readers = roster["results"][0]["subjects"]["user"]["results"]
+        assert [u["email"] for u in readers] == ["bob@acme.com"]
 
 
 @pytest.mark.parametrize("headers", UNRESOLVABLE)
@@ -518,9 +572,16 @@ def test_confluence_single_space_get(client, admin_h):
     key = spaces[0]["key"]
     r = client.get(f"/atlassian/wiki/rest/api/space/{key}", headers=admin_h)
     assert r.status_code == 200 and r.json()["key"] == key and r.json()["name"] == spaces[0]["name"]
-    # unknown space -> clean atlassian-shaped 404
-    r2 = client.get("/atlassian/wiki/rest/api/space/NOSUCH", headers=admin_h)
-    assert r2.status_code == 404 and "message" in r2.json()
+    # the reader roster is the admin's to read
+    perm = client.get(f"/atlassian/wiki/rest/api/space/{key}/permission", headers=admin_h)
+    assert perm.status_code == 200
+    assert perm.json()["results"][0]["operation"] == {"operation": "read", "targetType": "space"}
+    # An unknown space is the same atlassian-shaped 404 on BOTH space-scoped reads, so a space the
+    # caller cannot reach cannot be told apart from one that is not there.
+    for path in ("/wiki/rest/api/space/NOSUCH", "/wiki/rest/api/space/NOSUCH/permission"):
+        absent = client.get(f"/atlassian{path}", headers=admin_h)
+        assert absent.status_code == 404, path
+        assert absent.json()["message"] == "No space with the given key exists", path
 
 
 # --- OpenAPI enrichment: atlassian (jira + confluence) ------------------------------------
@@ -750,3 +811,241 @@ def test_confluence_child_page_and_restriction_match_a_nonexistent_id_for_an_out
         made_up = client.get(f"/atlassian/wiki/rest/api/content/999999999/{path}", headers=h)
         assert hidden.status_code == made_up.status_code == 404
         assert hidden.content == made_up.content
+
+
+# --- Jira: a page of comments is a page -------------------------------------------------------
+#
+# Measured against Jira Cloud on an issue with no comments, which settles every one of these:
+# parameter validation runs before the issue is resolved. The dates differ and say which instance
+# state each claim reflects — 2026-09-09 for the defaults, the clamps, the caps and `created` /
+# `+created` / `-created` against `bogus`; 2026-09-10 for the rest of the `orderBy` grammar (one
+# leading sigil, whitespace ignored, field case-insensitive), for the empty value being refused
+# rather than read as absent, and for the 400 arriving before the 404.
+#
+# What `-created` does to a non-empty list comes from Atlassian's document rather than from a
+# call, and the no-`orderBy` case from neither — see that test's own docstring.
+
+# The corpus lists these OUT of chronological order on purpose: `comment 1` is the newest and
+# `comment 7` the oldest. A fixture whose array order matches its clock cannot tell a real sort
+# from `store.doc_comments`' `ORDER BY seq`, so every ascending assertion below would pass against
+# an implementation that ignores `orderBy` altogether.
+_COMMENTS = [
+    {"content": f"comment {i}", "author_email": "b@x.com", "created_ts": 1770000000 + (8 - i) * 60}
+    for i in range(1, 8)
+]
+
+
+@pytest.fixture(scope="module")
+def paged(tmp_path_factory):
+    """One issue with seven comments, served."""
+    settings = tiny_corpus(
+        tmp_path_factory.mktemp("paged"),
+        [
+            {
+                "source_type": "jira",
+                "doc_id": "j-page",
+                "project": "payments",
+                "title": "T",
+                "content": "c",
+                "author_email": "a@x.com",
+                "visibility": "public",
+                "key": "PAY-7",
+                "comments": _COMMENTS,
+            }
+        ],
+    )
+    with client_for(settings, reload=True) as client:
+        tok = yaml.safe_load(settings.tokens_path.read_text())["admin_token"]
+        yield client, {"Authorization": f"Bearer {tok}"}
+
+
+def _page(paged, **params):
+    client, h = paged
+    r = client.get("/atlassian/rest/api/3/issue/PAY-7/comment", headers=h, params=params)
+    return r, r.json()
+
+
+def _bodies(d):
+    return [c["body"]["content"][0]["content"][0]["text"] for c in d["comments"]]
+
+
+def test_jira_comments_page_on_start_at_and_max_results(paged):
+    """The endpoint declares both, and the envelope has always claimed to be a page. Serving the
+    whole collection labelled `startAt: 0` hands a client asking for page two the contents of page
+    one, with nothing in the response to say so."""
+    r, d = _page(paged, startAt=3, maxResults=2)
+    assert r.status_code == 200
+    assert (d["startAt"], d["maxResults"], d["total"]) == (3, 2, 7)
+    assert _bodies(d) == ["comment 4", "comment 5"]
+
+
+def test_jira_comments_default_to_the_first_hundred(paged):
+    """Measured: with no parameters real Jira echoes `maxResults: 100`, not the size of the
+    collection."""
+    _r, d = _page(paged)
+    assert (d["startAt"], d["maxResults"], d["total"]) == (0, 100, 7)
+    assert len(d["comments"]) == 7
+
+
+@pytest.mark.parametrize(
+    "params,want",
+    [
+        # measured: a negative offset floors at 0, one past the end is echoed back unchanged
+        ({"startAt": -1}, (0, 100, 7)),
+        ({"startAt": 100}, (100, 100, 7)),
+        # measured: maxResults floors UP to 1 -- 0 and -1 both answer 1, not 0
+        ({"maxResults": 0}, (0, 1, 7)),
+        ({"maxResults": -1}, (0, 1, 7)),
+        # measured: capped at 100, which is the documented default AND the maximum
+        ({"maxResults": 100000}, (0, 100, 7)),
+    ],
+)
+def test_jira_comment_paging_clamps_the_way_the_real_api_does(paged, params, want):
+    _r, d = _page(paged, **params)
+    assert (d["startAt"], d["maxResults"], d["total"]) == want
+
+
+def test_jira_comments_past_the_end_are_an_empty_page_not_an_error(paged):
+    _r, d = _page(paged, startAt=100)
+    assert d["comments"] == []
+
+
+@pytest.mark.parametrize(
+    "order,want",
+    [
+        # `comment 7` is the OLDEST in this corpus and `comment 1` the newest, so an ascending
+        # sort has to reorder the rows rather than pass them through.
+        ("created", ["comment 7", "comment 6"]),
+        ("+created", ["comment 7", "comment 6"]),
+        ("-created", ["comment 1", "comment 2"]),
+    ],
+)
+def test_jira_comments_order_by_created(paged, order, want):
+    _r, d = _page(paged, orderBy=order, maxResults=2)
+    assert _bodies(d) == want
+
+
+def test_jira_comments_without_order_by_keep_the_order_the_corpus_states(paged):
+    """What real Jira returns with no `orderBy` is NOT measured: the site available for measuring
+    had no issue carrying a comment, and creating one is a write to a live instance. So the corpus
+    keeps whatever order it stated, rather than this inventing a default sort.
+
+    The fixture lists its comments newest-first, so a default sort would be visible here."""
+    _r, d = _page(paged, maxResults=3)
+    assert _bodies(d) == ["comment 1", "comment 2", "comment 3"]
+
+
+@pytest.mark.parametrize(
+    "query,want",
+    [
+        # Atlassian's own document writes the ascending form as `+created`, and a literal `+` in a
+        # query string decodes to a space. Real Jira answers 200 to every one of these.
+        ("orderBy=+created", ["comment 7", "comment 6"]),
+        ("orderBy=%2Bcreated", ["comment 7", "comment 6"]),
+        ("orderBy=%20created", ["comment 7", "comment 6"]),
+        ("orderBy=created%20", ["comment 7", "comment 6"]),
+        ("orderBy=Created", ["comment 7", "comment 6"]),
+        ("orderBy=CREATED", ["comment 7", "comment 6"]),
+        ("orderBy=-Created", ["comment 1", "comment 2"]),
+        ("orderBy=-%20created", ["comment 1", "comment 2"]),
+    ],
+)
+def test_jira_order_by_takes_the_spellings_the_real_api_takes(paged, query, want):
+    """Sent as a RAW query string, not through `params=`, which would percent-encode the `+` and
+    never exercise the spelling Atlassian's document actually writes.
+
+    Measured against Jira Cloud: one leading `+` or `-` is the direction sigil, whitespace around
+    it is ignored, and the field is matched case-insensitively."""
+    client, h = paged
+    d = client.get(f"/atlassian/rest/api/3/issue/PAY-7/comment?{query}&maxResults=2", headers=h)
+    assert d.status_code == 200, d.text
+    assert _bodies(d.json()) == want
+
+
+@pytest.mark.parametrize("query", ["orderBy=--created", "orderBy=%2B-created", "orderBy="])
+def test_jira_refuses_the_spellings_the_real_api_refuses(paged, query):
+    """Measured: exactly ONE sigil is stripped, so `--created` leaves `-created`, which is not a
+    field — real Jira's own message echoes `-created`, not `--created`. An empty value is refused
+    for the same reason: the field is the empty string."""
+    client, h = paged
+    r = client.get(f"/atlassian/rest/api/3/issue/PAY-7/comment?{query}", headers=h)
+    assert r.status_code == 400, r.text
+
+
+def test_jira_validates_order_by_before_resolving_the_issue(paged):
+    """Measured: `GET /issue/NOPE-1/comment?orderBy=bogus` is 400 on real Jira while the same key
+    without the parameter is 404, so the parameter is validated first.
+
+    It leaks nothing: the 400 is identical whether the key exists, is hidden, or was never a key,
+    so it separates none of the three."""
+    client, h = paged
+    assert client.get("/atlassian/rest/api/3/issue/NOPE-1/comment", headers=h).status_code == 404
+    r = client.get("/atlassian/rest/api/3/issue/NOPE-1/comment?orderBy=bogus", headers=h)
+    assert r.status_code == 400
+
+
+def test_jira_sorts_the_whole_collection_before_slicing_it(paged):
+    """A sort applied to the page instead of the collection passes every case that leaves `startAt`
+    at 0, so the two are only told apart off the first page."""
+    _r, d = _page(paged, orderBy="-created", startAt=2, maxResults=2)
+    assert _bodies(d) == ["comment 3", "comment 4"]
+
+
+def test_jira_orders_comments_sharing_a_timestamp_by_seq(tmp_path):
+    """The tie-break the router promises. Two comments written in the same second come back in
+    `seq` order ascending and reversed descending, rather than in whatever order the rows arrive
+    in twice."""
+    settings = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "jira",
+                "doc_id": "j-tie",
+                "project": "payments",
+                "title": "T",
+                "content": "c",
+                "author_email": "a@x.com",
+                "visibility": "public",
+                "key": "PAY-9",
+                "comments": [
+                    {"content": "same A", "author_email": "b@x.com", "created_ts": 1770000000},
+                    {"content": "same B", "author_email": "b@x.com", "created_ts": 1770000000},
+                ],
+            }
+        ],
+    )
+    with client_for(settings, reload=True) as client:
+        tok = yaml.safe_load(settings.tokens_path.read_text())["admin_token"]
+        h = {"Authorization": f"Bearer {tok}"}
+        url = "/atlassian/rest/api/3/issue/PAY-9/comment"
+        asc = client.get(url, headers=h, params={"orderBy": "created"}).json()
+        desc = client.get(url, headers=h, params={"orderBy": "-created"}).json()
+        assert _bodies(asc) == ["same A", "same B"]
+        assert _bodies(desc) == ["same B", "same A"]
+
+
+@pytest.mark.parametrize("order", ["bogus", "updated", "-updated"])
+def test_jira_refuses_an_order_by_field_that_is_not_created(paged, order):
+    """Measured: real Jira answers 400 for any field but `created`. Accepting one silently would
+    serve corpus order to a client that asked for something else, with nothing in the response
+    saying the sort was dropped -- and would pass here while failing against Jira.
+
+    Only the status and the envelope are reproduced. Jira's own message is localised to the
+    account's language, so its wording is not portable."""
+    r, d = _page(paged, orderBy=order)
+    assert r.status_code == 400
+    assert d["errors"] == {}
+    # The message names the field AFTER the direction sigil is stripped, which is what real Jira
+    # echoes: `--created` there reports `-created`, not what was sent.
+    assert d["errorMessages"][0].endswith(f"Instead: {order.lstrip('-+')}")
+    assert "[created]" in d["errorMessages"][0]
+
+
+def test_jira_comment_paging_is_declared_so_a_client_can_discover_it(paged):
+    client, _h = paged
+    op = client.app.openapi()["paths"]["/atlassian/rest/api/3/issue/{key}/comment"]["get"]
+    declared = {p["name"] for p in op["parameters"]}
+    assert {"startAt", "maxResults", "orderBy"} <= declared
+    # `expand` is deliberately absent: real Jira takes one, Backlot does not honour it, and `qp`
+    # is for parameters Backlot honours. `backlot diff --source jira` is where that gap is read.
+    assert "expand" not in declared

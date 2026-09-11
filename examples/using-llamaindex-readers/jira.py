@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Load Jira issues through the official llama-index Jira reader. Self-contained.
 
-pip install -e ".[examples,llamaindex]"
+pip install -e ".[official-sdk,llamaindex]"
 python examples/using-llamaindex-readers/jira.py            # or: --url http://localhost:8000
 python examples/using-llamaindex-readers/jira.py --url http://localhost:8000 --token <usr-token>
 """

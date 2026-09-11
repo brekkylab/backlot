@@ -18,12 +18,14 @@ response, which needs a credential.
 For a source compared against a **document its vendor publishes**, the request surface — which
 operations exist, and which query parameters each accepts. Backlot's side is the app's own
 `/openapi.json`. The vendor's side comes in two formats, read by two parsers, because Google does
-not publish OpenAPI: an **OpenAPI** document for GitHub, Slack, Jira, Confluence, Notion and
-HubSpot, and a **Google API Discovery** document for Gmail and Drive. Both are public, so these
-comparisons run with **no credential, no quota and no account**. Response bodies are out of scope
-here: a vendor spec describes them through deep `$ref` chains that Backlot's `response_model` set
-does not mirror shape-for-shape, so a body diff would report how two documents are written rather
-than how two servers answer.
+not publish OpenAPI: **OpenAPI** documents for GitHub, Slack, Jira, Confluence, Notion and
+HubSpot, and **Google API Discovery** documents for Gmail and the Drive family. A source is
+compared against as many documents as its vendor publishes for the surface Backlot serves — Jira's
+two REST versions, Drive alongside Docs, Sheets and Slides, HubSpot's CRM and associations. All
+are public, so these comparisons run with **no credential, no quota and no account**. Response
+bodies are out of scope here: a vendor spec describes them through deep `$ref` chains that
+Backlot's `response_model` set does not mirror shape-for-shape, so a body diff would report how two
+documents are written rather than how two servers answer.
 
 Path templates are compared with placeholders flattened. The vendor calling a segment `{userId}`
 and Backlot calling it `{user_id}` is not a divergence.
@@ -50,8 +52,10 @@ redirected run or a CI log stays plain text.
 backlot diff --source linear --json | jq '.new[] | select(.severity == "breaking") | .path'
 ```
 
-It carries `source`, `endpoint`, `total`, `new` and `resolved` — or, with `--update-baseline`,
-`acknowledged`, `unacknowledged` and the `baseline` path. Exit codes are the same either way.
+It carries `source`, `endpoints` (a list, one per compared contract — a published document, or
+the URL introspection was read from), `total`, `new` and `resolved` — or, with
+`--update-baseline`, `acknowledged`, `unacknowledged` and the `baseline` path. Exit codes are the
+same either way.
 
 Each source **declares** the credentials it needs, by a logical name and the environment variable
 it is read from, and `--credential NAME=VALUE` repeats for as many as a source declares. A single
@@ -112,9 +116,9 @@ Backlot does serve.
 
 S3 dispatches on the query string, not the path: `GET /{Bucket}` is ListObjects,
 `?list-type=2` is ListObjectsV2, `?location` is GetBucketLocation, and ninety more operations sit
-at the same path. Backlot serves them from four catch-all routes that declare no query parameters
-and read the string themselves, so a path-and-parameter diff pairs every S3 operation with the same
-route and reports a clean match every time — a green check that means nothing.
+at the same path. Backlot serves them from four catch-all routes that read the query string
+themselves, so a path-and-parameter diff pairs every S3 operation with the same route and reports a
+clean match every time — a green check that means nothing.
 
 So S3 is compared by asking a running server instead. Backlot starts on a free port, every read
 operation botocore declares is sent to it signed, and the answer is classified:
@@ -136,9 +140,12 @@ claimed to serve, and the first Linear run lists seven hundred and eighty-two �
 nobody reads the output. The baselines ship inside the package, so an installed copy can be compared
 against its vendor without the repository.
 
-Accepting a divergence is a file change, so it goes through review like any other. Each entry
-carries a note saying why the gap is deliberate — which makes this file the written record of what
-Backlot does and does not claim about a vendor:
+Accepting a divergence is a file change, so it goes through review like any other.
+`--update-baseline` writes the entry; the note beside it is added by hand in that review. Most
+entries are plain — surface the vendor has and Backlot does not — and a note is what records a
+decision someone had to make: a family accepted as a whole, or a shape where a stand-in would break
+a client rather than merely be absent. Those notes are the written record of what Backlot does and
+does not claim about a vendor:
 
 ```json
 {
@@ -181,11 +188,15 @@ but it is never the bug of whichever pull request happens to be open when a vend
 and a contributor fixing a typo must not be blocked by it. A new divergence opens an issue and
 turns the scheduled run red instead.
 
-A source has one issue for the life of the repository. It is opened under the `fidelity` label —
-the vendor API defines the right answer, so closing one needs a measurement against it — and found
-again on later runs whether it is open or closed, so triaging one does not produce a duplicate the
-next morning. Its body carries the latest run's report, and a comment is posted only when that
-report is not the one already there.
+A source has one open issue at a time. It is opened under the `fidelity` label — the vendor API
+defines the right answer, so closing one needs a measurement against it — titled with the date the
+divergence was first seen, and found again on later runs so triaging one does not produce a
+duplicate the next morning. Its body carries the latest run's report, and a comment is posted only
+when that report is not the one already there.
+
+Closing it closes the record. The body and the comments stay as the account of what was triaged,
+and a source still diverging the next morning gets a new issue that links back to the last one — a
+closed issue is never reopened and never written over.
 
 ## Coverage
 
@@ -199,19 +210,54 @@ each of those is compared, and a test fails if the two sets ever drift apart.
 | Linear | GraphQL introspection | `api_key` — `LINEAR_API_KEY`, sent **bare** |
 | Slack | published OpenAPI | none |
 | Gmail | Google Discovery | none |
-| Google Drive (`google_drive`) | Google Discovery | none |
+| Google Drive (`google_drive`) | Google Discovery — Drive, Docs, Sheets and Slides | none |
 | GitHub | published OpenAPI | none |
-| Jira | published OpenAPI (v3) | none |
+| Jira | published OpenAPI, v2 and v3 documents | none |
 | Confluence | published OpenAPI (v1) | none |
-| HubSpot | published OpenAPI, resolved through the API catalog | none |
+| HubSpot | published OpenAPI, CRM v3 and Associations v4, resolved through the API catalog | none |
 | Notion | published OpenAPI | none |
 | Amazon S3 | botocore service model, **probed** — see [S3 is asked, not read](#s3-is-asked-not-read) | none |
 
 The credential column is measured, not read off a page: Linear's personal API keys go in bare, and
 sending Linear a `Bearer` prefix is answered **400**, not 401.
 
-**Jira's `/rest/api/2` aliases** are served because real Jira serves them, but Atlassian publishes a
-v3 document. They are compared through their v3 twins rather than reported as invented.
+A source is compared against as many documents as its vendor publishes for the surface Backlot
+serves. Three need more than one: Jira's v2 and v3 REST APIs are separate documents, a Drive file is
+also read through Docs, Sheets and Slides, and HubSpot's associations are their own API at their own
+version.
 
-Two vendors need a second document before they are fully covered: HubSpot's v4 associations surface
-is a separate API in the same catalog, and Confluence's reads now live in a v2 document.
+**Jira's `/rest/api/2` paths** are served because the clients call them — `atlassian-python-api`
+hardcodes `api_version = "2"` in its Jira constructor, and the `jira` PyPI client defaults
+`rest_api_version` to `"2"` and probes `/rest/api/2/serverInfo` on connect. They are compared
+against Atlassian's own v2 document, which it publishes beside the v3 one: the naming is
+`swagger[-<apiVersion>].<oasVersion>.json`, so the suffix-less `swagger.v3.json` is the v2 API.
+
+Every path Backlot **declares** in its own `/openapi.json` is under one of those documents'
+mounts, probed, or listed in `UNCOMPARED` with the reason no document covers it — Backlot's own
+`/health`, `/oauth2/token` and `/_meta`, and Google's `/batch` — which every discovery document
+names in its top-level `batchPath` and none declares as an operation, so there is nothing for a
+path diff to pair it with. A declared path in none of the three fails the suite.
+
+Declared, not served: six live routes are `include_in_schema=False` and so invisible to that check.
+Four are FastAPI's own (`/docs`, `/docs/oauth2-redirect`, `/openapi.json`, `/redoc`). The other two
+are the GraphQL POSTs at `/fireflies/graphql` and `/linear/graphql`, which their own comparison
+covers — introspection, not a path map, so there is no mount to say so. Walking `app.routes`
+instead was ruled out for `gen_docs.py`, and the same reasoning holds here.
+
+Served, not declared: a `HEAD` under `/github`, `/health` or `/_meta` is answered as the `GET` with
+the body left off (`backlot.main.answer_head_as_the_get_without_its_body`), and no `head` operation
+is written for it, because real's own description declares none either. Real GitHub answers a `HEAD`
+that way on every route measured, so the divergence was the method missing, not the method being
+undocumented. But a path diff reads methods off the two documents, and neither mentions this one,
+so nothing here would catch it going away. The middleware's prefix tuple is the record of which
+vendors it covers; a vendor joins it once its own `HEAD` is measured.
+
+The five `x-ratelimit-*` headers are the same kind of gap. Every `/github` answer carries them
+(`backlot.main.report_github_rate_limit`), as every answer real gives does, but the comparison reads
+parameters and operations off the two documents and never a response header; real's description
+declares three of the five, on `GET /rate_limit`'s 200 alone, and Backlot's document declares none.
+The tests are the record here (`tests/test_github.py`, the rate-limit test), not the baseline.
+
+Confluence is not yet fully covered: its reads now live in a v2 document whose paths are shaped
+differently from the v1 ones Backlot serves, so the eight reads Atlassian has removed from the v1
+document are acknowledged rather than compared.

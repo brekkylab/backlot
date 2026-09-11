@@ -7,7 +7,7 @@ or call the response builder directly.
 from __future__ import annotations
 
 from backlot import store, synth
-from tests._helpers import tiny_corpus, tok, served_id
+from tests._helpers import served_id, tiny_corpus, tok
 
 
 def test_notion_page_retrieve_and_blocks(client, admin_h):

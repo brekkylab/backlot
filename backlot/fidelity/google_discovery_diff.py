@@ -64,8 +64,8 @@ def from_google_discovery(doc: Mapping[str, Any]) -> dict[tuple[str, str], Opera
     return ops
 
 
-class GoogleDiscoveryTarget(Protocol):
-    """What this module needs of a comparison. Structural, so the registry can import this module
+class SpecTarget(Protocol):
+    """What this module needs of ONE document. Structural, so the registry can import this module
     without this module importing the registry."""
 
     spec_url: str
@@ -73,14 +73,18 @@ class GoogleDiscoveryTarget(Protocol):
     strip: str
 
 
-def divergences(comparison: GoogleDiscoveryTarget, *, timeout: float = 120.0) -> list[Finding]:
-    """This module's entry point: load both contracts and compare them."""
+def divergences(spec: SpecTarget, *, timeout: float = 120.0) -> list[Finding]:
+    """This module's entry point: load both contracts and compare them.
+
+    ONE document. A Google source is often served through several APIs at once — a Drive file is
+    also read through Docs, Sheets and Slides — and each publishes its own discovery document with
+    its own service path. Those are the caller's to concatenate."""
     from backlot.main import app
 
-    vendor = from_google_discovery(fetch_json(comparison.spec_url, timeout=timeout))
+    vendor = from_google_discovery(fetch_json(spec.spec_url, timeout=timeout))
     if not vendor:
         raise FidelityError(
-            f"{comparison.spec_url} declared no operations; is it still a Discovery document?"
+            f"{spec.spec_url} declared no operations; is it still a Discovery document?"
         )
-    served = from_backlot(app.openapi(), comparison.mount, comparison.strip)
+    served = from_backlot(app.openapi(), spec.mount, spec.strip)
     return diff_operations(served, vendor)

@@ -3,10 +3,11 @@
 
 Mirage mounts Backlot's Drive API as a filesystem — folders and files you read with plain
 ``ls`` / ``cat`` (Google-native docs are exported to text on read). Auth is an ordinary Google
-authorized-user credential; the only mirage-specific glue is ``point_google_at`` (mirage's
-Google connectors have no host config, so we patch the module constants at Backlot).
+authorized-user credential; the only mirage-specific glue is ``point_google_at`` (mirage's one
+``GoogleConfig.api_base`` cannot give each Google API its own Backlot prefix, so we rebind the
+per-API constants instead).
 
-    pip install -e ".[examples,mirage]"
+    uv sync --all-extras --locked
     python examples/using-mirage/gdrive.py                                 # first user, locally
     python examples/using-mirage/gdrive.py --url http://localhost:8000 --user mia@acme.com
     python examples/using-mirage/gdrive.py --url http://localhost:8000 --fuse   # real OS mount
@@ -29,7 +30,6 @@ from backlot.integrations.mirage import point_google_at
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from _common.google_creds import google_oauth_user
-
 from _helpers import FUSE_HELP, lines, run_mirage
 
 CORPUS = [

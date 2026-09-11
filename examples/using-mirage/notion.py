@@ -7,7 +7,7 @@ each entry a directory with a ``page.json`` / ``database.json`` — so an agent 
 it straight at Backlot — no monkeypatch (unlike Google). mirage sends ``Notion-Version:
 2022-06-28``, which Backlot's version-aware router serves.
 
-    pip install -e ".[examples,mirage]"
+    uv sync --all-extras --locked
     python examples/using-mirage/notion.py                                  # local throwaway server
     python examples/using-mirage/notion.py --url http://localhost:8000
     python examples/using-mirage/notion.py --url http://localhost:8000 --token <usr-token>
@@ -21,11 +21,11 @@ import argparse
 import os
 import subprocess
 
+from _helpers import FUSE_HELP, lines, run_mirage
 from mirage import MountMode, Workspace
 from mirage.resource.notion import NotionConfig, NotionResource
 
 from backlot import serve_or_connect
-from _helpers import FUSE_HELP, lines, run_mirage
 
 CORPUS = [
     {

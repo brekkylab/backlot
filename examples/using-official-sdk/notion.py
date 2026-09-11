@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Read Notion through the official notion-client SDK. Self-contained: run it directly.
 
-    pip install -e ".[examples]"
+    pip install -e ".[official-sdk]"
     python examples/using-official-sdk/notion.py            # or: --url http://localhost:8000
     python examples/using-official-sdk/notion.py --url http://localhost:8000 --token <usr-token>
 

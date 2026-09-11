@@ -201,6 +201,15 @@ def _selected(q, selectors: frozenset[str]) -> list[str]:
     return sorted(k for k in q.keys() if k in selectors)
 
 
+def _first(q, name: str, default: str | None = "") -> str | None:
+    """The FIRST of a repeated query parameter, which is the one real S3 reads (measured
+    2026-09-11): ``?uploads&max-uploads=1&max-uploads=abc`` is the page at 1 and the same two
+    values the other way round the refusal of ``abc``, and ``encoding-type``, ``upload-id-marker``
+    and ``prefix`` go the same way. Starlette's ``QueryParams.get`` returns the last."""
+    values = q.getlist(name)
+    return values[0] if values else default
+
+
 def _argument_error(message: str, name: str, value: str, resource: str) -> Response:
     """Real S3's ``InvalidArgument`` for one query parameter: the message beside the parameter's
     name and the value as sent, in ``ArgumentName`` and ``ArgumentValue`` (measured)."""
@@ -543,32 +552,38 @@ def _url_encode(value: str) -> str:
 def _max_uploads(q, resource: str) -> tuple[int, Response | None]:
     """ListMultipartUploads' ``max-uploads``, parsed the way real S3 parses it (measured).
 
-    Absent or empty is the default; a run of digits is read for its value, leading zeros and all
-    (``05`` and ``00000000005`` are both 5, twenty zeros and a 5 is 5, five thousand zeros is 0),
-    and served at ``_MAX_UPLOADS`` past it; a value with a leading ``-`` draws "Argument
-    max-uploads must be an integer between 0 and 2147483647"; anything else — a word, a leading
-    space, a value whose digits come to more than 2147483647 — draws "Provided max-uploads not an
-    integer or within integer range". Not ``int()``, which accepts `` 5`` and ``+5`` and has no
-    ceiling.
+    Absent or empty is the default; a run of digits, with or without a leading ``-``, is read for
+    its value, leading zeros and all (``05`` and ``00000000005`` are both 5, twenty zeros and a 5 is
+    5, five thousand zeros is 0, ``-0`` is 0), and served at ``_MAX_UPLOADS`` past it; a value that
+    fits an int32 but comes to less than 0 (``-1``, ``-2147483648``) draws "Argument max-uploads
+    must be an integer between 0 and 2147483647"; anything else — a word, a leading space, a value
+    whose digits do not fit an int32 in either direction (``2147483648``, ``-2147483649``) — draws
+    "Provided max-uploads not an integer or within integer range". Not ``int()``, which accepts
+    `` 5`` and ``+5`` and has no ceiling.
     """
-    raw = next(iter(q.getlist("max-uploads")), "")
+    raw = _first(q, "max-uploads")
     if raw == "":
         return _MAX_UPLOADS, None
-    if re.fullmatch(r"-[0-9]+", raw):
+    negative = raw.startswith("-")
+    # Leading zeros come off before the range is judged, because real judges the value and not the
+    # length or the sign: `00002147483647` is served and `00002147483648` refused, five thousand
+    # zeros is 0 where five thousand nines is refused, and `-0` is 0 where `-1` is out of range
+    # (measured). Stripping them is also what keeps `int()` off a run of digits it will not parse
+    # at all, which it refuses past 4300 of them.
+    digits = (raw[1:] if negative else raw).lstrip("0") or "0"
+    # An int32 reaches one further below zero than above it, so `-2147483648` is a value out of
+    # range where `-2147483649` is not an integer at all (measured 2026-09-11).
+    ceiling = _INT32_MAX + 1 if negative else _INT32_MAX
+    if not re.fullmatch(r"-?[0-9]+", raw) or len(digits) > 10 or int(digits) > ceiling:
         return 0, _argument_error(
-            f"Argument max-uploads must be an integer between 0 and {_INT32_MAX}",
+            "Provided max-uploads not an integer or within integer range",
             "max-uploads",
             raw,
             resource,
         )
-    # Leading zeros come off before the range is judged, because real judges the value and not the
-    # length: `00002147483647` is served and `00002147483648` refused, and five thousand zeros is 0
-    # where five thousand nines is refused (measured). Stripping them is also what keeps `int()`
-    # off a run of digits it will not parse at all, which it refuses past 4300 of them.
-    digits = raw.lstrip("0") or "0"
-    if not re.fullmatch(r"[0-9]+", raw) or len(digits) > 10 or int(digits) > _INT32_MAX:
+    if negative and digits != "0":
         return 0, _argument_error(
-            "Provided max-uploads not an integer or within integer range",
+            f"Argument max-uploads must be an integer between 0 and {_INT32_MAX}",
             "max-uploads",
             raw,
             resource,
@@ -598,23 +613,24 @@ def _list_multipart_uploads(request: Request, bucket: str, max_uploads: int) -> 
     request takes the refusal. ``encoding-type`` is checked before the markers and refused unless it
     is ``url``, compared without case since real takes ``URL`` too and echoes it as ``URL`` (the two
     spellings measured); under it ``KeyMarker``, ``Delimiter`` and ``Prefix`` come back encoded (see
-    ``_url_encode``); ``Bucket`` as it is, a bucket name holding nothing the encoding touches.
+    ``_url_encode``); ``Bucket`` as it is, a bucket name holding nothing the encoding touches. Each
+    parameter is read as real reads it, the first value when one is sent twice (see ``_first``).
     """
     q = request.query_params
     resource = f"/{bucket}"
-    encoding_type = q.get("encoding-type")
+    encoding_type = _first(q, "encoding-type", None)
     if encoding_type is not None and encoding_type.lower() != "url":
         return _argument_error(
             "Invalid Encoding Method specified in Request", "encoding-type", encoding_type, resource
         )
-    key_marker = q.get("key-marker", "")
-    upload_id_marker = q.get("upload-id-marker", "")
+    key_marker = _first(q, "key-marker")
+    upload_id_marker = _first(q, "upload-id-marker")
     if key_marker and upload_id_marker:
         return _argument_error(
             "Invalid uploadId marker", "upload-id-marker", upload_id_marker, resource
         )
-    prefix = q.get("prefix", "")
-    delimiter = q.get("delimiter", "")
+    prefix = _first(q, "prefix")
+    delimiter = _first(q, "delimiter")
     enc = _url_encode if encoding_type is not None else (lambda v: v)
     body = [
         f'<ListMultipartUploadsResult xmlns="{NS}"><Bucket>{escape(bucket)}</Bucket>',

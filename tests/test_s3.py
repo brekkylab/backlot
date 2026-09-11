@@ -617,10 +617,10 @@ def test_head_with_a_subresource_is_405_and_a_bare_head_still_answers(live_serve
 
 
 # ------------------------------------------------------------------------ ListMultipartUploads
-# Every real S3 answer below was measured on 2026-09-10 against a general purpose bucket in
-# ap-northeast-2 with no upload in progress, path-style, SigV4, the query encoded the way `_sign_get`
-# encodes it (form-decoded, then `quote`d), so a `+` or `%25` in a value reached real the way it
-# reaches the server here.
+# Every real S3 answer below was measured on 2026-09-10 (the negative and the repeated values on
+# 2026-09-11) against a general purpose bucket in ap-northeast-2 with no upload in progress,
+# path-style, SigV4, the query encoded the way `_sign_get` encodes it (form-decoded, then `quote`d),
+# so a `+` or `%25` in a value reached real the way it reaches the server here.
 
 _EMPTY_UPLOADS_PAGE = (
     b'<?xml version="1.0" encoding="UTF-8"?>\n'
@@ -696,13 +696,16 @@ def test_list_multipart_uploads_echoes_what_was_sent_in_reals_order(live_server)
         ("IsTruncated", "false"),
     ]
     # max-uploads: read for its value and served at 1000 past it. Real judges the value and not
-    # the length of the digits, so any run of leading zeros comes off first — twenty of them ahead
-    # of a 5 is 5, five thousand of them alone is 0, and `00002147483647` is in range where
-    # `00002147483648` is refused below (all measured).
+    # the length of the digits or the sign, so any run of leading zeros comes off first — twenty of
+    # them ahead of a 5 is 5, five thousand of them alone is 0, `-0` and `-00` are 0 where `-1` is
+    # refused below, and `00002147483647` is in range where `00002147483648` is refused below (all
+    # measured).
     for sent, echoed in (
         ("5", "5"),
         ("05", "5"),
         ("0", "0"),
+        ("-0", "0"),
+        ("-00", "0"),
         ("00000000005", "5"),
         ("0" * 20 + "5", "5"),
         ("0" * 5000, "0"),
@@ -758,14 +761,30 @@ def test_list_multipart_uploads_refuses_what_real_refuses_with_reals_messages(li
     uploads = "/s3/eng-artifacts?uploads"
     # max-uploads: not `int()`, which would take ` 5` and any size. (A `+5` on the wire is ` 5` by
     # the time it is parsed, on real and here alike: `_sign_get` decodes it as the form encoding.)
+    # The two messages split on whether the value fits an int32: `-2147483648` does and is out of
+    # range, `-2147483649` does not and is "not an integer", like `2147483648` on the other side.
     not_an_integer = "Provided max-uploads not an integer or within integer range"
-    for value in ("abc", "2147483648", "00002147483648", " 5", "9" * 5000):
+    for value in (
+        "abc",
+        "2147483648",
+        "00002147483648",
+        " 5",
+        "9" * 5000,
+        "-2147483649",
+        "-" + "9" * 20,
+        "-abc",
+        "-",
+    ):
         err = _refused(base_url, f"{uploads}&max-uploads={value}", token)
         _invalid_argument(err, not_an_integer, "max-uploads", value)
-    err = _refused(base_url, f"{uploads}&max-uploads=-1", token)
-    _invalid_argument(
-        err, "Argument max-uploads must be an integer between 0 and 2147483647", "max-uploads", "-1"
-    )
+    for value in ("-1", "-2147483648"):
+        err = _refused(base_url, f"{uploads}&max-uploads={value}", token)
+        _invalid_argument(
+            err,
+            "Argument max-uploads must be an integer between 0 and 2147483647",
+            "max-uploads",
+            value,
+        )
     # encoding-type: anything but `url`, the empty value included.
     for value in ("bogus", ""):
         err = _refused(base_url, f"{uploads}&encoding-type={value}", token)
@@ -788,6 +807,42 @@ def test_list_multipart_uploads_refuses_what_real_refuses_with_reals_messages(li
     _invalid_argument(err, "Invalid Encoding Method specified in Request", "encoding-type", "bogus")
     err = _refused(base_url, f"{uploads}&max-uploads=abc&encoding-type=bogus", token)
     _invalid_argument(err, not_an_integer, "max-uploads", "abc")
+
+
+def test_list_multipart_uploads_reads_the_first_of_a_repeated_parameter_as_real_does(live_server):
+    """Real reads the first value of a parameter sent twice, so the same two values in opposite
+    order land on opposite statuses; Starlette's `QueryParams.get` would read the last and land
+    each on the other status."""
+    base_url, settings = live_server
+    token = settings.admin_token
+    uploads = "/s3/eng-artifacts?uploads"
+    fields = dict(_uploads_fields(base_url, "uploads&max-uploads=1&max-uploads=abc", token))
+    assert fields["MaxUploads"] == "1"
+    err = _refused(base_url, f"{uploads}&max-uploads=abc&max-uploads=1", token)
+    _invalid_argument(
+        err, "Provided max-uploads not an integer or within integer range", "max-uploads", "abc"
+    )
+    fields = dict(_uploads_fields(base_url, "uploads&encoding-type=url&encoding-type=bogus", token))
+    assert fields["EncodingType"] == "url"
+    err = _refused(base_url, f"{uploads}&encoding-type=bogus&encoding-type=url", token)
+    _invalid_argument(err, "Invalid Encoding Method specified in Request", "encoding-type", "bogus")
+    # An empty first upload-id-marker is the ignored one; the `x` sent after it is not read.
+    fields = dict(
+        _uploads_fields(
+            base_url, "uploads&key-marker=k&upload-id-marker=&upload-id-marker=x", token
+        )
+    )
+    assert fields["KeyMarker"] == "k"
+    err = _refused(base_url, f"{uploads}&key-marker=k&upload-id-marker=x&upload-id-marker=", token)
+    _invalid_argument(err, "Invalid uploadId marker", "upload-id-marker", "x")
+    fields = dict(
+        _uploads_fields(
+            base_url,
+            "uploads&prefix=a&prefix=b&delimiter=/&delimiter=|&key-marker=a&key-marker=b",
+            token,
+        )
+    )
+    assert (fields["Prefix"], fields["Delimiter"], fields["KeyMarker"]) == ("a", "/", "a")
 
 
 def test_list_multipart_uploads_on_a_bucket_the_caller_cannot_see_is_no_such_bucket(live_server):

@@ -3,7 +3,7 @@
   "endpoints": [
     "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json"
   ],
-  "measured": "2026-09-04",
+  "measured": "2026-09-10",
   "acknowledged": [
     {
       "kind": "extra_operation",
@@ -1996,6 +1996,13 @@
     {
       "kind": "missing_operation",
       "severity": "gap",
+      "path": "GET /orgs/{}/code-scanning/ai-scan",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "No corpus record states a scanning posture, so these four \u2014 `GET` and `PATCH`, per organization and per repository \u2014 404 like the rest of the code-scanning family rather than answer an invented `pr_scan`, and both `PATCH`es are writes besides. The vendor marked all four public preview, subject to change, when this was read on 2026-09-10."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
       "path": "GET /orgs/{}/code-scanning/alerts",
       "detail": "the vendor serves it; Backlot does not"
     },
@@ -3168,6 +3175,13 @@
       "severity": "gap",
       "path": "GET /repos/{}/{}/code-quality/setup",
       "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /repos/{}/{}/code-scanning/ai-scan",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "No corpus record states a scanning posture, so these four \u2014 `GET` and `PATCH`, per organization and per repository \u2014 404 like the rest of the code-scanning family rather than answer an invented `pr_scan`, and both `PATCH`es are writes besides. The vendor marked all four public preview, subject to change, when this was read on 2026-09-10."
     },
     {
       "kind": "missing_operation",
@@ -5070,6 +5084,13 @@
     {
       "kind": "missing_operation",
       "severity": "gap",
+      "path": "PATCH /orgs/{}/code-scanning/ai-scan",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "No corpus record states a scanning posture, so these four \u2014 `GET` and `PATCH`, per organization and per repository \u2014 404 like the rest of the code-scanning family rather than answer an invented `pr_scan`, and both `PATCH`es are writes besides. The vendor marked all four public preview, subject to change, when this was read on 2026-09-10."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
       "path": "PATCH /orgs/{}/code-security/configurations/{}",
       "detail": "the vendor serves it; Backlot does not"
     },
@@ -5198,6 +5219,13 @@
       "severity": "gap",
       "path": "PATCH /repos/{}/{}/code-quality/setup",
       "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "PATCH /repos/{}/{}/code-scanning/ai-scan",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "No corpus record states a scanning posture, so these four \u2014 `GET` and `PATCH`, per organization and per repository \u2014 404 like the rest of the code-scanning family rather than answer an invented `pr_scan`, and both `PATCH`es are writes besides. The vendor marked all four public preview, subject to change, when this was read on 2026-09-10."
     },
     {
       "kind": "missing_operation",

@@ -9,7 +9,7 @@ resolver can reconcile with the >=12 that [official-sdk] needs. The pin is over-
 only calls HubSpot(access_token=...) and crm.{deals,contacts,companies}.get_all(), all present in
 12.x — so install it past its own pin:
 
-    pip install -e ".[examples,llamaindex]"
+    pip install -e ".[official-sdk,llamaindex]"
     pip install --no-deps llama-index-readers-hubspot
     python examples/using-llamaindex-readers/hubspot.py            # or: --url http://localhost:8000
     python examples/using-llamaindex-readers/hubspot.py --url http://localhost:8000 --token <usr-token>

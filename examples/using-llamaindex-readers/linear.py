@@ -10,7 +10,7 @@ rewrites Linear's host and forwards everything else untouched.
 The query is caller-supplied (`load_data(query)`), so it lives here — which makes this script
 double as a readable statement of what Backlot's schema supports.
 
-    pip install -e ".[examples,llamaindex]"
+    pip install -e ".[official-sdk,llamaindex]"
     pip install llama-index-readers-linear
     python examples/using-llamaindex-readers/linear.py            # or: --url http://localhost:8000
     python examples/using-llamaindex-readers/linear.py --url http://localhost:8000 --token <usr-token>

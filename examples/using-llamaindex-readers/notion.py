@@ -4,7 +4,7 @@
 NotionPageReader hardcodes the Notion host in module constants; patch_notion_at() rebinds them at
 Backlot before the reader runs.
 
-    pip install -e ".[examples,llamaindex]"
+    pip install -e ".[official-sdk,llamaindex]"
     python examples/using-llamaindex-readers/notion.py            # or: --url http://localhost:8000
     python examples/using-llamaindex-readers/notion.py --url http://localhost:8000 --token <usr-token>
 """

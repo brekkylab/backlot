@@ -5,7 +5,7 @@ S3 uses an AWS access-key/secret pair (not a bearer token). With `--url` (a runn
 `--access-key`/`--secret-key` are required — grab a pair from GET <url>/_meta/users. Without
 `--url` the local throwaway server's admin keypair is used.
 
-    pip install -e ".[examples,llamaindex]"
+    pip install -e ".[official-sdk,llamaindex]"
     python examples/using-llamaindex-readers/s3.py
     python examples/using-llamaindex-readers/s3.py --url http://localhost:8000 --access-key <AK> --secret-key <sk>
 """

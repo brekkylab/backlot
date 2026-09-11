@@ -4,7 +4,7 @@ Point official [LlamaIndex readers](https://docs.llamaindex.ai/en/stable/module_
 (`llama-index-readers-*`) at Backlot and load your enterprise corpus as `Document` objects — the
 first step of any LlamaIndex ingestion / RAG pipeline. Each script is self-contained:
 
-    pip install -e ".[examples,llamaindex]"
+    pip install -e ".[official-sdk,llamaindex]"
     pip install --no-deps llama-index-readers-hubspot     # see the HubSpot note below
     python examples/using-llamaindex-readers/github.py            # local throwaway server
     python examples/using-llamaindex-readers/github.py --url http://localhost:8000 --token <usr-token>
@@ -44,7 +44,7 @@ exactly as against the real API.
   no shim needed.
 - **HubSpot** (`hubspot.py`): the reader is **not** in the `[llamaindex]` extra — it pins
   `hubspot-api-client<9`, which no resolver can reconcile with the `>=12` that `[official-sdk]` needs, so
-  declaring it would make `.[examples,llamaindex]` uninstallable. The pin is over-restrictive (the
+  declaring it would make `.[official-sdk,llamaindex]` uninstallable. The pin is over-restrictive (the
   reader only calls `HubSpot(access_token=...)` and `crm.{deals,contacts,companies}.get_all()`, all
   present in 12.x and verified working), hence the `--no-deps` install above. It does
   `from hubspot import HubSpot` *inside* `load_data()`, so `point_hubspot_at()` only has to rebind

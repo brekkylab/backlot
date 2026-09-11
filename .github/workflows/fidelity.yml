@@ -136,7 +136,7 @@ jobs:
             report="$(printf '%s\n… truncated at 55000 of %d characters. The whole report is in the run log: %s' \
               "${report:0:55000}" "${#report}" "$RUN_URL")"
           fi
-          intro="\`backlot diff --source $SOURCE\` reports divergences the baseline does not acknowledge. Each is either a bug in Backlot or a deliberate gap; a gap gets a note and an entry via \`backlot diff --source $SOURCE --update-baseline\`. This body is the latest scheduled run's report, rewritten in place. Closing this issue keeps it as the account of what was triaged; a run that still diverges opens a new one."
+          intro="\`backlot diff --source $SOURCE\` reports divergences the baseline does not acknowledge. Each is either a bug in Backlot or a deliberate gap; \`backlot diff --source $SOURCE --update-baseline\` writes the entry for a gap, and a note saying why it is deliberate is added by hand in the review that follows. This body is the latest scheduled run's report, rewritten in place. Closing this issue keeps it as the account of what was triaged; a run that still diverges opens a new one."
           if [ -n "$previous" ]; then
             intro="$intro Previously reported in #$previous."
           fi

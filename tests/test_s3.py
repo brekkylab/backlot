@@ -777,14 +777,11 @@ def test_list_multipart_uploads_refuses_what_real_refuses_with_reals_messages(li
     ):
         err = _refused(base_url, f"{uploads}&max-uploads={value}", token)
         _invalid_argument(err, not_an_integer, "max-uploads", value)
-    for value in ("-1", "-2147483648"):
-        err = _refused(base_url, f"{uploads}&max-uploads={value}", token)
-        _invalid_argument(
-            err,
-            "Argument max-uploads must be an integer between 0 and 2147483647",
-            "max-uploads",
-            value,
-        )
+    # The range message names the value as parsed, `-01` as `-1`, where the other names it as sent.
+    out_of_range = "Argument max-uploads must be an integer between 0 and 2147483647"
+    for sent, named in (("-1", "-1"), ("-2147483648", "-2147483648"), ("-01", "-1")):
+        err = _refused(base_url, f"{uploads}&max-uploads={sent}", token)
+        _invalid_argument(err, out_of_range, "max-uploads", named)
     # encoding-type: anything but `url`, the empty value included.
     for value in ("bogus", ""):
         err = _refused(base_url, f"{uploads}&encoding-type={value}", token)
@@ -794,19 +791,27 @@ def test_list_multipart_uploads_refuses_what_real_refuses_with_reals_messages(li
     # upload-id-marker beside a key-marker: no id names an upload here, so every one is refused.
     err = _refused(base_url, f"{uploads}&key-marker=abc&upload-id-marker=xyz", token)
     _invalid_argument(err, "Invalid uploadId marker", "upload-id-marker", "xyz")
-    # In real's order: max-uploads is checked before the bucket is looked up, encoding-type and the
-    # markers after it, and encoding-type before the markers.
+    # In real's order: max-uploads is parsed before the bucket is looked up, and its range,
+    # encoding-type and the markers are checked after it — encoding-type first, then the range,
+    # then the markers.
     err = _refused(base_url, "/s3/no-such-bucket?uploads&max-uploads=abc", token)
     _invalid_argument(err, not_an_integer, "max-uploads", "abc")
-    for query in ("encoding-type=bogus", "key-marker=a&upload-id-marker=b"):
+    for query in ("max-uploads=-1", "encoding-type=bogus", "key-marker=a&upload-id-marker=b"):
         err = _refused(base_url, f"/s3/no-such-bucket?uploads&{query}", token)
         assert err.code == 404 and b"NoSuchBucket" in err.read(), query
-    err = _refused(
-        base_url, f"{uploads}&encoding-type=bogus&key-marker=a&upload-id-marker=b", token
-    )
-    _invalid_argument(err, "Invalid Encoding Method specified in Request", "encoding-type", "bogus")
     err = _refused(base_url, f"{uploads}&max-uploads=abc&encoding-type=bogus", token)
     _invalid_argument(err, not_an_integer, "max-uploads", "abc")
+    for query in (
+        "encoding-type=bogus&key-marker=a&upload-id-marker=b",
+        "max-uploads=-1&encoding-type=bogus",
+        "max-uploads=-1&encoding-type=bogus&key-marker=a&upload-id-marker=b",
+    ):
+        err = _refused(base_url, f"{uploads}&{query}", token)
+        _invalid_argument(
+            err, "Invalid Encoding Method specified in Request", "encoding-type", "bogus"
+        )
+    err = _refused(base_url, f"{uploads}&max-uploads=-1&key-marker=a&upload-id-marker=b", token)
+    _invalid_argument(err, out_of_range, "max-uploads", "-1")
 
 
 def test_list_multipart_uploads_reads_the_first_of_a_repeated_parameter_as_real_does(live_server):

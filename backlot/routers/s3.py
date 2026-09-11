@@ -399,7 +399,9 @@ async def bucket_get(request: Request, bucket: str):
     max_uploads = _MAX_UPLOADS
     if selected == ["uploads"]:
         # Also before the bucket is looked up: `?uploads&max-uploads=abc` on a bucket that does not
-        # exist is the 400, not NoSuchBucket (measured); the other parameters are read after it.
+        # exist is the 400, not NoSuchBucket, where `?uploads&max-uploads=-1` on it is NoSuchBucket:
+        # the value is parsed here and judged against the range after the lookup (measured). The
+        # other parameters are read after it too.
         max_uploads, err = _max_uploads(request.query_params, f"/{bucket}")
         if err:
             return err
@@ -554,12 +556,13 @@ def _max_uploads(q, resource: str) -> tuple[int, Response | None]:
 
     Absent or empty is the default; a run of digits, with or without a leading ``-``, is read for
     its value, leading zeros and all (``05`` and ``00000000005`` are both 5, twenty zeros and a 5 is
-    5, five thousand zeros is 0, ``-0`` is 0), and served at ``_MAX_UPLOADS`` past it; a value that
-    fits an int32 but comes to less than 0 (``-1``, ``-2147483648``) draws "Argument max-uploads
-    must be an integer between 0 and 2147483647"; anything else — a word, a leading space, a value
-    whose digits do not fit an int32 in either direction (``2147483648``, ``-2147483649``) — draws
-    "Provided max-uploads not an integer or within integer range". Not ``int()``, which accepts
-    `` 5`` and ``+5`` and has no ceiling.
+    5, five thousand zeros is 0, ``-0`` is 0) and returned as parsed, ``_MAX_UPLOADS`` and the
+    range left to ``_list_multipart_uploads``: a value that fits an int32 but comes to less than 0
+    (``-1``, ``-2147483648``) is refused there, after the bucket lookup, with "Argument max-uploads
+    must be an integer between 0 and 2147483647". Anything else — a word, a leading space, a value
+    whose digits do not fit an int32 in either direction (``2147483648``, ``-2147483649``) — is
+    refused here, before the lookup, with "Provided max-uploads not an integer or within integer
+    range". Not ``int()``, which accepts `` 5`` and ``+5`` and has no ceiling.
     """
     raw = _first(q, "max-uploads")
     if raw == "":
@@ -581,14 +584,7 @@ def _max_uploads(q, resource: str) -> tuple[int, Response | None]:
             raw,
             resource,
         )
-    if negative and digits != "0":
-        return 0, _argument_error(
-            f"Argument max-uploads must be an integer between 0 and {_INT32_MAX}",
-            "max-uploads",
-            raw,
-            resource,
-        )
-    return min(int(digits), _MAX_UPLOADS), None
+    return -int(digits) if negative else int(digits), None
 
 
 def _list_multipart_uploads(request: Request, bucket: str, max_uploads: int) -> Response:
@@ -615,6 +611,10 @@ def _list_multipart_uploads(request: Request, bucket: str, max_uploads: int) -> 
     spellings measured); under it ``KeyMarker``, ``Delimiter`` and ``Prefix`` come back encoded (see
     ``_url_encode``); ``Bucket`` as it is, a bucket name holding nothing the encoding touches. Each
     parameter is read as real reads it, the first value when one is sent twice (see ``_first``).
+
+    ``max_uploads`` arrives parsed from ``_max_uploads``, negative included: real judges the range
+    after the bucket lookup and after ``encoding-type``, before the markers, and names the value as
+    parsed, ``-01`` as ``-1`` (measured 2026-09-11). Past ``_MAX_UPLOADS`` it is served at the cap.
     """
     q = request.query_params
     resource = f"/{bucket}"
@@ -622,6 +622,13 @@ def _list_multipart_uploads(request: Request, bucket: str, max_uploads: int) -> 
     if encoding_type is not None and encoding_type.lower() != "url":
         return _argument_error(
             "Invalid Encoding Method specified in Request", "encoding-type", encoding_type, resource
+        )
+    if max_uploads < 0:
+        return _argument_error(
+            f"Argument max-uploads must be an integer between 0 and {_INT32_MAX}",
+            "max-uploads",
+            str(max_uploads),
+            resource,
         )
     key_marker = _first(q, "key-marker")
     upload_id_marker = _first(q, "upload-id-marker")
@@ -638,7 +645,7 @@ def _list_multipart_uploads(request: Request, bucket: str, max_uploads: int) -> 
         "<NextKeyMarker></NextKeyMarker><NextUploadIdMarker></NextUploadIdMarker>",
         f"<Delimiter>{escape(enc(delimiter))}</Delimiter>" if delimiter else "",
         f"<Prefix>{escape(enc(prefix))}</Prefix>" if prefix else "",
-        f"<MaxUploads>{max_uploads}</MaxUploads>",
+        f"<MaxUploads>{min(max_uploads, _MAX_UPLOADS)}</MaxUploads>",
         f"<EncodingType>{escape(encoding_type)}</EncodingType>"
         if encoding_type is not None
         else "",

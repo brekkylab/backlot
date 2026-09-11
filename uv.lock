@@ -349,7 +349,6 @@ all = [
     { name = "gdrive-fsspec" },
     { name = "google-api-python-client" },
     { name = "google-auth" },
-    { name = "httpx" },
     { name = "httpx2" },
     { name = "hubspot-api-client" },
     { name = "jira" },
@@ -370,28 +369,15 @@ all = [
     { name = "pygithub" },
     { name = "pytest" },
     { name = "pytest-xdist" },
-    { name = "pyyaml" },
     { name = "ruff" },
     { name = "s3fs" },
     { name = "slack-sdk" },
 ]
 dev = [
-    { name = "httpx" },
     { name = "httpx2" },
     { name = "pytest" },
     { name = "pytest-xdist" },
     { name = "ruff" },
-]
-examples = [
-    { name = "atlassian-python-api" },
-    { name = "boto3" },
-    { name = "google-api-python-client" },
-    { name = "google-auth" },
-    { name = "httpx" },
-    { name = "hubspot-api-client" },
-    { name = "notion-client" },
-    { name = "pygithub" },
-    { name = "slack-sdk" },
 ]
 fsspec = [
     { name = "fsspec" },
@@ -425,37 +411,44 @@ mcp = [
     { name = "mcp" },
     { name = "openai" },
     { name = "openai-agents" },
-    { name = "pyyaml" },
 ]
 mirage = [
     { name = "mirage-ai", extra = ["fuse", "s3"] },
+]
+official-sdk = [
+    { name = "atlassian-python-api" },
+    { name = "boto3" },
+    { name = "google-api-python-client" },
+    { name = "google-auth" },
+    { name = "hubspot-api-client" },
+    { name = "notion-client" },
+    { name = "pygithub" },
+    { name = "slack-sdk" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "anthropic", extras = ["mcp"], marker = "extra == 'mcp'", specifier = ">=0.40" },
-    { name = "atlassian-python-api", marker = "extra == 'examples'", specifier = ">=3.41" },
     { name = "atlassian-python-api", marker = "extra == 'llamaindex'", specifier = ">=4.0" },
-    { name = "backlot", extras = ["dev", "examples", "fsspec", "llamaindex", "mcp", "mirage"], marker = "extra == 'all'" },
-    { name = "boto3", marker = "extra == 'examples'", specifier = ">=1.34" },
+    { name = "atlassian-python-api", marker = "extra == 'official-sdk'", specifier = ">=3.41" },
+    { name = "backlot", extras = ["dev", "fsspec", "llamaindex", "mcp", "mirage", "official-sdk"], marker = "extra == 'all'" },
     { name = "boto3", marker = "extra == 'llamaindex'", specifier = ">=1.40" },
+    { name = "boto3", marker = "extra == 'official-sdk'", specifier = ">=1.34" },
     { name = "fastapi", specifier = ">=0.110" },
     { name = "fastmcp", marker = "extra == 'mcp'", specifier = ">=4" },
     { name = "fsspec", marker = "extra == 'fsspec'", specifier = ">=2026.6" },
     { name = "gdrive-fsspec", marker = "extra == 'fsspec'", specifier = ">=0.1" },
-    { name = "google-api-python-client", marker = "extra == 'examples'", specifier = ">=2.120" },
     { name = "google-api-python-client", marker = "extra == 'fsspec'", specifier = ">=2.198" },
     { name = "google-api-python-client", marker = "extra == 'llamaindex'", specifier = ">=2.198" },
-    { name = "google-auth", marker = "extra == 'examples'", specifier = ">=2.29" },
+    { name = "google-api-python-client", marker = "extra == 'official-sdk'", specifier = ">=2.120" },
     { name = "google-auth", marker = "extra == 'fsspec'", specifier = ">=2.55" },
     { name = "google-auth", marker = "extra == 'llamaindex'", specifier = ">=2.55" },
+    { name = "google-auth", marker = "extra == 'official-sdk'", specifier = ">=2.29" },
     { name = "graphql-core", specifier = ">=3.2" },
     { name = "httpx", specifier = ">=0.27" },
-    { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
-    { name = "httpx", marker = "extra == 'examples'", specifier = ">=0.27" },
     { name = "httpx2", marker = "extra == 'dev'" },
     { name = "httpx2", marker = "extra == 'mcp'" },
-    { name = "hubspot-api-client", marker = "extra == 'examples'", specifier = ">=12" },
+    { name = "hubspot-api-client", marker = "extra == 'official-sdk'", specifier = ">=12" },
     { name = "jira", marker = "extra == 'llamaindex'", specifier = ">=3.10" },
     { name = "jsonschema", specifier = ">=4.20" },
     { name = "llama-index-readers-confluence", marker = "extra == 'llamaindex'", specifier = ">=0.7" },
@@ -468,28 +461,27 @@ requires-dist = [
     { name = "llama-index-readers-slack", marker = "extra == 'llamaindex'", specifier = ">=0.5" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=2" },
     { name = "mirage-ai", extras = ["fuse", "s3"], marker = "extra == 'mirage'", specifier = ">=0.0.6" },
-    { name = "notion-client", marker = "extra == 'examples'", specifier = ">=3.1" },
+    { name = "notion-client", marker = "extra == 'official-sdk'", specifier = ">=3.1" },
     { name = "openai", marker = "extra == 'mcp'", specifier = ">=1.40" },
     { name = "openai-agents", marker = "extra == 'mcp'", specifier = ">=0.1" },
     { name = "pandas", marker = "extra == 'fsspec'", specifier = ">=2.2" },
     { name = "pydantic", specifier = ">=2.6" },
     { name = "pydantic-settings", specifier = ">=2.2" },
-    { name = "pygithub", marker = "extra == 'examples'", specifier = ">=2.3" },
+    { name = "pygithub", marker = "extra == 'official-sdk'", specifier = ">=2.3" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.8" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3.6" },
     { name = "python-multipart", specifier = ">=0.0.9" },
     { name = "pyyaml", specifier = ">=6.0" },
-    { name = "pyyaml", marker = "extra == 'mcp'", specifier = ">=6.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15.22,<0.17.0" },
     { name = "s3fs", marker = "extra == 'fsspec'", specifier = ">=2026.6" },
     { name = "s3fs", marker = "extra == 'llamaindex'", specifier = ">=2026.6" },
-    { name = "slack-sdk", marker = "extra == 'examples'", specifier = ">=3.27" },
     { name = "slack-sdk", marker = "extra == 'llamaindex'", specifier = ">=3.43" },
+    { name = "slack-sdk", marker = "extra == 'official-sdk'", specifier = ">=3.27" },
     { name = "typer", specifier = ">=0.27" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.29" },
 ]
-provides-extras = ["all", "dev", "examples", "mcp", "llamaindex", "mirage", "fsspec"]
+provides-extras = ["all", "dev", "official-sdk", "mcp", "llamaindex", "mirage", "fsspec"]
 
 [[package]]
 name = "backoff"

@@ -95,7 +95,8 @@ class Server:
 def ensure_cert_bundle() -> None:
     # Talking to an HTTPS url (a deployment behind an ACM cert) can fail with
     # CERTIFICATE_VERIFY_FAILED on macOS, where Python's default SSL context has no CA bundle.
-    # certifi ships with the [examples] extra; point OpenSSL at it unless already configured.
+    # certifi arrives with the core install (httpx depends on it); point OpenSSL at it unless
+    # already configured.
     # Called only from the code paths that may hit a remote https:// url — not at import time,
     # so a bare `import backlot` never mutates process-global environment as a side effect.
     try:

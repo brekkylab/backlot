@@ -7,7 +7,7 @@ before returning, using whatever base_url the client was built with. `slack_read
 `backlot.integrations.llamaindex`) briefly swaps in a WebClient subclass that defaults to
 Backlot's base_url for just that one construction, so even the eager call lands on Backlot.
 
-    pip install -e ".[examples,llamaindex]"
+    pip install -e ".[official-sdk,llamaindex]"
     python examples/using-llamaindex-readers/slack.py            # or: --url http://localhost:8000
     python examples/using-llamaindex-readers/slack.py --url http://localhost:8000 --token <usr-token>
 """

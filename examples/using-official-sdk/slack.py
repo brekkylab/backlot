@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Read Slack through the official slack_sdk. Self-contained: run it directly.
 
-pip install -e ".[examples]"
+pip install -e ".[official-sdk]"
 python examples/using-official-sdk/slack.py            # or: --url http://localhost:8000
 python examples/using-official-sdk/slack.py --url http://localhost:8000 --token <usr-token>
 """

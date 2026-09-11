@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Read Confluence through the official atlassian-python-api. Self-contained.
 
-    pip install -e ".[examples]"
+    pip install -e ".[official-sdk]"
     python examples/using-official-sdk/confluence.py            # or: --url http://localhost:8000
     python examples/using-official-sdk/confluence.py --url http://localhost:8000 \
         --username <email> --password <usr-token>   # ACL-filtered to that user

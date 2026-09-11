@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Load GitHub issues/PRs through the official llama-index GitHub reader. Self-contained.
 
-pip install -e ".[examples,llamaindex]"
+pip install -e ".[official-sdk,llamaindex]"
 python examples/using-llamaindex-readers/github.py            # or: --url http://localhost:8000
 python examples/using-llamaindex-readers/github.py --url http://localhost:8000 --token <usr-token>
 """

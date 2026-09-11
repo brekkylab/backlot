@@ -4,7 +4,7 @@
 a Gmail connector uses. Self-contained: run it directly. (For the service-account flow, see
 gdrive.py.)
 
-    pip install -e ".[examples]"
+    pip install -e ".[official-sdk]"
     python examples/using-official-sdk/gmail.py                        # first user (ceo, locally)
     python examples/using-official-sdk/gmail.py --user ceo@acme.com    # a specific user (ACL)
     python examples/using-official-sdk/gmail.py --url http://localhost:8000 --user <email>

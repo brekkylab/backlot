@@ -49,20 +49,19 @@ dependencies = [
 # report names a `file://` url and marks it direct). `tests/test_packaging.py` holds this list
 # to the extras defined below, so the one place that decides what CI installs cannot fall out
 # of step with them.
-all = ["backlot[dev,examples,mcp,llamaindex,mirage,fsspec]"]
+all = ["backlot[dev,official-sdk,mcp,llamaindex,mirage,fsspec]"]
 dev = [
     "pytest>=8.0",
     "pytest-xdist>=3.6",
-    "httpx>=0.27",
-    # starlette 1.6's TestClient wants httpx2; httpx stays for the tests that call it directly.
+    # starlette 1.6's TestClient wants httpx2; the httpx the tests also call directly is a core
+    # dependency.
     "httpx2",
     # Pinned, not a lower bound: a ruff minor can change both the formatter and the lint
     # defaults. CI installs it from here, so local and CI cannot disagree.
     "ruff>=0.15.22,<0.17.0",
 ]
 # Official SDKs used by examples/using-official-sdk/, tests/test_sdk.py (one per service) + the ACL demo.
-examples = [
-    "httpx>=0.27",
+official-sdk = [
     "slack_sdk>=3.27",
     "PyGithub>=2.3",
     "atlassian-python-api>=3.41",
@@ -88,7 +87,6 @@ mcp = [
     "anthropic[mcp]>=0.40",
     "openai>=1.40",
     "openai-agents>=0.1",
-    "pyyaml>=6.0",
 ]
 # LlamaIndex reader examples (examples/using-llamaindex-readers/): point each official
 # llama-index reader at Backlot and load Documents. The client libs below are the ones the
@@ -103,7 +101,7 @@ llamaindex = [
     "llama-index-readers-s3>=0.6",
     "llama-index-readers-linear>=0.5",
     # llama-index-readers-hubspot is deliberately absent: it pins hubspot-api-client<9, which no
-    # resolver can reconcile with the >=12 that [examples] needs. The pin is over-restrictive, not a
+    # resolver can reconcile with the >=12 that [official-sdk] needs. The pin is over-restrictive, not a
     # real incompatibility, so install it past it:
     #     pip install --no-deps llama-index-readers-hubspot
     "jira>=3.10",

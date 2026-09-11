@@ -305,3 +305,42 @@ def test_every_optional_import_gate_is_reachable_from_an_extra():
         assert _norm(dist) not in provided, (
             f"{dist} is now carried by an extra; {module} is no longer a documented absence"
         )
+
+
+def _tracked_files() -> list[Path]:
+    out = subprocess.run(
+        ["git", "ls-files"], cwd=REPO_ROOT, capture_output=True, text=True, check=True
+    ).stdout
+    return [REPO_ROOT / line for line in out.splitlines() if line]
+
+
+def test_no_tracked_file_installs_an_extra_pyproject_does_not_define():
+    """Every ``.[...]`` in the repository is an install line somebody runs: the READMEs', each
+    example's header, CONTRIBUTING's table. The two tests above hold the triangle of
+    ``pyproject.toml``, the ``all`` aggregate and CONTRIBUTING; nothing held the rest, and an
+    extra renamed in pyproject left them naming one that no longer exists.
+
+    That failure is quiet at install time and loud later: pip and uv answer an unknown extra with
+    a warning and install the base package anyway, exit 0, so the script the line belongs to dies
+    on the import the extra was carrying — ``examples/using-llamaindex-readers/hubspot.py`` on
+    ``hubspot``, whose ``hubspot-api-client`` only ``[official-sdk]`` has.
+    """
+    with open(REPO_ROOT / "pyproject.toml", "rb") as f:
+        extras = set(tomllib.load(f)["project"]["optional-dependencies"])
+
+    undefined = []
+    for path in _tracked_files():
+        try:
+            text = path.read_text()
+        except (UnicodeDecodeError, FileNotFoundError):
+            continue  # an asset, or a path this checkout does not materialise
+        for lineno, line in enumerate(text.splitlines(), 1):
+            for group in re.findall(r"\.\[([\w,\s-]+)\]", line):
+                for name in (e.strip() for e in group.split(",")):
+                    if name and name not in extras:
+                        rel = path.relative_to(REPO_ROOT)
+                        undefined.append(f"{rel}:{lineno} installs `{name}`")
+    assert undefined == [], (
+        "these lines install an extra pyproject.toml does not define, which pip warns about and "
+        f"then ignores: {undefined}"
+    )

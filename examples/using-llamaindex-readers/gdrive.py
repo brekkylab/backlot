@@ -19,7 +19,7 @@ this *instance* only (not the class) — `load_data()` unconditionally calls
 survive. Scoped to the instance, this needs no try/finally: it dies with the reader object and
 never leaks into another reader or another test, unlike a class-level patch.
 
-    pip install -e ".[examples,llamaindex]"
+    pip install -e ".[official-sdk,llamaindex]"
     python examples/using-llamaindex-readers/gdrive.py                    # bare SA → admin
     python examples/using-llamaindex-readers/gdrive.py --url http://localhost:8000 --user mia@acme.com
 """

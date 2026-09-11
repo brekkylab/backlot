@@ -12,7 +12,7 @@ already supplied -- there's no constructor hook to inject credentials directly (
 version has no `credentials` field; setting one raises `ValueError`). We patch that method to
 hand back the Backlot-issued credential instead of touching disk.
 
-    pip install -e ".[examples,llamaindex]"
+    pip install -e ".[official-sdk,llamaindex]"
     python examples/using-llamaindex-readers/gmail.py                     # first user
     python examples/using-llamaindex-readers/gmail.py --url http://localhost:8000 --user ceo@acme.com
 """

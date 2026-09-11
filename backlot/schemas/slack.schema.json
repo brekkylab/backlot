@@ -83,7 +83,8 @@
               "type": "string",
               "format": "email"
             },
-            "description": "Who reacted, by address. A reaction nobody made is not one Slack returns, so the list may not be empty."
+            "uniqueItems": true,
+            "description": "Who reacted, by address. A reaction nobody made is not one Slack returns, so the list may not be empty, and one address twice is one Slack refuses with `already_reacted` (reactions.add), so it may not repeat: `count` is derived from this list and would otherwise disagree with the ids it renders."
           }
         },
         "required": [
@@ -165,7 +166,8 @@
                     "type": "string",
                     "format": "email"
                   },
-                  "description": "Who reacted, by address. A reaction nobody made is not one Slack returns, so the list may not be empty."
+                  "uniqueItems": true,
+                  "description": "Who reacted, by address. A reaction nobody made is not one Slack returns, so the list may not be empty, and one address twice is one Slack refuses with `already_reacted` (reactions.add), so it may not repeat: `count` is derived from this list and would otherwise disagree with the ids it renders."
                 }
               },
               "required": [

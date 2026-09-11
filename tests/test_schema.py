@@ -746,6 +746,27 @@ def test_slack_reaction_needs_someone_who_made_it():
     ]
 
 
+def test_slack_reaction_refuses_the_same_person_twice():
+    """`reactions.add` answers a repeat with `already_reacted`, so one address twice is a reaction
+    Slack cannot hold. It has to be refused at import rather than deduped when served: `count` is
+    derived from this list, so a pair of equal addresses renders one id under a count of two, which
+    is exactly the disagreement deriving the count is there to prevent.
+    """
+    twice = [{"name": "eyes", "users": ["bo@x.com", "bo@x.com"]}]
+    assert record_errors(complete("slack", content="c", reactions=twice)) == [
+        "<root> [reactions/0/users]: ['bo@x.com', 'bo@x.com'] has non-unique elements"
+    ]
+    reply = {
+        "content": "on it",
+        "author_email": "ava@x.com",
+        "created": "2026-03-01T09:00:01Z",
+        "reactions": twice,
+    }
+    assert record_errors(complete("slack", content="c", replies=[reply])) == [
+        "<root> [replies/0/reactions/0/users]: ['bo@x.com', 'bo@x.com'] has non-unique elements"
+    ]
+
+
 def test_fireflies_schema_rejects_the_slack_replies_array():
     """`replies` is Slack's child-row array. A transcript's child rows are `sentences`, so writing
     `replies` on a transcript is a mistake worth catching rather than silently ignoring."""

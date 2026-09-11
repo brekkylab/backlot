@@ -1130,8 +1130,9 @@ def _reactions(row) -> list[dict]:
     hand meant inventing ids for people the corpus already names by address everywhere else.
 
     `count` is DERIVED rather than stated. Slack computes one from the other, so a corpus that
-    wrote both could put them in disagreement and produce a reaction the real API never sends; with
-    only `users` written down there is nothing for it to disagree with.
+    wrote both could put them in disagreement and produce a reaction the real API never sends.
+    Deriving it is only half of that: the schema also refuses a REPEATED address, which would
+    otherwise render one id twice under a count of two.
 
     The address is not required to belong to a principal. `users.info` resolves a message AUTHOR's
     id (see `_slack_author_by_uid`) and a reactor who never posted is not among them, so a reaction

@@ -5,9 +5,9 @@ SaaS backend and read it with bash-style commands (``ls``, ``cat``, ``grep``, ``
 
 Slack, Notion and S3 take the host as a config field, so they need nothing from here — pass
 Backlot's URL for the resource in (``f"{base_url}/slack/api"``, ``…/notion/v1``, ``…/s3``).
-GitHub reads its host from a module-level constant. Google offers a single-host override, but
-Backlot needs a distinct prefix for each API. ``point_google_at`` / ``point_github_at`` therefore
-rebind the corresponding constants in ``mirage.core.*._client``.
+Google offers only a single-host override, and Backlot needs a distinct prefix per API; GitHub's
+own ``base_url`` reaches a resource but not one constructed without it. ``point_google_at`` /
+``point_github_at`` therefore rebind the corresponding constants in ``mirage.core.*.constants``.
 """
 
 from __future__ import annotations
@@ -69,19 +69,19 @@ def point_google_at(base_url: str) -> None:
     The constants are patched rather than configured, and the reason is NOT that mirage offers no
     host config -- it does. ``GoogleConfig.api_base`` exists and its own comment calls it a
     "single-host override for every Google API ... used to point backends at a fake server", and
-    every base in ``_client`` consults it first. What rules it out here is the SINGLE: with one
-    ``api_base``, mirage composes ``docs_base``, ``slides_base`` and ``forms_base`` as
+    every base in ``google/client.py`` consults it first. What rules it out here is the SINGLE:
+    with one ``api_base``, mirage composes ``docs_base``, ``slides_base`` and ``forms_base`` as
     ``{base}/v1`` alike, and Backlot serves docs at ``/docs/v1`` and slides at ``/slides/v1``, so
     three APIs would arrive on one prefix it cannot route apart. Per-constant rebinding is what
     keeps them distinguishable.
 
-    The consuming submodules import them BY VALUE (``from ..._client import GMAIL_API_BASE``), so
+    The consuming submodules import them BY VALUE (``from ...constants import GMAIL_API_BASE``), so
     both the source and every already-imported copy are rebound — that is what makes this
     order-independent. Idempotent; call once, before constructing the Google resources.
     """
     base = base_url.rstrip("/")
     _rebind_mirage_constants(
-        "mirage.core.google._client",
+        "mirage.core.google.constants",
         {
             "TOKEN_URL": f"{base}/oauth2/token",
             "GMAIL_API_BASE": f"{base}/gmail/v1",
@@ -93,9 +93,8 @@ def point_google_at(base_url: str) -> None:
             "SHEETS_API_BASE": f"{base}/sheets/v4",
             "SLIDES_API_BASE": f"{base}/slides/v1",
             # Backlot serves neither Calendar nor Forms, so these two are here for the reason
-            # DRIVE_UPLOAD_BASE is: mirage 0.0.5 added them, a caller who believed the whole client
-            # was redirected would otherwise reach the real Google, and a 404 from Backlot is the
-            # failure that says so.
+            # DRIVE_UPLOAD_BASE is: a caller who believed the whole client was redirected would
+            # otherwise reach the real Google, and a 404 from Backlot is the failure that says so.
             "CALENDAR_API_BASE": f"{base}/calendar/v3",
             "FORMS_API_BASE": f"{base}/forms/v1",
         },
@@ -105,10 +104,15 @@ def point_google_at(base_url: str) -> None:
 def point_github_at(base_url: str) -> None:
     """Redirect mirage's GitHub connector (repo tree/contents/blobs) at Backlot.
 
-    One constant, ``_client.API_BASE``, read as a module global at call time — so unlike Google's,
-    patching the source alone would do. The sweep is kept for symmetry, in case a future mirage
-    version starts copying it by value. Call once, before constructing ``GitHubResource``: its
-    constructor already makes HTTP calls (default branch, tree).
+    One constant, ``constants.API_BASE``, and the sweep over already-imported copies is load-bearing
+    here exactly as it is for Google: ``github/client.py`` imports it BY VALUE and reads that copy
+    as a module global in ``github_url``'s ``base_url or API_BASE``, so patching the source alone
+    would leave every request pointed at api.github.com.
+
+    Unlike Google's, this rebind is not forced — ``GitHubConfig.base_url`` is a real seam, threaded
+    to every call site in ``mirage.core.github`` — but it is what redirects a resource built without
+    that field set. Call once, before constructing ``GitHubResource``: its constructor already makes
+    HTTP calls (default branch, tree).
     """
     base = base_url.rstrip("/")
-    _rebind_mirage_constants("mirage.core.github._client", {"API_BASE": f"{base}/github"})
+    _rebind_mirage_constants("mirage.core.github.constants", {"API_BASE": f"{base}/github"})

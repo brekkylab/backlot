@@ -124,10 +124,12 @@ backlot import generated.jsonl --dry-run && backlot import generated.jsonl
   unknown top-level key is almost always a typo). Gmail's `content` and its `messages[].content`
   are the one exception to non-empty content: a thread opened or continued by a header-only message
   (auto-ack, bare forward) is real, and dropping it would renumber the rest of the thread.
-- **Permissive** — the loosely typed per-service extras (`reactions`, `attachments`,
-  `issuelinks`, `reviews`, `changelog`, …), which the loader stores as JSON without a fixed shape.
-  Each is a declared field of the source that has it: there is no free-form object, so a key no
-  schema names is a validation error rather than a value read and dropped.
+- **Permissive** — the loosely typed per-service extras (`attachments`, `issuelinks`,
+  `reviews`, `changelog`, …), which the loader stores as JSON without a fixed shape. Each is a
+  declared field of the source that has it: there is no free-form object, so a key no schema names
+  is a validation error rather than a value read and dropped. `reactions` is one of these on github,
+  where it is an `{emoji: count}` map, and is NOT on slack: there an entry names its reactors by
+  address and the router renders the ids and the count, so the shape is declared.
 - **Timestamps** — `created` is required of every DOCUMENT (a `subtype: "repo"` record states
   a repository, not a document, and dates nothing) and takes epoch seconds or ISO 8601. So is a
   child row's own second (`created_ts` on a comment, `created` on a slack reply or a gmail thread

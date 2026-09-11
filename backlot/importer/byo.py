@@ -34,8 +34,9 @@ Each line is one document:
       "updated": 1740900000,                # modified time; required on drive and notion
       "author_name": "Ava Chen",            # optional display name -> the owner's served name
       "replies": [                          # slack only: threaded replies — full messages, not just text
-        {"content": "on it", "author_email": "bob@acme.com",
-         "created": "2026-03-01T09:00:01Z", "reactions": [{"name": "eyes", "count": 1}]}
+        {"content": "on it", "author_email": "bob@acme.com",  # a reaction names who made it,
+         "created": "2026-03-01T09:00:01Z",                   #   by address; the count is derived
+         "reactions": [{"name": "eyes", "users": ["ava@acme.com"]}]}
       ],
       "messages": [                         # gmail only: the thread's later messages
         {"content": "On it.", "author_email": "ava@acme.com", "message_id": "<b@acme>",

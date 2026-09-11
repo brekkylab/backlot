@@ -3,7 +3,7 @@
   "endpoints": [
     "https://api.linear.app/graphql"
   ],
-  "measured": "2026-09-10",
+  "measured": "2026-09-11",
   "acknowledged": [
     {
       "kind": "missing_field",
@@ -2782,6 +2782,13 @@
       "severity": "gap",
       "path": "ProjectUpdate.reactions",
       "detail": "vendor serves reactions: [Reaction!]!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectUpdate.shortSummary",
+      "detail": "vendor serves shortSummary: String; Backlot does not",
+      "note": "No corpus states a project update. A Linear record here is an issue with its team, its comments and the people on it; nothing in it says how a project stood on a given day or who wrote that up, so `ProjectUpdate` is one of the id-only stubs at the top of `backlot/graphql/linear.graphql`: `Project.lastUpdate` and `Comment.projectUpdate` resolve to null, `Reaction.projectUpdate` is never reached because `reactions` is an empty list on every issue and comment, and `Query.projectUpdate`, `Query.projectUpdates` and `Project.projectUpdates` are gaps in this file. Measured against api.linear.app on 2026-09-11 with a personal API key: the vendor's `ProjectUpdate` carries 22 fields, none deprecated, and the 21 beyond `id` are the `ProjectUpdate.*` entries here. This one is the newest, added after the 2026-09-10 measurement. Linear's own description: \"A short AI-generated summary of the project update. Null if no short summary is available.\" It takes no argument. The workspace measured has no project and no update, so `projectUpdates` answers an empty connection there and what the field answers for an update that has a summary is unmeasured; a constant `null` would match the description's own case for an update without one and state nothing."
     },
     {
       "kind": "missing_field",

@@ -1138,12 +1138,13 @@ def _reactions(row) -> list[dict]:
     `reactions.add` answers a repeat with `already_reacted` and deriving from one would render a
     single id under a count of two.
 
-    The address is not required to belong to a principal. `users.info` resolves a message AUTHOR's
-    id (see `_slack_author_by_uid`) and a reactor who never posted is not among them, so a reaction
-    by someone the corpus names nowhere else serves an id that resolves to nobody — the same
-    limitation `users.list` already carries for display-only speakers.
+    The address is not required to belong to anyone the corpus places. `users.info` resolves a
+    PRINCIPAL's id first and falls back to a message author's, so a reactor who is neither is served
+    as an id that resolves to nobody — the same limitation `users.list` already carries for
+    display-only speakers. Being a principal is enough on its own: a reactor who never posted here
+    still resolves, which is why the sample corpus's reactors need not be Slack authors.
 
-    Field order is Slack's own: its `conversations.history` reference shows
+    Field order is Slack's own: the `reactions.get` example response shows
     `{"name": …, "users": [...], "count": N}`.
     """
     out = []

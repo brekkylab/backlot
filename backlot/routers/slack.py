@@ -1,4 +1,4 @@
-"""Slack Web API (read-only).
+"""Slack Web API.
 
 Base URL for a client: ``http://<host>/slack/api/`` (methods live under ``/api/``).
 Slack always returns HTTP 200 with an ``{"ok": bool}`` envelope, so auth failures are
@@ -10,13 +10,15 @@ up — so ``_caller_or_error`` decides it once for every method here.
 
 from __future__ import annotations
 
+import json
 import re
+import time
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
-from backlot import auth, store, synth
+from backlot import auth, overlay, store, synth
 from backlot.acl import Caller
 from backlot.config import get_settings
 from backlot.openapi import qp
@@ -90,6 +92,17 @@ _P_INFO = [qp("channel", required=True), qp("include_num_members", "boolean")]
 # The one workspace Backlot emulates. Every conversation is in it, shared with nobody, so the
 # sharing ids below are all this team or empty.
 TEAM_ID = "T0000BKLT"
+
+# The identity a write by the admin/service token carries. `auth.test` already answers that caller
+# `USERVICE0` -- "real Slack answers a bot token with the app's own id rather than a user's" -- and
+# a message it posts has to agree, because matching auth.test's `user_id` against message authors
+# is how a client finds its own messages (see auth.test's docstring). SERVICE_EMAIL is the row's
+# stored author, chosen to be improbable rather than impossible: `author_email` is free text in a
+# BYO record (display-only speakers already use that), so a corpus that stated this exact string
+# would have those messages served as USERVICE0.
+SERVICE_EMAIL = "service-account"
+SERVICE_USER_ID = "USERVICE0"
+BOT_ID = "B0000BKLT"
 _P_HISTORY = [
     qp("channel", required=True),
     qp("limit", "integer"),
@@ -108,6 +121,22 @@ _P_SEARCH = [
     qp("sort_dir"),
 ]
 _P_SEARCH_FILES = [qp("query", required=True), qp("count", "integer")]
+
+# The write surface. Each lists what Backlot actually READS, the way every other `_P_` here does:
+# a param the vendor documents but Backlot ignores stays an acknowledged gap in the fidelity
+# baseline rather than a declaration that promises behaviour it does not have.
+_P_POST_MESSAGE = [qp("channel", required=True), qp("text", required=True), qp("thread_ts")]
+_P_POST_EPHEMERAL = [
+    qp("channel", required=True),
+    qp("user", required=True),
+    qp("text", required=True),
+]
+_P_UPDATE = [qp("channel", required=True), qp("ts", required=True), qp("text", required=True)]
+_P_DELETE = [qp("channel", required=True), qp("ts", required=True)]
+_P_PERMALINK = [qp("channel", required=True), qp("message_ts", required=True)]
+_P_REACTION = [qp("channel"), qp("timestamp"), qp("name", required=True)]
+_P_REACTION_GET = [qp("channel"), qp("timestamp")]
+_P_REACTION_LIST = [qp("count", "integer")]
 
 # conversations.history page cap (thread roots). Slack recommends limit<=200; capping here bounds
 # how many authors a client resolves per call so history stays fast even with a small users.list.
@@ -298,6 +327,17 @@ def _channel_names(conn) -> list[str]:
     return [row["name"] for row in store.list_containers(conn, "slack")]
 
 
+def _uid(email: str) -> str:
+    """A stored author's Slack user id.
+
+    Every author but one is a corpus address hashed by :func:`synth.slack_user_id`. The exception
+    is the service account, which is not a person and whose id `auth.test` already fixes at
+    ``USERVICE0``; hashing its sentinel address instead would give a client two different ids for
+    the same caller.
+    """
+    return SERVICE_USER_ID if email == SERVICE_EMAIL else synth.slack_user_id(email)
+
+
 def _handle(email: str) -> str:
     """A corpus email as Slack's handle — the `name` a user object carries and the `user`
     `auth.test` reports for the same person."""
@@ -309,9 +349,11 @@ def _user_obj(conn, email: str) -> dict:
     display = u["display_name"] if u else email.split("@")[0]
     parts = display.split()
     updated = synth.epoch("user:" + email)
-    is_bot = not u and email.split("@")[0].endswith("bot")  # display-only "*bot" speakers
+    # The service account is a bot in the sense every client cares about: it posts as an app, and
+    # `auth.test` reports it with the app-shaped id `_uid` returns.
+    is_bot = email == SERVICE_EMAIL or (not u and email.split("@")[0].endswith("bot"))
     return {
-        "id": synth.slack_user_id(email),
+        "id": _uid(email),
         "team_id": TEAM_ID,
         "name": _handle(email),
         "real_name": display,
@@ -382,13 +424,13 @@ async def auth_test(request: Request):
     caller, err = _caller_or_error(request)
     if err is not None:
         return err
-    who = "service-account" if caller.is_admin else _handle(caller.email)
+    who = SERVICE_EMAIL if caller.is_admin else _handle(caller.email)
     return {
         "ok": True,
         "url": f"https://{get_settings().org_name}.slack.com/",
         "team": get_settings().org_name,
         "user": who,
-        "user_id": "USERVICE0" if caller.is_admin else synth.slack_user_id(caller.email),
+        "user_id": SERVICE_USER_ID if caller.is_admin else synth.slack_user_id(caller.email),
         "team_id": TEAM_ID,
     }
 
@@ -733,6 +775,10 @@ def _slack_author_by_uid(request: Request, conn, uid: str) -> str | None:
     cache = getattr(request.app.state, "_slack_uid_map", None)
     if cache is None:
         cache = {synth.slack_user_id(e): e for e in store.distinct_slack_author_emails(conn)}
+        # The service account is not a corpus author, so the DISTINCT scan cannot find it — but a
+        # message it posted names it, and `auth.test` tells a client to match that id against
+        # message authors. Resolving to nothing there breaks the one flow that docstring describes.
+        cache[SERVICE_USER_ID] = SERVICE_EMAIL
         request.app.state._slack_uid_map = cache
     return cache.get(uid)
 
@@ -901,6 +947,520 @@ async def search_all(request: Request):
     return {"ok": True, "query": query, "messages": block, "files": empty}
 
 
+# --- writes ---------------------------------------------------------------------------------
+#
+# Every method here answers BOTH verbs. Measured against slack.com on 2026-09-06 with a read-only
+# token: each answers `missing_scope` -- not `unknown_method` -- over GET and POST alike, so the
+# method and the verb are recognised and the request reaches the scope check.
+#
+# Backlot models no OAuth scopes, so wherever real Slack splits an answer on one it takes the
+# permissive branch. `chat.postMessage` into a public channel the caller has not joined is the
+# case that matters: real Slack answers `not_in_channel` without `chat:write.public`. The
+# divergence is an acknowledged entry in the Slack fidelity baseline rather than a silent one.
+
+
+def _writer(caller: Caller) -> tuple[str, str, bool]:
+    """Who a write is attributed to: ``(author_email, user_id, is_bot)``.
+
+    The service token has no corpus email -- `_is_member` says outright that it "is not a person"
+    -- and `auth.test` already answers it as ``USERVICE0`` by analogy to a bot token, on the
+    grounds that "real Slack answers a bot token with the app's own id rather than a user's". A
+    message it writes carries that same identity and the ``bot_message`` subtype real Slack gives
+    an app-posted message, so a client branching on subtype sees the shape it would see live.
+    """
+    if caller.is_admin:
+        return SERVICE_EMAIL, SERVICE_USER_ID, True
+    return caller.email, synth.slack_user_id(caller.email), False
+
+
+def _invalidate(request: Request, channel: str) -> None:
+    """Drop the warm-cache entries a write to this channel invalidates.
+
+    Deletion, not recomputation: `_member_count` treats a missing key as "not warm" and counts
+    that one channel, so dropping the key is the whole of the fix and costs one query on the next
+    read of it.
+
+    `doc_counts` is deliberately NOT touched. It is the corpus-wide per-source count `/health`
+    reports, nothing recomputes it after startup, and `main.py` says outright that "only `ok` with
+    null counts is wrong" — so clearing it put the server in exactly that state for its lifetime
+    on the first write. A served write does not change how many documents the CORPUS holds, which
+    is what that number means.
+    """
+    members = getattr(request.app.state, "channel_members", None)
+    if members is not None:
+        members.pop(channel, None)
+
+
+def _writable_channel(request: Request, conn, caller: Caller):
+    """``(channel_name, None)`` for a channel this caller may write to, else ``(None, error)``.
+
+    `channel_not_found` for one they cannot see, which is Slack's own non-leaking answer: a caller
+    outside a private channel is told it does not exist rather than that they lack permission, so
+    the error cannot be used to enumerate channels.
+    """
+    name = _channel_name(conn, _param(request, "channel") or "")
+    ids = auth.visible_ids(request, caller)
+    if name is None or not _channel_visibility(request, conn, ids)(name):
+        return None, _err("channel_not_found")
+    return name, None
+
+
+@router.api_route(
+    "/chat.postMessage", methods=["GET", "POST"], openapi_extra={"parameters": _P_POST_MESSAGE}
+)
+async def chat_post_message(request: Request):
+    """Post a message to a channel.
+
+    Errors quoted from `slack_web_openapi_v2.json`,
+    ``paths./chat.postMessage.post.responses.default``: `channel_not_found`, `not_in_channel`,
+    `is_archived`, `msg_too_long`, `no_text`, `too_many_attachments`. Backlot answers
+    `channel_not_found` and `no_text`; `not_in_channel` needs a scope model, `is_archived` needs a
+    channel that can be archived, and the two ceilings are workspace limits no corpus states.
+
+    Which condition triggers `no_text` is Backlot's decision -- the spec enumerates the string
+    without describing when it fires -- and is drawn where `_missing_argument` already draws its
+    line: an ABSENT argument is `invalid_arguments`, a present but empty one is about the
+    workspace.
+
+    `thread_ts` posts the message as a reply in that thread. It is honoured rather than ignored
+    because an agent told to reply in a thread otherwise gets a top-level message and a `200 ok` --
+    a wrong answer with no error in it. A `thread_ts` that does not name a message the caller can
+    see in this channel is answered `message_not_found`: the vendor's enum for THIS method lists no
+    thread error, so which answer to give is Backlot's decision, drawn to match the vocabulary
+    every other message-addressing method here uses rather than inventing a new string.
+
+    Arguments the vendor documents and Backlot still ignores: `blocks`, `attachments`, `as_user`,
+    `username`, `icon_emoji`, `icon_url`, `reply_broadcast`, `unfurl_links`, `unfurl_media`,
+    `parse`, `link_names`, `mrkdwn`. `backlot diff` cannot see them -- it compares query parameters
+    and Slack's spec declares these as form fields (see `backlot/fidelity/operations.py`) -- so
+    this list is the record until that gap is closed.
+    """
+    conn = auth.conn(request)
+    caller, err = _caller_or_error(request)
+    if err is not None:
+        return err
+    if err := _missing_argument(request, "channel", "text"):
+        return err
+    name, err = _writable_channel(request, conn, caller)
+    if err is not None:
+        return err
+    text = _param(request, "text") or ""
+    if not text.strip():
+        return _err("no_text")
+    author, uid, is_bot = _writer(caller)
+    ids = auth.visible_ids(request, caller)
+    thread_ts, thread_seq = None, 0
+    if raw_thread := _param(request, "thread_ts"):
+        parent = store.document_by_key(conn, "slack", (name, raw_thread), ids)
+        if parent is None:
+            return _err("message_not_found")
+        # Slack threads a reply under the ROOT, not under whichever message was named: replying to
+        # a reply puts it in the same thread. The corpus stores that as the root's own ts, which is
+        # what `thread_ts` holds on every row of a thread, the root included.
+        thread_ts = parent["thread_ts"] or parent["ts"]
+        thread_seq = store.slack_next_thread_seq(conn, name, thread_ts)
+    now = int(time.time())
+    was_member = _is_member(conn, name, caller, is_private=_is_private(request, conn, name))
+    ts = store.slack_next_ts(conn, name, now)
+    store.insert_document(
+        conn,
+        "slack",
+        {
+            "channel": name,
+            "ts": ts,
+            "author_email": author,
+            "content": text,
+            "created_ts": now,
+            "thread_ts": thread_ts,
+            "thread_seq": thread_seq,
+            "subtype": "bot_message" if is_bot else None,
+        },
+    )
+    # Membership on a public channel is derived from having spoken, so the row just written would
+    # join the poster to it. Real Slack does not join you when you post through the API, so the
+    # derivation is overridden rather than allowed to promote them. `conversations.join` is what
+    # legitimately writes the other state.
+    if not was_member and caller.email:
+        store.slack_set_membership(conn, name, caller.email, "out")
+    _invalidate(request, name)
+    row = store.document_by_key(conn, "slack", (name, ts))
+    return {
+        "ok": True,
+        "channel": synth.slack_channel_id(name),
+        "ts": ts,
+        "message": _message(row),
+    }
+
+
+@router.api_route(
+    "/chat.postEphemeral", methods=["GET", "POST"], openapi_extra={"parameters": _P_POST_EPHEMERAL}
+)
+async def chat_post_ephemeral(request: Request):
+    """A message only one user sees.
+
+    Nothing is stored: an ephemeral message is not in the channel's history in real Slack either,
+    so there is no state for a corpus to hold and nothing for a later read to disagree with.
+
+    Errors quoted from the spec's ``default`` response: `channel_not_found`, `is_archived`,
+    `msg_too_long`, `no_text`, `restricted_action`, `too_many_attachments`, `user_not_in_channel`.
+    Backlot answers `channel_not_found` and `no_text`.
+    """
+    conn = auth.conn(request)
+    caller, err = _caller_or_error(request)
+    if err is not None:
+        return err
+    if err := _missing_argument(request, "channel", "user", "text"):
+        return err
+    name, err = _writable_channel(request, conn, caller)
+    if err is not None:
+        return err
+    if not (_param(request, "text") or "").strip():
+        return _err("no_text")
+    return {"ok": True, "message_ts": synth.slack_fmt_ts(int(time.time()), f"ephemeral:{name}")}
+
+
+def _own_message(request: Request, conn, caller: Caller, ts_param: str, refusal: str):
+    """``(channel_name, ts, row, None)`` for a message this caller wrote, else an error in the
+    last slot.
+
+    The three refusals are ordered the way Slack answers them, and the order is the point: a
+    caller outside the channel is told `channel_not_found` before anything about the message is
+    looked up, so the message-level errors cannot be used to probe a channel they cannot see.
+    """
+    name, err = _writable_channel(request, conn, caller)
+    if err is not None:
+        return None, None, None, err
+    ts = _param(request, ts_param) or ""
+    row = store.document_by_key(conn, "slack", (name, ts), auth.visible_ids(request, caller))
+    if row is None:
+        return None, None, None, _err("message_not_found")
+    author, _uid_, _bot = _writer(caller)
+    # Case-folded, the way `_subscribed` compares the same addresses: a corpus states an author's
+    # address however it was written, and a mixed-case one could not edit their own message.
+    if (row["author_email"] or "").lower() != (author or "").lower():
+        return None, None, None, _err(refusal)
+    return name, ts, row, None
+
+
+@router.api_route("/chat.update", methods=["GET", "POST"], openapi_extra={"parameters": _P_UPDATE})
+async def chat_update(request: Request):
+    """Edit a message's text.
+
+    Errors quoted from `slack_web_openapi_v2.json`,
+    ``paths./chat.update.post.responses.default``: `message_not_found`, `cant_update_message`,
+    `channel_not_found`, `edit_window_closed`, `msg_too_long`, `too_many_attachments`, `no_text`,
+    `is_inactive`. Backlot answers the first three and `no_text`; `edit_window_closed` is a
+    workspace retention setting no corpus states, and the rest are limits it does not model.
+
+    That Slack answers `cant_update_message` rather than a permission error is quoted from that
+    enum. WHICH condition fires it is Backlot's decision, since the spec enumerates the string
+    without describing when — here, a message the caller did not write. The admin/service token is
+    refused too: bypassing the ACL is about what a caller may SEE, and authorship is a different
+    question it does not answer.
+    """
+    conn = auth.conn(request)
+    caller, err = _caller_or_error(request)
+    if err is not None:
+        return err
+    if err := _missing_argument(request, "channel", "ts", "text"):
+        return err
+    name, ts, row, err = _own_message(request, conn, caller, "ts", "cant_update_message")
+    if err is not None:
+        return err
+    text = _param(request, "text") or ""
+    if not text.strip():
+        return _err("no_text")
+    author, uid, _bot = _writer(caller)
+    store.patch_document(conn, "slack", (name, ts), "content", text)
+    # Real Slack stamps an edited message with `edited: {user, ts}`, which is what a client renders
+    # "(edited)" from. `_message` already serves the column, so filling it is the whole of it.
+    store.patch_document(
+        conn,
+        "slack",
+        (name, ts),
+        "edited",
+        json.dumps({"user": uid, "ts": synth.slack_fmt_ts(int(time.time()), f"edit:{name}:{ts}")}),
+    )
+    updated = store.document_by_key(conn, "slack", (name, ts))
+    return {
+        "ok": True,
+        "channel": synth.slack_channel_id(name),
+        "ts": ts,
+        "text": text,
+        "message": _message(updated),
+    }
+
+
+@router.api_route("/chat.delete", methods=["GET", "POST"], openapi_extra={"parameters": _P_DELETE})
+async def chat_delete(request: Request):
+    """Delete a message.
+
+    Errors quoted from the spec's ``default`` response: `message_not_found`, `channel_not_found`,
+    `cant_delete_message`, `compliance_exports_prevent_deletion`. The last is a workspace
+    compliance setting no corpus states.
+
+    A CORPUS message can be deleted. The row stays in the read-only database and is subtracted at
+    read time by the overlay's tombstone, which is the only way this can work over a corpus that
+    is never written.
+    """
+    conn = auth.conn(request)
+    caller, err = _caller_or_error(request)
+    if err is not None:
+        return err
+    if err := _missing_argument(request, "channel", "ts"):
+        return err
+    name, ts, _row, err = _own_message(request, conn, caller, "ts", "cant_delete_message")
+    if err is not None:
+        return err
+    store.tombstone_document(conn, "slack", (name, ts))
+    _invalidate(request, name)
+    return {"ok": True, "channel": synth.slack_channel_id(name), "ts": ts}
+
+
+@router.api_route(
+    "/chat.getPermalink", methods=["GET", "POST"], openapi_extra={"parameters": _P_PERMALINK}
+)
+async def chat_get_permalink(request: Request):
+    """A message's archive URL.
+
+    Errors quoted from the spec's ``default`` response: `channel_not_found`, `message_not_found`.
+
+    The path is Slack's own shape — ``/archives/<channel id>/p<ts with the dot removed>`` — so a
+    permalink Backlot mints parses the way a real one does.
+    """
+    conn = auth.conn(request)
+    caller, err = _caller_or_error(request)
+    if err is not None:
+        return err
+    if err := _missing_argument(request, "channel", "message_ts"):
+        return err
+    name, err = _writable_channel(request, conn, caller)
+    if err is not None:
+        return err
+    ts = _param(request, "message_ts") or ""
+    if store.document_by_key(conn, "slack", (name, ts), auth.visible_ids(request, caller)) is None:
+        return _err("message_not_found")
+    cid = synth.slack_channel_id(name)
+    return {
+        "ok": True,
+        "channel": cid,
+        "permalink": (
+            f"https://{get_settings().org_name}.slack.com/archives/{cid}/p{ts.replace('.', '')}"
+        ),
+    }
+
+
+class _AlreadyReacted(Exception):
+    """The caller already left this reaction. Raised from inside the edit callback so the write is
+    abandoned with the overlay lock still held, rather than decided on a value read before it."""
+
+
+class _NoReaction(Exception):
+    """The caller has no such reaction to remove. See :class:`_AlreadyReacted`."""
+
+
+def _reaction_target(request: Request, conn, caller: Caller):
+    """``(channel_name, ts, row, None)`` for a reaction's message, else an error in the last slot.
+
+    Slack addresses a reaction target three ways — `channel` + `timestamp`, `file`, or
+    `file_comment` — and answers `no_item_specified` when none is given. Backlot has no file
+    corpus (see search.files), so the two file forms resolve to nothing and are answered
+    `message_not_found` rather than a shape it cannot back.
+
+    The channel is checked before the message, so `channel_not_found` is the answer for a caller
+    outside it whether or not the ts they named is real. A ts that resolved differently would let
+    them confirm a message exists in a channel they cannot read.
+    """
+    if not _param(request, "channel") and not _param(request, "timestamp"):
+        return None, None, None, _err("no_item_specified")
+    name, err = _writable_channel(request, conn, caller)
+    if err is not None:
+        return None, None, None, err
+    ts = _param(request, "timestamp") or ""
+    row = store.document_by_key(conn, "slack", (name, ts), auth.visible_ids(request, caller))
+    if row is None:
+        return None, None, None, _err("message_not_found")
+    return name, ts, row, None
+
+
+@router.api_route(
+    "/reactions.add", methods=["GET", "POST"], openapi_extra={"parameters": _P_REACTION}
+)
+async def reactions_add(request: Request):
+    """Add an emoji reaction to a message.
+
+    Errors quoted from `slack_web_openapi_v2.json`,
+    ``paths./reactions.add.post.responses.default``: `bad_timestamp`, `message_not_found`,
+    `no_item_specified`, `invalid_name`, `already_reacted`, `too_many_emoji`,
+    `too_many_reactions`. Backlot answers `message_not_found`, `no_item_specified` and
+    `invalid_name`. The two ceilings are workspace limits no corpus states, and `bad_timestamp` is
+    not distinguished: a `timestamp` that does not name a message is `message_not_found` whether it
+    is malformed or merely absent.
+
+    `reactions` is a column the corpus already carries and every message payload already serves,
+    so this is a patch to a served field rather than a new entity. The patch REPLACES the column,
+    so the existing value is read and put back — a corpus message that already carries reactions
+    keeps them.
+    """
+    conn = auth.conn(request)
+    caller, err = _caller_or_error(request)
+    if err is not None:
+        return err
+    if err := _missing_argument(request, "name"):
+        return err
+    name, ts, row, err = _reaction_target(request, conn, caller)
+    if err is not None:
+        return err
+    emoji = (_param(request, "name") or "").strip()
+    if not emoji:
+        return _err("invalid_name")
+    _author, uid, _bot = _writer(caller)
+
+    def add(fresh):
+        # Re-read inside the lock: `row` above was read before it, and two callers reacting at
+        # once would otherwise each write back a list missing the other's user.
+        current = store.jcol(fresh, "reactions")
+        for r in current:
+            if r["name"] != emoji:
+                continue
+            if uid in r.get("users", []):
+                raise _AlreadyReacted
+            r["users"] = [*r.get("users", []), uid]
+            r["count"] = len(r["users"])
+            break
+        else:
+            current.append({"name": emoji, "count": 1, "users": [uid]})
+        return json.dumps(current)
+
+    try:
+        store.edit_document(
+            conn, "slack", (name, ts), "reactions", add, auth.visible_ids(request, caller)
+        )
+    except _AlreadyReacted:
+        return _err("already_reacted")
+    return {"ok": True}
+
+
+@router.api_route(
+    "/reactions.remove", methods=["GET", "POST"], openapi_extra={"parameters": _P_REACTION}
+)
+async def reactions_remove(request: Request):
+    """Remove one of the caller's own reactions.
+
+    Errors quoted from the spec's ``default`` response: `bad_timestamp`, `file_not_found`,
+    `file_comment_not_found`, `message_not_found`, `no_item_specified`, `invalid_name`,
+    `no_reaction`.
+
+    A reaction nobody is left on is dropped from the column entirely rather than kept at count 0,
+    so a message returns to the shape `_message` gives one nobody reacted to.
+    """
+    conn = auth.conn(request)
+    caller, err = _caller_or_error(request)
+    if err is not None:
+        return err
+    if err := _missing_argument(request, "name"):
+        return err
+    name, ts, row, err = _reaction_target(request, conn, caller)
+    if err is not None:
+        return err
+    emoji = (_param(request, "name") or "").strip()
+    _author, uid, _bot = _writer(caller)
+
+    def drop(fresh):
+        current = store.jcol(fresh, "reactions")
+        for r in current:
+            if r["name"] == emoji and uid in r.get("users", []):
+                r["users"] = [u for u in r["users"] if u != uid]
+                r["count"] = len(r["users"])
+                break
+        else:
+            raise _NoReaction
+        return json.dumps([r for r in current if r["count"]])
+
+    try:
+        store.edit_document(
+            conn, "slack", (name, ts), "reactions", drop, auth.visible_ids(request, caller)
+        )
+    except _NoReaction:
+        return _err("no_reaction")
+    return {"ok": True}
+
+
+@router.api_route(
+    "/reactions.get", methods=["GET", "POST"], openapi_extra={"parameters": _P_REACTION_GET}
+)
+async def reactions_get(request: Request):
+    """A message with its reactions.
+
+    Errors quoted from the spec's ``default`` response: `bad_timestamp`, `file_not_found`,
+    `file_comment_not_found`, `message_not_found`, `no_item_specified`.
+
+    The message is built by `_message`, the same builder conversations.history uses, so a client
+    that reads a reaction here and the message there cannot get two shapes for one message.
+    """
+    conn = auth.conn(request)
+    caller, err = _caller_or_error(request)
+    if err is not None:
+        return err
+    name, _ts, row, err = _reaction_target(request, conn, caller)
+    if err is not None:
+        return err
+    return {
+        "ok": True,
+        "type": "message",
+        "channel": synth.slack_channel_id(name),
+        "message": _message(row),
+    }
+
+
+@router.api_route(
+    "/reactions.list", methods=["GET", "POST"], openapi_extra={"parameters": _P_REACTION_LIST}
+)
+async def reactions_list(request: Request):
+    """Items the caller has reacted to.
+
+    Errors quoted from the spec's ``default`` response: `user_not_found`.
+
+    Only reactions left through this API are listed. A reaction the corpus shipped was written by
+    the import, and its `users` hold synthesized ids the corpus never attributed to anybody in
+    particular, so counting those would report reactions no one in this workspace left. Reading the
+    overlay's own patches is what makes the answer true.
+    """
+    conn = auth.conn(request)
+    caller, err = _caller_or_error(request)
+    if err is not None:
+        return err
+    _author, uid, _bot = _writer(caller)
+    ids = auth.visible_ids(request, caller)
+    patch = overlay.table_names("slack")["patch"]
+    items = []
+    for p in conn.execute(
+        f"SELECT channel, ts, value FROM ov.{patch} WHERE field = 'reactions' ORDER BY channel, ts"
+    ).fetchall():
+        try:
+            reactions = json.loads(p["value"] or "[]")
+        except ValueError:
+            continue
+        if not any(uid in r.get("users", []) for r in reactions):
+            continue
+        row = store.document_by_key(conn, "slack", (p["channel"], p["ts"]), ids)
+        if row is None:  # deleted, or no longer visible to this caller
+            continue
+        items.append(
+            {
+                "type": "message",
+                "channel": synth.slack_channel_id(p["channel"]),
+                "message": _message(row),
+            }
+        )
+    count = _int(request, "count", 100)
+    return {
+        "ok": True,
+        "items": items[:count],
+        "paging": {"count": count, "total": len(items), "page": 1, "pages": 1},
+    }
+
+
 # --- helpers --------------------------------------------------------------------
 
 
@@ -1022,9 +1582,16 @@ def _is_member(conn, name: str, caller: Caller, *, is_private: bool) -> bool:
     A service token is not a person: it bypasses the ACL rather than belonging to anything, so it
     is a member of nothing — the reasoning `_subscribed` and `_last_read` apply to a thread and a
     read cursor.
+
+    An explicit membership overrides both derivations. On a private channel that is the only thing
+    that can: being shown it is otherwise being in it, and someone removed from one has to stop
+    reading as a member while the corpus still holds their messages.
     """
     if not caller.email:
         return False
+    state = store.slack_membership(conn, name, caller.email)
+    if state != "derived":
+        return state == "in"
     if is_private:
         return True
     return store.slack_channel_has_author(conn, name, caller.email)
@@ -1033,10 +1600,16 @@ def _is_member(conn, name: str, caller: Caller, *, is_private: bool) -> bool:
 def _member_count(request: Request, conn, name: str) -> int:
     """A channel's member count — the same set conversations.members pages, so `num_members` and
     walking the members cannot disagree. Read from the warm cache; if the background thread has not
-    finished, count this one channel directly rather than blocking on all of them."""
+    finished, count this one channel directly rather than blocking on all of them.
+
+    A MISSING key is counted, not answered as zero. `slack_channel_member_counts` keys every
+    channel, including one with no messages at all, so the only way a key is absent from a filled
+    cache is that a write dropped it (`_invalidate`) — and reporting that channel as empty is how
+    a posted message made `num_members` collapse to 0.
+    """
     cache = getattr(request.app.state, "channel_members", None)
-    if cache is not None:
-        return cache.get(name, 0)
+    if cache is not None and name in cache:
+        return cache[name]
     return store.count_slack_channel_members(conn, name)
 
 
@@ -1065,11 +1638,15 @@ def _message(
     seed = f"{row['channel']}:{row['ts']}"
     m = {
         "type": "message",
-        "user": synth.slack_user_id(row["author_email"]),
+        "user": _uid(row["author_email"]),
         "text": text,
         "ts": row["ts"],
         "team": TEAM_ID,
     }
+    if row["subtype"] == "bot_message":
+        # Real Slack carries `bot_id` on the stored message, so a client that branches on it sees
+        # it in history too, not only in the reply to the post that created it.
+        m["bot_id"] = BOT_ID
     if not row["subtype"]:
         # `client_msg_id` is minted by the CLIENT that posted, and `blocks` is what that client
         # composed, so neither belongs on a message Slack itself generated — measured: a

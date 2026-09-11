@@ -591,8 +591,8 @@ def _list_multipart_uploads(request: Request, bucket: str, max_uploads: int) -> 
     """ListMultipartUploads — the page real S3 serves for a bucket with no upload in progress.
 
     Backlot never has one: data enters through ``backlot import`` and never through the served API,
-    so the faithful answer is always the empty page, and a GUI client that asks on every folder open
-    (Cyberduck sends ``?uploads`` after every ListObjectsV2) gets the 200 it gets from real.
+    so the faithful answer is always the empty page, and a browsing client that sends ``?uploads``
+    after every ListObjectsV2 gets the 200 it gets from real.
 
     The shape is real's, measured against a general purpose bucket with no upload in progress:
     ``Bucket``, then ``KeyMarker``, ``UploadIdMarker``, ``NextKeyMarker`` and ``NextUploadIdMarker``

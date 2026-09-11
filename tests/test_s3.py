@@ -638,13 +638,13 @@ def _get_raw(base_url, path, token):
 
 
 def test_list_multipart_uploads_is_the_empty_page_real_serves_byte_for_byte(live_server):
-    """#169: Cyberduck sends `?uploads` after every ListObjectsV2, unprompted, and got a 501 where
-    real answers 200. The body is real's for a bucket with no upload in progress, with the bucket's
+    """#169: a browsing client sends `?uploads` after every ListObjectsV2, unprompted, and got a
+    501 where real answers 200. The body is real's for a bucket with no upload in progress, with the bucket's
     name swapped in: the two markers and the two next-markers present and empty, MaxUploads at the
     default, IsTruncated false, no Upload element — and no Prefix, Delimiter or EncodingType when
     none was sent."""
     base_url, settings = live_server
-    for query in ("?uploads", "?uploads="):  # Cyberduck sends the `=`; real treats both alike
+    for query in ("?uploads", "?uploads="):  # with and without the `=`; real treats both alike
         status, headers, body = _get_raw(
             base_url, f"/s3/eng-artifacts{query}", settings.admin_token
         )
@@ -669,7 +669,7 @@ def test_list_multipart_uploads_echoes_what_was_sent_in_reals_order(live_server)
         ("NextKeyMarker", ""),
         ("NextUploadIdMarker", ""),
     ]
-    # Cyberduck's own pair from #169: a folder listing's `?uploads` carries the delimiter, and a
+    # The two queries in #169's trace: a folder listing's `?uploads` carries the delimiter, and a
     # prefix's carries both. Delimiter comes before Prefix on real, and both come before MaxUploads.
     assert _uploads_fields(base_url, "delimiter=%2F&uploads=", token) == fixed_head + [
         ("Delimiter", "/"),

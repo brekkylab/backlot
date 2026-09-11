@@ -1401,10 +1401,13 @@ def test_slack_one_person_has_one_handle_across_the_surface(tmp_path):
 def test_slack_reaction_ids_and_count_are_derived_from_the_addresses(tmp_path):
     """The corpus names the reactors; the response carries what Slack carries.
 
-    `count` is derived rather than stored, so it cannot disagree with `users` — and the ids are
-    `synth.slack_user_id` of each address, which is the same value `users.list` and a message's
-    own `user` report for that person, so a client that groups a reaction's users against message
-    authors gets one answer rather than two.
+    `count` agrees with `users` because the addresses are the only thing written down: the schema
+    refuses a stated count and a repeated address, and what is left is rendered here. Deriving it
+    alone would not be enough, since a duplicate renders one id under a count of two.
+
+    The ids are `synth.slack_user_id` of each address, which is the same value `users.list` and a
+    message's own `user` report for that person, so a client that groups a reaction's users against
+    message authors gets one answer rather than two.
     """
     import re
 
@@ -1420,10 +1423,10 @@ def test_slack_reaction_ids_and_count_are_derived_from_the_addresses(tmp_path):
                 "author_email": "ava@x.com",
                 "visibility": "public",
                 "reactions": [
+                    # No record states a `count`; the schema refuses one. So every count below
+                    # is one the response worked out from the addresses beside it.
                     {"name": "eyes", "users": ["ava@x.com", "bo@x.com"]},
-                    # A `count` a record still carries is ignored. Deriving it is what keeps the
-                    # served pair from disagreeing, whatever the record says.
-                    {"name": "+1", "users": ["bo@x.com"], "count": 9},
+                    {"name": "+1", "users": ["bo@x.com"]},
                 ],
             }
         ],

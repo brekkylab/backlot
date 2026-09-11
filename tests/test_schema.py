@@ -732,7 +732,7 @@ def test_slack_reaction_refuses_the_ids_a_corpus_cannot_know():
     spelling is REFUSED rather than read as an address that resolves to nobody, which is the one
     outcome a corpus author would not notice.
     """
-    old = complete("slack", content="c", reactions=[{"name": "eyes", "count": 2, "users": ["U01"]}])
+    old = complete("slack", content="c", reactions=[{"name": "eyes", "users": ["U01"]}])
     assert record_errors(old) == ["<root> [reactions/0/users/0]: 'U01' is not a 'email'"]
 
 
@@ -743,6 +743,30 @@ def test_slack_reaction_needs_someone_who_made_it():
     ) == ["<root> [reactions/0/users]: [] should be non-empty"]
     assert record_errors(complete("slack", content="c", reactions=[{"users": ["a@x.com"]}])) == [
         "<root> [reactions/0]: 'name' is a required property"
+    ]
+
+
+def test_slack_reaction_refuses_a_count_the_response_derives():
+    """`count` is rendered from `users`, so a record stating one states a value nothing reads. Left
+    open it is read and dropped, which is the same silence the old id spelling was refused for: the
+    author sees an import that worked and a response that ignored what they wrote.
+    """
+    kept = [{"name": "eyes", "users": ["ava@x.com"], "count": 9}]
+    assert record_errors(complete("slack", content="c", reactions=kept)) == [
+        "<root> [reactions/0]: Additional properties are not allowed ('count' was unexpected)"
+    ]
+    reply = {
+        "content": "on it",
+        "author_email": "bo@x.com",
+        "created": "2026-03-01T09:00:01Z",
+        "reactions": kept,
+    }
+    assert record_errors(complete("slack", content="c", replies=[reply])) == [
+        "<root> [replies/0/reactions/0]: Additional properties are not allowed ('count' was unexpected)"
+    ]
+    typo = [{"name": "eyes", "users": ["ava@x.com"], "user": "bo@x.com"}]
+    assert record_errors(complete("slack", content="c", reactions=typo)) == [
+        "<root> [reactions/0]: Additional properties are not allowed ('user' was unexpected)"
     ]
 
 

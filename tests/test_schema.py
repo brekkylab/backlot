@@ -772,9 +772,9 @@ def test_slack_reaction_refuses_a_count_the_response_derives():
 
 def test_slack_reaction_refuses_the_same_person_twice():
     """`reactions.add` answers a repeat with `already_reacted`, so one address twice is a reaction
-    Slack cannot hold. It has to be refused at import rather than deduped when served: `count` is
-    derived from this list, so a pair of equal addresses renders one id under a count of two, which
-    is exactly the disagreement deriving the count is there to prevent.
+    Slack cannot hold. It has to be refused at import rather than deduped when served, because the
+    served `count` is the LENGTH of this list: a pair of equal addresses renders one id and counts
+    two, so the number stops being the number of people.
     """
     twice = [{"name": "eyes", "users": ["bo@x.com", "bo@x.com"]}]
     assert record_errors(complete("slack", content="c", reactions=twice)) == [

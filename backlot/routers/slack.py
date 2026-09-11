@@ -1129,10 +1129,14 @@ def _reactions(row) -> list[dict]:
     which is `synth.slack_user_id` of a person, a value no corpus author can know. Writing it by
     hand meant inventing ids for people the corpus already names by address everywhere else.
 
-    `count` is DERIVED rather than stated, and the schema refuses a record that states one, so the
-    addresses are the only thing written down and there is nothing left for the count to disagree
-    with. Deriving is only half of it: a REPEATED address would render one id under a count of two,
-    which the schema refuses for the same reason.
+    `count` is DERIVED rather than stated, and NOT because a mismatch would be unreal: real Slack
+    sends one larger than `users` whenever it truncates, which `reactions.get` documents as `users`
+    "might not always contain all users that have reacted" while `count` "will always represent the
+    count of all users who made that reaction". Backlot truncates nothing, so every reactor the
+    corpus names is rendered and `len(users)` IS that count; stating it in a record would add a
+    second place for it to be wrong. The schema refuses one, and a REPEATED address too, since
+    `reactions.add` answers a repeat with `already_reacted` and deriving from one would render a
+    single id under a count of two.
 
     The address is not required to belong to a principal. `users.info` resolves a message AUTHOR's
     id (see `_slack_author_by_uid`) and a reactor who never posted is not among them, so a reaction

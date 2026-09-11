@@ -1401,9 +1401,10 @@ def test_slack_one_person_has_one_handle_across_the_surface(tmp_path):
 def test_slack_reaction_ids_and_count_are_derived_from_the_addresses(tmp_path):
     """The corpus names the reactors; the response carries what Slack carries.
 
-    `count` agrees with `users` because the addresses are the only thing written down: the schema
-    refuses a stated count and a repeated address, and what is left is rendered here. Deriving it
-    alone would not be enough, since a duplicate renders one id under a count of two.
+    `count` is the length of the rendered list, which is the true count here because Backlot serves
+    every reactor a record names; real Slack may send a larger one, truncating `users`. The schema
+    refuses a stated count and a repeated address, so the addresses are the only thing written down
+    and the number stays the number of people.
 
     The ids are `synth.slack_user_id` of each address, which is the same value `users.list` and a
     message's own `user` report for that person, so a client that groups a reaction's users against

@@ -1396,3 +1396,53 @@ def test_slack_one_person_has_one_handle_across_the_surface(tmp_path):
         assert hit["user"] == member["id"]  # the id already agreed
         assert hit["username"] == member["name"] == "avachen"
         assert "." not in hit["username"], "a handle drops the dot the address carries"
+
+
+def test_slack_reaction_ids_and_count_are_derived_from_the_addresses(tmp_path):
+    """The corpus names the reactors; the response carries what Slack carries.
+
+    `count` is the length of the rendered list, which is the true count here because Backlot serves
+    every reactor a record names; real Slack may send a larger one, truncating `users`. The schema
+    refuses a stated count and a repeated address, so the addresses are the only thing written down
+    and the number stays the number of people.
+
+    The ids are `synth.slack_user_id` of each address, which is the same value `users.list` and a
+    message's own `user` report for that person, so a client that groups a reaction's users against
+    message authors gets one answer rather than two.
+    """
+    import re
+
+    from backlot.routers.slack import _message
+
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "channel": "inc",
+                "content": "gateway is flapping",
+                "author_email": "ava@x.com",
+                "visibility": "public",
+                "reactions": [
+                    # No record states a `count`; the schema refuses one. So every count below
+                    # is one the response worked out from the addresses beside it.
+                    {"name": "eyes", "users": ["ava@x.com", "bo@x.com"]},
+                    {"name": "+1", "users": ["bo@x.com"]},
+                ],
+            }
+        ],
+    )
+    conn = store.connect_ro(s.db_path)
+    row = store.list_slack_top_level(conn, "inc")[0]
+    reactions = _message(row)["reactions"]
+
+    assert reactions == [
+        {
+            "name": "eyes",
+            "users": [synth.slack_user_id("ava@x.com"), synth.slack_user_id("bo@x.com")],
+            "count": 2,
+        },
+        {"name": "+1", "users": [synth.slack_user_id("bo@x.com")], "count": 1},
+    ]
+    # Slack's own `defs_user_id`, so an id Backlot mints is one the vendor's spec would accept.
+    assert all(re.fullmatch(r"[UW][A-Z0-9]{2,}", u) for r in reactions for u in r["users"])

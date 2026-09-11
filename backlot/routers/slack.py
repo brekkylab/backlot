@@ -1085,7 +1085,7 @@ def _message(
         blocks = synth.slack_blocks(text, seed)
         if blocks:
             m["blocks"] = blocks
-    reactions = store.jcol(row, "reactions")
+    reactions = _reactions(row)
     if reactions:
         m["reactions"] = reactions
     files = store.jcol(row, "files")
@@ -1119,6 +1119,45 @@ def _message(
         elif row["thread_seq"] > 0 and parent_user_id:  # a reply
             m["parent_user_id"] = parent_user_id
     return m
+
+
+def _reactions(row) -> list[dict]:
+    """A message's ``reactions``, built from the addresses the corpus stated.
+
+    Not pass-through, and the vendor's own spec is why. `objs_reaction` requires `name`, `users`
+    and `count` together, and each entry of `users` is a `defs_user_id` (`^[UW][A-Z0-9]{2,}$`) —
+    which is `synth.slack_user_id` of a person, a value no corpus author can know. Writing it by
+    hand meant inventing ids for people the corpus already names by address everywhere else.
+
+    `count` is DERIVED rather than stated, and NOT because a mismatch would be unreal: real Slack
+    sends one larger than `users` whenever it truncates, which `reactions.get` documents as `users`
+    "might not always contain all users that have reacted" while `count` "will always represent the
+    count of all users who made that reaction". Backlot truncates nothing, so every reactor the
+    corpus names is rendered and `len(users)` IS that count; stating it in a record would add a
+    second place for it to be wrong. The schema refuses one, and a REPEATED address too, since
+    `reactions.add` answers a repeat with `already_reacted` and deriving from one would render a
+    single id under a count of two.
+
+    The address is not required to belong to anyone the corpus places. `users.info` resolves a
+    PRINCIPAL's id first and falls back to a message author's, so a reactor who is neither is served
+    as an id that resolves to nobody — the same limitation `users.list` already carries for
+    display-only speakers. Being a principal is enough on its own: a reactor who never posted here
+    still resolves, which is why the sample corpus's reactors need not be Slack authors.
+
+    Field order is Slack's own: the `reactions.get` example response shows
+    `{"name": …, "users": [...], "count": N}`.
+    """
+    out = []
+    for reaction in store.jcol(row, "reactions"):
+        users = list(reaction.get("users") or [])
+        out.append(
+            {
+                "name": reaction.get("name"),
+                "users": [synth.slack_user_id(e) for e in users],
+                "count": len(users),
+            }
+        )
+    return out
 
 
 def _channel_name(conn, channel_id: str) -> str | None:

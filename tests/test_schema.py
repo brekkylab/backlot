@@ -725,6 +725,72 @@ def test_fireflies_record_with_neither_sentences_nor_content_is_rejected(tmp_pat
     assert "'content' is a required property" in str(e.value)
 
 
+def test_slack_reaction_refuses_the_ids_a_corpus_cannot_know():
+    """Slack's own OpenAPI types every entry of a reaction's `users` as a `defs_user_id`
+    (`^[UW][A-Z0-9]{2,}$`), which is `synth.slack_user_id` of a person — a value whoever writes the
+    corpus has no way to compute. A record names the reactor by address instead, and the old
+    spelling is REFUSED rather than read as an address that resolves to nobody, which is the one
+    outcome a corpus author would not notice.
+    """
+    old = complete("slack", content="c", reactions=[{"name": "eyes", "users": ["U01"]}])
+    assert record_errors(old) == ["<root> [reactions/0/users/0]: 'U01' is not a 'email'"]
+
+
+def test_slack_reaction_needs_someone_who_made_it():
+    """A reaction with nobody behind it is not one Slack returns: its `count` would be 0."""
+    assert record_errors(
+        complete("slack", content="c", reactions=[{"name": "eyes", "users": []}])
+    ) == ["<root> [reactions/0/users]: [] should be non-empty"]
+    assert record_errors(complete("slack", content="c", reactions=[{"users": ["a@x.com"]}])) == [
+        "<root> [reactions/0]: 'name' is a required property"
+    ]
+
+
+def test_slack_reaction_refuses_a_count_the_response_derives():
+    """`count` is rendered from `users`, so a record stating one states a value nothing reads. Left
+    open it is read and dropped, which is the same silence the old id spelling was refused for: the
+    author sees an import that worked and a response that ignored what they wrote.
+    """
+    kept = [{"name": "eyes", "users": ["ava@x.com"], "count": 9}]
+    assert record_errors(complete("slack", content="c", reactions=kept)) == [
+        "<root> [reactions/0]: Additional properties are not allowed ('count' was unexpected)"
+    ]
+    reply = {
+        "content": "on it",
+        "author_email": "bo@x.com",
+        "created": "2026-03-01T09:00:01Z",
+        "reactions": kept,
+    }
+    assert record_errors(complete("slack", content="c", replies=[reply])) == [
+        "<root> [replies/0/reactions/0]: Additional properties are not allowed ('count' was unexpected)"
+    ]
+    typo = [{"name": "eyes", "users": ["ava@x.com"], "user": "bo@x.com"}]
+    assert record_errors(complete("slack", content="c", reactions=typo)) == [
+        "<root> [reactions/0]: Additional properties are not allowed ('user' was unexpected)"
+    ]
+
+
+def test_slack_reaction_refuses_the_same_person_twice():
+    """`reactions.add` answers a repeat with `already_reacted`, so one address twice is a reaction
+    Slack cannot hold. It has to be refused at import rather than deduped when served, because the
+    served `count` is the LENGTH of this list: a pair of equal addresses renders one id and counts
+    two, so the number stops being the number of people.
+    """
+    twice = [{"name": "eyes", "users": ["bo@x.com", "bo@x.com"]}]
+    assert record_errors(complete("slack", content="c", reactions=twice)) == [
+        "<root> [reactions/0/users]: ['bo@x.com', 'bo@x.com'] has non-unique elements"
+    ]
+    reply = {
+        "content": "on it",
+        "author_email": "ava@x.com",
+        "created": "2026-03-01T09:00:01Z",
+        "reactions": twice,
+    }
+    assert record_errors(complete("slack", content="c", replies=[reply])) == [
+        "<root> [replies/0/reactions/0/users]: ['bo@x.com', 'bo@x.com'] has non-unique elements"
+    ]
+
+
 def test_fireflies_schema_rejects_the_slack_replies_array():
     """`replies` is Slack's child-row array. A transcript's child rows are `sentences`, so writing
     `replies` on a transcript is a mistake worth catching rather than silently ignoring."""

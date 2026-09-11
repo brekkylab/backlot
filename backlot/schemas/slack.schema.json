@@ -68,9 +68,32 @@
     "reactions": {
       "type": "array",
       "items": {
-        "type": "object"
+        "type": "object",
+        "description": "One reaction. Slack's own OpenAPI (`objs_reaction`) requires `name`, `users` and `count` together, and types each entry of `users` as a `defs_user_id` matching `^[UW][A-Z0-9]{2,}$` — a value a corpus author cannot know, since it is what `synth.slack_user_id` will make of an address. So the corpus writes the ADDRESS and the router renders the id, the same way `author_email` becomes a message's `user`. `count` is rendered from `users` too: real Slack may send a larger one, since it truncates `users` and says so on `reactions.get`, but Backlot serves every reactor a record names, so that length is the count. Stating it would add a second place to be wrong, so the item is closed and a record that states one, or misspells a key, is refused rather than read and dropped.",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The emoji name, without colons: `eyes`, `+1`, `tada`."
+          },
+          "users": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "format": "email"
+            },
+            "uniqueItems": true,
+            "description": "Who reacted, by address. A reaction nobody made is not one Slack returns, so the list may not be empty, and one address twice is one Slack refuses with `already_reacted` (reactions.add), so it may not repeat: the served `count` is this list's LENGTH, and a repeat would render one id while counting two."
+          }
+        },
+        "required": [
+          "name",
+          "users"
+        ],
+        "additionalProperties": false
       },
-      "description": "[{name, count, users:[U…]}]."
+      "description": "Reactions to this message, as `[{name, users: [<address>, …]}]`. `count` is derived from `users` rather than read, so the two can never disagree."
     },
     "files": {
       "type": "array",
@@ -129,9 +152,32 @@
           "reactions": {
             "type": "array",
             "items": {
-              "type": "object"
+              "type": "object",
+              "description": "One reaction. Slack's own OpenAPI (`objs_reaction`) requires `name`, `users` and `count` together, and types each entry of `users` as a `defs_user_id` matching `^[UW][A-Z0-9]{2,}$` — a value a corpus author cannot know, since it is what `synth.slack_user_id` will make of an address. So the corpus writes the ADDRESS and the router renders the id, the same way `author_email` becomes a message's `user`. `count` is rendered from `users` too: real Slack may send a larger one, since it truncates `users` and says so on `reactions.get`, but Backlot serves every reactor a record names, so that length is the count. Stating it would add a second place to be wrong, so the item is closed and a record that states one, or misspells a key, is refused rather than read and dropped.",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "The emoji name, without colons: `eyes`, `+1`, `tada`."
+                },
+                "users": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "string",
+                    "format": "email"
+                  },
+                  "uniqueItems": true,
+                  "description": "Who reacted, by address. A reaction nobody made is not one Slack returns, so the list may not be empty, and one address twice is one Slack refuses with `already_reacted` (reactions.add), so it may not repeat: the served `count` is this list's LENGTH, and a repeat would render one id while counting two."
+                }
+              },
+              "required": [
+                "name",
+                "users"
+              ],
+              "additionalProperties": false
             },
-            "description": "[{name, count, users:[U…]}]."
+            "description": "Reactions to this message, as `[{name, users: [<address>, …]}]`. `count` is derived from `users` rather than read, so the two can never disagree."
           },
           "files": {
             "type": "array",

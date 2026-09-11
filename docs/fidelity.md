@@ -116,9 +116,9 @@ Backlot does serve.
 
 S3 dispatches on the query string, not the path: `GET /{Bucket}` is ListObjects,
 `?list-type=2` is ListObjectsV2, `?location` is GetBucketLocation, and ninety more operations sit
-at the same path. Backlot serves them from four catch-all routes that declare no query parameters
-and read the string themselves, so a path-and-parameter diff pairs every S3 operation with the same
-route and reports a clean match every time — a green check that means nothing.
+at the same path. Backlot serves them from four catch-all routes that read the query string
+themselves, so a path-and-parameter diff pairs every S3 operation with the same route and reports a
+clean match every time — a green check that means nothing.
 
 So S3 is compared by asking a running server instead. Backlot starts on a free port, every read
 operation botocore declares is sent to it signed, and the answer is classified:

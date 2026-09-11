@@ -6,7 +6,7 @@ agents**: it mounts a SaaS backend and lets you read it with plain bash — `ls`
 agent over a corpus **you** supply, entirely offline.
 
 ```bash
-pip install -e ".[examples,mirage]"
+uv sync --all-extras --locked
 python examples/using-mirage/slack.py       # or gmail.py, gdrive.py, notion.py, s3.py, github.py, unified.py
 ```
 
@@ -70,9 +70,11 @@ uses an AWS keypair (not a bearer token): `--access-key`/`--secret-key` are **re
 `--url`** (real AWS keys, or a pair from `GET <url>/_meta/users` — the keys the SigV4 verifier
 accepts); without `--url` the local throwaway server uses its own admin keypair.
 
-**Google** has no such knob — its connectors read the API host from module constants that the
-base helpers return verbatim. So `backlot.integrations.mirage` exposes `point_google_at(base_url)`,
-which rewrites those constants to Backlot before the Google resources are built:
+**Google** has a knob, `GoogleConfig.api_base`, and it is the *single* that rules it out rather
+than its absence: mirage composes Docs, Slides and Forms alike as `{api_base}/v1`, while Backlot
+serves docs at `/docs/v1` and slides at `/slides/v1`, so all three would arrive on one prefix it
+cannot route apart. So `backlot.integrations.mirage` exposes `point_google_at(base_url)`, which
+rewrites the per-API constants the helpers fall back to when `api_base` is unset:
 
 ```python
 from backlot.integrations.mirage import point_google_at
@@ -87,10 +89,10 @@ exactly as in the `using-official-sdk` examples: `serve_or_connect` comes from `
 and `google_oauth_user` (Backlot-specific OAuth glue, not general API) from
 [`examples/_common/google_creds.py`](../_common/google_creds.py).
 
-**GitHub** is the same shape as Google, but with one constant: `GitHubConfig` has no `base_url`
-field, and mirage hardcodes `mirage.core.github._client.API_BASE = "https://api.github.com"`.
-`point_github_at(base_url)` patches that constant (and any already-imported copy) before the
-resource is built:
+**GitHub** is the same shape as Google, but with one constant:
+`mirage.core.github.constants.API_BASE = "https://api.github.com"`, which mirage falls back to
+whenever `GitHubConfig.base_url` is unset. `point_github_at(base_url)` rebinds that constant (and
+any already-imported copy) before the resource is built:
 
 ```python
 from backlot.integrations.mirage import point_github_at
@@ -98,10 +100,11 @@ point_github_at(s.base_url)                       # api.github.com  ->  Backlot
 repo = GitHubResource(GitHubConfig(token=T, owner="acme", repo="gateway"))
 ```
 
-Unlike Google's constants, nothing else in mirage imports `API_BASE` by value — every consumer
-calls the client's `github_get`/`github_get_sync` functions, which read the module global at call
-time — so the single patch is enough in practice; the copy-sweep is kept for parity with
-`point_google_at` and future-proofing.
+The copy-sweep matters here for the same reason it does for Google: `mirage/core/github/client.py`
+imports `API_BASE` by value and reads that copy in `github_url`, so patching only the constants
+module would leave every request pointed at api.github.com. What differs from Google is that
+`GitHubConfig.base_url` is a real seam — mirage threads it to every call site — so the rebind is
+what redirects a resource built without that field, rather than the only way in.
 
 ## FUSE mode (`--fuse`)
 
@@ -127,7 +130,8 @@ process.)
 
 **Requirements:**
 
-- `pip install -e ".[mirage]"` already pulls `mirage-ai[fuse]` (the `mfusepy` binding).
+- `uv sync --all-extras --locked` already pulls `mirage-ai[fuse,s3]` — the `mfusepy` binding, and
+  the `aioboto3` that `s3.py`'s backend imports.
 - An **OS FUSE driver**: [macFUSE](https://macfuse.io) on macOS, `fuse3` on Linux. Without it,
   `--fuse` prints install guidance and exits cleanly (the non-`--fuse` path needs no driver).
 

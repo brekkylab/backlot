@@ -140,9 +140,12 @@ claimed to serve, and the first Linear run lists seven hundred and eighty-two �
 nobody reads the output. The baselines ship inside the package, so an installed copy can be compared
 against its vendor without the repository.
 
-Accepting a divergence is a file change, so it goes through review like any other. Each entry
-carries a note saying why the gap is deliberate — which makes this file the written record of what
-Backlot does and does not claim about a vendor:
+Accepting a divergence is a file change, so it goes through review like any other.
+`--update-baseline` writes the entry; the note beside it is added by hand in that review. Most
+entries are plain — surface the vendor has and Backlot does not — and a note is what records a
+decision someone had to make: a family accepted as a whole, or a shape where a stand-in would break
+a client rather than merely be absent. Those notes are the written record of what Backlot does and
+does not claim about a vendor:
 
 ```json
 {

@@ -114,12 +114,14 @@ llamaindex = [
 ]
 # Mirage examples (examples/using-mirage/): drive Backlot through mirage's virtual filesystem.
 # The [fuse] extra powers the optional `--fuse` real-OS mount, which also needs an OS FUSE driver
-# (macFUSE / fuse3) — the Python dep itself installs everywhere.
+# (macFUSE / fuse3) — the Python dep itself installs everywhere. [s3] carries aioboto3, which
+# mirage's S3 backend imports at module scope: without it `s3.py` dies on `import aioboto3` before
+# it reaches Backlot.
 mirage = [
-    # Floor is 0.0.5, not 0.0.4: that release added CALENDAR_API_BASE and FORMS_API_BASE, and
-    # `integrations.mirage` rebinds both. `_rebind_mirage_constants` RAISES on a name it cannot
-    # find anywhere, so on 0.0.4 `point_google_at` would fail outright rather than degrade.
-    "mirage-ai[fuse]~=0.0.5",
+    # 0.0.6 is the floor: it holds the host constants `integrations.mirage` rebinds in
+    # `mirage.core.{google,github}.constants`, and it takes `GitHubResource(config)` alone, the
+    # signature `examples/using-mirage/github.py` calls. Earlier releases are not supported.
+    "mirage-ai[fuse,s3]>=0.0.6",
 ]
 # fsspec examples (examples/using-fsspec/): read the mock through the filesystem interface that
 # pandas, pyarrow, dask and LlamaIndex all consume. pandas is here because the examples' point is

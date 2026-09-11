@@ -76,17 +76,18 @@ file with them:
 | Docker, `npx`, `uvx` | one `tests/test_mcp.py` test each — the Atlassian, Notion and AWS MCP servers |
 | `git` | the tests in `tests/test_github.py` that build a real repo |
 
-Install what covers the surface you touched, or all of it at once, and let `-rs` confirm nothing
-you meant to run skipped. The zero-skip install is two commands, the way CI's is — `.[all]`
-is every extra above, kept in step with them by `tests/test_packaging.py`, and the HubSpot
-reader pins `hubspot-api-client<9` against the `>=12` that `examples` needs — over-restrictive
-rather than a real incompatibility, so it goes in past its own dependencies, at the version CI
-installs:
+Install with `uv sync --all-extras --locked` — the same command CI runs, and the one to use rather
+than pip, whose resolver cannot solve this dependency graph. It installs every extra above, so
+`-rs` confirms nothing you meant to run skipped. The HubSpot reader is the one addition: it pins
+`hubspot-api-client<9` against the `>=12` that `examples` needs — over-restrictive rather than a
+real incompatibility, so it goes in past its own dependencies, at the version CI installs.
 
 ```bash
-uv pip install -e ".[all]"
+uv sync --all-extras --locked
 uv pip install --no-deps "llama-index-readers-hubspot<0.6"
 ```
+
+(`.[all]` names the same set for anyone installing Backlot from PyPI rather than a checkout.)
 
 CI runs the suite, ruff, and the Linear example on every push to `main` and every pull request
 (see `.github/workflows/ci.yml`).

@@ -2388,7 +2388,8 @@ def test_drive_q_evaluates_the_operators_the_reference_lists(tmp_path):
 
     Every operator the reference lists for `name`, `mimeType`, `modifiedTime`, `createdTime` and
     `trashed`, over a corpus small enough to name the answer; `sharedWithMe`, `fullText` and the
-    two collections are the test two below. Folders are dropped here (their `createdTime` is seeded,
+    two collections are in the client-shapes test that closes this group. Folders are dropped here
+    (their `createdTime` is seeded,
     so a time clause's answer for them is not this test's to state); the test below is where they
     go through the same evaluator."""
     from tests._helpers import corpus_client
@@ -2526,8 +2527,9 @@ def test_drive_q_refuses_a_documented_term_it_holds_no_fact_for(tmp_path):
 
 
 def test_drive_q_shapes_clients_send_still_parse(tmp_path):
-    """The shapes measured off mirage and the LlamaIndex reader, spaces and all: `trashed=false`
-    without spaces, a bare `sharedWithMe`, keywords in either case, a phrase inside `fullText`."""
+    """The shapes clients send, spaces and all — mirage's `'<id>' in parents and trashed=false` is
+    the first — plus a bare `sharedWithMe`, keywords in either case, `in owners`, and a phrase and
+    an `or` around `fullText`, whose index answer is a membership test rather than a pre-filter."""
     from tests._helpers import corpus_client
 
     with corpus_client(tmp_path, _Q_RECORDS) as (client, settings):

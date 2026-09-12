@@ -770,6 +770,231 @@ def test_a_bad_token_is_unauthenticated_everywhere(client, path):
         assert e["errors"][0]["locationType"] == "header"
 
 
+# --- `$.xgafv`, the system parameter that selects the error envelope --------------------------
+#
+# Every shape below was measured against the live Sheets, Docs and Drive APIs on 2026-09-12 (#172):
+# `1` puts the legacy `errors[]` array on an editor-family error, `2` and an absent value leave it
+# off, Drive carries it either way, and the entry inside it depends on which error it is.
+
+XGAFV_REFUSAL = "Invalid query parameters. Invalid value '{}' for system query parameter : $.xgafv"
+
+
+@pytest.mark.parametrize("value", ["0", "3", "NOPE", "01", ""])
+def test_xgafv_takes_1_or_2_and_refuses_the_rest_with_reals_sentence(client, admin_h, value):
+    """Measured on Sheets: 400 INVALID_ARGUMENT, this sentence, spacing and all, and no `errors[]`
+    — the value that would have asked for one was the value refused. Drive carries the array on
+    every error, this one included, as `badRequest`."""
+    r = client.get("/sheets/v4/spreadsheets/x", headers=admin_h, params={"$.xgafv": value})
+    assert r.status_code == 400, r.text
+    e = _gerr(r)
+    assert e == {"code": 400, "message": XGAFV_REFUSAL.format(value), "status": "INVALID_ARGUMENT"}
+    r = client.get("/drive/v3/files", headers=admin_h, params={"$.xgafv": value})
+    e = _gerr(r)
+    assert e["message"] == XGAFV_REFUSAL.format(value) and e["status"] == "INVALID_ARGUMENT"
+    assert e["errors"] == [
+        {"message": XGAFV_REFUSAL.format(value), "domain": "global", "reason": "badRequest"}
+    ]
+
+
+def test_a_bad_xgafv_is_refused_before_anything_else_is_read(client, admin_h):
+    """Measured: real answers the system-parameter 400 ahead of a bad token, a missing credential
+    and an unparseable range. A router-level dependency is what puts the check first here."""
+    for headers, path in (
+        (BAD_TOKEN, "/sheets/v4/spreadsheets/x"),
+        ({}, "/sheets/v4/spreadsheets/x"),
+        (admin_h, "/sheets/v4/spreadsheets/x/values/NOPE!A1"),
+        ({}, "/docs/v1/documents/x"),
+    ):
+        r = client.get(path, headers=headers, params={"$.xgafv": "3"})
+        assert r.status_code == 400, (path, r.text)
+        assert _gerr(r)["message"] == XGAFV_REFUSAL.format("3")
+
+
+def test_xgafv_1_puts_the_errors_array_on_an_editor_error_and_2_does_not(client, admin_h):
+    """The same 404, three ways. `2` and an absent value are the envelope Backlot always served;
+    `1` adds `errors[]`, and the LAST repeat wins when the parameter is sent twice — measured,
+    `2&1` carries the array and `1&2` does not."""
+    doc = _drive_find(client, admin_h, "Brand")["id"]
+    path = f"/sheets/v4/spreadsheets/{doc}"
+    plain = _gerr(client.get(path, headers=admin_h))
+    assert plain["code"] == 404 and "errors" not in plain
+    assert _gerr(client.get(path, headers=admin_h, params={"$.xgafv": "2"})) == plain
+    v1 = _gerr(client.get(path, headers=admin_h, params={"$.xgafv": "1"}))
+    assert v1 == {
+        **plain,
+        "errors": [
+            {"message": "Requested entity was not found.", "domain": "global", "reason": "notFound"}
+        ],
+    }
+    assert _gerr(client.get(f"{path}?$.xgafv=1&$.xgafv=2", headers=admin_h)) == plain
+    assert _gerr(client.get(f"{path}?$.xgafv=2&$.xgafv=1", headers=admin_h)) == v1
+
+
+def test_xgafv_changes_nothing_about_a_success_or_a_drive_error(client, admin_h):
+    """Measured: a 200 body is byte-identical under `1`, `2` and no parameter, and Drive's envelope
+    — `errors[]` on every error already — reads the same under all three."""
+    doc = _drive_find(client, admin_h, "Brand")["id"]
+    bodies = [
+        client.get(f"/drive/v3/files/{doc}", headers=admin_h, params=p).json()
+        for p in ({}, {"$.xgafv": "1"}, {"$.xgafv": "2"})
+    ]
+    assert bodies[0] == bodies[1] == bodies[2]
+    errors = [
+        _gerr(client.get("/drive/v3/files", headers=admin_h, params={"fields": "nope", **p}))
+        for p in ({}, {"$.xgafv": "1"}, {"$.xgafv": "2"})
+    ]
+    assert errors[0] == errors[1] == errors[2]
+    assert errors[0]["errors"][0]["reason"] == "invalidParameter"
+
+
+# (what is sent, the `errors[0]` real answered at `$.xgafv=1`) — the entry is not uniform, and
+# which constructor raised the error decides its shape. `{path}` is the SAMPLE spreadsheet's id.
+XGAFV_ENTRIES = [
+    # a typed value the proto layer refuses: `invalid`, and no `domain`
+    (
+        "/sheets/v4/spreadsheets/{sid}/values/Sheet1!A1",
+        {"majorDimension": "NOPE"},
+        {
+            "message": "Invalid value at 'major_dimension' "
+            '(type.googleapis.com/google.apps.sheets.v4.Dimension), "NOPE"',
+            "reason": "invalid",
+        },
+    ),
+    (
+        "/sheets/v4/spreadsheets/{sid}",
+        {"includeGridData": "maybe"},
+        {
+            "message": "Invalid value at 'include_grid_data' (TYPE_BOOL), \"maybe\"",
+            "reason": "invalid",
+        },
+    ),
+    # everything else the editor APIs refuse with a 400: `badRequest` under `global`
+    (
+        "/sheets/v4/spreadsheets/{sid}/values/NOPE!A1",
+        {},
+        {"message": "Unable to parse range: NOPE!A1", "domain": "global", "reason": "badRequest"},
+    ),
+    (
+        "/sheets/v4/spreadsheets/{sid}/values/A1001",
+        {},
+        {
+            "message": "Range (Sheet1!A1001) exceeds grid limits. Max rows: 1000, max columns: 26",
+            "domain": "global",
+            "reason": "badRequest",
+        },
+    ),
+    (
+        "/sheets/v4/spreadsheets/{sid}",
+        {"fields": "nope"},
+        {
+            "message": "Request contains an invalid argument.",
+            "domain": "global",
+            "reason": "badRequest",
+        },
+    ),
+    (
+        "/sheets/v4/spreadsheets/{sid}/values/Sheet1!A1",
+        {"alt": "media"},
+        {
+            "message": 'Unsupported alt type "media" for non byte stream request.',
+            "domain": "global",
+            "reason": "badRequest",
+        },
+    ),
+    # not found, and the credential failures
+    (
+        "/sheets/v4/spreadsheets/nonexistent",
+        {},
+        {"message": "Requested entity was not found.", "domain": "global", "reason": "notFound"},
+    ),
+]
+
+
+@pytest.mark.parametrize("path, params, entry", XGAFV_ENTRIES)
+def test_the_errors_entry_at_xgafv_1_is_the_one_real_answers(client, admin_h, path, params, entry):
+    sid = _drive_find(client, admin_h, "Q1 Revenue Model")["id"]
+    r = client.get(path.format(sid=sid), headers=admin_h, params={**params, "$.xgafv": "1"})
+    e = _gerr(r)
+    assert e["errors"] == [entry], r.text
+    assert e["message"] == entry["message"]
+
+
+def test_the_credential_entries_at_xgafv_1(client):
+    """A bad token is `authError` at `location: Authorization` in every family (already pinned
+    without the parameter on Drive and Gmail). An anonymous Sheets request is `forbidden`; an
+    anonymous Docs request is `required` with the short `Login Required.` at the same location —
+    measured on Docs, and Slides is the same family."""
+    e = _gerr(client.get("/sheets/v4/spreadsheets/x", headers=BAD_TOKEN, params={"$.xgafv": "1"}))
+    assert e["errors"] == [
+        {
+            "message": "Invalid Credentials",
+            "domain": "global",
+            "reason": "authError",
+            "location": "Authorization",
+            "locationType": "header",
+        }
+    ]
+    e = _gerr(client.get("/sheets/v4/spreadsheets/x", params={"$.xgafv": "1"}))
+    assert e["code"] == 403
+    assert e["errors"] == [
+        {"message": e["message"], "domain": "global", "reason": "forbidden"},
+    ]
+    for path in ("/docs/v1/documents/x", "/slides/v1/presentations/x"):
+        e = _gerr(client.get(path, params={"$.xgafv": "1"}))
+        assert e["code"] == 401, path
+        assert e["errors"] == [
+            {
+                "message": "Login Required.",
+                "domain": "global",
+                "reason": "required",
+                "location": "Authorization",
+                "locationType": "header",
+            }
+        ], path
+        # ...and the array is the ONLY thing `1` adds: the same request without it is the same body
+        # minus that member.
+        assert {k: v for k, v in e.items() if k != "errors"} == _gerr(client.get(path))
+
+
+def test_every_google_operation_declares_the_system_parameter(client):
+    """Declared once for the document, the way real declares it once per discovery document, so
+    the fidelity diff stops reporting `missing_param … ?$.xgafv` on every Google operation and a
+    route added later cannot forget it. The batch endpoint is no family's and declares nothing."""
+    spec = client.get("/openapi.json").json()
+    families = ("/drive/v3", "/gmail/v1", "/docs/v1", "/sheets/v4", "/slides/v1")
+    missing, batch = [], []
+    for path, item in spec["paths"].items():
+        for method, op in item.items():
+            if method not in ("get", "post", "put", "patch", "delete"):
+                continue
+            declared = [p for p in op.get("parameters", []) if p["name"] == "$.xgafv"]
+            if path.startswith(families):
+                if declared != [
+                    {
+                        "name": "$.xgafv",
+                        "in": "query",
+                        "required": False,
+                        "description": "V1 error format.",
+                        "schema": {"type": "string", "enum": ["1", "2"]},
+                    }
+                ]:
+                    missing.append(f"{method.upper()} {path}")
+            elif path.startswith("/batch") and declared:
+                batch.append(f"{method.upper()} {path}")
+    assert missing == [] and batch == []
+
+
+def test_no_google_baseline_acknowledges_the_system_parameter_any_more():
+    """The 13 `google_drive` and 8 `gmail` entries `missing_param … ?$.xgafv` were the shape of
+    this gap in the fidelity baseline; declaring the parameter is what removes them, and a run of
+    `backlot diff --source <source> --update-baseline` against the live documents did."""
+    from backlot.fidelity import baseline_path
+
+    for source in ("google_drive", "gmail"):
+        acknowledged = json.loads(baseline_path(source).read_text())["acknowledged"]
+        assert not [e["path"] for e in acknowledged if "$.xgafv" in e["path"]], source
+
+
 @pytest.mark.parametrize(
     "path, code, status",
     [
@@ -1334,7 +1559,9 @@ def test_drive_about_appears_in_the_openapi_spec(client):
     """The OpenAPI→MCP bridge builds its tools from the spec, so a route the spec omits is a route
     no generated client can reach."""
     op = client.get("/openapi.json").json()["paths"][ABOUT]["get"]
-    assert {p["name"] for p in op["parameters"]} == {"fields"}
+    # `$.xgafv` beside the route's own parameter: a system parameter, declared on every Google
+    # operation at once (see test_every_google_operation_declares_the_system_parameter).
+    assert {p["name"] for p in op["parameters"]} == {"fields", "$.xgafv"}
 
 
 @pytest.fixture(scope="module")

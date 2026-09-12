@@ -57,7 +57,7 @@ def _body(status_code: int, detail) -> dict:
     }
 
 
-def http_body(path: str, exc) -> dict:
+def http_body(path: str, exc, query=None) -> dict:
     """``path`` is unused: one envelope covers every Atlassian route, unlike Google's per-family
     split. It is in the signature so the dispatch in ``__init__`` can treat every module alike."""
     return _body(exc.status_code, exc.detail)

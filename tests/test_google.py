@@ -2036,12 +2036,14 @@ MEASURED_ECHO = [
     ("Sheet1!A1:D5", "Sheet1!A1:D5"),
 ]
 
-# Every R1C1-related request sent to the live Sheets API on 2026-09-12 (#174), on a workbook whose
+# Every range-related request sent to the live Sheets API on 2026-09-12 (#174), on a workbook whose
 # sheets were `Sheet1`, `Data`, `R1C1`, `RC` and `A` (1000x26 each, `a`..`f` in A1:B3 of the first
 # two), with what came back: the status and the echoed `range`, or the error message. The five
-# rows the issue's comment measured on 2026-09-10 open the list. The test below serves a corpus with
-# the same five sheets and holds Backlot to every row, so the grammar in `_R1C1_END`'s comment is
-# what this table says and not what a document says.
+# rows the issue's comment measured on 2026-09-10 open the list; the last 28 are the edges asked
+# for in review — whitespace around the bang, whole rows and columns past the grid, in both
+# notations. The test
+# below serves a corpus with the same five sheets and holds Backlot to every row, so the grammar in
+# `_R1C1_END`'s comment is what this table says and not what a document says.
 MEASURED_R1C1 = [
     ("R1C2", 200, "Sheet1!B1"),
     ("R1C1:R2C2", 200, "Sheet1!A1:B2"),
@@ -2200,6 +2202,50 @@ MEASURED_R1C1 = [
     ("B1:A1", 200, "Sheet1!A1:B1"),
     ("C1:A1", 200, "Sheet1!A1:C1"),
     ("A2:A1", 200, "Sheet1!A1:A2"),
+    ("Sheet1! A1", 400, "Unable to parse range: Sheet1! A1"),
+    ("Sheet1 !A1", 400, "Unable to parse range: Sheet1 !A1"),
+    ("Sheet1! A1:B2", 400, "Unable to parse range: Sheet1! A1:B2"),
+    ("'Data' !A1", 400, "Unable to parse range: 'Data' !A1"),
+    ("'Data'! R1C1", 400, "Unable to parse range: 'Data'! R1C1"),
+    ("Sheet1!A1 :B2", 400, "Unable to parse range: Sheet1!A1 :B2"),
+    ("Sheet1!A1: B2", 400, "Unable to parse range: Sheet1!A1: B2"),
+    ("1001:1001", 400, "Range (Sheet1!1001) exceeds grid limits. Max rows: 1000, max columns: 26"),
+    (
+        "1001:1002",
+        400,
+        "Range (Sheet1!1001:1002) exceeds grid limits. Max rows: 1000, max columns: 26",
+    ),
+    ("1000:1001", 200, "Sheet1!A1000:Z1000"),
+    ("1:1001", 200, "Sheet1!A1:Z1000"),
+    ("2000:2000", 400, "Range (Sheet1!2000) exceeds grid limits. Max rows: 1000, max columns: 26"),
+    (
+        "Sheet1!1001:1001",
+        400,
+        "Range (Sheet1!1001) exceeds grid limits. Max rows: 1000, max columns: 26",
+    ),
+    (
+        "R1001:R1001",
+        400,
+        "Range (Sheet1!R1001) exceeds grid limits. Max rows: 1000, max columns: 26",
+    ),
+    (
+        "R[1000]:R[1000]",
+        400,
+        "Range (Sheet1!1001) exceeds grid limits. Max rows: 1000, max columns: 26",
+    ),
+    ("Z:AA", 200, "Sheet1!Z1:Z1000"),
+    ("A:ZZ", 200, "Sheet1!A1:Z1000"),
+    ("AA:AB", 400, "Range (Sheet1!AA:AB) exceeds grid limits. Max rows: 1000, max columns: 26"),
+    ("R1C27:R1C27", 400, "Range (Sheet1!AA1) exceeds grid limits. Max rows: 1000, max columns: 26"),
+    ("C27:C27", 200, "Sheet1!C27"),
+    ("C[26]", 400, "Range (Sheet1!AA) exceeds grid limits. Max rows: 1000, max columns: 26"),
+    ("R1C1:R1C27", 200, "Sheet1!A1:Z1"),
+    ("R1C1:R1001C1", 200, "Sheet1!A1:A1000"),
+    ("1000:1000", 200, "Sheet1!A1000:Z1000"),
+    ("Z:Z", 200, "Sheet1!Z1:Z1000"),
+    ("1:1000", 200, "Sheet1!A1:Z1000"),
+    ("R1000:R1000", 200, "Sheet1!R1000"),
+    ("R1000", 200, "Sheet1!R1000"),
 ]
 
 # A subset for the SAMPLE spreadsheet, which has `Sheet1` alone: two of the five the issue's

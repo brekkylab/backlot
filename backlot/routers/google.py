@@ -2505,7 +2505,7 @@ _A1_END = re.compile(r"(?:(?P<col>[A-Za-z]{1,3})(?P<row>\d+)?|(?P<rowonly>\d+))\
 # `range` ("The A1 notation or R1C1 notation of the range to retrieve values from"), and which
 # the LlamaIndex `GoogleSheetsReader` sends for every sheet as `R1C1:R{rowCount}C{columnCount}`.
 #
-# The grammar below is measured, not read off a document: 153 requests against a real workbook on
+# The grammar below is measured, not read off a document: 181 requests against a real workbook on
 # 2026-09-12 (#174), every one pinned in `tests/test_google.py::MEASURED_R1C1`.
 #
 # * `R` and `C` each take an ABSOLUTE 1-based number (`R1C1`), a BRACKETED 0-based offset from A1
@@ -2529,7 +2529,11 @@ _A1_END = re.compile(r"(?:(?P<col>[A-Za-z]{1,3})(?P<row>\d+)?|(?P<rowonly>\d+))\
 #   from it before they were sent all held, and the same-kind clause was then added for the 4
 #   mixed-kind rows the first version got wrong.
 # * the echo is the A1 equivalent, and the grid rules are A1's: an end past the grid is clamped
-#   (`R1C1:R2000C50` is A1:Z1000), a start past it is refused (`R[1000]C[0]` names `A1001`).
+#   (`R1C1:R2000C50` is A1:Z1000, `1:1001` is A1:Z1000), a start past it is refused (`R[1000]C[0]`
+#   names `A1001`), and a refused whole column or row is named by its letters or numbers alone
+#   (`C[26]` names `AA`, `R[1000]:R[1000]` names `1001`, `1001:1002` names `1001:1002`).
+# * whitespace is refused wherever it was tried: ` A1`, `A1 `, `Sheet1! A1`, `Sheet1 !A1`,
+#   `'Data' !A1`, `Sheet1!A1 :B2` and `Sheet1!A1: B2` are unparseable.
 _R1C1_END = re.compile(
     r"(?P<r>R(?:(?P<rabs>\d+)|\[(?P<rrel>\d+)\])?)?(?P<c>C(?:(?P<cabs>\d+)|\[(?P<crel>\d+)\])?)?\Z",
     re.IGNORECASE,
@@ -2700,13 +2704,14 @@ def _a1_sheet(spec: str, sheets: list[_Sheet]) -> tuple[_Sheet, str]:
     * a name no sheet has 400s with the same `Unable to parse range` message unparseable garbage
       gets — resolving to an empty grid instead would be indistinguishable from an empty range
     """
-    # Not stripped: measured, ` A1`, `A1 ` and ` R1C1 ` are "Unable to parse range", spaces and all.
+    # Not stripped anywhere: measured, ` A1`, `A1 `, ` R1C1 `, `Sheet1! A1`, `Sheet1 !A1` and
+    # `'Data' !A1` are all "Unable to parse range", spaces and all.
     bare = spec
     if "!" in bare:
         title, _, body = bare.rpartition("!")
-        found = _a1_find(title.strip(), sheets)
-        if found is not None and body.strip():
-            return found, body.strip()
+        found = _a1_find(title, sheets)
+        if found is not None and body:
+            return found, body
         # A title that itself holds a bang, named bare: `has!bang` is the WHOLE sheet, so the
         # split above leaves `has` (no such sheet) over `bang` (no such range). Measured.
         # `Sheet1!` with nothing after it falls here too, and is malformed either way.
@@ -2767,11 +2772,13 @@ def _a1_range(spec: str, body: str, sheet: _Sheet) -> tuple[int, int, int, int]:
             c0f, c1 = c1 - 1, c0f + 1
     if r0f >= nrows or c0f >= ncols or r0f < 0 or c0f < 0:
         # The START is outside the grid — refused, with the range echoed back unclamped; whole
-        # columns by their letters alone (`_a1_columns_name`).
-        whole_columns = len(ends) == 2 and ends[0].row is None and ends[1].row is None
-        named = (
-            _a1_columns_name(sheet, c0f, c1) if whole_columns else _a1_name(sheet, r0f, c0f, r1, c1)
-        )
+        # columns by their letters alone and whole rows by their numbers alone (`_a1_axis_name`).
+        if all(e.row is None for e in ends):
+            named = _a1_axis_name(sheet, _a1_col_letters(c0f), _a1_col_letters(c1 - 1))
+        elif all(e.col is None for e in ends):
+            named = _a1_axis_name(sheet, str(r0f + 1), str(r1))
+        else:
+            named = _a1_name(sheet, r0f, c0f, r1, c1)
         raise gerr.invalid_argument(
             f"Range ({named}) exceeds grid limits. Max rows: {nrows}, max columns: {ncols}"
         )
@@ -2806,14 +2813,14 @@ def _a1_col_letters(i: int) -> str:
     return s
 
 
-def _a1_columns_name(sheet: _Sheet, c0: int, c1: int) -> str:
-    """Whole columns by their letters alone, the way real names them when refusing a range past
-    the grid: measured, `ZZ:ZZ` reports ``Sheet1!ZZ`` and `RC:RC` ``Sheet1!RC``, never ``ZZ1:ZZ1000``.
-    One column collapses as one cell does."""
+def _a1_axis_name(sheet: _Sheet, start: str, end: str) -> str:
+    """Whole columns by their letters alone, or whole rows by their numbers alone, the way real
+    names them when refusing a range past the grid: measured, `ZZ:ZZ` reports ``Sheet1!ZZ``,
+    `AA:AB` ``Sheet1!AA:AB``, `1001:1001` ``Sheet1!1001`` and `1001:1002` ``Sheet1!1001:1002``, never
+    ``ZZ1:ZZ1000`` or ``A1001:Z1001``. One column or row collapses as one cell does; a lone `C[26]`
+    reports ``Sheet1!AA`` the same way."""
     title = _a1_title(sheet.title)
-    if c1 - c0 == 1:
-        return f"{title}!{_a1_col_letters(c0)}"
-    return f"{title}!{_a1_col_letters(c0)}:{_a1_col_letters(c1 - 1)}"
+    return f"{title}!{start}" if start == end else f"{title}!{start}:{end}"
 
 
 def _a1_name(sheet: _Sheet, r0: int, c0: int, r1: int, c1: int) -> str:

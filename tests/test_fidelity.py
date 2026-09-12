@@ -996,7 +996,10 @@ def test_a_route_no_document_declares_any_more_is_breaking_on_its_own(monkeypatc
     """
     specs = _serve_documents(
         monkeypatch,
-        *({"id": name, "batchPath": "batch"} for name in ("gmail:v1", "drive:v3", "docs:v1")),
+        *(
+            {"id": name, "batchPath": "batch"}
+            for name in ("gmail:v1", "drive:v3", "docs:v1", "sheets:v4", "slides:v1")
+        ),
     )
     found = google_batch.divergences(comparisons.BatchPathComparison(name="x", documents=specs))
     assert [(f.kind, f.severity, f.path) for f in found] == [
@@ -1025,8 +1028,9 @@ def test_two_documents_that_call_themselves_the_same_thing_report_once(monkeypat
 
 def test_two_comparisons_over_one_document_read_it_once():
     """A source's Specs may address one document more than once — HubSpot's two both address its
-    API index — and here that would read one document twice and report it twice under one key,
-    which a baseline keyed on `kind:path` cannot hold."""
+    API index — and here, where no resolver picks a different document out of it, that is one
+    document twice: a vendor round trip per run spent re-reading what is already in hand. What a
+    repeat does to the report is the keying above, not this."""
     shared = "https://doc.invalid/shared"
     compared = [
         comparisons.GoogleDiscoveryComparison(name="a", specs=(comparisons.Spec(shared, ("/a",)),)),

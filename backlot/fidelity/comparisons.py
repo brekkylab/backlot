@@ -465,8 +465,11 @@ def _documents_of(compared: Iterable[GoogleDiscoveryComparison]) -> tuple[Spec, 
 
     Deduplicated by URL, because a source's Specs may address one document more than once —
     HubSpot's two both address its API index, and `resolve_url` picks a different document out of
-    it. Here that would read one document twice and report it twice under one key, which a baseline
-    keyed on `kind:path` cannot hold.
+    it. There a repeat resolves to two different documents; here there is no resolver, so it is one
+    document twice, and what it costs is a vendor round trip per run spent re-reading a document
+    already in hand. What a repeat would otherwise do to the REPORT is `_one_report`'s job, which
+    covers it whether the repeat arrives as one URL twice or as the two URLs Google serves one
+    document at.
     """
     seen: dict[str, Spec] = {}
     for comparison in compared:

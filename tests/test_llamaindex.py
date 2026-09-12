@@ -235,6 +235,55 @@ def test_gdrive(live_server):
         discovery.build = _orig_build
 
 
+def test_gsheets(live_server):
+    """The reader that exposed #174: `GoogleSheetsReader` reads every sheet as
+    `R1C1:R{rowCount}C{columnCount}` built from `spreadsheets.get`, so until Backlot accepted R1C1
+    its first values call 400d with `Unable to parse range` on every spreadsheet."""
+    pytest.importorskip("llama_index.readers.google")
+    import json
+    import urllib.parse
+    import urllib.request
+
+    import llama_index.readers.google.sheets.base as gs
+    from google.oauth2.credentials import Credentials
+    from googleapiclient import discovery
+    from llama_index.readers.google import GoogleSheetsReader
+
+    from backlot.integrations.llamaindex import point_sheets_at
+
+    base, admin = _base_token(live_server)
+    # The spreadsheet, resolved through Drive the way a client would — by the exact name, which
+    # is the `name =` form #173 had falling out of the filter.
+    query = urllib.parse.urlencode(
+        {
+            "q": "mimeType = 'application/vnd.google-apps.spreadsheet' and name = 'Q1 Revenue Model'",
+            "fields": "files(id)",
+        }
+    )
+    req = urllib.request.Request(
+        f"{base}/drive/v3/files?{query}", headers={"Authorization": f"Bearer {admin}"}
+    )
+    with urllib.request.urlopen(req) as r:
+        (sheet,) = json.load(r)["files"]
+
+    # Both patches are process-global, restored after the test for the reason `test_gmail` gives.
+    # `GoogleSheetsReader._get_credentials` runs a disk-based OAuth flow with no constructor hook,
+    # exactly as `GmailReader`'s does, so the same patch hands back the admin bearer credential.
+    _orig_build = discovery.build
+    _orig_get_credentials = gs.GoogleSheetsReader._get_credentials
+    try:
+        point_sheets_at(base)
+        gs.GoogleSheetsReader._get_credentials = lambda self: Credentials(token=admin)
+        docs = GoogleSheetsReader().load_data(spreadsheet_ids=[sheet["id"]])
+        assert len(docs) == 1
+        # The reader writes the sheet title, then the grid tab-separated, one line per row.
+        assert docs[0].text.startswith("Sheet1\n")
+        assert "Jan,120000" in docs[0].text  # SAMPLE Q1 Revenue Model, A2
+    finally:
+        discovery.build = _orig_build
+        gs.GoogleSheetsReader._get_credentials = _orig_get_credentials
+
+
 def test_linear(live_server):
     """`LinearReader` hardcodes `graphql_endpoint` as a LOCAL VARIABLE inside `load_data`, so the
     only seam is the module's `requests` import — swapped here (via `patch_linear_at`) for a

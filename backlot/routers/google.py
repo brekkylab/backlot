@@ -844,10 +844,310 @@ def _gmail_message(row, fmt: str, caller_email: str | None = None) -> dict:
 
 # ================================ Drive =========================================
 
-_DRIVE_FULLTEXT_RE = re.compile(r"fullText\s+contains\s+'([^']+)'")
-# `sharedWithMe = true|false`, or the bare `sharedWithMe` Drive also accepts (meaning true).
-_DRIVE_SHARED_RE = re.compile(r"sharedWithMe\b(?:\s*=\s*(true|false))?")
-_DRIVE_MIME_RE = re.compile(r"mimeType\s*(=|!=)\s*'([^']+)'")
+# --- `q` ---------------------------------------------------------------------------------------
+# Drive's query language, PARSED rather than pattern-matched. One regex per known clause let any
+# clause the regexes did not match — `name = '…'`, `modifiedTime < '…'`, `mimeType contains '…'`,
+# an `or`, a `not`, a mistyped term — drop out of the FILTER instead of out of the result, so the
+# caller got the unfiltered listing under a 200. Measured 2026-09-12 at 6490f3b: `name = 'First
+# Week Checklist'` answered every visible file, 16, where `name contains` answered 1. mirage sends
+# two of those shapes: its folder listing resolves a file with `name='…'` and bounds a sync with
+# `modifiedTime >= '…'` and `modifiedTime < '…'`.
+#
+# The grammar is the reference's (developers.google.com/workspace/drive/api/guides/ref-search-terms):
+# a term is `<field> <operator> <value>` or `'<value>' in <collection>`, terms join with `and` and
+# `or`, `not` negates, and a string value is single-quoted with an apostrophe escaped as `\'` —
+# "Escape single quotes in queries with \'". Parentheses group. Whether `and` binds before `or` the
+# reference does not say; Backlot reads it the way every query language does, `and` first.
+#
+# A term Backlot cannot evaluate is a 400 on `q`, never a silence. Two kinds: a term the reference
+# does not list (`bogusField = 'x'`), which real Drive refuses too — its wording is unmeasured, so
+# the bare `Invalid Value` of the parameter envelope stands — and a documented term Backlot holds no
+# fact for, refused with a message that says so, the way an unmodelled `orderBy` key is. Honouring
+# `starred = true` as "everything" would be the listing this section exists to stop.
+
+# Every term Backlot evaluates, with the operators the reference lists for it.
+_DRIVE_Q_OPERATORS: dict[str, frozenset[str]] = {
+    "name": frozenset({"contains", "=", "!="}),
+    "fullText": frozenset({"contains"}),
+    "mimeType": frozenset({"contains", "=", "!="}),
+    "modifiedTime": frozenset({"<=", "<", "=", "!=", ">", ">="}),
+    "createdTime": frozenset({"<=", "<", "=", "!=", ">", ">="}),
+    "trashed": frozenset({"=", "!="}),
+    "sharedWithMe": frozenset({"=", "!="}),
+}
+_DRIVE_Q_COLLECTIONS = frozenset({"parents", "owners"})
+_DRIVE_Q_BOOLEAN = frozenset({"trashed", "sharedWithMe"})
+# Documented on the reference, and nothing in a corpus record to evaluate them against.
+_DRIVE_Q_UNMODELLED = frozenset(
+    {"starred", "viewedByMeTime", "writers", "readers", "properties", "appProperties", "visibility"}
+)
+_DRIVE_Q_TOKEN = re.compile(
+    r"\s*(?:(?P<paren>[()])|(?P<op>!=|<=|>=|=|<|>)|'(?P<str>(?:[^'\\]|\\.)*)'"
+    r"|(?P<word>[A-Za-z_][A-Za-z0-9_]*))"
+)
+
+
+class _QTerm(NamedTuple):
+    field: str
+    op: str
+    value: str
+
+
+class _QNot(NamedTuple):
+    inner: object
+
+
+class _QAnd(NamedTuple):
+    parts: tuple
+
+
+class _QOr(NamedTuple):
+    parts: tuple
+
+
+def _drive_q_refused(message: str | None = None) -> gerr.GoogleError:
+    return gerr.invalid_value("q", message)
+
+
+def _drive_q_tokens(q: str) -> list[tuple[str, str]]:
+    """``(kind, text)`` pairs; a quoted value arrives unescaped."""
+    out: list[tuple[str, str]] = []
+    pos = 0
+    while pos < len(q):
+        m = _DRIVE_Q_TOKEN.match(q, pos)
+        if m is None:
+            if q[pos:].strip():
+                raise _drive_q_refused()
+            break
+        pos = m.end()
+        kind = m.lastgroup or ""
+        text = m.group(kind)
+        out.append((kind, re.sub(r"\\(.)", r"\1", text) if kind == "str" else text))
+    return out
+
+
+def _drive_q_parse(q: str):
+    """The parsed query, or ``None`` for an empty one. A clause Backlot cannot evaluate is a 400.
+
+    A query that names no ``trashed`` term gets ``and trashed = false`` appended: real Drive leaves
+    trashed files out of a listing unless a clause asks for them, which the matcher used to apply as
+    its default branch and the plain listing applies as ``exclude_trashed``."""
+    tokens = _drive_q_tokens(q)
+    if not tokens:
+        return None
+    pos = 0
+
+    def peek() -> tuple[str | None, str | None]:
+        return tokens[pos] if pos < len(tokens) else (None, None)
+
+    def take() -> tuple[str | None, str | None]:
+        nonlocal pos
+        tok = peek()
+        pos += 1
+        return tok
+
+    def is_word(text: str) -> bool:
+        kind, tok = peek()
+        return kind == "word" and (tok or "").lower() == text
+
+    def disjunction():
+        parts = [conjunction()]
+        while is_word("or"):
+            take()
+            parts.append(conjunction())
+        return parts[0] if len(parts) == 1 else _QOr(tuple(parts))
+
+    def conjunction():
+        parts = [unary()]
+        while is_word("and"):
+            take()
+            parts.append(unary())
+        return parts[0] if len(parts) == 1 else _QAnd(tuple(parts))
+
+    def unary():
+        if is_word("not"):
+            take()
+            return _QNot(unary())
+        if peek() == ("paren", "("):
+            take()
+            node = disjunction()
+            if take() != ("paren", ")"):
+                raise _drive_q_refused()
+            return node
+        return term()
+
+    def unmodelled(field: str) -> gerr.GoogleError:
+        evaluated = ", ".join(sorted(_DRIVE_Q_OPERATORS))
+        return _drive_q_refused(
+            f"'{field}' is not evaluated by Backlot: a corpus record carries nothing to answer it "
+            f"from. Terms it evaluates: {evaluated}, and 'x' in parents / owners."
+        )
+
+    def term():
+        kind, text = take()
+        if kind == "str":  # `'<value>' in <collection>`
+            if not is_word("in"):
+                raise _drive_q_refused()
+            take()
+            fkind, field = take()
+            if fkind != "word":
+                raise _drive_q_refused()
+            if field in _DRIVE_Q_UNMODELLED:
+                raise unmodelled(field)
+            if field not in _DRIVE_Q_COLLECTIONS:
+                raise _drive_q_refused()
+            return _QTerm(field, "in", text or "")
+        if kind != "word" or text is None:
+            raise _drive_q_refused()
+        field = text
+        if field in _DRIVE_Q_UNMODELLED:
+            raise unmodelled(field)
+        if field not in _DRIVE_Q_OPERATORS:
+            raise _drive_q_refused()
+        okind, op = peek()
+        if okind == "op":
+            take()
+        elif okind == "word" and (op or "").lower() in ("contains", "has", "in"):
+            take()
+            op = (op or "").lower()
+        elif field == "sharedWithMe":
+            # The bare `sharedWithMe` Drive also accepts, meaning true.
+            return _QTerm(field, "=", "true")
+        else:
+            raise _drive_q_refused()
+        if op not in _DRIVE_Q_OPERATORS[field]:
+            raise _drive_q_refused()
+        vkind, value = take()
+        if field in _DRIVE_Q_BOOLEAN:
+            if vkind != "word" or (value or "").lower() not in ("true", "false"):
+                raise _drive_q_refused()
+            return _QTerm(field, op or "", (value or "").lower())
+        if vkind != "str":
+            raise _drive_q_refused()
+        return _QTerm(field, op or "", value or "")
+
+    node = disjunction()
+    if pos != len(tokens):
+        raise _drive_q_refused()
+    if not any(t.field == "trashed" for t in _drive_q_terms(node)):
+        node = _QAnd((node, _QTerm("trashed", "=", "false")))
+    return node
+
+
+def _drive_q_terms(node):
+    """Every term in the tree, whatever it sits under."""
+    if isinstance(node, _QTerm):
+        yield node
+    elif isinstance(node, _QNot):
+        yield from _drive_q_terms(node.inner)
+    elif isinstance(node, (_QAnd, _QOr)):
+        for part in node.parts:
+            yield from _drive_q_terms(part)
+
+
+def _drive_q_conjuncts(node) -> list[_QTerm]:
+    """The terms every match has to satisfy — those joined by `and` at the top, with nothing
+    under an `or` or a `not`. What the SQL paths may narrow the candidate set by."""
+    if isinstance(node, _QTerm):
+        return [node]
+    if isinstance(node, _QAnd):
+        return [t for part in node.parts for t in _drive_q_conjuncts(part)]
+    return []
+
+
+def _drive_q_is_conjunction(node) -> bool:
+    """Whether the whole tree is terms joined by `and`, so its conjuncts are the whole query."""
+    if isinstance(node, _QTerm):
+        return True
+    return isinstance(node, _QAnd) and all(_drive_q_is_conjunction(p) for p in node.parts)
+
+
+def _drive_q_time(value: str) -> datetime.datetime | None:
+    """An RFC 3339 value as a datetime, UTC when it names no zone; ``None`` if it is not one."""
+    try:
+        parsed = datetime.datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=datetime.timezone.utc)
+
+
+def _drive_q_compare(op: str, have: str, want: str) -> bool:
+    """A time term. Both sides parsed, so `'2026-01-10T00:00:00'` and `…Z` compare as instants;
+    a side that does not parse compares as the string it is."""
+    a, b = _drive_q_time(have), _drive_q_time(want)
+    left, right = (a, b) if a is not None and b is not None else (have, want)
+    if op == "<":
+        return left < right
+    if op == "<=":
+        return left <= right
+    if op == "=":
+        return left == right
+    if op == "!=":
+        return left != right
+    if op == ">":
+        return left > right
+    return left >= right
+
+
+def _drive_q_eval(node, f: dict, me: str | None, fulltext: dict[str, set[str]]) -> bool:
+    """Whether one file's facts satisfy the query. ``fulltext`` maps each `fullText contains`
+    value to the ids the index answered for it, so the term is a membership test here."""
+    if isinstance(node, _QNot):
+        return not _drive_q_eval(node.inner, f, me, fulltext)
+    if isinstance(node, _QAnd):
+        return all(_drive_q_eval(p, f, me, fulltext) for p in node.parts)
+    if isinstance(node, _QOr):
+        return any(_drive_q_eval(p, f, me, fulltext) for p in node.parts)
+    field, op, value = node
+    if field == "trashed":
+        return ((value == "true") == f["trashed"]) == (op == "=")
+    if field == "sharedWithMe":
+        # "Shared with me" = visible to the caller and not owned by them. Items shared with you
+        # carry no My Drive parent on real Drive, so this clause is the only way to enumerate
+        # that section.
+        shared = not _drive_owned_by(f["owner_email"], me)
+        return ((value == "true") == shared) == (op == "=")
+    if field == "name":
+        # Case-insensitive on every operator, as the `contains` this served before was. Whether
+        # real Drive compares `name =` case-sensitively is unmeasured.
+        have, want = f["name"].casefold(), value.casefold()
+        return want in have if op == "contains" else (have == want) == (op == "=")
+    if field == "mimeType":
+        return value in f["mime"] if op == "contains" else (f["mime"] == value) == (op == "=")
+    if field == "fullText":
+        return f["id"] in fulltext.get(value, ())
+    if field == "modifiedTime":
+        return _drive_q_compare(op, f["modified"], value)
+    if field == "createdTime":
+        return _drive_q_compare(op, f["created"], value)
+    if field == "parents":
+        return value in f["parents"]
+    if field == "owners":
+        return value.strip().lower() in f["owners"]
+    raise AssertionError(f"unevaluated q term {field!r}")  # every field the parser admits is above
+
+
+def _drive_q_fulltext(conn, node, ids) -> dict[str, list]:
+    """The index's answer for each `fullText contains` value in the query, as rows in rank order.
+
+    Real Drive semantics: a quoted value (`fullText contains '"X Y"'`) is an exact phrase (tokens
+    adjacent); unquoted is separate terms. A grep push-down sends the quoted form for a literal
+    pattern, so the exact doc surfaces instead of being buried under coincidental docs that merely
+    contain the words scattered."""
+    out: dict[str, list] = {}
+    for term in _drive_q_terms(node):
+        if term.field != "fullText" or term.value in out:
+            continue
+        raw = term.value
+        phrase = len(raw) >= 2 and raw[0] == '"' and raw[-1] == '"'
+        out[raw] = store.search_documents(
+            conn, raw[1:-1] if phrase else raw, "google_drive", ids, limit=10_000, phrase=phrase
+        )
+    return out
+
+
+def _drive_q_fulltext_ids(hits: dict[str, list]) -> dict[str, set[str]]:
+    return {value: {r["id"] for r in rows} for value, rows in hits.items()}
 
 
 def _drive_owned_by(owner_email: str | None, me: str | None) -> bool:
@@ -885,11 +1185,13 @@ def _drive_facts(row) -> dict:
     """The values `q` clauses are evaluated against, taken from a stored row."""
     modified = _drive_modified(row)
     return {
+        "id": row["id"],
         "trashed": bool(row["trashed"]),
         "parents": store.jcol(row, "parents") or [synth.drive_folder_id(row["folder"])],
         "mime": _drive_mime(row),
         "name": row["title"] or "",
         "modified": synth.rfc3339(modified),
+        "created": synth.rfc3339(_drive_created(row)),
         "owner_email": row["author_email"],
         # real Drive keys `in owners` on the owner's email; Backlot also accepts the owner
         # display name, since that's the only owner identifier some callers have.
@@ -901,52 +1203,23 @@ def _drive_obj_facts(obj: dict) -> dict:
     """The same values taken from an already-built file object — the synthesized folders, which
     exist only as objects, are matched through this so every clause treats them like a row."""
     return {
+        "id": obj.get("id") or "",
         "trashed": bool(obj.get("trashed")),
         "parents": obj.get("parents") or [],
         "mime": obj.get("mimeType") or "",
         "name": obj.get("name") or "",
         "modified": obj.get("modifiedTime") or "",
+        "created": obj.get("createdTime") or "",
         "owner_email": (obj.get("owners") or [{}])[0].get("emailAddress"),
         "owners": {(o.get("emailAddress") or "").lower() for o in (obj.get("owners") or [])},
     }
 
 
-def _drive_q_match_facts(f: dict, q: str, me: str | None = None) -> bool:
-    """Honor the Drive `q` clauses connectors use (folder scoping, mimeType, name contains,
-    modifiedTime, trashed, sharedWithMe, in owners). `fullText contains` is handled upstream via
-    FTS (see drive_files_list), so it's stripped from `q` before this runs. Unrecognized clauses
-    are ignored."""
-    m = re.search(r"trashed\s*=\s*(true|false)", q)
-    if m:
-        if (m.group(1) == "true") != f["trashed"]:
-            return False
-    elif f["trashed"]:  # real API excludes trashed by default
-        return False
-    for fid in re.findall(r"'([^']+)'\s+in\s+parents", q):
-        if fid not in f["parents"]:
-            return False
-    m = _DRIVE_MIME_RE.search(q)
-    if m and (m.group(1) == "=") != (f["mime"] == m.group(2)):
-        return False
-    m = re.search(r"name\s+contains\s+'([^']+)'", q)
-    if m and m.group(1).lower() not in f["name"].lower():
-        return False
-    m = re.search(r"modifiedTime\s*>\s*'([^']+)'", q)
-    if m and f["modified"] <= m.group(1):
-        return False
-    # "Shared with me" = visible to the caller and not owned by them. Items shared with you carry
-    # no My Drive parent on real Drive, so this clause is the only way to enumerate that section.
-    m = _DRIVE_SHARED_RE.search(q)
-    if m and ((m.group(1) or "true") == "true") == _drive_owned_by(f["owner_email"], me):
-        return False
-    for who in re.findall(r"'([^']+)'\s+in\s+owners", q):
-        if who.strip().lower() not in f["owners"]:
-            return False
-    return True
-
-
-def _drive_q_match(row, q: str, me: str | None = None) -> bool:
-    return _drive_q_match_facts(_drive_facts(row), q, me)
+def _drive_q_match(row, query, me: str | None = None, fulltext: dict | None = None) -> bool:
+    """Whether a stored row satisfies ``query`` — the string, or the tree ``_drive_q_parse`` built
+    from it. Without ``fulltext`` a `fullText contains` term matches nothing."""
+    node = _drive_q_parse(query) if isinstance(query, str) else query
+    return node is None or _drive_q_eval(node, _drive_facts(row), me, fulltext or {})
 
 
 def _visible_drive_folders(conn, ids) -> list[str]:
@@ -1196,84 +1469,93 @@ def _drive_sort(files: list[dict], specs: list[tuple]) -> list[dict]:
     return files
 
 
-def _drive_q_plain_folder(q: str) -> bool:
-    """True when ``q`` is just a folder scope (``'<id>' in parents``, optionally ``trashed=false``)
-    with no other clause — the shape a tree-walking client sends, servable straight from SQL."""
-    residual = re.sub(r"'[^']+'\s+in\s+parents", " ", q)
-    residual = re.sub(r"trashed\s*=\s*false", " ", residual)
-    residual = re.sub(r"\band\b", " ", residual, flags=re.IGNORECASE)
-    return residual.strip() == ""
+def _drive_q_plain_folder(query) -> bool:
+    """True when the query is just a folder scope (``'<id>' in parents``, and the ``trashed =
+    false`` every query carries) with no other clause — the shape a tree-walking client sends,
+    servable straight from SQL."""
+    return _drive_q_is_conjunction(query) and all(
+        t.field == "parents" or t == _QTerm("trashed", "=", "false")
+        for t in _drive_q_conjuncts(query)
+    )
 
 
-def _drive_q_excludes_folders(q: str) -> bool:
-    """True when ``q`` carries a mimeType clause no folder can satisfy. Only an optimization —
-    ``_drive_q_match_facts`` would reject them anyway — but it skips building the folder stream
-    (and its per-folder ACL probes) for the common query that only wants files."""
-    m = _DRIVE_MIME_RE.search(q)
-    return bool(m) and ((m.group(1) == "=") != (m.group(2) == DRIVE_FOLDER_MIME))
+def _drive_q_excludes_folders(conjuncts: list[_QTerm]) -> bool:
+    """True when a term every match has to satisfy is a mimeType no folder can satisfy. Only an
+    optimization — ``_drive_q_eval`` would reject them anyway — but it skips building the folder
+    stream (and its per-folder ACL probes) for the common query that only wants files."""
+    for t in conjuncts:
+        if t.field != "mimeType":
+            continue
+        if t.op == "contains":
+            if t.value not in DRIVE_FOLDER_MIME:
+                return True
+        elif (t.op == "=") != (t.value == DRIVE_FOLDER_MIME):
+            return True
+    return False
 
 
-def _drive_folder_candidates(conn, ids, q: str, me: str | None) -> list[dict]:
-    """The caller's visible folders as file objects, filtered by ``q`` through the same clause
-    matcher stored rows go through — so ``mimeType='…folder'`` finds them, not only
+def _drive_folder_candidates(conn, ids, query, me: str | None, fulltext: dict) -> list[dict]:
+    """The caller's visible folders as file objects, filtered by the query through the same
+    evaluator stored rows go through — so ``mimeType='…folder'`` finds them, not only
     ``'root' in parents``, and they honor the ``fields`` projection like any other row.
 
-    Skipped for a ``fullText contains`` query: a folder's only text is its name (Backlot's index
-    covers document content, not container names), so it can't take part in an FTS match."""
-    if _DRIVE_FULLTEXT_RE.search(q) or _drive_q_excludes_folders(q):
+    A ``fullText contains`` term matches no folder: a folder's only text is its name (Backlot's
+    index covers document content, not container names), so its id is never among the index's
+    answers."""
+    if _drive_q_excludes_folders(_drive_q_conjuncts(query)):
         return []
     return [
         f
         for f in (_drive_folder_obj(conn, n, me) for n in _visible_drive_folders(conn, ids))
-        if _drive_q_match_facts(_drive_obj_facts(f), q, me)
+        if query is None or _drive_q_eval(query, _drive_obj_facts(f), me, fulltext)
     ]
 
 
-def _drive_shared_with_me_scope(q: str, me: str | None) -> tuple[str | None, str | None]:
+def _drive_shared_with_me_scope(
+    conjuncts: list[_QTerm], me: str | None
+) -> tuple[str | None, str | None]:
     """``sharedWithMe`` as an SQL owner filter — ``(author_email, not_author_email)``. Drive's
     "Shared with me" is a first-class listing a client pages through, so the half of the corpus it
     can never contain is excluded in SQL rather than materialized and dropped in Python."""
-    m = _DRIVE_SHARED_RE.search(q)
-    if m is None or not me:
+    term = next((t for t in conjuncts if t.field == "sharedWithMe"), None)
+    if term is None or not me:
         return None, None
-    return (None, me) if (m.group(1) or "true") == "true" else (me, None)
+    return (None, me) if (term.value == "true") == (term.op == "=") else (me, None)
 
 
-def _drive_q_rows(conn, q: str, container: str | None, ids, me: str | None) -> list:
-    """Rows matching a non-trivial ``q``: build the smallest candidate set SQL can produce, then
-    apply the remaining clauses in Python."""
-    ft = _DRIVE_FULLTEXT_RE.search(q)
-    if ft:  # fullText contains → FTS candidates (ranked), then the other q clauses
-        # Honor real Drive semantics: a quoted value (`fullText contains '"X Y"'`) is an exact
-        # phrase (tokens adjacent); unquoted is separate terms. A grep push-down sends the quoted
-        # form for a literal pattern, so the exact doc surfaces instead of being buried under
-        # coincidental docs that merely contain the words scattered.
-        ft_raw = ft.group(1)
-        phrase = len(ft_raw) >= 2 and ft_raw[0] == '"' and ft_raw[-1] == '"'
-        ft_term = ft_raw[1:-1] if phrase else ft_raw
-        q_rest = _DRIVE_FULLTEXT_RE.sub(" ", q)  # FTS owns fullText; strip it from the rest
-        candidates = store.search_documents(
-            conn, ft_term, "google_drive", ids, limit=10_000, phrase=phrase
+def _drive_q_rows(conn, query, container: str | None, ids, me: str | None, hits: dict) -> list:
+    """Rows matching a non-trivial query: build the smallest candidate set SQL can produce from the
+    terms every match has to satisfy, then evaluate the whole query in Python.
+
+    ``hits`` is ``_drive_q_fulltext``'s answer for this query, so the index is asked once."""
+    conjuncts = _drive_q_conjuncts(query)
+    fulltext = next((t for t in conjuncts if t.field == "fullText"), None)
+    name = next((t for t in conjuncts if t.field == "name" and t.op == "contains"), None)
+    # `list_drive_by_name` answers non-trashed rows only, so it cannot be the candidate set for a
+    # query that asks for trash.
+    wants_trash = any(
+        t.field == "trashed" and (t.value == "true") == (t.op == "=") for t in _drive_q_terms(query)
+    )
+    if fulltext is not None:  # the index's candidates, in rank order, then the other terms
+        candidates = hits[fulltext.value]
+    elif name is not None and not wants_trash:
+        # A name lookup (mirage resolves every gdrive file this way) — SQL title LIKE instead of
+        # materializing the whole corpus (~25k rows, ~1.6s) to substring-match in Python. The
+        # remaining terms still filter the (small) name-matched set below.
+        candidates = store.list_drive_by_name(conn, name.value, container, ids, limit=100_000)
+    else:  # scope to the folder and/or the owner (if any) to shrink the set before the filter
+        owner, not_owner = _drive_shared_with_me_scope(conjuncts, me)
+        candidates = store.list_documents(
+            conn,
+            "google_drive",
+            container=container,
+            visible_ids=ids,
+            limit=100_000,
+            author_email=owner,
+            not_author_email=not_owner,
         )
-    else:
-        q_rest = q
-        nm = re.search(r"name\s+contains\s+'([^']+)'", q)
-        if nm:  # a name lookup (mirage resolves every gdrive file this way) — SQL title LIKE
-            # instead of materializing the whole corpus (~25k rows, ~1.6s) to substring-match in
-            # Python. The remaining q clauses still filter the (small) name-matched set below.
-            candidates = store.list_drive_by_name(conn, nm.group(1), container, ids, limit=100_000)
-        else:  # scope to the folder and/or the owner (if any) to shrink the set before the filter
-            owner, not_owner = _drive_shared_with_me_scope(q, me)
-            candidates = store.list_documents(
-                conn,
-                "google_drive",
-                container=container,
-                visible_ids=ids,
-                limit=100_000,
-                author_email=owner,
-                not_author_email=not_owner,
-            )
-    return [r for r in candidates if _drive_q_match(r, q_rest, me)]
+    ids_by_value = _drive_q_fulltext_ids(hits)
+    return [r for r in candidates if _drive_q_eval(query, _drive_facts(r), me, ids_by_value)]
 
 
 # --- about ---------------------------------------------------------------------------------
@@ -1474,29 +1756,37 @@ async def drive_files_list(request: Request):
     q = request.query_params.get("q", "") or ""
     keys = _drive_file_field_keys(request.query_params.get("fields"))  # 400 on an unknown field
     order = _drive_order_specs(request.query_params.get("orderBy"))  # 400 on an unusable key
-    parent_ids = re.findall(r"'([^']+)'\s+in\s+parents", q)
+    query = _drive_q_parse(q)  # 400 on a clause Backlot cannot evaluate; None when there is no q
+    conjuncts = _drive_q_conjuncts(query)
+    hits = _drive_q_fulltext(conn, query, ids)
+    # A parent every match has to be under; one under an `or` scopes nothing.
+    parent_ids = [t.value for t in conjuncts if t.field == "parents"]
     # A folder-scoped parent resolves to one container name (for the SQL-scoped paths below).
     scoped = [pid for pid in parent_ids if pid != "root"]
     container = next((n for pid in scoped if (n := _drive_folder_name_by_id(conn, pid))), None)
     # Backlot's folders all hang directly under the root, so a query scoped inside one can only
     # match files — no folder stream to build.
-    folders = [] if scoped else _drive_folder_candidates(conn, ids, q, me)
+    folders = (
+        []
+        if scoped
+        else _drive_folder_candidates(conn, ids, query, me, _drive_q_fulltext_ids(hits))
+    )
 
     # The row stream as (count, fetch) so the SQL paths stay SQL-paginated: a crawl costs one page
     # of rows per request, not a full-corpus scan re-run for every page.
     if "root" in parent_ids:
         total_rows, fetch = 0, lambda o, n: []  # every stored file lives in a folder
-    elif container is not None and _drive_q_plain_folder(q):
+    elif container is not None and _drive_q_plain_folder(query):
         # The common case: a client walking the tree wants just this folder's files.
         total_rows = store.count_drive_folder(conn, container, ids)
         fetch = lambda o, n: store.list_drive_folder(conn, container, ids, limit=n, offset=o)  # noqa: E731
-    elif q.strip():  # filter the visible set by the query, then paginate
-        matched = _drive_q_rows(conn, q, container, ids, me)
+    elif query is not None:  # filter the visible set by the query, then paginate
+        matched = _drive_q_rows(conn, query, container, ids, me, hits)
         total_rows, fetch = len(matched), lambda o, n: matched[o : o + n]  # noqa: E731
     else:
-        # exclude_trashed: with no `q` at all there is no clause for _drive_q_match to read, and
+        # exclude_trashed: with no `q` at all there is no query to carry `trashed = false`, and
         # real Drive leaves trashed files out of files.list unless `trashed = true` asks for them.
-        # The q-bearing paths already do this (_drive_q_match_facts' default branch,
+        # The q-bearing paths already do this (the `trashed = false` _drive_q_parse appends,
         # store.list_drive_folder's WHERE), so without it the DEFAULT listing was the one call that
         # returned trash.
         total_rows = store.count_documents(
@@ -2200,6 +2490,21 @@ _A1_DATETIME = ("SERIAL_NUMBER", "FORMATTED_STRING")
 _SHEETS_ENUM = "type.googleapis.com/google.apps.sheets.v4"
 # One endpoint of an A1 range: a full cell (`B2`), a bare column (`B`) or a bare row (`2`).
 _A1_END = re.compile(r"(?:(?P<col>[A-Za-z]{1,3})(?P<row>\d+)?|(?P<rowonly>\d+))\Z")
+# One endpoint in R1C1 notation, which the discovery document names beside A1 for every `range`
+# parameter ("The A1 notation or R1C1 notation of the range to retrieve values from"), and which
+# the LlamaIndex `GoogleSheetsReader` sends for every sheet as `R1C1:R{rowCount}C{columnCount}`.
+# Measured against a real workbook (2026-09-10, #174): accepted wherever A1 is — unqualified,
+# sheet-qualified, quoted — and the response echoes the A1 equivalent, `R1C1:R2C2` answering
+# `A1:B2`. Absolute only. The relative form the concepts guide also shows, `R[3]C[1]`, "refers to
+# the cell that is three rows below and one column to the right of the current cell", and a read
+# has no current cell; what real answers for it is unmeasured, so it is refused as unparseable.
+# A bare `R1` or `C2` is not this notation: each is an A1 cell (column R row 1, column C row 2).
+_R1C1_END = re.compile(r"R(?P<row>\d+)C(?P<col>\d+)\Z", re.IGNORECASE)
+
+
+def _a1_is_endpoint(part: str) -> bool:
+    """Whether a string is one side of a range in either notation."""
+    return bool(_R1C1_END.fullmatch(part) or _A1_END.fullmatch(part))
 
 
 def _a1_col(letters: str) -> int:
@@ -2255,8 +2560,16 @@ def _a1_endpoint(part: str, spec: str) -> tuple[int | None, int | None]:
     """``(row, col)`` 0-based for one side of a range; ``None`` means that axis is unbounded.
 
     ``spec`` is the whole requested range, because that — not the offending half — is what real
-    Sheets names back: `A1:` reports "Unable to parse range: A1:", never a bare "".."""
-    m = _A1_END.fullmatch(part.strip())
+    Sheets names back: `A1:` reports "Unable to parse range: A1:", never a bare "".
+
+    Either notation, per side: `R1C1` and `A1` name the same cell, and a range may spell each of
+    its halves in either (`A1:R2C2` is unmeasured against real; both halves resolve the same way
+    here, so it is answered as `A1:B2`)."""
+    part = part.strip()
+    m = _R1C1_END.fullmatch(part)
+    if m:
+        return int(m.group("row")) - 1, int(m.group("col")) - 1
+    m = _A1_END.fullmatch(part)
     if not m:
         raise gerr.invalid_argument(f"Unable to parse range: {spec}")
     if m.group("rowonly"):
@@ -2278,7 +2591,7 @@ def _a1_find(title: str, sheets: list[_Sheet]) -> _Sheet | None:
 
 
 def _a1_looks_like_a_range(body: str) -> bool:
-    return all(_A1_END.fullmatch(part.strip()) for part in body.split(":", 1))
+    return all(_a1_is_endpoint(part.strip()) for part in body.split(":", 1))
 
 
 def _a1_sheet(spec: str, sheets: list[_Sheet]) -> tuple[_Sheet, str]:
@@ -2368,8 +2681,11 @@ _A1_PLAIN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 
 def _a1_title(title: str) -> str:
     """A sheet title as the echoed ``range`` spells it, quoted unless it is a plain identifier that
-    is not itself a cell reference. An embedded apostrophe doubles."""
-    if _A1_PLAIN.fullmatch(title) and not _A1_END.fullmatch(title):
+    is not itself a cell reference. An embedded apostrophe doubles.
+
+    A title spelt like an R1C1 reference (`R1C1`) is quoted like one spelt as A1 (`'A1'`, measured):
+    the same ambiguity, so the same rule — inferred, since no measured title reads as R1C1."""
+    if _A1_PLAIN.fullmatch(title) and not _a1_is_endpoint(title):
         return title
     return "'" + title.replace("'", "''") + "'"
 

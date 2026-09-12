@@ -1683,11 +1683,23 @@ def _batch(base, headers, sheet_id, ranges, **params):
         ("1:1", [GRID[0]]),  # whole row
         ("Sheet1!A2:A", GRID[1:]),  # unbounded lower edge
         ("'Sheet1'!A1:A1", [GRID[0]]),  # quoted sheet name
+        # R1C1 notation, which the discovery document names beside A1 for `range`
+        ("R1C1:R3C1", GRID),
+        ("Sheet1!R1C1:R2C2", GRID[:2]),  # column B is empty, so it trims away
+        ("'Sheet1'!R2C1", [["Jan,120000"]]),  # one cell, quoted sheet name
+        ("r1c1:r3c1", GRID),  # case-insensitive, as the A1 side is
+        ("R[0]C[0]:R[2]C[0]", GRID),  # bracketed offsets from A1
+        ("R[1]", [["Jan,120000"]]),  # row 2 whole, trimmed to its one cell
+        ("RC", [GRID[0]]),  # bare letters are the cell A1
+        ("R1C:R3C", GRID),  # a bare C is column A
+        ("!A1:A3", GRID),  # an empty title is the first sheet
     ],
 )
 def test_sheets_values_get_range_forms(base, admin_h, sheet_id, rng, expected):
-    """Every A1 form a client may send has to resolve against the same grid. Without the parser
-    each of these is a 404 on a route that does not exist."""
+    """Every form a client may send has to resolve against the same grid. Without the parser each
+    of these is a 404 on a route that does not exist; without the R1C1 half, the LlamaIndex
+    `GoogleSheetsReader` — which reads every sheet as `R1C1:R{rowCount}C{columnCount}` — 400d on
+    its first values call against every spreadsheet."""
     r = _values(base, admin_h, sheet_id, rng)
     assert r.status_code == 200, r.text
     assert r.json()["values"] == expected
@@ -1794,11 +1806,31 @@ def test_sheets_values_get_omits_values_when_the_range_is_empty(base, admin_h, s
     assert r.json()["range"] == "Sheet1!D1:E2"
 
 
-@pytest.mark.parametrize("rng", ["Other!A1:B2", "not a range", "A1:", "!A1", ""])
+@pytest.mark.parametrize(
+    "rng",
+    [
+        "Other!A1:B2",
+        "not a range",
+        "A1:",
+        " !A1",  # an empty title is the first sheet; a whitespace one is nothing
+        "",
+        "R1C1:",
+        "R0C1",  # absolute R1C1 is 1-based
+        "R[-1]C[0]",  # an offset is not negative
+        "A1:R2C2",  # both halves of a range are one notation
+        "R2C2:R1C1",  # reversed by one, on the numbers as written
+        "A0",
+        "Z",  # a lone column is no range, so a bang-less one is a sheet name — and there is none
+        "Sheet1!B",
+        " A1",  # not stripped
+    ],
+)
 def test_sheets_values_get_rejects_an_unusable_range(base, admin_h, sheet_id, rng):
     """Backlot has exactly one sheet, `Sheet1`; naming another is as unresolvable as a malformed
     reference, and real Sheets 400s on both rather than returning an empty grid."""
-    assert _values(base, admin_h, sheet_id, rng).status_code == 400
+    r = _values(base, admin_h, sheet_id, rng)
+    assert r.status_code == 400
+    assert r.json()["error"]["message"] == f"Unable to parse range: {rng}"
 
 
 @pytest.mark.parametrize(
@@ -2004,6 +2036,336 @@ MEASURED_ECHO = [
     ("A100", "Sheet1!A100"),
     ("Sheet1!A1:D5", "Sheet1!A1:D5"),
 ]
+
+# Every range-related request sent to the live Sheets API on 2026-09-12 (#174), on a workbook whose
+# sheets were `Sheet1`, `Data`, `R1C1`, `RC` and `A` (1000x26 each, `a`..`f` in A1:B3 of the first
+# two), with what came back: the status and the echoed `range`, or the error message. The five
+# rows the issue's comment measured on 2026-09-10 open the list; the last 64 are the edges asked
+# for in review — whitespace around the bang and inside a token, whole rows and columns past the
+# grid, an empty title before the bang — in both notations. The test
+# below serves a corpus with the same five sheets and holds Backlot to every row, so the grammar in
+# `_R1C1_END`'s comment is what this table says and not what a document says.
+MEASURED_R1C1 = [
+    ("R1C2", 200, "Sheet1!B1"),
+    ("R1C1:R2C2", 200, "Sheet1!A1:B2"),
+    ("Data!R1C1:R2C2", 200, "Data!A1:B2"),
+    ("'Data'!R1C1:R2C2", 200, "Data!A1:B2"),
+    ("Data!R1C1", 200, "Data!A1"),
+    ("R[1]C[1]", 200, "Sheet1!B2"),
+    ("Data!R[3]C[1]", 200, "Data!B4"),
+    ("R[0]C[0]", 200, "Sheet1!A1"),
+    ("R1C1:R[2]C[2]", 200, "Sheet1!A1:C3"),
+    ("R[1]C1", 200, "Sheet1!A2"),
+    ("R1C[1]", 200, "Sheet1!B1"),
+    ("A1:R2C2", 400, "Unable to parse range: A1:R2C2"),
+    ("R1C1:B2", 400, "Unable to parse range: R1C1:B2"),
+    ("R1", 200, "Sheet1!R1"),
+    ("C2", 200, "Sheet1!C2"),
+    ("R1:R2", 200, "Sheet1!R1:R2"),
+    ("C1:C2", 200, "Sheet1!C1:C2"),
+    ("R0C0", 400, "Unable to parse range: R0C0"),
+    ("R0C1", 400, "Unable to parse range: R0C1"),
+    ("r1c1:r2c2", 200, "Sheet1!A1:B2"),
+    ("R1C1:R1000C26", 200, "Sheet1!A1:Z1000"),
+    ("R1C1:R2000C50", 200, "Sheet1!A1:Z1000"),
+    ("R1001C1", 400, "Range (Sheet1!A1001) exceeds grid limits. Max rows: 1000, max columns: 26"),
+    ("R1C", 200, "Sheet1!A1"),
+    ("RC1", 400, "Range (Sheet1!RC1) exceeds grid limits. Max rows: 1000, max columns: 26"),
+    ("R1C1:", 400, "Unable to parse range: R1C1:"),
+    ("R1C1R2C2", 400, "Unable to parse range: R1C1R2C2"),
+    ("Data!R1C1:R2C2:R3C3", 400, "Unable to parse range: Data!R1C1:R2C2:R3C3"),
+    ("R2C", 200, "Sheet1!A2"),
+    ("R1C:R3C", 200, "Sheet1!A1:A3"),
+    ("RC", 200, "Sheet1!A1"),
+    ("R[1]C", 200, "Sheet1!A2"),
+    ("RC[1]", 200, "Sheet1!B1"),
+    ("R[1]C[1]:R[2]C[2]", 200, "Sheet1!B2:C3"),
+    ("RC[0]:RC[1]", 200, "Sheet1!A1:B1"),
+    ("R[-1]C[0]", 400, "Unable to parse range: R[-1]C[0]"),
+    ("R[0]C[-1]", 400, "Unable to parse range: R[0]C[-1]"),
+    ("R[999]C[25]", 200, "Sheet1!Z1000"),
+    (
+        "R[1000]C[0]",
+        400,
+        "Range (Sheet1!A1001) exceeds grid limits. Max rows: 1000, max columns: 26",
+    ),
+    ("R[1]C[1]:R[3]C[1]", 200, "Sheet1!B2:B4"),
+    ("R[2]C[2]:R1C1", 200, "Sheet1!A1:C3"),
+    ("R2C2:R1C1", 400, "Unable to parse range: R2C2:R1C1"),
+    ("R1C1:R1C1", 200, "Sheet1!A1"),
+    ("R1C1:R1000C1", 200, "Sheet1!A1:A1000"),
+    ("R1C1:R1C26", 200, "Sheet1!A1:Z1"),
+    ("R2C1:R2C26", 200, "Sheet1!A2:Z2"),
+    ("R1C0", 400, "Unable to parse range: R1C0"),
+    ("R01C01", 200, "Sheet1!A1"),
+    ("R[01]C[01]", 200, "Sheet1!B2"),
+    ("R1 C1", 400, "Unable to parse range: R1 C1"),
+    (" R1C1 ", 400, "Unable to parse range:  R1C1 "),
+    ("R[+1]C[+1]", 400, "Unable to parse range: R[+1]C[+1]"),
+    ("R1C1 :R2C2", 400, "Unable to parse range: R1C1 :R2C2"),
+    ("A0", 400, "Unable to parse range: A0"),
+    ("A1:A0", 400, "Unable to parse range: A1:A0"),
+    ("Sheet1!R[1]C[1]", 200, "Sheet1!B2"),
+    ("'Sheet1'!R[1]C[1]", 200, "Sheet1!B2"),
+    ("Data!R1C:R2C", 200, "Data!A1:A2"),
+    ("R1C1:R2", 200, "Sheet1!A1:Z2"),
+    ("R1:R2C2", 200, "Sheet1!A1:B2"),
+    ("1:R2C2", 400, "Unable to parse range: 1:R2C2"),
+    ("A", 200, "A!A1:Z1000"),
+    ("Z", 400, "Unable to parse range: Z"),
+    ("A:A", 200, "Sheet1!A1:A1000"),
+    ("ZZ", 400, "Unable to parse range: ZZ"),
+    ("ZZ:ZZ", 400, "Range (Sheet1!ZZ) exceeds grid limits. Max rows: 1000, max columns: 26"),
+    ("RC:RC", 400, "Range (Sheet1!RC) exceeds grid limits. Max rows: 1000, max columns: 26"),
+    ("'RC'", 200, "'RC'!A1:Z1000"),
+    ("RC!A1", 200, "'RC'!A1"),
+    ("R1C1", 200, "Sheet1!A1"),
+    ("'R1C1'", 200, "'R1C1'!A1:Z1000"),
+    ("R1C1!A1", 200, "'R1C1'!A1"),
+    ("R1C1!R1C1", 200, "'R1C1'!A1"),
+    ("'A'", 200, "A!A1:Z1000"),
+    ("A!A1", 200, "A!A1"),
+    ("RC2", 400, "Range (Sheet1!RC2) exceeds grid limits. Max rows: 1000, max columns: 26"),
+    ("RC26", 400, "Range (Sheet1!RC26) exceeds grid limits. Max rows: 1000, max columns: 26"),
+    ("RC1:R2C2", 200, "Sheet1!A1:B2"),
+    ("R1C1:RC", 200, "Sheet1!A1"),
+    ("R1C1:C2", 200, "Sheet1!A1:B1000"),
+    ("C2:R1C1", 400, "Unable to parse range: C2:R1C1"),
+    ("R:R1C1", 200, "Sheet1!A1"),
+    ("R2:R1C1", 400, "Unable to parse range: R2:R1C1"),
+    ("R1C1:R", 200, "Sheet1!A1"),
+    ("R1C1:C", 200, "Sheet1!A1"),
+    ("R[1]:R[2]C[2]", 200, "Sheet1!A2:C3"),
+    ("R1C1:C[1]", 200, "Sheet1!A1:B1000"),
+    ("R:R", 200, "Sheet1!R1:R1000"),
+    ("C:C", 200, "Sheet1!C1:C1000"),
+    ("R2C1:R1C2", 400, "Unable to parse range: R2C1:R1C2"),
+    ("R1C2:R2C1", 400, "Unable to parse range: R1C2:R2C1"),
+    ("R[1]C[1]:R[0]C[0]", 400, "Unable to parse range: R[1]C[1]:R[0]C[0]"),
+    ("R2C2:R[2]C[2]", 200, "Sheet1!B2:C3"),
+    ("R[1]C[1]:R1C1", 200, "Sheet1!A1:B2"),
+    ("R2C2:R[0]C[0]", 200, "Sheet1!A1:B2"),
+    ("R[2]C[2]:R2C2", 200, "Sheet1!B2:C3"),
+    ("R[1]C[0]:R1C1", 200, "Sheet1!A1:A2"),
+    ("R1C1:R[0]C[0]", 200, "Sheet1!A1"),
+    ("R[3]C[3]:R[1]C[1]", 200, "Sheet1!B2:D4"),
+    ("R3C3:R[1]C[1]", 200, "Sheet1!B2:C3"),
+    ("R[1]C[1]:R2C2", 200, "Sheet1!B2"),
+    ("B2:A1", 200, "Sheet1!A1:B2"),
+    ("B2:A2", 200, "Sheet1!A2:B2"),
+    ("0:1", 400, "Unable to parse range: 0:1"),
+    ("A0:B2", 400, "Unable to parse range: A0:B2"),
+    ("R", 200, "Sheet1!A1"),
+    ("C", 200, "Sheet1!A1"),
+    ("R[1]", 200, "Sheet1!A2:Z2"),
+    ("C[1]", 200, "Sheet1!B1:B1000"),
+    ("R[1]:R[1]", 200, "Sheet1!A2:Z2"),
+    ("C[1]:C[1]", 200, "Sheet1!B1:B1000"),
+    ("R1C1:R[1]", 200, "Sheet1!A1:Z2"),
+    ("R1C1:C[0]", 200, "Sheet1!A1:A1000"),
+    ("R1C1:R2C", 200, "Sheet1!A1:A2"),
+    ("R1C1:RC2", 200, "Sheet1!A1:B1"),
+    ("R1C:R2C2", 200, "Sheet1!A1:B2"),
+    ("R2:R2", 200, "Sheet1!R2"),
+    ("R1C1:R1000C", 200, "Sheet1!A1:A1000"),
+    ("R1C1:RC26", 200, "Sheet1!A1:Z1"),
+    ("R[2]C[2]:R[0]C[0]", 200, "Sheet1!A1:C3"),
+    ("R[2]C[2]:R[1]C[1]", 400, "Unable to parse range: R[2]C[2]:R[1]C[1]"),
+    ("R[1]C[0]:R[0]C[0]", 400, "Unable to parse range: R[1]C[0]:R[0]C[0]"),
+    ("R[0]C[1]:R[0]C[0]", 400, "Unable to parse range: R[0]C[1]:R[0]C[0]"),
+    ("R[1]C[1]:R[0]C[1]", 400, "Unable to parse range: R[1]C[1]:R[0]C[1]"),
+    ("R[1]C[1]:R[1]C[0]", 400, "Unable to parse range: R[1]C[1]:R[1]C[0]"),
+    ("R[2]C[1]:R[1]C[2]", 400, "Unable to parse range: R[2]C[1]:R[1]C[2]"),
+    ("R3C3:R2C2", 400, "Unable to parse range: R3C3:R2C2"),
+    ("R[3]C[3]:R[2]C[2]", 400, "Unable to parse range: R[3]C[3]:R[2]C[2]"),
+    ("Sheet1!B", 400, "Unable to parse range: Sheet1!B"),
+    ("Sheet1!Z", 400, "Unable to parse range: Sheet1!Z"),
+    ("Sheet1!2", 400, "Unable to parse range: Sheet1!2"),
+    (" A1", 400, "Unable to parse range:  A1"),
+    ("A1 ", 400, "Unable to parse range: A1 "),
+    ("R3C3:R1C1", 200, "Sheet1!A1:C3"),
+    ("R4C4:R1C1", 200, "Sheet1!A1:D4"),
+    ("R2C1:R1C1", 400, "Unable to parse range: R2C1:R1C1"),
+    ("R3C1:R1C1", 200, "Sheet1!A1:A3"),
+    ("R5C5:R3C3", 200, "Sheet1!C3:E5"),
+    ("R1C3:R1C1", 200, "Sheet1!A1:C1"),
+    ("R1C2:R1C1", 400, "Unable to parse range: R1C2:R1C1"),
+    ("R[1]C[2]:R[0]C[0]", 400, "Unable to parse range: R[1]C[2]:R[0]C[0]"),
+    ("R[2]C[0]:R[0]C[0]", 200, "Sheet1!A1:A3"),
+    ("R[4]C[4]:R[0]C[0]", 200, "Sheet1!A1:E5"),
+    ("R[2]C[2]:R[1]C[0]", 400, "Unable to parse range: R[2]C[2]:R[1]C[0]"),
+    ("R3:R1C1", 200, "Sheet1!A1:A3"),
+    ("C3:R1C1", 200, "Sheet1!A1:C1"),
+    ("R1000C26:R1C1", 200, "Sheet1!A1:Z1000"),
+    ("R999C26:R1C1", 200, "Sheet1!A1:Z999"),
+    ("R[2]:R1C1", 200, "Sheet1!A1:A3"),
+    ("R[1]:R1C1", 200, "Sheet1!A1:A2"),
+    ("B1:A1", 200, "Sheet1!A1:B1"),
+    ("C1:A1", 200, "Sheet1!A1:C1"),
+    ("A2:A1", 200, "Sheet1!A1:A2"),
+    ("Sheet1! A1", 400, "Unable to parse range: Sheet1! A1"),
+    ("Sheet1 !A1", 400, "Unable to parse range: Sheet1 !A1"),
+    ("Sheet1! A1:B2", 400, "Unable to parse range: Sheet1! A1:B2"),
+    ("'Data' !A1", 400, "Unable to parse range: 'Data' !A1"),
+    ("'Data'! R1C1", 400, "Unable to parse range: 'Data'! R1C1"),
+    ("Sheet1!A1 :B2", 400, "Unable to parse range: Sheet1!A1 :B2"),
+    ("Sheet1!A1: B2", 400, "Unable to parse range: Sheet1!A1: B2"),
+    ("1001:1001", 400, "Range (Sheet1!1001) exceeds grid limits. Max rows: 1000, max columns: 26"),
+    (
+        "1001:1002",
+        400,
+        "Range (Sheet1!1001:1002) exceeds grid limits. Max rows: 1000, max columns: 26",
+    ),
+    ("1000:1001", 200, "Sheet1!A1000:Z1000"),
+    ("1:1001", 200, "Sheet1!A1:Z1000"),
+    ("2000:2000", 400, "Range (Sheet1!2000) exceeds grid limits. Max rows: 1000, max columns: 26"),
+    (
+        "Sheet1!1001:1001",
+        400,
+        "Range (Sheet1!1001) exceeds grid limits. Max rows: 1000, max columns: 26",
+    ),
+    (
+        "R1001:R1001",
+        400,
+        "Range (Sheet1!R1001) exceeds grid limits. Max rows: 1000, max columns: 26",
+    ),
+    (
+        "R[1000]:R[1000]",
+        400,
+        "Range (Sheet1!1001) exceeds grid limits. Max rows: 1000, max columns: 26",
+    ),
+    ("Z:AA", 200, "Sheet1!Z1:Z1000"),
+    ("A:ZZ", 200, "Sheet1!A1:Z1000"),
+    ("AA:AB", 400, "Range (Sheet1!AA:AB) exceeds grid limits. Max rows: 1000, max columns: 26"),
+    ("R1C27:R1C27", 400, "Range (Sheet1!AA1) exceeds grid limits. Max rows: 1000, max columns: 26"),
+    ("C27:C27", 200, "Sheet1!C27"),
+    ("C[26]", 400, "Range (Sheet1!AA) exceeds grid limits. Max rows: 1000, max columns: 26"),
+    ("R1C1:R1C27", 200, "Sheet1!A1:Z1"),
+    ("R1C1:R1001C1", 200, "Sheet1!A1:A1000"),
+    ("1000:1000", 200, "Sheet1!A1000:Z1000"),
+    ("Z:Z", 200, "Sheet1!Z1:Z1000"),
+    ("1:1000", 200, "Sheet1!A1:Z1000"),
+    ("R1000:R1000", 200, "Sheet1!R1000"),
+    ("R1000", 200, "Sheet1!R1000"),
+    ("A 1", 400, "Unable to parse range: A 1"),
+    ("A1 :B2", 400, "Unable to parse range: A1 :B2"),
+    ("A1: B2", 400, "Unable to parse range: A1: B2"),
+    ("A1 : B2", 400, "Unable to parse range: A1 : B2"),
+    ("A :A", 400, "Unable to parse range: A :A"),
+    ("1 :2", 400, "Unable to parse range: 1 :2"),
+    ("R 1C1", 400, "Unable to parse range: R 1C1"),
+    ("R1C 1", 400, "Unable to parse range: R1C 1"),
+    ("R1 C 1", 400, "Unable to parse range: R1 C 1"),
+    ("R [1]C[1]", 400, "Unable to parse range: R [1]C[1]"),
+    ("R[ 1]C[1]", 400, "Unable to parse range: R[ 1]C[1]"),
+    ("R[1 ]C[1]", 400, "Unable to parse range: R[1 ]C[1]"),
+    ("R1C1: R2C2", 400, "Unable to parse range: R1C1: R2C2"),
+    ("A1\tB2", 400, "Unable to parse range: A1\tB2"),
+    ("A1\t:B2", 400, "Unable to parse range: A1\t:B2"),
+    ("A1  :B2", 400, "Unable to parse range: A1  :B2"),
+    ("'Sheet1 '!A1", 400, "Unable to parse range: 'Sheet1 '!A1"),
+    ("' Sheet1'!A1", 400, "Unable to parse range: ' Sheet1'!A1"),
+    ("Sheet1!A 1", 400, "Unable to parse range: Sheet1!A 1"),
+    (" ", 400, "Unable to parse range:  "),
+    ("  ", 400, "Unable to parse range:   "),
+    (" !A1", 400, "Unable to parse range:  !A1"),
+    ("!A1", 200, "Sheet1!A1"),
+    ("! A1", 400, "Unable to parse range: ! A1"),
+    ("Sheet1!", 400, "Unable to parse range: Sheet1!"),
+    ("Sheet1! ", 400, "Unable to parse range: Sheet1! "),
+    ("!A1:B2", 200, "Sheet1!A1:B2"),
+    ("!R1C1", 200, "Sheet1!A1"),
+    ("!R[1]C[1]", 200, "Sheet1!B2"),
+    ("!A:A", 200, "Sheet1!A1:A1000"),
+    ("!Data", 400, "Unable to parse range: !Data"),
+    ("!", 400, "Unable to parse range: !"),
+    ("''!A1", 200, "Sheet1!A1"),
+    ("!!A1", 400, "Unable to parse range: !!A1"),
+    ("!Sheet1!A1", 400, "Unable to parse range: !Sheet1!A1"),
+    ("Data!!A1", 400, "Unable to parse range: Data!!A1"),
+]
+
+# A subset for the SAMPLE spreadsheet, which has `Sheet1` alone: two of the five the issue's
+# comment measured, then offsets, bare letters and a reversed range, on both reads.
+_R1C1_ECHO = {sent: echo for sent, status, echo in MEASURED_R1C1 if status == 200}
+MEASURED_ECHO_R1C1 = [
+    (sent, _R1C1_ECHO[sent])
+    for sent in ("R1C2", "R1C1:R2C2", "R[1]C[1]", "R1C1:R[2]C[2]", "R[1]", "C[1]", "R3C3:R1C1")
+]
+
+
+@pytest.mark.parametrize("rng, echo", MEASURED_ECHO_R1C1)
+def test_sheets_values_r1c1_echoes_the_a1_equivalent(base, admin_h, sheet_id, rng, echo):
+    """On `values.get` and on `values:batchGet`, since the reader sends the former and a client
+    batching sheets sends the latter."""
+    r = _values(base, admin_h, sheet_id, rng)
+    assert r.status_code == 200, r.text
+    assert r.json()["range"] == echo
+    b = _batch(base, admin_h, sheet_id, [rng])
+    assert b.status_code == 200, b.text
+    assert b.json()["valueRanges"][0]["range"] == echo
+
+
+def test_sheets_values_answer_every_measured_r1c1_request_as_real_does(tmp_path):
+    """All MEASURED_R1C1 rows, status and echo or message alike, over a corpus with the probe's
+    five sheets. One test rather than one per row: the corpus is built once, and a row that drifts
+    names itself in the assertion."""
+    from tests._helpers import corpus_client
+
+    grid = [["a", "b"], ["c", "d"], ["e", "f"]]
+    record = {
+        "source_type": "google_drive",
+        "doc_id": "probe",
+        "folder": "mk",
+        "title": "backlot #174 R1C1 probe",
+        "author_email": "a@x.com",
+        "visibility": "public",
+        "subtype": "spreadsheet",
+        "sheets": [{"title": t, "grid": grid} for t in ("Sheet1", "Data", "R1C1", "RC", "A")],
+    }
+    with corpus_client(tmp_path, [record]) as (client, settings):
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        (sheet,) = client.get(
+            "/drive/v3/files", headers=h, params={"q": "name = 'backlot #174 R1C1 probe'"}
+        ).json()["files"]
+        drifted = []
+        for sent, status, shown in MEASURED_R1C1:
+            r = client.get(
+                f"/sheets/v4/spreadsheets/{sheet['id']}/values/{quote(sent, safe='')}", headers=h
+            )
+            body = r.json()
+            got = body.get("range") if r.status_code == 200 else body["error"]["message"]
+            if (r.status_code, got) != (status, shown):
+                drifted.append(
+                    f"{sent!r}: real {status} {shown!r}, Backlot {r.status_code} {got!r}"
+                )
+        assert drifted == [], "\n".join(drifted)
+
+
+def test_sheets_values_r1c1_answers_exactly_what_its_a1_twin_does(base, admin_h, sheet_id):
+    """The whole body, not only the echo: the reader's `R1C1:R{rowCount}C{columnCount}` is the
+    whole grid, and has to come back as the bare sheet name does."""
+    assert _values(base, admin_h, sheet_id, "R1C1:R2C2").json() == (
+        _values(base, admin_h, sheet_id, "A1:B2").json()
+    )
+    whole = _values(base, admin_h, sheet_id, "R1C1:R1000C26").json()
+    assert whole == _values(base, admin_h, sheet_id, "Sheet1").json()
+    assert whole["range"] == "Sheet1!A1:Z1000"
+
+
+def test_sheets_a_title_spelt_as_a_reference_is_quoted_in_either_notation():
+    """Measured on sheets so named: `'A1'`, `'R1C1'` and `'RC'` echo quoted because the bare word
+    reads as a cell, while `A` echoes bare — a lone column is no range. And a bare `R1` is the A1
+    cell R1, not a row in R1C1 notation."""
+    from backlot.routers.google import _a1_classify, _a1_title
+
+    assert _a1_title("A1") == "'A1'"
+    assert _a1_title("R1C1") == "'R1C1'"
+    assert _a1_title("RC") == "'RC'"
+    assert _a1_title("A") == "A"
+    assert _a1_title("Data") == "Data"
+    assert _a1_classify("R1")[0] == "a1" and _a1_classify("RC")[0] == "r1c1"
+    assert _a1_classify("A") is None and _a1_classify("A1:R2C2") is None
 
 
 def test_sheets_values_accept_a_bare_quoted_sheet_name(base, admin_h, sheet_id):
@@ -2242,6 +2604,245 @@ def test_drive_files_list_excludes_trashed_with_no_query_at_all(tmp_path):
             "/drive/v3/files", headers=h, params={"q": "trashed = true", "pageSize": 100}
         ).json()
         assert [f["id"] for f in asked["files"]] == [gone_id]
+
+
+_Q_RECORDS = [
+    {
+        "source_type": "google_drive",
+        "doc_id": "brand",
+        "folder": "mk",
+        "title": "Brand guidelines",
+        "content": "palette",
+        "author_email": "mia@x.com",
+        "visibility": "public",
+        "subtype": "document",
+        "created": "2026-02-01T09:00:00Z",
+        "updated": "2026-02-10T09:00:00Z",
+    },
+    {
+        "source_type": "google_drive",
+        "doc_id": "rev",
+        "folder": "fin",
+        "title": "Q1 Revenue",
+        "content": "arr",
+        "author_email": "cfo@x.com",
+        "visibility": "public",
+        "subtype": "spreadsheet",
+        "created": "2026-01-05T09:00:00Z",
+        "updated": "2026-01-06T09:00:00Z",
+    },
+    {
+        "source_type": "google_drive",
+        "doc_id": "deck",
+        "folder": "mk",
+        "title": "Q1 Deck",
+        "content": "slides",
+        "author_email": "mia@x.com",
+        "visibility": "public",
+        "subtype": "presentation",
+        "created": "2026-01-20T09:00:00Z",
+        "updated": "2026-01-21T09:00:00Z",
+    },
+    {
+        "source_type": "google_drive",
+        "doc_id": "notes",
+        "folder": "mk",
+        "title": "Mia's Notes",
+        "content": "notes",
+        "author_email": "mia@x.com",
+        "visibility": "public",
+        "subtype": "document",
+        "created": "2025-12-01T09:00:00Z",
+        "updated": "2025-12-02T09:00:00Z",
+    },
+    {
+        "source_type": "google_drive",
+        "doc_id": "old",
+        "folder": "mk",
+        "title": "Old Deck",
+        "content": "stale",
+        "author_email": "mia@x.com",
+        "visibility": "public",
+        "trashed": True,
+    },
+]
+_FOLDER = "application/vnd.google-apps.folder"
+
+
+def test_drive_q_evaluates_the_operators_the_reference_lists(tmp_path):
+    """`files.list` matched `q` with one regex per clause it knew and ignored the rest, so a clause
+    in a form the regexes did not match — `name = '…'`, `modifiedTime < '…'`, `mimeType contains`,
+    an `or`, a `not` — dropped out of the FILTER rather than out of the result: the caller got the
+    unfiltered listing under a 200. mirage's folder listing resolves a file with `name='…'`, so a
+    client that took the first hit had the wrong file and no signal.
+
+    Every operator the reference lists for `name`, `mimeType`, `modifiedTime`, `createdTime` and
+    `trashed`, over a corpus small enough to name the answer; `sharedWithMe`, `fullText` and the
+    two collections are in the client-shapes test that closes this group. Folders are dropped here
+    (their `createdTime` is seeded,
+    so a time clause's answer for them is not this test's to state); the test below is where they
+    go through the same evaluator."""
+    from tests._helpers import corpus_client
+
+    with corpus_client(tmp_path, _Q_RECORDS) as (client, settings):
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+
+        def files(q):
+            r = client.get(
+                "/drive/v3/files",
+                headers=h,
+                params={"q": q, "fields": "files(name,mimeType)", "pageSize": 100},
+            )
+            assert r.status_code == 200, f"{q}: {r.text}"
+            return {f["name"] for f in r.json()["files"] if f["mimeType"] != _FOLDER}
+
+        # name: contains, =, != — `=` reads case-insensitively, as the `contains` before it did
+        assert files("name = 'Q1 Deck'") == {"Q1 Deck"}
+        assert files("name = 'q1 deck'") == {"Q1 Deck"}
+        assert files("name != 'Q1 Deck'") == {"Brand guidelines", "Q1 Revenue", "Mia's Notes"}
+        # the reference's escape for an apostrophe inside a value
+        assert files("name = 'Mia\\'s Notes'") == {"Mia's Notes"}
+        # mimeType: contains, =, !=
+        assert files("mimeType contains 'spreadsheet'") == {"Q1 Revenue"}
+        assert files("mimeType = 'application/vnd.google-apps.presentation'") == {"Q1 Deck"}
+        # modifiedTime / createdTime: the full comparison set, a zone-less value read as UTC
+        assert files("modifiedTime < '2026-01-10T00:00:00Z'") == {"Q1 Revenue", "Mia's Notes"}
+        assert files("modifiedTime <= '2026-01-21T09:00:00Z'") == {
+            "Q1 Revenue",
+            "Q1 Deck",
+            "Mia's Notes",
+        }
+        assert files("modifiedTime >= '2026-01-21T09:00:00'") == {"Brand guidelines", "Q1 Deck"}
+        assert files("modifiedTime > '2026-01-21T09:00:00Z'") == {"Brand guidelines"}
+        assert files("createdTime = '2026-01-05T09:00:00Z'") == {"Q1 Revenue"}
+        assert files("createdTime != '2026-01-05T09:00:00Z' and mimeType != 'x'") == {
+            "Brand guidelines",
+            "Q1 Deck",
+            "Mia's Notes",
+        }
+        # or, not, parentheses
+        assert files("name contains 'Deck' or name contains 'Brand'") == {
+            "Q1 Deck",
+            "Brand guidelines",
+        }
+        assert files("not name contains 'Q1'") == {"Brand guidelines", "Mia's Notes"}
+        assert files(
+            "(name contains 'Q1' or name contains 'Brand') and mimeType != "
+            "'application/vnd.google-apps.presentation'"
+        ) == {"Q1 Revenue", "Brand guidelines"}
+        # trashed: left out unless a clause asks, and asked for through `not` as well as `= true`
+        assert files("name contains 'Deck'") == {"Q1 Deck"}
+        assert files("name contains 'Deck' and trashed = true") == {"Old Deck"}
+        assert files("not trashed = false") == {"Old Deck"}
+        assert files("trashed != false") == {"Old Deck"}
+        # ...and through `not` beside a `name contains`, whose title-LIKE candidate set answers
+        # non-trashed rows only and so must not be used here.
+        assert files("name contains 'Deck' and not trashed = false") == {"Old Deck"}
+
+
+def test_drive_q_or_spans_folders_and_files(tmp_path):
+    """The synthesized folders go through the same evaluator as stored rows, so a disjunction that
+    names a folder by its mimeType and a file by its name answers both. A `'root' in parents`
+    under an `or` scopes nothing — the parent shortcut reads only the terms every match must
+    satisfy — so the files still come back."""
+    from tests._helpers import corpus_client
+
+    with corpus_client(tmp_path, _Q_RECORDS) as (client, settings):
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        r = client.get(
+            "/drive/v3/files",
+            headers=h,
+            params={
+                "q": f"mimeType = '{_FOLDER}' or name = 'Q1 Deck'",
+                "fields": "files(name)",
+                "pageSize": 100,
+            },
+        )
+        assert {f["name"] for f in r.json()["files"]} == {"mk", "fin", "Q1 Deck"}
+        r = client.get(
+            "/drive/v3/files",
+            headers=h,
+            params={"q": "'root' in parents or name contains 'Q1'", "fields": "files(name)"},
+        )
+        assert {f["name"] for f in r.json()["files"]} == {"mk", "fin", "Q1 Deck", "Q1 Revenue"}
+
+
+def test_drive_q_refuses_a_clause_it_cannot_parse(tmp_path):
+    """A term the reference does not list, or a clause that is not the grammar, is a 400 on `q` —
+    where before it silently fell out of the filter. Real Drive's wording for it is unmeasured, so
+    the message is the bare `Invalid Value` of the parameter envelope."""
+    from tests._helpers import corpus_client
+
+    with corpus_client(tmp_path, _Q_RECORDS) as (client, settings):
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        for q in (
+            "bogusField = 'x'",
+            "name ~ 'x'",
+            "name contains",
+            "name contains 'unterminated",
+            "trashed = 'true'",
+            "modifiedTime contains 'x'",
+            "modifiedTime < 'yesterday'",  # the reference wants RFC 3339 here
+            "'x' in bogus",
+            "name contains 'a' or",
+            "(name contains 'a'",
+            "name contains 'a' name contains 'b'",
+        ):
+            r = client.get("/drive/v3/files", headers=h, params={"q": q})
+            assert r.status_code == 400, f"{q}: {r.text}"
+            err = r.json()["error"]
+            assert err["message"] == "Invalid Value", q
+            assert (err["errors"][0]["reason"], err["errors"][0]["location"]) == ("invalid", "q")
+
+
+def test_drive_q_refuses_a_documented_term_it_holds_no_fact_for(tmp_path):
+    """`starred`, `writers`, `viewedByMeTime` are the reference's, and a corpus record carries
+    nothing to answer them from. Refused with a message that says so, the way an unmodelled
+    `orderBy` key is — honouring `starred = true` as "everything" would be the silent listing the
+    parser exists to stop."""
+    from tests._helpers import corpus_client
+
+    with corpus_client(tmp_path, _Q_RECORDS) as (client, settings):
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        for q in (
+            "starred = true",
+            "'mia@x.com' in writers",
+            "viewedByMeTime > '2026-01-01T00:00:00Z'",
+        ):
+            r = client.get("/drive/v3/files", headers=h, params={"q": q})
+            assert r.status_code == 400, f"{q}: {r.text}"
+            err = r.json()["error"]
+            assert "is not evaluated by Backlot" in err["message"], q
+            assert err["errors"][0]["location"] == "q"
+
+
+def test_drive_q_shapes_clients_send_still_parse(tmp_path):
+    """The shapes clients send, spaces and all — mirage's `'<id>' in parents and trashed=false` is
+    the first — plus a bare `sharedWithMe`, keywords in either case, `in owners`, and a phrase and
+    an `or` around `fullText`, whose index answer is a membership test rather than a pre-filter."""
+    from tests._helpers import corpus_client
+
+    with corpus_client(tmp_path, _Q_RECORDS) as (client, settings):
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        for q, expected in (
+            ("'root' in parents and trashed=false", {"mk", "fin"}),
+            ("mimeType='application/vnd.google-apps.folder' AND trashed=false", {"mk", "fin"}),
+            # The admin token is not a Drive user, so it owns nothing and everything reads as
+            # shared with it — the rule `_drive_owned_by` states.
+            (
+                "sharedWithMe and trashed = false",
+                {"mk", "fin", "Brand guidelines", "Q1 Revenue", "Q1 Deck", "Mia's Notes"},
+            ),
+            ("sharedWithMe = false", set()),
+            ("sharedWithMe != true", set()),
+            ("'mia@x.com' in owners and name contains 'Q1'", {"Q1 Deck"}),
+            ("fullText contains 'palette' and trashed = false", {"Brand guidelines"}),
+            ("fullText contains '\"slides\"'", {"Q1 Deck"}),
+            ("fullText contains 'palette' or name = 'Q1 Deck'", {"Brand guidelines", "Q1 Deck"}),
+        ):
+            r = client.get("/drive/v3/files", headers=h, params={"q": q, "fields": "files(name)"})
+            assert r.status_code == 200, f"{q}: {r.text}"
+            assert {f["name"] for f in r.json()["files"]} == expected, q
 
 
 def test_drive_size_is_populated_for_docs_editors_files(tmp_path):

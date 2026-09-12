@@ -844,10 +844,317 @@ def _gmail_message(row, fmt: str, caller_email: str | None = None) -> dict:
 
 # ================================ Drive =========================================
 
-_DRIVE_FULLTEXT_RE = re.compile(r"fullText\s+contains\s+'([^']+)'")
-# `sharedWithMe = true|false`, or the bare `sharedWithMe` Drive also accepts (meaning true).
-_DRIVE_SHARED_RE = re.compile(r"sharedWithMe\b(?:\s*=\s*(true|false))?")
-_DRIVE_MIME_RE = re.compile(r"mimeType\s*(=|!=)\s*'([^']+)'")
+# --- `q` ---------------------------------------------------------------------------------------
+# Drive's query language, PARSED rather than pattern-matched. One regex per known clause let any
+# clause the regexes did not match — `name = '…'`, `modifiedTime < '…'`, `mimeType contains '…'`,
+# an `or`, a `not`, a mistyped term — drop out of the FILTER instead of out of the result, so the
+# caller got the unfiltered listing under a 200. Measured 2026-09-12 at 6490f3b: `name = 'First
+# Week Checklist'` answered every visible file, 16, where `name contains` answered 1. mirage sends
+# two of those shapes: its folder listing resolves a file with `name='…'` and bounds a sync with
+# `modifiedTime >= '…'` and `modifiedTime < '…'`.
+#
+# The grammar is the reference's (developers.google.com/workspace/drive/api/guides/ref-search-terms):
+# a term is `<field> <operator> <value>` or `'<value>' in <collection>`, terms join with `and` and
+# `or`, `not` negates, and a string value is single-quoted with an apostrophe escaped as `\'` —
+# "Escape single quotes in queries with \'". Parentheses group. Whether `and` binds before `or` the
+# reference does not say; Backlot reads it as SQL does, `and` first.
+#
+# A term Backlot cannot evaluate is a 400 on `q`, never a silence. Two kinds: a term the reference
+# does not list (`bogusField = 'x'`), which real Drive refuses too — its wording is unmeasured, so
+# the bare `Invalid Value` of the parameter envelope stands — and a documented term Backlot holds no
+# fact for, refused with a message that says so, the way an unmodelled `orderBy` key is. Honouring
+# `starred = true` as "everything" would be the listing this section exists to stop.
+
+# Every term Backlot evaluates, with the operators the reference lists for it.
+_DRIVE_Q_OPERATORS: dict[str, frozenset[str]] = {
+    "name": frozenset({"contains", "=", "!="}),
+    "fullText": frozenset({"contains"}),
+    "mimeType": frozenset({"contains", "=", "!="}),
+    "modifiedTime": frozenset({"<=", "<", "=", "!=", ">", ">="}),
+    "createdTime": frozenset({"<=", "<", "=", "!=", ">", ">="}),
+    "trashed": frozenset({"=", "!="}),
+    "sharedWithMe": frozenset({"=", "!="}),
+}
+_DRIVE_Q_COLLECTIONS = frozenset({"parents", "owners"})
+_DRIVE_Q_BOOLEAN = frozenset({"trashed", "sharedWithMe"})
+# Documented on the reference, and nothing in a corpus record to evaluate them against.
+_DRIVE_Q_UNMODELLED = frozenset(
+    {"starred", "viewedByMeTime", "writers", "readers", "properties", "appProperties", "visibility"}
+)
+_DRIVE_Q_TOKEN = re.compile(
+    r"\s*(?:(?P<paren>[()])|(?P<op>!=|<=|>=|=|<|>)|'(?P<str>(?:[^'\\]|\\.)*)'"
+    r"|(?P<word>[A-Za-z_][A-Za-z0-9_]*))"
+)
+
+
+class _QTerm(NamedTuple):
+    field: str
+    op: str
+    value: str
+
+
+class _QNot(NamedTuple):
+    inner: object
+
+
+class _QAnd(NamedTuple):
+    parts: tuple
+
+
+class _QOr(NamedTuple):
+    parts: tuple
+
+
+def _drive_q_refused(message: str | None = None) -> gerr.GoogleError:
+    return gerr.invalid_value("q", message)
+
+
+def _drive_q_tokens(q: str) -> list[tuple[str, str]]:
+    """``(kind, text)`` pairs; a quoted value arrives unescaped."""
+    out: list[tuple[str, str]] = []
+    pos = 0
+    while pos < len(q):
+        m = _DRIVE_Q_TOKEN.match(q, pos)
+        if m is None:
+            if q[pos:].strip():
+                raise _drive_q_refused()
+            break
+        pos = m.end()
+        kind = m.lastgroup or ""
+        text = m.group(kind)
+        out.append((kind, re.sub(r"\\(.)", r"\1", text) if kind == "str" else text))
+    return out
+
+
+def _drive_q_parse(q: str):
+    """The parsed query, or ``None`` for an empty one. A clause Backlot cannot evaluate is a 400.
+
+    A query that names no ``trashed`` term gets ``and trashed = false`` appended: real Drive leaves
+    trashed files out of a listing unless a clause asks for them, which the matcher used to apply as
+    its default branch and the plain listing applies as ``exclude_trashed``."""
+    tokens = _drive_q_tokens(q)
+    if not tokens:
+        return None
+    pos = 0
+
+    def peek() -> tuple[str | None, str | None]:
+        return tokens[pos] if pos < len(tokens) else (None, None)
+
+    def take() -> tuple[str | None, str | None]:
+        nonlocal pos
+        tok = peek()
+        pos += 1
+        return tok
+
+    def is_word(text: str) -> bool:
+        kind, tok = peek()
+        return kind == "word" and (tok or "").lower() == text
+
+    def disjunction():
+        parts = [conjunction()]
+        while is_word("or"):
+            take()
+            parts.append(conjunction())
+        return parts[0] if len(parts) == 1 else _QOr(tuple(parts))
+
+    def conjunction():
+        parts = [unary()]
+        while is_word("and"):
+            take()
+            parts.append(unary())
+        return parts[0] if len(parts) == 1 else _QAnd(tuple(parts))
+
+    def unary():
+        if is_word("not"):
+            take()
+            return _QNot(unary())
+        if peek() == ("paren", "("):
+            take()
+            node = disjunction()
+            if take() != ("paren", ")"):
+                raise _drive_q_refused()
+            return node
+        return term()
+
+    def unmodelled(field: str) -> gerr.GoogleError:
+        evaluated = ", ".join(sorted(_DRIVE_Q_OPERATORS))
+        return _drive_q_refused(
+            f"'{field}' is not evaluated by Backlot: a corpus record carries nothing to answer it "
+            f"from. Terms it evaluates: {evaluated}, and 'x' in parents / owners."
+        )
+
+    def term():
+        kind, text = take()
+        if kind == "str":  # `'<value>' in <collection>`
+            if not is_word("in"):
+                raise _drive_q_refused()
+            take()
+            fkind, field = take()
+            if fkind != "word":
+                raise _drive_q_refused()
+            if field in _DRIVE_Q_UNMODELLED:
+                raise unmodelled(field)
+            if field not in _DRIVE_Q_COLLECTIONS:
+                raise _drive_q_refused()
+            return _QTerm(field, "in", text or "")
+        if kind != "word" or text is None:
+            raise _drive_q_refused()
+        field = text
+        if field in _DRIVE_Q_UNMODELLED:
+            raise unmodelled(field)
+        if field not in _DRIVE_Q_OPERATORS:
+            raise _drive_q_refused()
+        okind, op = peek()
+        if okind == "op":
+            take()
+        elif okind == "word" and (op or "").lower() in ("contains", "has", "in"):
+            take()
+            op = (op or "").lower()
+        elif field == "sharedWithMe":
+            # The bare `sharedWithMe` Drive also accepts, meaning true.
+            return _QTerm(field, "=", "true")
+        else:
+            raise _drive_q_refused()
+        if op not in _DRIVE_Q_OPERATORS[field]:
+            raise _drive_q_refused()
+        vkind, value = take()
+        if field in _DRIVE_Q_BOOLEAN:
+            if vkind != "word" or (value or "").lower() not in ("true", "false"):
+                raise _drive_q_refused()
+            return _QTerm(field, op or "", (value or "").lower())
+        if vkind != "str":
+            raise _drive_q_refused()
+        if field in ("modifiedTime", "createdTime") and _drive_q_time(value or "") is None:
+            # The reference wants RFC 3339 here. A value that is not one would otherwise compare
+            # as a string against the file's timestamp and answer something for every file; what
+            # real Drive answers for it is unmeasured, so this is a refusal rather than its wording.
+            raise _drive_q_refused()
+        return _QTerm(field, op or "", value or "")
+
+    node = disjunction()
+    if pos != len(tokens):
+        raise _drive_q_refused()
+    if not any(t.field == "trashed" for t in _drive_q_terms(node)):
+        node = _QAnd((node, _QTerm("trashed", "=", "false")))
+    return node
+
+
+def _drive_q_terms(node):
+    """Every term in the tree, whatever it sits under."""
+    if isinstance(node, _QTerm):
+        yield node
+    elif isinstance(node, _QNot):
+        yield from _drive_q_terms(node.inner)
+    elif isinstance(node, (_QAnd, _QOr)):
+        for part in node.parts:
+            yield from _drive_q_terms(part)
+
+
+def _drive_q_conjuncts(node) -> list[_QTerm]:
+    """The terms every match has to satisfy — those joined by `and` at the top, with nothing
+    under an `or` or a `not`. What the SQL paths may narrow the candidate set by."""
+    if isinstance(node, _QTerm):
+        return [node]
+    if isinstance(node, _QAnd):
+        return [t for part in node.parts for t in _drive_q_conjuncts(part)]
+    return []
+
+
+def _drive_q_is_conjunction(node) -> bool:
+    """Whether the whole tree is terms joined by `and`, so its conjuncts are the whole query."""
+    if isinstance(node, _QTerm):
+        return True
+    return isinstance(node, _QAnd) and all(_drive_q_is_conjunction(p) for p in node.parts)
+
+
+def _drive_q_time(value: str) -> datetime.datetime | None:
+    """An RFC 3339 value as a datetime, UTC when it names no zone; ``None`` if it is not one."""
+    try:
+        parsed = datetime.datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=datetime.timezone.utc)
+
+
+def _drive_q_compare(op: str, have: str, want: str) -> bool:
+    """A time term, compared as instants: `'2026-01-10T00:00:00'` equals `'…Z'`. The value was
+    checked at parse; a fact that is no timestamp (an object with the field unset) matches
+    nothing."""
+    left, right = _drive_q_time(have), _drive_q_time(want)
+    if left is None or right is None:
+        return False
+    if op == "<":
+        return left < right
+    if op == "<=":
+        return left <= right
+    if op == "=":
+        return left == right
+    if op == "!=":
+        return left != right
+    if op == ">":
+        return left > right
+    return left >= right
+
+
+def _drive_q_eval(node, f: dict, me: str | None, fulltext: dict[str, set[str]]) -> bool:
+    """Whether one file's facts satisfy the query. ``fulltext`` maps each `fullText contains`
+    value to the ids the index answered for it, so the term is a membership test here."""
+    if isinstance(node, _QNot):
+        return not _drive_q_eval(node.inner, f, me, fulltext)
+    if isinstance(node, _QAnd):
+        return all(_drive_q_eval(p, f, me, fulltext) for p in node.parts)
+    if isinstance(node, _QOr):
+        return any(_drive_q_eval(p, f, me, fulltext) for p in node.parts)
+    field, op, value = node
+    if field == "trashed":
+        return ((value == "true") == f["trashed"]) == (op == "=")
+    if field == "sharedWithMe":
+        # "Shared with me" = visible to the caller and not owned by them. Items shared with you
+        # carry no My Drive parent on real Drive, so this clause is the only way to enumerate
+        # that section.
+        shared = not _drive_owned_by(f["owner_email"], me)
+        return ((value == "true") == shared) == (op == "=")
+    if field == "name":
+        # Case-insensitive on every operator, as the `contains` this served before was. Whether
+        # real Drive compares `name =` case-sensitively is unmeasured.
+        have, want = f["name"].casefold(), value.casefold()
+        return want in have if op == "contains" else (have == want) == (op == "=")
+    if field == "mimeType":
+        return value in f["mime"] if op == "contains" else (f["mime"] == value) == (op == "=")
+    if field == "fullText":
+        return f["id"] in fulltext.get(value, ())
+    if field == "modifiedTime":
+        return _drive_q_compare(op, f["modified"], value)
+    if field == "createdTime":
+        return _drive_q_compare(op, f["created"], value)
+    if field == "parents":
+        return value in f["parents"]
+    if field == "owners":
+        return value.strip().lower() in f["owners"]
+    raise AssertionError(f"unevaluated q term {field!r}")  # every field the parser admits is above
+
+
+def _drive_q_fulltext(conn, node, ids) -> dict[str, list]:
+    """The index's answer for each `fullText contains` value in the query, as rows in rank order.
+
+    Real Drive semantics: a quoted value (`fullText contains '"X Y"'`) is an exact phrase (tokens
+    adjacent); unquoted is separate terms. A grep push-down sends the quoted form for a literal
+    pattern, so the exact doc surfaces instead of being buried under coincidental docs that merely
+    contain the words scattered."""
+    out: dict[str, list] = {}
+    for term in _drive_q_terms(node):
+        if term.field != "fullText" or term.value in out:
+            continue
+        raw = term.value
+        phrase = len(raw) >= 2 and raw[0] == '"' and raw[-1] == '"'
+        out[raw] = store.search_documents(
+            conn, raw[1:-1] if phrase else raw, "google_drive", ids, limit=10_000, phrase=phrase
+        )
+    return out
+
+
+def _drive_q_fulltext_ids(hits: dict[str, list]) -> dict[str, set[str]]:
+    return {value: {r["id"] for r in rows} for value, rows in hits.items()}
 
 
 def _drive_owned_by(owner_email: str | None, me: str | None) -> bool:
@@ -885,11 +1192,13 @@ def _drive_facts(row) -> dict:
     """The values `q` clauses are evaluated against, taken from a stored row."""
     modified = _drive_modified(row)
     return {
+        "id": row["id"],
         "trashed": bool(row["trashed"]),
         "parents": store.jcol(row, "parents") or [synth.drive_folder_id(row["folder"])],
         "mime": _drive_mime(row),
         "name": row["title"] or "",
         "modified": synth.rfc3339(modified),
+        "created": synth.rfc3339(_drive_created(row)),
         "owner_email": row["author_email"],
         # real Drive keys `in owners` on the owner's email; Backlot also accepts the owner
         # display name, since that's the only owner identifier some callers have.
@@ -901,52 +1210,23 @@ def _drive_obj_facts(obj: dict) -> dict:
     """The same values taken from an already-built file object — the synthesized folders, which
     exist only as objects, are matched through this so every clause treats them like a row."""
     return {
+        "id": obj.get("id") or "",
         "trashed": bool(obj.get("trashed")),
         "parents": obj.get("parents") or [],
         "mime": obj.get("mimeType") or "",
         "name": obj.get("name") or "",
         "modified": obj.get("modifiedTime") or "",
+        "created": obj.get("createdTime") or "",
         "owner_email": (obj.get("owners") or [{}])[0].get("emailAddress"),
         "owners": {(o.get("emailAddress") or "").lower() for o in (obj.get("owners") or [])},
     }
 
 
-def _drive_q_match_facts(f: dict, q: str, me: str | None = None) -> bool:
-    """Honor the Drive `q` clauses connectors use (folder scoping, mimeType, name contains,
-    modifiedTime, trashed, sharedWithMe, in owners). `fullText contains` is handled upstream via
-    FTS (see drive_files_list), so it's stripped from `q` before this runs. Unrecognized clauses
-    are ignored."""
-    m = re.search(r"trashed\s*=\s*(true|false)", q)
-    if m:
-        if (m.group(1) == "true") != f["trashed"]:
-            return False
-    elif f["trashed"]:  # real API excludes trashed by default
-        return False
-    for fid in re.findall(r"'([^']+)'\s+in\s+parents", q):
-        if fid not in f["parents"]:
-            return False
-    m = _DRIVE_MIME_RE.search(q)
-    if m and (m.group(1) == "=") != (f["mime"] == m.group(2)):
-        return False
-    m = re.search(r"name\s+contains\s+'([^']+)'", q)
-    if m and m.group(1).lower() not in f["name"].lower():
-        return False
-    m = re.search(r"modifiedTime\s*>\s*'([^']+)'", q)
-    if m and f["modified"] <= m.group(1):
-        return False
-    # "Shared with me" = visible to the caller and not owned by them. Items shared with you carry
-    # no My Drive parent on real Drive, so this clause is the only way to enumerate that section.
-    m = _DRIVE_SHARED_RE.search(q)
-    if m and ((m.group(1) or "true") == "true") == _drive_owned_by(f["owner_email"], me):
-        return False
-    for who in re.findall(r"'([^']+)'\s+in\s+owners", q):
-        if who.strip().lower() not in f["owners"]:
-            return False
-    return True
-
-
-def _drive_q_match(row, q: str, me: str | None = None) -> bool:
-    return _drive_q_match_facts(_drive_facts(row), q, me)
+def _drive_q_match(row, query, me: str | None = None, fulltext: dict | None = None) -> bool:
+    """Whether a stored row satisfies ``query`` — the string, or the tree ``_drive_q_parse`` built
+    from it. Without ``fulltext`` a `fullText contains` term matches nothing."""
+    node = _drive_q_parse(query) if isinstance(query, str) else query
+    return node is None or _drive_q_eval(node, _drive_facts(row), me, fulltext or {})
 
 
 def _visible_drive_folders(conn, ids) -> list[str]:
@@ -1196,84 +1476,94 @@ def _drive_sort(files: list[dict], specs: list[tuple]) -> list[dict]:
     return files
 
 
-def _drive_q_plain_folder(q: str) -> bool:
-    """True when ``q`` is just a folder scope (``'<id>' in parents``, optionally ``trashed=false``)
-    with no other clause — the shape a tree-walking client sends, servable straight from SQL."""
-    residual = re.sub(r"'[^']+'\s+in\s+parents", " ", q)
-    residual = re.sub(r"trashed\s*=\s*false", " ", residual)
-    residual = re.sub(r"\band\b", " ", residual, flags=re.IGNORECASE)
-    return residual.strip() == ""
+def _drive_q_plain_folder(query) -> bool:
+    """True when the query is just a folder scope (``'<id>' in parents``, and the ``trashed =
+    false`` every query carries) with no other clause — the shape a tree-walking client sends,
+    servable straight from SQL."""
+    return _drive_q_is_conjunction(query) and all(
+        t.field == "parents" or t == _QTerm("trashed", "=", "false")
+        for t in _drive_q_conjuncts(query)
+    )
 
 
-def _drive_q_excludes_folders(q: str) -> bool:
-    """True when ``q`` carries a mimeType clause no folder can satisfy. Only an optimization —
-    ``_drive_q_match_facts`` would reject them anyway — but it skips building the folder stream
-    (and its per-folder ACL probes) for the common query that only wants files."""
-    m = _DRIVE_MIME_RE.search(q)
-    return bool(m) and ((m.group(1) == "=") != (m.group(2) == DRIVE_FOLDER_MIME))
+def _drive_q_excludes_folders(conjuncts: list[_QTerm]) -> bool:
+    """True when a term every match has to satisfy is a mimeType no folder can satisfy. Only an
+    optimization — ``_drive_q_eval`` would reject them anyway — but it skips building the folder
+    stream (and its per-folder ACL probes) for the common query that only wants files."""
+    for t in conjuncts:
+        if t.field != "mimeType":
+            continue
+        if t.op == "contains":
+            if t.value not in DRIVE_FOLDER_MIME:
+                return True
+        elif (t.op == "=") != (t.value == DRIVE_FOLDER_MIME):
+            return True
+    return False
 
 
-def _drive_folder_candidates(conn, ids, q: str, me: str | None) -> list[dict]:
-    """The caller's visible folders as file objects, filtered by ``q`` through the same clause
-    matcher stored rows go through — so ``mimeType='…folder'`` finds them, not only
+def _drive_folder_candidates(conn, ids, query, me: str | None, fulltext: dict) -> list[dict]:
+    """The caller's visible folders as file objects, filtered by the query through the same
+    evaluator stored rows go through — so ``mimeType='…folder'`` finds them, not only
     ``'root' in parents``, and they honor the ``fields`` projection like any other row.
 
-    Skipped for a ``fullText contains`` query: a folder's only text is its name (Backlot's index
-    covers document content, not container names), so it can't take part in an FTS match."""
-    if _DRIVE_FULLTEXT_RE.search(q) or _drive_q_excludes_folders(q):
+    A ``fullText contains`` term matches no folder: a folder's only text is its name (Backlot's
+    index covers document content, not container names), so its id is never among the index's
+    answers."""
+    if _drive_q_excludes_folders(_drive_q_conjuncts(query)):
         return []
     return [
         f
         for f in (_drive_folder_obj(conn, n, me) for n in _visible_drive_folders(conn, ids))
-        if _drive_q_match_facts(_drive_obj_facts(f), q, me)
+        if query is None or _drive_q_eval(query, _drive_obj_facts(f), me, fulltext)
     ]
 
 
-def _drive_shared_with_me_scope(q: str, me: str | None) -> tuple[str | None, str | None]:
+def _drive_shared_with_me_scope(
+    conjuncts: list[_QTerm], me: str | None
+) -> tuple[str | None, str | None]:
     """``sharedWithMe`` as an SQL owner filter — ``(author_email, not_author_email)``. Drive's
     "Shared with me" is a first-class listing a client pages through, so the half of the corpus it
     can never contain is excluded in SQL rather than materialized and dropped in Python."""
-    m = _DRIVE_SHARED_RE.search(q)
-    if m is None or not me:
+    term = next((t for t in conjuncts if t.field == "sharedWithMe"), None)
+    if term is None or not me:
         return None, None
-    return (None, me) if (m.group(1) or "true") == "true" else (me, None)
+    return (None, me) if (term.value == "true") == (term.op == "=") else (me, None)
 
 
-def _drive_q_rows(conn, q: str, container: str | None, ids, me: str | None) -> list:
-    """Rows matching a non-trivial ``q``: build the smallest candidate set SQL can produce, then
-    apply the remaining clauses in Python."""
-    ft = _DRIVE_FULLTEXT_RE.search(q)
-    if ft:  # fullText contains → FTS candidates (ranked), then the other q clauses
-        # Honor real Drive semantics: a quoted value (`fullText contains '"X Y"'`) is an exact
-        # phrase (tokens adjacent); unquoted is separate terms. A grep push-down sends the quoted
-        # form for a literal pattern, so the exact doc surfaces instead of being buried under
-        # coincidental docs that merely contain the words scattered.
-        ft_raw = ft.group(1)
-        phrase = len(ft_raw) >= 2 and ft_raw[0] == '"' and ft_raw[-1] == '"'
-        ft_term = ft_raw[1:-1] if phrase else ft_raw
-        q_rest = _DRIVE_FULLTEXT_RE.sub(" ", q)  # FTS owns fullText; strip it from the rest
-        candidates = store.search_documents(
-            conn, ft_term, "google_drive", ids, limit=10_000, phrase=phrase
+def _drive_q_rows(conn, query, container: str | None, ids, me: str | None, hits: dict) -> list:
+    """Rows matching a non-trivial query: build the smallest candidate set SQL can produce from the
+    terms every match has to satisfy, then evaluate the whole query in Python.
+
+    ``hits`` is ``_drive_q_fulltext``'s answer for this query, so the index is asked once."""
+    conjuncts = _drive_q_conjuncts(query)
+    fulltext = next((t for t in conjuncts if t.field == "fullText"), None)
+    name = next((t for t in conjuncts if t.field == "name" and t.op == "contains"), None)
+    # `list_drive_by_name` answers non-trashed rows only, so it can be the candidate set only when
+    # every match is non-trashed — `trashed = false` a conjunct, not merely present: under a `not`
+    # it asks for the trash.
+    non_trashed = _QTerm("trashed", "=", "false") in conjuncts or (
+        _QTerm("trashed", "!=", "true") in conjuncts
+    )
+    if fulltext is not None:  # the index's candidates, in rank order, then the other terms
+        candidates = hits[fulltext.value]
+    elif name is not None and non_trashed:
+        # A name lookup (mirage resolves every gdrive file this way) — SQL title LIKE instead of
+        # materializing the whole corpus (~25k rows, ~1.6s) to substring-match in Python. The
+        # remaining terms still filter the (small) name-matched set below.
+        candidates = store.list_drive_by_name(conn, name.value, container, ids, limit=100_000)
+    else:  # scope to the folder and/or the owner (if any) to shrink the set before the filter
+        owner, not_owner = _drive_shared_with_me_scope(conjuncts, me)
+        candidates = store.list_documents(
+            conn,
+            "google_drive",
+            container=container,
+            visible_ids=ids,
+            limit=100_000,
+            author_email=owner,
+            not_author_email=not_owner,
         )
-    else:
-        q_rest = q
-        nm = re.search(r"name\s+contains\s+'([^']+)'", q)
-        if nm:  # a name lookup (mirage resolves every gdrive file this way) — SQL title LIKE
-            # instead of materializing the whole corpus (~25k rows, ~1.6s) to substring-match in
-            # Python. The remaining q clauses still filter the (small) name-matched set below.
-            candidates = store.list_drive_by_name(conn, nm.group(1), container, ids, limit=100_000)
-        else:  # scope to the folder and/or the owner (if any) to shrink the set before the filter
-            owner, not_owner = _drive_shared_with_me_scope(q, me)
-            candidates = store.list_documents(
-                conn,
-                "google_drive",
-                container=container,
-                visible_ids=ids,
-                limit=100_000,
-                author_email=owner,
-                not_author_email=not_owner,
-            )
-    return [r for r in candidates if _drive_q_match(r, q_rest, me)]
+    ids_by_value = _drive_q_fulltext_ids(hits)
+    return [r for r in candidates if _drive_q_eval(query, _drive_facts(r), me, ids_by_value)]
 
 
 # --- about ---------------------------------------------------------------------------------
@@ -1474,29 +1764,37 @@ async def drive_files_list(request: Request):
     q = request.query_params.get("q", "") or ""
     keys = _drive_file_field_keys(request.query_params.get("fields"))  # 400 on an unknown field
     order = _drive_order_specs(request.query_params.get("orderBy"))  # 400 on an unusable key
-    parent_ids = re.findall(r"'([^']+)'\s+in\s+parents", q)
+    query = _drive_q_parse(q)  # 400 on a clause Backlot cannot evaluate; None when there is no q
+    conjuncts = _drive_q_conjuncts(query)
+    hits = _drive_q_fulltext(conn, query, ids)
+    # A parent every match has to be under; one under an `or` scopes nothing.
+    parent_ids = [t.value for t in conjuncts if t.field == "parents"]
     # A folder-scoped parent resolves to one container name (for the SQL-scoped paths below).
     scoped = [pid for pid in parent_ids if pid != "root"]
     container = next((n for pid in scoped if (n := _drive_folder_name_by_id(conn, pid))), None)
     # Backlot's folders all hang directly under the root, so a query scoped inside one can only
     # match files — no folder stream to build.
-    folders = [] if scoped else _drive_folder_candidates(conn, ids, q, me)
+    folders = (
+        []
+        if scoped
+        else _drive_folder_candidates(conn, ids, query, me, _drive_q_fulltext_ids(hits))
+    )
 
     # The row stream as (count, fetch) so the SQL paths stay SQL-paginated: a crawl costs one page
     # of rows per request, not a full-corpus scan re-run for every page.
     if "root" in parent_ids:
         total_rows, fetch = 0, lambda o, n: []  # every stored file lives in a folder
-    elif container is not None and _drive_q_plain_folder(q):
+    elif container is not None and _drive_q_plain_folder(query):
         # The common case: a client walking the tree wants just this folder's files.
         total_rows = store.count_drive_folder(conn, container, ids)
         fetch = lambda o, n: store.list_drive_folder(conn, container, ids, limit=n, offset=o)  # noqa: E731
-    elif q.strip():  # filter the visible set by the query, then paginate
-        matched = _drive_q_rows(conn, q, container, ids, me)
+    elif query is not None:  # filter the visible set by the query, then paginate
+        matched = _drive_q_rows(conn, query, container, ids, me, hits)
         total_rows, fetch = len(matched), lambda o, n: matched[o : o + n]  # noqa: E731
     else:
-        # exclude_trashed: with no `q` at all there is no clause for _drive_q_match to read, and
+        # exclude_trashed: with no `q` at all there is no query to carry `trashed = false`, and
         # real Drive leaves trashed files out of files.list unless `trashed = true` asks for them.
-        # The q-bearing paths already do this (_drive_q_match_facts' default branch,
+        # The q-bearing paths already do this (the `trashed = false` _drive_q_parse appends,
         # store.list_drive_folder's WHERE), so without it the DEFAULT listing was the one call that
         # returned trash.
         total_rows = store.count_documents(
@@ -2198,8 +2496,132 @@ _A1_MAJOR = ("ROWS", "COLUMNS")
 _A1_RENDER = ("FORMATTED_VALUE", "UNFORMATTED_VALUE", "FORMULA")
 _A1_DATETIME = ("SERIAL_NUMBER", "FORMATTED_STRING")
 _SHEETS_ENUM = "type.googleapis.com/google.apps.sheets.v4"
-# One endpoint of an A1 range: a full cell (`B2`), a bare column (`B`) or a bare row (`2`).
+# One endpoint of an A1 range: a full cell (`B2`), a bare column (`B`) or a bare row (`2`). A bare
+# column or row is an endpoint only INSIDE a range — measured 2026-09-12, `Sheet1!B`, `Sheet1!2` and
+# a bang-less `Z` are all "Unable to parse range" while `A:A` and `1:1` answer — and row 0 is not
+# one at all (`A0`, `A1:A0` are unparseable too).
 _A1_END = re.compile(r"(?:(?P<col>[A-Za-z]{1,3})(?P<row>\d+)?|(?P<rowonly>\d+))\Z")
+# One endpoint in R1C1 notation, which the discovery document names beside A1 for `values.get`'s
+# `range` ("The A1 notation or R1C1 notation of the range to retrieve values from"), and which
+# the LlamaIndex `GoogleSheetsReader` sends for every sheet as `R1C1:R{rowCount}C{columnCount}`.
+#
+# The grammar below is measured, not read off a document: 217 requests against a real workbook on
+# 2026-09-12 (#174), every one pinned in `tests/test_google.py::MEASURED_R1C1`.
+#
+# * `R` and `C` each take an ABSOLUTE 1-based number (`R1C1`), a BRACKETED 0-based offset from A1
+#   (`R[1]C[1]` is B2, `R[0]C[0]` is A1 — the concepts guide's "relative to the current cell" has
+#   A1 as the current cell on a read), or no number at all (`R1C` is A1, `RC` is A1). Absolute 0
+#   and a negative or `+`-signed offset are unparseable; a leading zero is fine (`R01C01` is A1).
+# * either letter may be absent. Beside an R1C1 half a numbered `R2` is row 2 with the columns
+#   unbounded (`R1C1:R2` is A1:Z2) and `C[1]` alone is column B whole (`B1:B1000`); a bare `R`, `C`
+#   or `RC` is the cell A1.
+# * both halves of a range are read in ONE notation: `A1:R2C2` and `R1C1:B2` are unparseable. A
+#   token is read as A1 first (`R1` is the cell R1, `RC1` the cell RC1, `RC:RC` the columns RC),
+#   then as R1C1 (`RC` alone is A1, and so is `R1C1` even in a workbook with a sheet named `R1C1`),
+#   then — bang-less — as a sheet name (`A` is the sheet `A` when there is one).
+# * a reversed R1C1 range is swapped the way an A1 one is (`R3C3:R1C1` is A1:C3), except that on
+#   an axis where both halves carry a number OF THE SAME KIND — both absolute, or both offsets —
+#   start == end + 1 on the numbers AS WRITTEN is unparseable: `R2C2:R1C1`, `R1C2:R1C1`,
+#   `R[1]C[1]:R[0]C[0]` and `R2:R1C1` 400 while `R3C3:R1C1` and `R[2]C[2]:R[0]C[0]` answer. An
+#   axis that mixes the kinds swaps freely: `R[1]C[1]:R1C1`, `R[2]C[2]:R1C1` and `R1C1:R[0]C[0]`
+#   all answer. That reads as a half-open interval on the raw numbers coming out empty, checked
+#   before offsets are resolved; the rule was fitted on 22 reversed ranges, the 17 predictions made
+#   from it before they were sent all held, and the same-kind clause was then added for the 4
+#   mixed-kind rows the first version got wrong.
+# * the echo is the A1 equivalent, and the grid rules are A1's: an end past the grid is clamped
+#   (`R1C1:R2000C50` is A1:Z1000, `1:1001` is A1:Z1000), a start past it is refused (`R[1000]C[0]`
+#   names `A1001`), and a refused whole column or row is named by its letters or numbers alone
+#   (`C[26]` names `AA`, `R[1000]:R[1000]` names `1001`, `1001:1002` names `1001:1002`).
+# * whitespace is refused wherever it was tried — around the whole, around the bang, around the
+#   colon, inside a token, inside a quoted title, a tab as much as a space: ` A1`, `Sheet1! A1`,
+#   `A1: B2`, `R1 C1`, `R[ 1]C[1]`, `'Sheet1 '!A1` — all 36 forms sent — are unparseable. An EMPTY title
+#   before the bang is the first sheet (`!A1`, `''!A1`, `!R[1]C[1]`), a whitespace one is not.
+_R1C1_END = re.compile(
+    r"(?P<r>R(?:(?P<rabs>\d+)|\[(?P<rrel>\d+)\])?)?(?P<c>C(?:(?P<cabs>\d+)|\[(?P<crel>\d+)\])?)?\Z",
+    re.IGNORECASE,
+)
+
+
+class _End(NamedTuple):
+    """One side of a range, resolved: 0-based, ``None`` on an axis left unbounded. ``raw_row`` and
+    ``raw_col`` are the number as written and its kind — ``(2, "abs")`` for `R2`, ``(2, "rel")``
+    for `R[2]` — which is what real's reversed-range check reads; ``None`` where the axis carries no
+    number."""
+
+    row: int | None
+    col: int | None
+    raw_row: tuple[int, str] | None = None
+    raw_col: tuple[int, str] | None = None
+
+
+def _a1_end(part: str) -> _End | None:
+    """An A1 endpoint, or ``None`` when the string is not one."""
+    m = _A1_END.fullmatch(part)
+    if not m:
+        return None
+    if m.group("rowonly"):
+        n = int(m.group("rowonly"))
+        return _End(n - 1, None) if n else None
+    row = m.group("row")
+    if row is not None and int(row) == 0:
+        return None
+    return _End(int(row) - 1 if row else None, _a1_col(m.group("col")))
+
+
+def _r1c1_end(part: str) -> _End | None:
+    """An R1C1 endpoint, or ``None`` when the string is not one — the grammar above."""
+    m = _R1C1_END.fullmatch(part)
+    if not m or not (m.group("r") or m.group("c")):
+        return None
+
+    def numbered(letter: str) -> tuple[int, tuple[int, str]] | None:
+        """``(index, (raw, kind))`` for a letter that carries a number; ``None`` for one that does
+        not."""
+        absolute, relative = m.group(letter + "abs"), m.group(letter + "rel")
+        if absolute is not None:
+            n = int(absolute)
+            if n == 0:
+                raise ValueError(part)
+            return n - 1, (n, "abs")
+        if relative is not None:
+            n = int(relative)
+            return n, (n, "rel")
+        return None
+
+    try:
+        rnum, cnum = numbered("r"), numbered("c")
+    except ValueError:
+        return None
+
+    def index(letter: str, own, other) -> int | None:
+        if own is not None:
+            return own[0]
+        if m.group(letter):  # present without a number: offset 0
+            return 0
+        return None if other is not None else 0  # absent: unbounded beside a numbered letter
+
+    return _End(
+        index("r", rnum, cnum),
+        index("c", cnum, rnum),
+        rnum[1] if rnum else None,
+        cnum[1] if cnum else None,
+    )
+
+
+def _a1_classify(body: str) -> tuple[str, list[_End]] | None:
+    """Which notation a cell part is in, with its endpoints: ``("a1", ends)``, ``("r1c1", ends)``,
+    or ``None`` when it is neither. A1 first, then R1C1 — the order measured — and a lone A1 token
+    has to be a full cell, since a bare column or row is an endpoint only inside a range."""
+    halves = body.split(":")
+    if len(halves) > 2:
+        return None
+    a1 = [_a1_end(h) for h in halves]
+    if all(a1) and (len(a1) == 2 or (a1[0].row is not None and a1[0].col is not None)):
+        return "a1", a1  # type: ignore[return-value]
+    r1c1 = [_r1c1_end(h) for h in halves]
+    if all(r1c1):
+        return "r1c1", r1c1  # type: ignore[return-value]
+    return None
 
 
 def _a1_col(letters: str) -> int:
@@ -2251,20 +2673,6 @@ def _sheets_bool_value(raw, field: str) -> bool:
     raise gerr.invalid_argument(f"Invalid value at '{field}' (TYPE_BOOL), \"{raw}\"")
 
 
-def _a1_endpoint(part: str, spec: str) -> tuple[int | None, int | None]:
-    """``(row, col)`` 0-based for one side of a range; ``None`` means that axis is unbounded.
-
-    ``spec`` is the whole requested range, because that — not the offending half — is what real
-    Sheets names back: `A1:` reports "Unable to parse range: A1:", never a bare "".."""
-    m = _A1_END.fullmatch(part.strip())
-    if not m:
-        raise gerr.invalid_argument(f"Unable to parse range: {spec}")
-    if m.group("rowonly"):
-        return int(m.group("rowonly")) - 1, None
-    row = m.group("row")
-    return (int(row) - 1 if row else None), _a1_col(m.group("col"))
-
-
 def _a1_find(title: str, sheets: list[_Sheet]) -> _Sheet | None:
     """The sheet a title names, or None.
 
@@ -2278,7 +2686,7 @@ def _a1_find(title: str, sheets: list[_Sheet]) -> _Sheet | None:
 
 
 def _a1_looks_like_a_range(body: str) -> bool:
-    return all(_A1_END.fullmatch(part.strip()) for part in body.split(":", 1))
+    return _a1_classify(body) is not None
 
 
 def _a1_sheet(spec: str, sheets: list[_Sheet]) -> tuple[_Sheet, str]:
@@ -2291,17 +2699,26 @@ def _a1_sheet(spec: str, sheets: list[_Sheet]) -> tuple[_Sheet, str]:
       and splitting at the first would leave `bang!A1` as the cell part
     * a spec with NO bang is parsed as a range FIRST and only then as a sheet name, so bare `A1` is
       cell A1 of the first sheet even in a workbook that has a sheet named `A1`, while bare `Data`
-      is the sheet because four letters cannot be a cell reference
+      is the sheet because four letters cannot be a cell reference. R1C1 before a sheet name too:
+      bare `R1C1` and `RC` are the cell A1 in a workbook with sheets so named, and bare `A` is the
+      sheet `A`, a lone column being no range (measured 2026-09-12)
     * an unqualified range answers from the sheet at index 0
     * a name no sheet has 400s with the same `Unable to parse range` message unparseable garbage
       gets — resolving to an empty grid instead would be indistinguishable from an empty range
     """
-    bare = spec.strip()
+    # Not stripped anywhere: measured, ` A1`, `A1 `, ` R1C1 `, `Sheet1! A1`, `Sheet1 !A1` and
+    # `'Data' !A1` are all "Unable to parse range", spaces and all.
+    bare = spec
     if "!" in bare:
         title, _, body = bare.rpartition("!")
-        found = _a1_find(title.strip(), sheets)
-        if found is not None and body.strip():
-            return found, body.strip()
+        if title in ("", "''") and _a1_looks_like_a_range(body):
+            # An EMPTY title is the first sheet, as an unqualified range is: measured, `!A1`,
+            # `''!A1`, `!A1:B2` and `!R[1]C[1]` answer from `Sheet1`. Only for a range — `!Data`
+            # and a bare `!` are unparseable, as is a title that is only whitespace (` !A1`).
+            return sheets[0], body
+        found = _a1_find(title, sheets)
+        if found is not None and body:
+            return found, body
         # A title that itself holds a bang, named bare: `has!bang` is the WHOLE sheet, so the
         # split above leaves `has` (no such sheet) over `bang` (no such range). Measured.
         # `Sheet1!` with nothing after it falls here too, and is malformed either way.
@@ -2321,40 +2738,56 @@ def _a1_range(spec: str, body: str, sheet: _Sheet) -> tuple[int, int, int, int]:
     """Resolve the cell part of an A1 range to half-open ``(r0, c0, r1, c1)`` against this sheet.
 
     Handles every form a client may send: ``A1:B2``, ``B2`` (one cell), ``A:B`` / ``1:3`` (whole
-    columns / rows), ``A2:B`` (one edge unbounded) and ``""`` (the whole sheet, which is what a
-    bare sheet name resolves to). Everything resolves against the GRID, so a range may be wider
-    than the data — the caller trims.
+    columns / rows), ``A2:B`` (one edge unbounded), ``R1C1:R2C2`` (either half in R1C1) and ``""``
+    (the whole sheet, which is what a bare sheet name resolves to). Everything resolves against the
+    GRID, so a range may be wider than the data — the caller trims.
 
     Two boundary rules, measured against a real spreadsheet: the range's END may overflow and is
     CLAMPED (``A1:AA5`` on a 26-column sheet returns ``A1:Z5``), its START may not.
+
+    ``spec`` is the whole requested range, because that — not the offending half — is what real
+    Sheets names back: `A1:` reports "Unable to parse range: A1:", never a bare "".
     """
     nrows, ncols = sheet.rows, sheet.cols
     if not body:
         return 0, 0, nrows, ncols
-    start, sep, end = body.partition(":")
-    r0, c0 = _a1_endpoint(start, spec)
-    if not sep:  # a single reference: one cell, one whole row, one column
-        r0f, c0f = (0 if r0 is None else r0), (0 if c0 is None else c0)
-        r1 = nrows if r0 is None else r0 + 1
-        c1 = ncols if c0 is None else c0 + 1
+    classified = _a1_classify(body)
+    if classified is None:
+        raise gerr.invalid_argument(f"Unable to parse range: {spec}")
+    notation, ends = classified
+    if len(ends) == 1:  # a single reference: one cell, one whole row, one column
+        (start,) = ends
+        r0f, c0f = (0 if start.row is None else start.row), (0 if start.col is None else start.col)
+        r1 = nrows if start.row is None else start.row + 1
+        c1 = ncols if start.col is None else start.col + 1
     else:
-        r1x, c1x = _a1_endpoint(end, spec)
-        r0f = 0 if r0 is None else r0
-        c0f = 0 if c0 is None else c0
-        r1 = nrows if r1x is None else r1x + 1
-        c1 = ncols if c1x is None else c1x + 1
-        # A1 ranges are inclusive and may be written in either order (`B2:A1` == `A1:B2`).
+        start, end = ends
+        if notation == "r1c1":
+            # Real's reversed-range rule, on the numbers as written — see `_R1C1_END`.
+            for a, b in ((start.raw_row, end.raw_row), (start.raw_col, end.raw_col)):
+                if a is not None and b is not None and a[1] == b[1] and a[0] == b[0] + 1:
+                    raise gerr.invalid_argument(f"Unable to parse range: {spec}")
+        r0f = 0 if start.row is None else start.row
+        c0f = 0 if start.col is None else start.col
+        r1 = nrows if end.row is None else end.row + 1
+        c1 = ncols if end.col is None else end.col + 1
+        # Ranges are inclusive and may be written in either order (`B2:A1` == `A1:B2`), in R1C1
+        # as in A1 (`R3C3:R1C1` == `A1:C3`), once past the rule above.
         if r1 < r0f + 1:
             r0f, r1 = r1 - 1, r0f + 1
         if c1 < c0f + 1:
             c0f, c1 = c1 - 1, c0f + 1
     if r0f >= nrows or c0f >= ncols or r0f < 0 or c0f < 0:
-        # The START is outside the grid — refused, with the range echoed back unclamped.
+        # The START is outside the grid — refused, with the range echoed back unclamped; whole
+        # columns by their letters alone and whole rows by their numbers alone (`_a1_axis_name`).
+        if all(e.row is None for e in ends):
+            named = _a1_axis_name(sheet, _a1_col_letters(c0f), _a1_col_letters(c1 - 1))
+        elif all(e.col is None for e in ends):
+            named = _a1_axis_name(sheet, str(r0f + 1), str(r1))
+        else:
+            named = _a1_name(sheet, r0f, c0f, r1, c1)
         raise gerr.invalid_argument(
-            (
-                f"Range ({_a1_name(sheet, r0f, c0f, r1, c1)}) exceeds grid limits. "
-                f"Max rows: {nrows}, max columns: {ncols}"
-            )
+            f"Range ({named}) exceeds grid limits. Max rows: {nrows}, max columns: {ncols}"
         )
     return r0f, c0f, min(r1, nrows), min(c1, ncols)
 
@@ -2368,10 +2801,33 @@ _A1_PLAIN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 
 def _a1_title(title: str) -> str:
     """A sheet title as the echoed ``range`` spells it, quoted unless it is a plain identifier that
-    is not itself a cell reference. An embedded apostrophe doubles."""
-    if _A1_PLAIN.fullmatch(title) and not _A1_END.fullmatch(title):
+    is not itself a cell reference. An embedded apostrophe doubles.
+
+    Measured 2026-09-12 on sheets so named: `R1C1` and `RC` echo quoted (`'RC'!A1`), as `A1` does,
+    while `A` — a bare column, which is no reference on its own — echoes bare (`A!A1:Z1000`)."""
+    if _A1_PLAIN.fullmatch(title) and _a1_classify(title) is None:
         return title
     return "'" + title.replace("'", "''") + "'"
+
+
+def _a1_col_letters(i: int) -> str:
+    """A 0-based column index as A1 letters — the inverse of :func:`_a1_col`."""
+    s = ""
+    i += 1
+    while i:
+        i, rem = divmod(i - 1, 26)
+        s = chr(65 + rem) + s
+    return s
+
+
+def _a1_axis_name(sheet: _Sheet, start: str, end: str) -> str:
+    """Whole columns by their letters alone, or whole rows by their numbers alone, the way real
+    names them when refusing a range past the grid: measured, `ZZ:ZZ` reports ``Sheet1!ZZ``,
+    `AA:AB` ``Sheet1!AA:AB``, `1001:1001` ``Sheet1!1001`` and `1001:1002` ``Sheet1!1001:1002``, never
+    ``ZZ1:ZZ1000`` or ``A1001:Z1001``. One column or row collapses as one cell does; a lone `C[26]`
+    reports ``Sheet1!AA`` the same way."""
+    title = _a1_title(sheet.title)
+    return f"{title}!{start}" if start == end else f"{title}!{start}:{end}"
 
 
 def _a1_name(sheet: _Sheet, r0: int, c0: int, r1: int, c1: int) -> str:
@@ -2379,20 +2835,11 @@ def _a1_name(sheet: _Sheet, r0: int, c0: int, r1: int, c1: int) -> str:
 
     A single cell echoes as a bare reference (``Sheet1!A1``), not as ``A1:A1`` — measured: real
     Sheets collapses a 1x1 range even when the request spelled it out as ``A1:A1``."""
-
-    def col(i: int) -> str:
-        s = ""
-        i += 1
-        while i:
-            i, rem = divmod(i - 1, 26)
-            s = chr(65 + rem) + s
-        return s
-
     title = _a1_title(sheet.title)
-    start = f"{col(c0)}{r0 + 1}"
+    start = f"{_a1_col_letters(c0)}{r0 + 1}"
     if r1 - r0 == 1 and c1 - c0 == 1:
         return f"{title}!{start}"
-    return f"{title}!{start}:{col(c1 - 1)}{r1}"
+    return f"{title}!{start}:{_a1_col_letters(c1 - 1)}{r1}"
 
 
 def _rstrip_empty(cells: list[str]) -> list[str]:

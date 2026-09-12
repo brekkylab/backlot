@@ -2386,8 +2386,9 @@ def test_drive_q_evaluates_the_operators_the_reference_lists(tmp_path):
     unfiltered listing under a 200. mirage's folder listing resolves a file with `name='…'`, so a
     client that took the first hit had the wrong file and no signal.
 
-    Every operator the reference lists for a term Backlot evaluates, over a corpus small enough to
-    name the answer. Folders are dropped from the comparison here (their `createdTime` is seeded,
+    Every operator the reference lists for `name`, `mimeType`, `modifiedTime`, `createdTime` and
+    `trashed`, over a corpus small enough to name the answer; `sharedWithMe`, `fullText` and the
+    two collections are the test two below. Folders are dropped here (their `createdTime` is seeded,
     so a time clause's answer for them is not this test's to state); the test below is where they
     go through the same evaluator."""
     from tests._helpers import corpus_client
@@ -2421,6 +2422,7 @@ def test_drive_q_evaluates_the_operators_the_reference_lists(tmp_path):
             "Mia's Notes",
         }
         assert files("modifiedTime >= '2026-01-21T09:00:00'") == {"Brand guidelines", "Q1 Deck"}
+        assert files("modifiedTime > '2026-01-21T09:00:00Z'") == {"Brand guidelines"}
         assert files("createdTime = '2026-01-05T09:00:00Z'") == {"Q1 Revenue"}
         assert files("createdTime != '2026-01-05T09:00:00Z' and mimeType != 'x'") == {
             "Brand guidelines",
@@ -2442,6 +2444,9 @@ def test_drive_q_evaluates_the_operators_the_reference_lists(tmp_path):
         assert files("name contains 'Deck' and trashed = true") == {"Old Deck"}
         assert files("not trashed = false") == {"Old Deck"}
         assert files("trashed != false") == {"Old Deck"}
+        # ...and through `not` beside a `name contains`, whose title-LIKE candidate set answers
+        # non-trashed rows only and so must not be used here.
+        assert files("name contains 'Deck' and not trashed = false") == {"Old Deck"}
 
 
 def test_drive_q_or_spans_folders_and_files(tmp_path):
@@ -2536,6 +2541,8 @@ def test_drive_q_shapes_clients_send_still_parse(tmp_path):
                 {"mk", "fin", "Brand guidelines", "Q1 Revenue", "Q1 Deck", "Mia's Notes"},
             ),
             ("sharedWithMe = false", set()),
+            ("sharedWithMe != true", set()),
+            ("'mia@x.com' in owners and name contains 'Q1'", {"Q1 Deck"}),
             ("fullText contains 'palette' and trashed = false", {"Brand guidelines"}),
             ("fullText contains '\"slides\"'", {"Q1 Deck"}),
             ("fullText contains 'palette' or name = 'Q1 Deck'", {"Brand guidelines", "Q1 Deck"}),

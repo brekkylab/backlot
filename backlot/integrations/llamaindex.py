@@ -215,7 +215,7 @@ def point_sheets_at(base_url: str) -> None:
     (`import googleapiclient.discovery as discovery`) and calls `discovery.build("sheets", "v4",
     credentials=...)`, so the attribute lookup at call time finds the shared wrapper. The
     `api_endpoint` is `base + "/sheets"` with no version, because the Sheets discovery document
-    spells the version in every path (`v4/spreadsheets/...`) where Drive's rootUrl already carries
+    spells the version in the path (`v4/spreadsheets/...`) where Drive's rootUrl already carries
     `/drive/v3` — the same split `examples/using-official-sdk/gdrive.py` makes for its Sheets
     service.
 

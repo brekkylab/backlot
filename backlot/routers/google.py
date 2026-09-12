@@ -857,7 +857,7 @@ def _gmail_message(row, fmt: str, caller_email: str | None = None) -> dict:
 # a term is `<field> <operator> <value>` or `'<value>' in <collection>`, terms join with `and` and
 # `or`, `not` negates, and a string value is single-quoted with an apostrophe escaped as `\'` —
 # "Escape single quotes in queries with \'". Parentheses group. Whether `and` binds before `or` the
-# reference does not say; Backlot reads it the way every query language does, `and` first.
+# reference does not say; Backlot reads it as SQL does, `and` first.
 #
 # A term Backlot cannot evaluate is a 400 on `q`, never a silence. Two kinds: a term the reference
 # does not list (`bogusField = 'x'`), which real Drive refuses too — its wording is unmeasured, so
@@ -1531,14 +1531,15 @@ def _drive_q_rows(conn, query, container: str | None, ids, me: str | None, hits:
     conjuncts = _drive_q_conjuncts(query)
     fulltext = next((t for t in conjuncts if t.field == "fullText"), None)
     name = next((t for t in conjuncts if t.field == "name" and t.op == "contains"), None)
-    # `list_drive_by_name` answers non-trashed rows only, so it cannot be the candidate set for a
-    # query that asks for trash.
-    wants_trash = any(
-        t.field == "trashed" and (t.value == "true") == (t.op == "=") for t in _drive_q_terms(query)
+    # `list_drive_by_name` answers non-trashed rows only, so it can be the candidate set only when
+    # every match is non-trashed — `trashed = false` a conjunct, not merely present: under a `not`
+    # it asks for the trash.
+    non_trashed = _QTerm("trashed", "=", "false") in conjuncts or (
+        _QTerm("trashed", "!=", "true") in conjuncts
     )
     if fulltext is not None:  # the index's candidates, in rank order, then the other terms
         candidates = hits[fulltext.value]
-    elif name is not None and not wants_trash:
+    elif name is not None and non_trashed:
         # A name lookup (mirage resolves every gdrive file this way) — SQL title LIKE instead of
         # materializing the whole corpus (~25k rows, ~1.6s) to substring-match in Python. The
         # remaining terms still filter the (small) name-matched set below.
@@ -2490,8 +2491,8 @@ _A1_DATETIME = ("SERIAL_NUMBER", "FORMATTED_STRING")
 _SHEETS_ENUM = "type.googleapis.com/google.apps.sheets.v4"
 # One endpoint of an A1 range: a full cell (`B2`), a bare column (`B`) or a bare row (`2`).
 _A1_END = re.compile(r"(?:(?P<col>[A-Za-z]{1,3})(?P<row>\d+)?|(?P<rowonly>\d+))\Z")
-# One endpoint in R1C1 notation, which the discovery document names beside A1 for every `range`
-# parameter ("The A1 notation or R1C1 notation of the range to retrieve values from"), and which
+# One endpoint in R1C1 notation, which the discovery document names beside A1 for `values.get`'s
+# `range` ("The A1 notation or R1C1 notation of the range to retrieve values from"), and which
 # the LlamaIndex `GoogleSheetsReader` sends for every sheet as `R1C1:R{rowCount}C{columnCount}`.
 # Measured against a real workbook (2026-09-10, #174): accepted wherever A1 is — unqualified,
 # sheet-qualified, quoted — and the response echoes the A1 equivalent, `R1C1:R2C2` answering

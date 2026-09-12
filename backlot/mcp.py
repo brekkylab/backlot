@@ -75,8 +75,11 @@ PROBE_TIMEOUT = 2
 NAMED_SERVER_TIMEOUT = 10
 
 # The prefix a source's route handlers carry to stay unique inside one module (`routers/google.py`
-# holds Gmail and Drive together), which under the `<source>_` namespace would be said twice:
+# holds all five Google surfaces), which under the `<source>_` namespace would be said twice:
 # `gmail_gmail_messages_list`, `gdrive_drive_files_list`. `mounted_name` folds it into the namespace.
+# Only the prefix that repeats the namespace is folded. `gdrive` bridges Docs, Sheets and Slides
+# as well as Drive, and their handlers are `docs_get`, `sheets_get` and `slides_get`: `gdrive` says
+# which source, and the handler's own prefix says which of its four surfaces answers.
 _HANDLER_PREFIX: dict[str, str] = {"gmail": "gmail", "gdrive": "drive"}
 
 # The one per-source knob, measured (figures in examples/using-mcp-with-agents/README.md). Linear

@@ -242,8 +242,11 @@ def test_the_anchor_rule_matches_github(heading, expected):
 def test_the_routing_table_names_every_openapi_slice_key_and_no_others():
     """`/_meta/openapi/` is keyed on the MCP bridge's names, not on `source_type`.
 
-    Six of the eleven source_types 404 at that endpoint, so the routing table carries the real key
-    per source. Asserted as a set on both sides rather than row by row: a row-wise check would need
+    A source_type whose own name is not a key 404s at that endpoint — the two GraphQL sources have
+    no slice at all, and `jira`, `confluence` and `google_drive` answer to `atlassian` and `gdrive`
+    — so the routing table carries the real key per source. Named rather than counted: the count
+    was written as six and #109 made it five by giving S3 a key, with nothing to catch that.
+    Asserted as a set on both sides rather than row by row: a row-wise check would need
     to know which key belongs to which source, which is the generator's own derivation, and a test
     that repeats it can only agree with it. Comparing the sets catches both ways it can go wrong —
     a key invented here, and a served key the derivation quietly drops to `—`.

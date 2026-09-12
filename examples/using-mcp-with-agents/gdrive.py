@@ -3,8 +3,9 @@
 
 Official and community Drive MCP servers hard-wire `googleapis.com` and require real Google OAuth,
 so none can be pointed at a self-hosted server. Instead `backlot mcp --source gdrive` turns
-Backlot's typed `/openapi.json` into MCP tools: it slices to `/drive`, dedupes operation aliases,
-and serves them over stdio with a `Bearer <token>` header — retrieval is ACL-scoped by
+Backlot's typed `/openapi.json` into MCP tools: it slices to `/drive/v3`, `/docs/v1`, `/sheets/v4`
+and `/slides/v1` — the editors a Drive file opens in are the same source — dedupes operation
+aliases, and serves them over stdio with a `Bearer <token>` header — retrieval is ACL-scoped by
 `--user` (default: the admin; any email from GET /_meta/users).
 
 Prereqs: `pip install -e ".[mcp]"` (installs fastmcp); an LLM key for --agent

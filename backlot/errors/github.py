@@ -180,7 +180,7 @@ def docs_url(path: str) -> str:
     return DOCS_ROOT
 
 
-def http_body(path: str, exc) -> dict | None:
+def http_body(path: str, exc, query=None) -> dict | None:
     """Render an exception into the envelope.
 
     An error the router shaped by hand carries its own body as ``github_body``, and that wins. Seven

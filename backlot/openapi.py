@@ -148,6 +148,38 @@ def github_page_parameters(spec: dict, parameters: dict[str, tuple[int, str]]) -
     return spec
 
 
+def google_system_parameters(spec: dict) -> dict:
+    """``spec`` with `$.xgafv` declared on every Google-family operation, in place.
+
+    Google declares its system parameters once per discovery document, at the top level, and every
+    method takes them; Backlot honours `$.xgafv` the same way — validated once for the router and
+    read once by the envelope — so it is declared once here rather than on each of the
+    twenty-one family routes, where a route added later would forget it and the fidelity diff would
+    report the gap again. The declaration is the document's own: ``V1 error format.``, an enum of
+    ``1`` and ``2``. The batch endpoint is not a family path and gets nothing."""
+    from backlot.errors import google as gerr
+
+    for path, item in spec.get("paths", {}).items():
+        if gerr.family(path) is None:
+            continue
+        for method, op in item.items():
+            if method not in _METHODS:
+                continue
+            params = op.setdefault("parameters", [])
+            if any(p.get("name") == gerr.XGAFV and p.get("in") == "query" for p in params):
+                continue
+            params.append(
+                {
+                    "name": gerr.XGAFV,
+                    "in": "query",
+                    "required": False,
+                    "description": "V1 error format.",
+                    "schema": {"type": "string", "enum": list(gerr.XGAFV_VALUES)},
+                }
+            )
+    return spec
+
+
 def slice_spec(spec: dict, prefixes: list[str]) -> dict:
     """Copy ``spec`` keeping only paths under one of ``prefixes``."""
     paths = {

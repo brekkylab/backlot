@@ -18,7 +18,7 @@ from email.parser import BytesParser
 from http import HTTPStatus
 from typing import NamedTuple
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import PlainTextResponse, Response
 from pydantic import BaseModel, ConfigDict
 
@@ -29,7 +29,8 @@ from backlot.errors import google as gerr
 from backlot.openapi import qp
 from backlot.pagination import decode_cursor, next_page_token
 
-router = APIRouter(tags=["google"])
+# `$.xgafv` is checked before any route runs — see `gerr.validate_system_parameters`.
+router = APIRouter(tags=["google"], dependencies=[Depends(gerr.validate_system_parameters)])
 
 
 # --- OpenAPI enrichment --------------------------------------------------
@@ -2670,7 +2671,7 @@ def _sheets_bool_value(raw, field: str) -> bool:
         return True
     if folded in _SHEETS_FALSE:
         return False
-    raise gerr.invalid_argument(f"Invalid value at '{field}' (TYPE_BOOL), \"{raw}\"")
+    raise gerr.invalid_field_value(f"Invalid value at '{field}' (TYPE_BOOL), \"{raw}\"")
 
 
 def _a1_find(title: str, sheets: list[_Sheet]) -> _Sheet | None:
@@ -3036,7 +3037,7 @@ def _sheets_enum_value(raw, field: str, enum: str, allowed, default: str) -> str
         return default
     value = str(raw).upper()
     if value not in allowed:
-        raise gerr.invalid_argument(_a1_enum_error(field, enum, raw))
+        raise gerr.invalid_field_value(_a1_enum_error(field, enum, raw))
     return value
 
 
@@ -3171,21 +3172,21 @@ def _sheets_int32(raw, field: str, default: int) -> int:
     if raw is None:
         return default
     if isinstance(raw, bool):
-        raise gerr.invalid_argument(f"Invalid value at '{field}' (TYPE_INT32), \"{raw}\"")
+        raise gerr.invalid_field_value(f"Invalid value at '{field}' (TYPE_INT32), \"{raw}\"")
     value = raw
     if isinstance(value, str):
         try:
             value = int(value, 10)
         except ValueError:
-            raise gerr.invalid_argument(
+            raise gerr.invalid_field_value(
                 f"Invalid value at '{field}' (TYPE_INT32), \"{raw}\""
             ) from None
     if isinstance(value, float):
         if not value.is_integer():
-            raise gerr.invalid_argument(f"Invalid value at '{field}' (TYPE_INT32), \"{raw}\"")
+            raise gerr.invalid_field_value(f"Invalid value at '{field}' (TYPE_INT32), \"{raw}\"")
         value = int(value)
     if not isinstance(value, int) or value < 0:
-        raise gerr.invalid_argument(f"Invalid value at '{field}' (TYPE_INT32), \"{raw}\"")
+        raise gerr.invalid_field_value(f"Invalid value at '{field}' (TYPE_INT32), \"{raw}\"")
     return value
 
 

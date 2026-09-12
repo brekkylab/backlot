@@ -2505,7 +2505,7 @@ _A1_END = re.compile(r"(?:(?P<col>[A-Za-z]{1,3})(?P<row>\d+)?|(?P<rowonly>\d+))\
 # `range` ("The A1 notation or R1C1 notation of the range to retrieve values from"), and which
 # the LlamaIndex `GoogleSheetsReader` sends for every sheet as `R1C1:R{rowCount}C{columnCount}`.
 #
-# The grammar below is measured, not read off a document: 181 requests against a real workbook on
+# The grammar below is measured, not read off a document: 217 requests against a real workbook on
 # 2026-09-12 (#174), every one pinned in `tests/test_google.py::MEASURED_R1C1`.
 #
 # * `R` and `C` each take an ABSOLUTE 1-based number (`R1C1`), a BRACKETED 0-based offset from A1
@@ -2532,8 +2532,10 @@ _A1_END = re.compile(r"(?:(?P<col>[A-Za-z]{1,3})(?P<row>\d+)?|(?P<rowonly>\d+))\
 #   (`R1C1:R2000C50` is A1:Z1000, `1:1001` is A1:Z1000), a start past it is refused (`R[1000]C[0]`
 #   names `A1001`), and a refused whole column or row is named by its letters or numbers alone
 #   (`C[26]` names `AA`, `R[1000]:R[1000]` names `1001`, `1001:1002` names `1001:1002`).
-# * whitespace is refused wherever it was tried: ` A1`, `A1 `, `Sheet1! A1`, `Sheet1 !A1`,
-#   `'Data' !A1`, `Sheet1!A1 :B2` and `Sheet1!A1: B2` are unparseable.
+# * whitespace is refused wherever it was tried — around the whole, around the bang, around the
+#   colon, inside a token, inside a quoted title, a tab as much as a space: ` A1`, `Sheet1! A1`,
+#   `A1: B2`, `R1 C1`, `R[ 1]C[1]`, `'Sheet1 '!A1` — all 36 forms sent — are unparseable. An EMPTY title
+#   before the bang is the first sheet (`!A1`, `''!A1`, `!R[1]C[1]`), a whitespace one is not.
 _R1C1_END = re.compile(
     r"(?P<r>R(?:(?P<rabs>\d+)|\[(?P<rrel>\d+)\])?)?(?P<c>C(?:(?P<cabs>\d+)|\[(?P<crel>\d+)\])?)?\Z",
     re.IGNORECASE,
@@ -2709,6 +2711,11 @@ def _a1_sheet(spec: str, sheets: list[_Sheet]) -> tuple[_Sheet, str]:
     bare = spec
     if "!" in bare:
         title, _, body = bare.rpartition("!")
+        if title in ("", "''") and _a1_looks_like_a_range(body):
+            # An EMPTY title is the first sheet, as an unqualified range is: measured, `!A1`,
+            # `''!A1`, `!A1:B2` and `!R[1]C[1]` answer from `Sheet1`. Only for a range — `!Data`
+            # and a bare `!` are unparseable, as is a title that is only whitespace (` !A1`).
+            return sheets[0], body
         found = _a1_find(title, sheets)
         if found is not None and body:
             return found, body

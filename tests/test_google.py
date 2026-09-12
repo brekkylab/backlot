@@ -1692,6 +1692,7 @@ def _batch(base, headers, sheet_id, ranges, **params):
         ("R[1]", [["Jan,120000"]]),  # row 2 whole, trimmed to its one cell
         ("RC", [GRID[0]]),  # bare letters are the cell A1
         ("R1C:R3C", GRID),  # a bare C is column A
+        ("!A1:A3", GRID),  # an empty title is the first sheet
     ],
 )
 def test_sheets_values_get_range_forms(base, admin_h, sheet_id, rng, expected):
@@ -1811,7 +1812,7 @@ def test_sheets_values_get_omits_values_when_the_range_is_empty(base, admin_h, s
         "Other!A1:B2",
         "not a range",
         "A1:",
-        "!A1",
+        " !A1",  # an empty title is the first sheet; a whitespace one is nothing
         "",
         "R1C1:",
         "R0C1",  # absolute R1C1 is 1-based
@@ -2039,9 +2040,9 @@ MEASURED_ECHO = [
 # Every range-related request sent to the live Sheets API on 2026-09-12 (#174), on a workbook whose
 # sheets were `Sheet1`, `Data`, `R1C1`, `RC` and `A` (1000x26 each, `a`..`f` in A1:B3 of the first
 # two), with what came back: the status and the echoed `range`, or the error message. The five
-# rows the issue's comment measured on 2026-09-10 open the list; the last 28 are the edges asked
-# for in review — whitespace around the bang, whole rows and columns past the grid, in both
-# notations. The test
+# rows the issue's comment measured on 2026-09-10 open the list; the last 64 are the edges asked
+# for in review — whitespace around the bang and inside a token, whole rows and columns past the
+# grid, an empty title before the bang — in both notations. The test
 # below serves a corpus with the same five sheets and holds Backlot to every row, so the grammar in
 # `_R1C1_END`'s comment is what this table says and not what a document says.
 MEASURED_R1C1 = [
@@ -2246,6 +2247,42 @@ MEASURED_R1C1 = [
     ("1:1000", 200, "Sheet1!A1:Z1000"),
     ("R1000:R1000", 200, "Sheet1!R1000"),
     ("R1000", 200, "Sheet1!R1000"),
+    ("A 1", 400, "Unable to parse range: A 1"),
+    ("A1 :B2", 400, "Unable to parse range: A1 :B2"),
+    ("A1: B2", 400, "Unable to parse range: A1: B2"),
+    ("A1 : B2", 400, "Unable to parse range: A1 : B2"),
+    ("A :A", 400, "Unable to parse range: A :A"),
+    ("1 :2", 400, "Unable to parse range: 1 :2"),
+    ("R 1C1", 400, "Unable to parse range: R 1C1"),
+    ("R1C 1", 400, "Unable to parse range: R1C 1"),
+    ("R1 C 1", 400, "Unable to parse range: R1 C 1"),
+    ("R [1]C[1]", 400, "Unable to parse range: R [1]C[1]"),
+    ("R[ 1]C[1]", 400, "Unable to parse range: R[ 1]C[1]"),
+    ("R[1 ]C[1]", 400, "Unable to parse range: R[1 ]C[1]"),
+    ("R1C1: R2C2", 400, "Unable to parse range: R1C1: R2C2"),
+    ("A1\tB2", 400, "Unable to parse range: A1\tB2"),
+    ("A1\t:B2", 400, "Unable to parse range: A1\t:B2"),
+    ("A1  :B2", 400, "Unable to parse range: A1  :B2"),
+    ("'Sheet1 '!A1", 400, "Unable to parse range: 'Sheet1 '!A1"),
+    ("' Sheet1'!A1", 400, "Unable to parse range: ' Sheet1'!A1"),
+    ("Sheet1!A 1", 400, "Unable to parse range: Sheet1!A 1"),
+    (" ", 400, "Unable to parse range:  "),
+    ("  ", 400, "Unable to parse range:   "),
+    (" !A1", 400, "Unable to parse range:  !A1"),
+    ("!A1", 200, "Sheet1!A1"),
+    ("! A1", 400, "Unable to parse range: ! A1"),
+    ("Sheet1!", 400, "Unable to parse range: Sheet1!"),
+    ("Sheet1! ", 400, "Unable to parse range: Sheet1! "),
+    ("!A1:B2", 200, "Sheet1!A1:B2"),
+    ("!R1C1", 200, "Sheet1!A1"),
+    ("!R[1]C[1]", 200, "Sheet1!B2"),
+    ("!A:A", 200, "Sheet1!A1:A1000"),
+    ("!Data", 400, "Unable to parse range: !Data"),
+    ("!", 400, "Unable to parse range: !"),
+    ("''!A1", 200, "Sheet1!A1"),
+    ("!!A1", 400, "Unable to parse range: !!A1"),
+    ("!Sheet1!A1", 400, "Unable to parse range: !Sheet1!A1"),
+    ("Data!!A1", 400, "Unable to parse range: Data!!A1"),
 ]
 
 # A subset for the SAMPLE spreadsheet, which has `Sheet1` alone: two of the five the issue's

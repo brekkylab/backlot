@@ -24,6 +24,7 @@ from backlot.fidelity import (
     Finding,
     baseline_path,
     comparisons,
+    google_batch,
     google_discovery_diff,
     hubspot_catalog,
     openapi_diff,
@@ -31,6 +32,7 @@ from backlot.fidelity import (
     s3_probe,
 )
 from backlot.fidelity.comparisons import (
+    BATCH_PATH,
     COMPARISONS,
     GOOGLE_DISCOVERY,
     GRAPHQL,
@@ -179,7 +181,7 @@ def test_rewriting_a_baseline_keeps_its_notes_and_takes_the_new_identity(tmp_pat
     ],
 )
 def test_a_credential_is_resolved_or_refused_by_name(name, overrides, expected, monkeypatch):
-    """A single `--token` was accepted by all eleven comparisons and did something for two."""
+    """A single `--token` was accepted by every comparison and did something for two."""
     monkeypatch.delenv("FIREFLIES_API_KEY", raising=False)
     with pytest.raises(FidelityError, match=expected):
         comparisons._resolve_credentials(COMPARISONS[name], overrides)
@@ -436,14 +438,19 @@ def test_the_registry_names_exactly_the_source_types_backlot_serves():
     five vendor APIs.
 
     Fidelity does not get to invent a source: `store.SOURCE_TABLE` is the canonical list, and
-    the same `source_type` a BYO record carries.
+    the same `source_type` a BYO record carries. `google_batch` is the one comparison that is not
+    a source at all — Backlot's batch routes stand in for five Google APIs and sit under no
+    source's mount — and it is spelled out here rather than excused by a rule, so a second one
+    cannot arrive as a typo.
 
     `cli.FIDELITY_SOURCES` is held to the same list. It exists so `--help` can name the sources
     without importing `backlot.fidelity` on every other command, and it is what a reader is told
     the command takes — a source added to one and not the other leaves `--help` naming a set the
     command does not validate against.
     """
-    assert set(COMPARISONS) == set(store.SOURCE_TABLE) == set(cli.FIDELITY_SOURCES)
+    assert (
+        set(COMPARISONS) == set(store.SOURCE_TABLE) | {"google_batch"} == set(cli.FIDELITY_SOURCES)
+    )
 
 
 def test_every_comparison_is_registered_once_as_the_class_its_registry_implies():
@@ -452,6 +459,7 @@ def test_every_comparison_is_registered_once_as_the_class_its_registry_implies()
         (GOOGLE_DISCOVERY, comparisons.GoogleDiscoveryComparison),
         (GRAPHQL, comparisons.GraphQLComparison),
         (PROBE, comparisons.ProbeComparison),
+        (BATCH_PATH, comparisons.BatchPathComparison),
     ]
     assert sum(len(r) for r, _ in registries) == len(COMPARISONS)
     for registry, expected in registries:
@@ -542,6 +550,21 @@ def test_every_acknowledged_breaking_divergence_carries_its_reasoning():
         for entry in json.loads(baseline_path(name).read_text())["acknowledged"]:
             if entry["severity"] == BREAKING:
                 assert entry.get("note"), f"{name}: {entry['kind']} {entry['path']}"
+
+
+def test_the_dispatcher_hands_over_for_every_kind_the_registry_holds(monkeypatch):
+    """The guard in `divergences` is an isinstance check over a tuple written by hand, so a kind
+    added to the registry and not to that tuple is refused on a NIGHTLY run and nowhere else: the
+    suite stays green and `backlot diff --source <it>` answers "not a kind of comparison this knows
+    how to run"."""
+    monkeypatch.setenv("FIREFLIES_API_KEY", "x")
+    monkeypatch.setenv("LINEAR_API_KEY", "x")
+    for kind in {type(c) for c in COMPARISONS.values()}:
+        monkeypatch.setattr(
+            kind, "divergences", lambda self, credentials=None, *, timeout=120.0: []
+        )
+    for name, comparison in COMPARISONS.items():
+        assert comparisons.divergences(comparison) == [], name
 
 
 def test_a_kind_of_comparison_the_dispatcher_does_not_know_says_so():
@@ -827,6 +850,180 @@ def test_a_probe_declares_its_prober_and_the_dispatcher_only_hands_over(monkeypa
     assert comparisons.divergences(probe, timeout=5) == []
     assert seen["model"] == {"operations": {}} and seen["timeout"] == 5
     assert seen["base_url"].startswith("http")
+
+
+# --------------------------------------------------------------------------- the batch endpoint
+
+
+# What each discovery document declared when this was written, measured 2026-09-12. The real
+# comparison reads these off the vendor; here they are the vendor's side so the test says what it
+# is about, and so the fixture is the thing that goes stale rather than the check.
+BATCH_PATHS = {
+    "https://gmail.googleapis.com/$discovery/rest?version=v1": ("gmail:v1", "batch"),
+    "https://www.googleapis.com/discovery/v1/apis/drive/v3/rest": ("drive:v3", "batch/drive/v3"),
+    "https://www.googleapis.com/discovery/v1/apis/docs/v1/rest": ("docs:v1", "batch"),
+    "https://www.googleapis.com/discovery/v1/apis/sheets/v4/rest": ("sheets:v4", "batch"),
+    "https://www.googleapis.com/discovery/v1/apis/slides/v1/rest": ("slides:v1", "batch"),
+}
+
+
+def _serve_documents(monkeypatch, *declared: dict) -> tuple[comparisons.Spec, ...]:
+    """One `Spec` per document passed, at a made-up URL each, fetching back that document."""
+    specs = tuple(comparisons.Spec(f"https://doc.invalid/{i}", ()) for i, _ in enumerate(declared))
+    by_url = {s.spec_url: d for s, d in zip(specs, declared)}
+    monkeypatch.setattr(google_batch, "fetch_json", lambda url, timeout=120.0: by_url[url])
+    return specs
+
+
+@pytest.mark.parametrize(
+    "declared,expected",
+    [
+        ({"batchPath": "batch"}, "batch"),
+        ({"batchPath": "batch/drive/v3"}, "batch/drive/v3"),
+        # Canonical on both sides, so a slash either end is not a finding on its own.
+        ({"batchPath": "/batch"}, "batch"),
+        ({"batchPath": "batch/drive/v3/"}, "batch/drive/v3"),
+        ({}, ""),
+        ({"batchPath": ""}, ""),
+        ({"batchPath": None}, ""),
+    ],
+)
+def test_a_batch_path_is_what_the_document_declares_in_its_top_level_field(declared, expected):
+    assert google_batch.batch_path(declared) == expected
+
+
+@pytest.mark.parametrize(
+    "route,declared,answered",
+    [
+        ("batch", "batch", True),
+        ("batch/{}/{}", "batch/drive/v3", True),
+        ("batch/{}/{}", "batch/gmail/v1", True),
+        # Segment counts have to match, or a route swallows a value that moved under it.
+        ("batch", "batch/drive/v3", False),
+        ("batch/{}/{}", "batch", False),
+        ("batch/{}/{}", "batch/drive/v3/files", False),
+        # A literal segment is compared literally: only the placeholders are wild.
+        ("batch/{}/{}", "upload/drive/v3", False),
+    ],
+)
+def test_a_route_answers_a_batch_path_segment_by_segment(route, declared, answered):
+    assert google_batch.answers(route, declared) is answered
+
+
+@pytest.mark.parametrize(
+    "doc,expected",
+    [
+        ({"id": "gmail:v1", "name": "gmail", "version": "v1"}, "gmail:v1"),
+        ({"name": "gmail", "version": "v1"}, "gmail:v1"),
+        ({}, "https://doc.invalid/0"),
+    ],
+)
+def test_a_document_is_identified_by_what_it_calls_itself(doc, expected):
+    """Not by the URL it was fetched from. Measured 2026-09-12, Google answers the document that
+    calls itself `gmail:v1` at both `gmail.googleapis.com/$discovery/rest?version=v1` and
+    `www.googleapis.com/discovery/v1/apis/gmail/v1/rest`, so a registry repointed from one to the
+    other would otherwise read as a new divergence on an API nothing changed about."""
+    assert google_batch.document_id(doc, "https://doc.invalid/0") == expected
+
+
+def test_every_google_document_declares_a_batch_path_backlot_answers(monkeypatch):
+    """The whole comparison over what the five documents declared when this was written. It reads
+    every document the Google path diffs read, and Backlot's two route shapes answer all five
+    values between them, so there is nothing to report."""
+    comparison = comparisons.COMPARISONS["google_batch"]
+    # First, so a registry repointed at another URL fails here rather than as a KeyError inside
+    # the fetch below.
+    assert list(comparison.endpoints) == list(BATCH_PATHS)
+    asked = []
+
+    def fake_fetch(url, timeout=120.0):
+        asked.append(url)
+        name, path = BATCH_PATHS[url]
+        return {"id": name, "batchPath": path}
+
+    monkeypatch.setattr(google_batch, "fetch_json", fake_fetch)
+    assert google_batch.divergences(comparison) == []
+    assert asked == list(BATCH_PATHS)
+
+
+def test_a_document_that_declares_no_batch_path_is_breaking(monkeypatch):
+    """Google dropping batch for one API. Backlot goes on answering `/batch` for it, which is
+    surface the vendor's own document no longer describes.
+
+    The other two documents keep both routes answering something, so the only finding is this one.
+    """
+    specs = _serve_documents(
+        monkeypatch,
+        {"id": "docs:v1", "batchPath": "batch"},
+        {"id": "drive:v3", "batchPath": "batch/drive/v3"},
+        {"id": "gmail:v1"},
+    )
+    found = google_batch.divergences(comparisons.BatchPathComparison(name="x", documents=specs))
+    assert [(f.kind, f.severity, f.path) for f in found] == [
+        ("extra_batch_api", BREAKING, "gmail:v1")
+    ]
+
+
+def test_a_batch_path_that_moved_is_a_gap_and_leaves_its_route_standing_for_nothing(monkeypatch):
+    """Drive getting its own host: its value would stop carrying the `drive/v3` discriminator.
+
+    Two findings, and they say different things. Backlot does not answer where Drive now batches,
+    which is the gap; and `/batch/{api}/{version}` is then a route no document declares a value
+    for, which is how a shape Backlot serves for nobody stops being invisible.
+    """
+    specs = _serve_documents(
+        monkeypatch,
+        {"id": "gmail:v1", "batchPath": "batch"},
+        {"id": "drive:v3", "batchPath": "v3/batch"},
+    )
+    found = google_batch.divergences(comparisons.BatchPathComparison(name="x", documents=specs))
+    assert [(f.kind, f.severity, f.path) for f in found] == [
+        ("extra_batch_route", BREAKING, "/batch/{}/{}"),
+        ("missing_batch_path", GAP, "drive:v3"),
+    ]
+    assert "v3/batch" in found[1].detail
+
+
+def test_two_comparisons_over_one_document_read_it_once():
+    """A source's Specs may address one document more than once — HubSpot's two both address its
+    API index — and here that would read one document twice and report it twice under one key,
+    which a baseline keyed on `kind:path` cannot hold."""
+    shared = "https://doc.invalid/shared"
+    compared = [
+        comparisons.GoogleDiscoveryComparison(name="a", specs=(comparisons.Spec(shared, ("/a",)),)),
+        comparisons.GoogleDiscoveryComparison(
+            name="b",
+            specs=(
+                comparisons.Spec(shared, ("/b",)),
+                comparisons.Spec("https://doc.invalid/own", ()),
+            ),
+        ),
+    ]
+    assert [d.spec_url for d in comparisons._documents_of(compared)] == [
+        shared,
+        "https://doc.invalid/own",
+    ]
+
+
+def test_the_batch_comparison_reads_the_documents_the_google_path_diffs_read():
+    """Taken from `GOOGLE_DISCOVERY` rather than listed a second time. A second list would go on
+    reading a document the registry had repointed, and a sixth Google API would have its
+    `batchPath` unchecked until someone remembered the list existed."""
+    assert {d.spec_url for d in COMPARISONS["google_batch"].documents} == {
+        s.spec_url for c in GOOGLE_DISCOVERY.values() for s in c.specs
+    }
+
+
+def test_the_batch_routes_backlot_serves_are_the_two_shapes_google_documents():
+    """Backlot's side of the comparison, and the reason there are two of it. Every API answers
+    batch on its own host, which Backlot collapses onto one origin: `/batch` stands in for the four
+    whose document says `batch`, and `/batch/{api}/{version}` for Drive, which sits on the shared
+    `www.googleapis.com` and discriminates."""
+    from backlot.main import app
+
+    comparison = COMPARISONS["google_batch"]
+    served = {op.path for op in operations.from_backlot(app.openapi(), comparison.mount).values()}
+    assert served == {"batch", "batch/{}/{}"}
 
 
 # --------------------------------------------------------------------------- the command

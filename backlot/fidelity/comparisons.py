@@ -1,13 +1,15 @@
 """Which comparison each source gets, and what it needs to run.
 
-Four kinds, and they differ in what each side of the comparison is. For the two GraphQL sources,
+Five kinds, and they differ in what each side of the comparison is. For the two GraphQL sources,
 Backlot's side is the SDL the server builds its engine from and the vendor's is a live introspection
 response, which needs a credential. For the eight document sources, Backlot's side is the app's own
 ``app.openapi()`` and the vendor's is one or more documents it publishes, which needs none. For
 S3, whose operations are selected by query string rather than by path, both sides are answers from
-a running server that ``backlot.serve()`` starts.
+a running server that ``backlot.serve()`` starts. For Google's batch endpoint, which every discovery
+document names in a top-level field rather than declaring as an operation, Backlot's side is the
+paths it serves under ``/batch`` and the vendor's is that field.
 
-Nine of the eleven need no credential. All eleven run on a schedule and never on a pull request:
+Ten of the twelve need no credential. All twelve run on a schedule and never on a pull request:
 drift is this project's bug, but it is never the bug of whichever pull request happens to be open
 when a vendor ships a change.
 """
@@ -17,9 +19,10 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from backlot.fidelity import (
+    google_batch,
     google_discovery_diff,
     graphql_diff,
     hubspot_catalog,
@@ -246,6 +249,45 @@ class ProbeComparison:
         return s3_probe.divergences(self, timeout=timeout)
 
 
+@dataclass(frozen=True)
+class BatchPathComparison:
+    """Google's batch endpoint, compared against the field every discovery document declares it in.
+
+    Its own kind because the contract here is a document FIELD rather than an operation. Every
+    document names a batch endpoint in its top-level ``batchPath`` and none declares that endpoint
+    as a method, so a path diff has nothing on the vendor's side to pair Backlot's routes with —
+    the same argument :class:`ProbeComparison` makes for S3 at a different point, where what a
+    document does not enumerate as a path is an operation rather than a field.
+
+    And the endpoint belongs to no one source. Each API answers batch on its own host, which
+    Backlot collapses onto one origin: its ``/batch`` stands in for Gmail's, Docs', Sheets' and
+    Slides' at once. Mounting it under one of those sources would assert a correspondence that is
+    not one to one; mounting it under each would put one served path in several sources' baselines
+    and report it once per source.
+
+    ``documents``, not ``specs``: a document's own ``mount`` says which served paths that document
+    speaks for, and those are not the paths this comparison covers. ``mount`` below is.
+    """
+
+    name: str
+    documents: tuple[Spec, ...]
+    # Which served paths this comparison speaks for, as every kind answers. Both batch routes are
+    # under this one prefix, so what the coverage check reads here is also what
+    # `google_batch.divergences` selects Backlot's side of the comparison with.
+    mount: tuple[str, ...] = ("/batch",)
+    # None: the documents are the same public ones the Google path diffs read.
+    credentials: tuple[Credential, ...] = ()
+
+    @property
+    def endpoints(self) -> tuple[str, ...]:
+        return tuple(d.endpoint for d in self.documents)
+
+    def divergences(
+        self, credentials: Mapping[str, str] | None = None, *, timeout: float = 120.0
+    ) -> list[Finding]:
+        return google_batch.divergences(self, timeout=timeout)
+
+
 OPENAPI = {
     "slack": OpenAPIComparison(
         name="slack",
@@ -408,13 +450,43 @@ PROBE = {
 }
 
 
-# Served paths no published document covers, and why. Matched by prefix, so `/batch` covers
-# `/batch/{api}/{version}`.
+def _documents_of(compared: Iterable[GoogleDiscoveryComparison]) -> tuple[Spec, ...]:
+    """Every document those comparisons read, in the order they read them.
+
+    Taken from the comparisons rather than listed again: a second copy of these URLs would go on
+    comparing a document the rest of the registry had stopped reading, and adding a sixth Google API
+    would leave its `batchPath` unchecked until someone remembered this list existed.
+
+    Deduplicated by URL, because a source's Specs may address one document more than once —
+    HubSpot's two both address its API index, and `resolve_url` picks a different document out of
+    it. Here that would read one document twice and report it twice under one key, which a baseline
+    keyed on `kind:path` cannot hold.
+    """
+    seen: dict[str, Spec] = {}
+    for comparison in compared:
+        for spec in comparison.specs:
+            seen.setdefault(spec.spec_url, spec)
+    return tuple(seen.values())
+
+
+BATCH_PATH = {
+    "google_batch": BatchPathComparison(
+        name="google_batch",
+        documents=_documents_of(GOOGLE_DISCOVERY.values()),
+    ),
+}
+
+
+# Served paths no published document covers, and why. Matched by prefix, so `/_meta` covers
+# `/_meta/users`.
 #
 # The escape hatch the coverage check is built around, and deliberately narrow: an entry here is a
 # reason a reviewer reads, not a silence. Two kinds qualify — Backlot's own surface, which no
 # vendor publishes because it is not a vendor's, and a vendor surface that genuinely has no
-# document to compare against.
+# document to compare against. Every entry below is of the first kind. `/batch` was the second
+# until it stopped being one: the vendor's documents do describe it, in a top-level field rather
+# than as an operation, so what it needed was a kind of comparison that reads a field — see
+# `BatchPathComparison`.
 UNCOMPARED = {
     "/health": "Backlot's own liveness endpoint, not a vendor's surface",
     "/oauth2/token": (
@@ -425,18 +497,24 @@ UNCOMPARED = {
         "Backlot's own introspection — the corpus's principals and the per-source OpenAPI. No "
         "vendor has it, by construction."
     ),
-    "/batch": (
-        "Google's batch protocol. Each discovery document names a batch endpoint in its top-level "
-        "`batchPath` — Drive's is `batch/drive/v3`, Gmail's `batch` — but none declares it as an "
-        "operation under `resources`, and operations are the only thing a path diff can pair. So "
-        "there is a documented endpoint here and nothing for this machinery to compare it against."
-    ),
 }
 
-# The four kinds differ in what a vendor gives us to compare against, not in what they are for.
-Comparison = OpenAPIComparison | GoogleDiscoveryComparison | GraphQLComparison | ProbeComparison
+# The five kinds differ in what a vendor gives us to compare against, not in what they are for.
+Comparison = (
+    OpenAPIComparison
+    | GoogleDiscoveryComparison
+    | GraphQLComparison
+    | ProbeComparison
+    | BatchPathComparison
+)
 
-COMPARISONS: dict[str, Comparison] = {**OPENAPI, **GOOGLE_DISCOVERY, **GRAPHQL, **PROBE}
+COMPARISONS: dict[str, Comparison] = {
+    **OPENAPI,
+    **GOOGLE_DISCOVERY,
+    **GRAPHQL,
+    **PROBE,
+    **BATCH_PATH,
+}
 
 
 def _resolve_credentials(
@@ -482,7 +560,13 @@ def divergences(
     """
     if not isinstance(
         comparison,
-        (OpenAPIComparison, GoogleDiscoveryComparison, GraphQLComparison, ProbeComparison),
+        (
+            OpenAPIComparison,
+            GoogleDiscoveryComparison,
+            GraphQLComparison,
+            ProbeComparison,
+            BatchPathComparison,
+        ),
     ):
         raise FidelityError(
             f"{type(comparison).__name__} is not a kind of comparison this knows how to run"

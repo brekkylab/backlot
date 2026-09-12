@@ -146,9 +146,9 @@ the naming does not generalise: Google Drive is `gdrive` throughout, but only
 
 With a server already up, prefer the served surface over any description of it.
 `GET /_meta/openapi/<key>` returns a source's typed OpenAPI slice, where `<key>` is the **OpenAPI
-slice** column of the table below — not the `source_type`, which 404s for six of the eleven. A `—`
-in that column means no slice exists: Linear and Fireflies answer full GraphQL introspection at
-their own endpoints instead, and S3 has neither. The 404 body lists every key it does accept.
+slice** column of the table below — not the `source_type`, which 404s wherever the two spellings
+differ. A `—` in that column means no slice exists: Linear and Fireflies answer full GraphQL
+introspection at their own endpoints instead. The 404 body lists every key it does accept.
 
 ## 9. Check the answer against the corpus
 

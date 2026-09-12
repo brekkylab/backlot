@@ -965,11 +965,14 @@ def test_a_document_that_declares_no_batch_path_is_breaking(monkeypatch):
 
 
 def test_a_batch_path_that_moved_is_a_gap_and_leaves_its_route_standing_for_nothing(monkeypatch):
-    """Drive getting its own host: its value would stop carrying the `drive/v3` discriminator.
+    """A value moving to a THIRD shape — one that is neither `batch` nor `batch/<api>/<version>`.
 
     Two findings, and they say different things. Backlot does not answer where Drive now batches,
     which is the gap; and `/batch/{api}/{version}` is then a route no document declares a value
     for, which is how a shape Backlot serves for nobody stops being invisible.
+
+    Drive moving to its own host is the OTHER way the second finding arrives, and it arrives
+    alone — see the test below.
     """
     specs = _serve_documents(
         monkeypatch,
@@ -982,6 +985,42 @@ def test_a_batch_path_that_moved_is_a_gap_and_leaves_its_route_standing_for_noth
         ("missing_batch_path", GAP, "drive:v3"),
     ]
     assert "v3/batch" in found[1].detail
+
+
+def test_a_route_no_document_declares_any_more_is_breaking_on_its_own(monkeypatch):
+    """Drive moving to its own host, which is the case `docs/fidelity.md` names for this finding.
+
+    Its value would then stop carrying the `drive/v3` discriminator and read `batch`, like the
+    four APIs already on their own hosts. Every value is answered, so there is no gap — and
+    `/batch/{api}/{version}` is left standing for nothing, which is the whole finding.
+    """
+    specs = _serve_documents(
+        monkeypatch,
+        *({"id": name, "batchPath": "batch"} for name in ("gmail:v1", "drive:v3", "docs:v1")),
+    )
+    found = google_batch.divergences(comparisons.BatchPathComparison(name="x", documents=specs))
+    assert [(f.kind, f.severity, f.path) for f in found] == [
+        ("extra_batch_route", BREAKING, "/batch/{}/{}")
+    ]
+
+
+def test_two_documents_that_call_themselves_the_same_thing_report_once(monkeypatch):
+    """Google answers the document that calls itself `gmail:v1` at two URLs, so a registry holding
+    both reads one document twice.
+
+    The module reports what it read, once per document; the comparison passes that through
+    `_one_report`, which is where every kind's report is keyed. A baseline keyed on `kind:path`
+    cannot hold the second copy, so leaving it in makes the file claim more than it can load."""
+    specs = _serve_documents(
+        monkeypatch,
+        {"id": "gmail:v1"},
+        {"id": "gmail:v1"},
+        {"id": "drive:v3", "batchPath": "batch/drive/v3"},
+        {"id": "docs:v1", "batchPath": "batch"},
+    )
+    comparison = comparisons.BatchPathComparison(name="x", documents=specs)
+    assert [f.path for f in google_batch.divergences(comparison)] == ["gmail:v1", "gmail:v1"]
+    assert [f.path for f in comparison.divergences()] == ["gmail:v1"]
 
 
 def test_two_comparisons_over_one_document_read_it_once():

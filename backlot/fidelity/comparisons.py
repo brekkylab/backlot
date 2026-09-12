@@ -285,7 +285,13 @@ class BatchPathComparison:
     def divergences(
         self, credentials: Mapping[str, str] | None = None, *, timeout: float = 120.0
     ) -> list[Finding]:
-        return google_batch.divergences(self, timeout=timeout)
+        # Through `_one_report` like the two path diffs, for the reason its docstring gives: two
+        # documents can call themselves the same thing. Google answers the document that calls
+        # itself `gmail:v1` at two URLs (measured 2026-09-12), so a registry holding both reads one
+        # document twice and would report it twice under one key, which a baseline keyed on
+        # `kind:path` cannot hold. One list and not one per document, because a finding about a
+        # served route belongs to no single document.
+        return _one_report([google_batch.divergences(self, timeout=timeout)])
 
 
 OPENAPI = {

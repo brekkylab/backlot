@@ -61,8 +61,8 @@ Each source **declares** the credentials it needs, by a logical name and the env
 it is read from, and `--credential NAME=VALUE` repeats for as many as a source declares. A single
 `--token` would not stretch: a vendor authenticated with SigV4 needs an access key *and* a secret,
 and a Google service account needs a client id, a client secret and a private key. Declaring them
-also means a name a source does not take is **refused** rather than ignored — nine of the eleven
-sources need no credential at all, and that is exactly where a silently accepted option goes
+also means a name a source does not take is **refused** rather than ignored — ten of the twelve
+comparisons need no credential at all, and that is exactly where a silently accepted option goes
 unnoticed.
 
 Prefer the environment. A value passed on the command line is visible to any process that can run
@@ -131,6 +131,50 @@ operation botocore declares is sent to it signed, and the answer is classified:
 
 Requests are signed with [`backlot.sigv4`](../backlot/sigv4.py) — the module that verifies them —
 so the probe adds no dependency and a change to signing breaks both sides at once.
+
+## Google's batch endpoint is a field, not an operation
+
+Every Google discovery document names a batch endpoint in its top-level `batchPath`, and none
+declares that endpoint as a method. Operations are the only thing a path diff can pair, so Backlot's
+two batch routes had nothing on the vendor's side to be paired with and sat outside the check
+entirely. The methods that do carry the word are a different thing — `messages.batchModify`,
+`spreadsheets.values.batchGet` and the rest are single requests acting on several items, and they
+are declared as operations and compared as operations already.
+
+They belong to no one source either. Each API answers batch on its own host —
+`gmail.googleapis.com/batch`, `sheets.googleapis.com/batch` — while Drive sits on the shared
+`www.googleapis.com`, which is what the `drive/v3` in its value discriminates. Backlot collapses
+those hosts onto one origin, so `/batch` stands in for Gmail's, Docs', Sheets' and Slides' at once
+and `/batch/{api}/{version}` for Drive's; pairing either route with one document would assert a
+correspondence that is not one to one.
+
+So the field is compared instead, against the two route shapes, in both directions. The documents
+are the same ones the Gmail and Drive comparisons read, taken from their registry entries rather
+than listed a second time. Measured 2026-09-12:
+
+| Document | `batchPath` | Answered by |
+|---|---|---|
+| `gmail:v1` | `batch` | `/batch` |
+| `drive:v3` | `batch/drive/v3` | `/batch/{api}/{version}` |
+| `docs:v1` | `batch` | `/batch` |
+| `sheets:v4` | `batch` | `/batch` |
+| `slides:v1` | `batch` | `/batch` |
+
+Three things are reported, and the two breaking ones cannot be acknowledged by
+`--update-baseline` any more than any other breaking finding can:
+
+- **a document that declares no `batchPath`** — Backlot goes on answering batch for an API whose own
+  document no longer says it has one. `extra_batch_api`, and breaking.
+- **a declared value no Backlot route answers** — what a value moving to a third shape looks like.
+  `missing_batch_path`, and a gap, identified by the document and the value together: a gap is
+  acknowledged by identity alone, so an entry written for one move must not go on covering the
+  next.
+- **a Backlot route no declared value selects** — what Drive moving to its own host would look like:
+  `/batch/{api}/{version}` would go on being served while standing for nothing.
+  `extra_batch_route`, and breaking.
+
+A path, not an operation: `batchPath` names no method, so what is compared on Backlot's side is the
+paths it serves under `/batch` rather than the method-and-path pairs the two path diffs compare in.
 
 ## The baseline
 
@@ -202,7 +246,9 @@ closed issue is never reopened and never written over.
 
 Sources are named the way the rest of Backlot names them — the `source_type` a BYO record carries,
 which is also what `backlot/schemas/` defines. Fidelity keeps no source list of its own; it says how
-each of those is compared, and a test fails if the two sets ever drift apart.
+each of those is compared, and a test fails if the two sets ever drift apart. One row below is not a
+`source_type`: `google_batch` is Google's batch endpoint, whose two routes stand in for five APIs
+and so belong to none of them.
 
 | Source | Compared through | Credential |
 |---|---|---|
@@ -211,6 +257,7 @@ each of those is compared, and a test fails if the two sets ever drift apart.
 | Slack | published OpenAPI | none |
 | Gmail | Google Discovery | none |
 | Google Drive (`google_drive`) | Google Discovery — Drive, Docs, Sheets and Slides | none |
+| Google batch (`google_batch`) | the `batchPath` the Gmail and Drive-family documents declare — see [Google's batch endpoint is a field, not an operation](#googles-batch-endpoint-is-a-field-not-an-operation) | none |
 | GitHub | published OpenAPI | none |
 | Jira | published OpenAPI, v2 and v3 documents | none |
 | Confluence | published OpenAPI (v1) | none |
@@ -233,10 +280,9 @@ against Atlassian's own v2 document, which it publishes beside the v3 one: the n
 `swagger[-<apiVersion>].<oasVersion>.json`, so the suffix-less `swagger.v3.json` is the v2 API.
 
 Every path Backlot **declares** in its own `/openapi.json` is under one of those documents'
-mounts, probed, or listed in `UNCOMPARED` with the reason no document covers it — Backlot's own
-`/health`, `/oauth2/token` and `/_meta`, and Google's `/batch` — which every discovery document
-names in its top-level `batchPath` and none declares as an operation, so there is nothing for a
-path diff to pair it with. A declared path in none of the three fails the suite.
+mounts, probed, compared as Google's batch endpoint is, or listed in `UNCOMPARED` with the reason no
+document covers it — Backlot's own `/health`, `/oauth2/token` and `/_meta`. A declared path in none
+of the four fails the suite.
 
 Declared, not served: six live routes are `include_in_schema=False` and so invisible to that check.
 Four are FastAPI's own (`/docs`, `/docs/oauth2-redirect`, `/openapi.json`, `/redoc`). The other two

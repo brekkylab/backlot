@@ -1024,6 +1024,11 @@ def _drive_q_parse(q: str):
             return _QTerm(field, op or "", (value or "").lower())
         if vkind != "str":
             raise _drive_q_refused()
+        if field in ("modifiedTime", "createdTime") and _drive_q_time(value or "") is None:
+            # The reference wants RFC 3339 here. A value that is not one would otherwise compare
+            # as a string against the file's timestamp and answer something for every file; what
+            # real Drive answers for it is unmeasured, so this is a refusal rather than its wording.
+            raise _drive_q_refused()
         return _QTerm(field, op or "", value or "")
 
     node = disjunction()
@@ -1072,10 +1077,12 @@ def _drive_q_time(value: str) -> datetime.datetime | None:
 
 
 def _drive_q_compare(op: str, have: str, want: str) -> bool:
-    """A time term. Both sides parsed, so `'2026-01-10T00:00:00'` and `…Z` compare as instants;
-    a side that does not parse compares as the string it is."""
-    a, b = _drive_q_time(have), _drive_q_time(want)
-    left, right = (a, b) if a is not None and b is not None else (have, want)
+    """A time term, compared as instants: `'2026-01-10T00:00:00'` equals `'…Z'`. The value was
+    checked at parse; a fact that is no timestamp (an object with the field unset) matches
+    nothing."""
+    left, right = _drive_q_time(have), _drive_q_time(want)
+    if left is None or right is None:
+        return False
     if op == "<":
         return left < right
     if op == "<=":
@@ -2635,9 +2642,9 @@ def _a1_range(spec: str, body: str, sheet: _Sheet) -> tuple[int, int, int, int]:
     """Resolve the cell part of an A1 range to half-open ``(r0, c0, r1, c1)`` against this sheet.
 
     Handles every form a client may send: ``A1:B2``, ``B2`` (one cell), ``A:B`` / ``1:3`` (whole
-    columns / rows), ``A2:B`` (one edge unbounded) and ``""`` (the whole sheet, which is what a
-    bare sheet name resolves to). Everything resolves against the GRID, so a range may be wider
-    than the data — the caller trims.
+    columns / rows), ``A2:B`` (one edge unbounded), ``R1C1:R2C2`` (either half in R1C1) and ``""``
+    (the whole sheet, which is what a bare sheet name resolves to). Everything resolves against the
+    GRID, so a range may be wider than the data — the caller trims.
 
     Two boundary rules, measured against a real spreadsheet: the range's END may overflow and is
     CLAMPED (``A1:AA5`` on a 26-column sheet returns ``A1:Z5``), its START may not.

@@ -2491,6 +2491,7 @@ def test_drive_q_refuses_a_clause_it_cannot_parse(tmp_path):
             "name contains 'unterminated",
             "trashed = 'true'",
             "modifiedTime contains 'x'",
+            "modifiedTime < 'yesterday'",  # the reference wants RFC 3339 here
             "'x' in bogus",
             "name contains 'a' or",
             "(name contains 'a'",

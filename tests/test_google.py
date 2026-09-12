@@ -1688,7 +1688,10 @@ def _batch(base, headers, sheet_id, ranges, **params):
         ("Sheet1!R1C1:R2C2", GRID[:2]),  # column B is empty, so it trims away
         ("'Sheet1'!R2C1", [["Jan,120000"]]),  # one cell, quoted sheet name
         ("r1c1:r3c1", GRID),  # case-insensitive, as the A1 side is
-        ("A1:R3C1", GRID),  # a half in each notation resolves the same way
+        ("R[0]C[0]:R[2]C[0]", GRID),  # bracketed offsets from A1
+        ("R[1]", [["Jan,120000"]]),  # row 2 whole, trimmed to its one cell
+        ("RC", [GRID[0]]),  # bare letters are the cell A1
+        ("R1C:R3C", GRID),  # a bare C is column A
     ],
 )
 def test_sheets_values_get_range_forms(base, admin_h, sheet_id, rng, expected):
@@ -1810,11 +1813,15 @@ def test_sheets_values_get_omits_values_when_the_range_is_empty(base, admin_h, s
         "A1:",
         "!A1",
         "",
-        # The relative R1C1 form names a cell relative to "the current cell", which a read has
-        # none of; what real answers for it is unmeasured, so it is refused as unparseable.
-        "R[1]C[1]",
-        "R1C",
         "R1C1:",
+        "R0C1",  # absolute R1C1 is 1-based
+        "R[-1]C[0]",  # an offset is not negative
+        "A1:R2C2",  # both halves of a range are one notation
+        "R2C2:R1C1",  # reversed by one, on the numbers as written
+        "A0",
+        "Z",  # a lone column is no range, so a bang-less one is a sheet name — and there is none
+        "Sheet1!B",
+        " A1",  # not stripped
     ],
 )
 def test_sheets_values_get_rejects_an_unusable_range(base, admin_h, sheet_id, rng):
@@ -2029,16 +2036,178 @@ MEASURED_ECHO = [
     ("Sheet1!A1:D5", "Sheet1!A1:D5"),
 ]
 
-# R1C1 requests, measured against the live Sheets API on 2026-09-10 (#174) on a workbook whose
-# first sheet was `시트1` with a `Data` sheet beside it, normalising the sheet title to `Sheet1`.
-# Every one came back 200 with the A1 EQUIVALENT echoed, so an R1C1 request and its A1 twin are
-# indistinguishable to a client diffing two backends.
+# Every R1C1-related request sent to the live Sheets API on 2026-09-12 (#174), on a workbook whose
+# sheets were `Sheet1`, `Data`, `R1C1`, `RC` and `A` (1000x26 each, `a`..`f` in A1:B3 of the first
+# two), with what came back: the status and the echoed `range`, or the error message. The five
+# rows the issue's comment measured on 2026-09-10 open the list. The test below serves a corpus with
+# the same five sheets and holds Backlot to every row, so the grammar in `_R1C1_END`'s comment is
+# what this table says and not what a document says.
+MEASURED_R1C1 = [
+    ("R1C2", 200, "Sheet1!B1"),
+    ("R1C1:R2C2", 200, "Sheet1!A1:B2"),
+    ("Data!R1C1:R2C2", 200, "Data!A1:B2"),
+    ("'Data'!R1C1:R2C2", 200, "Data!A1:B2"),
+    ("Data!R1C1", 200, "Data!A1"),
+    ("R[1]C[1]", 200, "Sheet1!B2"),
+    ("Data!R[3]C[1]", 200, "Data!B4"),
+    ("R[0]C[0]", 200, "Sheet1!A1"),
+    ("R1C1:R[2]C[2]", 200, "Sheet1!A1:C3"),
+    ("R[1]C1", 200, "Sheet1!A2"),
+    ("R1C[1]", 200, "Sheet1!B1"),
+    ("A1:R2C2", 400, "Unable to parse range: A1:R2C2"),
+    ("R1C1:B2", 400, "Unable to parse range: R1C1:B2"),
+    ("R1", 200, "Sheet1!R1"),
+    ("C2", 200, "Sheet1!C2"),
+    ("R1:R2", 200, "Sheet1!R1:R2"),
+    ("C1:C2", 200, "Sheet1!C1:C2"),
+    ("R0C0", 400, "Unable to parse range: R0C0"),
+    ("R0C1", 400, "Unable to parse range: R0C1"),
+    ("r1c1:r2c2", 200, "Sheet1!A1:B2"),
+    ("R1C1:R1000C26", 200, "Sheet1!A1:Z1000"),
+    ("R1C1:R2000C50", 200, "Sheet1!A1:Z1000"),
+    ("R1001C1", 400, "Range (Sheet1!A1001) exceeds grid limits. Max rows: 1000, max columns: 26"),
+    ("R1C", 200, "Sheet1!A1"),
+    ("RC1", 400, "Range (Sheet1!RC1) exceeds grid limits. Max rows: 1000, max columns: 26"),
+    ("R1C1:", 400, "Unable to parse range: R1C1:"),
+    ("R1C1R2C2", 400, "Unable to parse range: R1C1R2C2"),
+    ("Data!R1C1:R2C2:R3C3", 400, "Unable to parse range: Data!R1C1:R2C2:R3C3"),
+    ("R2C", 200, "Sheet1!A2"),
+    ("R1C:R3C", 200, "Sheet1!A1:A3"),
+    ("RC", 200, "Sheet1!A1"),
+    ("R[1]C", 200, "Sheet1!A2"),
+    ("RC[1]", 200, "Sheet1!B1"),
+    ("R[1]C[1]:R[2]C[2]", 200, "Sheet1!B2:C3"),
+    ("RC[0]:RC[1]", 200, "Sheet1!A1:B1"),
+    ("R[-1]C[0]", 400, "Unable to parse range: R[-1]C[0]"),
+    ("R[0]C[-1]", 400, "Unable to parse range: R[0]C[-1]"),
+    ("R[999]C[25]", 200, "Sheet1!Z1000"),
+    (
+        "R[1000]C[0]",
+        400,
+        "Range (Sheet1!A1001) exceeds grid limits. Max rows: 1000, max columns: 26",
+    ),
+    ("R[1]C[1]:R[3]C[1]", 200, "Sheet1!B2:B4"),
+    ("R[2]C[2]:R1C1", 200, "Sheet1!A1:C3"),
+    ("R2C2:R1C1", 400, "Unable to parse range: R2C2:R1C1"),
+    ("R1C1:R1C1", 200, "Sheet1!A1"),
+    ("R1C1:R1000C1", 200, "Sheet1!A1:A1000"),
+    ("R1C1:R1C26", 200, "Sheet1!A1:Z1"),
+    ("R2C1:R2C26", 200, "Sheet1!A2:Z2"),
+    ("R1C0", 400, "Unable to parse range: R1C0"),
+    ("R01C01", 200, "Sheet1!A1"),
+    ("R[01]C[01]", 200, "Sheet1!B2"),
+    ("R1 C1", 400, "Unable to parse range: R1 C1"),
+    (" R1C1 ", 400, "Unable to parse range:  R1C1 "),
+    ("R[+1]C[+1]", 400, "Unable to parse range: R[+1]C[+1]"),
+    ("R1C1 :R2C2", 400, "Unable to parse range: R1C1 :R2C2"),
+    ("A0", 400, "Unable to parse range: A0"),
+    ("A1:A0", 400, "Unable to parse range: A1:A0"),
+    ("Sheet1!R[1]C[1]", 200, "Sheet1!B2"),
+    ("'Sheet1'!R[1]C[1]", 200, "Sheet1!B2"),
+    ("Data!R1C:R2C", 200, "Data!A1:A2"),
+    ("R1C1:R2", 200, "Sheet1!A1:Z2"),
+    ("R1:R2C2", 200, "Sheet1!A1:B2"),
+    ("1:R2C2", 400, "Unable to parse range: 1:R2C2"),
+    ("A", 200, "A!A1:Z1000"),
+    ("Z", 400, "Unable to parse range: Z"),
+    ("A:A", 200, "Sheet1!A1:A1000"),
+    ("ZZ", 400, "Unable to parse range: ZZ"),
+    ("ZZ:ZZ", 400, "Range (Sheet1!ZZ) exceeds grid limits. Max rows: 1000, max columns: 26"),
+    ("RC:RC", 400, "Range (Sheet1!RC) exceeds grid limits. Max rows: 1000, max columns: 26"),
+    ("'RC'", 200, "'RC'!A1:Z1000"),
+    ("RC!A1", 200, "'RC'!A1"),
+    ("R1C1", 200, "Sheet1!A1"),
+    ("'R1C1'", 200, "'R1C1'!A1:Z1000"),
+    ("R1C1!A1", 200, "'R1C1'!A1"),
+    ("R1C1!R1C1", 200, "'R1C1'!A1"),
+    ("'A'", 200, "A!A1:Z1000"),
+    ("A!A1", 200, "A!A1"),
+    ("RC2", 400, "Range (Sheet1!RC2) exceeds grid limits. Max rows: 1000, max columns: 26"),
+    ("RC26", 400, "Range (Sheet1!RC26) exceeds grid limits. Max rows: 1000, max columns: 26"),
+    ("RC1:R2C2", 200, "Sheet1!A1:B2"),
+    ("R1C1:RC", 200, "Sheet1!A1"),
+    ("R1C1:C2", 200, "Sheet1!A1:B1000"),
+    ("C2:R1C1", 400, "Unable to parse range: C2:R1C1"),
+    ("R:R1C1", 200, "Sheet1!A1"),
+    ("R2:R1C1", 400, "Unable to parse range: R2:R1C1"),
+    ("R1C1:R", 200, "Sheet1!A1"),
+    ("R1C1:C", 200, "Sheet1!A1"),
+    ("R[1]:R[2]C[2]", 200, "Sheet1!A2:C3"),
+    ("R1C1:C[1]", 200, "Sheet1!A1:B1000"),
+    ("R:R", 200, "Sheet1!R1:R1000"),
+    ("C:C", 200, "Sheet1!C1:C1000"),
+    ("R2C1:R1C2", 400, "Unable to parse range: R2C1:R1C2"),
+    ("R1C2:R2C1", 400, "Unable to parse range: R1C2:R2C1"),
+    ("R[1]C[1]:R[0]C[0]", 400, "Unable to parse range: R[1]C[1]:R[0]C[0]"),
+    ("R2C2:R[2]C[2]", 200, "Sheet1!B2:C3"),
+    ("R[1]C[1]:R1C1", 200, "Sheet1!A1:B2"),
+    ("R2C2:R[0]C[0]", 200, "Sheet1!A1:B2"),
+    ("R[2]C[2]:R2C2", 200, "Sheet1!B2:C3"),
+    ("R[1]C[0]:R1C1", 200, "Sheet1!A1:A2"),
+    ("R1C1:R[0]C[0]", 200, "Sheet1!A1"),
+    ("R[3]C[3]:R[1]C[1]", 200, "Sheet1!B2:D4"),
+    ("R3C3:R[1]C[1]", 200, "Sheet1!B2:C3"),
+    ("R[1]C[1]:R2C2", 200, "Sheet1!B2"),
+    ("B2:A1", 200, "Sheet1!A1:B2"),
+    ("B2:A2", 200, "Sheet1!A2:B2"),
+    ("0:1", 400, "Unable to parse range: 0:1"),
+    ("A0:B2", 400, "Unable to parse range: A0:B2"),
+    ("R", 200, "Sheet1!A1"),
+    ("C", 200, "Sheet1!A1"),
+    ("R[1]", 200, "Sheet1!A2:Z2"),
+    ("C[1]", 200, "Sheet1!B1:B1000"),
+    ("R[1]:R[1]", 200, "Sheet1!A2:Z2"),
+    ("C[1]:C[1]", 200, "Sheet1!B1:B1000"),
+    ("R1C1:R[1]", 200, "Sheet1!A1:Z2"),
+    ("R1C1:C[0]", 200, "Sheet1!A1:A1000"),
+    ("R1C1:R2C", 200, "Sheet1!A1:A2"),
+    ("R1C1:RC2", 200, "Sheet1!A1:B1"),
+    ("R1C:R2C2", 200, "Sheet1!A1:B2"),
+    ("R2:R2", 200, "Sheet1!R2"),
+    ("R1C1:R1000C", 200, "Sheet1!A1:A1000"),
+    ("R1C1:RC26", 200, "Sheet1!A1:Z1"),
+    ("R[2]C[2]:R[0]C[0]", 200, "Sheet1!A1:C3"),
+    ("R[2]C[2]:R[1]C[1]", 400, "Unable to parse range: R[2]C[2]:R[1]C[1]"),
+    ("R[1]C[0]:R[0]C[0]", 400, "Unable to parse range: R[1]C[0]:R[0]C[0]"),
+    ("R[0]C[1]:R[0]C[0]", 400, "Unable to parse range: R[0]C[1]:R[0]C[0]"),
+    ("R[1]C[1]:R[0]C[1]", 400, "Unable to parse range: R[1]C[1]:R[0]C[1]"),
+    ("R[1]C[1]:R[1]C[0]", 400, "Unable to parse range: R[1]C[1]:R[1]C[0]"),
+    ("R[2]C[1]:R[1]C[2]", 400, "Unable to parse range: R[2]C[1]:R[1]C[2]"),
+    ("R3C3:R2C2", 400, "Unable to parse range: R3C3:R2C2"),
+    ("R[3]C[3]:R[2]C[2]", 400, "Unable to parse range: R[3]C[3]:R[2]C[2]"),
+    ("Sheet1!B", 400, "Unable to parse range: Sheet1!B"),
+    ("Sheet1!Z", 400, "Unable to parse range: Sheet1!Z"),
+    ("Sheet1!2", 400, "Unable to parse range: Sheet1!2"),
+    (" A1", 400, "Unable to parse range:  A1"),
+    ("A1 ", 400, "Unable to parse range: A1 "),
+    ("R3C3:R1C1", 200, "Sheet1!A1:C3"),
+    ("R4C4:R1C1", 200, "Sheet1!A1:D4"),
+    ("R2C1:R1C1", 400, "Unable to parse range: R2C1:R1C1"),
+    ("R3C1:R1C1", 200, "Sheet1!A1:A3"),
+    ("R5C5:R3C3", 200, "Sheet1!C3:E5"),
+    ("R1C3:R1C1", 200, "Sheet1!A1:C1"),
+    ("R1C2:R1C1", 400, "Unable to parse range: R1C2:R1C1"),
+    ("R[1]C[2]:R[0]C[0]", 400, "Unable to parse range: R[1]C[2]:R[0]C[0]"),
+    ("R[2]C[0]:R[0]C[0]", 200, "Sheet1!A1:A3"),
+    ("R[4]C[4]:R[0]C[0]", 200, "Sheet1!A1:E5"),
+    ("R[2]C[2]:R[1]C[0]", 400, "Unable to parse range: R[2]C[2]:R[1]C[0]"),
+    ("R3:R1C1", 200, "Sheet1!A1:A3"),
+    ("C3:R1C1", 200, "Sheet1!A1:C1"),
+    ("R1000C26:R1C1", 200, "Sheet1!A1:Z1000"),
+    ("R999C26:R1C1", 200, "Sheet1!A1:Z999"),
+    ("R[2]:R1C1", 200, "Sheet1!A1:A3"),
+    ("R[1]:R1C1", 200, "Sheet1!A1:A2"),
+    ("B1:A1", 200, "Sheet1!A1:B1"),
+    ("C1:A1", 200, "Sheet1!A1:C1"),
+    ("A2:A1", 200, "Sheet1!A1:A2"),
+]
+
+# A subset for the SAMPLE spreadsheet, which has `Sheet1` alone: two of the five the issue's
+# comment measured, then offsets, bare letters and a reversed range, on both reads.
+_R1C1_ECHO = {sent: echo for sent, status, echo in MEASURED_R1C1 if status == 200}
 MEASURED_ECHO_R1C1 = [
-    ("R1C2", "Sheet1!B1"),
-    ("R1C1:R2C2", "Sheet1!A1:B2"),
-    ("Sheet1!R1C1:R2C2", "Sheet1!A1:B2"),
-    ("'Sheet1'!R1C1:R2C2", "Sheet1!A1:B2"),
-    ("Sheet1!R1C1", "Sheet1!A1"),
+    (sent, _R1C1_ECHO[sent])
+    for sent in ("R1C2", "R1C1:R2C2", "R[1]C[1]", "R1C1:R[2]C[2]", "R[1]", "C[1]", "R3C3:R1C1")
 ]
 
 
@@ -2054,6 +2223,42 @@ def test_sheets_values_r1c1_echoes_the_a1_equivalent(base, admin_h, sheet_id, rn
     assert b.json()["valueRanges"][0]["range"] == echo
 
 
+def test_sheets_values_answer_every_measured_r1c1_request_as_real_does(tmp_path):
+    """All MEASURED_R1C1 rows, status and echo or message alike, over a corpus with the probe's
+    five sheets. One test rather than one per row: the corpus is built once, and a row that drifts
+    names itself in the assertion."""
+    from tests._helpers import corpus_client
+
+    grid = [["a", "b"], ["c", "d"], ["e", "f"]]
+    record = {
+        "source_type": "google_drive",
+        "doc_id": "probe",
+        "folder": "mk",
+        "title": "backlot #174 R1C1 probe",
+        "author_email": "a@x.com",
+        "visibility": "public",
+        "subtype": "spreadsheet",
+        "sheets": [{"title": t, "grid": grid} for t in ("Sheet1", "Data", "R1C1", "RC", "A")],
+    }
+    with corpus_client(tmp_path, [record]) as (client, settings):
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        (sheet,) = client.get(
+            "/drive/v3/files", headers=h, params={"q": "name = 'backlot #174 R1C1 probe'"}
+        ).json()["files"]
+        drifted = []
+        for sent, status, shown in MEASURED_R1C1:
+            r = client.get(
+                f"/sheets/v4/spreadsheets/{sheet['id']}/values/{quote(sent, safe='')}", headers=h
+            )
+            body = r.json()
+            got = body.get("range") if r.status_code == 200 else body["error"]["message"]
+            if (r.status_code, got) != (status, shown):
+                drifted.append(
+                    f"{sent!r}: real {status} {shown!r}, Backlot {r.status_code} {got!r}"
+                )
+        assert drifted == [], "\n".join(drifted)
+
+
 def test_sheets_values_r1c1_answers_exactly_what_its_a1_twin_does(base, admin_h, sheet_id):
     """The whole body, not only the echo: the reader's `R1C1:R{rowCount}C{columnCount}` is the
     whole grid, and has to come back as the bare sheet name does."""
@@ -2066,16 +2271,18 @@ def test_sheets_values_r1c1_answers_exactly_what_its_a1_twin_does(base, admin_h,
 
 
 def test_sheets_a_title_spelt_as_a_reference_is_quoted_in_either_notation():
-    """`'A1'` echoes quoted (measured) because bare `A1` would read as the cell; a title `R1C1`
-    meets the same ambiguity, so the same rule — inferred from the A1 case. And a bare `R1` stays
-    the A1 cell R1, not a row in R1C1 notation."""
-    from backlot.routers.google import _a1_is_endpoint, _a1_title
+    """Measured on sheets so named: `'A1'`, `'R1C1'` and `'RC'` echo quoted because the bare word
+    reads as a cell, while `A` echoes bare — a lone column is no range. And a bare `R1` is the A1
+    cell R1, not a row in R1C1 notation."""
+    from backlot.routers.google import _a1_classify, _a1_title
 
     assert _a1_title("A1") == "'A1'"
     assert _a1_title("R1C1") == "'R1C1'"
+    assert _a1_title("RC") == "'RC'"
+    assert _a1_title("A") == "A"
     assert _a1_title("Data") == "Data"
-    assert _a1_is_endpoint("R1") and _a1_is_endpoint("C2") and _a1_is_endpoint("R1C1")
-    assert not _a1_is_endpoint("R[1]C[1]")
+    assert _a1_classify("R1")[0] == "a1" and _a1_classify("RC")[0] == "r1c1"
+    assert _a1_classify("A") is None and _a1_classify("A1:R2C2") is None
 
 
 def test_sheets_values_accept_a_bare_quoted_sheet_name(base, admin_h, sheet_id):

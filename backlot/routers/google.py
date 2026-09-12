@@ -2496,23 +2496,126 @@ _A1_MAJOR = ("ROWS", "COLUMNS")
 _A1_RENDER = ("FORMATTED_VALUE", "UNFORMATTED_VALUE", "FORMULA")
 _A1_DATETIME = ("SERIAL_NUMBER", "FORMATTED_STRING")
 _SHEETS_ENUM = "type.googleapis.com/google.apps.sheets.v4"
-# One endpoint of an A1 range: a full cell (`B2`), a bare column (`B`) or a bare row (`2`).
+# One endpoint of an A1 range: a full cell (`B2`), a bare column (`B`) or a bare row (`2`). A bare
+# column or row is an endpoint only INSIDE a range — measured 2026-09-12, `Sheet1!B`, `Sheet1!2` and
+# a bang-less `Z` are all "Unable to parse range" while `A:A` and `1:1` answer — and row 0 is not
+# one at all (`A0`, `A1:A0` are unparseable too).
 _A1_END = re.compile(r"(?:(?P<col>[A-Za-z]{1,3})(?P<row>\d+)?|(?P<rowonly>\d+))\Z")
 # One endpoint in R1C1 notation, which the discovery document names beside A1 for `values.get`'s
 # `range` ("The A1 notation or R1C1 notation of the range to retrieve values from"), and which
 # the LlamaIndex `GoogleSheetsReader` sends for every sheet as `R1C1:R{rowCount}C{columnCount}`.
-# Measured against a real workbook (2026-09-10, #174): accepted wherever A1 is — unqualified,
-# sheet-qualified, quoted — and the response echoes the A1 equivalent, `R1C1:R2C2` answering
-# `A1:B2`. Absolute only. The relative form the concepts guide also shows, `R[3]C[1]`, "refers to
-# the cell that is three rows below and one column to the right of the current cell", and a read
-# has no current cell; what real answers for it is unmeasured, so it is refused as unparseable.
-# A bare `R1` or `C2` is not this notation: each is an A1 cell (column R row 1, column C row 2).
-_R1C1_END = re.compile(r"R(?P<row>\d+)C(?P<col>\d+)\Z", re.IGNORECASE)
+#
+# The grammar below is measured, not read off a document: 153 requests against a real workbook on
+# 2026-09-12 (#174), every one pinned in `tests/test_google.py::MEASURED_R1C1`.
+#
+# * `R` and `C` each take an ABSOLUTE 1-based number (`R1C1`), a BRACKETED 0-based offset from A1
+#   (`R[1]C[1]` is B2, `R[0]C[0]` is A1 — the concepts guide's "relative to the current cell" has
+#   A1 as the current cell on a read), or no number at all (`R1C` is A1, `RC` is A1). Absolute 0
+#   and a negative or `+`-signed offset are unparseable; a leading zero is fine (`R01C01` is A1).
+# * either letter may be absent. Beside an R1C1 half a numbered `R2` is row 2 with the columns
+#   unbounded (`R1C1:R2` is A1:Z2) and `C[1]` alone is column B whole (`B1:B1000`); a bare `R`, `C`
+#   or `RC` is the cell A1.
+# * both halves of a range are read in ONE notation: `A1:R2C2` and `R1C1:B2` are unparseable. A
+#   token is read as A1 first (`R1` is the cell R1, `RC1` the cell RC1, `RC:RC` the columns RC),
+#   then as R1C1 (`RC` alone is A1, and so is `R1C1` even in a workbook with a sheet named `R1C1`),
+#   then — bang-less — as a sheet name (`A` is the sheet `A` when there is one).
+# * a reversed R1C1 range is swapped the way an A1 one is (`R3C3:R1C1` is A1:C3), except that on
+#   an axis where both halves carry a number OF THE SAME KIND — both absolute, or both offsets —
+#   start == end + 1 on the numbers AS WRITTEN is unparseable: `R2C2:R1C1`, `R1C2:R1C1`,
+#   `R[1]C[1]:R[0]C[0]` and `R2:R1C1` 400 while `R3C3:R1C1` and `R[2]C[2]:R[0]C[0]` answer. An
+#   axis that mixes the kinds swaps freely: `R[1]C[1]:R1C1`, `R[2]C[2]:R1C1` and `R1C1:R[0]C[0]`
+#   all answer. That reads as a half-open interval on the raw numbers coming out empty, checked
+#   before offsets are resolved; the rule was fitted on 22 reversed ranges, the 17 predictions made
+#   from it before they were sent all held, and the same-kind clause was then added for the 4
+#   mixed-kind rows the first version got wrong.
+# * the echo is the A1 equivalent, and the grid rules are A1's: an end past the grid is clamped
+#   (`R1C1:R2000C50` is A1:Z1000), a start past it is refused (`R[1000]C[0]` names `A1001`).
+_R1C1_END = re.compile(
+    r"(?P<r>R(?:(?P<rabs>\d+)|\[(?P<rrel>\d+)\])?)?(?P<c>C(?:(?P<cabs>\d+)|\[(?P<crel>\d+)\])?)?\Z",
+    re.IGNORECASE,
+)
 
 
-def _a1_is_endpoint(part: str) -> bool:
-    """Whether a string is one side of a range in either notation."""
-    return bool(_R1C1_END.fullmatch(part) or _A1_END.fullmatch(part))
+class _End(NamedTuple):
+    """One side of a range, resolved: 0-based, ``None`` on an axis left unbounded. ``raw_row`` and
+    ``raw_col`` are the number as written and its kind — ``(2, "abs")`` for `R2`, ``(2, "rel")``
+    for `R[2]` — which is what real's reversed-range check reads; ``None`` where the axis carries no
+    number."""
+
+    row: int | None
+    col: int | None
+    raw_row: tuple[int, str] | None = None
+    raw_col: tuple[int, str] | None = None
+
+
+def _a1_end(part: str) -> _End | None:
+    """An A1 endpoint, or ``None`` when the string is not one."""
+    m = _A1_END.fullmatch(part)
+    if not m:
+        return None
+    if m.group("rowonly"):
+        n = int(m.group("rowonly"))
+        return _End(n - 1, None) if n else None
+    row = m.group("row")
+    if row is not None and int(row) == 0:
+        return None
+    return _End(int(row) - 1 if row else None, _a1_col(m.group("col")))
+
+
+def _r1c1_end(part: str) -> _End | None:
+    """An R1C1 endpoint, or ``None`` when the string is not one — the grammar above."""
+    m = _R1C1_END.fullmatch(part)
+    if not m or not (m.group("r") or m.group("c")):
+        return None
+
+    def numbered(letter: str) -> tuple[int, tuple[int, str]] | None:
+        """``(index, (raw, kind))`` for a letter that carries a number; ``None`` for one that does
+        not."""
+        absolute, relative = m.group(letter + "abs"), m.group(letter + "rel")
+        if absolute is not None:
+            n = int(absolute)
+            if n == 0:
+                raise ValueError(part)
+            return n - 1, (n, "abs")
+        if relative is not None:
+            n = int(relative)
+            return n, (n, "rel")
+        return None
+
+    try:
+        rnum, cnum = numbered("r"), numbered("c")
+    except ValueError:
+        return None
+
+    def index(letter: str, own, other) -> int | None:
+        if own is not None:
+            return own[0]
+        if m.group(letter):  # present without a number: offset 0
+            return 0
+        return None if other is not None else 0  # absent: unbounded beside a numbered letter
+
+    return _End(
+        index("r", rnum, cnum),
+        index("c", cnum, rnum),
+        rnum[1] if rnum else None,
+        cnum[1] if cnum else None,
+    )
+
+
+def _a1_classify(body: str) -> tuple[str, list[_End]] | None:
+    """Which notation a cell part is in, with its endpoints: ``("a1", ends)``, ``("r1c1", ends)``,
+    or ``None`` when it is neither. A1 first, then R1C1 — the order measured — and a lone A1 token
+    has to be a full cell, since a bare column or row is an endpoint only inside a range."""
+    halves = body.split(":")
+    if len(halves) > 2:
+        return None
+    a1 = [_a1_end(h) for h in halves]
+    if all(a1) and (len(a1) == 2 or (a1[0].row is not None and a1[0].col is not None)):
+        return "a1", a1  # type: ignore[return-value]
+    r1c1 = [_r1c1_end(h) for h in halves]
+    if all(r1c1):
+        return "r1c1", r1c1  # type: ignore[return-value]
+    return None
 
 
 def _a1_col(letters: str) -> int:
@@ -2564,28 +2667,6 @@ def _sheets_bool_value(raw, field: str) -> bool:
     raise gerr.invalid_argument(f"Invalid value at '{field}' (TYPE_BOOL), \"{raw}\"")
 
 
-def _a1_endpoint(part: str, spec: str) -> tuple[int | None, int | None]:
-    """``(row, col)`` 0-based for one side of a range; ``None`` means that axis is unbounded.
-
-    ``spec`` is the whole requested range, because that — not the offending half — is what real
-    Sheets names back: `A1:` reports "Unable to parse range: A1:", never a bare "".
-
-    Either notation, per side: `R1C1` and `A1` name the same cell, and a range may spell each of
-    its halves in either (`A1:R2C2` is unmeasured against real; both halves resolve the same way
-    here, so it is answered as `A1:B2`)."""
-    part = part.strip()
-    m = _R1C1_END.fullmatch(part)
-    if m:
-        return int(m.group("row")) - 1, int(m.group("col")) - 1
-    m = _A1_END.fullmatch(part)
-    if not m:
-        raise gerr.invalid_argument(f"Unable to parse range: {spec}")
-    if m.group("rowonly"):
-        return int(m.group("rowonly")) - 1, None
-    row = m.group("row")
-    return (int(row) - 1 if row else None), _a1_col(m.group("col"))
-
-
 def _a1_find(title: str, sheets: list[_Sheet]) -> _Sheet | None:
     """The sheet a title names, or None.
 
@@ -2599,7 +2680,7 @@ def _a1_find(title: str, sheets: list[_Sheet]) -> _Sheet | None:
 
 
 def _a1_looks_like_a_range(body: str) -> bool:
-    return all(_a1_is_endpoint(part.strip()) for part in body.split(":", 1))
+    return _a1_classify(body) is not None
 
 
 def _a1_sheet(spec: str, sheets: list[_Sheet]) -> tuple[_Sheet, str]:
@@ -2612,12 +2693,15 @@ def _a1_sheet(spec: str, sheets: list[_Sheet]) -> tuple[_Sheet, str]:
       and splitting at the first would leave `bang!A1` as the cell part
     * a spec with NO bang is parsed as a range FIRST and only then as a sheet name, so bare `A1` is
       cell A1 of the first sheet even in a workbook that has a sheet named `A1`, while bare `Data`
-      is the sheet because four letters cannot be a cell reference
+      is the sheet because four letters cannot be a cell reference. R1C1 before a sheet name too:
+      bare `R1C1` and `RC` are the cell A1 in a workbook with sheets so named, and bare `A` is the
+      sheet `A`, a lone column being no range (measured 2026-09-12)
     * an unqualified range answers from the sheet at index 0
     * a name no sheet has 400s with the same `Unable to parse range` message unparseable garbage
       gets — resolving to an empty grid instead would be indistinguishable from an empty range
     """
-    bare = spec.strip()
+    # Not stripped: measured, ` A1`, `A1 ` and ` R1C1 ` are "Unable to parse range", spaces and all.
+    bare = spec
     if "!" in bare:
         title, _, body = bare.rpartition("!")
         found = _a1_find(title.strip(), sheets)
@@ -2648,34 +2732,48 @@ def _a1_range(spec: str, body: str, sheet: _Sheet) -> tuple[int, int, int, int]:
 
     Two boundary rules, measured against a real spreadsheet: the range's END may overflow and is
     CLAMPED (``A1:AA5`` on a 26-column sheet returns ``A1:Z5``), its START may not.
+
+    ``spec`` is the whole requested range, because that — not the offending half — is what real
+    Sheets names back: `A1:` reports "Unable to parse range: A1:", never a bare "".
     """
     nrows, ncols = sheet.rows, sheet.cols
     if not body:
         return 0, 0, nrows, ncols
-    start, sep, end = body.partition(":")
-    r0, c0 = _a1_endpoint(start, spec)
-    if not sep:  # a single reference: one cell, one whole row, one column
-        r0f, c0f = (0 if r0 is None else r0), (0 if c0 is None else c0)
-        r1 = nrows if r0 is None else r0 + 1
-        c1 = ncols if c0 is None else c0 + 1
+    classified = _a1_classify(body)
+    if classified is None:
+        raise gerr.invalid_argument(f"Unable to parse range: {spec}")
+    notation, ends = classified
+    if len(ends) == 1:  # a single reference: one cell, one whole row, one column
+        (start,) = ends
+        r0f, c0f = (0 if start.row is None else start.row), (0 if start.col is None else start.col)
+        r1 = nrows if start.row is None else start.row + 1
+        c1 = ncols if start.col is None else start.col + 1
     else:
-        r1x, c1x = _a1_endpoint(end, spec)
-        r0f = 0 if r0 is None else r0
-        c0f = 0 if c0 is None else c0
-        r1 = nrows if r1x is None else r1x + 1
-        c1 = ncols if c1x is None else c1x + 1
-        # A1 ranges are inclusive and may be written in either order (`B2:A1` == `A1:B2`).
+        start, end = ends
+        if notation == "r1c1":
+            # Real's reversed-range rule, on the numbers as written — see `_R1C1_END`.
+            for a, b in ((start.raw_row, end.raw_row), (start.raw_col, end.raw_col)):
+                if a is not None and b is not None and a[1] == b[1] and a[0] == b[0] + 1:
+                    raise gerr.invalid_argument(f"Unable to parse range: {spec}")
+        r0f = 0 if start.row is None else start.row
+        c0f = 0 if start.col is None else start.col
+        r1 = nrows if end.row is None else end.row + 1
+        c1 = ncols if end.col is None else end.col + 1
+        # Ranges are inclusive and may be written in either order (`B2:A1` == `A1:B2`), in R1C1
+        # as in A1 (`R3C3:R1C1` == `A1:C3`), once past the rule above.
         if r1 < r0f + 1:
             r0f, r1 = r1 - 1, r0f + 1
         if c1 < c0f + 1:
             c0f, c1 = c1 - 1, c0f + 1
     if r0f >= nrows or c0f >= ncols or r0f < 0 or c0f < 0:
-        # The START is outside the grid — refused, with the range echoed back unclamped.
+        # The START is outside the grid — refused, with the range echoed back unclamped; whole
+        # columns by their letters alone (`_a1_columns_name`).
+        whole_columns = len(ends) == 2 and ends[0].row is None and ends[1].row is None
+        named = (
+            _a1_columns_name(sheet, c0f, c1) if whole_columns else _a1_name(sheet, r0f, c0f, r1, c1)
+        )
         raise gerr.invalid_argument(
-            (
-                f"Range ({_a1_name(sheet, r0f, c0f, r1, c1)}) exceeds grid limits. "
-                f"Max rows: {nrows}, max columns: {ncols}"
-            )
+            f"Range ({named}) exceeds grid limits. Max rows: {nrows}, max columns: {ncols}"
         )
     return r0f, c0f, min(r1, nrows), min(c1, ncols)
 
@@ -2691,11 +2789,31 @@ def _a1_title(title: str) -> str:
     """A sheet title as the echoed ``range`` spells it, quoted unless it is a plain identifier that
     is not itself a cell reference. An embedded apostrophe doubles.
 
-    A title spelt like an R1C1 reference (`R1C1`) is quoted like one spelt as A1 (`'A1'`, measured):
-    the same ambiguity, so the same rule — inferred, since no measured title reads as R1C1."""
-    if _A1_PLAIN.fullmatch(title) and not _a1_is_endpoint(title):
+    Measured 2026-09-12 on sheets so named: `R1C1` and `RC` echo quoted (`'RC'!A1`), as `A1` does,
+    while `A` — a bare column, which is no reference on its own — echoes bare (`A!A1:Z1000`)."""
+    if _A1_PLAIN.fullmatch(title) and _a1_classify(title) is None:
         return title
     return "'" + title.replace("'", "''") + "'"
+
+
+def _a1_col_letters(i: int) -> str:
+    """A 0-based column index as A1 letters — the inverse of :func:`_a1_col`."""
+    s = ""
+    i += 1
+    while i:
+        i, rem = divmod(i - 1, 26)
+        s = chr(65 + rem) + s
+    return s
+
+
+def _a1_columns_name(sheet: _Sheet, c0: int, c1: int) -> str:
+    """Whole columns by their letters alone, the way real names them when refusing a range past
+    the grid: measured, `ZZ:ZZ` reports ``Sheet1!ZZ`` and `RC:RC` ``Sheet1!RC``, never ``ZZ1:ZZ1000``.
+    One column collapses as one cell does."""
+    title = _a1_title(sheet.title)
+    if c1 - c0 == 1:
+        return f"{title}!{_a1_col_letters(c0)}"
+    return f"{title}!{_a1_col_letters(c0)}:{_a1_col_letters(c1 - 1)}"
 
 
 def _a1_name(sheet: _Sheet, r0: int, c0: int, r1: int, c1: int) -> str:
@@ -2703,20 +2821,11 @@ def _a1_name(sheet: _Sheet, r0: int, c0: int, r1: int, c1: int) -> str:
 
     A single cell echoes as a bare reference (``Sheet1!A1``), not as ``A1:A1`` — measured: real
     Sheets collapses a 1x1 range even when the request spelled it out as ``A1:A1``."""
-
-    def col(i: int) -> str:
-        s = ""
-        i += 1
-        while i:
-            i, rem = divmod(i - 1, 26)
-            s = chr(65 + rem) + s
-        return s
-
     title = _a1_title(sheet.title)
-    start = f"{col(c0)}{r0 + 1}"
+    start = f"{_a1_col_letters(c0)}{r0 + 1}"
     if r1 - r0 == 1 and c1 - c0 == 1:
         return f"{title}!{start}"
-    return f"{title}!{start}:{col(c1 - 1)}{r1}"
+    return f"{title}!{start}:{_a1_col_letters(c1 - 1)}{r1}"
 
 
 def _rstrip_empty(cells: list[str]) -> list[str]:

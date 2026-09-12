@@ -138,11 +138,12 @@ app = FastAPI(
 _fastapi_openapi = app.openapi
 
 
-def _openapi_with_github_page_parameters() -> dict:
-    return openapi.github_page_parameters(_fastapi_openapi(), github.PAGE_PARAMETERS)
+def _openapi_with_vendor_parameters() -> dict:
+    spec = openapi.github_page_parameters(_fastapi_openapi(), github.PAGE_PARAMETERS)
+    return openapi.google_system_parameters(spec)
 
 
-app.openapi = _openapi_with_github_page_parameters
+app.openapi = _openapi_with_vendor_parameters
 
 
 # Per-vendor error envelopes live in ``backlot/errors/``. Both handlers ask that package and fall
@@ -152,7 +153,7 @@ app.openapi = _openapi_with_github_page_parameters
 @app.exception_handler(StarletteHTTPException)
 async def _http_exception_handler(request: Request, exc: StarletteHTTPException):
     headers = getattr(exc, "headers", None)
-    body = errors.http_body(request.url.path, exc)
+    body = errors.http_body(request.url.path, exc, request.query_params)
     if body is None:
         body = {"detail": exc.detail}
     return JSONResponse(status_code=exc.status_code, content=body, headers=headers)

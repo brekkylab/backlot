@@ -982,9 +982,43 @@ def test_a_batch_path_that_moved_is_a_gap_and_leaves_its_route_standing_for_noth
     found = google_batch.divergences(comparisons.BatchPathComparison(name="x", documents=specs))
     assert [(f.kind, f.severity, f.path) for f in found] == [
         ("extra_batch_route", BREAKING, "/batch/{}/{}"),
-        ("missing_batch_path", GAP, "drive:v3"),
+        ("missing_batch_path", GAP, "drive:v3 v3/batch"),
     ]
     assert "v3/batch" in found[1].detail
+
+
+def test_a_value_that_moves_again_is_not_covered_by_the_first_move_s_acknowledgement(monkeypatch):
+    """A gap is acknowledged by identity alone — `Baseline.unacknowledged` reads a gap's detail
+    for nothing — so the value has to be part of the identity. Keyed on the document only, the
+    entry `--update-baseline` wrote for `v3/batch` would answer for `v4/batch` too, and the second
+    move would pass as `0 new`."""
+    (first,) = [
+        f
+        for f in google_batch.divergences(
+            comparisons.BatchPathComparison(
+                name="x",
+                documents=_serve_documents(
+                    monkeypatch, {"id": "drive:v3", "batchPath": "v3/batch"}
+                ),
+            )
+        )
+        if f.kind == "missing_batch_path"
+    ]
+    acknowledged = Baseline("x", (), "", {first.key: first})
+    (second,) = [
+        f
+        for f in google_batch.divergences(
+            comparisons.BatchPathComparison(
+                name="x",
+                documents=_serve_documents(
+                    monkeypatch, {"id": "drive:v3", "batchPath": "v4/batch"}
+                ),
+            )
+        )
+        if f.kind == "missing_batch_path"
+    ]
+    assert acknowledged.unacknowledged([first]) == []
+    assert acknowledged.unacknowledged([second]) == [second]
 
 
 def test_a_route_no_document_declares_any_more_is_breaking_on_its_own(monkeypatch):

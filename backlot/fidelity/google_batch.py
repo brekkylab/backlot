@@ -25,7 +25,8 @@ What it asserts is narrow, and in both directions:
 * a document that declares no ``batchPath`` is reported, because Backlot goes on answering batch
   for an API whose own document no longer says it has one;
 * a declared value no Backlot route answers is reported, which is what a value moving to a third
-  shape looks like;
+  shape looks like — identified by the document and the value together, so that acknowledging one
+  move does not go on covering the next;
 * a Backlot route no declared value selects is reported, which is what Drive moving to its own host
   would look like — ``/batch/{api}/{version}`` would go on being served while standing for nothing.
 
@@ -135,11 +136,15 @@ def divergences(comparison: BatchTarget, *, timeout: float = 120.0) -> list[Find
             continue
         answering = [route for route in served if answers(route, declared)]
         if not answering:
+            # The document AND the value, because a gap is acknowledged by identity alone (see
+            # `Baseline.unacknowledged`): keyed on the document, an acknowledged move to `v3/batch`
+            # would go on covering a later move to anything else. The path diffs have the same
+            # property for free, since there the moved path IS the identity.
             out.append(
                 Finding(
                     "missing_batch_path",
                     GAP,
-                    who,
+                    f"{who} {declared}",
                     f"the vendor batches at '{declared}'; no Backlot route answers that shape",
                 )
             )

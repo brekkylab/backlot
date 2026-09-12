@@ -166,7 +166,9 @@ Three things are reported, and the two breaking ones cannot be acknowledged by
 - **a document that declares no `batchPath`** — Backlot goes on answering batch for an API whose own
   document no longer says it has one. `extra_batch_api`, and breaking.
 - **a declared value no Backlot route answers** — what a value moving to a third shape looks like.
-  `missing_batch_path`, and a gap.
+  `missing_batch_path`, and a gap, identified by the document and the value together: a gap is
+  acknowledged by identity alone, so an entry written for one move must not go on covering the
+  next.
 - **a Backlot route no declared value selects** — what Drive moving to its own host would look like:
   `/batch/{api}/{version}` would go on being served while standing for nothing.
   `extra_batch_route`, and breaking.

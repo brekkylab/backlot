@@ -402,10 +402,23 @@ def test_serving_a_db_older_than_a_table_says_so_and_says_to_re_import(tmp_path)
     conn.execute("DROP TABLE gdrive_sheets")
     conn.commit()
     conn.close()
-    assert store.missing_tables(sqlite3.connect(settings.db_path)) == ["gdrive_sheets"]
+    assert store.missing_schema(sqlite3.connect(settings.db_path)) == ["gdrive_sheets"]
 
     with pytest.raises(RuntimeError) as e:
         with client_for(settings, reload=True):
             pass
     assert "gdrive_sheets" in str(e.value)
     assert "backlot import" in str(e.value)
+
+    # A column this build reads that the table predates is the same refusal, named as
+    # `table.column` — before the check knew columns, `name contains` was a bare 500 per request
+    # on such a DB while the plain listing and `name =` answered 200.
+    conn = sqlite3.connect(settings.db_path)
+    conn.executescript(store.SCHEMA)  # the table comes back; the column is then dropped
+    conn.execute("ALTER TABLE gdrive_files DROP COLUMN title_fold")
+    conn.commit()
+    conn.close()
+    with pytest.raises(RuntimeError) as e:
+        with client_for(settings, reload=True):
+            pass
+    assert "gdrive_files.title_fold" in str(e.value)

@@ -363,11 +363,10 @@ CREATE TABLE IF NOT EXISTS gdrive_files (
     id TEXT PRIMARY KEY, folder TEXT NOT NULL, author_email TEXT NOT NULL,
     title TEXT NOT NULL, content TEXT NOT NULL,
     subtype TEXT, mime_type TEXT, parents TEXT, created_ts INTEGER NOT NULL, updated_ts INTEGER,
-    trashed INTEGER, owner_display TEXT,
-    -- `drive_name_fold(title)`, so a `name contains` lookup can be a LIKE over exactly the text
-    -- the evaluator compares; NULL on a row written before the column existed, which the lookup
-    -- falls back to `title` for.
-    title_fold TEXT
+    -- title_fold is `drive_name_fold(title)`, so a `name contains` lookup can be a LIKE over
+    -- exactly the text the evaluator compares. A DB built before the column has no row without
+    -- it, it has no column at all: `missing_schema` names it at startup.
+    trashed INTEGER, owner_display TEXT, title_fold TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_gdrive_folder ON gdrive_files(folder);
 DROP INDEX IF EXISTS idx_gdrive_served;
@@ -898,19 +897,60 @@ SCHEMA += "".join(
 )
 
 
-def missing_tables(conn: sqlite3.Connection) -> list[str]:
-    """Tables this build's :data:`SCHEMA` declares that the open DB does not have.
+_SCHEMA_CONSTRAINTS = frozenset({"PRIMARY", "UNIQUE", "FOREIGN", "CHECK", "CONSTRAINT"})
+
+
+def schema_columns() -> dict[str, list[str]]:
+    """Every table :data:`SCHEMA` declares, with its columns in declaration order — read off the
+    DDL text, so this build's expectation and the DDL cannot drift apart."""
+    # Comments first: a `--` line inside a body may hold parentheses or commas.
+    text = "\n".join(line.split("--", 1)[0] for line in SCHEMA.splitlines())
+    out: dict[str, list[str]] = {}
+    for m in re.finditer(r"CREATE TABLE IF NOT EXISTS (\w+)\s*\(", text):
+        name, depth, start = m.group(1), 1, m.end()
+        entries, seg = [], start
+        for i in range(start, len(text)):
+            ch = text[i]
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    entries.append(text[seg:i])
+                    break
+            elif ch == "," and depth == 1:
+                entries.append(text[seg:i])
+                seg = i + 1
+        columns = []
+        for entry in entries:
+            words = entry.split()
+            if words and words[0].upper() not in _SCHEMA_CONSTRAINTS:
+                columns.append(words[0])
+        out.setdefault(name, columns)
+    return out
+
+
+def missing_schema(conn: sqlite3.Connection) -> list[str]:
+    """Tables and columns this build's :data:`SCHEMA` declares that the open DB does not have --
+    a table by its name, a column as ``table.column``.
 
     A DB is built by ``backlot import`` and served READ-ONLY, so the ``CREATE TABLE IF NOT
-    EXISTS`` above never runs against one that predates a table. Without this the first read that
-    touches the new table raises a bare ``OperationalError`` per request; the server calls it once
-    at startup instead and says which table and what to do. There is no migration here on purpose
-    -- a corpus is re-imported, not upgraded in place -- so naming the gap IS the remedy."""
+    EXISTS`` above never runs against one that predates a table, and never adds a column to a
+    table it already finds. Without this the first read that touches the new table or column
+    raises a bare ``OperationalError`` per request; the server calls it once at startup instead
+    and says which and what to do. There is no migration here on purpose -- a corpus is
+    re-imported, not upgraded in place -- so naming the gap IS the remedy."""
     have = {
         r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
     }
-    want = re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)", SCHEMA)
-    return [t for t in dict.fromkeys(want) if t not in have]
+    gaps = []
+    for table, columns in schema_columns().items():
+        if table not in have:
+            gaps.append(table)
+            continue
+        present = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        gaps.extend(f"{table}.{c}" for c in columns if c not in present)
+    return gaps
 
 
 def connect_rw(path: Path, *, busy_ms: int = 60_000) -> sqlite3.Connection:
@@ -1756,9 +1796,8 @@ def list_drive_by_name(
     rows the evaluator accepts — not a superset it narrows. ``name =`` folds case for ASCII letters
     only (``'ÉLAN VITAL'`` finds ``Élan Vital``, ``'élan vital'`` and ``'strasse plan'`` do not),
     which is exactly SQLite's LIKE with no wildcards. ``name contains`` folds more, so it compares
-    :func:`drive_name_fold` of the needle against the ``title_fold`` the importer stored (``title``
-    itself on a row that predates the column). LIKE wildcards in the needle are escaped so they
-    stay literal."""
+    :func:`drive_name_fold` of the needle against the ``title_fold`` the importer stored. LIKE
+    wildcards in the needle are escaped so they stay literal."""
     if exact:
         needle = _like_escape(name)
         # SQLite LIKE is case-insensitive for ASCII and exact elsewhere — real's `name =` rule;
@@ -1771,7 +1810,7 @@ def list_drive_by_name(
         needle = _like_escape(drive_name_fold(name))
         sql = (
             "SELECT * FROM gdrive_files WHERE COALESCE(trashed, 0) = 0 "
-            "AND COALESCE(title_fold, title) LIKE ? ESCAPE '\\'"
+            "AND title_fold LIKE ? ESCAPE '\\'"
         )
         params = [f"%{needle}%"]
     if container is not None:

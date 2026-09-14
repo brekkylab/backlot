@@ -1704,8 +1704,8 @@ def _editor_doc(request: Request, file_id: str, *, expect: str):
 
 @router.get("/docs/v1/documents/{document_id}")
 async def docs_get(document_id: str, request: Request):
+    """The document as Docs structural elements: one ``paragraph`` per line of the stored text."""
     row = _editor_doc(request, document_id, expect="document")
-    # Docs body is an ordered list of structural elements; one paragraph per line.
     content = [{"sectionBreak": {"sectionStyle": {}}}]
     for line in (row["content"] or "").split("\n"):
         content.append(
@@ -2855,6 +2855,7 @@ async def sheets_get_by_data_filter(spreadsheet_id: str, request: Request):
 
 @router.get("/slides/v1/presentations/{presentation_id}")
 async def slides_get(presentation_id: str, request: Request):
+    """The presentation as slides: one ``TEXT_BOX`` slide per blank-line-separated block of text."""
     row = _editor_doc(request, presentation_id, expect="presentation")
     chunks = [c for c in (row["content"] or "").split("\n\n") if c.strip()] or [
         row["content"] or ""

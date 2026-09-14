@@ -374,9 +374,10 @@ def test_backlots_own_routes_answer_head_as_the_get(client, admin_h):
     assert client.get("/_meta/openapi/nope").status_code == 404  # the 404 cell was a 404
 
 
-def test_serving_a_db_older_than_a_table_says_so_and_says_to_re_import(tmp_path):
-    """Rather than an OperationalError per Sheets read. There is no migration -- a corpus is
-    re-imported, not upgraded in place -- so naming the gap is the whole remedy."""
+def test_serving_a_db_older_than_the_schema_says_so_and_says_to_re_import(tmp_path):
+    """A table this build reads that the DB does not have, then a column one of its tables does
+    not have -- rather than an OperationalError per read either way. There is no migration -- a
+    corpus is re-imported, not upgraded in place -- so naming the gap is the whole remedy."""
     import sqlite3
 
     import pytest

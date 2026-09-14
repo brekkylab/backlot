@@ -199,6 +199,32 @@ def _s3_big_corpus(n=3000):
             "visibility": "public",
         }
 
+    # A third, dedicated bucket for what `encoding-type=url` is for: keys holding a space, a
+    # literal `+`, a `%` and a non-ASCII character, plus a "folder" whose own name holds a space so
+    # CommonPrefixes is encoded too. The bundled corpus has none of these — every key in it comes
+    # back the same encoded or not, so it cannot tell the two apart. The pair `a b.txt`/`a+b.txt`
+    # is the reason the encoding exists: decoded they are the same string.
+    for doc_id, key in (
+        ("space", "a b.txt"),
+        ("plus", "a+b.txt"),
+        ("percent", "100%.csv"),
+        ("hangul", "한글/x.txt"),
+        ("folder", "run books/x.txt"),
+        ("plain", "zz.txt"),
+    ):
+        yield {
+            "source_type": "s3",
+            "doc_id": f"s3-encoded-{doc_id}",
+            "bucket": "encoded-bucket",
+            "group": "engineering",
+            "key": key,
+            "title": key,
+            "content": f"payload-{doc_id}",
+            "author_email": "eng-bulk@acme.com",
+            "author_groups": ["engineering"],
+            "visibility": "public",
+        }
+
 
 @pytest.fixture(scope="module")
 def big_bucket_settings(tmp_path_factory):
@@ -387,8 +413,12 @@ def test_s3_delimiter_common_prefix_not_duplicated_across_pages(
 
 
 def test_s3_max_keys_zero_returns_empty_page_safely(big_bucket_client, big_bucket_settings):
-    """Fix 4: max-keys=0 must not crash (no indexing into an empty page) and must report
-    IsTruncated based on whether more data exists, with KeyCount 0 and no NextContinuationToken."""
+    """max-keys=0 is an empty page that says so: KeyCount 0, IsTruncated false and no cursor.
+
+    False whatever is in the bucket, which is what real S3 answers with keys in it (measured
+    2026-09-14 against a bucket holding seven). A client that pages on IsTruncated is told there
+    is no next page, and either way it is given no cursor to fetch one with. The page must also
+    not crash: nothing indexes into it."""
     pytest.importorskip("botocore")
     r = _s3_get(
         big_bucket_client, "/s3/big-bucket?list-type=2&max-keys=0", big_bucket_settings.admin_token
@@ -398,7 +428,7 @@ def test_s3_max_keys_zero_returns_empty_page_safely(big_bucket_client, big_bucke
     assert root.findtext(f"{{{S3NS}}}KeyCount") == "0"
     assert root.findall(f"{{{S3NS}}}Contents") == []
     assert root.findall(f"{{{S3NS}}}CommonPrefixes") == []
-    assert root.findtext(f"{{{S3NS}}}IsTruncated") == "true"  # big-bucket has 3000 objects
+    assert root.findtext(f"{{{S3NS}}}IsTruncated") == "false"  # big-bucket has 3000 objects
     assert root.findtext(f"{{{S3NS}}}NextContinuationToken") is None
 
 
@@ -887,6 +917,42 @@ def test_boto3_list_multipart_uploads_is_an_empty_page_not_a_client_error(live_s
     assert page["IsTruncated"] is False and "Uploads" not in page
 
 
+def test_boto3_list_objects_paginator_walks_the_bucket_and_keeps_marker_and_owner(live_server):
+    """#188's own reproduction, from the client side.
+
+    Against one body for both listings `list_objects` died on the first page — botocore's V1
+    paginator falls back to the last key as the next `Marker`, the server ignored it and sent the
+    same page again, and the walk raised `PaginationError: The same next token was received twice`.
+    It also dropped `Marker` and every `Owner` from the output, because botocore keeps only the
+    members the V1 output shape declares. Both listings now walk the bucket, and `list_objects`
+    carries the two members again."""
+    boto3 = pytest.importorskip("boto3")
+    from botocore.config import Config
+
+    base_url, settings = live_server
+    s3 = boto3.client(
+        "s3",
+        endpoint_url=f"{base_url}/s3",
+        aws_access_key_id=synth.s3_access_key_id(settings.admin_token),
+        aws_secret_access_key=synth.s3_secret_access_key(settings.admin_token),
+        region_name="us-east-1",
+        config=Config(s3={"addressing_style": "path"}),
+    )
+    walks = {}
+    for operation in ("list_objects", "list_objects_v2"):
+        pages = list(
+            s3.get_paginator(operation).paginate(
+                Bucket="eng-artifacts", PaginationConfig={"PageSize": 1}
+            )
+        )
+        walks[operation] = [o["Key"] for page in pages for o in page.get("Contents", [])]
+        assert len(pages) == len(walks[operation]), operation
+    assert walks["list_objects"] == walks["list_objects_v2"] != []
+    page = s3.list_objects(Bucket="eng-artifacts", MaxKeys=1)
+    assert page["Marker"] == "" and page["Contents"][0]["Owner"]["ID"]
+    assert "Owner" not in s3.list_objects_v2(Bucket="eng-artifacts", MaxKeys=1)["Contents"][0]
+
+
 def test_boto3_gets_one_client_error_instead_of_an_empty_answer_or_a_retried_500(live_server):
     """The issue's own reproduction. Before the fix `get_bucket_versioning` returned `{}` and
     `get_bucket_policy` returned the XML listing as the policy string, because botocore parsed the
@@ -1173,3 +1239,260 @@ def test_presigned_unexpired_ok(path):
     caller, err = auth.resolve_sigv4(req)
     assert err is None
     assert caller == Caller(email="ava@acme.com", is_admin=False)
+
+
+# --- the two listings ------------------------------------------------------------
+
+
+def _children(root) -> list[str]:
+    """The result's child tags in document order, without the namespace."""
+    return [c.tag[len(f"{{{S3NS}}}") :] for c in root]
+
+
+def _listing(client, query, token):
+    r = _s3_get(client, f"/s3/encoded-bucket?{query}", token)
+    assert r.status_code == 200, r.text
+    return ET.fromstring(r.text)
+
+
+def _entries(root) -> list[str]:
+    """Keys and CommonPrefixes together, in the order they were served."""
+    return [
+        c.findtext(f"{{{S3NS}}}Key")
+        if c.tag.endswith("Contents")
+        else c.findtext(f"{{{S3NS}}}Prefix")
+        for c in root
+        if c.tag.endswith("Contents") or c.tag.endswith("CommonPrefixes")
+    ]
+
+
+def test_a_bare_bucket_get_is_list_objects_and_only_list_type_2_is_its_v2_form(
+    big_bucket_client, big_bucket_settings
+):
+    """#188: the two listings are different bodies, and `list-type` alone chooses between them.
+
+    Measured against a bucket in ap-northeast-2 on 2026-09-14: V1 carries `Marker` and a per-object
+    `Owner` and no `KeyCount`; V2 carries `KeyCount` and a `NextContinuationToken` and no `Owner`.
+    Every value of `list-type` other than `2` — `1`, `0`, a word — answers V1, the same as sending
+    none at all.
+    """
+    token = big_bucket_settings.admin_token
+    v1 = _listing(big_bucket_client, "max-keys=1", token)
+    assert _children(v1) == ["Name", "Prefix", "Marker", "MaxKeys", "IsTruncated", "Contents"]
+    assert v1.findtext(f"{{{S3NS}}}Marker") is None or v1.findtext(f"{{{S3NS}}}Marker") in (
+        "",
+        None,
+    )
+    v2 = _listing(big_bucket_client, "list-type=2&max-keys=1", token)
+    assert _children(v2) == [
+        "Name",
+        "Prefix",
+        "NextContinuationToken",
+        "KeyCount",
+        "MaxKeys",
+        "IsTruncated",
+        "Contents",
+    ]
+    owner = f"{{{S3NS}}}Contents/{{{S3NS}}}Owner"
+    assert v1.find(owner) is not None and list(v1.find(owner)) != []
+    assert [c.tag[len(f"{{{S3NS}}}") :] for c in v1.find(owner)] == ["ID"]
+    assert v2.find(owner) is None
+    for value in ("1", "0", "bogus"):
+        other = _listing(big_bucket_client, f"list-type={value}&max-keys=1", token)
+        assert _children(other) == _children(v1), value
+
+
+def test_list_objects_names_a_next_marker_only_under_a_delimiter_and_pages_to_the_end(
+    big_bucket_client, big_bucket_settings
+):
+    """#188: V1's cursor is `NextMarker`, and real sends one only when a `delimiter` is set.
+
+    Without one a truncated page carries no cursor at all and botocore falls back to the last key
+    it saw, which is the fallback this has to leave intact. With one, `NextMarker` names the last
+    entry of the page — a key or a rolled-up prefix — and sending it back as `marker` resumes past
+    that whole entry: real answers `?delimiter=/&marker=docs/` and `?delimiter=/&marker=docs/a.txt`
+    alike with what follows `docs/`, never `docs/` again, so the walk terminates (measured
+    2026-09-14).
+    """
+    token = big_bucket_settings.admin_token
+    flat = _listing(big_bucket_client, "max-keys=1", token)
+    assert flat.findtext(f"{{{S3NS}}}IsTruncated") == "true"
+    assert flat.find(f"{{{S3NS}}}NextMarker") is None
+    rolled = _listing(big_bucket_client, "delimiter=/&max-keys=1", token)
+    assert rolled.findtext(f"{{{S3NS}}}NextMarker") == _entries(rolled)[-1]
+
+    seen, marker, pages = [], None, 0
+    while pages < 10:
+        query = "delimiter=/&max-keys=1" + (f"&marker={quote(marker)}" if marker else "")
+        page = _listing(big_bucket_client, query, token)
+        seen += _entries(page)
+        pages += 1
+        if page.findtext(f"{{{S3NS}}}IsTruncated") != "true":
+            break
+        marker = page.findtext(f"{{{S3NS}}}NextMarker")
+    assert seen == ["100%.csv", "a b.txt", "a+b.txt", "run books/", "zz.txt", "한글/"]
+    assert len(seen) == len(set(seen))
+    # A marker inside a group skips the rest of it, exactly as one naming the group does.
+    inside = _listing(big_bucket_client, "delimiter=/&marker=" + quote("run books/x.txt"), token)
+    assert _entries(inside) == ["zz.txt", "한글/"]
+
+
+def test_a_parameter_of_the_other_listing_is_refused_before_the_bucket_is_looked_up(
+    big_bucket_client, big_bucket_settings
+):
+    """#188: `marker` under V2 and `start-after`/`continuation-token` without it are refused.
+
+    Each carries its own message and an `ArgumentName` with no `ArgumentValue` beside it, an empty
+    value is refused like any other, and a bucket that does not exist still takes the 400 rather
+    than NoSuchBucket. On a V1 request carrying both V2 parameters real names `continuation-token`
+    (all measured 2026-09-14).
+    """
+    token = big_bucket_settings.admin_token
+    cases = (
+        (
+            "list-type=2&marker=x",
+            "Marker unsupported with REST.GET.BUCKET in list-type=2",
+            "marker",
+        ),
+        (
+            "start-after=x",
+            "startAfter only supported in REST.GET.BUCKET with list-type=2",
+            "start-after",
+        ),
+        (
+            "continuation-token=x",
+            "continuation-token only supported in REST.GET.BUCKET with list-type=2",
+            "continuation-token",
+        ),
+    )
+    for query, message, name in cases:
+        for bucket in ("encoded-bucket", "no-such-bucket-here"):
+            r = _s3_get(big_bucket_client, f"/s3/{bucket}?{query}", token)
+            assert r.status_code == 400, (bucket, query, r.text)
+            assert f"<Message>{message}</Message>" in r.text, query
+            assert f"<ArgumentName>{name}</ArgumentName>" in r.text, query
+            assert "<ArgumentValue>" not in r.text, query
+        empty = _s3_get(big_bucket_client, f"/s3/encoded-bucket?{query[:-1]}", token)
+        assert empty.status_code == 400, query
+    both = _s3_get(
+        big_bucket_client, "/s3/encoded-bucket?start-after=x&continuation-token=y", token
+    )
+    assert "<ArgumentName>continuation-token</ArgumentName>" in both.text
+
+
+def test_the_listing_encodes_under_encoding_type_url_as_real_does(
+    big_bucket_client, big_bucket_settings
+):
+    """#178: `encoding-type=url` is read, echoed and applied to every key and prefix.
+
+    boto3 sets it on every `list_objects`/`list_objects_v2` the caller did not
+    (`botocore/handlers.py`, `set_list_objects_encoding_type_url`) and Cyberduck puts it on every
+    listing it issues, so this is the query the common clients send. Measured 2026-09-14 on a
+    bucket holding these keys: a space is `+`, a literal `+` is `%2B`, `%` is `%25` and the UTF-8
+    of a non-ASCII character is `%XX` per byte, in `Key` and `CommonPrefixes/Prefix` alike. The
+    continuation tokens are left alone. Ordering is on the stored key, not the encoded one, which
+    is why `a b.txt` comes back before `a+b.txt` where encoding first would swap them (`%` is 0x25
+    and `+` is 0x2B).
+    """
+    token = big_bucket_settings.admin_token
+    plain = _listing(big_bucket_client, "list-type=2&max-keys=3", token)
+    assert _entries(plain) == ["100%.csv", "a b.txt", "a+b.txt"]
+    assert plain.find(f"{{{S3NS}}}EncodingType") is None
+    encoded = _listing(big_bucket_client, "list-type=2&encoding-type=url&max-keys=3", token)
+    assert _entries(encoded) == ["100%25.csv", "a+b.txt", "a%2Bb.txt"]
+    assert encoded.findtext(f"{{{S3NS}}}EncodingType") == "url"
+    # The token is opaque and stays as it is, `=` padding included.
+    assert encoded.findtext(f"{{{S3NS}}}NextContinuationToken") == plain.findtext(
+        f"{{{S3NS}}}NextContinuationToken"
+    )
+    rolled = _listing(
+        big_bucket_client, "list-type=2&encoding-type=url&delimiter=" + quote("/"), token
+    )
+    assert "run+books/" in _entries(rolled) and "%ED%95%9C%EA%B8%80/" in _entries(rolled)
+    # V1's own echoes go through the same encoder, `NextMarker` included.
+    v1 = _listing(
+        big_bucket_client,
+        "encoding-type=url&delimiter=" + quote("/") + "&marker=" + quote("a b.txt") + "&max-keys=1",
+        token,
+    )
+    assert v1.findtext(f"{{{S3NS}}}Marker") == "a+b.txt"
+    assert v1.findtext(f"{{{S3NS}}}NextMarker") == "a%2Bb.txt"
+    # `URL` is taken like `url` and echoed as sent; anything else is refused, empty included.
+    assert (
+        _listing(big_bucket_client, "list-type=2&encoding-type=URL&max-keys=1", token).findtext(
+            f"{{{S3NS}}}EncodingType"
+        )
+        == "URL"
+    )
+    for value in ("bogus", ""):
+        r = _s3_get(
+            big_bucket_client, f"/s3/encoded-bucket?list-type=2&encoding-type={value}", token
+        )
+        assert r.status_code == 400, value
+        assert "<Message>Invalid Encoding Method specified in Request</Message>" in r.text, value
+        assert (
+            f"<ArgumentName>encoding-type</ArgumentName><ArgumentValue>{value}</ArgumentValue>"
+            in r.text
+        ), value
+
+
+def test_max_keys_is_read_by_value_and_refused_with_the_two_messages_real_sends(
+    big_bucket_client, big_bucket_settings
+):
+    """#192: `max-keys` is parsed the way `max-uploads` is, and its refusals spell it two ways.
+
+    A value that does not parse as an int32 is "Provided max-keys not an integer or within integer
+    range" under `ArgumentName` `max-keys`; one that parses but is below zero is "Argument maxKeys
+    must be an integer between 0 and 2147483647" under `maxKeys`, camel-cased. The split is also a
+    split around the bucket lookup: the parse happens before it and the range after, which a bucket
+    that does not exist tells apart. What is served is capped at 1000 but the echo is the value as
+    parsed, and `max-keys=0` is an empty page whose IsTruncated is false (all measured 2026-09-14,
+    the spellings on both forms of the listing).
+    """
+    token = big_bucket_settings.admin_token
+    not_an_integer = "Provided max-keys not an integer or within integer range"
+    out_of_range = f"Argument maxKeys must be an integer between 0 and {2147483647}"
+    for prefix in ("", "list-type=2&"):
+        for value, message, name in (
+            ("abc", not_an_integer, "max-keys"),
+            (" 5", not_an_integer, "max-keys"),
+            ("2147483648", not_an_integer, "max-keys"),
+            ("-2147483649", not_an_integer, "max-keys"),
+            ("-1", out_of_range, "maxKeys"),
+            ("-2147483648", out_of_range, "maxKeys"),
+        ):
+            r = _s3_get(
+                big_bucket_client, f"/s3/encoded-bucket?{prefix}max-keys={quote(value)}", token
+            )
+            assert r.status_code == 400, (prefix, value, r.text)
+            assert f"<Message>{message}</Message>" in r.text, (prefix, value)
+            assert f"<ArgumentName>{name}</ArgumentName>" in r.text, (prefix, value)
+    # `-01` is reported as `-1`: the value as parsed, not as sent.
+    r = _s3_get(big_bucket_client, "/s3/encoded-bucket?max-keys=-01", token)
+    assert "<ArgumentValue>-1</ArgumentValue>" in r.text
+    # The parse is before the bucket lookup and the range after it.
+    assert _s3_get(big_bucket_client, "/s3/no-such-bucket?max-keys=abc", token).status_code == 400
+    missing = _s3_get(big_bucket_client, "/s3/no-such-bucket?max-keys=-1", token)
+    assert missing.status_code == 404 and "<Code>NoSuchBucket</Code>" in missing.text
+    # Empty is the default, leading zeros come off, `-0` is 0, and the echo is uncapped.
+    assert (
+        _listing(big_bucket_client, "list-type=2&max-keys=", token).findtext(f"{{{S3NS}}}MaxKeys")
+        == "1000"
+    )
+    assert (
+        _listing(big_bucket_client, "list-type=2&max-keys=05", token).findtext(f"{{{S3NS}}}MaxKeys")
+        == "5"
+    )
+    past_cap = _listing(big_bucket_client, "list-type=2&max-keys=1001", token)
+    assert past_cap.findtext(f"{{{S3NS}}}MaxKeys") == "1001"
+    assert len(_entries(past_cap)) == 6
+    zero = _listing(big_bucket_client, "list-type=2&max-keys=0", token)
+    assert zero.findtext(f"{{{S3NS}}}MaxKeys") == "0"
+    assert zero.findtext(f"{{{S3NS}}}IsTruncated") == "false" and _entries(zero) == []
+    # Repeated, real reads the first — the same reading `?uploads` already has.
+    assert (
+        _listing(big_bucket_client, "list-type=2&max-keys=1&max-keys=abc", token).findtext(
+            f"{{{S3NS}}}KeyCount"
+        )
+        == "1"
+    )

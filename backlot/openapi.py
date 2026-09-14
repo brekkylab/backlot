@@ -70,8 +70,9 @@ NOT_BRIDGED: dict[str, str] = {
     "/batch": (
         "Google's `multipart/mixed` batch transport, which carries operations rather than being "
         "one: a part is an `application/http` sub-request with its own method and target, which "
-        "`routers.google.batch` dispatches back through this app. The route itself declares no "
-        "request body, so a tool derived from it would take no arguments at all."
+        "`routers.google.batch` dispatches back through this app. The route declares no request "
+        "body, so the only arguments a tool would get are the `api` and `version` query params it "
+        "shares with `/batch/{api}/{version}`, neither of which can carry a sub-request."
     ),
 }
 

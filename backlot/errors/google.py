@@ -8,12 +8,12 @@ status codes were already right.
 Everything here was measured against the live Docs / Drive / Gmail / Sheets / Slides APIs. The
 envelope is NOT uniform — three families differ in which optional members they carry:
 
-    family                        errors[]          status                no Authorization header
-    ------------------------------|----------------|----------------------|------------------------
-    Drive v3                      | always         | auth failures only   | 403 PERMISSION_DENIED
-    Gmail v1                      | unless $.xgafv=2 | always             | 401 UNAUTHENTICATED
-    Docs v1 / Slides v1           | $.xgafv=1      | always               | 401 UNAUTHENTICATED
-    Sheets v4                     | $.xgafv=1      | always               | 403 PERMISSION_DENIED
+    family                  errors[]           status               no Authorization header
+    ------------------------|------------------|---------------------|------------------------
+    Drive v3                | always           | auth failures only  | 403 PERMISSION_DENIED
+    Gmail v1                | unless $.xgafv=2 | always              | 401 UNAUTHENTICATED
+    Docs v1 / Slides v1     | $.xgafv=1        | always              | 401 UNAUTHENTICATED
+    Sheets v4               | $.xgafv=1        | always              | 403 PERMISSION_DENIED
 
 Sheets parts from the other two editor APIs on that last column: measured, a request with no
 Authorization header is 403 PERMISSION_DENIED with the unregistered-caller sentence, where Docs
@@ -43,15 +43,15 @@ and NO ``domain``; every other 400 measured — an unparseable range, a range pa
 ``fields`` mask, an unsupported or unknown ``alt``, ``dataFilter.filter must be specified.``, ``Must
 specify at least one dataFilter.``, ``No sheet with id``, a non-JSON body — reports ``reason:
 badRequest`` with ``domain: global``, and the editor 400s not measured (an Office file read as a
-native document, ``Invalid gridRange``) take that entry too; a 404 is ``notFound``, a bad token ``authError`` with ``location:
-Authorization``, an anonymous Sheets request ``forbidden``, and an anonymous Docs request
-``required`` with the short ``Login Required.`` and the same location. Drive and Gmail carry the
-array whatever `$.xgafv` says, with the shapes the tests beside them already pin.
+native document, ``Invalid gridRange``) take that entry too; a 404 is ``notFound``, a bad token
+``authError`` with ``location: Authorization``, an anonymous Sheets request ``forbidden``, and an
+anonymous Docs or Slides request ``required`` with the short ``Login Required.`` and the same
+location. Drive's and Gmail's entries are the shapes the tests beside them already pin.
 """
 
 from __future__ import annotations
 
-from typing import Mapping
+from collections.abc import Mapping
 
 from fastapi import HTTPException, Request
 
@@ -252,8 +252,8 @@ def missing_credentials(path: str = "") -> GoogleError:
     """No Authorization header, on an OAuth-only API (Gmail, Docs, Slides).
 
     On the editor family the `errors[]` entry (shown at `$.xgafv=1`) is the short ``Login
-    Required.`` at ``location: Authorization`` — measured on Docs. Gmail's entry is unmeasured, and
-    keeps the long message with no location."""
+    Required.`` at ``location: Authorization`` — measured on Docs AND Slides, which answer it
+    identically. Gmail's entry is unmeasured, and keeps the long message with no location."""
     if family(path) == EDITOR:
         return GoogleError(
             401,

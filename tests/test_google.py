@@ -772,9 +772,9 @@ def test_a_bad_token_is_unauthenticated_everywhere(client, path):
 
 # --- `$.xgafv`, the system parameter that selects the error envelope --------------------------
 #
-# Every shape below was measured against the live Sheets, Docs and Drive APIs on 2026-09-12 (#172):
-# `1` puts the legacy `errors[]` array on an editor-family error, `2` and an absent value leave it
-# off, Drive carries it either way, and the entry inside it depends on which error it is.
+# Sheets shapes, measured on 2026-09-12 (#172). Which families show the array under which value is
+# one rule, stated once in `backlot.errors.google`; what this table adds is the entry INSIDE it,
+# which depends on the error rather than the family.
 
 XGAFV_REFUSAL = "Invalid query parameters. Invalid value '{}' for system query parameter : $.xgafv"
 
@@ -944,8 +944,9 @@ def test_the_errors_entry_at_xgafv_1_is_the_one_real_answers(client, admin_h, pa
 def test_the_credential_entries_at_xgafv_1(client):
     """A bad token is `authError` at `location: Authorization` in every family (already pinned
     without the parameter on Drive and Gmail). An anonymous Sheets request is `forbidden`; an
-    anonymous Docs request is `required` with the short `Login Required.` at the same location —
-    measured on Docs, and Slides is the same family."""
+    anonymous Docs request is `required` with the short `Login Required.` at the same location, and
+    Slides answers that identically — both measured, since a request with no Authorization header
+    needs no credential to send."""
     e = _gerr(client.get("/sheets/v4/spreadsheets/x", headers=BAD_TOKEN, params={"$.xgafv": "1"}))
     assert e["errors"] == [
         {
@@ -1011,8 +1012,8 @@ def test_every_google_operation_declares_the_system_parameter_and_checks_it(clie
                 r = client.request(method.upper(), f"{url}?$.xgafv=0", json={})
                 if r.status_code != 400 or "system query parameter" not in r.text:
                     unchecked.append(f"{method.upper()} {path} -> {r.status_code}")
-                batch.append(f"{method.upper()} {path}")
             elif path.startswith("/batch") and declared:
+                batch.append(f"{method.upper()} {path}")
     assert missing == [] and batch == [] and unchecked == []
 
 

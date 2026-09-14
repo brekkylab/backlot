@@ -206,15 +206,19 @@ because that is where Google puts them.
 app, so a batch may target any endpoint this server serves, not only Google Drive's.
 
 **`$.xgafv` is honoured on every Google route**, the way real declares it: a system parameter at
-the top of the discovery document, which every method takes, rather than one a few methods list. `1` puts the legacy `errors[]` array
-on an error from the Docs, Sheets and Slides APIs, `2` and an absent value leave it off, and Drive and
-Gmail carry the array either way; a success body is the same under both. A value other than `1` or
-`2` is refused before anything else is read — ahead of a bad token or an unparseable range — with
-real's `Invalid query parameters. Invalid value '…' for system query parameter : $.xgafv`. Inside the
-array the entry follows the error: a typed value the proto layer refuses (an enum, a bool, an int32)
-is `reason: invalid` with no `domain`, everything else is `badRequest` under `domain: global`, and a
-missing credential on Docs and Slides is the short `Login Required.` at `location: Authorization`.
-Measured against the live Sheets, Docs and Drive APIs on 2026-09-12.
+the top of the discovery document, which every method takes, rather than one a few methods list.
+What it selects is the legacy `errors[]` array, and the three families answer it three ways. Docs,
+Sheets and Slides opt in — `1` adds the array, `2` and an absent value leave it off. Gmail opts
+out — the array is there unless `2` turns it off. Drive carries it whatever the value says. A
+success body is the same under all of them. A value other than `1` or `2` is refused before
+anything else is read, ahead of a bad token or an unparseable range, with real's sentence
+`Invalid query parameters. Invalid value '…' for system query parameter : $.xgafv`. Inside the
+array the entry follows the error: a typed value the proto layer refuses (an enum, a bool, an
+int32) is `reason: invalid` with no `domain`, everything else is `badRequest` under
+`domain: global`, and a missing credential on Docs and Slides is the short `Login Required.` at
+`location: Authorization`. Measured against the live Sheets, Docs and Drive APIs on 2026-09-12,
+and against Slides and Gmail on 2026-09-14 through the errors a request with no Authorization
+header reaches.
 
 ### HubSpot — `/hubspot/crm/v3` `/hubspot/crm/v4`
 

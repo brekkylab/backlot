@@ -37,8 +37,8 @@ warnings.filterwarnings("ignore", message="Duplicate Operation ID", category=Use
 # is the Drive, Docs, Sheets and Slides roots, because one `google_drive` record is a file that
 # Drive lists and one of the three editors reads. Every served path outside `NOT_BRIDGED` has to
 # be under one of these, and every prefix has to select something — `test_openapi.py` asserts both
-# directions, which a prefix that selects something on its own does not give (`/drive` alone did,
-# while `/docs/v1`, `/sheets/v4` and `/slides/v1` went unbridged from #44 until #170).
+# directions, because a source whose other prefix selects something still slices to a non-empty
+# spec, so a dead-prefix check alone cannot see a root that goes unbridged.
 SOURCE_PREFIXES: dict[str, list[str]] = {
     "github": ["/github"],
     "slack": ["/slack/api"],

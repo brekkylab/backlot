@@ -374,21 +374,36 @@ async def jira_search(request: Request):
     conn = auth.conn(request)
     caller = _jira_caller(request)
     ids = auth.visible_ids(request, caller)
-    params = dict(request.query_params)
+    # The body wins where it speaks, which is what this handler has always done; what changed is
+    # the OTHER half -- a parameter the body is silent about is now read off the query string with
+    # the rules real reads it with. The two halves are separate because their parsers are: Jackson
+    # reads the body, Spring's parameter binding the query string, and they disagree. #187 is where
+    # the query string stops being read on POST at all.
+    body: dict = {}
     if request.method == "POST":
         try:
-            params.update(await request.json())
+            parsed = await request.json()
         except Exception:
-            pass
-    jql = str(params.get("jql", ""))
+            parsed = None
+        if isinstance(parsed, dict):
+            body = parsed
+    jql = str(body["jql"]) if "jql" in body else (_str_param(request, "jql") or "")
     container = _project_from_jql(conn, jql, request)
     if container is _JIRA_PROJECT_UNRESOLVED:
         # a project= clause was present but didn't match any project: strict 0 matches, not
         # the unfiltered corpus.
         return {"issues": [], "isLast": True}
     term = _text_from_jql(jql)
-    limit = _int(params.get("maxResults"), get_settings().default_page_size)
-    offset = decode_cursor(params.get("nextPageToken"))
+    default_size = get_settings().default_page_size
+    limit = (
+        _int(body["maxResults"], default_size)
+        if "maxResults" in body
+        else _int_param(request, "maxResults", default_size)
+    )
+    token = (
+        body["nextPageToken"] if "nextPageToken" in body else _str_param(request, "nextPageToken")
+    )
+    offset = decode_cursor(token)
     if term:  # text ~ / summary ~ / description ~ → full-text search (FTS), scoped to project
         total = store.count_search(conn, term, "jira", ids, container=container)
         rows = store.search_documents(
@@ -422,7 +437,7 @@ async def jira_get_issue(key: str, request: Request):
             status_code=404,
             detail="Issue does not exist or you do not have permission to see it.",
         )
-    return _jira_issue(conn, request, row, expand=request.query_params.get("expand", ""))
+    return _jira_issue(conn, request, row, expand=_str_param(request, "expand", ""))
 
 
 @router.get(
@@ -448,7 +463,6 @@ async def jira_issue_comments(key: str, request: Request):
     was dropped — and would pass here while failing against Jira. Its own message is localised to
     the account's language, so the wording is not reproduced, only the refusal.
     """
-    params = request.query_params
     # BEFORE the issue is resolved. Measured 2026-09-10: a bad `orderBy` on a key that does
     # not exist is 400 on real Jira where the same key without the parameter is 404, so the
     # parameter is checked first. It separates nothing a caller could not already tell — the
@@ -461,7 +475,7 @@ async def jira_issue_comments(key: str, request: Request):
     # (project classification: "If not provided, values will not be sorted"), and the site
     # available for measuring had no issue carrying a comment. Sorting on that would be picking a
     # default, not reproducing one.
-    raw_order = params.get("orderBy")
+    raw_order = _str_param(request, "orderBy")
     desc = _jira_order_desc(raw_order) if raw_order is not None else None
 
     conn = auth.conn(request)
@@ -473,9 +487,11 @@ async def jira_issue_comments(key: str, request: Request):
             status_code=404,
             detail="Issue does not exist or you do not have permission to see it.",
         )
-    start = max(0, _int(params.get("startAt"), 0))
+    # `startAt` is the one parameter measured to take a Java LONG rather than an int.
+    start = max(0, _int_param(request, "startAt", 0, width=JAVA_LONG))
     limit = min(
-        _JIRA_COMMENT_PAGE_MAX, max(1, _int(params.get("maxResults"), _JIRA_COMMENT_PAGE_MAX))
+        _JIRA_COMMENT_PAGE_MAX,
+        max(1, _int_param(request, "maxResults", _JIRA_COMMENT_PAGE_MAX)),
     )
 
     cs = store.doc_comments(conn, "jira", row["key"])
@@ -1029,7 +1045,7 @@ async def confluence_space_get(key: str, request: Request):
         "status": "current",
         "_links": {"webui": f"/spaces/{key}"},
     }
-    if "description" in request.query_params.get("expand", ""):
+    if "description" in (_str_param(request, "expand", "") or ""):
         space["description"] = {"plain": {"value": f"{container} space", "representation": "plain"}}
     return space
 
@@ -1041,7 +1057,7 @@ async def confluence_cql_search(request: Request):
     conn = auth.conn(request)
     caller = _confluence_caller(request)
     ids = auth.visible_ids(request, caller)
-    cql = request.query_params.get("cql", "")
+    cql = _str_param(request, "cql", "") or ""
     m = re.search(r'(?:text|title)\s*~\s*"?([^"~]+)"?', cql) or re.search(r'~\s*"?([^"~]+)"?', cql)
     term = m.group(1).strip() if m else ""
     # honor the common structured CQL clauses: space / type / label
@@ -1058,8 +1074,7 @@ async def confluence_cql_search(request: Request):
     want_type = mt.group(1) if mt else None
     ml = re.search(r'label\s*(?:=|in)\s*"?([^")\s]+)"?', cql)
     want_label = ml.group(1) if ml else None
-    limit = _int(request.query_params.get("limit"), 25)
-    start = _int(request.query_params.get("start"), 0)
+    limit, start = _confluence_page_params(request)
 
     # fetch the full ACL-visible match set, filter by the clauses, then paginate — so
     # totalSize reflects the true match count (not just the returned page).
@@ -1115,10 +1130,9 @@ async def confluence_content_list(request: Request):
     conn = auth.conn(request)
     caller = _confluence_caller(request)
     ids = auth.visible_ids(request, caller)
-    expand = request.query_params.get("expand", "")
-    space_key = request.query_params.get("spaceKey")
-    limit = _int(request.query_params.get("limit"), 25)
-    start = _int(request.query_params.get("start"), 0)
+    expand = _str_param(request, "expand", "") or ""
+    space_key = _str_param(request, "spaceKey")
+    limit, start = _confluence_page_params(request)
     if space_key:
         container = _space_container_for_key(conn, space_key)
         if container is None:
@@ -1153,7 +1167,7 @@ async def confluence_content_get(content_id: int, request: Request):
     row = store.confluence_by_id(conn, content_id, visible_ids=ids)
     if row is None:
         raise HTTPException(status_code=404, detail="No content found with id")
-    return _confluence_page(conn, request, row, request.query_params.get("expand", "body.storage"))
+    return _confluence_page(conn, request, row, _str_param(request, "expand", "body.storage"))
 
 
 @router.get(
@@ -1410,7 +1424,93 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
 
 
 def _int(v, default: int) -> int:
+    """A value already read out of a JSON request body, as an int.
+
+    The lenient one, and deliberately so: what parses the POST `search/jql` body on real is Jackson
+    rather than Spring's parameter binding, and it takes values the query string refuses (`1.5`
+    arrives as `1`) while refusing others in a body-wide message that names no parameter. Reading
+    the query string goes through :func:`_int_param` instead — see #187, which is where the body's
+    own rules get measured.
+    """
     try:
         return int(v) if v not in (None, "") else default
     except (ValueError, TypeError):
         return default
+
+
+# What real converts a query parameter with. Measured on brekkylab.atlassian.net, 2026-09-14,
+# against Jira's comment read and Confluence's space listing, which agree on every case:
+#
+#   ?maxResults=          the default, as though unsent -- an empty value is not a failure
+#   ?maxResults=+3        3, so a leading sign is read
+#   ?maxResults=%203%20   3, and ?maxResults=3%204 is 34 -- whitespace is REMOVED, not trimmed
+#   ?maxResults=<U+0663>  3, so the digits are Unicode's, not ASCII's
+#   ?maxResults=1_0       400 -- where Python's own int() reads 10
+#   ?maxResults=1.5       400
+#
+# Python's `int` agrees with all of it but the underscore and the internal whitespace, so those two
+# are handled here and the rest is left to `int` rather than restated as a pattern that would then
+# have to be kept in step with it.
+#
+# The WIDTH is per parameter, not per product, and measured one parameter at a time: Jira's
+# `startAt` takes a Java long (`2147483648` and `9223372036854775807` are both echoed back, and
+# only past a long is it refused), while its `maxResults` and both Confluence parameters are a Java
+# int. Reading one width off another is what put a 400 on `?startAt=-2147483649`, which real
+# answers 200.
+JAVA_INT = (-(2**31), 2**31 - 1)
+JAVA_LONG = (-(2**63), 2**63 - 1)
+
+
+def _int_param(
+    request: Request, name: str, default: int, *, width: tuple[int, int] = JAVA_INT
+) -> int:
+    """One query parameter as an int, refused the way real refuses it.
+
+    The FIRST value when the parameter repeats, not the last: `?startAt=3&startAt=5` is 3 on both
+    products, where Starlette's ``QueryParams.get`` returns 5. A client that appends to a URL
+    rather than replacing in it — a retry layer adding `startAt` to a URL that already carries one
+    is the ordinary way — was being served real's other page under a 200.
+    """
+    values = request.query_params.getlist(name)
+    if not values or values[0] == "":
+        return default
+    raw = values[0]
+    cleaned = "".join(raw.split())
+    try:
+        if "_" in cleaned:
+            raise ValueError(cleaned)
+        n = int(cleaned)
+    except (ValueError, TypeError):
+        raise errors_atlassian.integer_conversion_failure(request.url.path, name, values) from None
+    if not width[0] <= n <= width[1]:
+        # Python's int is unbounded, so a page size computed from a timestamp or a byte count
+        # flowed into the query where real answered 400.
+        raise errors_atlassian.integer_conversion_failure(request.url.path, name, values)
+    return n
+
+
+def _str_param(request: Request, name: str, default: str | None = None) -> str | None:
+    """One query parameter as a string, comma-joined when it repeats.
+
+    Measured: `?orderBy=bogus&orderBy=created` is refused naming `bogus,created`, in either order,
+    and a repeated `jql` is refused with a parse error at the character the comma lands on. So a
+    repeated string is one value with a comma in it, and reading the last alone answers 200 to
+    whichever ordering happens to put a valid spelling second.
+    """
+    values = request.query_params.getlist(name)
+    return ",".join(values) if values else default
+
+
+def _confluence_page_params(request: Request) -> tuple[int, int]:
+    """Confluence's `limit` and `start`, which refuse a negative where Jira's clamp one.
+
+    Measured on both listings: `?limit=-1` and `?start=-1` are 400. Unclamped they reached SQLite,
+    which reads a negative LIMIT as no limit at all — so the answer to `?limit=-1` was the whole
+    collection.
+    """
+    limit = _int_param(request, "limit", 25)
+    start = _int_param(request, "start", 0)
+    for name, value in (("limit", limit), ("start", start)):
+        if value < 0:
+            raise errors_atlassian.negative_not_allowed(name)
+    return limit, start

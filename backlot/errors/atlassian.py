@@ -86,9 +86,13 @@ def integer_conversion_failure(path: str, name: str, values: list[str]) -> Atlas
     a REPEATED parameter is the whole array rather than the one value it tried: Confluence renders
     it as the comma-join, Jira as a Java array's ``toString``. The identity hash in Jira's differs
     per request on real, so a Python ``id`` stands in — equally arbitrary, equally not a promise.
+
+    The products also disagree on whether the value they name is the one that ARRIVED: Jira echoes
+    it whitespace and all (`?maxResults=%20abc%20` names `' abc '`), Confluence names the trimmed
+    one (the same value names `"abc"`, and a whitespace-only value names `""`).
     """
     if path.startswith(WIKI):
-        shown = ",".join(values)
+        shown = ",".join(values).strip()
         java_type = "java.lang.String" if len(values) == 1 else "java.lang.String[]"
         return AtlassianError(
             400,

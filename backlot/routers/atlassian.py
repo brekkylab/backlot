@@ -374,35 +374,34 @@ async def jira_search(request: Request):
     conn = auth.conn(request)
     caller = _jira_caller(request)
     ids = auth.visible_ids(request, caller)
-    # The body wins where it speaks, which is what this handler has always done; what changed is
-    # the OTHER half -- a parameter the body is silent about is now read off the query string with
-    # the rules real reads it with. The two halves are separate because their parsers are: Jackson
-    # reads the body, Spring's parameter binding the query string, and they disagree. #187 is where
-    # the query string stops being read on POST at all.
-    body: dict = {}
+    default_size = get_settings().default_page_size
     if request.method == "POST":
+        # POST keeps the lenient read it has always had, query string and all. Measured
+        # 2026-09-14: real does not read the query string on this method at ALL, so
+        # `POST search/jql?maxResults=abc` with any body is a 200 — applying the GET rules here
+        # would answer 400 where real answers 200, trading one divergence for another. #187 is
+        # where the query string stops being read on POST, and it measures the body's own parser
+        # (Jackson, which takes `1.5` as `1`) at the same time.
+        params = dict(request.query_params)
         try:
             parsed = await request.json()
         except Exception:
             parsed = None
         if isinstance(parsed, dict):
-            body = parsed
-    jql = str(body["jql"]) if "jql" in body else (_str_param(request, "jql") or "")
+            params.update(parsed)
+        jql = str(params.get("jql", ""))
+        limit = _int(params.get("maxResults"), default_size)
+        token = params.get("nextPageToken")
+    else:
+        jql = _str_param(request, "jql") or ""
+        limit = _int_param(request, "maxResults", default_size)
+        token = _str_param(request, "nextPageToken")
     container = _project_from_jql(conn, jql, request)
     if container is _JIRA_PROJECT_UNRESOLVED:
         # a project= clause was present but didn't match any project: strict 0 matches, not
         # the unfiltered corpus.
         return {"issues": [], "isLast": True}
     term = _text_from_jql(jql)
-    default_size = get_settings().default_page_size
-    limit = (
-        _int(body["maxResults"], default_size)
-        if "maxResults" in body
-        else _int_param(request, "maxResults", default_size)
-    )
-    token = (
-        body["nextPageToken"] if "nextPageToken" in body else _str_param(request, "nextPageToken")
-    )
     offset = decode_cursor(token)
     if term:  # text ~ / summary ~ / description ~ → full-text search (FTS), scoped to project
         total = store.count_search(conn, term, "jira", ids, container=container)
@@ -1452,6 +1451,12 @@ def _int(v, default: int) -> int:
 # are handled here and the rest is left to `int` rather than restated as a pattern that would then
 # have to be kept in step with it.
 #
+# The products part on ONE case, a value that is whitespace and nothing else. Jira reads it as
+# absent and answers 200 with the default (`?maxResults=%20` and `?maxResults=%09` both); Confluence
+# trims it to the empty string and fails to convert THAT, reporting `For input string: ""`. A
+# genuinely empty `?limit=` is the default on both, so it is the whitespace, not the emptiness,
+# that separates them.
+#
 # The WIDTH is per parameter, not per product, and measured one parameter at a time: Jira's
 # `startAt` takes a Java long (`2147483648` and `9223372036854775807` are both echoed back, and
 # only past a long is it refused), while its `maxResults` and both Confluence parameters are a Java
@@ -1476,6 +1481,8 @@ def _int_param(
         return default
     raw = values[0]
     cleaned = "".join(raw.split())
+    if cleaned == "" and not request.url.path.startswith(errors_atlassian.WIKI):
+        return default  # Jira alone reads a whitespace-only value as absent
     try:
         if "_" in cleaned:
             raise ValueError(cleaned)
@@ -1507,10 +1514,15 @@ def _confluence_page_params(request: Request) -> tuple[int, int]:
     Measured on both listings: `?limit=-1` and `?start=-1` are 400. Unclamped they reached SQLite,
     which reads a negative LIMIT as no limit at all — so the answer to `?limit=-1` was the whole
     collection.
+
+    Order is measured too, because both parameters can be wrong at once. Conversion comes first for
+    BOTH — `?limit=-1&start=abc` is the conversion failure about `abc`, not the negative about
+    `limit` — and among two negatives `start` is the one named: `?limit=-1&start=-1` reports
+    `start cannot be less than zero`.
     """
     limit = _int_param(request, "limit", 25)
     start = _int_param(request, "start", 0)
-    for name, value in (("limit", limit), ("start", start)):
+    for name, value in (("start", start), ("limit", limit)):
         if value < 0:
             raise errors_atlassian.negative_not_allowed(name)
     return limit, start

@@ -214,9 +214,11 @@ success body is the same under all of them. A value other than `1` or `2` is ref
 anything else is read, ahead of a bad token or an unparseable range, with real's sentence
 `Invalid query parameters. Invalid value '…' for system query parameter : $.xgafv`. Inside the
 array the entry follows the error: a typed value the proto layer refuses (an enum, a bool, an
-int32) is `reason: invalid` with no `domain`, everything else is `badRequest` under
-`domain: global`, and a missing credential on Docs and Slides is the short `Login Required.` at
-`location: Authorization`. Measured against the live Sheets, Docs and Drive APIs on 2026-09-12,
+int32) is `reason: invalid` and carries no `domain`; an Office file read as a native document is
+`failedPrecondition` under `domain: global`; everything else is `badRequest` under the same domain;
+and a missing credential on any of the three OAuth-only APIs — Gmail, Docs and Slides — is the
+short `Login Required.` at `location: Authorization`, which Gmail shows by default where the editor
+families show it only at `1`. Measured against the live Sheets, Docs and Drive APIs on 2026-09-12,
 and against Slides and Gmail on 2026-09-14 through the errors a request with no Authorization
 header reaches.
 

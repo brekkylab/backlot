@@ -1504,8 +1504,19 @@ def test_max_keys_is_read_by_value_and_refused_with_the_two_messages_real_sends(
     zero = _listing(big_bucket_client, "list-type=2&max-keys=0", token)
     assert zero.findtext(f"{{{S3NS}}}MaxKeys") == "0"
     assert zero.findtext(f"{{{S3NS}}}IsTruncated") == "false" and _entries(zero) == []
-    # Repeated, real reads the first — the same reading `?uploads` already has, where the listing
-    # read the last until now. `max-keys=abc` first would be the refusal above.
+
+
+def test_a_repeated_parameter_is_read_as_its_first_value_including_list_type(
+    big_bucket_client, big_bucket_settings
+):
+    """#178: the listing read the last of a repeated parameter where real reads the first.
+
+    `?uploads` already reads the first, through `_first` (#176); the listing went through
+    `QueryParams.get`, which is the last. Measured 2026-09-14: `?prefix=a&prefix=zz.txt` lists
+    under `a`, and `?max-keys=1&max-keys=abc` is a page of one rather than the refusal `abc`
+    would be. `list-type` is read the same way, so the first of two spellings picks the shape.
+    """
+    token = big_bucket_settings.admin_token
     assert (
         _listing(big_bucket_client, "list-type=2&max-keys=1&max-keys=abc", token).findtext(
             f"{{{S3NS}}}KeyCount"
@@ -1518,6 +1529,5 @@ def test_max_keys_is_read_by_value_and_refused_with_the_two_messages_real_sends(
         )
         == "a"
     )
-    # `list-type` is read the same way, so the first value picks the shape.
     assert _children(_listing(big_bucket_client, "list-type=1&list-type=2", token))[2] == "Marker"
     assert "KeyCount" in _children(_listing(big_bucket_client, "list-type=2&list-type=1", token))

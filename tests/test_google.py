@@ -988,7 +988,13 @@ def test_every_google_operation_declares_the_system_parameter_and_checks_it(clie
     to refuse it. The declaration is derived from the path, so it would appear on a family route
     served by some other router while the dependency that validates it did not run — a gap this
     half sees and the declaration alone cannot. The path parameters are dummies: the refusal comes
-    before the route, so what an id would have resolved to never matters."""
+    before the route, so what an id would have resolved to never matters.
+
+    The document is asked for TWICE. The enrichment edits the schema FastAPI caches and hands back
+    by identity, so declaring the parameter has to be idempotent; without the guard that skips an
+    operation already carrying it, the second call appends a second copy and every later reader —
+    `/_meta/openapi/<source>`, the MCP bridge — sees the parameter twice."""
+    client.get("/openapi.json")
     spec = client.get("/openapi.json").json()
     families = ("/drive/v3", "/gmail/v1", "/docs/v1", "/sheets/v4", "/slides/v1")
     missing, batch, unchecked = [], [], []

@@ -978,13 +978,19 @@ def test_the_credential_entries_at_xgafv_1(client):
         assert {k: v for k, v in e.items() if k != "errors"} == _gerr(client.get(path))
 
 
-def test_every_google_operation_declares_the_system_parameter(client):
+def test_every_google_operation_declares_the_system_parameter_and_checks_it(client):
     """Declared once for the document, the way real declares it once per discovery document, so
     the fidelity diff stops reporting `missing_param … ?$.xgafv` on every Google operation and a
-    route added later cannot forget it. The batch endpoint is no family's and declares nothing."""
+    route added later cannot forget it. The batch endpoint is no family's and declares nothing.
+
+    Then the other direction: each operation is SENT a value the parameter does not take, and has
+    to refuse it. The declaration is derived from the path, so it would appear on a family route
+    served by some other router while the dependency that validates it did not run — a gap this
+    half sees and the declaration alone cannot. The path parameters are dummies: the refusal comes
+    before the route, so what an id would have resolved to never matters."""
     spec = client.get("/openapi.json").json()
     families = ("/drive/v3", "/gmail/v1", "/docs/v1", "/sheets/v4", "/slides/v1")
-    missing, batch = [], []
+    missing, batch, unchecked = [], [], []
     for path, item in spec["paths"].items():
         for method, op in item.items():
             if method not in ("get", "post", "put", "patch", "delete"):
@@ -1001,9 +1007,13 @@ def test_every_google_operation_declares_the_system_parameter(client):
                     }
                 ]:
                     missing.append(f"{method.upper()} {path}")
-            elif path.startswith("/batch") and declared:
+                url = re.sub(r"\{[^}]+\}", "dummy", path)
+                r = client.request(method.upper(), f"{url}?$.xgafv=0", json={})
+                if r.status_code != 400 or "system query parameter" not in r.text:
+                    unchecked.append(f"{method.upper()} {path} -> {r.status_code}")
                 batch.append(f"{method.upper()} {path}")
-    assert missing == [] and batch == []
+            elif path.startswith("/batch") and declared:
+    assert missing == [] and batch == [] and unchecked == []
 
 
 def test_no_google_baseline_acknowledges_the_system_parameter_any_more():

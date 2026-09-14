@@ -1301,6 +1301,42 @@ def test_a_bare_bucket_get_is_list_objects_and_only_list_type_2_is_its_v2_form(
     for value in ("1", "0", "bogus"):
         other = _listing(big_bucket_client, f"list-type={value}&max-keys=1", token)
         assert _children(other) == _children(v1), value
+    # The order with every element present, which the two pages above cannot show. Real's, measured
+    # 2026-09-14: the cursors sit between Prefix and KeyCount on V2 and before MaxKeys on V1, and
+    # Delimiter and EncodingType sit between MaxKeys and IsTruncated on both.
+    slash = quote("/")
+    full_v2 = _listing(
+        big_bucket_client,
+        f"list-type=2&delimiter={slash}&start-after={quote('100%.csv')}&encoding-type=url"
+        "&max-keys=1",
+        token,
+    )
+    assert _children(full_v2)[:9] == [
+        "Name",
+        "Prefix",
+        "StartAfter",
+        "NextContinuationToken",
+        "KeyCount",
+        "MaxKeys",
+        "Delimiter",
+        "EncodingType",
+        "IsTruncated",
+    ]
+    full_v1 = _listing(
+        big_bucket_client,
+        f"delimiter={slash}&marker={quote('100%.csv')}&encoding-type=url&max-keys=1",
+        token,
+    )
+    assert _children(full_v1)[:8] == [
+        "Name",
+        "Prefix",
+        "Marker",
+        "NextMarker",
+        "MaxKeys",
+        "Delimiter",
+        "EncodingType",
+        "IsTruncated",
+    ]
 
 
 def test_list_objects_names_a_next_marker_only_under_a_delimiter_and_pages_to_the_end(

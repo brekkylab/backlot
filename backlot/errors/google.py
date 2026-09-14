@@ -37,11 +37,10 @@ measurement. Measured on Sheets and Docs at `$.xgafv=1`: a typed value the proto
 ``reason: invalid`` with NO ``domain`` (:func:`invalid_field_value`); every other measured 400 is
 ``badRequest`` under ``global`` (:func:`invalid_argument`, :func:`bad_field_mask`); a 404 is
 ``notFound``; a bad token ``authError`` at ``location: Authorization``; an anonymous Sheets request
-``forbidden``; an anonymous request on any of the three OAuth-only APIs ``required`` with the
-short ``Login Required.``.
-The two editor 400s NOT measured keep whatever their constructor already renders — ``Invalid
-gridRange`` is :func:`invalid_argument`, so ``badRequest``, but an Office file read as a native
-document is :func:`failed_precondition`, so ``failedPrecondition``.
+``forbidden``; an anonymous request on any of the three OAuth-only APIs ``required`` with the short
+``Login Required.``. The two editor 400s NOT measured keep whatever their constructor already
+renders — ``Invalid gridRange`` is :func:`invalid_argument`, so ``badRequest``, but an Office file
+read as a native document is :func:`failed_precondition`, so ``failedPrecondition``.
 """
 
 from __future__ import annotations

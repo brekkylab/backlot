@@ -847,6 +847,28 @@ def test_xgafv_changes_nothing_about_a_success_or_a_drive_error(client, admin_h)
     assert errors[0]["errors"][0]["reason"] == "invalidParameter"
 
 
+def test_gmail_carries_the_errors_array_unless_xgafv_is_2(client):
+    """Gmail is the family that opts OUT, where the editor families opt in and Drive never does.
+
+    Measured on the one Gmail error a request with no scope can reach, its anonymous 401, over both
+    `users/me/labels` and `users/me/messages`: the array is there with no parameter and at `1`, and
+    gone at `2`. The value read is the last repeat, and it is that value the rule tests — `2&0` is
+    a refusal, not a `2`, and keeps the array; `0&2` drops it."""
+    for params, carried in (({}, True), ({"$.xgafv": "1"}, True), ({"$.xgafv": "2"}, False)):
+        for path in ("/gmail/v1/users/me/labels", "/gmail/v1/users/me/messages"):
+            e = _gerr(client.get(path, params=params))
+            assert e["code"] == 401, (path, params)
+            assert ("errors" in e) is carried, (path, params)
+            if carried:
+                assert e["errors"][0]["reason"] == "required", (path, params)
+    repeated = {
+        q: _gerr(client.get(f"/gmail/v1/users/me/labels?{q}"))
+        for q in ("$.xgafv=2&$.xgafv=0", "$.xgafv=0&$.xgafv=2")
+    }
+    assert repeated["$.xgafv=2&$.xgafv=0"]["errors"][0]["reason"] == "badRequest"
+    assert "errors" not in repeated["$.xgafv=0&$.xgafv=2"]
+
+
 # (what is sent, the `errors[0]` real answered at `$.xgafv=1`) — the entry is not uniform, and
 # which constructor raised the error decides its shape. `{path}` is the SAMPLE spreadsheet's id.
 XGAFV_ENTRIES = [

@@ -8,12 +8,12 @@ status codes were already right.
 Everything here was measured against the live Docs / Drive / Gmail / Sheets / Slides APIs. The
 envelope is NOT uniform — three families differ in which optional members they carry:
 
-    family                        errors[]         status                no Authorization header
-    ------------------------------|---------------|----------------------|------------------------
-    Drive v3                      | always        | auth failures only   | 403 PERMISSION_DENIED
-    Gmail v1                      | always        | always               | 401 UNAUTHENTICATED
-    Docs v1 / Slides v1           | $.xgafv=1     | always               | 401 UNAUTHENTICATED
-    Sheets v4                     | $.xgafv=1     | always               | 403 PERMISSION_DENIED
+    family                        errors[]          status                no Authorization header
+    ------------------------------|----------------|----------------------|------------------------
+    Drive v3                      | always         | auth failures only   | 403 PERMISSION_DENIED
+    Gmail v1                      | unless $.xgafv=2 | always             | 401 UNAUTHENTICATED
+    Docs v1 / Slides v1           | $.xgafv=1      | always               | 401 UNAUTHENTICATED
+    Sheets v4                     | $.xgafv=1      | always               | 403 PERMISSION_DENIED
 
 Sheets parts from the other two editor APIs on that last column: measured, a request with no
 Authorization header is 403 PERMISSION_DENIED with the unregistered-caller sentence, where Docs
@@ -21,9 +21,14 @@ answers 401 UNAUTHENTICATED with the missing-credential one. A present-but-inval
 UNAUTHENTICATED in every family, which is why a missing header and a bad token are separate
 constructors here rather than one "unauthorized".
 
-`errors[]` is what `$.xgafv` selects for the editor families — `1` adds it, `2` and an absent
-parameter leave it off, and the LAST value wins when it is sent twice (measured: `$.xgafv=2&$.xgafv=1`
-carries the array, `1&2` does not). A success body is the same either way. `$.xgafv` is a SYSTEM
+`errors[]` is what `$.xgafv` selects, and the three families answer it three ways — the middle
+column above. The editor families are opt-IN: `1` adds the array, `2` and an absent parameter leave
+it off. Gmail is opt-OUT: the array is there unless `2` turns it off, so an absent parameter and a
+value it refuses both keep it. Drive is neither, and carries the array whatever the value says
+(measured on a `fields` refusal at `2` as well as with no parameter). The LAST value wins when it
+is sent twice, and that is the value each rule reads: measured on Sheets, `$.xgafv=2&$.xgafv=1`
+carries the array and `1&2` does not; measured on Gmail, `2&0` carries it (the `0` is refused, and
+a refusal is not a `2`) and `0&2` does not. A success body is the same either way. `$.xgafv` is a SYSTEM
 parameter — a top-level entry of a discovery document's ``parameters``, which every method takes
 (read on the Sheets and Drive documents; #172 found it on the rest) — so it is validated once for
 the whole router (:func:`validate_system_parameters`) and declared once for the whole document
@@ -50,12 +55,9 @@ from typing import Mapping
 
 from fastapi import HTTPException, Request
 
-# Whether a family carries the legacy `errors[]` array whatever `$.xgafv` says; the editor families
-# carry it at `$.xgafv=1` only. `status` needs no per-family flag: Drive's
-# parameter failures simply do not have one, while every Gmail and editor error does, so "the error
-# carries a status" is the whole condition.
 DRIVE, GMAIL, EDITOR = "drive", "gmail", "editor"
-_FAMILY_HAS_ERRORS = {DRIVE: True, GMAIL: True, EDITOR: False}
+# `status` needs no per-family flag: Drive's parameter failures simply do not have one, while every
+# Gmail and editor error does, so "the error carries a status" is the whole condition.
 _PREFIX_FAMILY = (
     ("/drive/v3", DRIVE),
     ("/gmail/v1", GMAIL),
@@ -320,6 +322,19 @@ def validate_system_parameters(request: Request) -> None:
         raise bad_system_parameter(XGAFV, value)
 
 
+def has_errors_array(fam: str, value: str | None) -> bool:
+    """Whether a family's error carries `errors[]` under the `$.xgafv` the request sent.
+
+    Three rules, one per family, each measured. Drive always carries it. Gmail carries it unless
+    the value is `2`, so an absent parameter and a value Google refuses both keep it. The editor
+    families carry it only at `1`."""
+    if fam == DRIVE:
+        return True
+    if fam == GMAIL:
+        return value != "2"
+    return value == "1"
+
+
 def http_body(path: str, exc: HTTPException, query: Mapping[str, str] | None = None) -> dict:
     """Render an exception into its family's envelope.
 
@@ -336,7 +351,7 @@ def http_body(path: str, exc: HTTPException, query: Mapping[str, str] | None = N
         detail = exc.detail
         message = detail if isinstance(detail, str) else str(detail)
     err: dict = {"code": exc.status_code, "message": message}
-    if _FAMILY_HAS_ERRORS[family(path)] or xgafv(query) == "1":
+    if has_errors_array(family(path), xgafv(query)):
         entry = {"message": getattr(exc, "short", None) or message}
         domain = getattr(exc, "domain", "global")
         if domain:

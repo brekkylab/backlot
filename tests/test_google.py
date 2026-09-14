@@ -777,9 +777,8 @@ XGAFV_REFUSAL = "Invalid query parameters. Invalid value '{}' for system query p
 
 @pytest.mark.parametrize("value", ["0", "3", "NOPE", "01", ""])
 def test_xgafv_takes_1_or_2_and_refuses_the_rest_with_reals_sentence(client, admin_h, value):
-    """Measured on Sheets: 400 INVALID_ARGUMENT, this sentence, spacing and all, and no `errors[]`
-    — the value that would have asked for one was the value refused. Drive carries the array on
-    every error, this one included, as `badRequest`."""
+    """Sheets carries no `errors[]` on its own refusal: the value that would have asked for one
+    was the value refused."""
     r = client.get("/sheets/v4/spreadsheets/x", headers=admin_h, params={"$.xgafv": value})
     assert r.status_code == 400, r.text
     e = _gerr(r)

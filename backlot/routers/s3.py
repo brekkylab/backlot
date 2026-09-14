@@ -358,7 +358,7 @@ def _encode_key_token(key: str) -> str:
 def _encode_group_token(group_successor: str) -> str:
     """A cursor that resumes past a WHOLE rolled-up CommonPrefixes group at once, rather than
     past just the last raw key seen — used when the last entry on a page is a CommonPrefix whose
-    raw keys aren't all fetched yet (see ``_list_objects_v2``). ``group_successor`` is already
+    raw keys aren't all fetched yet (see ``_list_objects``). ``group_successor`` is already
     ``store.key_successor(group)``; resumes INCLUSIVE of it (``key >= group_successor``), since
     that's the smallest key that could possibly fall outside the group."""
     return base64.urlsafe_b64encode(("g:" + group_successor).encode()).decode()

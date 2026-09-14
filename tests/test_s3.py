@@ -334,7 +334,7 @@ def test_s3_large_bucket_delimiter_returns_common_prefixes(big_bucket_client, bi
     pytest.importorskip("botocore")
     # Under a single month (250 objects, well within one SQL page) every "day" folder rolls up
     # into one CommonPrefixes entry, computed over that bounded page — see the comment on
-    # backlot.routers.s3._list_objects_v2 for why this only holds a page's worth of raw rows at once.
+    # backlot.routers.s3._list_objects for why this only holds a page's worth of raw rows at once.
     r = _s3_get(
         big_bucket_client,
         "/s3/big-bucket?list-type=2&prefix=logs/2026/01/&delimiter=/&max-keys=1000",

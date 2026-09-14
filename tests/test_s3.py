@@ -1321,6 +1321,12 @@ def test_list_objects_names_a_next_marker_only_under_a_delimiter_and_pages_to_th
     assert flat.find(f"{{{S3NS}}}NextMarker") is None
     rolled = _listing(big_bucket_client, "delimiter=/&max-keys=1", token)
     assert rolled.findtext(f"{{{S3NS}}}NextMarker") == _entries(rolled)[-1]
+    # The page above ends on a plain key, where the last entry and the last raw key are the same
+    # string. This one ends on a rolled-up prefix, which is what real names — `run books/`, not the
+    # `run books/x.txt` underneath it.
+    on_a_group = _listing(big_bucket_client, "delimiter=/&max-keys=4", token)
+    assert _entries(on_a_group)[-1] == "run books/"
+    assert on_a_group.findtext(f"{{{S3NS}}}NextMarker") == "run books/"
 
     seen, marker, pages = [], None, 0
     while pages < 10:

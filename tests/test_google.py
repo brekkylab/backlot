@@ -976,20 +976,14 @@ def test_the_credential_entries_at_xgafv_1(client):
 
 
 def test_every_google_operation_declares_the_system_parameter_and_checks_it(client):
-    """Declared once for the document, the way real declares it once per discovery document, so
-    the fidelity diff stops reporting `missing_param … ?$.xgafv` on every Google operation and a
-    route added later cannot forget it. The batch endpoint is no family's and declares nothing.
+    """Both directions, and the document asked for twice.
 
-    Then the other direction: each operation is SENT a value the parameter does not take, and has
-    to refuse it. The declaration is derived from the path, so it would appear on a family route
-    served by some other router while the dependency that validates it did not run — a gap this
-    half sees and the declaration alone cannot. The path parameters are dummies: the refusal comes
-    before the route, so what an id would have resolved to never matters.
-
-    The document is asked for TWICE. The enrichment edits the schema FastAPI caches and hands back
-    by identity, so declaring the parameter has to be idempotent; without the guard that skips an
-    operation already carrying it, the second call appends a second copy and every later reader —
-    `/_meta/openapi/<source>`, the MCP bridge — sees the parameter twice."""
+    Declared: every family operation carries it, `/batch` carries nothing. Checked: each operation
+    is SENT a value the parameter does not take and has to refuse it — the declaration is derived
+    from the path, so it would appear on a family route served by some other router while the
+    dependency that validates it never ran, a gap only this half sees. The path parameters are
+    dummies; the refusal comes before the route. The second fetch holds the enrichment idempotent,
+    since it edits the schema FastAPI caches and hands back by identity."""
     client.get("/openapi.json")
     spec = client.get("/openapi.json").json()
     families = ("/drive/v3", "/gmail/v1", "/docs/v1", "/sheets/v4", "/slides/v1")

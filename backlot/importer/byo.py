@@ -2072,6 +2072,8 @@ class _Loader:
             cols.update(author_email=email, content=body)
             if src not in store.TITLELESS:
                 cols["title"] = ttl
+            if src == "google_drive":
+                cols["title_fold"] = store.drive_name_fold(ttl or "")
             if src == "s3" and cols.get("size") is None:
                 cols["size"] = len((body or "").encode("utf-8"))
             cols[gcol] = container

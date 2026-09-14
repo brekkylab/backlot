@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import unicodedata
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
@@ -362,7 +363,11 @@ CREATE TABLE IF NOT EXISTS gdrive_files (
     id TEXT PRIMARY KEY, folder TEXT NOT NULL, author_email TEXT NOT NULL,
     title TEXT NOT NULL, content TEXT NOT NULL,
     subtype TEXT, mime_type TEXT, parents TEXT, created_ts INTEGER NOT NULL, updated_ts INTEGER,
-    trashed INTEGER, owner_display TEXT
+    trashed INTEGER, owner_display TEXT,
+    -- `drive_name_fold(title)`, so a `name contains` lookup can be a LIKE over exactly the text
+    -- the evaluator compares; NULL on a row written before the column existed, which the lookup
+    -- falls back to `title` for.
+    title_fold TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_gdrive_folder ON gdrive_files(folder);
 DROP INDEX IF EXISTS idx_gdrive_served;
@@ -1724,18 +1729,51 @@ def list_drive_folder(conn, folder, visible_ids=None, limit=100, offset=0) -> li
     return conn.execute(sql, params).fetchall()
 
 
+def drive_name_fold(title: str) -> str:
+    """A Drive file name as ``name contains`` compares it — measured 2026-09-14 against real Drive.
+
+    Real folds case across the alphabet (``contains 'élan'`` and ``'ÉLAN'`` both find ``Élan
+    Vital``) and compatibility forms (``'finance'`` finds ``ﬁnance deck``, ``'istanbul'`` finds
+    ``İstanbul``), but not ``ß`` (``'strasse'`` does NOT find ``Straße Plan``) and not accents
+    (``'elan'`` does not find ``Élan``). NFKC then ``lower()`` is that rule, with the one seam
+    ``lower()`` leaves: a dotted capital I lowers to ``i`` plus a combining dot, which real reads
+    as ``i``. ``str.casefold`` is not this rule — it folds ``ß`` to ``ss`` and keeps the dot.
+
+    Stored on the row at import (``gdrive_files.title_fold``) and applied to the needle at query
+    time, so the SQL candidate set and the Python evaluator compare the same text.
+    """
+    return unicodedata.normalize("NFKC", title).lower().replace("i\u0307", "i")
+
+
 def list_drive_by_name(
-    conn, name_substr, container=None, visible_ids=None, limit=100_000, offset=0
+    conn, name, container=None, visible_ids=None, limit=100_000, offset=0, *, exact=False
 ) -> list[sqlite3.Row]:
-    """Non-trashed Drive files whose title contains ``name_substr`` (Drive's ``name contains 'X'``),
-    optionally within a folder — the SQL path for a name lookup. Without it the endpoint listed the
-    WHOLE corpus (~25k rows, ~1.6s) then substring-matched in Python; a title LIKE builds only the
-    matches (~14ms). LIKE wildcards in the needle are escaped so they stay literal."""
-    needle = _like_escape(name_substr)
-    # SQLite LIKE is case-insensitive for ASCII by default (matching Drive's case-insensitive
-    # `name contains`); no lower() wrapper, which would force a per-row scan.
-    sql = "SELECT * FROM gdrive_files WHERE COALESCE(trashed, 0) = 0 AND title LIKE ? ESCAPE '\\'"
-    params: list = [f"%{needle}%"]
+    """Non-trashed Drive files whose title matches ``name``, optionally within a folder — the SQL
+    path for a name lookup, which otherwise listed the WHOLE corpus (~25k rows, ~1.6s) to compare
+    in Python. ``exact`` is Drive's ``name = 'X'``; without it, ``name contains 'X'``.
+
+    Each is the comparison real Drive makes, measured 2026-09-14, so the rows this returns are the
+    rows the evaluator accepts — not a superset it narrows. ``name =`` folds case for ASCII letters
+    only (``'ÉLAN VITAL'`` finds ``Élan Vital``, ``'élan vital'`` and ``'strasse plan'`` do not),
+    which is exactly SQLite's LIKE with no wildcards. ``name contains`` folds more, so it compares
+    :func:`drive_name_fold` of the needle against the ``title_fold`` the importer stored (``title``
+    itself on a row that predates the column). LIKE wildcards in the needle are escaped so they
+    stay literal."""
+    if exact:
+        needle = _like_escape(name)
+        # SQLite LIKE is case-insensitive for ASCII and exact elsewhere — real's `name =` rule;
+        # no lower() wrapper, which would force a per-row scan.
+        sql = (
+            "SELECT * FROM gdrive_files WHERE COALESCE(trashed, 0) = 0 AND title LIKE ? ESCAPE '\\'"
+        )
+        params: list = [needle]
+    else:
+        needle = _like_escape(drive_name_fold(name))
+        sql = (
+            "SELECT * FROM gdrive_files WHERE COALESCE(trashed, 0) = 0 "
+            "AND COALESCE(title_fold, title) LIKE ? ESCAPE '\\'"
+        )
+        params = [f"%{needle}%"]
     if container is not None:
         sql += " AND folder = ?"
         params.append(container)

@@ -14,6 +14,7 @@ import datetime
 import hashlib
 import json
 import re
+import string
 from email.parser import BytesParser
 from http import HTTPStatus
 from typing import NamedTuple
@@ -1128,10 +1129,14 @@ def _drive_q_eval(node, f: dict, me: str | None, fulltext: dict[str, set[str]]) 
         shared = not _drive_owned_by(f["owner_email"], me)
         return ((value == "true") == shared) == (op == "=")
     if field == "name":
-        # Case-insensitive on every operator, as the `contains` this served before was. Whether
-        # real Drive compares `name =` case-sensitively is unmeasured.
-        have, want = f["name"].casefold(), value.casefold()
-        return want in have if op == "contains" else (have == want) == (op == "=")
+        # Two comparisons, both measured 2026-09-14 against real Drive and each the one
+        # `store.list_drive_by_name` builds its candidate set with, so SQL and this agree. `=` and
+        # `!=` fold case for ASCII letters only (`'ÉLAN VITAL'` is `Élan Vital`, `'élan vital'` and
+        # `'strasse plan'` are not); `contains` folds as `store.drive_name_fold` says.
+        if op == "contains":
+            return store.drive_name_fold(value) in store.drive_name_fold(f["name"])
+        have, want = _ascii_lower(f["name"]), _ascii_lower(value)
+        return (have == want) == (op == "=")
     if field == "mimeType":
         return value in f["mime"] if op == "contains" else (f["mime"] == value) == (op == "=")
     if field == "fullText":
@@ -1150,6 +1155,14 @@ def _drive_q_eval(node, f: dict, me: str | None, fulltext: dict[str, set[str]]) 
             return bool(me) and me.lower() in f["owners"]
         return who in f["owners"]
     raise AssertionError(f"unevaluated q term {field!r}")  # every field the parser admits is above
+
+
+_ASCII_LOWER = str.maketrans(string.ascii_uppercase, string.ascii_lowercase)
+
+
+def _ascii_lower(text: str) -> str:
+    """Lower-case the ASCII letters and nothing else — SQLite's LIKE fold, and real Drive's `name =`."""
+    return text.translate(_ASCII_LOWER)
 
 
 def _drive_q_fulltext(conn, node, ids) -> dict[str, list]:
@@ -1548,18 +1561,10 @@ def _drive_q_rows(conn, query, container: str | None, ids, me: str | None, hits:
     ``hits`` is ``_drive_q_fulltext``'s answer for this query, so the index is asked once."""
     conjuncts = _drive_q_conjuncts(query)
     fulltext = next((t for t in conjuncts if t.field == "fullText"), None)
-    # `contains` or `=`: `list_drive_by_name`'s `%needle%` LIKE is a superset of equality, and the
-    # evaluator narrows what it returns. ASCII needles only — SQLite's LIKE (and its `lower()`)
-    # fold case for ASCII alone, where `_drive_q_eval` casefolds, so `name = 'élan vital'` against
-    # a title `Élan Vital` would leave the candidate set and never reach the evaluator.
-    name = next(
-        (
-            t
-            for t in conjuncts
-            if t.field == "name" and t.op in ("contains", "=") and t.value.isascii()
-        ),
-        None,
-    )
+    # `contains` or `=`: `list_drive_by_name` makes the comparison real Drive makes for each, the
+    # same one `_drive_q_eval` makes, so the candidate set is the answer for that term and the
+    # evaluator only applies the others. Nothing the evaluator accepts is outside it.
+    name = next((t for t in conjuncts if t.field == "name" and t.op in ("contains", "=")), None)
     # `list_drive_by_name` answers non-trashed rows only, so it can be the candidate set only when
     # every match is non-trashed — `trashed = false` a conjunct, not merely present: under a `not`
     # it asks for the trash.
@@ -1572,7 +1577,9 @@ def _drive_q_rows(conn, query, container: str | None, ids, me: str | None, hits:
         # A name lookup (mirage resolves every gdrive file with `name='…'`) — SQL title LIKE
         # instead of materializing the whole corpus (~25k rows, ~1.6s) to match in Python. The
         # remaining terms still filter the (small) name-matched set below.
-        candidates = store.list_drive_by_name(conn, name.value, container, ids, limit=100_000)
+        candidates = store.list_drive_by_name(
+            conn, name.value, container, ids, limit=100_000, exact=name.op == "="
+        )
     else:  # scope to the folder and/or the owner (if any) to shrink the set before the filter
         owner, not_owner = _drive_shared_with_me_scope(conjuncts, me)
         candidates = store.list_documents(

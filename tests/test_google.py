@@ -2867,30 +2867,14 @@ def test_drive_q_shapes_clients_send_still_parse(tmp_path):
             assert {f["name"] for f in r.json()["files"]} == expected, q
 
 
-def test_drive_q_me_is_the_caller_and_a_non_ascii_name_still_matches(tmp_path):
+def test_drive_q_me_is_the_caller(tmp_path):
     """`'me' in owners` is the caller's own files and `not 'me' in owners` everyone else's, resolved
-    through the identity `sharedWithMe` reads. And `name =` against a title with a non-ASCII letter
-    matches case-insensitively as `_drive_q_eval` casefolds: such a needle skips the title-LIKE
-    candidate set, whose SQLite LIKE folds case for ASCII alone."""
+    through the identity `sharedWithMe` reads."""
     import yaml
 
     from tests._helpers import corpus_client
 
-    records = _Q_RECORDS + [
-        {
-            "source_type": "google_drive",
-            "doc_id": "elan",
-            "folder": "mk",
-            "title": "Élan Vital",
-            "content": "accent",
-            "author_email": "cfo@x.com",
-            "visibility": "public",
-            "subtype": "document",
-            "created": "2026-01-02T09:00:00Z",
-            "updated": "2026-01-03T09:00:00Z",
-        }
-    ]
-    with corpus_client(tmp_path, records) as (client, settings):
+    with corpus_client(tmp_path, _Q_RECORDS) as (client, settings):
         tokens = {
             u["email"]: u["token"]
             for u in yaml.safe_load(settings.tokens_path.read_text())["users"]
@@ -2899,13 +2883,77 @@ def test_drive_q_me_is_the_caller_and_a_non_ascii_name_still_matches(tmp_path):
         files = "mimeType != 'application/vnd.google-apps.folder'"
         for q, expected in (
             ("'me' in owners", {"Brand guidelines", "Q1 Deck", "Mia's Notes"}),
-            (f"not 'me' in owners and {files}", {"Q1 Revenue", "Élan Vital"}),
-            ("name = 'élan vital'", {"Élan Vital"}),
-            ("name = 'ÉLAN VITAL'", {"Élan Vital"}),
+            (f"not 'me' in owners and {files}", {"Q1 Revenue"}),
         ):
             r = client.get("/drive/v3/files", headers=mia, params={"q": q, "fields": "files(name)"})
             assert r.status_code == 200, f"{q}: {r.text}"
             assert {f["name"] for f in r.json()["files"]} == expected, q
+
+
+# Four titles created in a real Drive on 2026-09-14 and the answer `files.list` gave each `q`
+# against them, deleted after. `name =` folds case for ASCII letters and nothing else; `name
+# contains` folds case across the alphabet and compatibility forms (the ligature, the dotted
+# capital I) but neither `ß` nor accents. The same rows drive both the SQL candidate set and the
+# evaluator, so this holds them to one another as much as to real.
+_NAME_TITLES = ("Straße Plan", "Élan Vital", "ﬁnance deck", "backlot probe İstanbul")
+MEASURED_NAME = [
+    ("name = 'straße plan'", {"Straße Plan"}),
+    ("name = 'STRAßE PLAN'", {"Straße Plan"}),
+    ("name = 'strasse plan'", set()),
+    ("name = 'STRASSE PLAN'", set()),
+    ("name = 'ÉLAN VITAL'", {"Élan Vital"}),
+    ("name = 'élan vital'", set()),
+    ("name = 'elan vital'", set()),
+    ("name = 'ﬁnance deck'", {"ﬁnance deck"}),
+    ("name = 'finance deck'", set()),
+    ("name contains 'straße'", {"Straße Plan"}),
+    ("name contains 'strasse'", set()),
+    ("name contains 'élan'", {"Élan Vital"}),
+    ("name contains 'ÉLAN'", {"Élan Vital"}),
+    ("name contains 'elan'", set()),
+    ("name contains 'finance'", {"ﬁnance deck"}),
+    ("name contains 'istanbul'", {"backlot probe İstanbul"}),
+    ("name contains 'İstanbul'", {"backlot probe İstanbul"}),
+]
+
+
+@pytest.mark.parametrize(("q", "expected"), MEASURED_NAME, ids=[q for q, _ in MEASURED_NAME])
+def test_drive_q_name_compares_as_real_drive_does(tmp_path, q, expected):
+    """Every measured row, through the handler — so through `list_drive_by_name`'s candidate set
+    and `_drive_q_eval` both. `name !=` is the complement of `name =` and shares its fold."""
+    from tests._helpers import corpus_client
+
+    records = [
+        {
+            "source_type": "google_drive",
+            "doc_id": f"n{i}",
+            "folder": "mk",
+            "title": title,
+            "content": "x",
+            "author_email": "a@x.com",
+            "visibility": "public",
+            "subtype": "document",
+            "created": "2026-01-02T09:00:00Z",
+            "updated": "2026-01-03T09:00:00Z",
+        }
+        for i, title in enumerate(_NAME_TITLES)
+    ]
+    with corpus_client(tmp_path, records) as (client, settings):
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        r = client.get("/drive/v3/files", headers=h, params={"q": q, "fields": "files(name)"})
+        assert r.status_code == 200, r.text
+        assert {f["name"] for f in r.json()["files"]} == expected
+        if q.startswith("name = "):
+            r = client.get(
+                "/drive/v3/files",
+                headers=h,
+                params={
+                    "q": q.replace("name = ", "name != ", 1)
+                    + " and mimeType != 'application/vnd.google-apps.folder'",
+                    "fields": "files(name)",
+                },
+            )
+            assert {f["name"] for f in r.json()["files"]} == set(_NAME_TITLES) - expected
 
 
 def test_drive_size_is_populated_for_docs_editors_files(tmp_path):

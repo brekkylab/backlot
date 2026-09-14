@@ -21,32 +21,27 @@ answers 401 UNAUTHENTICATED with the missing-credential one. A present-but-inval
 UNAUTHENTICATED in every family, which is why a missing header and a bad token are separate
 constructors here rather than one "unauthorized".
 
-`errors[]` is what `$.xgafv` selects, and the three families answer it three ways — the middle
-column above. The editor families are opt-IN: `1` adds the array, `2` and an absent parameter leave
-it off. Gmail is opt-OUT: the array is there unless `2` turns it off, so an absent parameter and a
-value it refuses both keep it. Drive is neither, and carries the array whatever the value says
-(measured on a `fields` refusal at `2` as well as with no parameter). The LAST value wins when it
-is sent twice, and that is the value each rule reads: measured on Sheets, `$.xgafv=2&$.xgafv=1`
-carries the array and `1&2` does not; measured on Gmail, `2&0` carries it (the `0` is refused, and
-a refusal is not a `2`) and `0&2` does not. A success body is the same either way. `$.xgafv` is a SYSTEM
-parameter — a top-level entry of a discovery document's ``parameters``, which every method takes
-(read on the Sheets and Drive documents; #172 found it on the rest) — so it is validated once for
-the whole router (:func:`validate_system_parameters`) and declared once for the whole document
-(:func:`backlot.openapi.google_system_parameters`) rather than route by route. A value other than
-`1` or `2` is refused before anything else is read — measured, ahead of a bad token, a missing
-credential and an unparseable range alike — with the sentence :func:`bad_system_parameter` carries.
+`errors[]` is what `$.xgafv` selects, and the middle column above is the whole rule
+(:func:`has_errors_array`). It is a SYSTEM parameter — a top-level entry of a discovery document's
+``parameters``, which every method takes — so it is validated once for the router
+(:func:`validate_system_parameters`) and declared once for the document
+(:func:`backlot.openapi.google_system_parameters`) rather than route by route. Measured: Drive
+carries the array on a `fields` refusal at `2` as well as with no parameter; the LAST repeat is the
+value every rule reads (`2&1` carries it on Sheets where `1&2` does not, `2&0` on Gmail — a refused
+value is not a `2` — where `0&2` does not); a success body is the same under all of them; and a
+value other than `1` or `2` is refused ahead of a bad token, a missing credential and an
+unparseable range alike.
 
-Inside `errors[]` the entry is not uniform, and the difference is which constructor raised it.
-Measured on Sheets and Docs at `$.xgafv=1`: a typed value the proto layer refuses — the enum, bool
-and int32 "Invalid value at '<field>' (<type>), \"<value>\"" messages — reports ``reason: invalid``
-and NO ``domain``; every other 400 measured — an unparseable range, a range past the grid, a bad
-``fields`` mask, an unsupported or unknown ``alt``, ``dataFilter.filter must be specified.``, ``Must
-specify at least one dataFilter.``, ``No sheet with id``, a non-JSON body — reports ``reason:
-badRequest`` with ``domain: global``, and the editor 400s not measured (an Office file read as a
-native document, ``Invalid gridRange``) take that entry too; a 404 is ``notFound``, a bad token
-``authError`` with ``location: Authorization``, an anonymous Sheets request ``forbidden``, and an
-anonymous Docs or Slides request ``required`` with the short ``Login Required.`` and the same
-location. Drive's and Gmail's entries are the shapes the tests beside them already pin.
+Inside `errors[]` the entry follows the constructor that raised it, and each one carries its own
+measurement. Measured on Sheets and Docs at `$.xgafv=1`: a typed value the proto layer refuses is
+``reason: invalid`` with NO ``domain`` (:func:`invalid_field_value`); every other measured 400 is
+``badRequest`` under ``global`` (:func:`invalid_argument`, :func:`bad_field_mask`); a 404 is
+``notFound``; a bad token ``authError`` at ``location: Authorization``; an anonymous Sheets request
+``forbidden``; an anonymous request on any of the three OAuth-only APIs ``required`` with the
+short ``Login Required.``.
+The two editor 400s NOT measured keep whatever their constructor already renders — ``Invalid
+gridRange`` is :func:`invalid_argument`, so ``badRequest``, but an Office file read as a native
+document is :func:`failed_precondition`, so ``failedPrecondition``.
 """
 
 from __future__ import annotations

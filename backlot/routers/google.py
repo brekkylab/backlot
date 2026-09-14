@@ -30,7 +30,11 @@ from backlot.errors import google as gerr
 from backlot.openapi import qp
 from backlot.pagination import decode_cursor, next_page_token
 
-# `$.xgafv` is checked before any route runs — see `gerr.validate_system_parameters`.
+# `$.xgafv` is checked before any route runs — see `gerr.validate_system_parameters`. A router
+# dependency runs only once a route has MATCHED, so a family path with no route 404s here rather
+# than refusing the value. Nothing to match there: measured 2026-09-14, real answers an unrouted
+# family path from its front end, as HTML — 400 on Sheets and Docs, 404 on Drive — with or without
+# the parameter, so no JSON envelope of its own exists to compare against.
 router = APIRouter(tags=["google"], dependencies=[Depends(gerr.validate_system_parameters)])
 
 

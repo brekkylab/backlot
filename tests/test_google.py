@@ -771,10 +771,6 @@ def test_a_bad_token_is_unauthenticated_everywhere(client, path):
 
 
 # --- `$.xgafv`, the system parameter that selects the error envelope --------------------------
-#
-# Sheets shapes, measured on 2026-09-12 (#172). Which families show the array under which value is
-# one rule, stated once in `backlot.errors.google`; what this table adds is the entry INSIDE it,
-# which depends on the error rather than the family.
 
 XGAFV_REFUSAL = "Invalid query parameters. Invalid value '{}' for system query parameter : $.xgafv"
 

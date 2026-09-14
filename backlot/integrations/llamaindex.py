@@ -2,7 +2,7 @@
 
 Each `llama-index-readers-*` package normally targets a real SaaS host. Four take a custom host
 via constructor args (GitHub `base_url`, Jira `PATauth.server_url`, Confluence `base_url`, S3
-`s3_endpoint_url`); four hardcode it and need a shim, all isolated here. Each shim's docstring
+`s3_endpoint_url`); the others hardcode it and need a shim, all isolated here. Each shim's docstring
 says what seam it uses and why that one:
 
   - Slack: `slack_reader_at` — the reader calls `api_test()` DURING construction, so the client

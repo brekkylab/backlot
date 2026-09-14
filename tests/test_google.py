@@ -937,12 +937,14 @@ def test_the_errors_entry_at_xgafv_1_is_the_one_real_answers(client, admin_h, pa
     assert e["message"] == entry["message"]
 
 
-def test_the_credential_entries_at_xgafv_1(client):
-    """A bad token is `authError` at `location: Authorization` in every family (already pinned
-    without the parameter on Drive and Gmail). An anonymous Sheets request is `forbidden`; an
-    anonymous Docs request is `required` with the short `Login Required.` at the same location, and
-    Slides answers that identically — both measured, since a request with no Authorization header
-    needs no credential to send."""
+def test_the_credential_entries(client):
+    """The three credential failures, which differ from each other rather than by family: a bad
+    token, an anonymous Sheets request, an anonymous request on an OAuth-only API.
+
+    The last of those is asked of Gmail with NO parameter, because Gmail carries the array by
+    default, and of Docs and Slides at `$.xgafv=1`, because they do not. Real answers all three the
+    same entry — measured 2026-09-14, a request with no Authorization header needs no credential to
+    send."""
     e = _gerr(client.get("/sheets/v4/spreadsheets/x", headers=BAD_TOKEN, params={"$.xgafv": "1"}))
     assert e["errors"] == [
         {
@@ -958,21 +960,29 @@ def test_the_credential_entries_at_xgafv_1(client):
     assert e["errors"] == [
         {"message": e["message"], "domain": "global", "reason": "forbidden"},
     ]
-    for path in ("/docs/v1/documents/x", "/slides/v1/presentations/x"):
-        e = _gerr(client.get(path, params={"$.xgafv": "1"}))
+    entry = {
+        "message": "Login Required.",
+        "domain": "global",
+        "reason": "required",
+        "location": "Authorization",
+        "locationType": "header",
+    }
+    for path, params in (
+        ("/docs/v1/documents/x", {"$.xgafv": "1"}),
+        ("/slides/v1/presentations/x", {"$.xgafv": "1"}),
+        ("/gmail/v1/users/me/labels", {}),
+    ):
+        e = _gerr(client.get(path, params=params))
         assert e["code"] == 401, path
-        assert e["errors"] == [
-            {
-                "message": "Login Required.",
-                "domain": "global",
-                "reason": "required",
-                "location": "Authorization",
-                "locationType": "header",
-            }
-        ], path
-        # ...and the array is the ONLY thing `1` adds: the same request without it is the same body
-        # minus that member.
-        assert {k: v for k, v in e.items() if k != "errors"} == _gerr(client.get(path))
+        assert e["errors"] == [entry], path
+    # The array is the only member the parameter moves: on the editor families it is what `1` adds,
+    # and on Gmail, which carries it already, `1` adds nothing at all.
+    for path in ("/docs/v1/documents/x", "/slides/v1/presentations/x"):
+        bare = _gerr(client.get(path))
+        assert "errors" not in bare, path
+        assert _gerr(client.get(path, params={"$.xgafv": "1"})) == {**bare, "errors": [entry]}, path
+    gmail = _gerr(client.get("/gmail/v1/users/me/labels"))
+    assert _gerr(client.get("/gmail/v1/users/me/labels", params={"$.xgafv": "1"})) == gmail
 
 
 def test_every_google_operation_declares_the_system_parameter_and_checks_it(client):

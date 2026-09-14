@@ -103,9 +103,9 @@ class GoogleError(HTTPException):
     """An error carrying everything its envelope needs.
 
     ``reason``/``location`` populate ``errors[0]`` for the families that send it; ``status`` is the
-    canonical code name. ``short`` is a distinct ``errors[0].message`` — only the bad-token 401 uses
-    one, where Google's top-level message is the long form and ``errors[0]`` says "Invalid
-    Credentials"."""
+    canonical code name. ``short`` is a distinct ``errors[0].message``, where Google's top-level
+    message is the long form: the bad-token 401 says "Invalid Credentials" and the
+    missing-credential 401 says "Login Required."."""
 
     def __init__(
         self,
@@ -248,24 +248,22 @@ def bad_token() -> GoogleError:
     )
 
 
-def missing_credentials(path: str = "") -> GoogleError:
+def missing_credentials() -> GoogleError:
     """No Authorization header, on an OAuth-only API (Gmail, Docs, Slides).
 
-    On the editor family the `errors[]` entry (shown at `$.xgafv=1`) is the short ``Login
-    Required.`` at ``location: Authorization`` — measured on Docs AND Slides, which answer it
-    identically. Gmail's entry is unmeasured, and keeps the long message with no location."""
-    if family(path) == EDITOR:
-        return GoogleError(
-            401,
-            MISSING_CREDENTIALS_MESSAGE,
-            reason="required",
-            location="Authorization",
-            location_type="header",
-            status="UNAUTHENTICATED",
-            short="Login Required.",
-        )
+    One answer for the three: measured 2026-09-14, Gmail, Docs and Slides send the same long
+    top-level message and the same `errors[]` entry, the short ``Login Required.`` at ``location:
+    Authorization``. Which of them SHOWS that entry still differs — Gmail carries it unless
+    `$.xgafv=2`, the editor families only at `1` — but that is `has_errors_array`'s rule, not a
+    difference in the error."""
     return GoogleError(
-        401, MISSING_CREDENTIALS_MESSAGE, reason="required", status="UNAUTHENTICATED"
+        401,
+        MISSING_CREDENTIALS_MESSAGE,
+        reason="required",
+        location="Authorization",
+        location_type="header",
+        status="UNAUTHENTICATED",
+        short="Login Required.",
     )
 
 
@@ -282,7 +280,7 @@ def no_credentials(path: str) -> GoogleError:
     and Slides but not this behaviour, so it is resolved from the path rather than the family."""
     if family(path) == DRIVE or path.startswith("/sheets/v4"):
         return unregistered_caller()
-    return missing_credentials(path)
+    return missing_credentials()
 
 
 # --- system parameters ---------------------------------------------------------------------------

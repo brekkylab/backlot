@@ -1142,7 +1142,7 @@ def test_drive_folders_honor_the_fields_projection(client, admin_h):
 
 
 def test_drive_folders_match_the_same_q_clauses_as_files(client, admin_h):
-    """Folders now flow through `_drive_q_match`, so every clause that should match one does."""
+    """Folders flow through `_drive_q_eval`, so every clause that should match one does."""
     folders = client.get(
         "/drive/v3/files",
         headers=admin_h,
@@ -2514,7 +2514,12 @@ def test_history_honors_oldest_latest(base, admin_h):
 
 
 def test_drive_permissions_and_trashed(tmp_path):
-    from backlot.routers.google import _drive_permissions, _drive_q_match
+    from backlot.routers.google import (
+        _drive_facts,
+        _drive_permissions,
+        _drive_q_eval,
+        _drive_q_parse,
+    )
 
     s = tiny_corpus(
         tmp_path,
@@ -2551,8 +2556,9 @@ def test_drive_permissions_and_trashed(tmp_path):
     assert any(p["type"] == "group" for p in gperms)
     # trashed excluded from a default `q`, included when asked
     d2 = store.get_document(conn, "google_drive", served_id("google_drive", "d2"))
-    assert _drive_q_match(d2, "trashed = false") is False
-    assert _drive_q_match(d2, "trashed = true") is True
+    facts = _drive_facts(d2)
+    assert _drive_q_eval(_drive_q_parse("trashed = false"), facts, None, {}) is False
+    assert _drive_q_eval(_drive_q_parse("trashed = true"), facts, None, {}) is True
 
 
 def test_drive_files_list_excludes_trashed_with_no_query_at_all(tmp_path):
@@ -2785,6 +2791,10 @@ def test_drive_q_refuses_a_clause_it_cannot_parse(tmp_path):
             "modifiedTime < 'yesterday'",  # the reference wants RFC 3339 here
             "'x' in bogus",
             "name contains 'a' or",
+            # Past the nesting bound: the parser is recursive, and these exhausted the frame
+            # limit into a 500 before the bound was there.
+            "(" * 64 + "name contains 'a'" + ")" * 64,
+            "not " * 64 + "name contains 'a'",
             "(name contains 'a'",
             "name contains 'a' name contains 'b'",
         ):
@@ -2806,6 +2816,10 @@ def test_drive_q_refuses_a_documented_term_it_holds_no_fact_for(tmp_path):
         h = {"Authorization": f"Bearer {settings.admin_token}"}
         for q in (
             "starred = true",
+            # The reference's own spelling for the two map-valued terms: `{` is a token, so the
+            # field is read and named before the brace can be refused.
+            "properties has { key='x' and value='y' }",
+            "appProperties has { key='x' and value='y' }",
             "'mia@x.com' in writers",
             "viewedByMeTime > '2026-01-01T00:00:00Z'",
         ):
@@ -2834,12 +2848,63 @@ def test_drive_q_shapes_clients_send_still_parse(tmp_path):
                 {"mk", "fin", "Brand guidelines", "Q1 Revenue", "Q1 Deck", "Mia's Notes"},
             ),
             ("sharedWithMe = false", set()),
+            # `me` is the caller; the admin token owns nothing, so nothing is `me`'s and
+            # everything non-trashed is `not me`'s.
+            ("'me' in owners", set()),
+            (
+                "not 'me' in owners and trashed = false",
+                {"mk", "fin", "Brand guidelines", "Q1 Revenue", "Q1 Deck", "Mia's Notes"},
+            ),
+            # `name =` is case-insensitive on the title-LIKE candidate path as `contains` is.
+            ("name = 'q1 deck'", {"Q1 Deck"}),
+            ("(" * 8 + "name = 'Q1 Deck'" + ")" * 8, {"Q1 Deck"}),
             ("sharedWithMe != true", set()),
             ("'mia@x.com' in owners and name contains 'Q1'", {"Q1 Deck"}),
             ("fullText contains 'palette' and trashed = false", {"Brand guidelines"}),
             ("fullText contains '\"slides\"'", {"Q1 Deck"}),
             ("fullText contains 'palette' or name = 'Q1 Deck'", {"Brand guidelines", "Q1 Deck"}),
         ):
+            assert {f["name"] for f in r.json()["files"]} == expected, q
+
+
+def test_drive_q_me_is_the_caller_and_a_non_ascii_name_still_matches(tmp_path):
+    """`'me' in owners` is the caller's own files and `not 'me' in owners` everyone else's, resolved
+    through the identity `sharedWithMe` reads. And `name =` against a title with a non-ASCII letter
+    matches case-insensitively as `_drive_q_eval` casefolds: such a needle skips the title-LIKE
+    candidate set, whose SQLite LIKE folds case for ASCII alone."""
+    import yaml
+
+    from tests._helpers import corpus_client
+
+    records = _Q_RECORDS + [
+        {
+            "source_type": "google_drive",
+            "doc_id": "elan",
+            "folder": "mk",
+            "title": "Élan Vital",
+            "content": "accent",
+            "author_email": "cfo@x.com",
+            "visibility": "public",
+            "subtype": "document",
+            "created": "2026-01-02T09:00:00Z",
+            "updated": "2026-01-03T09:00:00Z",
+        }
+    ]
+    with corpus_client(tmp_path, records) as (client, settings):
+        tokens = {
+            u["email"]: u["token"]
+            for u in yaml.safe_load(settings.tokens_path.read_text())["users"]
+        }
+        mia = {"Authorization": f"Bearer {tokens['mia@x.com']}"}
+        files = "mimeType != 'application/vnd.google-apps.folder'"
+        for q, expected in (
+            ("'me' in owners", {"Brand guidelines", "Q1 Deck", "Mia's Notes"}),
+            (f"not 'me' in owners and {files}", {"Q1 Revenue", "Élan Vital"}),
+            ("name = 'élan vital'", {"Élan Vital"}),
+            ("name = 'ÉLAN VITAL'", {"Élan Vital"}),
+        ):
+            r = client.get("/drive/v3/files", headers=mia, params={"q": q, "fields": "files(name)"})
+            assert r.status_code == 200, f"{q}: {r.text}"
             r = client.get("/drive/v3/files", headers=h, params={"q": q, "fields": "files(name)"})
             assert r.status_code == 200, f"{q}: {r.text}"
             assert {f["name"] for f in r.json()["files"]} == expected, q

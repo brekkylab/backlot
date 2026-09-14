@@ -878,11 +878,18 @@ _DRIVE_Q_OPERATORS: dict[str, frozenset[str]] = {
 _DRIVE_Q_COLLECTIONS = frozenset({"parents", "owners"})
 _DRIVE_Q_BOOLEAN = frozenset({"trashed", "sharedWithMe"})
 # Documented on the reference, and nothing in a corpus record to evaluate them against.
+# `{` and `}` are tokens so that `properties has { key='x' and value='y' }`, the reference's own
+# spelling, reaches `term()` with the field read — the refusal then names `properties` instead of
+# the bare `Invalid Value` an unlexable character gets.
 _DRIVE_Q_UNMODELLED = frozenset(
     {"starred", "viewedByMeTime", "writers", "readers", "properties", "appProperties", "visibility"}
 )
 _DRIVE_Q_TOKEN = re.compile(
-    r"\s*(?:(?P<paren>[()])|(?P<op>!=|<=|>=|=|<|>)|'(?P<str>(?:[^'\\]|\\.)*)'"
+# Nesting past this is refused. The parser is recursive, so an unbounded query answered 500 where
+# this section's contract is a 400: 320 parentheses, or 960 `not`s, exhausted the interpreter's
+# frame limit. Real Drive's own limit is unmeasured; no client writes a query 32 levels deep.
+_DRIVE_Q_MAX_DEPTH = 32
+    r"\s*(?:(?P<paren>[()])|(?P<brace>[{}])|(?P<op>!=|<=|>=|=|<|>)|'(?P<str>(?:[^'\\]|\\.)*)'"
     r"|(?P<word>[A-Za-z_][A-Za-z0-9_]*))"
 )
 
@@ -961,20 +968,29 @@ def _drive_q_parse(q: str):
         parts = [unary()]
         while is_word("and"):
             take()
+    depth = 0
+
             parts.append(unary())
         return parts[0] if len(parts) == 1 else _QAnd(tuple(parts))
 
     def unary():
-        if is_word("not"):
-            take()
-            return _QNot(unary())
-        if peek() == ("paren", "("):
-            take()
-            node = disjunction()
-            if take() != ("paren", ")"):
-                raise _drive_q_refused()
-            return node
-        return term()
+        nonlocal depth
+        depth += 1
+        if depth > _DRIVE_Q_MAX_DEPTH:
+            raise _drive_q_refused()
+        try:
+            if is_word("not"):
+                take()
+                return _QNot(unary())
+            if peek() == ("paren", "("):
+                take()
+                node = disjunction()
+                if take() != ("paren", ")"):
+                    raise _drive_q_refused()
+                return node
+            return term()
+        finally:
+            depth -= 1
 
     def unmodelled(field: str) -> gerr.GoogleError:
         evaluated = ", ".join(sorted(_DRIVE_Q_OPERATORS))
@@ -1130,7 +1146,12 @@ def _drive_q_eval(node, f: dict, me: str | None, fulltext: dict[str, set[str]]) 
     if field == "parents":
         return value in f["parents"]
     if field == "owners":
-        return value.strip().lower() in f["owners"]
+        # `me` is the reference's alias for the caller (`'me' in owners`), resolved through the
+        # identity `sharedWithMe` reads: the admin token is not a Drive user and owns nothing.
+        who = value.strip().lower()
+        if who == "me":
+            return bool(me) and me.lower() in f["owners"]
+        return who in f["owners"]
     raise AssertionError(f"unevaluated q term {field!r}")  # every field the parser admits is above
 
 
@@ -1220,13 +1241,6 @@ def _drive_obj_facts(obj: dict) -> dict:
         "owner_email": (obj.get("owners") or [{}])[0].get("emailAddress"),
         "owners": {(o.get("emailAddress") or "").lower() for o in (obj.get("owners") or [])},
     }
-
-
-def _drive_q_match(row, query, me: str | None = None, fulltext: dict | None = None) -> bool:
-    """Whether a stored row satisfies ``query`` — the string, or the tree ``_drive_q_parse`` built
-    from it. Without ``fulltext`` a `fullText contains` term matches nothing."""
-    node = _drive_q_parse(query) if isinstance(query, str) else query
-    return node is None or _drive_q_eval(node, _drive_facts(row), me, fulltext or {})
 
 
 def _visible_drive_folders(conn, ids) -> list[str]:
@@ -1537,7 +1551,18 @@ def _drive_q_rows(conn, query, container: str | None, ids, me: str | None, hits:
     ``hits`` is ``_drive_q_fulltext``'s answer for this query, so the index is asked once."""
     conjuncts = _drive_q_conjuncts(query)
     fulltext = next((t for t in conjuncts if t.field == "fullText"), None)
-    name = next((t for t in conjuncts if t.field == "name" and t.op == "contains"), None)
+    # `contains` or `=`: `list_drive_by_name`'s `%needle%` LIKE is a superset of equality, and the
+    # evaluator narrows what it returns. ASCII needles only — SQLite's LIKE (and its `lower()`)
+    # fold case for ASCII alone, where `_drive_q_eval` casefolds, so `name = 'élan vital'` against
+    # a title `Élan Vital` would leave the candidate set and never reach the evaluator.
+    name = next(
+        (
+            t
+            for t in conjuncts
+            if t.field == "name" and t.op in ("contains", "=") and t.value.isascii()
+        ),
+        None,
+    )
     # `list_drive_by_name` answers non-trashed rows only, so it can be the candidate set only when
     # every match is non-trashed — `trashed = false` a conjunct, not merely present: under a `not`
     # it asks for the trash.
@@ -1547,8 +1572,8 @@ def _drive_q_rows(conn, query, container: str | None, ids, me: str | None, hits:
     if fulltext is not None:  # the index's candidates, in rank order, then the other terms
         candidates = hits[fulltext.value]
     elif name is not None and non_trashed:
-        # A name lookup (mirage resolves every gdrive file this way) — SQL title LIKE instead of
-        # materializing the whole corpus (~25k rows, ~1.6s) to substring-match in Python. The
+        # A name lookup (mirage resolves every gdrive file with `name='…'`) — SQL title LIKE
+        # instead of materializing the whole corpus (~25k rows, ~1.6s) to match in Python. The
         # remaining terms still filter the (small) name-matched set below.
         candidates = store.list_drive_by_name(conn, name.value, container, ids, limit=100_000)
     else:  # scope to the folder and/or the owner (if any) to shrink the set before the filter

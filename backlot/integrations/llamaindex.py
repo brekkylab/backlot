@@ -163,8 +163,9 @@ def point_gmail_at(base_url: str) -> None:
     the base itself, NOT `base + /gmail/v1` — the bundled discovery doc's rootUrl is replaced and
     the client appends `/gmail/v1`).
 
-    The wrap point is SHARED with `point_drive_at` (see `_ensure_google_build_wrapped`) — both can
-    be active at once, in either order, and each redirects only its own service. Idempotent for
+    The wrap point is SHARED with `point_drive_at` and `point_sheets_at` (see
+    `_ensure_google_build_wrapped`) — all three can be active at once, in any order, and each
+    redirects only its own service. Idempotent for
     repeated calls with the same URL; fails loudly if the target `build` symbol is gone rather
     than silently letting the reader hit real googleapis.com.
     """
@@ -193,8 +194,9 @@ def point_drive_at(base_url: str) -> None:
     it (`base + "/drive/v3"`); Gmail's api_endpoint is the base with no suffix (see
     `examples/using-official-sdk/gdrive.py` vs `gmail.py`).
 
-    The wrap point is SHARED with `point_gmail_at` (see `_ensure_google_build_wrapped`) — both can
-    be active at once, in either order, and each redirects only its own service. Idempotent for
+    The wrap point is SHARED with `point_gmail_at` and `point_sheets_at` (see
+    `_ensure_google_build_wrapped`) — all three can be active at once, in any order, and each
+    redirects only its own service. Idempotent for
     repeated calls with the same URL; fails loudly if the target `build` symbol is gone rather
     than silently letting the reader hit real googleapis.com.
     """

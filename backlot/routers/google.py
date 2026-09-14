@@ -845,13 +845,10 @@ def _gmail_message(row, fmt: str, caller_email: str | None = None) -> dict:
 # ================================ Drive =========================================
 
 # --- `q` ---------------------------------------------------------------------------------------
-# Drive's query language, PARSED rather than pattern-matched. One regex per known clause let any
-# clause the regexes did not match — `name = '…'`, `modifiedTime < '…'`, `mimeType contains '…'`,
-# an `or`, a `not`, a mistyped term — drop out of the FILTER instead of out of the result, so the
-# caller got the unfiltered listing under a 200. Measured 2026-09-12 at 6490f3b: `name = 'First
-# Week Checklist'` answered every visible file, 16, where `name contains` answered 1. mirage sends
-# two of those shapes: its folder listing resolves a file with `name='…'` and bounds a sync with
-# `modifiedTime >= '…'` and `modifiedTime < '…'`.
+# Drive's query language, parsed as the reference's grammar and evaluated term by term, so a clause
+# is either evaluated or refused — never dropped from the filter while the listing answers 200.
+# mirage sends two of its shapes: its folder listing resolves a file with `name='…'` and bounds a
+# sync with `modifiedTime >= '…'` and `modifiedTime < '…'`.
 #
 # The grammar is the reference's (developers.google.com/workspace/drive/api/guides/ref-search-terms):
 # a term is `<field> <operator> <value>` or `'<value>' in <collection>`, terms join with `and` and
@@ -878,20 +875,20 @@ _DRIVE_Q_OPERATORS: dict[str, frozenset[str]] = {
 _DRIVE_Q_COLLECTIONS = frozenset({"parents", "owners"})
 _DRIVE_Q_BOOLEAN = frozenset({"trashed", "sharedWithMe"})
 # Documented on the reference, and nothing in a corpus record to evaluate them against.
-# `{` and `}` are tokens so that `properties has { key='x' and value='y' }`, the reference's own
-# spelling, reaches `term()` with the field read — the refusal then names `properties` instead of
-# the bare `Invalid Value` an unlexable character gets.
 _DRIVE_Q_UNMODELLED = frozenset(
     {"starred", "viewedByMeTime", "writers", "readers", "properties", "appProperties", "visibility"}
 )
+# `{` and `}` are tokens so that `properties has { key='x' and value='y' }`, the reference's own
+# spelling, reaches `term()` with the field read — the refusal then names `properties` instead of
+# the bare `Invalid Value` an unlexable character gets.
 _DRIVE_Q_TOKEN = re.compile(
+    r"\s*(?:(?P<paren>[()])|(?P<brace>[{}])|(?P<op>!=|<=|>=|=|<|>)|'(?P<str>(?:[^'\\]|\\.)*)'"
+    r"|(?P<word>[A-Za-z_][A-Za-z0-9_]*))"
+)
 # Nesting past this is refused. The parser is recursive, so an unbounded query answered 500 where
 # this section's contract is a 400: 320 parentheses, or 960 `not`s, exhausted the interpreter's
 # frame limit. Real Drive's own limit is unmeasured; no client writes a query 32 levels deep.
 _DRIVE_Q_MAX_DEPTH = 32
-    r"\s*(?:(?P<paren>[()])|(?P<brace>[{}])|(?P<op>!=|<=|>=|=|<|>)|'(?P<str>(?:[^'\\]|\\.)*)'"
-    r"|(?P<word>[A-Za-z_][A-Za-z0-9_]*))"
-)
 
 
 class _QTerm(NamedTuple):
@@ -937,8 +934,8 @@ def _drive_q_parse(q: str):
     """The parsed query, or ``None`` for an empty one. A clause Backlot cannot evaluate is a 400.
 
     A query that names no ``trashed`` term gets ``and trashed = false`` appended: real Drive leaves
-    trashed files out of a listing unless a clause asks for them, which the matcher used to apply as
-    its default branch and the plain listing applies as ``exclude_trashed``."""
+    trashed files out of a listing unless a clause asks for them, as the plain listing does through
+    ``exclude_trashed``."""
     tokens = _drive_q_tokens(q)
     if not tokens:
         return None
@@ -968,10 +965,10 @@ def _drive_q_parse(q: str):
         parts = [unary()]
         while is_word("and"):
             take()
-    depth = 0
-
             parts.append(unary())
         return parts[0] if len(parts) == 1 else _QAnd(tuple(parts))
+
+    depth = 0
 
     def unary():
         nonlocal depth
@@ -2550,13 +2547,12 @@ _A1_END = re.compile(r"(?:(?P<col>[A-Za-z]{1,3})(?P<row>\d+)?|(?P<rowonly>\d+))\
 #   `R[1]C[1]:R[0]C[0]` and `R2:R1C1` 400 while `R3C3:R1C1` and `R[2]C[2]:R[0]C[0]` answer. An
 #   axis that mixes the kinds swaps freely: `R[1]C[1]:R1C1`, `R[2]C[2]:R1C1` and `R1C1:R[0]C[0]`
 #   all answer. That reads as a half-open interval on the raw numbers coming out empty, checked
-#   before offsets are resolved; the rule was fitted on 22 reversed ranges, the 17 predictions made
-#   from it before they were sent all held, and the same-kind clause was then added for the 4
-#   mixed-kind rows the first version got wrong.
+#   before offsets are resolved; every reversed range sent is a row of `MEASURED_R1C1`.
 # * the echo is the A1 equivalent, and the grid rules are A1's: an end past the grid is clamped
 #   (`R1C1:R2000C50` is A1:Z1000, `1:1001` is A1:Z1000), a start past it is refused (`R[1000]C[0]`
-#   names `A1001`), and a refused whole column or row is named by its letters or numbers alone
-#   (`C[26]` names `AA`, `R[1000]:R[1000]` names `1001`, `1001:1002` names `1001:1002`).
+#   names `A1001`), and a refused whole column or row is named by its letters or numbers alone,
+#   one column or row collapsing as one cell does (`ZZ:ZZ` names `ZZ`, `AA:AB` names `AA:AB`,
+#   `C[26]` names `AA`, `R[1000]:R[1000]` names `1001`, `1001:1002` names `1001:1002`).
 # * whitespace is refused wherever it was tried — around the whole, around the bang, around the
 #   colon, inside a token, inside a quoted title, a tab as much as a space: ` A1`, `Sheet1! A1`,
 #   `A1: B2`, `R1 C1`, `R[ 1]C[1]`, `'Sheet1 '!A1` — all 36 forms sent — are unparseable. An EMPTY title
@@ -2635,8 +2631,8 @@ def _r1c1_end(part: str) -> _End | None:
 
 def _a1_classify(body: str) -> tuple[str, list[_End]] | None:
     """Which notation a cell part is in, with its endpoints: ``("a1", ends)``, ``("r1c1", ends)``,
-    or ``None`` when it is neither. A1 first, then R1C1 — the order measured — and a lone A1 token
-    has to be a full cell, since a bare column or row is an endpoint only inside a range."""
+    or ``None`` when it is neither. A1 first, then R1C1 — the order `_R1C1_END`'s comment states —
+    and a lone A1 token has to be a full cell (see `_A1_END`)."""
     halves = body.split(":")
     if len(halves) > 2:
         return None
@@ -2724,22 +2720,19 @@ def _a1_sheet(spec: str, sheets: list[_Sheet]) -> tuple[_Sheet, str]:
       and splitting at the first would leave `bang!A1` as the cell part
     * a spec with NO bang is parsed as a range FIRST and only then as a sheet name, so bare `A1` is
       cell A1 of the first sheet even in a workbook that has a sheet named `A1`, while bare `Data`
-      is the sheet because four letters cannot be a cell reference. R1C1 before a sheet name too:
-      bare `R1C1` and `RC` are the cell A1 in a workbook with sheets so named, and bare `A` is the
-      sheet `A`, a lone column being no range (measured 2026-09-12)
+      is the sheet because four letters cannot be a cell reference. R1C1 before a sheet name too
+      (the order `_R1C1_END`'s comment states, with the sheets it was measured against)
     * an unqualified range answers from the sheet at index 0
     * a name no sheet has 400s with the same `Unable to parse range` message unparseable garbage
       gets — resolving to an empty grid instead would be indistinguishable from an empty range
     """
-    # Not stripped anywhere: measured, ` A1`, `A1 `, ` R1C1 `, `Sheet1! A1`, `Sheet1 !A1` and
-    # `'Data' !A1` are all "Unable to parse range", spaces and all.
+    # Not stripped anywhere — the whitespace rule in `_R1C1_END`'s comment.
     bare = spec
     if "!" in bare:
         title, _, body = bare.rpartition("!")
         if title in ("", "''") and _a1_looks_like_a_range(body):
-            # An EMPTY title is the first sheet, as an unqualified range is: measured, `!A1`,
-            # `''!A1`, `!A1:B2` and `!R[1]C[1]` answer from `Sheet1`. Only for a range — `!Data`
-            # and a bare `!` are unparseable, as is a title that is only whitespace (` !A1`).
+            # An EMPTY title is the first sheet (the rule in `_R1C1_END`'s comment), and only
+            # before a range: `!Data` and a bare `!` are unparseable.
             return sheets[0], body
         found = _a1_find(title, sheets)
         if found is not None and body:
@@ -2829,7 +2822,7 @@ def _a1_title(title: str) -> str:
     is not itself a cell reference. An embedded apostrophe doubles.
 
     Measured 2026-09-12 on sheets so named: `R1C1` and `RC` echo quoted (`'RC'!A1`), as `A1` does,
-    while `A` — a bare column, which is no reference on its own — echoes bare (`A!A1:Z1000`)."""
+    while `A`, no reference on its own, echoes bare (`A!A1:Z1000`)."""
     if _A1_PLAIN.fullmatch(title) and _a1_classify(title) is None:
         return title
     return "'" + title.replace("'", "''") + "'"
@@ -2847,10 +2840,8 @@ def _a1_col_letters(i: int) -> str:
 
 def _a1_axis_name(sheet: _Sheet, start: str, end: str) -> str:
     """Whole columns by their letters alone, or whole rows by their numbers alone, the way real
-    names them when refusing a range past the grid: measured, `ZZ:ZZ` reports ``Sheet1!ZZ``,
-    `AA:AB` ``Sheet1!AA:AB``, `1001:1001` ``Sheet1!1001`` and `1001:1002` ``Sheet1!1001:1002``, never
-    ``ZZ1:ZZ1000`` or ``A1001:Z1001``. One column or row collapses as one cell does; a lone `C[26]`
-    reports ``Sheet1!AA`` the same way."""
+    names them when refusing a range past the grid — the naming rule in `_R1C1_END`'s comment,
+    never ``ZZ1:ZZ1000`` or ``A1001:Z1001``."""
     title = _a1_title(sheet.title)
     return f"{title}!{start}" if start == end else f"{title}!{start}:{end}"
 

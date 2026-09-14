@@ -1826,8 +1826,13 @@ def test_sheets_values_get_omits_values_when_the_range_is_empty(base, admin_h, s
     ],
 )
 def test_sheets_values_get_rejects_an_unusable_range(base, admin_h, sheet_id, rng):
-    """Backlot has exactly one sheet, `Sheet1`; naming another is as unresolvable as a malformed
-    reference, and real Sheets 400s on both rather than returning an empty grid."""
+    """Every unusable range is real's `Unable to parse range: <spec>`, whatever made it unusable —
+    a sheet this workbook does not have, a malformed reference, an absolute R1C1 index of 0, a
+    negative offset, a range that mixes the two notations, a reversal by one on the numbers as
+    written, row 0, a lone column (bang-less, read as a sheet name, and there is none), whitespace.
+    Each case is one representative of a rule `_R1C1_END`'s comment states; the measured rows
+    themselves are `MEASURED_R1C1`, so a new case belongs here when it stands for a rule and there
+    when it is a request that was sent."""
     r = _values(base, admin_h, sheet_id, rng)
     assert r.status_code == 400
     assert r.json()["error"]["message"] == f"Unable to parse range: {rng}"
@@ -2039,12 +2044,11 @@ MEASURED_ECHO = [
 
 # Every range-related request sent to the live Sheets API on 2026-09-12 (#174), on a workbook whose
 # sheets were `Sheet1`, `Data`, `R1C1`, `RC` and `A` (1000x26 each, `a`..`f` in A1:B3 of the first
-# two), with what came back: the status and the echoed `range`, or the error message. The five
-# rows the issue's comment measured on 2026-09-10 open the list; the last 64 are the edges asked
-# for in review — whitespace around the bang and inside a token, whole rows and columns past the
-# grid, an empty title before the bang — in both notations. The test
-# below serves a corpus with the same five sheets and holds Backlot to every row, so the grammar in
-# `_R1C1_END`'s comment is what this table says and not what a document says.
+# two), with what came back: the status and the echoed `range`, or the error message — both
+# notations, whitespace around the bang and inside a token, whole rows and columns past the grid,
+# an empty title before the bang. The test below serves a corpus with the same five sheets and
+# holds Backlot to every row, so the grammar in `_R1C1_END`'s comment is what this table says and
+# not what a document says.
 MEASURED_R1C1 = [
     ("R1C2", 200, "Sheet1!B1"),
     ("R1C1:R2C2", 200, "Sheet1!A1:B2"),
@@ -2676,13 +2680,7 @@ _FOLDER = "application/vnd.google-apps.folder"
 
 
 def test_drive_q_evaluates_the_operators_the_reference_lists(tmp_path):
-    """`files.list` matched `q` with one regex per clause it knew and ignored the rest, so a clause
-    in a form the regexes did not match — `name = '…'`, `modifiedTime < '…'`, `mimeType contains`,
-    an `or`, a `not` — dropped out of the FILTER rather than out of the result: the caller got the
-    unfiltered listing under a 200. mirage's folder listing resolves a file with `name='…'`, so a
-    client that took the first hit had the wrong file and no signal.
-
-    Every operator the reference lists for `name`, `mimeType`, `modifiedTime`, `createdTime` and
+    """Every operator the reference lists for `name`, `mimeType`, `modifiedTime`, `createdTime` and
     `trashed`, over a corpus small enough to name the answer; `sharedWithMe`, `fullText` and the
     two collections are in the client-shapes test that closes this group. Folders are dropped here
     (their `createdTime` is seeded,
@@ -2791,12 +2789,12 @@ def test_drive_q_refuses_a_clause_it_cannot_parse(tmp_path):
             "modifiedTime < 'yesterday'",  # the reference wants RFC 3339 here
             "'x' in bogus",
             "name contains 'a' or",
+            "(name contains 'a'",
+            "name contains 'a' name contains 'b'",
             # Past the nesting bound: the parser is recursive, and these exhausted the frame
             # limit into a 500 before the bound was there.
             "(" * 64 + "name contains 'a'" + ")" * 64,
             "not " * 64 + "name contains 'a'",
-            "(name contains 'a'",
-            "name contains 'a' name contains 'b'",
         ):
             r = client.get("/drive/v3/files", headers=h, params={"q": q})
             assert r.status_code == 400, f"{q}: {r.text}"
@@ -2816,12 +2814,12 @@ def test_drive_q_refuses_a_documented_term_it_holds_no_fact_for(tmp_path):
         h = {"Authorization": f"Bearer {settings.admin_token}"}
         for q in (
             "starred = true",
+            "'mia@x.com' in writers",
+            "viewedByMeTime > '2026-01-01T00:00:00Z'",
             # The reference's own spelling for the two map-valued terms: `{` is a token, so the
             # field is read and named before the brace can be refused.
             "properties has { key='x' and value='y' }",
             "appProperties has { key='x' and value='y' }",
-            "'mia@x.com' in writers",
-            "viewedByMeTime > '2026-01-01T00:00:00Z'",
         ):
             r = client.get("/drive/v3/files", headers=h, params={"q": q})
             assert r.status_code == 400, f"{q}: {r.text}"
@@ -2848,6 +2846,8 @@ def test_drive_q_shapes_clients_send_still_parse(tmp_path):
                 {"mk", "fin", "Brand guidelines", "Q1 Revenue", "Q1 Deck", "Mia's Notes"},
             ),
             ("sharedWithMe = false", set()),
+            ("sharedWithMe != true", set()),
+            ("'mia@x.com' in owners and name contains 'Q1'", {"Q1 Deck"}),
             # `me` is the caller; the admin token owns nothing, so nothing is `me`'s and
             # everything non-trashed is `not me`'s.
             ("'me' in owners", set()),
@@ -2858,12 +2858,12 @@ def test_drive_q_shapes_clients_send_still_parse(tmp_path):
             # `name =` is case-insensitive on the title-LIKE candidate path as `contains` is.
             ("name = 'q1 deck'", {"Q1 Deck"}),
             ("(" * 8 + "name = 'Q1 Deck'" + ")" * 8, {"Q1 Deck"}),
-            ("sharedWithMe != true", set()),
-            ("'mia@x.com' in owners and name contains 'Q1'", {"Q1 Deck"}),
             ("fullText contains 'palette' and trashed = false", {"Brand guidelines"}),
             ("fullText contains '\"slides\"'", {"Q1 Deck"}),
             ("fullText contains 'palette' or name = 'Q1 Deck'", {"Brand guidelines", "Q1 Deck"}),
         ):
+            r = client.get("/drive/v3/files", headers=h, params={"q": q, "fields": "files(name)"})
+            assert r.status_code == 200, f"{q}: {r.text}"
             assert {f["name"] for f in r.json()["files"]} == expected, q
 
 
@@ -2904,8 +2904,6 @@ def test_drive_q_me_is_the_caller_and_a_non_ascii_name_still_matches(tmp_path):
             ("name = 'ÉLAN VITAL'", {"Élan Vital"}),
         ):
             r = client.get("/drive/v3/files", headers=mia, params={"q": q, "fields": "files(name)"})
-            assert r.status_code == 200, f"{q}: {r.text}"
-            r = client.get("/drive/v3/files", headers=h, params={"q": q, "fields": "files(name)"})
             assert r.status_code == 200, f"{q}: {r.text}"
             assert {f["name"] for f in r.json()["files"]} == expected, q
 

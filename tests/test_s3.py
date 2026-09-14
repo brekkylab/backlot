@@ -1279,10 +1279,11 @@ def test_a_bare_bucket_get_is_list_objects_and_only_list_type_2_is_its_v2_form(
     token = big_bucket_settings.admin_token
     v1 = _listing(big_bucket_client, "max-keys=1", token)
     assert _children(v1) == ["Name", "Prefix", "Marker", "MaxKeys", "IsTruncated", "Contents"]
-    assert v1.findtext(f"{{{S3NS}}}Marker") is None or v1.findtext(f"{{{S3NS}}}Marker") in (
-        "",
-        None,
-    )
+    # Present and empty when none was sent, which is what real answers and not what the reference
+    # says ("Marker is included in the response if it was sent with the request").
+    assert v1.findtext(f"{{{S3NS}}}Marker") == ""
+    sent = _listing(big_bucket_client, "marker=" + quote("a b.txt"), token)
+    assert sent.findtext(f"{{{S3NS}}}Marker") == "a b.txt"
     v2 = _listing(big_bucket_client, "list-type=2&max-keys=1", token)
     assert _children(v2) == [
         "Name",
@@ -1409,6 +1410,20 @@ def test_the_listing_encodes_under_encoding_type_url_as_real_does(
         big_bucket_client, "list-type=2&encoding-type=url&delimiter=" + quote("/"), token
     )
     assert "run+books/" in _entries(rolled) and "%ED%95%9C%EA%B8%80/" in _entries(rolled)
+    # The echoes of what was sent go through the encoder too, not just the keys.
+    echoes = _listing(
+        big_bucket_client,
+        "list-type=2&encoding-type=url&prefix="
+        + quote("run books/")
+        + "&delimiter="
+        + quote("|")
+        + "&start-after="
+        + quote("a b.txt"),
+        token,
+    )
+    assert echoes.findtext(f"{{{S3NS}}}Prefix") == "run+books/"
+    assert echoes.findtext(f"{{{S3NS}}}Delimiter") == "%7C"
+    assert echoes.findtext(f"{{{S3NS}}}StartAfter") == "a+b.txt"
     # V1's own echoes go through the same encoder, `NextMarker` included.
     v1 = _listing(
         big_bucket_client,
@@ -1489,10 +1504,20 @@ def test_max_keys_is_read_by_value_and_refused_with_the_two_messages_real_sends(
     zero = _listing(big_bucket_client, "list-type=2&max-keys=0", token)
     assert zero.findtext(f"{{{S3NS}}}MaxKeys") == "0"
     assert zero.findtext(f"{{{S3NS}}}IsTruncated") == "false" and _entries(zero) == []
-    # Repeated, real reads the first — the same reading `?uploads` already has.
+    # Repeated, real reads the first — the same reading `?uploads` already has, where the listing
+    # read the last until now. `max-keys=abc` first would be the refusal above.
     assert (
         _listing(big_bucket_client, "list-type=2&max-keys=1&max-keys=abc", token).findtext(
             f"{{{S3NS}}}KeyCount"
         )
         == "1"
     )
+    assert (
+        _listing(big_bucket_client, "list-type=2&prefix=a&prefix=zz.txt", token).findtext(
+            f"{{{S3NS}}}Prefix"
+        )
+        == "a"
+    )
+    # `list-type` is read the same way, so the first value picks the shape.
+    assert _children(_listing(big_bucket_client, "list-type=1&list-type=2", token))[2] == "Marker"
+    assert "KeyCount" in _children(_listing(big_bucket_client, "list-type=2&list-type=1", token))

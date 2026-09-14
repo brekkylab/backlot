@@ -499,11 +499,17 @@ def _list_objects(
     The rows, the ``prefix`` filter and the ``delimiter`` rollup are the same for both. What
     differs is measured, and it is what a client pages with:
 
-    V1 carries ``Marker`` always, empty when none was sent and echoing it when one was, and
-    ``NextMarker`` only when a ``delimiter`` is set and the page is truncated — without one real
-    sends no cursor at all and botocore falls back to the last key it saw. Its ``Contents`` carry
-    an ``Owner``, which in this region is an ``ID`` with no ``DisplayName``. It has no
-    ``KeyCount``.
+    V1 carries ``Marker`` always, empty when none was sent and echoing it when one was — the API
+    reference says otherwise ("Marker is included in the response if it was sent with the
+    request"), and what real does is send the empty element either way (measured). It carries
+    ``NextMarker`` only when a ``delimiter`` is set and the page is truncated, which the reference
+    states and the measurement agrees with: "This element is returned only if you have the
+    delimiter request parameter specified. If the response does not include the NextMarker element
+    and it is truncated, you can use the value of the last Key element in the response as the
+    marker parameter in the subsequent request". That fallback is botocore's V1 paginator, so
+    sending a cursor where real sends none would make Backlot easier to page than the thing it
+    stands in for. Its ``Contents`` carry an ``Owner``, which in this region is an ``ID`` with no
+    ``DisplayName``. It has no ``KeyCount``.
 
     V2 carries ``KeyCount``, ``NextContinuationToken`` when truncated, ``ContinuationToken``
     echoed when one was sent, and ``StartAfter`` echoed when one was and no continuation token
@@ -522,9 +528,16 @@ def _list_objects(
     false with keys in the bucket (all measured 2026-09-14).
 
     ``encoding-type`` is judged here, after the bucket lookup and before the range, and refused
-    unless it is ``url`` compared without case; under it ``Prefix``, ``Delimiter``, ``StartAfter``,
+    unless it is ``url`` compared without case. Under it ``Prefix``, ``Delimiter``, ``StartAfter``,
     ``Marker``, ``NextMarker``, every ``Key`` and every ``CommonPrefixes/Prefix`` come back encoded
-    and the continuation tokens do not (measured: a token keeps its ``/``, ``+`` and ``=``).
+    and the continuation tokens do not — each of those measured, since the reference names only
+    four ("returns encoded key name values in the following response elements: Delimiter, Prefix,
+    Key, and StartAfter", the ListObjectsV2 page) and says nothing about the V1 pair or the tokens.
+    A token keeps its ``/``, ``+`` and ``=``.
+
+    Every parameter is read as real reads it, the first value when one is sent twice (see
+    ``_first``): ``?prefix=a&prefix=zz.txt`` lists under ``a``, and ``?list-type=1&list-type=2``
+    answers V1 where the two the other way round answer V2 (measured).
     """
     q = request.query_params
     resource = f"/{bucket}"

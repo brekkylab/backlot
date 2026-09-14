@@ -2,13 +2,13 @@
 
 Each `llama-index-readers-*` package normally targets a real SaaS host. Four take a custom host
 via constructor args (GitHub `base_url`, Jira `PATauth.server_url`, Confluence `base_url`, S3
-`s3_endpoint_url`); four hardcode it and need a shim, all isolated here. Each shim's docstring
+`s3_endpoint_url`); the others hardcode it and need a shim, all isolated here. Each shim's docstring
 says what seam it uses and why that one:
 
   - Slack: `slack_reader_at` — the reader calls `api_test()` DURING construction, so the client
     has to arrive already pointed at Backlot.
-  - Gmail/Drive: `point_gmail_at` / `point_drive_at` — wrap `build` to inject
-    `client_options(api_endpoint=...)`.
+  - Gmail/Drive/Sheets: `point_gmail_at` / `point_drive_at` / `point_sheets_at` — wrap `build`
+    to inject `client_options(api_endpoint=...)`.
   - Notion: `patch_notion_at` — rebind the module-level URL constants.
   - Linear: `patch_linear_at` — swap the module's `requests` for a URL-rewriting proxy.
 """
@@ -19,6 +19,7 @@ __all__ = [
     "slack_reader_at",
     "point_gmail_at",
     "point_drive_at",
+    "point_sheets_at",
     "patch_notion_at",
     "patch_s3fs_walk",
     "point_hubspot_at",
@@ -162,8 +163,9 @@ def point_gmail_at(base_url: str) -> None:
     the base itself, NOT `base + /gmail/v1` — the bundled discovery doc's rootUrl is replaced and
     the client appends `/gmail/v1`).
 
-    The wrap point is SHARED with `point_drive_at` (see `_ensure_google_build_wrapped`) — both can
-    be active at once, in either order, and each redirects only its own service. Idempotent for
+    The wrap point is SHARED with `point_drive_at` and `point_sheets_at` (see
+    `_ensure_google_build_wrapped`) — all three can be active at once, in any order, and each
+    redirects only its own service. Idempotent for
     repeated calls with the same URL; fails loudly if the target `build` symbol is gone rather
     than silently letting the reader hit real googleapis.com.
     """
@@ -192,8 +194,9 @@ def point_drive_at(base_url: str) -> None:
     it (`base + "/drive/v3"`); Gmail's api_endpoint is the base with no suffix (see
     `examples/using-official-sdk/gdrive.py` vs `gmail.py`).
 
-    The wrap point is SHARED with `point_gmail_at` (see `_ensure_google_build_wrapped`) — both can
-    be active at once, in either order, and each redirects only its own service. Idempotent for
+    The wrap point is SHARED with `point_gmail_at` and `point_sheets_at` (see
+    `_ensure_google_build_wrapped`) — all three can be active at once, in any order, and each
+    redirects only its own service. Idempotent for
     repeated calls with the same URL; fails loudly if the target `build` symbol is gone rather
     than silently letting the reader hit real googleapis.com.
     """
@@ -205,6 +208,33 @@ def point_drive_at(base_url: str) -> None:
         )
     _ensure_google_build_wrapped()
     _BACKLOT_SERVICE_ENDPOINTS["drive"] = f"{base_url.rstrip('/')}/drive/v3"
+
+
+def point_sheets_at(base_url: str) -> None:
+    """Redirect GoogleSheetsReader at Backlot.
+
+    The same wrap point as the two above, reached differently: the reader imports the module
+    (`import googleapiclient.discovery as discovery`) and calls `discovery.build("sheets", "v4",
+    credentials=...)`, so the attribute lookup at call time finds the shared wrapper. The
+    `api_endpoint` is `base + "/sheets"` with no version, because the Sheets discovery document
+    spells the version in the path (`v4/spreadsheets/...`) where Drive's rootUrl already carries
+    `/drive/v3` — the same split `examples/using-official-sdk/gdrive.py` makes for its Sheets
+    service.
+
+    Credentials are not this shim's to inject: `GoogleSheetsReader._get_credentials` runs a
+    disk-based OAuth flow with no constructor hook, as `GmailReader`'s does, so a caller patches
+    that method the way `tests/test_llamaindex.py` does for both. What the reader then sends is one
+    `values.get` per sheet at `R1C1:R{rowCount}C{columnCount}`, which is the request Backlot's
+    Sheets reads accept R1C1 notation for.
+    """
+    from googleapiclient import discovery
+
+    if not hasattr(discovery, "build"):
+        raise RuntimeError(
+            "point_sheets_at: googleapiclient.discovery.build is gone — update the shim"
+        )
+    _ensure_google_build_wrapped()
+    _BACKLOT_SERVICE_ENDPOINTS["sheets"] = f"{base_url.rstrip('/')}/sheets"
 
 
 def patch_notion_at(base_url: str) -> None:

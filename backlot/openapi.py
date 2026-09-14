@@ -199,6 +199,8 @@ def google_system_parameters(spec: dict) -> dict:
             if method not in _METHODS:
                 continue
             params = op.setdefault("parameters", [])
+            # FastAPI caches the document and hands the same dict back by identity, so a second
+            # call would append a second copy of the parameter.
             if any(p.get("name") == gerr.XGAFV and p.get("in") == "query" for p in params):
                 continue
             params.append(

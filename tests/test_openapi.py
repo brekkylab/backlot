@@ -333,3 +333,92 @@ def test_drop_head_operations_drops_a_path_it_empties():
         }
     }
     assert openapi.drop_head_operations(spec)["paths"] == {"/both": {"get": {"operationId": "b"}}}
+
+
+def test_the_gdrive_slice_carries_the_docs_sheets_and_slides_routes():
+    """One `google_drive` record is a file Drive lists and one of the three editors reads, so a
+    slice holding Drive alone offers an agent no way to open what it just found.
+
+    `SOURCE_PREFIXES["gdrive"]` was `["/drive"]` from #44 until #170, which dropped the Docs,
+    Sheets and Slides routes before `build_mcp_spec` saw them: `/_meta/openapi/gdrive` answered
+    Drive's six operations and `backlot mcp --source gdrive` offered six tools. The routes are
+    named rather than counted, because the count moved while the gap was open — #161 added the two
+    `…ByDataFilter` routes after #170 was filed, and neither reached the slice either.
+
+    Not covered by `test_every_served_path_is_bridged_or_says_why_not` below, which asks only that
+    a path be in SOME bucket: declaring `/docs/v1` in `NOT_BRIDGED` would satisfy it and leave the
+    editors unreachable. This is the cell that says which bucket they belong in."""
+    warnings.filterwarnings("ignore")
+    from backlot.main import app
+
+    paths = openapi.build_mcp_spec(app.openapi(), "gdrive")["paths"]
+    assert {
+        "/docs/v1/documents/{document_id}",
+        "/sheets/v4/spreadsheets/{spreadsheet_id}",
+        "/sheets/v4/spreadsheets/{spreadsheet_id}/values/{a1_range}",
+        "/sheets/v4/spreadsheets/{spreadsheet_id}/values:batchGet",
+        "/slides/v1/presentations/{presentation_id}",
+    } <= set(paths), sorted(paths)
+    assert any(p.startswith("/drive/v3/") for p in paths), sorted(paths)
+
+
+def test_every_source_prefix_selects_something():
+    """A prefix matching no served path reads as coverage and gives none.
+
+    `atlassian` carried `/wiki` from #44 until #170 and it selected nothing for any of that time:
+    the commit that added the prefix is the one that gave the Atlassian router `prefix="/atlassian"`,
+    so Confluence has always been served under `/atlassian/wiki/...`, which `/atlassian` already
+    covers. The table said the entry spanned two roots when it spanned one. Harmless on its own,
+    and the same defect that hid the Drive one: a source whose OTHER prefix selects something still
+    slices to a non-empty spec, so `slice_spec`'s own `ValueError` cannot see it."""
+    warnings.filterwarnings("ignore")
+    from backlot.main import app
+
+    served = list(app.openapi()["paths"])
+    for source, prefixes in openapi.SOURCE_PREFIXES.items():
+        for prefix in prefixes:
+            assert any(p == prefix or p.startswith(prefix + "/") for p in served), (
+                f"{source}: {prefix} selects nothing"
+            )
+
+
+def test_every_served_path_is_bridged_or_says_why_not():
+    """The converse, and NOT implied by the test above: a prefix that selects something says
+    nothing about the paths no prefix selects.
+
+    That is how `/docs/v1`, `/sheets/v4` and `/slides/v1` stayed unbridged from #44 to #170 —
+    `/drive` selected six operations, so every check the table had was satisfied. Every served path
+    lands in exactly one bucket: under some source's prefixes, or declared in `NOT_BRIDGED` with a
+    reason. A path in neither is a route someone added without asking which toolset serves it."""
+    warnings.filterwarnings("ignore")
+    from backlot.main import app
+
+    prefixes = [p for ps in openapi.SOURCE_PREFIXES.values() for p in ps]
+    unbridged = [
+        path
+        for path in sorted(app.openapi()["paths"])
+        if not any(path == p or path.startswith(p + "/") for p in prefixes)
+        and not any(path == n or path.startswith(n + "/") for n in openapi.NOT_BRIDGED)
+    ]
+    assert unbridged == [], (
+        "no source's MCP server exposes these, and NOT_BRIDGED does not say why: "
+        + ", ".join(unbridged)
+    )
+
+
+def test_no_not_bridged_declaration_outlives_its_route():
+    """An entry kept after its route is gone is a reason nobody is reading any more.
+
+    And an entry may not sit under a source's prefixes. Nothing else stops one claiming a surface
+    that IS bridged — the coverage check only asks whether a path is in some bucket, not whether it
+    is in the right one — which would leave the list unreadable at face value."""
+    warnings.filterwarnings("ignore")
+    from backlot.main import app
+
+    served = list(app.openapi()["paths"])
+    prefixes = [p for ps in openapi.SOURCE_PREFIXES.values() for p in ps]
+    for prefix, reason in openapi.NOT_BRIDGED.items():
+        assert any(p == prefix or p.startswith(prefix + "/") for p in served), prefix
+        assert reason.strip(), prefix
+        covered = [p for p in prefixes if prefix.startswith(p) or p.startswith(prefix)]
+        assert not covered, f"{prefix} is declared not bridged but sits under {covered}"

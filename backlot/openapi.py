@@ -32,15 +32,48 @@ import warnings
 warnings.filterwarnings("ignore", message="Duplicate Operation ID", category=UserWarning)
 
 # source -> the path prefix(es) whose operations that source's MCP server should expose.
+#
+# A source is named here for the MCP bridge, so one entry can span several vendor APIs: `gdrive`
+# is the Drive, Docs, Sheets and Slides roots, because one `google_drive` record is a file that
+# Drive lists and one of the three editors reads. Every served path outside `NOT_BRIDGED` has to
+# be under one of these, and every prefix has to select something — `test_openapi.py` asserts both
+# directions, because a source whose other prefix selects something still slices to a non-empty
+# spec, so a dead-prefix check alone cannot see a root that goes unbridged.
 SOURCE_PREFIXES: dict[str, list[str]] = {
     "github": ["/github"],
     "slack": ["/slack/api"],
     "gmail": ["/gmail"],
-    "gdrive": ["/drive"],
+    "gdrive": ["/drive/v3", "/docs/v1", "/sheets/v4", "/slides/v1"],
     "notion": ["/notion/v1"],
-    "atlassian": ["/atlassian", "/wiki"],
+    "atlassian": ["/atlassian"],
     "hubspot": ["/hubspot"],
     "s3": ["/s3"],
+}
+
+# Served paths no source's MCP server exposes, and why. Matched by prefix, so `/batch` covers
+# `/batch/{api}/{version}`.
+#
+# The escape hatch the coverage check named above is built around, in the shape
+# `fidelity.comparisons.UNCOMPARED` set: an entry is a reason a reviewer reads, not a silence.
+# Three are Backlot's own surface, which is not a vendor's and so has no place in a toolset built
+# to answer as one; `/batch` is a vendor's, and says its own reason.
+NOT_BRIDGED: dict[str, str] = {
+    "/health": "Backlot's own liveness endpoint, not a vendor's surface",
+    "/oauth2/token": (
+        "Backlot's own token exchange. `backlot.mcp` reads the whole credential set off "
+        "`/_meta/users` and puts it on every tool call, so an agent has nothing to exchange."
+    ),
+    "/_meta": (
+        "Backlot's own introspection — the corpus's principals and the per-source OpenAPI. This "
+        "table is what the second of those answers, so a tool built from it would be circular."
+    ),
+    "/batch": (
+        "Google's `multipart/mixed` batch transport, which carries operations rather than being "
+        "one: a part is an `application/http` sub-request with its own method and target, which "
+        "`routers.google.batch` dispatches back through this app. The route declares no request "
+        "body, so the only arguments a tool would get are the `api` and `version` query params it "
+        "shares with `/batch/{api}/{version}`, neither of which can carry a sub-request."
+    ),
 }
 
 _METHODS = ("get", "post", "put", "delete", "patch")

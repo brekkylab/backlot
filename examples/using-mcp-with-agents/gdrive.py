@@ -35,6 +35,28 @@ CORPUS = [
         "content": "p95 checkout latency 2.1s after the payments migration; rolled back.",
     },
     {
+        # A spreadsheet states its cells as `sheets`, and then carries no `content`: Drive's
+        # `files.export` derives that from the first sheet (docs/corpus.md, "Spreadsheets").
+        "updated": "2026-02-12T11:00:00Z",
+        "author_email": "ava@acme.com",
+        "created": "2026-02-12T11:00:00Z",
+        "source_type": "google_drive",
+        "folder": "Incidents",
+        "subtype": "spreadsheet",
+        "title": "Checkout latency by region",
+        "sheets": [
+            {
+                "title": "p95",
+                "grid": [
+                    ["region", "checkout p95 ms before", "checkout p95 ms after"],
+                    ["us-east", 410, 2100],
+                    ["eu-west", 380, 1900],
+                    ["ap-south", 520, 640],
+                ],
+            }
+        ],
+    },
+    {
         "updated": "2025-09-10T11:00:00Z",
         "author_email": "ava@acme.com",
         "created": "2025-09-10T11:00:00Z",
@@ -46,8 +68,9 @@ CORPUS = [
     },
 ]
 QUESTION = (
-    "Search Drive for the checkout latency postmortem and summarize it, then find the "
-    "on-call runbook doc. Cite the titles."
+    "Search Drive for the checkout latency postmortem and summarize it. Then open the latency-"
+    "by-region spreadsheet and read its cells: which region's p95 rose the most? Finally find "
+    "the on-call runbook doc. Cite the titles."
 )
 
 

@@ -259,6 +259,10 @@ _LOOP_FILES = (
             "experimental-cc-routine-2026-04-01",
         ),
     ),
+    (
+        "docs/loop.md",
+        ("needs-maintainer", "ready-for-maintainer", "decision: gap", "GITHUB_TOKEN"),
+    ),
 )
 
 

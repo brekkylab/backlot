@@ -2199,8 +2199,10 @@ def _linear_client(tmp_path):
 
 # --- schema drift against api.linear.app (issue #101) --------------------------------------------
 # Every type below is what introspection of https://api.linear.app/graphql reported on 2026-09-03,
-# copied here as literals so the suite runs offline; `backlot diff --source linear` is the live
-# re-measurement and `backlot/fidelity/baseline/linear.json` the record of the gaps it accepts.
+# copied here as literals so the suite runs offline; a line moves when the vendor moves and the
+# divergence is read, as `IntegrationService` has twice since that date, dated on the enum in
+# `backlot/graphql/linear.graphql`. `backlot diff --source linear` is the live re-measurement and
+# `backlot/fidelity/baseline/linear.json` the record of the gaps it accepts.
 # Most entries were a `breaking` finding in #101: Backlot declared the same name at a different
 # type, or declared a name the vendor does not have. The behaviour tests after the tables pin that
 # the resolvers PRODUCE the corrected types -- a changed declaration on its own is not a fix.
@@ -2266,6 +2268,7 @@ LINEAR_ENUMS = {
     "ExternalSyncService": ["jira", "github", "slack"],
     "IntegrationService": [
         "airbyte",
+        "datadog",
         "discord",
         "figma",
         "figmaPlugin",

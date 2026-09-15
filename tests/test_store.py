@@ -2415,12 +2415,27 @@ def test_write_meta_commits_the_entire_transaction(tmp_path):
     check_conn.close()
 
 
-def test_missing_tables_names_what_an_older_db_lacks(tmp_path):
+def test_missing_schema_names_what_an_older_db_lacks(tmp_path):
     """A DB is built by `backlot import` and served READ-ONLY, so `CREATE TABLE IF NOT EXISTS`
-    never runs against one that predates a table — every read touching it would raise a bare
-    OperationalError. The server asks this once at startup and names the gap instead."""
+    never runs against one that predates a table and never adds a column to a table it finds —
+    every read touching either would raise a bare OperationalError. The server asks this once at
+    startup and names the gap instead, a column as `table.column`."""
     conn = store.connect_rw(tmp_path / "old.sqlite")
-    assert store.missing_tables(conn) == []
+    assert store.missing_schema(conn) == []
+    conn.execute("ALTER TABLE gdrive_files DROP COLUMN title_fold")
+    conn.commit()
+    assert store.missing_schema(conn) == ["gdrive_files.title_fold"]
     conn.execute("DROP TABLE gdrive_sheets")
     conn.commit()
-    assert store.missing_tables(conn) == ["gdrive_sheets"]
+    assert store.missing_schema(conn) == ["gdrive_files.title_fold", "gdrive_sheets"]
+
+
+def test_schema_columns_reads_every_table_off_the_ddl():
+    """The column list is read off `SCHEMA`'s text, so it names what `connect_rw` creates —
+    checked against a fresh DB table by table."""
+    conn = store.connect_rw(":memory:")
+    declared = store.schema_columns()
+    assert len(declared) == store.SCHEMA.count("CREATE TABLE IF NOT EXISTS")
+    for table, columns in declared.items():
+        created = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
+        assert columns == created, table

@@ -10,8 +10,8 @@ first step of any LlamaIndex ingestion / RAG pipeline. Each script is self-conta
     python examples/using-llamaindex-readers/github.py --url http://localhost:8000 --token <usr-token>
 
 The only difference from talking to the real SaaS is where the reader points. Four readers take a
-host argument directly; five hardcode the host, so the helpers in `backlot.integrations.llamaindex`
-redirect them.
+host argument directly; the others hardcode the host, so the helpers in
+`backlot.integrations.llamaindex` redirect them.
 
 | Source | Reader class | How it's pointed at Backlot |
 |--------|--------------|------------------------------|
@@ -24,6 +24,7 @@ redirect them.
 | Gmail | `GmailReader` | `point_gmail_at()` (wraps `googleapiclient.discovery.build`) + patches `_get_credentials` |
 | HubSpot | `HubspotReader` | `point_hubspot_at()` (rebinds `hubspot.HubSpot` to inject `host=`) |
 | Google Drive | `GoogleDriveReader` | `point_drive_at()` (wraps `build`) + real `service_account_key=` injection hook |
+| Google Sheets | `GoogleSheetsReader` | `point_sheets_at()` (wraps `build`) + patches `_get_credentials` |
 | Linear | `LinearReader` | `patch_linear_at()` (swaps the module's `requests` for a URL-rewriting proxy) |
 | Fireflies | **none exists** | n/a — `llama-index-readers-fireflies` is not on PyPI; see the note below |
 
@@ -109,6 +110,12 @@ exactly as against the real API.
   impersonation) path needs no monkeypatch beyond `point_drive_at()`. Impersonating a user
   (`--user <email>`) still needs an instance-level `_get_credentials` override, since that
   constructor path drops any `subject`.
+- **Google Sheets** (`gsheets.py`): `point_sheets_at()` wraps `build` the same way, with `/sheets` on
+  the endpoint (the Sheets discovery document spells its version in the path, where Google Drive's
+  rootUrl already carries `/drive/v3`). `GoogleSheetsReader` has no credential hook, as `GmailReader`
+  has none, so the example overrides `_get_credentials` on the instance. The reader reads every sheet
+  as `R1C1:R{rowCount}C{columnCount}`, the R1C1 request Backlot's `values.get` accepts; the workbook
+  is resolved through Drive by exact name, `name = '…'`.
 
 Gmail/Google Drive credentials (and the shared OAuth client config) come from Backlot's
 `GET /_meta/credentials`, exactly as in `examples/using-official-sdk/`.

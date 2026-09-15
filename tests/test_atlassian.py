@@ -1506,10 +1506,17 @@ def test_jira_search_post_reads_the_media_type_the_way_real_matches_it(
 @pytest.mark.parametrize(
     "raw,message",
     [
+        # "no content" is about LENGTH, not emptiness after stripping
         ("", "No content to map to Object due to end of input"),
         ("null", "No content to map to Object due to end of input"),
         ("{", "There was an error parsing JSON. Check that your request body is valid."),
         ("[]", "Invalid request payload. Refer to the REST API documentation and try again."),
+        # a body that parses to anything but an object, whatever that anything is
+        ("5", "Invalid request payload. Refer to the REST API documentation and try again."),
+        ('"x"', "Invalid request payload. Refer to the REST API documentation and try again."),
+        ("true", "Invalid request payload. Refer to the REST API documentation and try again."),
+        # whitespace alone is NOT the parse error a JSON reader would raise, and not "no content"
+        ("   ", "Invalid request payload. Refer to the REST API documentation and try again."),
     ],
 )
 def test_jira_search_post_refuses_a_body_it_cannot_turn_into_an_object(
@@ -1525,6 +1532,18 @@ def test_jira_search_post_refuses_a_body_it_cannot_turn_into_an_object(
     )
     assert r.status_code == 400, r.text
     assert r.json() == {"errorMessages": [message]}
+
+
+def test_jira_search_post_ignores_bytes_after_a_complete_body(client, admin_h):
+    """Measured: `{"jql": …} junk` is answered 200 — the vendor's parser reads the first value and
+    lets the rest go, where a whole-input JSON read would refuse it."""
+    r = client.post(
+        "/atlassian/rest/api/3/search/jql",
+        headers={**admin_h, "Content-Type": "application/json"},
+        content=json.dumps({"jql": "project = payments"}) + " trailing",
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["issues"]
 
 
 def test_jira_search_post_with_no_body_at_all_is_the_media_type_refusal(client, admin_h):

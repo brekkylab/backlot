@@ -156,7 +156,16 @@ async def _http_exception_handler(request: Request, exc: StarletteHTTPException)
     body = errors.http_body(request.url.path, exc, request.query_params)
     if body is None:
         body = {"detail": exc.detail}
-    return JSONResponse(status_code=exc.status_code, content=body, headers=headers)
+    # A vendor may answer one refusal under a media type of its own — Jira's type-conversion 400 is
+    # RFC 7807 on `application/problem+json`, where its other 400s are plain JSON. The exception
+    # carries it, because the path and status this is reached by are the same for both and
+    # `errors.json_media_type` sees only those two. `None` leaves `JSONResponse`'s own type alone.
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=body,
+        headers=headers,
+        media_type=getattr(exc, "media_type", None),
+    )
 
 
 @app.exception_handler(RequestValidationError)

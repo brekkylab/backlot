@@ -8,12 +8,12 @@ status codes were already right.
 Everything here was measured against the live Docs / Drive / Gmail / Sheets / Slides APIs. The
 envelope is NOT uniform — three families differ in which optional members they carry:
 
-    family                        errors[]   status                no Authorization header
-    ------------------------------|---------|----------------------|------------------------
-    Drive v3                      | always  | auth failures only   | 403 PERMISSION_DENIED
-    Gmail v1                      | always  | always               | 401 UNAUTHENTICATED
-    Docs v1 / Slides v1           | never   | always               | 401 UNAUTHENTICATED
-    Sheets v4                     | never   | always               | 403 PERMISSION_DENIED
+    family                  errors[]           status               no Authorization header
+    ------------------------|------------------|---------------------|------------------------
+    Drive v3                | always           | auth failures only  | 403 PERMISSION_DENIED
+    Gmail v1                | unless $.xgafv=2 | always              | 401 UNAUTHENTICATED
+    Docs v1 / Slides v1     | $.xgafv=1        | always              | 401 UNAUTHENTICATED
+    Sheets v4               | $.xgafv=1        | always              | 403 PERMISSION_DENIED
 
 Sheets parts from the other two editor APIs on that last column: measured, a request with no
 Authorization header is 403 PERMISSION_DENIED with the unregistered-caller sentence, where Docs
@@ -21,20 +21,37 @@ answers 401 UNAUTHENTICATED with the missing-credential one. A present-but-inval
 UNAUTHENTICATED in every family, which is why a missing header and a bad token are separate
 constructors here rather than one "unauthorized".
 
-`errors[]` is what `$.xgafv` selects for the editor families -- `1` adds it, `2` and an absent
-parameter leave it off -- which is the column's "never" here, since nothing reads that parameter
-yet.
+`errors[]` is what `$.xgafv` selects, and the middle column above is the whole rule
+(:func:`has_errors_array`). It is a SYSTEM parameter — a top-level entry of a discovery document's
+``parameters``, which every method takes — so it is validated once for the router
+(:func:`validate_system_parameters`) and declared once for the document
+(:func:`backlot.openapi.google_system_parameters`) rather than route by route. Measured: Drive
+carries the array on a `fields` refusal at `2` as well as with no parameter; the LAST repeat is the
+value every rule reads (`2&1` carries it on Sheets where `1&2` does not, `2&0` on Gmail — a refused
+value is not a `2` — where `0&2` does not); a success body is the same under all of them; and a
+value other than `1` or `2` is refused ahead of a bad token, a missing credential and an
+unparseable range alike.
+
+Inside `errors[]` the entry follows the constructor that raised it, and each one carries its own
+measurement. Measured on Sheets and Docs at `$.xgafv=1`: a typed value the proto layer refuses is
+``reason: invalid`` with NO ``domain`` (:func:`invalid_field_value`); every other measured 400 is
+``badRequest`` under ``global`` (:func:`invalid_argument`, :func:`bad_field_mask`); a 404 is
+``notFound``; a bad token ``authError`` at ``location: Authorization``; an anonymous Sheets request
+``forbidden``; an anonymous request on any of the three OAuth-only APIs ``required`` with the short
+``Login Required.``. The two editor 400s NOT measured keep whatever their constructor already
+renders — ``Invalid gridRange`` is :func:`invalid_argument`, so ``badRequest``, but an Office file
+read as a native document is :func:`failed_precondition`, so ``failedPrecondition``.
 """
 
 from __future__ import annotations
 
-from fastapi import HTTPException
+from collections.abc import Mapping
 
-# Whether a family carries the legacy `errors[]` array. `status` needs no per-family flag: Drive's
-# parameter failures simply do not have one, while every Gmail and editor error does, so "the error
-# carries a status" is the whole condition.
+from fastapi import HTTPException, Request
+
 DRIVE, GMAIL, EDITOR = "drive", "gmail", "editor"
-_FAMILY_HAS_ERRORS = {DRIVE: True, GMAIL: True, EDITOR: False}
+# `status` needs no per-family flag: Drive's parameter failures simply do not have one, while every
+# Gmail and editor error does, so "the error carries a status" is the whole condition.
 _PREFIX_FAMILY = (
     ("/drive/v3", DRIVE),
     ("/gmail/v1", GMAIL),
@@ -80,9 +97,9 @@ class GoogleError(HTTPException):
     """An error carrying everything its envelope needs.
 
     ``reason``/``location`` populate ``errors[0]`` for the families that send it; ``status`` is the
-    canonical code name. ``short`` is a distinct ``errors[0].message`` — only the bad-token 401 uses
-    one, where Google's top-level message is the long form and ``errors[0]`` says "Invalid
-    Credentials"."""
+    canonical code name. ``short`` is a distinct ``errors[0].message``, where Google's top-level
+    message is the long form: the bad-token 401 says "Invalid Credentials" and the
+    missing-credential 401 says "Login Required."."""
 
     def __init__(
         self,
@@ -95,6 +112,7 @@ class GoogleError(HTTPException):
         status: str | None = None,
         short: str | None = None,
         details: list | None = None,
+        domain: str | None = "global",
     ):
         super().__init__(status_code=status_code, detail=message)
         self.message = message
@@ -104,6 +122,9 @@ class GoogleError(HTTPException):
         self.status = status
         self.short = short
         self.details = details
+        # `errors[0].domain`. Every measured entry says `global` except the proto layer's typed-value
+        # refusal, which carries none — so a constructor that renders that one passes ``None``.
+        self.domain = domain
 
 
 # --- constructors: the call site names the KIND of failure, which is what only it knows ---------
@@ -154,8 +175,19 @@ def not_downloadable() -> GoogleError:
 
 
 def invalid_argument(message: str) -> GoogleError:
-    """The editor APIs' generic 400."""
-    return GoogleError(400, message, reason="invalidArgument", status="INVALID_ARGUMENT")
+    """The editor APIs' generic 400. Its `errors[]` entry, shown at `$.xgafv=1`, is ``badRequest``
+    under ``global`` — measured on an unparseable range, a range past the grid, an unsupported
+    ``alt``, ``dataFilter.filter must be specified.``, ``No sheet with id``, ``Must specify at least
+    one dataFilter.`` and a non-JSON body. A typed value the proto layer refuses is a different
+    entry: :func:`invalid_field_value`."""
+    return GoogleError(400, message, reason="badRequest", status="INVALID_ARGUMENT")
+
+
+def invalid_field_value(message: str) -> GoogleError:
+    """The proto layer's refusal of a typed value — ``Invalid value at '<field>' (<type>),
+    "<value>"`` for an enum, a bool or an int32. Measured at `$.xgafv=1`, its `errors[]` entry is
+    ``reason: invalid`` and carries no ``domain``, which no other Google error measured does."""
+    return GoogleError(400, message, reason="invalid", status="INVALID_ARGUMENT", domain=None)
 
 
 def bad_field_mask(path: str) -> GoogleError:
@@ -167,7 +199,7 @@ def bad_field_mask(path: str) -> GoogleError:
     return GoogleError(
         400,
         "Request contains an invalid argument.",
-        reason="invalidArgument",
+        reason="badRequest",
         status="INVALID_ARGUMENT",
         details=[
             {
@@ -211,9 +243,21 @@ def bad_token() -> GoogleError:
 
 
 def missing_credentials() -> GoogleError:
-    """No Authorization header, on an OAuth-only API (Gmail, Docs, Slides)."""
+    """No Authorization header, on an OAuth-only API (Gmail, Docs, Slides).
+
+    One answer for the three: measured 2026-09-14, Gmail, Docs and Slides send the same long
+    top-level message and the same `errors[]` entry, the short ``Login Required.`` at ``location:
+    Authorization``. Which of them SHOWS that entry still differs — Gmail carries it unless
+    `$.xgafv=2`, the editor families only at `1` — but that is `has_errors_array`'s rule, not a
+    difference in the error."""
     return GoogleError(
-        401, MISSING_CREDENTIALS_MESSAGE, reason="required", status="UNAUTHENTICATED"
+        401,
+        MISSING_CREDENTIALS_MESSAGE,
+        reason="required",
+        location="Authorization",
+        location_type="header",
+        status="UNAUTHENTICATED",
+        short="Login Required.",
     )
 
 
@@ -233,21 +277,77 @@ def no_credentials(path: str) -> GoogleError:
     return missing_credentials()
 
 
-def http_body(path: str, exc: HTTPException) -> dict:
+# --- system parameters ---------------------------------------------------------------------------
+
+XGAFV = "$.xgafv"
+XGAFV_VALUES = ("1", "2")
+
+
+def bad_system_parameter(name: str, value: str) -> GoogleError:
+    """A system parameter with a value it does not take. Measured on Sheets and Drive for `$.xgafv`
+    at `0`, `3`, `NOPE`, `01` and the empty string: 400 INVALID_ARGUMENT with this sentence, spacing
+    included, and on Drive an `errors[]` entry of ``badRequest`` under ``global``."""
+    return GoogleError(
+        400,
+        f"Invalid query parameters. Invalid value '{value}' for system query parameter : {name}",
+        reason="badRequest",
+        status="INVALID_ARGUMENT",
+    )
+
+
+def xgafv(query: Mapping[str, str] | None) -> str | None:
+    """The `$.xgafv` a request sent, or ``None``. Starlette's ``QueryParams.get`` answers the LAST
+    repeat, which is the one real reads."""
+    return None if query is None else query.get(XGAFV)
+
+
+def validate_system_parameters(request: Request) -> None:
+    """Refuse a `$.xgafv` other than `1` or `2`, on a Google-family path, before the route runs.
+
+    A router-level dependency, so it is the first thing a request meets: measured, real answers this
+    400 ahead of a bad token, a missing credential and an unparseable range. The batch endpoint is
+    not a family path and is left alone."""
+    if family(request.url.path) is None:
+        return
+    value = xgafv(request.query_params)
+    if value is not None and value not in XGAFV_VALUES:
+        raise bad_system_parameter(XGAFV, value)
+
+
+def has_errors_array(fam: str, value: str | None) -> bool:
+    """Whether a family's error carries `errors[]` under the `$.xgafv` the request sent.
+
+    Three rules, one per family, each measured. Drive always carries it. Gmail carries it unless
+    the value is `2`, so an absent parameter and a value Google refuses both keep it. The editor
+    families carry it only at `1`."""
+    if fam == DRIVE:
+        return True
+    if fam == GMAIL:
+        return value != "2"
+    return value == "1"
+
+
+def http_body(path: str, exc: HTTPException, query: Mapping[str, str] | None = None) -> dict:
     """Render an exception into its family's envelope.
 
     The EXCEPTION, not its ``detail``: a :class:`GoogleError` carries the reason / location / status
     as attributes on itself, and reading them off the detail string would silently flatten every
     error to a bare message. A plain ``HTTPException`` raised on a Google path still renders — it
     just carries no reason — so a route that has not been migrated degrades instead of 500ing.
+
+    ``query`` is the request's, for the one thing the envelope reads off it: `$.xgafv=1` puts
+    `errors[]` on an editor-family error.
     """
     message = getattr(exc, "message", None)
     if message is None:
         detail = exc.detail
         message = detail if isinstance(detail, str) else str(detail)
     err: dict = {"code": exc.status_code, "message": message}
-    if _FAMILY_HAS_ERRORS[family(path)]:
-        entry = {"message": getattr(exc, "short", None) or message, "domain": "global"}
+    if has_errors_array(family(path), xgafv(query)):
+        entry = {"message": getattr(exc, "short", None) or message}
+        domain = getattr(exc, "domain", "global")
+        if domain:
+            entry["domain"] = domain
         reason = getattr(exc, "reason", None)
         if reason:
             entry["reason"] = reason

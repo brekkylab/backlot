@@ -249,6 +249,16 @@ _LOOP_FILES = (
         ".claude/skills/loop/SKILL.md",
         ("---\nname: loop\n", "description:", "disable-model-invocation: true", "## Rehearsal"),
     ),
+    (
+        ".github/workflows/loop-doorbell.yml",
+        (
+            "issues:",
+            "issue_comment:",
+            "LOOP_FIRE_URL",
+            "LOOP_FIRE_TOKEN",
+            "experimental-cc-routine-2026-04-01",
+        ),
+    ),
 )
 
 

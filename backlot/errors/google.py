@@ -323,9 +323,11 @@ def first_repeat(query: Mapping[str, str] | None, name: str) -> str | None:
     last, so reading one of these off it is wrong wherever a caller repeats it.
 
     Read through here by `callback` and by `alt`, which :func:`jsonp_callback` needs to agree with
-    ``routers.google._sheets_respond`` on. `fields` and `prettyPrint` still come off
-    ``QueryParams.get`` at their own read sites, so a caller that repeats one of those gets the last
-    value where real takes the first -- measured the same day, not yet fixed.
+    ``routers.google._sheets_respond`` on. The other parameters still come off ``QueryParams.get``
+    at their own read sites, which is right for some of them and wrong for the rest: measured the
+    same day, `majorDimension` and `includeGridData` really are read last, while `fields`,
+    `prettyPrint`, `pageSize`, `pageToken`, `q`, `orderBy` and `mimeType` are read first and are
+    not yet fixed here.
     """
     if query is None:
         return None

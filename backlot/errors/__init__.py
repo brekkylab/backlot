@@ -25,7 +25,9 @@ A module in ``_ENVELOPES`` provides:
   Google has one: its errors are indented, its `content-type` carries a charset, and a `callback`
   on a GET turns one into a 200 JSONP script. The whole REQUEST, because that rendering reads the
   method as well as the query. A vendor without it gets FastAPI's ``JSONResponse`` around the dict,
-  which is what Atlassian and GitHub keep.
+  which is what Atlassian and GitHub keep — measured, Atlassian ignores `callback` on every route
+  asked, and GitHub's JSONP is a different envelope under a different media type, so neither wants
+  Google's renderer.
 
 A media type that varies by REFUSAL rather than by path and status cannot come from
 ``json_media_type``, which sees only those two. It rides on the exception instead, as a

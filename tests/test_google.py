@@ -1403,9 +1403,16 @@ def test_angle_brackets_are_escaped_in_a_google_success(tmp_path):
 
 
 def test_a_callback_changes_nothing_outside_google(client, admin_h):
-    """The handler serves Atlassian and GitHub too, and neither vendor's error rendering has been
-    measured for `callback` or for indentation — so both keep exactly the `JSONResponse` they had,
-    GitHub's own charset (``errors.github.json_media_type``) included."""
+    """The handler serves Atlassian and GitHub too, and both keep exactly the `JSONResponse` they
+    had, GitHub's own charset (``errors.github.json_media_type``) included.
+
+    Measured 2026-09-15, that is right for both and for different reasons. Jira and Confluence
+    ignore `callback` outright — a 404 and a 200 come back identical with and without it. GitHub
+    honours it, but through an envelope of its own: `/**/cb({"meta": {…, "status": 404}, "data":
+    <the body>})` at 200 under `application/javascript; charset=utf-8`, compact, with an
+    unparseable name refused UNWRAPPED at 400 and an EMPTY one refused rather than ignored — the
+    opposite of Google on both counts. Sharing Google's renderer would answer neither vendor's
+    shape, so this test pins that it is not shared."""
     gh = client.get("/github/repos/nope/nope", headers=admin_h, params={"callback": "cb"})
     assert gh.status_code == 404
     assert gh.headers["content-type"] == "application/json; charset=utf-8"

@@ -20,17 +20,25 @@ A module in ``_ENVELOPES`` provides:
   body answered at that path with that status, when it is measured to differ from FastAPI's bare
   `application/json`. GitHub is the one that implements it; a vendor without it keeps the default,
   which is not a claim about what real sends.
+- ``rendered(status_code, body, query, headers)``, optional — the whole ``Response``, for a vendor
+  whose error bodies are measured to the byte or whose status the body does not decide. Only Google
+  has one: its errors are indented, its `content-type` carries a charset, and a `callback` turns one
+  into a 200 JSONP script. A vendor without it gets FastAPI's ``JSONResponse`` around the dict,
+  which is what Atlassian and GitHub keep.
 
-A media type that varies by REFUSAL rather than by path and status cannot come from that hook,
-which sees only those two. It rides on the exception instead, as a ``media_type`` attribute
-``backlot.main``'s handler reads: Atlassian's :class:`~backlot.errors.atlassian.AtlassianError`
-carries `application/problem+json` for Jira's type-conversion 400, where Jira's other 400s on the
-same path are plain JSON. A vendor that sets no such attribute is unaffected.
+A media type that varies by REFUSAL rather than by path and status cannot come from
+``json_media_type``, which sees only those two. It rides on the exception instead, as a
+``media_type`` attribute ``backlot.main``'s handler reads: Atlassian's
+:class:`~backlot.errors.atlassian.AtlassianError` carries `application/problem+json` for Jira's
+type-conversion 400, where Jira's other 400s on the same path are plain JSON. A vendor that sets no
+such attribute is unaffected.
 
 Adding a vendor is a module plus one entry below — not an edit to the handler.
 """
 
 from __future__ import annotations
+
+from fastapi import Response
 
 from backlot.errors import atlassian, github, google
 
@@ -56,6 +64,22 @@ def json_media_type(path: str, status_code: int) -> str | None:
     return None
 
 
+def rendered(path: str, status_code: int, body: dict, query=None, headers=None) -> Response | None:
+    """The vendor's own rendering of an error on ``path`` — the whole response rather than the body
+    alone — or ``None`` to let the handler answer with a ``JSONResponse`` around ``body``.
+
+    The whole response, because a vendor can decide more about an error than its dict: Google
+    indents every error body and ends it with a newline whatever `prettyPrint` says, names a charset
+    on the type, and answers a request carrying `callback` at 200 as a script with the error inside
+    it. ``query`` is the request's, for that last one.
+    """
+    for envelope in _ENVELOPES:
+        if envelope.owns(path):
+            render = getattr(envelope, "rendered", None)
+            return render(status_code, body, query, headers) if render is not None else None
+    return None
+
+
 def validation_body(path: str, errors) -> tuple[int, dict] | None:
     """The status and vendor-shaped body for a request-validation failure on ``path``, or ``None``
     to keep FastAPI's own 422.
@@ -69,4 +93,12 @@ def validation_body(path: str, errors) -> tuple[int, dict] | None:
     return None
 
 
-__all__ = ["atlassian", "github", "google", "http_body", "validation_body"]
+__all__ = [
+    "atlassian",
+    "github",
+    "google",
+    "http_body",
+    "json_media_type",
+    "rendered",
+    "validation_body",
+]

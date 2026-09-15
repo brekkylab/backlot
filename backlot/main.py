@@ -156,6 +156,15 @@ async def _http_exception_handler(request: Request, exc: StarletteHTTPException)
     body = errors.http_body(request.url.path, exc, request.query_params)
     if body is None:
         body = {"detail": exc.detail}
+    # A vendor may decide how the body reaches the wire as well as what is in it — Google's errors
+    # are indented to the byte and a `callback` answers one at 200 as a script. Asking the envelope
+    # keeps that where the rest of that vendor's error shape lives, and leaves the vendors whose
+    # rendering is not measured with exactly the JSONResponse they had.
+    rendered = errors.rendered(
+        request.url.path, exc.status_code, body, request.query_params, headers
+    )
+    if rendered is not None:
+        return rendered
     # A vendor may answer one refusal under a media type of its own — Jira's type-conversion 400 is
     # RFC 7807 on `application/problem+json`, where its other 400s are plain JSON. The exception
     # carries it, because the path and status this is reached by are the same for both and

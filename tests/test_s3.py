@@ -1573,3 +1573,28 @@ def test_a_repeated_parameter_is_read_as_its_first_value_including_list_type(
     )
     assert _children(_listing(big_bucket_client, "list-type=1&list-type=2", token))[2] == "Marker"
     assert "KeyCount" in _children(_listing(big_bucket_client, "list-type=2&list-type=1", token))
+
+
+def test_a_prefix_or_marker_at_the_last_code_point_is_a_page_not_a_500(
+    big_bucket_client, big_bucket_settings
+):
+    """Both parameters take any character a client sends, and the key-range helper had nothing to
+    increment past the last code point, so `?prefix=a\U0010ffff` was an unhandled ValueError —
+    a 500 with no `<Error>` body for boto3 to raise on. The listing's own `marker` reaches the
+    same helper through the CommonPrefixes group it resumes past, which is the route this PR
+    opens. Neither is a listing anyone wants; both are answered.
+
+    What real S3 does with these is unmeasured — a delimiter of `\U0010ffff` is not a query worth
+    a bucket — so the only claim here is that the server answers rather than crashes."""
+    token = big_bucket_settings.admin_token
+    last = "\U0010ffff"
+    for query in (
+        f"prefix=a{quote(last)}",
+        f"list-type=2&prefix=a{quote(last)}",
+        f"delimiter={quote(last)}&marker=a{quote(last)}",
+        f"delimiter={quote(last)}",
+        f"prefix={quote(last)}",
+    ):
+        r = _s3_get(big_bucket_client, f"/s3/encoded-bucket?{query}", token)
+        assert r.status_code == 200, (query, r.status_code, r.text[:200])
+        assert ET.fromstring(r.text).tag == f"{{{S3NS}}}ListBucketResult", query

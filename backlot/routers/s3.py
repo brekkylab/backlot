@@ -562,7 +562,7 @@ def _list_objects(
     # V1 reaches the same two bounds through `marker` alone: inside a group it resumes past the
     # whole group, and anywhere else past the key itself.
     continuation = _first(q, "continuation-token", None) if v2 else None
-    after, at = None, None
+    after, at, past_the_end = None, None, False
     if continuation:
         decoded = _decode_token(continuation)
         if decoded is not None:
@@ -577,6 +577,9 @@ def _list_objects(
         group = _group_of(marker, prefix, delimiter)
         if group:
             at = store.key_successor(group)
+            # No successor means the group runs to the end of what a key can spell, so nothing
+            # sorts after it and this page is empty rather than the whole listing over again.
+            past_the_end = at is None
         else:
             after = marker
 
@@ -588,14 +591,18 @@ def _list_objects(
     # back is not. served=0 is its own case — `rows` is empty after trimming, IsTruncated is false
     # the way real answers it, and nothing below reads the overflow row.
     served = min(max_keys, _MAX_KEYS)
-    rows = store.list_s3_objects(
-        conn,
-        bucket,
-        prefix=prefix,
-        start_after=after,
-        start_at=at,
-        visible_ids=visible,
-        limit=served + 1,
+    rows = (
+        []
+        if past_the_end
+        else store.list_s3_objects(
+            conn,
+            bucket,
+            prefix=prefix,
+            start_after=after,
+            start_at=at,
+            visible_ids=visible,
+            limit=served + 1,
+        )
     )
     is_truncated = served > 0 and len(rows) > served
     overflow_row = rows[served] if is_truncated else None  # first not-yet-returned raw row
@@ -642,7 +649,10 @@ def _list_objects(
             and overflow_row is not None
             and overflow_row["key"].startswith(last_val)
         ):
-            next_token = _encode_group_token(store.key_successor(last_val))
+            group_successor = store.key_successor(last_val)
+            next_token = (
+                _encode_group_token(group_successor) if group_successor is not None else None
+            )
         else:
             next_token = _encode_key_token(rows[-1]["key"])
     next_marker = entries[-1][1] if (is_truncated and entries and not v2 and delimiter) else None

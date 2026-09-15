@@ -599,6 +599,35 @@ def test_list_s3_objects_prefix_no_like_wildcard_semantics(tmp_path):
     assert store.list_s3_objects(conn, "b", prefix="logs%") == []
 
 
+def test_key_successor_carries_past_the_last_code_point_instead_of_raising():
+    """`chr(ord(c) + 1)` has nothing to return for the last code point, and both the prefix and the
+    delimiter a client sends reach this — `?prefix=a\U0010ffff` was a 500 on the wire.
+
+    The trailing run comes off and the character before it is incremented, which is still greater
+    than every string starting with the argument. A string that is only that code point has no
+    successor and says so with None."""
+    assert store.key_successor("logs/") == "logs0"  # '/' + 1
+    assert store.key_successor("a\U0010ffff") == "b"
+    assert store.key_successor("a\U0010ffff\U0010ffff") == "b"
+    assert store.key_successor("ab\U0010ffff") == "ac"
+    assert store.key_successor("\U0010ffff") is None
+    assert store.key_successor("\U0010ffff\U0010ffff") is None
+    # Still an upper bound: every string with the prefix sorts below what comes back.
+    for prefix, probe in (
+        ("a\U0010ffff", "a\U0010ffff\U0010ffff"),
+        ("ab\U0010ffff", "ab\U0010ffffz"),
+    ):
+        assert probe > prefix and probe < store.key_successor(prefix)
+
+
+def test_list_s3_objects_takes_the_lower_bound_alone_when_a_prefix_has_no_successor(tmp_path):
+    """A prefix of nothing but the last code point has no ceiling, and the range is the same
+    without one: every key at or above it starts with it."""
+    conn = _s3_mini_db(tmp_path)
+    assert store.list_s3_objects(conn, "b", prefix="\U0010ffff") == []
+    assert store.list_s3_objects(conn, "b", prefix="logs/") != []
+
+
 def test_list_s3_objects_prefix_uses_index_range_not_like(tmp_path):
     """Fix 1 (perf): the prefix filter must compile to an explicit key range on idx_s3_key —
     NOT a LIKE scan — since SQLite only range-optimizes a LIKE under case_sensitive_like=ON,

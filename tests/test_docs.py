@@ -245,6 +245,10 @@ _LOOP_FILES = (
         ".claude/agents/prose-reviewer.md",
         ("---\nname: prose-reviewer\n", "description:", "disallowedTools:"),
     ),
+    (
+        ".claude/skills/loop/SKILL.md",
+        ("---\nname: loop\n", "description:", "disable-model-invocation: true", "## Rehearsal"),
+    ),
 )
 
 

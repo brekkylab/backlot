@@ -8,12 +8,15 @@ ACL-filtered. Errors use Notion's envelope: ``{"object":"error","status","code",
 **Version-aware databases.** Notion moved database querying to the *data sources* model in
 ``2025-09-03``. This router keys off the ``Notion-Version`` request header:
 
-- ``2025-09-03`` (default): ``databases.retrieve`` returns a ``data_sources: [{id,name}]`` array
-  and rows are read via ``POST /data_sources/{id}/query``.
-- ``2022-06-28`` (e.g. mirage): ``databases.retrieve`` returns ``properties`` (schema) inline and
-  rows are read via ``POST /databases/{id}/query``.
+- ``2025-09-03`` and later (the default when a caller sends no header): ``databases.retrieve``
+  returns a ``data_sources: [{id,name}]`` array and rows are read via
+  ``POST /data_sources/{id}/query``.
+- before it (2022-06-28 and the three versions older than that): ``databases.retrieve`` returns
+  ``properties`` (schema) inline and rows are read via ``POST /databases/{id}/query``.
 
-Both query paths and both retrieve shapes are always served; Backlot has one data source per
+One query path per version, as on the real API: the other one answers ``invalid_request_url``,
+and a request that carries no version header reaches neither (see ``_version_refusal``). Both
+retrieve shapes stay served, each under its own versions. Backlot has one data source per
 database, its id assigned at import alongside the database's own.
 
 Object mapping: a Notion *page* is one doc (``subtype='page'``); a *database* is one doc
@@ -37,8 +40,12 @@ from backlot.routers import json_body
 router = APIRouter(prefix="/notion/v1", tags=["notion"])
 
 _PAGE_MAX = 100  # Notion caps page_size at 100
-DEFAULT_VERSION = "2025-09-03"
-LEGACY_VERSION = "2022-06-28"
+# The version that split databases into data sources, so the cut between the two models: a
+# request at or after it reads rows through a data source, one before it through the database.
+# Notion names a version for its release date and lists them in that order, which is what makes
+# ``_data_sources_model`` a date comparison ("Changes by version", read 2026-09-15).
+DATA_SOURCES_VERSION = "2025-09-03"
+DEFAULT_VERSION = DATA_SOURCES_VERSION
 
 
 # --- OpenAPI enrichment --------------------------------------------------
@@ -83,7 +90,39 @@ _B_SEARCH = _body(
         "page_size": {"type": "integer"},
     }
 )
-_B_QUERY = _body({"start_cursor": {"type": "string"}, "page_size": {"type": "integer"}})
+
+
+def _version_param(serves: str, refuses: str) -> dict:
+    """The ``Notion-Version`` header parameter for one query route: ``serves`` names the versions
+    that route is the path for, ``refuses`` the ones that read a database's rows through the other.
+
+    Notion's own document declares this header on every one of its operations, required; Backlot
+    declares it on the pair where it decides the answer, which is the pair that honours it -- a
+    route that ignores a parameter must not advertise it (see ``openapi.qp``). Spelling it out
+    here is also the whole of what the MCP bridge knows: the header carries no default there, so
+    without this the generated tool has no way to send a version and the route refuses it."""
+    return {
+        "name": "Notion-Version",
+        "in": "header",
+        "required": True,
+        "schema": {"type": "string"},
+        "description": (
+            f"The API version to read this request under. This path serves {serves}; "
+            f"{refuses} read a database's rows through the other query path, and a request "
+            "under one of them is refused here, as is a request that sends no version."
+        ),
+    }
+
+
+def _query_extra(serves: str, refuses: str) -> dict:
+    return {
+        **_body({"start_cursor": {"type": "string"}, "page_size": {"type": "integer"}}),
+        "parameters": [_version_param(serves, refuses)],
+    }
+
+
+_B_QUERY_DATA_SOURCE = _query_extra("2025-09-03 and later", "versions before it")
+_B_QUERY_DATABASE = _query_extra("versions up to and including 2022-06-28", "2025-09-03 and later")
 
 
 # --------------------------------------------------------------------------- helpers
@@ -97,7 +136,58 @@ def _error(status: int, code: str, message: str) -> JSONResponse:
 
 
 def _version(request: Request) -> str:
+    """The caller's ``Notion-Version``, or :data:`DEFAULT_VERSION` when it sent none. Real Notion
+    requires the header on every request ("The Notion-Version header must be included in all REST
+    API requests", Versioning, read 2026-09-15) and answers ``missing_version`` without it; the
+    query routes are the pair that requirement is enforced on here (see ``_version_refusal``),
+    because they are where it was measured. Everywhere else a header-less caller is still served,
+    and the two answers that depend on the version -- ``databases.retrieve``'s shape and the
+    databases ``search`` returns -- are built on this default."""
     return request.headers.get("notion-version") or DEFAULT_VERSION
+
+
+def _data_sources_model(version: str) -> bool:
+    """Whether ``version`` reads a database's rows through a data source.
+
+    2025-09-03 re-organised the ``/v1/databases`` APIs into ``/v1/data_sources`` (for a data
+    source) and ``/v1/databases`` (for the container that holds them). Every version before it
+    predates data sources entirely, so the comparison is against the date, not against the one
+    legacy version a client happens to send: 2022-02-22 has no more idea what a data source is
+    than 2022-06-28 does.
+
+    A value that is not one of Notion's dated versions sorts by its own text and is not refused --
+    what real Notion answers a version string it does not publish is not measured here."""
+    return version >= DATA_SOURCES_VERSION
+
+
+def _version_refusal(request: Request, *, data_sources: bool) -> JSONResponse | None:
+    """Notion's answer when the caller's version does not serve the query path it asked for, or
+    when it sent no version at all -- None when the request may go through.
+
+    Measured against api.notion.com on 2026-09-11 with an integration token, probing each path
+    with an id that exists but is a page: 2022-06-28 serves ``databases/{id}/query`` and answers
+    ``invalid_request_url`` for ``data_sources/{id}/query``, 2025-09-03 the other way round, and a
+    request with no header at all is refused with ``missing_version`` on either. The two messages
+    come from different places, since that probe recorded the codes: ``Invalid request URL.`` is
+    what api.notion.com answered on 2026-09-15 for a path no version mounts at all, and the
+    ``missing_version`` wording is the example Notion's status-code table prints for that code
+    (read the same day).
+
+    After the 401, not before it: on 2026-09-15 an invalid token answered ``unauthorized`` on both
+    paths under 2022-06-28, under 2025-09-03 and with no version header at all, so neither refusal
+    is reachable without a credential that resolves. An empty header value is taken as none
+    sent."""
+    version = request.headers.get("notion-version")
+    if not version:
+        return _error(
+            400,
+            "missing_version",
+            "Notion-Version header failed validation: Notion-Version header should be defined, "
+            "instead was undefined.",
+        )
+    if _data_sources_model(version) is not data_sources:
+        return _error(400, "invalid_request_url", "Invalid request URL.")
+    return None
 
 
 def _norm(nid: str) -> str:
@@ -122,11 +212,11 @@ def _existing_id(request: Request, page_id: str) -> str | None:
     PRIMARY KEY lookup (see store.notion_by_id). All it does is normalise the spelling and
     confirm a row holds that id.
 
-    Unscoped by ACL on purpose: used only by query_database (via _query_rows), which needs the id
-    to drive a further, separately ACL-scoped query (store.children, a DIFFERENT table) rather
-    than to serve this row itself -- see get_page and friends (and list_comments), which read the
-    row directly instead of going through here, so as not to resolve it once and refetch it a
-    second time for the ACL check."""
+    Unscoped by ACL on purpose: used only by _query_rows, for the ``databases/{id}/query`` half,
+    which needs the id to drive a further, separately ACL-scoped query (store.children, a
+    DIFFERENT table) rather than to serve this row itself -- see get_page and friends (and
+    list_comments), which read the row directly instead of going through here, so as not to
+    resolve it once and refetch it a second time for the ACL check."""
     row = store.notion_by_id(auth.conn(request), _norm(page_id))
     return row["id"] if row is not None else None
 
@@ -266,10 +356,10 @@ def _database_obj(conn, row, version: str) -> dict:
         "url": f"https://www.notion.so/{did.replace('-', '')}",
         "public_url": None,
     }
-    if version == LEGACY_VERSION:
-        obj["properties"] = _schema_props(row)
-    else:
+    if _data_sources_model(version):
         obj["data_sources"] = [{"id": row["data_source_id"], "name": row["title"]}]
+    else:
+        obj["properties"] = _schema_props(row)
     return obj
 
 
@@ -382,10 +472,19 @@ async def get_data_source(data_source_id: str, request: Request):
     return _data_source_obj(conn, row)
 
 
-async def _query_rows(request: Request, db_id: str | None):
+async def _query_rows(request: Request, row_id: str, *, data_sources: bool):
+    """The rows of one database, reached by whichever of the two query paths the caller's version
+    serves. ``row_id`` is the id as spelled in the path -- a data source's under ``data_sources``,
+    the database's own under ``databases`` -- and is resolved only once the credential and the
+    version have both been accepted, so a refused request never runs a lookup."""
     caller = auth.resolve_bearer(request)
     if caller is None:
         return _error(401, "unauthorized", "API token is invalid.")
+    if (refusal := _version_refusal(request, data_sources=data_sources)) is not None:
+        return refusal
+    db_id = (
+        _db_doc_for_data_source(request, row_id) if data_sources else _existing_id(request, row_id)
+    )
     conn = auth.conn(request)
     visible = auth.visible_ids(request, caller)
     db = store.get_document(conn, "notion", db_id, visible_ids=visible) if db_id else None
@@ -402,15 +501,19 @@ async def _query_rows(request: Request, db_id: str | None):
 
 
 @router.post(
-    "/data_sources/{data_source_id}/query", response_model=NotionList, openapi_extra=_B_QUERY
+    "/data_sources/{data_source_id}/query",
+    response_model=NotionList,
+    openapi_extra=_B_QUERY_DATA_SOURCE,
 )
 async def query_data_source(data_source_id: str, request: Request):
-    return await _query_rows(request, _db_doc_for_data_source(request, data_source_id))
+    return await _query_rows(request, data_source_id, data_sources=True)
 
 
-@router.post("/databases/{database_id}/query", response_model=NotionList, openapi_extra=_B_QUERY)
+@router.post(
+    "/databases/{database_id}/query", response_model=NotionList, openapi_extra=_B_QUERY_DATABASE
+)
 async def query_database(database_id: str, request: Request):
-    return await _query_rows(request, _existing_id(request, database_id))
+    return await _query_rows(request, database_id, data_sources=False)
 
 
 # --------------------------------------------------------------------------- search

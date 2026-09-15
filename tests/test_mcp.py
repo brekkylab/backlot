@@ -625,6 +625,40 @@ def test_mcp_hubspot_bridge_search_tool(live_server):
     )
 
 
+def test_mcp_notion_query_tools_send_the_version_their_path_is_served_under(live_server):
+    """Notion's two query paths are served one per `Notion-Version`, so a tool that cannot send a
+    version reaches neither: the bridge's client carries the credential and nothing else (asserted
+    on the header in `test_auth_header_spells_each_source_the_way_its_client_speaks`), and Backlot
+    answers a header-less query `missing_version` the way real Notion does. The routes declare the
+    header as a required parameter for exactly that reason, which is what puts it in the tool's
+    arguments here -- without it both tools would be unusable, and the failure would be a 400 at
+    call time rather than anything the spec shows."""
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    base, _ = live_server
+    creds = backlot_mcp.resolve(base, None)
+    did, dsid = synth.notion_id("nt-tasks-db"), synth.notion_data_source_id("nt-tasks-db")
+
+    async def _go():
+        server = backlot_mcp.openapi_server(base, creds, "notion")
+        async with Client(server) as c:
+            tools = {t.name: t for t in await c.list_tools()}
+            out = {}
+            for name, args in (
+                ("query_data_source", {"data_source_id": dsid, "Notion-Version": "2025-09-03"}),
+                ("query_database", {"database_id": did, "Notion-Version": "2022-06-28"}),
+            ):
+                assert "Notion-Version" in tools[name].inputSchema["required"], name
+                res = await c.call_tool(name, args)
+                out[name] = "".join(getattr(b, "text", "") for b in res.content)
+            return out
+
+    answers = asyncio.run(_go())
+    for name, text in answers.items():
+        assert '"object": "page"' in text or '"object":"page"' in text, (name, text[:200])
+
+
 # ------------------------------------------------------------------ `backlot mcp` over stdio
 # The command an MCP client runs. The in-memory tests above prove each source's bridge; these prove
 # the process around it: the stdio transport, the per-source namespace, the server it starts when

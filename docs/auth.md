@@ -203,8 +203,12 @@ curl -s localhost:8000/notion/v1/users/me \
   -H "Notion-Version: 2025-09-03"
 ```
 
-`Notion-Version` is optional here and defaults to `2025-09-03`, the data-sources model. Real Notion
-requires it, so send it if you are exercising a client's own version handling.
+The two query paths require `Notion-Version`, the way real Notion requires it on every request:
+`POST data_sources/{id}/query` is served under `2025-09-03` and later and `POST
+databases/{id}/query` under the versions before it, each refusing the other's versions with
+`invalid_request_url`, and a request with no header at all with `missing_version`. Elsewhere the
+header is optional, and the two answers that depend on it — `databases/{id}`'s shape and the
+databases `search` returns — are built on `2025-09-03`, the data-sources model, without one.
 
 ### HubSpot — `Bearer`
 

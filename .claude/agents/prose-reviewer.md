@@ -50,7 +50,7 @@ VERDICT: pass | block
 - [note] docs/page.md:45 — <observation> — <optional suggestion>
 ```
 
-Drift, history in comments, a generated-doc hand edit and a missing PR template section are
-`block`. Length and duplication are `block` only when the resolution is a strict cut with no loss of
+Paths are repository-relative. Drift, history in comments, a generated-doc hand edit and a missing
+PR template section are `block`. Length and duplication are `block` only when the resolution is a strict cut with no loss of
 information; otherwise `note`. A finding you cannot quote from the diff or a file is not written.
 Three certain findings beat ten plausible ones.

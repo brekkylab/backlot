@@ -22,7 +22,10 @@ the body with `gh pr view <n> --json body` or from the prompt, and the files the
    in the environment (`docs/fidelity.md` lists which variable each vendor reads, and which vendor
    wants its key bare rather than as `Bearer`). Compare the vendor's answer to what the changed code
    serves. `block` when you cannot make the call, when the vendor answers differently, or when the
-   evidence is documentation alone while a credential for that vendor exists.
+   evidence is documentation alone while a credential for that vendor exists. Where the diff adds a
+   validation rule or an error message, measure each rule's own failing case: a message measured
+   for one value, one method or one resource does not carry to its neighbour, and the order two
+   refusals are reached in is measured by sending both at once.
 2. **Nothing new is silently wrong.** Trace each changed route: could it now answer `200` with a
    body the vendor would not send for that request? That is the one failure Backlot exists to
    prevent, and it is always `block`.
@@ -52,6 +55,6 @@ VERDICT: pass | block
 - [note] path/to/file.py:45 — <observation> — <optional suggestion>
 ```
 
-`block` findings make the verdict `block`; `note` findings never do. A finding you cannot tie to a
-file and line with evidence you produced is not written. Three certain findings beat ten plausible
+Paths are repository-relative. `block` findings make the verdict `block`; `note` findings never do.
+A finding you cannot tie to a file and line with evidence you produced is not written. Three certain findings beat ten plausible
 ones. When the measurement reproduces and the tests hold, say `VERDICT: pass` and stop.

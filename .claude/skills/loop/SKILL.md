@@ -35,6 +35,11 @@ conflicts, stop and say so; that issue cannot be rehearsed from here. The review
 branch against that revert commit rather than against `main`, and your summary ends with the diff
 between your change and the merged one (`git diff <merge commit> HEAD -- <files you touched>`),
 described in a sentence: same behaviour, or where it differs and which side the measurement backs.
+If step 3 classifies a closed issue as needing a decision, print the escalation comment you would
+have posted, then continue under the decision the merged pull request took, and say so.
+
+A rehearsal ends on the branch it started from: `git checkout <that branch>` before your summary,
+leaving `claude/rehearsal-$0` in place for a maintainer to read.
 
 ## 1. Survey
 
@@ -144,9 +149,12 @@ one, followed by the PR title and body you would have sent, since there is no PR
 
 Read each `VERDICT:` line and its findings. Treat findings the way you treat human review in step
 2: reproduce first, then fix or rebut with evidence. Push fixes, then dispatch both reviewers again
-in fresh contexts. Stop when both say `pass`. After three rounds with a `block` still standing,
-`gh pr ready --undo` (draft), add `needs-maintainer`, and comment one paragraph stating the finding,
-your evidence against it, and what a maintainer needs to decide.
+in fresh contexts. Stop when both say `pass` on the same commit. A reviewer that passed is not
+dispatched again unless a later fix touched what it reviews. After three rounds with a `block`
+still standing: if every finding of the last round was applied undisputed, dispatch that reviewer
+once more on the result; otherwise, or if it still blocks, `gh pr ready --undo` (draft), add
+`needs-maintainer`, and comment one paragraph stating the finding, your evidence against it, and
+what a maintainer needs to decide.
 
 ## 10. Hand over
 

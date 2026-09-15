@@ -7,6 +7,7 @@ Confluence bodies are storage-format XHTML — matching the real APIs.
 
 from __future__ import annotations
 
+import json
 import re
 from html import escape
 from urllib.parse import quote
@@ -19,14 +20,15 @@ from backlot.acl import Caller
 from backlot.config import get_settings
 from backlot.errors import atlassian as errors_atlassian
 from backlot.openapi import qp
-from backlot.pagination import confluence_next_link, decode_cursor, next_page_token
+from backlot.pagination import confluence_next_link, decode_cursor_or_none, next_page_token
 
 router = APIRouter(prefix="/atlassian", tags=["atlassian"])
 
 
 # --- OpenAPI enrichment --------------------------------------------------
-# jira_search reads params query-or-body (GET+POST) so they're documented with openapi_extra (no
-# signature change); confluence params are query-only. Response models use extra="allow" to
+# jira_search takes its parameters in the query string on GET and in the body on POST, one
+# operation each, documented with openapi_extra (no signature change); confluence params are
+# query-only. Response models use extra="allow" to
 # preserve every field. Error paths raise HTTPException (Atlassian-shaped), not filtered here.
 # Secondary metadata routes (roles / linktypes / labels / restrictions) are left untyped — the
 # bridge still exposes them as tools; they aren't retrieval surfaces.
@@ -70,8 +72,12 @@ class ConfluencePage(_ALoose):
     pass
 
 
-_X_JIRA_SEARCH = {
-    "parameters": [qp("jql"), qp("maxResults", "integer"), qp("nextPageToken")],
+# One operation per METHOD, because the two take the same three parameters in different places:
+# the GET form in the query string, the POST form in a `SearchAndReconcileRequestBean` body. Both
+# of Atlassian's documents split them this way, down to the schema name, and the live service
+# follows.
+_X_JIRA_SEARCH_GET = {"parameters": [qp("jql"), qp("maxResults", "integer"), qp("nextPageToken")]}
+_X_JIRA_SEARCH_POST = {
     "requestBody": {
         "content": {
             "application/json": {
@@ -360,38 +366,42 @@ async def jira_project_role(key: str, role_id: int, request: Request):
 
 @router.api_route(
     "/rest/api/2/search/jql",
-    methods=["GET", "POST"],  # atlassian-python-api uses v2
+    methods=["GET"],  # atlassian-python-api uses v2
     response_model=JiraSearchResult,
-    openapi_extra=_X_JIRA_SEARCH,
+    openapi_extra=_X_JIRA_SEARCH_GET,
 )
 @router.api_route(
     "/rest/api/3/search/jql",
-    methods=["GET", "POST"],
+    methods=["GET"],
     response_model=JiraSearchResult,
-    openapi_extra=_X_JIRA_SEARCH,
+    openapi_extra=_X_JIRA_SEARCH_GET,
+)
+@router.api_route(
+    "/rest/api/2/search/jql",
+    methods=["POST"],
+    response_model=JiraSearchResult,
+    openapi_extra=_X_JIRA_SEARCH_POST,
+)
+@router.api_route(
+    "/rest/api/3/search/jql",
+    methods=["POST"],
+    response_model=JiraSearchResult,
+    openapi_extra=_X_JIRA_SEARCH_POST,
 )
 async def jira_search(request: Request):
     conn = auth.conn(request)
     caller = _jira_caller(request)
     ids = auth.visible_ids(request, caller)
     default_size = get_settings().default_page_size
+    # One parameter, two places, and real reads exactly one of them per method. Measured
+    # 2026-09-15: on POST the query string is not read at all, so a `nextPageToken` placed there
+    # leaves the answer at page one under a 200, and `?maxResults=1` with a body that omits it is
+    # ignored.
     if request.method == "POST":
-        # POST keeps the lenient read it has always had, query string and all. Measured
-        # 2026-09-14: real does not read the query string on this method at ALL, so
-        # `POST search/jql?maxResults=abc` with any body is a 200 — applying the GET rules here
-        # would answer 400 where real answers 200, trading one divergence for another. #187 is
-        # where the query string stops being read on POST, and it measures the body's own parser
-        # (Jackson, which takes `1.5` as `1`) at the same time.
-        params = dict(request.query_params)
-        try:
-            parsed = await request.json()
-        except Exception:
-            parsed = None
-        if isinstance(parsed, dict):
-            params.update(parsed)
-        jql = str(params.get("jql", ""))
-        limit = _int(params.get("maxResults"), default_size)
-        token = params.get("nextPageToken")
+        body = await _jira_search_body(request)
+        jql = str(body.get("jql", ""))
+        limit = _int(body.get("maxResults"), default_size)
+        token = body.get("nextPageToken")
     else:
         jql = _str_param(request, "jql") or ""
         limit = _int_param(request, "maxResults", default_size)
@@ -402,7 +412,9 @@ async def jira_search(request: Request):
         # the unfiltered corpus.
         return {"issues": [], "isLast": True}
     term = _text_from_jql(jql)
-    offset = decode_cursor(token)
+    offset = decode_cursor_or_none(None if token is None else str(token))
+    if offset is None:
+        raise errors_atlassian.bad_page_token()
     if term:  # text ~ / summary ~ / description ~ → full-text search (FTS), scoped to project
         total = store.count_search(conn, term, "jira", ids, container=container)
         rows = store.search_documents(
@@ -1441,10 +1453,10 @@ def _int(v, default: int) -> int:
     """A value already read out of a JSON request body, as an int.
 
     The lenient one, and deliberately so: what parses the POST `search/jql` body on real is Jackson
-    rather than Spring's parameter binding, and it takes values the query string refuses (`1.5`
-    arrives as `1`) while refusing others in a body-wide message that names no parameter. Reading
-    the query string goes through :func:`_int_param` instead — see #187, which is where the body's
-    own rules get measured.
+    rather than Spring's parameter binding, and it takes values the query string refuses — `1.5`
+    arrives as `1` and `"5"` as `5`. The query string goes through :func:`_int_param` instead, which
+    reproduces Spring's rules. What Jackson refuses (`"abc"`, `true`, a range outside 1-5000) is a
+    body-wide message naming no parameter, and is not reproduced here.
     """
     try:
         return int(v) if v not in (None, "") else default
@@ -1528,6 +1540,49 @@ def _int_param(
         # flowed into the query where real answered 400.
         raise errors_atlassian.integer_conversion_failure(request.url.path, name, values)
     return n
+
+
+async def _jira_search_body(request: Request) -> dict:
+    """The `search/jql` request body, or the refusal real gives for one it will not read.
+
+    Measured 2026-09-15. The `Content-Type` is checked FIRST and on its own: a perfectly good JSON
+    body sent without the header is the same 415 as one sent with `text/plain`, so the header
+    decides before the bytes are looked at. The match is on the media type alone, case-insensitively
+    and ignoring parameters — `APPLICATION/JSON` and `application/json; charset=utf-8` are both
+    read, `*/*` and `application/xml` are not.
+
+    Then the body, which real sorts into three sentences, and the boundaries between them are not
+    where a JSON parser would draw them:
+
+    - a body of zero length, and a literal `null`, are "no content"
+    - bytes that do not parse are a parse error — but a body that is only WHITESPACE is not, it is
+      the not-an-object sentence, which is why emptiness here means length and not `strip()`
+    - JSON that parses to anything but an object — `[]`, `5`, `"x"`, `true` — is not-an-object
+
+    Trailing bytes after a complete value are IGNORED rather than refused: `{"jql": …} junk` is
+    answered 200. That is what `raw_decode` reproduces and `json.loads` would not, reading the
+    first value and letting the rest go.
+    """
+    content_type = request.headers.get("content-type")
+    if (content_type or "").split(";")[0].strip().lower() != "application/json":
+        raise errors_atlassian.unsupported_media_type(request.url.path, content_type)
+    raw = await request.body()
+    if not raw:
+        raise errors_atlassian.body_not_read(errors_atlassian.BODY_EMPTY)
+    try:
+        parsed, _end = json.JSONDecoder().raw_decode(raw.decode("utf-8", "replace").lstrip())
+    except ValueError:
+        message = (
+            errors_atlassian.BODY_NOT_AN_OBJECT
+            if not raw.strip()
+            else errors_atlassian.BODY_UNPARSEABLE
+        )
+        raise errors_atlassian.body_not_read(message) from None
+    if parsed is None:
+        raise errors_atlassian.body_not_read(errors_atlassian.BODY_EMPTY)
+    if not isinstance(parsed, dict):
+        raise errors_atlassian.body_not_read(errors_atlassian.BODY_NOT_AN_OBJECT)
+    return parsed
 
 
 def _str_param(request: Request, name: str, default: str | None = None) -> str | None:

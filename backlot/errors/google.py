@@ -27,10 +27,15 @@ constructors here rather than one "unauthorized".
 (:func:`validate_system_parameters`) and declared once for the document
 (:func:`backlot.openapi.google_system_parameters`) rather than route by route. Measured: Drive
 carries the array on a `fields` refusal at `2` as well as with no parameter; the LAST repeat is the
-value every rule reads (`2&1` carries it on Sheets where `1&2` does not, `2&0` on Gmail — a refused
-value is not a `2` — where `0&2` does not); a success body is the same under all of them; and a
-value other than `1` or `2` is refused ahead of a bad token, a missing credential and an
-unparseable range alike.
+value every rule about THIS parameter reads (`2&1` carries it on Sheets where `1&2` does not, `2&0`
+on Gmail — a refused value is not a `2` — where `0&2` does not), which is the opposite of the other
+system parameters (:func:`first_repeat`); a success body is the same under all of them; and a value
+other than `1` or `2` is refused ahead of a bad token, a missing credential and an unparseable range
+alike.
+
+`callback` is the second system parameter :func:`validate_system_parameters` checks, and the one
+that decides how a body reaches the wire rather than what is in it: see :func:`respond`, which is
+also where the indentation and the charset every Google error carries are decided.
 
 Inside `errors[]` the entry follows the constructor that raised it, and each one carries its own
 measurement. Measured on Sheets and Docs at `$.xgafv=1`: a typed value the proto layer refuses is
@@ -45,9 +50,11 @@ read as a native document is :func:`failed_precondition`, so ``failedPreconditio
 
 from __future__ import annotations
 
+import json
+import re
 from collections.abc import Mapping
 
-from fastapi import HTTPException, Request
+from fastapi import HTTPException, Request, Response
 
 DRIVE, GMAIL, EDITOR = "drive", "gmail", "editor"
 # `status` needs no per-family flag: Drive's parameter failures simply do not have one, while every
@@ -297,21 +304,110 @@ def bad_system_parameter(name: str, value: str) -> GoogleError:
 
 def xgafv(query: Mapping[str, str] | None) -> str | None:
     """The `$.xgafv` a request sent, or ``None``. Starlette's ``QueryParams.get`` answers the LAST
-    repeat, which is the one real reads."""
+    repeat, which is the one real reads -- and `$.xgafv` is the one system parameter that works
+    that way. Measured 2026-09-15 on Sheets: `1&2` carries no `errors[]` where `2&1` does, while
+    `callback`, `alt`, `fields` and `prettyPrint` each answer their FIRST repeat
+    (:func:`first_repeat`)."""
     return None if query is None else query.get(XGAFV)
 
 
-def validate_system_parameters(request: Request) -> None:
-    """Refuse a `$.xgafv` other than `1` or `2`, on a Google-family path, before the route runs.
+def first_repeat(query: Mapping[str, str] | None, name: str) -> str | None:
+    """The FIRST repeat of ``name``, which is the one real reads for the system parameters that are
+    not `$.xgafv`.
 
-    A router-level dependency, so it is the first thing a request meets: measured, real answers this
-    400 ahead of a bad token, a missing credential and an unparseable range. The batch endpoint is
-    not a family path and is left alone."""
+    Measured 2026-09-15 on Sheets and Drive, one pair per parameter: `callback=cb&callback=dd` is
+    called through `cb`, `alt=media&alt=json` answers the `media` refusal, `fields=range&fields=
+    bogus` answers a 200 carrying `range` where `bogus` first is a 400, and
+    `prettyPrint=false&prettyPrint=true` is compact. A second repeat is not even validated --
+    `callback=cb&callback=a b` answers the success through `cb`. ``QueryParams.get`` answers the
+    last, so reading one of these off it is wrong wherever a caller repeats it.
+
+    Read through here by `callback` and by `alt`, which :func:`jsonp_callback` needs to agree with
+    ``routers.google._sheets_respond`` on. The other parameters still come off ``QueryParams.get``
+    at their own read sites, which is right for some of them and wrong for the rest: measured the
+    same day, `majorDimension` and `includeGridData` really are read last, while `fields`,
+    `prettyPrint`, `pageSize`, `pageToken`, `q`, `orderBy` and `mimeType` are read first and are
+    not yet fixed here.
+    """
+    if query is None:
+        return None
+    getlist = getattr(query, "getlist", None)
+    if getlist is None:
+        return query.get(name)
+    values = getlist(name)
+    return values[0] if values else None
+
+
+ALT = "alt"
+CALLBACK = "callback"
+# The characters a JSONP callback name may be built from, quoted from the refusal real writes when
+# one is not: "only alphabet, number, '_', '$', '.', '[' and ']' are allowed." Measured character by
+# character on Sheets, sending `cb<CH>x` for each of the ASCII punctuation marks and for space, tab,
+# newline and `\u00e9`, and `a<ZWSP>b` besides: the seven classes that sentence names are accepted
+# and every character sent outside them is refused, so "alphabet" is ASCII letters and nothing
+# wider. Position does not matter -- `.cb`, `cb.`, `1bad` and `$` are all accepted, and a
+# 2,000-character name is as well.
+_CALLBACK_NAME = re.compile(r"[A-Za-z0-9_$.\[\]]+")
+
+
+def bad_jsonp_callback(name: str) -> GoogleError:
+    """A `callback` whose value cannot be a JavaScript name. Measured on Sheets, Drive and Gmail,
+    authenticated and anonymous: 400 INVALID_ARGUMENT with this sentence, and its `errors[]` entry
+    is ``badRequest`` under ``global`` -- so :func:`invalid_argument`, spelled out here only for the
+    message. The refusal still arrives WRAPPED, through the name it just refused."""
+    return invalid_argument(
+        f"Invalid JSONP callback name: '{name}'; only alphabet, number, '_', '$', '.', '[' and "
+        "']' are allowed."
+    )
+
+
+def jsonp_callback(request: Request) -> str | None:
+    """The `callback` this request is answered through, or ``None`` for a plain JSON body.
+
+    The REQUEST, not its query alone, because the method decides too: JSONP is what a `<script>`
+    element fetches, and a `<script>` element issues a GET. Measured on Sheets, a `callback` on
+    `values:batchGetByDataFilter` and on `spreadsheets:getByDataFilter` is ignored outright -- no
+    wrap on a success, none on an error, and a name that a GET would be refused for is not even
+    looked at -- where the same POST honours `$.xgafv` and `prettyPrint`. So GET is the whole of
+    where this parameter applies.
+
+    Two values that look like a callback are not one either. An empty `callback=` is absent:
+    measured, it answers the plain body at the real status, success and error alike. So is any
+    `alt` other than `json` -- measured on Sheets, `alt=media`, `alt=proto` and `alt=zzz` each
+    answer their own 400 unwrapped, even when `callback` is itself unparseable, so an `alt` whose
+    format the API cannot render takes the request out of the JSONP path along with the JSON one.
+
+    Both are read as :func:`first_repeat`, not off ``QueryParams.get``: real answers a repeated
+    `callback` through the first name and a repeated `alt` through the first format.
+    """
+    if request.method != "GET":
+        return None
+    query = request.query_params
+    alt = first_repeat(query, ALT)
+    if alt is not None and alt != "json":
+        return None
+    return first_repeat(query, CALLBACK) or None
+
+
+def validate_system_parameters(request: Request) -> None:
+    """Refuse a `$.xgafv` other than `1` or `2`, or a `callback` that cannot be a JavaScript name,
+    on a Google-family path, before the route runs.
+
+    A router-level dependency, so it is the first thing a request meets: measured, real answers the
+    `$.xgafv` 400 ahead of a bad token, a missing credential and an unparseable range, and the
+    `callback` 400 ahead of the same three and of a mistyped `fields` mask. `$.xgafv` goes first
+    because it beats `callback` too -- measured, `callback=a b&$.xgafv=9` answers the `$.xgafv`
+    sentence, wrapped through the very name the other check would have refused. The batch endpoint
+    is not a family path and is left alone.
+    """
     if family(request.url.path) is None:
         return
     value = xgafv(request.query_params)
     if value is not None and value not in XGAFV_VALUES:
         raise bad_system_parameter(XGAFV, value)
+    callback = jsonp_callback(request)
+    if callback is not None and not _CALLBACK_NAME.fullmatch(callback):
+        raise bad_jsonp_callback(callback)
 
 
 def has_errors_array(fam: str, value: str | None) -> bool:
@@ -372,3 +468,84 @@ def validation_body(path: str, errors) -> None:
     """None: keep FastAPI's own 422 body. A bad parameter on a Google route is refused by the router
     with a :class:`GoogleError`, so FastAPI's validator is not the path that reports it."""
     return None
+
+
+# --- how a Google body reaches the wire ---------------------------------------------------------
+
+
+def _escaped(text: str) -> str:
+    """``<`` and ``>`` as their `\\u003c` and `\\u003e` escapes, which is what real's serializer
+    writes.
+
+    Measured on both sides of the same API: a Sheets cell holding ``<b>&'x`` followed by two
+    non-ASCII letters comes back with the brackets escaped and the letters raw, and an error
+    message echoing an unparseable range spelled ``<b>&'x`` does the same. So `&`, `'` and
+    non-ASCII stay as they are and only the two angle brackets move -- the escape that keeps a
+    body from closing a ``<script>`` element around it. Measured on the plain body as much as the
+    wrapped one, and on a success as much as an error, so it is not the JSONP path's own. Safe to
+    apply to serialized JSON: neither character is part of the grammar, so every one of them is
+    already inside a string.
+    """
+    return text.replace("<", "\\u003c").replace(">", "\\u003e")
+
+
+def respond(
+    body: dict,
+    *,
+    compact: bool = False,
+    callback: str | None = None,
+    status_code: int = 200,
+    headers: Mapping[str, str] | None = None,
+) -> Response:
+    """One Google body on the wire, rendered the way real renders it.
+
+    Measured to the byte: compact puts no space after `:` or `,` and ends without a newline, while
+    the indented form is two spaces deep and DOES end with one, and the plain type names a charset.
+
+    A `callback` makes the answer a script rather than a body: measured across Sheets, Docs, Drive,
+    Gmail and Slides, authenticated and anonymous, a 400, a 401, a 403 and a 404 each came back
+    **200** with `text/javascript; charset=UTF-8` and the body inside ``// API callback\ncb(…);``.
+    The status the caller would have seen survives only inside `error.code`, which is the point of
+    JSONP: a browser loading the answer through a `<script>` element can read neither a status nor
+    a body that did not arrive as JavaScript.
+    """
+    text = _escaped(
+        json.dumps(body, ensure_ascii=False, separators=(",", ":"))
+        if compact
+        else json.dumps(body, ensure_ascii=False, indent=2) + "\n"
+    )
+    if callback is None:
+        return Response(
+            text,
+            status_code=status_code,
+            media_type="application/json; charset=UTF-8",
+            headers=headers,
+        )
+    return Response(
+        f"// API callback\n{_escaped(callback)}({text});",
+        status_code=200,
+        media_type="text/javascript; charset=UTF-8",
+        headers=headers,
+    )
+
+
+def rendered(
+    request: Request,
+    status_code: int,
+    body: dict,
+    headers: Mapping[str, str] | None = None,
+) -> Response:
+    """The whole response for a Google error, which real renders exactly as it renders a success.
+
+    Indented whatever `prettyPrint` says -- measured on Sheets, Docs, Drive, Gmail and Slides, an
+    error came back two-space indented with no parameter, with `prettyPrint=false` and with
+    `prettyPrint=true` alike, where a success under `prettyPrint=false` is compact. So the
+    parameter reaches the success path only (``routers.google._sheets_respond``) and nothing here
+    reads it.
+
+    The `callback` value needs no check here: ``validate_system_parameters`` has already refused a
+    name that cannot be one, and refused it early enough that the body being wrapped may BE that
+    refusal. It takes the whole request because :func:`jsonp_callback` reads the method as well as
+    the query.
+    """
+    return respond(body, callback=jsonp_callback(request), status_code=status_code, headers=headers)

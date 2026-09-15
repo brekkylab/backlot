@@ -1049,3 +1049,351 @@ def test_jira_comment_paging_is_declared_so_a_client_can_discover_it(paged):
     # `expand` is deliberately absent: real Jira takes one, Backlot does not honour it, and `qp`
     # is for parameters Backlot honours. `backlot diff --source jira` is where that gap is read.
     assert "expand" not in declared
+
+
+# --- how a query parameter is READ: conversion, range, repetition -------------------------
+
+# Measured on brekkylab.atlassian.net, 2026-09-14. The two products refuse a type-conversion
+# failure in DIFFERENT envelopes, which is why these cases cannot go through the one
+# `errors.atlassian._body` serves: Jira answers RFC 7807 on `application/problem+json`, Confluence
+# its own two-key body carrying a raw Java exception string on a bare `application/json`.
+
+
+@pytest.mark.parametrize(
+    "param,value",
+    [
+        ("maxResults", "abc"),
+        ("startAt", "abc"),
+        ("maxResults", "1.5"),
+        # where Python's own int() reads 10
+        ("maxResults", "1_0"),
+        # the width is per PARAMETER: `maxResults` is a Java int, `startAt` a Java long, and each
+        # is refused just past its own boundary and answered 200 just inside it (below)
+        ("maxResults", "2147483648"),
+        ("maxResults", "-2147483649"),
+        ("maxResults", "9223372036854775807"),
+        ("startAt", "9223372036854775808"),
+        ("startAt", "-9223372036854775809"),
+    ],
+)
+def test_jira_refuses_an_integer_parameter_it_cannot_convert(paged, param, value):
+    client, h = paged
+    r = client.get(f"/atlassian/rest/api/3/issue/PAY-7/comment?{param}={value}", headers=h)
+    assert r.status_code == 400, r.text
+    assert r.headers["content-type"] == "application/problem+json;charset=UTF-8"
+    assert r.json() == {
+        "type": "about:blank",
+        "title": "Bad Request",
+        "status": 400,
+        "detail": f"Failed to convert '{param}' with value: '{value}'",
+        "instance": "/rest/api/3/issue/PAY-7/comment",
+    }
+
+
+@pytest.mark.parametrize(
+    "query,want",
+    [
+        # an EMPTY value is not a conversion failure on either product -- it reads as absent
+        ("maxResults=", (0, 100)),
+        # a leading `+` and surrounding whitespace are both accepted, which is narrower than
+        # "any decimal integer" and is what Python's own `int()` accepts
+        ("maxResults=%2B3", (0, 3)),
+        ("maxResults=%203%20", (0, 3)),
+        # internal whitespace is REMOVED, not just trimmed -- `3 4` is thirty-four
+        ("maxResults=3%204", (0, 34)),
+        # Unicode digits, not ASCII's: U+0663 is ARABIC-INDIC DIGIT THREE
+        ("maxResults=%D9%A3", (0, 3)),
+        # whitespace and nothing else reads as absent HERE -- Confluence refuses the same value,
+        # see test_confluence_refuses_a_whitespace_only_value_where_jira_reads_it_as_absent
+        ("maxResults=%20", (0, 100)),
+        ("maxResults=%09", (0, 100)),
+        # just inside each parameter's own width
+        ("maxResults=2147483647", (0, 100)),
+        ("startAt=9223372036854775807", (9223372036854775807, 100)),
+        ("startAt=-9223372036854775808", (0, 100)),
+    ],
+)
+def test_jira_takes_the_integer_spellings_the_real_api_takes(paged, query, want):
+    client, h = paged
+    r = client.get(f"/atlassian/rest/api/3/issue/PAY-7/comment?{query}", headers=h)
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert (d["startAt"], d["maxResults"]) == want
+
+
+@pytest.mark.parametrize(
+    "query,want",
+    [
+        # an integer takes the FIRST value and ignores the rest -- not the last, which is what
+        # Starlette's `QueryParams.get` returns
+        ("startAt=3&startAt=5", (3, 100)),
+        ("startAt=5&startAt=abc", (5, 100)),
+        ("maxResults=1&maxResults=2", (0, 1)),
+        ("startAt=&startAt=5", (0, 100)),
+    ],
+)
+def test_jira_reads_the_first_of_a_repeated_integer_parameter(paged, query, want):
+    client, h = paged
+    r = client.get(f"/atlassian/rest/api/3/issue/PAY-7/comment?{query}", headers=h)
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert (d["startAt"], d["maxResults"]) == want
+
+
+def test_jira_reports_the_whole_array_when_the_first_repeated_value_will_not_convert(paged):
+    """Measured: `?startAt=abc&startAt=5` is refused and the value real names is the ARRAY, as a
+    Java `toString` — `'[Ljava.lang.String;@5edeadf5'`. The trailing identity hash differs per
+    request, so the shape is reproduced and the hash is not a promise."""
+    client, h = paged
+    r = client.get("/atlassian/rest/api/3/issue/PAY-7/comment?startAt=abc&startAt=5", headers=h)
+    assert r.status_code == 400, r.text
+    assert re.fullmatch(
+        r"Failed to convert 'startAt' with value: '\[Ljava\.lang\.String;@[0-9a-f]+'",
+        r.json()["detail"],
+    ), r.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    "query", ["orderBy=bogus&orderBy=created", "orderBy=created&orderBy=bogus"]
+)
+def test_jira_comma_joins_a_repeated_string_parameter_before_validating_it(paged, query):
+    """Measured: a repeated STRING parameter is joined with a comma and validated as one string, so
+    `bogus,created` is refused in BOTH orders — where reading the last value alone answers 200 to
+    whichever ordering puts the valid spelling second."""
+    client, h = paged
+    r = client.get(f"/atlassian/rest/api/3/issue/PAY-7/comment?{query}", headers=h)
+    assert r.status_code == 400, r.text
+    assert "bogus" in r.json()["errorMessages"][0]
+
+
+def test_jira_search_refuses_an_integer_parameter_it_cannot_convert(client, admin_h):
+    r = client.get("/atlassian/rest/api/3/search/jql?maxResults=abc", headers=admin_h)
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"] == "Failed to convert 'maxResults' with value: 'abc'"
+    assert r.json()["instance"] == "/rest/api/3/search/jql"
+
+
+@pytest.mark.parametrize("param", ["limit", "start"])
+def test_confluence_refuses_an_integer_parameter_it_cannot_convert(client, admin_h, param):
+    """Confluence's own envelope, not Jira's: two keys, a bare `application/json`, and the raw
+    Java exception string real puts in `message`."""
+    r = client.get(f"/atlassian/wiki/rest/api/content?{param}=abc", headers=admin_h)
+    assert r.status_code == 400, r.text
+    assert r.headers["content-type"] == "application/json"
+    assert r.json() == {
+        "statusCode": 400,
+        "message": (
+            "org.springframework.web.method.annotation.MethodArgumentTypeMismatchException: "
+            "Failed to convert value of type 'java.lang.String' to required type 'int'; "
+            'nested exception is java.lang.NumberFormatException: For input string: "abc"'
+        ),
+    }
+
+
+def test_confluence_names_the_comma_join_when_a_repeated_value_will_not_convert(client, admin_h):
+    """Where Jira renders the array as a Java `toString`, Confluence renders it as the comma-join
+    and reports the array's own type."""
+    r = client.get("/atlassian/wiki/rest/api/content?limit=abc&limit=2", headers=admin_h)
+    assert r.status_code == 400, r.text
+    assert "'java.lang.String[]'" in r.json()["message"]
+    assert 'For input string: "abc,2"' in r.json()["message"]
+
+
+def test_confluence_refuses_a_negative_limit_where_jira_clamps_one(client, admin_h):
+    """The products disagree and both are measured: Jira answers 200 with `startAt: 0` for
+    `?startAt=-5`, Confluence refuses. Unclamped, `-1` reaches SQLite, which reads a negative
+    `LIMIT` as NO limit — so the answer was the whole collection, the opposite of the ask."""
+    r = client.get("/atlassian/wiki/rest/api/content?limit=-1", headers=admin_h)
+    assert r.status_code == 400, r.text
+    assert r.json() == {
+        "statusCode": 400,
+        "message": "java.lang.IllegalArgumentException: limit cannot be less than zero",
+    }
+
+
+def test_confluence_reads_the_first_of_a_repeated_integer_parameter(client, admin_h):
+    r = client.get("/atlassian/wiki/rest/api/content?limit=1&limit=25", headers=admin_h)
+    assert r.status_code == 200, r.text
+    assert r.json()["limit"] == 1
+
+
+@pytest.mark.parametrize(
+    "query,want_limit",
+    [
+        ("limit=", 25),
+        ("limit=%2B3", 3),
+        ("limit=%203%20", 3),
+        ("limit=3%204", 34),
+        ("limit=%D9%A3", 3),
+        ("limit=2147483647", 2147483647),
+    ],
+)
+def test_confluence_takes_the_integer_spellings_the_real_api_takes(
+    client, admin_h, query, want_limit
+):
+    """The conversion rules are shared with Jira, and were pinned only on Jira: giving both
+    `_confluence_page_params` reads `width=JAVA_LONG` left this file green."""
+    r = client.get(f"/atlassian/wiki/rest/api/content?{query}", headers=admin_h)
+    assert r.status_code == 200, r.text
+    assert r.json()["limit"] == want_limit
+
+
+@pytest.mark.parametrize(
+    "value", ["1.5", "1_0", "2147483648", "-2147483649", "9223372036854775807"]
+)
+def test_confluence_refuses_the_integer_values_the_real_api_refuses(client, admin_h, value):
+    """`limit` is a Java int on this route, where Jira's `startAt` is a long."""
+    r = client.get(f"/atlassian/wiki/rest/api/content?limit={value}", headers=admin_h)
+    assert r.status_code == 400, r.text
+
+
+@pytest.mark.parametrize("path", ["/rest/api/3/issue/PAY-7/comment", "/wiki/rest/api/content"])
+def test_atlassian_reads_javas_whitespace_set_not_pythons(client, admin_h, paged, path):
+    """Measured: Java's `Character.isWhitespace` excludes the three non-breaking spaces, so a value
+    holding one is a 400 on both products WHEREVER it sits, where U+2003, a newline and a tab are
+    removed and the value converts.
+
+    The spelling axis is not decoration. Python's `str.split()` calls all six whitespace, which read
+    the non-breaking ones as thirty-four; and once they survive the cleaning, Python's own `int()`
+    strips a LEADING or TRAILING one before converting (`int('\\xa03')` is 3), so only the interior
+    spelling reached a refusal. Three characters by four placements catches both."""
+    c, h = paged if path.startswith("/rest") else (client, admin_h)
+    name = "maxResults" if path.startswith("/rest") else "limit"
+    placements = ("3{s}4", "{s}3", "3{s}", "{s}3{s}")
+    for nbsp in ("%C2%A0", "%E2%80%87", "%E2%80%AF"):
+        for placement in placements:
+            value = placement.format(s=nbsp)
+            r = c.get(f"/atlassian{path}?{name}={value}", headers=h)
+            assert r.status_code == 400, f"{value}: {r.text}"
+    for space in ("%E2%80%83", "%0A", "%09"):
+        for placement in placements:
+            value = placement.format(s=space)
+            ok = c.get(f"/atlassian{path}?{name}={value}", headers=h)
+            assert ok.status_code == 200, f"{value}: {ok.text}"
+
+
+def test_confluence_refuses_an_empty_first_value_only_when_the_parameter_repeats(client, admin_h):
+    """Measured: `?limit=&limit=5` is a 400 naming `",5"` — the array with an empty element in
+    front — where a lone `?limit=` is the default. Jira reads `?startAt=&startAt=5` as the default,
+    so this is Confluence's alone."""
+    r = client.get("/atlassian/wiki/rest/api/content?limit=&limit=5", headers=admin_h)
+    assert r.status_code == 400, r.text
+    assert 'For input string: ",5"' in r.json()["message"]
+
+
+@pytest.mark.parametrize(
+    "query,want",
+    [
+        # cleaning is per value and the join comes after -- stripping the join gives "abc ,2"
+        ("limit=%20abc%20&limit=2", '"abc,2"'),
+        ("limit=abc&limit=%202%20", '"abc,2"'),
+        ("limit=%20&limit=2", '",2"'),
+        # and a single value is whitespace REMOVAL, not a trim
+        ("limit=a%20b", '"ab"'),
+    ],
+)
+def test_confluence_names_each_value_cleaned_before_joining_them(client, admin_h, query, want):
+    r = client.get(f"/atlassian/wiki/rest/api/content?{query}", headers=admin_h)
+    assert r.status_code == 400, r.text
+    assert f"For input string: {want}" in r.json()["message"]
+
+
+@pytest.mark.parametrize(
+    "query,name",
+    [
+        ("maxResults=abc", "maxResults"),
+        ("startAt=abc", "startAt"),
+        ("maxResults=abc&orderBy=bogus", "maxResults"),
+        ("orderBy=bogus&maxResults=abc", "maxResults"),
+        # `startAt` is named in either URL order: the handler signature's order, not the URL's
+        ("startAt=abc&maxResults=xyz", "startAt"),
+        ("maxResults=xyz&startAt=abc", "startAt"),
+    ],
+)
+def test_jira_refuses_an_unconvertible_parameter_before_resolving_the_issue(paged, query, name):
+    """Measured 2026-09-15: the binder outranks both the 404 and the `orderBy` check.
+    `?maxResults=abc` on a key that does not exist is the conversion 400 where the same key alone
+    is 404, and it wins over a bad `orderBy` in either query order."""
+    client, h = paged
+    for key in ("PAY-7", "NOPE-99999"):
+        r = client.get(f"/atlassian/rest/api/3/issue/{key}/comment?{query}", headers=h)
+        assert r.status_code == 400, f"{key}: {r.text}"
+        assert (
+            r.json()["detail"]
+            == f"Failed to convert '{name}' with value: '{query.split(f'{name}=')[1].split('&')[0]}'"
+        )
+    # ... where the same key with no parameter at all is still the 404
+    assert (
+        client.get("/atlassian/rest/api/3/issue/NOPE-99999/comment", headers=h).status_code == 404
+    )
+
+
+def test_confluence_cql_search_keeps_its_own_lenient_read(client, admin_h):
+    """The CQL route is not Spring-bound: a value it cannot convert is a bodiless 404 on real, not
+    `content`'s 400 (#216). Serving `content`'s refusal here would trade one divergence for
+    another, so it keeps the lenient read — but the NEGATIVE refusal is measured on this route too
+    and is shared."""
+    ok = client.get("/atlassian/wiki/rest/api/search?cql=type%3Dpage&limit=abc", headers=admin_h)
+    assert ok.status_code == 200, ok.text
+    neg = client.get("/atlassian/wiki/rest/api/search?cql=type%3Dpage&start=-1", headers=admin_h)
+    assert neg.status_code == 400, neg.text
+    assert neg.json()["message"] == (
+        "java.lang.IllegalArgumentException: start cannot be less than zero"
+    )
+
+
+def test_confluence_refuses_a_whitespace_only_value_where_jira_reads_it_as_absent(client, admin_h):
+    """The one case the two products part on. Jira answers 200 with the default; Confluence trims
+    to the empty string and fails to convert that, naming `""`. A genuinely empty `?limit=` is the
+    default on both, so it is the whitespace rather than the emptiness that separates them."""
+    r = client.get("/atlassian/wiki/rest/api/content?limit=%20", headers=admin_h)
+    assert r.status_code == 400, r.text
+    assert 'For input string: ""' in r.json()["message"]
+    assert client.get("/atlassian/wiki/rest/api/content?limit=", headers=admin_h).status_code == 200
+
+
+def test_confluence_names_the_trimmed_value_where_jira_names_the_raw_one(client, admin_h, paged):
+    """Measured on `?…=%20abc%20`: Jira's `detail` keeps the spaces, Confluence's `message` does
+    not. The same value, rendered two ways by the product that refused it."""
+    conf = client.get("/atlassian/wiki/rest/api/content?limit=%20abc%20", headers=admin_h)
+    assert conf.status_code == 400, conf.text
+    assert 'For input string: "abc"' in conf.json()["message"]
+
+    jira_client, h = paged
+    jira = jira_client.get(
+        "/atlassian/rest/api/3/issue/PAY-7/comment?maxResults=%20abc%20", headers=h
+    )
+    assert jira.status_code == 400, jira.text
+    assert jira.json()["detail"] == "Failed to convert 'maxResults' with value: ' abc '"
+
+
+@pytest.mark.parametrize(
+    "query,want",
+    [
+        # conversion comes first for BOTH parameters, so a bad `start` outranks a negative `limit`
+        ("limit=-1&start=abc", 'For input string: "abc"'),
+        ("limit=abc&start=-1", 'For input string: "abc"'),
+        # and among two negatives it is `start` that gets named
+        ("limit=-1&start=-1", "start cannot be less than zero"),
+    ],
+)
+def test_confluence_refuses_the_parameter_real_names_when_both_are_wrong(
+    client, admin_h, query, want
+):
+    r = client.get(f"/atlassian/wiki/rest/api/content?{query}", headers=admin_h)
+    assert r.status_code == 400, r.text
+    assert want in r.json()["message"]
+
+
+def test_jira_search_on_post_reads_the_query_string_as_leniently_as_it_always_has(client, admin_h):
+    """Measured 2026-09-14: real does not read the query string on `POST search/jql` at all, so a
+    malformed parameter there is a 200 whatever the body says. Applying the GET rules to this
+    method would answer 400 where real answers 200 — trading one divergence for another. #187 is
+    where the query string stops being read here at all."""
+    for body in ({"jql": "project = payments", "maxResults": 1}, {"jql": "project = payments"}):
+        r = client.post(
+            "/atlassian/rest/api/3/search/jql?maxResults=abc&startAt=abc",
+            headers=admin_h,
+            json=body,
+        )
+        assert r.status_code == 200, r.text

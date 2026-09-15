@@ -59,9 +59,9 @@ async def lifespan(app: FastAPI):
         temp_memory=True,
         busy_ms=settings.sqlite_busy_ms,
     )
-    # A DB older than a table this build reads would answer every request that touches it with a
-    # bare OperationalError, one per read, with nothing saying why. Named once here instead.
-    if stale := store.missing_tables(conn):
+    # A DB older than a table or column this build reads would answer every request that touches
+    # it with a bare OperationalError, one per read, with nothing saying why. Named once here.
+    if stale := store.missing_schema(conn):
         raise RuntimeError(
             f"{settings.db_path} was built by an older Backlot and has no "
             f"{', '.join(stale)}. Re-import the corpus: backlot import <corpus.jsonl>"

@@ -24,7 +24,7 @@ service (like the other `examples/` dirs) — run the one you want:
   (`/slack/api/*`) as tools instead.
 - **`gmail.py`** via the same **OpenAPI→MCP bridge** — Gmail MCP servers hard-wire `googleapis.com`
   and need real Google OAuth, so the bridge serves Backlot's Gmail API (`/gmail/*`) as tools.
-- **`gdrive.py`** via the same **OpenAPI→MCP bridge** — likewise for Google Drive (`/drive/*`).
+- **`gdrive.py`** via the same **OpenAPI→MCP bridge** — likewise for Google Drive, and for the three editors a Drive file opens in: the `gdrive` slice is `/drive/v3`, `/docs/v1`, `/sheets/v4` and `/slides/v1`, so an agent that finds a spreadsheet can read its cells in the next call.
 - **`hubspot.py`** via the same **OpenAPI→MCP bridge** — no HubSpot MCP server takes a base-URL
   override. Because the CRM API is polymorphic over `{object_type}`, the agent gets five tools that
   each work across every object type (list, read, search, batch-read, associations) rather than a set
@@ -236,8 +236,8 @@ backlot mcp --source atlassian --url <url> --user someone@acme.com
 ```
 
 Atlassian authenticates with HTTP Basic, the resolved user's own email as the username and their
-Backlot token as the password, and its `SOURCE_PREFIXES` entry covers both the `/atlassian` (Jira)
-and `/wiki` (Confluence) path roots.
+Backlot token as the password, and its `SOURCE_PREFIXES` entry is the single `/atlassian` root,
+which covers Jira and Confluence alike — Confluence is served under `/atlassian/wiki/…`.
 
 **S3 goes through the same path, signed rather than bearer-authenticated.** SigV4 signs each
 request, so a fixed `Authorization` header cannot serve it — the bridge signs every call with

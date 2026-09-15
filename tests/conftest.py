@@ -97,7 +97,7 @@ SAMPLE = [
         "author_email": "bob@acme.com",
         "author_groups": ["engineering"],
         "visibility": "public",
-        "reactions": [{"name": "eyes", "count": 2, "users": ["U01", "U02"]}],
+        "reactions": [{"name": "eyes", "users": ["ava@acme.com", "bob@acme.com"]}],
         "replies": [
             {
                 "content": "Yeah, looking now.",

@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: hashgraph-online/ai-plugin-scanner-action@06bfa78ffae51fa0bcadf595b4d4a009bea96e42 # v1.2.626
+      - uses: hashgraph-online/ai-plugin-scanner-action@588d157fed6e47942a2ca3c9251ff7bff4a48bc9 # v1.2.667
         with:
           min_score: 80
           fail_on_severity: critical

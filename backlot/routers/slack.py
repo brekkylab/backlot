@@ -1250,6 +1250,19 @@ async def chat_get_permalink(request: Request):
     }
 
 
+def _same_address(a: str, b: str) -> bool:
+    """Whether two stored reactor addresses are the same person.
+
+    Case-folded, the way `_subscribed` and the authorship check compare the same addresses: a
+    corpus states an address however it was written.
+    """
+    return (a or "").lower() == (b or "").lower()
+
+
+def _has_reacted(reaction: dict, address: str) -> bool:
+    return any(_same_address(u, address) for u in reaction.get("users") or [])
+
+
 class _AlreadyReacted(Exception):
     """The caller already left this reaction. Raised from inside the edit callback so the write is
     abandoned with the overlay lock still held, rather than decided on a value read before it."""
@@ -1301,6 +1314,11 @@ async def reactions_add(request: Request):
     so this is a patch to a served field rather than a new entity. The patch REPLACES the column,
     so the existing value is read and put back — a corpus message that already carries reactions
     keeps them.
+
+    What is stored is the reactor's ADDRESS, which is what a corpus states and what `_reactions`
+    hashes into a Slack id when it serves the message. Storing the id instead would be hashed a
+    second time. No `count` is stored either: `_reactions` derives it from the list, and the record
+    schema refuses a stated one for the same reason — a second place for it to be wrong.
     """
     conn = auth.conn(request)
     caller, err = _caller_or_error(request)
@@ -1314,7 +1332,7 @@ async def reactions_add(request: Request):
     emoji = (_param(request, "name") or "").strip()
     if not emoji:
         return _err("invalid_name")
-    _author, uid, _bot = _writer(caller)
+    author, _uid_, _bot = _writer(caller)
 
     def add(fresh):
         # Re-read inside the lock: `row` above was read before it, and two callers reacting at
@@ -1323,13 +1341,12 @@ async def reactions_add(request: Request):
         for r in current:
             if r["name"] != emoji:
                 continue
-            if uid in r.get("users", []):
+            if _has_reacted(r, author):
                 raise _AlreadyReacted
-            r["users"] = [*r.get("users", []), uid]
-            r["count"] = len(r["users"])
+            r["users"] = [*r.get("users", []), author]
             break
         else:
-            current.append({"name": emoji, "count": 1, "users": [uid]})
+            current.append({"name": emoji, "users": [author]})
         return json.dumps(current)
 
     try:
@@ -1364,18 +1381,17 @@ async def reactions_remove(request: Request):
     if err is not None:
         return err
     emoji = (_param(request, "name") or "").strip()
-    _author, uid, _bot = _writer(caller)
+    author, _uid_, _bot = _writer(caller)
 
     def drop(fresh):
         current = store.jcol(fresh, "reactions")
         for r in current:
-            if r["name"] == emoji and uid in r.get("users", []):
-                r["users"] = [u for u in r["users"] if u != uid]
-                r["count"] = len(r["users"])
+            if r["name"] == emoji and _has_reacted(r, author):
+                r["users"] = [u for u in r.get("users", []) if not _same_address(u, author)]
                 break
         else:
             raise _NoReaction
-        return json.dumps([r for r in current if r["count"]])
+        return json.dumps([r for r in current if r.get("users")])
 
     try:
         store.edit_document(
@@ -1421,16 +1437,15 @@ async def reactions_list(request: Request):
 
     Errors quoted from the spec's ``default`` response: `user_not_found`.
 
-    Only reactions left through this API are listed. A reaction the corpus shipped was written by
-    the import, and its `users` hold synthesized ids the corpus never attributed to anybody in
-    particular, so counting those would report reactions no one in this workspace left. Reading the
-    overlay's own patches is what makes the answer true.
+    Only reactions left through this API are listed. A reaction the corpus shipped is part of the
+    scene the corpus describes rather than something this caller did, so reading the overlay's own
+    patches is what keeps the answer about them.
     """
     conn = auth.conn(request)
     caller, err = _caller_or_error(request)
     if err is not None:
         return err
-    _author, uid, _bot = _writer(caller)
+    author, _uid_, _bot = _writer(caller)
     ids = auth.visible_ids(request, caller)
     patch = overlay.table_names("slack")["patch"]
     items = []
@@ -1441,7 +1456,7 @@ async def reactions_list(request: Request):
             reactions = json.loads(p["value"] or "[]")
         except ValueError:
             continue
-        if not any(uid in r.get("users", []) for r in reactions):
+        if not any(_has_reacted(r, author) for r in reactions):
             continue
         row = store.document_by_key(conn, "slack", (p["channel"], p["ts"]), ids)
         if row is None:  # deleted, or no longer visible to this caller
@@ -1662,7 +1677,7 @@ def _message(
         blocks = synth.slack_blocks(text, seed)
         if blocks:
             m["blocks"] = blocks
-    reactions = store.jcol(row, "reactions")
+    reactions = _reactions(row)
     if reactions:
         m["reactions"] = reactions
     files = store.jcol(row, "files")
@@ -1696,6 +1711,48 @@ def _message(
         elif row["thread_seq"] > 0 and parent_user_id:  # a reply
             m["parent_user_id"] = parent_user_id
     return m
+
+
+def _reactions(row) -> list[dict]:
+    """A message's ``reactions``, built from the addresses the corpus stated.
+
+    Not pass-through, and the vendor's own spec is why. `objs_reaction` requires `name`, `users`
+    and `count` together, and each entry of `users` is a `defs_user_id` (`^[UW][A-Z0-9]{2,}$`) —
+    which is `synth.slack_user_id` of a person, a value no corpus author can know. Writing it by
+    hand meant inventing ids for people the corpus already names by address everywhere else.
+
+    `count` is DERIVED rather than stated, and NOT because a mismatch would be unreal: real Slack
+    sends one larger than `users` whenever it truncates, which `reactions.get` documents as `users`
+    "might not always contain all users that have reacted" while `count` "will always represent the
+    count of all users who made that reaction". Backlot truncates nothing, so every reactor the
+    corpus names is rendered and `len(users)` IS that count; stating it in a record would add a
+    second place for it to be wrong. The schema refuses one, and a REPEATED address too, since
+    `reactions.add` answers a repeat with `already_reacted` and deriving from one would render a
+    single id under a count of two.
+
+    The address is not required to belong to anyone the corpus places. `users.info` resolves a
+    PRINCIPAL's id first and falls back to a message author's, so a reactor who is neither is served
+    as an id that resolves to nobody — the same limitation `users.list` already carries for
+    display-only speakers. Being a principal is enough on its own: a reactor who never posted here
+    still resolves, which is why the sample corpus's reactors need not be Slack authors.
+
+    Field order is Slack's own: the `reactions.get` example response shows
+    `{"name": …, "users": [...], "count": N}`.
+    """
+    out = []
+    for reaction in store.jcol(row, "reactions"):
+        users = list(reaction.get("users") or [])
+        out.append(
+            {
+                "name": reaction.get("name"),
+                # `_uid`, not `synth.slack_user_id`: the service account is not a corpus address
+                # and its id is fixed at USERVICE0, the same value `auth.test` and a message it
+                # posted report. Hashing its sentinel would give a client two ids for one reactor.
+                "users": [_uid(e) for e in users],
+                "count": len(users),
+            }
+        )
+    return out
 
 
 def _channel_name(conn, channel_id: str) -> str | None:

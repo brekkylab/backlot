@@ -450,7 +450,7 @@ def test_byo_slack_rich_replies(tmp_path):
                         {
                             "content": "on it",
                             "author_email": "ava@a.com",
-                            "reactions": [{"name": "eyes", "count": 1, "users": ["U1"]}],
+                            "reactions": [{"name": "eyes", "users": ["bo@x.com"]}],
                             "subtype": "thread_broadcast",
                         },
                     ],

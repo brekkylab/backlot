@@ -27,10 +27,15 @@ constructors here rather than one "unauthorized".
 (:func:`validate_system_parameters`) and declared once for the document
 (:func:`backlot.openapi.google_system_parameters`) rather than route by route. Measured: Drive
 carries the array on a `fields` refusal at `2` as well as with no parameter; the LAST repeat is the
-value every rule reads (`2&1` carries it on Sheets where `1&2` does not, `2&0` on Gmail — a refused
-value is not a `2` — where `0&2` does not); a success body is the same under all of them; and a
-value other than `1` or `2` is refused ahead of a bad token, a missing credential and an
-unparseable range alike.
+value every rule about THIS parameter reads (`2&1` carries it on Sheets where `1&2` does not, `2&0`
+on Gmail — a refused value is not a `2` — where `0&2` does not), which is the opposite of the other
+system parameters (:func:`first_repeat`); a success body is the same under all of them; and a value
+other than `1` or `2` is refused ahead of a bad token, a missing credential and an unparseable range
+alike.
+
+`callback` is the second system parameter :func:`validate_system_parameters` checks, and the one
+that decides how a body reaches the wire rather than what is in it: see :func:`respond`, which is
+also where the indentation and the charset every Google error carries are decided.
 
 Inside `errors[]` the entry follows the constructor that raised it, and each one carries its own
 measurement. Measured on Sheets and Docs at `$.xgafv=1`: a typed value the proto layer refuses is
@@ -299,8 +304,36 @@ def bad_system_parameter(name: str, value: str) -> GoogleError:
 
 def xgafv(query: Mapping[str, str] | None) -> str | None:
     """The `$.xgafv` a request sent, or ``None``. Starlette's ``QueryParams.get`` answers the LAST
-    repeat, which is the one real reads."""
+    repeat, which is the one real reads -- and `$.xgafv` is the one system parameter that works
+    that way. Measured 2026-09-15 on Sheets: `1&2` carries no `errors[]` where `2&1` does, while
+    `callback`, `alt`, `fields` and `prettyPrint` each answer their FIRST repeat
+    (:func:`first_repeat`)."""
     return None if query is None else query.get(XGAFV)
+
+
+def first_repeat(query: Mapping[str, str] | None, name: str) -> str | None:
+    """The FIRST repeat of ``name``, which is the one real reads for the system parameters that are
+    not `$.xgafv`.
+
+    Measured 2026-09-15 on Sheets and Drive, one pair per parameter: `callback=cb&callback=dd` is
+    called through `cb`, `alt=media&alt=json` answers the `media` refusal, `fields=range&fields=
+    bogus` answers a 200 carrying `range` where `bogus` first is a 400, and
+    `prettyPrint=false&prettyPrint=true` is compact. A second repeat is not even validated --
+    `callback=cb&callback=a b` answers the success through `cb`. ``QueryParams.get`` answers the
+    last, so reading one of these off it is wrong wherever a caller repeats it.
+
+    Read through here by `callback` and by `alt`, which :func:`jsonp_callback` needs to agree with
+    ``routers.google._sheets_respond`` on. `fields` and `prettyPrint` still come off
+    ``QueryParams.get`` at their own read sites, so a caller that repeats one of those gets the last
+    value where real takes the first -- measured the same day, not yet fixed.
+    """
+    if query is None:
+        return None
+    getlist = getattr(query, "getlist", None)
+    if getlist is None:
+        return query.get(name)
+    values = getlist(name)
+    return values[0] if values else None
 
 
 ALT = "alt"
@@ -326,21 +359,32 @@ def bad_jsonp_callback(name: str) -> GoogleError:
     )
 
 
-def jsonp_callback(query: Mapping[str, str] | None) -> str | None:
+def jsonp_callback(request: Request) -> str | None:
     """The `callback` this request is answered through, or ``None`` for a plain JSON body.
 
-    Two values that look like a callback are not one. An empty `callback=` is absent: measured, it
-    answers the plain body at the real status, success and error alike. So is any `alt` other than
-    `json` -- measured on Sheets, `alt=media` and `alt=zzz` answer their own 400 as
-    `application/json` and unwrapped, even when `callback` is itself unparseable, so an `alt` whose
+    The REQUEST, not its query alone, because the method decides too: JSONP is what a `<script>`
+    element fetches, and a `<script>` element issues a GET. Measured on Sheets, a `callback` on
+    `values:batchGetByDataFilter` and on `spreadsheets:getByDataFilter` is ignored outright -- no
+    wrap on a success, none on an error, and a name that a GET would be refused for is not even
+    looked at -- where the same POST honours `$.xgafv` and `prettyPrint`. So GET is the whole of
+    where this parameter applies.
+
+    Two values that look like a callback are not one either. An empty `callback=` is absent:
+    measured, it answers the plain body at the real status, success and error alike. So is any
+    `alt` other than `json` -- measured on Sheets, `alt=media`, `alt=proto` and `alt=zzz` each
+    answer their own 400 unwrapped, even when `callback` is itself unparseable, so an `alt` whose
     format the API cannot render takes the request out of the JSONP path along with the JSON one.
+
+    Both are read as :func:`first_repeat`, not off ``QueryParams.get``: real answers a repeated
+    `callback` through the first name and a repeated `alt` through the first format.
     """
-    if query is None:
+    if request.method != "GET":
         return None
-    alt = query.get(ALT)
+    query = request.query_params
+    alt = first_repeat(query, ALT)
     if alt is not None and alt != "json":
         return None
-    return query.get(CALLBACK) or None
+    return first_repeat(query, CALLBACK) or None
 
 
 def validate_system_parameters(request: Request) -> None:
@@ -359,7 +403,7 @@ def validate_system_parameters(request: Request) -> None:
     value = xgafv(request.query_params)
     if value is not None and value not in XGAFV_VALUES:
         raise bad_system_parameter(XGAFV, value)
-    callback = jsonp_callback(request.query_params)
+    callback = jsonp_callback(request)
     if callback is not None and not _CALLBACK_NAME.fullmatch(callback):
         raise bad_jsonp_callback(callback)
 
@@ -484,9 +528,9 @@ def respond(
 
 
 def rendered(
+    request: Request,
     status_code: int,
     body: dict,
-    query: Mapping[str, str] | None = None,
     headers: Mapping[str, str] | None = None,
 ) -> Response:
     """The whole response for a Google error, which real renders exactly as it renders a success.
@@ -499,6 +543,7 @@ def rendered(
 
     The `callback` value needs no check here: ``validate_system_parameters`` has already refused a
     name that cannot be one, and refused it early enough that the body being wrapped may BE that
-    refusal.
+    refusal. It takes the whole request because :func:`jsonp_callback` reads the method as well as
+    the query.
     """
-    return respond(body, callback=jsonp_callback(query), status_code=status_code, headers=headers)
+    return respond(body, callback=jsonp_callback(request), status_code=status_code, headers=headers)

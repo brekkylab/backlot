@@ -20,10 +20,11 @@ A module in ``_ENVELOPES`` provides:
   body answered at that path with that status, when it is measured to differ from FastAPI's bare
   `application/json`. GitHub is the one that implements it; a vendor without it keeps the default,
   which is not a claim about what real sends.
-- ``rendered(status_code, body, query, headers)``, optional — the whole ``Response``, for a vendor
-  whose error bodies are measured to the byte or whose status the body does not decide. Only Google
-  has one: its errors are indented, its `content-type` carries a charset, and a `callback` turns one
-  into a 200 JSONP script. A vendor without it gets FastAPI's ``JSONResponse`` around the dict,
+- ``rendered(request, status_code, body, headers)``, optional — the whole ``Response``, for a
+  vendor whose error bodies are measured to the byte or whose status the body does not decide. Only
+  Google has one: its errors are indented, its `content-type` carries a charset, and a `callback`
+  on a GET turns one into a 200 JSONP script. The whole REQUEST, because that rendering reads the
+  method as well as the query. A vendor without it gets FastAPI's ``JSONResponse`` around the dict,
   which is what Atlassian and GitHub keep.
 
 A media type that varies by REFUSAL rather than by path and status cannot come from
@@ -38,7 +39,7 @@ Adding a vendor is a module plus one entry below — not an edit to the handler.
 
 from __future__ import annotations
 
-from fastapi import Response
+from fastapi import Request, Response
 
 from backlot.errors import atlassian, github, google
 
@@ -64,19 +65,21 @@ def json_media_type(path: str, status_code: int) -> str | None:
     return None
 
 
-def rendered(path: str, status_code: int, body: dict, query=None, headers=None) -> Response | None:
-    """The vendor's own rendering of an error on ``path`` — the whole response rather than the body
-    alone — or ``None`` to let the handler answer with a ``JSONResponse`` around ``body``.
+def rendered(request: Request, status_code: int, body: dict, headers=None) -> Response | None:
+    """The vendor's own rendering of an error on this request's path — the whole response rather
+    than the body alone — or ``None`` to let the handler answer with a ``JSONResponse`` around
+    ``body``.
 
     The whole response, because a vendor can decide more about an error than its dict: Google
     indents every error body and ends it with a newline whatever `prettyPrint` says, names a charset
-    on the type, and answers a request carrying `callback` at 200 as a script with the error inside
-    it. ``query`` is the request's, for that last one.
+    on the type, and answers a GET carrying `callback` at 200 as a script with the error inside it.
+    The whole request, because that last one is decided by the method and the query together, where
+    the other entry points here need only a path.
     """
     for envelope in _ENVELOPES:
-        if envelope.owns(path):
+        if envelope.owns(request.url.path):
             render = getattr(envelope, "rendered", None)
-            return render(status_code, body, query, headers) if render is not None else None
+            return render(request, status_code, body, headers) if render is not None else None
     return None
 
 

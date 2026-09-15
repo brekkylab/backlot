@@ -160,9 +160,7 @@ async def _http_exception_handler(request: Request, exc: StarletteHTTPException)
     # are indented to the byte and a `callback` answers one at 200 as a script. Asking the envelope
     # keeps that where the rest of that vendor's error shape lives, and leaves the vendors whose
     # rendering is not measured with exactly the JSONResponse they had.
-    rendered = errors.rendered(
-        request.url.path, exc.status_code, body, request.query_params, headers
-    )
+    rendered = errors.rendered(request, exc.status_code, body, headers)
     if rendered is not None:
         return rendered
     # A vendor may answer one refusal under a media type of its own — Jira's type-conversion 400 is

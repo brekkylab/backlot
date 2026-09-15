@@ -474,6 +474,19 @@ async def jira_issue_comments(key: str, request: Request):
     # (project classification: "If not provided, values will not be sorted"), and the site
     # available for measuring had no issue carrying a comment. Sorting on that would be picking a
     # default, not reproducing one.
+    #
+    # The integers are read here too, and BEFORE `orderBy`, because the binder outranks both. All
+    # measured 2026-09-15: `?maxResults=abc` on a key that does not exist is the conversion 400
+    # where the same key alone is 404; `?maxResults=abc&orderBy=bogus` is the conversion 400 in
+    # either query order; and `?startAt=abc&maxResults=xyz` names `startAt` in either order, which
+    # is the handler signature's order rather than the URL's, so `startAt` is read first.
+    #
+    # `startAt` is the one parameter measured to take a Java LONG rather than an int.
+    start = max(0, _int_param(request, "startAt", 0, width=JAVA_LONG))
+    limit = min(
+        _JIRA_COMMENT_PAGE_MAX,
+        max(1, _int_param(request, "maxResults", _JIRA_COMMENT_PAGE_MAX)),
+    )
     raw_order = _str_param(request, "orderBy")
     desc = _jira_order_desc(raw_order) if raw_order is not None else None
 
@@ -486,12 +499,6 @@ async def jira_issue_comments(key: str, request: Request):
             status_code=404,
             detail="Issue does not exist or you do not have permission to see it.",
         )
-    # `startAt` is the one parameter measured to take a Java LONG rather than an int.
-    start = max(0, _int_param(request, "startAt", 0, width=JAVA_LONG))
-    limit = min(
-        _JIRA_COMMENT_PAGE_MAX,
-        max(1, _int_param(request, "maxResults", _JIRA_COMMENT_PAGE_MAX)),
-    )
 
     cs = store.doc_comments(conn, "jira", row["key"])
     if desc is not None:
@@ -1073,7 +1080,15 @@ async def confluence_cql_search(request: Request):
     want_type = mt.group(1) if mt else None
     ml = re.search(r'label\s*(?:=|in)\s*"?([^")\s]+)"?', cql)
     want_label = ml.group(1) if ml else None
-    limit, start = _confluence_page_params(request)
+    # NOT `_confluence_page_params`: this route is not bound by Spring the way `content` is, and a
+    # value it cannot convert is a bodiless 404 (JAX-RS's answer for a `@QueryParam`) rather than
+    # the Spring 400 — while `?limit=%20` and `?limit=` are 200 with the default. Serving `content`'s
+    # refusal here would trade one divergence for another, so the lenient read stays until #216
+    # reproduces the 404. The NEGATIVE check is shared, and measured on this route: `?limit=-1` and
+    # `?start=-1` are the same `IllegalArgumentException` 400 both listings give.
+    limit = _int(request.query_params.get("limit"), 25)
+    start = _int(request.query_params.get("start"), 0)
+    _refuse_negative_page_params(limit, start)
 
     # fetch the full ACL-visible match set, filter by the clauses, then paginate — so
     # totalSize reflects the true match count (not just the returned page).
@@ -1180,7 +1195,7 @@ async def confluence_child_pages(content_id: int, request: Request):
     ids = auth.visible_ids(request, caller)
     if store.get_document(conn, "confluence", content_id, visible_ids=ids) is None:
         raise HTTPException(status_code=404, detail="No content found with id")
-    expand = request.query_params.get("expand", "")
+    expand = _str_param(request, "expand", "") or ""
     kids = store.children(conn, "confluence", content_id, visible_ids=ids)
     results = [_confluence_page(conn, request, k, expand) for k in kids]
     return {
@@ -1441,7 +1456,8 @@ def _int(v, default: int) -> int:
 # against Jira's comment read and Confluence's space listing, which agree on every case:
 #
 #   ?maxResults=          the default, as though unsent -- an empty value is not a failure
-#   ?maxResults=+3        3, so a leading sign is read
+#   ?maxResults=%2B3      3, so a leading sign is read (a RAW `+` decodes to a space and reaches
+#                         the binder as ` 3`, which reads 3 by the whitespace removal below)
 #   ?maxResults=%203%20   3, and ?maxResults=3%204 is 34 -- whitespace is REMOVED, not trimmed
 #   ?maxResults=<U+0663>  3, so the digits are Unicode's, not ASCII's
 #   ?maxResults=1_0       400 -- where Python's own int() reads 10
@@ -1475,19 +1491,28 @@ def _int_param(
     products, where Starlette's ``QueryParams.get`` returns 5. A client that appends to a URL
     rather than replacing in it — a retry layer adding `startAt` to a URL that already carries one
     is the ordinary way — was being served real's other page under a 200.
+
+    A value that converts to nothing is where the products part, and they part twice. A LONE empty
+    value is the default on both (`?limit=` and `?maxResults=` are each 200). A first value that is
+    empty or whitespace-only is the default on Jira (`?startAt=&startAt=5` and `?maxResults=%20`
+    are 200 with it) and, on Confluence, the default only when the parameter does not repeat:
+    `?limit=&limit=5` is a 400 naming `",5"`, the array with an empty element in front.
     """
     values = request.query_params.getlist(name)
-    if not values or values[0] == "":
+    if not values:
+        return default
+    confluence = errors_atlassian.is_confluence(request.url.path)
+    if values[0] == "" and (len(values) == 1 or not confluence):
         return default
     raw = values[0]
-    cleaned = "".join(raw.split())
-    if cleaned == "" and not request.url.path.startswith(errors_atlassian.WIKI):
+    cleaned = errors_atlassian.strip_java_whitespace(raw)
+    if cleaned == "" and not confluence:
         return default  # Jira alone reads a whitespace-only value as absent
     try:
         if "_" in cleaned:
             raise ValueError(cleaned)
         n = int(cleaned)
-    except (ValueError, TypeError):
+    except ValueError:
         raise errors_atlassian.integer_conversion_failure(request.url.path, name, values) from None
     if not width[0] <= n <= width[1]:
         # Python's int is unbounded, so a page size computed from a timestamp or a byte count
@@ -1499,10 +1524,15 @@ def _int_param(
 def _str_param(request: Request, name: str, default: str | None = None) -> str | None:
     """One query parameter as a string, comma-joined when it repeats.
 
-    Measured: `?orderBy=bogus&orderBy=created` is refused naming `bogus,created`, in either order,
-    and a repeated `jql` is refused with a parse error at the character the comma lands on. So a
-    repeated string is one value with a comma in it, and reading the last alone answers 200 to
-    whichever ordering happens to put a valid spelling second.
+    Measured on three parameters across both products: Jira's `?orderBy=bogus&orderBy=created` is
+    refused naming `bogus,created` in either order, its repeated `jql` is refused with a parse error
+    at the character the comma lands on, and Confluence's `?spaceKey=NOPE1&spaceKey=NOPE2` is a 404
+    naming `NOPE1,NOPE2`. So a repeated string is one value with a comma in it, and reading the last
+    alone answers 200 to whichever ordering happens to put a valid spelling second.
+
+    The join is what is reproduced here, not every refusal that follows from it: a repeated `jql`
+    reaches `_project_from_jql`, which is lenient where real's JQL parser is not, so Backlot answers
+    200 to a joined query real refuses. That leniency is the parser's and predates this.
     """
     values = request.query_params.getlist(name)
     return ",".join(values) if values else default
@@ -1519,10 +1549,20 @@ def _confluence_page_params(request: Request) -> tuple[int, int]:
     BOTH — `?limit=-1&start=abc` is the conversion failure about `abc`, not the negative about
     `limit` — and among two negatives `start` is the one named: `?limit=-1&start=-1` reports
     `start cannot be less than zero`.
+
+    The CQL search reads its own pair: it is not Spring-bound and refuses a value it cannot convert
+    as a bodiless 404 (#216). It shares :func:`_refuse_negative_page_params`, which is measured on
+    that route too.
     """
     limit = _int_param(request, "limit", 25)
     start = _int_param(request, "start", 0)
+    _refuse_negative_page_params(limit, start)
+    return limit, start
+
+
+def _refuse_negative_page_params(limit: int, start: int) -> None:
+    """Confluence's refusal of a negative page parameter, shared by every listing measured to give
+    it. `start` is checked first because it is the one real names when both are negative."""
     for name, value in (("start", start), ("limit", limit)):
         if value < 0:
             raise errors_atlassian.negative_not_allowed(name)
-    return limit, start

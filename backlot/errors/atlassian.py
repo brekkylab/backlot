@@ -53,6 +53,27 @@ def owns(path: str) -> bool:
     return path.startswith(PREFIX)
 
 
+def is_confluence(path: str) -> bool:
+    """Which of the two products serves ``path``. They answer several things differently — the
+    refusal envelope below, and how a query parameter is read — and one predicate keeps the
+    callers from drifting apart on what counts as Confluence."""
+    return path.startswith(WIKI)
+
+
+# Java's `Character.isWhitespace` is documented to EXCLUDE the three non-breaking spaces and to
+# include the other Unicode space separators. Measured on both products, 2026-09-15: a value
+# holding U+00A0, U+2007 or U+202F between its digits is a 400 naming that value, while the same
+# value holding U+2003, U+0020, a tab or a newline is thirty-four. Python's own `str.isspace()`
+# calls all seven whitespace, so the three are put back by hand.
+_JAVA_NON_WHITESPACE = "\u00a0\u2007\u202f"
+
+
+def strip_java_whitespace(raw: str) -> str:
+    """``raw`` with every character Java calls whitespace removed — not trimmed, removed: real
+    reads `?maxResults=3%204` as thirty-four and names `?limit=a%20b` as ``"ab"``."""
+    return "".join(ch for ch in raw if not ch.isspace() or ch in _JAVA_NON_WHITESPACE)
+
+
 class AtlassianError(HTTPException):
     """A refusal whose body real sends verbatim, rather than through :func:`_body`.
 
@@ -88,11 +109,14 @@ def integer_conversion_failure(path: str, name: str, values: list[str]) -> Atlas
     per request on real, so a Python ``id`` stands in — equally arbitrary, equally not a promise.
 
     The products also disagree on whether the value they name is the one that ARRIVED: Jira echoes
-    it whitespace and all (`?maxResults=%20abc%20` names `' abc '`), Confluence names the trimmed
-    one (the same value names `"abc"`, and a whitespace-only value names `""`).
+    it whitespace and all (`?maxResults=%20abc%20` names `' abc '`), Confluence names it with the
+    whitespace REMOVED — the same cleaning it converts by, so `?limit=a%20b` names `"ab"` and a
+    whitespace-only value names `""`. The cleaning is per value and the join comes after, which is
+    the only order that matches all three of `?limit=%20abc%20&limit=2` naming `"abc,2"`,
+    `?limit=abc&limit=%202%20` naming `"abc,2"` and `?limit=%20&limit=2` naming `",2"`.
     """
-    if path.startswith(WIKI):
-        shown = ",".join(values).strip()
+    if is_confluence(path):
+        shown = ",".join(strip_java_whitespace(v) for v in values)
         java_type = "java.lang.String" if len(values) == 1 else "java.lang.String[]"
         return AtlassianError(
             400,
@@ -106,7 +130,9 @@ def integer_conversion_failure(path: str, name: str, values: list[str]) -> Atlas
                 ),
             },
         )
-    shown = values[0] if len(values) == 1 else f"[Ljava.lang.String;@{id(values):x}"
+    # Masked to 32 bits: `Integer.toHexString(hashCode())` is at most eight digits, where CPython's
+    # `id` is a heap address and renders nine here — which would also put a live address on the wire.
+    shown = values[0] if len(values) == 1 else f"[Ljava.lang.String;@{id(values) & 0xFFFFFFFF:x}"
     return AtlassianError(
         400,
         {

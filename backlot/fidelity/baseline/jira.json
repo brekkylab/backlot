@@ -7,48 +7,6 @@
   "measured": "2026-09-10",
   "acknowledged": [
     {
-      "kind": "extra_param",
-      "severity": "breaking",
-      "path": "POST /rest/api/2/search/jql?jql",
-      "detail": "Backlot accepts it; the vendor's spec declares no such parameter",
-      "note": "Read off Atlassian's own v2 document on 2026-09-09: the GET form of `search/jql` takes these in the query string and the POST form takes them in a `SearchAndReconcileRequestBean` body \u2014 the same split the v3 document makes, down to the schema name. Backlot accepts them in the query string on both, which is more permissive than the vendor rather than incompatible with it. One divergence, not two: `/rest/api/2/search/jql` and `/rest/api/3/search/jql` are the same handler under two decorators, so the v3 entries beside these record the same behaviour at the other version. Not measured against a live Jira site."
-    },
-    {
-      "kind": "extra_param",
-      "severity": "breaking",
-      "path": "POST /rest/api/2/search/jql?maxResults",
-      "detail": "Backlot accepts it; the vendor's spec declares no such parameter",
-      "note": "Read off Atlassian's own v2 document on 2026-09-09: the GET form of `search/jql` takes these in the query string and the POST form takes them in a `SearchAndReconcileRequestBean` body \u2014 the same split the v3 document makes, down to the schema name. Backlot accepts them in the query string on both, which is more permissive than the vendor rather than incompatible with it. One divergence, not two: `/rest/api/2/search/jql` and `/rest/api/3/search/jql` are the same handler under two decorators, so the v3 entries beside these record the same behaviour at the other version. Not measured against a live Jira site."
-    },
-    {
-      "kind": "extra_param",
-      "severity": "breaking",
-      "path": "POST /rest/api/2/search/jql?nextPageToken",
-      "detail": "Backlot accepts it; the vendor's spec declares no such parameter",
-      "note": "Read off Atlassian's own v2 document on 2026-09-09: the GET form of `search/jql` takes these in the query string and the POST form takes them in a `SearchAndReconcileRequestBean` body \u2014 the same split the v3 document makes, down to the schema name. Backlot accepts them in the query string on both, which is more permissive than the vendor rather than incompatible with it. One divergence, not two: `/rest/api/2/search/jql` and `/rest/api/3/search/jql` are the same handler under two decorators, so the v3 entries beside these record the same behaviour at the other version. Not measured against a live Jira site."
-    },
-    {
-      "kind": "extra_param",
-      "severity": "breaking",
-      "path": "POST /rest/api/3/search/jql?jql",
-      "detail": "Backlot accepts it; the vendor's spec declares no such parameter",
-      "note": "Read off Atlassian's own v3 document on 2026-09-01: the GET form of `search/jql` takes these in the query string and the POST form takes them in a `SearchAndReconcileRequestBean` body. Backlot accepts them in the query string on both, which is more permissive than the vendor rather than incompatible with it. Not measured against a live Jira site."
-    },
-    {
-      "kind": "extra_param",
-      "severity": "breaking",
-      "path": "POST /rest/api/3/search/jql?maxResults",
-      "detail": "Backlot accepts it; the vendor's spec declares no such parameter",
-      "note": "Read off Atlassian's own v3 document on 2026-09-01: the GET form of `search/jql` takes these in the query string and the POST form takes them in a `SearchAndReconcileRequestBean` body. Backlot accepts them in the query string on both, which is more permissive than the vendor rather than incompatible with it. Not measured against a live Jira site."
-    },
-    {
-      "kind": "extra_param",
-      "severity": "breaking",
-      "path": "POST /rest/api/3/search/jql?nextPageToken",
-      "detail": "Backlot accepts it; the vendor's spec declares no such parameter",
-      "note": "Read off Atlassian's own v3 document on 2026-09-01: the GET form of `search/jql` takes these in the query string and the POST form takes them in a `SearchAndReconcileRequestBean` body. Backlot accepts them in the query string on both, which is more permissive than the vendor rather than incompatible with it. Not measured against a live Jira site."
-    },
-    {
       "kind": "missing_operation",
       "severity": "gap",
       "path": "DELETE /rest/api/2/attachment/{}",

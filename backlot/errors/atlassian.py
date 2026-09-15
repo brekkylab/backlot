@@ -159,6 +159,58 @@ def negative_not_allowed(name: str) -> AtlassianError:
     )
 
 
+def unsupported_media_type(path: str, content_type: str | None) -> AtlassianError:
+    """Jira's 415 for a POST body it will not read, measured 2026-09-15 on `POST search/jql`.
+
+    RFC 7807 again, the same five keys and the same media type as
+    :func:`integer_conversion_failure`. The ``detail`` names the type that arrived, and a request
+    carrying no ``Content-Type`` at all is named ``'null'`` — the literal string, which is the
+    header's absence rendered by a Java formatter rather than a JSON null.
+    """
+    return AtlassianError(
+        415,
+        {
+            "type": "about:blank",
+            "title": "Unsupported Media Type",
+            "status": 415,
+            "detail": f"Content-Type '{content_type or 'null'}' is not supported.",
+            "instance": _instance(path),
+        },
+        media_type=PROBLEM_JSON,
+    )
+
+
+# The three sentences Jira answers a POST body it cannot turn into an object, measured 2026-09-15.
+# Each arrives as `errorMessages` ALONE — no `errors`, where the refusals below it carry one — so
+# they go through :class:`AtlassianError` rather than :func:`_body`.
+BODY_EMPTY = "No content to map to Object due to end of input"
+BODY_UNPARSEABLE = "There was an error parsing JSON. Check that your request body is valid."
+BODY_NOT_AN_OBJECT = "Invalid request payload. Refer to the REST API documentation and try again."
+
+
+def body_not_read(message: str) -> AtlassianError:
+    """A 400 for a body that did not deserialize. ``message`` is one of the three above."""
+    return AtlassianError(400, {"errorMessages": [message]})
+
+
+def bad_page_token() -> AtlassianError:
+    """Jira's 400 for a ``nextPageToken`` it cannot decode, measured 2026-09-15 on both methods —
+    the query string's token and the body's are refused alike.
+
+    The sentence is Backlot's own, not a transcription: real localises this one to the account's
+    language, as it does the ``orderBy`` refusal (see ``routers.atlassian._jira_order_desc``), and
+    the account it was measured against answers in Korean. The envelope is reproduced, the wording
+    is not.
+    """
+    return AtlassianError(
+        400,
+        {
+            "errorMessages": ["The provided nextPageToken is invalid or has expired."],
+            "errors": {},
+        },
+    )
+
+
 def _body(status_code: int, detail) -> dict:
     try:
         reason = http.HTTPStatus(status_code).phrase

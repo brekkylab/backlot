@@ -274,6 +274,9 @@ compiled into SQL, and full introspection.
 
 ### Notion — `/notion/v1`
 
+Every route requires a `Notion-Version` header and answers `missing_version` without one, as the
+real API does; the value picks the database model, which is what the notes below name.
+
 | Endpoint | Notes |
 |---|---|
 | `POST search` | |

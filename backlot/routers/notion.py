@@ -8,16 +8,20 @@ ACL-filtered. Errors use Notion's envelope: ``{"object":"error","status","code",
 **Version-aware databases.** Notion moved database querying to the *data sources* model in
 ``2025-09-03``. This router keys off the ``Notion-Version`` request header:
 
-- ``2025-09-03`` and later (the default when a caller sends no header): ``databases.retrieve``
-  returns a ``data_sources: [{id,name}]`` array and rows are read via
-  ``POST /data_sources/{id}/query``.
+- ``2025-09-03`` and later: ``databases.retrieve`` returns a ``data_sources: [{id,name}]`` array
+  and rows are read via ``POST /data_sources/{id}/query``.
 - before it (2022-06-28 and the three versions older than that): ``databases.retrieve`` returns
   ``properties`` (schema) inline and rows are read via ``POST /databases/{id}/query``.
 
-One query path per version, as on the real API: the other one answers ``invalid_request_url``,
-and a request that carries no version header reaches neither (see ``_version_refusal``). Both
-retrieve shapes stay served, each under its own versions. Backlot has one data source per
-database, its id assigned at import alongside the database's own.
+One query path per version, as on the real API: the other one answers ``invalid_request_url``
+(see ``_wrong_query_path``). Both retrieve shapes stay served, each under its own versions.
+Backlot has one data source per database, its id assigned at import alongside the database's own.
+
+**The header is required** on every route here, as Notion requires it on every REST request: a
+request that omits it is answered ``missing_version``, behind the 401 that a request with no
+usable credential gets (see ``_refusal``). Every route declares it in the spec as well, so a
+client generated from that spec -- ``backlot mcp``'s tools among them -- can send what the route
+asks for.
 
 Object mapping: a Notion *page* is one doc (``subtype='page'``); a *database* is one doc
 (``subtype='database'``, ``content`` → its description); a *database row* is a page whose
@@ -45,7 +49,6 @@ _PAGE_MAX = 100  # Notion caps page_size at 100
 # Notion names a version for its release date and lists them in that order, which is what makes
 # ``_data_sources_model`` a date comparison ("Changes by version", read 2026-09-15).
 DATA_SOURCES_VERSION = "2025-09-03"
-DEFAULT_VERSION = DATA_SOURCES_VERSION
 
 
 # --- OpenAPI enrichment --------------------------------------------------
@@ -92,32 +95,47 @@ _B_SEARCH = _body(
 )
 
 
-def _version_param(serves: str, refuses: str) -> dict:
-    """The ``Notion-Version`` header parameter for one query route: ``serves`` names the versions
-    that route is the path for, ``refuses`` the ones that read a database's rows through the other.
-
-    Notion's own document declares this header on every one of its operations, required; Backlot
-    declares it on the pair where it decides the answer, which is the pair that honours it -- a
-    route that ignores a parameter must not advertise it (see ``openapi.qp``). Spelling it out
-    here is also the whole of what the MCP bridge knows: the header carries no default there, so
-    without this the generated tool has no way to send a version and the route refuses it."""
+def _version_param(description: str) -> dict:
+    """The ``Notion-Version`` header, declared the way Notion's own document declares it: on every
+    operation, required. Here that is not documentation but the contract each route enforces (see
+    ``_refusal``), and it is the whole of what a generated client knows -- ``backlot mcp`` builds
+    its tools off this spec and its bridge sends no version of its own, so a route that required
+    the header without declaring it would hand an agent a tool it could not call."""
     return {
         "name": "Notion-Version",
         "in": "header",
         "required": True,
         "schema": {"type": "string"},
-        "description": (
-            f"The API version to read this request under. This path serves {serves}; "
-            f"{refuses} read a database's rows through the other query path, and a request "
-            "under one of them is refused here, as is a request that sends no version."
-        ),
+        "description": description,
     }
 
 
+_P_VERSION = _version_param(
+    "The API version to read this request under. Notion requires it on every request and refuses "
+    "one that omits it. `2025-09-03` and later read a database's rows through "
+    "`data_sources/{id}/query`; the versions before it read them through `databases/{id}/query`, "
+    "and see a database's schema inline instead of a `data_sources` array."
+)
+
+
+def _params(*query_params: dict) -> dict:
+    """``openapi_extra`` for a route: the version header every request carries, then whatever
+    query parameters the route reads."""
+    return {"parameters": [_P_VERSION, *query_params]}
+
+
 def _query_extra(serves: str, refuses: str) -> dict:
+    """``openapi_extra`` for one of the two query routes. ``serves`` names the versions it is the
+    path for, ``refuses`` the ones that read rows through the other."""
     return {
         **_body({"start_cursor": {"type": "string"}, "page_size": {"type": "integer"}}),
-        "parameters": [_version_param(serves, refuses)],
+        "parameters": [
+            _version_param(
+                f"The API version to read this request under. This path serves {serves}; "
+                f"{refuses} read a database's rows through the other query path, and a request "
+                "under one of them is refused here, as is a request that sends no version."
+            )
+        ],
     }
 
 
@@ -136,14 +154,11 @@ def _error(status: int, code: str, message: str) -> JSONResponse:
 
 
 def _version(request: Request) -> str:
-    """The caller's ``Notion-Version``, or :data:`DEFAULT_VERSION` when it sent none. Real Notion
-    requires the header on every request ("The Notion-Version header must be included in all REST
-    API requests", Versioning, read 2026-09-15) and answers ``missing_version`` without it; the
-    query routes are the pair that requirement is enforced on here (see ``_version_refusal``),
-    because they are where it was measured. Everywhere else a header-less caller is still served,
-    and the two answers that depend on the version -- ``databases.retrieve``'s shape and the
-    databases ``search`` returns -- are built on this default."""
-    return request.headers.get("notion-version") or DEFAULT_VERSION
+    """The caller's ``Notion-Version``. The fallback is unreachable through a route -- every one
+    of them runs ``_refusal`` first, which answers a request that sent no version -- and is here
+    so a reader of ``_database_obj`` or ``search`` need not prove that to know what the version is
+    when the shape is built."""
+    return request.headers.get("notion-version") or DATA_SOURCES_VERSION
 
 
 def _data_sources_model(version: str) -> bool:
@@ -160,32 +175,46 @@ def _data_sources_model(version: str) -> bool:
     return version >= DATA_SOURCES_VERSION
 
 
-def _version_refusal(request: Request, *, data_sources: bool) -> JSONResponse | None:
-    """Notion's answer when the caller's version does not serve the query path it asked for, or
-    when it sent no version at all -- None when the request may go through.
+def _refusal(request: Request, caller) -> JSONResponse | None:
+    """What a request is answered before any route reads a row -- None when it may go on. Every
+    route calls this, so the two checks are in one place and in the order the real API applies
+    them. Called rather than declared as a router dependency, the way Google's system-parameter
+    check is (see routers.google): a dependency runs before the route body, and the credential
+    half of this has to stay where the route resolves the caller it goes on to scope rows by.
 
-    Measured against api.notion.com on 2026-09-11 with an integration token, probing each path
-    with an id that exists but is a page: 2022-06-28 serves ``databases/{id}/query`` and answers
-    ``invalid_request_url`` for ``data_sources/{id}/query``, 2025-09-03 the other way round, and a
-    request with no header at all is refused with ``missing_version`` on either. The two messages
-    come from different places, since that probe recorded the codes: ``Invalid request URL.`` is
-    what api.notion.com answered on 2026-09-15 for a path no version mounts at all, and the
-    ``missing_version`` wording is the example Notion's status-code table prints for that code
-    (read the same day).
+    The credential first: on 2026-09-15 an invalid token answered ``unauthorized`` on both query
+    paths under 2022-06-28, under 2025-09-03 and with no version header at all, so the version is
+    never what a request without a usable credential hears about.
 
-    After the 401, not before it: on 2026-09-15 an invalid token answered ``unauthorized`` on both
-    paths under 2022-06-28, under 2025-09-03 and with no version header at all, so neither refusal
-    is reachable without a credential that resolves. An empty header value is taken as none
+    Then the version, which Notion requires on every request -- "The Notion-Version header must be
+    included in all REST API requests" (Versioning, read 2026-09-15), answered ``missing_version``
+    when it is absent (status codes, same day). That requirement is the vendor's document rather
+    than a measurement here: the check sits behind a credential that resolves, and no Notion token
+    was available to put in front of it, so what #189 measured is the query pair. The message is
+    the example the status-code table prints for the code. An empty header value is taken as none
     sent."""
-    version = request.headers.get("notion-version")
-    if not version:
+    if caller is None:
+        return _error(401, "unauthorized", "API token is invalid.")
+    if not request.headers.get("notion-version"):
         return _error(
             400,
             "missing_version",
             "Notion-Version header failed validation: Notion-Version header should be defined, "
             "instead was undefined.",
         )
-    if _data_sources_model(version) is not data_sources:
+    return None
+
+
+def _wrong_query_path(request: Request, *, data_sources: bool) -> JSONResponse | None:
+    """Notion's answer when the caller's version does not serve the query path it asked for --
+    None when it does. Runs after ``_refusal``, so the version read here is one the caller sent.
+
+    Measured against api.notion.com on 2026-09-11 with an integration token, probing each path
+    with an id that exists but is a page: 2022-06-28 serves ``databases/{id}/query`` and answers
+    ``invalid_request_url`` for ``data_sources/{id}/query``, and 2025-09-03 the other way round.
+    That probe recorded the code; the message is what api.notion.com answered on 2026-09-15 for a
+    path no version mounts at all."""
+    if _data_sources_model(_version(request)) is not data_sources:
         return _error(400, "invalid_request_url", "Invalid request URL.")
     return None
 
@@ -377,11 +406,11 @@ def _data_source_obj(conn, row) -> dict:
 # --------------------------------------------------------------------------- pages / blocks
 
 
-@router.get("/pages/{page_id}", response_model=NotionObject)
+@router.get("/pages/{page_id}", response_model=NotionObject, openapi_extra=_params())
 async def get_page(page_id: str, request: Request):
     caller = auth.resolve_bearer(request)
-    if caller is None:
-        return _error(401, "unauthorized", "API token is invalid.")
+    if (refusal := _refusal(request, caller)) is not None:
+        return refusal
     conn = auth.conn(request)
     # One ACL-scoped query, not a resolve followed by a get_document refetch of the same row:
     # `id` is the PRIMARY KEY, so the ACL clause can only narrow "found" to "not found", never
@@ -392,11 +421,11 @@ async def get_page(page_id: str, request: Request):
     return _page_obj(conn, row)
 
 
-@router.get("/blocks/{block_id}", response_model=NotionObject)
+@router.get("/blocks/{block_id}", response_model=NotionObject, openapi_extra=_params())
 async def get_block(block_id: str, request: Request):
     caller = auth.resolve_bearer(request)
-    if caller is None:
-        return _error(401, "unauthorized", "API token is invalid.")
+    if (refusal := _refusal(request, caller)) is not None:
+        return refusal
     conn = auth.conn(request)
     row = store.notion_by_id(conn, _norm(block_id), auth.visible_ids(request, caller))
     if row is None:
@@ -420,12 +449,12 @@ async def get_block(block_id: str, request: Request):
 @router.get(
     "/blocks/{block_id}/children",
     response_model=NotionList,
-    openapi_extra={"parameters": _P_PAGINATE},
+    openapi_extra=_params(*_P_PAGINATE),
 )
 async def get_block_children(block_id: str, request: Request):
     caller = auth.resolve_bearer(request)
-    if caller is None:
-        return _error(401, "unauthorized", "API token is invalid.")
+    if (refusal := _refusal(request, caller)) is not None:
+        return refusal
     conn = auth.conn(request)
     row = store.notion_by_id(conn, _norm(block_id), auth.visible_ids(request, caller))
     if row is None:
@@ -440,11 +469,11 @@ async def get_block_children(block_id: str, request: Request):
 # --------------------------------------------------------------------------- databases / data sources
 
 
-@router.get("/databases/{database_id}", response_model=NotionObject)
+@router.get("/databases/{database_id}", response_model=NotionObject, openapi_extra=_params())
 async def get_database(database_id: str, request: Request):
     caller = auth.resolve_bearer(request)
-    if caller is None:
-        return _error(401, "unauthorized", "API token is invalid.")
+    if (refusal := _refusal(request, caller)) is not None:
+        return refusal
     conn = auth.conn(request)
     row = store.notion_by_id(conn, _norm(database_id), auth.visible_ids(request, caller))
     if row is None or row["subtype"] != "database":
@@ -452,11 +481,11 @@ async def get_database(database_id: str, request: Request):
     return _database_obj(conn, row, _version(request))
 
 
-@router.get("/data_sources/{data_source_id}", response_model=NotionObject)
+@router.get("/data_sources/{data_source_id}", response_model=NotionObject, openapi_extra=_params())
 async def get_data_source(data_source_id: str, request: Request):
     caller = auth.resolve_bearer(request)
-    if caller is None:
-        return _error(401, "unauthorized", "API token is invalid.")
+    if (refusal := _refusal(request, caller)) is not None:
+        return refusal
     conn = auth.conn(request)
     # No subtype check needed here, unlike get_database's lookup by `id` (which spans both pages
     # and databases): served_data_source_id is populated only for subtype='database' rows, and the
@@ -478,9 +507,9 @@ async def _query_rows(request: Request, row_id: str, *, data_sources: bool):
     the database's own under ``databases`` -- and is resolved only once the credential and the
     version have both been accepted, so a refused request never runs a lookup."""
     caller = auth.resolve_bearer(request)
-    if caller is None:
-        return _error(401, "unauthorized", "API token is invalid.")
-    if (refusal := _version_refusal(request, data_sources=data_sources)) is not None:
+    if (refusal := _refusal(request, caller)) is not None:
+        return refusal
+    if (refusal := _wrong_query_path(request, data_sources=data_sources)) is not None:
         return refusal
     db_id = (
         _db_doc_for_data_source(request, row_id) if data_sources else _existing_id(request, row_id)
@@ -519,11 +548,11 @@ async def query_database(database_id: str, request: Request):
 # --------------------------------------------------------------------------- search
 
 
-@router.post("/search", response_model=NotionList, openapi_extra=_B_SEARCH)
+@router.post("/search", response_model=NotionList, openapi_extra={**_B_SEARCH, **_params()})
 async def search(request: Request):
     caller = auth.resolve_bearer(request)
-    if caller is None:
-        return _error(401, "unauthorized", "API token is invalid.")
+    if (refusal := _refusal(request, caller)) is not None:
+        return refusal
     conn = auth.conn(request)
     visible = auth.visible_ids(request, caller)
     body = await json_body(request)
@@ -559,11 +588,11 @@ async def search(request: Request):
 # --------------------------------------------------------------------------- users
 
 
-@router.get("/users", response_model=NotionList, openapi_extra={"parameters": _P_PAGINATE})
+@router.get("/users", response_model=NotionList, openapi_extra=_params(*_P_PAGINATE))
 async def list_users(request: Request):
     caller = auth.resolve_bearer(request)
-    if caller is None:
-        return _error(401, "unauthorized", "API token is invalid.")
+    if (refusal := _refusal(request, caller)) is not None:
+        return refusal
     conn = auth.conn(request)
     users = store.list_users(conn)
     offset = pagination.decode_cursor(request.query_params.get("start_cursor"))
@@ -573,11 +602,11 @@ async def list_users(request: Request):
     return _list_obj(results, offset, len(page), len(users), "user")
 
 
-@router.get("/users/me", response_model=NotionObject)
+@router.get("/users/me", response_model=NotionObject, openapi_extra=_params())
 async def get_me(request: Request):
     caller = auth.resolve_bearer(request)
-    if caller is None:
-        return _error(401, "unauthorized", "API token is invalid.")
+    if (refusal := _refusal(request, caller)) is not None:
+        return refusal
     conn = auth.conn(request)
     if caller.email:  # a user token → that person
         return _user_obj(conn, caller.email)
@@ -595,11 +624,11 @@ async def get_me(request: Request):
     }
 
 
-@router.get("/users/{user_id}", response_model=NotionObject)
+@router.get("/users/{user_id}", response_model=NotionObject, openapi_extra=_params())
 async def get_user(user_id: str, request: Request):
     caller = auth.resolve_bearer(request)
-    if caller is None:
-        return _error(401, "unauthorized", "API token is invalid.")
+    if (refusal := _refusal(request, caller)) is not None:
+        return refusal
     conn = auth.conn(request)
     key = _norm(user_id)
     for u in store.list_users(conn):
@@ -611,11 +640,11 @@ async def get_user(user_id: str, request: Request):
 # --------------------------------------------------------------------------- comments
 
 
-@router.get("/comments", response_model=NotionList, openapi_extra={"parameters": _P_COMMENTS})
+@router.get("/comments", response_model=NotionList, openapi_extra=_params(*_P_COMMENTS))
 async def list_comments(request: Request):
     caller = auth.resolve_bearer(request)
-    if caller is None:
-        return _error(401, "unauthorized", "API token is invalid.")
+    if (refusal := _refusal(request, caller)) is not None:
+        return refusal
     conn = auth.conn(request)
     block_id = request.query_params.get("block_id")
     # One ACL-scoped query (the parent must itself be visible to the caller), not

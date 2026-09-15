@@ -370,8 +370,9 @@ def test_fireflies_the_hand_written_examples_queries_still_validate(client, admi
 
 
 def test_fireflies_declares_no_mutations(client, admin_h):
-    """A read-only server declares no Mutation type rather than accepting writes and dropping
-    them."""
+    """Backlot serves no Fireflies write, so its schema declares no Mutation type rather than
+    accepting one and dropping it. A fact about this source, not about the server: Slack takes
+    writes."""
     r = ff_gql(client, "{ __schema { mutationType { name } } }", admin_h)
     assert r.json()["data"]["__schema"]["mutationType"] is None
 

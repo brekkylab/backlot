@@ -1,6 +1,8 @@
 """FastAPI app hosting every emulated vendor API under path prefixes.
 
-Startup opens the read-only DB, loads the ACL/token map, and starts a background cache warm-up.
+Startup opens the read-only corpus DB, attaches the writable mutation overlay to it, loads the
+ACL/token map, and starts a background cache warm-up. The corpus file is never opened writable —
+see `backlot/overlay.py`.
 """
 
 from __future__ import annotations
@@ -16,7 +18,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from backlot import auth, errors, openapi, store, synth
+from backlot import auth, errors, openapi, overlay, store, synth
 from backlot.acl import Acl
 from backlot.config import get_settings
 from backlot.oauth import Oauth
@@ -65,6 +67,11 @@ async def lifespan(app: FastAPI):
             f"{', '.join(stale)}. Re-import the corpus: backlot import <corpus.jsonl>"
         )
     app.state.conn = conn
+    # The mutation overlay. Attached to the same connection as the corpus, which stays mode=ro:
+    # served writes land in `ov` and the corpus file is never opened writable. A per-app name so
+    # two servers in one process (every pytest run) do not share one overlay.
+    app.state.overlay_name = overlay.name_for(app)
+    overlay.attach(conn, app.state.overlay_name)
     app.state.acl = Acl.load(settings.tokens_path, settings.admin_token, settings.org_name)
     app.state.oauth = Oauth.load(settings.credentials_path)  # None if credentials.yaml absent
 
@@ -468,6 +475,64 @@ async def meta_openapi(source: str, request: Request):
             detail=f"no MCP spec for {source!r}; one of {sorted(openapi.SOURCE_PREFIXES)}",
         )
     return openapi.build_mcp_spec(request.app.openapi(), source)
+
+
+def _require_admin(request: Request) -> None:
+    """Refuse a caller who is not the admin/service token.
+
+    Used by the one `/_meta` route that destroys state. The rest of the namespace is open on
+    purpose — `/_meta/users` hands out every user's token — but "this server is a fixture" is an
+    argument about READS.
+    """
+    caller = app.state.acl.resolve(auth.bearer_token(request))
+    if caller is None or not caller.is_admin:
+        raise HTTPException(status_code=403, detail="admin token required")
+
+
+@app.get("/_meta/overlay")
+def meta_overlay():
+    """Everything written since the last reset — the read an evaluation's grader makes.
+
+    An ACL oracle asks what an agent did, and answering it by diffing the served surface against
+    itself means knowing what the surface looked like before. The overlay already IS that
+    difference, so it is reported directly: the documents written, the grants they carry, the
+    columns overwritten, the documents subtracted, and the memberships changed.
+
+    The FTS index is left out. It holds no fact the document rows do not.
+
+    Unauthenticated, like every other `/_meta` route: `/_meta/users` already hands out every
+    user's token to any caller, so this namespace is a test fixture's control surface rather than
+    a secured one, and a gate on this route alone would be the only one of its kind.
+    """
+    conn = app.state.conn
+    out: dict[str, list[dict]] = {}
+    for src in sorted(store.WRITABLE):
+        names = [n for n in overlay.table_names(src).values() if not n.endswith("_fts_ov")]
+        names += list(overlay.EXTRA_DDL.get(src, {}))
+        for name in names:
+            out[name] = [dict(r) for r in conn.execute(f"SELECT * FROM ov.{name}")]
+    return out
+
+
+@app.post("/_meta/overlay/reset")
+def meta_overlay_reset(request: Request):
+    """Throw the overlay away — an evaluation run's teardown.
+
+    Every write goes, including a tombstone, so a message deleted in one run is back for the next.
+    That is what makes two runs over one server comparable. The corpus is untouched either way; it
+    was never opened writable.
+
+    Admin token only, unlike every other `/_meta` route — this is the one that DESTROYS
+    something. An evaluation is graded from `/_meta/overlay`, so an agent that could reach this
+    without a credential could erase the record of what it had just done, which is the one thing
+    the oracle exists to hold.
+    """
+    _require_admin(request)
+    overlay.reset(app.state.conn, app.state.overlay_name)
+    # The per-channel member counts were computed against the pre-write corpus and are correct for
+    # it again, so the cache is rebuilt rather than left holding a written channel's number.
+    app.state.channel_members = None
+    return {"ok": True}
 
 
 app.include_router(oauth.router)

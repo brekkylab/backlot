@@ -3,7 +3,7 @@
   "endpoints": [
     "https://gmail.googleapis.com/$discovery/rest?version=v1"
   ],
-  "measured": "2026-09-01",
+  "measured": "2026-09-12",
   "acknowledged": [
     {
       "kind": "missing_operation",
@@ -86,12 +86,6 @@
     {
       "kind": "missing_param",
       "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/labels/{}?$.xgafv",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
       "path": "GET /gmail/v1/users/{}/labels/{}?access_token",
       "detail": "the vendor accepts it; Backlot does not"
     },
@@ -147,12 +141,6 @@
       "kind": "missing_param",
       "severity": "gap",
       "path": "GET /gmail/v1/users/{}/labels/{}?upload_protocol",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/labels?$.xgafv",
       "detail": "the vendor accepts it; Backlot does not"
     },
     {
@@ -218,12 +206,6 @@
     {
       "kind": "missing_param",
       "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/messages/{}/attachments/{}?$.xgafv",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
       "path": "GET /gmail/v1/users/{}/messages/{}/attachments/{}?access_token",
       "detail": "the vendor accepts it; Backlot does not"
     },
@@ -279,12 +261,6 @@
       "kind": "missing_param",
       "severity": "gap",
       "path": "GET /gmail/v1/users/{}/messages/{}/attachments/{}?upload_protocol",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/messages/{}?$.xgafv",
       "detail": "the vendor accepts it; Backlot does not"
     },
     {
@@ -351,12 +327,6 @@
       "kind": "missing_param",
       "severity": "gap",
       "path": "GET /gmail/v1/users/{}/messages/{}?upload_protocol",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/messages?$.xgafv",
       "detail": "the vendor accepts it; Backlot does not"
     },
     {
@@ -429,12 +399,6 @@
       "kind": "missing_param",
       "severity": "gap",
       "path": "GET /gmail/v1/users/{}/messages?upload_protocol",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/profile?$.xgafv",
       "detail": "the vendor accepts it; Backlot does not"
     },
     {
@@ -614,12 +578,6 @@
     {
       "kind": "missing_param",
       "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/threads/{}?$.xgafv",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
       "path": "GET /gmail/v1/users/{}/threads/{}?access_token",
       "detail": "the vendor accepts it; Backlot does not"
     },
@@ -681,12 +639,6 @@
       "kind": "missing_param",
       "severity": "gap",
       "path": "GET /gmail/v1/users/{}/threads/{}?upload_protocol",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/threads?$.xgafv",
       "detail": "the vendor accepts it; Backlot does not"
     },
     {

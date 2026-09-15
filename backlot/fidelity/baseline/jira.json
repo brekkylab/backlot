@@ -4,7 +4,7 @@
     "https://developer.atlassian.com/cloud/jira/platform/swagger-v3.v3.json",
     "https://developer.atlassian.com/cloud/jira/platform/swagger.v3.json"
   ],
-  "measured": "2026-09-10",
+  "measured": "2026-09-15",
   "acknowledged": [
     {
       "kind": "extra_param",
@@ -4677,6 +4677,13 @@
     {
       "kind": "missing_operation",
       "severity": "gap",
+      "path": "POST /rest/api/2/forge/panel/action/bulk/status",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Read off Atlassian's own v2 document on 2026-09-15: `getBulkPinStatus`, summarised \"Get issue panel pin status for projects\", whose description opens \"Get the pin status of an issue panel (added by a Forge app) for multiple projects.\" and goes on \"The operation is read-only and runs synchronously.\" So it is not Backlot's one-way data flow that keeps this out: Backlot already serves a read over POST, at `search/jql`. It is scope. A Backlot jira record is an issue, carrying its project, status, comments and the people on it, with no Forge app and so no panel for a pin to be set on. The path sibling `POST /rest/api/2/forge/panel/action/bulk/async` is a different case: the same document calls it `bulkPinUnpinProjectsAsync` and opens it \"Bulk pin or unpin an issue panel (added by a Forge app) to or from multiple projects.\", which writes. It arrived between the scheduled fidelity runs of 2026-09-14 and 2026-09-15. Not measured against a live Jira site."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
       "path": "POST /rest/api/2/group",
       "detail": "the vendor serves it; Backlot does not"
     },
@@ -5169,6 +5176,13 @@
     {
       "kind": "missing_operation",
       "severity": "gap",
+      "path": "POST /rest/api/2/workflows/copy",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Read off Atlassian's own v2 document on 2026-09-15: `copyWorkflow`, summarised \"Copy workflow\", whose description opens \"Copies an existing workflow, and the statuses it uses, into a new workflow with the given name.\" It writes, and Backlot's data flows one way (a corpus enters through `backlot import`, never through a served route), so there is nothing here for a served route to answer. `POST /rest/api/2/workflows/create` and `POST /rest/api/2/workflows/update`, which the same document opens as \"Create workflows and related statuses.\" and \"Update workflows and related statuses.\", are acknowledged in this file already. It arrived between the scheduled fidelity runs of 2026-09-14 and 2026-09-15. Not measured against a live Jira site."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
       "path": "POST /rest/api/2/workflows/create",
       "detail": "the vendor serves it; Backlot does not"
     },
@@ -5447,6 +5461,13 @@
       "severity": "gap",
       "path": "POST /rest/api/3/forge/panel/action/bulk/async",
       "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /rest/api/3/forge/panel/action/bulk/status",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Read off Atlassian's own v3 document on 2026-09-15: `getBulkPinStatus`, summarised \"Get issue panel pin status for projects\", whose description opens \"Get the pin status of an issue panel (added by a Forge app) for multiple projects.\" and goes on \"The operation is read-only and runs synchronously.\" So it is not Backlot's one-way data flow that keeps this out: Backlot already serves a read over POST, at `search/jql`. It is scope. A Backlot jira record is an issue, carrying its project, status, comments and the people on it, with no Forge app and so no panel for a pin to be set on. The path sibling `POST /rest/api/3/forge/panel/action/bulk/async` is a different case: the same document calls it `bulkPinUnpinProjectsAsync` and opens it \"Bulk pin or unpin an issue panel (added by a Forge app) to or from multiple projects.\", which writes. It arrived between the scheduled fidelity runs of 2026-09-14 and 2026-09-15. Not measured against a live Jira site."
     },
     {
       "kind": "missing_operation",
@@ -5939,6 +5960,13 @@
       "severity": "gap",
       "path": "POST /rest/api/3/workflows",
       "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /rest/api/3/workflows/copy",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Read off Atlassian's own v3 document on 2026-09-15: `copyWorkflow`, summarised \"Copy workflow\", whose description opens \"Copies an existing workflow, and the statuses it uses, into a new workflow with the given name.\" It writes, and Backlot's data flows one way (a corpus enters through `backlot import`, never through a served route), so there is nothing here for a served route to answer. `POST /rest/api/3/workflows/create` and `POST /rest/api/3/workflows/update`, which the same document opens as \"Create workflows and related statuses.\" and \"Update workflows and related statuses.\", are acknowledged in this file already. It arrived between the scheduled fidelity runs of 2026-09-14 and 2026-09-15. Not measured against a live Jira site."
     },
     {
       "kind": "missing_operation",

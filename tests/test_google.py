@@ -21,6 +21,7 @@ import yaml
 
 from backlot import oauth, sheets_grid, store
 from backlot.config import Settings
+from backlot.errors import google as gerr
 from tests._helpers import (
     client_for,
     crawl_drive,
@@ -1055,6 +1056,300 @@ def test_a_missing_header_differs_by_family(client, path, code, status):
         assert "unregistered callers" in e["message"]
     else:
         assert "missing required authentication credential" in e["message"]
+
+
+# --- `callback`, and the bytes a Google body reaches the wire as -------------------------------
+#
+# Measured 2026-09-15 against sheets.googleapis.com, docs.googleapis.com, drive/v3 on
+# www.googleapis.com, gmail.googleapis.com and slides.googleapis.com — every family, authenticated
+# where a credential reaches one and anonymous where it does not, over a 400, a 401, a 403 and a
+# 404. Three properties, none of which `backlot diff` can see: it builds its findings from the
+# discovery document's operations and parameters, so no comparison it runs reads a response body.
+#
+#   callback=cb   HTTP 200, `text/javascript; charset=UTF-8`, `// API callback\ncb({…}\n);`
+#   indentation   two spaces and a trailing newline on an error, whatever `prettyPrint` says
+#   charset       `application/json; charset=UTF-8` on the plain body
+#
+# The five anonymous errors below are the same five `test_a_missing_header_differs_by_family`
+# measures, reused because one request per family is what real was asked.
+
+JSONP_FAMILY_ERRORS = [
+    ("/drive/v3/files", 403),
+    ("/sheets/v4/spreadsheets/x", 403),
+    ("/gmail/v1/users/me/profile", 401),
+    ("/docs/v1/documents/x", 401),
+    ("/slides/v1/presentations/x", 401),
+]
+
+CALLBACK_REFUSAL = (
+    "Invalid JSONP callback name: '{}'; only alphabet, number, '_', '$', '.', '[' and ']' "
+    "are allowed."
+)
+
+
+def _jsonp(resp, name):
+    """The object inside a JSONP answer, having asserted that it IS one, called through ``name``.
+
+    ``resp.json()`` cannot read these: the body is a script, which is the whole divergence. `<` and
+    `>` reach the wrapper escaped, so a name carrying one is compared in that form."""
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"] == "text/javascript; charset=UTF-8"
+    called = name.replace("<", "\\u003c").replace(">", "\\u003e")
+    prefix = f"// API callback\n{called}("
+    assert resp.text.startswith(prefix), resp.text[: len(prefix) + 20]
+    assert resp.text.endswith(");")
+    return json.loads(resp.text[len(prefix) : -2])
+
+
+@pytest.mark.parametrize("path, code", JSONP_FAMILY_ERRORS)
+def test_a_google_error_is_indented_and_names_its_charset(client, path, code):
+    """Two spaces deep, one trailing newline, `application/json; charset=UTF-8`. A client that
+    records a response body byte for byte, or one that sniffs the charset off the header, saw a
+    different body from Backlot on every Google error before this."""
+    r = client.get(path)
+    assert r.status_code == code
+    assert r.headers["content-type"] == "application/json; charset=UTF-8"
+    assert r.text == json.dumps(r.json(), ensure_ascii=False, indent=2) + "\n"
+    assert r.text.startswith('{\n  "error": {\n    "code": ')
+    assert r.text.endswith("\n  }\n}\n")
+
+
+def test_the_indented_error_is_the_body_real_sends_to_the_byte(client):
+    """One family spelled out, so the shape is pinned by something other than the serializer that
+    produced it. Sheets answers an anonymous read 403 PERMISSION_DENIED with the
+    unregistered-caller sentence."""
+    r = client.get("/sheets/v4/spreadsheets/x")
+    assert r.text == (
+        "{\n"
+        '  "error": {\n'
+        '    "code": 403,\n'
+        f'    "message": "{gerr.UNREGISTERED_CALLER_MESSAGE}",\n'
+        '    "status": "PERMISSION_DENIED"\n'
+        "  }\n"
+        "}\n"
+    )
+
+
+@pytest.mark.parametrize("pretty", [None, "false", "true", "NOPE"])
+def test_prettyprint_does_not_reach_an_error(base, admin_h, sheet_id, pretty):
+    """Measured on all five families, each on an error of its own: every one came back two-space
+    indented with no parameter, with `false` and with `true` alike, byte for byte. A SUCCESS under
+    `false` is compact, so the parameter is the success path's alone — which is why the success is
+    read here too, as the half of the pair that does change."""
+    params = {} if pretty is None else {"prettyPrint": pretty}
+    bad = _values(base, admin_h, sheet_id, "NOPE!!", **params)
+    assert bad.status_code == 400, bad.text
+    assert bad.text == json.dumps(bad.json(), ensure_ascii=False, indent=2) + "\n"
+    ok = _values(base, admin_h, sheet_id, "Sheet1!A1", **params)
+    compact = pretty == "false"
+    assert ok.text.endswith("}") if compact else ok.text.endswith("}\n")
+
+
+@pytest.mark.parametrize("path, code", JSONP_FAMILY_ERRORS)
+def test_a_callback_answers_an_error_at_200_as_a_script(client, path, code):
+    """JSONP is the case where the status code is the whole point: a browser loading the answer
+    through a `<script>` element can see no status at all, so against real a failed call runs
+    `cb({"error": …})` and the page handles it. Answering the error status with an unwrapped body
+    fires `onerror` instead and the callback never runs — the client's error branch is then the one
+    path its tests cannot exercise against Backlot."""
+    plain = client.get(path)
+    r = client.get(path, params={"callback": "cb"})
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "text/javascript; charset=UTF-8"
+    assert r.text == f"// API callback\ncb({plain.text});"
+    assert json.loads(r.text[len("// API callback\ncb(") : -2])["error"]["code"] == code
+
+
+def test_a_callback_wraps_a_success_and_an_error_through_the_same_serializer(
+    base, admin_h, sheet_id
+):
+    """The divergence this closes was between Backlot's own two paths as much as against the
+    vendor: `_sheets_respond` already rendered a success to the byte while every error went out as
+    one compact `JSONResponse` line."""
+    ok = _values(base, admin_h, sheet_id, "Sheet1!A1")
+    ok_cb = _values(base, admin_h, sheet_id, "Sheet1!A1", callback="cb")
+    bad = _values(base, admin_h, sheet_id, "NOPE!!")
+    bad_cb = _values(base, admin_h, sheet_id, "NOPE!!", callback="cb")
+    assert ok_cb.text == f"// API callback\ncb({ok.text});"
+    assert bad_cb.text == f"// API callback\ncb({bad.text});"
+    assert ok_cb.headers["content-type"] == bad_cb.headers["content-type"]
+    assert (ok_cb.status_code, bad_cb.status_code) == (200, 200)
+
+
+@pytest.mark.parametrize("path, code", JSONP_FAMILY_ERRORS)
+def test_an_empty_callback_is_no_callback(client, path, code):
+    """Measured: `callback=` answers the plain body at the real status, success and error alike."""
+    r = client.get(path, params={"callback": ""})
+    assert r.status_code == code
+    assert r.headers["content-type"] == "application/json; charset=UTF-8"
+    assert r.text == client.get(path).text
+
+
+@pytest.mark.parametrize("name", ["a b", "cb);alert(1", "<script>", "window['x']", "cb\n", "é"])
+def test_a_callback_name_that_cannot_be_one_is_refused_through_itself(client, admin_h, name):
+    """The refusal arrives WRAPPED, through the very name it refuses — measured on Sheets, Drive
+    and Gmail, authenticated and anonymous. So a page that asked for a callback still gets a script
+    that calls something, and the error object reaches its error branch rather than `onerror`."""
+    r = client.get("/sheets/v4/spreadsheets/x", headers=admin_h, params={"callback": name})
+    assert _jsonp(r, name)["error"] == {
+        "code": 400,
+        "message": CALLBACK_REFUSAL.format(name),
+        "status": "INVALID_ARGUMENT",
+    }
+
+
+@pytest.mark.parametrize("name", ["cb", "1bad", "foo.bar", "$cb", "_cb", ".cb", "cb.", "a" * 2000])
+def test_the_callback_names_real_accepts(client, admin_h, name):
+    """Position does not matter and length does not either — measured, `.cb`, `cb.`, `1bad` and a
+    2,000-character name are all accepted, so the rule is the character set and nothing else."""
+    r = client.get("/sheets/v4/spreadsheets/x", headers=admin_h, params={"callback": name})
+    assert r.text.startswith(f"// API callback\n{name}(")
+    assert "Invalid JSONP callback name" not in r.text
+
+
+@pytest.mark.parametrize("ch", list("!\"#%&'()*+,-/:;<=>?@\\^`{|}~ ") + ["\t", "\n", "é", "​"])
+def test_the_characters_a_callback_name_may_not_hold(client, admin_h, ch):
+    """The live sweep this mirrors sent `cb<CH>x` for each ASCII punctuation mark and for space, tab
+    and newline, and `a<ZWSP>b` besides. `é` and a zero-width space are refused among them, so
+    "alphabet" in real's own sentence is ASCII letters and nothing wider."""
+    r = client.get("/sheets/v4/spreadsheets/x", headers=admin_h, params={"callback": f"cb{ch}x"})
+    assert _jsonp(r, f"cb{ch}x")["error"]["message"] == CALLBACK_REFUSAL.format(f"cb{ch}x")
+
+
+@pytest.mark.parametrize("ch", list("$.[]_09Az"))
+def test_the_characters_a_callback_name_may_hold(client, admin_h, ch):
+    """The other half of the same sweep: these seven classes are what the refusal names."""
+    r = client.get("/sheets/v4/spreadsheets/x", headers=admin_h, params={"callback": f"cb{ch}x"})
+    assert "Invalid JSONP callback name" not in r.text
+
+
+def test_the_callback_refusal_beats_the_route_but_not_the_system_parameter(client, admin_h):
+    """Measured, both directions. `callback=a b` answers its own 400 ahead of a bad token, a
+    missing credential, an unparseable range and a mistyped `fields` mask; `$.xgafv=9` beside it
+    answers the `$.xgafv` sentence instead — wrapped through the very name the other check would
+    have refused. That order is why both live in ``validate_system_parameters``, `$.xgafv` first."""
+    for headers, path, params in (
+        (BAD_TOKEN, "/sheets/v4/spreadsheets/x", {}),
+        ({}, "/sheets/v4/spreadsheets/x", {}),
+        (admin_h, "/sheets/v4/spreadsheets/x/values/NOPE!!", {}),
+        (admin_h, "/drive/v3/files", {"fields": "nope"}),
+    ):
+        r = client.get(path, headers=headers, params={"callback": "a b", **params})
+        assert _jsonp(r, "a b")["error"]["message"] == CALLBACK_REFUSAL.format("a b"), path
+    r = client.get(
+        "/sheets/v4/spreadsheets/x", headers=admin_h, params={"callback": "a b", "$.xgafv": "9"}
+    )
+    assert _jsonp(r, "a b")["error"]["message"] == XGAFV_REFUSAL.format("9")
+
+
+def test_the_callback_refusal_carries_its_familys_errors_array(client, admin_h):
+    """`badRequest` under `global`, which is :func:`gerr.invalid_argument` — measured on Sheets at
+    `$.xgafv=1` and on Drive, which carries the array with no parameter at all."""
+    entry = {
+        "message": CALLBACK_REFUSAL.format("a b"),
+        "domain": "global",
+        "reason": "badRequest",
+    }
+    sheets = client.get(
+        "/sheets/v4/spreadsheets/x", headers=admin_h, params={"callback": "a b", "$.xgafv": "1"}
+    )
+    assert _jsonp(sheets, "a b")["error"]["errors"] == [entry]
+    drive = client.get("/drive/v3/files", headers=admin_h, params={"callback": "a b"})
+    assert _jsonp(drive, "a b")["error"]["errors"] == [entry]
+
+
+@pytest.mark.parametrize(
+    "alt, message", [("media", "Unsupported alt type"), ("zzz", "Invalid value")]
+)
+def test_an_alt_the_api_cannot_render_takes_the_request_out_of_the_jsonp_path(
+    base, admin_h, sheet_id, alt, message
+):
+    """Measured on Sheets: `alt=media` and `alt=zzz` answer their own 400 as `application/json` and
+    unwrapped, even when `callback` is itself unparseable — so the `alt` refusal wins over the
+    callback one, and an `alt` whose format the API cannot render suppresses the wrap."""
+    for callback in ("cb", "a b"):
+        r = _values(base, admin_h, sheet_id, "Sheet1!A1", alt=alt, callback=callback)
+        assert r.status_code == 400, r.text
+        assert r.headers["content-type"] == "application/json; charset=UTF-8"
+        assert message in _gerr(r)["message"]
+
+
+def test_every_google_operation_refuses_a_callback_it_cannot_call(client):
+    """The other half of ``test_every_google_operation_declares_the_system_parameter_and_checks_it``
+    for the second system parameter: each family operation is sent a name that cannot be a
+    JavaScript one and has to refuse it. `callback` is NOT declared router-wide beside `$.xgafv` —
+    Sheets is the only family whose SUCCESS is wrapped, and `qp` declares only what Backlot
+    honours — so this half is the whole of what the document says about it."""
+    spec = client.get("/openapi.json").json()
+    families = ("/drive/v3", "/gmail/v1", "/docs/v1", "/sheets/v4", "/slides/v1")
+    unchecked = []
+    for path, item in spec["paths"].items():
+        if not path.startswith(families):
+            continue
+        for method, op in item.items():
+            if method not in ("get", "post", "put", "patch", "delete"):
+                continue
+            url = re.sub(r"\{[^}]+\}", "dummy", path)
+            r = client.request(method.upper(), f"{url}?callback=a%20b", json={})
+            if r.status_code != 200 or "Invalid JSONP callback name" not in r.text:
+                unchecked.append(f"{method.upper()} {path} -> {r.status_code}")
+    assert unchecked == []
+
+
+def test_angle_brackets_are_escaped_in_a_google_error(base, admin_h, sheet_id):
+    """Measured on both sides of the same API: an error message echoing an unparseable range
+    spelled `<b>&'x` comes back with the brackets escaped and `&` and `'` raw. The escape is what
+    keeps a body from closing a `<script>` element around it, so it is on the plain body too."""
+    r = _values(base, admin_h, sheet_id, "<b>&'x")
+    assert "\\u003cb\\u003e&'x" in r.text
+    assert "<b>" not in r.text
+    assert _gerr(r)["message"] == "Unable to parse range: <b>&'x"
+
+
+def test_angle_brackets_are_escaped_in_a_google_success(tmp_path):
+    """The same serializer on the success side, measured the same way: a Sheets cell holding
+    `<b>&'x` came back `\\u003cb\\u003e&'x` from the live API, indented, compact and wrapped
+    alike."""
+    from tests._helpers import corpus_client
+
+    record = {
+        "source_type": "google_drive",
+        "doc_id": "angle",
+        "folder": "mk",
+        "title": "Angle probe",
+        "author_email": "a@x.com",
+        "visibility": "public",
+        "subtype": "spreadsheet",
+        "sheets": [{"title": "Sheet1", "grid": [["<b>&'x"]]}],
+    }
+    with corpus_client(tmp_path, [record]) as (client, settings):
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        (sheet,) = client.get(
+            "/drive/v3/files", headers=h, params={"q": "name = 'Angle probe'"}
+        ).json()["files"]
+        path = f"/sheets/v4/spreadsheets/{sheet['id']}/values/Sheet1!A1"
+        for params in ({}, {"prettyPrint": "false"}, {"callback": "cb"}):
+            r = client.get(path, headers=h, params=params)
+            assert "\\u003cb\\u003e&'x" in r.text, params
+            assert "<b>" not in r.text, params
+
+
+def test_a_callback_changes_nothing_outside_google(client, admin_h):
+    """The handler serves Atlassian and GitHub too, and neither vendor's error rendering has been
+    measured for `callback` or for indentation — so both keep exactly the `JSONResponse` they had,
+    GitHub's own charset (``errors.github.json_media_type``) included."""
+    gh = client.get("/github/repos/nope/nope", headers=admin_h, params={"callback": "cb"})
+    assert gh.status_code == 404
+    assert gh.headers["content-type"] == "application/json; charset=utf-8"
+    assert gh.text == json.dumps(gh.json(), separators=(",", ":"))
+    jira = client.get(
+        "/atlassian/ex/jira/nope/rest/api/3/issue/NOPE-1",
+        headers=admin_h,
+        params={"callback": "cb"},
+    )
+    assert jira.status_code == 404
+    assert jira.headers["content-type"] == "application/json"
+    assert jira.text == json.dumps(jira.json(), separators=(",", ":"))
 
 
 # --- Gmail: typed response schema, unchanged responses ------------------------------------

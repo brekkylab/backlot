@@ -241,6 +241,10 @@ _LOOP_FILES = (
         ".claude/agents/behaviour-reviewer.md",
         ("---\nname: behaviour-reviewer\n", "description:", "disallowedTools:"),
     ),
+    (
+        ".claude/agents/prose-reviewer.md",
+        ("---\nname: prose-reviewer\n", "description:", "disallowedTools:"),
+    ),
 )
 
 

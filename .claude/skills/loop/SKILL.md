@@ -26,6 +26,16 @@ by printing the PR title and body you would have opened plus each reviewer's las
 "comment", "label", "file an issue", "push" and "open the PR" instruction below is replaced by
 writing the text you would have sent into your final summary.
 
+A closed issue is rehearsed from before its fix, so there is work to do and a known answer to
+compare with. Find the pull request that closed it (`gh issue view $0 --json closedByPullRequestsReferences`)
+and its commit on `main` (`gh pr view <pr> --json mergeCommit --jq .mergeCommit.oid`). Create the
+branch from HEAD, then `git revert --no-edit <that commit>` as the branch's first commit: the tree
+is current everywhere except that fix, and the skill and reviewer files stay in place. If the revert
+conflicts, stop and say so; that issue cannot be rehearsed from here. The reviewers then review the
+branch against that revert commit rather than against `main`, and your summary ends with the diff
+between your change and the merged one (`git diff <merge commit> HEAD -- <files you touched>`),
+described in a sentence: same behaviour, or where it differs and which side the measurement backs.
+
 ## 1. Survey
 
 ```bash
@@ -126,7 +136,8 @@ on single lines. Push and `gh pr create`.
 
 Dispatch both reviewers in parallel with the Agent tool, each with a prompt of one line:
 `Review pull request #<n> of brekkylab/backlot` (rehearsal: `Review branch claude/rehearsal-$0
-against main`).
+against <base>`, where `<base>` is `main` for an open issue and the revert commit's sha for a closed
+one, followed by the PR title and body you would have sent, since there is no PR to read them from).
 
 - `subagent_type: behaviour-reviewer`
 - `subagent_type: prose-reviewer`

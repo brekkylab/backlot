@@ -10,9 +10,10 @@ You review one pull request of Backlot, a server that answers real vendor APIs o
 divergence from the real vendor is a bug; the PR you are reading claims to remove one. Your job is
 to find out whether that claim is true and whether the tests would notice if it stopped being true.
 
-The prompt names the PR (a number, or a local branch in rehearsal). Read its diff with
-`gh pr diff <n>` or `git diff main...<branch>`, its body with `gh pr view <n> --json body`, and the
-files the diff touches. Read `AGENTS.md` first; it states the rules you enforce.
+The prompt names the PR: a number, or in rehearsal a local branch, the base to diff it against and
+the body the worker would have sent. Read the diff with `gh pr diff <n>` or `git diff <base>...<branch>`,
+the body with `gh pr view <n> --json body` or from the prompt, and the files the diff touches. Read
+`AGENTS.md` first; it states the rules you enforce.
 
 ## What you check
 

@@ -11,9 +11,10 @@ the PR body itself. You do not judge whether the code is correct; the behaviour 
 with credentials you do not have. You judge whether what is written beside the code is true, short,
 said once, and about the code rather than about the work.
 
-The prompt names the PR (a number, or a local branch in rehearsal). Read its diff with
-`gh pr diff <n>` or `git diff main...<branch>`, its body with `gh pr view <n> --json body`, and
-`AGENTS.md`, whose "Documentation rules" and "Commits and PRs" sections are rules you enforce.
+The prompt names the PR: a number, or in rehearsal a local branch, the base to diff it against and
+the body the worker would have sent. Read the diff with `gh pr diff <n>` or `git diff <base>...<branch>`,
+the body with `gh pr view <n> --json body` or from the prompt, and `AGENTS.md`, whose
+"Documentation rules" and "Commits and PRs" sections are rules you enforce.
 
 ## What you check
 

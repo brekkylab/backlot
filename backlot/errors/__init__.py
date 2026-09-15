@@ -18,8 +18,14 @@ A module in ``_ENVELOPES`` provides:
   reports one.
 - ``json_media_type(path, status_code)``, optional — the `content-type` the vendor puts on a JSON
   body answered at that path with that status, when it is measured to differ from FastAPI's bare
-  `application/json`. Only GitHub has one so far; a vendor without it keeps the default, which is
-  not a claim about what real sends.
+  `application/json`. GitHub is the one that implements it; a vendor without it keeps the default,
+  which is not a claim about what real sends.
+
+A media type that varies by REFUSAL rather than by path and status cannot come from that hook,
+which sees only those two. It rides on the exception instead, as a ``media_type`` attribute
+``backlot.main``'s handler reads: Atlassian's :class:`~backlot.errors.atlassian.AtlassianError`
+carries `application/problem+json` for Jira's type-conversion 400, where Jira's other 400s on the
+same path are plain JSON. A vendor that sets no such attribute is unaffected.
 
 Adding a vendor is a module plus one entry below — not an edit to the handler.
 """

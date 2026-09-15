@@ -165,6 +165,14 @@ back to step 2 with the failing check. Comment on each issue you touched with on
 what you did and where. End with a one-paragraph summary: issues surveyed, what you picked and why,
 what you filed, what you escalated, the PR.
 
+## The working tree is yours alone
+
+Never check out another commit or branch in the working tree during a run: the skill and the
+reviewer agents are read from it, and a checkout that predates them makes the reviewers vanish
+mid-session. To run or read the tree at another commit — the merged fix in a rehearsal, `main` for
+a comparison — add a throwaway worktree (`git worktree add /tmp/loop-<sha> <sha>`) and remove it
+when done.
+
 ## Budget
 
 One run picks one PR's worth of work. It does not start a second PR after the first is handed

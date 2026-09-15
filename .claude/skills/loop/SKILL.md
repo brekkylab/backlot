@@ -78,7 +78,9 @@ vendor documentation alone because no credential in the environment can measure 
 — a shape, status code, header, charset, pagination, ordering or error-envelope difference on an
 operation Backlot already serves — is **mechanical**.
 
-For an issue that needs a decision, comment exactly this and add `needs-maintainer`:
+For an issue that needs a decision, measure first — enough live calls that the proposal states what
+the vendor actually does today and where it keeps the surface Backlot would lose or gain — then
+comment exactly this and add `needs-maintainer`:
 
 ```
 **Needs a decision.** <one sentence: what the vendor does and what Backlot does>. Proposal: `serve` — <what serving it takes, in one sentence> / `gap` — <the note the baseline entry would carry>. Reply `decision: serve` or `decision: gap <why>`.

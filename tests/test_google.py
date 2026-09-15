@@ -1274,15 +1274,56 @@ def test_an_alt_the_api_cannot_render_takes_the_request_out_of_the_jsonp_path(
         assert message in _gerr(r)["message"]
 
 
-def test_every_google_operation_refuses_a_callback_it_cannot_call(client):
+def test_a_repeated_callback_is_answered_through_the_first_one(base, admin_h, sheet_id):
+    """`$.xgafv` is the system parameter real reads LAST; `callback` and `alt` it reads FIRST.
+    Measured 2026-09-15: `cb&dd` calls `cb`, `dd&cb` calls `dd`, an empty first repeat is no
+    callback however the second one reads, and a second repeat is not validated at all — `cb&a b`
+    answers the success through `cb` rather than refusing the name."""
+    url = f"{base}/sheets/v4/spreadsheets/{sheet_id}/values/Sheet1%21A1"
+    assert httpx.get(f"{url}?callback=cb&callback=dd", headers=admin_h).text.startswith(
+        "// API callback\ncb("
+    )
+    assert httpx.get(f"{url}?callback=dd&callback=cb", headers=admin_h).text.startswith(
+        "// API callback\ndd("
+    )
+    empty_first = httpx.get(f"{url}?callback=&callback=cb", headers=admin_h)
+    assert empty_first.headers["content-type"] == "application/json; charset=UTF-8"
+    assert httpx.get(f"{url}?callback=cb&callback=", headers=admin_h).text.startswith(
+        "// API callback\ncb("
+    )
+    bad_second = httpx.get(f"{url}?callback=cb&callback=a%20b", headers=admin_h)
+    assert _jsonp(bad_second, "cb")["range"] == "Sheet1!A1"
+
+
+def test_a_repeated_alt_decides_the_wrap_from_the_first_one(base, admin_h, sheet_id):
+    """The same rule on the parameter that suppresses the wrap, and the reason `_sheets_respond`
+    reads `alt` the way `gerr.jsonp_callback` does. Measured: `media&json` answers the `media`
+    refusal unwrapped, `json&media` answers the success wrapped."""
+    url = f"{base}/sheets/v4/spreadsheets/{sheet_id}/values/Sheet1%21A1"
+    media_first = httpx.get(f"{url}?callback=cb&alt=media&alt=json", headers=admin_h)
+    assert media_first.status_code == 400
+    assert media_first.headers["content-type"] == "application/json; charset=UTF-8"
+    assert "Unsupported alt type" in _gerr(media_first)["message"]
+    json_first = httpx.get(f"{url}?callback=cb&alt=json&alt=media", headers=admin_h)
+    assert _jsonp(json_first, "cb")["range"] == "Sheet1!A1"
+
+
+def test_every_google_get_refuses_a_callback_it_cannot_call_and_no_post_reads_one(client):
     """The other half of ``test_every_google_operation_declares_the_system_parameter_and_checks_it``
-    for the second system parameter: each family operation is sent a name that cannot be a
-    JavaScript one and has to refuse it. `callback` is NOT declared router-wide beside `$.xgafv` —
-    Sheets is the only family whose SUCCESS is wrapped, and `qp` declares only what Backlot
-    honours — so this half is the whole of what the document says about it."""
+    for the second system parameter, split the way real splits it.
+
+    Every family GET is sent a name that cannot be a JavaScript one and has to refuse it. Every
+    family POST is sent the same name and has to IGNORE it: measured on Sheets, a `callback` on
+    `values:batchGetByDataFilter` and on `spreadsheets:getByDataFilter` is not honoured and not even
+    validated, where the same POST honours `$.xgafv` and `prettyPrint` — JSONP is what a `<script>`
+    element fetches, and a `<script>` element issues a GET.
+
+    `callback` is NOT declared router-wide beside `$.xgafv` — Sheets is the only family whose
+    SUCCESS is wrapped, and `qp` declares only what Backlot honours — so this is the whole of what
+    the document says about it."""
     spec = client.get("/openapi.json").json()
     families = ("/drive/v3", "/gmail/v1", "/docs/v1", "/sheets/v4", "/slides/v1")
-    unchecked = []
+    gets, posts, wrong = 0, 0, []
     for path, item in spec["paths"].items():
         if not path.startswith(families):
             continue
@@ -1291,9 +1332,36 @@ def test_every_google_operation_refuses_a_callback_it_cannot_call(client):
                 continue
             url = re.sub(r"\{[^}]+\}", "dummy", path)
             r = client.request(method.upper(), f"{url}?callback=a%20b", json={})
-            if r.status_code != 200 or "Invalid JSONP callback name" not in r.text:
-                unchecked.append(f"{method.upper()} {path} -> {r.status_code}")
-    assert unchecked == []
+            refused = r.status_code == 200 and "Invalid JSONP callback name" in r.text
+            if method == "get":
+                gets += 1
+                if not refused:
+                    wrong.append(f"GET {path} did not refuse -> {r.status_code}")
+            else:
+                posts += 1
+                if refused:
+                    wrong.append(f"{method.upper()} {path} refused where real ignores")
+    assert wrong == []
+    assert gets and posts, f"both halves have to have run, got {gets} GETs and {posts} POSTs"
+
+
+def test_a_post_ignores_a_callback_the_way_real_does(base, admin_h, sheet_id):
+    """The measured POST, not a synthesized one: `values:batchGetByDataFilter` answers a good
+    `callback` with an unwrapped `application/json; charset=UTF-8` body and an unparseable one the
+    same way, where the same route under `$.xgafv=9` still refuses the value."""
+    url = f"{base}/sheets/v4/spreadsheets/{sheet_id}/values:batchGetByDataFilter"
+    body = {"dataFilters": [{"a1Range": "Sheet1!A1"}]}
+    for callback in ("cb", "a b"):
+        r = httpx.post(url, headers=admin_h, params={"callback": callback}, json=body)
+        assert r.status_code == 200, r.text
+        assert r.headers["content-type"] == "application/json; charset=UTF-8"
+        assert "// API callback" not in r.text
+        assert r.json()["valueRanges"]
+    refused = httpx.post(
+        url, headers=admin_h, params={"callback": "a b", "$.xgafv": "9"}, json=body
+    )
+    assert refused.status_code == 400
+    assert _gerr(refused)["message"] == XGAFV_REFUSAL.format("9")
 
 
 def test_angle_brackets_are_escaped_in_a_google_error(base, admin_h, sheet_id):

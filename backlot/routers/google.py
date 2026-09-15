@@ -2078,14 +2078,18 @@ def _sheets_grid(content: str | None) -> list[list[str]]:
 #   prettyPrint      DEFAULT TRUE -- the body is 2-space indented unless `false` says otherwise,
 #                    and an unparseable value is treated as true rather than refused
 #   alt              `json` only; `media` is 400 "Unsupported alt type ... for non byte stream
-#                    request." and anything else 400 "Invalid value ... for query parameter 'alt'"
-#   callback         JSONP: the body is wrapped and the type becomes text/javascript, and the
+#                    request." and `zzz` 400 "Invalid value ... for query parameter 'alt'". `proto`
+#                    is a third answer real gives and this module does not -- see `_sheets_respond`
+#   callback         JSONP, on a GET: the body is wrapped, the type becomes text/javascript and the
 #                    status becomes 200 -- a name that is not a JavaScript one is refused ahead of
 #                    everything but `$.xgafv` and `alt` (`gerr.validate_system_parameters`), and an
 #                    empty value is no callback at all. Declared here rather than router-wide with
 #                    `$.xgafv`, because Sheets is where a SUCCESS is wrapped: the other four
-#                    families honour it on their errors only, which is less than this declaration
-#                    would promise.
+#                    families honour it on their errors only, which is less than a router-wide
+#                    declaration would promise. The two POST routes below share this list and so
+#                    declare it as well, which real's document does for every method -- and real
+#                    ignores it on a POST exactly as `gerr.jsonp_callback` does, so the declaration
+#                    promises a caller no more there than the vendor's own does.
 #   quotaUser        a rate-limit bucket label; any string, including empty, and no effect on the
 #                    response -- Backlot enforces no quota, so there is nothing for it to select
 #   upload_protocol  accepted and ignored on a read
@@ -2205,9 +2209,16 @@ def _sheets_respond(request: Request, body: dict, allowed: dict) -> Response:
     The bytes themselves are ``gerr.respond``'s, which is also what every Google ERROR is rendered
     through: a success and a failure on the same route come back through the same serializer on
     real, so they do here."""
-    alt = request.query_params.get("alt")
+    # `gerr.first_repeat`, not `.get`: real answers a repeated `alt` through the first one, and
+    # `gerr.jsonp_callback` reads the same parameter to decide the wrap -- so one request has to
+    # see one `alt` in both places.
+    alt = gerr.first_repeat(request.query_params, gerr.ALT)
     if alt is not None and alt != "json":
-        # Measured: `media` gets its own sentence, everything else the generic one.
+        # Measured on `media` and `zzz`: `media` gets its own sentence, everything else the
+        # generic one. NOT `proto`, which the discovery document also declares and which real
+        # answers with a protobuf body ("Proto over HTTP is not allowed for service …") under
+        # `application/x-protobuf` — a format this module does not serve, so it lands on the
+        # generic sentence here.
         raise gerr.invalid_argument(
             f'Unsupported alt type "{alt}" for non byte stream request.'
             if alt == "media"
@@ -2222,7 +2233,7 @@ def _sheets_respond(request: Request, body: dict, allowed: dict) -> Response:
     # unparseable value is treated as true rather than refused, unlike the other booleans. It is
     # the success side alone that reads it: an error is indented whatever it says.
     compact = (request.query_params.get("prettyPrint") or "").casefold() in _SHEETS_FALSE
-    return gerr.respond(body, compact=compact, callback=gerr.jsonp_callback(request.query_params))
+    return gerr.respond(body, compact=compact, callback=gerr.jsonp_callback(request))
 
 
 # What a `fields` mask may name, per response — the fields these routes actually build. A cell's

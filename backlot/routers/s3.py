@@ -585,8 +585,8 @@ def _list_objects(
     # sorted order. Ask for one extra row so IsTruncated is a plain length check (and so we can
     # tell, below, whether a trailing rolled-up group extends past this page) — no separate
     # COUNT(*) query. `served` is what this page may hold: the echo is uncapped but what comes
-    # back is not. served=0: the LIMIT is still 1 (so the trailing-group test below still has its
-    # row), `rows` ends up empty after trimming, and IsTruncated is false the way real answers it.
+    # back is not. served=0 is its own case — `rows` is empty after trimming, IsTruncated is false
+    # the way real answers it, and nothing below reads the overflow row.
     served = min(max_keys, _MAX_KEYS)
     rows = store.list_s3_objects(
         conn,
@@ -598,7 +598,7 @@ def _list_objects(
         limit=served + 1,
     )
     is_truncated = served > 0 and len(rows) > served
-    overflow_row = rows[served] if len(rows) > served else None  # first not-yet-returned raw row
+    overflow_row = rows[served] if is_truncated else None  # first not-yet-returned raw row
     rows = rows[:served]
     by_key = {r["key"]: r for r in rows}
 

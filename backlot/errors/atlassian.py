@@ -149,8 +149,10 @@ def _body(status_code: int, detail) -> dict:
 
 
 def http_body(path: str, exc, query=None) -> dict:
-    """``path`` is unused: one envelope covers every Atlassian route, unlike Google's per-family
-    split. It is in the signature so the dispatch in ``__init__`` can treat every module alike.
+    """``path`` and ``query`` are both unused: one envelope covers every Atlassian route, unlike
+    Google's per-family split, and no Atlassian refusal is selected by a query parameter the way
+    Google's is by `$.xgafv`. They are in the signature so the dispatch in ``__init__`` can treat
+    every module alike.
 
     An :class:`AtlassianError` is the exception to the one envelope and says so by carrying its
     own body, which is served as it stands."""

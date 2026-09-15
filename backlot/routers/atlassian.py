@@ -374,21 +374,35 @@ async def jira_search(request: Request):
     conn = auth.conn(request)
     caller = _jira_caller(request)
     ids = auth.visible_ids(request, caller)
-    params = dict(request.query_params)
+    default_size = get_settings().default_page_size
     if request.method == "POST":
+        # POST keeps the lenient read it has always had, query string and all. Measured
+        # 2026-09-14: real does not read the query string on this method at ALL, so
+        # `POST search/jql?maxResults=abc` with any body is a 200 — applying the GET rules here
+        # would answer 400 where real answers 200, trading one divergence for another. #187 is
+        # where the query string stops being read on POST, and it measures the body's own parser
+        # (Jackson, which takes `1.5` as `1`) at the same time.
+        params = dict(request.query_params)
         try:
-            params.update(await request.json())
+            parsed = await request.json()
         except Exception:
-            pass
-    jql = str(params.get("jql", ""))
+            parsed = None
+        if isinstance(parsed, dict):
+            params.update(parsed)
+        jql = str(params.get("jql", ""))
+        limit = _int(params.get("maxResults"), default_size)
+        token = params.get("nextPageToken")
+    else:
+        jql = _str_param(request, "jql") or ""
+        limit = _int_param(request, "maxResults", default_size)
+        token = _str_param(request, "nextPageToken")
     container = _project_from_jql(conn, jql, request)
     if container is _JIRA_PROJECT_UNRESOLVED:
         # a project= clause was present but didn't match any project: strict 0 matches, not
         # the unfiltered corpus.
         return {"issues": [], "isLast": True}
     term = _text_from_jql(jql)
-    limit = _int(params.get("maxResults"), get_settings().default_page_size)
-    offset = decode_cursor(params.get("nextPageToken"))
+    offset = decode_cursor(token)
     if term:  # text ~ / summary ~ / description ~ → full-text search (FTS), scoped to project
         total = store.count_search(conn, term, "jira", ids, container=container)
         rows = store.search_documents(
@@ -422,7 +436,7 @@ async def jira_get_issue(key: str, request: Request):
             status_code=404,
             detail="Issue does not exist or you do not have permission to see it.",
         )
-    return _jira_issue(conn, request, row, expand=request.query_params.get("expand", ""))
+    return _jira_issue(conn, request, row, expand=_str_param(request, "expand", ""))
 
 
 @router.get(
@@ -448,7 +462,6 @@ async def jira_issue_comments(key: str, request: Request):
     was dropped — and would pass here while failing against Jira. Its own message is localised to
     the account's language, so the wording is not reproduced, only the refusal.
     """
-    params = request.query_params
     # BEFORE the issue is resolved. Measured 2026-09-10: a bad `orderBy` on a key that does
     # not exist is 400 on real Jira where the same key without the parameter is 404, so the
     # parameter is checked first. It separates nothing a caller could not already tell — the
@@ -461,7 +474,20 @@ async def jira_issue_comments(key: str, request: Request):
     # (project classification: "If not provided, values will not be sorted"), and the site
     # available for measuring had no issue carrying a comment. Sorting on that would be picking a
     # default, not reproducing one.
-    raw_order = params.get("orderBy")
+    #
+    # The integers are read here too, and BEFORE `orderBy`, because the binder outranks both. All
+    # measured 2026-09-15: `?maxResults=abc` on a key that does not exist is the conversion 400
+    # where the same key alone is 404; `?maxResults=abc&orderBy=bogus` is the conversion 400 in
+    # either query order; and `?startAt=abc&maxResults=xyz` names `startAt` in either order, which
+    # is the handler signature's order rather than the URL's, so `startAt` is read first.
+    #
+    # `startAt` is the one parameter measured to take a Java LONG rather than an int.
+    start = max(0, _int_param(request, "startAt", 0, width=JAVA_LONG))
+    limit = min(
+        _JIRA_COMMENT_PAGE_MAX,
+        max(1, _int_param(request, "maxResults", _JIRA_COMMENT_PAGE_MAX)),
+    )
+    raw_order = _str_param(request, "orderBy")
     desc = _jira_order_desc(raw_order) if raw_order is not None else None
 
     conn = auth.conn(request)
@@ -473,10 +499,6 @@ async def jira_issue_comments(key: str, request: Request):
             status_code=404,
             detail="Issue does not exist or you do not have permission to see it.",
         )
-    start = max(0, _int(params.get("startAt"), 0))
-    limit = min(
-        _JIRA_COMMENT_PAGE_MAX, max(1, _int(params.get("maxResults"), _JIRA_COMMENT_PAGE_MAX))
-    )
 
     cs = store.doc_comments(conn, "jira", row["key"])
     if desc is not None:
@@ -1029,7 +1051,7 @@ async def confluence_space_get(key: str, request: Request):
         "status": "current",
         "_links": {"webui": f"/spaces/{key}"},
     }
-    if "description" in request.query_params.get("expand", ""):
+    if "description" in (_str_param(request, "expand", "") or ""):
         space["description"] = {"plain": {"value": f"{container} space", "representation": "plain"}}
     return space
 
@@ -1041,7 +1063,7 @@ async def confluence_cql_search(request: Request):
     conn = auth.conn(request)
     caller = _confluence_caller(request)
     ids = auth.visible_ids(request, caller)
-    cql = request.query_params.get("cql", "")
+    cql = _str_param(request, "cql", "") or ""
     m = re.search(r'(?:text|title)\s*~\s*"?([^"~]+)"?', cql) or re.search(r'~\s*"?([^"~]+)"?', cql)
     term = m.group(1).strip() if m else ""
     # honor the common structured CQL clauses: space / type / label
@@ -1058,8 +1080,15 @@ async def confluence_cql_search(request: Request):
     want_type = mt.group(1) if mt else None
     ml = re.search(r'label\s*(?:=|in)\s*"?([^")\s]+)"?', cql)
     want_label = ml.group(1) if ml else None
+    # NOT `_confluence_page_params`: this route is not bound by Spring the way `content` is, and a
+    # value it cannot convert is a bodiless 404 (JAX-RS's answer for a `@QueryParam`) rather than
+    # the Spring 400 — while `?limit=%20` and `?limit=` are 200 with the default. Serving `content`'s
+    # refusal here would trade one divergence for another, so the lenient read stays until #216
+    # reproduces the 404. The NEGATIVE check is shared, and measured on this route: `?limit=-1` and
+    # `?start=-1` are the same `IllegalArgumentException` 400 both listings give.
     limit = _int(request.query_params.get("limit"), 25)
     start = _int(request.query_params.get("start"), 0)
+    _refuse_negative_page_params(limit, start)
 
     # fetch the full ACL-visible match set, filter by the clauses, then paginate — so
     # totalSize reflects the true match count (not just the returned page).
@@ -1115,10 +1144,9 @@ async def confluence_content_list(request: Request):
     conn = auth.conn(request)
     caller = _confluence_caller(request)
     ids = auth.visible_ids(request, caller)
-    expand = request.query_params.get("expand", "")
-    space_key = request.query_params.get("spaceKey")
-    limit = _int(request.query_params.get("limit"), 25)
-    start = _int(request.query_params.get("start"), 0)
+    expand = _str_param(request, "expand", "") or ""
+    space_key = _str_param(request, "spaceKey")
+    limit, start = _confluence_page_params(request)
     if space_key:
         container = _space_container_for_key(conn, space_key)
         if container is None:
@@ -1153,7 +1181,7 @@ async def confluence_content_get(content_id: int, request: Request):
     row = store.confluence_by_id(conn, content_id, visible_ids=ids)
     if row is None:
         raise HTTPException(status_code=404, detail="No content found with id")
-    return _confluence_page(conn, request, row, request.query_params.get("expand", "body.storage"))
+    return _confluence_page(conn, request, row, _str_param(request, "expand", "body.storage"))
 
 
 @router.get(
@@ -1167,7 +1195,7 @@ async def confluence_child_pages(content_id: int, request: Request):
     ids = auth.visible_ids(request, caller)
     if store.get_document(conn, "confluence", content_id, visible_ids=ids) is None:
         raise HTTPException(status_code=404, detail="No content found with id")
-    expand = request.query_params.get("expand", "")
+    expand = _str_param(request, "expand", "") or ""
     kids = store.children(conn, "confluence", content_id, visible_ids=ids)
     results = [_confluence_page(conn, request, k, expand) for k in kids]
     return {
@@ -1410,7 +1438,140 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
 
 
 def _int(v, default: int) -> int:
+    """A value already read out of a JSON request body, as an int.
+
+    The lenient one, and deliberately so: what parses the POST `search/jql` body on real is Jackson
+    rather than Spring's parameter binding, and it takes values the query string refuses (`1.5`
+    arrives as `1`) while refusing others in a body-wide message that names no parameter. Reading
+    the query string goes through :func:`_int_param` instead — see #187, which is where the body's
+    own rules get measured.
+    """
     try:
         return int(v) if v not in (None, "") else default
     except (ValueError, TypeError):
         return default
+
+
+# What real converts a query parameter with. Measured on brekkylab.atlassian.net, 2026-09-14,
+# against Jira's comment read and Confluence's space listing, which agree on every case:
+#
+#   ?maxResults=          the default, as though unsent -- an empty value is not a failure
+#   ?maxResults=%2B3      3, so a leading sign is read (a RAW `+` decodes to a space and reaches
+#                         the binder as ` 3`, which reads 3 by the whitespace removal below)
+#   ?maxResults=%203%20   3, and ?maxResults=3%204 is 34 -- whitespace is REMOVED, not trimmed
+#   ?maxResults=<U+0663>  3, so the digits are Unicode's, not ASCII's
+#   ?maxResults=1_0       400 -- where Python's own int() reads 10
+#   ?maxResults=1.5       400
+#
+# Python's `int` agrees with all of it but three things — the underscore, the internal whitespace,
+# and the non-breaking spaces `strip_java_whitespace` exists for — so those three are handled here
+# and the rest is left to `int` rather than restated as a pattern that would then have to be kept
+# in step with it.
+#
+# The products part on TWO cases, both of them a value that cleans away to nothing:
+#
+#   - whitespace and nothing else. Jira reads it as absent and answers 200 with the default
+#     (`?maxResults=%20` and `?maxResults=%09` both); Confluence cleans it to the empty string and
+#     fails to convert THAT, reporting `For input string: ""`. A genuinely empty `?limit=` is the
+#     default on both, so it is the whitespace, not the emptiness, that separates them.
+#   - an empty FIRST value of a repeated parameter. Jira takes the default (`?startAt=&startAt=5`);
+#     Confluence refuses, naming `",5"`. See :func:`_int_param`.
+#
+# The WIDTH is per parameter, not per product, and measured one parameter at a time: Jira's
+# `startAt` takes a Java long (`2147483648` and `9223372036854775807` are both echoed back, and
+# only past a long is it refused), while its `maxResults` and both Confluence parameters are a Java
+# int. Reading one width off another is what put a 400 on `?startAt=-2147483649`, which real
+# answers 200.
+JAVA_INT = (-(2**31), 2**31 - 1)
+JAVA_LONG = (-(2**63), 2**63 - 1)
+
+
+def _int_param(
+    request: Request, name: str, default: int, *, width: tuple[int, int] = JAVA_INT
+) -> int:
+    """One query parameter as an int, refused the way real refuses it.
+
+    The FIRST value when the parameter repeats, not the last: `?startAt=3&startAt=5` is 3 on both
+    products, where Starlette's ``QueryParams.get`` returns 5. A client that appends to a URL
+    rather than replacing in it — a retry layer adding `startAt` to a URL that already carries one
+    is the ordinary way — was being served real's other page under a 200.
+
+    A value that converts to nothing is where the products part, and they part twice. A LONE empty
+    value is the default on both (`?limit=` and `?maxResults=` are each 200). A first value that is
+    empty or whitespace-only is the default on Jira (`?startAt=&startAt=5` and `?maxResults=%20`
+    are 200 with it) and, on Confluence, the default only when the parameter does not repeat:
+    `?limit=&limit=5` is a 400 naming `",5"`, the array with an empty element in front.
+    """
+    values = request.query_params.getlist(name)
+    if not values:
+        return default
+    confluence = errors_atlassian.is_confluence(request.url.path)
+    if values[0] == "" and (len(values) == 1 or not confluence):
+        return default
+    raw = values[0]
+    cleaned = errors_atlassian.strip_java_whitespace(raw)
+    if cleaned == "" and not confluence:
+        return default  # Jira alone reads a whitespace-only value as absent
+    try:
+        if "_" in cleaned:
+            raise ValueError(cleaned)
+        if any(ch.isspace() for ch in cleaned):
+            # Only the three non-breaking spaces survive the cleaning, and Java throws on one
+            # WHEREVER it sits, while Python's `int()` strips a leading or trailing one itself
+            # (`int('\xa03')` is 3). Without this, only the interior spelling was refused.
+            raise ValueError(cleaned)
+        n = int(cleaned)
+    except ValueError:
+        raise errors_atlassian.integer_conversion_failure(request.url.path, name, values) from None
+    if not width[0] <= n <= width[1]:
+        # Python's int is unbounded, so a page size computed from a timestamp or a byte count
+        # flowed into the query where real answered 400.
+        raise errors_atlassian.integer_conversion_failure(request.url.path, name, values)
+    return n
+
+
+def _str_param(request: Request, name: str, default: str | None = None) -> str | None:
+    """One query parameter as a string, comma-joined when it repeats.
+
+    Measured on three parameters across both products: Jira's `?orderBy=bogus&orderBy=created` is
+    refused naming `bogus,created` in either order, its repeated `jql` is refused with a parse error
+    at the character the comma lands on, and Confluence's `?spaceKey=NOPE1&spaceKey=NOPE2` is a 404
+    naming `NOPE1,NOPE2`. So a repeated string is one value with a comma in it, and reading the last
+    alone answers 200 to whichever ordering happens to put a valid spelling second.
+
+    The join is what is reproduced here, not every refusal that follows from it: a repeated `jql`
+    reaches `_project_from_jql`, which is lenient where real's JQL parser is not, so Backlot answers
+    200 to a joined query real refuses. That leniency is the parser's and predates this.
+    """
+    values = request.query_params.getlist(name)
+    return ",".join(values) if values else default
+
+
+def _confluence_page_params(request: Request) -> tuple[int, int]:
+    """Confluence's `limit` and `start`, which refuse a negative where Jira's clamp one.
+
+    Measured on both listings: `?limit=-1` and `?start=-1` are 400. Unclamped they reached SQLite,
+    which reads a negative LIMIT as no limit at all — so the answer to `?limit=-1` was the whole
+    collection.
+
+    Order is measured too, because both parameters can be wrong at once. Conversion comes first for
+    BOTH — `?limit=-1&start=abc` is the conversion failure about `abc`, not the negative about
+    `limit` — and among two negatives `start` is the one named: `?limit=-1&start=-1` reports
+    `start cannot be less than zero`.
+
+    The CQL search reads its own pair: it is not Spring-bound and refuses a value it cannot convert
+    as a bodiless 404 (#216). It shares :func:`_refuse_negative_page_params`, which is measured on
+    that route too.
+    """
+    limit = _int_param(request, "limit", 25)
+    start = _int_param(request, "start", 0)
+    _refuse_negative_page_params(limit, start)
+    return limit, start
+
+
+def _refuse_negative_page_params(limit: int, start: int) -> None:
+    """Confluence's refusal of a negative page parameter, shared by every listing measured to give
+    it. `start` is checked first because it is the one real names when both are negative."""
+    for name, value in (("start", start), ("limit", limit)):
+        if value < 0:
+            raise errors_atlassian.negative_not_allowed(name)

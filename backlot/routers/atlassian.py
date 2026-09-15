@@ -1463,15 +1463,19 @@ def _int(v, default: int) -> int:
 #   ?maxResults=1_0       400 -- where Python's own int() reads 10
 #   ?maxResults=1.5       400
 #
-# Python's `int` agrees with all of it but the underscore and the internal whitespace, so those two
-# are handled here and the rest is left to `int` rather than restated as a pattern that would then
-# have to be kept in step with it.
+# Python's `int` agrees with all of it but three things — the underscore, the internal whitespace,
+# and the non-breaking spaces `strip_java_whitespace` exists for — so those three are handled here
+# and the rest is left to `int` rather than restated as a pattern that would then have to be kept
+# in step with it.
 #
-# The products part on ONE case, a value that is whitespace and nothing else. Jira reads it as
-# absent and answers 200 with the default (`?maxResults=%20` and `?maxResults=%09` both); Confluence
-# trims it to the empty string and fails to convert THAT, reporting `For input string: ""`. A
-# genuinely empty `?limit=` is the default on both, so it is the whitespace, not the emptiness,
-# that separates them.
+# The products part on TWO cases, both of them a value that cleans away to nothing:
+#
+#   - whitespace and nothing else. Jira reads it as absent and answers 200 with the default
+#     (`?maxResults=%20` and `?maxResults=%09` both); Confluence cleans it to the empty string and
+#     fails to convert THAT, reporting `For input string: ""`. A genuinely empty `?limit=` is the
+#     default on both, so it is the whitespace, not the emptiness, that separates them.
+#   - an empty FIRST value of a repeated parameter. Jira takes the default (`?startAt=&startAt=5`);
+#     Confluence refuses, naming `",5"`. See :func:`_int_param`.
 #
 # The WIDTH is per parameter, not per product, and measured one parameter at a time: Jira's
 # `startAt` takes a Java long (`2147483648` and `9223372036854775807` are both echoed back, and
@@ -1510,6 +1514,11 @@ def _int_param(
         return default  # Jira alone reads a whitespace-only value as absent
     try:
         if "_" in cleaned:
+            raise ValueError(cleaned)
+        if any(ch.isspace() for ch in cleaned):
+            # Only the three non-breaking spaces survive the cleaning, and Java throws on one
+            # WHEREVER it sits, while Python's `int()` strips a leading or trailing one itself
+            # (`int('\xa03')` is 3). Without this, only the interior spelling was refused.
             raise ValueError(cleaned)
         n = int(cleaned)
     except ValueError:

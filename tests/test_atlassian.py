@@ -1250,17 +1250,26 @@ def test_confluence_refuses_the_integer_values_the_real_api_refuses(client, admi
 @pytest.mark.parametrize("path", ["/rest/api/3/issue/PAY-7/comment", "/wiki/rest/api/content"])
 def test_atlassian_reads_javas_whitespace_set_not_pythons(client, admin_h, paged, path):
     """Measured: Java's `Character.isWhitespace` excludes the three non-breaking spaces, so a value
-    holding one is a 400 on both products, where U+2003 and a newline are removed and the value
-    converts. Python's `str.split()` calls all of them whitespace, which read the no-break space as
-    thirty-four."""
+    holding one is a 400 on both products WHEREVER it sits, where U+2003, a newline and a tab are
+    removed and the value converts.
+
+    The spelling axis is not decoration. Python's `str.split()` calls all six whitespace, which read
+    the non-breaking ones as thirty-four; and once they survive the cleaning, Python's own `int()`
+    strips a LEADING or TRAILING one before converting (`int('\\xa03')` is 3), so only the interior
+    spelling reached a refusal. Three characters by four placements catches both."""
     c, h = paged if path.startswith("/rest") else (client, admin_h)
     name = "maxResults" if path.startswith("/rest") else "limit"
+    placements = ("3{s}4", "{s}3", "3{s}", "{s}3{s}")
     for nbsp in ("%C2%A0", "%E2%80%87", "%E2%80%AF"):
-        r = c.get(f"/atlassian{path}?{name}=3{nbsp}4", headers=h)
-        assert r.status_code == 400, f"{nbsp}: {r.text}"
+        for placement in placements:
+            value = placement.format(s=nbsp)
+            r = c.get(f"/atlassian{path}?{name}={value}", headers=h)
+            assert r.status_code == 400, f"{value}: {r.text}"
     for space in ("%E2%80%83", "%0A", "%09"):
-        ok = c.get(f"/atlassian{path}?{name}=3{space}4", headers=h)
-        assert ok.status_code == 200, f"{space}: {ok.text}"
+        for placement in placements:
+            value = placement.format(s=space)
+            ok = c.get(f"/atlassian{path}?{name}={value}", headers=h)
+            assert ok.status_code == 200, f"{value}: {ok.text}"
 
 
 def test_confluence_refuses_an_empty_first_value_only_when_the_parameter_repeats(client, admin_h):

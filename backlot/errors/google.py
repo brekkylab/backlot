@@ -376,6 +376,11 @@ def jsonp_callback(request: Request) -> str | None:
     `alt` other than `json` -- measured on Sheets, `alt=media`, `alt=proto` and `alt=zzz` each
     answer their own 400 unwrapped, even when `callback` is itself unparseable, so an `alt` whose
     format the API cannot render takes the request out of the JSONP path along with the JSON one.
+    That suppression is not Sheets' own: measured 2026-09-16, `alt=media` and `alt=zzz` beside a
+    `callback` answer unwrapped on Drive, Gmail, Docs and Slides too, which is why `alt` is read
+    for every family here rather than only where ``routers.google._sheets_respond`` refuses the
+    value. Refusing it is still Sheets-only, and the four families that accept a format they cannot
+    render where real answers a 400 are a gap of their own.
 
     Both are read as :func:`first_repeat`, not off ``QueryParams.get``: real answers a repeated
     `callback` through the first name and a repeated `alt` through the first format.
@@ -402,6 +407,10 @@ def validate_system_parameters(request: Request) -> None:
     """
     if family(request.url.path) is None:
         return
+    # That this ran at all is what :func:`rendered` needs to know, and only this call can say so:
+    # a ROUTER dependency runs once a route has matched, so an unrouted family path reaches the
+    # renderer with a `callback` nothing has looked at.
+    request.state.google_system_parameters_checked = True
     value = xgafv(request.query_params)
     if value is not None and value not in XGAFV_VALUES:
         raise bad_system_parameter(XGAFV, value)
@@ -504,7 +513,7 @@ def respond(
 
     A `callback` makes the answer a script rather than a body: measured across Sheets, Docs, Drive,
     Gmail and Slides, authenticated and anonymous, a 400, a 401, a 403 and a 404 each came back
-    **200** with `text/javascript; charset=UTF-8` and the body inside ``// API callback\ncb(…);``.
+    **200** with `text/javascript; charset=UTF-8` and the body inside ``// API callback\\ncb(…);``.
     The status the caller would have seen survives only inside `error.code`, which is the point of
     JSONP: a browser loading the answer through a `<script>` element can read neither a status nor
     a body that did not arrive as JavaScript.
@@ -543,9 +552,19 @@ def rendered(
     parameter reaches the success path only (``routers.google._sheets_respond``) and nothing here
     reads it.
 
-    The `callback` value needs no check here: ``validate_system_parameters`` has already refused a
-    name that cannot be one, and refused it early enough that the body being wrapped may BE that
-    refusal. It takes the whole request because :func:`jsonp_callback` reads the method as well as
-    the query.
+    Wrapped only where ``validate_system_parameters`` ran, which is where a route matched. That is a
+    ROUTER dependency, so a family path with NO route -- `/sheets/v4/nope` -- reaches this having
+    been refused nothing, and `callback=a b` there would be answered by calling `a b`. Real answers
+    such a path from its front end as HTML, measured 2026-09-16 with a `callback` and without: 400
+    on Sheets, Docs and Slides, 404 on Drive and Gmail. So JSONP is not its shape there under any
+    name, and the plain body is the nearer of the two answers Backlot can give.
+
+    Where the check DID run the name needs no second look, and the body being wrapped may BE its
+    refusal -- that is real's own answer, measured the same day: `callback=evil);alert(1);//` on a
+    Sheets read comes back 200 calling that very name, with `<` and `>` escaped and nothing else.
+
+    It takes the whole request because :func:`jsonp_callback` reads the method as well as the query.
     """
-    return respond(body, callback=jsonp_callback(request), status_code=status_code, headers=headers)
+    checked = getattr(request.state, "google_system_parameters_checked", False)
+    callback = jsonp_callback(request) if checked else None
+    return respond(body, callback=callback, status_code=status_code, headers=headers)

@@ -32,10 +32,12 @@ from backlot.pagination import decode_cursor, next_page_token
 
 # `$.xgafv` and `callback` are checked before any route runs — see
 # `gerr.validate_system_parameters`. A router dependency runs only once a route has MATCHED, so a
-# family path with no route 404s here rather than refusing either value. Nothing to match there:
-# measured 2026-09-14, real answers an unrouted family path from its front end, as HTML — 400 on
-# Sheets and Docs, 404 on Drive — with or without the parameter, so no JSON envelope of its own
-# exists to compare against.
+# family path with no route 404s here rather than refusing either value — which is why this call
+# records that it ran and `gerr.rendered` wraps nothing without it: an unrouted path must not be
+# answered by calling a name nothing refused. Nothing to match there — measured 2026-09-16, real
+# answers an unrouted family path from its front end, as HTML, 400 on Sheets, Docs and Slides and
+# 404 on Drive and Gmail, with or without either parameter, so no JSON envelope of its own exists
+# to compare against.
 router = APIRouter(tags=["google"], dependencies=[Depends(gerr.validate_system_parameters)])
 
 

@@ -1345,6 +1345,26 @@ def test_every_google_get_refuses_a_callback_it_cannot_call_and_no_post_reads_on
     assert gets and posts, f"both halves have to have run, got {gets} GETs and {posts} POSTs"
 
 
+def test_a_family_path_with_no_route_is_not_answered_by_calling_an_unchecked_name(client):
+    """The sweep above reads the document, so the paths NOT in it are its blind spot — and those
+    are exactly the ones ``gerr.validate_system_parameters`` never sees, because a router dependency
+    runs only once a route has matched. ``gerr.rendered`` checks the name a second time for them.
+
+    Real answers an unrouted family path from its front end as HTML — measured 2026-09-16 on all
+    five, with a `callback` and without: 400 on Sheets, Docs and Slides and 404 on Drive and Gmail.
+    So JSONP is not its shape there under ANY name, and a name that can be called is dropped with
+    one that cannot rather than answered at 200 as a script."""
+    for prefix in ("/sheets/v4", "/docs/v1", "/slides/v1", "/drive/v3", "/gmail/v1"):
+        plain = client.get(f"{prefix}/nope")
+        assert plain.status_code == 404, plain.text
+        for name in ("a b", "cb"):
+            r = client.get(f"{prefix}/nope", params={"callback": name})
+            assert r.status_code == 404, (prefix, name, r.text)
+            assert r.headers["content-type"] == "application/json; charset=UTF-8"
+            assert "// API callback" not in r.text, (prefix, name)
+            assert r.text == plain.text, (prefix, name)
+
+
 def test_a_post_ignores_a_callback_the_way_real_does(base, admin_h, sheet_id):
     """The measured POST, not a synthesized one: `values:batchGetByDataFilter` answers a good
     `callback` with an unwrapped `application/json; charset=UTF-8` body and an unparseable one the

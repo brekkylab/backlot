@@ -403,9 +403,10 @@ input IssueFilter {
 #     types the eight counts below (`Issue.customerTicketCount`, `Team.issueCount`, …) `Int!`, and a
 #     real issue answers `customerTicketCount: 0`, not `0.0` (measured 2026-09-03).
 #   * Enums. Eleven fields are enums upstream and were served as bare `String`. Each enum below
-#     carries the vendor's FULL member list as introspection reports it (2026-09-03), so a served
-#     value is checked against the same set the real API would check it against, and
-#     `backlot diff` compares the two lists member for member.
+#     carries the vendor's FULL member list as introspection reports it (2026-09-03, unless the
+#     enum's own description dates it later), so a served value is checked against the same set
+#     the real API would check it against, and `backlot diff` compares the two lists member for
+#     member.
 
 """Linear's `ExternalSyncService`: the service that syncs an external entity to Linear."""
 enum ExternalSyncService { jira github slack }

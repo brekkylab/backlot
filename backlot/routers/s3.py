@@ -239,12 +239,9 @@ def _conflict(selected: list[str], resource: str) -> Response:
 
 _HEAD_REFUSAL_ALLOWS_GET = frozenset({"location", "uploads"})
 # The only two bucket selectors Backlot answers on a GET (GetBucketLocation, the always-empty
-# ListMultipartUploads page). Real S3's Allow on this 405 names every method the sub-resource
-# takes — measured against a general purpose bucket, 2026-09-16: `?location` is `GET`; `?uploads`
-# is `POST, GET`; `?versioning` and `?acl` are `GET, PUT`; `?tagging` and `?policy` are
-# `DELETE, GET, PUT`. Backlot names only the methods it itself takes, so `?uploads` is `GET` alone
-# rather than real's `POST, GET` — advertising the POST (CreateMultipartUpload) it does not
-# implement would be worse than the missing header this replaces.
+# ListMultipartUploads page). Real S3's Allow on this 405, measured against a general purpose
+# bucket, 2026-09-16: `?location` is `GET`; `?uploads` is `POST, GET`; `?versioning` and `?acl`
+# are `GET, PUT`; `?tagging` and `?policy` are `DELETE, GET, PUT`.
 
 
 def _head_refusal(selected: list[str]) -> Response:
@@ -253,9 +250,10 @@ def _head_refusal(selected: list[str]) -> Response:
     No sub-resource has a HEAD form: real S3 answers ``HEAD /{bucket}?versioning`` and
     ``HEAD /{key}?acl`` 405 with an empty ``application/xml`` body, whether or not the bucket or the
     key exists, and two selectors at once with the conflict's 400 and the same empty body
-    (measured, both with no ``Allow``). Real S3 also sends an ``Allow`` naming the methods that
-    sub-resource takes; Backlot names its own, which is ``GET`` for ``location`` and ``uploads``
-    and nothing for every other selector, since it takes none of them.
+    (measured, both with no ``Allow``). Real S3 also sends an ``Allow`` naming every method the
+    sub-resource takes; Backlot names only the methods it itself takes, which is ``GET`` for
+    ``location`` and ``uploads`` and nothing for every other selector — sending real's ``POST`` on
+    ``uploads`` would advertise a ``CreateMultipartUpload`` Backlot does not implement.
     """
     if len(selected) > 1:
         return Response(status_code=400, media_type="application/xml")

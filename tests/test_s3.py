@@ -599,11 +599,8 @@ def test_what_does_not_exist_is_reported_before_the_subresource_except_for_list_
 def test_head_with_a_subresource_is_405_and_a_bare_head_still_answers(live_server):
     base_url, settings = live_server
     token = settings.admin_token
-    # Real S3's Allow on this 405 names every method the sub-resource takes (measured against a
-    # general purpose bucket, 2026-09-16: `?location` is `GET`; `?uploads` is `POST, GET`;
-    # `?versioning` and `?acl` are `GET, PUT`). Backlot names only the methods IT takes, which is
-    # `GET` for `?location` and `?uploads` — the two it answers on a GET — and no header at all
-    # everywhere it takes none, rather than advertise a PUT or POST it would refuse.
+    # Measured against a general purpose bucket, 2026-09-16: real S3's Allow on this 405 is `GET`
+    # for `?location`, `POST, GET` for `?uploads`, `GET, PUT` for `?versioning` and `?acl`.
     for path, allow in (
         ("/s3/eng-artifacts?location", "GET"),
         ("/s3/eng-artifacts?uploads", "GET"),  # served on a GET, and still no HEAD form

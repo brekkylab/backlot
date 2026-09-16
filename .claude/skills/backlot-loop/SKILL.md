@@ -1,6 +1,6 @@
 ---
-name: loop
-description: Work Backlot's `agent`-labelled issues into reviewed pull requests — measure the real vendor API, fix, test, open a PR, and have the two reviewer agents pass it. `/loop` runs live; `/loop <issue-number>` rehearses one issue locally with no GitHub writes.
+name: backlot-loop
+description: Work Backlot's `agent`-labelled issues into reviewed pull requests — measure the real vendor API, fix, test, open a PR, and have the two reviewer agents pass it. `/backlot-loop` runs live; `/backlot-loop <issue-number>` rehearses one issue locally with no GitHub writes.
 argument-hint: "[issue-number for rehearsal]"
 disable-model-invocation: true
 allowed-tools: Read, Edit, Write, Grep, Glob, Bash, Agent, WebFetch
@@ -19,7 +19,7 @@ passed and CI is green. `hold` on an issue or PR means every step below skips it
 
 ## Rehearsal
 
-`$0` set (`/loop 146`) means rehearsal on that one issue, whatever its labels or state. In
+`$0` set (`/backlot-loop 146`) means rehearsal on that one issue, whatever its labels or state. In
 rehearsal you read GitHub freely and write to it never: no comments, no labels, no issues, no push,
 no PR. Work on a local branch `claude/rehearsal-$0`, run the reviewers against that branch, and end
 by printing the PR title and body you would have opened plus each reviewer's last verdict. Every

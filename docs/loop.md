@@ -5,7 +5,7 @@
 A Claude Code routine reads the issues a maintainer has labelled `agent`, measures the real vendor
 API, fixes Backlot, and opens a pull request that two reviewer agents have passed. A person does two
 things: answers a judgment call when the loop asks, and merges. The procedure the routine follows is
-[`.claude/skills/loop/SKILL.md`](../.claude/skills/loop/SKILL.md); the reviewers are
+[`.claude/skills/backlot-loop/SKILL.md`](../.claude/skills/backlot-loop/SKILL.md); the reviewers are
 [`behaviour-reviewer`](../.claude/agents/behaviour-reviewer.md) and
 [`prose-reviewer`](../.claude/agents/prose-reviewer.md). Changing how the loop works is a pull
 request against those files.
@@ -40,7 +40,7 @@ Recorded here so it can be recreated on another account in a morning.
 
 **Prompt**, model set to the strongest in the selector:
 
-> Run `/loop`. In short: look at the open issues labelled `agent` and at the open pull requests you
+> Run `/backlot-loop`. In short: look at the open issues labelled `agent` and at the open pull requests you
 > opened earlier. Address review comments on your own pull requests first. Skip anything labelled
 > `hold`. For an issue that needs a decision Backlot's maintainers have not made, comment your
 > proposal and label it `needs-maintainer`; if it already carries a `decision:` comment, follow that
@@ -78,7 +78,7 @@ account's GitHub user, so the other maintainer merges.
 
 ## Rehearsing a change to the loop
 
-`/loop <issue-number>` in a local checkout with the vendor credentials in the environment runs the
+`/backlot-loop <issue-number>` in a local checkout with the vendor credentials in the environment runs the
 whole procedure on that issue without writing to GitHub: no comments, no labels, no push, no PR.
 It ends by printing the pull request it would have opened and both reviewers' verdicts. Use it on a
 closed issue whose merged fix you know before changing the skill or a reviewer.

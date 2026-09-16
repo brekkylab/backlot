@@ -246,8 +246,13 @@ _LOOP_FILES = (
         ("---\nname: prose-reviewer\n", "description:", "disallowedTools:"),
     ),
     (
-        ".claude/skills/loop/SKILL.md",
-        ("---\nname: loop\n", "description:", "disable-model-invocation: true", "## Rehearsal"),
+        ".claude/skills/backlot-loop/SKILL.md",
+        (
+            "---\nname: backlot-loop\n",
+            "description:",
+            "disable-model-invocation: true",
+            "## Rehearsal",
+        ),
     ),
     (
         ".github/workflows/loop-doorbell.yml",

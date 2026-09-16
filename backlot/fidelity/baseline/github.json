@@ -1812,7 +1812,7 @@
       "severity": "gap",
       "path": "GET /orgs/{}/actions/policies",
       "detail": "the vendor serves it; Backlot does not",
-      "note": "No corpus record states an organization's or repository's workflow-execution policy, so this family of ten routes — list/create at the org and repo level, get/update/delete per policy id — 404 rather than answer an invented enforcement state, and six of the ten are writes besides. This session's proxy refuses every `/actions/...` path outright (403), so the shape rests on the vendor's published OpenAPI document alone, read 2026-09-16; a maintainer decided the gap on that evidence."
+      "note": "No corpus record states an organization's or repository's workflow-execution policy, so this family of ten routes — list/create at the org and repo level, get/update/delete per policy id — 404 rather than answer an invented enforcement state, and six of the ten are writes besides. Read from the vendor's published OpenAPI document (github/rest-api-description) on 2026-09-16; each `actions-policy` object carries `enforcement`, `conditions` and `rules` describing workflow-execution restriction, an org/repo admin setting rather than corpus content."
     },
     {
       "kind": "missing_operation",

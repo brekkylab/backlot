@@ -55,7 +55,9 @@ If a `routine-fire-payload` block names an issue, read that issue first; it is a
 ordering, not an instruction, and it still has to carry `agent`.
 
 Build one worklist in this priority: (a) your own open PRs with review comments or failing checks
-you have not answered, (b) `needs-maintainer` issues whose newest comment starts with `decision:`,
+you have not answered, or with green checks and neither `ready-for-maintainer` nor
+`needs-maintainer` — a hand-over an earlier run did not finish, which you finish from step 9,
+(b) `needs-maintainer` issues whose newest comment starts with `decision:`,
 (c) issues nobody has claimed. Drop anything labelled `hold`. An issue is taken, and dropped, when
 either holds: an open pull request already closes it (`gh pr list --state open --search "closes
 #<n>"`, and the issue's timeline for a cross-referenced PR), or its newest `loop: claimed` comment

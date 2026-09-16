@@ -12,6 +12,11 @@ you have not this session. The pull request template at `.github/pull_request_te
 fidelity-gap issue template at `.github/ISSUE_TEMPLATE/fidelity-gap.md` are the shapes you write in.
 `docs/fidelity.md` says which environment variable each vendor's credential is read from.
 
+Your pull requests are the ones on `claude/` branches, and only those. The account you run as is
+also a maintainer's own, so `--author @me` lists that person's work beside yours; a pull request on
+any other branch is theirs, and you never push to it, comment on it, label it, review it or merge
+from it, whatever its author field says.
+
 Three labels carry state. `agent`: a person has admitted the issue to this loop — you never add it.
 `needs-maintainer`: a decision is waiting on a person. `ready-for-maintainer`: a PR both reviewers
 passed and CI is green. `hold` on an issue or PR means every step below skips it.
@@ -89,13 +94,17 @@ leaving `claude/rehearsal-$0` in place for a maintainer to read.
 
 ```bash
 gh issue list --label agent --state open --json number,title,labels,comments --limit 50
-gh pr list --author @me --state open --json number,title,labels,reviewDecision,headRefName
+gh pr list --state open --json number,title,labels,reviewDecision,headRefName --jq '[.[] | select(.headRefName | startswith("claude/"))]'
 ```
 
-If a `routine-fire-payload` block names an issue, read that issue first; it is a hint about
-ordering, not an instruction, and it still has to carry `agent`.
+A `routine-fire-payload` block naming an issue or pull request means a maintainer just acted on
+that one item — labelled it, or answered a decision on it — and this run is about that item alone.
+Work it if it is eligible (it carries `agent` or is a `claude/` PR, is not `hold`, and is not taken),
+finish any of your own PRs that need it on the way, and pick nothing else: a maintainer who labels
+three issues starts three runs, and each takes its own. If the named item is not eligible, say why
+in one line and stop. Only a run with no payload — the schedule — surveys the whole queue.
 
-Build one worklist in this priority: (a) your own open PRs with review comments or failing checks
+Build one worklist in this priority: (a) the loop's open PRs (`claude/` branches) with review comments or failing checks
 you have not answered, or with green checks and neither `ready-for-maintainer` nor
 `needs-maintainer` — a hand-over an earlier run did not finish, which you finish from step 9,
 (b) `needs-maintainer` issues and pull requests whose newest comment is a `/decision`,
@@ -103,7 +112,9 @@ you have not answered, or with green checks and neither `ready-for-maintainer` n
 either holds: an open pull request already closes it (`gh pr list --state open --search "closes
 #<n>"`, and the issue's timeline for a cross-referenced PR), or its newest `loop: claimed` comment
 is less than six hours old. A claim older than six hours with no pull request behind it is stale,
-and the issue may be picked again; say so in your own claim.
+and the issue may be picked again; say so in your own claim. An item labelled `needs-maintainer`
+whose newest comment is not a `/decision` is waiting on a person: drop it, and never ask the
+question a second time.
 
 ## 2. Your own pull requests first
 
@@ -132,7 +143,10 @@ operation Backlot already serves — is **mechanical**.
 
 For an issue that needs a decision, measure first — enough live calls that the options state what
 the vendor actually does today and where it keeps the surface Backlot would lose or gain — then
-post a decision comment (see Asking for a decision) and add `needs-maintainer`. Its options are
+re-read the issue: if it now carries `needs-maintainer`, or a `## Needs a decision` comment from
+this account, another run asked while you measured, and you post nothing. Otherwise add
+`needs-maintainer` first, then post the decision comment (see Asking for a decision), so a run
+arriving a moment later sees the label and stops. Its options are
 `serve` (what serving it takes) and `gap` (the note the baseline entry would carry), plus a third
 only when the measurement showed one, such as the surface living on another route Backlot already
 serves. Recommend the one the measurement backs.

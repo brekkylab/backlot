@@ -13,6 +13,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from backlot.validation import SERVICE_SCHEMAS
 
 REPO = Path(__file__).resolve().parent.parent
@@ -228,3 +230,55 @@ def test_env_example_names_only_real_settings():
     listed = set(re.findall(r"BACKLOT_[A-Z_]+", (REPO / ".env.example").read_text()))
     real = {f"BACKLOT_{name.upper()}" for name in Settings.model_fields}
     assert listed <= real, sorted(listed - real)
+
+
+# The agent loop is four files the routine on claude.ai reads from the checkout, plus the page
+# that tells a maintainer how to drive it. A routine that finds no skill runs its one-paragraph
+# prompt with no procedure, and a reviewer file without frontmatter is not an agent at all — both
+# fail silently on the routine's side, so their presence is pinned here.
+_LOOP_FILES = (
+    (
+        ".claude/agents/behaviour-reviewer.md",
+        ("---\nname: behaviour-reviewer\n", "description:", "disallowedTools:"),
+    ),
+    (
+        ".claude/agents/prose-reviewer.md",
+        ("---\nname: prose-reviewer\n", "description:", "disallowedTools:"),
+    ),
+    (
+        ".claude/skills/backlot-loop/SKILL.md",
+        (
+            "---\nname: backlot-loop\n",
+            "description:",
+            "allowed-tools:",
+            "## Rehearsal",
+        ),
+    ),
+    (
+        ".github/workflows/loop-doorbell.yml",
+        (
+            "issues:",
+            "issue_comment:",
+            "LOOP_FIRE_URL",
+            "LOOP_FIRE_TOKEN",
+            "experimental-cc-routine-2026-04-01",
+        ),
+    ),
+    (
+        "docs/loop.md",
+        ("needs-maintainer", "ready-for-maintainer", "/decision 1", "GITHUB_TOKEN"),
+    ),
+    (".claude/settings.json", ("SessionStart", "scripts/cloud_session_start.sh")),
+    (
+        "scripts/cloud_session_start.sh",
+        ("CLAUDE_CODE_REMOTE", "uv sync --all-extras", "scripts/loop_env.py"),
+    ),
+    ("scripts/loop_env.py", ("/backlot-loop/", "CLAUDE_ENV_FILE")),
+)
+
+
+@pytest.mark.parametrize(("path", "needles"), _LOOP_FILES, ids=[p for p, _ in _LOOP_FILES])
+def test_loop_files_are_in_place(path, needles):
+    text = (REPO / path).read_text()
+    missing = [n for n in needles if n not in text]
+    assert not missing, f"{path} lacks: {missing}"

@@ -1575,25 +1575,27 @@ def test_a_repeated_parameter_is_read_as_its_first_value_including_list_type(
     assert "KeyCount" in _children(_listing(big_bucket_client, "list-type=2&list-type=1", token))
 
 
-def test_a_prefix_or_marker_at_the_last_code_point_is_a_page_not_a_500(
-    big_bucket_client, big_bucket_settings
+@pytest.mark.parametrize("edge", ["\U0010ffff", "\ud7ff"])
+def test_a_prefix_or_marker_no_character_steps_past_is_a_page_not_a_500(
+    big_bucket_client, big_bucket_settings, edge
 ):
-    """Both parameters take any character a client sends, and the key-range helper had nothing to
-    increment past the last code point, so `?prefix=a\U0010ffff` was an unhandled ValueError —
-    a 500 with no `<Error>` body for boto3 to raise on. The listing's own `marker` reaches the
-    same helper through the CommonPrefixes group it resumes past, which is the route this PR
-    opens. Neither is a listing anyone wants; both are answered.
+    """Both parameters take any character a client sends, and two of them had no character the
+    key-range helper could step onto, so each went out as a 500 with no `<Error>` body for boto3 to
+    raise on. The last code point has nothing above it at all and raised `ValueError`; U+D7FF has
+    only the surrogate block, and `chr(ord(c) + 1)` landed on U+D800, which sqlite3 cannot bind
+    (`UnicodeEncodeError`). The listing's own `marker` reaches the same helper through the
+    CommonPrefixes group it resumes past, which is the route this PR opens. Neither is a listing
+    anyone wants; both are answered.
 
     What real S3 does with these is unmeasured — a delimiter of `\U0010ffff` is not a query worth
     a bucket — so the only claim here is that the server answers rather than crashes."""
     token = big_bucket_settings.admin_token
-    last = "\U0010ffff"
     for query in (
-        f"prefix=a{quote(last)}",
-        f"list-type=2&prefix=a{quote(last)}",
-        f"delimiter={quote(last)}&marker=a{quote(last)}",
-        f"delimiter={quote(last)}",
-        f"prefix={quote(last)}",
+        f"prefix=a{quote(edge)}",
+        f"list-type=2&prefix=a{quote(edge)}",
+        f"delimiter={quote(edge)}&marker=a{quote(edge)}",
+        f"delimiter={quote(edge)}",
+        f"prefix={quote(edge)}",
     ):
         r = _s3_get(big_bucket_client, f"/s3/encoded-bucket?{query}", token)
         assert r.status_code == 200, (query, r.status_code, r.text[:200])

@@ -620,6 +620,23 @@ def test_key_successor_carries_past_the_last_code_point_instead_of_raising():
         assert probe > prefix and probe < store.key_successor(prefix)
 
 
+def test_key_successor_steps_over_the_surrogate_block_instead_of_into_it(tmp_path):
+    """U+D7FF is one step below the surrogates, and `chr(ord(c) + 1)` lands on U+D800, which UTF-8
+    cannot encode: sqlite3 raised `UnicodeEncodeError` binding it and `?prefix=a%ED%9F%BF` went out
+    as a 500 with no `<Error>` body, the same failure the last code point used to be.
+
+    The step goes over the block to U+E000, which is still exact here — a key sorting between the
+    two would have to spell a surrogate, and a key stored as UTF-8 cannot."""
+    assert store.key_successor("a\ud7ff") == "a\ue000"
+    assert store.key_successor("\ud7ff") == "\ue000"
+    assert store.key_successor("\ud7ff\U0010ffff") == "\ue000"
+    # Exact: every key with the prefix sorts below what comes back, and it binds.
+    conn = _s3_mini_db(tmp_path)
+    for prefix in ("a\ud7ff", "\ud7ff"):
+        assert prefix < prefix + "z" < store.key_successor(prefix)
+        assert store.list_s3_objects(conn, "b", prefix=prefix) == []
+
+
 def test_list_s3_objects_takes_the_lower_bound_alone_when_a_prefix_has_no_successor(tmp_path):
     """A prefix of nothing but the last code point has no ceiling, and the range is the same
     without one: every key at or above it starts with it."""

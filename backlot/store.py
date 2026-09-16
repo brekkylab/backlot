@@ -1161,6 +1161,12 @@ def list_documents(
 # increment past. A key or a query parameter can contain it: `chr(0x10FFFF)` survives UTF-8 and
 # SQLite TEXT intact.
 _LAST_CODE_POINT = "\U0010ffff"
+# The surrogate block. A Python string can hold one but UTF-8 cannot encode it, so sqlite3 refuses
+# to bind it and a bound that lands here raises `UnicodeEncodeError` rather than filtering a range.
+# The one character whose step lands in it is U+D7FF, and stepping over the block to U+E000 keeps
+# the bound exact for it: a key that sorts between the two would have to spell a surrogate, which
+# no key stored as UTF-8 does.
+_SURROGATES = range(0xD800, 0xE000)
 
 
 def key_successor(s: str) -> str | None:
@@ -1168,19 +1174,21 @@ def key_successor(s: str) -> str | None:
     half-open range ``key >= s AND key < key_successor(s)``. The listing router also uses it to skip
     a whole CommonPrefixes group in one bound.
 
-    Normally this increments the last character. A trailing run of the last code point has no
-    character above it to use, so the run comes off and the character before it is incremented
-    instead — the result is still greater than every string starting with ``s``, since they all
-    share the smaller prefix. A string that is nothing but that code point has no successor at all,
+    Normally this increments the last character. Two ranges of code point have no usable character
+    one step up, and both are reachable from the wire, where ``?prefix=``, ``?delimiter=`` and
+    ``?marker=`` take whatever a client sends, and where each used to go out as a 500 with no
+    ``<Error>`` body. A step into the surrogate block goes over it instead. A trailing run of the
+    last code point has nothing above it at all, so the run comes off and the character before it
+    is incremented — the result is still greater than every string starting with ``s``, since they
+    all share the smaller prefix. A string that is nothing but that code point has no successor,
     and ``None`` says so: every string with that prefix sorts at the very end, which a caller reads
-    as "no upper bound" or "nothing follows" depending on which side it is bounding. Reachable from
-    the wire — ``?prefix=`` and ``?delimiter=`` take any character a client sends — where it used
-    to raise ValueError and surface as a 500. Undefined for an empty string; callers guard that
-    case."""
+    as "no upper bound" or "nothing follows" depending on which side it is bounding. Undefined for
+    an empty string; callers guard that case."""
     core = s.rstrip(_LAST_CODE_POINT)
     if not core:
         return None
-    return core[:-1] + chr(ord(core[-1]) + 1)
+    nxt = ord(core[-1]) + 1
+    return core[:-1] + chr(_SURROGATES.stop if nxt in _SURROGATES else nxt)
 
 
 def list_s3_objects(

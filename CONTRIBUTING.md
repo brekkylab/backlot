@@ -116,6 +116,9 @@ the marketplace when you are done — uninstalling leaves the cache directory be
 5. Fill in the pull request template: what changed, the measurement that says it is right, and
    the test output — describing the finished state rather than the rounds of work behind it.
 
+A Claude Code routine also opens pull requests here, for issues a maintainer labels `agent`. How to
+drive it, stop it and recreate it is in [`docs/loop.md`](docs/loop.md).
+
 ## Adding or changing API behavior
 
 The whole point of this project is **fidelity to the real APIs**, so:

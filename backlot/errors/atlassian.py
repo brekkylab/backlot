@@ -210,7 +210,7 @@ def unbounded_jql() -> AtlassianError:
 
 
 def bad_page_token() -> AtlassianError:
-    """Jira's 400 for a ``nextPageToken`` it cannot decode, measured 2026-09-15 on both methods —
+    """Jira's 400 for a ``nextPageToken`` it cannot decode, measured 2026-09-16 on both methods —
     the query string's token and the body's are refused alike.
 
     The sentence is Backlot's own, not a transcription: real localises this one to the account's

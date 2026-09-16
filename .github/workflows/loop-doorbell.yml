@@ -1,0 +1,41 @@
+# Rings the agent-loop routine on claude.ai the moment a maintainer acts, instead of leaving the
+# action to wait for the routine's next scheduled run. The routine re-reads the queue itself; the
+# issue number sent here is a hint about where to look first, never an instruction.
+#
+# `/fire` is behind a dated beta header. When Anthropic moves it, this file is the only thing in
+# the repository that changes.
+name: Loop doorbell
+
+on:
+  issues:
+    types: [labeled]
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+jobs:
+  ring:
+    if: >
+      (github.event_name == 'issues' && github.event.label.name == 'agent') ||
+      (github.event_name == 'issue_comment' && startsWith(github.event.comment.body, 'decision:'))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fire the routine
+        env:
+          URL: ${{ secrets.LOOP_FIRE_URL }}
+          TOKEN: ${{ secrets.LOOP_FIRE_TOKEN }}
+          ISSUE: ${{ github.event.issue.number }}
+        run: |
+          # Without the two secrets there is no routine to ring; a green no-op keeps a fork's
+          # workflow list quiet rather than red on every label.
+          if [ -z "$URL" ] || [ -z "$TOKEN" ]; then
+            echo "::notice::LOOP_FIRE_URL / LOOP_FIRE_TOKEN are not set; nothing to ring."
+            exit 0
+          fi
+          curl -sSf -X POST "$URL" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "anthropic-beta: experimental-cc-routine-2026-04-01" \
+            -H "anthropic-version: 2023-06-01" \
+            -H "Content-Type: application/json" \
+            -d "{\"text\": \"issue #$ISSUE\"}"

@@ -25,6 +25,8 @@ from __future__ import annotations
 import re
 import warnings
 
+from backlot.errors import google as gerr
+
 # Building the app's /openapi.json (FastAPI) warns "Duplicate Operation ID" once per multi-method
 # route described above. Those duplicates are expected and are collapsed by build_mcp_spec, so the
 # warning is pure noise — silence just that message. Lives here (imported by backlot.main before any
@@ -164,8 +166,10 @@ def github_page_parameters(spec: dict, parameters: dict[str, tuple[int, str]]) -
     applies the numbers holds them (``backlot.routers.github.PAGE_PARAMETERS``, whose prose is built
     from the same ``PER_PAGE_DEFAULT`` and ``PER_PAGE_MAX`` its routes apply), so the document cannot
     declare one size while the route applies another. Six routers import this module for
-    :func:`qp`, which is why it does not import that one. Only GitHub: the other vendors' declared
-    defaults are not measured."""
+    :func:`qp`, which is why it does not import that one — the routers package, not `backlot` at
+    large: `backlot.errors` imports neither this module nor a router, so
+    :func:`google_system_parameters` takes it at module scope. Only GitHub: the other vendors'
+    declared defaults are not measured."""
     for path, item in spec.get("paths", {}).items():
         if path != "/github" and not path.startswith("/github/"):
             continue
@@ -178,6 +182,38 @@ def github_page_parameters(spec: dict, parameters: dict[str, tuple[int, str]]) -
                     default, description = declared
                     param["schema"]["default"] = default
                     param["description"] = description
+    return spec
+
+
+def google_system_parameters(spec: dict) -> dict:
+    """``spec`` with `$.xgafv` declared on every Google-family operation, in place.
+
+    Google declares its system parameters once per discovery document, at the top level, and every
+    method takes them; Backlot honours `$.xgafv` the same way — validated once for the router and
+    read once by the envelope — so it is declared once here rather than on each of the
+    twenty-one family routes, where a route added later would forget it and the fidelity diff would
+    report the gap again. The declaration is the document's own: ``V1 error format.``, an enum of
+    ``1`` and ``2``. The batch endpoint is not a family path and gets nothing."""
+    for path, item in spec.get("paths", {}).items():
+        if gerr.family(path) is None:
+            continue
+        for method, op in item.items():
+            if method not in _METHODS:
+                continue
+            params = op.setdefault("parameters", [])
+            # FastAPI caches the document and hands the same dict back by identity, so a second
+            # call would append a second copy of the parameter.
+            if any(p.get("name") == gerr.XGAFV and p.get("in") == "query" for p in params):
+                continue
+            params.append(
+                {
+                    "name": gerr.XGAFV,
+                    "in": "query",
+                    "required": False,
+                    "description": "V1 error format.",
+                    "schema": {"type": "string", "enum": list(gerr.XGAFV_VALUES)},
+                }
+            )
     return spec
 
 

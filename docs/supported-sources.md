@@ -205,6 +205,23 @@ because that is where Google puts them.
 `/batch` is Google-shaped but not Google-scoped — sub-requests are dispatched against the whole
 app, so a batch may target any endpoint this server serves, not only Google Drive's.
 
+**`$.xgafv` is honoured on every Google route**, the way real declares it: a system parameter at
+the top of the discovery document, which every method takes, rather than one a few methods list.
+What it selects is the legacy `errors[]` array, and the three families answer it three ways. Docs,
+Sheets and Slides opt in — `1` adds the array, `2` and an absent value leave it off. Gmail opts
+out — the array is there unless `2` turns it off. Drive carries it whatever the value says. A
+success body is the same under all of them. A value other than `1` or `2` is refused before
+anything else is read, ahead of a bad token or an unparseable range, with real's sentence
+`Invalid query parameters. Invalid value '…' for system query parameter : $.xgafv`. Inside the
+array the entry follows the error: a typed value the proto layer refuses (an enum, a bool, an
+int32) is `reason: invalid` and carries no `domain`; an Office file read as a native document is
+`failedPrecondition` under `domain: global`; everything else is `badRequest` under the same domain;
+and a missing credential on any of the three OAuth-only APIs — Gmail, Docs and Slides — is the
+short `Login Required.` at `location: Authorization`, which Gmail shows by default where the editor
+families show it only at `1`. Measured against the live Sheets, Docs and Drive APIs on 2026-09-12,
+and against Slides and Gmail on 2026-09-14 through the errors a request with no Authorization
+header reaches.
+
 ### HubSpot — `/hubspot/crm/v3` `/hubspot/crm/v4`
 
 | Endpoint | Notes |

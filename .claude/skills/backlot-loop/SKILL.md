@@ -136,7 +136,9 @@ exists, comment your measurement there instead. Never add `agent` to it.
 Branch `claude/<source>-<slug>`. Title: one declarative sentence describing the new state, prefixed
 with the source like the log (`github: a JSON response carries the charset real's carry`). Body:
 the repository's PR template with every section filled and `Closes #a, #b` for each issue. Push and
-`gh pr create`.
+`gh pr create --assignee @me --label <labels>`, where `<labels>` is every label the closed issues
+carry except `agent` (`fidelity`, `bug`, `feature`, `good first issue`, …), read with
+`gh issue view <n> --json labels`; a PR closing several issues carries the union.
 
 The body is read on GitHub, which renders every newline as a line break, so never hard-wrap a
 paragraph. Readability comes from structure instead:

@@ -108,8 +108,9 @@ _P_BUCKET_GET = [
     ),
     qp(
         "encoding-type",
-        description="url: every key, prefix, delimiter and marker in the response comes back "
-        "URL-encoded, under an EncodingType element; any other value is refused",
+        description="url: every key and every prefix in the response comes back URL-encoded, and "
+        "so do the echoes of delimiter, start-after and marker, under an EncodingType element; "
+        "any other value is refused",
     ),
     qp(
         "max-keys",

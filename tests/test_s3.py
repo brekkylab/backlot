@@ -1,4 +1,4 @@
-"""S3: ListObjectsV2, object reads, the XML shapes, and SigV4.
+"""S3: the two bucket listings, object reads, the XML shapes, and SigV4.
 
 One file per router, so a source's shape assertions live in one place whether they go over HTTP
 or call the response builder directly.
@@ -446,7 +446,7 @@ def test_s3_max_keys_zero_returns_empty_page_safely(big_bucket_client, big_bucke
     assert root.findtext(f"{{{S3NS}}}KeyCount") == "0"
     assert root.findall(f"{{{S3NS}}}Contents") == []
     assert root.findall(f"{{{S3NS}}}CommonPrefixes") == []
-    assert root.findtext(f"{{{S3NS}}}IsTruncated") == "false"  # big-bucket has 3000 objects
+    assert root.findtext(f"{{{S3NS}}}IsTruncated") == "false"
     assert root.findtext(f"{{{S3NS}}}NextContinuationToken") is None
 
 

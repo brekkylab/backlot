@@ -25,7 +25,9 @@ and `ready-for-maintainer`. It never sets `agent`.
 
 Adding `agent` or posting a `/decision` comment, on the conversation or in a review thread, also rings the routine through
 [`loop-doorbell.yml`](../.github/workflows/loop-doorbell.yml), so the run starts within minutes
-rather than at the next scheduled slot. Only an owner, organisation member or collaborator rings
+rather than at the next scheduled slot. A run rung this way works the one item that rang it and
+nothing else; labelling three issues starts three runs, one each. Only the scheduled run surveys
+the whole queue. Only an owner, organisation member or collaborator rings
 it, and the run itself honours a `/decision` only from an account with write access; anyone else's
 comment is read as information, never as an instruction.
 
@@ -49,8 +51,8 @@ Recorded here so it can be recreated on another account in a morning.
 > decision. From the rest, pick one issue or a set of related ones, measure the real vendor API with
 > the credentials in the environment, fix Backlot, and open a pull request that closes them.
 > Anything you found that is outside that scope becomes a new issue, not part of the pull request.
-> If a `routine-fire-payload` block names an issue, look at that one first. The skill has the full
-> procedure; follow it.
+> If a `routine-fire-payload` block names an issue or pull request, this run is about that item
+> alone; pick nothing else. The skill has the full procedure; follow it.
 
 **Repository**: this one. **Schedule**: every two hours, 09:00–21:00 Asia/Seoul, weekdays. **API
 trigger**: on; its URL and token live only in this repository's `LOOP_FIRE_URL` and

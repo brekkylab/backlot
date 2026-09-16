@@ -650,7 +650,7 @@ def test_mcp_notion_tools_take_the_version_every_request_carries(live_server):
             without = [
                 n
                 for n, t in tools.items()
-                if "Notion-Version" not in ((t.inputSchema or {}).get("required") or [])
+                if "Notion-Version" not in ((t.input_schema or {}).get("required") or [])
             ]
             assert not without, without
             out = {}

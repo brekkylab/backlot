@@ -1,8 +1,7 @@
 ---
 name: backlot-loop
-description: Work Backlot's `agent`-labelled issues into reviewed pull requests — measure the real vendor API, fix, test, open a PR, and have the two reviewer agents pass it. `/backlot-loop` runs live; `/backlot-loop <issue-number>` rehearses one issue locally with no GitHub writes.
+description: Work Backlot's `agent`-labelled issues into reviewed pull requests — measure the real vendor API, fix, test, open a PR, and have the two reviewer agents pass it. `/backlot-loop` runs live; `/backlot-loop <issue-number>` rehearses one issue locally with no GitHub writes. Run it only when a person or the routine's own prompt says `/backlot-loop`; an ordinary request to fix an issue is not that.
 argument-hint: "[issue-number for rehearsal]"
-disable-model-invocation: true
 allowed-tools: Read, Edit, Write, Grep, Glob, Bash, Agent, WebFetch
 ---
 

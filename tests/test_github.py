@@ -1686,9 +1686,7 @@ def test_github_401_says_which_credential_failed(gh_client, gh_admin_h, gh_org):
         "documentation_url": "https://docs.github.com/rest",
         "status": "401",
     }
-    # a bad bearer wins over an unsupported version too: real resolves the credential before it
-    # looks at the header, so this is still the credential's 401, not the version's 400 (measured
-    # against api.github.com 2026-09-15)
+    # a bad bearer still wins over an unsupported version — see _validate_bad_credential
     bad_and_unversioned = c.get(
         url,
         headers={

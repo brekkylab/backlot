@@ -6,7 +6,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ \"$CLAUDE_CODE_REMOTE\" = true ] && [ -n \"$AWS_ACCESS_KEY_ID\" ]; then cd \"$CLAUDE_PROJECT_DIR\" && uv run --no-sync python scripts/loop_env.py; fi"
+            "command": "bash \"$CLAUDE_PROJECT_DIR\"/scripts/cloud_session_start.sh",
+            "timeout": 900
           }
         ]
       }

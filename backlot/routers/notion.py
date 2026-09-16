@@ -97,10 +97,24 @@ _B_SEARCH = _body(
 
 def _version_param(description: str) -> dict:
     """The ``Notion-Version`` header, declared the way Notion's own document declares it: on every
-    operation, required. Here that is not documentation but the contract each route enforces (see
+    operation, required (its OpenAPI points all of them at one ``components/parameters`` entry;
+    read 2026-09-16). Here that is not documentation but the contract each route enforces (see
     ``_refusal``), and it is the whole of what a generated client knows -- ``backlot mcp`` builds
     its tools off this spec and its bridge sends no version of its own, so a route that required
-    the header without declaring it would hand an agent a tool it could not call."""
+    the header without declaring it would hand an agent a tool it could not call.
+
+    Declared route by route rather than written onto the source's operations afterwards, the way
+    :func:`backlot.openapi.google_system_parameters` declares ``$.xgafv``: the two query routes
+    have to name which versions they are the path for (see ``_query_extra``), which one shared
+    declaration cannot carry, and a pass that wrote it would have to special-case those two by
+    path. What that pass buys -- a route added later cannot forget the parameter -- a sweep over
+    the router buys instead (``tests/test_notion.py``).
+
+    The schema stays a plain string where the vendor's names an enum of one value, its current
+    version. Copying that would put the versions the legacy query path serves outside what a
+    generated client may send, leaving a tool for a route Backlot answers that an agent could
+    never call -- and this router refuses no version string, so a declaration narrower than the
+    route accepts would be a claim it does not keep."""
     return {
         "name": "Notion-Version",
         "in": "header",
@@ -188,11 +202,12 @@ def _refusal(request: Request, caller) -> JSONResponse | None:
 
     Then the version, which Notion requires on every request -- "The Notion-Version header must be
     included in all REST API requests" (Versioning, read 2026-09-15), answered ``missing_version``
-    when it is absent (status codes, same day). That requirement is the vendor's document rather
-    than a measurement here: the check sits behind a credential that resolves, and no Notion token
-    was available to put in front of it, so what #189 measured is the query pair. The message is
-    the example the status-code table prints for the code. An empty header value is taken as none
-    sent."""
+    when it is absent (status codes, same day). On the two query paths that refusal is measured:
+    #189 sent a version-less request to each on 2026-09-11 with an integration token and both
+    answered 400 ``missing_version``. The other ten routes rest on the document instead -- the
+    check sits behind a credential that resolves, and no Notion token was available here to put in
+    front of it. The message is the example the status-code table prints for the code. An empty
+    header value is taken as none sent."""
     if caller is None:
         return _error(401, "unauthorized", "API token is invalid.")
     if not request.headers.get("notion-version"):
@@ -212,8 +227,9 @@ def _wrong_query_path(request: Request, *, data_sources: bool) -> JSONResponse |
     Measured against api.notion.com on 2026-09-11 with an integration token, probing each path
     with an id that exists but is a page: 2022-06-28 serves ``databases/{id}/query`` and answers
     ``invalid_request_url`` for ``data_sources/{id}/query``, and 2025-09-03 the other way round.
-    That probe recorded the code; the message is what api.notion.com answered on 2026-09-15 for a
-    path no version mounts at all."""
+    That probe recorded codes rather than bodies, and reported the refusal as "the same as a
+    made-up path", so the message here is what api.notion.com answered on 2026-09-15 for a path no
+    version mounts at all."""
     if _data_sources_model(_version(request)) is not data_sources:
         return _error(400, "invalid_request_url", "Invalid request URL.")
     return None

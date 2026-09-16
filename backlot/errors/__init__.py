@@ -18,8 +18,8 @@ A module in ``_ENVELOPES`` provides:
   reports one.
 - ``json_media_type(path, status_code)``, optional — the `content-type` the vendor puts on a JSON
   body answered at that path with that status, when it is measured to differ from FastAPI's bare
-  `application/json`. GitHub is the one that implements it; a vendor without it keeps the default,
-  which is not a claim about what real sends.
+  `application/json`. GitHub and Atlassian (Jira only) implement it; a vendor without it keeps
+  the default, which is not a claim about what real sends. Confluence stays on the bare type.
 
 A media type that varies by REFUSAL rather than by path and status cannot come from that hook,
 which sees only those two. It rides on the exception instead, as a ``media_type`` attribute

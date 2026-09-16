@@ -3521,11 +3521,14 @@ def test_github_json_carries_the_charset_real_sends_except_on_code_search(
     # charset is on the wire, not in the contract `backlot diff` compares
     op = c.get("/openapi.json").json()["paths"]["/github/repos/{owner}/{repo}/issues"]["get"]
     assert list(op["responses"]["200"]["content"]) == ["application/json"]
-    # ...and a JSON response outside `/github` is untouched, the app's own routes and another
-    # vendor's alike: not a claim about what Atlassian sends, only that this rule is GitHub's alone
+    # ...and a JSON response outside `/github` is untouched by THIS rule: the app's own
+    # `/openapi.json` stays bare. Jira's charset is Atlassian's envelope, not GitHub's.
     assert c.get("/openapi.json").headers["content-type"] == bare
     server_info = c.get("/atlassian/rest/api/2/serverInfo", headers=gh_admin_h)
-    assert (server_info.status_code, server_info.headers["content-type"]) == (200, bare)
+    assert (server_info.status_code, server_info.headers["content-type"]) == (
+        200,
+        "application/json;charset=UTF-8",
+    )
 
 
 def test_github_unsupported_api_version_is_refused_ahead_of_everything(gh_client, gh_org):

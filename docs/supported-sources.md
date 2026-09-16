@@ -251,6 +251,9 @@ than there being a set per type.
 `search/jql`, `issue/{key}`, `issue/{key}/comment`, `field` and `serverInfo` are served under
 `rest/api/2` as well as `/3`.
 
+Jira JSON responses use `application/json;charset=UTF-8` (no space after the semicolon).
+Confluence JSON responses under `/atlassian/wiki` stay `application/json`.
+
 ### Linear — `/linear/graphql`
 
 **GraphQL only**, one `POST`. Root `Query` fields:

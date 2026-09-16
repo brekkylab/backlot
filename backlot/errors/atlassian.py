@@ -60,6 +60,30 @@ def is_confluence(path: str) -> bool:
     return path.startswith(WIKI)
 
 
+#: What real Jira puts on a JSON body — measured 2026-09-15 against a live Jira Cloud site
+#: on 200, 400, 401 and 404. The spelling is exact: no space after the semicolon, ``UTF-8``
+#: upper-case. Confluence, served by the same router under ``/wiki``, answers the bare type.
+JIRA_JSON_MEDIA_TYPE = "application/json;charset=UTF-8"
+
+
+def json_media_type(path: str, status_code: int) -> str | None:
+    """The `content-type` real puts on a JSON body answered at ``path``.
+
+    Jira answers ``application/json;charset=UTF-8`` on every JSON status measured. Confluence
+    answers the bare ``application/json``, so this returns ``None`` and leaves FastAPI's
+    default alone. The middleware only rewrites a response whose type is exactly
+    ``application/json``, so a Jira RFC 7807 body on ``application/problem+json`` is
+    untouched.
+
+    ``status_code`` is unused: the charset does not vary by status on the routes this
+    server serves. It stays in the signature so the dispatch in ``errors.json_media_type``
+    can treat every envelope alike.
+    """
+    if is_confluence(path):
+        return None
+    return JIRA_JSON_MEDIA_TYPE
+
+
 # Java's `Character.isWhitespace` is documented to EXCLUDE the three non-breaking spaces and to
 # include the other Unicode space separators. Measured on both products, 2026-09-15: a value
 # holding U+00A0, U+2007 or U+202F between its digits is a 400 naming that value, while the same

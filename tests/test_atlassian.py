@@ -1190,6 +1190,35 @@ def test_confluence_refuses_an_integer_parameter_it_cannot_convert(client, admin
     }
 
 
+def test_jira_json_bodies_name_a_charset_that_confluence_does_not(client, admin_h):
+    """Measured 2026-09-15: Jira Cloud sends ``application/json;charset=UTF-8`` (no space,
+    ``UTF-8`` upper-case) on 200, 400, 401 and 404. The four Confluence routes this server
+    serves send the bare ``application/json``. The middleware only rewrites a response that
+    is already exactly ``application/json``, so Jira's RFC 7807 400 keeps
+    ``application/problem+json;charset=UTF-8``.
+    """
+    jira = "application/json;charset=UTF-8"
+    bare = "application/json"
+    assert (
+        client.get("/atlassian/rest/api/3/serverInfo", headers=admin_h).headers["content-type"]
+        == jira
+    )
+    missing = client.get("/atlassian/rest/api/3/issue/NOPE-999999", headers=admin_h)
+    assert missing.status_code == 404
+    assert missing.headers["content-type"] == jira
+    bad = client.get("/atlassian/rest/api/3/issue/PAY-7/comment?orderBy=bogus", headers=admin_h)
+    assert bad.status_code == 400
+    assert bad.headers["content-type"] == jira
+    spaces = client.get("/atlassian/wiki/rest/api/space", headers=admin_h)
+    assert spaces.status_code == 200
+    assert spaces.headers["content-type"] == bare
+    missing_space = client.get("/atlassian/wiki/rest/api/space/NOPESUCHSPACE", headers=admin_h)
+    assert missing_space.status_code == 404
+    assert missing_space.headers["content-type"] == bare
+    assert errors_atlassian.json_media_type("/atlassian/rest/api/3/myself", 401) == jira
+    assert errors_atlassian.json_media_type("/atlassian/wiki/rest/api/space", 200) is None
+
+
 def test_confluence_names_the_comma_join_when_a_repeated_value_will_not_convert(client, admin_h):
     """Where Jira renders the array as a Java `toString`, Confluence renders it as the comma-join
     and reports the array's own type."""

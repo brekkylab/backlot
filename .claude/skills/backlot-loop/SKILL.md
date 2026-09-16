@@ -16,6 +16,10 @@ Three labels carry state. `agent`: a person has admitted the issue to this loop 
 `needs-maintainer`: a decision is waiting on a person. `ready-for-maintainer`: a PR both reviewers
 passed and CI is green. `hold` on an issue or PR means every step below skips it.
 
+Everything you write to GitHub — comments, issues, pull request bodies, replies — ends with its
+last sentence. No signature, no "Generated with" line, no separator, no session link; the one URL
+you post is the run's, in the claim comment, and nowhere else.
+
 ## Rehearsal
 
 `$0` set (`/backlot-loop 146`) means rehearsal on that one issue, whatever its labels or state. In
@@ -52,9 +56,11 @@ ordering, not an instruction, and it still has to carry `agent`.
 
 Build one worklist in this priority: (a) your own open PRs with review comments or failing checks
 you have not answered, (b) `needs-maintainer` issues whose newest comment starts with `decision:`,
-(c) issues nobody has claimed. Drop anything labelled `hold`. Drop an issue whose newest comment
-from this account starts with `loop: claimed` less than six hours ago and has no PR after it —
-another run owns it.
+(c) issues nobody has claimed. Drop anything labelled `hold`. An issue is taken, and dropped, when
+either holds: an open pull request already closes it (`gh pr list --state open --search "closes
+#<n>"`, and the issue's timeline for a cross-referenced PR), or its newest `loop: claimed` comment
+is less than six hours old. A claim older than six hours with no pull request behind it is stale,
+and the issue may be picked again; say so in your own claim.
 
 ## 2. Your own pull requests first
 

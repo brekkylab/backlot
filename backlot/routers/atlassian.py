@@ -392,10 +392,7 @@ async def jira_search(request: Request):
     caller = _jira_caller(request)
     ids = auth.visible_ids(request, caller)
     default_size = get_settings().default_page_size
-    # One parameter, two places, and real reads exactly one of them per method. Measured
-    # 2026-09-15: on POST the query string is not read at all, so a `nextPageToken` placed there
-    # leaves the answer at page one under a 200, and `?maxResults=1` with a body that omits it is
-    # ignored.
+    # One parameter, two places: the body on POST, the query string on GET.
     if request.method == "POST":
         body = await _jira_search_body(request)
         jql = str(body.get("jql", ""))

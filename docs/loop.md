@@ -61,7 +61,7 @@ default registries kept, plus: `slack.com`, `*.atlassian.net`, `api.atlassian.co
 
 Environment variables are three: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and
 `AWS_DEFAULT_REGION`, for an IAM principal allowed to read the loop's parameters (below) and the
-measurement bucket, plus `BACKLOT_LOOP_SSM_REGION` when the parameters live in a different region
+measurement bucket, plus `AWS_SSM_REGION` when the parameters live in a different region
 from the bucket (they do: `us-east-1` against a bucket in `ap-northeast-2`). Every other vendor
 credential arrives through Parameter Store at session start.
 Anyone whose sessions use this environment can read its variables, which is why it is personal to

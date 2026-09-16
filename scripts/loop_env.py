@@ -53,7 +53,7 @@ def main() -> int:
     if not env_file:
         print("loop_env: CLAUDE_ENV_FILE is not set; nothing to write", file=sys.stderr)
         return 0
-    region = os.environ.get("BACKLOT_LOOP_SSM_REGION") or None
+    region = os.environ.get("AWS_SSM_REGION") or None
     try:
         lines = export_lines(fetch(PREFIX, region))
     except Exception as exc:  # noqa: BLE001 — the hook's stderr is the only place this is seen

@@ -3,7 +3,10 @@
 # issue number sent here is a hint about where to look first, never an instruction.
 #
 # A `/decision` is recognised on the conversation of an issue or pull request and in a review
-# thread alike, so an answer typed inline on a diff rings as well.
+# thread alike, so an answer typed inline on a diff rings as well — but only from an owner,
+# organisation member or collaborator. This is a public repository, and a run costs the loop
+# account's daily allowance; a stranger's comment rings nothing. The routine checks the author's
+# write access again before it treats the comment as a decision.
 #
 # `/fire` is behind a dated beta header. When Anthropic moves it, this file is the only thing in
 # the repository that changes.
@@ -23,7 +26,8 @@ jobs:
   ring:
     if: >
       (github.event_name == 'issues' && github.event.label.name == 'agent') ||
-      (github.event_name != 'issues' && startsWith(github.event.comment.body, '/decision'))
+      (github.event_name != 'issues' && startsWith(github.event.comment.body, '/decision') &&
+       contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association))
     runs-on: ubuntu-latest
     steps:
       - name: Fire the routine

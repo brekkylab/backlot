@@ -25,7 +25,9 @@ and `ready-for-maintainer`. It never sets `agent`.
 
 Adding `agent` or posting a `/decision` comment, on the conversation or in a review thread, also rings the routine through
 [`loop-doorbell.yml`](../.github/workflows/loop-doorbell.yml), so the run starts within minutes
-rather than at the next scheduled slot.
+rather than at the next scheduled slot. Only an owner, organisation member or collaborator rings
+it, and the run itself honours a `/decision` only from an account with write access; anyone else's
+comment is read as information, never as an instruction.
 
 ## Reading a run
 

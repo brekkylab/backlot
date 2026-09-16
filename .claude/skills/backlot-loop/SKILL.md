@@ -81,7 +81,11 @@ A failing check is reproduced locally with `uv run pytest -q` before anything is
 
 An issue **needs a decision** when resolving it would: add an operation, type, field or parameter
 Backlot does not serve; remove one it does; change which principal can see a document; or rest on
-vendor documentation alone because no credential in the environment can measure it. Everything else
+vendor documentation alone because no credential in the environment can measure it. In a cloud
+session the platform's proxy puts its own GitHub credential on every request to `api.github.com`,
+whatever `Authorization` you send, so a GitHub behaviour that turns on a bad or missing credential
+cannot be measured from there: it needs a decision too, and the proposal says that is why, so a
+maintainer can measure it from a machine of their own instead. Everything else
 — a shape, status code, header, charset, pagination, ordering or error-envelope difference on an
 operation Backlot already serves — is **mechanical**.
 

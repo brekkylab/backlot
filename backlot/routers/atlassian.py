@@ -407,9 +407,8 @@ async def jira_search(request: Request):
     offset = decode_cursor_or_none(None if token is None else str(token))
     if offset is None:
         raise errors_atlassian.bad_page_token()
-    # No `jql` at all is refused rather than answered as the unfiltered corpus: measured
-    # 2026-09-16, on both methods, including a POST whose query string carries a `jql` that the
-    # body (the only place POST reads it) omits.
+    # No `jql` at all is refused rather than answered as the unfiltered corpus (see
+    # test_jira_search_refuses_no_jql_at_all).
     if not jql.strip():
         raise errors_atlassian.unbounded_jql()
     container = _project_from_jql(conn, jql, request)

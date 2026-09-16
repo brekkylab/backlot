@@ -1688,7 +1688,7 @@ def test_github_401_says_which_credential_failed(gh_client, gh_admin_h, gh_org):
     }
     # a bad bearer wins over an unsupported version too: real resolves the credential before it
     # looks at the header, so this is still the credential's 401, not the version's 400 (measured
-    # against api.github.com 2026-09-15 — #231)
+    # against api.github.com 2026-09-15)
     bad_and_unversioned = c.get(
         url,
         headers={
@@ -3548,8 +3548,8 @@ def test_github_unsupported_api_version_is_refused_ahead_of_a_missing_credential
     credential and before routing — verified against api.github.com, which 400s a bad version on a
     nonexistent repo with no credentials at all. Running this check after either one would report a
     client's version typo as 401 or 404 and send them looking in the wrong place. A credential that
-    arrived and failed to resolve is a narrower case still ahead of this one (measured 2026-09-15 —
-    #231, `test_github_401_says_which_credential_failed`).
+    arrived and failed to resolve is a narrower case still ahead of this one (measured 2026-09-15,
+    see `test_github_401_says_which_credential_failed`).
 
     Real sends no `Selected` echo on this 400 (it selected nothing), and does send one on a 404."""
     c, _ = gh_client

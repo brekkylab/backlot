@@ -107,7 +107,7 @@ async def _validate_bad_credential(request: Request) -> None:
 
     Real resolves a presented credential before it looks at ``X-GitHub-Api-Version``: a bad bearer
     with an unsupported version pinned is "Bad credentials", not the version's 400 (measured against
-    api.github.com 2026-09-15 — see #231). A request carrying no credential at all still meets the
+    api.github.com 2026-09-15). A request carrying no credential at all still meets the
     version check first, since real's own missing-credential 401 there follows the version's 400
     (measured the same day), so this only fires for a token that arrived and failed to resolve;
     :func:`_validate_path_owner` answers the missing-credential case in its own place, after the
@@ -210,7 +210,7 @@ async def _validate_api_version(request: Request) -> None:
     a repo that does not exist while sending no credentials at all. It matters to the caller — a
     version typo reported as 401 sends them to their token, and as 404 to their path, when the header
     is what is wrong. A credential that arrived and failed to resolve is checked earlier still (see
-    :func:`_validate_bad_credential`; measured 2026-09-15 — #231), so this only ever answers the
+    :func:`_validate_bad_credential`; measured 2026-09-15), so this only ever answers the
     version's 400 to a caller with no credential or a good one. Declared after
     ``_validate_bad_credential`` and before ``_validate_path_owner`` in the router's dependency list,
     which is what puts it in that order.

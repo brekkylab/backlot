@@ -25,7 +25,9 @@ and `ready-for-maintainer`. It never sets `agent`.
 
 Adding `agent` or posting a `/decision` comment, on the conversation or in a review thread, also rings the routine through
 [`loop-doorbell.yml`](../.github/workflows/loop-doorbell.yml), so the run starts within minutes
-rather than at the next scheduled slot. Only an owner, organisation member or collaborator rings
+rather than at the next scheduled slot. A run rung this way works the one item that rang it and
+nothing else; labelling three issues starts three runs, one each. Only the scheduled run surveys
+the whole queue. Only an owner, organisation member or collaborator rings
 it, and the run itself honours a `/decision` only from an account with write access; anyone else's
 comment is read as information, never as an instruction.
 
@@ -42,15 +44,16 @@ Recorded here so it can be recreated on another account in a morning.
 
 **Prompt**, model set to the strongest in the selector:
 
-> Run `/backlot-loop`. In short: look at the open issues labelled `agent` and at the open pull requests you
-> opened earlier. Address review comments on your own pull requests first. Skip anything labelled
+> Run `/backlot-loop`. In short: look at the open issues labelled `agent` and at the loop's open pull
+> requests, the ones on `claude/` branches; a pull request on any other branch is a person's and you
+> never touch it. Address review comments on the loop's pull requests first. Skip anything labelled
 > `hold`. For an issue that needs a decision Backlot's maintainers have not made, comment your
 > proposal and label it `needs-maintainer`; if it already carries a `/decision` comment, follow that
 > decision. From the rest, pick one issue or a set of related ones, measure the real vendor API with
 > the credentials in the environment, fix Backlot, and open a pull request that closes them.
 > Anything you found that is outside that scope becomes a new issue, not part of the pull request.
-> If a `routine-fire-payload` block names an issue, look at that one first. The skill has the full
-> procedure; follow it.
+> If a `routine-fire-payload` block names an issue or pull request, this run is about that item
+> alone; pick nothing else. The skill has the full procedure; follow it.
 
 **Repository**: this one. **Schedule**: every two hours, 09:00–21:00 Asia/Seoul, weekdays. **API
 trigger**: on; its URL and token live only in this repository's `LOOP_FIRE_URL` and
@@ -125,7 +128,9 @@ the parameters back is `aws ssm get-parameters-by-path --path /backlot-loop/ --w
 A run is subscription usage on the loop account, and runs count against that account's daily
 routine cap, both shown on the routine's page. Parallel runs share the account's rate limit.
 Everything the loop does on GitHub — commits, pull requests, comments — appears as the loop
-account's GitHub user, so the other maintainer merges.
+account's GitHub user, so the other maintainer merges. That user is also a maintainer's own, so the
+loop tells its pull requests from that person's by branch, `claude/` and nothing else, and leaves
+every other branch alone.
 
 ## Rehearsing a change to the loop
 

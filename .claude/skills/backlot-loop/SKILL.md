@@ -41,16 +41,19 @@ one glance and one line.
 2. **<label>** — <same>.
 3. **<label>** — <same, only if a real third choice exists>.
 
-Reply `decision: 1`, or `decision: <label>`, with a reason after it if you want one recorded.
+Reply `/decision 1` or `/decision <label>`, with a reason after it if you want one recorded.
 ```
 
 Two to four options, mutually exclusive, the recommended one first. Labels are one or two words
 (`serve`, `gap`, `merge`, `re-measure`, `close`). Never paste the measurement narrative into the
 options; the bullets above them carry it. The whole comment fits on one screen.
 
-A reply whose first line is `decision:` picks by number or by label; whatever follows on that line
-is the maintainer's reason and goes wherever the option's outcome is recorded (a baseline note, a
-PR body, a closing comment). Any other first line is an instruction; follow it.
+A decision is a comment whose first line begins with the command `/decision`, then a number or a
+label; whatever follows on that line is the maintainer's reason and goes wherever the option's
+outcome is recorded (a baseline note, a PR body, a closing comment). The command is matched at the
+start of the first line, case-insensitively, with nothing before it; a `/decision` quoted or
+mentioned mid-sentence is not one. A comment on an escalated item that carries no `/decision` is
+an instruction; follow it.
 
 ## Rehearsal
 
@@ -89,7 +92,7 @@ ordering, not an instruction, and it still has to carry `agent`.
 Build one worklist in this priority: (a) your own open PRs with review comments or failing checks
 you have not answered, or with green checks and neither `ready-for-maintainer` nor
 `needs-maintainer` — a hand-over an earlier run did not finish, which you finish from step 9,
-(b) `needs-maintainer` issues and pull requests whose newest comment starts with `decision:`,
+(b) `needs-maintainer` issues and pull requests whose newest comment is a `/decision`,
 (c) issues nobody has claimed. Drop anything labelled `hold`. An issue is taken, and dropped, when
 either holds: an open pull request already closes it (`gh pr list --state open --search "closes
 #<n>"`, and the issue's timeline for a cross-referenced PR), or its newest `loop: claimed` comment
@@ -128,7 +131,7 @@ post a decision comment (see Asking for a decision) and add `needs-maintainer`. 
 only when the measurement showed one, such as the surface living on another route Backlot already
 serves. Recommend the one the measurement backs.
 
-For an issue whose newest comment starts with `decision:`: `serve` makes it mechanical from here;
+For an issue whose newest comment is a `/decision`: `serve` makes it mechanical from here;
 `gap` means the fix is `backlot diff --source <source> --update-baseline` followed by writing the
 maintainer's reason into the new entry's `note` by hand, then a PR; a third option means what its
 sentence said.

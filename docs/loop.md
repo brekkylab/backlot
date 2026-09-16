@@ -15,7 +15,7 @@ request against those files.
 | You want | You do |
 |---|---|
 | the loop to work an issue | add the `agent` label. Nothing else admits an issue, including the nightly fidelity report and the issues the loop files itself |
-| to answer an escalation | the loop's comment lists numbered options with the recommended one first; reply with a first line `decision: 1` or `decision: <label>` (`serve`, `gap`, `merge`, …), and anything after it on that line is recorded as your reason |
+| to answer an escalation | the loop's comment lists numbered options with the recommended one first; reply with a comment whose first line is `/decision 1` or `/decision <label>` (`serve`, `gap`, `merge`, …), and anything after it on that line is recorded as your reason |
 | to stop one item | add `hold` to the issue or PR; every run skips it |
 | to stop everything | pause the schedule on the routine's page |
 | to merge | a PR labelled `ready-for-maintainer` has both reviewers' pass and green CI; review it as you would any other and merge |
@@ -23,7 +23,7 @@ request against those files.
 Labels the loop sets: `needs-maintainer` (a decision is waiting; the proposal is the last comment)
 and `ready-for-maintainer`. It never sets `agent`.
 
-Adding `agent` or posting a `decision:` comment also rings the routine through
+Adding `agent` or posting a `/decision` comment, on the conversation or in a review thread, also rings the routine through
 [`loop-doorbell.yml`](../.github/workflows/loop-doorbell.yml), so the run starts within minutes
 rather than at the next scheduled slot.
 
@@ -43,7 +43,7 @@ Recorded here so it can be recreated on another account in a morning.
 > Run `/backlot-loop`. In short: look at the open issues labelled `agent` and at the open pull requests you
 > opened earlier. Address review comments on your own pull requests first. Skip anything labelled
 > `hold`. For an issue that needs a decision Backlot's maintainers have not made, comment your
-> proposal and label it `needs-maintainer`; if it already carries a `decision:` comment, follow that
+> proposal and label it `needs-maintainer`; if it already carries a `/decision` comment, follow that
 > decision. From the rest, pick one issue or a set of related ones, measure the real vendor API with
 > the credentials in the environment, fix Backlot, and open a pull request that closes them.
 > Anything you found that is outside that scope becomes a new issue, not part of the pull request.

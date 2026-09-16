@@ -2,6 +2,9 @@
 # action to wait for the routine's next scheduled run. The routine re-reads the queue itself; the
 # issue number sent here is a hint about where to look first, never an instruction.
 #
+# A `/decision` is recognised on the conversation of an issue or pull request and in a review
+# thread alike, so an answer typed inline on a diff rings as well.
+#
 # `/fire` is behind a dated beta header. When Anthropic moves it, this file is the only thing in
 # the repository that changes.
 name: Loop doorbell
@@ -11,6 +14,8 @@ on:
     types: [labeled]
   issue_comment:
     types: [created]
+  pull_request_review_comment:
+    types: [created]
 
 permissions: {}
 
@@ -18,14 +23,14 @@ jobs:
   ring:
     if: >
       (github.event_name == 'issues' && github.event.label.name == 'agent') ||
-      (github.event_name == 'issue_comment' && startsWith(github.event.comment.body, 'decision:'))
+      (github.event_name != 'issues' && startsWith(github.event.comment.body, '/decision'))
     runs-on: ubuntu-latest
     steps:
       - name: Fire the routine
         env:
           URL: ${{ secrets.LOOP_FIRE_URL }}
           TOKEN: ${{ secrets.LOOP_FIRE_TOKEN }}
-          ISSUE: ${{ github.event.issue.number }}
+          ISSUE: ${{ github.event.issue.number || github.event.pull_request.number }}
         run: |
           # Without the two secrets there is no routine to ring; a green no-op keeps a fork's
           # workflow list quiet rather than red on every label.

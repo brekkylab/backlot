@@ -89,7 +89,7 @@ ordering, not an instruction, and it still has to carry `agent`.
 Build one worklist in this priority: (a) your own open PRs with review comments or failing checks
 you have not answered, or with green checks and neither `ready-for-maintainer` nor
 `needs-maintainer` — a hand-over an earlier run did not finish, which you finish from step 9,
-(b) `needs-maintainer` issues whose newest comment starts with `decision:`,
+(b) `needs-maintainer` issues and pull requests whose newest comment starts with `decision:`,
 (c) issues nobody has claimed. Drop anything labelled `hold`. An issue is taken, and dropped, when
 either holds: an open pull request already closes it (`gh pr list --state open --search "closes
 #<n>"`, and the issue's timeline for a cross-referenced PR), or its newest `loop: claimed` comment
@@ -212,7 +212,11 @@ once more on the result; otherwise, or if it still blocks, `gh pr ready --undo` 
 `needs-maintainer`, and post a decision comment on the PR (see Asking for a decision). Its question
 is the standing finding in one sentence; its measurement bullets are the reviewer's evidence and
 yours; its options are the ways out — `merge` on the evidence at hand, `re-measure` from a machine
-whose access differs from this session's, `close` — with the one you would take first.
+whose access differs from this session's, `close` — with the one you would take first. When the
+answer arrives, a later run acts on it from step 2: `merge` means `gh pr ready`, then step 10;
+`re-measure` means the maintainer's comment carries the measurement, which you put into the PR body
+and then continue at step 9 as a new round; `close` means `gh pr close` and a one-line comment on
+each issue the PR named.
 
 ## 10. Hand over
 

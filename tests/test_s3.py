@@ -1357,15 +1357,57 @@ def test_a_bare_bucket_get_is_list_objects_and_only_list_type_2_is_its_v2_form(
     ]
 
 
+def test_every_contents_is_written_before_every_common_prefixes(
+    big_bucket_client, big_bucket_settings
+):
+    """Real groups the two, where Backlot wrote them interleaved in key order.
+
+    Measured 2026-09-14 and again 2026-09-16 over these same six keys: `?delimiter=/` comes back
+    with `100%.csv`, `a b.txt`, `a+b.txt` and `zz.txt` as `Contents` and then `run books/` and
+    `한글/` as `CommonPrefixes`, so `run books/` follows `zz.txt` although it sorts before it. Both
+    listings answer that way, and `encoding-type=url` does not move anything.
+
+    The set of elements is the same either way, which is why the probe's child-set comparison
+    cannot see this and `backlot diff` reports nothing: only the document order says it.
+    """
+    token = big_bucket_settings.admin_token
+    grouped = ["100%.csv", "a b.txt", "a+b.txt", "zz.txt", "run books/", "한글/"]
+    for query in ("delimiter=/", "list-type=2&delimiter=/"):
+        root = _listing(big_bucket_client, query, token)
+        assert _entries(root) == grouped, query
+        kinds = [
+            c.tag.split("}")[1] for c in root if c.tag.endswith(("Contents", "CommonPrefixes"))
+        ]
+        assert kinds == ["Contents"] * 4 + ["CommonPrefixes"] * 2, query
+    encoded = _listing(
+        big_bucket_client, "list-type=2&encoding-type=url&delimiter=" + quote("/"), token
+    )
+    assert _entries(encoded) == [
+        "100%25.csv",
+        "a+b.txt",
+        "a%2Bb.txt",
+        "zz.txt",
+        "run+books/",
+        "%ED%95%9C%EA%B8%80/",
+    ]
+    # A page with no delimiter has no CommonPrefixes to move, and stays in key order.
+    assert _entries(_listing(big_bucket_client, "max-keys=3", token)) == [
+        "100%.csv",
+        "a b.txt",
+        "a+b.txt",
+    ]
+
+
 def test_list_objects_names_a_next_marker_only_under_a_delimiter_and_pages_to_the_end(
     big_bucket_client, big_bucket_settings
 ):
     """#188: V1's cursor is `NextMarker`, and real sends one only when a `delimiter` is set.
 
     Without one a truncated page carries no cursor at all and botocore falls back to the last key
-    it saw, which is the fallback this has to leave intact. With one, `NextMarker` names the last
-    entry of the page — a key or a rolled-up prefix — and sending it back as `marker` resumes past
-    that whole entry: real answers `?delimiter=/&marker=docs/` and `?delimiter=/&marker=docs/a.txt`
+    it saw, which is the fallback this has to leave intact. With one, `NextMarker` names the page's
+    last entry BY KEY — a key or a rolled-up prefix, and not always the element the body ends on,
+    since every CommonPrefixes is written after every Contents — and sending it back as `marker`
+    resumes past that whole entry: real answers `?delimiter=/&marker=docs/` and `?delimiter=/&marker=docs/a.txt`
     alike with what follows `docs/`, never `docs/` again, so the walk terminates (measured
     2026-09-14).
     """
@@ -1379,8 +1421,15 @@ def test_list_objects_names_a_next_marker_only_under_a_delimiter_and_pages_to_th
     # string. This one ends on a rolled-up prefix, which is what real names — `run books/`, not the
     # `run books/x.txt` underneath it.
     on_a_group = _listing(big_bucket_client, "delimiter=/&max-keys=4", token)
-    assert _entries(on_a_group)[-1] == "run books/"
+    assert _entries(on_a_group) == ["100%.csv", "a b.txt", "a+b.txt", "run books/"]
     assert on_a_group.findtext(f"{{{S3NS}}}NextMarker") == "run books/"
+    # One key further in, the entry real names is no longer the element the body ends on: the page
+    # carries four Contents and then `run books/`, and `NextMarker` is `zz.txt`, the last entry by
+    # key (measured 2026-09-16). Reading the last element of the body instead would send the walk
+    # back over `zz.txt`.
+    past_the_group = _listing(big_bucket_client, "delimiter=/&max-keys=5", token)
+    assert _entries(past_the_group) == ["100%.csv", "a b.txt", "a+b.txt", "zz.txt", "run books/"]
+    assert past_the_group.findtext(f"{{{S3NS}}}NextMarker") == "zz.txt"
 
     seen, marker, pages = [], None, 0
     while pages < 10:

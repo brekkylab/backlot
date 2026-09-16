@@ -535,6 +535,13 @@ def _list_objects(
     Key, and StartAfter", the ListObjectsV2 page) and says nothing about the V1 pair or the tokens.
     A token keeps its ``/``, ``+`` and ``=``.
 
+    The body carries every ``Contents`` and then every ``CommonPrefixes``, real's order on both
+    listings and not the key order the entries are collected in. The two part company on a page
+    holding both: real answers ``?delimiter=/&max-keys=5`` over ``100%.csv``, ``a b.txt``,
+    ``a+b.txt``, ``run books/x.txt`` and ``zz.txt`` with four ``Contents`` and then
+    ``run books/``, and names ``zz.txt`` as the ``NextMarker`` — the last entry by key, not the
+    element the body ends on (measured 2026-09-16).
+
     Every parameter is read as real reads it, the first value when one is sent twice (see
     ``_first``): ``?prefix=a&prefix=zz.txt`` lists under ``a``, and ``?list-type=1&list-type=2``
     answers V1 where the two the other way round answer V2 (measured).
@@ -610,8 +617,9 @@ def _list_objects(
     by_key = {r["key"]: r for r in rows}
 
     # Split into (CommonPrefixes, Contents) using the delimiter, S3-style. `rows` is already
-    # key-ascending (straight off idx_s3_key), so a first-seen dedup below reproduces the final
-    # sorted order for free — no second sort.
+    # key-ascending (straight off idx_s3_key), so a first-seen dedup below puts `entries` in key
+    # order for free — no second sort. Key order is what KeyCount counts and what both cursors are
+    # cut from; the body is written in real's document order further down, which is not this one.
     #
     # Bounded rollup: CommonPrefixes are computed only over THIS page (<= served+1 raw rows),
     # never the whole bucket/prefix. Real S3 can afford to enumerate every CommonPrefixes for a
@@ -687,20 +695,25 @@ def _list_objects(
     if encoding_type is not None:
         body.append(f"<EncodingType>{escape(encoding_type)}</EncodingType>")
     body.append(f"<IsTruncated>{'true' if is_truncated else 'false'}</IsTruncated>")
+    # Every `Contents` first and every `CommonPrefixes` after, which is real's document order and
+    # not the key order `entries` is in: a page of `100%.csv`, `a b.txt`, `a+b.txt`, `run books/`
+    # and `zz.txt` comes back with `run books/` last, after `zz.txt`, on both listings (measured
+    # 2026-09-14 and 2026-09-16). `entries` keeps key order because that is what the cursors are
+    # cut from — `NextMarker` on that page is `zz.txt`, the last entry by key, not the element the
+    # body ends on.
     owner = "" if v2 else f"<Owner><ID>{_owner_id(request)}</ID></Owner>"
-    for kind, val in entries:
-        if kind == "cp":
-            body.append(f"<CommonPrefixes><Prefix>{escape(enc(val))}</Prefix></CommonPrefixes>")
-        else:
-            r = by_key[val]
-            ts = r["updated_ts"] or r["created_ts"]
-            body.append(
-                f"<Contents><Key>{escape(enc(val))}</Key>"
-                f"<LastModified>{synth.s3_iso(ts)}</LastModified>"
-                f"<ETag>{escape(synth.s3_etag(r['key'], r['content']))}</ETag>"
-                f"<Size>{len(r['content'].encode())}</Size>{owner}"
-                f"<StorageClass>{escape(r['subtype'] or 'STANDARD')}</StorageClass></Contents>"
-            )
+    for val in [v for kind, v in entries if kind == "obj"]:
+        r = by_key[val]
+        ts = r["updated_ts"] or r["created_ts"]
+        body.append(
+            f"<Contents><Key>{escape(enc(val))}</Key>"
+            f"<LastModified>{synth.s3_iso(ts)}</LastModified>"
+            f"<ETag>{escape(synth.s3_etag(r['key'], r['content']))}</ETag>"
+            f"<Size>{len(r['content'].encode())}</Size>{owner}"
+            f"<StorageClass>{escape(r['subtype'] or 'STANDARD')}</StorageClass></Contents>"
+        )
+    for val in [v for kind, v in entries if kind == "cp"]:
+        body.append(f"<CommonPrefixes><Prefix>{escape(enc(val))}</Prefix></CommonPrefixes>")
     body.append("</ListBucketResult>")
     return _xml("".join(body))
 

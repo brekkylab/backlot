@@ -1157,12 +1157,30 @@ def list_documents(
     return conn.execute(sql, params).fetchall()
 
 
-def key_successor(s: str) -> str:
-    """The smallest string greater than every string with prefix ``s`` (increments its last
-    character), so an S3 prefix becomes the half-open range ``key >= s AND key < key_successor(s)``.
-    The ListObjectsV2 router also uses it to skip a whole CommonPrefixes group in one bound.
-    Undefined for an empty string — callers guard that case."""
-    return s[:-1] + chr(ord(s[-1]) + 1)
+# The highest code point a Python string can hold, and so the one `key_successor` has nothing to
+# increment past. A key or a query parameter can contain it: `chr(0x10FFFF)` survives UTF-8 and
+# SQLite TEXT intact.
+_LAST_CODE_POINT = "\U0010ffff"
+
+
+def key_successor(s: str) -> str | None:
+    """The smallest string greater than every string with prefix ``s``, so an S3 prefix becomes the
+    half-open range ``key >= s AND key < key_successor(s)``. The listing router also uses it to skip
+    a whole CommonPrefixes group in one bound.
+
+    Normally this increments the last character. A trailing run of the last code point has no
+    character above it to use, so the run comes off and the character before it is incremented
+    instead — the result is still greater than every string starting with ``s``, since they all
+    share the smaller prefix. A string that is nothing but that code point has no successor at all,
+    and ``None`` says so: every string with that prefix sorts at the very end, which a caller reads
+    as "no upper bound" or "nothing follows" depending on which side it is bounding. Reachable from
+    the wire — ``?prefix=`` and ``?delimiter=`` take any character a client sends — where it used
+    to raise ValueError and surface as a 500. Undefined for an empty string; callers guard that
+    case."""
+    core = s.rstrip(_LAST_CODE_POINT)
+    if not core:
+        return None
+    return core[:-1] + chr(ord(core[-1]) + 1)
 
 
 def list_s3_objects(
@@ -1176,13 +1194,20 @@ def list_s3_objects(
     default case-insensitive LIKE). The byte range hits ``idx_s3_key(bucket, key)`` for both the
     WHERE and the ORDER BY, and is byte-exact like real S3.
 
+    A prefix whose successor does not exist (see ``key_successor``) takes the lower bound alone,
+    which is the same range: every key at or above it starts with it.
+
     ``start_after`` (exclusive) and ``start_at`` (inclusive — the router uses it to resume past a
     whole rolled-up CommonPrefixes group) are independent bounds."""
     sql = "SELECT * FROM s3_objects WHERE bucket = ?"
     params: list = [bucket]
     if prefix:
-        sql += " AND key >= ? AND key < ?"
-        params += [prefix, key_successor(prefix)]
+        sql += " AND key >= ?"
+        params.append(prefix)
+        ceiling = key_successor(prefix)
+        if ceiling is not None:
+            sql += " AND key < ?"
+            params.append(ceiling)
     if start_after:
         sql += " AND key > ?"
         params.append(start_after)

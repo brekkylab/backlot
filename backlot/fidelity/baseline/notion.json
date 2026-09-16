@@ -3,7 +3,7 @@
   "endpoints": [
     "https://developers.notion.com/openapi.json"
   ],
-  "measured": "2026-09-01",
+  "measured": "2026-09-16",
   "acknowledged": [
     {
       "kind": "extra_operation",
@@ -53,6 +53,27 @@
       "severity": "gap",
       "path": "GET /v1/agents/{}/insights",
       "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /v1/ai/plugins",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Lists the workspace's installed AI plugins. Read live on 2026-09-16: 200, one entry for the connected workspace's plugin, no corpus record of an installed plugin to draw the list from."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /v1/ai/plugins/{}",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Returns plugin metadata plus a freshly signed, hour-limited S3 URL to the plugin's package. Read live on 2026-09-16: 200 with a signed download link; a fixed corpus has nothing to sign against."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /v1/ai/skills/{}",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Reads a workspace AI-skills directory entry by id. Read live on 2026-09-16: 404 directory_not_found for an id not shared with the connected workspace, 400 validation_error for a non-UUID id — a per-workspace install state the corpus does not represent."
     },
     {
       "kind": "missing_operation",

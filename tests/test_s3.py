@@ -655,10 +655,7 @@ def test_what_does_not_exist_is_reported_before_the_subresource_except_for_list_
 def test_head_with_a_subresource_is_405_and_names_what_backlot_serves_in_allow(live_server):
     base_url, settings = live_server
     token = settings.admin_token
-    # `location` and `uploads` are the two sub-resources Backlot answers on a GET, so a HEAD on
-    # either names it in `Allow`; every other sub-resource gets none, because Backlot never answers
-    # a GET on it either, and naming one would be as false as naming real's PUT or DELETE (see
-    # `_head_refusal`).
+    # See `_head_refusal` for which selectors get `Allow: GET`.
     for path, allow in (
         ("/s3/eng-artifacts?location", "GET"),
         ("/s3/eng-artifacts?uploads", "GET"),  # served on a GET, and still no HEAD form

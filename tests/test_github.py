@@ -5003,3 +5003,9 @@ def test_github_a_trailing_slash_is_404_not_a_redirect(gh_client, gh_admin_h, gh
     assert int(second["remaining"]) == int(first["remaining"]) - 1
     third = _ratelimit(c.get(path, headers={"Authorization": "Bearer usr-not-a-real-token"}))
     assert int(third["used"]) == int(second["used"]) + 1
+
+    # `/github/rate_limit/` counts here too: unlike the real routed endpoint, this is a "no route
+    # matched" 404 and not the route's own report-without-counting answer
+    rl_first = _ratelimit(c.get("/github/rate_limit/"))
+    rl_second = _ratelimit(c.get("/github/rate_limit/"))
+    assert int(rl_second["used"]) == int(rl_first["used"]) + 1

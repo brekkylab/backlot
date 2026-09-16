@@ -374,7 +374,8 @@ async def refuse_a_trailing_slash_on_github(request: Request, call_next):
         body = errors.http_body(path, exc, request.query_params)
         response = JSONResponse(status_code=exc.status_code, content=body or {"detail": exc.detail})
         if not github.rate_limit_caller(request)[1]:
-            for name, value in github.rate_limit_headers(request, exc.status_code).items():
+            headers = github.rate_limit_headers(request, exc.status_code, count=True)
+            for name, value in headers.items():
                 response.headers[name] = value
         return response
     return await call_next(request)

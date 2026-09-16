@@ -377,17 +377,27 @@ def rate_limit_caller(request: Request) -> tuple[str, bool]:
     return f"host:{host}", False
 
 
-def rate_limit_headers(request: Request, status_code: int) -> dict[str, str]:
-    """The five `x-ratelimit-*` headers for a `/github` answer, counting it, except on
-    :data:`RATE_LIMIT_PATH`, which reports its window without counting: two `GET /rate_limit` in
-    a row both answered `remaining: 5000`, `used: 0`, each carrying the five with `resource: core`,
-    and the description's own note says the route does not count."""
+def rate_limit_headers(
+    request: Request, status_code: int, *, count: bool | None = None
+) -> dict[str, str]:
+    """The five `x-ratelimit-*` headers for a `/github` answer.
+
+    Counts the request against the window, except on :data:`RATE_LIMIT_PATH` exactly, which
+    reports its window without counting: two `GET /rate_limit` in a row both answered
+    `remaining: 5000`, `used: 0`, each carrying the five with `resource: core`, and the
+    description's own note says the route does not count. `count` overrides that path-based
+    default for a caller that is not the routed endpoint itself — a trailing slash on the same
+    path answers a 404 no route matched, which counts like any other, so
+    `refuse_a_trailing_slash_on_github` passes `count=True` rather than let this rstrip its way
+    into the no-count branch meant for the real route alone."""
     key, authenticated = rate_limit_caller(request)
     resource = rate_limit_resource(request.url.path, status_code)
     limits = RATE_LIMITS[resource]
     limit = limits.authenticated if authenticated else limits.anonymous
     windows = _rate_limit_windows(request.app)
-    read = windows.status if request.url.path.rstrip("/") == RATE_LIMIT_PATH else windows.count
+    if count is None:
+        count = request.url.path.rstrip("/") != RATE_LIMIT_PATH
+    read = windows.count if count else windows.status
     window = read(key, resource, limit)
     return {
         "x-ratelimit-limit": str(window["limit"]),

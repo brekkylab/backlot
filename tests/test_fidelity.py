@@ -508,9 +508,10 @@ def test_every_served_path_is_compared_or_says_why_not():
     both tests passed — a Sheets response shape could be rewritten and `backlot diff` would still
     answer `0 new`. This counts served PATHS, which is what a comparison actually covers.
 
-    Every path lands in exactly one bucket: under some document's mount, probe-compared, or
-    declared in `UNCOMPARED` with a reason. A path in none of them is a router someone added
-    without asking what checks it.
+    Every path lands in exactly one bucket: under some document's mount, probe-compared, compared
+    as Google's batch endpoint is — whose mount is the comparison's own rather than any one
+    document's — or declared in `UNCOMPARED` with a reason. A path in none of the four is a router
+    someone added without asking what checks it.
     """
     from backlot.main import app
 

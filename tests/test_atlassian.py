@@ -397,10 +397,11 @@ def test_jira_search_filtered_by_project(client, admin_h):
 
     # a jql with no project clause at all -> unfiltered (same three issues here, since payments
     # is the only Jira project in the SAMPLE corpus -- the earlier assertions are what prove
-    # filtering, not this equality). An empty jql is refused instead of read as this same
-    # unfiltered case -- see test_jira_search_refuses_no_jql_at_all.
+    # filtering, not this equality). It still has to RESTRICT, or real refuses it: an empty jql,
+    # and an `ORDER BY` alone, are both the unbounded refusal -- see
+    # test_jira_search_refuses_no_jql_at_all.
     unfiltered = client.get(
-        "/atlassian/rest/api/3/search/jql", headers=admin_h, params={"jql": "order by created"}
+        "/atlassian/rest/api/3/search/jql", headers=admin_h, params={"jql": "project is not EMPTY"}
     ).json()
     assert {i["fields"]["summary"] for i in unfiltered["issues"]} == titles
 
@@ -610,7 +611,7 @@ def test_atlassian_serverinfo_has_typed_response_schema(client):
 
 def test_atlassian_responses_unchanged_by_enrichment(client, admin_h):
     search = client.get(
-        "/atlassian/rest/api/3/search/jql", headers=admin_h, params={"jql": "order by created"}
+        "/atlassian/rest/api/3/search/jql", headers=admin_h, params={"jql": "project is not EMPTY"}
     ).json()
     assert "issues" in search and "isLast" in search and search["issues"]
     key = search["issues"][0]["key"]
@@ -1483,7 +1484,7 @@ def test_jira_search_reads_a_null_jql_as_one_that_was_not_sent(client, admin_h):
     [
         # JSON's whitespace is the four ASCII ones, so a non-breaking space in front is not skipped
         (
-            " {}",
+            "\xa0{}",
             "There was an error parsing JSON. Check that your request body is valid.",
         ),
         # and bytes that are not UTF-8 are not repaired into U+FFFD and then parsed
@@ -1527,7 +1528,7 @@ def test_jira_search_declares_each_placement_on_the_method_that_reads_it(client)
     }
     assert "requestBody" not in paths["get"]
     assert "parameters" not in paths["post"] or paths["post"]["parameters"] == []
-    assert "requestBody" in paths["post"]
+    assert paths["post"]["requestBody"]["required"] is True
 
 
 @pytest.mark.parametrize(

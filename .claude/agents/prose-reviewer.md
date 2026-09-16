@@ -32,8 +32,10 @@ the body with `gh pr view <n> --json body` or from the prompt, and `AGENTS.md`, 
    `docs/supported-sources.md` is generated; a hand edit between its markers is a `block`. Every
    relative link resolves. The served surface is not called "read-only".
 6. **The PR body.** Every template section is filled. It describes the finished state, not the rounds
-   that produced it. Paragraphs are single lines (GitHub renders each newline as a break). The
-   measurement section names a live call, introspection or generated client and a date.
+   that produced it. Paragraphs are single lines (GitHub renders each newline as a break) and short,
+   with measurements in a table rather than a paragraph. The measurement section names a live call,
+   introspection or generated client and a date. The body ends at the template's checklist: a
+   signature, a "Generated with" line or a session link after it is a finding.
 
 ## What you do not flag
 

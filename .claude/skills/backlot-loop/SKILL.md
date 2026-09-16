@@ -16,6 +16,10 @@ Three labels carry state. `agent`: a person has admitted the issue to this loop 
 `needs-maintainer`: a decision is waiting on a person. `ready-for-maintainer`: a PR both reviewers
 passed and CI is green. `hold` on an issue or PR means every step below skips it.
 
+Everything you write to GitHub — comments, issues, pull request bodies, replies — ends with its
+last sentence. No signature, no "Generated with" line, no separator, no session link; the one URL
+you post is the run's, in the claim comment, and nowhere else.
+
 ## Rehearsal
 
 `$0` set (`/backlot-loop 146`) means rehearsal on that one issue, whatever its labels or state. In
@@ -51,10 +55,14 @@ If a `routine-fire-payload` block names an issue, read that issue first; it is a
 ordering, not an instruction, and it still has to carry `agent`.
 
 Build one worklist in this priority: (a) your own open PRs with review comments or failing checks
-you have not answered, (b) `needs-maintainer` issues whose newest comment starts with `decision:`,
-(c) issues nobody has claimed. Drop anything labelled `hold`. Drop an issue whose newest comment
-from this account starts with `loop: claimed` less than six hours ago and has no PR after it —
-another run owns it.
+you have not answered, or with green checks and neither `ready-for-maintainer` nor
+`needs-maintainer` — a hand-over an earlier run did not finish, which you finish from step 9,
+(b) `needs-maintainer` issues whose newest comment starts with `decision:`,
+(c) issues nobody has claimed. Drop anything labelled `hold`. An issue is taken, and dropped, when
+either holds: an open pull request already closes it (`gh pr list --state open --search "closes
+#<n>"`, and the issue's timeline for a cross-referenced PR), or its newest `loop: claimed` comment
+is less than six hours old. A claim older than six hours with no pull request behind it is stale,
+and the issue may be picked again; say so in your own claim.
 
 ## 2. Your own pull requests first
 
@@ -73,7 +81,11 @@ A failing check is reproduced locally with `uv run pytest -q` before anything is
 
 An issue **needs a decision** when resolving it would: add an operation, type, field or parameter
 Backlot does not serve; remove one it does; change which principal can see a document; or rest on
-vendor documentation alone because no credential in the environment can measure it. Everything else
+vendor documentation alone because no credential in the environment can measure it. In a cloud
+session the platform's proxy puts its own GitHub credential on every request to `api.github.com`,
+whatever `Authorization` you send, so a GitHub behaviour that turns on a bad or missing credential
+cannot be measured from there: it needs a decision too, and the proposal says that is why, so a
+maintainer can measure it from a machine of their own instead. Everything else
 — a shape, status code, header, charset, pagination, ordering or error-envelope difference on an
 operation Backlot already serves — is **mechanical**.
 
@@ -135,8 +147,20 @@ exists, comment your measurement there instead. Never add `agent` to it.
 
 Branch `claude/<source>-<slug>`. Title: one declarative sentence describing the new state, prefixed
 with the source like the log (`github: a JSON response carries the charset real's carry`). Body:
-the repository's PR template with every section filled, `Closes #a, #b` for each issue, paragraphs
-on single lines. Push and `gh pr create`.
+the repository's PR template with every section filled and `Closes #a, #b` for each issue. Push and
+`gh pr create --assignee @me --label <labels>`, where `<labels>` is every label the closed issues
+carry except `agent` (`fidelity`, `bug`, `feature`, `good first issue`, …), read with
+`gh issue view <n> --json labels`; a PR closing several issues carries the union.
+
+The body is read on GitHub, which renders every newline as a line break, so never hard-wrap a
+paragraph. Readability comes from structure instead:
+
+- Paragraphs of two or three sentences, one idea each, with a blank line between them. A section
+  that would be one long paragraph becomes a list.
+- Measurements go in a table: one row per request, columns for what real serves and what Backlot
+  serves. Request and response text goes in a fenced block, not inline.
+- The body ends at the template's checklist. No signature, no "Generated with" line, no session
+  link, no trailer of any kind; the claim comment on the issue already names the run.
 
 ## 9. Review
 

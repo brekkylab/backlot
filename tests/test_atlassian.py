@@ -1467,8 +1467,7 @@ def test_jira_search_declares_each_placement_on_the_method_that_reads_it(client)
 def test_jira_search_post_refuses_a_media_type_it_does_not_read(
     client, admin_h, content_type, named
 ):
-    """Measured: the header decides before the bytes are looked at — a perfectly good JSON body
-    sent with no `Content-Type` is the same 415 as one sent as `text/plain`."""
+    """Measured: each content type below is refused or read as shown."""
     headers = dict(admin_h)
     if content_type is not None:
         headers["Content-Type"] = content_type
@@ -1522,9 +1521,8 @@ def test_jira_search_post_reads_the_media_type_the_way_real_matches_it(
 def test_jira_search_post_refuses_a_body_it_cannot_turn_into_an_object(
     client, admin_h, raw, message
 ):
-    """Three sentences, measured, where Backlot caught all of it with one `except` and fell through
-    to whatever the query string held — which is how a POST with no body was answered as a search.
-    Each body carries `errorMessages` alone: no `errors`, unlike the token refusal below."""
+    """Three sentences, measured. Each body carries `errorMessages` alone: no `errors`, unlike the
+    token refusal below."""
     r = client.post(
         "/atlassian/rest/api/3/search/jql",
         headers={**admin_h, "Content-Type": "application/json"},
@@ -1560,10 +1558,7 @@ def test_jira_search_post_with_no_body_at_all_is_the_media_type_refusal(client, 
 @pytest.mark.parametrize("method", ["get", "post"])
 def test_jira_search_refuses_a_page_token_it_cannot_decode(client, admin_h, method):
     """Measured on both methods, identically. Read as offset zero, a client that truncates or
-    corrupts a cursor was served page one under a 200 for as long as it kept following it.
-
-    The sentence is Backlot's own — real localises this one, like the `orderBy` refusal — so the
-    envelope is asserted and the wording is not transcribed."""
+    corrupts a cursor was served page one under a 200 for as long as it kept following it."""
     if method == "get":
         r = client.get(
             "/atlassian/rest/api/3/search/jql?jql=project+%3D+payments&nextPageToken=BOGUS",

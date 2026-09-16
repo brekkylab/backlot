@@ -1797,13 +1797,12 @@ def test_confluence_expands_permissions_on_both_space_reads(client, admin_h):
         (entry,) = space["permissions"]
         assert entry["operation"] == {"operation": "read", "targetType": "space"}
         assert entry["unlicensedAccess"] is False
-        # a space no ACL narrows is reported as anonymous access rather than as a roster naming
-        # everyone, so exactly one of the two is there
-        assert ("subjects" in entry) is not entry["anonymousAccess"]
-        if "subjects" in entry:
-            users = entry["subjects"]["user"]
-            assert users["size"] == len(users["results"])
-            assert entry["subjects"]["_expandable"] == {"group": ""}
+        # an org-wide grant is every MEMBER, not every visitor, and an anonymous caller is refused
+        # before a space resolves — so the roster names the org and the flag stays False
+        assert entry["anonymousAccess"] is False
+        users = entry["subjects"]["user"]
+        assert users["size"] == len(users["results"]) > 0
+        assert entry["subjects"]["_expandable"] == {"group": ""}
 
     assert single["permissions"] == listed["permissions"]
 

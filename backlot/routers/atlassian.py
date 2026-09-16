@@ -1032,23 +1032,30 @@ def _space_permissions(conn, container: str) -> list[dict]:
     2026-09-16), of which the five `read`/`space` entries are the ones this can derive; inventing
     the other 25 would put a permission model on the wire that the corpus never licensed.
 
-    ``container_member_emails`` of ``None`` is a space no ACL narrows, which real reports as
-    ``anonymousAccess`` rather than as a roster naming everyone.
+    ``anonymousAccess`` is False whatever the grant, because no grant a corpus can write says
+    "the public": ``container_member_emails`` of ``None`` is an ORG-wide grant (`store._expand_grants`
+    returns it for `principal_type == "org"`), which is every member and not every visitor, and
+    ``_confluence_caller`` refuses an anonymous caller before a space is resolved at all. So a space
+    reachable by the whole org is a roster naming the whole org, and the flag stays False — real's
+    was False on the space measured. The route this replaces answered ``anonymousAccess: True`` with
+    an EMPTY roster for that grant, which claimed public access this server then refused.
     """
     emails = store.container_member_emails(conn, "confluence", container)
-    entry = {
-        "id": synth.confluence_id(f"perm:{container}:read"),
-        "operation": {"operation": "read", "targetType": "space"},
-        "anonymousAccess": emails is None,
-        "unlicensedAccess": False,
-    }
-    if emails is not None:
-        users = [_conf_user(e) for e in sorted(emails)]
-        entry["subjects"] = {
-            "user": {"results": users, "size": len(users)},
-            "_expandable": {"group": ""},
+    if emails is None:
+        emails = {u["email"] for u in store.list_users(conn)}
+    users = [_conf_user(e) for e in sorted(emails)]
+    return [
+        {
+            "id": synth.confluence_id(f"perm:{container}:read"),
+            "subjects": {
+                "user": {"results": users, "size": len(users)},
+                "_expandable": {"group": ""},
+            },
+            "operation": {"operation": "read", "targetType": "space"},
+            "anonymousAccess": False,
+            "unlicensedAccess": False,
         }
-    return [entry]
+    ]
 
 
 def _space(request: Request, conn, container: str, expand: str, *, listed: bool) -> dict:
@@ -1104,7 +1111,21 @@ async def confluence_spaces(request: Request):
     results = [
         _space(request, conn, r["name"], expand, listed=True) for r in _reachable_spaces(conn, ids)
     ]
-    return {"results": results, "start": 0, "limit": len(results), "size": len(results)}
+    # The envelope's own `_links`, measured beside the per-space one on 2026-09-16: `base`,
+    # `context` and `self`. Real carries `next` here too once the page it describes is short of the
+    # collection, which is #207 — this route reads neither `limit` nor `start` yet.
+    links = {
+        "base": f"{_site(request)}/wiki",
+        "context": "/wiki",
+        "self": f"{_site(request)}/wiki/rest/api/space",
+    }
+    return {
+        "results": results,
+        "start": 0,
+        "limit": len(results),
+        "size": len(results),
+        "_links": links,
+    }
 
 
 @router.get("/wiki/rest/api/space/{key}/permission", include_in_schema=False)

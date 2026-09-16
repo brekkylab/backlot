@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import json
 import re
+from urllib.parse import quote
 
 import pytest
 import yaml
@@ -1556,16 +1557,21 @@ def test_jira_search_post_with_no_body_at_all_is_the_media_type_refusal(client, 
 
 
 @pytest.mark.parametrize("method", ["get", "post"])
-def test_jira_search_refuses_a_page_token_it_cannot_decode(client, admin_h, method):
-    """Measured on both methods, identically. Read as offset zero, a client that truncates or
-    corrupts a cursor was served page one under a 200 for as long as it kept following it."""
+@pytest.mark.parametrize("project", ["payments", "ZZZNOPE999"])
+def test_jira_search_refuses_a_page_token_it_cannot_decode(client, admin_h, method, project):
+    """Measured on both methods, identically, and unaffected by whether the JQL's project
+    resolves: measured 2026-09-16, `project = ZZZNOPE999` (matching no project) with a bogus
+    `nextPageToken` still draws the 400 on real, not the unresolved-project's empty page. Read
+    as offset zero instead, a client that truncates or corrupts a cursor was served page one
+    under a 200 for as long as it kept following it."""
+    jql = f"project = {project}"
     if method == "get":
         r = client.get(
-            "/atlassian/rest/api/3/search/jql?jql=project+%3D+payments&nextPageToken=BOGUS",
+            f"/atlassian/rest/api/3/search/jql?jql={quote(jql)}&nextPageToken=BOGUS",
             headers=admin_h,
         )
     else:
-        r = _search_post(client, admin_h, jql="project = payments", nextPageToken="BOGUS")
+        r = _search_post(client, admin_h, jql=jql, nextPageToken="BOGUS")
     assert r.status_code == 400, r.text
     assert r.json()["errors"] == {}
     assert "nextPageToken" in r.json()["errorMessages"][0]

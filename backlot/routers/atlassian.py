@@ -405,15 +405,18 @@ async def jira_search(request: Request):
         jql = _str_param(request, "jql") or ""
         limit = _int_param(request, "maxResults", default_size)
         token = _str_param(request, "nextPageToken")
+    # An undecodable token is refused before the project clause is resolved: measured
+    # 2026-09-16, `project = ZZZNOPE999` (unresolvable) with a bogus `nextPageToken` still
+    # answers 400 on real, not the unresolved-project's empty page.
+    offset = decode_cursor_or_none(None if token is None else str(token))
+    if offset is None:
+        raise errors_atlassian.bad_page_token()
     container = _project_from_jql(conn, jql, request)
     if container is _JIRA_PROJECT_UNRESOLVED:
         # a project= clause was present but didn't match any project: strict 0 matches, not
         # the unfiltered corpus.
         return {"issues": [], "isLast": True}
     term = _text_from_jql(jql)
-    offset = decode_cursor_or_none(None if token is None else str(token))
-    if offset is None:
-        raise errors_atlassian.bad_page_token()
     if term:  # text ~ / summary ~ / description ~ → full-text search (FTS), scoped to project
         total = store.count_search(conn, term, "jira", ids, container=container)
         rows = store.search_documents(

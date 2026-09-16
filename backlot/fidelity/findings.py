@@ -1,9 +1,9 @@
 """What a comparison reports, and what a baseline remembers about it.
 
-Every kind of comparison — a GraphQL schema walk, a published-spec path diff, a behavioural
-probe — answers in these terms, so the vocabulary lives apart from any one of them. A finding says
-what diverged and how much it matters; a baseline says which of them have already been read and
-accepted.
+Every kind of comparison — a GraphQL schema walk, a published-spec path diff, a behavioural probe,
+a field read off a document — answers in these terms, so the vocabulary lives apart from any one of
+them. A finding says what diverged and how much it matters; a baseline says which of them have
+already been read and accepted.
 """
 
 from __future__ import annotations

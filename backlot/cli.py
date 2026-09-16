@@ -39,11 +39,15 @@ from backlot import mcp as _mcp
 # `erb` is what this codebase calls it among itself, and a caller reading `--type erb` learns nothing
 # about what is being downloaded. The cost of the abbreviation lands on the person who did not write
 # the code, so it is not offered.
-# The sources `backlot diff` can compare, named here so `--help` lists them without importing
+# What `backlot diff` can compare, named here so `--help` lists them without importing
 # backlot.fidelity (and httpx's TLS stack) on every other command.
+#
+# Every `source_type` Backlot serves, and `google_batch`, which is not one: Backlot's batch routes
+# stand in for five Google APIs, so they sit under no source's mount and are compared on their own.
 FIDELITY_SOURCES = (
     "confluence",
     "fireflies",
+    "google_batch",
     "google_drive",
     "github",
     "gmail",

@@ -135,8 +135,18 @@ exists, comment your measurement there instead. Never add `agent` to it.
 
 Branch `claude/<source>-<slug>`. Title: one declarative sentence describing the new state, prefixed
 with the source like the log (`github: a JSON response carries the charset real's carry`). Body:
-the repository's PR template with every section filled, `Closes #a, #b` for each issue, paragraphs
-on single lines. Push and `gh pr create`.
+the repository's PR template with every section filled and `Closes #a, #b` for each issue. Push and
+`gh pr create`.
+
+The body is read on GitHub, which renders every newline as a line break, so never hard-wrap a
+paragraph. Readability comes from structure instead:
+
+- Paragraphs of two or three sentences, one idea each, with a blank line between them. A section
+  that would be one long paragraph becomes a list.
+- Measurements go in a table: one row per request, columns for what real serves and what Backlot
+  serves. Request and response text goes in a fenced block, not inline.
+- The body ends at the template's checklist. No signature, no "Generated with" line, no session
+  link, no trailer of any kind; the claim comment on the issue already names the run.
 
 ## 9. Review
 

@@ -214,9 +214,8 @@ def bad_page_token() -> AtlassianError:
     the query string's token and the body's are refused alike.
 
     The sentence is Backlot's own, not a transcription: real localises this one to the account's
-    language, as it does the ``orderBy`` refusal (see ``routers.atlassian._jira_order_desc``), and
-    the account it was measured against answers in Korean. The envelope is reproduced, the wording
-    is not.
+    language, as it does the ``orderBy`` refusal (see ``routers.atlassian._jira_order_desc``,
+    measured against the same account). The envelope is reproduced, the wording is not.
     """
     return AtlassianError(
         400,

@@ -1580,7 +1580,7 @@ def test_jira_search_post_with_no_body_at_all_is_the_media_type_refusal(client, 
 @pytest.mark.parametrize("project", ["payments", "ZZZNOPE999"])
 def test_jira_search_refuses_a_page_token_it_cannot_decode(client, admin_h, method, project):
     """Measured on both methods, identically, and unaffected by whether the JQL's project
-    resolves: measured 2026-09-16, `project = ZZZNOPE999` (matching no project) with a bogus
+    resolves: 2026-09-16, `project = ZZZNOPE999` (matching no project) with a bogus
     `nextPageToken` still draws the 400 on real, not the unresolved-project's empty page."""
     jql = f"project = {project}"
     if method == "get":

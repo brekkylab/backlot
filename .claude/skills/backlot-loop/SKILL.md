@@ -20,6 +20,38 @@ Everything you write to GitHub — comments, issues, pull request bodies, replie
 last sentence. No signature, no "Generated with" line, no separator, no session link; the one URL
 you post is the run's, in the claim comment, and nowhere else.
 
+## Asking for a decision
+
+Every time a person has to choose — an issue that needs a decision (step 3), a review comment
+that could mean two things (step 2), a review that stays blocked (step 9) — the comment has this
+shape and no other. A maintainer reads it on a phone between meetings; it has to be answerable in
+one glance and one line.
+
+```
+## Needs a decision
+
+**Question** — <one sentence a maintainer can answer without opening anything else>.
+
+**What I measured** — <date>, <where>:
+- `<request>` → real: <answer> · Backlot: <answer>
+- <two to four bullets at most; the request and both answers on one line each>
+
+**Options**
+1. **<label> (recommended)** — <what happens if chosen, and what it costs, in one sentence>.
+2. **<label>** — <same>.
+3. **<label>** — <same, only if a real third choice exists>.
+
+Reply `decision: 1`, or `decision: <label>`, with a reason after it if you want one recorded.
+```
+
+Two to four options, mutually exclusive, the recommended one first. Labels are one or two words
+(`serve`, `gap`, `merge`, `re-measure`, `close`). Never paste the measurement narrative into the
+options; the bullets above them carry it. The whole comment fits on one screen.
+
+A reply whose first line is `decision:` picks by number or by label; whatever follows on that line
+is the maintainer's reason and goes wherever the option's outcome is recorded (a baseline note, a
+PR body, a closing comment). Any other first line is an instruction; follow it.
+
 ## Rehearsal
 
 `$0` set (`/backlot-loop 146`) means rehearsal on that one issue, whatever its labels or state. In
@@ -72,8 +104,8 @@ For each unaddressed review comment:
 - If it reproduces, fix it, push, and reply in the thread with what changed.
 - If it does not, reply with the measurement that contradicts it and leave the thread open.
 - If the comment could mean two different changes, or asks whether Backlot should serve something
-  at all, reply with the question that would settle it, add `needs-maintainer` to the PR, and move
-  on.
+  at all, reply in the thread with a decision comment (see Asking for a decision) whose options are
+  the readings you see, add `needs-maintainer` to the PR, and move on.
 
 A failing check is reproduced locally with `uv run pytest -q` before anything is changed.
 
@@ -89,18 +121,17 @@ maintainer can measure it from a machine of their own instead. Everything else
 — a shape, status code, header, charset, pagination, ordering or error-envelope difference on an
 operation Backlot already serves — is **mechanical**.
 
-For an issue that needs a decision, measure first — enough live calls that the proposal states what
+For an issue that needs a decision, measure first — enough live calls that the options state what
 the vendor actually does today and where it keeps the surface Backlot would lose or gain — then
-comment exactly this and add `needs-maintainer`:
+post a decision comment (see Asking for a decision) and add `needs-maintainer`. Its options are
+`serve` (what serving it takes) and `gap` (the note the baseline entry would carry), plus a third
+only when the measurement showed one, such as the surface living on another route Backlot already
+serves. Recommend the one the measurement backs.
 
-```
-**Needs a decision.** <one sentence: what the vendor does and what Backlot does>. Proposal: `serve` — <what serving it takes, in one sentence> / `gap` — <the note the baseline entry would carry>. Reply `decision: serve` or `decision: gap <why>`.
-```
-
-For an issue whose newest comment starts with `decision:`: `decision: serve` makes it mechanical
-from here; `decision: gap <why>` means the fix is `backlot diff --source <source> --update-baseline`
-followed by writing `<why>` into the new entry's `note` by hand, then a PR. Any other first line is
-an instruction from a maintainer; follow it.
+For an issue whose newest comment starts with `decision:`: `serve` makes it mechanical from here;
+`gap` means the fix is `backlot diff --source <source> --update-baseline` followed by writing the
+maintainer's reason into the new entry's `note` by hand, then a PR; a third option means what its
+sentence said.
 
 ## 4. Pick
 
@@ -178,8 +209,10 @@ in fresh contexts. Stop when both say `pass` on the same commit. A reviewer that
 dispatched again unless a later fix touched what it reviews. After three rounds with a `block`
 still standing: if every finding of the last round was applied undisputed, dispatch that reviewer
 once more on the result; otherwise, or if it still blocks, `gh pr ready --undo` (draft), add
-`needs-maintainer`, and comment one paragraph stating the finding, your evidence against it, and
-what a maintainer needs to decide.
+`needs-maintainer`, and post a decision comment on the PR (see Asking for a decision). Its question
+is the standing finding in one sentence; its measurement bullets are the reviewer's evidence and
+yours; its options are the ways out — `merge` on the evidence at hand, `re-measure` from a machine
+whose access differs from this session's, `close` — with the one you would take first.
 
 ## 10. Hand over
 

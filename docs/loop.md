@@ -15,7 +15,7 @@ request against those files.
 | You want | You do |
 |---|---|
 | the loop to work an issue | add the `agent` label. Nothing else admits an issue, including the nightly fidelity report and the issues the loop files itself |
-| to answer an escalation | reply on the issue with a first line `decision: serve` or `decision: gap <why>`. `serve` sends it down the fix path; `gap` has the loop write the baseline entry with your reason as its note |
+| to answer an escalation | the loop's comment lists numbered options with the recommended one first; reply with a first line `decision: 1` or `decision: <label>` (`serve`, `gap`, `merge`, …), and anything after it on that line is recorded as your reason |
 | to stop one item | add `hold` to the issue or PR; every run skips it |
 | to stop everything | pause the schedule on the routine's page |
 | to merge | a PR labelled `ready-for-maintainer` has both reviewers' pass and green CI; review it as you would any other and merge |

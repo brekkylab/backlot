@@ -1686,6 +1686,18 @@ def test_github_401_says_which_credential_failed(gh_client, gh_admin_h, gh_org):
         "documentation_url": "https://docs.github.com/rest",
         "status": "401",
     }
+    # a bad bearer wins over an unsupported version too: real resolves the credential before it
+    # looks at the header, so this is still the credential's 401, not the version's 400 (measured
+    # against api.github.com 2026-09-15 — #231)
+    bad_and_unversioned = c.get(
+        url,
+        headers={
+            "Authorization": "Bearer usr-not-a-real-token",
+            "X-GitHub-Api-Version": "1999-01-01",
+        },
+    )
+    assert bad_and_unversioned.status_code == 401
+    assert bad_and_unversioned.json()["message"] == "Bad credentials"
 
 
 def test_github_documentation_url_names_the_route_that_failed(gh_client, gh_admin_h, gh_org):
@@ -2622,8 +2634,9 @@ def test_github_code_search_neither_refuses_nor_echoes_the_api_version(gh_client
     `1999-01-01` or `garbage` is a 200 where every other route answers the version 400, a pinned
     `2026-03-10` is a 200, and no response from it, 200, 400 or 422, carries
     `X-GitHub-Api-Version-Selected` (measured 2026-09-06; `/search/issues` beside it 400s the bad
-    version, see `test_github_unsupported_api_version_is_refused_ahead_of_everything`). Backlot
-    refused the bad version and echoed the good one here as everywhere else."""
+    version, see
+    `test_github_unsupported_api_version_is_refused_ahead_of_a_missing_credential_and_routing`).
+    Backlot refused the bad version and echoed the good one here as everywhere else."""
     c, _ = gh_client
     for pinned in ("1999-01-01", "garbage", "2026-03-10", None):
         h = {**gh_admin_h, **({"X-GitHub-Api-Version": pinned} if pinned else {})}
@@ -3528,11 +3541,15 @@ def test_github_json_carries_the_charset_real_sends_except_on_code_search(
     assert (server_info.status_code, server_info.headers["content-type"]) == (200, bare)
 
 
-def test_github_unsupported_api_version_is_refused_ahead_of_everything(gh_client, gh_org):
-    """An unsupported version is a malformed request, so real answers it before authenticating and
-    before routing — verified against api.github.com, which 400s a bad version on a nonexistent repo
-    with no credentials at all. Running this check after either one would report a client's version
-    typo as 401 or 404 and send them looking in the wrong place.
+def test_github_unsupported_api_version_is_refused_ahead_of_a_missing_credential_and_routing(
+    gh_client, gh_org
+):
+    """An unsupported version is a malformed request, so real answers it before a MISSING
+    credential and before routing — verified against api.github.com, which 400s a bad version on a
+    nonexistent repo with no credentials at all. Running this check after either one would report a
+    client's version typo as 401 or 404 and send them looking in the wrong place. A credential that
+    arrived and failed to resolve is a narrower case still ahead of this one (measured 2026-09-15 —
+    #231, `test_github_401_says_which_credential_failed`).
 
     Real sends no `Selected` echo on this 400 (it selected nothing), and does send one on a 404."""
     c, _ = gh_client
@@ -3547,6 +3564,8 @@ def test_github_unsupported_api_version_is_refused_ahead_of_everything(gh_client
     # no credentials, and an owner Backlot does not serve: still the version's 400
     assert c.get("/github/repos/nope/nope/pulls/1", headers=bad).status_code == 400
     assert c.get("/github/search/issues", headers=bad, params={"q": "x"}).status_code == 400
+    # /rate_limit serves an anonymous caller too, so the version's 400 reaches it the same way
+    assert c.get("/github/rate_limit", headers=bad).status_code == 400
 
 
 # --- a pull is a pull, not an issue with extra keys -------------

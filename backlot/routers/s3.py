@@ -288,10 +288,15 @@ def _head_refusal(selected: list[str]) -> Response:
     No sub-resource has a HEAD form: real S3 answers ``HEAD /{bucket}?versioning`` and
     ``HEAD /{key}?acl`` 405 with an empty ``application/xml`` body, whether or not the bucket or the
     key exists, and two selectors at once with the conflict's 400 and the same empty body
-    (measured). Real S3 also sends an ``Allow`` naming the methods that sub-resource takes; Backlot
-    takes none of them, so it sends none.
+    (measured). Real S3 also sends an ``Allow`` naming every method that sub-resource takes, GET and
+    PUT and DELETE among them (measured); Backlot names only the one it actually serves, ``GET`` for
+    ``location`` and ``uploads``, and sends none for a sub-resource it does not implement at all —
+    naming a method that still answers 501 would be as false as naming real's PUT or DELETE.
     """
-    return Response(status_code=400 if len(selected) > 1 else 405, media_type="application/xml")
+    if len(selected) > 1:
+        return Response(status_code=400, media_type="application/xml")
+    headers = {"Allow": "GET"} if selected[0] in ("location", "uploads") else None
+    return Response(status_code=405, media_type="application/xml", headers=headers)
 
 
 def _not_implemented(selector: str, resource: str) -> Response:

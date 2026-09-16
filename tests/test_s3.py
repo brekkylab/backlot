@@ -675,6 +675,28 @@ def test_head_with_a_subresource_is_405_and_a_bare_head_still_answers(live_serve
             assert r.status == 200, path
 
 
+def test_head_with_a_subresource_names_the_methods_backlot_serves_in_allow(live_server):
+    base_url, settings = live_server
+    token = settings.admin_token
+    # `location` and `uploads` are the two bucket sub-resources Backlot answers on a GET (measured
+    # against real S3: it names every method the sub-resource takes there, GET and PUT and DELETE
+    # among them; Backlot names only the one it actually serves, since claiming the others would
+    # advertise a method that still 501s).
+    for path in ("/s3/eng-artifacts?location", "/s3/eng-artifacts?uploads"):
+        err = _refused(base_url, path, token, method="HEAD")
+        assert err.code == 405 and err.headers.get("Allow") == "GET", path
+    # Every sub-resource Backlot does not implement at all gets no Allow, same as before: it never
+    # answers a GET on these either, so naming one would be as false as naming real's PUT or DELETE.
+    for path in (
+        "/s3/eng-artifacts?versioning",
+        "/s3/eng-artifacts?acl",
+        f"{OBJECT_PATH}?acl",
+        f"{OBJECT_PATH}?uploadId=x",
+    ):
+        err = _refused(base_url, path, token, method="HEAD")
+        assert err.code == 405 and err.headers.get("Allow") is None, path
+
+
 # ------------------------------------------------------------------------ ListMultipartUploads
 # Every real S3 answer below was measured on 2026-09-10 (the negative and the repeated values on
 # 2026-09-11) against a general purpose bucket in ap-northeast-2 with no upload in progress,

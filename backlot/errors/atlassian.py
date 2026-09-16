@@ -193,6 +193,22 @@ def body_not_read(message: str) -> AtlassianError:
     return AtlassianError(400, {"errorMessages": [message]})
 
 
+def unbounded_jql() -> AtlassianError:
+    """Jira's 400 for `search/jql` given no `jql` at all — on GET or POST, measured 2026-09-16
+    against `brekkylab.atlassian.net`. The sentence is Backlot's own: real answers in the
+    account's language, as it does the `nextPageToken` and `orderBy` refusals.
+    """
+    return AtlassianError(
+        400,
+        {
+            "errorMessages": [
+                "Unbounded JQL queries are not allowed here. Add a search restriction to the query."
+            ],
+            "errors": {},
+        },
+    )
+
+
 def bad_page_token() -> AtlassianError:
     """Jira's 400 for a ``nextPageToken`` it cannot decode, measured 2026-09-15 on both methods —
     the query string's token and the body's are refused alike.

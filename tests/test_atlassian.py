@@ -395,10 +395,13 @@ def test_jira_search_filtered_by_project(client, admin_h):
     ).json()
     assert bogus["issues"] == [] and bogus["isLast"] is True
 
-    # no project clause at all -> unfiltered (same three issues here, since payments is the
-    # only Jira project in the SAMPLE corpus -- the earlier assertions are what prove filtering,
-    # not this equality)
-    unfiltered = client.get("/atlassian/rest/api/3/search/jql", headers=admin_h).json()
+    # a jql with no project clause at all -> unfiltered (same three issues here, since payments
+    # is the only Jira project in the SAMPLE corpus -- the earlier assertions are what prove
+    # filtering, not this equality). An empty jql is refused instead of read as this same
+    # unfiltered case -- see test_jira_search_refuses_no_jql_at_all.
+    unfiltered = client.get(
+        "/atlassian/rest/api/3/search/jql", headers=admin_h, params={"jql": "order by created"}
+    ).json()
     assert {i["fields"]["summary"] for i in unfiltered["issues"]} == titles
 
 
@@ -606,7 +609,9 @@ def test_atlassian_serverinfo_has_typed_response_schema(client):
 
 
 def test_atlassian_responses_unchanged_by_enrichment(client, admin_h):
-    search = client.get("/atlassian/rest/api/3/search/jql", headers=admin_h).json()
+    search = client.get(
+        "/atlassian/rest/api/3/search/jql", headers=admin_h, params={"jql": "order by created"}
+    ).json()
     assert "issues" in search and "isLast" in search and search["issues"]
     key = search["issues"][0]["key"]
     issue = client.get(f"/atlassian/rest/api/3/issue/{key}", headers=admin_h).json()
@@ -1442,6 +1447,24 @@ def test_jira_search_post_takes_its_parameters_from_the_body_and_get_from_the_qu
     assert got.json()["issues"][0]["key"] == in_body.json()["issues"][0]["key"]
 
 
+@pytest.mark.parametrize("method", ["get", "post"])
+def test_jira_search_refuses_no_jql_at_all(client, admin_h, method):
+    """Measured 2026-09-16, on both methods: no `jql` anywhere Backlot reads it for that method is
+    the same 400 real gives, not the unfiltered corpus. A POST's own query string carrying a `jql`
+    still draws it, because the body is the only place POST reads one."""
+    if method == "get":
+        r = client.get("/atlassian/rest/api/3/search/jql?maxResults=5", headers=admin_h)
+    else:
+        r = _search_post(client, admin_h, query="?jql=project+%3D+payments&maxResults=1")
+    assert r.status_code == 400, r.text
+    assert r.json() == {
+        "errorMessages": [
+            "Unbounded JQL queries are not allowed here. Add a search restriction to the query."
+        ],
+        "errors": {},
+    }
+
+
 def test_jira_search_declares_each_placement_on_the_method_that_reads_it(client):
     """The served spec has to make the split discoverable, or a generated client keeps sending a
     POST cursor in the query string and never sees why it does not page."""
@@ -1522,8 +1545,7 @@ def test_jira_search_post_reads_the_media_type_the_way_real_matches_it(
 def test_jira_search_post_refuses_a_body_it_cannot_turn_into_an_object(
     client, admin_h, raw, message
 ):
-    """Three sentences, measured. Each body carries `errorMessages` alone: no `errors`, unlike the
-    token refusal below."""
+    """Three sentences, measured."""
     r = client.post(
         "/atlassian/rest/api/3/search/jql",
         headers={**admin_h, "Content-Type": "application/json"},

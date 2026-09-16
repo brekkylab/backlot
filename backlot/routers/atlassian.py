@@ -402,12 +402,16 @@ async def jira_search(request: Request):
         jql = _str_param(request, "jql") or ""
         limit = _int_param(request, "maxResults", default_size)
         token = _str_param(request, "nextPageToken")
-    # An undecodable token is refused before the project clause is resolved: measured
-    # 2026-09-16, `project = ZZZNOPE999` (unresolvable) with a bogus `nextPageToken` still
-    # answers 400 on real, not the unresolved-project's empty page.
+    # An undecodable token is refused before the project clause is resolved (measured
+    # 2026-09-16; see test_jira_search_refuses_a_page_token_it_cannot_decode).
     offset = decode_cursor_or_none(None if token is None else str(token))
     if offset is None:
         raise errors_atlassian.bad_page_token()
+    # No `jql` at all is refused rather than answered as the unfiltered corpus: measured
+    # 2026-09-16, on both methods, including a POST whose query string carries a `jql` that the
+    # body (the only place POST reads it) omits.
+    if not jql.strip():
+        raise errors_atlassian.unbounded_jql()
     container = _project_from_jql(conn, jql, request)
     if container is _JIRA_PROJECT_UNRESOLVED:
         # a project= clause was present but didn't match any project: strict 0 matches, not

@@ -432,7 +432,9 @@ def crawl_github_repo(client, headers, org, repo):
 def crawl_jira(client, headers):
     out, token = [], None
     while True:
-        p = {"maxResults": 6}
+        # real refuses an empty `jql` outright, so a full crawl needs a jql that restricts
+        # nothing -- any project-free, text-free clause does, `order by created` included.
+        p = {"maxResults": 6, "jql": "order by created"}
         if token:
             p["nextPageToken"] = token
         j = client.get("/atlassian/rest/api/3/search/jql", headers=headers, params=p).json()

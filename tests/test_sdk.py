@@ -450,7 +450,7 @@ def jira():
     from atlassian import Jira
 
     j = Jira(url=f"{BASE}/atlassian", username="svc@x", password=ADMIN)
-    res = j.get("rest/api/3/search/jql", params={"maxResults": 50})
+    res = j.get("rest/api/3/search/jql", params={"jql": "order by created", "maxResults": 50})
     check("Jira", "search/jql")(lambda: f"{len(res['issues'])} issues")
     tres = j.get("rest/api/3/search/jql", params={"jql": 'text ~ "latency"'})
     check("Jira", "search/jql text~")(

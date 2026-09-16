@@ -16,6 +16,11 @@ A module in ``_ENVELOPES`` provides:
   ``None`` to keep FastAPI's own 422. Google is the one that keeps it: its editor APIs answer a bad
   *parameter* through a router-raised ``GoogleError``, so the validator is not the path that
   reports one.
+- ``method_not_allowed(path, method)``, optional — the vendor's own 405, as an exception carrying
+  its body, media type and headers. The router raises a 405 before any vendor code runs, so a
+  vendor whose 405 differs from the shape its other refusals take says so here. Atlassian is the
+  one that implements it, because its two products answer a wrong method differently from each
+  other and from the envelope they share. A vendor without it keeps the shared envelope.
 - ``json_media_type(path, status_code)``, optional — the `content-type` the vendor puts on a JSON
   body answered at that path with that status, when it is measured to differ from FastAPI's bare
   `application/json`. GitHub is the one that implements it; a vendor without it keeps the default,
@@ -46,6 +51,20 @@ def http_body(path: str, exc, query=None) -> dict | None:
     return None
 
 
+def method_not_allowed(path: str, method: str):
+    """The vendor's own 405 for ``method`` on ``path``, as an exception whose body, media type and
+    headers ``backlot.main``'s handler reads, or ``None`` to keep the shared envelope.
+
+    Its ``headers`` is three-valued: a mapping replaces what the router computed, ``{}`` sends none
+    where the vendor sends none, and ``None`` keeps the router's `Allow`.
+    """
+    for envelope in _ENVELOPES:
+        if envelope.owns(path):
+            answer = getattr(envelope, "method_not_allowed", None)
+            return answer(path, method) if answer is not None else None
+    return None
+
+
 def json_media_type(path: str, status_code: int) -> str | None:
     """The vendor's measured `content-type` for a JSON body answered on ``path`` with
     ``status_code``, or ``None`` for FastAPI's."""
@@ -69,4 +88,11 @@ def validation_body(path: str, errors) -> tuple[int, dict] | None:
     return None
 
 
-__all__ = ["atlassian", "github", "google", "http_body", "validation_body"]
+__all__ = [
+    "atlassian",
+    "github",
+    "google",
+    "http_body",
+    "method_not_allowed",
+    "validation_body",
+]

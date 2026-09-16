@@ -984,9 +984,9 @@ def _require_space(request: Request, conn, key: str) -> str:
     """The container behind a space key the caller can reach — `_require_project` for Confluence.
 
     Both space reads answer an unreachable key with the SAME ``404 {"message": "No space with the
-    given key exists"}`` a key naming nothing gets, so neither confirms the space exists — the
-    roster on ``.../permission`` is what makes that worth withholding, since it names who reads a
-    space the caller cannot open. Unmeasured for a scoped caller, see :func:`_reachable_spaces`.
+    given key exists"}`` a key naming nothing gets, so neither confirms the space exists — worth
+    withholding because ``?expand=permissions`` names who reads a space the caller cannot open.
+    Unmeasured for a scoped caller, see :func:`_reachable_spaces`.
     """
     ids = auth.visible_ids(request, _confluence_caller(request))
     container = _space_container_for_key(conn, key)
@@ -1000,49 +1000,129 @@ def _require_space(request: Request, conn, key: str) -> str:
     raise HTTPException(status_code=404, detail="No space with the given key exists")
 
 
-@router.get("/wiki/rest/api/space", response_model=ConfluenceResults)
+# The thirteen keys real names under `_expandable` on a space, in real's own order. Four of them
+# carry a path on real and nine are the empty string; `homepage` is empty here rather than a
+# `/rest/api/content/{id}` because a corpus states no home page for a space, and the empty string
+# is real's own value for a key it will expand but cannot address. Measured on
+# brekkylab.atlassian.net, 2026-09-16, on a global space and two personal ones, which agreed.
+def _space_expandable(key: str) -> dict:
+    return {
+        "settings": f"/rest/api/space/{key}/settings",
+        "metadata": "",
+        "identifiers": "",
+        "roles": "",
+        "icon": "",
+        "typeSettings": "",
+        "description": "",
+        "history": "",
+        "operations": "",
+        "lookAndFeel": f"/rest/api/settings/lookandfeel?spaceKey={key}",
+        "permissions": "",
+        "theme": f"/rest/api/space/{key}/theme",
+        "homepage": "",
+    }
+
+
+def _space_permissions(conn, container: str) -> list[dict]:
+    """The space permission roster, as `?expand=permissions` answers it.
+
+    One operation, `read`/`space`, because it is the only one a corpus states: the ACL says who can
+    read a document and nothing at all about who may administer the space or delete a comment. Real
+    answered 120 entries across 26 operations on the space measured (brekkylab.atlassian.net,
+    2026-09-16), of which the five `read`/`space` entries are the ones this can derive; inventing
+    the other 25 would put a permission model on the wire that the corpus never licensed.
+
+    ``container_member_emails`` of ``None`` is a space no ACL narrows, which real reports as
+    ``anonymousAccess`` rather than as a roster naming everyone.
+    """
+    emails = store.container_member_emails(conn, "confluence", container)
+    entry = {
+        "id": synth.confluence_id(f"perm:{container}:read"),
+        "operation": {"operation": "read", "targetType": "space"},
+        "anonymousAccess": emails is None,
+        "unlicensedAccess": False,
+    }
+    if emails is not None:
+        users = [_conf_user(e) for e in sorted(emails)]
+        entry["subjects"] = {
+            "user": {"results": users, "size": len(users)},
+            "_expandable": {"group": ""},
+        }
+    return [entry]
+
+
+def _space(request: Request, conn, container: str, expand: str, *, listed: bool) -> dict:
+    """One space, as both reads render it.
+
+    ``listed`` is the one difference real draws between them, and it is in `_links`: a space inside
+    the listing carries `webui` and `self` alone, where the single read carries `context`,
+    `collection` and `base` beside them. Measured 2026-09-16 on the same site, the same minute.
+
+    An expansion real serves is REMOVED from `_expandable` once it is served, which is how a client
+    tells an expansion it asked for and got from one it asked for and did not.
+    """
+    key = synth.confluence_space_key(container)
+    site = _site(request)
+    space = {
+        "id": synth.github_user_id(container),
+        "ari": (
+            f"ari:cloud:confluence:{synth.atlassian_cloud_id(get_settings().org_name)}"
+            f":space/{synth.github_user_id(container)}"
+        ),
+        "key": key,
+        "alias": key,
+        "name": container,
+        "type": "global",
+        "status": "current",
+        "_expandable": _space_expandable(key),
+    }
+    wanted = [e.strip() for e in (expand or "").split(",") if e.strip()]
+    if "description" in wanted:
+        space["description"] = {"plain": {"value": f"{container} space", "representation": "plain"}}
+        space["_expandable"].pop("description", None)
+    if "permissions" in wanted:
+        space["permissions"] = _space_permissions(conn, container)
+        space["_expandable"].pop("permissions", None)
+    links = {"webui": f"/spaces/{key}", "self": f"{site}/wiki/rest/api/space/{key}"}
+    if not listed:
+        links = {
+            "context": "/wiki",
+            "self": links["self"],
+            "collection": "/rest/api/space",
+            "webui": links["webui"],
+            "base": f"{site}/wiki",
+        }
+    space["_links"] = links
+    return space
+
+
+@router.get("/wiki/rest/api/space", response_model=ConfluenceResults, openapi_extra=_P_EXPAND)
 async def confluence_spaces(request: Request):
     conn = auth.conn(request)
     ids = auth.visible_ids(request, _confluence_caller(request))
-    results = []
-    for r in _reachable_spaces(conn, ids):
-        key = synth.confluence_space_key(r["name"])
-        results.append(
-            {
-                "id": synth.github_user_id(r["name"]),
-                "key": key,
-                "name": r["name"],
-                "type": "global",
-                "_links": {"webui": f"/spaces/{key}"},
-            }
-        )
+    expand = _str_param(request, "expand", "") or ""
+    results = [
+        _space(request, conn, r["name"], expand, listed=True) for r in _reachable_spaces(conn, ids)
+    ]
     return {"results": results, "start": 0, "limit": len(results), "size": len(results)}
 
 
-@router.get("/wiki/rest/api/space/{key}/permission")
+@router.get("/wiki/rest/api/space/{key}/permission", include_in_schema=False)
 async def confluence_space_permission(key: str, request: Request):
-    conn = auth.conn(request)
-    container = _require_space(request, conn, key)
-    emails = store.container_member_emails(conn, "confluence", container)
-    if emails is None:
-        perm = {
-            "operation": {"operation": "read", "targetType": "space"},
-            "subjects": {"user": {"results": []}},
-            "anonymousAccess": True,
-        }
-    else:
-        perm = {
-            "operation": {"operation": "read", "targetType": "space"},
-            "subjects": {
-                "user": {
-                    "results": [
-                        {"accountId": synth.atlassian_account_id(e), "email": e}
-                        for e in sorted(emails)
-                    ]
-                }
-            },
-        }
-    return {"results": [perm]}
+    """Real refuses a `GET` here, so Backlot refuses one too, and the roster this route used to
+    answer is served where real serves it: `space/{key}?expand=permissions`.
+
+    A route rather than nothing at all, because the path having no handler is a 404 and real's
+    answer is a 405 — the vendor's own document declares one operation here and it is a `POST`
+    (add a space permission), a write no source in Backlot serves. ``include_in_schema=False``
+    keeps the refusal off ``app.openapi()``, which is what `backlot diff` compares: the 405 is a
+    fact about the wire, and declaring a `GET` operation the vendor does not have is what the
+    acknowledged `extra_operation` for this path used to record.
+
+    ``key`` is unused and declared because the path carries it; a caller's key is never resolved,
+    since the refusal comes before any lookup on real (a key naming no space answers the same 405).
+    """
+    raise errors_atlassian.method_not_allowed(request.url.path, request.method)
 
 
 @router.get("/wiki/rest/api/space/{key}", response_model=ConfluencePage, openapi_extra=_P_EXPAND)
@@ -1051,17 +1131,7 @@ async def confluence_space_get(key: str, request: Request):
     404s (Atlassian-shaped) for a key naming no space the caller can reach (:func:`_require_space`)."""
     conn = auth.conn(request)
     container = _require_space(request, conn, key)
-    space = {
-        "id": synth.github_user_id(container),
-        "key": key,
-        "name": container,
-        "type": "global",
-        "status": "current",
-        "_links": {"webui": f"/spaces/{key}"},
-    }
-    if "description" in (_str_param(request, "expand", "") or ""):
-        space["description"] = {"plain": {"value": f"{container} space", "representation": "plain"}}
-    return space
+    return _space(request, conn, container, _str_param(request, "expand", "") or "", listed=False)
 
 
 @router.get("/wiki/rest/api/search", response_model=ConfluenceResults, openapi_extra=_P_CQL)

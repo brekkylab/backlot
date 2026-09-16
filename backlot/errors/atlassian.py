@@ -14,6 +14,7 @@ where the two products visibly part — see :func:`integer_conversion_failure`.
 from __future__ import annotations
 
 import http
+import re
 
 from fastapi import HTTPException
 
@@ -84,8 +85,19 @@ class AtlassianError(HTTPException):
     reproduce half of it.
     """
 
-    def __init__(self, status_code: int, body: dict, *, media_type: str | None = None):
-        super().__init__(status_code=status_code, detail=body.get("detail") or body.get("message"))
+    def __init__(
+        self,
+        status_code: int,
+        body: dict,
+        *,
+        media_type: str | None = None,
+        headers: dict[str, str] | None = None,
+    ):
+        super().__init__(
+            status_code=status_code,
+            detail=body.get("detail") or body.get("message"),
+            headers=headers,
+        )
         self.body = body
         self.media_type = media_type
 
@@ -223,6 +235,101 @@ def bad_page_token() -> AtlassianError:
             "errorMessages": ["The provided nextPageToken is invalid or has expired."],
             "errors": {},
         },
+    )
+
+
+# What real answers in `Allow` on a Jira 405, per route. A SET rather than a string: the order
+# varies per RESPONSE on real, so no order reproduces it. Three `PUT /rest/api/3/search/jql` in a
+# row answered `POST, GET`, `GET, POST` and `POST, GET`; two `POST /rest/api/3/issue/{key}`
+# answered `DELETE, GET, PUT` and `PUT, GET, DELETE`. The order below is this module's choice, and
+# the only part of the header that is not a measurement.
+#
+# Measured on brekkylab.atlassian.net, 2026-09-16, by sending a method the vendor defines on no
+# route of that path. Jira's own `swagger-v3.v3.json` declares the same set for every route here
+# but `project/search`, where it declares `GET` alone and real answers the three methods
+# `/rest/api/3/project/{projectIdOrKey}` takes — so `search` binds as a project key there, and the
+# measurement rather than the document is what this row states. `project/{key}/role/{id}` is the
+# reverse: every standard method reaches a handler on real (a `POST` with an unknown key is that
+# route's 404, not a 405), so no 405 could be measured and its row is the document's.
+_JIRA_ALLOW = (
+    ("/rest/api/{version}/serverInfo", ("GET",)),
+    ("/rest/api/{version}/field", ("GET", "POST")),
+    ("/rest/api/{version}/issue/{key}", ("GET", "PUT", "DELETE")),
+    ("/rest/api/{version}/issue/{key}/comment", ("GET", "POST")),
+    ("/rest/api/{version}/search/jql", ("GET", "POST")),
+    ("/rest/api/{version}/issueLinkType", ("GET", "POST")),
+    ("/rest/api/{version}/project/search", ("GET", "PUT", "DELETE")),
+    ("/rest/api/{version}/project/{key}/role", ("GET",)),
+    ("/rest/api/{version}/project/{key}/role/{id}", ("GET", "POST", "PUT", "DELETE")),
+)
+
+
+def _route_regex(template: str) -> re.Pattern[str]:
+    """``template`` with `{version}` bound to the two Jira mounts and every other placeholder to one
+    path segment. Anchored at both ends: `/issue/{key}` must not match `/issue/{key}/comment`."""
+    segments = [
+        "[23]" if seg == "{version}" else "[^/]+" if seg.startswith("{") else re.escape(seg)
+        for seg in template.split("/")
+    ]
+    return re.compile("/".join(segments) + "$")
+
+
+_JIRA_ALLOW_PATTERNS = tuple((_route_regex(t), methods) for t, methods in _JIRA_ALLOW)
+
+
+def jira_allow(path: str) -> str | None:
+    """The `Allow` real sends on a 405 at ``path``, or ``None`` for a Jira route no row above
+    covers. ``path`` is Backlot's, prefix and all."""
+    vendor_path = _instance(path)
+    for pattern, methods in _JIRA_ALLOW_PATTERNS:
+        if pattern.fullmatch(vendor_path):
+            return ", ".join(methods)
+    return None
+
+
+def method_not_allowed(path: str, method: str) -> AtlassianError:
+    """The 405 each product answers for a method it does not serve at ``path``.
+
+    The one refusal where the shared envelope :func:`http_body` emits is wrong for BOTH products,
+    and wrong in two different directions. Measured on brekkylab.atlassian.net, 2026-09-16:
+    Confluence answers a Spring `errors` LIST on `application/json` and sends no `Allow` at all,
+    where Jira answers RFC 7807 on `application/problem+json` and names the methods it takes. A
+    client reading `errors[0]["code"]` is the one this costs: Backlot's shared envelope has an
+    `errors` OBJECT, so that read raises against Backlot and works against real Confluence.
+
+    ``headers`` of ``{}`` on the Confluence side is the empty header set, not "no opinion": real
+    sends no `Allow` and Starlette computes one from the routes Backlot happens to declare. ``None``
+    on a Jira route no measurement covers keeps Starlette's, which is at least Backlot's own truth.
+    """
+    if is_confluence(path):
+        return AtlassianError(
+            405,
+            {
+                "errors": [
+                    {
+                        "status": 405,
+                        "code": "METHOD_NOT_ALLOWED",
+                        "title": (
+                            "org.springframework.web.HttpRequestMethodNotSupportedException: "
+                            f"Request method '{method}' not supported"
+                        ),
+                    }
+                ]
+            },
+            headers={},
+        )
+    allow = jira_allow(path)
+    return AtlassianError(
+        405,
+        {
+            "type": "about:blank",
+            "title": "Method Not Allowed",
+            "status": 405,
+            "detail": f"Method '{method}' is not supported.",
+            "instance": _instance(path),
+        },
+        media_type=PROBLEM_JSON,
+        headers=None if allow is None else {"Allow": allow},
     )
 
 

@@ -432,9 +432,11 @@ def crawl_github_repo(client, headers, org, repo):
 def crawl_jira(client, headers):
     out, token = [], None
     while True:
-        # real refuses an empty `jql` outright, so a full crawl needs a jql that restricts
-        # nothing -- any project-free, text-free clause does, `order by created` included.
-        p = {"maxResults": 6, "jql": "order by created"}
+        # real refuses an empty `jql` outright, and an `ORDER BY` is not a search restriction:
+        # `order by created` draws the same refusal (measured 2026-09-16). `project is not EMPTY`
+        # is a 200 there and restricts nothing here either, since `_project_from_jql` filters on a
+        # `project =`.
+        p = {"maxResults": 6, "jql": "project is not EMPTY"}
         if token:
             p["nextPageToken"] = token
         j = client.get("/atlassian/rest/api/3/search/jql", headers=headers, params=p).json()

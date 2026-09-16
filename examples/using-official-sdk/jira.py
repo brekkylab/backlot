@@ -82,9 +82,9 @@ with serve_or_connect(CORPUS, url=args.url) as s:
         print(f"authenticating as {username} → responses are ACL-filtered to that user")
     jira = Jira(url=f"{s.base_url}/atlassian", username=username, password=password)
 
-    issues = jira.get("rest/api/3/search/jql", params={"jql": "order by created", "maxResults": 5})[
-        "issues"
-    ]
+    issues = jira.get(
+        "rest/api/3/search/jql", params={"jql": "project is not EMPTY", "maxResults": 5}
+    )["issues"]
     if not issues:
         print("no issues visible to this identity")
     else:

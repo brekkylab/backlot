@@ -71,13 +71,18 @@ class ConfluencePage(_ALoose):
     pass
 
 
-# One operation per METHOD, because the two take the same three parameters in different places:
-# the GET form in the query string, the POST form in a `SearchAndReconcileRequestBean` body. Both
-# of Atlassian's documents split them this way, down to the schema name, and the live service
-# follows.
-_X_JIRA_SEARCH_GET = {"parameters": [qp("jql"), qp("maxResults", "integer"), qp("nextPageToken")]}
-_X_JIRA_SEARCH_POST = {
+# The two take the same three parameters in different places: the GET form in the query string, the
+# POST form in a `SearchAndReconcileRequestBean` body. Both of Atlassian's documents split them this
+# way, down to the schema name, and the live service follows. Both placements are declared here and
+# separated per method after FastAPI has built the document, by
+# :func:`backlot.openapi.jira_search_placement`. One ROUTE serves both methods, because Starlette
+# fills `Allow` from the single route that partially matched and real names both.
+_X_JIRA_SEARCH = {
+    "parameters": [qp("jql"), qp("maxResults", "integer"), qp("nextPageToken")],
     "requestBody": {
+        # Real refuses a POST carrying no body: the missing `Content-Type` is its 415, and the
+        # header with an empty body is `No content to map to Object due to end of input`.
+        "required": True,
         "content": {
             "application/json": {
                 "schema": {
@@ -89,7 +94,7 @@ _X_JIRA_SEARCH_POST = {
                     },
                 }
             }
-        }
+        },
     },
 }
 _P_EXPAND = {"parameters": [qp("expand")]}
@@ -365,27 +370,15 @@ async def jira_project_role(key: str, role_id: int, request: Request):
 
 @router.api_route(
     "/rest/api/2/search/jql",
-    methods=["GET"],  # atlassian-python-api uses v2
+    methods=["GET", "POST"],  # atlassian-python-api uses v2
     response_model=JiraSearchResult,
-    openapi_extra=_X_JIRA_SEARCH_GET,
+    openapi_extra=_X_JIRA_SEARCH,
 )
 @router.api_route(
     "/rest/api/3/search/jql",
-    methods=["GET"],
+    methods=["GET", "POST"],
     response_model=JiraSearchResult,
-    openapi_extra=_X_JIRA_SEARCH_GET,
-)
-@router.api_route(
-    "/rest/api/2/search/jql",
-    methods=["POST"],
-    response_model=JiraSearchResult,
-    openapi_extra=_X_JIRA_SEARCH_POST,
-)
-@router.api_route(
-    "/rest/api/3/search/jql",
-    methods=["POST"],
-    response_model=JiraSearchResult,
-    openapi_extra=_X_JIRA_SEARCH_POST,
+    openapi_extra=_X_JIRA_SEARCH,
 )
 async def jira_search(request: Request):
     conn = auth.conn(request)
@@ -394,7 +387,9 @@ async def jira_search(request: Request):
     default_size = get_settings().default_page_size
     if request.method == "POST":
         body = await _jira_search_body(request)
-        jql = str(body.get("jql", ""))
+        # A JSON null is the parameter unsent, not the string "None": real answers
+        # `{"jql": null}` with the same unbounded-JQL refusal it gives `{}` (measured 2026-09-16).
+        jql = "" if body.get("jql") is None else str(body["jql"])
         limit = _int(body.get("maxResults"), default_size)
         token = body.get("nextPageToken")
     else:
@@ -406,8 +401,8 @@ async def jira_search(request: Request):
     offset = decode_cursor_or_none(None if token is None else str(token))
     if offset is None:
         raise errors_atlassian.bad_page_token()
-    # No `jql` at all is refused rather than answered as the unfiltered corpus (see
-    # test_jira_search_refuses_no_jql_at_all).
+    # No `jql` at all is refused rather than answered as the unfiltered corpus (measured
+    # 2026-09-16; see test_jira_search_refuses_no_jql_at_all).
     if not jql.strip():
         raise errors_atlassian.unbounded_jql()
     container = _project_from_jql(conn, jql, request)
@@ -1456,8 +1451,13 @@ def _int(v, default: int) -> int:
     The lenient one, and deliberately so: what parses the POST `search/jql` body on real is Jackson
     rather than Spring's parameter binding, and it takes values the query string refuses — `1.5`
     arrives as `1` and `"5"` as `5`. The query string goes through :func:`_int_param` instead, which
-    reproduces Spring's rules. What Jackson refuses (`"abc"`, `true`, a range outside 1-5000) is a
-    body-wide message naming no parameter, and is not reproduced here.
+    reproduces Spring's rules, and answers that same `1.5` with
+    `Failed to convert 'maxResults' with value: '1.5'`.
+
+    What Jackson refuses — `"abc"` and `true` — is a body-wide message naming no parameter, and is
+    not reproduced here. The 1-5000 range is NOT Jackson's: it is refused on the query string too,
+    to the character, it names the parameter and it carries `errors` where the two type refusals
+    carry `errorMessages` alone, so it belongs to the operation rather than to either parser.
     """
     try:
         return int(v) if v not in (None, "") else default
@@ -1563,6 +1563,11 @@ async def _jira_search_body(request: Request) -> dict:
     Trailing bytes after a complete value are IGNORED rather than refused: `{"jql": …} junk` is
     answered 200. That is what `raw_decode` reproduces and `json.loads` would not, reading the
     first value and letting the rest go.
+
+    The leading bytes are the other side of that and are NOT ignored so freely. JSON's whitespace is
+    the four ASCII ones, so a non-breaking space in front of the object is the parse error, where
+    `str.lstrip()` would skip it and read the object behind it. Bytes that are not UTF-8 are the
+    not-an-object sentence, where `errors="replace"` would repair them into U+FFFD and parse.
     """
     content_type = request.headers.get("content-type")
     if (content_type or "").split(";")[0].strip().lower() != "application/json":
@@ -1571,7 +1576,11 @@ async def _jira_search_body(request: Request) -> dict:
     if not raw:
         raise errors_atlassian.body_not_read(errors_atlassian.BODY_EMPTY)
     try:
-        parsed, _end = json.JSONDecoder().raw_decode(raw.decode("utf-8", "replace").lstrip())
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise errors_atlassian.body_not_read(errors_atlassian.BODY_NOT_AN_OBJECT) from None
+    try:
+        parsed, _end = json.JSONDecoder().raw_decode(text.lstrip(" \t\n\r"))
     except ValueError:
         message = (
             errors_atlassian.BODY_NOT_AN_OBJECT

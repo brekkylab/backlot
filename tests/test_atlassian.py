@@ -1463,6 +1463,59 @@ def test_jira_search_refuses_no_jql_at_all(client, admin_h, method):
     }
 
 
+def test_jira_search_reads_a_null_jql_as_one_that_was_not_sent(client, admin_h):
+    """Measured 2026-09-16: `{"jql": null}` draws the same unbounded-JQL refusal as `{}`. Read
+    through a bare `str()` it is the string "None", which restricts nothing and reaches the whole
+    visible corpus — the answer this refusal exists to replace."""
+    r = client.post(
+        "/atlassian/rest/api/3/search/jql",
+        headers={**admin_h, "Content-Type": "application/json"},
+        content='{"jql": null}',
+    )
+    assert r.status_code == 400, r.text
+    assert r.json()["errorMessages"] == [
+        "Unbounded JQL queries are not allowed here. Add a search restriction to the query."
+    ]
+
+
+@pytest.mark.parametrize(
+    "raw,message",
+    [
+        # JSON's whitespace is the four ASCII ones, so a non-breaking space in front is not skipped
+        (
+            " {}",
+            "There was an error parsing JSON. Check that your request body is valid.",
+        ),
+        # and bytes that are not UTF-8 are not repaired into U+FFFD and then parsed
+        (
+            b'{"jql": "project = payments\xff"}',
+            "Invalid request payload. Refer to the REST API documentation and try again.",
+        ),
+    ],
+)
+def test_jira_search_post_refuses_the_leading_bytes_real_refuses(client, admin_h, raw, message):
+    """Bytes TRAILING a complete value are ignored; the leading ones are not ignored so freely, and
+    both boundaries are measured rather than taken from a JSON reader's own defaults."""
+    r = client.post(
+        "/atlassian/rest/api/3/search/jql",
+        headers={**admin_h, "Content-Type": "application/json"},
+        content=raw if isinstance(raw, bytes) else raw.encode(),
+    )
+    assert r.status_code == 400, r.text
+    assert r.json() == {"errorMessages": [message]}
+
+
+def test_jira_search_advertises_both_its_methods_when_it_refuses_a_third(client, admin_h):
+    """Measured: real answers `PUT` with `Allow: POST, GET`. Starlette fills the header from the
+    single route that partially matched, so serving the two methods from a route each would
+    advertise one of them — which is why the per-method split is made in the served document
+    instead (see `openapi.jira_search_placement`)."""
+    for version in ("2", "3"):
+        r = client.request("PUT", f"/atlassian/rest/api/{version}/search/jql", headers=admin_h)
+        assert r.status_code == 405, r.text
+        assert set(r.headers["allow"].replace(" ", "").split(",")) == {"GET", "POST"}
+
+
 def test_jira_search_declares_each_placement_on_the_method_that_reads_it(client):
     """The served spec has to make the split discoverable, or a generated client keeps sending a
     POST cursor in the query string and never sees why it does not page."""
@@ -1489,7 +1542,8 @@ def test_jira_search_declares_each_placement_on_the_method_that_reads_it(client)
 def test_jira_search_post_refuses_a_media_type_it_does_not_read(
     client, admin_h, content_type, named
 ):
-    """Measured: each content type below is refused or read as shown."""
+    """Measured: the header decides before the bytes are looked at, so the JSON body sent with each
+    of these is never reached."""
     headers = dict(admin_h)
     if content_type is not None:
         headers["Content-Type"] = content_type

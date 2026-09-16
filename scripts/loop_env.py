@@ -35,11 +35,15 @@ def export_lines(parameters: Iterable[dict]) -> list[str]:
     return lines
 
 
-def fetch(prefix: str) -> list[dict]:
-    """Every parameter directly under ``prefix``, decrypted, across every page."""
+def fetch(prefix: str, region: str | None) -> list[dict]:
+    """Every parameter directly under ``prefix``, decrypted, across every page.
+
+    ``region`` is where the parameters live; ``None`` is the AWS default chain, which the
+    measurement bucket's region also drives, so the two are separable when they differ.
+    """
     import boto3
 
-    paginator = boto3.client("ssm").get_paginator("get_parameters_by_path")
+    paginator = boto3.client("ssm", region_name=region).get_paginator("get_parameters_by_path")
     pages = paginator.paginate(Path=prefix, Recursive=False, WithDecryption=True)
     return [p for page in pages for p in page["Parameters"]]
 
@@ -49,8 +53,9 @@ def main() -> int:
     if not env_file:
         print("loop_env: CLAUDE_ENV_FILE is not set; nothing to write", file=sys.stderr)
         return 0
+    region = os.environ.get("BACKLOT_LOOP_SSM_REGION") or None
     try:
-        lines = export_lines(fetch(PREFIX))
+        lines = export_lines(fetch(PREFIX, region))
     except Exception as exc:  # noqa: BLE001 — the hook's stderr is the only place this is seen
         print(f"loop_env: could not read {PREFIX} from Parameter Store: {exc}", file=sys.stderr)
         return 1

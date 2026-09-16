@@ -41,14 +41,24 @@ def test_export_lines_quote_for_bash_and_refuse_what_is_not_a_variable(tmp_path)
 
 def test_main_appends_to_the_env_file_and_does_nothing_without_one(tmp_path, monkeypatch):
     loop_env = _load()
-    monkeypatch.setattr(
-        loop_env, "fetch", lambda prefix: [{"Name": prefix + "LINEAR_API_KEY", "Value": "lin_k"}]
-    )
+    asked = []
+
+    def fetch(prefix, region):
+        asked.append(region)
+        return [{"Name": prefix + "LINEAR_API_KEY", "Value": "lin_k"}]
+
+    monkeypatch.setattr(loop_env, "fetch", fetch)
     monkeypatch.delenv("CLAUDE_ENV_FILE", raising=False)
+    monkeypatch.delenv("BACKLOT_LOOP_SSM_REGION", raising=False)
     assert loop_env.main() == 0
+    assert asked == []
 
     env_file = tmp_path / "env"
     env_file.write_text("export A=1\n")
     monkeypatch.setenv("CLAUDE_ENV_FILE", str(env_file))
     assert loop_env.main() == 0
     assert env_file.read_text() == "export A=1\nexport LINEAR_API_KEY=lin_k\n"
+    # The parameters' region is separable from the bucket's: unset, the default chain decides.
+    monkeypatch.setenv("BACKLOT_LOOP_SSM_REGION", "us-east-1")
+    assert loop_env.main() == 0
+    assert asked == [None, "us-east-1"]

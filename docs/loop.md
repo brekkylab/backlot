@@ -70,11 +70,8 @@ the loop account and shared with nobody.
 ### Credentials
 
 The vendor credentials [`docs/fidelity.md`](fidelity.md) and the source routers read live in AWS
-Systems Manager Parameter Store, one `SecureString` per variable, named `/backlot-loop/<VARIABLE>`:
-`SLACK_USER_TOKEN`, `HUBSPOT_API_KEY`, `HUBSPOT_PERSONAL_ACCESS_KEY`, `LINEAR_API_KEY`,
-`FIREFLIES_API_KEY`, `ATLASSIAN_ORG_ID`, `ATLASSIAN_ORG_API_KEY`, `ATLASSIAN_USER_EMAIL`,
-`ATLASSIAN_USER_API_TOKEN`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN`,
-`AWS_S3_BUCKET`, `NOTION_API_KEY`.
+Systems Manager Parameter Store, one `SecureString` per variable, named `/backlot-loop/<VARIABLE>`.
+The store is the list: whatever is under that path is what a session gets.
 
 When a cloud session starts, the `SessionStart` hook in [`.claude/settings.json`](../.claude/settings.json)
 runs [`scripts/loop_env.py`](../scripts/loop_env.py), which reads every parameter under

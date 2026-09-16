@@ -392,7 +392,6 @@ async def jira_search(request: Request):
     caller = _jira_caller(request)
     ids = auth.visible_ids(request, caller)
     default_size = get_settings().default_page_size
-    # One parameter, two places: the body on POST, the query string on GET.
     if request.method == "POST":
         body = await _jira_search_body(request)
         jql = str(body.get("jql", ""))

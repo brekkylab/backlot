@@ -1414,9 +1414,7 @@ def _search_post(client, headers, query="", **body):
 def test_jira_search_post_takes_its_parameters_from_the_body_and_get_from_the_query(
     client, admin_h
 ):
-    """Measured 2026-09-15 across the four placements. The `nextPageToken` row is the expensive
-    one: a pager that puts its cursor in the query string of a POST walks the corpus here and
-    re-reads page one forever against real, with a 200 every time."""
+    """Measured 2026-09-15 across the four placements."""
     page1 = _search_post(client, admin_h, jql="project = payments", maxResults=1)
     assert page1.status_code == 200, page1.text
     token = page1.json()["nextPageToken"]

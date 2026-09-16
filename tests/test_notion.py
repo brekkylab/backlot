@@ -154,21 +154,32 @@ def test_notion_query_rows_one_path_per_version(client, notion_h):
         }, version
 
 
-def test_notion_query_version_cut_is_the_date_not_one_legacy_spelling(client, notion_h):
-    """A version older than 2022-06-28 predates data sources just as much, so it reads rows
-    through the database and sees the schema inline -- the cut is the 2025-09-03 release date,
-    not an equality test against the one legacy version Backlot's clients happen to send."""
+def test_notion_version_cut_is_the_date_on_both_sides_of_it(client, notion_h):
+    """The cut is the 2025-09-03 release date, not an equality test against either version this
+    repo's own clients send. Below it: 2022-02-22 predates data sources just as much as 2022-06-28
+    does, so it reads rows through the database and sees the schema inline. Above it: 2026-03-11 is
+    what Notion publishes as current -- its OpenAPI declares `Notion-Version` with
+    `enum: ["2026-03-11"]`, read 2026-09-16 -- and reads them through the data source.
+
+    Both sides, because a comparison narrowed back to equality answers 2025-09-03 and 2022-06-28
+    exactly as the date cut does: only a version outside that pair separates them, and the half of
+    the rule that names no version at all ("2025-09-03 and later") is the half a client on a
+    version Notion has not published yet arrives on."""
     did = synth.notion_id("nt-tasks-db")
     dsid = synth.notion_data_source_id("nt-tasks-db")
-    h = {**notion_h, "Notion-Version": "2022-02-22"}
-    rows = client.post(f"/notion/v1/databases/{did}/query", json={}, headers=h)
-    assert rows.status_code == 200
-    assert any(r["id"] == synth.notion_id("nt-task-1") for r in rows.json()["results"])
-    assert (
-        client.post(f"/notion/v1/data_sources/{dsid}/query", json={}, headers=h).status_code == 400
-    )
-    db = client.get(f"/notion/v1/databases/{did}", headers=h).json()
-    assert "properties" in db and "data_sources" not in db
+    task = synth.notion_id("nt-task-1")
+    for version, served, refused, carries, lacks in (
+        ("2022-02-22", f"databases/{did}", f"data_sources/{dsid}", "properties", "data_sources"),
+        ("2026-03-11", f"data_sources/{dsid}", f"databases/{did}", "data_sources", "properties"),
+    ):
+        h = {**notion_h, "Notion-Version": version}
+        rows = client.post(f"/notion/v1/{served}/query", json={}, headers=h)
+        assert rows.status_code == 200, version
+        assert any(r["id"] == task for r in rows.json()["results"]), version
+        gone = client.post(f"/notion/v1/{refused}/query", json={}, headers=h)
+        assert gone.status_code == 400 and gone.json()["code"] == "invalid_request_url", version
+        db = client.get(f"/notion/v1/databases/{did}", headers=h).json()
+        assert carries in db and lacks not in db, version
 
 
 def test_notion_every_route_requires_the_version_header(client, admin_h, notion_h):

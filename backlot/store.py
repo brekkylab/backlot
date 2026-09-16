@@ -3915,8 +3915,8 @@ def slack_membership_violations(conn) -> list[tuple[str, str]]:
     conversations.info. The corpus has no way to say "left the channel", which is the one state
     real Slack reaches this from, so within this model it is a corpus that cannot be true.
 
-    An explicit ``out`` IS that way of saying it, so a speaker removed from a channel is not
-    reported: they are the state this could not previously represent, not a corpus that is wrong.
+    An explicit ``out`` records that state directly, so a speaker removed from a channel is not
+    reported as a violation.
 
     Only PRIVATE channels can produce it — a public channel's org grant covers every principal —
     and only speakers who are principals: a display-only speaker has no identity to authenticate

@@ -57,9 +57,7 @@ one place, without diffing the served surface against itself.
 `POST /_meta/overlay/reset` restores the corpus's own state, tombstones included, so a second
 evaluation run over the same server starts where the first one did.
 
-Reading is unauthenticated, like the rest of `/_meta`. Resetting is not: it is the one route
-here that destroys something, and an agent being graded from `/_meta/overlay` must not be able
-to erase the record of what it just did. It takes the admin token.
+Reading is unauthenticated, like the rest of `/_meta`. Resetting requires the admin token.
 
 ## What a write is attributed to
 

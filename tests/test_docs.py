@@ -268,6 +268,8 @@ _LOOP_FILES = (
         "docs/loop.md",
         ("needs-maintainer", "ready-for-maintainer", "decision: gap", "GITHUB_TOKEN"),
     ),
+    (".claude/settings.json", ("SessionStart", "CLAUDE_CODE_REMOTE", "scripts/loop_env.py")),
+    ("scripts/loop_env.py", ("/backlot-loop/", "CLAUDE_ENV_FILE")),
 )
 
 

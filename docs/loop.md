@@ -57,7 +57,16 @@ trigger**: on; its URL and token live only in this repository's `LOOP_FIRE_URL` 
 **Environment** `backlot-loop`, personal to the loop account. Network access **Custom** with the
 default registries kept, plus: `slack.com`, `*.atlassian.net`, `api.atlassian.com`,
 `*.googleapis.com`, `oauth2.googleapis.com`, `api.hubapi.com`, `api.linear.app`,
-`api.fireflies.ai`, `api.notion.com`, `*.amazonaws.com`. Setup script: `uv sync --all-extras`.
+`api.fireflies.ai`, `api.notion.com`, `*.amazonaws.com`.
+
+The setup script runs outside the clone, so it cannot install the project; it warms `uv`'s cache
+from a throwaway clone instead, and the environment cache keeps that warmth for every later session:
+
+```bash
+git clone --depth 1 https://github.com/brekkylab/backlot.git /tmp/backlot-warm && cd /tmp/backlot-warm && uv sync --all-extras && cd / && rm -rf /tmp/backlot-warm
+```
+
+The project's own install happens in the session, through the hook described under Credentials.
 
 Environment variables are three: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and
 `AWS_DEFAULT_REGION`, for an IAM principal allowed to read the loop's parameters (below) and the
@@ -74,11 +83,14 @@ Systems Manager Parameter Store, one `SecureString` per variable, named `/backlo
 The store is the list: whatever is under that path is what a session gets.
 
 When a cloud session starts, the `SessionStart` hook in [`.claude/settings.json`](../.claude/settings.json)
-runs [`scripts/loop_env.py`](../scripts/loop_env.py), which reads every parameter under
+runs [`scripts/cloud_session_start.sh`](../scripts/cloud_session_start.sh): `uv sync --all-extras`
+in the clone, the HubSpot reader past its pin the way CI installs it, then
+[`scripts/loop_env.py`](../scripts/loop_env.py), which reads every parameter under
 `/backlot-loop/` and appends an `export` line for each to the file Claude Code sources before every
 Bash call, so the variables are in the session without ever being in the environment's own list. The
-hook runs only where `CLAUDE_CODE_REMOTE` is `true` and an AWS key is present; a local session is
-untouched. A parameter whose leaf is not a variable name is skipped, and so are **`GITHUB_TOKEN` and
+script exits at once where `CLAUDE_CODE_REMOTE` is not `true`, so a local session is untouched, and
+reads the parameters only when an AWS key is present. A parameter whose leaf is not a variable name
+is skipped, and so are **`GITHUB_TOKEN` and
 `GH_TOKEN`**: either one replaces the platform's GitHub credential with its literal value, and every
 `gh` call in the run fails.
 

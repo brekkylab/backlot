@@ -26,8 +26,7 @@ router = APIRouter(prefix="/atlassian", tags=["atlassian"])
 
 
 # --- OpenAPI enrichment --------------------------------------------------
-# jira_search takes its parameters in the query string on GET and in the body on POST, one
-# operation each, documented with openapi_extra (no signature change); confluence params are
+# Parameters are documented with openapi_extra (no signature change); confluence params are
 # query-only. Response models use extra="allow" to
 # preserve every field. Error paths raise HTTPException (Atlassian-shaped), not filtered here.
 # Secondary metadata routes (roles / linktypes / labels / restrictions) are left untyped — the

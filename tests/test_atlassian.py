@@ -1547,8 +1547,9 @@ def test_jira_search_post_ignores_bytes_after_a_complete_body(client, admin_h):
 
 
 def test_jira_search_post_with_no_body_at_all_is_the_media_type_refusal(client, admin_h):
-    """The case #191 opens on: `POST search/jql?jql=…&maxResults=1` with nothing attached. The
-    query string it carries is never reached, because the missing header refuses it first."""
+    """No body at all is the media-type refusal: the query string
+    `POST search/jql?jql=…&maxResults=1` carries is never reached, because the missing header
+    refuses the request first."""
     r = client.post(
         "/atlassian/rest/api/3/search/jql?jql=project+%3D+payments&maxResults=1", headers=admin_h
     )

@@ -59,15 +59,52 @@ default registries kept, plus: `slack.com`, `*.atlassian.net`, `api.atlassian.co
 `*.googleapis.com`, `oauth2.googleapis.com`, `api.hubapi.com`, `api.linear.app`,
 `api.fireflies.ai`, `api.notion.com`, `*.amazonaws.com`. Setup script: `uv sync --all-extras`.
 
-Environment variables are the vendor credentials [`docs/fidelity.md`](fidelity.md) and the source
-routers read: `SLACK_USER_TOKEN`, `HUBSPOT_API_KEY`, `HUBSPOT_PERSONAL_ACCESS_KEY`,
-`LINEAR_API_KEY`, `FIREFLIES_API_KEY`, `ATLASSIAN_ORG_ID`, `ATLASSIAN_ORG_API_KEY`,
-`ATLASSIAN_USER_EMAIL`, `ATLASSIAN_USER_API_TOKEN`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`,
-`GOOGLE_REFRESH_TOKEN`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION`,
-`AWS_S3_BUCKET`, `NOTION_API_KEY`. **Never `GITHUB_TOKEN` or `GH_TOKEN`**: either one replaces the
-platform's GitHub credential with its literal value, and every `gh` call in the run fails. Anyone
-whose sessions use this environment can read its variables, which is why it is personal to the loop
-account and shared with nobody.
+Environment variables are three: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and
+`AWS_DEFAULT_REGION`, for an IAM principal allowed to read the loop's parameters (below) and the
+measurement bucket, plus `AWS_SSM_REGION` when the parameters live in a different region
+from the bucket (they do: `us-east-1` against a bucket in `ap-northeast-2`). Every other vendor
+credential arrives through Parameter Store at session start.
+Anyone whose sessions use this environment can read its variables, which is why it is personal to
+the loop account and shared with nobody.
+
+### Credentials
+
+The vendor credentials [`docs/fidelity.md`](fidelity.md) and the source routers read live in AWS
+Systems Manager Parameter Store, one `SecureString` per variable, named `/backlot-loop/<VARIABLE>`.
+The store is the list: whatever is under that path is what a session gets.
+
+When a cloud session starts, the `SessionStart` hook in [`.claude/settings.json`](../.claude/settings.json)
+runs [`scripts/loop_env.py`](../scripts/loop_env.py), which reads every parameter under
+`/backlot-loop/` and appends an `export` line for each to the file Claude Code sources before every
+Bash call, so the variables are in the session without ever being in the environment's own list. The
+hook runs only where `CLAUDE_CODE_REMOTE` is `true` and an AWS key is present; a local session is
+untouched. A parameter whose leaf is not a variable name is skipped, and so are **`GITHUB_TOKEN` and
+`GH_TOKEN`**: either one replaces the platform's GitHub credential with its literal value, and every
+`gh` call in the run fails.
+
+The IAM principal behind the environment's key needs this on top of its bucket access, with the
+region and account filled in:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "ssm:GetParametersByPath",
+      "Resource": "arn:aws:ssm:<region>:<account>:parameter/backlot-loop/*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "kms:Decrypt",
+      "Resource": "arn:aws:kms:<region>:<account>:key/<id of alias/aws/ssm>"
+    }
+  ]
+}
+```
+
+Rotating a credential is `put-parameter --overwrite`; the next session reads the new value. Reading
+the parameters back is `aws ssm get-parameters-by-path --path /backlot-loop/ --with-decryption`.
 
 ## Cost and identity
 

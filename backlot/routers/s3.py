@@ -237,16 +237,30 @@ def _conflict(selected: list[str], resource: str) -> Response:
     )
 
 
+_HEAD_REFUSAL_ALLOWS_GET = frozenset({"location", "uploads"})
+# The only two bucket selectors Backlot answers on a GET (GetBucketLocation, the always-empty
+# ListMultipartUploads page). Real S3's Allow on this 405 names every method the sub-resource
+# takes — measured against a general purpose bucket, 2026-09-16: `?location` is `GET`; `?uploads`
+# is `POST, GET`; `?versioning` and `?acl` are `GET, PUT`; `?tagging` and `?policy` are
+# `DELETE, GET, PUT`. Backlot names only the methods it itself takes, so `?uploads` is `GET` alone
+# rather than real's `POST, GET` — advertising the POST (CreateMultipartUpload) it does not
+# implement would be worse than the missing header this replaces.
+
+
 def _head_refusal(selected: list[str]) -> Response:
     """HEAD with a sub-resource selector, refused before the bucket or the key is looked up.
 
     No sub-resource has a HEAD form: real S3 answers ``HEAD /{bucket}?versioning`` and
     ``HEAD /{key}?acl`` 405 with an empty ``application/xml`` body, whether or not the bucket or the
     key exists, and two selectors at once with the conflict's 400 and the same empty body
-    (measured). Real S3 also sends an ``Allow`` naming the methods that sub-resource takes; Backlot
-    takes none of them, so it sends none.
+    (measured, both with no ``Allow``). Real S3 also sends an ``Allow`` naming the methods that
+    sub-resource takes; Backlot names its own, which is ``GET`` for ``location`` and ``uploads``
+    and nothing for every other selector, since it takes none of them.
     """
-    return Response(status_code=400 if len(selected) > 1 else 405, media_type="application/xml")
+    if len(selected) > 1:
+        return Response(status_code=400, media_type="application/xml")
+    headers = {"Allow": "GET"} if selected[0] in _HEAD_REFUSAL_ALLOWS_GET else None
+    return Response(status_code=405, media_type="application/xml", headers=headers)
 
 
 def _not_implemented(selector: str, resource: str) -> Response:

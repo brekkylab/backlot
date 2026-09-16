@@ -4904,8 +4904,8 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
         # `rate` is the FIRST key on the wire under this version, which a dict comparison does not
         # see; real answers it before `resources`.
         assert list(status.json()) == ["rate", "resources"]
-        # A trailing slash is real's 404, not FastAPI's redirect to the same route; with a valid
-        # token it carries none of the five, the same as any other path no route matches.
+        # A trailing slash answers 404 with a valid token, carrying none of the five ratelimit
+        # headers, the same as any other path no route matches.
         trailing = c.get("/github/rate_limit/", headers=h, follow_redirects=False)
         assert trailing.status_code == 404
         assert not any(n.startswith("x-ratelimit-") for n in trailing.headers)

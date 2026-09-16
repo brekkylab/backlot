@@ -352,23 +352,15 @@ async def parse_slack_form(request: Request, call_next):
 @app.middleware("http")
 async def refuse_a_trailing_slash_on_github(request: Request, call_next):
     """A trailing slash on `/github` is a 404, not the redirect Starlette's router answers by
-    default for a path whose slash-free form matches a route.
+    default for a path whose slash-free form matches a route — real treats it exactly like a path
+    that matches no route at all, ahead of a bad bearer's own 401. See the PR body and
+    `test_github_a_trailing_slash_is_404_not_a_redirect` for the measurement.
 
-    Real treats the slash exactly like a path that matches no route at all: `/repos/psf/requests/`,
-    `/orgs/psf/`, `/user/repos/` and `/rate_limit/` each answered 404 on api.github.com (measured
-    2026-09-15 and re-measured 2026-09-16), where the slash-free forms answer 200 or their own 401
-    the same minute — including with a bad bearer, which still answers the slash's 404 rather than
-    the credential's own 401 (`Bearer usr-not-a-real-token` on `/repos/psf/requests/`, measured
-    2026-09-16), so this never yields to a failed bearer.
-
-    A "no route matched" 404 carries the five `x-ratelimit-*` headers for an anonymous caller
-    (three consecutive anonymous `/repos/psf/requests/` answered `remaining: 49, 48, 47`, all five
-    present) and neither those nor the API-version echo for one with a valid token
-    (`/repos/psf/requests/` and `/nonexistent-route-zz`, both with neither) — unlike a 404 for a
-    route that DID match, on a resource that does not exist (`/repos/psf/ghost-zz-9876`, with
-    both), all measured 2026-09-16. The anonymous limit is counted by address, ahead of and
-    independent of routing; the token-keyed one only starts once a route is reached. This answers
-    the same way, via `rate_limit_headers`, for an anonymous caller alone.
+    A "no route matched" 404 carries the five `x-ratelimit-*` headers, via `rate_limit_headers`,
+    for an anonymous caller alone: the anonymous limit is counted by address, ahead of and
+    independent of routing, where the token-keyed one only starts once a route is reached — unlike
+    a 404 for a route that DID match, on a resource that does not exist, which carries both for
+    either caller.
 
     `redirect_slashes` is a setting of the whole app's `Router`, shared by every vendor mounted
     here, and no other vendor's own answer to a trailing slash has been measured — so this

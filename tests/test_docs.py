@@ -250,7 +250,7 @@ _LOOP_FILES = (
         (
             "---\nname: backlot-loop\n",
             "description:",
-            "disable-model-invocation: true",
+            "allowed-tools:",
             "## Rehearsal",
         ),
     ),

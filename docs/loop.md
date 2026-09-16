@@ -1,0 +1,121 @@
+# The agent loop
+
+[← README](../README.md)
+
+A Claude Code routine reads the issues a maintainer has labelled `agent`, measures the real vendor
+API, fixes Backlot, and opens a pull request that two reviewer agents have passed. A person does two
+things: answers a judgment call when the loop asks, and merges. The procedure the routine follows is
+[`.claude/skills/backlot-loop/SKILL.md`](../.claude/skills/backlot-loop/SKILL.md); the reviewers are
+[`behaviour-reviewer`](../.claude/agents/behaviour-reviewer.md) and
+[`prose-reviewer`](../.claude/agents/prose-reviewer.md). Changing how the loop works is a pull
+request against those files.
+
+## Driving it
+
+| You want | You do |
+|---|---|
+| the loop to work an issue | add the `agent` label. Nothing else admits an issue, including the nightly fidelity report and the issues the loop files itself |
+| to answer an escalation | reply on the issue with a first line `decision: serve` or `decision: gap <why>`. `serve` sends it down the fix path; `gap` has the loop write the baseline entry with your reason as its note |
+| to stop one item | add `hold` to the issue or PR; every run skips it |
+| to stop everything | pause the schedule on the routine's page |
+| to merge | a PR labelled `ready-for-maintainer` has both reviewers' pass and green CI; review it as you would any other and merge |
+
+Labels the loop sets: `needs-maintainer` (a decision is waiting; the proposal is the last comment)
+and `ready-for-maintainer`. It never sets `agent`.
+
+Adding `agent` or posting a `decision:` comment also rings the routine through
+[`loop-doorbell.yml`](../.github/workflows/loop-doorbell.yml), so the run starts within minutes
+rather than at the next scheduled slot.
+
+## Reading a run
+
+The routine's page on claude.ai lists runs. A green run means the session exited without an
+infrastructure error, not that it did anything useful; the record of what a run did is the comment
+it leaves on each issue it touched and the summary at the end of its session. A run that found
+nothing labelled `agent` says so and stops.
+
+## What the routine is
+
+Recorded here so it can be recreated on another account in a morning.
+
+**Prompt**, model set to the strongest in the selector:
+
+> Run `/backlot-loop`. In short: look at the open issues labelled `agent` and at the open pull requests you
+> opened earlier. Address review comments on your own pull requests first. Skip anything labelled
+> `hold`. For an issue that needs a decision Backlot's maintainers have not made, comment your
+> proposal and label it `needs-maintainer`; if it already carries a `decision:` comment, follow that
+> decision. From the rest, pick one issue or a set of related ones, measure the real vendor API with
+> the credentials in the environment, fix Backlot, and open a pull request that closes them.
+> Anything you found that is outside that scope becomes a new issue, not part of the pull request.
+> If a `routine-fire-payload` block names an issue, look at that one first. The skill has the full
+> procedure; follow it.
+
+**Repository**: this one. **Schedule**: every two hours, 09:00–21:00 Asia/Seoul, weekdays. **API
+trigger**: on; its URL and token live only in this repository's `LOOP_FIRE_URL` and
+`LOOP_FIRE_TOKEN` secrets. **Connectors**: none.
+
+**Environment** `backlot-loop`, personal to the loop account. Network access **Custom** with the
+default registries kept, plus: `slack.com`, `*.atlassian.net`, `api.atlassian.com`,
+`*.googleapis.com`, `oauth2.googleapis.com`, `api.hubapi.com`, `api.linear.app`,
+`api.fireflies.ai`, `api.notion.com`, `*.amazonaws.com`. Setup script: `uv sync --all-extras`.
+
+Environment variables are three: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and
+`AWS_DEFAULT_REGION`, for an IAM principal allowed to read the loop's parameters (below) and the
+measurement bucket, plus `AWS_SSM_REGION` when the parameters live in a different region
+from the bucket (they do: `us-east-1` against a bucket in `ap-northeast-2`). Every other vendor
+credential arrives through Parameter Store at session start.
+Anyone whose sessions use this environment can read its variables, which is why it is personal to
+the loop account and shared with nobody.
+
+### Credentials
+
+The vendor credentials [`docs/fidelity.md`](fidelity.md) and the source routers read live in AWS
+Systems Manager Parameter Store, one `SecureString` per variable, named `/backlot-loop/<VARIABLE>`.
+The store is the list: whatever is under that path is what a session gets.
+
+When a cloud session starts, the `SessionStart` hook in [`.claude/settings.json`](../.claude/settings.json)
+runs [`scripts/loop_env.py`](../scripts/loop_env.py), which reads every parameter under
+`/backlot-loop/` and appends an `export` line for each to the file Claude Code sources before every
+Bash call, so the variables are in the session without ever being in the environment's own list. The
+hook runs only where `CLAUDE_CODE_REMOTE` is `true` and an AWS key is present; a local session is
+untouched. A parameter whose leaf is not a variable name is skipped, and so are **`GITHUB_TOKEN` and
+`GH_TOKEN`**: either one replaces the platform's GitHub credential with its literal value, and every
+`gh` call in the run fails.
+
+The IAM principal behind the environment's key needs this on top of its bucket access, with the
+region and account filled in:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "ssm:GetParametersByPath",
+      "Resource": "arn:aws:ssm:<region>:<account>:parameter/backlot-loop/*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "kms:Decrypt",
+      "Resource": "arn:aws:kms:<region>:<account>:key/<id of alias/aws/ssm>"
+    }
+  ]
+}
+```
+
+Rotating a credential is `put-parameter --overwrite`; the next session reads the new value. Reading
+the parameters back is `aws ssm get-parameters-by-path --path /backlot-loop/ --with-decryption`.
+
+## Cost and identity
+
+A run is subscription usage on the loop account, and runs count against that account's daily
+routine cap, both shown on the routine's page. Parallel runs share the account's rate limit.
+Everything the loop does on GitHub — commits, pull requests, comments — appears as the loop
+account's GitHub user, so the other maintainer merges.
+
+## Rehearsing a change to the loop
+
+`/backlot-loop <issue-number>` in a local checkout with the vendor credentials in the environment runs the
+whole procedure on that issue without writing to GitHub: no comments, no labels, no push, no PR.
+It ends by printing the pull request it would have opened and both reviewers' verdicts. Use it on a
+closed issue whose merged fix you know before changing the skill or a reviewer.

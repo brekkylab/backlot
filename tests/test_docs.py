@@ -266,7 +266,7 @@ _LOOP_FILES = (
     ),
     (
         "docs/loop.md",
-        ("needs-maintainer", "ready-for-maintainer", "decision: gap", "GITHUB_TOKEN"),
+        ("needs-maintainer", "ready-for-maintainer", "/decision 1", "GITHUB_TOKEN"),
     ),
     (".claude/settings.json", ("SessionStart", "scripts/cloud_session_start.sh")),
     (

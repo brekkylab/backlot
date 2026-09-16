@@ -210,7 +210,7 @@ async def _validate_api_version(request: Request) -> None:
     a repo that does not exist while sending no credentials at all. It matters to the caller — a
     version typo reported as 401 sends them to their token, and as 404 to their path, when the header
     is what is wrong. A credential that arrived and failed to resolve is checked earlier still (see
-    :func:`_validate_bad_credential`; measured 2026-09-15), so this only ever answers the
+    :func:`_validate_bad_credential`), so this only ever answers the
     version's 400 to a caller with no credential or a good one. Declared after
     ``_validate_bad_credential`` and before ``_validate_path_owner`` in the router's dependency list,
     which is what puts it in that order.
@@ -230,8 +230,8 @@ async def _validate_path_owner(request: Request) -> None:
     with neither path param (``/search/issues``, ``/user/repos``) are unaffected. Credentials are
     checked first, so a bad token still reports 401 rather than the owner's 404. `/rate_limit` is
     the one route a caller with no credential is served, as real serves it (200 at the anonymous
-    limits, measured 2026-09-10); it names no owner and reads no document, and it checks the
-    credential it is given itself (see :func:`get_rate_limit`).
+    limits, measured 2026-09-10); it names no owner and reads no document. A bad credential there
+    still 401s, ahead of this dependency (see :func:`_validate_bad_credential`).
 
     The match is case-insensitive, as GitHub logins are, and real then answers in the canonical
     spelling whatever case was asked for: `/repos/PSF/REQUESTS` answers `full_name: psf/requests`

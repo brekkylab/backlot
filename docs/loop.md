@@ -82,16 +82,6 @@ untouched. A parameter whose leaf is not a variable name is skipped, and so are 
 `GH_TOKEN`**: either one replaces the platform's GitHub credential with its literal value, and every
 `gh` call in the run fails.
 
-To load the parameters from a maintainer's `.env`, skipping the three AWS variables the environment
-carries and the keys the loop does not use:
-
-```bash
-while IFS='=' read -r key value; do
-  case "$key" in ''|\#*|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_DEFAULT_REGION|PYPI_TOKEN|OPENAI_API_KEY|ANTHROPIC_API_KEY) continue;; esac
-  aws ssm put-parameter --name "/backlot-loop/$key" --type SecureString --value "$value" --overwrite
-done < .env
-```
-
 The IAM principal behind the environment's key needs this on top of its bucket access, with the
 region and account filled in:
 

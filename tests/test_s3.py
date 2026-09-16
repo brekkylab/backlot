@@ -225,6 +225,24 @@ def _s3_big_corpus(n=3000):
             "visibility": "public",
         }
 
+    # A fourth bucket for the one group that has no successor: every key rolls up under the last
+    # code point, so `key_successor` of the group is None and there is no bound to resume past.
+    # Two keys, so one of them is still unfetched when the page holds the group.
+    for doc_id in ("a", "b"):
+        key = f"\U0010ffff{doc_id}.txt"
+        yield {
+            "source_type": "s3",
+            "doc_id": f"s3-edge-{doc_id}",
+            "bucket": "edge-bucket",
+            "group": "engineering",
+            "key": key,
+            "title": key,
+            "content": f"payload-{doc_id}",
+            "author_email": "eng-bulk@acme.com",
+            "author_groups": ["engineering"],
+            "visibility": "public",
+        }
+
 
 @pytest.fixture(scope="module")
 def big_bucket_settings(tmp_path_factory):
@@ -1573,6 +1591,32 @@ def test_a_repeated_parameter_is_read_as_its_first_value_including_list_type(
     )
     assert _children(_listing(big_bucket_client, "list-type=1&list-type=2", token))[2] == "Marker"
     assert "KeyCount" in _children(_listing(big_bucket_client, "list-type=2&list-type=1", token))
+
+
+def test_a_page_whose_trailing_group_has_no_successor_is_complete_not_truncated(
+    big_bucket_client, big_bucket_settings
+):
+    """A rolled-up group under the last code point has no bound to resume past, and the page that
+    ends on it used to say truncated and hand back nothing to page with — `IsTruncated true`,
+    `KeyCount 1`, no `NextContinuationToken`. Real never sends a truncated page with no cursor, and
+    there was nothing to fetch anyway: a key sorting after that group cannot be spelled, so every
+    row still unfetched rolls up into the CommonPrefixes entry the page already carries.
+
+    Both listings reach it — V2 through the group token and V1 through `NextMarker` — and the walk
+    ends on the first page either way."""
+    token = big_bucket_settings.admin_token
+    last = quote("\U0010ffff")
+    for query in (f"list-type=2&delimiter={last}&max-keys=1", f"delimiter={last}&max-keys=1"):
+        r = _s3_get(big_bucket_client, f"/s3/edge-bucket?{query}", token)
+        assert r.status_code == 200, r.text
+        root = ET.fromstring(r.text)
+        assert _entries(root) == ["\U0010ffff"], query
+        assert root.findtext(f"{{{S3NS}}}IsTruncated") == "false", query
+        assert root.find(f"{{{S3NS}}}NextContinuationToken") is None, query
+        assert root.find(f"{{{S3NS}}}NextMarker") is None, query
+    # The guard is only for the group with no successor: a group that has one still pages.
+    ordinary = _listing(big_bucket_client, "delimiter=/&max-keys=1", token)
+    assert ordinary.findtext(f"{{{S3NS}}}IsTruncated") == "true"
 
 
 @pytest.mark.parametrize("edge", ["\U0010ffff", "\ud7ff"])

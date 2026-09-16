@@ -641,21 +641,29 @@ def _list_objects(
     # emitted at most once across all pages, and plain keys still use the last-key cursor.
     # V1 needs no such split: its cursor IS the last entry, group or key, and a marker naming a
     # group is read back as that same bound above.
+    last_kind, last_val = entries[-1] if entries else (None, None)
+    group_runs_on = (
+        is_truncated
+        and last_kind == "cp"
+        and overflow_row is not None
+        and overflow_row["key"].startswith(last_val)
+    )
+    group_successor = store.key_successor(last_val) if group_runs_on else None
+    if group_runs_on and group_successor is None:
+        # That group's key range runs to the end of what a key can spell (see
+        # ``store.key_successor``), so every row still unfetched rolls up into the CommonPrefixes
+        # entry this page already carries: the page holds every entry there is, and saying
+        # truncated would leave a client a page it cannot page out of — there is no cursor to give
+        # it and nothing left to fetch with one.
+        is_truncated = False
     next_token = None
     if is_truncated and rows and v2:
-        last_kind, last_val = entries[-1] if entries else (None, None)
-        if (
-            last_kind == "cp"
-            and overflow_row is not None
-            and overflow_row["key"].startswith(last_val)
-        ):
-            group_successor = store.key_successor(last_val)
-            next_token = (
-                _encode_group_token(group_successor) if group_successor is not None else None
-            )
-        else:
-            next_token = _encode_key_token(rows[-1]["key"])
-    next_marker = entries[-1][1] if (is_truncated and entries and not v2 and delimiter) else None
+        next_token = (
+            _encode_group_token(group_successor)
+            if group_successor is not None
+            else _encode_key_token(rows[-1]["key"])
+        )
+    next_marker = last_val if (is_truncated and entries and not v2 and delimiter) else None
 
     body = [
         f'<ListBucketResult xmlns="{NS}"><Name>{escape(bucket)}</Name>',

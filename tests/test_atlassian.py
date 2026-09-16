@@ -1812,3 +1812,17 @@ def test_confluence_space_read_without_the_expansion_carries_no_permissions(clie
     plain = client.get(f"/atlassian/wiki/rest/api/space/{space['key']}", headers=admin_h).json()
     assert "permissions" not in plain
     assert plain["_expandable"]["permissions"] == ""
+
+
+def test_confluence_refuses_the_permission_read_before_it_resolves_the_key(client, admin_h):
+    """`GET space/NOSUCHSPACE/permission` is the same 405 as the key that names a space, measured
+    2026-09-16 — the method is refused ahead of the lookup, so this route never reports whether a
+    space exists. The space read itself still does, with its 404."""
+    absent = client.get("/atlassian/wiki/rest/api/space/NOSUCHSPACE/permission", headers=admin_h)
+    known = client.get("/atlassian/wiki/rest/api/space", headers=admin_h).json()["results"][0]
+    present = client.get(
+        f"/atlassian/wiki/rest/api/space/{known['key']}/permission", headers=admin_h
+    )
+    assert absent.status_code == present.status_code == 405
+    assert absent.json() == present.json()
+    assert "allow" not in absent.headers

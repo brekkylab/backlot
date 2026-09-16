@@ -1029,8 +1029,9 @@ def _space_permissions(conn, container: str) -> list[dict]:
     One operation, `read`/`space`, because it is the only one a corpus states: the ACL says who can
     read a document and nothing at all about who may administer the space or delete a comment. Real
     answered 120 entries across 26 operations on the space measured (brekkylab.atlassian.net,
-    2026-09-16), of which the five `read`/`space` entries are the ones this can derive; inventing
-    the other 25 would put a permission model on the wire that the corpus never licensed.
+    2026-09-16), five of them `read`/`space`; inventing the other 25 operations would put a
+    permission model on the wire that the corpus never licensed, and the five are one roster here
+    because a corpus states the readers once.
 
     ``anonymousAccess`` is False whatever the grant, because no grant a corpus can write says
     "the public": ``container_member_emails`` of ``None`` is an ORG-wide grant (`store._expand_grants`
@@ -1140,8 +1141,9 @@ async def confluence_space_permission(key: str, request: Request):
     fact about the wire, and declaring a `GET` operation the vendor does not have is what the
     acknowledged `extra_operation` for this path used to record.
 
-    ``key`` is unused and declared because the path carries it; a caller's key is never resolved,
-    since the refusal comes before any lookup on real (a key naming no space answers the same 405).
+    ``key`` is unused and declared because the path carries it: the refusal comes before any lookup
+    on real, where `GET space/NOSUCHSPACE/permission` answers the same 405 as a key that names a
+    space (measured 2026-09-16), so resolving one here would only be able to disagree.
     """
     raise errors_atlassian.method_not_allowed(request.url.path, request.method)
 

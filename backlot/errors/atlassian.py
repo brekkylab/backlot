@@ -249,8 +249,8 @@ def bad_page_token() -> AtlassianError:
 # but `project/search`, where it declares `GET` alone and real answers the three methods
 # `/rest/api/3/project/{projectIdOrKey}` takes — so `search` binds as a project key there, and the
 # measurement rather than the document is what this row states. `project/{key}/role/{id}` is the
-# reverse: every standard method reaches a handler on real (a `POST` with an unknown key is that
-# route's 404, not a 405), so no 405 could be measured and its row is the document's.
+# reverse: a `POST` there is that route's 404 for an unknown key rather than a 405, and the document
+# declares all four methods, so no 405 could be measured and its row is the document's alone.
 _JIRA_ALLOW = (
     ("/rest/api/{version}/serverInfo", ("GET",)),
     ("/rest/api/{version}/field", ("GET", "POST")),
@@ -266,7 +266,8 @@ _JIRA_ALLOW = (
 
 def _route_regex(template: str) -> re.Pattern[str]:
     """``template`` with `{version}` bound to the two Jira mounts and every other placeholder to one
-    path segment. Anchored at both ends: `/issue/{key}` must not match `/issue/{key}/comment`."""
+    path segment. Read with ``fullmatch`` below, so `/issue/{key}` never matches
+    `/issue/{key}/comment`."""
     segments = [
         "[23]" if seg == "{version}" else "[^/]+" if seg.startswith("{") else re.escape(seg)
         for seg in template.split("/")
@@ -290,10 +291,11 @@ def jira_allow(path: str) -> str | None:
 def method_not_allowed(path: str, method: str) -> AtlassianError:
     """The 405 each product answers for a method it does not serve at ``path``.
 
-    The one refusal where the shared envelope :func:`http_body` emits is wrong for BOTH products,
-    and wrong in two different directions. Measured on brekkylab.atlassian.net, 2026-09-16:
-    Confluence answers a Spring `errors` LIST on `application/json` and sends no `Allow` at all,
-    where Jira answers RFC 7807 on `application/problem+json` and names the methods it takes. A
+    A refusal the shared envelope :func:`http_body` gets wrong for both products, in two different
+    directions. Measured on brekkylab.atlassian.net, 2026-09-16, on three Confluence requests and
+    fifteen distinct Jira ones: Confluence answers a Spring `errors` LIST on `application/json` with no
+    `Allow` header on any of them, where Jira answers RFC 7807 on `application/problem+json` and
+    names the methods that path takes. A
     client reading `errors[0]["code"]` is the one this costs: Backlot's shared envelope has an
     `errors` OBJECT, so that read raises against Backlot and works against real Confluence.
 

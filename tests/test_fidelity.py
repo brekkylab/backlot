@@ -899,6 +899,30 @@ def test_a_breaking_finding_acknowledged_by_hand_survives_a_rewrite(_vendor, tmp
     ]
 
 
+GITHUB_ACTIONS_POLICIES_DOC = {
+    "paths": {
+        "/orgs/{org}/actions/policies": {"get": {}, "post": {}},
+        "/orgs/{org}/actions/policies/{policy_id}": {"get": {}, "put": {}, "delete": {}},
+        "/repos/{owner}/{repo}/actions/policies": {"get": {}, "post": {}},
+        "/repos/{owner}/{repo}/actions/policies/{policy_id}": {"get": {}, "put": {}, "delete": {}},
+    }
+}
+
+
+def test_github_baseline_acknowledges_the_actions_policies_family_as_a_gap():
+    """The ten `actions/policies` operations GitHub's published spec describes are read from the
+    corpus never, so the checked-in baseline records all ten as an acknowledged gap rather than
+    leaving them to surface as unacknowledged findings on the next `backlot diff` run. Built from a
+    fixture document, not a live fetch, so a rewrite that drops or mis-classifies one of the ten is
+    caught here rather than only on that scheduled run."""
+    vendor = openapi_diff.from_openapi(GITHUB_ACTIONS_POLICIES_DOC)
+    assert len(vendor) == 10
+    findings = operations.diff_operations({}, vendor)
+    baseline = Baseline.load(baseline_path("github"))
+    assert baseline.unacknowledged(findings) == []
+    assert {f.severity for f in findings} == {GAP}
+
+
 @pytest.mark.parametrize(
     "reply",
     [None, (500, "nope"), (200, "<html>just a moment…</html>"), (200, {"data": {"__schema": {}}})],

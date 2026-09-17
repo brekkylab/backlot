@@ -286,7 +286,7 @@ def _conflict(selected: list[str], resource: str) -> Response:
     )
 
 
-def _head_refusal(selected: list[str], served_on_get: frozenset[str] = frozenset()) -> Response:
+def _head_refusal(selected: list[str], served_on_get: frozenset[str]) -> Response:
     """HEAD with a sub-resource selector, refused before the bucket or the key is looked up.
 
     No sub-resource has a HEAD form: real S3 answers ``HEAD /{bucket}?versioning`` and
@@ -879,7 +879,9 @@ async def object_get(request: Request, bucket: str, key: str):
     conn = auth.conn(request)
     selected = _selected(request.query_params, _OBJECT_SELECTORS)
     if selected and request.method == "HEAD":
-        return _head_refusal(selected)
+        # An empty set, not `_BUCKET_GETS`: a key's path serves no sub-resource on a GET, so its
+        # 405 names no method even for a selector a bucket's path does serve.
+        return _head_refusal(selected, frozenset())
     if len(selected) > 1:
         return _conflict(selected, f"/{bucket}/{key}")
     if selected == ["uploadId"]:

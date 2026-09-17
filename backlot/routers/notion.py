@@ -10,7 +10,7 @@ ACL-filtered. Errors use Notion's envelope: ``{"object":"error","status","code",
 
 - ``2025-09-03`` and later: ``databases.retrieve`` returns a ``data_sources: [{id,name}]`` array
   and rows are read via ``POST /data_sources/{id}/query``.
-- before it (2022-06-28 and the three versions older than that): ``databases.retrieve`` returns
+- before it (2022-06-28 and the four versions older than that): ``databases.retrieve`` returns
   ``properties`` (schema) inline and rows are read via ``POST /databases/{id}/query``.
 
 One query path per version, as on the real API: the other one answers ``invalid_request_url``

@@ -52,7 +52,10 @@ that same session wakes, reacts 🚀 to the pull request, reproduces each commen
 answers it or answers with the measurement that contradicts it. Nothing new appears in the
 routine's run list for this; the session is the one the claim comment on the issue links to. An
 approval wakes nothing; merging is yours. Should the session fail to wake, the next scheduled run
-finds the unanswered comments itself. A `/decision` is the one comment the woken session leaves
+finds the unanswered comments itself. A merge conflict wakes nothing either — GitHub sends no event
+when `main` moves under a branch — so the scheduled run also merges `main` into any loop pull
+request that has come to conflict, and a review that says only "resolve the conflict" is answered
+at the next slot at the latest. A `/decision` is the one comment the woken session leaves
 alone: the doorbell rings a fresh run for it wherever it is posted, so a decision on a pull request
 is acted on once.
 

@@ -121,8 +121,9 @@ three issues starts three runs, and each takes its own. If the named item is not
 payload — the schedule — surveys the whole queue.
 
 Build one worklist in this priority: (a) the loop's open PRs (`claude/` branches) with review comments or failing checks
-you have not answered, or with green checks and neither `ready-for-maintainer` nor
-`needs-maintainer` — a hand-over an earlier run did not finish, which you finish from step 9,
+you have not answered, a merge conflict (`gh pr view <n> --json mergeStateStatus` answers `DIRTY`),
+or green checks and neither `ready-for-maintainer` nor `needs-maintainer` — a hand-over an earlier
+run did not finish, which you finish from step 9,
 (b) `needs-maintainer` issues and pull requests whose newest comment is a `/decision`,
 (c) issues nobody has claimed. Drop anything labelled `hold`. An issue is taken, and dropped, when
 either holds: an open pull request already closes it (`gh pr list --state open --search "closes
@@ -133,6 +134,18 @@ whose newest comment is not a `/decision` is waiting on a person: drop it, and n
 question a second time.
 
 ## 2. Your own pull requests first
+
+A review is unaddressed when a thread has no reply from this account, and also when a review's own
+body — a `changes_requested` or `commented` submission with no inline threads — has had no reply
+from this account since it was posted; answer such a body with a conversation comment. Read both:
+`gh api repos/brekkylab/backlot/pulls/<n>/comments` for threads and `.../pulls/<n>/reviews` for
+bodies.
+
+Before any comment, the branch has to merge: if `gh pr view <n> --json mergeStateStatus` answers
+`DIRTY`, `git fetch origin main && git merge origin/main`, resolve each conflict so that the
+pull request's own change and everything that landed on `main` both survive, run the suite, push,
+and say so in one conversation comment. A reviewer who wrote only "resolve the conflict" is
+answered by exactly that.
 
 For each unaddressed review comment:
 
@@ -276,8 +289,9 @@ Auto-fix wakes this session, not a new run, when the pull request you handed ove
 review or a check fails. Everything above still binds; in particular:
 
 - React 🚀 to the pull request first, so a maintainer watching GitHub knows the review was picked
-  up, then work step 2 on it: reproduce each unanswered comment, fix and reply or reply with the
-  measurement that contradicts it, and run the reviewers again on what you changed.
+  up, then work step 2 on it: merge `main` if the branch conflicts, reproduce each unanswered
+  comment and each unanswered review body, fix and reply or reply with the measurement that
+  contradicts it, and run the reviewers again on what you changed.
 - A comment that could mean two changes, or that asks whether Backlot should serve something at
   all, is answered on GitHub with a decision comment and `needs-maintainer`, never with a question
   in this session: nobody is reading it.

@@ -252,7 +252,8 @@ each issue the PR named.
 
 ## 10. Hand over
 
-When both reviewers pass: wait for `gh pr checks <n> --watch --fail-fast`. Green: add
+When both reviewers pass: wait for `gh pr checks <n> --watch --fail-fast`. Green: if
+`gh pr view <n> --json assignees` shows none, `gh pr edit <n> --add-assignee @me`; then add
 `ready-for-maintainer` and `gh pr edit <n> --add-reviewer <the other maintainer's login, read from
 the repository's recent merges with gh pr list --state merged --limit 20 --json mergedBy>`. Red:
 back to step 2 with the failing check. Comment on each issue you touched with one sentence saying

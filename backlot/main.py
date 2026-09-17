@@ -221,6 +221,72 @@ async def report_github_rate_limit(request: Request, call_next):
     return response
 
 
+def _would_redirect_to_the_slash_free_path(request: Request) -> bool:
+    """Whether the router's `redirect_slashes` would answer this path with a 307 to its slash-free
+    spelling.
+
+    That is the whole of what real has no equivalent for, so it is the whole of what gets
+    intercepted. Starlette redirects only when the path AS SENT matches no route and the slash-free
+    spelling matches one, so a route whose last segment is a `{path:path}` — `/contents/{path:path}`
+    matches the empty string — answers its own trailing slash and never reaches the redirect, the
+    same as real answers it.
+    """
+    scope = request.scope
+    routes = app.router.routes
+    if any(route.matches(scope)[0] is not Match.NONE for route in routes):
+        return False
+    slash_free = {**scope, "path": scope["path"].rstrip("/")}
+    return any(route.matches(slash_free)[0] is not Match.NONE for route in routes)
+
+
+@app.middleware("http")
+async def refuse_a_trailing_slash_on_github(request: Request, call_next):
+    """A trailing slash on `/github` that matches no route is a 404, not the 307 to the slash-free
+    path that Starlette's router answers by default.
+
+    Real runs no slash redirect at all: a trailing slash is just part of the path, and what answers
+    it is whichever route matches the path as sent. A route ending in a path parameter absorbs the
+    slash as an empty segment — `GET /repos/{owner}/{repo}/contents/` is the root listing's own 200,
+    like `/contents` beside it — and every other route simply does not match, so the request gets
+    the same 404 a path with no route at all gets, ahead of a bad bearer's own 401. Measured against
+    api.github.com on 2026-09-15, 2026-09-16 and 2026-09-17: 404 for `/repos/{owner}/{repo}/`,
+    `/orgs/{org}/`, `/user/repos/`, `/repos/{owner}/{repo}/pulls/`, `/rate_limit/`,
+    `/repositories/{id}/` and `/organizations/{id}/repos/`, and 200 for
+    `/repos/{owner}/{repo}/contents/`. So this fires on the redirect alone — see
+    :func:`_would_redirect_to_the_slash_free_path` — and leaves a trailing slash a route does match
+    to that route.
+
+    A "no route matched" 404 carries the five `x-ratelimit-*` headers, via `rate_limit_headers`,
+    for an anonymous caller alone: the anonymous limit is counted by address, ahead of and
+    independent of routing, where the token-keyed one only starts once a route is reached — unlike
+    a 404 for a route that DID match, on a resource that does not exist, which carries both for
+    either caller.
+
+    `redirect_slashes` is a setting of the whole app's `Router`, shared by every vendor mounted
+    here, and no other vendor's own answer to a trailing slash has been measured — so this
+    intercepts ahead of routing rather than turning the flag off for all of them. Registered inside
+    `resolve_github_id_paths`, so an id-keyed path is already its login-keyed spelling by the time
+    the question is asked and refuses its slash with the rest; and outside `report_github_rate_limit`
+    and the version echo, so a refused path reaches the rate limiter only through the call below and
+    never carries the echo.
+    """
+    path = request.url.path
+    if (
+        path.startswith("/github/")
+        and path.endswith("/")
+        and _would_redirect_to_the_slash_free_path(request)
+    ):
+        exc = StarletteHTTPException(status_code=404)
+        body = errors.http_body(path, exc, request.query_params)
+        response = JSONResponse(status_code=exc.status_code, content=body or {"detail": exc.detail})
+        if not github.rate_limit_caller(request)[1]:
+            headers = github.rate_limit_headers(request, exc.status_code, count=True)
+            for name, value in headers.items():
+                response.headers[name] = value
+        return response
+    return await call_next(request)
+
+
 @app.middleware("http")
 async def resolve_github_id_paths(request: Request, call_next):
     """Serve `/github/repositories/{id}/…` and `/github/organizations/{id}/…` as what the
@@ -347,69 +413,6 @@ async def parse_slack_form(request: Request, call_next):
         ctype = request.headers.get("content-type", "")
         if "application/x-www-form-urlencoded" in ctype:
             request.state._form = dict(await request.form())
-    return await call_next(request)
-
-
-def _would_redirect_to_the_slash_free_path(request: Request) -> bool:
-    """Whether the router's `redirect_slashes` would answer this path with a 307 to its slash-free
-    spelling.
-
-    That is the whole of what real has no equivalent for, so it is the whole of what gets
-    intercepted. Starlette redirects only when the path AS SENT matches no route and the slash-free
-    spelling matches one, so a route whose last segment is a `{path:path}` — `/contents/{path:path}`
-    matches the empty string — answers its own trailing slash and never reaches the redirect, the
-    same as real answers it.
-    """
-    scope = request.scope
-    routes = app.router.routes
-    if any(route.matches(scope)[0] is not Match.NONE for route in routes):
-        return False
-    slash_free = {**scope, "path": scope["path"].rstrip("/")}
-    return any(route.matches(slash_free)[0] is not Match.NONE for route in routes)
-
-
-@app.middleware("http")
-async def refuse_a_trailing_slash_on_github(request: Request, call_next):
-    """A trailing slash on `/github` that matches no route is a 404, not the 307 to the slash-free
-    path that Starlette's router answers by default.
-
-    Real runs no slash redirect at all: a trailing slash is just part of the path, and what answers
-    it is whichever route matches the path as sent. A route ending in a path parameter absorbs the
-    slash as an empty segment — `GET /repos/{owner}/{repo}/contents/` is the root listing's own 200,
-    like `/contents` beside it — and every other route simply does not match, so the request gets
-    the same 404 a path with no route at all gets, ahead of a bad bearer's own 401. Measured against
-    api.github.com on 2026-09-15, 2026-09-16 and 2026-09-17: 404 for `/repos/{owner}/{repo}/`,
-    `/orgs/{org}/`, `/user/repos/`, `/repos/{owner}/{repo}/pulls/` and `/rate_limit/`, and 200 for
-    `/repos/{owner}/{repo}/contents/`. So this fires on the redirect alone — see
-    :func:`_would_redirect_to_the_slash_free_path` — and leaves a trailing slash a route does match
-    to that route.
-
-    A "no route matched" 404 carries the five `x-ratelimit-*` headers, via `rate_limit_headers`,
-    for an anonymous caller alone: the anonymous limit is counted by address, ahead of and
-    independent of routing, where the token-keyed one only starts once a route is reached — unlike
-    a 404 for a route that DID match, on a resource that does not exist, which carries both for
-    either caller.
-
-    `redirect_slashes` is a setting of the whole app's `Router`, shared by every vendor mounted
-    here, and no other vendor's own answer to a trailing slash has been measured — so this
-    intercepts ahead of routing rather than turning the flag off for all of them. Registered after
-    the GitHub middlewares above, which makes it outer to them, so a trailing-slash path never runs
-    through the version echo, and reaches the rate limiter only through the call below.
-    """
-    path = request.url.path
-    if (
-        path.startswith("/github/")
-        and path.endswith("/")
-        and _would_redirect_to_the_slash_free_path(request)
-    ):
-        exc = StarletteHTTPException(status_code=404)
-        body = errors.http_body(path, exc, request.query_params)
-        response = JSONResponse(status_code=exc.status_code, content=body or {"detail": exc.detail})
-        if not github.rate_limit_caller(request)[1]:
-            headers = github.rate_limit_headers(request, exc.status_code, count=True)
-            for name, value in headers.items():
-                response.headers[name] = value
-        return response
     return await call_next(request)
 
 

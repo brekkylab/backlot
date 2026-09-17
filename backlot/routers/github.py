@@ -564,16 +564,20 @@ def canonical_id_path(conn, org: str, path: str) -> str | None:
     if len(parts) < 3 or parts[1] not in _ID_PATHS:
         return None
     tail = parts[3:]
+    # A trailing slash survives the rewrite. `/repositories/{id}/` is real's 404, the same as the
+    # `/repos/{owner}/{repo}/` it stands for, so dropping it with the rest of the stripping would
+    # answer the resource on a spelling real refuses.
+    slash = "/" if path.endswith("/") else ""
     if parts[1] == "organizations":
         named = org if str(synth.github_user_id(org)) == parts[2] else parts[2]
-        return "/".join(["/github/orgs", named, *tail])
+        return "/".join(["/github/orgs", named, *tail]) + slash
     hits = [
         r["name"]
         for r in store.list_containers(conn, "github")
         if str(synth.github_user_id(r["name"])) == parts[2]
     ]
     named = hits[0] if len(hits) == 1 else parts[2]
-    return "/".join(["/github/repos", org, named, *tail])
+    return "/".join(["/github/repos", org, named, *tail]) + slash
 
 
 def _link_response(link: str | None, body: list) -> Response:

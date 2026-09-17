@@ -129,6 +129,10 @@ operation botocore declares is sent to it signed, and the answer is classified:
   neither implements the operation nor refuses it, so the caller parses another operation's body
   under a 200, with no error and no log line. `silent_fallthrough`, and breaking.
 
+"The same body" is the status, the XML root element and the set of direct child elements. The
+children are what keep the two listings apart: `?list-type=2` and a bare bucket GET are both
+`200 <ListBucketResult>`, and only `KeyCount` against `Marker` says they are different answers.
+
 Requests are signed with [`backlot.sigv4`](../backlot/sigv4.py) — the module that verifies them —
 so the probe adds no dependency and a change to signing breaks both sides at once.
 

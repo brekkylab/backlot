@@ -13,8 +13,10 @@ ACL-filtered. Errors use Notion's envelope: ``{"object":"error","status","code",
 - before it (2022-06-28 and the four versions older than that): ``databases.retrieve`` returns
   ``properties`` (schema) inline and rows are read via ``POST /databases/{id}/query``.
 
-One query path per version, as on the real API: the other one answers ``invalid_request_url``
-(see ``_wrong_query_path``). Both retrieve shapes stay served, each under its own versions.
+One query path per version, as on the real API: the other one answers ``invalid_request_url``,
+and so does ``GET /data_sources/{id}`` under a version older than the split, which mounts no data
+source route at all (see ``_unmounted_here``). ``databases.retrieve`` is mounted under every
+version and answers in whichever of the two shapes the caller's version reads.
 Backlot has one data source per database, its id assigned at import alongside the database's own.
 
 **The header is required** on every route here, as Notion requires it on every REST request: a
@@ -222,14 +224,20 @@ def _refusal(request: Request, caller) -> JSONResponse | None:
     return None
 
 
-def _wrong_query_path(request: Request, *, data_sources: bool) -> JSONResponse | None:
-    """Notion's answer when the caller's version does not serve the query path it asked for --
-    None when it does. Runs after ``_refusal``, so the version read here is one the caller sent.
+def _unmounted_here(request: Request, *, data_sources: bool) -> JSONResponse | None:
+    """Notion's answer when the route the caller asked for is not mounted under the version it
+    sent -- None when it is. Runs after ``_refusal``, so the version read here is one the caller
+    sent.
 
-    Measured against api.notion.com on 2026-09-11 with an integration token, probing each path
-    with an id that exists but is a page: 2022-06-28 serves ``databases/{id}/query`` and answers
-    ``invalid_request_url`` for ``data_sources/{id}/query``, and 2025-09-03 the other way round.
-    That probe recorded codes rather than bodies, and reported the refusal as "the same as a
+    The two query paths, measured against api.notion.com on 2026-09-11 with an integration token,
+    probing each with an id that exists but is a page: 2022-06-28 serves ``databases/{id}/query``
+    and answers ``invalid_request_url`` for ``data_sources/{id}/query``, and 2025-09-03 the other
+    way round. ``GET /data_sources/{id}`` is gated on the version the same way, measured on
+    2026-09-17 with an id that exists and is not a data source: 2021-05-11 and 2022-06-28 answer
+    ``invalid_request_url``, 2025-09-03 and 2026-03-11 answer ``object_not_found``, which is the
+    route answering. Its counterpart ``GET /databases/{id}`` is mounted under all seven.
+
+    The 09-11 probe recorded codes rather than bodies, and reported the refusal as "the same as a
     made-up path", so the message here is what api.notion.com answered on 2026-09-15 for a path no
     version mounts at all."""
     if _data_sources_model(_version(request)) is not data_sources:
@@ -504,7 +512,7 @@ async def get_data_source(data_source_id: str, request: Request):
     caller = auth.resolve_bearer(request)
     if (refusal := _refusal(request, caller)) is not None:
         return refusal
-    if (refusal := _wrong_query_path(request, data_sources=True)) is not None:
+    if (refusal := _unmounted_here(request, data_sources=True)) is not None:
         return refusal
     conn = auth.conn(request)
     # No subtype check needed here, unlike get_database's lookup by `id` (which spans both pages
@@ -529,7 +537,7 @@ async def _query_rows(request: Request, row_id: str, *, data_sources: bool):
     caller = auth.resolve_bearer(request)
     if (refusal := _refusal(request, caller)) is not None:
         return refusal
-    if (refusal := _wrong_query_path(request, data_sources=data_sources)) is not None:
+    if (refusal := _unmounted_here(request, data_sources=data_sources)) is not None:
         return refusal
     db_id = (
         _db_doc_for_data_source(request, row_id) if data_sources else _existing_id(request, row_id)

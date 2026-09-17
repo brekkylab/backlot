@@ -235,10 +235,33 @@ def test_notion_credential_is_checked_before_the_version(client):
         assert r.json()["code"] == "unauthorized", (path, version)
 
 
-def test_notion_data_source_retrieve(client, notion_h):
+def test_notion_data_source_retrieve_is_mounted_only_above_the_cut(client, notion_h):
+    """`GET /data_sources/{id}` is gated on the version the way the query pair is: a version older
+    than the split mounts no data source route at all, so it answers `invalid_request_url` rather
+    than the object. Measured against api.notion.com on 2026-09-17 with an id that exists and is
+    not a data source: 2021-05-11 and 2022-06-28 refuse, 2025-09-03 and 2026-03-11 answer
+    `object_not_found`, which is the route answering. `GET /databases/{id}` is the control -- it is
+    mounted under all seven, so what is refused below the cut is this route and not the request."""
     dsid = synth.notion_data_source_id("nt-tasks-db")
-    ds = client.get(f"/notion/v1/data_sources/{dsid}", headers=notion_h).json()
-    assert ds["object"] == "data_source" and "Status" in ds["properties"]
+    did = synth.notion_id("nt-tasks-db")
+    for version in ("2025-09-03", "2026-03-11"):
+        ds = client.get(
+            f"/notion/v1/data_sources/{dsid}", headers={**notion_h, "Notion-Version": version}
+        )
+        assert ds.status_code == 200, version
+        body = ds.json()
+        assert body["object"] == "data_source" and "Status" in body["properties"], version
+    for version in ("2021-05-11", "2022-06-28"):
+        h = {**notion_h, "Notion-Version": version}
+        gone = client.get(f"/notion/v1/data_sources/{dsid}", headers=h)
+        assert gone.status_code == 400, version
+        assert gone.json() == {
+            "object": "error",
+            "status": 400,
+            "code": "invalid_request_url",
+            "message": "Invalid request URL.",
+        }, version
+        assert client.get(f"/notion/v1/databases/{did}", headers=h).status_code == 200, version
 
 
 # --- Notion: typed response schema ---------------------------------------------------------

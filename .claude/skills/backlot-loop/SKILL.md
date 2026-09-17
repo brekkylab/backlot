@@ -105,16 +105,11 @@ hand-over — end the first line with `(running branch <name>)`, so a maintainer
 tell a branch trial from the loop proper. It may carry `mode: rehearsal` too, which is the
 rehearsal above; `mode: live` or no `mode` line is an ordinary run.
 
-A `routine-fire-payload` ending in `review` means a person reviewed the pull request it names:
-go straight to step 2 for that pull request, and treat every review comment there that has no
-reply from this account as unaddressed, whether it arrived as a full review or a single reply.
-
 A `routine-fire-payload` block naming an issue or pull request means a maintainer just acted on
 that one item — labelled it, or answered a decision on it — and this run is about that item alone.
 Before anything else, tell the maintainer you have it: react 🚀 (`rocket`) to what rang — the
 issue itself for a label (`gh api -X POST repos/brekkylab/backlot/issues/<n>/reactions -f content=rocket`),
-the pull request itself for a review (the same `issues/<n>/reactions` path; a review has no
-reactions of its own), or the `/decision` comment for a decision (`.../issues/comments/<id>/reactions`, or
+or the `/decision` comment for a decision (`.../issues/comments/<id>/reactions`, or
 `.../pulls/comments/<id>/reactions` for a review-thread comment; the id is the newest comment on
 the item whose first line starts with `/decision`). The doorbell already left 👀 there when it
 requested you.
@@ -269,9 +264,26 @@ When both reviewers pass: wait for `gh pr checks <n> --watch --fail-fast`. Green
 `gh pr view <n> --json assignees` shows none, `gh pr edit <n> --add-assignee @me`; then add
 `ready-for-maintainer` and request review from the maintainers' team:
 `gh pr edit <n> --add-reviewer brekkylab/backlot-reviewer`. Red:
-back to step 2 with the failing check. Comment on each issue you touched with one sentence saying
-what you did and where. End with a one-paragraph summary: issues surveyed, what you picked and why,
-what you filed, what you escalated, the PR.
+back to step 2 with the failing check. Then turn on the platform's auto-fix for the pull request,
+so this session is woken when a reviewer comments or a check fails; the cloud session you run in
+has that ability, and if it does not, say so in your summary. Comment on each issue you touched with
+one sentence saying what you did and where. End with a one-paragraph summary: issues surveyed, what
+you picked and why, what you filed, what you escalated, the PR.
+
+## After hand-over: being woken
+
+Auto-fix wakes this session, not a new run, when the pull request you handed over receives a
+review or a check fails. Everything above still binds; in particular:
+
+- React 🚀 to the pull request first, so a maintainer watching GitHub knows the review was picked
+  up, then work step 2 on it: reproduce each unanswered comment, fix and reply or reply with the
+  measurement that contradicts it, and run the reviewers again on what you changed.
+- A comment that could mean two changes, or that asks whether Backlot should serve something at
+  all, is answered on GitHub with a decision comment and `needs-maintainer`, never with a question
+  in this session: nobody is reading it.
+- Stay on this pull request. A wake-up is not a survey; other issues and other pull requests are
+  the next run's.
+- An approval, a merge or a close is the end: react nothing, change nothing, and stop.
 
 ## The working tree is yours alone
 

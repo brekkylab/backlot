@@ -46,11 +46,13 @@ the routine's page:
 A labelled issue is also assigned to the loop's account, by the doorbell when its token is set
 and by the run when it claims the issue, so the issue list shows who has it.
 
-A review you leave on one of the loop's pull requests — a full review, or one inline reply — rings
-the same way, after a ninety-second pause during which a further review on that pull request
-replaces it, so a burst of replies starts one run. The run reproduces each comment, then fixes and
-answers it or answers with the measurement that contradicts it. An approval does not ring; merging
-is yours.
+A review you leave on one of the loop's pull requests, or a check that fails on it, does not ring
+the doorbell: the run that opened the pull request turned on the platform's auto-fix for it, so
+that same session wakes, reacts 🚀 to the pull request, reproduces each comment, and fixes and
+answers it or answers with the measurement that contradicts it. Nothing new appears in the
+routine's run list for this; the session is the one the claim comment on the issue links to. An
+approval wakes nothing; merging is yours. Should the session fail to wake, the next scheduled run
+finds the unanswered comments itself.
 
 What follows is the run's ordinary output: a claim comment, a pull request, a decision comment, or
 the hand-over. No reaction after 👀 for ten minutes means the run did not start; the routine's

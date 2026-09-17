@@ -573,8 +573,8 @@ def test_atlassian_errors_use_atlassian_envelope(client):
 
 
 def test_confluence_spaces_are_paged_not_served_whole(client, admin_h, tokens):
-    """Measured on brekkylab.atlassian.net, 2026-09-17: `space` reads `limit`/`start` and answers a
-    page, with `_links.next`/`.prev` shaped like :func:`confluence_space_links`."""
+    """Measured against a live Confluence Cloud site on 2026-09-17: `space` reads `limit`/`start`
+    and answers a page, with `_links.next`/`.prev` shaped like :func:`confluence_space_links`."""
     unpaged = client.get("/atlassian/wiki/rest/api/space", headers=admin_h).json()
     names = [s["name"] for s in unpaged["results"]]
     assert names == [
@@ -583,10 +583,10 @@ def test_confluence_spaces_are_paged_not_served_whole(client, admin_h, tokens):
     ]  # ORDER BY name: the order every slice below relies on
     assert unpaged["start"] == 0 and unpaged["limit"] == 25 and unpaged["size"] == 2
     assert unpaged["_links"] == {
-        "base": unpaged["_links"]["base"],
+        "base": "http://testserver/wiki",
         "context": "/wiki",
-        "self": unpaged["_links"]["base"] + "/rest/api/space",
-    }  # a full page: no next, no prev
+        "self": "http://testserver/wiki/rest/api/space",
+    }  # a full page: no next, no prev. `self` carries no query string, whatever was asked.
 
     first = client.get("/atlassian/wiki/rest/api/space?limit=1", headers=admin_h).json()
     assert [s["name"] for s in first["results"]] == ["handbook"]

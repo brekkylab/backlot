@@ -1148,7 +1148,8 @@ def _space(request: Request, conn, container: str, expand: str, *, listed: bool)
 @router.get("/wiki/rest/api/space", response_model=ConfluenceResults, openapi_extra=_P_SPACE)
 async def confluence_spaces(request: Request):
     """Paged the way `content` is (`?limit`/`?start`, both through `_confluence_page_params`), with
-    its own `next`/`prev` shape: measured 2026-09-17, see :func:`confluence_space_links`.
+    its own `next`/`prev` shape: measured 2026-09-17, see :func:`confluence_space_links`. `expand`
+    is applied per space through :func:`_space` and carried into `next`/`prev`/`self` too.
 
     `limit` is echoed uncapped, where real caps it at 1000 — an acknowledged gap that also bounds
     the page size `next` returns.
@@ -1166,8 +1167,11 @@ async def confluence_spaces(request: Request):
         for r in reachable[start : start + limit]
     ]
     links = {"base": f"{_site(request)}/wiki", "context": "/wiki"}
-    links.update(confluence_space_links("/rest/api/space", start, limit, len(results), total))
-    links["self"] = f"{_site(request)}/wiki/rest/api/space"
+    links.update(
+        confluence_space_links("/rest/api/space", start, limit, len(results), total, expand)
+    )
+    self_query = f"?expand={expand}" if expand else ""
+    links["self"] = f"{_site(request)}/wiki/rest/api/space{self_query}"
     return {
         "results": results,
         "start": start,

@@ -249,6 +249,13 @@ def test_confluence_space_links():
     assert pg.confluence_space_links(path, 100, 25, 0, 3) == {
         "prev": f"{path}?prev=true&limit=25&start=75"
     }
+    # `expand` rides both links, but sorts differently on each side: `next=true` still leads, while
+    # on `prev` the marker does not, so `expand` lands ahead of it there.
+    expanded = pg.confluence_space_links(path, 1, 1, 1, 3, "description")
+    assert expanded == {
+        "next": f"{path}?next=true&expand=description&limit=1&start=2",
+        "prev": f"{path}?expand=description&prev=true&limit=1&start=0",
+    }
 
 
 # --- Linear: Relay connections ----------------------------------------------------

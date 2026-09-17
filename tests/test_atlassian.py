@@ -589,8 +589,8 @@ def test_confluence_spaces_are_paged_not_served_whole(client, admin_h, tokens):
         "base": "http://testserver/wiki",
         "context": "/wiki",
         "self": "http://testserver/wiki/rest/api/space",
-    }  # a full page: no next, no prev. `self` carries no query string for a limit/start-only
-    # request — the only kind this route takes, so there is nothing else to measure yet.
+    }  # a full page: no next, no prev. `self` carries no query string for a request that sends
+    # none of `limit`/`start`/`expand` — the only parameters this route reads.
 
     # `_site` echoes the caller's own Host, not a fixed org name — proved here since this route's
     # `base`/`self` are the only place that claim goes untested.
@@ -611,6 +611,34 @@ def test_confluence_spaces_are_paged_not_served_whole(client, admin_h, tokens):
     assert (second["start"], second["limit"], second["size"]) == (1, 25, 1)
     assert second["_links"]["prev"] == "/rest/api/space?prev=true&limit=1&start=0"
     assert "next" not in second["_links"]
+
+    # `expand` rides into `next`/`prev`/`self` too, once the route reads it — measured today
+    # against brekkylab.atlassian.net: `next=true` still leads on `next` (`next=true&expand=
+    # description&limit=1&start=1`), but on `prev` the marker does not lead, so the same corpus one
+    # page further on answers `expand=description&prev=true&limit=1&start=0` — `expand` ahead of
+    # the marker. `self` carries the same `?expand=description` with nothing else changed.
+    expanded_first = client.get(
+        "/atlassian/wiki/rest/api/space?limit=1&expand=description", headers=admin_h
+    ).json()
+    # a bare `description` carries no value (see `_space_description`'s own docstring) — its
+    # `_expandable` moving under the per-space entry is enough to prove `expand` reached `_space`.
+    assert expanded_first["results"][0]["description"] == {"_expandable": {"view": "", "plain": ""}}
+    assert (
+        expanded_first["_links"]["next"]
+        == "/rest/api/space?next=true&expand=description&limit=1&start=1"
+    )
+    assert (
+        expanded_first["_links"]["self"]
+        == "http://testserver/wiki/rest/api/space?expand=description"
+    )
+
+    expanded_second = client.get(
+        "/atlassian/wiki/rest/api/space?start=1&limit=1&expand=description", headers=admin_h
+    ).json()
+    assert (
+        expanded_second["_links"]["prev"]
+        == "/rest/api/space?expand=description&prev=true&limit=1&start=0"
+    )
 
     # a negative or unconvertible value is refused the same way `content` refuses it — shared
     # through `_confluence_page_params` — proved once here rather than the whole matrix again.

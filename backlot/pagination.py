@@ -429,8 +429,10 @@ def confluence_next_link(
     return f"{path}?{q}"
 
 
-def confluence_space_links(path: str, start: int, limit: int, size: int, total: int) -> dict:
-    """`space`'s own `next`/`prev`, for a request carrying only `limit`/`start` — the only two
+def confluence_space_links(
+    path: str, start: int, limit: int, size: int, total: int, expand: str = ""
+) -> dict:
+    """`space`'s own `next`/`prev`, for a request carrying only `limit`/`start`/`expand` — the only
     parameters that route reads today. Literal for literal with what real answers THOSE requests.
 
     Measured against a live Confluence Cloud site on 2026-09-17, on a three-space site. `next` and
@@ -443,18 +445,25 @@ def confluence_space_links(path: str, start: int, limit: int, size: int, total: 
     which is what it asked for. `next` is built ahead of `prev` here because real emits `_links`
     alphabetically and a caller reading key order sees `next` first.
 
-    Not reproduced: a request carrying anything other than `limit`/`start`. Real carries every other
-    query parameter into `next`/`prev` too, sorted alongside `limit`/`start` rather than appended
-    after them, and not always after the marker — `?limit=1&expand=description` answers `next` of
-    `next=true&expand=description&limit=1&start=1` but, once `start` also lands the caller on a
-    `prev`, that link is `expand=description&prev=true&limit=1&start=0`, `expand` ahead of the marker
-    itself. `space` accepts no other parameter today, so there is nothing on this side to carry.
+    `expand` is carried into both links when the caller sent one, and it sorts differently on each
+    side: `next=true` always leads, so `?limit=1&expand=description` answers `next` of
+    `next=true&expand=description&limit=1&start=1`; on `prev` the marker does not lead, so the same
+    request once `start` also lands the caller there answers `expand=description&prev=true&limit=1
+    &start=0` — `expand` ahead of `prev=true`. Re-measured today against the live site: both shapes
+    still hold, and `self` (built in `confluence_spaces`, not here) carries the same `?expand=...`
+    with no other change.
+
+    `space` accepts no other parameter today, so `expand` is the only one carried; a future
+    parameter would need its own place in this ordering rather than a generic sort, since a bare
+    alphabetical sort of every key together does not reproduce the `prev` case above (`limit` sorts
+    ahead of `prev` alphabetically, but real answers `prev` ahead of `limit`).
     """
     links = {}
+    extra = f"expand={expand}&" if expand else ""
     nxt = start + size
     if nxt < total:
-        links["next"] = f"{path}?next=true&limit={limit}&start={nxt}"
+        links["next"] = f"{path}?next=true&{extra}limit={limit}&start={nxt}"
     if start > 0:
         prev_start = max(0, start - limit)
-        links["prev"] = f"{path}?prev=true&limit={start - prev_start}&start={prev_start}"
+        links["prev"] = f"{path}?{extra}prev=true&limit={start - prev_start}&start={prev_start}"
     return links

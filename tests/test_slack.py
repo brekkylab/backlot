@@ -1450,13 +1450,10 @@ def test_slack_reaction_ids_and_count_are_derived_from_the_addresses(tmp_path):
 
 
 def test_slack_deactivated_member_is_deleted_and_dropped_from_membership(tmp_path):
-    """A roster's `deactivated: true` (`backlot.importer.byo.load_roster`). Measured live against
-    a workspace on 2026-09-17: 9 of 19 `users.list` members carried `"deleted": true`, 9 for 9;
-    none of the 9 appeared in any of 8 readable channels' `conversations.members`, though their
-    messages stayed in channel history, and their own token still resolves — real answers it
-    `account_inactive` rather than dropping the credential. (The same 9 split on an undocumented
-    `is_forgotten` key with no signal that predicts it — 5 carried it, 4 didn't — so Backlot
-    doesn't serve it either way; see `_user_obj`.)"""
+    """A roster's `deactivated: true` (`backlot.importer.byo.load_roster`): the person is
+    `deleted: true`, dropped from channel membership though their messages stay in history, and
+    refused `account_inactive` on their own token; `is_forgotten` stays unserved either way. See
+    `_user_obj` and `slack_private_channel_members` for the measurement behind each."""
     settings = tiny_corpus(
         tmp_path,
         [

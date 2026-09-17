@@ -17,13 +17,14 @@ One query path per version, as on the real API: the other one answers ``invalid_
 and so does ``GET /data_sources/{id}`` under a version older than the split, which mounts no data
 source route at all (see ``_unmounted_here``). ``databases.retrieve`` stays mounted and answers
 in whichever of the two shapes the caller's version reads.
+
 Backlot has one data source per database, its id assigned at import alongside the database's own.
 
 **The header is required** on every route here, as Notion requires it on every REST request: a
-request that omits it is answered ``missing_version``, behind the 401 that a request with no
-usable credential gets (see ``_refusal``). Every route declares it in the spec as well, so a
-client generated from that spec -- ``backlot mcp``'s tools among them -- can send what the route
-asks for.
+request that omits it -- or names a version Notion does not publish -- is answered
+``missing_version``, behind the 401 that a request with no usable credential gets (see
+``_refusal``). Every route declares it in the spec as well, so a client generated from that spec
+-- ``backlot mcp``'s tools among them -- can send what the route asks for.
 
 Object mapping: a Notion *page* is one doc (``subtype='page'``); a *database* is one doc
 (``subtype='database'``, ``content`` → its description); a *database row* is a page whose

@@ -206,8 +206,10 @@ def _refusal(request: Request, caller) -> JSONResponse | None:
     #189 sent a version-less request to each on 2026-09-11 with an integration token and both
     answered 400 ``missing_version``. The other ten routes rest on the document instead -- the
     check sits behind a credential that resolves, and no Notion token was available here to put in
-    front of it. The message is the example the status-code table prints for the code. An empty
-    header value is taken as none sent."""
+    front of it. The message is what the live API answers, measured on 2026-09-17: the example
+    Notion's status-code table prints for the code is the same sentence with the last word
+    unquoted, so the table is a pair of backticks short of the service. An empty header value is
+    taken as none sent."""
     if caller is None:
         return _error(401, "unauthorized", "API token is invalid.")
     if not request.headers.get("notion-version"):
@@ -215,7 +217,7 @@ def _refusal(request: Request, caller) -> JSONResponse | None:
             400,
             "missing_version",
             "Notion-Version header failed validation: Notion-Version header should be defined, "
-            "instead was undefined.",
+            "instead was `undefined`.",
         )
     return None
 

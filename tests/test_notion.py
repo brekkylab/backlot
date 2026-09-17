@@ -196,7 +196,7 @@ def test_notion_every_route_requires_the_version_header(client, admin_h, notion_
             "status": 400,
             "code": "missing_version",
             "message": "Notion-Version header failed validation: Notion-Version header should be "
-            "defined, instead was undefined.",
+            "defined, instead was `undefined`.",
         }, (method, url)
     # The refusal comes before the lookup, so it is not something a failed lookup could have
     # produced: the ids swept in above are a page's, and the same URL with a version reaches the

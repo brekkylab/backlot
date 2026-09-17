@@ -587,7 +587,13 @@ def test_byo_slack_reply_clock_must_be_readable(tmp_path, bad):
         load(corpus, Settings(data_dir=tmp_path))
 
 
-@pytest.mark.parametrize("edited_ts", ["2026-05-01T02:00:00Z", "2026-05-01T01:00:00Z"])
+@pytest.mark.parametrize(
+    "edited_ts",
+    [
+        f"{_epoch('2026-05-01T02:00:00Z')}.000000",  # same second as created
+        f"{_epoch('2026-05-01T01:00:00Z')}.000000",  # before created
+    ],
+)
 def test_byo_slack_root_edited_ts_must_be_after_created(tmp_path, edited_ts):
     """Real Slack's `edited.ts` is always later than the message it edited. Refused at import
     whether it names the same second (indistinguishable from the message's own clock) or an
@@ -627,7 +633,10 @@ def test_byo_slack_reply_edited_ts_must_be_after_its_own_created(tmp_path):
                         "content": "on it",
                         "author_email": "ava@a.com",
                         "created": "2026-05-01T01:00:00Z",
-                        "edited": {"user": "ava@a.com", "ts": "2026-05-01T00:30:00Z"},
+                        "edited": {
+                            "user": "ava@a.com",
+                            "ts": f"{_epoch('2026-05-01T00:30:00Z')}.000000",
+                        },
                     }
                 ],
             }

@@ -823,9 +823,21 @@ def test_slack_edited_needs_the_timestamp_too():
     ]
 
 
+def test_slack_edited_ts_refuses_a_bare_number():
+    """Every live `ts` this project has read off `brekkylab.slack.com` is a quoted string in
+    Slack's own `defs_ts` shape (`^\\d{10}\\.\\d{6}$`), never a bare JSON number — so a corpus
+    stating one would have Backlot serve a shape real Slack never sends."""
+    assert record_errors(
+        complete("slack", content="c", edited={"user": "ava@x.com", "ts": 1770311280})
+    ) == ["<root> [edited/ts]: 1770311280 is not of type 'string'"]
+    assert record_errors(
+        complete("slack", content="c", edited={"user": "ava@x.com", "ts": "1770311280.0"})
+    ) == ["<root> [edited/ts]: '1770311280.0' does not match '^\\\\d{10}\\\\.\\\\d{6}$'"]
+
+
 def test_slack_edited_refuses_an_unknown_key():
-    """An extra or misspelled key states more than Slack's own shape allows, so it is caught at
-    import rather than served unread."""
+    """The old bare-object shape accepted anything, which is the silence #197 refused: a typo'd
+    or extra key is caught at import rather than served unread."""
     bad = {"user": "ava@x.com", "ts": "1770311280.000000", "by": "ava@x.com"}
     assert record_errors(complete("slack", content="c", edited=bad)) == [
         "<root> [edited]: Additional properties are not allowed ('by' was unexpected)"

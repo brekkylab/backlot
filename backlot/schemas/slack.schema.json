@@ -108,13 +108,9 @@
           "description": "Who last edited it, by address. Real Slack's `edited.user` is a `defs_user_id` (`^[UW][A-Z0-9]{2,}$`) a corpus author cannot invent, so it is rendered the same way `reactions.users` is: the corpus writes the address and the router mints the id."
         },
         "ts": {
-          "type": [
-            "integer",
-            "number",
-            "string"
-          ],
-          "minLength": 1,
-          "description": "When it was last edited. Stated rather than derived — an edit time is information the author holds, not a value the response can work out from something else — and checked at import to fall after `created`."
+          "type": "string",
+          "pattern": "^\\d{10}\\.\\d{6}$",
+          "description": "When it was last edited, as a Slack ts (`defs_ts`: `^\\d{10}\\.\\d{6}$` — every live `ts` this project has read is a quoted string in this shape, never a bare number). Stated rather than derived — an edit time is information the author holds, not a value the response can work out from something else — and checked at import to fall after `created`."
         }
       },
       "required": [
@@ -213,13 +209,9 @@
                 "description": "Who last edited it, by address. Real Slack's `edited.user` is a `defs_user_id` (`^[UW][A-Z0-9]{2,}$`) a corpus author cannot invent, so it is rendered the same way `reactions.users` is: the corpus writes the address and the router mints the id."
               },
               "ts": {
-                "type": [
-                  "integer",
-                  "number",
-                  "string"
-                ],
-                "minLength": 1,
-                "description": "When it was last edited. Stated rather than derived — an edit time is information the author holds, not a value the response can work out from something else — and checked at import to fall after this reply's own `created`."
+                "type": "string",
+                "pattern": "^\\d{10}\\.\\d{6}$",
+                "description": "When it was last edited, as a Slack ts (`defs_ts`: `^\\d{10}\\.\\d{6}$` — every live `ts` this project has read is a quoted string in this shape, never a bare number). Stated rather than derived — an edit time is information the author holds, not a value the response can work out from something else — and checked at import to fall after this reply's own `created`."
               }
             },
             "required": [

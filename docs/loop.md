@@ -148,10 +148,11 @@ the parameters back is `aws ssm get-parameters-by-path --path /backlot-loop/ --w
 
 A run is subscription usage on the loop account, and runs count against that account's daily
 routine cap, both shown on the routine's page. Parallel runs share the account's rate limit.
-Everything the loop does on GitHub — commits, pull requests, comments — appears as the loop
-account's GitHub user, so the other maintainer merges. That user is also a maintainer's own, so the
-loop tells its pull requests from that person's by branch, `claude/` and nothing else, and leaves
-every other branch alone.
+Everything the loop does on GitHub — commits, pull requests, comments, reactions — appears as
+`brekkybot`, the machine user connected to the loop account. A pull request it hands over asks the
+`brekkylab/backlot-reviewer` team for review; who is on that team is decided in the organisation's
+settings, not here. The loop still tells its pull requests from everyone
+else's by branch, `claude/` and nothing else, and leaves every other branch alone.
 
 ## Rehearsing a change to the loop
 

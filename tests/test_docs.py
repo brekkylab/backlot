@@ -8,7 +8,10 @@ just the README.
 
 from __future__ import annotations
 
+import json
+import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -169,6 +172,61 @@ def test_generated_docs_are_current():
         text=True,
     )
     assert proc.returncode == 0, f"{proc.stdout}{proc.stderr}\nrun: python scripts/gen_docs.py"
+
+
+def test_gen_docs_renders_from_its_own_tree(tmp_path):
+    """`scripts/gen_docs.py` imports the backlot beside it, not the one a bare import would find.
+
+    Run as a script, sys.path[0] is scripts/, which holds no backlot package, so an unguarded import
+    falls through to whatever Python finds next: in a git worktree with the package installed
+    editable from the primary checkout, another revision, whose routes and schemas the script then
+    renders into this tree's files. Here the other revision is a copy of this tree's package with
+    one schema description changed, placed where a bare import finds it first. The check must pass
+    regardless, because the script must never have looked there.
+
+    PYTHONPATH stands in for the editable install: the setuptools finder answers only after
+    PathFinder has tried every sys.path entry, so an entry the script puts at sys.path[0] beats it
+    exactly as it beats the PYTHONPATH one.
+    """
+    shadow = tmp_path / "shadow"
+    shutil.copytree(
+        REPO / "backlot", shadow / "backlot", ignore=shutil.ignore_patterns("__pycache__")
+    )
+    schema_file = shadow / "backlot" / "schemas" / "slack.schema.json"
+    schema = json.loads(schema_file.read_text())
+    schema["description"] = "A record from the shadow tree. " + schema["description"]
+    schema_file.write_text(json.dumps(schema))
+    env = {**os.environ, "PYTHONPATH": str(shadow)}
+
+    # The control: under this environment a bare import does get the shadow, and the shadow does
+    # render differently. Without it, the assertion below would also pass in an environment where
+    # PYTHONPATH had no effect.
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import backlot.validation as v; print(v.SERVICE_SCHEMAS['slack']['description'])",
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert probe.stdout.startswith("A record from the shadow tree."), (
+        f"{probe.stdout}{probe.stderr}"
+    )
+
+    proc = subprocess.run(
+        [sys.executable, "scripts/gen_docs.py", "--check"],
+        cwd=REPO,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, (
+        f"gen_docs.py rendered from the shadow tree on PYTHONPATH, not from {REPO}:\n"
+        f"{proc.stdout}{proc.stderr}"
+    )
 
 
 def test_every_source_type_is_documented():

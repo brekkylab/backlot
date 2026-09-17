@@ -35,11 +35,19 @@ import re
 import sys
 from pathlib import Path
 
+REPO = Path(__file__).resolve().parent.parent
+
+# Ahead of the backlot imports: run as `python scripts/gen_docs.py`, sys.path[0] is scripts/, which
+# holds no backlot package, so an unguarded import falls through to whichever backlot is installed
+# — and a git worktree with the package installed editable from the primary checkout renders that
+# checkout's routes and schemas into this tree's files, with nothing in the output saying so. The
+# blocks are written at REPO, so they are rendered from REPO.
+sys.path.insert(0, str(REPO))
+
 from backlot.main import app
 from backlot.openapi import SOURCE_PREFIXES
 from backlot.validation import SERVICE_SCHEMAS
 
-REPO = Path(__file__).resolve().parent.parent
 SOURCES_DOC = REPO / "docs" / "supported-sources.md"
 AUTH_DOC = REPO / "docs" / "auth.md"
 SKILL_DOC = REPO / "skills" / "backlot" / "SKILL.md"

@@ -185,6 +185,28 @@ def github_page_parameters(spec: dict, parameters: dict[str, tuple[int, str]]) -
     return spec
 
 
+def jira_search_placement(spec: dict) -> dict:
+    """``spec`` with `search/jql`'s parameters left on the GET and its body on the POST, in place.
+
+    The two methods take the same three parameters in different places — the query string on GET,
+    a `SearchAndReconcileRequestBean` body on POST — which is what both of Atlassian's documents
+    declare and what the live service reads: a `nextPageToken` in the query string of a POST is not
+    read, and `?maxResults=1` with a body that omits it is ignored (measured 2026-09-15).
+
+    Here rather than in two `openapi_extra` dicts on two routes, because ``openapi_extra`` is per
+    ROUTE and a route is per path: splitting the methods into a route each would leave both paths
+    served by two single-method routes, and Starlette fills `Allow` from the one route that
+    partially matched, so a `PUT` would name one method where real names both. One route keeps the
+    header and this keeps the document.
+    """
+    for path, item in spec.get("paths", {}).items():
+        if not path.endswith("/search/jql"):
+            continue
+        item.get("get", {}).pop("requestBody", None)
+        item.get("post", {}).pop("parameters", None)
+    return spec
+
+
 def google_system_parameters(spec: dict) -> dict:
     """``spec`` with `$.xgafv` declared on every Google-family operation, in place.
 

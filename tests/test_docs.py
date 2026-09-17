@@ -250,7 +250,7 @@ _LOOP_FILES = (
         (
             "---\nname: backlot-loop\n",
             "description:",
-            "disable-model-invocation: true",
+            "allowed-tools:",
             "## Rehearsal",
         ),
     ),
@@ -266,9 +266,13 @@ _LOOP_FILES = (
     ),
     (
         "docs/loop.md",
-        ("needs-maintainer", "ready-for-maintainer", "decision: gap", "GITHUB_TOKEN"),
+        ("needs-maintainer", "ready-for-maintainer", "/decision 1", "GITHUB_TOKEN"),
     ),
-    (".claude/settings.json", ("SessionStart", "CLAUDE_CODE_REMOTE", "scripts/loop_env.py")),
+    (".claude/settings.json", ("SessionStart", "scripts/cloud_session_start.sh")),
+    (
+        "scripts/cloud_session_start.sh",
+        ("CLAUDE_CODE_REMOTE", "uv sync --all-extras", "scripts/loop_env.py"),
+    ),
     ("scripts/loop_env.py", ("/backlot-loop/", "CLAUDE_ENV_FILE")),
 )
 

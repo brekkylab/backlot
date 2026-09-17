@@ -15,7 +15,7 @@ request against those files.
 | You want | You do |
 |---|---|
 | the loop to work an issue | add the `agent` label. Nothing else admits an issue, including the nightly fidelity report and the issues the loop files itself |
-| to answer an escalation | reply on the issue with a first line `decision: serve` or `decision: gap <why>`. `serve` sends it down the fix path; `gap` has the loop write the baseline entry with your reason as its note |
+| to answer an escalation | the loop's comment lists numbered options with the recommended one first; reply with a comment whose first line is `/decision 1` or `/decision <label>` (`serve`, `gap`, `merge`, …), and anything after it on that line is recorded as your reason |
 | to stop one item | add `hold` to the issue or PR; every run skips it |
 | to stop everything | pause the schedule on the routine's page |
 | to merge | a PR labelled `ready-for-maintainer` has both reviewers' pass and green CI; review it as you would any other and merge |
@@ -23,9 +23,13 @@ request against those files.
 Labels the loop sets: `needs-maintainer` (a decision is waiting; the proposal is the last comment)
 and `ready-for-maintainer`. It never sets `agent`.
 
-Adding `agent` or posting a `decision:` comment also rings the routine through
+Adding `agent` or posting a `/decision` comment, on the conversation or in a review thread, also rings the routine through
 [`loop-doorbell.yml`](../.github/workflows/loop-doorbell.yml), so the run starts within minutes
-rather than at the next scheduled slot.
+rather than at the next scheduled slot. A run rung this way works the one item that rang it and
+nothing else; labelling three issues starts three runs, one each. Only the scheduled run surveys
+the whole queue. Only an owner, organisation member or collaborator rings
+it, and the run itself honours a `/decision` only from an account with write access; anyone else's
+comment is read as information, never as an instruction.
 
 ## Reading a run
 
@@ -40,15 +44,16 @@ Recorded here so it can be recreated on another account in a morning.
 
 **Prompt**, model set to the strongest in the selector:
 
-> Run `/backlot-loop`. In short: look at the open issues labelled `agent` and at the open pull requests you
-> opened earlier. Address review comments on your own pull requests first. Skip anything labelled
+> Run `/backlot-loop`. In short: look at the open issues labelled `agent` and at the loop's open pull
+> requests, the ones on `claude/` branches; a pull request on any other branch is a person's and you
+> never touch it. Address review comments on the loop's pull requests first. Skip anything labelled
 > `hold`. For an issue that needs a decision Backlot's maintainers have not made, comment your
-> proposal and label it `needs-maintainer`; if it already carries a `decision:` comment, follow that
+> proposal and label it `needs-maintainer`; if it already carries a `/decision` comment, follow that
 > decision. From the rest, pick one issue or a set of related ones, measure the real vendor API with
 > the credentials in the environment, fix Backlot, and open a pull request that closes them.
 > Anything you found that is outside that scope becomes a new issue, not part of the pull request.
-> If a `routine-fire-payload` block names an issue, look at that one first. The skill has the full
-> procedure; follow it.
+> If a `routine-fire-payload` block names an issue or pull request, this run is about that item
+> alone; pick nothing else. The skill has the full procedure; follow it.
 
 **Repository**: this one. **Schedule**: every two hours, 09:00–21:00 Asia/Seoul, weekdays. **API
 trigger**: on; its URL and token live only in this repository's `LOOP_FIRE_URL` and
@@ -57,7 +62,16 @@ trigger**: on; its URL and token live only in this repository's `LOOP_FIRE_URL` 
 **Environment** `backlot-loop`, personal to the loop account. Network access **Custom** with the
 default registries kept, plus: `slack.com`, `*.atlassian.net`, `api.atlassian.com`,
 `*.googleapis.com`, `oauth2.googleapis.com`, `api.hubapi.com`, `api.linear.app`,
-`api.fireflies.ai`, `api.notion.com`, `*.amazonaws.com`. Setup script: `uv sync --all-extras`.
+`api.fireflies.ai`, `api.notion.com`, `*.amazonaws.com`.
+
+The setup script runs outside the clone, so it cannot install the project; it warms `uv`'s cache
+from a throwaway clone instead, and the environment cache keeps that warmth for every later session:
+
+```bash
+git clone --depth 1 https://github.com/brekkylab/backlot.git /tmp/backlot-warm && cd /tmp/backlot-warm && uv sync --all-extras && cd / && rm -rf /tmp/backlot-warm
+```
+
+The project's own install happens in the session, through the hook described under Credentials.
 
 Environment variables are three: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and
 `AWS_DEFAULT_REGION`, for an IAM principal allowed to read the loop's parameters (below) and the
@@ -74,11 +88,14 @@ Systems Manager Parameter Store, one `SecureString` per variable, named `/backlo
 The store is the list: whatever is under that path is what a session gets.
 
 When a cloud session starts, the `SessionStart` hook in [`.claude/settings.json`](../.claude/settings.json)
-runs [`scripts/loop_env.py`](../scripts/loop_env.py), which reads every parameter under
+runs [`scripts/cloud_session_start.sh`](../scripts/cloud_session_start.sh): `uv sync --all-extras`
+in the clone, the HubSpot reader past its pin the way CI installs it, then
+[`scripts/loop_env.py`](../scripts/loop_env.py), which reads every parameter under
 `/backlot-loop/` and appends an `export` line for each to the file Claude Code sources before every
 Bash call, so the variables are in the session without ever being in the environment's own list. The
-hook runs only where `CLAUDE_CODE_REMOTE` is `true` and an AWS key is present; a local session is
-untouched. A parameter whose leaf is not a variable name is skipped, and so are **`GITHUB_TOKEN` and
+script exits at once where `CLAUDE_CODE_REMOTE` is not `true`, so a local session is untouched, and
+reads the parameters only when an AWS key is present. A parameter whose leaf is not a variable name
+is skipped, and so are **`GITHUB_TOKEN` and
 `GH_TOKEN`**: either one replaces the platform's GitHub credential with its literal value, and every
 `gh` call in the run fails.
 
@@ -111,7 +128,9 @@ the parameters back is `aws ssm get-parameters-by-path --path /backlot-loop/ --w
 A run is subscription usage on the loop account, and runs count against that account's daily
 routine cap, both shown on the routine's page. Parallel runs share the account's rate limit.
 Everything the loop does on GitHub — commits, pull requests, comments — appears as the loop
-account's GitHub user, so the other maintainer merges.
+account's GitHub user, so the other maintainer merges. That user is also a maintainer's own, so the
+loop tells its pull requests from that person's by branch, `claude/` and nothing else, and leaves
+every other branch alone.
 
 ## Rehearsing a change to the loop
 

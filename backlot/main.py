@@ -140,7 +140,7 @@ _fastapi_openapi = app.openapi
 
 def _openapi_with_vendor_parameters() -> dict:
     spec = openapi.github_page_parameters(_fastapi_openapi(), github.PAGE_PARAMETERS)
-    return openapi.google_system_parameters(spec)
+    return openapi.google_system_parameters(openapi.jira_search_placement(spec))
 
 
 app.openapi = _openapi_with_vendor_parameters

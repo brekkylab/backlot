@@ -7,7 +7,9 @@ or call the response builder directly.
 from __future__ import annotations
 
 import base64
+import json
 import re
+from urllib.parse import quote
 
 import pytest
 import yaml
@@ -393,10 +395,14 @@ def test_jira_search_filtered_by_project(client, admin_h):
     ).json()
     assert bogus["issues"] == [] and bogus["isLast"] is True
 
-    # no project clause at all -> unfiltered (same three issues here, since payments is the
-    # only Jira project in the SAMPLE corpus -- the earlier assertions are what prove filtering,
-    # not this equality)
-    unfiltered = client.get("/atlassian/rest/api/3/search/jql", headers=admin_h).json()
+    # a jql with no project clause at all -> unfiltered (same three issues here, since payments
+    # is the only Jira project in the SAMPLE corpus -- the earlier assertions are what prove
+    # filtering, not this equality). It still has to RESTRICT, or real refuses it: an empty jql,
+    # and an `ORDER BY` alone, are both the unbounded refusal -- see
+    # test_jira_search_refuses_no_jql_at_all.
+    unfiltered = client.get(
+        "/atlassian/rest/api/3/search/jql", headers=admin_h, params={"jql": "project is not EMPTY"}
+    ).json()
     assert {i["fields"]["summary"] for i in unfiltered["issues"]} == titles
 
 
@@ -604,7 +610,9 @@ def test_atlassian_serverinfo_has_typed_response_schema(client):
 
 
 def test_atlassian_responses_unchanged_by_enrichment(client, admin_h):
-    search = client.get("/atlassian/rest/api/3/search/jql", headers=admin_h).json()
+    search = client.get(
+        "/atlassian/rest/api/3/search/jql", headers=admin_h, params={"jql": "project is not EMPTY"}
+    ).json()
     assert "issues" in search and "isLast" in search and search["issues"]
     key = search["issues"][0]["key"]
     issue = client.get(f"/atlassian/rest/api/3/issue/{key}", headers=admin_h).json()
@@ -1385,11 +1393,9 @@ def test_confluence_refuses_the_parameter_real_names_when_both_are_wrong(
     assert want in r.json()["message"]
 
 
-def test_jira_search_on_post_reads_the_query_string_as_leniently_as_it_always_has(client, admin_h):
-    """Measured 2026-09-14: real does not read the query string on `POST search/jql` at all, so a
-    malformed parameter there is a 200 whatever the body says. Applying the GET rules to this
-    method would answer 400 where real answers 200 — trading one divergence for another. #187 is
-    where the query string stops being read here at all."""
+def test_jira_search_on_post_does_not_read_the_query_string_at_all(client, admin_h):
+    """Measured: the query string is not read on POST, so a malformed parameter there cannot
+    refuse the request — the GET rules do not reach this method."""
     for body in ({"jql": "project = payments", "maxResults": 1}, {"jql": "project = payments"}):
         r = client.post(
             "/atlassian/rest/api/3/search/jql?maxResults=abc&startAt=abc",
@@ -1397,3 +1403,263 @@ def test_jira_search_on_post_reads_the_query_string_as_leniently_as_it_always_ha
             json=body,
         )
         assert r.status_code == 200, r.text
+
+
+# --- search/jql: one parameter, two places, one of them per method ------------------------
+
+
+def _search_post(client, headers, query="", **body):
+    return client.post(f"/atlassian/rest/api/3/search/jql{query}", headers=headers, json=body)
+
+
+def test_jira_search_post_takes_its_parameters_from_the_body_and_get_from_the_query(
+    client, admin_h
+):
+    """Measured 2026-09-15 across the four placements."""
+    page1 = _search_post(client, admin_h, jql="project = payments", maxResults=1)
+    assert page1.status_code == 200, page1.text
+    token = page1.json()["nextPageToken"]
+    first = page1.json()["issues"][0]["key"]
+
+    # the body is read
+    in_body = _search_post(
+        client, admin_h, jql="project = payments", maxResults=1, nextPageToken=token
+    )
+    assert in_body.json()["issues"][0]["key"] != first
+
+    # the query string is not, on this method
+    in_query = _search_post(
+        client, admin_h, query=f"?nextPageToken={token}", jql="project = payments", maxResults=1
+    )
+    assert in_query.json()["issues"][0]["key"] == first
+
+    # ... and a body that is silent falls back to the default, not to the query string
+    ignored = _search_post(client, admin_h, query="?maxResults=1", jql="project = payments")
+    assert len(ignored.json()["issues"]) > 1
+
+    # while the GET form reads exactly the parameters the POST form ignores
+    got = client.get(
+        f"/atlassian/rest/api/3/search/jql?jql=project+%3D+payments&maxResults=1&nextPageToken={token}",
+        headers=admin_h,
+    )
+    assert got.status_code == 200, got.text
+    assert got.json()["issues"][0]["key"] == in_body.json()["issues"][0]["key"]
+
+
+@pytest.mark.parametrize("method", ["get", "post"])
+def test_jira_search_refuses_no_jql_at_all(client, admin_h, method):
+    """Measured 2026-09-16, on both methods: no `jql` anywhere Backlot reads it for that method is
+    the same 400 real gives, not the unfiltered corpus. A POST's own query string carrying a `jql`
+    still draws it, because the body is the only place POST reads one."""
+    if method == "get":
+        r = client.get("/atlassian/rest/api/3/search/jql?maxResults=5", headers=admin_h)
+    else:
+        r = _search_post(client, admin_h, query="?jql=project+%3D+payments&maxResults=1")
+    assert r.status_code == 400, r.text
+    assert r.json() == {
+        "errorMessages": [
+            "Unbounded JQL queries are not allowed here. Add a search restriction to the query."
+        ],
+        "errors": {},
+    }
+
+
+def test_jira_search_reads_a_null_jql_as_one_that_was_not_sent(client, admin_h):
+    """Measured 2026-09-16: `{"jql": null}` draws the same unbounded-JQL refusal as `{}`. Read
+    through a bare `str()` it is the string "None", which restricts nothing and reaches the whole
+    visible corpus — the answer this refusal exists to replace."""
+    r = client.post(
+        "/atlassian/rest/api/3/search/jql",
+        headers={**admin_h, "Content-Type": "application/json"},
+        content='{"jql": null}',
+    )
+    assert r.status_code == 400, r.text
+    assert r.json()["errorMessages"] == [
+        "Unbounded JQL queries are not allowed here. Add a search restriction to the query."
+    ]
+
+
+@pytest.mark.parametrize(
+    "raw,message",
+    [
+        # JSON's whitespace is the four ASCII ones, so a non-breaking space in front is not skipped
+        (
+            "\xa0{}",
+            "There was an error parsing JSON. Check that your request body is valid.",
+        ),
+        # and bytes that are not UTF-8 are not repaired into U+FFFD and then parsed
+        (
+            b'{"jql": "project = payments\xff"}',
+            "Invalid request payload. Refer to the REST API documentation and try again.",
+        ),
+    ],
+)
+def test_jira_search_post_refuses_the_leading_bytes_real_refuses(client, admin_h, raw, message):
+    """Bytes TRAILING a complete value are ignored; the leading ones are not ignored so freely, and
+    both boundaries are measured rather than taken from a JSON reader's own defaults."""
+    r = client.post(
+        "/atlassian/rest/api/3/search/jql",
+        headers={**admin_h, "Content-Type": "application/json"},
+        content=raw if isinstance(raw, bytes) else raw.encode(),
+    )
+    assert r.status_code == 400, r.text
+    assert r.json() == {"errorMessages": [message]}
+
+
+def test_jira_search_advertises_both_its_methods_when_it_refuses_a_third(client, admin_h):
+    """Measured: real answers `PUT` with `Allow: POST, GET`. Starlette fills the header from the
+    single route that partially matched, so serving the two methods from a route each would
+    advertise one of them — which is why the per-method split is made in the served document
+    instead (see `openapi.jira_search_placement`)."""
+    for version in ("2", "3"):
+        r = client.request("PUT", f"/atlassian/rest/api/{version}/search/jql", headers=admin_h)
+        assert r.status_code == 405, r.text
+        assert set(r.headers["allow"].replace(" ", "").split(",")) == {"GET", "POST"}
+
+
+def test_jira_search_declares_each_placement_on_the_method_that_reads_it(client):
+    """The served spec has to make the split discoverable, or a generated client keeps sending a
+    POST cursor in the query string and never sees why it does not page."""
+    paths = client.app.openapi()["paths"]["/atlassian/rest/api/3/search/jql"]
+    assert {p["name"] for p in paths["get"]["parameters"]} == {
+        "jql",
+        "maxResults",
+        "nextPageToken",
+    }
+    assert "requestBody" not in paths["get"]
+    assert "parameters" not in paths["post"] or paths["post"]["parameters"] == []
+    assert paths["post"]["requestBody"]["required"] is True
+
+
+@pytest.mark.parametrize(
+    "content_type,named",
+    [
+        (None, "null"),
+        ("text/plain", "text/plain"),
+        ("application/xml", "application/xml"),
+        ("*/*", "*/*"),
+    ],
+)
+def test_jira_search_post_refuses_a_media_type_it_does_not_read(
+    client, admin_h, content_type, named
+):
+    """Measured: the header decides before the bytes are looked at, so the JSON body sent with each
+    of these is never reached."""
+    headers = dict(admin_h)
+    if content_type is not None:
+        headers["Content-Type"] = content_type
+    r = client.post(
+        "/atlassian/rest/api/3/search/jql",
+        headers=headers,
+        content=json.dumps({"jql": "project = payments"}),
+    )
+    assert r.status_code == 415, r.text
+    assert r.headers["content-type"] == "application/problem+json;charset=UTF-8"
+    assert r.json() == {
+        "type": "about:blank",
+        "title": "Unsupported Media Type",
+        "status": 415,
+        "detail": f"Content-Type '{named}' is not supported.",
+        "instance": "/rest/api/3/search/jql",
+    }
+
+
+@pytest.mark.parametrize(
+    "content_type", ["application/json", "APPLICATION/JSON", "application/json; charset=utf-8"]
+)
+def test_jira_search_post_reads_the_media_type_the_way_real_matches_it(
+    client, admin_h, content_type
+):
+    """Case-insensitive, and parameters are ignored — all three are read on real."""
+    r = client.post(
+        "/atlassian/rest/api/3/search/jql",
+        headers={**admin_h, "Content-Type": content_type},
+        content=json.dumps({"jql": "project = payments"}),
+    )
+    assert r.status_code == 200, r.text
+
+
+@pytest.mark.parametrize(
+    "raw,message",
+    [
+        # "no content" is about LENGTH, not emptiness after stripping
+        ("", "No content to map to Object due to end of input"),
+        ("null", "No content to map to Object due to end of input"),
+        ("{", "There was an error parsing JSON. Check that your request body is valid."),
+        ("[]", "Invalid request payload. Refer to the REST API documentation and try again."),
+        # a body that parses to anything but an object, whatever that anything is
+        ("5", "Invalid request payload. Refer to the REST API documentation and try again."),
+        ('"x"', "Invalid request payload. Refer to the REST API documentation and try again."),
+        ("true", "Invalid request payload. Refer to the REST API documentation and try again."),
+        # whitespace alone is NOT the parse error a JSON reader would raise, and not "no content"
+        ("   ", "Invalid request payload. Refer to the REST API documentation and try again."),
+    ],
+)
+def test_jira_search_post_refuses_a_body_it_cannot_turn_into_an_object(
+    client, admin_h, raw, message
+):
+    """Three sentences, measured."""
+    r = client.post(
+        "/atlassian/rest/api/3/search/jql",
+        headers={**admin_h, "Content-Type": "application/json"},
+        content=raw,
+    )
+    assert r.status_code == 400, r.text
+    assert r.json() == {"errorMessages": [message]}
+
+
+def test_jira_search_post_ignores_bytes_after_a_complete_body(client, admin_h):
+    """Measured: `{"jql": …} junk` is answered 200 — the vendor's parser reads the first value and
+    lets the rest go, where a whole-input JSON read would refuse it."""
+    r = client.post(
+        "/atlassian/rest/api/3/search/jql",
+        headers={**admin_h, "Content-Type": "application/json"},
+        content=json.dumps({"jql": "project = payments"}) + " trailing",
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["issues"]
+
+
+def test_jira_search_post_with_no_body_at_all_is_the_media_type_refusal(client, admin_h):
+    """No body at all is the media-type refusal: the query string
+    `POST search/jql?jql=…&maxResults=1` carries is never reached, because the missing header
+    refuses the request first."""
+    r = client.post(
+        "/atlassian/rest/api/3/search/jql?jql=project+%3D+payments&maxResults=1", headers=admin_h
+    )
+    assert r.status_code == 415, r.text
+    assert r.json()["detail"] == "Content-Type 'null' is not supported."
+
+
+@pytest.mark.parametrize("method", ["get", "post"])
+@pytest.mark.parametrize("project", ["payments", "ZZZNOPE999"])
+def test_jira_search_refuses_a_page_token_it_cannot_decode(client, admin_h, method, project):
+    """Measured on both methods, identically, and unaffected by whether the JQL's project
+    resolves: 2026-09-16, `project = ZZZNOPE999` (matching no project) with a bogus
+    `nextPageToken` still draws the 400 on real, not the unresolved-project's empty page."""
+    jql = f"project = {project}"
+    if method == "get":
+        r = client.get(
+            f"/atlassian/rest/api/3/search/jql?jql={quote(jql)}&nextPageToken=BOGUS",
+            headers=admin_h,
+        )
+    else:
+        r = _search_post(client, admin_h, jql=jql, nextPageToken="BOGUS")
+    assert r.status_code == 400, r.text
+    assert r.json()["errors"] == {}
+    assert "nextPageToken" in r.json()["errorMessages"][0]
+
+
+def test_jira_search_still_pages_on_a_token_it_issued(client, admin_h):
+    """The refusal above must not catch the tokens Backlot hands out, on either method."""
+    first = client.get(
+        "/atlassian/rest/api/3/search/jql?jql=project+%3D+payments&maxResults=1", headers=admin_h
+    ).json()
+    assert (
+        client.get(
+            f"/atlassian/rest/api/3/search/jql?jql=project+%3D+payments&maxResults=1"
+            f"&nextPageToken={first['nextPageToken']}",
+            headers=admin_h,
+        ).json()["issues"][0]["key"]
+        != first["issues"][0]["key"]
+    )

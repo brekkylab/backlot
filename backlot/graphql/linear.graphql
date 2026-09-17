@@ -450,6 +450,11 @@ enum ReleaseNoteGenerationStatus { pending completed }
 private-team boundary."""
 enum TeamVisibility { public restricted private }
 
+"""The selection mode of a label group. Null on `IssueLabel.groupType` for a regular label;
+groups without a type use single-select behavior — measured against api.linear.app on
+2026-09-17, every label the corpus produces is `isGroup: false`, so this is never reached."""
+enum LabelGroupType { singleSelect multiSelect }
+
 type ActorBot {
   avatarUrl: String
   subType: String
@@ -694,6 +699,7 @@ type IssueLabel {
   createdAt: DateTime!
   id: ID!
   isGroup: Boolean!
+  groupType: LabelGroupType
   inheritedFrom: IssueLabel
   parent: IssueLabel
   team: Team

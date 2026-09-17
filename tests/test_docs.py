@@ -262,6 +262,7 @@ _LOOP_FILES = (
             "LOOP_FIRE_URL",
             "LOOP_FIRE_TOKEN",
             "experimental-cc-routine-2026-04-01",
+            "reactions",
         ),
     ),
     (

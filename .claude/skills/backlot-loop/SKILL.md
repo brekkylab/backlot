@@ -283,6 +283,9 @@ review or a check fails. Everything above still binds; in particular:
   in this session: nobody is reading it.
 - Stay on this pull request. A wake-up is not a survey; other issues and other pull requests are
   the next run's.
+- A `/decision` is not yours. The doorbell rings a fresh run for every `/decision`, wherever it is
+  posted, and that run acts on it; when the event that woke you is a comment whose first line
+  starts with `/decision`, react nothing, change nothing, and stop.
 - An approval, a merge or a close is the end: react nothing, change nothing, and stop.
 
 ## The working tree is yours alone

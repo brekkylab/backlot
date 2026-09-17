@@ -52,7 +52,9 @@ that same session wakes, reacts 🚀 to the pull request, reproduces each commen
 answers it or answers with the measurement that contradicts it. Nothing new appears in the
 routine's run list for this; the session is the one the claim comment on the issue links to. An
 approval wakes nothing; merging is yours. Should the session fail to wake, the next scheduled run
-finds the unanswered comments itself.
+finds the unanswered comments itself. A `/decision` is the one comment the woken session leaves
+alone: the doorbell rings a fresh run for it wherever it is posted, so a decision on a pull request
+is acted on once.
 
 What follows is the run's ordinary output: a claim comment, a pull request, a decision comment, or
 the hand-over. No reaction after 👀 for ten minutes means the run did not start; the routine's

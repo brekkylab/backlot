@@ -812,6 +812,29 @@ def test_an_operation_answered_with_another_operations_body_is_breaking(monkeypa
     )
 
 
+def test_two_bodies_under_one_root_element_are_told_apart_by_their_children(monkeypatch):
+    """#188: both listings are `200 <ListBucketResult>`, so status and root alone cannot tell
+    ListObjectsV2 from the body a bare bucket GET answers with — which is why V2 had to be
+    acknowledged in the baseline to keep the comparison quiet. The child elements separate them:
+    V2 carries KeyCount where V1 carries Marker. An operation the catch-all really does answer
+    still matches on all three, which this model's `?acl` is here to show."""
+    v1 = '<?xml version="1.0"?><ListBucketResult><Name>b</Name><Marker></Marker></ListBucketResult>'
+    v2 = '<?xml version="1.0"?><ListBucketResult><Name>b</Name><KeyCount>1</KeyCount></ListBucketResult>'
+
+    def fake(method, url, headers=None, timeout=None):
+        return httpx.Response(200, text=v2 if "list-type=2" in url else v1)
+
+    monkeypatch.setattr(s3_probe.httpx, "request", fake)
+    found = {
+        f.path.split(":")[0]: f
+        for f in s3_probe.probe(
+            "http://x", "ak", "sk", s3_probe.operations(S3_MODEL), bucket="b", key="k"
+        )
+    }
+    assert "ListObjectsV2" not in found
+    assert found["GetBucketAcl"].kind == "silent_fallthrough"
+
+
 def test_a_server_that_cannot_be_asked_is_not_a_divergence(monkeypatch):
     """The probe's answers come from a server Backlot started, and one that does not answer means
     no comparison ran. Left to escape as a `KeyError` it reaches `backlot diff` as status 1, the

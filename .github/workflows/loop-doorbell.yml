@@ -10,8 +10,9 @@
 #
 # The maintainer hears back at once: 👀 on the issue or the comment when the run is requested,
 # 😕 and a comment when it could not be, and a labelled issue is assigned to the loop's account.
-# Reactions are posted as the loop's own account when its token is set, and as github-actions
-# otherwise. The run adds 🚀 itself when it starts on the item.
+# Each of those is tried as the loop's own account first and as github-actions when that token
+# is missing or refused, so a token that lapsed or lacks a permission costs the maintainer the
+# name on the reaction, never the reaction. The run adds 🚀 itself when it starts on the item.
 #
 # `/fire` is behind a dated beta header. When Anthropic moves it, this file is the only thing in
 # the repository that changes.
@@ -41,8 +42,8 @@ jobs:
         env:
           URL: ${{ secrets.LOOP_FIRE_URL }}
           TOKEN: ${{ secrets.LOOP_FIRE_TOKEN }}
-          GH_TOKEN: ${{ secrets.BREKKYBOT_TOKEN || github.token }}
-          BOT: ${{ secrets.BREKKYBOT_TOKEN }}
+          BOT_TOKEN: ${{ secrets.BREKKYBOT_TOKEN }}
+          ACTIONS_TOKEN: ${{ github.token }}
           EVENT: ${{ github.event_name }}
           REPO: ${{ github.repository }}
           ISSUE: ${{ github.event.issue.number || github.event.pull_request.number }}
@@ -52,7 +53,13 @@ jobs:
              || github.event_name == 'issue_comment' && format('issues/comments/{0}/reactions', github.event.comment.id)
              || format('pulls/comments/{0}/reactions', github.event.comment.id) }}
         run: |
-          react() { gh api -X POST "repos/$REPO/$REACT_TO" -f content="$1" --silent || true; }
+          # Runs a gh command as the loop's account, and as github-actions when that fails.
+          as_loop() {
+            if [ -n "$BOT_TOKEN" ] && GH_TOKEN="$BOT_TOKEN" "$@" 2>bot.err; then return 0; fi
+            [ -n "$BOT_TOKEN" ] && echo "::warning::the loop's token could not: $(head -c 200 bot.err); using github-actions"
+            GH_TOKEN="$ACTIONS_TOKEN" "$@" || true
+          }
+          react() { as_loop gh api -X POST "repos/$REPO/$REACT_TO" -f content="$1" --silent; }
           # Without the two secrets there is no routine to ring; a green no-op keeps a fork's
           # workflow list quiet rather than red on every label.
           if [ -z "$URL" ] || [ -z "$TOKEN" ]; then
@@ -60,11 +67,11 @@ jobs:
             exit 0
           fi
           react eyes
-          # A labelled issue is the loop's from this moment: assigned to its account, which is
-          # what `@me` resolves to under the loop's token. The fallback token has no account to
-          # assign, so the run assigns itself when it claims the issue instead.
-          if [ "$EVENT" = issues ] && [ -n "$BOT" ]; then
-            gh issue edit "$ISSUE" --repo "$REPO" --add-assignee @me >/dev/null || true
+          # A labelled issue is the loop's from this moment. `@me` is whoever the token is, so
+          # this is only done under the loop's own token; the run assigns itself when it claims.
+          if [ "$EVENT" = issues ] && [ -n "$BOT_TOKEN" ]; then
+            GH_TOKEN="$BOT_TOKEN" gh issue edit "$ISSUE" --repo "$REPO" --add-assignee @me >/dev/null \
+              || echo "::warning::the loop's token could not assign #$ISSUE"
           fi
           status=$(curl -sS -o response.json -w '%{http_code}' -X POST "$URL" \
             -H "Authorization: Bearer $TOKEN" \
@@ -78,5 +85,5 @@ jobs:
           esac
           react confused
           body=$(head -c 300 response.json)
-          gh issue comment "$ISSUE" --repo "$REPO" --body "The loop could not be started for this: the routine's fire endpoint answered HTTP $status. $body"
+          as_loop gh issue comment "$ISSUE" --repo "$REPO" --body "The loop could not be started for this: the routine's fire endpoint answered HTTP $status. $body"
           exit 1

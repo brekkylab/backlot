@@ -15,6 +15,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.routing import Match
 
 from backlot import auth, errors, openapi, store, synth
 from backlot.acl import Acl
@@ -349,12 +350,39 @@ async def parse_slack_form(request: Request, call_next):
     return await call_next(request)
 
 
+def _would_redirect_to_the_slash_free_path(request: Request) -> bool:
+    """Whether the router's `redirect_slashes` would answer this path with a 307 to its slash-free
+    spelling.
+
+    That is the whole of what real has no equivalent for, so it is the whole of what gets
+    intercepted. Starlette redirects only when the path AS SENT matches no route and the slash-free
+    spelling matches one, so a route whose last segment is a `{path:path}` — `/contents/{path:path}`
+    matches the empty string — answers its own trailing slash and never reaches the redirect, the
+    same as real answers it.
+    """
+    scope = request.scope
+    routes = app.router.routes
+    if any(route.matches(scope)[0] is not Match.NONE for route in routes):
+        return False
+    slash_free = {**scope, "path": scope["path"].rstrip("/")}
+    return any(route.matches(slash_free)[0] is not Match.NONE for route in routes)
+
+
 @app.middleware("http")
 async def refuse_a_trailing_slash_on_github(request: Request, call_next):
-    """A trailing slash on `/github` is a 404, not the redirect Starlette's router answers by
-    default for a path whose slash-free form matches a route — real treats it exactly like a path
-    that matches no route at all, ahead of a bad bearer's own 401. See the PR body and
-    `test_github_a_trailing_slash_is_404_not_a_redirect` for the measurement.
+    """A trailing slash on `/github` that matches no route is a 404, not the 307 to the slash-free
+    path that Starlette's router answers by default.
+
+    Real runs no slash redirect at all: a trailing slash is just part of the path, and what answers
+    it is whichever route matches the path as sent. A route ending in a path parameter absorbs the
+    slash as an empty segment — `GET /repos/{owner}/{repo}/contents/` is the root listing's own 200,
+    like `/contents` beside it — and every other route simply does not match, so the request gets
+    the same 404 a path with no route at all gets, ahead of a bad bearer's own 401. Measured against
+    api.github.com on 2026-09-15, 2026-09-16 and 2026-09-17: 404 for `/repos/{owner}/{repo}/`,
+    `/orgs/{org}/`, `/user/repos/`, `/repos/{owner}/{repo}/pulls/` and `/rate_limit/`, and 200 for
+    `/repos/{owner}/{repo}/contents/`. So this fires on the redirect alone — see
+    :func:`_would_redirect_to_the_slash_free_path` — and leaves a trailing slash a route does match
+    to that route.
 
     A "no route matched" 404 carries the five `x-ratelimit-*` headers, via `rate_limit_headers`,
     for an anonymous caller alone: the anonymous limit is counted by address, ahead of and
@@ -369,7 +397,11 @@ async def refuse_a_trailing_slash_on_github(request: Request, call_next):
     through the version echo, and reaches the rate limiter only through the call below.
     """
     path = request.url.path
-    if path.startswith("/github/") and path.endswith("/"):
+    if (
+        path.startswith("/github/")
+        and path.endswith("/")
+        and _would_redirect_to_the_slash_free_path(request)
+    ):
         exc = StarletteHTTPException(status_code=404)
         body = errors.http_body(path, exc, request.query_params)
         response = JSONResponse(status_code=exc.status_code, content=body or {"detail": exc.detail})

@@ -229,7 +229,6 @@ def test_confluence_space_links():
     assert pg.confluence_space_links(path, 0, 1, 1, 3) == {
         "next": f"{path}?next=true&limit=1&start=1"
     }
-    # `start=1` at the default `limit=25`: `prev` names the ONE row actually skipped, not `limit`
     assert pg.confluence_space_links(path, 1, 25, 2, 3) == {
         "prev": f"{path}?prev=true&limit=1&start=0"
     }

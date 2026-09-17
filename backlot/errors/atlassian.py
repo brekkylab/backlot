@@ -238,35 +238,24 @@ def bad_page_token() -> AtlassianError:
     )
 
 
-# What real answers in `Allow` on a Jira 405, per route. A SET rather than a string: the order
-# varies per RESPONSE on real, so no order reproduces it. Three `PUT /rest/api/3/search/jql` in a
-# row answered `POST, GET`, `GET, POST` and `POST, GET`; two `POST /rest/api/3/issue/{key}`
-# answered `DELETE, GET, PUT` and `PUT, GET, DELETE`. The order below is this module's choice, and
-# the only part of the header that is not a measurement.
+# What real answers in `Allow` on a Jira 405, per route. Measured on brekkylab.atlassian.net,
+# 2026-09-17, by sending a method the vendor defines on no route of that path. Both Jira mounts were
+# measured and agreed, which is why one row binds `{version}` to both: `PUT /rest/api/2/search/jql`
+# answers `GET, POST` and `POST /rest/api/2/serverInfo` answers `GET`, the sets their `/3` spellings
+# answer. The set is the vendor's rather than this server's, so a 405 answered here for a write the
+# vendor serves carries that method in its own `Allow`.
 #
-# Measured on brekkylab.atlassian.net, 2026-09-16, by sending a method the vendor defines on no
-# route of that path. Jira's own `swagger-v3.v3.json` declares the same set for every route here
-# but `project/search`, where it declares `GET` alone and real answers the three methods
-# `/rest/api/3/project/{projectIdOrKey}` takes — so `search` binds as a project key there, and the
-# measurement rather than the document is what this row states. `project/{key}/role/{id}` is the
-# reverse: a `POST` there is that route's 404 for an unknown key rather than a 405, and the document
-# declares all four methods, so no 405 could be measured and its row is the document's alone.
+# A SET rather than a string: real's order varies per RESPONSE, so no order reproduces it. Three
+# `PUT /rest/api/3/search/jql` in a row answered `POST, GET`, `GET, POST` and `POST, GET`; two
+# `POST /rest/api/3/issue/{key}` answered `DELETE, GET, PUT` and `PUT, GET, DELETE`. The order below
+# is this module's choice and the only part of the header that is not a measurement.
 #
-# One row binds `{version}` to both Jira mounts because both were measured and agreed:
-# `PUT /rest/api/2/search/jql` answers `GET, POST` and `POST /rest/api/2/serverInfo` answers `GET`,
-# the sets their v3 spellings answer.
-#
-# The set is the VENDOR's, not this server's, and the two part wherever the vendor has a write no
-# source here serves: `PUT` and `DELETE` on `issue/{key}`, `POST` on `field`, on
-# `issue/{key}/comment` and on `issueLinkType`, and all three writes on `project/{key}/role/{id}`
-# are acknowledged `missing_operation`s in `fidelity/baseline/jira.json`, so each is refused here
-# where real would carry it out — and the refusal names that method in its own `Allow`, which makes
-# `DELETE /rest/api/{version}/issue/{key}` a 405 carrying `DELETE`. The header is right about the
-# path and the status is wrong about the method, which is that acknowledged gap showing rather than
-# a second one; narrowing `Allow` to the methods Backlot implements would hide it behind a header
-# real never sends. The other two rows carrying a non-GET method do not reach this: `search/jql`,
-# whose `POST` Backlot serves, and `project/search`, whose `PUT` and `DELETE` name no vendor
-# operation at all — they belong to `project/{projectIdOrKey}`, which is what `search` binds to.
+# Two rows part from Jira's own `swagger-v3.v3.json`, which declares the same set as the measurement
+# for every other route here. `project/search`: the document declares `GET` alone and real answers
+# the three methods `/rest/api/3/project/{projectIdOrKey}` takes, so `search` binds as a project key
+# there and the measurement is what the row states. `project/{key}/role/{id}`: a `POST` with an
+# unknown key is that route's 404 rather than a 405, so no 405 could be measured and its row is the
+# document's four methods alone.
 _JIRA_ALLOW = (
     ("/rest/api/{version}/serverInfo", ("GET",)),
     ("/rest/api/{version}/field", ("GET", "POST")),
@@ -305,19 +294,18 @@ def jira_allow(path: str) -> str | None:
 
 
 def method_not_allowed(path: str, method: str) -> AtlassianError:
-    """The 405 each product answers for a method it does not serve at ``path``.
+    """The 405 each product answers for a method it does not serve at ``path``, `HEAD` and
+    `OPTIONS` excepted: both reach this and real answers both rather than refusing them (#255).
 
-    A refusal the shared envelope :func:`http_body` gets wrong for both products, in two different
-    directions. Measured on brekkylab.atlassian.net, 2026-09-16, on three Confluence requests and
-    fifteen distinct Jira ones: Confluence answers a Spring `errors` LIST on `application/json` with no
-    `Allow` header on any of them, where Jira answers RFC 7807 on `application/problem+json` and
-    names the methods that path takes. A
-    client reading `errors[0]["code"]` is the one this costs: Backlot's shared envelope has an
-    `errors` OBJECT, so that read raises against Backlot and works against real Confluence.
+    The one refusal the shared envelope :func:`http_body` gets wrong for both products, in two
+    different directions — Confluence's `errors` is a LIST carrying no `Allow`, Jira's is RFC 7807
+    on `application/problem+json` naming the methods that path takes (the table above). A client
+    reading `errors[0]["code"]` is the one this costs: the shared envelope has an `errors` OBJECT,
+    so that read raises against Backlot and works against real Confluence.
 
     ``headers`` of ``{}`` on the Confluence side is the empty header set, not "no opinion": real
     sends no `Allow` and Starlette computes one from the routes Backlot happens to declare. ``None``
-    on a Jira route no measurement covers keeps Starlette's, which is at least Backlot's own truth.
+    on a Jira route no row above covers keeps Starlette's, which is at least Backlot's own truth.
     """
     if is_confluence(path):
         return AtlassianError(

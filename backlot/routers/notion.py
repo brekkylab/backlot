@@ -502,6 +502,8 @@ async def get_data_source(data_source_id: str, request: Request):
     caller = auth.resolve_bearer(request)
     if (refusal := _refusal(request, caller)) is not None:
         return refusal
+    if (refusal := _wrong_query_path(request, data_sources=True)) is not None:
+        return refusal
     conn = auth.conn(request)
     # No subtype check needed here, unlike get_database's lookup by `id` (which spans both pages
     # and databases): served_data_source_id is populated only for subtype='database' rows, and the

@@ -633,11 +633,13 @@ def test_key_successor_steps_over_the_surrogate_block_instead_of_into_it():
         assert prefix < prefix + "z" < store.key_successor(prefix)
 
 
-def test_list_s3_objects_takes_the_lower_bound_alone_when_a_prefix_has_no_successor(tmp_path):
-    """A prefix of nothing but the last code point has no ceiling, and the range is the same
-    without one: every key at or above it starts with it."""
+def test_the_edge_bounds_key_successor_returns_reach_sql(tmp_path):
+    """Whatever `key_successor` hands back has to work as a bound. The one that steps over the
+    surrogate block is bindable as UTF-8 where U+D800 is not, and a prefix with no successor takes
+    the lower bound alone — the same range, since every key at or above it starts with it."""
     conn = _s3_mini_db(tmp_path)
-    assert store.list_s3_objects(conn, "b", prefix="\U0010ffff") == []
+    for prefix in ("a\ud7ff", "\ud7ff", "\U0010ffff", "a\U0010ffff"):
+        assert store.list_s3_objects(conn, "b", prefix=prefix) == []
     assert store.list_s3_objects(conn, "b", prefix="logs/") != []
 
 

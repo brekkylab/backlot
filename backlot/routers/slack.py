@@ -1093,7 +1093,7 @@ def _message(
         m["files"] = files
     edited = store.jcol(row, "edited", {})
     if edited:
-        m["edited"] = edited
+        m["edited"] = _edited(edited)
     if row["subtype"]:
         m["subtype"] = row["subtype"]
     if row["thread_ts"]:  # part of a thread
@@ -1158,6 +1158,21 @@ def _reactions(row) -> list[dict]:
             }
         )
     return out
+
+
+def _edited(edited: dict) -> dict:
+    """A message's ``edited``, rendered from the address the corpus wrote.
+
+    Slack's message event reference types `edited.user` as a user id (example `U123ABC456`), the
+    same `defs_user_id` pattern `_reactions` already renders `reactions.users` from — a value no
+    corpus author can invent, so the corpus writes the address and `synth.slack_user_id` mints the
+    id, exactly as a message's own `user` is minted from `author_email`.
+
+    `ts` is passed through rather than derived: unlike `reactions`' `count`, an edit time is
+    information only the author holds, so the schema requires it and the importer checks it falls
+    after the message's own `created` (see `_check_edited_ts`).
+    """
+    return {"user": synth.slack_user_id(edited["user"]), "ts": edited["ts"]}
 
 
 def _channel_name(conn, channel_id: str) -> str | None:

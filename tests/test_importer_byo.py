@@ -587,6 +587,56 @@ def test_byo_slack_reply_clock_must_be_readable(tmp_path, bad):
         load(corpus, Settings(data_dir=tmp_path))
 
 
+@pytest.mark.parametrize("edited_ts", ["2026-05-01T02:00:00Z", "2026-05-01T01:00:00Z"])
+def test_byo_slack_root_edited_ts_must_be_after_created(tmp_path, edited_ts):
+    """Real Slack's `edited.ts` is always later than the message it edited. Refused at import
+    whether it names the same second (indistinguishable from the message's own clock) or an
+    earlier one, since neither is an edit history real Slack could emit."""
+    corpus = _write(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "content": "root",
+                "channel": "incidents",
+                "author_email": "bob@a.com",
+                "created": "2026-05-01T02:00:00Z",
+                "edited": {"user": "ava@a.com", "ts": edited_ts},
+            }
+        ],
+    )
+    with pytest.raises(SystemExit, match="edited.ts must be after this message's own created"):
+        load(corpus, Settings(data_dir=tmp_path))
+
+
+def test_byo_slack_reply_edited_ts_must_be_after_its_own_created(tmp_path):
+    """A reply's `edited.ts` is checked against ITS OWN `created`, not the root's: a reply an hour
+    into the thread may be edited a minute later, which is after the reply but still well before a
+    check against the root's clock would refuse."""
+    corpus = _write(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "content": "root",
+                "channel": "incidents",
+                "author_email": "bob@a.com",
+                "created": "2026-05-01T00:00:00Z",
+                "replies": [
+                    {
+                        "content": "on it",
+                        "author_email": "ava@a.com",
+                        "created": "2026-05-01T01:00:00Z",
+                        "edited": {"user": "ava@a.com", "ts": "2026-05-01T00:30:00Z"},
+                    }
+                ],
+            }
+        ],
+    )
+    with pytest.raises(SystemExit, match=r"reply 1: edited\.ts must be after"):
+        load(corpus, Settings(data_dir=tmp_path))
+
+
 def test_byo_a_speaker_outside_a_private_channels_readers_is_refused(tmp_path):
     """A channel's members are the people who have spoken in it and what a caller may read is the
     ACL, so a corpus that puts a speaker outside a private channel's grantees states two things

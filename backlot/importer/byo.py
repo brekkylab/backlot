@@ -306,6 +306,24 @@ def _thread_seconds(where, root_sec, replies):
     return out
 
 
+def _check_edited_ts(where, edited, created_sec):
+    """An `edited.ts` checked against its OWN message's `created`, before any row is written.
+
+    Beyond what the schema states: real Slack's edit time is always later than the message it
+    edited, so one at or before `created` is not an edit history a corpus author could have
+    observed.
+    """
+    if not edited:
+        return
+    ts = edited["ts"]
+    sec = _epoch(ts)
+    if sec is None or sec <= created_sec:
+        raise SystemExit(
+            f"{where}: edited.ts must be after this message's own created "
+            f"(got {ts!r}, created at {created_sec})"
+        )
+
+
 def _service_columns(
     src,
     ex,
@@ -1992,6 +2010,8 @@ class _Loader:
         parent_id = rec.get("parent")
         created = _epoch_field(rec["created"], where, "created")
         updated = _epoch_field(rec.get("updated"), where, "updated")
+        if src == "slack":
+            _check_edited_ts(where, rec.get("edited"), created)
 
         replies = rec.get("replies") if src == "slack" else None
         # The ROOT's `ts`, which is what a reply stores as its `thread_ts` — and it is not known
@@ -2510,6 +2530,7 @@ class _Loader:
             # Its second was resolved with the rest of the thread's in `_thread_seconds`,
             # which is where the ordering rule and its refusals live.
             rep_cts = reply_seconds[i - 1]
+            _check_edited_ts(f"{where}: reply {i}", rep.get("edited"), rep_cts)
             insert(
                 rep_id,
                 rep_author,

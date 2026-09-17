@@ -791,6 +791,47 @@ def test_slack_reaction_refuses_the_same_person_twice():
     ]
 
 
+def test_slack_edited_refuses_the_id_a_corpus_cannot_know():
+    """Slack's own message event reference types `edited.user` as a user id (`defs_user_id`,
+    `^[UW][A-Z0-9]{2,}$`) — the same value `_reactions` already refuses in `reactions.users`, for
+    the same reason: a corpus author has no way to compute it. A record names the editor by
+    address instead, and the old spelling is REFUSED rather than read as an address that resolves
+    to nobody.
+    """
+    old = complete("slack", content="c", edited={"user": "UC20FA2B1C0", "ts": "1770311280.000000"})
+    assert record_errors(old) == ["<root> [edited/user]: 'UC20FA2B1C0' is not a 'email'"]
+
+    reply = {
+        "content": "on it",
+        "author_email": "ava@x.com",
+        "created": "2026-03-01T09:00:01Z",
+        "edited": {"user": "UC20FA2B1C0", "ts": "1770311280.000000"},
+    }
+    assert record_errors(complete("slack", content="c", replies=[reply])) == [
+        "<root> [replies/0/edited/user]: 'UC20FA2B1C0' is not a 'email'"
+    ]
+
+
+def test_slack_edited_needs_the_timestamp_too():
+    """`{user}` alone is not `edited`: Slack's own reference names both the editor and when, and a
+    record missing either states less than the vendor ever would."""
+    assert record_errors(complete("slack", content="c", edited={"user": "ava@x.com"})) == [
+        "<root> [edited]: 'ts' is a required property"
+    ]
+    assert record_errors(complete("slack", content="c", edited={"ts": "1770311280.000000"})) == [
+        "<root> [edited]: 'user' is a required property"
+    ]
+
+
+def test_slack_edited_refuses_an_unknown_key():
+    """The old bare-object shape accepted anything, which is the silence #197 refused: a typo'd
+    or extra key is caught at import rather than served unread."""
+    bad = {"user": "ava@x.com", "ts": "1770311280.000000", "by": "ava@x.com"}
+    assert record_errors(complete("slack", content="c", edited=bad)) == [
+        "<root> [edited]: Additional properties are not allowed ('by' was unexpected)"
+    ]
+
+
 def test_fireflies_schema_rejects_the_slack_replies_array():
     """`replies` is Slack's child-row array. A transcript's child rows are `sentences`, so writing
     `replies` on a transcript is a mistake worth catching rather than silently ignoring."""

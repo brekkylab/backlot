@@ -450,9 +450,7 @@ enum ReleaseNoteGenerationStatus { pending completed }
 private-team boundary."""
 enum TeamVisibility { public restricted private }
 
-"""The selection mode of a label group. Null on `IssueLabel.groupType` for a regular label;
-groups without a type use single-select behavior — measured against api.linear.app on
-2026-09-17, every label the corpus produces is `isGroup: false`, so this is never reached."""
+"""The selection mode of a label group; null for a regular label, per Linear's own description."""
 enum LabelGroupType { singleSelect multiSelect }
 
 type ActorBot {

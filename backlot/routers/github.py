@@ -107,11 +107,12 @@ async def _validate_bad_credential(request: Request) -> None:
 
     Real resolves a presented credential before it looks at ``X-GitHub-Api-Version``: a bad bearer
     with an unsupported version pinned is "Bad credentials", not the version's 400 (measured against
-    api.github.com 2026-09-15). A request carrying no credential at all still meets the
-    version check first, since real's own missing-credential 401 there follows the version's 400
-    (measured the same day), so this only fires for a token that arrived and failed to resolve;
-    :func:`_validate_path_owner` answers the missing-credential case in its own place, after the
-    version check.
+    api.github.com 2026-09-15 on ``/repos/{owner}/{repo}`` and ``/rate_limit``). On
+    ``/repos/{owner}/{repo}``, ``/orgs/{org}`` and ``/search/issues`` a request carrying no
+    credential at all still meets the version check first, since real's missing-credential 401 there
+    follows the version's 400 (measured the same day), so this only fires for a token that arrived
+    and failed to resolve; :func:`_validate_path_owner` answers the missing-credential case in its
+    own place, after the version check.
     """
     if auth.bearer_token(request) is not None:
         auth.require_bearer(request, "Bad credentials")
@@ -419,10 +420,12 @@ def rate_limit_headers(request: Request, status_code: int) -> dict[str, str]:
 router = APIRouter(
     prefix="/github",
     tags=["github"],
-    # Order is the answering order: real resolves a credential that arrived before it looks at
-    # anything else, an unsupported API version is a malformed request it refuses next — ahead of a
-    # MISSING credential and of routing — and the repo's spelling is resolved last, so never for a
-    # request that fails one of the three ahead of it.
+    # Order is the answering order: real resolves a credential that arrived before it looks at the
+    # version or the path, an unsupported API version is a malformed request it refuses next — ahead
+    # of a MISSING credential and of the owner the path names — and the repo's spelling is resolved
+    # last, so never for a request that fails one of the three ahead of it. A path no route matches
+    # is 404 ahead of all three on real (measured 2026-09-17 on an unrouted path and on a
+    # nonexistent subresource), and a router-wide dependency does not run for one either.
     dependencies=[
         Depends(_validate_bad_credential),
         Depends(_validate_api_version),

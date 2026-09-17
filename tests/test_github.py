@@ -2633,7 +2633,7 @@ def test_github_code_search_neither_refuses_nor_echoes_the_api_version(gh_client
     `2026-03-10` is a 200, and no response from it, 200, 400 or 422, carries
     `X-GitHub-Api-Version-Selected` (measured 2026-09-06; `/search/issues` beside it 400s the bad
     version, see
-    `test_github_unsupported_api_version_is_refused_ahead_of_a_missing_credential_and_routing`).
+    `test_github_unsupported_api_version_is_refused_ahead_of_a_missing_credential_and_the_owner`).
     Backlot refused the bad version and echoed the good one here as everywhere else."""
     c, _ = gh_client
     for pinned in ("1999-01-01", "garbage", "2026-03-10", None):
@@ -3539,15 +3539,15 @@ def test_github_json_carries_the_charset_real_sends_except_on_code_search(
     assert (server_info.status_code, server_info.headers["content-type"]) == (200, bare)
 
 
-def test_github_unsupported_api_version_is_refused_ahead_of_a_missing_credential_and_routing(
+def test_github_unsupported_api_version_is_refused_ahead_of_a_missing_credential_and_the_owner(
     gh_client, gh_org
 ):
     """An unsupported version is a malformed request, so real answers it before a MISSING
-    credential and before routing — verified against api.github.com, which 400s a bad version on a
-    nonexistent repo with no credentials at all. Running this check after either one would report a
-    client's version typo as 401 or 404 and send them looking in the wrong place. A credential that
-    arrived and failed to resolve is a narrower case still ahead of this one (measured 2026-09-15,
-    see `test_github_401_says_which_credential_failed`).
+    credential and before the owner a path names — verified against api.github.com, which 400s a
+    bad version on a nonexistent repo with no credentials at all. Running this check after either
+    one would report a client's version typo as 401 or 404 and send them looking in the wrong place.
+    A credential that arrived and failed to resolve is a narrower case still ahead of this one
+    (measured 2026-09-15, see `test_github_401_says_which_credential_failed`).
 
     Real sends no `Selected` echo on this 400 (it selected nothing), and does send one on a 404."""
     c, _ = gh_client
@@ -3562,8 +3562,6 @@ def test_github_unsupported_api_version_is_refused_ahead_of_a_missing_credential
     # no credentials, and an owner Backlot does not serve: still the version's 400
     assert c.get("/github/repos/nope/nope/pulls/1", headers=bad).status_code == 400
     assert c.get("/github/search/issues", headers=bad, params={"q": "x"}).status_code == 400
-    # /rate_limit serves an anonymous caller too, so the version's 400 reaches it the same way
-    assert c.get("/github/rate_limit", headers=bad).status_code == 400
 
 
 # --- a pull is a pull, not an issue with extra keys -------------

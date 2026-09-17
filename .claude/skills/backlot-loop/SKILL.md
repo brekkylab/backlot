@@ -68,9 +68,9 @@ maintainer's comment on an escalated item that carries no `/decision` is an inst
 
 ## Rehearsal
 
-`$0` set (`/backlot-loop 146`) means rehearsal on that one issue, whatever its labels or state. In
-rehearsal you read GitHub freely and write to it never: no comments, no labels, no issues, no push,
-no PR. Work on a local branch `claude/rehearsal-$0`, run the reviewers against that branch, and end
+`$0` set (`/backlot-loop 146`), or a `routine-fire-payload` carrying `mode: rehearsal`, means
+rehearsal on that one issue, whatever its labels or state. In rehearsal you read GitHub freely and
+write to it never: no comments, no labels, no issues, no push, no PR, and no reactions either. Work on a local branch `claude/rehearsal-$0`, run the reviewers against that branch, and end
 by printing the PR title and body you would have opened plus each reviewer's last verdict. Every
 "comment", "label", "file an issue", "push" and "open the PR" instruction below is replaced by
 writing the text you would have sent into your final summary.
@@ -96,6 +96,12 @@ leaving `claude/rehearsal-$0` in place for a maintainer to read.
 gh issue list --label agent --state open --json number,title,labels,comments --limit 50
 gh pr list --state open --json number,title,labels,reviewDecision,headRefName --jq '[.[] | select(.headRefName | startswith("claude/"))]'
 ```
+
+A `routine-fire-payload` may also carry `branch: <name>`: a maintainer is trying the loop's own
+files as they stand on that branch, and the routine's prompt has already checked it out before
+calling you, so the skill and reviewers you are reading are that branch's. Say which branch in your
+summary. It may carry `mode: rehearsal` too, which is the rehearsal above; `mode: live` or no
+`mode` line is an ordinary run.
 
 A `routine-fire-payload` block naming an issue or pull request means a maintainer just acted on
 that one item — labelled it, or answered a decision on it — and this run is about that item alone.

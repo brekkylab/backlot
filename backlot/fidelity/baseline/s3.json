@@ -13,13 +13,6 @@
       "note": "Not a fallthrough Backlot chose: CreateSession exists for directory buckets only, and real S3 answers `GET /{bucket}?session` on a general purpose bucket with the ListBucketResult too, and `?session&versioning` as GetBucketVersioning with no conflict (measured in us-east-1 and ap-northeast-2), so the listing is the faithful answer and `session` is deliberately not a selector Backlot refuses."
     },
     {
-      "kind": "silent_fallthrough",
-      "severity": "breaking",
-      "path": "ListObjectsV2: GET /{bucket}?list-type=2",
-      "detail": "ListObjectsV2 is answered 200 <ListBucketResult>, which is what the same path answers with no operation selected: Backlot neither implements it nor refuses it, so a caller parses another operation's body",
-      "note": "Not a fallthrough: a bare bucket GET is ListObjects, and `?list-type=2` selects its v2 form, so both correctly answer the same ListBucketResult."
-    },
-    {
       "kind": "missing_operation",
       "severity": "gap",
       "path": "GetBucketAbac: GET /{bucket}?abac",

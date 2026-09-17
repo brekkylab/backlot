@@ -1698,7 +1698,7 @@ def test_drive_export_and_media_stay_non_json(client, admin_h):
     assert med.status_code == 200 and "application/json" not in med.headers["content-type"]
 
 
-def test_the_alt_that_downloads_is_read_the_way_every_other_alt_is(client, admin_h):
+def test_the_alt_that_downloads_is_read_the_way_every_other_alt_is(client, admin_h, tokens):
     """Case does not decide a download and neither does the last repeat.
 
     Measured 2026-09-17 against `www.googleapis.com/drive/v3/files/<id>` with a credential:
@@ -1715,6 +1715,22 @@ def test_the_alt_that_downloads_is_read_the_way_every_other_alt_is(client, admin
     assert client.get(f"{url}?alt=media&alt=json", headers=admin_h).content == raw.content
     metadata = client.get(f"{url}?alt=json&alt=media", headers=admin_h)
     assert metadata.headers["content-type"].startswith("application/json")
+    # The spelling reaches corpus content, so it has to reach the same ACL. A file only the admin
+    # can see answers the scoped token 404 through `MEDIA` exactly as through `media`, where the
+    # admin gets the 403 a native document's download is refused with — the visibility test runs
+    # before the branch this reads `alt` in, and upper-casing the value does not step around it.
+    restricted = _drive_find(client, admin_h, "Q1 Revenue Model")["id"]
+    scoped = {"Authorization": f"Bearer {tokens['mia@acme.com']}"}
+    for spelling in ("media", "MEDIA"):
+        params = {"alt": spelling}
+        assert (
+            client.get(f"/drive/v3/files/{restricted}", params=params, headers=scoped).status_code
+            == 404
+        )
+        assert (
+            client.get(f"/drive/v3/files/{restricted}", params=params, headers=admin_h).status_code
+            == 403
+        )
 
 
 # --- Drive fidelity: measured divergences from real Google Drive ---------------

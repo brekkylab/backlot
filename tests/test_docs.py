@@ -264,6 +264,7 @@ _LOOP_FILES = (
             "experimental-cc-routine-2026-04-01",
             "reactions",
             "workflow_dispatch",
+            "pull_request_review:",
         ),
     ),
     (

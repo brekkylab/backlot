@@ -100,14 +100,21 @@ gh pr list --state open --json number,title,labels,reviewDecision,headRefName --
 A `routine-fire-payload` may also carry `branch: <name>`: a maintainer is trying the loop's own
 files as they stand on that branch, and the routine's prompt has already checked it out before
 calling you, so the skill and reviewers you are reading are that branch's. Say which branch in your
-summary. It may carry `mode: rehearsal` too, which is the rehearsal above; `mode: live` or no
-`mode` line is an ordinary run.
+summary, and in every comment you post during the run — the claim, a not-eligible line, a
+hand-over — end the first line with `(running branch <name>)`, so a maintainer reading GitHub can
+tell a branch trial from the loop proper. It may carry `mode: rehearsal` too, which is the
+rehearsal above; `mode: live` or no `mode` line is an ordinary run.
+
+A `routine-fire-payload` ending in `review` means a person reviewed the pull request it names:
+go straight to step 2 for that pull request, and treat every review comment there that has no
+reply from this account as unaddressed, whether it arrived as a full review or a single reply.
 
 A `routine-fire-payload` block naming an issue or pull request means a maintainer just acted on
 that one item — labelled it, or answered a decision on it — and this run is about that item alone.
 Before anything else, tell the maintainer you have it: react 🚀 (`rocket`) to what rang — the
 issue itself for a label (`gh api -X POST repos/brekkylab/backlot/issues/<n>/reactions -f content=rocket`),
-or the `/decision` comment for a decision (`.../issues/comments/<id>/reactions`, or
+the pull request itself for a review (the same `issues/<n>/reactions` path; a review has no
+reactions of its own), or the `/decision` comment for a decision (`.../issues/comments/<id>/reactions`, or
 `.../pulls/comments/<id>/reactions` for a review-thread comment; the id is the newest comment on
 the item whose first line starts with `/decision`). The doorbell already left 👀 there when it
 requested you.

@@ -165,6 +165,17 @@ async def _http_exception_handler(request: Request, exc: StarletteHTTPException)
     body = errors.http_body(request.url.path, exc, request.query_params)
     if body is None:
         body = {"detail": exc.detail}
+    # A vendor may decide how the body reaches the wire as well as what is in it — Google's errors
+    # are indented to the byte and a `callback` on a GET answers one at 200 as a script. Asking the
+    # envelope keeps that where the rest of that vendor's error shape lives, and leaves Atlassian
+    # and GitHub with exactly the JSONResponse they had. Measured 2026-09-15, that is right for
+    # both and for different reasons: Jira and Confluence ignore `callback` outright, on an error
+    # and on a success, while GitHub honours it through an envelope of its own — `/**/cb({"meta":
+    # …, "data": …})` under `application/javascript; charset=utf-8`, with the status inside `meta`
+    # and an unparseable name refused UNWRAPPED — which is a shape to build, not one to share.
+    rendered = errors.rendered(request, exc.status_code, body, headers)
+    if rendered is not None:
+        return rendered
     # A vendor may answer one refusal under a media type of its own — Jira's type-conversion 400 is
     # RFC 7807 on `application/problem+json`, where its other 400s are plain JSON. The exception
     # carries it, because the path and status this is reached by are the same for both and

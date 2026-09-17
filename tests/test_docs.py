@@ -184,9 +184,11 @@ def test_gen_docs_renders_from_its_own_tree(tmp_path):
     one schema description changed, placed where a bare import finds it first. The check must pass
     regardless, because the script must never have looked there.
 
-    PYTHONPATH stands in for the editable install: the setuptools finder answers only after
-    PathFinder has tried every sys.path entry, so an entry the script puts at sys.path[0] beats it
-    exactly as it beats the PYTHONPATH one.
+    A copy that loads a different schema, not a stub that raises: an unguarded import of a stub
+    would fail loudly, and the failure this guards against is the silent one. PYTHONPATH stands in
+    for the editable install: the setuptools finder answers only after PathFinder has tried every
+    sys.path entry, so an entry the script puts at sys.path[0] beats it exactly as it beats the
+    PYTHONPATH one.
     """
     shadow = tmp_path / "shadow"
     shutil.copytree(
@@ -198,9 +200,10 @@ def test_gen_docs_renders_from_its_own_tree(tmp_path):
     schema_file.write_text(json.dumps(schema))
     env = {**os.environ, "PYTHONPATH": str(shadow)}
 
-    # The control: under this environment a bare import does get the shadow, and the shadow does
-    # render differently. Without it, the assertion below would also pass in an environment where
-    # PYTHONPATH had no effect.
+    # The control: under this environment a bare import does get the shadow, and the shadow's slack
+    # schema is the changed one, whose first sentence is what the docs table's last column holds.
+    # Without it, the assertion below would also pass in an environment where PYTHONPATH had no
+    # effect.
     probe = subprocess.run(
         [
             sys.executable,

@@ -38,9 +38,9 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 
 # Ahead of the backlot imports: run as `python scripts/gen_docs.py`, sys.path[0] is scripts/, which
-# holds no backlot package, so an unguarded import falls through to whichever backlot is installed
-# — and a git worktree with the package installed editable from the primary checkout renders that
-# checkout's routes and schemas into this tree's files, with nothing in the output saying so. The
+# holds no backlot package, so an unguarded import falls through to whichever backlot is installed.
+# A git worktree with the package installed editable from the primary checkout then renders that
+# checkout's routes and schemas into this tree's files, and nothing in the output says so. The
 # blocks are written at REPO, so they are rendered from REPO.
 sys.path.insert(0, str(REPO))
 

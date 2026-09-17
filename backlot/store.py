@@ -3197,8 +3197,9 @@ def slack_private_channel_members(conn, channel) -> list[str] | None:
     everyone in the org, so its org grant says nothing about who is in it — see
     :func:`slack_channel_member_emails` for what answers there.
 
-    An empty list is a private channel nobody may read (``"readers": []``, or a grant to a group
-    with no members): it has no membership rather than a membership of everyone.
+    An empty list is a private channel nobody may read (``"readers": []``, a grant to a group with
+    no members, or every grantee deactivated): it has no membership rather than a membership of
+    everyone.
     """
     if container_has_public(conn, "slack", channel):
         return None
@@ -3211,9 +3212,15 @@ def slack_private_channel_members(conn, channel) -> list[str] | None:
             members.add(pid)
         elif ptype == "group":
             members.update(r["id"] for r in group_members(conn, pid))
-    # A deactivated member is dropped from conversations.members (measured against a live
-    # workspace on 2026-09-17: none of 9 deactivated members appeared in any of 8 readable
-    # channels) — their messages stay in history unchanged, only membership is affected.
+    # Slack drops a deactivated member from every channel and keeps what they wrote: "They'll be
+    # removed from all channels ... nor are their messages or files deleted" (Slack, "Deactivate a
+    # member's account"). The live workspace measured 2026-09-17 is consistent with that rather
+    # than evidence for it: none of its 9 deactivated members appears in any of the 8 readable
+    # channels' conversations.members, but none of them has spoken in one either (10 visible
+    # messages in all, no channel reporting has_more), and absence is equally what real answers
+    # for somebody who was never in the channel. Private channels are outside that token's scopes
+    # as well (types=private_channel answers missing_scope without groups:read), so no live
+    # observation reaches this path at all.
     deactivated = {r[0] for r in conn.execute("SELECT email FROM slack_deactivated_users")}
     return sorted(members - deactivated)
 
@@ -3281,12 +3288,15 @@ def slack_membership_violations(conn) -> list[tuple[str, str]]:
 
 def slack_channel_has_author(conn, channel, email) -> bool:
     """Whether ``email`` has spoken in a channel — which is being a member of a PUBLIC one, the
-    same set :func:`slack_channel_member_emails` pages there, asked about one person. Index-only on
+    same set :func:`slack_channel_member_emails` pages there, asked about one person. Deactivation
+    is excluded here for the same reason it is there: a channel's membership and one person's
+    place in it are one fact, and the two cannot be allowed to disagree. Index-only on
     idx_slack_channel_author with equality on both columns, so it is a seek rather than the DISTINCT
     scan that counting the members is."""
     return (
         conn.execute(
-            "SELECT 1 FROM slack_messages WHERE channel = ? AND author_email = ? LIMIT 1",
+            "SELECT 1 FROM slack_messages WHERE channel = ? AND author_email = ? "
+            "AND author_email NOT IN (SELECT email FROM slack_deactivated_users) LIMIT 1",
             (channel, email),
         ).fetchone()
         is not None
@@ -3294,9 +3304,13 @@ def slack_channel_has_author(conn, channel, email) -> bool:
 
 
 def slack_channel_member_counts(conn) -> dict[str, int]:
-    """Every channel's member count in one pass. Per-channel COUNT(DISTINCT) is ~1.9s on the
-    biggest channel measured, and conversations.list shapes every channel in the page, so counting
-    them one at a time would be minutes per request; this is 12.2s once.
+    """Every channel's member count in one pass, paid once at startup instead of per request.
+    conversations.list shapes every channel in the page and a member count is a DISTINCT over that
+    channel's messages, so a page costs that work however it is spread: measured 2026-09-17 on a
+    5.6M-message corpus of 36 channels (the biggest 19,543 distinct authors), this pass is 6.6s and
+    the same counts taken one channel at a time are 6.6s. Both stay index-only on
+    idx_slack_channel_author, with the deactivated set entering the plan as USING INDEX
+    sqlite_autoindex_slack_deactivated_users_1 FOR IN-OPERATOR.
 
     Counted from whatever membership that channel has, so `num_members` and walking
     :func:`slack_channel_member_emails` cannot disagree — the speakers for a public channel, the

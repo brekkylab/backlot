@@ -11,7 +11,7 @@ import yaml
 
 from backlot import store, synth
 from backlot.routers import slack
-from tests._helpers import client_for, corpus_client, crawl_slack, db_count, tiny_corpus
+from tests._helpers import client_for, corpus_client, crawl_slack, db_count, tiny_corpus, tok
 
 
 def test_admin_slack_crawls_all(client, admin_h, ro_conn):
@@ -1451,9 +1451,10 @@ def test_slack_reaction_ids_and_count_are_derived_from_the_addresses(tmp_path):
 
 def test_slack_deactivated_member_is_deleted_and_dropped_from_membership(tmp_path):
     """A roster's `deactivated: true` (`backlot.importer.byo.load_roster`): the person is
-    `deleted: true`, dropped from channel membership though their messages stay in history, and
-    refused `account_inactive` on their own token; `is_forgotten` stays unserved either way. See
-    `_user_obj` and `slack_private_channel_members` for the measurement behind each."""
+    `deleted: true`, dropped from the membership of both kinds of channel though their messages
+    stay in history, and refused `account_inactive` on their own Slack token while a non-Slack
+    route still answers it. `is_forgotten` stays unserved either way. See `_user_obj` and
+    `slack_private_channel_members` for the measurement behind each."""
     settings = tiny_corpus(
         tmp_path,
         [
@@ -1469,6 +1470,13 @@ def test_slack_deactivated_member_is_deleted_and_dropped_from_membership(tmp_pat
                 "content": "thanks ava",
                 "author_email": "bo@acme.com",
             },
+            {
+                "source_type": "slack",
+                "channel": "board-comp",
+                "content": "the comp band lands at 240k",
+                "author_email": "ava@acme.com",
+                "readers": ["user:ava@acme.com", "user:bo@acme.com"],
+            },
         ],
     )
     conn = store.connect_rw(settings.db_path)
@@ -1479,7 +1487,8 @@ def test_slack_deactivated_member_is_deleted_and_dropped_from_membership(tmp_pat
     with client_for(settings) as client:
         tokens = yaml.safe_load(settings.tokens_path.read_text())
         admin_h = {"Authorization": f"Bearer {tokens['admin_token']}"}
-        ava_token = next(u["token"] for u in tokens["users"] if u["email"] == "ava@acme.com")
+        ava_h = {"Authorization": f"Bearer {tok(tokens, 'ava@acme.com')}"}
+        bo_h = {"Authorization": f"Bearer {tok(tokens, 'bo@acme.com')}"}
         ava_uid, bo_uid = synth.slack_user_id("ava@acme.com"), synth.slack_user_id("bo@acme.com")
 
         by_email = {
@@ -1496,36 +1505,64 @@ def test_slack_deactivated_member_is_deleted_and_dropped_from_membership(tmp_pat
         ).json()["user"]
         assert info["deleted"] is True
 
-        cid = client.get(
-            "/slack/api/conversations.list", headers=admin_h, params={"limit": 10}
-        ).json()["channels"][0]["id"]
-        members = client.get(
-            "/slack/api/conversations.members",
-            headers=admin_h,
-            params={"channel": cid, "limit": 10},
-        ).json()["members"]
-        assert ava_uid not in members and bo_uid in members
-        info_ch = client.get(
-            "/slack/api/conversations.info",
-            headers=admin_h,
-            params={"channel": cid, "include_num_members": "true"},
-        ).json()["channel"]
-        assert info_ch["num_members"] == len(members)
+        listed = {
+            c["name"]: c
+            for c in client.get(
+                "/slack/api/conversations.list", headers=admin_h, params=_EVERY_CHANNEL
+            ).json()["channels"]
+        }
+        assert listed["board-comp"]["is_private"] is True
+        assert listed["incidents"]["is_private"] is False
+        # The two kinds of channel derive membership from different facts — speakers for a public
+        # one, grantees for a private one — so deactivation has to be excluded from both.
+        for name in ("incidents", "board-comp"):
+            channel = listed[name]
+            members = client.get(
+                "/slack/api/conversations.members",
+                headers=admin_h,
+                params={"channel": channel["id"], "limit": 10},
+            ).json()["members"]
+            assert members == [bo_uid], name
+            assert channel["num_members"] == len(members), name
+            history = client.get(
+                "/slack/api/conversations.history",
+                headers=admin_h,
+                params={"channel": channel["id"]},
+            ).json()["messages"]
+            assert any(m["user"] == ava_uid for m in history), (
+                f"deactivation must not erase the person's messages from #{name}"
+            )
 
-        history = client.get(
-            "/slack/api/conversations.history", headers=admin_h, params={"channel": cid}
-        ).json()["messages"]
-        assert any(m["user"] == ava_uid for m in history), (
-            "deactivation must not erase the person's messages from history"
-        )
+        # `num_members` above came from the warm cache; the window before it lands counts each
+        # channel on its own, and the two cannot answer differently.
+        client.app.state.warm_thread.join()
+        warm, client.app.state.channel_members = client.app.state.channel_members, None
+        try:
+            for name in ("incidents", "board-comp"):
+                cold = client.get(
+                    "/slack/api/conversations.info",
+                    headers=admin_h,
+                    params={"channel": listed[name]["id"], "include_num_members": "true"},
+                ).json()["channel"]
+                assert cold["num_members"] == warm[name] == 1, name
+        finally:
+            client.app.state.channel_members = warm
 
-        refused = client.post(
-            "/slack/api/auth.test", headers={"Authorization": f"Bearer {ava_token}"}
-        ).json()
+        refused = client.post("/slack/api/auth.test", headers=ava_h).json()
         assert refused == {"ok": False, "error": "account_inactive"}
-        # a bo-authenticated call is unaffected
-        bo_token = next(u["token"] for u in tokens["users"] if u["email"] == "bo@acme.com")
-        ok = client.post(
-            "/slack/api/auth.test", headers={"Authorization": f"Bearer {bo_token}"}
-        ).json()
-        assert ok["ok"] is True
+        # ...before any handler, so a read refuses the same way rather than answering a page
+        assert client.get("/slack/api/users.list", headers=ava_h).json()["error"] == (
+            "account_inactive"
+        )
+        # ...and only Slack draws it: the roster field is Slack's own state, not a suspension
+        assert client.get("/gmail/v1/users/me/profile", headers=ava_h).status_code == 200
+        assert client.post("/slack/api/auth.test", headers=bo_h).json()["ok"] is True
+
+    conn = store.connect_ro(settings.db_path)
+    try:
+        # `is_member` asks this one about the caller alone, where the refusal above reaches first,
+        # so nothing served can tell it from the membership it claims to answer a person about.
+        assert store.slack_channel_has_author(conn, "incidents", "ava@acme.com") is False
+        assert store.slack_channel_has_author(conn, "incidents", "bo@acme.com") is True
+    finally:
+        conn.close()

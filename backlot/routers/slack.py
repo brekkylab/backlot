@@ -1112,7 +1112,7 @@ def _message(
         m["files"] = files
     edited = store.jcol(row, "edited", {})
     if edited:
-        m["edited"] = edited
+        m["edited"] = _edited(edited)
     if row["subtype"]:
         m["subtype"] = row["subtype"]
     if row["thread_ts"]:  # part of a thread
@@ -1177,6 +1177,13 @@ def _reactions(row) -> list[dict]:
             }
         )
     return out
+
+
+def _edited(edited: dict) -> dict:
+    """Renders `edited.user` via `synth.slack_user_id`, the same lift `_reactions` gives
+    `reactions.users` (see `backlot/schemas/slack.schema.json` for the vendor shape behind it);
+    `ts` passes through unchanged."""
+    return {"user": synth.slack_user_id(edited["user"]), "ts": edited["ts"]}
 
 
 def _channel_name(conn, channel_id: str) -> str | None:

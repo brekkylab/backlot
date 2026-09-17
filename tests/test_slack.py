@@ -1449,6 +1449,62 @@ def test_slack_reaction_ids_and_count_are_derived_from_the_addresses(tmp_path):
     assert all(re.fullmatch(r"[UW][A-Z0-9]{2,}", u) for r in reactions for u in r["users"])
 
 
+def test_slack_edited_renders_the_editors_id(tmp_path):
+    """`edited.user` is rendered the same way `reactions.users` is: the corpus names the editor by
+    address and `synth.slack_user_id` mints the id Slack's own spec types it as. `ts` is passed
+    through unchanged — it is information only the corpus holds, not a value to derive.
+
+    A reply carries the same block, and `_message` is the single renderer for history, replies and
+    search hits, so both are read here off the rows each is served from. The editor is the author
+    on both, which is the only pairing real Slack produces (see `_check_edited`).
+    """
+    import re
+
+    from backlot.routers.slack import _message
+
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "channel": "inc",
+                "content": "gateway is flapping",
+                "author_email": "ava@x.com",
+                "visibility": "public",
+                "created": "2026-03-01T09:00:00Z",
+                "edited": {"user": "ava@x.com", "ts": "1772614801.000000"},
+                "replies": [
+                    {
+                        "content": "rolling back",
+                        "author_email": "bo@x.com",
+                        "created": "2026-03-01T09:01:00Z",
+                        "edited": {"user": "bo@x.com", "ts": "1772614899.000000"},
+                    }
+                ],
+            }
+        ],
+    )
+    conn = store.connect_ro(s.db_path)
+    root = store.list_slack_top_level(conn, "inc")[0]
+    reply = store.slack_thread(conn, "inc", root["thread_ts"])[1]
+
+    assert _message(root)["edited"] == {
+        "user": synth.slack_user_id("ava@x.com"),
+        "ts": "1772614801.000000",
+    }
+    assert _message(reply)["edited"] == {
+        "user": synth.slack_user_id("bo@x.com"),
+        "ts": "1772614899.000000",
+    }
+    for row in (root, reply):
+        m = _message(row)
+        # Slack's own `defs_user_id`, so an id Backlot mints is one the vendor's spec would accept.
+        assert re.fullmatch(r"[UW][A-Z0-9]{2,}", m["edited"]["user"])
+        # The editor is the author on the surface a client reads, which is the identity Slack's
+        # own message-event example shows (`user` and `edited.user` are both `U123ABC456`).
+        assert m["edited"]["user"] == m["user"]
+
+
 def test_slack_deactivated_member_is_deleted_and_dropped_from_membership(tmp_path):
     """A roster's `deactivated: true` (`backlot.importer.byo.load_roster`): the person is
     `deleted: true`, dropped from the membership of both kinds of channel though their messages

@@ -10,7 +10,7 @@
       "severity": "breaking",
       "path": "POST /v1/databases/{}/query",
       "detail": "the vendor's spec declares no such operation",
-      "note": "Notion's current document describes `data_sources/{id}/query`, which replaced this path. Backlot serves the legacy form deliberately, for corpora and clients pinned to an API version from before the change. Read off the document on 2026-09-01."
+      "note": "Notion's current document describes `data_sources/{id}/query`, which replaced this path, and it publishes one document rather than one per version. The path is still live on the real API under a version older than 2025-09-03 -- the deprecation note on the vendor's own page for it reads \"This page describes the API for versions up to and including 2022-06-28\" -- and that is when Backlot serves it: a request under 2025-09-03 or later is refused here with `invalid_request_url`, the way the real API refuses it. Read off the document on 2026-09-01, versions re-read on 2026-09-15."
     },
     {
       "kind": "missing_operation",

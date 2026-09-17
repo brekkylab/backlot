@@ -115,6 +115,12 @@ def test_notion(live_server):
     docs = reader.load_data(page_ids=[synth.notion_id("nt-runbook")])
     assert docs, "expected the runbook page as a Document"
     assert any("Check dashboards" in d.text for d in docs)  # SAMPLE nt-runbook body, case-correct
+    # The reader pins `Notion-Version: 2022-06-28` and reads a database's rows through
+    # `databases/{id}/query` (`DATABASE_URL_TMPL`, rebound by `patch_notion_at`). That is the path
+    # that version serves and the only one it can reach: under 2025-09-03 Backlot refuses it the
+    # way real Notion does, so this is what says the reader is on the served side of that cut.
+    rows = reader.load_data(database_ids=[synth.notion_id("nt-tasks-db")])
+    assert rows, "expected the task rows as Documents"
 
 
 def test_hubspot(live_server, monkeypatch):

@@ -115,6 +115,7 @@ _P_CQL = {"parameters": [qp("cql", required=True), qp("limit", "integer"), qp("s
 _P_CONTENT = {
     "parameters": [qp("expand"), qp("spaceKey"), qp("limit", "integer"), qp("start", "integer")]
 }
+_P_SPACE = {"parameters": [qp("limit", "integer"), qp("start", "integer")]}
 
 # The page a comment read serves. Measured against Jira Cloud (2026-09-09) on a real issue,
 # which settles what no document states: `maxResults` is CAPPED at 100 as well as defaulted
@@ -1005,13 +1006,20 @@ def _require_space(request: Request, conn, key: str) -> str:
     raise HTTPException(status_code=404, detail="No space with the given key exists")
 
 
-@router.get("/wiki/rest/api/space", response_model=ConfluenceResults)
+@router.get("/wiki/rest/api/space", response_model=ConfluenceResults, openapi_extra=_P_SPACE)
 async def confluence_spaces(request: Request):
     """Paged the way `content` is (`?limit`/`?start`, both through `_confluence_page_params`), with
-    its own `next`/`prev` shape: measured 2026-09-17, see :func:`confluence_space_links`."""
+    its own `next`/`prev` shape: measured 2026-09-17, see :func:`confluence_space_links`.
+
+    `limit` is echoed uncapped, where real caps it at 1000 (#217) — that cap now also bounds the
+    page size a client walking `next` gets handed, not just the single response `#217` measured.
+    """
     conn = auth.conn(request)
     ids = auth.visible_ids(request, _confluence_caller(request))
     limit, start = _confluence_page_params(request)
+    # `store.list_containers` orders by name; real's own order is none of name, key or id (measured
+    # 2026-09-17) and was unobservable while this route served every reachable space in one answer.
+    # Now that paging exposes it, this is Backlot's own ordering choice, not a reproduction of real's.
     reachable = _reachable_spaces(conn, ids)
     total = len(reachable)
     results = []
@@ -1026,12 +1034,9 @@ async def confluence_spaces(request: Request):
                 "_links": {"webui": f"/spaces/{key}"},
             }
         )
-    links = {
-        "base": f"{_site(request)}/wiki",
-        "context": "/wiki",
-        "self": f"{_site(request)}/wiki/rest/api/space",
-    }
+    links = {"base": f"{_site(request)}/wiki", "context": "/wiki"}
     links.update(confluence_space_links("/rest/api/space", start, limit, len(results), total))
+    links["self"] = f"{_site(request)}/wiki/rest/api/space"
     return {
         "results": results,
         "start": start,

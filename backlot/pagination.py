@@ -430,7 +430,8 @@ def confluence_next_link(
 
 
 def confluence_space_links(path: str, start: int, limit: int, size: int, total: int) -> dict:
-    """`space`'s own `next`/`prev`, literal for literal with what real answers.
+    """`space`'s own `next`/`prev`, for a request carrying only `limit`/`start` — the only two
+    parameters that route reads today. Literal for literal with what real answers THOSE requests.
 
     Measured against a live Confluence Cloud site on 2026-09-17, on a three-space site. `next` and
     `prev` each carry their own marker (`next=true`/`prev=true`) ahead of `limit` and `start`, which
@@ -440,6 +441,12 @@ def confluence_space_links(path: str, start: int, limit: int, size: int, total: 
     0 (`?limit=0`, an empty page rather than a refusal): real does not take this module's
     `size == 0` shortcut either, and a caller sending `limit=0` gets the same link back forever,
     which is what it asked for.
+
+    NOT measured for a request carrying anything else: real also carries every other query
+    parameter into `next`/`prev`, sorted alongside `limit`/`start` rather than appended after them
+    (`?limit=1&expand=description` answers `next=…&expand=description&limit=1&start=1`, `expand`
+    ahead of `limit`), which this function does not reproduce because `space` accepts no other
+    parameter yet — there is nothing on this side to carry.
     """
     links = {}
     if start > 0:

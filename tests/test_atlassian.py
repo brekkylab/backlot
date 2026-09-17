@@ -580,13 +580,23 @@ def test_confluence_spaces_are_paged_not_served_whole(client, admin_h, tokens):
     assert names == [
         "handbook",
         "people-ops",
-    ]  # ORDER BY name: the order every slice below relies on
+    ]  # `store.list_containers` orders by name; the order every slice below relies on, and
+    # Backlot's own choice — real's own order is none of name, key or id (measured 2026-09-17)
     assert unpaged["start"] == 0 and unpaged["limit"] == 25 and unpaged["size"] == 2
     assert unpaged["_links"] == {
         "base": "http://testserver/wiki",
         "context": "/wiki",
         "self": "http://testserver/wiki/rest/api/space",
-    }  # a full page: no next, no prev. `self` carries no query string, whatever was asked.
+    }  # a full page: no next, no prev. `self` carries no query string for a limit/start-only
+    # request — the only kind this route takes, so there is nothing else to measure yet.
+
+    # `_site` echoes the caller's own Host, not a fixed org name — proved here since this route's
+    # `base`/`self` are the only place that claim goes untested.
+    via_alias = client.get(
+        "/atlassian/wiki/rest/api/space", headers={**admin_h, "Host": "example.test"}
+    ).json()
+    assert via_alias["_links"]["base"] == "http://example.test/wiki"
+    assert via_alias["_links"]["self"] == "http://example.test/wiki/rest/api/space"
 
     first = client.get("/atlassian/wiki/rest/api/space?limit=1", headers=admin_h).json()
     assert [s["name"] for s in first["results"]] == ["handbook"]

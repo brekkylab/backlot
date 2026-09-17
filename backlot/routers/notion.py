@@ -15,8 +15,8 @@ ACL-filtered. Errors use Notion's envelope: ``{"object":"error","status","code",
 
 One query path per version, as on the real API: the other one answers ``invalid_request_url``,
 and so does ``GET /data_sources/{id}`` under a version older than the split, which mounts no data
-source route at all (see ``_unmounted_here``). ``databases.retrieve`` is mounted under every
-version and answers in whichever of the two shapes the caller's version reads.
+source route at all (see ``_unmounted_here``). ``databases.retrieve`` stays mounted and answers
+in whichever of the two shapes the caller's version reads.
 Backlot has one data source per database, its id assigned at import alongside the database's own.
 
 **The header is required** on every route here, as Notion requires it on every REST request: a
@@ -110,24 +110,15 @@ _B_SEARCH = _body(
 
 
 def _version_param(description: str) -> dict:
-    """The ``Notion-Version`` header, declared the way Notion's own document declares it: on every
-    operation, required (its OpenAPI points all of them at one ``components/parameters`` entry;
-    read 2026-09-16). Here that is not documentation but the contract each route enforces (see
-    ``_refusal``), and it is the whole of what a generated client knows -- ``backlot mcp`` builds
-    its tools off this spec and its bridge sends no version of its own, so a route that required
-    the header without declaring it would hand an agent a tool it could not call.
+    """The ``Notion-Version`` header, declared on every operation and required, the way the
+    vendor's OpenAPI declares it (all 64 of its operations point at one ``components/parameters``
+    entry; read 2026-09-16). Here it is the contract each route enforces (see ``_refusal``), and
+    it is the whole of what a generated client knows -- ``backlot mcp`` builds its tools off this
+    spec and its bridge sends no version of its own.
 
-    Declared route by route rather than written onto the source's operations afterwards, the way
-    :func:`backlot.openapi.google_system_parameters` declares ``$.xgafv``: the two query routes
-    have to name which versions they are the path for (see ``_query_extra``), which one shared
-    declaration cannot carry, and a pass that wrote it would have to special-case those two by
-    path. What that pass buys -- a route added later cannot forget the parameter -- a sweep over
-    the router buys instead (``tests/test_notion.py``).
-
-    The schema enumerates the seven versions Notion publishes, which is the set the route accepts
-    (see ``_refusal``) -- not the vendor's own enum, which names its current version alone and
-    would put the versions the legacy query path serves outside what a generated client may
-    send."""
+    Declared route by route because the two query routes name the versions they serve (see
+    ``_query_extra``). The schema is the seven versions the route accepts, not the vendor's enum
+    of its current version alone."""
     return {
         "name": "Notion-Version",
         "in": "header",
@@ -217,9 +208,8 @@ def _unknown_version(value: str) -> str:
 def _refusal(request: Request, caller) -> JSONResponse | None:
     """What a request is answered before any route reads a row -- None when it may go on. Every
     route calls this, so the two checks are in one place and in the order the real API applies
-    them. Called rather than declared as a router dependency, the way Google's system-parameter
-    check is (see routers.google): a dependency runs before the route body, and the credential
-    half of this has to stay where the route resolves the caller it goes on to scope rows by.
+    them. Called rather than declared as a router dependency: the credential half has to stay
+    where the route resolves the caller it goes on to scope rows by.
 
     The credential first: on 2026-09-15 an invalid token answered ``unauthorized`` on both query
     paths under 2022-06-28, under 2025-09-03 and with no version header at all, so the version is
@@ -262,7 +252,8 @@ def _unmounted_here(request: Request, *, data_sources: bool) -> JSONResponse | N
     way round. ``GET /data_sources/{id}`` is gated on the version the same way, measured on
     2026-09-17 with an id that exists and is not a data source: 2021-05-11 and 2022-06-28 answer
     ``invalid_request_url``, 2025-09-03 and 2026-03-11 answer ``object_not_found``, which is the
-    route answering. Its counterpart ``GET /databases/{id}`` is mounted under all seven.
+    route answering. Its counterpart ``GET /databases/{id}`` answered under each version probed
+    there -- 2021-05-11, 2022-06-28 and 2026-03-11.
 
     The 09-11 probe recorded codes rather than bodies, and reported the refusal as "the same as a
     made-up path", so the message here is what api.notion.com answered on 2026-09-15 for a path no

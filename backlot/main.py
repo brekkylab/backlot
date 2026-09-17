@@ -261,9 +261,10 @@ async def refuse_a_trailing_slash_on_github(request: Request, call_next):
     like `/contents` beside it — and every other route simply does not match, so the request gets
     the same 404 a path with no route at all gets, ahead of a bad bearer's own 401. Measured against
     api.github.com on 2026-09-15, 2026-09-16 and 2026-09-17: 404 for `/repos/{owner}/{repo}/`,
-    `/orgs/{org}/`, `/user/repos/`, `/repos/{owner}/{repo}/pulls/`, `/rate_limit/`,
-    `/repositories/{id}/` and `/organizations/{id}/repos/`, and 200 for
-    `/repos/{owner}/{repo}/contents/`. So this fires on the redirect alone — see
+    `/repos/{owner}/{repo}/pulls/`, `/orgs/{org}/`, `/orgs/{org}/repos/`, `/user/repos/`,
+    `/rate_limit/`, and for the id-keyed spellings of the first four — `/repositories/{id}/`,
+    `/repositories/{id}/pulls/`, `/organizations/{id}/` and `/organizations/{id}/repos/` — and 200
+    for `/repos/{owner}/{repo}/contents/`. So this fires on the redirect alone — see
     :func:`_would_redirect_to_the_slash_free_path` — and leaves a trailing slash a route does match
     to that route.
 

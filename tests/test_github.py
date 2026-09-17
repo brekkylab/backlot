@@ -4954,9 +4954,10 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
 
 def test_github_a_trailing_slash_is_404_not_a_redirect(gh_client, gh_admin_h, gh_org):
     """Drives the paths `refuse_a_trailing_slash_on_github` documents the measurement for, the
-    id-keyed spellings of two of them among them: each 404 with a valid token, carrying neither the
-    five `x-ratelimit-*` headers nor the API-version echo, and counting against no window; a bad
-    bearer answers the same 404 rather than its own 401, and is counted nowhere either; two
+    id-keyed spellings of four of them among them: each 404 with a valid token, carrying neither the
+    five `x-ratelimit-*` headers nor the API-version echo; a valid token's window does not move
+    across two of them; a bad bearer answers the same 404 rather than its own 401, and is counted
+    nowhere either; two
     anonymous requests in a row carry the five and count. A route that ends in a path parameter
     answers its own trailing slash instead, so `/contents/` keeps the root listing's 200. See that
     middleware's docstring for the measurement.
@@ -4966,12 +4967,13 @@ def test_github_a_trailing_slash_is_404_not_a_redirect(gh_client, gh_admin_h, gh
     org_id = synth.github_user_id(gh_org)
     for path in (
         f"/github/repos/{gh_org}/codebase/",
-        f"/github/orgs/{gh_org}/",
         f"/github/repos/{gh_org}/codebase/pulls/",
+        f"/github/orgs/{gh_org}/",
+        f"/github/orgs/{gh_org}/repos/",
         "/github/user/repos/",
         "/github/rate_limit/",
         # the id-keyed spelling `_page_base_url` emits, which `resolve_github_id_paths` rewrites
-        # to the two above with the slash still on it
+        # to the four entries above it, the slash still on them
         f"/github/repositories/{repo_id}/",
         f"/github/repositories/{repo_id}/pulls/",
         f"/github/organizations/{org_id}/",
@@ -5010,7 +5012,7 @@ def test_github_a_trailing_slash_is_404_not_a_redirect(gh_client, gh_admin_h, gh
     assert c.get(f"/github/repos/{gh_org}/codebase", headers=stale).status_code == 400
     assert c.get(f"/github/repos/{gh_org}/codebase/", headers=stale).status_code == 404
 
-    # a valid token's window does not move across any of it
+    # a valid token's window does not move across a refusal, by either spelling
     before = _ratelimit(c.get(f"/github/repos/{gh_org}/codebase", headers=gh_admin_h))
     c.get(f"/github/repos/{gh_org}/codebase/", headers=gh_admin_h)
     c.get(f"/github/repositories/{repo_id}/", headers=gh_admin_h)

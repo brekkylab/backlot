@@ -390,9 +390,11 @@ def jsonp_callback(request: Request) -> str | None:
 
     Two values that look like a callback are not one either. An empty `callback=` is absent:
     measured, it answers the plain body at the real status, success and error alike. So is any
-    `alt` other than `json` -- measured on Sheets, `alt=media`, `alt=proto` and `alt=zzz` each
-    answer their own 400 unwrapped, even when `callback` is itself unparseable, so an `alt` whose
-    format the API cannot render takes the request out of the JSONP path along with the JSON one.
+    `alt` NAMING A FORMAT other than `json` -- which spellings do name that format is
+    :func:`alt_format`'s half, and `JSON` and an empty `alt=` are among them. Measured on Sheets,
+    `alt=media`, `alt=proto` and `alt=zzz` each answer their own 400 unwrapped, even when
+    `callback` is itself unparseable, so an `alt` whose format the API cannot render takes the
+    request out of the JSONP path along with the JSON one.
     That suppression is not Sheets' own: measured 2026-09-16, `alt=media` and `alt=zzz` beside a
     `callback` answer unwrapped on Drive, Gmail, Docs and Slides too, which is why `alt` is read
     for every family here rather than only where ``routers.google._sheets_respond`` refuses the
@@ -507,8 +509,9 @@ def validation_body(path: str, errors) -> None:
 # JSON requires of every serializer. Measured 2026-09-17 by sending each of the 1,112,063
 # codepoints a query string carries -- every one but the surrogates and U+0000, which the front end
 # hands back as the literal `%00` rather than decoding -- through the `alt` echo on Sheets in 1,013
-# requests, and reading which came back escaped. 209 do, and these are the 145 of them that
-# ``json.dumps`` leaves alone.
+# requests, and reading which came back escaped. 209 do, and these are the 176 of them that
+# ``json.dumps`` leaves alone -- it writes the other 33 itself, U+0001-U+001F and the two
+# characters JSON reserves.
 #
 # The set cannot be written as a category test. It is the format category as Unicode 4.0 drew it:
 # U+17B4 and U+17B5 are in it though they have been Mn since 4.1, and U+061C, U+0604 and U+180E are

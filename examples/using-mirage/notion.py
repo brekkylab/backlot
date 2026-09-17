@@ -5,7 +5,8 @@ Mirage mounts Backlot's Notion API as a filesystem — ``pages/`` and ``database
 each entry a directory with a ``page.json`` / ``database.json`` — so an agent reads it with plain
 ``ls`` / ``cat``. Notion's API host is a config knob (``NotionConfig(base_url=...)``), so we point
 it straight at Backlot — no monkeypatch (unlike Google). mirage sends ``Notion-Version:
-2022-06-28``, which Backlot's version-aware router serves.
+2025-09-03`` (``NotionConfig.api_version`` overrides it), so it reads a database through its data
+source, which is the half of the version-aware router that version serves.
 
     uv sync --all-extras --locked
     python examples/using-mirage/notion.py                                  # local throwaway server

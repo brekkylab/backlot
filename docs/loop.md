@@ -71,7 +71,9 @@ Recorded here so it can be recreated on another account in a morning.
 > the credentials in the environment, fix Backlot, and open a pull request that closes them.
 > Anything you found that is outside that scope becomes a new issue, not part of the pull request.
 > If a `routine-fire-payload` block names an issue or pull request, this run is about that item
-> alone; pick nothing else. The skill has the full procedure; follow it.
+> alone; pick nothing else. If that block carries a `branch:` line, run
+> `git fetch origin <branch> && git checkout <branch>` before anything else, so the skill you run
+> is that branch's. The skill has the full procedure; follow it.
 
 **Repository**: this one. **Schedule**: every two hours, 09:00–21:00 Asia/Seoul, weekdays. **API
 trigger**: on; its URL and token live only in this repository's `LOOP_FIRE_URL` and
@@ -160,3 +162,16 @@ else's by branch, `claude/` and nothing else, and leaves every other branch alon
 whole procedure on that issue without writing to GitHub: no comments, no labels, no push, no PR.
 It ends by printing the pull request it would have opened and both reviewers' verdicts. Use it on a
 closed issue whose merged fix you know before changing the skill or a reviewer.
+
+To try a branch of the loop's own files in the cloud, where the proxy identity, the network policy
+and the session hook are real, ring the doorbell by hand with the branch named:
+
+```bash
+gh workflow run loop-doorbell.yml --ref <branch> -f issue=<n> -f branch=<branch>
+```
+
+`--ref` runs that branch's copy of the doorbell; the `branch` input makes the routine check the
+branch out before it runs the skill, so the skill and reviewers under test are the branch's too.
+The run is a rehearsal unless `-f mode=live` is added, so a real open issue is a safe target. The
+branch must be the head of an open pull request; the doorbell refuses any other name, so a label or
+a `/decision` can never send a run anywhere but `main`.

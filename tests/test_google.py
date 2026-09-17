@@ -1136,15 +1136,13 @@ def test_the_indented_error_is_the_body_real_sends_to_the_byte(client):
 def test_prettyprint_does_not_reach_an_error(base, admin_h, sheet_id, pretty):
     """Measured on all five families, each on an error of its own: every one came back two-space
     indented with no parameter, with `false` and with `true` alike, byte for byte. A SUCCESS under
-    `false` is compact, so the parameter is the success path's alone — which is why the success is
-    read here too, as the half of the pair that does change."""
+    `false` is compact, which is what makes an indented error a rule and not a default — that half
+    is `test_pretty_print_is_on_by_default_and_only_false_turns_it_off`, pinned to the byte in both
+    spellings."""
     params = {} if pretty is None else {"prettyPrint": pretty}
     bad = _values(base, admin_h, sheet_id, "NOPE!!", **params)
     assert bad.status_code == 400, bad.text
     assert bad.text == json.dumps(bad.json(), ensure_ascii=False, indent=2) + "\n"
-    ok = _values(base, admin_h, sheet_id, "Sheet1!A1", **params)
-    compact = pretty == "false"
-    assert ok.text.endswith("}") if compact else ok.text.endswith("}\n")
 
 
 @pytest.mark.parametrize("path, code", JSONP_FAMILY_ERRORS)
@@ -1167,7 +1165,11 @@ def test_a_callback_wraps_a_success_and_an_error_through_the_same_serializer(
 ):
     """The divergence this closes was between Backlot's own two paths as much as against the
     vendor: `_sheets_respond` already rendered a success to the byte while every error went out as
-    one compact `JSONResponse` line."""
+    one compact `JSONResponse` line.
+
+    The success is compared to its own unwrapped body rather than read once, which is the assertion
+    `test_callback_wraps_the_body_as_jsonp` does not make — that one reads the prefix and the
+    suffix. Wrapping a success byte for byte is held here and nowhere else."""
     ok = _values(base, admin_h, sheet_id, "Sheet1!A1")
     ok_cb = _values(base, admin_h, sheet_id, "Sheet1!A1", callback="cb")
     bad = _values(base, admin_h, sheet_id, "NOPE!!")

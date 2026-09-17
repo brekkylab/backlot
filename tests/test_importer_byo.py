@@ -587,6 +587,98 @@ def test_byo_slack_reply_clock_must_be_readable(tmp_path, bad):
         load(corpus, Settings(data_dir=tmp_path))
 
 
+@pytest.mark.parametrize(
+    "edited_ts",
+    [
+        f"{_epoch('2026-05-01T02:00:00Z')}.999999",  # the message's own second, latest fraction
+        f"{_epoch('2026-05-01T01:00:00Z')}.000000",  # an earlier second
+    ],
+)
+def test_byo_slack_root_edited_ts_must_name_a_later_second_than_created(tmp_path, edited_ts):
+    """Real Slack's `edited.ts` is always later than the message it edited, and only a later
+    SECOND is later from outside: the served `ts` takes its six-digit fraction from a hash, so a
+    fraction inside the message's own second is a value the corpus cannot order against it."""
+    corpus = _write(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "content": "root",
+                "channel": "incidents",
+                "author_email": "bob@a.com",
+                "created": "2026-05-01T02:00:00Z",
+                "edited": {"user": "bob@a.com", "ts": edited_ts},
+            }
+        ],
+    )
+    with pytest.raises(SystemExit, match="edited.ts must name a later second than"):
+        load(corpus, Settings(data_dir=tmp_path))
+
+
+def test_byo_slack_reply_edited_ts_is_checked_against_its_own_created(tmp_path):
+    """A reply's `edited.ts` is checked against ITS OWN `created`, not the root's: a reply an hour
+    into the thread edited half an hour before itself is refused, even though that second is well
+    after the root's and a check against the root's clock would let it through."""
+    corpus = _write(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "content": "root",
+                "channel": "incidents",
+                "author_email": "bob@a.com",
+                "created": "2026-05-01T00:00:00Z",
+                "replies": [
+                    {
+                        "content": "on it",
+                        "author_email": "ava@a.com",
+                        "created": "2026-05-01T01:00:00Z",
+                        "edited": {
+                            "user": "ava@a.com",
+                            "ts": f"{_epoch('2026-05-01T00:30:00Z')}.000000",
+                        },
+                    }
+                ],
+            }
+        ],
+    )
+    with pytest.raises(SystemExit, match=r"reply 1: edited\.ts must name a later second"):
+        load(corpus, Settings(data_dir=tmp_path))
+
+
+@pytest.mark.parametrize("on", ["root", "reply"])
+def test_byo_slack_edited_user_must_be_the_messages_own_author(tmp_path, on):
+    """`chat.update`, the only Web API method that gives a message an `edited` block, answers
+    anyone but the author `cant_update_message` — "Only messages posted by the authenticated user
+    are able to be updated using this method". An editor who is not the author is one real Slack
+    cannot produce, and Backlot would serve it as an id resolving to nobody. Not the answer
+    `reactions` reaches for its own address list: `reactions.add` works for anyone, so a reactor
+    who is not the author IS a state real Slack holds.
+    """
+    root = {
+        "source_type": "slack",
+        "content": "root",
+        "channel": "incidents",
+        "author_email": "bob@a.com",
+        "created": "2026-05-01T02:00:00Z",
+    }
+    edited = {"user": "mallory@a.com", "ts": f"{_epoch('2026-05-01T03:00:00Z')}.000000"}
+    if on == "root":
+        root["edited"] = edited
+    else:
+        root["replies"] = [
+            {
+                "content": "on it",
+                "author_email": "ava@a.com",
+                "created": "2026-05-01T02:30:00Z",
+                "edited": edited,
+            }
+        ]
+    corpus = _write(tmp_path, [root])
+    with pytest.raises(SystemExit, match="edited.user must be this message's own author"):
+        load(corpus, Settings(data_dir=tmp_path))
+
+
 def test_byo_a_speaker_outside_a_private_channels_readers_is_refused(tmp_path):
     """A channel's members are the people who have spoken in it and what a caller may read is the
     ACL, so a corpus that puts a speaker outside a private channel's grantees states two things
@@ -2204,6 +2296,166 @@ def test_byo_roster_duplicate_entries_union_their_groups(tmp_path):
         "2024",
     }
     assert len(bo["groups"]) == 5  # deduplicated, so no membership row is doubled
+
+
+def test_byo_roster_deactivated_is_a_boolean_that_unions_or_is_refused(tmp_path):
+    """`deactivated: true` on a roster entry — Slack's own offboarded-member state. It unions the
+    same way `token` does: once any entry for a person states it, a later entry that doesn't
+    state it never un-deactivates them within one `load_roster` call. Anything but a boolean is
+    refused rather than read, which is the one field here where tolerance would invert a meaning
+    rather than widen it."""
+    from backlot.importer.byo import load_roster
+
+    roster = tmp_path / "roster.yaml"
+    roster.write_text(
+        yaml.safe_dump(
+            {
+                "org": "redwood",
+                "org_domain": "redwoodinference.com",
+                "departments": {
+                    "Engineering": [
+                        {"name": "Ava Chen", "email": "ava@redwoodinference.com"},
+                        {
+                            "name": "Cy Ito",
+                            "email": "cy@redwoodinference.com",
+                            "deactivated": True,
+                        },
+                    ],
+                    "Security": [{"name": "Cy Ito", "email": "cy@redwoodinference.com"}],
+                },
+            }
+        )
+    )
+    users = load_roster(roster)["users"]
+    assert users["ava@redwoodinference.com"]["deactivated"] is False
+    assert users["cy@redwoodinference.com"]["deactivated"] is True
+    assert users["cy@redwoodinference.com"]["token"] is True  # deactivation never drops the token
+
+    # The readers around it take a value in any shape; this one cannot, because `bool("false")`
+    # is True and a quoted value would deactivate the person it says to keep.
+    roster.write_text(
+        yaml.safe_dump(
+            {
+                "departments": {
+                    "Engineering": [
+                        {"email": "cy@redwoodinference.com", "deactivated": "false"},
+                    ]
+                }
+            }
+        )
+    )
+    with pytest.raises(SystemExit, match="is not a boolean"):
+        load_roster(roster)
+
+
+def test_byo_roster_deactivated_reaches_the_db_tokens_yaml_and_the_membership_check(tmp_path):
+    """The end-to-end shape: `deactivated: true` lands in `slack_deactivated_users`, keyed on the
+    roster's principal, and the person's token stays in `tokens.yaml` (real answers it
+    `account_inactive` rather than dropping the credential). The roster is authoritative on every
+    load, and `store.slack_membership_violations` — which the load runs before committing — reads
+    the same state: one corpus refuses with the person active and loads with them deactivated."""
+    deactivated_roster = tmp_path / "roster-deactivated.yaml"
+    deactivated_roster.write_text(
+        yaml.safe_dump(
+            {
+                "org": "redwood",
+                "org_domain": "redwoodinference.com",
+                "departments": {
+                    "Engineering": [
+                        {"name": "Ava Chen", "email": "ava.chen@redwoodinference.com"},
+                        {
+                            "name": "Cy Ito",
+                            "email": "cy.ito@redwoodinference.com",
+                            "deactivated": True,
+                        },
+                    ]
+                },
+            }
+        )
+    )
+    corpus = _write(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "doc_id": "s1",
+                "channel": "incidents",
+                "content": "hi",
+                "author_email": "ava.chen@redwoodinference.com",
+            }
+        ],
+    )
+    settings = Settings(data_dir=tmp_path)
+    load(corpus, settings, roster=deactivated_roster)
+
+    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    assert {u["email"] for u in tokens["users"]} == {
+        "ava.chen@redwoodinference.com",
+        "cy.ito@redwoodinference.com",
+    }
+
+    conn = store.connect_ro(settings.db_path)
+    try:
+        assert {r[0] for r in conn.execute("SELECT email FROM slack_deactivated_users")} == {
+            "cy.ito@redwoodinference.com"
+        }
+    finally:
+        conn.close()
+
+    # a re-import whose roster no longer states it un-deactivates the person
+    active_roster = tmp_path / "roster-active.yaml"
+    active_roster.write_text(
+        yaml.safe_dump(
+            {
+                "org": "redwood",
+                "org_domain": "redwoodinference.com",
+                "departments": {
+                    "Engineering": [
+                        {"name": "Ava Chen", "email": "ava.chen@redwoodinference.com"},
+                        {"name": "Cy Ito", "email": "cy.ito@redwoodinference.com"},
+                    ]
+                },
+            }
+        )
+    )
+    load(corpus, settings, roster=active_roster, reset=False)
+    conn = store.connect_ro(settings.db_path)
+    try:
+        assert conn.execute("SELECT * FROM slack_deactivated_users").fetchall() == []
+    finally:
+        conn.close()
+
+    # A deactivated person speaking in a private channel they cannot read is not the state the
+    # import refuses (`store.slack_membership_violations`): they are in no channel's membership,
+    # so conversations.members and conversations.info cannot answer them two ways. The same
+    # corpus with them active is the refusal, which is the whole of the difference.
+    private = _write(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "doc_id": "s2",
+                "channel": "board-comp",
+                "content": "the comp band lands at 240k",
+                "author_email": "cy.ito@redwoodinference.com",
+                "readers": ["user:ava.chen@redwoodinference.com"],
+            }
+        ],
+        name="private.jsonl",
+    )
+    with pytest.raises(SystemExit, match="speak in a private slack channel they cannot read"):
+        load(private, Settings(data_dir=tmp_path / "active"), roster=active_roster)
+    deactivated_settings = Settings(data_dir=tmp_path / "deactivated")
+    load(private, deactivated_settings, roster=deactivated_roster)
+    conn = store.connect_ro(deactivated_settings.db_path)
+    try:
+        assert store.slack_private_channel_members(conn, "board-comp") == [
+            "ava.chen@redwoodinference.com"
+        ]
+        # ...and the message they wrote is still in the channel
+        assert store.count_documents(conn, "slack", container="board-comp") == 1
+    finally:
+        conn.close()
 
 
 def test_byo_roster_departments_alone_is_an_employee_directory(tmp_path):

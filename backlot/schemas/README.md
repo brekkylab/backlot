@@ -207,6 +207,7 @@ departments:                      # authenticating users -> a bearer token each
     - {name: Ava Chen, email: ava.chen@redwoodinference.com}
     - {name: Bo Ryu, email: bo.ryu@redwoodinference.com,
        groups: [proj-checkout-rework, res-emea-support]}
+    - {name: Cy Ito, email: cy.ito@redwoodinference.com, deactivated: true}
 contacts:                         # principals with NO token (display-only)
   - {name: Zoe Newperson, email: zoe.newperson@redwoodinference.com, group: engineering}
 ```
@@ -215,6 +216,11 @@ A person is rarely exactly one group: an entry's `groups` list adds squad, compl
 region-scoped memberships on top of the department (or `group`) one — it never replaces it. An
 email appearing in more than one entry holds the union of all of them, and a `contacts` entry
 never upgrades (or demotes) a `departments` account.
+
+`deactivated: true` is Slack's offboarded-member state: the person keeps their token (Slack answers
+a deactivated member's own calls `account_inactive` rather than forgetting the credential), while
+`users.list` / `users.info` answer them `deleted: true` and `conversations.members` drops them from
+every channel — their messages stay in history. No other served source has the concept.
 
 With a roster, `principals` / `group_members` / `tokens.yaml` come from it **alone**: a record's
 `author_email` and `readers` are references into it, and an address that is not in it — a Slack

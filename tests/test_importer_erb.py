@@ -3284,6 +3284,7 @@ def test_export_byo_writes_a_roster_carrying_names_and_who_may_authenticate(tmp_
         "name": "Tomás Rré",
         "groups": ["engineering"],
         "token": True,
+        "deactivated": False,
     }
     assert parsed["users"]["ravi.other@redwoodinference.com"]["token"] is False
 

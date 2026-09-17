@@ -612,11 +612,7 @@ def test_confluence_spaces_are_paged_not_served_whole(client, admin_h, tokens):
     assert second["_links"]["prev"] == "/rest/api/space?prev=true&limit=1&start=0"
     assert "next" not in second["_links"]
 
-    # `expand` rides into `next`/`prev`/`self` too, once the route reads it — measured today
-    # against brekkylab.atlassian.net: `next=true` still leads on `next` (`next=true&expand=
-    # description&limit=1&start=1`), but on `prev` the marker does not lead, so the same corpus one
-    # page further on answers `expand=description&prev=true&limit=1&start=0` — `expand` ahead of
-    # the marker. `self` carries the same `?expand=description` with nothing else changed.
+    # expand rides into next/prev/self too — see confluence_space_links for the ordering.
     expanded_first = client.get(
         "/atlassian/wiki/rest/api/space?limit=1&expand=description", headers=admin_h
     ).json()

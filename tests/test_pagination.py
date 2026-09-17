@@ -233,8 +233,8 @@ def test_confluence_space_links():
     assert pg.confluence_space_links(path, 1, 25, 2, 3) == {
         "prev": f"{path}?prev=true&limit=1&start=0"
     }
-    # a full page in the middle carries both — `next` inserted first, matching real's alphabetical
-    # `_links` order (`next` < `prev`); a `==` on the dict alone would not catch it reverting.
+    # a full page in the middle carries both — pins insertion order, since `==` on the dict alone
+    # would not catch a reversion (see confluence_space_links for why `next` leads).
     both = pg.confluence_space_links(path, 2, 2, 1, 5)
     assert both == {
         "prev": f"{path}?prev=true&limit=2&start=0",

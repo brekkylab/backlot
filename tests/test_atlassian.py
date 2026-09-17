@@ -1804,10 +1804,18 @@ def test_confluence_expands_permissions_with_one_entry_per_grant(tmp_path):
         },
         {
             "source_type": "confluence",
-            "space": "bobs",
-            "title": "Private",
+            "space": "shared-private",
+            "title": "Bob's",
             "content": "Body.",
             "author_email": "bob@acme.com",
+            "visibility": "private",
+        },
+        {
+            "source_type": "confluence",
+            "space": "shared-private",
+            "title": "Ava's",
+            "content": "Body.",
+            "author_email": "ava@acme.com",
             "visibility": "private",
         },
     ]
@@ -1816,7 +1824,7 @@ def test_confluence_expands_permissions_with_one_entry_per_grant(tmp_path):
         admin = {"Authorization": f"Bearer {settings.admin_token}"}
         spaces = c.get("/atlassian/wiki/rest/api/space?expand=permissions", headers=admin).json()
         by_name = {s["name"]: s["permissions"] for s in spaces["results"]}
-        assert sorted(by_name) == ["bobs", "eng-only", "open"]
+        assert sorted(by_name) == ["eng-only", "open", "shared-private"]
 
         for name in ("open", "eng-only"):
             (entry,) = by_name[name]
@@ -1827,11 +1835,17 @@ def test_confluence_expands_permissions_with_one_entry_per_grant(tmp_path):
             assert entry["anonymousAccess"] is False
             assert entry["unlicensedAccess"] is False
 
-        (private,) = by_name["bobs"]
-        users = private["subjects"]["user"]
-        assert users["size"] == len(users["results"]) == 1
-        assert users["results"][0]["email"] == "bob@acme.com"
-        assert private["subjects"]["_expandable"] == {"group": ""}
+        # two user grants on one space are two entries, which is what makes the id a per-grant id
+        private = by_name["shared-private"]
+        assert len(private) == 2
+        assert len({e["id"] for e in private}) == 2
+        named = []
+        for entry in private:
+            users = entry["subjects"]["user"]
+            assert users["size"] == len(users["results"]) == 1
+            assert entry["subjects"]["_expandable"] == {"group": ""}
+            named.append(users["results"][0]["email"])
+        assert sorted(named) == ["ava@acme.com", "bob@acme.com"]
 
         ids = [e["id"] for perms in by_name.values() for e in perms]
         assert len(ids) == len(set(ids))
@@ -1841,7 +1855,7 @@ def test_confluence_expands_permissions_with_one_entry_per_grant(tmp_path):
         page = c.get(
             "/atlassian/wiki/rest/api/content?limit=1&expand=version,history", headers=admin
         ).json()["results"][0]
-        subject = users["results"][0]
+        subject = private[0]["subjects"]["user"]["results"][0]
         assert list(subject) == [
             "type",
             "accountId",

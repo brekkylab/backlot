@@ -367,15 +367,18 @@ def test_s3_large_bucket_delimiter_returns_common_prefixes(big_bucket_client, bi
     assert root.findtext(f"{{{S3NS}}}IsTruncated") == "false"
 
 
+@pytest.mark.parametrize("listing", ["", "list-type=2&"], ids=["v1", "v2"])
 def test_s3_large_bucket_acl_scopes_listing(
-    big_bucket_client, big_bucket_settings, big_bucket_tokens
+    big_bucket_client, big_bucket_settings, big_bucket_tokens, listing
 ):
+    """Both served bodies scope the same way. The V1 one carries a per-object ``Owner`` a scoped
+    caller can read, so the ACL has to be proved on it and not only on the V2 shape."""
     pytest.importorskip("botocore")
 
     def keys_for(token):
         r = _s3_get(
             big_bucket_client,
-            "/s3/big-bucket?list-type=2&prefix=logs/2026/01/&max-keys=1000",
+            f"/s3/big-bucket?{listing}prefix=logs/2026/01/&max-keys=1000",
             token,
         )
         return {e.text for e in ET.fromstring(r.text).findall(f"{{{S3NS}}}Contents/{{{S3NS}}}Key")}
@@ -389,6 +392,14 @@ def test_s3_large_bucket_acl_scopes_listing(
     assert eng_keys < admin_keys and people_keys < admin_keys  # proper, non-empty subsets
     assert eng_keys.isdisjoint(people_keys)
     assert eng_keys | people_keys == admin_keys
+    # And the scoped caller gets the body it asked for, per-object `Owner` and all.
+    scoped = _s3_get(
+        big_bucket_client,
+        f"/s3/big-bucket?{listing}prefix=logs/2026/01/&max-keys=1",
+        big_bucket_tokens["eng-bulk@acme.com"],
+    )
+    owner = ET.fromstring(scoped.text).find(f"{{{S3NS}}}Contents/{{{S3NS}}}Owner/{{{S3NS}}}ID")
+    assert (owner is not None) == (listing == "")
 
 
 def test_s3_delimiter_common_prefix_not_duplicated_across_pages(

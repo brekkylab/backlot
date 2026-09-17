@@ -251,6 +251,22 @@ def bad_page_token() -> AtlassianError:
 # measurement rather than the document is what this row states. `project/{key}/role/{id}` is the
 # reverse: a `POST` there is that route's 404 for an unknown key rather than a 405, and the document
 # declares all four methods, so no 405 could be measured and its row is the document's alone.
+#
+# One row binds `{version}` to both Jira mounts because both were measured and agreed:
+# `PUT /rest/api/2/search/jql` answers `GET, POST` and `POST /rest/api/2/serverInfo` answers `GET`,
+# the sets their v3 spellings answer.
+#
+# The set is the VENDOR's, not this server's, and the two part wherever the vendor has a write no
+# source here serves: `PUT` and `DELETE` on `issue/{key}`, `POST` on `field`, on
+# `issue/{key}/comment` and on `issueLinkType`, and all three writes on `project/{key}/role/{id}`
+# are acknowledged `missing_operation`s in `fidelity/baseline/jira.json`, so each is refused here
+# where real would carry it out — and the refusal names that method in its own `Allow`, which makes
+# `DELETE /rest/api/{version}/issue/{key}` a 405 carrying `DELETE`. The header is right about the
+# path and the status is wrong about the method, which is that acknowledged gap showing rather than
+# a second one; narrowing `Allow` to the methods Backlot implements would hide it behind a header
+# real never sends. The other two rows carrying a non-GET method do not reach this: `search/jql`,
+# whose `POST` Backlot serves, and `project/search`, whose `PUT` and `DELETE` name no vendor
+# operation at all — they belong to `project/{projectIdOrKey}`, which is what `search` binds to.
 _JIRA_ALLOW = (
     ("/rest/api/{version}/serverInfo", ("GET",)),
     ("/rest/api/{version}/field", ("GET", "POST")),

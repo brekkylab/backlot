@@ -43,8 +43,11 @@ Ordered as the table above, by `source_type`.
 | `content/{id}/label` | |
 | `content/{id}/restriction/byOperation` | |
 | `search` | CQL |
-| `space` | `expand=permissions` for the reader roster |
+| `space` | `expand=description,permissions` |
 | `space/{key}` | `expand=description,permissions` |
+
+`expand=permissions` carries the space's reader roster on either read — one `read`/`space` entry
+naming the accounts the corpus lets read that space, which is the only operation an ACL states.
 
 ### Fireflies — `/fireflies/graphql`
 

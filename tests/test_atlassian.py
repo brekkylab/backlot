@@ -1807,6 +1807,41 @@ def test_confluence_expands_permissions_on_both_space_reads(client, admin_h):
     assert single["permissions"] == listed["permissions"]
 
 
+@pytest.mark.parametrize(
+    "expand,description,permissions",
+    [
+        ("description", True, False),
+        ("description.plain", True, False),
+        ("description.view,permissions", True, True),
+        ("permissions.bogus", False, True),
+        ("descriptions", False, False),
+        ("bogus", False, False),
+    ],
+)
+def test_confluence_expands_the_property_the_first_dotted_segment_names(
+    client, admin_h, expand, description, permissions
+):
+    """Measured 2026-09-17 on `space/{key}`: the property is named by the FIRST dotted segment of
+    each term, so `description.plain` and `permissions.bogus` both expand, and a term naming no
+    property is ignored rather than refused — `expand=bogus` answers 200 with `_expandable` whole.
+    Which SUB-property a term asks for does not change the body here, so `description.view` gets
+    the same plain rendering `description` does; that gap is in `_space`'s comment.
+
+    Both reads take the expansion, so both are asserted: they share `_space`.
+    """
+    listed = client.get(f"/atlassian/wiki/rest/api/space?expand={expand}", headers=admin_h).json()[
+        "results"
+    ][0]
+    single = client.get(
+        f"/atlassian/wiki/rest/api/space/{listed['key']}?expand={expand}", headers=admin_h
+    ).json()
+    for space in (listed, single):
+        assert ("description" in space) is description
+        assert ("permissions" in space) is permissions
+        assert ("description" in space["_expandable"]) is not description
+        assert ("permissions" in space["_expandable"]) is not permissions
+
+
 def test_confluence_space_read_without_the_expansion_carries_no_permissions(client, admin_h):
     space = client.get("/atlassian/wiki/rest/api/space", headers=admin_h).json()["results"][0]
     plain = client.get(f"/atlassian/wiki/rest/api/space/{space['key']}", headers=admin_h).json()

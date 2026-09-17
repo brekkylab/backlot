@@ -1084,7 +1084,14 @@ def _space(request: Request, conn, container: str, expand: str, *, listed: bool)
         "status": "current",
         "_expandable": _space_expandable(key),
     }
-    wanted = [e.strip() for e in (expand or "").split(",") if e.strip()]
+    # An expansion is named by the FIRST dotted segment of each comma-separated term: real answers
+    # `expand=description.plain` and `expand=permissions.bogus` with the property expanded, and
+    # ignores a term that names no property (`descriptions`, `bogus`) rather than refusing it.
+    # Measured on brekkylab.atlassian.net, 2026-09-17, on `space/{key}`. What each SUB-property
+    # selects is not reproduced: real gives `expand=description` the empty `_expandable` pair
+    # `{view, plain}` and only `description.plain` or `.view` the value, where the description here
+    # is one plain rendering whichever spelling asks for it.
+    wanted = {e.strip().split(".", 1)[0] for e in (expand or "").split(",") if e.strip()}
     if "description" in wanted:
         space["description"] = {"plain": {"value": f"{container} space", "representation": "plain"}}
         space["_expandable"].pop("description", None)
@@ -1140,6 +1147,12 @@ async def confluence_space_permission(key: str, request: Request):
     keeps the refusal off ``app.openapi()``, which is what `backlot diff` compares: the 405 is a
     fact about the wire, and declaring a `GET` operation the vendor does not have is what the
     acknowledged `extra_operation` for this path used to record.
+
+    The refusal covers the `POST` as well, where real gets past the method check: a `POST` here
+    answers 415 with Spring's `UNSUPPORTED_MEDIA_TYPE` naming the absent content type (measured
+    2026-09-17, on a key naming no space). That is the acknowledged `missing_operation` for this
+    path showing on the wire, as an unserved write does on any path Backlot routes for a read, and
+    answering the 415 would mean serving the first step of the write itself.
 
     ``key`` is unused and declared because the path carries it: the refusal comes before any lookup
     on real, where `GET space/NOSUCHSPACE/permission` answers the same 405 as a key that names a

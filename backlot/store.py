@@ -3339,10 +3339,8 @@ def all_user_emails(conn) -> list[str]:
 
 
 def slack_is_deactivated(conn, email) -> bool:
-    """Whether a roster entry named ``email`` with ``deactivated: true`` — real Slack's own
-    `deleted`/`is_forgotten` flag on a member, measured against a live workspace on 2026-09-17
-    (`users.list`/`.info`: 9 of 19 members carry `"deleted": true` and an undocumented but present
-    `"is_forgotten": true`; the rest carry neither key)."""
+    """Whether a roster entry named ``email`` with ``deactivated: true`` — see
+    ``backlot.routers.slack._user_obj`` for the vendor shape this drives."""
     return (
         conn.execute("SELECT 1 FROM slack_deactivated_users WHERE email = ?", (email,)).fetchone()
         is not None

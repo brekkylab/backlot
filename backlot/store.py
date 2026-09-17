@@ -3245,9 +3245,9 @@ def slack_private_channel_members(conn, channel) -> list[str] | None:
             members.add(pid)
         elif ptype == "group":
             members.update(r["id"] for r in group_members(conn, pid))
-    # Slack drops a deactivated member from every channel and keeps what they wrote: "They'll be
-    # removed from all channels ... nor are their messages or files deleted" (Slack, "Deactivate a
-    # member's account"). The live workspace measured 2026-09-17 is consistent with that rather
+    # Slack drops a deactivated member from every channel and keeps what they wrote: "People
+    # aren't notified when their accounts are deactivated, nor are their messages or files
+    # deleted. They'll be removed from all channels ..." (Slack, "Deactivate a member's account"). The live workspace measured 2026-09-17 is consistent with that rather
     # than evidence for it: none of its 9 deactivated members appears in any of the 8 readable
     # channels' conversations.members, but none of them has spoken in one either (10 visible
     # messages in all, no channel reporting has_more), and absence is equally what real answers

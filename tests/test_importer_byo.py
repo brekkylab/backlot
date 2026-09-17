@@ -2298,10 +2298,12 @@ def test_byo_roster_duplicate_entries_union_their_groups(tmp_path):
     assert len(bo["groups"]) == 5  # deduplicated, so no membership row is doubled
 
 
-def test_byo_roster_deactivated_is_parsed_and_unions_true(tmp_path):
+def test_byo_roster_deactivated_is_a_boolean_that_unions_or_is_refused(tmp_path):
     """`deactivated: true` on a roster entry — Slack's own offboarded-member state. It unions the
     same way `token` does: once any entry for a person states it, a later entry that doesn't
-    state it never un-deactivates them within one `load_roster` call."""
+    state it never un-deactivates them within one `load_roster` call. Anything but a boolean is
+    refused rather than read, which is the one field here where tolerance would invert a meaning
+    rather than widen it."""
     from backlot.importer.byo import load_roster
 
     roster = tmp_path / "roster.yaml"
@@ -2346,10 +2348,12 @@ def test_byo_roster_deactivated_is_parsed_and_unions_true(tmp_path):
         load_roster(roster)
 
 
-def test_byo_roster_deactivated_reaches_the_db_and_tokens_yaml(tmp_path):
+def test_byo_roster_deactivated_reaches_the_db_tokens_yaml_and_the_membership_check(tmp_path):
     """The end-to-end shape: `deactivated: true` lands in `slack_deactivated_users`, keyed on the
     roster's principal, and the person's token stays in `tokens.yaml` (real answers it
-    `account_inactive` rather than dropping the credential)."""
+    `account_inactive` rather than dropping the credential). The roster is authoritative on every
+    load, and `store.slack_membership_violations` — which the load runs before committing — reads
+    the same state: one corpus refuses with the person active and loads with them deactivated."""
     deactivated_roster = tmp_path / "roster-deactivated.yaml"
     deactivated_roster.write_text(
         yaml.safe_dump(

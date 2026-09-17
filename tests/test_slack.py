@@ -1505,7 +1505,7 @@ def test_slack_edited_renders_the_editors_id(tmp_path):
         assert m["edited"]["user"] == m["user"]
 
 
-def test_slack_deactivated_member_is_deleted_and_dropped_from_membership(tmp_path):
+def test_slack_deactivation_changes_every_slack_answer_about_a_member_and_nothing_else(tmp_path):
     """A roster's `deactivated: true` (`backlot.importer.byo.load_roster`): the person is
     `deleted: true`, dropped from the membership of both kinds of channel though their messages
     stay in history, and refused `account_inactive` on their own Slack token while a non-Slack

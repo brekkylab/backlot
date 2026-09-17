@@ -1274,6 +1274,47 @@ def test_an_alt_the_api_cannot_render_takes_the_request_out_of_the_jsonp_path(
         assert message in _gerr(r)["message"]
 
 
+@pytest.mark.parametrize("path, code", JSONP_FAMILY_ERRORS)
+@pytest.mark.parametrize("alt", ["json", "JSON", "Json", ""])
+def test_an_alt_that_still_means_json_keeps_the_callback(client, path, code, alt):
+    """`alt` is matched without regard to case, and an empty `alt=` names no format at all.
+
+    Measured 2026-09-17, anonymous on all five families and authenticated on Sheets: `alt=JSON`,
+    `alt=Json` and `alt=` each come back as the same 200 script `alt=json` does. Comparing the
+    value literally answered all three at the error status with an unwrapped body, which is the one
+    shape a page loading the answer through a `<script>` element cannot read."""
+    r = client.get(path, params={"callback": "cb", "alt": alt})
+    assert _jsonp(r, "cb")["error"]["code"] == code
+
+
+@pytest.mark.parametrize("alt", ["json", "JSON", "Json", ""])
+def test_the_alt_spellings_a_success_is_served_through(base, admin_h, sheet_id, alt):
+    """The success half of the same measurement: authenticated on Sheets, each of these answers the
+    200 a request naming no `alt` answers."""
+    r = _values(base, admin_h, sheet_id, "Sheet1!A1", alt=alt)
+    assert r.status_code == 200, r.text
+    assert r.json()["range"] == "Sheet1!A1"
+
+
+@pytest.mark.parametrize(
+    "alt, message",
+    [
+        ("media", 'Unsupported alt type "media" for non byte stream request.'),
+        ("MEDIA", 'Unsupported alt type "media" for non byte stream request.'),
+        ("Media", 'Unsupported alt type "media" for non byte stream request.'),
+        ("zzz", "Invalid value \"zzz\" for query parameter 'alt'"),
+        ("ZZZ", "Invalid value \"ZZZ\" for query parameter 'alt'"),
+    ],
+)
+def test_the_two_alt_refusals_quote_different_spellings(base, admin_h, sheet_id, alt, message):
+    """A format real recognises but cannot render here is reported lowercased; one it does not
+    recognise is quoted the way it arrived. Measured 2026-09-17 on Sheets with a credential, which
+    is what it takes to reach either sentence — anonymous, the 403 comes first."""
+    r = _values(base, admin_h, sheet_id, "Sheet1!A1", alt=alt)
+    assert r.status_code == 400, r.text
+    assert _gerr(r)["message"] == message
+
+
 def test_a_repeated_callback_is_answered_through_the_first_one(base, admin_h, sheet_id):
     """`$.xgafv` is the system parameter real reads LAST; `callback` and `alt` it reads FIRST.
     Measured 2026-09-15: `cb&dd` calls `cb`, `dd&cb` calls `dd`, an empty first repeat is no
@@ -1528,6 +1569,25 @@ def test_drive_export_and_media_stay_non_json(client, admin_h):
     pdf = _drive_find(client, admin_h, "Whitepaper")
     med = client.get(f"/drive/v3/files/{pdf['id']}", params={"alt": "media"}, headers=admin_h)
     assert med.status_code == 200 and "application/json" not in med.headers["content-type"]
+
+
+def test_the_alt_that_downloads_is_read_the_way_every_other_alt_is(client, admin_h):
+    """Case does not decide a download and neither does the last repeat.
+
+    Measured 2026-09-17 against `www.googleapis.com/drive/v3/files/<id>` with a credential:
+    `alt=MEDIA` and `alt=Media` hand back the same bytes `alt=media` does, `alt=media&alt=json`
+    downloads and `alt=json&alt=media` answers the metadata. Reading the parameter off
+    ``QueryParams.get`` gave the opposite answer on the repeat and the metadata on both spellings,
+    so a client that upper-cased the value got JSON where real gave it a file."""
+    url = f"/drive/v3/files/{_drive_find(client, admin_h, 'Whitepaper')['id']}"
+    raw = client.get(url, params={"alt": "media"}, headers=admin_h)
+    assert raw.status_code == 200
+    for spelling in ("MEDIA", "Media"):
+        r = client.get(url, params={"alt": spelling}, headers=admin_h)
+        assert (r.status_code, r.content) == (200, raw.content), spelling
+    assert client.get(f"{url}?alt=media&alt=json", headers=admin_h).content == raw.content
+    metadata = client.get(f"{url}?alt=json&alt=media", headers=admin_h)
+    assert metadata.headers["content-type"].startswith("application/json")
 
 
 # --- Drive fidelity: measured divergences from real Google Drive ---------------

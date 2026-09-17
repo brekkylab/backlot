@@ -1896,7 +1896,11 @@ async def drive_files_get(file_id: str, request: Request):
             keys = _drive_get_field_keys(request.query_params.get("fields"))
             return _drive_project([_drive_folder_obj(conn, name, caller.email)], keys)[0]
         raise gerr.not_found_file(file_id)
-    if request.query_params.get("alt") == "media":
+    # `gerr.alt_format`, not `.get`: measured 2026-09-17 against this same route, `alt=MEDIA` and
+    # `alt=Media` download the content just as `alt=media` does, and `alt=media&alt=json` downloads
+    # it where `alt=json&alt=media` answers the metadata — the first repeat decides, and
+    # ``QueryParams.get`` answers the last.
+    if gerr.alt_format(request.query_params) == "media":
         # raw download — real API errors on native Docs-editors types (use export)
         if _native(row) is not None:
             raise gerr.not_downloadable()
@@ -2214,17 +2218,24 @@ def _sheets_respond(request: Request, body: dict, allowed: dict) -> Response:
     # `gerr.first_repeat`, not `.get`: real answers a repeated `alt` through the first one, and
     # `gerr.jsonp_callback` reads the same parameter to decide the wrap -- so one request has to
     # see one `alt` in both places.
-    alt = gerr.first_repeat(request.query_params, gerr.ALT)
-    if alt is not None and alt != "json":
+    alt = gerr.alt_format(request.query_params)
+    if alt and alt != "json":
         # Measured on `media` and `zzz`: `media` gets its own sentence, everything else the
         # generic one. NOT `proto`, which the discovery document also declares and which real
         # answers with a protobuf body ("Proto over HTTP is not allowed for service …") under
         # `application/x-protobuf` — a format this module does not serve, so it lands on the
         # generic sentence here.
+        #
+        # The two sentences quote different spellings, measured 2026-09-17 on Sheets: `alt=MEDIA`
+        # answers `Unsupported alt type "media"` with the format lowercased, while `alt=ZZZ`
+        # answers `Invalid value "ZZZ"` through the spelling that arrived. So the generic one
+        # reads the parameter again rather than reusing the folded value.
         raise gerr.invalid_argument(
             f'Unsupported alt type "{alt}" for non byte stream request.'
             if alt == "media"
-            else f"Invalid value \"{alt}\" for query parameter 'alt'"
+            else "Invalid value \"{}\" for query parameter 'alt'".format(
+                gerr.first_repeat(request.query_params, gerr.ALT)
+            )
         )
     mask = request.query_params.get("fields")
     if mask:

@@ -361,6 +361,23 @@ def bad_jsonp_callback(name: str) -> GoogleError:
     )
 
 
+def alt_format(query: Mapping[str, str] | None) -> str:
+    """The format `alt` asks for, casefolded, with an absent or empty parameter answering ``""``.
+
+    `alt` is matched without regard to case and an empty `alt=` is no value at all. Measured
+    2026-09-17, anonymous on Sheets, Docs, Drive, Gmail and Slides and authenticated on Sheets:
+    `alt=JSON`, `alt=Json` and `alt=` each answer the 200 a bare request does, and each is wrapped
+    beside a `callback` exactly as `alt=json` is. Reading the value literally answered all three at
+    the error status, unwrapped.
+
+    The refusals split on the same measurement, which is why this returns the folded value and the
+    caller keeps the sent one: `alt=MEDIA` and `alt=Media` answer ``Unsupported alt type "media"``
+    with the format lowercased, while `alt=ZZZ` answers ``Invalid value "ZZZ"`` through the
+    spelling it received.
+    """
+    return (first_repeat(query, ALT) or "").casefold()
+
+
 def jsonp_callback(request: Request) -> str | None:
     """The `callback` this request is answered through, or ``None`` for a plain JSON body.
 
@@ -382,14 +399,18 @@ def jsonp_callback(request: Request) -> str | None:
     value. Refusing it is still Sheets-only, and the four families that accept a format they cannot
     render where real answers a 400 are a gap of their own.
 
+    Which `alt` counts as JSON is :func:`alt_format`'s question, not this one's -- `alt=JSON` and
+    `alt=` are the JSON the default spells, and answering them unwrapped is the divergence that
+    reading the value literally here used to produce.
+
     Both are read as :func:`first_repeat`, not off ``QueryParams.get``: real answers a repeated
     `callback` through the first name and a repeated `alt` through the first format.
     """
     if request.method != "GET":
         return None
     query = request.query_params
-    alt = first_repeat(query, ALT)
-    if alt is not None and alt != "json":
+    alt = alt_format(query)
+    if alt and alt != "json":
         return None
     return first_repeat(query, CALLBACK) or None
 

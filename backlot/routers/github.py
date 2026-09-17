@@ -388,8 +388,10 @@ def rate_limit_caller(request: Request) -> tuple[str, bool]:
     The token when it resolves; the client's address otherwise, which is how real counts a caller
     with no credential (the docs' 60 an hour "for unauthenticated requests", `limit: 60` on every
     anonymous answer measured). A bearer that does not resolve is counted with the anonymous
-    callers from its address: real's answer for one is a 401 carrying the five, and which window it
-    counts against is not measured."""
+    callers from its address, which real does not do: its 401 for one carried none of the five and
+    moved no window, where an anonymous 401 on `/user/repos` carried all five and counted (measured
+    2026-09-17). Callers of this that draw real's line themselves ask `auth.bearer_token` for the
+    presence of the header instead — see `refuse_a_trailing_slash_on_github`."""
     token = auth.bearer_token(request)
     if token is not None and auth.resolve_bearer(request) is not None:
         return f"token:{token}", True
@@ -397,17 +399,26 @@ def rate_limit_caller(request: Request) -> tuple[str, bool]:
     return f"host:{host}", False
 
 
-def rate_limit_headers(request: Request, status_code: int) -> dict[str, str]:
-    """The five `x-ratelimit-*` headers for a `/github` answer, counting it, except on
-    :data:`RATE_LIMIT_PATH`, which reports its window without counting: two `GET /rate_limit` in
-    a row both answered `remaining: 5000`, `used: 0`, each carrying the five with `resource: core`,
-    and the description's own note says the route does not count."""
+def rate_limit_headers(
+    request: Request, status_code: int, *, count: bool | None = None
+) -> dict[str, str]:
+    """The five `x-ratelimit-*` headers for a `/github` answer.
+
+    Counts the request against the window, except on :data:`RATE_LIMIT_PATH`, which reports its
+    window without counting: two `GET /rate_limit` in a row both answered `remaining: 5000`,
+    `used: 0`, each carrying the five with `resource: core`, and the description's own note says
+    the route does not count. That default rstrips the path, so `/rate_limit/` falls into the
+    no-count branch as well; `count` overrides it for a caller that is not the routed endpoint
+    itself, and `refuse_a_trailing_slash_on_github` passes `count=True` because a trailing slash
+    there is a 404 no route matched, which counts like any other."""
     key, authenticated = rate_limit_caller(request)
     resource = rate_limit_resource(request.url.path, status_code)
     limits = RATE_LIMITS[resource]
     limit = limits.authenticated if authenticated else limits.anonymous
     windows = _rate_limit_windows(request.app)
-    read = windows.status if request.url.path.rstrip("/") == RATE_LIMIT_PATH else windows.count
+    if count is None:
+        count = request.url.path.rstrip("/") != RATE_LIMIT_PATH
+    read = windows.count if count else windows.status
     window = read(key, resource, limit)
     return {
         "x-ratelimit-limit": str(window["limit"]),
@@ -578,16 +589,20 @@ def canonical_id_path(conn, org: str, path: str) -> str | None:
     if len(parts) < 3 or parts[1] not in _ID_PATHS:
         return None
     tail = parts[3:]
+    # A trailing slash survives the rewrite. `/repositories/{id}/` is real's 404, the same as the
+    # `/repos/{owner}/{repo}/` it stands for, so dropping it with the rest of the stripping would
+    # answer the resource on a spelling real refuses.
+    slash = "/" if path.endswith("/") else ""
     if parts[1] == "organizations":
         named = org if str(synth.github_user_id(org)) == parts[2] else parts[2]
-        return "/".join(["/github/orgs", named, *tail])
+        return "/".join(["/github/orgs", named, *tail]) + slash
     hits = [
         r["name"]
         for r in store.list_containers(conn, "github")
         if str(synth.github_user_id(r["name"])) == parts[2]
     ]
     named = hits[0] if len(hits) == 1 else parts[2]
-    return "/".join(["/github/repos", org, named, *tail])
+    return "/".join(["/github/repos", org, named, *tail]) + slash
 
 
 def _link_response(link: str | None, body: list) -> Response:

@@ -4929,11 +4929,12 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
         # `rate` is the FIRST key on the wire under this version, which a dict comparison does not
         # see; real answers it before `resources`.
         assert list(status.json()) == ["rate", "resources"]
-        # A trailing slash is FastAPI's 307 to the same route. That answer does not count either:
-        # it is a read of the route under another spelling, not a request behind it.
-        redirect = c.get("/github/rate_limit/", headers=h, follow_redirects=False)
-        assert redirect.status_code == 307
-        assert _ratelimit(redirect)["used"] == "4"
+        # A trailing slash answers 404 with a valid token, carrying none of the five ratelimit
+        # headers, the same as real answers any other path no route matches. Backlot's own
+        # `/github/nonexistent-route-zz` still carries them — #254.
+        trailing = c.get("/github/rate_limit/", headers=h, follow_redirects=False)
+        assert trailing.status_code == 404
+        assert not any(n.startswith("x-ratelimit-") for n in trailing.headers)
         assert (
             "rate"
             not in c.get(
@@ -4974,3 +4975,101 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
         over = c.get(repo, headers=h)
         assert over.status_code == 200
         assert (_ratelimit(over)["remaining"], _ratelimit(over)["used"]) == ("0", "3")
+
+
+def test_github_a_trailing_slash_is_404_not_a_redirect(gh_client, gh_admin_h, gh_org):
+    """Drives the paths `refuse_a_trailing_slash_on_github` documents the measurement for, the
+    id-keyed spellings of four of them among them: each 404 with a valid token, carrying neither the
+    five `x-ratelimit-*` headers nor the API-version echo; a valid token's window does not move
+    across two of them; a bad bearer answers the same 404 rather than its own 401, and is counted
+    nowhere either; two
+    anonymous requests in a row carry the five and count. A route that ends in a path parameter
+    answers its own trailing slash instead, so `/contents/` keeps the root listing's 200. See that
+    middleware's docstring for the measurement.
+    """
+    c, _ = gh_client
+    repo_id = synth.github_user_id("codebase")
+    org_id = synth.github_user_id(gh_org)
+    for path in (
+        f"/github/repos/{gh_org}/codebase/",
+        f"/github/repos/{gh_org}/codebase/pulls/",
+        f"/github/orgs/{gh_org}/",
+        f"/github/orgs/{gh_org}/repos/",
+        "/github/user/repos/",
+        "/github/rate_limit/",
+        # the id-keyed spelling `_page_base_url` emits, which `resolve_github_id_paths` rewrites
+        # to the four entries above it, the slash still on them
+        f"/github/repositories/{repo_id}/",
+        f"/github/repositories/{repo_id}/pulls/",
+        f"/github/organizations/{org_id}/",
+        f"/github/organizations/{org_id}/repos/",
+    ):
+        r = c.get(path, headers=gh_admin_h, follow_redirects=False)
+        assert r.status_code == 404, path
+        assert "location" not in r.headers
+        assert r.json() == {
+            "message": "Not Found",
+            "documentation_url": "https://docs.github.com/rest",
+            "status": "404",
+        }
+        assert r.headers["content-type"] == "application/json; charset=utf-8"
+        assert not any(n.startswith("x-ratelimit-") for n in r.headers)
+        assert "x-github-api-version-selected" not in r.headers
+
+    # the slash-free paths still answer 200, id-keyed ones included
+    assert c.get(f"/github/repos/{gh_org}/codebase", headers=gh_admin_h).status_code == 200
+    assert c.get("/github/user/repos", headers=gh_admin_h).status_code == 200
+    assert c.get(f"/github/repositories/{repo_id}", headers=gh_admin_h).status_code == 200
+    assert c.get(f"/github/organizations/{org_id}", headers=gh_admin_h).status_code == 200
+
+    # `/contents/{path:path}` matches the empty path, so the slash reaches the route rather than
+    # the refusal above, and answers the root listing `/contents` answers (real: 200 for both).
+    root = c.get(f"/github/repos/{gh_org}/codebase/contents", headers=gh_admin_h)
+    slashed = c.get(
+        f"/github/repos/{gh_org}/codebase/contents/", headers=gh_admin_h, follow_redirects=False
+    )
+    assert slashed.status_code == 200
+    assert slashed.json() == root.json()
+
+    # an unsupported API version is the slash's 404 rather than the 400 the slash-free spelling
+    # answers: the route dependency that refuses the version is never reached
+    stale = {**gh_admin_h, "X-GitHub-Api-Version": "1999-01-01"}
+    assert c.get(f"/github/repos/{gh_org}/codebase", headers=stale).status_code == 400
+    assert c.get(f"/github/repos/{gh_org}/codebase/", headers=stale).status_code == 404
+
+    # a valid token's window does not move across a refusal, by either spelling
+    before = _ratelimit(c.get(f"/github/repos/{gh_org}/codebase", headers=gh_admin_h))
+    c.get(f"/github/repos/{gh_org}/codebase/", headers=gh_admin_h)
+    c.get(f"/github/repositories/{repo_id}/", headers=gh_admin_h)
+    after = _ratelimit(c.get(f"/github/repos/{gh_org}/codebase", headers=gh_admin_h))
+    assert int(after["used"]) == int(before["used"]) + 1
+
+    # anonymous, the slash's 404 carries the five and counts
+    path = f"/github/repos/{gh_org}/codebase/"
+    first = _ratelimit(c.get(path))
+    assert first["resource"] == "core"
+    second = _ratelimit(c.get(path))
+    assert int(second["used"]) == int(first["used"]) + 1
+    assert int(second["remaining"]) == int(first["remaining"]) - 1
+
+    # the slash wins over a bad bearer: still the 404, not the credential's own 401 — and real
+    # gives that one none of the five and counts it against no window, the anonymous one included
+    bad = c.get(
+        path,
+        headers={"Authorization": "Bearer usr-not-a-real-token"},
+        follow_redirects=False,
+    )
+    assert bad.status_code == 404
+    assert bad.json() == {
+        "message": "Not Found",
+        "documentation_url": "https://docs.github.com/rest",
+        "status": "404",
+    }
+    assert not any(n.startswith("x-ratelimit-") for n in bad.headers)
+    assert int(_ratelimit(c.get(path))["used"]) == int(second["used"]) + 1
+
+    # `/github/rate_limit/` counts here too: unlike the real routed endpoint, this is a "no route
+    # matched" 404 and not the route's own report-without-counting answer
+    rl_first = _ratelimit(c.get("/github/rate_limit/"))
+    rl_second = _ratelimit(c.get("/github/rate_limit/"))
+    assert int(rl_second["used"]) == int(rl_first["used"]) + 1

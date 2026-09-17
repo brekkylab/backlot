@@ -824,8 +824,8 @@ def test_slack_edited_needs_the_timestamp_too():
 
 
 def test_slack_edited_refuses_an_unknown_key():
-    """The old bare-object shape accepted anything, which is the silence #197 refused: a typo'd
-    or extra key is caught at import rather than served unread."""
+    """An extra or misspelled key states more than Slack's own shape allows, so it is caught at
+    import rather than served unread."""
     bad = {"user": "ava@x.com", "ts": "1770311280.000000", "by": "ava@x.com"}
     assert record_errors(complete("slack", content="c", edited=bad)) == [
         "<root> [edited]: Additional properties are not allowed ('by' was unexpected)"

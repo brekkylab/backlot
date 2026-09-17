@@ -572,6 +572,52 @@ def test_atlassian_errors_use_atlassian_envelope(client):
     assert r3.status_code == 404 and "detail" in r3.json() and "message" not in r3.json()
 
 
+def test_confluence_spaces_are_paged_not_served_whole(client, admin_h, tokens):
+    """Measured on brekkylab.atlassian.net, 2026-09-17: `space` reads `limit`/`start` and answers a
+    page, with `_links.next`/`.prev` shaped like :func:`confluence_space_links`, where it used to
+    answer the whole collection under `start: 0, limit: len(results)` whatever the parameters said."""
+    unpaged = client.get("/atlassian/wiki/rest/api/space", headers=admin_h).json()
+    names = [s["name"] for s in unpaged["results"]]
+    assert names == [
+        "handbook",
+        "people-ops",
+    ]  # ORDER BY name: the order every slice below relies on
+    assert unpaged["start"] == 0 and unpaged["limit"] == 25 and unpaged["size"] == 2
+    assert unpaged["_links"] == {
+        "base": unpaged["_links"]["base"],
+        "context": "/wiki",
+        "self": unpaged["_links"]["base"] + "/rest/api/space",
+    }  # a full page: no next, no prev
+
+    first = client.get("/atlassian/wiki/rest/api/space?limit=1", headers=admin_h).json()
+    assert [s["name"] for s in first["results"]] == ["handbook"]
+    assert (first["start"], first["limit"], first["size"]) == (0, 1, 1)
+    assert first["_links"]["next"] == "/rest/api/space?next=true&limit=1&start=1"
+    assert "prev" not in first["_links"]
+
+    second = client.get("/atlassian/wiki/rest/api/space?start=1", headers=admin_h).json()
+    assert [s["name"] for s in second["results"]] == ["people-ops"]
+    assert (second["start"], second["limit"], second["size"]) == (1, 25, 1)
+    assert second["_links"]["prev"] == "/rest/api/space?prev=true&limit=1&start=0"
+    assert "next" not in second["_links"]
+
+    # a negative or unconvertible value is refused the same way `content` refuses it — shared
+    # through `_confluence_page_params` — proved once here rather than the whole matrix again.
+    negative = client.get("/atlassian/wiki/rest/api/space?limit=-1", headers=admin_h)
+    assert negative.status_code == 400
+    assert (
+        negative.json()["message"]
+        == "java.lang.IllegalArgumentException: limit cannot be less than zero"
+    )
+
+    # ACL-scoped: `total` (and so where `next`/`prev` land) is the caller's own reachable set, not
+    # the corpus's. ava reads only the engineering space, so her one-row page carries neither link.
+    ava_h = {"Authorization": f"Bearer {tokens['ava@acme.com']}"}
+    scoped = client.get("/atlassian/wiki/rest/api/space?limit=1", headers=ava_h).json()
+    assert [s["name"] for s in scoped["results"]] == ["handbook"]
+    assert "next" not in scoped["_links"] and "prev" not in scoped["_links"]
+
+
 def test_confluence_single_space_get(client, admin_h):
     spaces = client.get("/atlassian/wiki/rest/api/space", headers=admin_h).json()["results"]
     assert spaces

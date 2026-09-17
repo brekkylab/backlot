@@ -222,6 +222,32 @@ def test_confluence_next_link():
     assert pg.confluence_next_link("/wiki/rest/api/content", {}, 50, 25, 10, 60) is None
 
 
+def test_confluence_space_links():
+    """Measured on brekkylab.atlassian.net, 2026-09-17, on a three-space site."""
+    path = "/rest/api/space"
+    # page one: no `prev`, `next` walks forward by the requested `limit`
+    assert pg.confluence_space_links(path, 0, 1, 1, 3) == {
+        "next": f"{path}?next=true&limit=1&start=1"
+    }
+    # `start=1` at the default `limit=25`: `prev` names the ONE row actually skipped, not `limit`
+    assert pg.confluence_space_links(path, 1, 25, 2, 3) == {
+        "prev": f"{path}?prev=true&limit=1&start=0"
+    }
+    # a full page in the middle carries both
+    assert pg.confluence_space_links(path, 2, 2, 1, 5) == {
+        "prev": f"{path}?prev=true&limit=2&start=0",
+        "next": f"{path}?next=true&limit=2&start=3",
+    }
+    # `?limit=0`: an empty page, but `next` still answers — real does not special-case `size == 0`
+    assert pg.confluence_space_links(path, 0, 0, 0, 3) == {
+        "next": f"{path}?next=true&limit=0&start=0"
+    }
+    # past the end: no rows left to serve, so no `next`, and `prev` walks back a full page
+    assert pg.confluence_space_links(path, 100, 25, 0, 3) == {
+        "prev": f"{path}?prev=true&limit=25&start=75"
+    }
+
+
 # --- Linear: Relay connections ----------------------------------------------------
 # Linear pages a Relay connection (`first`/`after` -> `{nodes, pageInfo}`) rather than the
 # offset/token schemes above. The cursor underneath is this module's opaque offset cursor, so

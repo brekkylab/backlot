@@ -20,7 +20,12 @@ from backlot.acl import Caller
 from backlot.config import get_settings
 from backlot.errors import atlassian as errors_atlassian
 from backlot.openapi import qp
-from backlot.pagination import confluence_next_link, decode_cursor_or_none, next_page_token
+from backlot.pagination import (
+    confluence_next_link,
+    confluence_space_links,
+    decode_cursor_or_none,
+    next_page_token,
+)
 
 router = APIRouter(prefix="/atlassian", tags=["atlassian"])
 
@@ -1002,10 +1007,15 @@ def _require_space(request: Request, conn, key: str) -> str:
 
 @router.get("/wiki/rest/api/space", response_model=ConfluenceResults)
 async def confluence_spaces(request: Request):
+    """Paged the way `content` is (`?limit`/`?start`, both through `_confluence_page_params`), with
+    its own `next`/`prev` shape: measured 2026-09-17, see :func:`confluence_space_links`."""
     conn = auth.conn(request)
     ids = auth.visible_ids(request, _confluence_caller(request))
+    limit, start = _confluence_page_params(request)
+    reachable = _reachable_spaces(conn, ids)
+    total = len(reachable)
     results = []
-    for r in _reachable_spaces(conn, ids):
+    for r in reachable[start : start + limit]:
         key = synth.confluence_space_key(r["name"])
         results.append(
             {
@@ -1016,7 +1026,19 @@ async def confluence_spaces(request: Request):
                 "_links": {"webui": f"/spaces/{key}"},
             }
         )
-    return {"results": results, "start": 0, "limit": len(results), "size": len(results)}
+    links = {
+        "base": f"{_site(request)}/wiki",
+        "context": "/wiki",
+        "self": f"{_site(request)}/wiki/rest/api/space",
+    }
+    links.update(confluence_space_links("/rest/api/space", start, limit, len(results), total))
+    return {
+        "results": results,
+        "start": start,
+        "limit": limit,
+        "size": len(results),
+        "_links": links,
+    }
 
 
 @router.get("/wiki/rest/api/space/{key}/permission")

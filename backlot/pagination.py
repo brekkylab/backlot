@@ -427,3 +427,25 @@ def confluence_next_link(
         return None
     q = "&".join(f"{k}={v}" for k, v in {**params, "start": nxt, "limit": limit}.items())
     return f"{path}?{q}"
+
+
+def confluence_space_links(path: str, start: int, limit: int, size: int, total: int) -> dict:
+    """`space`'s own `next`/`prev`, literal for literal with what real answers.
+
+    Measured on brekkylab.atlassian.net, 2026-09-17, on a three-space site. `next` and `prev` each
+    carry their own marker (`next=true`/`prev=true`) ahead of `limit` and `start`, which
+    :func:`confluence_next_link` does not add. `prev` walks back by `limit`, clamped to zero rather
+    than negative, so `start=1` at the default `limit=25` answers `limit=1&start=0` — the single
+    row actually skipped, not the requested page size. And `next` is answered even where `size` is
+    0 (`?limit=0`, an empty page rather than a refusal): real does not take this module's
+    `size == 0` shortcut either, and a caller sending `limit=0` gets the same link back forever,
+    which is what it asked for.
+    """
+    links = {}
+    if start > 0:
+        prev_start = max(0, start - limit)
+        links["prev"] = f"{path}?prev=true&limit={start - prev_start}&start={prev_start}"
+    nxt = start + size
+    if nxt < total:
+        links["next"] = f"{path}?next=true&limit={limit}&start={nxt}"
+    return links

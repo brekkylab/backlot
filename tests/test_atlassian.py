@@ -574,8 +574,7 @@ def test_atlassian_errors_use_atlassian_envelope(client):
 
 def test_confluence_spaces_are_paged_not_served_whole(client, admin_h, tokens):
     """Measured on brekkylab.atlassian.net, 2026-09-17: `space` reads `limit`/`start` and answers a
-    page, with `_links.next`/`.prev` shaped like :func:`confluence_space_links`, where it used to
-    answer the whole collection under `start: 0, limit: len(results)` whatever the parameters said."""
+    page, with `_links.next`/`.prev` shaped like :func:`confluence_space_links`."""
     unpaged = client.get("/atlassian/wiki/rest/api/space", headers=admin_h).json()
     names = [s["name"] for s in unpaged["results"]]
     assert names == [
@@ -611,7 +610,7 @@ def test_confluence_spaces_are_paged_not_served_whole(client, admin_h, tokens):
     )
 
     # ACL-scoped: `total` (and so where `next`/`prev` land) is the caller's own reachable set, not
-    # the corpus's. ava reads only the engineering space, so her one-row page carries neither link.
+    # the corpus's. ava reaches only "handbook", so her one-row page carries neither link.
     ava_h = {"Authorization": f"Bearer {tokens['ava@acme.com']}"}
     scoped = client.get("/atlassian/wiki/rest/api/space?limit=1", headers=ava_h).json()
     assert [s["name"] for s in scoped["results"]] == ["handbook"]

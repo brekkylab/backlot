@@ -223,7 +223,7 @@ def test_confluence_next_link():
 
 
 def test_confluence_space_links():
-    """Measured on brekkylab.atlassian.net, 2026-09-17, on a three-space site."""
+    """See :func:`pg.confluence_space_links` for the measurement behind each case."""
     path = "/rest/api/space"
     # page one: no `prev`, `next` walks forward by the requested `limit`
     assert pg.confluence_space_links(path, 0, 1, 1, 3) == {

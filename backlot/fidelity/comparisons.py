@@ -7,6 +7,11 @@ response, which needs a credential. For the eight document sources, Backlot's si
 S3, whose operations are selected by query string rather than by path, both sides are answers from
 a running server that ``backlot.serve()`` starts.
 
+A document does not always carry one contract. Google names its batch endpoint in a top-level
+``batchPath`` rather than declaring it under ``resources``, so each Google document is read for two:
+the operations a path diff pairs, and that field, compared against the batch routes ``batch_mount``
+says the source speaks for. Both read the same fetched document.
+
 Nine of the eleven need no credential. All eleven run on a schedule and never on a pull request:
 drift is this project's bug, but it is never the bug of whichever pull request happens to be open
 when a vendor ships a change.
@@ -157,6 +162,17 @@ class GoogleDiscoveryComparison:
     name: str
     specs: tuple[Spec, ...]
     credentials: tuple[Credential, ...] = ()
+    # Which batch routes this source speaks for, as `ProbeComparison.mount` answers the same
+    # question for a probe. NOT a `Spec.mount`, and not foldable into one: a document declares its
+    # batch endpoint in the top-level `batchPath` rather than under `resources`, so a mount that
+    # selected these paths would hand them to the path diff, which would report both as operations
+    # Backlot invented.
+    #
+    # Per source and not per document because Backlot collapses five Google hosts onto one origin:
+    # `/batch` stands in for `gmail.googleapis.com/batch` and for Docs', Sheets' and Slides' at
+    # once, and `/batch/{api}/{version}` for Drive's on the shared `www.googleapis.com`. What the
+    # source owns is the pair; which document selects which of them is measured on every run.
+    batch_mount: tuple[str, ...] = ()
 
     @property
     def endpoints(self) -> tuple[str, ...]:
@@ -165,9 +181,21 @@ class GoogleDiscoveryComparison:
     def divergences(
         self, credentials: Mapping[str, str] | None = None, *, timeout: float = 120.0
     ) -> list[Finding]:
-        return _one_report(
-            [google_discovery_diff.divergences(s, timeout=timeout) for s in self.specs]
-        )
+        # One memo across this run's specs, so the batch check reads the documents the path diffs
+        # already fetched rather than asking the vendor for them a second time: measured
+        # 2026-09-17, the five documents these two sources read total 1.3 MB, the largest of them
+        # 369 KB.
+        fetched: dict[str, dict] = {}
+        per_spec = [
+            google_discovery_diff.divergences(s, timeout=timeout, seen=fetched) for s in self.specs
+        ]
+        if self.batch_mount:
+            per_spec.append(
+                google_discovery_diff.batch_divergences(
+                    self.batch_mount, [(s.spec_url, fetched[s.spec_url]) for s in self.specs]
+                )
+            )
+        return _one_report(per_spec)
 
 
 @dataclass(frozen=True)
@@ -347,6 +375,7 @@ GOOGLE_DISCOVERY = {
                 mount=("/gmail",),
             ),
         ),
+        batch_mount=("/batch",),
     ),
     "google_drive": GoogleDiscoveryComparison(
         name="google_drive",
@@ -380,6 +409,11 @@ GOOGLE_DISCOVERY = {
                 strip="/slides",
             ),
         ),
+        # Both, because this source's four documents need both shapes: Docs, Sheets and Slides
+        # answer batch at the root of their own hosts, and Drive at `batch/drive/v3` on the shared
+        # one. Gmail's source mounts only the first, which is why a Drive move to its own host
+        # reports here and nowhere else.
+        batch_mount=("/batch", "/batch/{api}/{version}"),
     ),
 }
 
@@ -408,13 +442,13 @@ PROBE = {
 }
 
 
-# Served paths no published document covers, and why. Matched by prefix, so `/batch` covers
-# `/batch/{api}/{version}`.
+# Served paths no published document covers, and why. Matched by prefix, so `/_meta` covers
+# `/_meta/users`.
 #
 # The escape hatch the coverage check is built around, and deliberately narrow: an entry here is a
 # reason a reviewer reads, not a silence. Two kinds qualify — Backlot's own surface, which no
 # vendor publishes because it is not a vendor's, and a vendor surface that genuinely has no
-# document to compare against.
+# document to compare against. Every entry below is of the first kind.
 UNCOMPARED = {
     "/health": "Backlot's own liveness endpoint, not a vendor's surface",
     "/oauth2/token": (
@@ -424,12 +458,6 @@ UNCOMPARED = {
     "/_meta": (
         "Backlot's own introspection — the corpus's principals and the per-source OpenAPI. No "
         "vendor has it, by construction."
-    ),
-    "/batch": (
-        "Google's batch protocol. Each discovery document names a batch endpoint in its top-level "
-        "`batchPath` — Drive's is `batch/drive/v3`, Gmail's `batch` — but none declares it as an "
-        "operation under `resources`, and operations are the only thing a path diff can pair. So "
-        "there is a documented endpoint here and nothing for this machinery to compare it against."
     ),
 }
 

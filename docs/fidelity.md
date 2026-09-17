@@ -136,6 +136,48 @@ children are what keep the two listings apart: `?list-type=2` and a bare bucket 
 Requests are signed with [`backlot.sigv4`](../backlot/sigv4.py) — the module that verifies them —
 so the probe adds no dependency and a change to signing breaks both sides at once.
 
+## Google's batch endpoint is a field, not an operation
+
+Every discovery document names a batch endpoint in its top-level `batchPath`, and none declares it
+under `resources`. Measured 2026-09-17:
+
+| Document | `batchPath` | `rootUrl` | Backlot answers it at |
+|---|---|---|---|
+| `gmail:v1` | `batch` | `gmail.googleapis.com` | `/batch` |
+| `docs:v1` | `batch` | `docs.googleapis.com` | `/batch` |
+| `sheets:v4` | `batch` | `sheets.googleapis.com` | `/batch` |
+| `slides:v1` | `batch` | `slides.googleapis.com` | `/batch` |
+| `drive:v3` | `batch/drive/v3` | `www.googleapis.com` | `/batch/{api}/{version}` |
+
+Each API answers batch at the root of its own host; Drive alone sits on the shared
+`www.googleapis.com`, and the `drive/v3` is what discriminates it there. Backlot collapses those
+hosts onto one origin, so one served route stands in for several documents.
+
+That is why the endpoint is not a mount. A mount selects paths for the path diff, which pairs
+operations — and no document declares this one, so both routes would report as surface Backlot
+invented. The methods that carry the word are a different thing and are compared as operations
+already: `messages.batchModify` on Gmail, `documents.batchUpdate` on Docs, seven `batch*` methods
+on Sheets. Measured across the five documents, no path any of them declares is a `batchPath` value.
+
+So each Google source names the batch routes it speaks for in `batch_mount`, and the field is
+compared against them on every run. Three things are reported:
+
+| Kind | Severity | Fires when |
+|---|---|---|
+| `extra_batch_api` | breaking | a document declares no `batchPath`, and Backlot goes on answering batch for that API |
+| `missing_batch_path` | gap | a declared value no route the source mounts answers — identified by the document **and** the value, so acknowledging one move does not cover the next |
+| `extra_batch_route` | breaking | a mounted route no document of that source selects |
+
+The third is the direction no single document can answer, and it is why the routes are named per
+source rather than matched wherever they fit. Were Drive to move to its own host, every document
+would declare `batch`, every declared value would be answered, and `/batch/{api}/{version}` would
+go on being served for nobody behind a green check. Gmail's source mounts only `/batch`, so it
+reports nothing about a route it never spoke for.
+
+What the batch endpoint *does* — the multipart envelope, the `Content-ID` pairing, the outer
+credential applying to a sub-request that carries none — is behaviour, and is held by
+`tests/test_google.py` rather than by this comparison.
+
 ## The baseline
 
 `backlot/fidelity/baseline/<source>.json` holds the divergences already read and accepted, so a run
@@ -213,8 +255,8 @@ each of those is compared, and a test fails if the two sets ever drift apart.
 | Fireflies | GraphQL introspection | `api_key` — `FIREFLIES_API_KEY`, sent as `Bearer <key>` |
 | Linear | GraphQL introspection | `api_key` — `LINEAR_API_KEY`, sent **bare** |
 | Slack | published OpenAPI | none |
-| Gmail | Google Discovery | none |
-| Google Drive (`google_drive`) | Google Discovery — Drive, Docs, Sheets and Slides | none |
+| Gmail | Google Discovery, operations and `batchPath` | none |
+| Google Drive (`google_drive`) | Google Discovery — Drive, Docs, Sheets and Slides, operations and `batchPath` | none |
 | GitHub | published OpenAPI | none |
 | Jira | published OpenAPI, v2 and v3 documents | none |
 | Confluence | published OpenAPI (v1) | none |
@@ -237,10 +279,10 @@ against Atlassian's own v2 document, which it publishes beside the v3 one: the n
 `swagger[-<apiVersion>].<oasVersion>.json`, so the suffix-less `swagger.v3.json` is the v2 API.
 
 Every path Backlot **declares** in its own `/openapi.json` is under one of those documents'
-mounts, probed, or listed in `UNCOMPARED` with the reason no document covers it — Backlot's own
-`/health`, `/oauth2/token` and `/_meta`, and Google's `/batch` — which every discovery document
-names in its top-level `batchPath` and none declares as an operation, so there is nothing for a
-path diff to pair it with. A declared path in none of the three fails the suite.
+mounts, named as a Google source's batch route, probed, or listed in `UNCOMPARED` with the reason
+no document covers it — Backlot's own `/health`, `/oauth2/token` and `/_meta`, none of which a
+vendor publishes because none of them is a vendor's. A declared path in none of the four fails the
+suite.
 
 Declared, not served: six live routes are `include_in_schema=False` and so invisible to that check.
 Four are FastAPI's own (`/docs`, `/docs/oauth2-redirect`, `/openapi.json`, `/redoc`). The other two

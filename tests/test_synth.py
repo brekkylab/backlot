@@ -1,5 +1,6 @@
 import hashlib
 import re
+import uuid
 from urllib.parse import urlparse
 
 import pytest
@@ -55,6 +56,18 @@ def test_notion_id_is_stable_uuid():
     assert synth.notion_id("n-page") != synth.notion_id("n-other")
     a = synth.notion_id("n-page")
     assert len(a) == 36 and a.count("-") == 4
+
+
+def test_atlassian_cloud_id_is_a_v4_uuid_and_stable_per_org():
+    """Real's cloud id is a v4 UUID — `/_edge/tenant_info` answers one, and it is the tenant half of
+    every space `ari`. A strict validator (`zod`'s `.uuid()`, `class-validator`'s `IsUUID(4)`) reads
+    the version nibble and the variant bits, which a raw digest slice sets by accident."""
+    cid = synth.atlassian_cloud_id("acme")
+    parsed = uuid.UUID(cid)
+    assert parsed.version == 4
+    assert parsed.variant == uuid.RFC_4122
+    assert cid == synth.atlassian_cloud_id("acme")
+    assert cid != synth.atlassian_cloud_id("other-org")
 
 
 def test_notion_blocks_roundtrip_content_verbatim():

@@ -15,7 +15,7 @@ Generated from `backlot/schemas/*.schema.json` and the app's own `/openapi.json`
 <!-- generated:sources start -->
 | `source_type` | Service | URL prefix | Endpoints | Record schema | What one record is |
 |---|---|---|---|---|---|
-| `confluence` | Confluence | `/atlassian/wiki/rest/api` | 10 | [`confluence.schema.json`](../backlot/schemas/confluence.schema.json) | A Confluence page or blogpost. |
+| `confluence` | Confluence | `/atlassian/wiki/rest/api` | 9 | [`confluence.schema.json`](../backlot/schemas/confluence.schema.json) | A Confluence page or blogpost. |
 | `fireflies` | Fireflies | `/fireflies/graphql` | GraphQL (one `POST`) | [`fireflies.schema.json`](../backlot/schemas/fireflies.schema.json) | A Fireflies.ai meeting transcript. |
 | `github` | GitHub | `/github` | 33 | [`github.schema.json`](../backlot/schemas/github.schema.json) | A GitHub issue, pull request, file, or the repository itself. |
 | `gmail` | Gmail | `/gmail/v1` | 8 | [`gmail.schema.json`](../backlot/schemas/gmail.schema.json) | A Gmail message. |
@@ -43,9 +43,12 @@ Ordered as the table above, by `source_type`.
 | `content/{id}/label` | |
 | `content/{id}/restriction/byOperation` | |
 | `search` | CQL |
-| `space` | |
-| `space/{key}` | |
-| `space/{key}/permission` | |
+| `space` | `expand=description,permissions` |
+| `space/{key}` | `expand=description,permissions` |
+
+`expand=permissions` carries the space's permission roster on either read, one entry per ACL grant
+— a user grant naming that user, a group or org grant naming none — for `read`/`space`, the only
+operation an ACL states.
 
 ### Fireflies — `/fireflies/graphql`
 

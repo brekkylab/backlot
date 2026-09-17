@@ -733,6 +733,22 @@ def load_roster(path) -> dict:
         # are not dropped, `_groups` reads the whole field again as extra memberships.
         return next(iter(_slugs(raw)), None)
 
+    def _deactivated(entry: dict) -> bool:
+        """An entry's ``deactivated:`` — a boolean or nothing, where the readers around it take
+        any shape at all.
+
+        Their tolerance widens what a field accepts; here it would invert what one says. ``bool()``
+        reads the string ``"false"`` as True, and ``"no"`` too, so a quoted value would deactivate
+        the person it states is active. YAML spells the value both ways unquoted already, which
+        leaves nothing for a string to express."""
+        raw = entry.get("deactivated")
+        if raw is None or isinstance(raw, bool):
+            return bool(raw)
+        raise SystemExit(
+            f"roster entry {entry.get('email')!r}: `deactivated: {raw!r}` is not a boolean. "
+            "Write `deactivated: true`, or leave the key out."
+        )
+
     def _groups(entry: dict, primary: str | None) -> list[str]:
         # The primary membership first — a department entry's is its department, a contact's is
         # its own `group:` — then everything either field names. dict.fromkeys keeps first
@@ -792,7 +808,7 @@ def load_roster(path) -> dict:
                 _groups(p, slugify(dept) or None),
                 True,
                 stated=bool(p.get("name")),
-                deactivated=bool(p.get("deactivated")),
+                deactivated=_deactivated(p),
             )
     for p in data.get("contacts") or []:
         _merge(
@@ -801,7 +817,7 @@ def load_roster(path) -> dict:
             _groups(p, _primary(p.get("group"))),
             False,
             stated=bool(p.get("name")),
-            deactivated=bool(p.get("deactivated")),
+            deactivated=_deactivated(p),
         )
     for u in users.values():
         u.pop("_stated", None)

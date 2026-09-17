@@ -2237,13 +2237,29 @@ def test_byo_roster_deactivated_is_parsed_and_unions_true(tmp_path):
     assert users["cy@redwoodinference.com"]["deactivated"] is True
     assert users["cy@redwoodinference.com"]["token"] is True  # deactivation never drops the token
 
+    # The readers around it take a value in any shape; this one cannot, because `bool("false")`
+    # is True and a quoted value would deactivate the person it says to keep.
+    roster.write_text(
+        yaml.safe_dump(
+            {
+                "departments": {
+                    "Engineering": [
+                        {"email": "cy@redwoodinference.com", "deactivated": "false"},
+                    ]
+                }
+            }
+        )
+    )
+    with pytest.raises(SystemExit, match="is not a boolean"):
+        load_roster(roster)
+
 
 def test_byo_roster_deactivated_reaches_the_db_and_tokens_yaml(tmp_path):
     """The end-to-end shape: `deactivated: true` lands in `slack_deactivated_users`, keyed on the
     roster's principal, and the person's token stays in `tokens.yaml` (real answers it
     `account_inactive` rather than dropping the credential)."""
-    roster = tmp_path / "roster.yaml"
-    roster.write_text(
+    deactivated_roster = tmp_path / "roster-deactivated.yaml"
+    deactivated_roster.write_text(
         yaml.safe_dump(
             {
                 "org": "redwood",
@@ -2274,7 +2290,7 @@ def test_byo_roster_deactivated_reaches_the_db_and_tokens_yaml(tmp_path):
         ],
     )
     settings = Settings(data_dir=tmp_path)
-    load(corpus, settings, roster=roster)
+    load(corpus, settings, roster=deactivated_roster)
 
     tokens = yaml.safe_load(settings.tokens_path.read_text())
     assert {u["email"] for u in tokens["users"]} == {
@@ -2291,7 +2307,8 @@ def test_byo_roster_deactivated_reaches_the_db_and_tokens_yaml(tmp_path):
         conn.close()
 
     # a re-import whose roster no longer states it un-deactivates the person
-    roster.write_text(
+    active_roster = tmp_path / "roster-active.yaml"
+    active_roster.write_text(
         yaml.safe_dump(
             {
                 "org": "redwood",
@@ -2305,10 +2322,42 @@ def test_byo_roster_deactivated_reaches_the_db_and_tokens_yaml(tmp_path):
             }
         )
     )
-    load(corpus, settings, roster=roster, reset=False)
+    load(corpus, settings, roster=active_roster, reset=False)
     conn = store.connect_ro(settings.db_path)
     try:
         assert conn.execute("SELECT * FROM slack_deactivated_users").fetchall() == []
+    finally:
+        conn.close()
+
+    # A deactivated person speaking in a private channel they cannot read is not the state the
+    # import refuses (`store.slack_membership_violations`): they are in no channel's membership,
+    # so conversations.members and conversations.info cannot answer them two ways. The same
+    # corpus with them active is the refusal, which is the whole of the difference.
+    private = _write(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "doc_id": "s2",
+                "channel": "board-comp",
+                "content": "the comp band lands at 240k",
+                "author_email": "cy.ito@redwoodinference.com",
+                "readers": ["user:ava.chen@redwoodinference.com"],
+            }
+        ],
+        name="private.jsonl",
+    )
+    with pytest.raises(SystemExit, match="speak in a private slack channel they cannot read"):
+        load(private, Settings(data_dir=tmp_path / "active"), roster=active_roster)
+    deactivated_settings = Settings(data_dir=tmp_path / "deactivated")
+    load(private, deactivated_settings, roster=deactivated_roster)
+    conn = store.connect_ro(deactivated_settings.db_path)
+    try:
+        assert store.slack_private_channel_members(conn, "board-comp") == [
+            "ava.chen@redwoodinference.com"
+        ]
+        # ...and the message they wrote is still in the channel
+        assert store.count_documents(conn, "slack", container="board-comp") == 1
     finally:
         conn.close()
 

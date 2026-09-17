@@ -303,7 +303,8 @@ virtual-hosted client looks for `acme-artifacts.localhost:8000` and finds nothin
 | `HeadBucket` | |
 | `GetBucketLocation` | |
 | `ListMultipartUploads` | Always the empty page, since data enters through `backlot import` and no upload is ever in progress. `prefix`, `delimiter` and `key-marker` are echoed, `max-uploads` and `encoding-type` validated and echoed, as real does |
-| `ListObjectsV2` | `prefix`, `delimiter`, `continuation-token` |
+| `ListObjects` | The bare bucket GET, and what any `list-type` other than `2` selects. `prefix`, `delimiter`, `marker`, `max-keys`, `encoding-type`; `Marker` echoed, `NextMarker` under a delimiter, an `Owner` on every object |
+| `ListObjectsV2` | Selected by `list-type=2`. `prefix`, `delimiter`, `start-after`, `continuation-token`, `max-keys`, `encoding-type`; `KeyCount` and the continuation tokens, no `Owner` |
 | `GetObject` | `Range` |
 | `HeadObject` | |
 

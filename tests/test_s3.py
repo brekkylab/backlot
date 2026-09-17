@@ -567,6 +567,9 @@ def test_an_unimplemented_bucket_subresource_is_refused_not_answered_with_the_li
     assert b"<Code>NotImplemented</Code>" in body
     assert b"ListBucketResult" not in body
     assert err.headers.get("Content-Type") == "application/xml"
+    # The HEAD at the same path names no method, the `Allow` naming only what a GET serves.
+    head = _refused(base_url, f"/s3/eng-artifacts?{selector}", settings.admin_token, method="HEAD")
+    assert head.code == 405 and head.headers.get("Allow") is None
 
 
 @pytest.mark.parametrize("selector", OBJECT_SUBRESOURCES)
@@ -580,6 +583,9 @@ def test_an_unimplemented_object_subresource_is_refused_not_answered_with_the_ob
     assert b"<Code>NotImplemented</Code>" in body
     assert OBJECT_TEXT not in body
     assert err.headers.get("Content-Type") == "application/xml"
+    # As above, and no object sub-resource is served at all, so none of these names a method.
+    head = _refused(base_url, f"{OBJECT_PATH}?{selector}", settings.admin_token, method="HEAD")
+    assert head.code == 405 and head.headers.get("Allow") is None
 
 
 def test_the_listing_location_and_object_still_answer_and_an_unknown_key_is_ignored(live_server):
@@ -637,6 +643,8 @@ def test_head_with_two_subresources_is_the_conflicts_400_with_an_empty_body(live
         err = _refused(base_url, path, settings.admin_token, method="HEAD")
         assert err.code == 400 and err.read() == b"", path
         assert err.headers.get("Content-Type") == "application/xml"
+        # Real sends no `Allow` on the conflict's 400 (measured).
+        assert err.headers.get("Allow") is None, path
 
 
 def test_what_does_not_exist_is_reported_before_the_subresource_except_for_list_parts(live_server):
@@ -652,21 +660,25 @@ def test_what_does_not_exist_is_reported_before_the_subresource_except_for_list_
     assert err.code == 501 and b"NotImplemented" in err.read()
 
 
-def test_head_with_a_subresource_is_405_and_a_bare_head_still_answers(live_server):
+def test_head_with_a_subresource_names_what_a_get_serves_and_a_bare_head_still_answers(live_server):
     base_url, settings = live_server
     token = settings.admin_token
-    for path in (
-        "/s3/eng-artifacts?versioning",
-        "/s3/eng-artifacts?uploads",  # served on a GET, and still no HEAD form
-        f"{OBJECT_PATH}?acl",
-        f"{OBJECT_PATH}?uploadId=x",
-        # Before the bucket or the key is looked up, as on real S3.
-        "/s3/no-such-bucket?versioning",
-        "/s3/eng-artifacts/no/such.md?acl",
+    # `location` and `uploads` are served on a GET and still have no HEAD form, so theirs are the
+    # two 405s that name GET; every selector the GET refuses is asserted beside its own 501 above.
+    for path, allow in (
+        ("/s3/eng-artifacts?location", "GET"),
+        ("/s3/eng-artifacts?uploads", "GET"),
+        # Before the bucket or the key is looked up, as on real S3 — the header with it: a bucket
+        # that does not exist answers `Allow: GET` for `?location` on real too (measured
+        # 2026-09-17, ap-northeast-2).
+        ("/s3/no-such-bucket?location", "GET"),
+        ("/s3/no-such-bucket?versioning", None),
+        ("/s3/eng-artifacts/no/such.md?acl", None),
     ):
         err = _refused(base_url, path, token, method="HEAD")
         assert err.code == 405 and err.read() == b"", path
-        assert err.headers.get("Content-Type") == "application/xml"
+        assert err.headers.get("Content-Type") == "application/xml", path
+        assert err.headers.get("Allow") == allow, path
     for path in ("/s3/eng-artifacts", OBJECT_PATH):
         url, headers = _sign_get(base_url, path, token, method="HEAD")
         with urllib.request.urlopen(

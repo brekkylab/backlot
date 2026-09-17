@@ -202,6 +202,10 @@ _BUCKET_SELECTORS = frozenset(
 _OBJECT_SELECTORS = frozenset(
     {"acl", "annotation", "attributes", "legal-hold", "retention", "tagging", "torrent", "uploadId"}
 )
+# The bucket selectors `bucket_get` answers rather than refusing with 501, written once so that the
+# `Allow` on the HEAD refusal and the GET it names cannot drift apart. No object selector is served,
+# so an object's refusal names no method at all.
+_BUCKET_GETS = frozenset({"location", "uploads"})
 
 
 # --------------------------------------------------------------------------- helpers
@@ -282,16 +286,29 @@ def _conflict(selected: list[str], resource: str) -> Response:
     )
 
 
-def _head_refusal(selected: list[str]) -> Response:
+def _head_refusal(selected: list[str], served_on_get: frozenset[str]) -> Response:
     """HEAD with a sub-resource selector, refused before the bucket or the key is looked up.
 
     No sub-resource has a HEAD form: real S3 answers ``HEAD /{bucket}?versioning`` and
     ``HEAD /{key}?acl`` 405 with an empty ``application/xml`` body, whether or not the bucket or the
     key exists, and two selectors at once with the conflict's 400 and the same empty body
-    (measured). Real S3 also sends an ``Allow`` naming the methods that sub-resource takes; Backlot
-    takes none of them, so it sends none.
+    (measured). Real S3 also sends an ``Allow`` naming the methods that sub-resource takes, GET and
+    PUT and DELETE among them (measured), and what an ``Allow`` names is the resource answering
+    rather than S3: "a list of the target resource's currently supported methods" (RFC 9110,
+    Section 15.5.6). ``served_on_get`` is that list — the selectors this same path answers on a GET,
+    which is a different set at a bucket's path and at a key's — so each of them gets ``GET``, and a
+    selector whose GET is a 501 gets no header, naming a method there being as false a claim as
+    repeating real's PUT and DELETE.
+
+    No header leaves Section 15.5.6's MUST unmet, and Section 10.2.1's "An empty Allow field value
+    indicates that the resource allows no methods" would meet it and does survive this stack. Real
+    S3 sends an empty ``Allow`` on none of these rows (measured), so the absent header is preferred
+    to a value real never sends.
     """
-    return Response(status_code=400 if len(selected) > 1 else 405, media_type="application/xml")
+    if len(selected) > 1:
+        return Response(status_code=400, media_type="application/xml")
+    headers = {"Allow": "GET"} if selected[0] in served_on_get else None
+    return Response(status_code=405, media_type="application/xml", headers=headers)
 
 
 def _not_implemented(selector: str, resource: str) -> Response:
@@ -421,7 +438,7 @@ async def head_bucket(request: Request, bucket: str):
     conn = auth.conn(request)
     selected = _selected(request.query_params, _BUCKET_SELECTORS)
     if selected:
-        return _head_refusal(selected)
+        return _head_refusal(selected, _BUCKET_GETS)
     if not _bucket_visible(conn, bucket, visible):
         return Response(status_code=404)
     return Response(status_code=200, headers={"x-amz-bucket-region": "us-east-1"})
@@ -472,13 +489,13 @@ async def bucket_get(request: Request, bucket: str):
                 return _error("InvalidArgument", message, resource, extra=_argument_name(name))
     if not _bucket_visible(conn, bucket, visible):
         return _error("NoSuchBucket", "The specified bucket does not exist", bucket)
+    if selected and selected[0] not in _BUCKET_GETS:
+        return _not_implemented(selected[0], resource)
     if selected == ["location"]:
         # us-east-1 is represented by an *empty* LocationConstraint element on real S3.
         return _xml(f'<LocationConstraint xmlns="{NS}"></LocationConstraint>')
     if selected == ["uploads"]:
         return _list_multipart_uploads(request, bucket, max_uploads)
-    if selected:
-        return _not_implemented(selected[0], resource)
     return _list_objects(request, conn, bucket, visible, v2=v2, max_keys=max_keys)
 
 
@@ -862,7 +879,9 @@ async def object_get(request: Request, bucket: str, key: str):
     conn = auth.conn(request)
     selected = _selected(request.query_params, _OBJECT_SELECTORS)
     if selected and request.method == "HEAD":
-        return _head_refusal(selected)
+        # An empty set, not `_BUCKET_GETS`: a key's path serves no sub-resource on a GET, so its
+        # 405 names no method even for a selector a bucket's path does serve.
+        return _head_refusal(selected, frozenset())
     if len(selected) > 1:
         return _conflict(selected, f"/{bucket}/{key}")
     if selected == ["uploadId"]:

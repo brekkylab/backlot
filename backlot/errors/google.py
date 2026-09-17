@@ -503,20 +503,84 @@ def validation_body(path: str, errors) -> None:
 # --- how a Google body reaches the wire ---------------------------------------------------------
 
 
-def _escaped(text: str) -> str:
-    """``<`` and ``>`` as their `\\u003c` and `\\u003e` escapes, which is what real's serializer
-    writes.
+# The characters real's serializer writes as `\\uXXXX` rather than as themselves, beyond the ones
+# JSON requires of every serializer. Measured 2026-09-17 by sending each of the 1,112,063
+# codepoints a query string carries -- every one but the surrogates and U+0000, which the front end
+# hands back as the literal `%00` rather than decoding -- through the `alt` echo on Sheets in 1,013
+# requests, and reading which came back escaped. 209 do, and these are the 145 of them that
+# ``json.dumps`` leaves alone.
+#
+# The set cannot be written as a category test. It is the format category as Unicode 4.0 drew it:
+# U+17B4 and U+17B5 are in it though they have been Mn since 4.1, and U+061C, U+0604 and U+180E are
+# out of it though each is Cf today. The line and paragraph separators come with it. Everything
+# else stays as it is -- letters, emoji, NBSP, U+3000, `&` and `'` among them.
+_ALSO_ESCAPED = (
+    (0x003C, 0x003C),
+    (0x003E, 0x003E),
+    (0x007F, 0x009F),
+    (0x00AD, 0x00AD),
+    (0x0600, 0x0603),
+    (0x06DD, 0x06DD),
+    (0x070F, 0x070F),
+    (0x17B4, 0x17B5),
+    (0x200B, 0x200F),
+    (0x2028, 0x202E),
+    (0x2060, 0x2064),
+    (0x206A, 0x206F),
+    (0xFEFF, 0xFEFF),
+    (0xFFF9, 0xFFFB),
+    (0x1D173, 0x1D17A),
+    (0xE0001, 0xE0001),
+    (0xE0020, 0xE007F),
+)
 
-    Measured on both sides of the same API: a Sheets cell holding ``<b>&'x`` followed by two
-    non-ASCII letters comes back with the brackets escaped and the letters raw, and an error
-    message echoing an unparseable range spelled ``<b>&'x`` does the same. So `&`, `'` and
-    non-ASCII stay as they are and only the two angle brackets move -- the escape that keeps a
-    body from closing a ``<script>`` element around it. Measured on the plain body as much as the
-    wrapped one, and on a success as much as an error, so it is not the JSONP path's own. Safe to
-    apply to serialized JSON: neither character is part of the grammar, so every one of them is
-    already inside a string.
+_ALSO_ESCAPED_RE = re.compile(
+    "[%s]" % "".join(f"{chr(lo)}-{chr(hi)}" if lo != hi else chr(lo) for lo, hi in _ALSO_ESCAPED)
+)
+
+
+def _escape(match: "re.Match[str]") -> str:
+    """One character as the `\\uXXXX` real writes, in the surrogate pair it writes above the BMP."""
+    cp = ord(match.group())
+    if cp <= 0xFFFF:
+        return "\\u%04x" % cp
+    cp -= 0x10000
+    return "\\u%04x\\u%04x" % (0xD800 + (cp >> 10), 0xDC00 + (cp & 0x3FF))
+
+
+def _escaped(text: str) -> str:
+    """Serialized JSON with the characters real escapes and ``json.dumps`` does not.
+
+    ``json.dumps`` already writes U+0000-U+001F, `"` and `\\` the way real does, down to the short
+    forms -- measured, a value carrying U+0008 through U+000D comes back as `\\b\\t\\n\\u000b\\f\\r`,
+    which is Python's spelling exactly. What it leaves raw and real does not is :data:`_ALSO_ESCAPED`.
+
+    Applied to the serialized text rather than to the values inside it, which is safe for exactly
+    this set: none of these characters is part of JSON's grammar, so every one of them the text
+    holds is already inside a string. U+0000-U+001F could not be handled here for that reason --
+    the newlines an indented body is laid out with are the same character.
+
+    It reaches the plain body as much as the wrapped one and a success as much as an error:
+    measured, a Sheets cell holding ``<b>&'x`` comes back with the brackets escaped and `&`, `'`
+    and the letters raw, and an error echoing an unparseable range spelled the same way matches it.
+    So this is the serializer's rule, not the JSONP path's.
     """
-    return text.replace("<", "\\u003c").replace(">", "\\u003e")
+    return _ALSO_ESCAPED_RE.sub(_escape, text)
+
+
+def _escaped_name(name: str) -> str:
+    """A callback name the way real writes it into ``// API callback\\n<name>(``.
+
+    The wrapper needs more of the rule than the body does: a name is not serialized JSON, so
+    nothing has escaped its quotes, backslashes and C0 controls yet. ``json.dumps`` does that half
+    -- measured, `cb<TAB>x` is called through `cb\\tx` and `cb<BACKSLASH>x` through `cb\\\\x` --
+    and :func:`_escaped` does the rest.
+
+    Real refuses every one of these names, since the character set it accepts is ASCII letters,
+    digits and ``_$.[]``. The refusal still arrives wrapped, through the very name it refuses, so
+    the escaping is what the client reads.
+    """
+    return _escaped(json.dumps(name, ensure_ascii=False)[1:-1])
 
 
 def respond(
@@ -552,7 +616,7 @@ def respond(
             headers=headers,
         )
     return Response(
-        f"// API callback\n{_escaped(callback)}({text});",
+        f"// API callback\n{_escaped_name(callback)}({text});",
         status_code=200,
         media_type="text/javascript; charset=UTF-8",
         headers=headers,

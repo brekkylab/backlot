@@ -1090,11 +1090,13 @@ CALLBACK_REFUSAL = (
 def _jsonp(resp, name):
     """The object inside a JSONP answer, having asserted that it IS one, called through ``name``.
 
-    ``resp.json()`` cannot read these: the body is a script, which is the whole divergence. `<` and
-    `>` reach the wrapper escaped, so a name carrying one is compared in that form."""
+    ``resp.json()`` cannot read these: the body is a script, which is the whole divergence. A name
+    carrying a character the serializer escapes reaches the wrapper in that form, so it is compared
+    through the same function — what that function must produce is pinned literally, and against
+    the live sweep it came from, in ``test_the_characters_the_serializer_escapes``."""
     assert resp.status_code == 200, resp.text
     assert resp.headers["content-type"] == "text/javascript; charset=UTF-8"
-    called = name.replace("<", "\\u003c").replace(">", "\\u003e")
+    called = gerr._escaped_name(name)
     prefix = f"// API callback\n{called}("
     assert resp.text.startswith(prefix), resp.text[: len(prefix) + 20]
     assert resp.text.endswith(");")
@@ -1423,6 +1425,129 @@ def test_a_post_ignores_a_callback_the_way_real_does(base, admin_h, sheet_id):
     )
     assert refused.status_code == 400
     assert _gerr(refused)["message"] == XGAFV_REFUSAL.format("9")
+
+
+# Every character real's serializer writes as an escape rather than as itself, as ranges. Measured
+# 2026-09-17 by sending each of the 1,112,063 codepoints a query string carries -- every one but
+# the surrogates and U+0000, which the front end hands back as the literal `%00` rather than
+# decoding -- through the `alt` echo on Sheets in 1,013 requests, and reading which came back
+# escaped. 209 do. Spelled out here rather than imported from `gerr`, so what the module produces
+# is checked against the measurement and not against itself.
+MEASURED_ESCAPES = (
+    (0x0001, 0x001F),
+    (0x0022, 0x0022),
+    (0x003C, 0x003C),
+    (0x003E, 0x003E),
+    (0x005C, 0x005C),
+    (0x007F, 0x009F),
+    (0x00AD, 0x00AD),
+    (0x0600, 0x0603),
+    (0x06DD, 0x06DD),
+    (0x070F, 0x070F),
+    (0x17B4, 0x17B5),
+    (0x200B, 0x200F),
+    (0x2028, 0x202E),
+    (0x2060, 0x2064),
+    (0x206A, 0x206F),
+    (0xFEFF, 0xFEFF),
+    (0xFFF9, 0xFFFB),
+    (0x1D173, 0x1D17A),
+    (0xE0001, 0xE0001),
+    (0xE0020, 0xE007F),
+)
+
+# Characters the rule is easy to guess wrong, all of which the sweep found raw: `&` and `'`, NBSP
+# and U+3000, and five format characters. U+061C, U+0604 and U+180E are Cf today and are NOT
+# escaped; U+110BD, U+13430 and U+1BCA0 are Cf and astral and are not either, where U+1D173 and
+# U+E0001 are. Read with U+17B4 and U+17B5, which ARE escaped and have been Mn since Unicode 4.1,
+# the set is that version's format category rather than any category a lookup would return today.
+RAW_THROUGH_THE_SERIALIZER = (
+    0x0026,
+    0x0027,
+    0x00A0,
+    0x3000,
+    0x061C,
+    0x0604,
+    0x0605,
+    0x180E,
+    0x110BD,
+    0x13430,
+    0x1BCA0,
+)
+
+
+def test_the_characters_the_serializer_escapes():
+    """The sweep above, against the module that has to reproduce it.
+
+    209 codepoints move and 1,111,854 do not. Reading the rule off a category test gets it wrong in
+    both directions, which is why the ranges are data here."""
+    escaped = {cp for lo, hi in MEASURED_ESCAPES for cp in range(lo, hi + 1)}
+    assert len(escaped) == 209
+    for cp in sorted(escaped):
+        assert gerr._escaped_name(chr(cp)) != chr(cp), hex(cp)
+    edges = {cp for lo, hi in MEASURED_ESCAPES for cp in (lo - 1, hi + 1)} - escaped
+    for cp in sorted(edges.union(RAW_THROUGH_THE_SERIALIZER)):
+        if cp < 0x0001 or 0xD800 <= cp <= 0xDFFF:
+            continue
+        assert gerr._escaped_name(chr(cp)) == chr(cp), hex(cp)
+
+
+@pytest.mark.parametrize(
+    "ch, written",
+    [
+        ("\t", "\\t"),
+        ("\\", "\\\\"),
+        ("", "\\u007f"),
+        ("­", "\\u00ad"),
+        ("​", "\\u200b"),
+        (" ", "\\u2028"),
+        ("\U0001d173", "\\ud834\\udd73"),
+        ("\U000e0001", "\\udb40\\udc01"),
+    ],
+)
+def test_a_callback_name_reaches_the_wrapper_escaped(client, admin_h, ch, written):
+    """A name is not serialized JSON, so the wrapper carries more of the rule than a body does:
+    nothing has escaped its quotes, backslashes and C0 controls before it gets there.
+
+    These are the names real wrote into ``// API callback\\n…(`` for `cb<CH>x`, measured on Sheets
+    on 2026-09-17, astral characters in the surrogate pair it spells them with. Every one of them
+    is refused — the character set a name may be built from is ASCII letters, digits and `_$.[]` —
+    and the refusal still arrives through the name it refuses, so this is what the client reads."""
+    r = client.get("/sheets/v4/spreadsheets/x", headers=admin_h, params={"callback": f"cb{ch}x"})
+    assert r.status_code == 200
+    assert r.text.startswith(f"// API callback\ncb{written}x(")
+    assert _jsonp(r, f"cb{ch}x")["error"]["message"] == CALLBACK_REFUSAL.format(f"cb{ch}x")
+
+
+@pytest.mark.parametrize(
+    "ch, written",
+    [
+        ("­", "\\u00ad"),
+        ("", "\\u007f"),
+        ("​", "\\u200b"),
+        (" ", "\\u2028"),
+        ("\U0001d173", "\\ud834\\udd73"),
+    ],
+)
+def test_the_body_carries_the_escapes_the_wrapper_does(base, admin_h, sheet_id, ch, written):
+    """The same rule on a plain body, where `json.dumps(…, ensure_ascii=False)` writes every one of
+    these raw. Measured on Sheets: an unparseable range carrying one comes back as
+    `"Unable to parse range: a\\u200bb!!"` and its kind."""
+    r = _values(base, admin_h, sheet_id, f"a{ch}b!!")
+    assert r.status_code == 400, r.text
+    assert f"a{written}b!!" in r.text
+    assert ch not in r.text
+    assert _gerr(r)["message"] == f"Unable to parse range: a{ch}b!!"
+
+
+@pytest.mark.parametrize("ch", ["　", " ", "&", "'", "\U0001bca0"])
+def test_the_characters_a_body_keeps(base, admin_h, sheet_id, ch):
+    """The other half of the same request: measured, `a<U+3000>b!!` comes back with the ideographic
+    space itself in the message, and so do NBSP, `&`, `'` and an astral format character the rule
+    leaves out."""
+    r = _values(base, admin_h, sheet_id, f"a{ch}b!!")
+    assert r.status_code == 400, r.text
+    assert f"a{ch}b!!" in r.text
 
 
 def test_angle_brackets_are_escaped_in_a_google_error(base, admin_h, sheet_id):

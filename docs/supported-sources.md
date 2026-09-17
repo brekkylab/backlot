@@ -223,8 +223,10 @@ and against Slides and Gmail on 2026-09-14 through the errors a request with no 
 header reaches.
 
 **Every Google error body is rendered the way real renders one** — two spaces deep with a trailing
-newline whatever `prettyPrint` says, `application/json; charset=UTF-8`, and `<` and `>` as their
-`\u003c` and `\u003e` escapes. `callback` turns one into JSONP: HTTP **200** with
+newline whatever `prettyPrint` says, `application/json; charset=UTF-8`, and the 209 characters
+real escapes written as `\uXXXX` — `<` and `>` among them, the C0 and C1 controls, the line and
+paragraph separators, and the format characters as Unicode 4.0 drew that category, while letters,
+emoji, NBSP, `&` and `'` stay as they are. `callback` turns one into JSONP: HTTP **200** with
 `text/javascript; charset=UTF-8` and the body inside `// API callback\ncb({…}\n);`, which is what
 lets a page loading the answer through a `<script>` element reach its error branch rather than
 `onerror`. A name that cannot be a JavaScript one is refused with real's own sentence — `only

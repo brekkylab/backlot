@@ -16,11 +16,15 @@ an object listing under a 200 gets no error, no log line, and a parse that quiet
 nonsense — which is the exact failure this project exists to prevent, and it cannot be seen in a
 document.
 
-An operation is judged indistinguishable when its response has the same status and the same XML
-root element as the same path carrying no query at all. ListObjectsV2 legitimately answers that way
-— ``?list-type=2`` selects the v2 form of what a bare bucket GET already means — so it is
-acknowledged in the baseline like any other reviewed divergence, rather than special-cased here.
-ListObjects is the bare form itself, so it carries no selector and is never asked.
+An operation is judged indistinguishable when its response has the same status, the same XML root
+element AND the same set of child elements as the same path carrying no query at all. The child
+set is what separates the two listings: ``?list-type=2`` and a bare bucket GET are both
+``200 <ListBucketResult>``, but the V2 form carries ``KeyCount`` where the V1 one carries
+``Marker``, so ListObjectsV2 is told apart from the fallthrough by what it answers rather than by
+being exempted from the question. ListObjects is the bare form itself, so it carries no selector
+and is never asked. An operation that really is answered by the catch-all matches on all three —
+``?session`` still does, and is acknowledged in the baseline, because real S3 answers the listing
+there too.
 """
 
 from __future__ import annotations
@@ -40,6 +44,9 @@ from backlot.fidelity.fetch import fetch_json
 from backlot.fidelity.findings import BREAKING, GAP, Finding
 
 _ROOT = re.compile(r"<\??[a-zA-Z]*[^>]*>\s*<([A-Za-z][\w.-]*)")
+# Element opens and closes, self-closing ones skipped: they open and close at once, so they never
+# change the depth the walk above is counting.
+_TAG = re.compile(r"<(/?)([A-Za-z][\w.-]*)(?:\s[^>]*?)?(?<!/)>")
 _EMPTY_SHA = hashlib.sha256(b"").hexdigest()
 
 
@@ -146,10 +153,32 @@ def _sign(method: str, url: str, access_key: str, secret: str, region: str = "us
     return headers
 
 
-def _shape(response: httpx.Response) -> tuple[int, str]:
-    """What a response looks like from the outside: its status and its XML root element."""
-    match = _ROOT.match(response.text.lstrip())
-    return response.status_code, match.group(1) if match else "(not xml)"
+def _direct_children(text: str) -> frozenset[str]:
+    """The tags one level inside the root, by depth rather than by name — the body is XML the
+    server just produced, so a tag walk is enough and an XML parser is not needed here."""
+    depth, out = 0, set()
+    for closing, tag in _TAG.findall(text):
+        if closing:
+            depth -= 1
+            continue
+        if depth == 1:
+            out.add(tag)
+        depth += 1
+    return frozenset(out)
+
+
+def _shape(response: httpx.Response) -> tuple[int, str, frozenset[str]]:
+    """What a response looks like from the outside: its status, XML root element and child tags.
+
+    The children are a set, not a sequence: two pages of the same operation differ in how many
+    ``Contents`` they carry and in whether a cursor is present, and none of that says the operation
+    was answered by something else. What the set does catch is one operation's body arriving under
+    another's name (see the module docstring)."""
+    text = response.text.lstrip()
+    match = _ROOT.match(text)
+    if not match:
+        return response.status_code, "(not xml)", frozenset()
+    return response.status_code, match.group(1), _direct_children(text)
 
 
 def probe(

@@ -102,6 +102,23 @@ def _require(request: Request) -> Caller:
     return auth.require_bearer(request, "Bad credentials")
 
 
+async def _validate_bad_credential(request: Request) -> None:
+    """401 a credential that arrived and did not resolve — ahead of the version check.
+
+    Real resolves a presented credential before it looks at ``X-GitHub-Api-Version``: a bad bearer
+    with an unsupported version pinned is "Bad credentials", not the version's 400 (measured against
+    api.github.com 2026-09-15 on ``/repos/{owner}/{repo}`` and ``/rate_limit``). A request carrying
+    no credential at all still meets the version check first, measured on ``/user/repos``, the one
+    served route real refuses an anonymous caller: an unsupported version there is the version's 400
+    and a supported one is "Requires authentication" (2026-09-17, three runs of each on cache-busted
+    URLs). So this only fires for a token that arrived and failed to resolve;
+    :func:`_validate_path_owner` answers the missing-credential case in its own place, after the
+    version check.
+    """
+    if auth.bearer_token(request) is not None:
+        auth.require_bearer(request, "Bad credentials")
+
+
 def _org(request: Request) -> str:
     """The single org Backlot serves. ``tokens.yaml``'s ``org`` wins over the setting and lands
     on the ACL (see ``backlot.main``), so read it from there when there is one."""
@@ -189,13 +206,16 @@ def _version(request: Request) -> str:
 
 
 async def _validate_api_version(request: Request) -> None:
-    """400 a pinned version that does not exist — ahead of the credential and the owner check.
+    """400 a pinned version that does not exist — ahead of a missing credential and the owner check.
 
     Ordering is real's, and it is verified rather than assumed: api.github.com 400s a bad version on
     a repo that does not exist while sending no credentials at all. It matters to the caller — a
     version typo reported as 401 sends them to their token, and as 404 to their path, when the header
-    is what is wrong. Declared before ``_validate_path_owner`` in the router's dependency list, which
-    is what puts it first.
+    is what is wrong. A credential that arrived and failed to resolve is checked earlier still (see
+    :func:`_validate_bad_credential`), so this only ever answers the
+    version's 400 to a caller with no credential or a good one. Declared after
+    ``_validate_bad_credential`` and before ``_validate_path_owner`` in the router's dependency list,
+    which is what puts it in that order.
     """
     if honours_api_version(request) and selected_api_version(request) is None:
         # `None` is only reachable with the header present, so this read cannot miss.
@@ -212,8 +232,8 @@ async def _validate_path_owner(request: Request) -> None:
     with neither path param (``/search/issues``, ``/user/repos``) are unaffected. Credentials are
     checked first, so a bad token still reports 401 rather than the owner's 404. `/rate_limit` is
     the one route a caller with no credential is served, as real serves it (200 at the anonymous
-    limits, measured 2026-09-10); it names no owner and reads no document, and it checks the
-    credential it is given itself (see :func:`get_rate_limit`).
+    limits, measured 2026-09-10); it names no owner and reads no document. A bad credential there
+    still 401s, ahead of this dependency (see :func:`_validate_bad_credential`).
 
     The match is case-insensitive, as GitHub logins are, and real then answers in the canonical
     spelling whatever case was asked for: `/repos/PSF/REQUESTS` answers `full_name: psf/requests`
@@ -368,8 +388,10 @@ def rate_limit_caller(request: Request) -> tuple[str, bool]:
     The token when it resolves; the client's address otherwise, which is how real counts a caller
     with no credential (the docs' 60 an hour "for unauthenticated requests", `limit: 60` on every
     anonymous answer measured). A bearer that does not resolve is counted with the anonymous
-    callers from its address: real's answer for one is a 401 carrying the five, and which window it
-    counts against is not measured."""
+    callers from its address, which real does not do: its 401 for one carried none of the five and
+    moved no window, where an anonymous 401 on `/user/repos` carried all five and counted (measured
+    2026-09-17). Callers of this that draw real's line themselves ask `auth.bearer_token` for the
+    presence of the header instead — see `refuse_a_trailing_slash_on_github`."""
     token = auth.bearer_token(request)
     if token is not None and auth.resolve_bearer(request) is not None:
         return f"token:{token}", True
@@ -377,17 +399,26 @@ def rate_limit_caller(request: Request) -> tuple[str, bool]:
     return f"host:{host}", False
 
 
-def rate_limit_headers(request: Request, status_code: int) -> dict[str, str]:
-    """The five `x-ratelimit-*` headers for a `/github` answer, counting it, except on
-    :data:`RATE_LIMIT_PATH`, which reports its window without counting: two `GET /rate_limit` in
-    a row both answered `remaining: 5000`, `used: 0`, each carrying the five with `resource: core`,
-    and the description's own note says the route does not count."""
+def rate_limit_headers(
+    request: Request, status_code: int, *, count: bool | None = None
+) -> dict[str, str]:
+    """The five `x-ratelimit-*` headers for a `/github` answer.
+
+    Counts the request against the window, except on :data:`RATE_LIMIT_PATH`, which reports its
+    window without counting: two `GET /rate_limit` in a row both answered `remaining: 5000`,
+    `used: 0`, each carrying the five with `resource: core`, and the description's own note says
+    the route does not count. That default rstrips the path, so `/rate_limit/` falls into the
+    no-count branch as well; `count` overrides it for a caller that is not the routed endpoint
+    itself, and `refuse_a_trailing_slash_on_github` passes `count=True` because a trailing slash
+    there is a 404 no route matched, which counts like any other."""
     key, authenticated = rate_limit_caller(request)
     resource = rate_limit_resource(request.url.path, status_code)
     limits = RATE_LIMITS[resource]
     limit = limits.authenticated if authenticated else limits.anonymous
     windows = _rate_limit_windows(request.app)
-    read = windows.status if request.url.path.rstrip("/") == RATE_LIMIT_PATH else windows.count
+    if count is None:
+        count = request.url.path.rstrip("/") != RATE_LIMIT_PATH
+    read = windows.count if count else windows.status
     window = read(key, resource, limit)
     return {
         "x-ratelimit-limit": str(window["limit"]),
@@ -401,10 +432,14 @@ def rate_limit_headers(request: Request, status_code: int) -> dict[str, str]:
 router = APIRouter(
     prefix="/github",
     tags=["github"],
-    # Order is the answering order: an unsupported API version is a malformed request and real
-    # refuses it before authenticating or routing, so it is declared first. The repo's spelling is
-    # resolved last, and so never for a request that fails the version or the credential.
+    # Order is the answering order: real resolves a credential that arrived before it looks at the
+    # version or the path, an unsupported API version is a malformed request it refuses next — ahead
+    # of a MISSING credential and of the owner the path names — and the repo's spelling is resolved
+    # last, so never for a request that fails one of the three ahead of it. A path no route matches
+    # is 404 ahead of all three on real (measured 2026-09-17 on an unrouted path and on a
+    # nonexistent subresource), and a router-wide dependency does not run for one either.
     dependencies=[
+        Depends(_validate_bad_credential),
         Depends(_validate_api_version),
         Depends(_validate_path_owner),
         Depends(_canonical_path_repo),
@@ -554,16 +589,20 @@ def canonical_id_path(conn, org: str, path: str) -> str | None:
     if len(parts) < 3 or parts[1] not in _ID_PATHS:
         return None
     tail = parts[3:]
+    # A trailing slash survives the rewrite. `/repositories/{id}/` is real's 404, the same as the
+    # `/repos/{owner}/{repo}/` it stands for, so dropping it with the rest of the stripping would
+    # answer the resource on a spelling real refuses.
+    slash = "/" if path.endswith("/") else ""
     if parts[1] == "organizations":
         named = org if str(synth.github_user_id(org)) == parts[2] else parts[2]
-        return "/".join(["/github/orgs", named, *tail])
+        return "/".join(["/github/orgs", named, *tail]) + slash
     hits = [
         r["name"]
         for r in store.list_containers(conn, "github")
         if str(synth.github_user_id(r["name"])) == parts[2]
     ]
     named = hits[0] if len(hits) == 1 else parts[2]
-    return "/".join(["/github/repos", org, named, *tail])
+    return "/".join(["/github/repos", org, named, *tail]) + slash
 
 
 def _link_response(link: str | None, body: list) -> Response:
@@ -1433,7 +1472,8 @@ async def get_rate_limit(request: Request):
     `2026-03-10`, which removed it (measured 2026-09-10: the body's keys are `rate`, `resources`
     under the one and `resources` alone under the other). A caller with no credential is answered
     at the anonymous limits, as real answers one; a bearer that does not resolve is real's 401
-    (measured), so a credential is checked when it is there and not required.
+    (measured — see :func:`_validate_bad_credential`, which answers it router-wide before this
+    handler runs).
 
     Which window real's route reports is not the one its headers had just reported: a minute after
     answers carrying `remaining: 4994`, `used: 6`, `reset: 1789020007`, the route answered
@@ -1442,8 +1482,6 @@ async def get_rate_limit(request: Request):
     it to learn what the headers would say, so this reports the headers' window; the fresh window
     real answered could only be reproduced by reporting a window nothing counts against.
     """
-    if auth.bearer_token(request) is not None:
-        auth.require_bearer(request, "Bad credentials")
     key, authenticated = rate_limit_caller(request)
     windows = _rate_limit_windows(request.app)
     resources = {

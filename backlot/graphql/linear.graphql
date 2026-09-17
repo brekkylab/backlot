@@ -450,6 +450,9 @@ enum ReleaseNoteGenerationStatus { pending completed }
 private-team boundary."""
 enum TeamVisibility { public restricted private }
 
+"""The selection mode of a label group; null for a regular label, per Linear's own description."""
+enum LabelGroupType { singleSelect multiSelect }
+
 type ActorBot {
   avatarUrl: String
   subType: String
@@ -694,6 +697,7 @@ type IssueLabel {
   createdAt: DateTime!
   id: ID!
   isGroup: Boolean!
+  groupType: LabelGroupType
   inheritedFrom: IssueLabel
   parent: IssueLabel
   team: Team

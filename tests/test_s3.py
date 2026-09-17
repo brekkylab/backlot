@@ -6,6 +6,7 @@ or call the response builder directly.
 
 from __future__ import annotations
 
+import base64
 import json
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -921,6 +922,72 @@ def test_list_multipart_uploads_reads_the_first_of_a_repeated_parameter_as_real_
     assert (fields["Prefix"], fields["Delimiter"], fields["KeyMarker"]) == ("a", "/", "a")
 
 
+def test_a_continuation_token_is_refused_after_the_bucket_lookup_not_before_it(live_server):
+    """#205: the refusal cannot be read as "this bucket exists", for any caller.
+
+    Real puts the check below the lookup — `?list-type=2&continuation-token=garbage` on a bucket
+    that does not exist is NoSuchBucket rather than the 400, and an empty value goes the same way
+    (measured 2026-09-17). Here the bucket a caller cannot see is the one that tells them apart:
+    `people-vault` holds one group-visible object, so an engineer is told it does not exist while
+    the admin gets the 400 the token earns.
+    """
+    base_url, settings = live_server
+    tokens = {
+        u["email"]: u["token"] for u in yaml.safe_load(settings.tokens_path.read_text())["users"]
+    }
+    for value in ("garbage", ""):
+        path = f"/s3/people-vault?list-type=2&continuation-token={value}"
+        scoped = _refused(base_url, path, tokens["ava@acme.com"])
+        assert scoped.code == 404 and b"<Code>NoSuchBucket</Code>" in scoped.read(), value
+        admin = _refused(base_url, path, settings.admin_token)
+        body = admin.read()
+        assert admin.code == 400, value
+        assert b"<Message>The continuation token provided is incorrect</Message>" in body, value
+
+
+def _boto3_client(live_server):
+    """An admin boto3 client at the live server, path-addressed, the way every boto3 test here
+    dials it."""
+    boto3 = pytest.importorskip("boto3")
+    from botocore.config import Config
+
+    base_url, settings = live_server
+    return boto3.client(
+        "s3",
+        endpoint_url=f"{base_url}/s3",
+        aws_access_key_id=synth.s3_access_key_id(settings.admin_token),
+        aws_secret_access_key=synth.s3_secret_access_key(settings.admin_token),
+        region_name="us-east-1",
+        config=Config(s3={"addressing_style": "path"}),
+    )
+
+
+def test_boto3_gets_one_client_error_for_a_bad_continuation_token_not_page_one(live_server):
+    """#205's own reproduction, from the client side.
+
+    A paging loop that stores its cursor between runs, or passes it through a URL or a queue, gets
+    one `ClientError` for a mangled cursor and no page: botocore reads the 400 as that error and
+    does not retry it, which is what real answers the cursor with.
+    """
+    s3 = _boto3_client(live_server)
+    from botocore.exceptions import ClientError
+
+    with pytest.raises(ClientError) as raised:
+        s3.list_objects_v2(Bucket="eng-artifacts", ContinuationToken="garbage")
+    error = raised.value.response
+    assert error["ResponseMetadata"]["HTTPStatusCode"] == 400
+    assert error["ResponseMetadata"]["RetryAttempts"] == 0
+    assert error["Error"]["Code"] == "InvalidArgument"
+    assert error["Error"]["Message"] == "The continuation token provided is incorrect"
+    # The cursor a page hands out still walks, so what was refused is the mangling and not paging.
+    first = s3.list_objects_v2(Bucket="eng-artifacts", MaxKeys=1)
+    second = s3.list_objects_v2(
+        Bucket="eng-artifacts", MaxKeys=1, ContinuationToken=first["NextContinuationToken"]
+    )
+    assert second["ContinuationToken"] == first["NextContinuationToken"]
+    assert second["Contents"][0]["Key"] != first["Contents"][0]["Key"]
+
+
 def test_list_multipart_uploads_on_a_bucket_the_caller_cannot_see_is_no_such_bucket(live_server):
     """The listing and `?uploads` agree about which buckets exist: `people-vault` holds one
     group-visible object, so an engineer is told it does not exist, as the listing tells them."""
@@ -939,18 +1006,7 @@ def test_list_multipart_uploads_on_a_bucket_the_caller_cannot_see_is_no_such_buc
 
 
 def test_boto3_list_multipart_uploads_is_an_empty_page_not_a_client_error(live_server):
-    boto3 = pytest.importorskip("boto3")
-    from botocore.config import Config
-
-    base_url, settings = live_server
-    s3 = boto3.client(
-        "s3",
-        endpoint_url=f"{base_url}/s3",
-        aws_access_key_id=synth.s3_access_key_id(settings.admin_token),
-        aws_secret_access_key=synth.s3_secret_access_key(settings.admin_token),
-        region_name="us-east-1",
-        config=Config(s3={"addressing_style": "path"}),
-    )
+    s3 = _boto3_client(live_server)
     page = s3.list_multipart_uploads(Bucket="eng-artifacts", Prefix="runbooks/", Delimiter="/")
     assert page["ResponseMetadata"]["HTTPStatusCode"] == 200
     assert page["Bucket"] == "eng-artifacts" and page["Prefix"] == "runbooks/"
@@ -967,18 +1023,7 @@ def test_boto3_list_objects_paginator_walks_the_bucket_and_keeps_marker_and_owne
     It also dropped `Marker` and every `Owner` from the output, because botocore keeps only the
     members the V1 output shape declares. Both listings now walk the bucket, and `list_objects`
     carries the two members again."""
-    boto3 = pytest.importorskip("boto3")
-    from botocore.config import Config
-
-    base_url, settings = live_server
-    s3 = boto3.client(
-        "s3",
-        endpoint_url=f"{base_url}/s3",
-        aws_access_key_id=synth.s3_access_key_id(settings.admin_token),
-        aws_secret_access_key=synth.s3_secret_access_key(settings.admin_token),
-        region_name="us-east-1",
-        config=Config(s3={"addressing_style": "path"}),
-    )
+    s3 = _boto3_client(live_server)
     walks = {}
     for operation in ("list_objects", "list_objects_v2"):
         pages = list(
@@ -1000,19 +1045,9 @@ def test_boto3_gets_one_client_error_instead_of_an_empty_answer_or_a_retried_500
     listing as each operation's output; `get_object_tagging` and `list_parts` surfaced as a 500
     after botocore's retries, because botocore's `_handle_200_error` could not parse the object's bytes
     as XML. 501 is not a status botocore retries, so each is now one ClientError, at once."""
-    boto3 = pytest.importorskip("boto3")
-    from botocore.config import Config
+    s3 = _boto3_client(live_server)
     from botocore.exceptions import ClientError
 
-    base_url, settings = live_server
-    s3 = boto3.client(
-        "s3",
-        endpoint_url=f"{base_url}/s3",
-        aws_access_key_id=synth.s3_access_key_id(settings.admin_token),
-        aws_secret_access_key=synth.s3_secret_access_key(settings.admin_token),
-        region_name="us-east-1",
-        config=Config(s3={"addressing_style": "path"}),
-    )
     bucket, key = "eng-artifacts", "runbooks/oncall.md"
     for call in (
         lambda: s3.get_bucket_versioning(Bucket=bucket),
@@ -1591,6 +1626,113 @@ def test_the_listing_encodes_under_encoding_type_url_as_real_does(
             f"<ArgumentName>encoding-type</ArgumentName><ArgumentValue>{value}</ArgumentValue>"
             in r.text
         ), value
+
+
+def test_a_continuation_token_that_does_not_decode_is_refused_not_answered_with_page_one(
+    big_bucket_client, big_bucket_settings
+):
+    """#205: a `continuation-token` Backlot cannot read is a 400, and an empty one is the same 400.
+
+    Real answers both "The continuation token provided is incorrect" under `ArgumentName`
+    `continuation-token` with no `ArgumentValue` beside it, and answers neither with a page
+    (measured 2026-09-17 against a bucket in ap-northeast-2). Where the refusal sits is measured
+    too: `encoding-type` is judged before it, the `max-keys` range after it, the `max-keys` parse
+    before the bucket is looked up at all, and a bucket that does not exist is NoSuchBucket for an
+    unreadable token and an empty one alike.
+
+    A token that decodes is served, which is what keeps paging working — and it is served even when
+    this listing never handed it out, where real refuses it. Why the two cannot be told apart here
+    is in `_list_objects`'s docstring. Real's own check is not a check on a token's shape: one it
+    issued with its final character replaced comes back 200, echoed as sent (measured the same
+    day).
+    """
+    token = big_bucket_settings.admin_token
+    message = "The continuation token provided is incorrect"
+
+    def refused(query):
+        r = _s3_get(big_bucket_client, f"/s3/encoded-bucket?{query}", token)
+        assert r.status_code == 400, (query, r.text)
+        return r.text
+
+    # Sent and unreadable, an empty value among them: not base64, base64 of bytes that are not
+    # UTF-8, and base64 of a string this listing does not spell its bounds with.
+    for value in ("garbage", "", "!!!!", "a" * 200, base64.urlsafe_b64encode(b"x:zz").decode()):
+        body = refused(f"list-type=2&continuation-token={quote(value)}")
+        assert f"<Message>{message}</Message>" in body, value
+        assert "<ArgumentName>continuation-token</ArgumentName>" in body, value
+        assert "<ArgumentValue>" not in body, value
+        # No page came back with it, and nothing echoed the token as if one had.
+        assert "<Contents>" not in body and "<ContinuationToken>" not in body, value
+
+    # The order among the refusals this path already had, with the bucket lookup in the middle of
+    # it: the `max-keys` parse is judged above the lookup, this refusal below it.
+    assert "<ArgumentName>encoding-type</ArgumentName>" in refused(
+        "list-type=2&continuation-token=garbage&encoding-type=bogus"
+    )
+    assert f"<Message>{message}</Message>" in refused(
+        "list-type=2&continuation-token=garbage&max-keys=-1"
+    )
+    assert "<ArgumentName>max-keys</ArgumentName>" in refused(
+        "list-type=2&continuation-token=garbage&max-keys=abc"
+    )
+    for value in ("garbage", ""):
+        missing = _s3_get(
+            big_bucket_client, f"/s3/no-such-bucket?list-type=2&continuation-token={value}", token
+        )
+        assert missing.status_code == 404, value
+        assert "<Code>NoSuchBucket</Code>" in missing.text, value
+    # `start-after` is not reached once the token is refused, an empty token included.
+    assert f"<Message>{message}</Message>" in refused(
+        "list-type=2&continuation-token=garbage&start-after=zz.txt"
+    )
+    assert f"<Message>{message}</Message>" in refused(
+        "list-type=2&continuation-token=&start-after="
+    )
+
+    # The first of a repeated parameter is the one read, here as everywhere (see `_first`).
+    issued = _listing(big_bucket_client, "list-type=2&max-keys=1", token).findtext(
+        f"{{{S3NS}}}NextContinuationToken"
+    )
+    assert f"<Message>{message}</Message>" in refused(
+        f"list-type=2&continuation-token=garbage&continuation-token={quote(issued)}"
+    )
+    good_first = _listing(
+        big_bucket_client,
+        f"list-type=2&max-keys=1&continuation-token={quote(issued)}&continuation-token=garbage",
+        token,
+    )
+    assert good_first.findtext(f"{{{S3NS}}}ContinuationToken") == issued
+
+    # The parameter name is matched as sent: a capitalised one selects nothing, so the listing is
+    # page one and echoes no token at all.
+    capitalised = _listing(big_bucket_client, "list-type=2&Continuation-Token=garbage", token)
+    assert capitalised.find(f"{{{S3NS}}}ContinuationToken") is None
+    assert _entries(capitalised) == _entries(_listing(big_bucket_client, "list-type=2", token))
+
+    # A token displaces `start-after` rather than being weighed against it, and displaces its echo
+    # too: real sends no `StartAfter` element at all when both were sent, where `start-after` alone
+    # is echoed (measured 2026-09-17).
+    displaced = _listing(
+        big_bucket_client,
+        f"list-type=2&max-keys=1&start-after=zz.txt&continuation-token={quote(issued)}",
+        token,
+    )
+    assert displaced.find(f"{{{S3NS}}}StartAfter") is None
+    assert displaced.findtext(f"{{{S3NS}}}ContinuationToken") == issued
+    assert _entries(displaced) == ["a b.txt"]
+
+    # A token this listing handed out still pages, and so does one a caller spelled by hand.
+    page_two = _listing(
+        big_bucket_client, f"list-type=2&max-keys=1&continuation-token={quote(issued)}", token
+    )
+    assert page_two.findtext(f"{{{S3NS}}}ContinuationToken") == issued
+    assert _entries(page_two) == ["a b.txt"]
+    hand_written = base64.urlsafe_b64encode(b"k:zz.txt").decode()
+    served = _listing(
+        big_bucket_client, f"list-type=2&continuation-token={quote(hand_written)}", token
+    )
+    assert served.findtext(f"{{{S3NS}}}ContinuationToken") == hand_written
+    assert _entries(served) == ["한글/x.txt"]
 
 
 def test_max_keys_is_read_by_value_and_refused_with_the_two_messages_real_sends(

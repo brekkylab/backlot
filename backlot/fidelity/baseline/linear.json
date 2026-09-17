@@ -3,7 +3,7 @@
   "endpoints": [
     "https://api.linear.app/graphql"
   ],
-  "measured": "2026-09-11",
+  "measured": "2026-09-17",
   "acknowledged": [
     {
       "kind": "missing_field",
@@ -1304,6 +1304,13 @@
     {
       "kind": "missing_field",
       "severity": "gap",
+      "path": "IntegrationsSettings.slackInitiativeCommentCreated",
+      "detail": "vendor serves slackInitiativeCommentCreated: Boolean; Backlot does not",
+      "note": "Linear's own description: \"Whether to send a Slack message when a top-level initiative comment is created. New settings default to true. Existing unset settings inherit the initiative update preference until first edited.\" It joins the family whose gap is recorded on the other `slack*`/`microsoftTeams*` booleans on this type: `IntegrationsSettings` is the id-only stub `Project.integrationsSettings` resolves to for `@linear/sdk` fragment validation. The SDK's own generated `Project` fragment requests `integrationsSettings { id }` and nothing past it, so no client measured here asks for this field."
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
       "path": "IntegrationsSettings.slackInitiativeUpdateCreated",
       "detail": "vendor serves slackInitiativeUpdateCreated: Boolean; Backlot does not"
     },
@@ -1354,6 +1361,13 @@
       "severity": "gap",
       "path": "IntegrationsSettings.slackIssueStatusChangedDone",
       "detail": "vendor serves slackIssueStatusChangedDone: Boolean; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IntegrationsSettings.slackProjectCommentCreated",
+      "detail": "vendor serves slackProjectCommentCreated: Boolean; Backlot does not",
+      "note": "Linear's own description: \"Whether to send a Slack message when a top-level project comment is created. New settings default to true. Existing unset settings inherit the project update preference until first edited.\" Same family as `IntegrationsSettings.slackInitiativeCommentCreated`: a toggle on the id-only `IntegrationsSettings` stub, which the `@linear/sdk`'s own `Project` fragment never asks past `{ id }`."
     },
     {
       "kind": "missing_field",
@@ -2486,6 +2500,13 @@
     {
       "kind": "missing_field",
       "severity": "gap",
+      "path": "Project.leadTeamId",
+      "detail": "vendor serves leadTeamId: String!; Backlot does not",
+      "note": "Linear's own description: \"[Internal] The ID of the team that leads the project, even when the viewer cannot access the team.\" (the sibling `leadTeam` carries the same marker). Non-null on the vendor, per the `String!` in the detail above; measured against api.linear.app on 2026-09-17, `projects(first: 50)` answers zero nodes on this workspace, and only `includeArchived: true` reaches any, all of them archived leftovers of earlier measurement runs. It joins the gap already recorded on the sibling `Project.leadTeam`, and on `Project.teams` separately: no project-team relationship exists in this schema, and `_project()` derives a project from an issue's project name alone. Serving a non-null field here would mean inventing a project-to-team assignment the corpus doesn't carry and presenting the invented value as measured. The `@linear/sdk`'s own `Project` fragment does not request either `leadTeam` or `leadTeamId`, so acknowledging this changes nothing a measured client asks for."
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
       "path": "Project.members",
       "detail": "vendor serves members: UserConnection!; Backlot does not"
     },
@@ -2674,6 +2695,13 @@
       "severity": "gap",
       "path": "ProjectStatus.team",
       "detail": "vendor serves team: Team; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectStatus.teamId",
+      "detail": "vendor serves teamId: String; Backlot does not",
+      "note": "Linear's own description: \"[Internal] The ID of the team that owns the status, even when the viewer cannot access the team. Null for workspace statuses.\" Measured against api.linear.app on 2026-09-17: `projectStatuses` answers 5 statuses on this workspace, every one workspace-level with `teamId: null`. `ProjectStatus` is an id-only stub like `IntegrationsSettings` (`Project.status` resolves to `{ id }` only) and joins the family whose gap is recorded on its other fields (`name`, `color`, `type`, `team`, and the rest). The `@linear/sdk`'s own `Project` fragment requests `status { id }` and nothing past it, so no measured client asks for this field."
     },
     {
       "kind": "missing_field",

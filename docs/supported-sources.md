@@ -15,7 +15,7 @@ Generated from `backlot/schemas/*.schema.json` and the app's own `/openapi.json`
 <!-- generated:sources start -->
 | `source_type` | Service | URL prefix | Endpoints | Record schema | What one record is |
 |---|---|---|---|---|---|
-| `confluence` | Confluence | `/atlassian/wiki/rest/api` | 10 | [`confluence.schema.json`](../backlot/schemas/confluence.schema.json) | A Confluence page or blogpost. |
+| `confluence` | Confluence | `/atlassian/wiki/rest/api` | 9 | [`confluence.schema.json`](../backlot/schemas/confluence.schema.json) | A Confluence page or blogpost. |
 | `fireflies` | Fireflies | `/fireflies/graphql` | GraphQL (one `POST`) | [`fireflies.schema.json`](../backlot/schemas/fireflies.schema.json) | A Fireflies.ai meeting transcript. |
 | `github` | GitHub | `/github` | 33 | [`github.schema.json`](../backlot/schemas/github.schema.json) | A GitHub issue, pull request, file, or the repository itself. |
 | `gmail` | Gmail | `/gmail/v1` | 8 | [`gmail.schema.json`](../backlot/schemas/gmail.schema.json) | A Gmail message. |
@@ -43,9 +43,12 @@ Ordered as the table above, by `source_type`.
 | `content/{id}/label` | |
 | `content/{id}/restriction/byOperation` | |
 | `search` | CQL |
-| `space` | |
-| `space/{key}` | |
-| `space/{key}/permission` | |
+| `space` | `expand=description,permissions` |
+| `space/{key}` | `expand=description,permissions` |
+
+`expand=permissions` carries the space's permission roster on either read, one entry per ACL grant
+— a user grant naming that user, a group or org grant naming none — for `read`/`space`, the only
+operation an ACL states.
 
 ### Fireflies — `/fireflies/graphql`
 
@@ -222,6 +225,28 @@ families show it only at `1`. Measured against the live Sheets, Docs and Drive A
 and against Slides and Gmail on 2026-09-14 through the errors a request with no Authorization
 header reaches.
 
+**Every Google error body is rendered the way real renders one** — two spaces deep with a trailing
+newline whatever `prettyPrint` says, `application/json; charset=UTF-8`, and the 209 characters
+real escapes written as `\uXXXX` — `<` and `>` among them, the C0 and C1 controls, the line and
+paragraph separators, and the format characters as Unicode 4.0 drew that category, while letters,
+emoji, NBSP, `&` and `'` stay as they are. `callback` turns one into JSONP: HTTP **200** with
+`text/javascript; charset=UTF-8` and the body inside `// API callback\ncb({…}\n);`, which is what
+lets a page loading the answer through a `<script>` element reach its error branch rather than
+`onerror`. A name that cannot be a JavaScript one is refused with real's own sentence — `only
+alphabet, number, '_', '$', '.', '[' and ']' are allowed` — ahead of a bad token, a missing
+credential, an unparseable range and a mistyped `fields` mask, though `$.xgafv` is refused ahead of
+it and an `alt` naming a format other than `json` suppresses the wrap altogether — the format is
+matched without regard to case and an empty `alt=` names none, so `alt=JSON`, `alt=Json` and
+`alt=` each ask for the JSON the default serves rather than for a format of their own. An empty
+`callback=` is no
+callback; a repeated one is answered through the first name where `$.xgafv` is answered through the
+last; and a POST ignores the parameter outright, as real does, since JSONP is what a `<script>`
+element fetches and a `<script>` element issues a GET. A SUCCESS body is wrapped and indented on
+the `/sheets/v4` routes only; the other four families honour `callback` on their errors and not yet
+on their 200s. Measured against the live Sheets, Docs, Drive, Gmail and Slides APIs on 2026-09-15,
+2026-09-16 and 2026-09-17: the wrap, the indent and the charset first, the suppression across the
+four non-Sheets families next, and the escape set and the case-insensitive `alt` last.
+
 ### HubSpot — `/hubspot/crm/v3` `/hubspot/crm/v4`
 
 | Endpoint | Notes |
@@ -274,16 +299,20 @@ compiled into SQL, and full introspection.
 
 ### Notion — `/notion/v1`
 
+Every route requires a `Notion-Version` header and answers `missing_version` without one — or
+with a version Notion does not publish — as the real API does; the value picks the database model,
+which is what the notes below name.
+
 | Endpoint | Notes |
 |---|---|
 | `POST search` | |
 | `pages/{id}` | |
 | `blocks/{id}` | |
 | `blocks/{id}/children` | |
-| `databases/{id}` | Version-aware |
-| `POST databases/{id}/query` | Legacy |
-| `data_sources/{id}` | |
-| `POST data_sources/{id}/query` | |
+| `databases/{id}` | Version-aware: `data_sources` from `2025-09-03`, inline `properties` before it |
+| `POST databases/{id}/query` | Versions before `2025-09-03` only |
+| `data_sources/{id}` | `2025-09-03` and later only |
+| `POST data_sources/{id}/query` | `2025-09-03` and later only |
 | `users[/{id}]` | |
 | `users/me` | |
 | `comments` | |
@@ -300,7 +329,8 @@ virtual-hosted client looks for `acme-artifacts.localhost:8000` and finds nothin
 | `HeadBucket` | |
 | `GetBucketLocation` | |
 | `ListMultipartUploads` | Always the empty page, since data enters through `backlot import` and no upload is ever in progress. `prefix`, `delimiter` and `key-marker` are echoed, `max-uploads` and `encoding-type` validated and echoed, as real does |
-| `ListObjectsV2` | `prefix`, `delimiter`, `continuation-token` |
+| `ListObjects` | The bare bucket GET, and what any `list-type` other than `2` selects. `prefix`, `delimiter`, `marker`, `max-keys`, `encoding-type`; `Marker` echoed, `NextMarker` under a delimiter, an `Owner` on every object |
+| `ListObjectsV2` | Selected by `list-type=2`. `prefix`, `delimiter`, `start-after`, `continuation-token`, `max-keys`, `encoding-type`; `KeyCount` and the continuation tokens, no `Owner` |
 | `GetObject` | `Range` |
 | `HeadObject` | |
 

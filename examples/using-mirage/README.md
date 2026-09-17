@@ -59,9 +59,9 @@ with serve_or_connect(CORPUS) as s:
 ```
 
 **Notion** is the same one-liner — `NotionConfig(base_url=f"{s.base_url}/notion/v1")`, no
-monkeypatch. mirage sends `Notion-Version: 2022-06-28`, which Backlot's version-aware router
-serves (the legacy inline-`properties` / `databases.query` shape), so pages and databases both
-read correctly.
+monkeypatch. mirage sends `Notion-Version: 2025-09-03`, which Backlot's version-aware router
+serves (the `data_sources` shape on a database, and its rows through `data_sources/{id}/query`),
+so pages and databases both read correctly.
 
 **S3** is also plain config, no monkeypatch and no pin bump: `S3Config(endpoint_url=
 f"{s.base_url}/s3", path_style=True, aws_access_key_id=ak, aws_secret_access_key=sk)`.

@@ -16,21 +16,38 @@ A module in ``_ENVELOPES`` provides:
   ``None`` to keep FastAPI's own 422. Google is the one that keeps it: its editor APIs answer a bad
   *parameter* through a router-raised ``GoogleError``, so the validator is not the path that
   reports one.
+- ``method_not_allowed(path, method)``, optional — the vendor's own 405, as an exception carrying
+  its body, media type and headers. The router raises a 405 before any vendor code runs, so a
+  vendor whose 405 differs from the shape its other refusals take says so here. Atlassian is the
+  one that implements it; what its two products answer is in
+  :func:`backlot.errors.atlassian.method_not_allowed`. A vendor without it keeps the shared
+  envelope.
 - ``json_media_type(path, status_code)``, optional — the `content-type` the vendor puts on a JSON
   body answered at that path with that status, when it is measured to differ from FastAPI's bare
   `application/json`. GitHub is the one that implements it; a vendor without it keeps the default,
   which is not a claim about what real sends.
+- ``rendered(request, status_code, body, headers)``, optional — the whole ``Response``, for a
+  vendor whose error bodies are measured to the byte or whose status the body does not decide. Only
+  Google has one: its errors are indented, its `content-type` carries a charset, and a `callback`
+  on a GET turns one into a 200 JSONP script. The whole REQUEST, because that rendering reads the
+  method as well as the query. A vendor without it gets FastAPI's ``JSONResponse`` around the dict,
+  which is what Atlassian and GitHub keep — measured, Atlassian ignores `callback` on every route
+  asked, and GitHub's JSONP is a different envelope under a different media type, so neither wants
+  Google's renderer.
 
-A media type that varies by REFUSAL rather than by path and status cannot come from that hook,
-which sees only those two. It rides on the exception instead, as a ``media_type`` attribute
-``backlot.main``'s handler reads: Atlassian's :class:`~backlot.errors.atlassian.AtlassianError`
-carries `application/problem+json` for Jira's type-conversion 400, where Jira's other 400s on the
-same path are plain JSON. A vendor that sets no such attribute is unaffected.
+A media type that varies by REFUSAL rather than by path and status cannot come from
+``json_media_type``, which sees only those two. It rides on the exception instead, as a
+``media_type`` attribute ``backlot.main``'s handler reads: Atlassian's
+:class:`~backlot.errors.atlassian.AtlassianError` carries `application/problem+json` for Jira's
+type-conversion 400, where Jira's other 400s on the same path are plain JSON. A vendor that sets no
+such attribute is unaffected.
 
 Adding a vendor is a module plus one entry below — not an edit to the handler.
 """
 
 from __future__ import annotations
+
+from fastapi import Request, Response
 
 from backlot.errors import atlassian, github, google
 
@@ -46,6 +63,20 @@ def http_body(path: str, exc, query=None) -> dict | None:
     return None
 
 
+def method_not_allowed(path: str, method: str):
+    """The vendor's own 405 for ``method`` on ``path``, as an exception whose body, media type and
+    headers ``backlot.main``'s handler reads, or ``None`` to keep the shared envelope.
+
+    Its ``headers`` is three-valued: a mapping replaces what the router computed, ``{}`` sends none
+    where the vendor sends none, and ``None`` keeps the router's `Allow`.
+    """
+    for envelope in _ENVELOPES:
+        if envelope.owns(path):
+            answer = getattr(envelope, "method_not_allowed", None)
+            return answer(path, method) if answer is not None else None
+    return None
+
+
 def json_media_type(path: str, status_code: int) -> str | None:
     """The vendor's measured `content-type` for a JSON body answered on ``path`` with
     ``status_code``, or ``None`` for FastAPI's."""
@@ -53,6 +84,24 @@ def json_media_type(path: str, status_code: int) -> str | None:
         if envelope.owns(path):
             pick = getattr(envelope, "json_media_type", None)
             return pick(path, status_code) if pick is not None else None
+    return None
+
+
+def rendered(request: Request, status_code: int, body: dict, headers=None) -> Response | None:
+    """The vendor's own rendering of an error on this request's path — the whole response rather
+    than the body alone — or ``None`` to let the handler answer with a ``JSONResponse`` around
+    ``body``.
+
+    The whole response, because a vendor can decide more about an error than its dict: Google
+    indents every error body and ends it with a newline whatever `prettyPrint` says, names a charset
+    on the type, and answers a GET carrying `callback` at 200 as a script with the error inside it.
+    The whole request, because that last one is decided by the method and the query together, where
+    the other entry points here need only a path.
+    """
+    for envelope in _ENVELOPES:
+        if envelope.owns(request.url.path):
+            render = getattr(envelope, "rendered", None)
+            return render(request, status_code, body, headers) if render is not None else None
     return None
 
 
@@ -69,4 +118,13 @@ def validation_body(path: str, errors) -> tuple[int, dict] | None:
     return None
 
 
-__all__ = ["atlassian", "github", "google", "http_body", "validation_body"]
+__all__ = [
+    "atlassian",
+    "github",
+    "google",
+    "http_body",
+    "json_media_type",
+    "method_not_allowed",
+    "rendered",
+    "validation_body",
+]

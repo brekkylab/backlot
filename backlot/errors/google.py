@@ -27,10 +27,15 @@ constructors here rather than one "unauthorized".
 (:func:`validate_system_parameters`) and declared once for the document
 (:func:`backlot.openapi.google_system_parameters`) rather than route by route. Measured: Drive
 carries the array on a `fields` refusal at `2` as well as with no parameter; the LAST repeat is the
-value every rule reads (`2&1` carries it on Sheets where `1&2` does not, `2&0` on Gmail — a refused
-value is not a `2` — where `0&2` does not); a success body is the same under all of them; and a
-value other than `1` or `2` is refused ahead of a bad token, a missing credential and an
-unparseable range alike.
+value every rule about THIS parameter reads (`2&1` carries it on Sheets where `1&2` does not, `2&0`
+on Gmail — a refused value is not a `2` — where `0&2` does not), which is the opposite of the other
+system parameters (:func:`first_repeat`); a success body is the same under all of them; and a value
+other than `1` or `2` is refused ahead of a bad token, a missing credential and an unparseable range
+alike.
+
+`callback` is the second system parameter :func:`validate_system_parameters` checks, and the one
+that decides how a body reaches the wire rather than what is in it: see :func:`respond`, which is
+also where the indentation and the charset every Google error carries are decided.
 
 Inside `errors[]` the entry follows the constructor that raised it, and each one carries its own
 measurement. Measured on Sheets and Docs at `$.xgafv=1`: a typed value the proto layer refuses is
@@ -45,9 +50,11 @@ read as a native document is :func:`failed_precondition`, so ``failedPreconditio
 
 from __future__ import annotations
 
+import json
+import re
 from collections.abc import Mapping
 
-from fastapi import HTTPException, Request
+from fastapi import HTTPException, Request, Response
 
 DRIVE, GMAIL, EDITOR = "drive", "gmail", "editor"
 # `status` needs no per-family flag: Drive's parameter failures simply do not have one, while every
@@ -297,21 +304,142 @@ def bad_system_parameter(name: str, value: str) -> GoogleError:
 
 def xgafv(query: Mapping[str, str] | None) -> str | None:
     """The `$.xgafv` a request sent, or ``None``. Starlette's ``QueryParams.get`` answers the LAST
-    repeat, which is the one real reads."""
+    repeat, which is the one real reads -- and `$.xgafv` is the one system parameter that works
+    that way. Measured 2026-09-15 on Sheets: `1&2` carries no `errors[]` where `2&1` does, while
+    `callback`, `alt`, `fields` and `prettyPrint` each answer their FIRST repeat
+    (:func:`first_repeat`)."""
     return None if query is None else query.get(XGAFV)
 
 
-def validate_system_parameters(request: Request) -> None:
-    """Refuse a `$.xgafv` other than `1` or `2`, on a Google-family path, before the route runs.
+def first_repeat(query: Mapping[str, str] | None, name: str) -> str | None:
+    """The FIRST repeat of ``name``, which is the one real reads for the system parameters that are
+    not `$.xgafv`.
 
-    A router-level dependency, so it is the first thing a request meets: measured, real answers this
-    400 ahead of a bad token, a missing credential and an unparseable range. The batch endpoint is
-    not a family path and is left alone."""
+    Measured 2026-09-15 on Sheets and Drive, one pair per parameter: `callback=cb&callback=dd` is
+    called through `cb`, `alt=media&alt=json` answers the `media` refusal, `fields=range&fields=
+    bogus` answers a 200 carrying `range` where `bogus` first is a 400, and
+    `prettyPrint=false&prettyPrint=true` is compact. A second repeat is not even validated --
+    `callback=cb&callback=a b` answers the success through `cb`. ``QueryParams.get`` answers the
+    last, so reading one of these off it is wrong wherever a caller repeats it.
+
+    Read through here by `callback` and by `alt`, which :func:`jsonp_callback` needs to agree with
+    ``routers.google._sheets_respond`` on. The other parameters still come off ``QueryParams.get``
+    at their own read sites, which is right for some of them and wrong for the rest: measured the
+    same day, `majorDimension` and `includeGridData` really are read last, while `fields`,
+    `prettyPrint`, `pageSize`, `pageToken`, `q`, `orderBy` and `mimeType` are read first and are
+    not yet fixed here.
+    """
+    if query is None:
+        return None
+    getlist = getattr(query, "getlist", None)
+    if getlist is None:
+        return query.get(name)
+    values = getlist(name)
+    return values[0] if values else None
+
+
+ALT = "alt"
+CALLBACK = "callback"
+# The characters a JSONP callback name may be built from, quoted from the refusal real writes when
+# one is not: "only alphabet, number, '_', '$', '.', '[' and ']' are allowed." Measured character by
+# character on Sheets, sending `cb<CH>x` for each of the ASCII punctuation marks and for space, tab,
+# newline and `\u00e9`, and `a<ZWSP>b` besides: the seven classes that sentence names are accepted
+# and every character sent outside them is refused, so "alphabet" is ASCII letters and nothing
+# wider. Position does not matter -- `.cb`, `cb.`, `1bad` and `$` are all accepted, and a
+# 2,000-character name is as well.
+_CALLBACK_NAME = re.compile(r"[A-Za-z0-9_$.\[\]]+")
+
+
+def bad_jsonp_callback(name: str) -> GoogleError:
+    """A `callback` whose value cannot be a JavaScript name. Measured on Sheets, Drive and Gmail,
+    authenticated and anonymous: 400 INVALID_ARGUMENT with this sentence, and its `errors[]` entry
+    is ``badRequest`` under ``global`` -- so :func:`invalid_argument`, spelled out here only for the
+    message. The refusal still arrives WRAPPED, through the name it just refused."""
+    return invalid_argument(
+        f"Invalid JSONP callback name: '{name}'; only alphabet, number, '_', '$', '.', '[' and "
+        "']' are allowed."
+    )
+
+
+def alt_format(query: Mapping[str, str] | None) -> str:
+    """The format `alt` asks for, casefolded, with an absent or empty parameter answering ``""``.
+
+    `alt` is matched without regard to case and an empty `alt=` is no value at all. Measured
+    2026-09-17, anonymous on Sheets, Docs, Drive, Gmail and Slides and authenticated on Sheets:
+    `alt=JSON`, `alt=Json` and `alt=` each answer the 200 a bare request does, and each is wrapped
+    beside a `callback` exactly as `alt=json` is. Reading the value literally answered all three at
+    the error status, unwrapped.
+
+    The refusals split on the same measurement, which is why this returns the folded value and the
+    caller keeps the sent one: `alt=MEDIA` and `alt=Media` answer ``Unsupported alt type "media"``
+    with the format lowercased, while `alt=ZZZ` answers ``Invalid value "ZZZ"`` through the
+    spelling it received.
+    """
+    return (first_repeat(query, ALT) or "").casefold()
+
+
+def jsonp_callback(request: Request) -> str | None:
+    """The `callback` this request is answered through, or ``None`` for a plain JSON body.
+
+    The REQUEST, not its query alone, because the method decides too: JSONP is what a `<script>`
+    element fetches, and a `<script>` element issues a GET. Measured on Sheets, a `callback` on
+    `values:batchGetByDataFilter` and on `spreadsheets:getByDataFilter` is ignored outright -- no
+    wrap on a success, none on an error, and a name that a GET would be refused for is not even
+    looked at -- where the same POST honours `$.xgafv` and `prettyPrint`. So GET is the whole of
+    where this parameter applies.
+
+    Two values that look like a callback are not one either. An empty `callback=` is absent:
+    measured, it answers the plain body at the real status, success and error alike. So is any
+    `alt` NAMING A FORMAT other than `json` -- which spellings do name that format is
+    :func:`alt_format`'s half, and `JSON` and an empty `alt=` are among them. Measured on Sheets,
+    `alt=media`, `alt=proto` and `alt=zzz` each answer their own 400 unwrapped, even when
+    `callback` is itself unparseable, so an `alt` whose format the API cannot render takes the
+    request out of the JSONP path along with the JSON one.
+    That suppression is not Sheets' own: measured 2026-09-16, `alt=media` and `alt=zzz` beside a
+    `callback` answer unwrapped on Drive, Gmail, Docs and Slides too, which is why `alt` is read
+    for every family here rather than only where ``routers.google._sheets_respond`` refuses the
+    value. Refusing it is still Sheets-only, and the four families that accept a format they cannot
+    render where real answers a 400 are a gap of their own.
+
+    Which `alt` counts as JSON is :func:`alt_format`'s question, not this one's -- `alt=JSON` and
+    `alt=` are the JSON the default spells, and answering them unwrapped is the divergence that
+    reading the value literally here used to produce.
+
+    Both are read as :func:`first_repeat`, not off ``QueryParams.get``: real answers a repeated
+    `callback` through the first name and a repeated `alt` through the first format.
+    """
+    if request.method != "GET":
+        return None
+    query = request.query_params
+    alt = alt_format(query)
+    if alt and alt != "json":
+        return None
+    return first_repeat(query, CALLBACK) or None
+
+
+def validate_system_parameters(request: Request) -> None:
+    """Refuse a `$.xgafv` other than `1` or `2`, or a `callback` that cannot be a JavaScript name,
+    on a Google-family path, before the route runs.
+
+    A router-level dependency, so it is the first thing a request meets: measured, real answers the
+    `$.xgafv` 400 ahead of a bad token, a missing credential and an unparseable range, and the
+    `callback` 400 ahead of the same three and of a mistyped `fields` mask. `$.xgafv` goes first
+    because it beats `callback` too -- measured, `callback=a b&$.xgafv=9` answers the `$.xgafv`
+    sentence, wrapped through the very name the other check would have refused. The batch endpoint
+    is not a family path and is left alone.
+    """
     if family(request.url.path) is None:
         return
+    # That this ran at all is what :func:`rendered` needs to know, and only this call can say so:
+    # a ROUTER dependency runs once a route has matched, so an unrouted family path reaches the
+    # renderer with a `callback` nothing has looked at.
+    request.state.google_system_parameters_checked = True
     value = xgafv(request.query_params)
     if value is not None and value not in XGAFV_VALUES:
         raise bad_system_parameter(XGAFV, value)
+    callback = jsonp_callback(request)
+    if callback is not None and not _CALLBACK_NAME.fullmatch(callback):
+        raise bad_jsonp_callback(callback)
 
 
 def has_errors_array(fam: str, value: str | None) -> bool:
@@ -372,3 +500,160 @@ def validation_body(path: str, errors) -> None:
     """None: keep FastAPI's own 422 body. A bad parameter on a Google route is refused by the router
     with a :class:`GoogleError`, so FastAPI's validator is not the path that reports it."""
     return None
+
+
+# --- how a Google body reaches the wire ---------------------------------------------------------
+
+
+# The characters real's serializer writes as `\\uXXXX` rather than as themselves, beyond the ones
+# JSON requires of every serializer. Measured 2026-09-17 by sending each of the 1,112,063
+# codepoints a query string carries -- every one but the surrogates and U+0000, which the front end
+# hands back as the literal `%00` rather than decoding -- through the `alt` echo on Sheets in 1,013
+# requests, and reading which came back escaped. 209 do, and these are the 176 of them that
+# ``json.dumps`` leaves alone -- it writes the other 33 itself, U+0001-U+001F and the two
+# characters JSON reserves.
+#
+# The set cannot be written as a category test. It is the format category as Unicode 4.0 drew it:
+# U+17B4 and U+17B5 are in it though they have been Mn since 4.1, and U+061C, U+0604 and U+180E are
+# out of it though each is Cf today. The line and paragraph separators come with it. Everything
+# else stays as it is -- letters, emoji, NBSP, U+3000, `&` and `'` among them.
+_ALSO_ESCAPED = (
+    (0x003C, 0x003C),
+    (0x003E, 0x003E),
+    (0x007F, 0x009F),
+    (0x00AD, 0x00AD),
+    (0x0600, 0x0603),
+    (0x06DD, 0x06DD),
+    (0x070F, 0x070F),
+    (0x17B4, 0x17B5),
+    (0x200B, 0x200F),
+    (0x2028, 0x202E),
+    (0x2060, 0x2064),
+    (0x206A, 0x206F),
+    (0xFEFF, 0xFEFF),
+    (0xFFF9, 0xFFFB),
+    (0x1D173, 0x1D17A),
+    (0xE0001, 0xE0001),
+    (0xE0020, 0xE007F),
+)
+
+_ALSO_ESCAPED_RE = re.compile(
+    "[%s]" % "".join(f"{chr(lo)}-{chr(hi)}" if lo != hi else chr(lo) for lo, hi in _ALSO_ESCAPED)
+)
+
+
+def _escape(match: "re.Match[str]") -> str:
+    """One character as the `\\uXXXX` real writes, in the surrogate pair it writes above the BMP."""
+    cp = ord(match.group())
+    if cp <= 0xFFFF:
+        return "\\u%04x" % cp
+    cp -= 0x10000
+    return "\\u%04x\\u%04x" % (0xD800 + (cp >> 10), 0xDC00 + (cp & 0x3FF))
+
+
+def _escaped(text: str) -> str:
+    """Serialized JSON with the characters real escapes and ``json.dumps`` does not.
+
+    ``json.dumps`` already writes U+0000-U+001F, `"` and `\\` the way real does, down to the short
+    forms -- measured, a value carrying U+0008 through U+000D comes back as `\\b\\t\\n\\u000b\\f\\r`,
+    which is Python's spelling exactly. What it leaves raw and real does not is :data:`_ALSO_ESCAPED`.
+
+    Applied to the serialized text rather than to the values inside it, which is safe for exactly
+    this set: none of these characters is part of JSON's grammar, so every one of them the text
+    holds is already inside a string. U+0000-U+001F could not be handled here for that reason --
+    the newlines an indented body is laid out with are the same character.
+
+    It reaches the plain body as much as the wrapped one and a success as much as an error:
+    measured, a Sheets cell holding ``<b>&'x`` comes back with the brackets escaped and `&`, `'`
+    and the letters raw, and an error echoing an unparseable range spelled the same way matches it.
+    So this is the serializer's rule, not the JSONP path's.
+    """
+    return _ALSO_ESCAPED_RE.sub(_escape, text)
+
+
+def _escaped_name(name: str) -> str:
+    """A callback name the way real writes it into ``// API callback\\n<name>(``.
+
+    The wrapper needs more of the rule than the body does: a name is not serialized JSON, so
+    nothing has escaped its quotes, backslashes and C0 controls yet. ``json.dumps`` does that half
+    -- measured, `cb<TAB>x` is called through `cb\\tx` and `cb<BACKSLASH>x` through `cb\\\\x` --
+    and :func:`_escaped` does the rest.
+
+    Real refuses every one of these names, since the character set it accepts is ASCII letters,
+    digits and ``_$.[]``. The refusal still arrives wrapped, through the very name it refuses, so
+    the escaping is what the client reads.
+    """
+    return _escaped(json.dumps(name, ensure_ascii=False)[1:-1])
+
+
+def respond(
+    body: dict,
+    *,
+    compact: bool = False,
+    callback: str | None = None,
+    status_code: int = 200,
+    headers: Mapping[str, str] | None = None,
+) -> Response:
+    """One Google body on the wire, rendered the way real renders it.
+
+    Measured to the byte: compact puts no space after `:` or `,` and ends without a newline, while
+    the indented form is two spaces deep and DOES end with one, and the plain type names a charset.
+
+    A `callback` makes the answer a script rather than a body: measured across Sheets, Docs, Drive,
+    Gmail and Slides, authenticated and anonymous, a 400, a 401, a 403 and a 404 each came back
+    **200** with `text/javascript; charset=UTF-8` and the body inside ``// API callback\\ncb(…);``.
+    The status the caller would have seen survives only inside `error.code`, which is the point of
+    JSONP: a browser loading the answer through a `<script>` element can read neither a status nor
+    a body that did not arrive as JavaScript.
+    """
+    text = _escaped(
+        json.dumps(body, ensure_ascii=False, separators=(",", ":"))
+        if compact
+        else json.dumps(body, ensure_ascii=False, indent=2) + "\n"
+    )
+    if callback is None:
+        return Response(
+            text,
+            status_code=status_code,
+            media_type="application/json; charset=UTF-8",
+            headers=headers,
+        )
+    return Response(
+        f"// API callback\n{_escaped_name(callback)}({text});",
+        status_code=200,
+        media_type="text/javascript; charset=UTF-8",
+        headers=headers,
+    )
+
+
+def rendered(
+    request: Request,
+    status_code: int,
+    body: dict,
+    headers: Mapping[str, str] | None = None,
+) -> Response:
+    """The whole response for a Google error, which real renders exactly as it renders a success.
+
+    Indented whatever `prettyPrint` says -- measured on Sheets, Docs, Drive, Gmail and Slides, an
+    error came back two-space indented with no parameter, with `prettyPrint=false` and with
+    `prettyPrint=true` alike, where a success under `prettyPrint=false` is compact. So the
+    parameter reaches the success path only (``routers.google._sheets_respond``) and nothing here
+    reads it.
+
+    Wrapped only where ``validate_system_parameters`` ran, which is where a route matched. That is a
+    ROUTER dependency, so a family path with NO route -- `/sheets/v4/nope` -- reaches this having
+    been refused nothing, and `callback=a b` there would be answered by calling `a b`. Real answers
+    such a path from its front end as HTML, measured 2026-09-16 with a `callback` and without: 400
+    on Sheets, Docs and Slides, 404 on Drive and Gmail. So JSONP is not its shape there under any
+    name, and the plain body is the nearer of the two answers Backlot can give.
+
+    Where the check DID run the name needs no second look, and the body being wrapped may BE its
+    refusal -- that is real's own answer, measured the same day: `callback=evil);alert(1);//` on a
+    Sheets read comes back 200 calling that very name, escaped the way :func:`_escaped_name`
+    escapes one.
+
+    It takes the whole request because :func:`jsonp_callback` reads the method as well as the query.
+    """
+    checked = getattr(request.state, "google_system_parameters_checked", False)
+    callback = jsonp_callback(request) if checked else None
+    return respond(body, callback=callback, status_code=status_code, headers=headers)

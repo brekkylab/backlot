@@ -172,8 +172,7 @@ def _caller_or_error(request: Request) -> tuple[Caller | None, dict | None]:
 
     A resolved token whose person a roster marks ``deactivated: true`` answers Slack's own
     ``account_inactive`` ("Authentication token is for a deleted user or workspace") rather than
-    the caller it would otherwise resolve to — the token is kept in `tokens.yaml` (not dropped),
-    so this is the one place that refusal is drawn.
+    the caller it would otherwise resolve to; this is the one place that refusal is drawn.
     """
     token = auth.slack_token(request)
     caller = auth.acl(request).resolve(token)

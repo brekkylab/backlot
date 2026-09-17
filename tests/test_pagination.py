@@ -233,11 +233,14 @@ def test_confluence_space_links():
     assert pg.confluence_space_links(path, 1, 25, 2, 3) == {
         "prev": f"{path}?prev=true&limit=1&start=0"
     }
-    # a full page in the middle carries both
-    assert pg.confluence_space_links(path, 2, 2, 1, 5) == {
+    # a full page in the middle carries both — `next` inserted first, matching real's alphabetical
+    # `_links` order (`next` < `prev`); a `==` on the dict alone would not catch it reverting.
+    both = pg.confluence_space_links(path, 2, 2, 1, 5)
+    assert both == {
         "prev": f"{path}?prev=true&limit=2&start=0",
         "next": f"{path}?next=true&limit=2&start=3",
     }
+    assert list(both) == ["next", "prev"]
     # `?limit=0`: an empty page, but `next` still answers — real does not special-case `size == 0`
     assert pg.confluence_space_links(path, 0, 0, 0, 3) == {
         "next": f"{path}?next=true&limit=0&start=0"

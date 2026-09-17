@@ -440,19 +440,21 @@ def confluence_space_links(path: str, start: int, limit: int, size: int, total: 
     actually skipped, not the requested page size. And `next` is answered even where `size` is
     0 (`?limit=0`, an empty page rather than a refusal): real does not take this module's
     `size == 0` shortcut either, and a caller sending `limit=0` gets the same link back forever,
-    which is what it asked for.
+    which is what it asked for. `next` is built ahead of `prev` here because real emits `_links`
+    alphabetically and a caller reading key order sees `next` first.
 
-    NOT measured for a request carrying anything else: real also carries every other query
-    parameter into `next`/`prev`, sorted alongside `limit`/`start` rather than appended after them
-    (`?limit=1&expand=description` answers `next=…&expand=description&limit=1&start=1`, `expand`
-    ahead of `limit`), which this function does not reproduce because `space` accepts no other
-    parameter yet — there is nothing on this side to carry.
+    Not reproduced: a request carrying anything other than `limit`/`start`. Real carries every other
+    query parameter into `next`/`prev` too, sorted alongside `limit`/`start` rather than appended
+    after them, and not always after the marker — `?limit=1&expand=description` answers `next` of
+    `next=true&expand=description&limit=1&start=1` but, once `start` also lands the caller on a
+    `prev`, that link is `expand=description&prev=true&limit=1&start=0`, `expand` ahead of the marker
+    itself. `space` accepts no other parameter today, so there is nothing on this side to carry.
     """
     links = {}
-    if start > 0:
-        prev_start = max(0, start - limit)
-        links["prev"] = f"{path}?prev=true&limit={start - prev_start}&start={prev_start}"
     nxt = start + size
     if nxt < total:
         links["next"] = f"{path}?next=true&limit={limit}&start={nxt}"
+    if start > 0:
+        prev_start = max(0, start - limit)
+        links["prev"] = f"{path}?prev=true&limit={start - prev_start}&start={prev_start}"
     return links

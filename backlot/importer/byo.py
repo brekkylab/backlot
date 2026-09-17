@@ -306,20 +306,33 @@ def _thread_seconds(where, root_sec, replies):
     return out
 
 
-def _check_edited_ts(where, edited, created_sec):
-    """An `edited.ts` checked against its OWN message's `created`, before any row is written.
+def _check_edited(where, edited, created_sec, author):
+    """An `edited` block checked against its OWN message, before any row is written.
 
-    Beyond what the schema states: real Slack's edit time is always later than the message it
-    edited, so one at or before `created` is not an edit history a corpus author could have
-    observed.
+    Two rules the schema cannot state, because each reads a second field of the same record:
+
+    `edited.user` is the message's own author. `chat.update` is the only way a message acquires
+    an `edited` block, and it answers anything else `cant_update_message`: "Only messages posted
+    by the authenticated user are able to be updated using this method." Slack's own message-event
+    example carries the rule in its values — `user` and `edited.user` are both `U123ABC456`.
+
+    `edited.ts` names a LATER SECOND than `created`. The served `ts` takes its six-digit fraction
+    from a hash of the message (`synth.slack_fmt_ts`), so a corpus author writing `edited.ts` has
+    no way to tell whether a fraction inside the message's own second lands before or after it;
+    only a later second is ordered after the message from outside.
     """
     if not edited:
         return
-    ts = edited["ts"]
-    sec = _epoch(ts)
-    if sec is None or sec <= created_sec:
+    if author and edited["user"] != author:
         raise SystemExit(
-            f"{where}: edited.ts must be after this message's own created "
+            f"{where}: edited.user must be this message's own author "
+            f"(got {edited['user']!r}, authored by {author!r}) — real Slack only lets the "
+            f"author edit, and answers anyone else cant_update_message"
+        )
+    ts = edited["ts"]
+    if _epoch_field(ts, where, "edited.ts") <= created_sec:
+        raise SystemExit(
+            f"{where}: edited.ts must name a later second than this message's own created "
             f"(got {ts!r}, created at {created_sec})"
         )
 
@@ -2011,7 +2024,7 @@ class _Loader:
         created = _epoch_field(rec["created"], where, "created")
         updated = _epoch_field(rec.get("updated"), where, "updated")
         if src == "slack":
-            _check_edited_ts(where, rec.get("edited"), created)
+            _check_edited(where, rec.get("edited"), created, author)
 
         replies = rec.get("replies") if src == "slack" else None
         # The ROOT's `ts`, which is what a reply stores as its `thread_ts` — and it is not known
@@ -2530,7 +2543,7 @@ class _Loader:
             # Its second was resolved with the rest of the thread's in `_thread_seconds`,
             # which is where the ordering rule and its refusals live.
             rep_cts = reply_seconds[i - 1]
-            _check_edited_ts(f"{where}: reply {i}", rep.get("edited"), rep_cts)
+            _check_edited(f"{where}: reply {i}", rep.get("edited"), rep_cts, rep_author)
             insert(
                 rep_id,
                 rep_author,

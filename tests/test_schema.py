@@ -791,56 +791,68 @@ def test_slack_reaction_refuses_the_same_person_twice():
     ]
 
 
-def test_slack_edited_refuses_the_id_a_corpus_cannot_know():
+def _edited_record(edited, *, on: str) -> tuple[dict, str]:
+    """The same `edited` block on a root and on a reply, with the error path each answers under.
+
+    `backlot/schemas/` carries no `$ref`, so a reply's `edited` block is a hand-kept copy of the
+    root's. Every rule is asserted on both, since a test is the only thing that notices when the
+    two copies drift apart.
+    """
+    if on == "root":
+        return complete("slack", content="c", edited=edited), "edited"
+    reply = {
+        "content": "on it",
+        "author_email": "ava@x.com",
+        "created": "2026-03-01T09:00:01Z",
+        "edited": edited,
+    }
+    return complete("slack", content="c", replies=[reply]), "replies/0/edited"
+
+
+@pytest.mark.parametrize("on", ["root", "reply"])
+def test_slack_edited_refuses_the_id_a_corpus_cannot_know(on):
     """Slack's own message event reference types `edited.user` as a user id (`defs_user_id`,
     `^[UW][A-Z0-9]{2,}$`) — the same value `_reactions` already refuses in `reactions.users`, for
     the same reason: a corpus author has no way to compute it. A record names the editor by
     address instead, and the old spelling is REFUSED rather than read as an address that resolves
     to nobody.
     """
-    old = complete("slack", content="c", edited={"user": "UC20FA2B1C0", "ts": "1770311280.000000"})
-    assert record_errors(old) == ["<root> [edited/user]: 'UC20FA2B1C0' is not a 'email'"]
-
-    reply = {
-        "content": "on it",
-        "author_email": "ava@x.com",
-        "created": "2026-03-01T09:00:01Z",
-        "edited": {"user": "UC20FA2B1C0", "ts": "1770311280.000000"},
-    }
-    assert record_errors(complete("slack", content="c", replies=[reply])) == [
-        "<root> [replies/0/edited/user]: 'UC20FA2B1C0' is not a 'email'"
-    ]
+    rec, at = _edited_record({"user": "UC20FA2B1C0", "ts": "1770311280.000000"}, on=on)
+    assert record_errors(rec) == [f"<root> [{at}/user]: 'UC20FA2B1C0' is not a 'email'"]
 
 
-def test_slack_edited_needs_the_timestamp_too():
+@pytest.mark.parametrize("on", ["root", "reply"])
+def test_slack_edited_needs_the_timestamp_too(on):
     """`{user}` alone is not `edited`: Slack's own reference names both the editor and when, and a
     record missing either states less than the vendor ever would."""
-    assert record_errors(complete("slack", content="c", edited={"user": "ava@x.com"})) == [
-        "<root> [edited]: 'ts' is a required property"
-    ]
-    assert record_errors(complete("slack", content="c", edited={"ts": "1770311280.000000"})) == [
-        "<root> [edited]: 'user' is a required property"
-    ]
+    no_ts, at = _edited_record({"user": "ava@x.com"}, on=on)
+    assert record_errors(no_ts) == [f"<root> [{at}]: 'ts' is a required property"]
+    no_user, _ = _edited_record({"ts": "1770311280.000000"}, on=on)
+    assert record_errors(no_user) == [f"<root> [{at}]: 'user' is a required property"]
 
 
-def test_slack_edited_ts_refuses_a_bare_number():
+@pytest.mark.parametrize("on", ["root", "reply"])
+def test_slack_edited_ts_refuses_a_bare_number(on):
     """Every live `ts` this project has read off `brekkylab.slack.com` is a quoted string in
     Slack's own `defs_ts` shape (`^\\d{10}\\.\\d{6}$`), never a bare JSON number — so a corpus
     stating one would have Backlot serve a shape real Slack never sends."""
-    assert record_errors(
-        complete("slack", content="c", edited={"user": "ava@x.com", "ts": 1770311280})
-    ) == ["<root> [edited/ts]: 1770311280 is not of type 'string'"]
-    assert record_errors(
-        complete("slack", content="c", edited={"user": "ava@x.com", "ts": "1770311280.0"})
-    ) == ["<root> [edited/ts]: '1770311280.0' does not match '^\\\\d{10}\\\\.\\\\d{6}$'"]
+    number, at = _edited_record({"user": "ava@x.com", "ts": 1770311280}, on=on)
+    assert record_errors(number) == [f"<root> [{at}/ts]: 1770311280 is not of type 'string'"]
+    short, _ = _edited_record({"user": "ava@x.com", "ts": "1770311280.0"}, on=on)
+    assert record_errors(short) == [
+        f"<root> [{at}/ts]: '1770311280.0' does not match '^\\\\d{{10}}\\\\.\\\\d{{6}}$'"
+    ]
 
 
-def test_slack_edited_refuses_an_unknown_key():
+@pytest.mark.parametrize("on", ["root", "reply"])
+def test_slack_edited_refuses_an_unknown_key(on):
     """An extra or misspelled key states more than Slack's own shape allows, so it is caught at
     import rather than served unread."""
-    bad = {"user": "ava@x.com", "ts": "1770311280.000000", "by": "ava@x.com"}
-    assert record_errors(complete("slack", content="c", edited=bad)) == [
-        "<root> [edited]: Additional properties are not allowed ('by' was unexpected)"
+    rec, at = _edited_record(
+        {"user": "ava@x.com", "ts": "1770311280.000000", "by": "ava@x.com"}, on=on
+    )
+    assert record_errors(rec) == [
+        f"<root> [{at}]: Additional properties are not allowed ('by' was unexpected)"
     ]
 
 

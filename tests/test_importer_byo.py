@@ -590,14 +590,14 @@ def test_byo_slack_reply_clock_must_be_readable(tmp_path, bad):
 @pytest.mark.parametrize(
     "edited_ts",
     [
-        f"{_epoch('2026-05-01T02:00:00Z')}.000000",  # same second as created
-        f"{_epoch('2026-05-01T01:00:00Z')}.000000",  # before created
+        f"{_epoch('2026-05-01T02:00:00Z')}.999999",  # the message's own second, latest fraction
+        f"{_epoch('2026-05-01T01:00:00Z')}.000000",  # an earlier second
     ],
 )
-def test_byo_slack_root_edited_ts_must_be_after_created(tmp_path, edited_ts):
-    """Real Slack's `edited.ts` is always later than the message it edited. Refused at import
-    whether it names the same second (indistinguishable from the message's own clock) or an
-    earlier one, since neither is an edit history real Slack could emit."""
+def test_byo_slack_root_edited_ts_must_name_a_later_second_than_created(tmp_path, edited_ts):
+    """Real Slack's `edited.ts` is always later than the message it edited, and only a later
+    SECOND is later from outside: the served `ts` takes its six-digit fraction from a hash, so a
+    fraction inside the message's own second is a value the corpus cannot order against it."""
     corpus = _write(
         tmp_path,
         [
@@ -607,18 +607,18 @@ def test_byo_slack_root_edited_ts_must_be_after_created(tmp_path, edited_ts):
                 "channel": "incidents",
                 "author_email": "bob@a.com",
                 "created": "2026-05-01T02:00:00Z",
-                "edited": {"user": "ava@a.com", "ts": edited_ts},
+                "edited": {"user": "bob@a.com", "ts": edited_ts},
             }
         ],
     )
-    with pytest.raises(SystemExit, match="edited.ts must be after this message's own created"):
+    with pytest.raises(SystemExit, match="edited.ts must name a later second than"):
         load(corpus, Settings(data_dir=tmp_path))
 
 
-def test_byo_slack_reply_edited_ts_must_be_after_its_own_created(tmp_path):
+def test_byo_slack_reply_edited_ts_is_checked_against_its_own_created(tmp_path):
     """A reply's `edited.ts` is checked against ITS OWN `created`, not the root's: a reply an hour
-    into the thread may be edited a minute later, which is after the reply but still well before a
-    check against the root's clock would refuse."""
+    into the thread edited half an hour before itself is refused, even though that second is well
+    after the root's and a check against the root's clock would let it through."""
     corpus = _write(
         tmp_path,
         [
@@ -642,7 +642,40 @@ def test_byo_slack_reply_edited_ts_must_be_after_its_own_created(tmp_path):
             }
         ],
     )
-    with pytest.raises(SystemExit, match=r"reply 1: edited\.ts must be after"):
+    with pytest.raises(SystemExit, match=r"reply 1: edited\.ts must name a later second"):
+        load(corpus, Settings(data_dir=tmp_path))
+
+
+@pytest.mark.parametrize("on", ["root", "reply"])
+def test_byo_slack_edited_user_must_be_the_messages_own_author(tmp_path, on):
+    """`chat.update` is the only way a message acquires an `edited` block, and it answers anyone
+    but the author `cant_update_message` — "Only messages posted by the authenticated user are
+    able to be updated using this method". An editor who is not the author is a message real Slack
+    cannot produce, and Backlot would serve it as an id resolving to nobody. Not the answer
+    `reactions` reaches for its own address list: `reactions.add` works for anyone, so a reactor
+    who is not the author IS a state real Slack holds.
+    """
+    root = {
+        "source_type": "slack",
+        "content": "root",
+        "channel": "incidents",
+        "author_email": "bob@a.com",
+        "created": "2026-05-01T02:00:00Z",
+    }
+    edited = {"user": "mallory@a.com", "ts": f"{_epoch('2026-05-01T03:00:00Z')}.000000"}
+    if on == "root":
+        root["edited"] = edited
+    else:
+        root["replies"] = [
+            {
+                "content": "on it",
+                "author_email": "ava@a.com",
+                "created": "2026-05-01T02:30:00Z",
+                "edited": edited,
+            }
+        ]
+    corpus = _write(tmp_path, [root])
+    with pytest.raises(SystemExit, match="edited.user must be this message's own author"):
         load(corpus, Settings(data_dir=tmp_path))
 
 

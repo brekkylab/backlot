@@ -19,8 +19,9 @@ A module in ``_ENVELOPES`` provides:
 - ``method_not_allowed(path, method)``, optional — the vendor's own 405, as an exception carrying
   its body, media type and headers. The router raises a 405 before any vendor code runs, so a
   vendor whose 405 differs from the shape its other refusals take says so here. Atlassian is the
-  one that implements it, because its two products answer a wrong method differently from each
-  other and from the envelope they share. A vendor without it keeps the shared envelope.
+  one that implements it; what its two products answer is in
+  :func:`backlot.errors.atlassian.method_not_allowed`. A vendor without it keeps the shared
+  envelope.
 - ``json_media_type(path, status_code)``, optional — the `content-type` the vendor puts on a JSON
   body answered at that path with that status, when it is measured to differ from FastAPI's bare
   `application/json`. GitHub is the one that implements it; a vendor without it keeps the default,

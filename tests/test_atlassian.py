@@ -1684,10 +1684,9 @@ def test_jira_search_still_pages_on_a_token_it_issued(client, admin_h):
 def test_confluence_refuses_a_wrong_method_with_springs_errors_list_and_no_allow(
     client, admin_h, method, path
 ):
-    """Measured on brekkylab.atlassian.net, 2026-09-16, on both requests below: `errors` is a LIST
-    of one object, the title is the Spring exception's own `toString` naming the method that
-    arrived, and no `Allow` header comes back at all. The shared Atlassian envelope has `errors` as
-    an OBJECT, so a client reading `errors[0]["code"]` is what this splits."""
+    """Both requests measured on brekkylab.atlassian.net, 2026-09-16. The shape and what it costs a
+    client are in ``errors.atlassian.method_not_allowed``; this holds it on the wire, including the
+    title naming the method that arrived."""
     key = client.get("/atlassian/wiki/rest/api/space", headers=admin_h).json()["results"][0]["key"]
     r = getattr(client, method)(f"/atlassian{path}".format(key=key), headers=admin_h)
     assert r.status_code == 405, r.text

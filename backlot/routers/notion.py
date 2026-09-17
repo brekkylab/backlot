@@ -51,6 +51,18 @@ _PAGE_MAX = 100  # Notion caps page_size at 100
 # Notion names a version for its release date and lists them in that order, which is what makes
 # ``_data_sources_model`` a date comparison ("Changes by version", read 2026-09-15).
 DATA_SOURCES_VERSION = "2025-09-03"
+# Every version Notion publishes, oldest first. Not a list off the document -- "Changes by
+# version" omits 2021-05-11 -- but the enumeration the API itself answers an unrecognised version
+# with, read off that refusal on 2026-09-17.
+PUBLISHED_VERSIONS = (
+    "2021-05-11",
+    "2021-05-13",
+    "2021-08-16",
+    "2022-02-22",
+    "2022-06-28",
+    "2025-09-03",
+    "2026-03-11",
+)
 
 
 # --- OpenAPI enrichment --------------------------------------------------
@@ -112,23 +124,23 @@ def _version_param(description: str) -> dict:
     path. What that pass buys -- a route added later cannot forget the parameter -- a sweep over
     the router buys instead (``tests/test_notion.py``).
 
-    The schema stays a plain string where the vendor's names an enum of one value, its current
-    version. Copying that would put the versions the legacy query path serves outside what a
-    generated client may send, leaving a tool for a route Backlot answers that an agent could
-    never call -- and this router refuses no version string, so a declaration narrower than the
-    route accepts would be a claim it does not keep."""
+    The schema enumerates the seven versions Notion publishes, which is the set the route accepts
+    (see ``_refusal``) -- not the vendor's own enum, which names its current version alone and
+    would put the versions the legacy query path serves outside what a generated client may
+    send."""
     return {
         "name": "Notion-Version",
         "in": "header",
         "required": True,
-        "schema": {"type": "string"},
+        "schema": {"type": "string", "enum": list(PUBLISHED_VERSIONS)},
         "description": description,
     }
 
 
 _P_VERSION = _version_param(
-    "The API version to read this request under. Notion requires it on every request and refuses "
-    "one that omits it. `2025-09-03` and later read a database's rows through "
+    "The API version to read this request under. Notion requires it on every request, and refuses "
+    "a request that omits it or names a version it does not publish. `2025-09-03` and later read "
+    "a database's rows through "
     "`data_sources/{id}/query`; the versions before it read them through `databases/{id}/query`, "
     "and see a database's schema inline instead of a `data_sources` array."
 )
@@ -186,9 +198,20 @@ def _data_sources_model(version: str) -> bool:
     legacy version a client happens to send: 2022-02-22 has no more idea what a data source is
     than 2022-06-28 does.
 
-    A value that is not one of Notion's dated versions sorts by its own text and is not refused --
-    what real Notion answers a version string it does not publish is not measured here."""
+    A value Notion does not publish never reaches this comparison -- ``_refusal`` answers it
+    ``missing_version``, as api.notion.com does (measured 2026-09-17), so the ordering here is
+    total over the seven versions Notion publishes."""
     return version >= DATA_SOURCES_VERSION
+
+
+def _unknown_version(value: str) -> str:
+    """Notion's refusal for a version it does not publish: the enumeration, then the value it was
+    handed, both quoted the way the live API quotes them (measured 2026-09-17)."""
+    listed = ", ".join(f'`"{v}"`' for v in PUBLISHED_VERSIONS[:-1])
+    return (
+        f"Notion-Version header failed validation: Notion-Version header should be {listed}, "
+        f'or `"{PUBLISHED_VERSIONS[-1]}"`, instead was `"{value}"`.'
+    )
 
 
 def _refusal(request: Request, caller) -> JSONResponse | None:
@@ -202,25 +225,29 @@ def _refusal(request: Request, caller) -> JSONResponse | None:
     paths under 2022-06-28, under 2025-09-03 and with no version header at all, so the version is
     never what a request without a usable credential hears about.
 
-    Then the version, which Notion requires on every request -- "The Notion-Version header must be
-    included in all REST API requests" (Versioning, read 2026-09-15), answered ``missing_version``
-    when it is absent (status codes, same day). On the two query paths that refusal is measured:
-    #189 sent a version-less request to each on 2026-09-11 with an integration token and both
-    answered 400 ``missing_version``. The other ten routes rest on the document instead -- the
-    check sits behind a credential that resolves, and no Notion token was available here to put in
-    front of it. The message is what the live API answers, measured on 2026-09-17: the example
-    Notion's status-code table prints for the code is the same sentence with the last word
-    unquoted, so the table is a pair of backticks short of the service. An empty header value is
-    taken as none sent."""
+    Then the version, which Notion requires on every request and refuses when it is one Notion
+    does not publish. Both halves answer ``missing_version``, and each has its own message:
+    measured against api.notion.com on 2026-09-17 with an integration token, a version-less
+    request is refused on twelve routes out of twelve, and ``banana``, ``2024-01-01`` and
+    ``2099-01-01`` are each answered with the enumeration of the seven versions it does publish.
+    The absent-header message is a pair of backticks wider than the example Notion's status-code
+    table prints for the code, so the table is stale against the service there.
+
+    An empty header value is a value rather than a missing one, and real answers it the
+    enumerating way -- so it is refused here too, which is what keeps it from sorting below
+    2025-09-03 and quietly picking the legacy model for a caller that named nothing."""
     if caller is None:
         return _error(401, "unauthorized", "API token is invalid.")
-    if not request.headers.get("notion-version"):
+    version = request.headers.get("notion-version")
+    if version is None:
         return _error(
             400,
             "missing_version",
             "Notion-Version header failed validation: Notion-Version header should be defined, "
             "instead was `undefined`.",
         )
+    if version not in PUBLISHED_VERSIONS:
+        return _error(400, "missing_version", _unknown_version(version))
     return None
 
 

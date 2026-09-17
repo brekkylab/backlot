@@ -274,8 +274,9 @@ compiled into SQL, and full introspection.
 
 ### Notion — `/notion/v1`
 
-Every route requires a `Notion-Version` header and answers `missing_version` without one, as the
-real API does; the value picks the database model, which is what the notes below name.
+Every route requires a `Notion-Version` header and answers `missing_version` without one — or
+with a version Notion does not publish — as the real API does; the value picks the database model,
+which is what the notes below name.
 
 | Endpoint | Notes |
 |---|---|
@@ -285,7 +286,7 @@ real API does; the value picks the database model, which is what the notes below
 | `blocks/{id}/children` | |
 | `databases/{id}` | Version-aware: `data_sources` from `2025-09-03`, inline `properties` before it |
 | `POST databases/{id}/query` | Versions before `2025-09-03` only |
-| `data_sources/{id}` | |
+| `data_sources/{id}` | `2025-09-03` and later only |
 | `POST data_sources/{id}/query` | `2025-09-03` and later only |
 | `users[/{id}]` | |
 | `users/me` | |

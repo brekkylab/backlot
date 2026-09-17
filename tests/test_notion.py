@@ -11,7 +11,7 @@ import re
 import pytest
 
 from backlot import store, synth
-from backlot.routers.notion import DATA_SOURCES_VERSION
+from backlot.routers.notion import DATA_SOURCES_VERSION, PUBLISHED_VERSIONS
 from backlot.routers.notion import router as notion_router
 from tests._helpers import served_id, tiny_corpus, tok
 
@@ -204,11 +204,47 @@ def test_notion_every_route_requires_the_version_header(client, admin_h, notion_
     url = f"/notion/v1/data_sources/{synth.notion_id('nt-runbook')}"
     assert client.get(url, headers=admin_h).json()["code"] == "missing_version"
     assert client.get(url, headers=notion_h).json()["code"] == "object_not_found"
-    # A header with an empty value carries no version, so it is answered as none sent rather than
-    # read as a version string -- which would sort below 2025-09-03 and quietly pick the legacy
-    # model for a caller that named nothing.
+    # An empty header carries a value rather than no header, and real answers it by enumerating
+    # what it publishes rather than with the `undefined` sentence (measured 2026-09-17). Either
+    # way it is refused, which is what keeps it from sorting below 2025-09-03 and quietly picking
+    # the legacy model for a caller that named nothing.
     empty = client.get(url, headers={**admin_h, "Notion-Version": ""})
     assert empty.status_code == 400 and empty.json()["code"] == "missing_version"
+    assert empty.json()["message"].endswith('instead was `""`.')
+
+
+def test_notion_refuses_a_version_it_does_not_publish(client, admin_h):
+    """A version Notion does not publish is refused rather than sorted: `2024-01-01` would fall
+    below the 2025-09-03 cut and hand a client the legacy database model for a version that never
+    existed. Measured against api.notion.com on 2026-09-17 with an integration token -- `banana`,
+    `2024-01-01` and `2099-01-01` are each answered 400 `missing_version` with the enumeration of
+    the seven versions it publishes, and that refusal is where this list of seven comes from.
+    Swept off the router, so a route added later is held to it too."""
+    message = (
+        "Notion-Version header failed validation: Notion-Version header should be "
+        '`"2021-05-11"`, `"2021-05-13"`, `"2021-08-16"`, `"2022-02-22"`, `"2022-06-28"`, '
+        '`"2025-09-03"`, or `"2026-03-11"`, instead was `"2024-01-01"`.'
+    )
+    for method, url in _notion_routes():
+        r = client.request(
+            method,
+            url,
+            headers={**admin_h, "Notion-Version": "2024-01-01"},
+            json={} if method == "POST" else None,
+        )
+        assert r.status_code == 400, (method, url)
+        assert r.json() == {
+            "object": "error",
+            "status": 400,
+            "code": "missing_version",
+            "message": message,
+        }, (method, url)
+    # The seven pass, so what is refused above is the value and not the check: each reads a page,
+    # a route every version mounts.
+    page = f"/notion/v1/pages/{synth.notion_id('nt-runbook')}"
+    for version in PUBLISHED_VERSIONS:
+        r = client.get(page, headers={**admin_h, "Notion-Version": version})
+        assert r.status_code == 200, version
 
 
 def test_notion_credential_is_checked_before_the_version(client):
@@ -273,11 +309,12 @@ def test_notion_search_documents_body_param(client):
     assert "query" in props and "filter" in props
 
 
-def test_notion_every_route_declares_the_version_header(client):
+def test_notion_every_route_declares_the_version_header_it_enforces(client):
     """A route that requires the header has to declare it: the spec is the whole of what a
     generated client knows, and `backlot mcp` builds its tools off this one while its bridge sends
     no version of its own (see `tests/test_mcp.py`), so an undeclared requirement would hand an
-    agent tools it could not call."""
+    agent tools it could not call. Declared as the seven versions the route accepts rather than as
+    a string, so a generated client is handed the set the route keeps."""
     paths = client.get("/openapi.json").json()["paths"]
     ops = [
         (method, path, op)
@@ -290,6 +327,10 @@ def test_notion_every_route_declares_the_version_header(client):
         version = [p for p in op.get("parameters", []) if p["name"] == "Notion-Version"]
         assert len(version) == 1, (method, path)
         assert version[0]["in"] == "header" and version[0]["required"] is True, (method, path)
+        assert version[0]["schema"] == {
+            "type": "string",
+            "enum": list(PUBLISHED_VERSIONS),
+        }, (method, path)
 
 
 def test_notion_query_routes_name_the_versions_they_serve(client):

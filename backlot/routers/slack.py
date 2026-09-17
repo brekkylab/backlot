@@ -317,9 +317,12 @@ def _user_obj(conn, email: str) -> dict:
     parts = display.split()
     updated = synth.epoch("user:" + email)
     is_bot = not u and email.split("@")[0].endswith("bot")  # display-only "*bot" speakers
-    # A roster entry's `deactivated: true`. Measured against a live workspace on 2026-09-17:
-    # a deactivated member's users.list/.info carries "is_forgotten": true beside "deleted": true;
-    # an active member carries neither key at all, not "is_forgotten": false.
+    # A roster entry's `deactivated: true`. Measured against a live workspace on 2026-09-17: a
+    # deactivated member's users.list/.info answers "deleted": true 9-for-9. `is_forgotten` (an
+    # undocumented key, present true or absent, never false) does NOT track `deleted` — of the
+    # same 9, 5 carried it and 4 did not, with no signal in either the roster or the corpus a BYO
+    # import carries that predicts which. Serving it for every deactivated person would be wrong
+    # 4 times in 9, so it stays unserved: an acknowledged gap, not a value this models.
     deactivated = bool(u) and store.slack_is_deactivated(conn, email)
     obj = {
         "id": synth.slack_user_id(email),
@@ -356,8 +359,6 @@ def _user_obj(conn, email: str) -> dict:
             "avatar_hash": synth._digest(email)[:12],
         },
     }
-    if deactivated:
-        obj["is_forgotten"] = True
     return obj
 
 

@@ -1451,11 +1451,12 @@ def test_slack_reaction_ids_and_count_are_derived_from_the_addresses(tmp_path):
 
 def test_slack_deactivated_member_is_deleted_and_dropped_from_membership(tmp_path):
     """A roster's `deactivated: true` (`backlot.importer.byo.load_roster`). Measured live against
-    a workspace on 2026-09-17: 9 of 19 `users.list` members carried `"deleted": true` plus an
-    undocumented but present `"is_forgotten": true`; the other members carried neither key. None
-    of the 9 appeared in any of 8 readable channels' `conversations.members`, though their
+    a workspace on 2026-09-17: 9 of 19 `users.list` members carried `"deleted": true`, 9 for 9;
+    none of the 9 appeared in any of 8 readable channels' `conversations.members`, though their
     messages stayed in channel history, and their own token still resolves — real answers it
-    `account_inactive` rather than dropping the credential."""
+    `account_inactive` rather than dropping the credential. (The same 9 split on an undocumented
+    `is_forgotten` key with no signal that predicts it — 5 carried it, 4 didn't — so Backlot
+    doesn't serve it either way; see `_user_obj`.)"""
     settings = tiny_corpus(
         tmp_path,
         [
@@ -1489,14 +1490,14 @@ def test_slack_deactivated_member_is_deleted_and_dropped_from_membership(tmp_pat
             for u in client.get("/slack/api/users.list", headers=admin_h).json()["members"]
         }
         assert by_email["ava@acme.com"]["deleted"] is True
-        assert by_email["ava@acme.com"]["is_forgotten"] is True
+        assert "is_forgotten" not in by_email["ava@acme.com"]
         assert by_email["bo@acme.com"]["deleted"] is False
         assert "is_forgotten" not in by_email["bo@acme.com"]
 
         info = client.get(
             "/slack/api/users.info", headers=admin_h, params={"user": ava_uid}
         ).json()["user"]
-        assert info["deleted"] is True and info["is_forgotten"] is True
+        assert info["deleted"] is True
 
         cid = client.get(
             "/slack/api/conversations.list", headers=admin_h, params={"limit": 10}

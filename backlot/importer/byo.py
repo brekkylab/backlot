@@ -702,9 +702,8 @@ def load_roster(path) -> dict:
     An entry's ``deactivated: true`` is Slack's own offboarded-member state — the person keeps
     their token in ``tokens.yaml`` (real answers a deactivated member's own calls with
     ``account_inactive`` rather than dropping the credential), but ``users.list``/``.info`` answer
-    them ``deleted``/``is_forgotten: true`` and ``conversations.members`` drops them. No other
-    vendor Backlot serves has this concept, so it is read here and acted on only in
-    ``backlot.routers.slack``.
+    them ``deleted: true`` and ``conversations.members`` drops them. No other vendor Backlot
+    serves has this concept, so it is read here and acted on only in ``backlot.routers.slack``.
 
     A person may belong to more than one group — a squad, a compliance register, a region-scoped
     grant — which one department slot cannot say. An entry's ``groups`` list adds those memberships

@@ -3549,6 +3549,11 @@ def test_github_unsupported_api_version_is_refused_ahead_of_a_missing_credential
     A credential that arrived and failed to resolve is a narrower case still ahead of this one
     (measured 2026-09-15, see `test_github_401_says_which_credential_failed`).
 
+    The missing-credential half is only visible on a route real refuses an anonymous caller, since
+    it serves the public ones 200: `/user/repos` is the one Backlot serves, and real answers the
+    version's 400 there where a supported version is `Requires authentication` (measured 2026-09-17,
+    three runs of each).
+
     Real sends no `Selected` echo on this 400 (it selected nothing), and does send one on a 404."""
     c, _ = gh_client
     bad = {"X-GitHub-Api-Version": "1999-01-01"}
@@ -3562,6 +3567,11 @@ def test_github_unsupported_api_version_is_refused_ahead_of_a_missing_credential
     # no credentials, and an owner Backlot does not serve: still the version's 400
     assert c.get("/github/repos/nope/nope/pulls/1", headers=bad).status_code == 400
     assert c.get("/github/search/issues", headers=bad, params={"q": "x"}).status_code == 400
+    # the version's 400 ahead of the missing credential's own 401, on the route that refuses one
+    assert c.get("/github/user/repos", headers=bad).status_code == 400
+    unversioned = c.get("/github/user/repos")
+    assert unversioned.status_code == 401
+    assert unversioned.json()["message"] == "Requires authentication"
 
 
 # --- a pull is a pull, not an issue with extra keys -------------

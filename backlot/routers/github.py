@@ -107,12 +107,13 @@ async def _validate_bad_credential(request: Request) -> None:
 
     Real resolves a presented credential before it looks at ``X-GitHub-Api-Version``: a bad bearer
     with an unsupported version pinned is "Bad credentials", not the version's 400 (measured against
-    api.github.com 2026-09-15 on ``/repos/{owner}/{repo}`` and ``/rate_limit``). On
-    ``/repos/{owner}/{repo}``, ``/orgs/{org}`` and ``/search/issues`` a request carrying no
-    credential at all still meets the version check first, since real's missing-credential 401 there
-    follows the version's 400 (measured the same day), so this only fires for a token that arrived
-    and failed to resolve; :func:`_validate_path_owner` answers the missing-credential case in its
-    own place, after the version check.
+    api.github.com 2026-09-15 on ``/repos/{owner}/{repo}`` and ``/rate_limit``). A request carrying
+    no credential at all still meets the version check first, measured on ``/user/repos``, the one
+    served route real refuses an anonymous caller: an unsupported version there is the version's 400
+    and a supported one is "Requires authentication" (2026-09-17, three runs of each on cache-busted
+    URLs). So this only fires for a token that arrived and failed to resolve;
+    :func:`_validate_path_owner` answers the missing-credential case in its own place, after the
+    version check.
     """
     if auth.bearer_token(request) is not None:
         auth.require_bearer(request, "Bad credentials")

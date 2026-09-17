@@ -80,10 +80,9 @@ _URL_ENCODING_SAFE = frozenset(
 # different reason. They are not inert: _int32_param and _list_multipart_uploads read them,
 # `max-uploads` and `key-marker` come back echoed, and `max-uploads` and `upload-id-marker` can
 # each turn the 200 into an InvalidArgument. What none of them does is decide which uploads a
-# caller gets, because there are
-# never any — all they shape is an echo of the caller's own input on a page that is always empty.
-# Declaring them would advertise a paging surface, a marker to resume from and a page size, over a
-# listing that never has a second page.
+# caller gets, because there are never any — all they shape is an echo of the caller's own input
+# on a page that is always empty. Declaring them would advertise a paging surface, a marker to
+# resume from and a page size, over a listing that never has a second page.
 _P_BUCKET_GET = [
     qp("prefix"),
     qp(

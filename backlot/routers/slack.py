@@ -170,15 +170,20 @@ def _caller_or_error(request: Request) -> tuple[Caller | None, dict | None]:
     ``auth.slack_token`` returns None for every case in the first group: an unrecognised scheme
     parses to nothing, and an empty query or form value is falsy.
 
-    A resolved token whose person a roster marks ``deactivated: true`` answers Slack's own
-    ``account_inactive`` ("Authentication token is for a deleted user or workspace") rather than
-    the caller it would otherwise resolve to; this is the one place that refusal is drawn.
+    A resolved token whose person a roster marks ``deactivated: true`` is answered Slack's own
+    ``account_inactive`` instead of the caller it would otherwise resolve to; this is the one place
+    that refusal is drawn. Slack's spec declares that error for every served method that declares
+    an error enum at all — 8 of the 12, ``api.test`` and ``search.messages`` declaring none and
+    ``search.all``/``search.files`` being absent from the spec — and declares it unqualified, which
+    the method reference's own sentence for it does not ("...for a deleted user or workspace when
+    using a bot token", where Backlot's per-person tokens are user tokens). An admin or anonymous
+    caller has no email, so it is never one of these people.
     """
     token = auth.slack_token(request)
     caller = auth.acl(request).resolve(token)
     if caller is None:
         return None, _err("invalid_auth" if token else "not_authed")
-    if not caller.is_admin and store.slack_is_deactivated(auth.conn(request), caller.email):
+    if store.slack_is_deactivated(auth.conn(request), caller.email):
         return None, _err("account_inactive")
     return caller, None
 
@@ -316,14 +321,15 @@ def _user_obj(conn, email: str) -> dict:
     parts = display.split()
     updated = synth.epoch("user:" + email)
     is_bot = not u and email.split("@")[0].endswith("bot")  # display-only "*bot" speakers
-    # A roster entry's `deactivated: true`. Measured against a live workspace on 2026-09-17: a
-    # deactivated member's users.list/.info answers "deleted": true 9-for-9. `is_forgotten` (an
-    # undocumented key, present true or absent, never false) does NOT track `deleted` — of the
-    # same 9, 5 carried it and 4 did not, with no signal in either the roster or the corpus a BYO
-    # import carries that predicts which. Serving it for every deactivated person would be wrong
-    # 4 times in 9, so it stays unserved: an acknowledged gap, not a value this models.
+    # A roster entry's `deactivated: true`. Measured against a live workspace on 2026-09-17:
+    # `deleted` is present on all 19 members and true on the 9 deactivated ones, so it is served
+    # unconditionally where Slack's reference allows either ("Otherwise the value is false, or the
+    # field may not appear at all"). `is_forgotten` is a different state, not a spelling of this
+    # one: the same reference gives it as "Whether the user has been GDPR-forgotten" and Slack's
+    # OpenAPI declares it a boolean, and on that workspace 5 of the 9 carried it against 0 of the
+    # 10 active. A roster states no GDPR erasure, so there is nothing here to derive it from.
     deactivated = bool(u) and store.slack_is_deactivated(conn, email)
-    obj = {
+    return {
         "id": synth.slack_user_id(email),
         "team_id": TEAM_ID,
         "name": _handle(email),
@@ -358,7 +364,6 @@ def _user_obj(conn, email: str) -> dict:
             "avatar_hash": synth._digest(email)[:12],
         },
     }
-    return obj
 
 
 @router.api_route("/api.test", methods=["GET", "POST"], response_model=SlackApiTest)

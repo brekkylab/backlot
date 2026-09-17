@@ -9,8 +9,9 @@
 # write access again before it treats the comment as a decision.
 #
 # The maintainer hears back at once: 👀 on the issue or the comment when the run is requested,
-# 😕 and a comment when it could not be. Reactions are posted as the loop's own account when its
-# token is set, and as github-actions otherwise. The run adds 🚀 itself when it starts on the item.
+# 😕 and a comment when it could not be, and a labelled issue is assigned to the loop's account.
+# Reactions are posted as the loop's own account when its token is set, and as github-actions
+# otherwise. The run adds 🚀 itself when it starts on the item.
 #
 # `/fire` is behind a dated beta header. When Anthropic moves it, this file is the only thing in
 # the repository that changes.
@@ -41,6 +42,8 @@ jobs:
           URL: ${{ secrets.LOOP_FIRE_URL }}
           TOKEN: ${{ secrets.LOOP_FIRE_TOKEN }}
           GH_TOKEN: ${{ secrets.BREKKYBOT_TOKEN || github.token }}
+          BOT: ${{ secrets.BREKKYBOT_TOKEN }}
+          EVENT: ${{ github.event_name }}
           REPO: ${{ github.repository }}
           ISSUE: ${{ github.event.issue.number || github.event.pull_request.number }}
           # Where the acknowledgement lands: the issue for a label, the comment for a /decision.
@@ -57,6 +60,12 @@ jobs:
             exit 0
           fi
           react eyes
+          # A labelled issue is the loop's from this moment: assigned to its account, which is
+          # what `@me` resolves to under the loop's token. The fallback token has no account to
+          # assign, so the run assigns itself when it claims the issue instead.
+          if [ "$EVENT" = issues ] && [ -n "$BOT" ]; then
+            gh issue edit "$ISSUE" --repo "$REPO" --add-assignee @me >/dev/null || true
+          fi
           status=$(curl -sS -o response.json -w '%{http_code}' -X POST "$URL" \
             -H "Authorization: Bearer $TOKEN" \
             -H "anthropic-beta: experimental-cc-routine-2026-04-01" \

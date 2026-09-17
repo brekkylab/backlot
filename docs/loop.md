@@ -42,6 +42,9 @@ with reactions, so you know where things stand without opening the routine's pag
 | 🚀 | the run, within a few minutes | the run has started and is on this item |
 | 😕 | either | it could not proceed; the comment beside it says why (the fire endpoint refused, the daily run cap, an item that is not eligible) |
 
+A labelled issue is also assigned to the loop's account, by the doorbell when its token is set
+and by the run when it claims the issue, so the issue list shows who has it.
+
 What follows is the run's ordinary output: a claim comment, a pull request, a decision comment, or
 the hand-over. No reaction after 👀 for ten minutes means the run did not start; the routine's
 page has the reason.

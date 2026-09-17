@@ -168,7 +168,8 @@ sentence said.
 
 From the mechanical issues choose one, or several whose fixes touch the same router and share one
 measurement (three charset issues on one vendor are one PR; a charset issue and a pagination issue
-are two). Comment `loop: claimed by run <session url or "local">` on each. Say in the PR body why
+are two). Comment `loop: claimed by run <session url or "local">` on each and assign each to
+yourself (`gh issue edit <n> --add-assignee @me`), so the issue list shows who has it. Say in the PR body why
 the set is one PR.
 
 ## 5. Measure

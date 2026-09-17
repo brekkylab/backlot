@@ -646,7 +646,8 @@ def rendered(
 
     Where the check DID run the name needs no second look, and the body being wrapped may BE its
     refusal -- that is real's own answer, measured the same day: `callback=evil);alert(1);//` on a
-    Sheets read comes back 200 calling that very name, with `<` and `>` escaped and nothing else.
+    Sheets read comes back 200 calling that very name, escaped the way :func:`_escaped_name`
+    escapes one.
 
     It takes the whole request because :func:`jsonp_callback` reads the method as well as the query.
     """

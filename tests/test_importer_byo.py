@@ -648,9 +648,9 @@ def test_byo_slack_reply_edited_ts_is_checked_against_its_own_created(tmp_path):
 
 @pytest.mark.parametrize("on", ["root", "reply"])
 def test_byo_slack_edited_user_must_be_the_messages_own_author(tmp_path, on):
-    """`chat.update` is the only way a message acquires an `edited` block, and it answers anyone
-    but the author `cant_update_message` — "Only messages posted by the authenticated user are
-    able to be updated using this method". An editor who is not the author is a message real Slack
+    """`chat.update`, the only Web API method that gives a message an `edited` block, answers
+    anyone but the author `cant_update_message` — "Only messages posted by the authenticated user
+    are able to be updated using this method". An editor who is not the author is one real Slack
     cannot produce, and Backlot would serve it as an id resolving to nobody. Not the answer
     `reactions` reaches for its own address list: `reactions.add` works for anyone, so a reactor
     who is not the author IS a state real Slack holds.

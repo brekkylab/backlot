@@ -1495,7 +1495,10 @@ def test_slack_edited_renders_the_editors_id(tmp_path):
         "user": synth.slack_user_id("bo@x.com"),
         "ts": "1772614899.000000",
     }
-    # Slack's own `defs_user_id`, so an id Backlot mints is one the vendor's spec would accept.
-    assert all(
-        re.fullmatch(r"[UW][A-Z0-9]{2,}", _message(row)["edited"]["user"]) for row in (root, reply)
-    )
+    for row in (root, reply):
+        m = _message(row)
+        # Slack's own `defs_user_id`, so an id Backlot mints is one the vendor's spec would accept.
+        assert re.fullmatch(r"[UW][A-Z0-9]{2,}", m["edited"]["user"])
+        # The editor is the author on the surface a client reads, which is the identity Slack's
+        # own message-event example shows (`user` and `edited.user` are both `U123ABC456`).
+        assert m["edited"]["user"] == m["user"]

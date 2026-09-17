@@ -311,10 +311,12 @@ def _check_edited(where, edited, created_sec, author):
 
     Two rules the schema cannot state, because each reads a second field of the same record:
 
-    `edited.user` is the message's own author. `chat.update` is the only way a message acquires
-    an `edited` block, and it answers anything else `cant_update_message`: "Only messages posted
-    by the authenticated user are able to be updated using this method." Slack's own message-event
-    example carries the rule in its values — `user` and `edited.user` are both `U123ABC456`.
+    `edited.user` is the message's own author. `chat.update` is the only Web API method that
+    gives a message an `edited` block, and it answers anyone else `cant_update_message`: "Only
+    messages posted by the authenticated user are able to be updated using this method." A human
+    editing in the client is the other path that sets one — the same page notes "The (edited)
+    label renders only on messages edited by humans" — and Slack's own message-event example
+    carries the rule in its values either way: `user` and `edited.user` are both `U123ABC456`.
 
     `edited.ts` names a LATER SECOND than `created`. The served `ts` takes its six-digit fraction
     from a hash of the message (`synth.slack_fmt_ts`), so a corpus author writing `edited.ts` has
@@ -323,7 +325,9 @@ def _check_edited(where, edited, created_sec, author):
     """
     if not edited:
         return
-    if author and edited["user"] != author:
+    # `author` is never absent here: `author_email` is required on a root and on a reply, and
+    # `format: email` refuses `""`.
+    if edited["user"] != author:
         raise SystemExit(
             f"{where}: edited.user must be this message's own author "
             f"(got {edited['user']!r}, authored by {author!r}) — real Slack only lets the "

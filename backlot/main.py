@@ -152,6 +152,15 @@ app.openapi = _openapi_with_vendor_parameters
 
 @app.exception_handler(StarletteHTTPException)
 async def _http_exception_handler(request: Request, exc: StarletteHTTPException):
+    # A wrong method is refused by the router before any vendor code runs, so the vendor's own 405
+    # is asked for here rather than raised where the other refusals are. The exception is replaced
+    # rather than edited: what follows reads the body, media type and headers off it either way.
+    if exc.status_code == 405:
+        vendor = errors.method_not_allowed(request.url.path, request.method)
+        if vendor is not None:
+            if vendor.headers is None:
+                vendor.headers = getattr(exc, "headers", None)
+            exc = vendor
     headers = getattr(exc, "headers", None)
     body = errors.http_body(request.url.path, exc, request.query_params)
     if body is None:

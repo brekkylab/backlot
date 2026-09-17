@@ -1381,7 +1381,7 @@ def test_a_bare_bucket_get_is_list_objects_and_only_list_type_2_is_its_v2_form(
 def test_every_contents_is_written_before_every_common_prefixes(
     big_bucket_client, big_bucket_settings
 ):
-    """Real groups the two, where Backlot wrote them interleaved in key order.
+    """Real groups the two rather than interleaving them by key.
 
     Measured 2026-09-14 and again 2026-09-16 over these same six keys: `?delimiter=/` comes back
     with `100%.csv`, `a b.txt`, `a+b.txt` and `zz.txt` as `Contents` and then `run books/` and
@@ -1639,12 +1639,12 @@ def test_max_keys_is_read_by_value_and_refused_with_the_two_messages_real_sends(
 def test_a_repeated_parameter_is_read_as_its_first_value_including_list_type(
     big_bucket_client, big_bucket_settings
 ):
-    """#178: the listing read the last of a repeated parameter where real reads the first.
+    """#178: real reads the first of a repeated parameter, and so does the listing.
 
-    `?uploads` already reads the first, through `_first` (#176); the listing went through
-    `QueryParams.get`, which is the last. Measured 2026-09-14: `?prefix=a&prefix=zz.txt` lists
-    under `a`, and `?max-keys=1&max-keys=abc` is a page of one rather than the refusal `abc`
-    would be. `list-type` is read the same way, so the first of two spellings picks the shape.
+    Both go through `_first`, which `?uploads` already used (#176), where Starlette's
+    `QueryParams.get` gives the last. Measured 2026-09-14: `?prefix=a&prefix=zz.txt` lists under
+    `a`, and `?max-keys=1&max-keys=abc` is a page of one rather than the refusal `abc` would be.
+    `list-type` is read the same way, so the first of two spellings picks the shape.
     """
     token = big_bucket_settings.admin_token
     assert (
@@ -1666,11 +1666,10 @@ def test_a_repeated_parameter_is_read_as_its_first_value_including_list_type(
 def test_a_page_whose_trailing_group_has_no_successor_is_complete_not_truncated(
     big_bucket_client, big_bucket_settings
 ):
-    """A rolled-up group under the last code point has no bound to resume past, and the page that
-    ends on it used to say truncated and hand back nothing to page with — `IsTruncated true`,
-    `KeyCount 1`, no `NextContinuationToken`. Real never sends a truncated page with no cursor, and
-    there was nothing to fetch anyway: a key sorting after that group cannot be spelled, so every
-    row still unfetched rolls up into the CommonPrefixes entry the page already carries.
+    """A rolled-up group under the last code point has no bound to resume past, and a page ending
+    on it carries every entry there is: a key sorting after that group cannot be spelled, so every
+    row still unfetched rolls up into the CommonPrefixes entry already on the page. It reports
+    itself complete, rather than truncated with no cursor to leave it by, which real never sends.
 
     Both listings reach it — V2 through the group token and V1 through `NextMarker` — and the walk
     ends on the first page either way."""
@@ -1693,13 +1692,11 @@ def test_a_page_whose_trailing_group_has_no_successor_is_complete_not_truncated(
 def test_a_prefix_or_marker_no_character_steps_past_is_a_page_not_a_500(
     big_bucket_client, big_bucket_settings, edge
 ):
-    """Both parameters take any character a client sends, and two of them had no character the
-    key-range helper could step onto, so each went out as a 500 with no `<Error>` body for boto3 to
-    raise on. The last code point has nothing above it at all and raised `ValueError`; U+D7FF has
-    only the surrogate block, and `chr(ord(c) + 1)` landed on U+D800, which sqlite3 cannot bind
-    (`UnicodeEncodeError`). The listing's own `marker` reaches the same helper through the
-    CommonPrefixes group it resumes past, which is the route this PR opens. Neither is a listing
-    anyone wants; both are answered.
+    """Both parameters take any character a client sends, and two of them have no character the
+    key-range helper can step onto: the last code point has nothing above it at all, and U+D7FF
+    has only the surrogate block, which UTF-8 cannot encode and sqlite3 cannot bind. The listing's
+    own `marker` reaches the same helper through the CommonPrefixes group it resumes past. Neither
+    is a listing anyone wants; both are answered.
 
     What real S3 does with these is unmeasured — a delimiter of `\U0010ffff` is not a query worth
     a bucket — so the only claim here is that the server answers rather than crashes."""

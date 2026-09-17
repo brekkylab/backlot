@@ -173,8 +173,7 @@ def _shape(response: httpx.Response) -> tuple[int, str, frozenset[str]]:
     The children are a set, not a sequence: two pages of the same operation differ in how many
     ``Contents`` they carry and in whether a cursor is present, and none of that says the operation
     was answered by something else. What the set does catch is one operation's body arriving under
-    another's name — ``KeyCount`` against ``Marker`` tells the two listings apart (see the module
-    docstring)."""
+    another's name (see the module docstring)."""
     text = response.text.lstrip()
     match = _ROOT.match(text)
     if not match:

@@ -76,11 +76,11 @@ _URL_ENCODING_SAFE = frozenset(
 # back, which is why `list-type`, `marker` and `encoding-type` are declared below: the first
 # chooses between the two listings, the second pages the V1 one, and the third changes how every
 # key comes back.
-# ListMultipartUploads' own parameters (`max-uploads`, `key-marker`, `upload-id-marker`,
-# `encoding-type`) are absent for a different reason. They are not inert: _int32_param and
-# _list_multipart_uploads read all four, `max-uploads`, `key-marker` and `encoding-type` come back
-# echoed, and `max-uploads`, `encoding-type` and `upload-id-marker` can each turn the 200 into an
-# InvalidArgument. What none of them does is decide which uploads a caller gets, because there are
+# ListMultipartUploads' own `max-uploads`, `key-marker` and `upload-id-marker` are absent for a
+# different reason. They are not inert: _int32_param and _list_multipart_uploads read them,
+# `max-uploads` and `key-marker` come back echoed, and `max-uploads` and `upload-id-marker` can
+# each turn the 200 into an InvalidArgument. What none of them does is decide which uploads a
+# caller gets, because there are
 # never any — all they shape is an echo of the caller's own input on a page that is always empty.
 # Declaring them would advertise a paging surface, a marker to resume from and a page size, over a
 # listing that never has a second page.
@@ -699,12 +699,8 @@ def _list_objects(
     if encoding_type is not None:
         body.append(f"<EncodingType>{escape(encoding_type)}</EncodingType>")
     body.append(f"<IsTruncated>{'true' if is_truncated else 'false'}</IsTruncated>")
-    # Every `Contents` first and every `CommonPrefixes` after, which is real's document order and
-    # not the key order `entries` is in: a page of `100%.csv`, `a b.txt`, `a+b.txt`, `run books/`
-    # and `zz.txt` comes back with `run books/` last, after `zz.txt`, on both listings (measured
-    # 2026-09-14 and 2026-09-16). `entries` keeps key order because that is what the cursors are
-    # cut from — `NextMarker` on that page is `zz.txt`, the last entry by key, not the element the
-    # body ends on.
+    # Every `Contents`, then every `CommonPrefixes` — real's document order, not the key order
+    # `entries` holds (see this function's docstring).
     owner = "" if v2 else f"<Owner><ID>{_owner_id(request)}</ID></Owner>"
     for val in [v for kind, v in entries if kind == "obj"]:
         r = by_key[val]

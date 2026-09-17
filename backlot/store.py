@@ -1176,10 +1176,9 @@ def key_successor(s: str) -> str | None:
 
     Normally this increments the last character. Two ranges of code point have no usable character
     one step up, and both are reachable from the wire, where ``?prefix=``, ``?delimiter=`` and
-    ``?marker=`` take whatever a client sends, and where each used to go out as a 500 with no
-    ``<Error>`` body. A step into the surrogate block goes over it instead. A trailing run of the
-    last code point has nothing above it at all, so the run comes off and the character before it
-    is incremented — the result is still greater than every string starting with ``s``, since they
+    ``?marker=`` take whatever a client sends. A step into the surrogate block goes over it
+    instead. A trailing run of the last code point has nothing above it at all, so the run comes
+    off and the character before it is incremented — the result is still greater than every string starting with ``s``, since they
     all share the smaller prefix. A string that is nothing but that code point has no successor,
     and ``None`` says so: every string with that prefix sorts at the very end, which a caller reads
     as "no upper bound" or "nothing follows" depending on which side it is bounding. Undefined for

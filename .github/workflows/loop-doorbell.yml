@@ -8,6 +8,10 @@
 # account's daily allowance; a stranger's comment rings nothing. The routine checks the author's
 # write access again before it treats the comment as a decision.
 #
+# The maintainer hears back at once: 👀 on the issue or the comment when the run is requested,
+# 😕 and a comment when it could not be. Reactions are posted as the loop's own account when its
+# token is set, and as github-actions otherwise. The run adds 🚀 itself when it starts on the item.
+#
 # `/fire` is behind a dated beta header. When Anthropic moves it, this file is the only thing in
 # the repository that changes.
 name: Loop doorbell
@@ -20,7 +24,9 @@ on:
   pull_request_review_comment:
     types: [created]
 
-permissions: {}
+permissions:
+  issues: write
+  pull-requests: write
 
 jobs:
   ring:
@@ -34,17 +40,34 @@ jobs:
         env:
           URL: ${{ secrets.LOOP_FIRE_URL }}
           TOKEN: ${{ secrets.LOOP_FIRE_TOKEN }}
+          GH_TOKEN: ${{ secrets.BREKKYBOT_TOKEN || github.token }}
+          REPO: ${{ github.repository }}
           ISSUE: ${{ github.event.issue.number || github.event.pull_request.number }}
+          # Where the acknowledgement lands: the issue for a label, the comment for a /decision.
+          REACT_TO: >-
+            ${{ github.event_name == 'issues' && format('issues/{0}/reactions', github.event.issue.number)
+             || github.event_name == 'issue_comment' && format('issues/comments/{0}/reactions', github.event.comment.id)
+             || format('pulls/comments/{0}/reactions', github.event.comment.id) }}
         run: |
+          react() { gh api -X POST "repos/$REPO/$REACT_TO" -f content="$1" --silent || true; }
           # Without the two secrets there is no routine to ring; a green no-op keeps a fork's
           # workflow list quiet rather than red on every label.
           if [ -z "$URL" ] || [ -z "$TOKEN" ]; then
             echo "::notice::LOOP_FIRE_URL / LOOP_FIRE_TOKEN are not set; nothing to ring."
             exit 0
           fi
-          curl -sSf -X POST "$URL" \
+          react eyes
+          status=$(curl -sS -o response.json -w '%{http_code}' -X POST "$URL" \
             -H "Authorization: Bearer $TOKEN" \
             -H "anthropic-beta: experimental-cc-routine-2026-04-01" \
             -H "anthropic-version: 2023-06-01" \
             -H "Content-Type: application/json" \
-            -d "{\"text\": \"issue #$ISSUE\"}"
+            -d "{\"text\": \"issue #$ISSUE\"}") || status=000
+          cat response.json; echo
+          case "$status" in
+            2*) exit 0 ;;
+          esac
+          react confused
+          body=$(head -c 300 response.json)
+          gh issue comment "$ISSUE" --repo "$REPO" --body "The loop could not be started for this: the routine's fire endpoint answered HTTP $status. $body"
+          exit 1

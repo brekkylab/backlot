@@ -99,10 +99,18 @@ gh pr list --state open --json number,title,labels,reviewDecision,headRefName --
 
 A `routine-fire-payload` block naming an issue or pull request means a maintainer just acted on
 that one item — labelled it, or answered a decision on it — and this run is about that item alone.
+Before anything else, tell the maintainer you have it: react 🚀 (`rocket`) to what rang — the
+issue itself for a label (`gh api -X POST repos/brekkylab/backlot/issues/<n>/reactions -f content=rocket`),
+or the `/decision` comment for a decision (`.../issues/comments/<id>/reactions`, or
+`.../pulls/comments/<id>/reactions` for a review-thread comment; the id is the newest comment on
+the item whose first line starts with `/decision`). The doorbell already left 👀 there when it
+requested you.
+
 Work it if it is eligible (it carries `agent` or is a `claude/` PR, is not `hold`, and is not taken),
 finish any of your own PRs that need it on the way, and pick nothing else: a maintainer who labels
-three issues starts three runs, and each takes its own. If the named item is not eligible, say why
-in one line and stop. Only a run with no payload — the schedule — surveys the whole queue.
+three issues starts three runs, and each takes its own. If the named item is not eligible, react
+😕 (`confused`) to the same target, comment one line saying why, and stop. Only a run with no
+payload — the schedule — surveys the whole queue.
 
 Build one worklist in this priority: (a) the loop's open PRs (`claude/` branches) with review comments or failing checks
 you have not answered, or with green checks and neither `ready-for-maintainer` nor

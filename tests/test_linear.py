@@ -268,9 +268,13 @@ def test_linear_by_id_relation_roots_answer(client, admin_h):
         == "2025-W08"
     )
     label_id = issue["labels"]["nodes"][0]["id"]
-    assert gql(client, "{ issueLabel(id: %s) { name } }" % lit(label_id), admin_h).json()["data"][
-        "issueLabel"
-    ]["name"] in {"bug", "gateway"}
+    label = gql(
+        client, "{ issueLabel(id: %s) { name isGroup groupType } }" % lit(label_id), admin_h
+    ).json()["data"]["issueLabel"]
+    assert label["name"] in {"bug", "gateway"}
+    # `@linear/sdk@95.1.0`'s `IssueLabel` fragment selects `groupType`; `95.0.0`'s does not.
+    assert label["isGroup"] is False
+    assert label["groupType"] is None
 
 
 def test_linear_workflow_states_are_per_team(client, admin_h):

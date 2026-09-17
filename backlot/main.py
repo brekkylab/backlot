@@ -256,11 +256,14 @@ async def refuse_a_trailing_slash_on_github(request: Request, call_next):
     :func:`_would_redirect_to_the_slash_free_path` — and leaves a trailing slash a route does match
     to that route.
 
-    A "no route matched" 404 carries the five `x-ratelimit-*` headers, via `rate_limit_headers`,
-    for an anonymous caller alone: the anonymous limit is counted by address, ahead of and
-    independent of routing, where the token-keyed one only starts once a route is reached — unlike
-    a 404 for a route that DID match, on a resource that does not exist, which carries both for
-    either caller.
+    The five `x-ratelimit-*` headers ride on this 404, via `rate_limit_headers`, for a caller that
+    sent no `Authorization` header at all, and on no other: the anonymous limit is counted by
+    address, ahead of and independent of routing, where a credential's window only starts once a
+    route is reached. A bearer that fails to resolve gets neither the headers nor a count, which is
+    where real's line falls rather than at `rate_limit_caller`'s "did this token resolve" —
+    anonymous `/repos/psf/requests/` answered `used` 45, 46 then 47 across a pair of bad-bearer 404s
+    that carried no headers and moved no window between them (measured 2026-09-17). A 404 for a
+    route that DID match, on a resource that does not exist, carries the five for either caller.
 
     `redirect_slashes` is a setting of the whole app's `Router`, shared by every vendor mounted
     here, and no other vendor's own answer to a trailing slash has been measured — so this
@@ -279,7 +282,7 @@ async def refuse_a_trailing_slash_on_github(request: Request, call_next):
         exc = StarletteHTTPException(status_code=404)
         body = errors.http_body(path, exc, request.query_params)
         response = JSONResponse(status_code=exc.status_code, content=body or {"detail": exc.detail})
-        if not github.rate_limit_caller(request)[1]:
+        if auth.bearer_token(request) is None:
             headers = github.rate_limit_headers(request, exc.status_code, count=True)
             for name, value in headers.items():
                 response.headers[name] = value

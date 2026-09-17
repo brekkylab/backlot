@@ -4955,8 +4955,8 @@ def test_github_a_trailing_slash_is_404_not_a_redirect(gh_client, gh_admin_h, gh
     """Drives the paths `refuse_a_trailing_slash_on_github` documents the measurement for, the
     id-keyed spellings of two of them among them: each 404 with a valid token, carrying neither the
     five `x-ratelimit-*` headers nor the API-version echo;
-    a bad bearer answers the same 404 rather than its own 401; two anonymous requests in a row carry
-    the five and count. A route that ends in a path parameter answers its own trailing slash
+    a bad bearer answers the same 404 rather than its own 401, and is counted nowhere either; two
+    anonymous requests in a row carry the five and count. A route that ends in a path parameter answers its own trailing slash
     instead, so `/contents/` keeps the root listing's 200. See that middleware's docstring for the
     measurement.
     """
@@ -5006,9 +5006,18 @@ def test_github_a_trailing_slash_is_404_not_a_redirect(gh_client, gh_admin_h, gh
     assert slashed.status_code == 200
     assert slashed.json() == root.json()
 
-    # the slash wins over a bad bearer: still the 404, not the credential's own 401
+    # anonymous, the slash's 404 carries the five and counts
+    path = f"/github/repos/{gh_org}/codebase/"
+    first = _ratelimit(c.get(path))
+    assert first["resource"] == "core"
+    second = _ratelimit(c.get(path))
+    assert int(second["used"]) == int(first["used"]) + 1
+    assert int(second["remaining"]) == int(first["remaining"]) - 1
+
+    # the slash wins over a bad bearer: still the 404, not the credential's own 401 — and real
+    # gives that one none of the five and counts it against no window, the anonymous one included
     bad = c.get(
-        f"/github/repos/{gh_org}/codebase/",
+        path,
         headers={"Authorization": "Bearer usr-not-a-real-token"},
         follow_redirects=False,
     )
@@ -5018,16 +5027,8 @@ def test_github_a_trailing_slash_is_404_not_a_redirect(gh_client, gh_admin_h, gh
         "documentation_url": "https://docs.github.com/rest",
         "status": "404",
     }
-
-    # anonymous, the slash's 404 carries the five and counts; a bad bearer counts the same way
-    path = f"/github/repos/{gh_org}/codebase/"
-    first = _ratelimit(c.get(path))
-    assert first["resource"] == "core"
-    second = _ratelimit(c.get(path))
-    assert int(second["used"]) == int(first["used"]) + 1
-    assert int(second["remaining"]) == int(first["remaining"]) - 1
-    third = _ratelimit(c.get(path, headers={"Authorization": "Bearer usr-not-a-real-token"}))
-    assert int(third["used"]) == int(second["used"]) + 1
+    assert not any(n.startswith("x-ratelimit-") for n in bad.headers)
+    assert int(_ratelimit(c.get(path))["used"]) == int(second["used"]) + 1
 
     # `/github/rate_limit/` counts here too: unlike the real routed endpoint, this is a "no route
     # matched" 404 and not the route's own report-without-counting answer

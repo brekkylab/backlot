@@ -368,8 +368,10 @@ def rate_limit_caller(request: Request) -> tuple[str, bool]:
     The token when it resolves; the client's address otherwise, which is how real counts a caller
     with no credential (the docs' 60 an hour "for unauthenticated requests", `limit: 60` on every
     anonymous answer measured). A bearer that does not resolve is counted with the anonymous
-    callers from its address: real's answer for one is a 401 carrying the five, and which window it
-    counts against is not measured."""
+    callers from its address, which real does not do: its 401 for one carried none of the five and
+    moved no window, where an anonymous 401 on `/user/repos` carried all five and counted (measured
+    2026-09-17). Callers of this that draw real's line themselves ask `auth.bearer_token` for the
+    presence of the header instead — see `refuse_a_trailing_slash_on_github`."""
     token = auth.bearer_token(request)
     if token is not None and auth.resolve_bearer(request) is not None:
         return f"token:{token}", True

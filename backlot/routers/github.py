@@ -384,14 +384,13 @@ def rate_limit_headers(
 ) -> dict[str, str]:
     """The five `x-ratelimit-*` headers for a `/github` answer.
 
-    Counts the request against the window, except on :data:`RATE_LIMIT_PATH` exactly, which
-    reports its window without counting: two `GET /rate_limit` in a row both answered
-    `remaining: 5000`, `used: 0`, each carrying the five with `resource: core`, and the
-    description's own note says the route does not count. `count` overrides that path-based
-    default for a caller that is not the routed endpoint itself — a trailing slash on the same
-    path answers a 404 no route matched, which counts like any other, so
-    `refuse_a_trailing_slash_on_github` passes `count=True` rather than let this rstrip its way
-    into the no-count branch meant for the real route alone."""
+    Counts the request against the window, except on :data:`RATE_LIMIT_PATH`, which reports its
+    window without counting: two `GET /rate_limit` in a row both answered `remaining: 5000`,
+    `used: 0`, each carrying the five with `resource: core`, and the description's own note says
+    the route does not count. That default rstrips the path, so `/rate_limit/` falls into the
+    no-count branch as well; `count` overrides it for a caller that is not the routed endpoint
+    itself, and `refuse_a_trailing_slash_on_github` passes `count=True` because a trailing slash
+    there is a 404 no route matched, which counts like any other."""
     key, authenticated = rate_limit_caller(request)
     resource = rate_limit_resource(request.url.path, status_code)
     limits = RATE_LIMITS[resource]

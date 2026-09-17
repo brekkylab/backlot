@@ -279,11 +279,9 @@ async def refuse_a_trailing_slash_on_github(request: Request, call_next):
         and path.endswith("/")
         and _would_redirect_to_the_slash_free_path(request)
     ):
-        exc = StarletteHTTPException(status_code=404)
-        body = errors.http_body(path, exc, request.query_params)
-        response = JSONResponse(status_code=exc.status_code, content=body or {"detail": exc.detail})
+        response = await _http_exception_handler(request, StarletteHTTPException(status_code=404))
         if auth.bearer_token(request) is None:
-            headers = github.rate_limit_headers(request, exc.status_code, count=True)
+            headers = github.rate_limit_headers(request, response.status_code, count=True)
             for name, value in headers.items():
                 response.headers[name] = value
         return response

@@ -380,7 +380,10 @@ _BRIDGE_CASES = [
         "notion",
         "subtype IS NOT 'database'",
         lambda n: n.startswith("get_page"),
-        lambda row, st: {"page_id": row["id"]},
+        # Notion refuses a request that carries no version, so every notion tool takes one -- the
+        # bridge's client sends the credential and nothing else, which
+        # `test_auth_header_spells_each_source_the_way_its_client_speaks` pins.
+        lambda row, st: {"page_id": row["id"], "Notion-Version": "2025-09-03"},
         lambda t, row: '"object": "page"' in t or '"object":"page"' in t,
         id="notion",
     ),
@@ -623,6 +626,45 @@ def test_mcp_hubspot_bridge_search_tool(live_server):
         },
         ok_pred=lambda t: '"total"' in t and "Acme Health" in t,
     )
+
+
+def test_mcp_notion_tools_take_the_version_every_request_carries(live_server):
+    """Notion refuses a request that sends no `Notion-Version`, so a tool that cannot send one is
+    unusable: the bridge's client carries the credential and nothing else (asserted on the header
+    in `test_auth_header_spells_each_source_the_way_its_client_speaks`). Every notion route
+    declares the header, which is what puts it in every tool's arguments; the query pair is where
+    the value also decides which of the two answers, so both are called under the version their
+    path is served for."""
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    base, _ = live_server
+    creds = backlot_mcp.resolve(base, None)
+    did, dsid = synth.notion_id("nt-tasks-db"), synth.notion_data_source_id("nt-tasks-db")
+
+    async def _go():
+        server = backlot_mcp.openapi_server(base, creds, "notion")
+        async with Client(server) as c:
+            tools = {t.name: t for t in await c.list_tools()}
+            assert tools, "expected the notion tools"
+            without = [
+                n
+                for n, t in tools.items()
+                if "Notion-Version" not in ((t.input_schema or {}).get("required") or [])
+            ]
+            assert not without, without
+            out = {}
+            for name, args in (
+                ("query_data_source", {"data_source_id": dsid, "Notion-Version": "2025-09-03"}),
+                ("query_database", {"database_id": did, "Notion-Version": "2022-06-28"}),
+            ):
+                res = await c.call_tool(name, args)
+                out[name] = "".join(getattr(b, "text", "") for b in res.content)
+            return out
+
+    answers = asyncio.run(_go())
+    for name, text in answers.items():
+        assert '"object": "page"' in text or '"object":"page"' in text, (name, text[:200])
 
 
 # ------------------------------------------------------------------ `backlot mcp` over stdio

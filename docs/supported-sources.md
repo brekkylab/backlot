@@ -274,16 +274,20 @@ compiled into SQL, and full introspection.
 
 ### Notion — `/notion/v1`
 
+Every route requires a `Notion-Version` header and answers `missing_version` without one — or
+with a version Notion does not publish — as the real API does; the value picks the database model,
+which is what the notes below name.
+
 | Endpoint | Notes |
 |---|---|
 | `POST search` | |
 | `pages/{id}` | |
 | `blocks/{id}` | |
 | `blocks/{id}/children` | |
-| `databases/{id}` | Version-aware |
-| `POST databases/{id}/query` | Legacy |
-| `data_sources/{id}` | |
-| `POST data_sources/{id}/query` | |
+| `databases/{id}` | Version-aware: `data_sources` from `2025-09-03`, inline `properties` before it |
+| `POST databases/{id}/query` | Versions before `2025-09-03` only |
+| `data_sources/{id}` | `2025-09-03` and later only |
+| `POST data_sources/{id}/query` | `2025-09-03` and later only |
 | `users[/{id}]` | |
 | `users/me` | |
 | `comments` | |
@@ -300,7 +304,8 @@ virtual-hosted client looks for `acme-artifacts.localhost:8000` and finds nothin
 | `HeadBucket` | |
 | `GetBucketLocation` | |
 | `ListMultipartUploads` | Always the empty page, since data enters through `backlot import` and no upload is ever in progress. `prefix`, `delimiter` and `key-marker` are echoed, `max-uploads` and `encoding-type` validated and echoed, as real does |
-| `ListObjectsV2` | `prefix`, `delimiter`, `continuation-token` |
+| `ListObjects` | The bare bucket GET, and what any `list-type` other than `2` selects. `prefix`, `delimiter`, `marker`, `max-keys`, `encoding-type`; `Marker` echoed, `NextMarker` under a delimiter, an `Owner` on every object |
+| `ListObjectsV2` | Selected by `list-type=2`. `prefix`, `delimiter`, `start-after`, `continuation-token`, `max-keys`, `encoding-type`; `KeyCount` and the continuation tokens, no `Owner` |
 | `GetObject` | `Range` |
 | `HeadObject` | |
 

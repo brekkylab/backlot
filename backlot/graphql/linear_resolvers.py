@@ -546,6 +546,7 @@ def _label(name: str, ts: str) -> dict:
         "name": name,
         "color": "#bec2c8",
         "isGroup": False,
+        "groupType": None,
         "createdAt": ts,
         "updatedAt": ts,
         "description": None,

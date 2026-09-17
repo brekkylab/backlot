@@ -1017,9 +1017,8 @@ async def confluence_spaces(request: Request):
     conn = auth.conn(request)
     ids = auth.visible_ids(request, _confluence_caller(request))
     limit, start = _confluence_page_params(request)
-    # `store.list_containers` orders by name; real's own order is none of name, key or id (measured
-    # 2026-09-17) and was unobservable while this route served every reachable space in one answer.
-    # Now that paging exposes it, this is Backlot's own ordering choice, not a reproduction of real's.
+    # store.list_containers orders by name; real's own order is none of name, key or id (measured
+    # 2026-09-17).
     reachable = _reachable_spaces(conn, ids)
     total = len(reachable)
     results = []

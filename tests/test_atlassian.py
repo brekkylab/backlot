@@ -580,8 +580,7 @@ def test_confluence_spaces_are_paged_not_served_whole(client, admin_h, tokens):
     assert names == [
         "handbook",
         "people-ops",
-    ]  # `store.list_containers` orders by name; the order every slice below relies on, and
-    # Backlot's own choice — real's own order is none of name, key or id (measured 2026-09-17)
+    ]  # store.list_containers orders by name — the order every slice below relies on.
     assert unpaged["start"] == 0 and unpaged["limit"] == 25 and unpaged["size"] == 2
     assert unpaged["_links"] == {
         "base": "http://testserver/wiki",

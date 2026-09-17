@@ -31,6 +31,24 @@ the whole queue. Only an owner, organisation member or collaborator rings
 it, and the run itself honours a `/decision` only from an account with write access; anyone else's
 comment is read as information, never as an instruction.
 
+## Hearing back
+
+The item you acted on — the issue you labelled, or the `/decision` comment you wrote — answers
+with reactions, so you know where things stand without opening the routine's page:
+
+| Reaction | From | Means |
+|---|---|---|
+| 👀 | the doorbell, within seconds | your action was seen and a run was requested |
+| 🚀 | the run, within a few minutes | the run has started and is on this item |
+| 😕 | either | it could not proceed; the comment beside it says why (the fire endpoint refused, the daily run cap, an item that is not eligible) |
+
+A labelled issue is also assigned to the loop's account, by the doorbell when its token is set
+and by the run when it claims the issue, so the issue list shows who has it.
+
+What follows is the run's ordinary output: a claim comment, a pull request, a decision comment, or
+the hand-over. No reaction after 👀 for ten minutes means the run did not start; the routine's
+page has the reason.
+
 ## Reading a run
 
 The routine's page on claude.ai lists runs. A green run means the session exited without an
@@ -57,7 +75,10 @@ Recorded here so it can be recreated on another account in a morning.
 
 **Repository**: this one. **Schedule**: every two hours, 09:00–21:00 Asia/Seoul, weekdays. **API
 trigger**: on; its URL and token live only in this repository's `LOOP_FIRE_URL` and
-`LOOP_FIRE_TOKEN` secrets. **Connectors**: none.
+`LOOP_FIRE_TOKEN` secrets. **Connectors**: none. A third secret, `BREKKYBOT_TOKEN`, is a
+fine-grained personal access token of the loop's GitHub account, scoped to this repository with
+Issues and Pull requests read and write, so the doorbell's reactions and its failure comment appear
+as that account rather than as github-actions; without it they still appear, as github-actions.
 
 **Environment** `backlot-loop`, personal to the loop account. Network access **Custom** with the
 default registries kept, plus: `slack.com`, `*.atlassian.net`, `api.atlassian.com`,

@@ -561,7 +561,10 @@ def _list_objects(
     prefix = _first(q, "prefix")
     delimiter = _first(q, "delimiter")
     marker = _first(q, "marker") if not v2 else ""
-    start_after = _first(q, "start-after") if v2 else ""
+    # `None` for absent and `""` for sent empty, which the echo below has to tell apart the way
+    # `continuation` does: real answers `?list-type=2&start-after=` with `<StartAfter></StartAfter>`
+    # and sends no element when the parameter is absent (measured 2026-09-17).
+    start_after = _first(q, "start-after", None) if v2 else None
 
     # A continuation-token (opaque, from a previous page) wins over start-after, exactly like
     # real S3 — start-after only seeds the very first page of a listing. Its mode (exclusive
@@ -679,7 +682,7 @@ def _list_objects(
         f"<Prefix>{escape(enc(prefix))}</Prefix>",
     ]
     if v2:
-        if start_after and not continuation:
+        if start_after is not None and not continuation:
             body.append(f"<StartAfter>{escape(enc(start_after))}</StartAfter>")
         if continuation:
             body.append(f"<ContinuationToken>{escape(continuation)}</ContinuationToken>")

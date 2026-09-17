@@ -1303,6 +1303,16 @@ def test_a_bare_bucket_get_is_list_objects_and_only_list_type_2_is_its_v2_form(
     sent = _listing(big_bucket_client, "marker=" + quote("a b.txt"), token)
     assert sent.findtext(f"{{{S3NS}}}Marker") == "a b.txt"
     v2 = _listing(big_bucket_client, "list-type=2&max-keys=1", token)
+    # V2's echo goes the other way: the element is there when the parameter was sent, an empty
+    # value included, and absent when it was not — `?list-type=2&start-after=` answers
+    # `<StartAfter></StartAfter>` (measured 2026-09-17).
+    assert v2.find(f"{{{S3NS}}}StartAfter") is None
+    assert (
+        _listing(big_bucket_client, "list-type=2&start-after=", token).findtext(
+            f"{{{S3NS}}}StartAfter"
+        )
+        == ""
+    )
     assert _children(v2) == [
         "Name",
         "Prefix",

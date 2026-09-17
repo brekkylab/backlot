@@ -272,9 +272,7 @@ def test_linear_by_id_relation_roots_answer(client, admin_h):
         client, "{ issueLabel(id: %s) { name isGroup groupType } }" % lit(label_id), admin_h
     ).json()["data"]["issueLabel"]
     assert label["name"] in {"bug", "gateway"}
-    # `groupType` is null for every label the corpus produces: measured against api.linear.app on
-    # 2026-09-17, real answers null there too for every non-group label (`isGroup: false`), which
-    # is what `@linear/sdk@95.1.0`'s `IssueLabel` fragment selects and `95.0.0` does not.
+    # `@linear/sdk@95.1.0`'s `IssueLabel` fragment selects `groupType`; `95.0.0`'s does not.
     assert label["isGroup"] is False
     assert label["groupType"] is None
 

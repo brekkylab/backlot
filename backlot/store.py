@@ -870,11 +870,10 @@ CREATE TABLE IF NOT EXISTS group_members (
     group_id TEXT NOT NULL, user_id TEXT NOT NULL, PRIMARY KEY (group_id, user_id)
 );
 
--- A roster entry's `deactivated: true` (backlot.importer.byo.load_roster) — Slack's own concept
--- (a member `users.list`/`.info` answers with `deleted`/`is_forgotten: true` and drops from
--- `conversations.members`), so it lives beside `fireflies_users` rather than widening the central
--- `principals` row every other vendor reads. A derived roster (no `--roster`) never inserts here:
--- there is no `deactivated:` key to read.
+-- A roster entry's `deactivated: true` (backlot.importer.byo.load_roster — see its docstring for
+-- the vendor shape this drives), so it lives beside `fireflies_users` rather than widening the
+-- central `principals` row every other vendor reads. A derived roster (no `--roster`) never
+-- inserts here: there is no `deactivated:` key to read.
 CREATE TABLE IF NOT EXISTS slack_deactivated_users (
     email TEXT PRIMARY KEY REFERENCES principals(id)
 );

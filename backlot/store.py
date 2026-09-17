@@ -870,6 +870,15 @@ CREATE TABLE IF NOT EXISTS group_members (
     group_id TEXT NOT NULL, user_id TEXT NOT NULL, PRIMARY KEY (group_id, user_id)
 );
 
+-- A roster entry's `deactivated: true` (backlot.importer.byo.load_roster) — Slack's own concept
+-- (a member `users.list`/`.info` answers with `deleted`/`is_forgotten: true` and drops from
+-- `conversations.members`), so it lives beside `fireflies_users` rather than widening the central
+-- `principals` row every other vendor reads. A derived roster (no `--roster`) never inserts here:
+-- there is no `deactivated:` key to read.
+CREATE TABLE IF NOT EXISTS slack_deactivated_users (
+    email TEXT PRIMARY KEY REFERENCES principals(id)
+);
+
 -- Build-time facts that cannot be recomputed from the rows. `source_documents` is the count of
 -- documents the corpus OFFERED, which differs from COUNT(*) because faithful parsing promotes
 -- structure inside a document to first-class rows (one Slack transcript -> many messages).
@@ -3203,7 +3212,11 @@ def slack_private_channel_members(conn, channel) -> list[str] | None:
             members.add(pid)
         elif ptype == "group":
             members.update(r["id"] for r in group_members(conn, pid))
-    return sorted(members)
+    # A deactivated member is dropped from conversations.members (measured against a live
+    # workspace on 2026-09-17: none of 9 deactivated members appeared in any of 8 readable
+    # channels) — their messages stay in history unchanged, only membership is affected.
+    deactivated = {r[0] for r in conn.execute("SELECT email FROM slack_deactivated_users")}
+    return sorted(members - deactivated)
 
 
 def slack_channel_member_emails(conn, channel, limit=100, offset=0) -> list[str]:
@@ -3226,6 +3239,7 @@ def slack_channel_member_emails(conn, channel, limit=100, offset=0) -> list[str]
         r[0]
         for r in conn.execute(
             "SELECT DISTINCT author_email FROM slack_messages WHERE channel = ? "
+            "AND author_email NOT IN (SELECT email FROM slack_deactivated_users) "
             "ORDER BY author_email LIMIT ? OFFSET ?",
             (channel, limit, offset),
         )
@@ -3256,7 +3270,9 @@ def slack_membership_violations(conn) -> list[tuple[str, str]]:
         for (email,) in conn.execute(
             "SELECT DISTINCT m.author_email FROM slack_messages m "
             "JOIN principals p ON p.id = m.author_email AND p.type = 'user' "
-            "WHERE m.channel = ? ORDER BY m.author_email",
+            "WHERE m.channel = ? "
+            "AND m.author_email NOT IN (SELECT email FROM slack_deactivated_users) "
+            "ORDER BY m.author_email",
             (channel,),
         ):
             if email not in allowed:
@@ -3291,7 +3307,9 @@ def slack_channel_member_counts(conn) -> dict[str, int]:
     counts = {
         r[0]: r[1]
         for r in conn.execute(
-            "SELECT channel, COUNT(DISTINCT author_email) FROM slack_messages GROUP BY channel"
+            "SELECT channel, COUNT(DISTINCT author_email) FROM slack_messages "
+            "WHERE author_email NOT IN (SELECT email FROM slack_deactivated_users) "
+            "GROUP BY channel"
         )
     }
     return {
@@ -3310,12 +3328,25 @@ def count_slack_channel_members(conn, channel) -> int:
     if members is not None:
         return len(members)
     return conn.execute(
-        "SELECT COUNT(DISTINCT author_email) FROM slack_messages WHERE channel = ?", (channel,)
+        "SELECT COUNT(DISTINCT author_email) FROM slack_messages WHERE channel = ? "
+        "AND author_email NOT IN (SELECT email FROM slack_deactivated_users)",
+        (channel,),
     ).fetchone()[0]
 
 
 def all_user_emails(conn) -> list[str]:
     return [r[0] for r in conn.execute("SELECT id FROM principals WHERE type = 'user' ORDER BY id")]
+
+
+def slack_is_deactivated(conn, email) -> bool:
+    """Whether a roster entry named ``email`` with ``deactivated: true`` — real Slack's own
+    `deleted`/`is_forgotten` flag on a member, measured against a live workspace on 2026-09-17
+    (`users.list`/`.info`: 9 of 19 members carry `"deleted": true` and an undocumented but present
+    `"is_forgotten": true`; the rest carry neither key)."""
+    return (
+        conn.execute("SELECT 1 FROM slack_deactivated_users WHERE email = ?", (email,)).fetchone()
+        is not None
+    )
 
 
 def distinct_slack_author_emails(conn) -> list[str]:

@@ -689,6 +689,7 @@ def load_roster(path) -> dict:
             - {name: Ava Chen, email: ava.chen@redwoodinference.com}
             - {name: Bo Ryu, email: bo.ryu@redwoodinference.com,
                groups: [proj-checkout-rework, res-emea-support]}
+            - {name: Cy Ito, email: cy.ito@redwoodinference.com, deactivated: true}
         contacts:                         # principals with NO token (display-only)
           - {name: Zoe Newperson, email: zoe.newperson@redwoodinference.com, group: engineering}
 
@@ -697,6 +698,13 @@ def load_roster(path) -> dict:
     ``slugify``.
     ``contacts`` are people a corpus names who are not accounts — they own and read documents but
     cannot authenticate, the distinction ``tokens.yaml`` draws.
+
+    An entry's ``deactivated: true`` is Slack's own offboarded-member state — the person keeps
+    their token in ``tokens.yaml`` (real answers a deactivated member's own calls with
+    ``account_inactive`` rather than dropping the credential), but ``users.list``/``.info`` answer
+    them ``deleted``/``is_forgotten: true`` and ``conversations.members`` drops them. No other
+    vendor Backlot serves has this concept, so it is read here and acted on only in
+    ``backlot.routers.slack``.
 
     A person may belong to more than one group — a squad, a compliance register, a region-scoped
     grant — which one department slot cannot say. An entry's ``groups`` list adds those memberships
@@ -735,11 +743,21 @@ def load_roster(path) -> dict:
 
     users: dict[str, dict] = {}
 
-    def _merge(email: str, name: str, groups: list[str], token: bool, *, stated: bool) -> None:
+    def _merge(
+        email: str,
+        name: str,
+        groups: list[str],
+        token: bool,
+        *,
+        stated: bool,
+        deactivated: bool = False,
+    ) -> None:
         # A person may appear more than once — two departments, or a department entry plus a
         # contact carrying extra register memberships. Membership is the UNION: replacing the
         # entry drops the earlier groups, and a `readers: [group:...]` clause then wrongly denies
         # the person it names. A contact never upgrades an account, but it never demotes one.
+        # `deactivated` unions the same way — once any entry for a person states it, they stay
+        # deactivated regardless of order.
         #
         # Names do not union, so first-seen-wins is wrong for them: `name` always has a
         # fallback — one derived from the address — and so never looks absent. An entry that
@@ -748,13 +766,20 @@ def load_roster(path) -> dict:
         # between two stated names the first still wins, as for groups.
         cur = users.get(email)
         if cur is None:
-            users[email] = {"name": name, "groups": groups, "token": token, "_stated": stated}
+            users[email] = {
+                "name": name,
+                "groups": groups,
+                "token": token,
+                "_stated": stated,
+                "deactivated": deactivated,
+            }
             return
         # No empty-string filter here: both operands came from `_groups`, which drops them
         # already. Inside `_groups` the filter is load-bearing — it catches a name whose slug
         # collapses to "" — and repeating it here only suggested it could still happen.
         cur["groups"] = list(dict.fromkeys(cur["groups"] + groups))
         cur["token"] = cur["token"] or token
+        cur["deactivated"] = cur["deactivated"] or deactivated
         if stated and not cur["_stated"]:
             cur["name"] = name
             cur["_stated"] = True
@@ -767,6 +792,7 @@ def load_roster(path) -> dict:
                 _groups(p, slugify(dept) or None),
                 True,
                 stated=bool(p.get("name")),
+                deactivated=bool(p.get("deactivated")),
             )
     for p in data.get("contacts") or []:
         _merge(
@@ -775,6 +801,7 @@ def load_roster(path) -> dict:
             _groups(p, _primary(p.get("group"))),
             False,
             stated=bool(p.get("name")),
+            deactivated=bool(p.get("deactivated")),
         )
     for u in users.values():
         u.pop("_stated", None)
@@ -3423,6 +3450,15 @@ def _load_records(
             "ON CONFLICT(email) DO UPDATE SET served_id=excluded.served_id",
             (email, synth.fireflies_user_id(email)),
         )
+    # The roster is authoritative for `deactivated` on every load, not just the first: a person a
+    # later roster stops marking deactivated is un-deactivated here, the same way `closed` above
+    # treats the whole principal set as replaced by what the roster currently states.
+    if closed:
+        for email, u in roster_data["users"].items():
+            if u["deactivated"]:
+                conn.execute("INSERT OR IGNORE INTO slack_deactivated_users VALUES (?)", (email,))
+            else:
+                conn.execute("DELETE FROM slack_deactivated_users WHERE email = ?", (email,))
     loader.write_containers()
     for g, email in memberships:
         conn.execute("INSERT OR REPLACE INTO group_members VALUES (?,?)", (g, email))

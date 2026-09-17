@@ -7,10 +7,11 @@ or call the response builder directly.
 from __future__ import annotations
 
 import pytest
+import yaml
 
 from backlot import store, synth
 from backlot.routers import slack
-from tests._helpers import corpus_client, crawl_slack, db_count, tiny_corpus
+from tests._helpers import client_for, corpus_client, crawl_slack, db_count, tiny_corpus
 
 
 def test_admin_slack_crawls_all(client, admin_h, ro_conn):
@@ -1446,3 +1447,87 @@ def test_slack_reaction_ids_and_count_are_derived_from_the_addresses(tmp_path):
     ]
     # Slack's own `defs_user_id`, so an id Backlot mints is one the vendor's spec would accept.
     assert all(re.fullmatch(r"[UW][A-Z0-9]{2,}", u) for r in reactions for u in r["users"])
+
+
+def test_slack_deactivated_member_is_deleted_and_dropped_from_membership(tmp_path):
+    """A roster's `deactivated: true` (`backlot.importer.byo.load_roster`). Measured live against
+    a workspace on 2026-09-17: 9 of 19 `users.list` members carried `"deleted": true` plus an
+    undocumented but present `"is_forgotten": true`; the other members carried neither key. None
+    of the 9 appeared in any of 8 readable channels' `conversations.members`, though their
+    messages stayed in channel history, and their own token still resolves — real answers it
+    `account_inactive` rather than dropping the credential."""
+    settings = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "channel": "incidents",
+                "content": "rolling back the deploy now",
+                "author_email": "ava@acme.com",
+            },
+            {
+                "source_type": "slack",
+                "channel": "incidents",
+                "content": "thanks ava",
+                "author_email": "bo@acme.com",
+            },
+        ],
+    )
+    conn = store.connect_rw(settings.db_path)
+    conn.execute("INSERT INTO slack_deactivated_users VALUES (?)", ("ava@acme.com",))
+    conn.commit()
+    conn.close()
+
+    with client_for(settings) as client:
+        tokens = yaml.safe_load(settings.tokens_path.read_text())
+        admin_h = {"Authorization": f"Bearer {tokens['admin_token']}"}
+        ava_token = next(u["token"] for u in tokens["users"] if u["email"] == "ava@acme.com")
+        ava_uid, bo_uid = synth.slack_user_id("ava@acme.com"), synth.slack_user_id("bo@acme.com")
+
+        by_email = {
+            u["profile"]["email"]: u
+            for u in client.get("/slack/api/users.list", headers=admin_h).json()["members"]
+        }
+        assert by_email["ava@acme.com"]["deleted"] is True
+        assert by_email["ava@acme.com"]["is_forgotten"] is True
+        assert by_email["bo@acme.com"]["deleted"] is False
+        assert "is_forgotten" not in by_email["bo@acme.com"]
+
+        info = client.get(
+            "/slack/api/users.info", headers=admin_h, params={"user": ava_uid}
+        ).json()["user"]
+        assert info["deleted"] is True and info["is_forgotten"] is True
+
+        cid = client.get(
+            "/slack/api/conversations.list", headers=admin_h, params={"limit": 10}
+        ).json()["channels"][0]["id"]
+        members = client.get(
+            "/slack/api/conversations.members",
+            headers=admin_h,
+            params={"channel": cid, "limit": 10},
+        ).json()["members"]
+        assert ava_uid not in members and bo_uid in members
+        info_ch = client.get(
+            "/slack/api/conversations.info",
+            headers=admin_h,
+            params={"channel": cid, "include_num_members": "true"},
+        ).json()["channel"]
+        assert info_ch["num_members"] == len(members)
+
+        history = client.get(
+            "/slack/api/conversations.history", headers=admin_h, params={"channel": cid}
+        ).json()["messages"]
+        assert any(m["user"] == ava_uid for m in history), (
+            "deactivation must not erase the person's messages from history"
+        )
+
+        refused = client.post(
+            "/slack/api/auth.test", headers={"Authorization": f"Bearer {ava_token}"}
+        ).json()
+        assert refused == {"ok": False, "error": "account_inactive"}
+        # a bo-authenticated call is unaffected
+        bo_token = next(u["token"] for u in tokens["users"] if u["email"] == "bo@acme.com")
+        ok = client.post(
+            "/slack/api/auth.test", headers={"Authorization": f"Bearer {bo_token}"}
+        ).json()
+        assert ok["ok"] is True

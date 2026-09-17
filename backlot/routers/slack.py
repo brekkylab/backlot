@@ -169,12 +169,19 @@ def _caller_or_error(request: Request) -> tuple[Caller | None, dict | None]:
 
     ``auth.slack_token`` returns None for every case in the first group: an unrecognised scheme
     parses to nothing, and an empty query or form value is falsy.
+
+    A resolved token whose person a roster marks ``deactivated: true`` answers Slack's own
+    ``account_inactive`` ("Authentication token is for a deleted user or workspace") rather than
+    the caller it would otherwise resolve to — the token is kept in `tokens.yaml` (not dropped),
+    so this is the one place that refusal is drawn.
     """
     token = auth.slack_token(request)
     caller = auth.acl(request).resolve(token)
-    if caller is not None:
-        return caller, None
-    return None, _err("invalid_auth" if token else "not_authed")
+    if caller is None:
+        return None, _err("invalid_auth" if token else "not_authed")
+    if not caller.is_admin and store.slack_is_deactivated(auth.conn(request), caller.email):
+        return None, _err("account_inactive")
+    return caller, None
 
 
 def _missing_argument(request: Request, *names: str) -> JSONResponse | None:
@@ -310,12 +317,16 @@ def _user_obj(conn, email: str) -> dict:
     parts = display.split()
     updated = synth.epoch("user:" + email)
     is_bot = not u and email.split("@")[0].endswith("bot")  # display-only "*bot" speakers
-    return {
+    # A roster entry's `deactivated: true`. Measured against a live workspace on 2026-09-17:
+    # a deactivated member's users.list/.info carries "is_forgotten": true beside "deleted": true;
+    # an active member carries neither key at all, not "is_forgotten": false.
+    deactivated = bool(u) and store.slack_is_deactivated(conn, email)
+    obj = {
         "id": synth.slack_user_id(email),
         "team_id": TEAM_ID,
         "name": _handle(email),
         "real_name": display,
-        "deleted": False,
+        "deleted": deactivated,
         "is_bot": is_bot,
         "is_app_user": is_bot,
         "is_admin": False,
@@ -345,6 +356,9 @@ def _user_obj(conn, email: str) -> dict:
             "avatar_hash": synth._digest(email)[:12],
         },
     }
+    if deactivated:
+        obj["is_forgotten"] = True
+    return obj
 
 
 @router.api_route("/api.test", methods=["GET", "POST"], response_model=SlackApiTest)

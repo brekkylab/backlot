@@ -1778,32 +1778,108 @@ def test_confluence_space_reads_carry_the_identifiers_and_links_real_sends(clien
     assert single["_links"]["webui"] == f"/spaces/{key}"
 
 
-def test_confluence_expands_permissions_on_both_space_reads(client, admin_h):
-    """The roster `space/{key}/permission` used to answer, where real answers it. One operation,
-    `read`/`space`, because the ACL states who reads a document and nothing else; real answered 120
-    entries over 26 operations on the space measured, and the other 25 operations are not derivable
-    from a corpus. An expansion that is served leaves `_expandable`, which is how a client tells an
-    expansion it got from one it asked for and did not."""
+def test_confluence_expands_permissions_with_one_entry_per_grant(tmp_path):
+    """Real's unit is the grant, not the space — see ``_space_permissions`` for the counts behind
+    that. A user grant is a single-user subject; a group or an org grant carries no `subjects` key
+    at all, which is the shape real gives a principal it leaves collapsed. Its own corpus because
+    the shared one carries no user grant on a Confluence space, so neither shape could be told from
+    the other there."""
+    corpus = [
+        {
+            "source_type": "confluence",
+            "space": "open",
+            "title": "Open",
+            "content": "Body.",
+            "author_email": "ava@acme.com",
+            "visibility": "public",
+        },
+        {
+            "source_type": "confluence",
+            "space": "eng-only",
+            "title": "Group",
+            "content": "Body.",
+            "author_email": "ava@acme.com",
+            "author_groups": ["engineering"],
+            "visibility": "group",
+        },
+        {
+            "source_type": "confluence",
+            "space": "bobs",
+            "title": "Private",
+            "content": "Body.",
+            "author_email": "bob@acme.com",
+            "visibility": "private",
+        },
+    ]
+    settings = tiny_corpus(tmp_path, corpus)
+    with client_for(settings, reload=True) as c:
+        admin = {"Authorization": f"Bearer {settings.admin_token}"}
+        spaces = c.get("/atlassian/wiki/rest/api/space?expand=permissions", headers=admin).json()
+        by_name = {s["name"]: s["permissions"] for s in spaces["results"]}
+        assert sorted(by_name) == ["bobs", "eng-only", "open"]
+
+        for name in ("open", "eng-only"):
+            (entry,) = by_name[name]
+            assert "subjects" not in entry, name
+            assert entry["operation"] == {"operation": "read", "targetType": "space"}
+            # an org grant is every MEMBER, not every visitor, and an anonymous caller is refused
+            # before a space resolves — so neither flag is ever True here
+            assert entry["anonymousAccess"] is False
+            assert entry["unlicensedAccess"] is False
+
+        (private,) = by_name["bobs"]
+        users = private["subjects"]["user"]
+        assert users["size"] == len(users["results"]) == 1
+        assert users["results"][0]["email"] == "bob@acme.com"
+        assert private["subjects"]["_expandable"] == {"group": ""}
+
+        ids = [e["id"] for perms in by_name.values() for e in perms]
+        assert len(ids) == len(set(ids))
+
+        # the subject is the object every Confluence read carries: measured 2026-09-17, real sends
+        # the same thirteen keys for a roster subject, a page's `version.by` and its `createdBy`
+        page = c.get(
+            "/atlassian/wiki/rest/api/content?limit=1&expand=version,history", headers=admin
+        ).json()["results"][0]
+        subject = users["results"][0]
+        assert list(subject) == [
+            "type",
+            "accountId",
+            "accountType",
+            "email",
+            "publicName",
+            "profilePicture",
+            "displayName",
+            "isExternalCollaborator",
+            "isGuest",
+            "locale",
+            "accountStatus",
+            "_expandable",
+            "_links",
+        ]
+        assert subject["accountStatus"] == "active"
+        assert subject["isGuest"] is False and subject["isExternalCollaborator"] is False
+        assert subject["_expandable"] == {"operations": "", "personalSpace": ""}
+        assert subject["_links"]["self"] == (
+            f"http://testserver/wiki/rest/api/user?accountId={subject['accountId']}"
+        )
+        for user in (page["version"]["by"], page["history"]["createdBy"]):
+            assert list(user) == list(subject)
+
+
+def test_confluence_both_space_reads_answer_the_same_roster(client, admin_h):
+    """An expansion that is served leaves `_expandable`, which is how a client tells an expansion it
+    got from one it asked for and did not, and the listing's entry is the single read's."""
     listed = client.get(
         "/atlassian/wiki/rest/api/space?expand=permissions", headers=admin_h
     ).json()["results"][0]
     single = client.get(
         f"/atlassian/wiki/rest/api/space/{listed['key']}?expand=permissions", headers=admin_h
     ).json()
-
     for space in (listed, single):
+        assert space["permissions"]
         assert "permissions" not in space["_expandable"]
         assert len(space["_expandable"]) == 12
-        (entry,) = space["permissions"]
-        assert entry["operation"] == {"operation": "read", "targetType": "space"}
-        assert entry["unlicensedAccess"] is False
-        # an org-wide grant is every MEMBER, not every visitor, and an anonymous caller is refused
-        # before a space resolves — so the roster names the org and the flag stays False
-        assert entry["anonymousAccess"] is False
-        users = entry["subjects"]["user"]
-        assert users["size"] == len(users["results"]) > 0
-        assert entry["subjects"]["_expandable"] == {"group": ""}
-
     assert single["permissions"] == listed["permissions"]
 
 
@@ -1816,6 +1892,7 @@ def test_confluence_expands_permissions_on_both_space_reads(client, admin_h):
         ("permissions.bogus", False, True),
         ("descriptions", False, False),
         ("bogus", False, False),
+        ("", False, False),
     ],
 )
 def test_confluence_expands_the_property_the_first_dotted_segment_names(
@@ -1823,9 +1900,8 @@ def test_confluence_expands_the_property_the_first_dotted_segment_names(
 ):
     """Measured 2026-09-17 on `space/{key}`: the property is named by the FIRST dotted segment of
     each term, so `description.plain` and `permissions.bogus` both expand, and a term naming no
-    property is ignored rather than refused — `expand=bogus` answers 200 with `_expandable` whole.
-    Which SUB-property a term asks for does not change the body here, so `description.view` gets
-    the same plain rendering `description` does; that gap is in `_space`'s comment.
+    property is ignored rather than refused — `expand=bogus` answers 200 with `_expandable` whole,
+    as an absent `expand` does.
 
     Both reads take the expansion, so both are asserted: they share `_space`.
     """
@@ -1842,11 +1918,38 @@ def test_confluence_expands_the_property_the_first_dotted_segment_names(
         assert ("permissions" in space["_expandable"]) is not permissions
 
 
-def test_confluence_space_read_without_the_expansion_carries_no_permissions(client, admin_h):
-    space = client.get("/atlassian/wiki/rest/api/space", headers=admin_h).json()["results"][0]
-    plain = client.get(f"/atlassian/wiki/rest/api/space/{space['key']}", headers=admin_h).json()
-    assert "permissions" not in plain
-    assert plain["_expandable"]["permissions"] == ""
+@pytest.mark.parametrize(
+    "expand,served,expandable",
+    [
+        ("description", (), {"view": "", "plain": ""}),
+        ("description.plain", ("plain",), {"view": ""}),
+        ("description.view", ("view",), {"plain": ""}),
+        ("description.plain,description.view", ("plain", "view"), None),
+    ],
+)
+def test_confluence_description_carries_a_value_only_for_the_rendering_asked_for(
+    client, admin_h, expand, served, expandable
+):
+    """Measured 2026-09-17 on `space/{key}`: the bare term carries no value at all, `.plain` and
+    `.view` each carry one and leave the other in a nested `_expandable`, and asking for both leaves
+    no `_expandable`. A client reading `description.plain.value` off the bare term gets nothing from
+    real, so answering one there would be a body real does not send."""
+    listed = client.get(f"/atlassian/wiki/rest/api/space?expand={expand}", headers=admin_h).json()[
+        "results"
+    ][0]
+    single = client.get(
+        f"/atlassian/wiki/rest/api/space/{listed['key']}?expand={expand}", headers=admin_h
+    ).json()
+    for space in (listed, single):
+        got = space["description"]
+        assert tuple(k for k in got if k != "_expandable") == served
+        for rendering in served:
+            assert got[rendering] == {
+                "value": f"{space['name']} space",
+                "representation": rendering,
+                "embeddedContent": [],
+            }
+        assert got.get("_expandable") == expandable
 
 
 def test_confluence_refuses_the_permission_read_before_it_resolves_the_key(client, admin_h):

@@ -408,9 +408,10 @@ def atlassian_cloud_id(org: str) -> str:
     Real's is the site's own cloud id, which `/_edge/tenant_info` answers and a corpus has no
     equivalent of, so it is seeded from the org name like every other synthetic id here. Stable
     across a run and across runs on the same org, because an ``ari`` is an address clients store.
+
+    Through :func:`_uuid_from` because real's is a v4 UUID, which a raw digest slice is not.
     """
-    h = _digest("cloudid:" + org)
-    return f"{h[0:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:32]}"
+    return _uuid_from("cloudid:" + org)
 
 
 def github_login(email: str) -> str:

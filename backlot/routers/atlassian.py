@@ -985,8 +985,8 @@ def _require_space(request: Request, conn, key: str) -> str:
 
     Both space reads answer an unreachable key with the SAME ``404 {"message": "No space with the
     given key exists"}`` a key naming nothing gets, so neither confirms the space exists — worth
-    withholding because ``?expand=permissions`` names who reads a space the caller cannot open.
-    Unmeasured for a scoped caller, see :func:`_reachable_spaces`.
+    withholding because ``?expand=permissions`` names a principal granted a space the caller cannot
+    open. Unmeasured for a scoped caller, see :func:`_reachable_spaces`.
     """
     ids = auth.visible_ids(request, _confluence_caller(request))
     container = _space_container_for_key(conn, key)
@@ -1000,11 +1000,12 @@ def _require_space(request: Request, conn, key: str) -> str:
     raise HTTPException(status_code=404, detail="No space with the given key exists")
 
 
-# The thirteen keys real names under `_expandable` on a space, in real's own order. Four of them
-# carry a path on real and nine are the empty string; `homepage` is empty here rather than a
-# `/rest/api/content/{id}` because a corpus states no home page for a space, and the empty string
-# is real's own value for a key it will expand but cannot address. Measured on
-# brekkylab.atlassian.net, 2026-09-16, on a global space and two personal ones, which agreed.
+# The thirteen keys real names under `_expandable` on a space, in real's own order. Measured on
+# brekkylab.atlassian.net, 2026-09-16, on a global space and two personal ones, which agreed: four
+# of the keys carry a path and nine are the empty string. `homepage` is one of the four there, and
+# is empty here — a corpus names no home page for a space, and a space without one is not something
+# the measurement could produce, so the empty string is this server's gap rather than a value real
+# was seen to send.
 def _space_expandable(key: str) -> dict:
     return {
         "settings": f"/rest/api/space/{key}/settings",
@@ -1023,40 +1024,66 @@ def _space_expandable(key: str) -> dict:
     }
 
 
-def _space_permissions(conn, container: str) -> list[dict]:
+def _space_permissions(request: Request, conn, container: str) -> list[dict]:
     """The space permission roster, as `?expand=permissions` answers it.
+
+    One entry per GRANT, which is real's unit: of the 120 entries on the space measured
+    (brekkylab.atlassian.net, 2026-09-17) 81 carry a subject and every one of those is a single
+    user, while the other 39 carry no `subjects` key at all. So the roster's length tracks grants
+    rather than membership, and `permissions[i].subjects.user.results[0]` names one principal. A
+    `group` or `org` grant is an entry with no `subjects` here for the same reason real leaves those
+    collapsed — no group subject appeared under this expansion on the space measured.
 
     One operation, `read`/`space`, because it is the only one a corpus states: the ACL says who can
     read a document and nothing at all about who may administer the space or delete a comment. Real
-    answered 120 entries across 26 operations on the space measured (brekkylab.atlassian.net,
-    2026-09-16), five of them `read`/`space`; inventing the other 25 operations would put a
-    permission model on the wire that the corpus never licensed, and the five are one roster here
-    because a corpus states the readers once.
+    answered 26 operations there, five of them `read`/`space`; inventing the other 25 would put a
+    permission model on the wire that the corpus never licensed.
 
-    ``anonymousAccess`` is False whatever the grant, because no grant a corpus can write says
-    "the public": ``container_member_emails`` of ``None`` is an ORG-wide grant (`store._expand_grants`
-    returns it for `principal_type == "org"`), which is every member and not every visitor, and
-    ``_confluence_caller`` refuses an anonymous caller before a space is resolved at all. So a space
-    reachable by the whole org is a roster naming the whole org, and the flag stays False — real's
-    was False on the space measured. The route this replaces answered ``anonymousAccess: True`` with
-    an EMPTY roster for that grant, which claimed public access this server then refused.
+    ``anonymousAccess`` is False whatever the grant, because no grant a corpus can write says "the
+    public": an org grant is every MEMBER and not every visitor (`store._expand_grants` returns
+    ``None`` for `principal_type == "org"`), and ``_confluence_caller`` refuses an anonymous caller
+    before a space is resolved at all. Real's was False on every entry measured.
+
+    The order is this function's own — real's was not measured — and it is sorted so that two reads
+    of the same space agree.
     """
-    emails = store.container_member_emails(conn, "confluence", container)
-    if emails is None:
-        emails = {u["email"] for u in store.list_users(conn)}
-    users = [_conf_user(e) for e in sorted(emails)]
-    return [
-        {
-            "id": synth.confluence_id(f"perm:{container}:read"),
-            "subjects": {
-                "user": {"results": users, "size": len(users)},
+    entries = []
+    for g in sorted(store.container_grants(conn, "confluence", container), key=tuple):
+        ptype, pid = g["principal_type"], g["principal_id"]
+        entry = {"id": synth.confluence_id(f"perm:{container}:read:{ptype}:{pid}")}
+        if ptype == "user":
+            entry["subjects"] = {
+                "user": {"results": [_conf_user(pid, _site(request))], "size": 1},
                 "_expandable": {"group": ""},
-            },
-            "operation": {"operation": "read", "targetType": "space"},
-            "anonymousAccess": False,
-            "unlicensedAccess": False,
-        }
-    ]
+            }
+        entry["operation"] = {"operation": "read", "targetType": "space"}
+        entry["anonymousAccess"] = False
+        entry["unlicensedAccess"] = False
+        entries.append(entry)
+    return entries
+
+
+def _space_description(container: str, subs: set[str]) -> dict:
+    """A space description, as the sub-properties in ``subs`` select it.
+
+    Measured on brekkylab.atlassian.net, 2026-09-17: the bare `expand=description` carries NO value,
+    only `{"_expandable": {"view": "", "plain": ""}}`. The value arrives for `description.plain` or
+    `description.view`, each leaving the other spelling in a nested `_expandable`, and asking for
+    both leaves no `_expandable` at all. A client that reads `description.plain.value` off the bare
+    spelling gets nothing from real, so serving it there would answer a body real does not send.
+
+    The two renderings differ only in `representation` here, because a corpus states one description
+    text and real's was empty on the space measured.
+    """
+    out = {
+        sub: {"value": f"{container} space", "representation": sub, "embeddedContent": []}
+        for sub in ("plain", "view")
+        if sub in subs
+    }
+    rest = {sub: "" for sub in ("view", "plain") if sub not in subs}
+    if rest:
+        out["_expandable"] = rest
+    return out
 
 
 def _space(request: Request, conn, container: str, expand: str, *, listed: bool) -> dict:
@@ -1084,19 +1111,20 @@ def _space(request: Request, conn, container: str, expand: str, *, listed: bool)
         "status": "current",
         "_expandable": _space_expandable(key),
     }
-    # An expansion is named by the FIRST dotted segment of each comma-separated term: real answers
+    # A term names its property before the first dot and its sub-property after: real answers
     # `expand=description.plain` and `expand=permissions.bogus` with the property expanded, and
-    # ignores a term that names no property (`descriptions`, `bogus`) rather than refusing it.
-    # Measured on brekkylab.atlassian.net, 2026-09-17, on `space/{key}`. What each SUB-property
-    # selects is not reproduced: real gives `expand=description` the empty `_expandable` pair
-    # `{view, plain}` and only `description.plain` or `.view` the value, where the description here
-    # is one plain rendering whichever spelling asks for it.
-    wanted = {e.strip().split(".", 1)[0] for e in (expand or "").split(",") if e.strip()}
+    # ignores a term naming no property (`descriptions`, `bogus`) rather than refusing it. Measured
+    # on brekkylab.atlassian.net, 2026-09-17, on `space/{key}`.
+    wanted: dict[str, set[str]] = {}
+    for term in (expand or "").split(","):
+        head, _, sub = term.strip().partition(".")
+        if head:
+            wanted.setdefault(head, set()).update([sub] if sub else [])
     if "description" in wanted:
-        space["description"] = {"plain": {"value": f"{container} space", "representation": "plain"}}
+        space["description"] = _space_description(container, wanted["description"])
         space["_expandable"].pop("description", None)
     if "permissions" in wanted:
-        space["permissions"] = _space_permissions(conn, container)
+        space["permissions"] = _space_permissions(request, conn, container)
         space["_expandable"].pop("permissions", None)
     links = {"webui": f"/spaces/{key}", "self": f"{site}/wiki/rest/api/space/{key}"}
     if not listed:
@@ -1138,15 +1166,15 @@ async def confluence_spaces(request: Request):
 
 @router.get("/wiki/rest/api/space/{key}/permission", include_in_schema=False)
 async def confluence_space_permission(key: str, request: Request):
-    """Real refuses a `GET` here, so Backlot refuses one too, and the roster this route used to
-    answer is served where real serves it: `space/{key}?expand=permissions`.
+    """Real refuses a `GET` here, so Backlot refuses one too, and the roster is served where real
+    serves it: `space/{key}?expand=permissions`.
 
     A route rather than nothing at all, because the path having no handler is a 404 and real's
     answer is a 405 — the vendor's own document declares one operation here and it is a `POST`
     (add a space permission), a write no source in Backlot serves. ``include_in_schema=False``
     keeps the refusal off ``app.openapi()``, which is what `backlot diff` compares: the 405 is a
-    fact about the wire, and declaring a `GET` operation the vendor does not have is what the
-    acknowledged `extra_operation` for this path used to record.
+    fact about the wire, and a `GET` operation on this path is a declaration the vendor's document
+    does not make.
 
     The refusal covers the `POST` as well, where real gets past the method check: a `POST` here
     answers 415 with Spring's `UNSUPPORTED_MEDIA_TYPE` naming the absent content type (measured
@@ -1346,7 +1374,7 @@ async def confluence_comments(content_id: int, request: Request):
                 "version": {
                     "number": 1,
                     "when": synth.rfc3339_millis(ts),
-                    "by": _conf_user(author),
+                    "by": _conf_user(author, _site(request)),
                     "minorEdit": False,
                     "message": "",
                 },
@@ -1381,7 +1409,7 @@ async def confluence_restrictions(content_id: int, request: Request):
     if store.get_document(conn, "confluence", content_id, visible_ids=ids) is None:
         raise HTTPException(status_code=404, detail="No content found with id")
     emails = store.doc_member_emails(conn, "confluence", content_id)
-    users = [] if emails is None else [_conf_user(e) for e in sorted(emails)]
+    users = [] if emails is None else [_conf_user(e, _site(request)) for e in sorted(emails)]
 
     def _op(name):
         return {
@@ -1396,21 +1424,43 @@ async def confluence_restrictions(content_id: int, request: Request):
     return {"read": _op("read"), "update": _op("update")}
 
 
-def _conf_user(email: str) -> dict:
+def _conf_user(email: str, site: str) -> dict:
+    """The user object every Confluence read carries.
+
+    One helper for all of them because real sends ONE object: the space roster's subject, a page's
+    `version.by` and `history.createdBy`, and a comment's own two are the same thirteen keys in the
+    same order, measured on brekkylab.atlassian.net, 2026-09-17, on `space/{key}?expand=permissions`,
+    `content?expand=version` and `content/{id}/child/comment?expand=version,history`.
+
+    Four of the thirteen are constants on the site measured and a corpus states nothing that could
+    vary them: `isExternalCollaborator`, `isGuest`, `accountStatus` and `_expandable`. `locale` is
+    real's ACCOUNT language setting (`"ko"` there, and it is what the error messages follow), which
+    is a property of the reader rather than of the corpus, so it is one value here.
+
+    ``site`` is the caller's own base (:func:`_site`) because `_links.self` is an address a client
+    follows — the shape `github._gh_user` takes `_api_base(request)` for.
+    """
     aid = synth.atlassian_account_id(email or "unknown")
+    name = (email or "unknown").split("@")[0]
     return {
         "type": "known",
         "accountId": aid,
         "accountType": "atlassian",
         "email": email,
-        "publicName": (email or "unknown").split("@")[0],
-        "displayName": (email or "unknown").split("@")[0].replace(".", " ").title(),
+        "publicName": name,
         "profilePicture": {
             "path": f"/wiki/aa-avatar/{aid}",
             "width": 48,
             "height": 48,
             "isDefault": False,
         },
+        "displayName": name.replace(".", " ").title(),
+        "isExternalCollaborator": False,
+        "isGuest": False,
+        "locale": "en",
+        "accountStatus": "active",
+        "_expandable": {"operations": "", "personalSpace": ""},
+        "_links": {"self": f"{site}/wiki/rest/api/user?accountId={aid}"},
     }
 
 
@@ -1474,10 +1524,10 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
         page["history"] = {
             "latest": True,
             "createdDate": synth.rfc3339_millis(created),
-            "createdBy": _conf_user(author),
+            "createdBy": _conf_user(author, _site(request)),
             "lastUpdated": {
                 "when": synth.rfc3339_millis(updated),
-                "by": _conf_user(author),
+                "by": _conf_user(author, _site(request)),
                 "number": vnum,
             },
         }
@@ -1485,7 +1535,7 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
         page["version"] = {
             "number": vnum,
             "when": synth.rfc3339_millis(updated),
-            "by": _conf_user(author),
+            "by": _conf_user(author, _site(request)),
             "minorEdit": bool(row["minor_edit"]),
             "message": row["version_message"] or "",
         }

@@ -46,8 +46,9 @@ Ordered as the table above, by `source_type`.
 | `space` | `expand=description,permissions` |
 | `space/{key}` | `expand=description,permissions` |
 
-`expand=permissions` carries the space's reader roster on either read — one `read`/`space` entry
-naming the accounts the corpus lets read that space, which is the only operation an ACL states.
+`expand=permissions` carries the space's permission roster on either read, one entry per ACL grant
+— a user grant naming that user, a group or org grant naming none — for `read`/`space`, the only
+operation an ACL states.
 
 ### Fireflies — `/fireflies/graphql`
 

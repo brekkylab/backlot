@@ -102,6 +102,23 @@ def _require(request: Request) -> Caller:
     return auth.require_bearer(request, "Bad credentials")
 
 
+async def _validate_bad_credential(request: Request) -> None:
+    """401 a credential that arrived and did not resolve — ahead of the version check.
+
+    Real resolves a presented credential before it looks at ``X-GitHub-Api-Version``: a bad bearer
+    with an unsupported version pinned is "Bad credentials", not the version's 400 (measured against
+    api.github.com 2026-09-15 on ``/repos/{owner}/{repo}`` and ``/rate_limit``). A request carrying
+    no credential at all still meets the version check first, measured on ``/user/repos``, the one
+    served route real refuses an anonymous caller: an unsupported version there is the version's 400
+    and a supported one is "Requires authentication" (2026-09-17, three runs of each on cache-busted
+    URLs). So this only fires for a token that arrived and failed to resolve;
+    :func:`_validate_path_owner` answers the missing-credential case in its own place, after the
+    version check.
+    """
+    if auth.bearer_token(request) is not None:
+        auth.require_bearer(request, "Bad credentials")
+
+
 def _org(request: Request) -> str:
     """The single org Backlot serves. ``tokens.yaml``'s ``org`` wins over the setting and lands
     on the ACL (see ``backlot.main``), so read it from there when there is one."""
@@ -189,13 +206,16 @@ def _version(request: Request) -> str:
 
 
 async def _validate_api_version(request: Request) -> None:
-    """400 a pinned version that does not exist — ahead of the credential and the owner check.
+    """400 a pinned version that does not exist — ahead of a missing credential and the owner check.
 
     Ordering is real's, and it is verified rather than assumed: api.github.com 400s a bad version on
     a repo that does not exist while sending no credentials at all. It matters to the caller — a
     version typo reported as 401 sends them to their token, and as 404 to their path, when the header
-    is what is wrong. Declared before ``_validate_path_owner`` in the router's dependency list, which
-    is what puts it first.
+    is what is wrong. A credential that arrived and failed to resolve is checked earlier still (see
+    :func:`_validate_bad_credential`), so this only ever answers the
+    version's 400 to a caller with no credential or a good one. Declared after
+    ``_validate_bad_credential`` and before ``_validate_path_owner`` in the router's dependency list,
+    which is what puts it in that order.
     """
     if honours_api_version(request) and selected_api_version(request) is None:
         # `None` is only reachable with the header present, so this read cannot miss.
@@ -212,8 +232,8 @@ async def _validate_path_owner(request: Request) -> None:
     with neither path param (``/search/issues``, ``/user/repos``) are unaffected. Credentials are
     checked first, so a bad token still reports 401 rather than the owner's 404. `/rate_limit` is
     the one route a caller with no credential is served, as real serves it (200 at the anonymous
-    limits, measured 2026-09-10); it names no owner and reads no document, and it checks the
-    credential it is given itself (see :func:`get_rate_limit`).
+    limits, measured 2026-09-10); it names no owner and reads no document. A bad credential there
+    still 401s, ahead of this dependency (see :func:`_validate_bad_credential`).
 
     The match is case-insensitive, as GitHub logins are, and real then answers in the canonical
     spelling whatever case was asked for: `/repos/PSF/REQUESTS` answers `full_name: psf/requests`
@@ -412,10 +432,14 @@ def rate_limit_headers(
 router = APIRouter(
     prefix="/github",
     tags=["github"],
-    # Order is the answering order: an unsupported API version is a malformed request and real
-    # refuses it before authenticating or routing, so it is declared first. The repo's spelling is
-    # resolved last, and so never for a request that fails the version or the credential.
+    # Order is the answering order: real resolves a credential that arrived before it looks at the
+    # version or the path, an unsupported API version is a malformed request it refuses next — ahead
+    # of a MISSING credential and of the owner the path names — and the repo's spelling is resolved
+    # last, so never for a request that fails one of the three ahead of it. A path no route matches
+    # is 404 ahead of all three on real (measured 2026-09-17 on an unrouted path and on a
+    # nonexistent subresource), and a router-wide dependency does not run for one either.
     dependencies=[
+        Depends(_validate_bad_credential),
         Depends(_validate_api_version),
         Depends(_validate_path_owner),
         Depends(_canonical_path_repo),
@@ -1448,7 +1472,8 @@ async def get_rate_limit(request: Request):
     `2026-03-10`, which removed it (measured 2026-09-10: the body's keys are `rate`, `resources`
     under the one and `resources` alone under the other). A caller with no credential is answered
     at the anonymous limits, as real answers one; a bearer that does not resolve is real's 401
-    (measured), so a credential is checked when it is there and not required.
+    (measured — see :func:`_validate_bad_credential`, which answers it router-wide before this
+    handler runs).
 
     Which window real's route reports is not the one its headers had just reported: a minute after
     answers carrying `remaining: 4994`, `used: 6`, `reset: 1789020007`, the route answered
@@ -1457,8 +1482,6 @@ async def get_rate_limit(request: Request):
     it to learn what the headers would say, so this reports the headers' window; the fresh window
     real answered could only be reproduced by reporting a window nothing counts against.
     """
-    if auth.bearer_token(request) is not None:
-        auth.require_bearer(request, "Bad credentials")
     key, authenticated = rate_limit_caller(request)
     windows = _rate_limit_windows(request.app)
     resources = {

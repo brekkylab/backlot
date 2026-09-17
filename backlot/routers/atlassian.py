@@ -1011,8 +1011,8 @@ async def confluence_spaces(request: Request):
     """Paged the way `content` is (`?limit`/`?start`, both through `_confluence_page_params`), with
     its own `next`/`prev` shape: measured 2026-09-17, see :func:`confluence_space_links`.
 
-    `limit` is echoed uncapped, where real caps it at 1000 — an acknowledged gap (#217) that also
-    bounds the page size `next` returns.
+    `limit` is echoed uncapped, where real caps it at 1000 — an acknowledged gap that also bounds
+    the page size `next` returns.
     """
     conn = auth.conn(request)
     ids = auth.visible_ids(request, _confluence_caller(request))

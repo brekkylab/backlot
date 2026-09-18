@@ -177,22 +177,14 @@ def test_generated_docs_are_current():
 def test_gen_docs_renders_from_its_own_tree(tmp_path):
     """`scripts/gen_docs.py` imports the backlot beside it, not the one a bare import would find.
 
-    Run as a script, sys.path[0] is scripts/, which holds no backlot package, so an unguarded import
-    falls through to whatever Python finds next: in a git worktree with the package installed
-    editable from the primary checkout, another revision, whose routes and schemas the script then
-    renders into this tree's files. Here the other revision is a copy of this tree's package with
-    one schema description changed, placed where a bare import finds it first. The check must pass
-    regardless, because the script must never have looked there.
+    The guard at the top of the script says why a bare import would land elsewhere. Here the
+    elsewhere is a copy of this tree's package with one schema description changed, placed where a
+    bare import finds it first; the check must pass regardless, because the script must never have
+    looked there.
 
-    A copy that loads a different schema, not a stub that raises: an unguarded import of a stub
-    would fail loudly, and the failure this guards against is the silent one. PYTHONPATH stands in
-    for the editable install. setuptools documents two shapes for one: a `.pth` file that installs
-    an "import finder (`MetaPathFinder` or `PathEntryFinder`)", which is what the venv this was
-    measured in holds and which sits on sys.meta_path behind PathFinder, or in compat mode a static
-    `.pth` file "to extend `sys.path`", which lands after site-packages. Either answers only after
-    every earlier sys.path entry, so the entry the script puts at sys.path[0] beats both exactly as
-    it beats the PYTHONPATH one.
-    """
+    PYTHONPATH stands in for the editable install: both shapes setuptools gives one (a meta-path
+    finder behind PathFinder, or a `.pth` entry after site-packages) answer only after every earlier
+    sys.path entry, so sys.path[0] beats them the way it beats PYTHONPATH.
     shadow = tmp_path / "shadow"
     shutil.copytree(
         REPO / "backlot", shadow / "backlot", ignore=shutil.ignore_patterns("__pycache__")

@@ -289,6 +289,9 @@ def test_a_write_drops_the_stale_member_count(oclient, sample_settings):
     tokens = _tokens(sample_settings)
     admin = {"Authorization": f"Bearer {sample_settings.admin_token}"}
     cid = synth.slack_channel_id("eng-announcements")
+    # The cache has to be published before this can be about dropping a key from it; the
+    # unpublished window is its own test above.
+    oclient.app.state.warm_thread.join(10)
 
     def num_members():
         page = oclient.post("/slack/api/conversations.list", headers=admin, data={"limit": 200})
@@ -307,3 +310,51 @@ def test_a_write_drops_the_stale_member_count(oclient, sample_settings):
     store.slack_set_membership(conn, "eng-announcements", "ava@acme.com", "out")
     oclient.app.state.channel_members = None
     assert num_members() == before - 1
+
+
+def test_the_warm_up_does_not_undo_a_write_that_landed_while_it_ran(sample_settings, monkeypatch):
+    """The warm-up builds its member-count map from the corpus and publishes it whole, so a write
+    during that window would be undone the moment it lands.
+
+    Held open rather than raced: `slack_channel_member_counts` is swapped for one that blocks, so
+    the write happens with the cache still unpublished every run. Without the re-application in
+    `_warm_caches`, `conversations.list` answers the pre-write count for the life of the server —
+    which is what a CI runner slow enough to lose the race saw.
+    """
+    import threading
+
+    from backlot import synth
+    from backlot.routers.slack import _invalidate
+
+    release, entered = threading.Event(), threading.Event()
+    real = store.slack_channel_member_counts
+
+    def slow(conn):
+        entered.set()
+        release.wait(10)
+        return real(conn)
+
+    monkeypatch.setattr(store, "slack_channel_member_counts", slow)
+
+    from tests._helpers import client_for
+
+    with client_for(sample_settings, reload=True) as client:
+        app = client.app
+        assert entered.wait(10), "the warm-up never reached the member counts"
+        assert app.state.channel_members is None
+
+        cid = synth.slack_channel_id("eng-announcements")
+        admin = {"Authorization": f"Bearer {sample_settings.admin_token}"}
+
+        def num_members():
+            page = client.post("/slack/api/conversations.list", headers=admin, data={"limit": 200})
+            return [c["num_members"] for c in page.json()["channels"] if c["id"] == cid][0]
+
+        store.slack_set_membership(app.state.conn, "eng-announcements", "ava@acme.com", "out")
+        request = type("_Req", (), {"app": app})()
+        _invalidate(request, "eng-announcements")
+        assert num_members() == 0
+
+        release.set()
+        app.state.warm_thread.join(10)
+        assert num_members() == 0

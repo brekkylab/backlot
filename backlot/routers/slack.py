@@ -1021,12 +1021,19 @@ def _invalidate(request: Request, channel: str) -> None:
     that one channel, so dropping the key is the whole of the fix and costs one query on the next
     read of it.
 
+    The channel is also recorded, because the cache may not exist yet: the warm-up builds its map
+    from the corpus and publishes it whole, so a write during that window would be undone when it
+    lands. `app.state.invalidated_channels` is what the warm-up re-applies.
+
     `doc_counts` is deliberately NOT touched. It is the corpus-wide per-source count `/health`
     reports, nothing recomputes it after startup, and `main.py` says outright that "only `ok` with
     null counts is wrong" — so clearing it put the server in exactly that state for its lifetime
     on the first write. A served write does not change how many documents the CORPUS holds, which
     is what that number means.
     """
+    invalidated = getattr(request.app.state, "invalidated_channels", None)
+    if invalidated is not None:
+        invalidated.add(channel)
     members = getattr(request.app.state, "channel_members", None)
     if members is not None:
         members.pop(channel, None)

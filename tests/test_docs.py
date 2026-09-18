@@ -8,7 +8,10 @@ just the README.
 
 from __future__ import annotations
 
+import json
+import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -169,6 +172,62 @@ def test_generated_docs_are_current():
         text=True,
     )
     assert proc.returncode == 0, f"{proc.stdout}{proc.stderr}\nrun: python scripts/gen_docs.py"
+
+
+def test_gen_docs_renders_from_its_own_tree(tmp_path):
+    """`scripts/gen_docs.py` imports the backlot beside it, not the one a bare import would find.
+
+    The guard at the top of the script says why a bare import would land elsewhere. Here the
+    elsewhere is a copy of this tree's package with one schema description changed, placed where a
+    bare import finds it first; the check must pass regardless, because the script must never have
+    looked there.
+
+    PYTHONPATH stands in for the editable install: both shapes setuptools gives one (a meta-path
+    finder behind PathFinder, or a `.pth` entry after site-packages) answer only after every earlier
+    sys.path entry, so sys.path[0] beats them the way it beats PYTHONPATH.
+    """
+    shadow = tmp_path / "shadow"
+    shutil.copytree(
+        REPO / "backlot", shadow / "backlot", ignore=shutil.ignore_patterns("__pycache__")
+    )
+    schema_file = shadow / "backlot" / "schemas" / "slack.schema.json"
+    schema = json.loads(schema_file.read_text())
+    schema["description"] = "A record from the shadow tree. " + schema["description"]
+    schema_file.write_text(json.dumps(schema))
+    env = {**os.environ, "PYTHONPATH": str(shadow)}
+
+    # The control: under this environment a bare import does get the shadow, and the shadow's slack
+    # schema is the changed one, whose first sentence is what the docs table's last column holds.
+    # Without it, the assertion below would also pass in an environment where PYTHONPATH had no
+    # effect.
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import backlot.validation as v; print(v.SERVICE_SCHEMAS['slack']['description'])",
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert probe.stdout.startswith("A record from the shadow tree."), (
+        f"{probe.stdout}{probe.stderr}"
+    )
+
+    proc = subprocess.run(
+        [sys.executable, "scripts/gen_docs.py", "--check"],
+        cwd=REPO,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, (
+        "scripts/gen_docs.py --check failed with the shadow tree first on PYTHONPATH. If "
+        "test_generated_docs_are_current fails too, the docs are stale and this is that failure "
+        f"again; if it passes, the script rendered from the shadow rather than {REPO}, or did not "
+        f"get as far as rendering:\n{proc.stdout}{proc.stderr}"
+    )
 
 
 def test_every_source_type_is_documented():

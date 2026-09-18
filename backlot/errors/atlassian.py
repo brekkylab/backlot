@@ -61,6 +61,34 @@ def is_confluence(path: str) -> bool:
     return path.startswith(WIKI)
 
 
+#: What real Jira puts on a JSON body. Measured on a live Jira Cloud site, 2026-09-15 and
+#: 2026-09-18: `serverInfo` (with and without a credential), `issueLinkType`, `project/search`, the
+#: 404 for an unknown issue under both mounts, the 400 for an unparseable JQL. No space after the
+#: semicolon and `UTF-8` upper-case, unlike GitHub's `application/json; charset=utf-8`.
+JIRA_JSON_MEDIA_TYPE = "application/json;charset=UTF-8"
+
+
+def json_media_type(path: str, status_code: int) -> str | None:
+    """The `content-type` real puts on a JSON body answered at ``path`` with ``status_code``, or
+    ``None`` to keep FastAPI's bare `application/json`.
+
+    Jira names the charset above on every JSON status measured but one: the gateway's 403 for a
+    bearer it cannot read as a Connect token (:func:`connect_token_body`) is the bare type,
+    measured 2026-09-16 and 2026-09-18 on `serverInfo`, `field` and `project/search`. That 403 is
+    the only one this server answers on a Jira path, so the status alone selects it. Confluence
+    answers the bare type on every JSON body measured — the 200s, the 404s, the 400, 403 and 405
+    (2026-09-15 and 2026-09-18) — so `/wiki` is ``None`` throughout; its 401 is Tomcat's HTML page,
+    which the envelope here does not reproduce.
+
+    The RFC 7807 refusals are not this function's: they ride on :class:`AtlassianError` under
+    :data:`PROBLEM_JSON`, and ``main.vendor_json_media_type`` rewrites only a response that is
+    exactly `application/json`.
+    """
+    if is_confluence(path) or status_code == 403:
+        return None
+    return JIRA_JSON_MEDIA_TYPE
+
+
 # Java's `Character.isWhitespace` is documented to EXCLUDE the three non-breaking spaces and to
 # include the other Unicode space separators. Measured on both products, 2026-09-15: a value
 # holding U+00A0, U+2007 or U+202F between its digits is a 400 naming that value, while the same

@@ -159,9 +159,10 @@ extend-exclude = ["*.md"]
 # measured-behaviour comment tables.
 select = ["E4", "E7", "E9", "F", "I"]
 # I never fights the E402 ignore below: isort sorts within a run of consecutive imports and never
-# lifts one over a statement, so the examples' sys.path shadowing guards, and the tests' imports
-# below a module-level `importorskip` or a mid-file section break, all stay where they are.
-ignore = ["E402"]  # module-level import not at top: the examples must set sys.path first
+# lifts one over a statement, so the sys.path guards in the examples and scripts/gen_docs.py, and
+# the tests' imports below a module-level `importorskip` or a mid-file section break, all stay
+# where they are.
+ignore = ["E402"]  # module-level import not at top: those guards have to run before the import
 # flake8-bandit, minus what a mock of real SaaS APIs necessarily trips: S608 composes the FTS and
 # listing queries, which is most of what `--select S` finds under backlot/, S324 hashes etags, S104
 # is `--host 0.0.0.0`, S101 is every assert a test makes. What is left passes, so the selection

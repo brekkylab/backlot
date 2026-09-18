@@ -50,6 +50,9 @@ Ordered as the table above, by `source_type`.
 — a user grant naming that user, a group or org grant naming none — for `read`/`space`, the only
 operation an ACL states.
 
+A JSON body is the bare `application/json` on every Confluence route served — the 200s, the 404s,
+the 400, 403 and 405 measured. The charset Jira names is Jira's alone.
+
 ### Fireflies — `/fireflies/graphql`
 
 **GraphQL only**, one `POST`. Root `Query` fields:
@@ -275,6 +278,12 @@ than there being a set per type.
 
 `search/jql`, `issue/{key}`, `issue/{key}/comment`, `field` and `serverInfo` are served under
 `rest/api/2` as well as `/3`.
+
+A JSON body is `application/json;charset=UTF-8` — no space after the semicolon, `UTF-8`
+upper-case — as real's is on every route and status measured, except where real answers a
+different type altogether: the RFC 7807 refusals (a type-conversion 400, the 405, the 415) are
+`application/problem+json;charset=UTF-8`, and the gateway's 403 for a bearer it cannot read as a
+Connect token is the bare `application/json`.
 
 ### Linear — `/linear/graphql`
 

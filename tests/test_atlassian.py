@@ -1605,6 +1605,173 @@ def test_jira_search_reads_a_null_jql_as_one_that_was_not_sent(client, admin_h):
     ]
 
 
+_MAX_RESULTS_RANGE_MESSAGE = "The maxResults parameter must be between 1 and 5,000."
+
+
+@pytest.mark.parametrize("value", [0, -1, 5001])
+def test_jira_search_refuses_a_max_results_outside_the_range_on_get(client, admin_h, value):
+    """Measured 2026-09-18 against Jira Cloud: real refuses `maxResults` outside 1-5000 on both
+    methods."""
+    r = client.get(
+        "/atlassian/rest/api/3/search/jql",
+        headers=admin_h,
+        params={"jql": "project = payments", "maxResults": value},
+    )
+    assert r.status_code == 400, r.text
+    assert r.json() == {"errorMessages": [_MAX_RESULTS_RANGE_MESSAGE], "errors": {}}
+
+
+@pytest.mark.parametrize("value", [1, 5000])
+def test_jira_search_serves_a_max_results_at_the_range_bounds_on_get(client, admin_h, value):
+    r = client.get(
+        "/atlassian/rest/api/3/search/jql",
+        headers=admin_h,
+        params={"jql": "project = payments", "maxResults": value},
+    )
+    assert r.status_code == 200, r.text
+
+
+def test_jira_search_max_results_range_loses_to_a_bad_page_token_on_get(client, admin_h):
+    """Measured: the token is decoded first, so a request wrong on both counts gets the token's
+    refusal rather than the range's."""
+    r = client.get(
+        "/atlassian/rest/api/3/search/jql",
+        headers=admin_h,
+        params={"jql": "project = payments", "maxResults": -1, "nextPageToken": "not-a-token"},
+    )
+    assert r.status_code == 400, r.text
+    assert r.json()["errorMessages"] == ["The provided nextPageToken is invalid or has expired."]
+
+
+def test_jira_search_max_results_range_wins_over_the_unbounded_jql_refusal_on_get(client, admin_h):
+    """Measured: an out-of-range `maxResults` with no `jql` at all is the range refusal, not the
+    unbounded one."""
+    r = client.get("/atlassian/rest/api/3/search/jql", headers=admin_h, params={"maxResults": -1})
+    assert r.status_code == 400, r.text
+    assert r.json()["errorMessages"] == [_MAX_RESULTS_RANGE_MESSAGE]
+
+
+@pytest.mark.parametrize("query", ["", "maxResults=", "maxResults=%20"])
+def test_jira_search_default_page_size_is_never_checked_against_the_range(
+    tmp_path, monkeypatch, query
+):
+    """`default_page_size` is Backlot's own setting, not a value the vendor ever validated, so a
+    deployment that misconfigures it outside 1-5000 must not turn a request that sent no
+    `maxResults` at all into a refusal — real never checks its own default against that range.
+    An empty or whitespace-only value is the same "not really sent" case on real (see
+    `_int_param`), so it gets the same exemption."""
+    monkeypatch.setenv("BACKLOT_DEFAULT_PAGE_SIZE", "0")
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "jira",
+                "doc_id": "j-default",
+                "project": "payments",
+                "title": "T",
+                "content": "c",
+                "author_email": "a@x.com",
+                "visibility": "public",
+            }
+        ],
+    )
+    with client_for(s, reload=True) as c:
+        h = {"Authorization": f"Bearer {s.admin_token}"}
+        get_r = c.get(
+            f"/atlassian/rest/api/3/search/jql?jql=project+%3D+payments&{query}", headers=h
+        )
+        assert get_r.status_code == 200, get_r.text
+        post_r = c.post(
+            "/atlassian/rest/api/3/search/jql", headers=h, json={"jql": "project = payments"}
+        )
+        assert post_r.status_code == 200, post_r.text
+
+
+@pytest.mark.parametrize("value", [0, -1, 5001, "0", "-1", "5001", None])
+def test_jira_search_refuses_a_max_results_outside_the_range_on_post(client, admin_h, value):
+    """Measured 2026-09-18: the same range applies to the POST body, and a JSON `null` is not the
+    parameter unsent the way it is for `jql` — Jackson reads a null int field as `0`, which fails
+    this same check."""
+    r = _search_post(client, admin_h, jql="project = payments", maxResults=value)
+    assert r.status_code == 400, r.text
+    assert r.json() == {"errorMessages": [_MAX_RESULTS_RANGE_MESSAGE], "errors": {}}
+
+
+@pytest.mark.parametrize("value", [1, 5000, "1", "5000"])
+def test_jira_search_serves_a_max_results_at_the_range_bounds_on_post(client, admin_h, value):
+    r = _search_post(client, admin_h, jql="project = payments", maxResults=value)
+    assert r.status_code == 200, r.text
+
+
+@pytest.mark.parametrize("value", ["abc", True, False])
+def test_jira_search_post_refuses_a_max_results_the_vendor_will_not_coerce(client, admin_h, value):
+    """Measured 2026-09-18: Jackson refuses a non-numeral string or a boolean with the body-wide
+    sentence, naming no parameter."""
+    r = _search_post(client, admin_h, jql="project = payments", maxResults=value)
+    assert r.status_code == 400, r.text
+    assert r.json() == {"errorMessages": [errors_atlassian.BODY_NOT_AN_OBJECT]}
+
+
+@pytest.mark.parametrize("value,want_len", [("5", 3), (1.5, 1)])
+def test_jira_search_post_coerces_a_max_results_the_vendor_coerces(
+    client, admin_h, value, want_len
+):
+    """Measured: a digit string is read as the number it names — `"5"` serves the whole
+    three-issue project here — and a float truncates towards zero, so `1.5` serves one issue,
+    where a non-numeral string and a boolean are refused instead."""
+    r = _search_post(client, admin_h, jql="project = payments", maxResults=value)
+    assert r.status_code == 200, r.text
+    assert len(r.json()["issues"]) == want_len
+
+
+@pytest.mark.parametrize("bogus", [{"startAt": 0}, {"bogus": 1}])
+def test_jira_search_post_refuses_an_unknown_body_field(client, admin_h, bogus):
+    """Measured 2026-09-18: an undeclared body property is refused, not ignored."""
+    r = _search_post(client, admin_h, jql="project = payments", **bogus)
+    assert r.status_code == 400, r.text
+    assert r.json() == {"errorMessages": [errors_atlassian.BODY_NOT_AN_OBJECT]}
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("fields", ["summary"]),
+        ("fieldsByKeys", True),
+        ("expand", "names"),
+        ("properties", ["prop1"]),
+        ("reconcileIssues", [1, 2]),
+    ],
+)
+def test_jira_search_post_accepts_every_field_the_vendors_bean_declares(
+    client, admin_h, field, value
+):
+    """Measured 2026-09-18: real's `SearchAndReconcileRequestBean` also takes these, so the
+    unknown-field refusal above must not catch them even though Backlot acts on none of them."""
+    r = _search_post(client, admin_h, jql="project = payments", **{field: value})
+    assert r.status_code == 200, r.text
+
+
+def test_jira_search_post_refuses_a_jql_shaped_as_a_list(client, admin_h):
+    """Measured 2026-09-18: `{"jql": [...]}` draws the same not-an-object refusal as an unknown
+    field, where a scalar `jql` (a number, say) is coerced to a string and reaches the (lenient)
+    JQL parser instead."""
+    r = _search_post(client, admin_h, jql=["order by created"])
+    assert r.status_code == 400, r.text
+    assert r.json() == {"errorMessages": [errors_atlassian.BODY_NOT_AN_OBJECT]}
+
+
+@pytest.mark.parametrize("value", [["abc"], {"a": 1}])
+def test_jira_search_post_refuses_a_next_page_token_shaped_as_a_list_or_object(
+    client, admin_h, value
+):
+    """Measured 2026-09-18: the same not-an-object refusal `jql` draws as a list applies to
+    `nextPageToken` too, where a scalar (an int, a bool) is coerced to a string and reaches the
+    token decoder instead, drawing `bad_page_token`."""
+    r = _search_post(client, admin_h, jql="project = payments", nextPageToken=value)
+    assert r.status_code == 400, r.text
+    assert r.json() == {"errorMessages": [errors_atlassian.BODY_NOT_AN_OBJECT]}
+
+
 @pytest.mark.parametrize(
     "raw,message",
     [

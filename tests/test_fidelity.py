@@ -368,6 +368,13 @@ def test_a_google_source_is_compared_against_every_api_it_is_served_through():
     `backlot diff --source google_drive` would still answer `0 new`."""
     mounts = {m for s in COMPARISONS["google_drive"].specs for m in s.mount}
     assert mounts == {"/drive/v3", "/docs/v1", "/sheets/v4", "/slides/v1"}
+    # And the batch endpoint each of those four APIs declares, which no `mount` can select: it is
+    # a top-level field rather than an operation, so a mount over it would hand both routes to the
+    # path diff to report as surface Backlot invented. Measured 2026-09-17: Docs, Sheets and
+    # Slides declare `batch` at the root of their own hosts and Drive `batch/drive/v3` on the
+    # shared `www.googleapis.com`, so this source needs both shapes and Gmail's needs one.
+    assert COMPARISONS["google_drive"].batch_mount == ("/batch", "/batch/{api}/{version}")
+    assert COMPARISONS["gmail"].batch_mount == ("/batch",)
 
 
 def test_hubspot_compares_its_v4_associations_surface_too():
@@ -391,6 +398,43 @@ def test_jira_compares_both_rest_versions_against_their_own_documents():
     assert set(by_mount) == {"/atlassian/rest/api/2", "/atlassian/rest/api/3"}
     assert by_mount["/atlassian/rest/api/2"].endswith("/swagger.v3.json")
     assert by_mount["/atlassian/rest/api/3"].endswith("/swagger-v3.v3.json")
+
+
+def test_a_google_document_is_read_once_for_both_the_contracts_it_carries(monkeypatch):
+    """A discovery document describes operations under `resources` AND a batch endpoint in its
+    top-level `batchPath`, and a Google source reads it once for both."""
+    URL = "https://gmail.invalid/rest"
+    doc = {
+        "id": "gmail:v1",
+        "batchPath": "batch",
+        "resources": {
+            "users": {
+                "methods": {
+                    "getProfile": {"path": "gmail/v1/users/{userId}/profile", "httpMethod": "GET"}
+                }
+            }
+        },
+    }
+    fetched = []
+
+    def fake_fetch(url, *, timeout=120.0):
+        fetched.append(url)
+        return doc
+
+    monkeypatch.setattr(google_discovery_diff, "fetch_json", fake_fetch)
+    c = comparisons.GoogleDiscoveryComparison(
+        name="gmail",
+        specs=(comparisons.Spec(URL, ("/gmail",)),),
+        # A route that cannot answer what this document declares, so the batch check has something
+        # to say and reading it off the memoized document is what the assertion below proves.
+        batch_mount=("/batch/{api}/{version}",),
+    )
+    found = c.divergences()
+    assert fetched == [URL]
+    assert [(f.kind, f.path) for f in found if "batch" in f.kind] == [
+        ("extra_batch_route", "/batch/{}/{}"),
+        ("missing_batch_path", "gmail:v1 batch"),
+    ]
 
 
 def test_specs_sharing_an_index_read_it_once_per_run(monkeypatch):
@@ -482,6 +526,17 @@ def test_every_mount_selects_something_backlot_serves():
     for name, comparison in COMPARISONS.items():
         for mount in _comparison_mounts(comparison):
             assert any(p.startswith(mount) for p in served), f"{name}: {mount} selects nothing"
+        # A batch route is matched EXACTLY where a mount is matched by prefix: `/batch` would
+        # otherwise stand in for `/batch/{api}/{version}`, and a source could go on mounting a
+        # batch route Backlot stopped serving.
+        for route in _batch_routes(comparison):
+            assert route in served, f"{name}: {route} is not served"
+        # And a Google source names at least one. `batch_mount` defaults to empty and the batch
+        # check is skipped when it is, so a third Google source registered without one would have
+        # every document's `batchPath` go unread while every test above it passed -- the test
+        # beside this one pins the two sources that exist rather than the rule.
+        if isinstance(comparison, comparisons.GoogleDiscoveryComparison):
+            assert comparison.batch_mount, f"{name}: a Google source names no batch route"
 
 
 def _comparison_mounts(comparison) -> tuple[str, ...]:
@@ -492,6 +547,12 @@ def _comparison_mounts(comparison) -> tuple[str, ...]:
     return tuple(getattr(comparison, "mount", ()))
 
 
+def _batch_routes(comparison) -> tuple[str, ...]:
+    """The batch routes a comparison speaks for. Apart from the mounts above because these are
+    whole paths and not prefixes, and because the path diff must never be handed one."""
+    return tuple(getattr(comparison, "batch_mount", ()))
+
+
 def test_every_served_path_is_compared_or_says_why_not():
     """The coverage guarantee the tests beside this one only appeared to give.
 
@@ -500,17 +561,19 @@ def test_every_served_path_is_compared_or_says_why_not():
     both tests passed — a Sheets response shape could be rewritten and `backlot diff` would still
     answer `0 new`. This counts served PATHS, which is what a comparison actually covers.
 
-    Every path lands in exactly one bucket: under some document's mount, probe-compared, or
-    declared in `UNCOMPARED` with a reason. A path in none of them is a router someone added
-    without asking what checks it.
+    Every path lands in exactly one bucket: under some document's mount, named as a source's batch
+    route, probe-compared, or declared in `UNCOMPARED` with a reason. A path in none of them is a
+    router someone added without asking what checks it.
     """
     from backlot.main import app
 
     mounts = [m for c in COMPARISONS.values() for m in _comparison_mounts(c)]
+    batch = {r for c in COMPARISONS.values() for r in _batch_routes(c)}
     unclassified = [
         p
         for p in sorted(app.openapi()["paths"])
         if not any(p.startswith(m) for m in mounts)
+        and p not in batch
         and not any(p == u or p.startswith(u + "/") for u in UNCOMPARED)
     ]
     assert unclassified == [], (
@@ -528,6 +591,7 @@ def test_no_uncompared_declaration_outlives_its_route():
 
     served = list(app.openapi()["paths"])
     mounts = [m for c in COMPARISONS.values() for m in _comparison_mounts(c)]
+    mounts += [r for c in COMPARISONS.values() for r in _batch_routes(c)]
     for prefix, reason in UNCOMPARED.items():
         assert any(p == prefix or p.startswith(prefix + "/") for p in served), prefix
         assert reason.strip(), prefix
@@ -677,6 +741,109 @@ def test_operation_divergences_are_classified_like_schema_ones():
     }
     by_kind = {f.kind: f.severity for f in operations.diff_operations(served, vendor)}
     assert by_kind == {"extra_param": BREAKING, "missing_param": GAP, "missing_operation": GAP}
+
+
+GOOGLE_BATCH_MOUNT = ("/batch", "/batch/{api}/{version}")
+
+
+def _batch_docs(declared: tuple[str | None, ...], spelled: str = "id") -> list[tuple[str, dict]]:
+    """Four documents shaped like `google_drive`'s and in its order, each declaring the batchPath
+    given -- `None` declaring none.
+
+    `spelled` is how a document says which API it is. Google's carry an `id`; the other two are
+    what a finding falls back to when one does not, and they are reached here rather than through
+    `document_id` because the identity a baseline holds is the finding's path."""
+    docs = []
+    for who, d in zip(("drive:v3", "docs:v1", "sheets:v4", "slides:v1"), declared):
+        name, version = who.split(":")
+        says = {"id": {"id": who}, "name and version": {"name": name, "version": version}}
+        docs.append(
+            (
+                f"https://{name}.invalid/rest",
+                {**says.get(spelled, {}), **({"batchPath": d} if d else {})},
+            )
+        )
+    return docs
+
+
+SHORTER = ("batch/v3", "batch", "batch", "batch")
+
+
+@pytest.mark.parametrize(
+    "declared,spelled,expected",
+    [
+        pytest.param(
+            ("batch/drive/v3", "batch", "batch", "batch"), "id", [], id="measured-2026-09-17"
+        ),
+        pytest.param(
+            ("batch", "batch", "batch", "batch"),
+            "id",
+            [("extra_batch_route", BREAKING, "/batch/{}/{}")],
+            id="drive-moves-to-its-own-host",
+        ),
+        pytest.param(
+            ("batch/drive/v3", None, "batch", "batch"),
+            "id",
+            [("extra_batch_api", BREAKING, "docs:v1")],
+            id="one-api-drops-batch",
+        ),
+        pytest.param(
+            SHORTER,
+            "id",
+            [
+                ("extra_batch_route", BREAKING, "/batch/{}/{}"),
+                ("missing_batch_path", GAP, "drive:v3 batch/v3"),
+            ],
+            id="a-value-shorter-than-the-route",
+        ),
+        pytest.param(
+            ("batch/drive/v3/files", "batch", "batch", "batch"),
+            "id",
+            [
+                ("extra_batch_route", BREAKING, "/batch/{}/{}"),
+                ("missing_batch_path", GAP, "drive:v3 batch/drive/v3/files"),
+            ],
+            id="a-value-longer-than-the-route",
+        ),
+        pytest.param(
+            ("/batch/drive/v3/", "/batch/", "batch", "batch"), "id", [], id="slashes-at-either-end"
+        ),
+        pytest.param(
+            SHORTER,
+            "name and version",
+            [
+                ("extra_batch_route", BREAKING, "/batch/{}/{}"),
+                ("missing_batch_path", GAP, "drive:v3 batch/v3"),
+            ],
+            id="a-document-carrying-no-id",
+        ),
+        pytest.param(
+            SHORTER,
+            "nothing",
+            [
+                ("extra_batch_route", BREAKING, "/batch/{}/{}"),
+                ("missing_batch_path", GAP, "https://drive.invalid/rest batch/v3"),
+            ],
+            id="a-document-that-names-itself-nowhere",
+        ),
+    ],
+)
+def test_batch_path_divergences_name_the_document_and_the_route(declared, spelled, expected):
+    """Both directions, and a value that moved reports as both.
+
+    The gap carries the VALUE as well as the document, because a gap is acknowledged by identity
+    alone: keyed on the document, an acknowledged move to one shape would go on covering a later
+    move to another.
+
+    `one-api-drops-batch` is where the two directions come apart: `/batch` is still selected by the
+    two documents left, so only the API is reported and the route is not.
+
+    The two length cases are the matcher's segment count. A route that swallowed a differing
+    number of segments would report either move as covered."""
+    found = google_discovery_diff.batch_divergences(
+        GOOGLE_BATCH_MOUNT, _batch_docs(declared, spelled)
+    )
+    assert [(f.kind, f.severity, f.path) for f in found] == expected
 
 
 CATALOG = {

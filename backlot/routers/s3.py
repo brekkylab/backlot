@@ -385,7 +385,7 @@ def _encode_group_token(group_successor: str) -> str:
 def _decode_token(token: str) -> tuple[str, str] | None:
     """Decode a continuation token to ``(mode, value)`` — ``mode`` is ``"after"`` (exclusive,
     from ``_encode_key_token``) or ``"at"`` (inclusive, from ``_encode_group_token``). ``None``
-    if the token is malformed, which the listing refuses rather than paging from the top."""
+    if the token is malformed, which the listing refuses."""
     try:
         raw = base64.urlsafe_b64decode(token.encode()).decode()
     except (ValueError, UnicodeDecodeError):
@@ -554,10 +554,9 @@ def _list_objects(
     Key, and StartAfter", the ListObjectsV2 page) and says nothing about the V1 pair or the tokens.
     A token keeps its ``/``, ``+`` and ``=``.
 
-    A ``continuation-token`` that does not decode is refused rather than answered with page one,
-    and an empty one is refused the same way: real answers both "The continuation token provided is
-    incorrect" under ``ArgumentName`` ``continuation-token``, with no ``ArgumentValue`` (measured
-    2026-09-17). What is left is a token
+    A ``continuation-token`` that does not decode is refused, and an empty one the same way: real
+    answers both "The continuation token provided is incorrect" under ``ArgumentName``
+    ``continuation-token``, with no ``ArgumentValue`` (measured 2026-09-17). What is left is a token
     that decodes to a bound this listing never handed out — real refuses that too, where Backlot
     pages from the bound it spells. Backlot's tokens are derived from the bound rather than issued
     and recorded, so one a caller wrote and one a previous page returned are the same bytes, and
@@ -581,8 +580,7 @@ def _list_objects(
         return _argument_error(
             "Invalid Encoding Method specified in Request", "encoding-type", encoding_type, resource
         )
-    # Read before the range is judged, because an unreadable token is refused ahead of it (see
-    # below); what a readable one then bounds is at `after, at` further down.
+    # What a readable token bounds is at `after, at` further down.
     continuation = _first(q, "continuation-token", None) if v2 else None
     decoded = None
     if continuation is not None:

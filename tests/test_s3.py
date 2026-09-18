@@ -1664,7 +1664,7 @@ def test_a_continuation_token_that_does_not_decode_is_refused_not_answered_with_
         # No page came back with it, and nothing echoed the token as if one had.
         assert "<Contents>" not in body and "<ContinuationToken>" not in body, value
 
-    # The order among the refusals this path already had, with the bucket lookup in the middle of
+    # The order among the listing's refusals, with the bucket lookup in the middle of
     # it: the `max-keys` parse is judged above the lookup, this refusal below it.
     assert "<ArgumentName>encoding-type</ArgumentName>" in refused(
         "list-type=2&continuation-token=garbage&encoding-type=bogus"

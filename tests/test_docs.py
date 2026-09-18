@@ -262,11 +262,13 @@ _LOOP_FILES = (
             "LOOP_FIRE_URL",
             "LOOP_FIRE_TOKEN",
             "experimental-cc-routine-2026-04-01",
+            "reactions",
+            "workflow_dispatch",
         ),
     ),
     (
         "docs/loop.md",
-        ("needs-maintainer", "ready-for-maintainer", "decision: gap", "GITHUB_TOKEN"),
+        ("needs-maintainer", "ready-for-maintainer", "/decision 1", "GITHUB_TOKEN"),
     ),
     (".claude/settings.json", ("SessionStart", "scripts/cloud_session_start.sh")),
     (

@@ -7,6 +7,7 @@ Confluence bodies are storage-format XHTML — matching the real APIs.
 
 from __future__ import annotations
 
+import json
 import re
 from html import escape
 from urllib.parse import quote
@@ -19,14 +20,19 @@ from backlot.acl import Caller
 from backlot.config import get_settings
 from backlot.errors import atlassian as errors_atlassian
 from backlot.openapi import qp
-from backlot.pagination import confluence_next_link, decode_cursor, next_page_token
+from backlot.pagination import (
+    confluence_next_link,
+    confluence_space_links,
+    decode_cursor_or_none,
+    next_page_token,
+)
 
 router = APIRouter(prefix="/atlassian", tags=["atlassian"])
 
 
 # --- OpenAPI enrichment --------------------------------------------------
-# jira_search reads params query-or-body (GET+POST) so they're documented with openapi_extra (no
-# signature change); confluence params are query-only. Response models use extra="allow" to
+# Parameters are documented with openapi_extra (no signature change); confluence params are
+# query-only. Response models use extra="allow" to
 # preserve every field. Error paths raise HTTPException (Atlassian-shaped), not filtered here.
 # Secondary metadata routes (roles / linktypes / labels / restrictions) are left untyped — the
 # bridge still exposes them as tools; they aren't retrieval surfaces.
@@ -70,9 +76,18 @@ class ConfluencePage(_ALoose):
     pass
 
 
+# The two take the same three parameters in different places: the GET form in the query string, the
+# POST form in a `SearchAndReconcileRequestBean` body. Both of Atlassian's documents split them this
+# way, down to the schema name, and the live service follows. Both placements are declared here and
+# separated per method after FastAPI has built the document, by
+# :func:`backlot.openapi.jira_search_placement`. One ROUTE serves both methods, because Starlette
+# fills `Allow` from the single route that partially matched and real names both.
 _X_JIRA_SEARCH = {
     "parameters": [qp("jql"), qp("maxResults", "integer"), qp("nextPageToken")],
     "requestBody": {
+        # Real refuses a POST carrying no body: the missing `Content-Type` is its 415, and the
+        # header with an empty body is `No content to map to Object due to end of input`.
+        "required": True,
         "content": {
             "application/json": {
                 "schema": {
@@ -84,7 +99,7 @@ _X_JIRA_SEARCH = {
                     },
                 }
             }
-        }
+        },
     },
 }
 _P_EXPAND = {"parameters": [qp("expand")]}
@@ -100,6 +115,7 @@ _P_CQL = {"parameters": [qp("cql", required=True), qp("limit", "integer"), qp("s
 _P_CONTENT = {
     "parameters": [qp("expand"), qp("spaceKey"), qp("limit", "integer"), qp("start", "integer")]
 }
+_P_SPACE = {"parameters": [qp("expand"), qp("limit", "integer"), qp("start", "integer")]}
 
 # The page a comment read serves. Measured against Jira Cloud (2026-09-09) on a real issue,
 # which settles what no document states: `maxResults` is CAPPED at 100 as well as defaulted
@@ -376,33 +392,31 @@ async def jira_search(request: Request):
     ids = auth.visible_ids(request, caller)
     default_size = get_settings().default_page_size
     if request.method == "POST":
-        # POST keeps the lenient read it has always had, query string and all. Measured
-        # 2026-09-14: real does not read the query string on this method at ALL, so
-        # `POST search/jql?maxResults=abc` with any body is a 200 — applying the GET rules here
-        # would answer 400 where real answers 200, trading one divergence for another. #187 is
-        # where the query string stops being read on POST, and it measures the body's own parser
-        # (Jackson, which takes `1.5` as `1`) at the same time.
-        params = dict(request.query_params)
-        try:
-            parsed = await request.json()
-        except Exception:
-            parsed = None
-        if isinstance(parsed, dict):
-            params.update(parsed)
-        jql = str(params.get("jql", ""))
-        limit = _int(params.get("maxResults"), default_size)
-        token = params.get("nextPageToken")
+        body = await _jira_search_body(request)
+        # A JSON null is the parameter unsent, not the string "None": real answers
+        # `{"jql": null}` with the same unbounded-JQL refusal it gives `{}` (measured 2026-09-16).
+        jql = "" if body.get("jql") is None else str(body["jql"])
+        limit = _int(body.get("maxResults"), default_size)
+        token = body.get("nextPageToken")
     else:
         jql = _str_param(request, "jql") or ""
         limit = _int_param(request, "maxResults", default_size)
         token = _str_param(request, "nextPageToken")
+    # An undecodable token is refused before the project clause is resolved (measured
+    # 2026-09-16; see test_jira_search_refuses_a_page_token_it_cannot_decode).
+    offset = decode_cursor_or_none(None if token is None else str(token))
+    if offset is None:
+        raise errors_atlassian.bad_page_token()
+    # No `jql` at all is refused rather than answered as the unfiltered corpus (measured
+    # 2026-09-16; see test_jira_search_refuses_no_jql_at_all).
+    if not jql.strip():
+        raise errors_atlassian.unbounded_jql()
     container = _project_from_jql(conn, jql, request)
     if container is _JIRA_PROJECT_UNRESOLVED:
         # a project= clause was present but didn't match any project: strict 0 matches, not
         # the unfiltered corpus.
         return {"issues": [], "isLast": True}
     term = _text_from_jql(jql)
-    offset = decode_cursor(token)
     if term:  # text ~ / summary ~ / description ~ → full-text search (FTS), scoped to project
         total = store.count_search(conn, term, "jira", ids, container=container)
         rows = store.search_documents(
@@ -976,9 +990,9 @@ def _require_space(request: Request, conn, key: str) -> str:
     """The container behind a space key the caller can reach — `_require_project` for Confluence.
 
     Both space reads answer an unreachable key with the SAME ``404 {"message": "No space with the
-    given key exists"}`` a key naming nothing gets, so neither confirms the space exists — the
-    roster on ``.../permission`` is what makes that worth withholding, since it names who reads a
-    space the caller cannot open. Unmeasured for a scoped caller, see :func:`_reachable_spaces`.
+    given key exists"}`` a key naming nothing gets, so neither confirms the space exists — worth
+    withholding because ``?expand=permissions`` names a principal granted a space the caller cannot
+    open. Unmeasured for a scoped caller, see :func:`_reachable_spaces`.
     """
     ids = auth.visible_ids(request, _confluence_caller(request))
     container = _space_container_for_key(conn, key)
@@ -992,49 +1006,204 @@ def _require_space(request: Request, conn, key: str) -> str:
     raise HTTPException(status_code=404, detail="No space with the given key exists")
 
 
-@router.get("/wiki/rest/api/space", response_model=ConfluenceResults)
+# The thirteen keys real names under `_expandable` on a space, in real's own order. Measured on
+# brekkylab.atlassian.net, 2026-09-16, on a global space and two personal ones, which agreed: four
+# of the keys carry a path and nine are the empty string. `homepage` is one of the four there, and
+# is empty here — a corpus names no home page for a space, and a space without one is not something
+# the measurement could produce, so the empty string is this server's gap rather than a value real
+# was seen to send.
+def _space_expandable(key: str) -> dict:
+    return {
+        "settings": f"/rest/api/space/{key}/settings",
+        "metadata": "",
+        "identifiers": "",
+        "roles": "",
+        "icon": "",
+        "typeSettings": "",
+        "description": "",
+        "history": "",
+        "operations": "",
+        "lookAndFeel": f"/rest/api/settings/lookandfeel?spaceKey={key}",
+        "permissions": "",
+        "theme": f"/rest/api/space/{key}/theme",
+        "homepage": "",
+    }
+
+
+def _space_permissions(request: Request, conn, container: str) -> list[dict]:
+    """The space permission roster, as `?expand=permissions` answers it.
+
+    One entry per GRANT, which is real's unit: of the 120 entries on the space measured
+    (brekkylab.atlassian.net, 2026-09-17) 81 carry a subject and every one of those is a single
+    user, while the other 39 carry no `subjects` key at all. So the roster's length tracks grants
+    rather than membership, and `permissions[i].subjects.user.results[0]` names one principal. A
+    `group` or `org` grant is an entry with no `subjects` here for the same reason real leaves those
+    collapsed — no group subject appeared under this expansion on the space measured.
+
+    One operation, `read`/`space`, because it is the only one a corpus states: the ACL says who can
+    read a document and nothing at all about who may administer the space or delete a comment. Real
+    answered 26 operations there, five of them `read`/`space`; inventing the other 25 would put a
+    permission model on the wire that the corpus never licensed.
+
+    ``anonymousAccess`` is False whatever the grant, because no grant a corpus can write says "the
+    public": an org grant is every MEMBER and not every visitor (`store._expand_grants` returns
+    ``None`` for `principal_type == "org"`), and ``_confluence_caller`` refuses an anonymous caller
+    before a space is resolved at all. Real's was False on every entry measured.
+
+    The order is this function's own — real's was not measured — and it is sorted so that two reads
+    of the same space agree.
+    """
+    entries = []
+    for g in sorted(store.container_grants(conn, "confluence", container), key=tuple):
+        ptype, pid = g["principal_type"], g["principal_id"]
+        entry = {"id": synth.confluence_id(f"perm:{container}:read:{ptype}:{pid}")}
+        if ptype == "user":
+            entry["subjects"] = {
+                "user": {"results": [_conf_user(pid, _site(request))], "size": 1},
+                "_expandable": {"group": ""},
+            }
+        entry["operation"] = {"operation": "read", "targetType": "space"}
+        entry["anonymousAccess"] = False
+        entry["unlicensedAccess"] = False
+        entries.append(entry)
+    return entries
+
+
+def _space_description(container: str, subs: set[str]) -> dict:
+    """A space description, as the sub-properties in ``subs`` select it.
+
+    Measured on brekkylab.atlassian.net, 2026-09-17: the bare `expand=description` carries NO value,
+    only `{"_expandable": {"view": "", "plain": ""}}`. The value arrives for `description.plain` or
+    `description.view`, each leaving the other spelling in a nested `_expandable`, and asking for
+    both leaves no `_expandable` at all. A client that reads `description.plain.value` off the bare
+    spelling gets nothing from real, so serving it there would answer a body real does not send.
+
+    The two renderings differ only in `representation` here, because a corpus states one description
+    text and real's was empty on the space measured.
+    """
+    out = {
+        sub: {"value": f"{container} space", "representation": sub, "embeddedContent": []}
+        for sub in ("plain", "view")
+        if sub in subs
+    }
+    rest = {sub: "" for sub in ("view", "plain") if sub not in subs}
+    if rest:
+        out["_expandable"] = rest
+    return out
+
+
+def _space(request: Request, conn, container: str, expand: str, *, listed: bool) -> dict:
+    """One space, as both reads render it.
+
+    ``listed`` is the one difference real draws between them, and it is in `_links`: a space inside
+    the listing carries `webui` and `self` alone, where the single read carries `context`,
+    `collection` and `base` beside them. Measured 2026-09-16 on the same site, the same minute.
+
+    An expansion real serves is REMOVED from `_expandable` once it is served, which is how a client
+    tells an expansion it asked for and got from one it asked for and did not.
+    """
+    key = synth.confluence_space_key(container)
+    site = _site(request)
+    space = {
+        "id": synth.github_user_id(container),
+        "ari": (
+            f"ari:cloud:confluence:{synth.atlassian_cloud_id(get_settings().org_name)}"
+            f":space/{synth.github_user_id(container)}"
+        ),
+        "key": key,
+        "alias": key,
+        "name": container,
+        "type": "global",
+        "status": "current",
+        "_expandable": _space_expandable(key),
+    }
+    # A term names its property before the first dot and its sub-property after: real answers
+    # `expand=description.plain` and `expand=permissions.bogus` with the property expanded, and
+    # ignores a term naming no property (`descriptions`, `bogus`) rather than refusing it. Measured
+    # on brekkylab.atlassian.net, 2026-09-17, on `space/{key}`.
+    wanted: dict[str, set[str]] = {}
+    for term in (expand or "").split(","):
+        head, _, sub = term.strip().partition(".")
+        if head:
+            wanted.setdefault(head, set()).update([sub] if sub else [])
+    if "description" in wanted:
+        space["description"] = _space_description(container, wanted["description"])
+        space["_expandable"].pop("description", None)
+    if "permissions" in wanted:
+        space["permissions"] = _space_permissions(request, conn, container)
+        space["_expandable"].pop("permissions", None)
+    links = {"webui": f"/spaces/{key}", "self": f"{site}/wiki/rest/api/space/{key}"}
+    if not listed:
+        links = {
+            "context": "/wiki",
+            "self": links["self"],
+            "collection": "/rest/api/space",
+            "webui": links["webui"],
+            "base": f"{site}/wiki",
+        }
+    space["_links"] = links
+    return space
+
+
+@router.get("/wiki/rest/api/space", response_model=ConfluenceResults, openapi_extra=_P_SPACE)
 async def confluence_spaces(request: Request):
+    """Paged the way `content` is (`?limit`/`?start`, both through `_confluence_page_params`), with
+    its own `next`/`prev` shape: measured 2026-09-17, see :func:`confluence_space_links`. `expand`
+    is applied per space through :func:`_space` and carried into `next`/`prev`/`self` too.
+
+    `limit` is echoed uncapped, where real caps it at 1000 — an acknowledged gap that also bounds
+    the page size `next` returns.
+    """
     conn = auth.conn(request)
     ids = auth.visible_ids(request, _confluence_caller(request))
-    results = []
-    for r in _reachable_spaces(conn, ids):
-        key = synth.confluence_space_key(r["name"])
-        results.append(
-            {
-                "id": synth.github_user_id(r["name"]),
-                "key": key,
-                "name": r["name"],
-                "type": "global",
-                "_links": {"webui": f"/spaces/{key}"},
-            }
-        )
-    return {"results": results, "start": 0, "limit": len(results), "size": len(results)}
+    limit, start = _confluence_page_params(request)
+    expand = _str_param(request, "expand", "") or ""
+    # store.list_containers orders by name; real's own order is none of name, key or id (measured
+    # 2026-09-17).
+    reachable = _reachable_spaces(conn, ids)
+    total = len(reachable)
+    results = [
+        _space(request, conn, r["name"], expand, listed=True)
+        for r in reachable[start : start + limit]
+    ]
+    links = {"base": f"{_site(request)}/wiki", "context": "/wiki"}
+    links.update(
+        confluence_space_links("/rest/api/space", start, limit, len(results), total, expand)
+    )
+    self_query = f"?expand={expand}" if expand else ""
+    links["self"] = f"{_site(request)}/wiki/rest/api/space{self_query}"
+    return {
+        "results": results,
+        "start": start,
+        "limit": limit,
+        "size": len(results),
+        "_links": links,
+    }
 
 
-@router.get("/wiki/rest/api/space/{key}/permission")
+@router.get("/wiki/rest/api/space/{key}/permission", include_in_schema=False)
 async def confluence_space_permission(key: str, request: Request):
-    conn = auth.conn(request)
-    container = _require_space(request, conn, key)
-    emails = store.container_member_emails(conn, "confluence", container)
-    if emails is None:
-        perm = {
-            "operation": {"operation": "read", "targetType": "space"},
-            "subjects": {"user": {"results": []}},
-            "anonymousAccess": True,
-        }
-    else:
-        perm = {
-            "operation": {"operation": "read", "targetType": "space"},
-            "subjects": {
-                "user": {
-                    "results": [
-                        {"accountId": synth.atlassian_account_id(e), "email": e}
-                        for e in sorted(emails)
-                    ]
-                }
-            },
-        }
-    return {"results": [perm]}
+    """Real refuses a `GET` here, so Backlot refuses one too, and the roster is served where real
+    serves it: `space/{key}?expand=permissions`.
+
+    A route rather than nothing at all, because the path having no handler is a 404 and real's
+    answer is a 405 — the vendor's own document declares one operation here and it is a `POST`
+    (add a space permission), a write no source in Backlot serves. ``include_in_schema=False``
+    keeps the refusal off ``app.openapi()``, which is what `backlot diff` compares: the 405 is a
+    fact about the wire, and a `GET` operation on this path is a declaration the vendor's document
+    does not make.
+
+    The refusal covers the `POST` as well, where real gets past the method check: a `POST` here
+    answers 415 with Spring's `UNSUPPORTED_MEDIA_TYPE` naming the absent content type (measured
+    2026-09-17, on a key naming no space). That is the acknowledged `missing_operation` for this
+    path showing on the wire, as an unserved write does on any path Backlot routes for a read, and
+    answering the 415 would mean serving the first step of the write itself.
+
+    ``key`` is unused and declared because the path carries it: the refusal comes before any lookup
+    on real, where `GET space/NOSUCHSPACE/permission` answers the same 405 as a key that names a
+    space (measured 2026-09-16), so resolving one here would only be able to disagree.
+    """
+    raise errors_atlassian.method_not_allowed(request.url.path, request.method)
 
 
 @router.get("/wiki/rest/api/space/{key}", response_model=ConfluencePage, openapi_extra=_P_EXPAND)
@@ -1043,17 +1212,7 @@ async def confluence_space_get(key: str, request: Request):
     404s (Atlassian-shaped) for a key naming no space the caller can reach (:func:`_require_space`)."""
     conn = auth.conn(request)
     container = _require_space(request, conn, key)
-    space = {
-        "id": synth.github_user_id(container),
-        "key": key,
-        "name": container,
-        "type": "global",
-        "status": "current",
-        "_links": {"webui": f"/spaces/{key}"},
-    }
-    if "description" in (_str_param(request, "expand", "") or ""):
-        space["description"] = {"plain": {"value": f"{container} space", "representation": "plain"}}
-    return space
+    return _space(request, conn, container, _str_param(request, "expand", "") or "", listed=False)
 
 
 @router.get("/wiki/rest/api/search", response_model=ConfluenceResults, openapi_extra=_P_CQL)
@@ -1232,7 +1391,7 @@ async def confluence_comments(content_id: int, request: Request):
                 "version": {
                     "number": 1,
                     "when": synth.rfc3339_millis(ts),
-                    "by": _conf_user(author),
+                    "by": _conf_user(author, _site(request)),
                     "minorEdit": False,
                     "message": "",
                 },
@@ -1267,7 +1426,7 @@ async def confluence_restrictions(content_id: int, request: Request):
     if store.get_document(conn, "confluence", content_id, visible_ids=ids) is None:
         raise HTTPException(status_code=404, detail="No content found with id")
     emails = store.doc_member_emails(conn, "confluence", content_id)
-    users = [] if emails is None else [_conf_user(e) for e in sorted(emails)]
+    users = [] if emails is None else [_conf_user(e, _site(request)) for e in sorted(emails)]
 
     def _op(name):
         return {
@@ -1282,21 +1441,43 @@ async def confluence_restrictions(content_id: int, request: Request):
     return {"read": _op("read"), "update": _op("update")}
 
 
-def _conf_user(email: str) -> dict:
+def _conf_user(email: str, site: str) -> dict:
+    """The user object every Confluence read carries.
+
+    One helper for all of them because real sends ONE object: the space roster's subject, a page's
+    `version.by` and `history.createdBy`, and a comment's own two are the same thirteen keys in the
+    same order, measured on brekkylab.atlassian.net, 2026-09-17, on `space/{key}?expand=permissions`,
+    `content?expand=version` and `content/{id}/child/comment?expand=version,history`.
+
+    Four of the thirteen are constants on the site measured and a corpus states nothing that could
+    vary them: `isExternalCollaborator`, `isGuest`, `accountStatus` and `_expandable`. `locale` is
+    real's ACCOUNT language setting (`"ko"` there, and it is what the error messages follow), which
+    is a property of the reader rather than of the corpus, so it is one value here.
+
+    ``site`` is the caller's own base (:func:`_site`) because `_links.self` is an address a client
+    follows — the shape `github._gh_user` takes `_api_base(request)` for.
+    """
     aid = synth.atlassian_account_id(email or "unknown")
+    name = (email or "unknown").split("@")[0]
     return {
         "type": "known",
         "accountId": aid,
         "accountType": "atlassian",
         "email": email,
-        "publicName": (email or "unknown").split("@")[0],
-        "displayName": (email or "unknown").split("@")[0].replace(".", " ").title(),
+        "publicName": name,
         "profilePicture": {
             "path": f"/wiki/aa-avatar/{aid}",
             "width": 48,
             "height": 48,
             "isDefault": False,
         },
+        "displayName": name.replace(".", " ").title(),
+        "isExternalCollaborator": False,
+        "isGuest": False,
+        "locale": "en",
+        "accountStatus": "active",
+        "_expandable": {"operations": "", "personalSpace": ""},
+        "_links": {"self": f"{site}/wiki/rest/api/user?accountId={aid}"},
     }
 
 
@@ -1360,10 +1541,10 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
         page["history"] = {
             "latest": True,
             "createdDate": synth.rfc3339_millis(created),
-            "createdBy": _conf_user(author),
+            "createdBy": _conf_user(author, _site(request)),
             "lastUpdated": {
                 "when": synth.rfc3339_millis(updated),
-                "by": _conf_user(author),
+                "by": _conf_user(author, _site(request)),
                 "number": vnum,
             },
         }
@@ -1371,7 +1552,7 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
         page["version"] = {
             "number": vnum,
             "when": synth.rfc3339_millis(updated),
-            "by": _conf_user(author),
+            "by": _conf_user(author, _site(request)),
             "minorEdit": bool(row["minor_edit"]),
             "message": row["version_message"] or "",
         }
@@ -1441,10 +1622,15 @@ def _int(v, default: int) -> int:
     """A value already read out of a JSON request body, as an int.
 
     The lenient one, and deliberately so: what parses the POST `search/jql` body on real is Jackson
-    rather than Spring's parameter binding, and it takes values the query string refuses (`1.5`
-    arrives as `1`) while refusing others in a body-wide message that names no parameter. Reading
-    the query string goes through :func:`_int_param` instead — see #187, which is where the body's
-    own rules get measured.
+    rather than Spring's parameter binding, and it takes values the query string refuses — `1.5`
+    arrives as `1` and `"5"` as `5`. The query string goes through :func:`_int_param` instead, which
+    reproduces Spring's rules, and answers that same `1.5` with
+    `Failed to convert 'maxResults' with value: '1.5'`.
+
+    What Jackson refuses — `"abc"` and `true` — is a body-wide message naming no parameter, and is
+    not reproduced here. The 1-5000 range is NOT Jackson's: it is refused on the query string too,
+    to the character, it names the parameter and it carries `errors` where the two type refusals
+    carry `errorMessages` alone, so it belongs to the operation rather than to either parser.
     """
     try:
         return int(v) if v not in (None, "") else default
@@ -1528,6 +1714,58 @@ def _int_param(
         # flowed into the query where real answered 400.
         raise errors_atlassian.integer_conversion_failure(request.url.path, name, values)
     return n
+
+
+async def _jira_search_body(request: Request) -> dict:
+    """The `search/jql` request body, or the refusal real gives for one it will not read.
+
+    Measured 2026-09-15. The `Content-Type` is checked FIRST and on its own: a perfectly good JSON
+    body sent without the header is the same 415 as one sent with `text/plain`, so the header
+    decides before the bytes are looked at. The match is on the media type alone, case-insensitively
+    and ignoring parameters — `APPLICATION/JSON` and `application/json; charset=utf-8` are both
+    read, `*/*` and `application/xml` are not.
+
+    Then the body, which real sorts into three sentences, and the boundaries between them are not
+    where a JSON parser would draw them:
+
+    - a body of zero length, and a literal `null`, are "no content"
+    - bytes that do not parse are a parse error — but a body that is only WHITESPACE is not, it is
+      the not-an-object sentence, which is why emptiness here means length and not `strip()`
+    - JSON that parses to anything but an object — `[]`, `5`, `"x"`, `true` — is not-an-object
+
+    Trailing bytes after a complete value are IGNORED rather than refused: `{"jql": …} junk` is
+    answered 200. That is what `raw_decode` reproduces and `json.loads` would not, reading the
+    first value and letting the rest go.
+
+    The leading bytes are the other side of that and are NOT ignored so freely. JSON's whitespace is
+    the four ASCII ones, so a non-breaking space in front of the object is the parse error, where
+    `str.lstrip()` would skip it and read the object behind it. Bytes that are not UTF-8 are the
+    not-an-object sentence, where `errors="replace"` would repair them into U+FFFD and parse.
+    """
+    content_type = request.headers.get("content-type")
+    if (content_type or "").split(";")[0].strip().lower() != "application/json":
+        raise errors_atlassian.unsupported_media_type(request.url.path, content_type)
+    raw = await request.body()
+    if not raw:
+        raise errors_atlassian.body_not_read(errors_atlassian.BODY_EMPTY)
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise errors_atlassian.body_not_read(errors_atlassian.BODY_NOT_AN_OBJECT) from None
+    try:
+        parsed, _end = json.JSONDecoder().raw_decode(text.lstrip(" \t\n\r"))
+    except ValueError:
+        message = (
+            errors_atlassian.BODY_NOT_AN_OBJECT
+            if not raw.strip()
+            else errors_atlassian.BODY_UNPARSEABLE
+        )
+        raise errors_atlassian.body_not_read(message) from None
+    if parsed is None:
+        raise errors_atlassian.body_not_read(errors_atlassian.BODY_EMPTY)
+    if not isinstance(parsed, dict):
+        raise errors_atlassian.body_not_read(errors_atlassian.BODY_NOT_AN_OBJECT)
+    return parsed
 
 
 def _str_param(request: Request, name: str, default: str | None = None) -> str | None:

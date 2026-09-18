@@ -17,6 +17,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.routing import Match
 
 from backlot import auth, errors, openapi, overlay, store, synth
 from backlot.acl import Acl
@@ -147,7 +148,7 @@ _fastapi_openapi = app.openapi
 
 def _openapi_with_vendor_parameters() -> dict:
     spec = openapi.github_page_parameters(_fastapi_openapi(), github.PAGE_PARAMETERS)
-    return openapi.google_system_parameters(spec)
+    return openapi.google_system_parameters(openapi.jira_search_placement(spec))
 
 
 app.openapi = _openapi_with_vendor_parameters
@@ -159,10 +160,30 @@ app.openapi = _openapi_with_vendor_parameters
 
 @app.exception_handler(StarletteHTTPException)
 async def _http_exception_handler(request: Request, exc: StarletteHTTPException):
+    # A wrong method is refused by the router before any vendor code runs, so the vendor's own 405
+    # is asked for here rather than raised where the other refusals are. The exception is replaced
+    # rather than edited: what follows reads the body, media type and headers off it either way.
+    if exc.status_code == 405:
+        vendor = errors.method_not_allowed(request.url.path, request.method)
+        if vendor is not None:
+            if vendor.headers is None:
+                vendor.headers = getattr(exc, "headers", None)
+            exc = vendor
     headers = getattr(exc, "headers", None)
     body = errors.http_body(request.url.path, exc, request.query_params)
     if body is None:
         body = {"detail": exc.detail}
+    # A vendor may decide how the body reaches the wire as well as what is in it — Google's errors
+    # are indented to the byte and a `callback` on a GET answers one at 200 as a script. Asking the
+    # envelope keeps that where the rest of that vendor's error shape lives, and leaves Atlassian
+    # and GitHub with exactly the JSONResponse they had. Measured 2026-09-15, that is right for
+    # both and for different reasons: Jira and Confluence ignore `callback` outright, on an error
+    # and on a success, while GitHub honours it through an envelope of its own — `/**/cb({"meta":
+    # …, "data": …})` under `application/javascript; charset=utf-8`, with the status inside `meta`
+    # and an unparseable name refused UNWRAPPED — which is a shape to build, not one to share.
+    rendered = errors.rendered(request, exc.status_code, body, headers)
+    if rendered is not None:
+        return rendered
     # A vendor may answer one refusal under a media type of its own — Jira's type-conversion 400 is
     # RFC 7807 on `application/problem+json`, where its other 400s are plain JSON. The exception
     # carries it, because the path and status this is reached by are the same for both and
@@ -225,6 +246,74 @@ async def report_github_rate_limit(request: Request, call_next):
         for name, value in github.rate_limit_headers(request, response.status_code).items():
             response.headers[name] = value
     return response
+
+
+def _would_redirect_to_the_slash_free_path(request: Request) -> bool:
+    """Whether the router's `redirect_slashes` would answer this path with a 307 to its slash-free
+    spelling.
+
+    That is the whole of what real has no equivalent for, so it is the whole of what gets
+    intercepted. Starlette redirects only when the path AS SENT matches no route and the slash-free
+    spelling matches one, so a route whose last segment is a `{path:path}` — `/contents/{path:path}`
+    matches the empty string — answers its own trailing slash and never reaches the redirect, the
+    same as real answers it.
+    """
+    scope = request.scope
+    routes = app.router.routes
+    if any(route.matches(scope)[0] is not Match.NONE for route in routes):
+        return False
+    slash_free = {**scope, "path": scope["path"].rstrip("/")}
+    return any(route.matches(slash_free)[0] is not Match.NONE for route in routes)
+
+
+@app.middleware("http")
+async def refuse_a_trailing_slash_on_github(request: Request, call_next):
+    """A trailing slash on `/github` that matches no route is a 404, not the 307 to the slash-free
+    path that Starlette's router answers by default.
+
+    Real runs no slash redirect at all: a trailing slash is just part of the path, and what answers
+    it is whichever route matches the path as sent. A route ending in a path parameter absorbs the
+    slash as an empty segment — `GET /repos/{owner}/{repo}/contents/` is the root listing's own 200,
+    like `/contents` beside it — and every other route simply does not match, so the request gets
+    the same 404 a path with no route at all gets, ahead of a bad bearer's own 401. Measured against
+    api.github.com on 2026-09-15, 2026-09-16 and 2026-09-17: 404 for `/repos/{owner}/{repo}/`,
+    `/repos/{owner}/{repo}/pulls/`, `/orgs/{org}/`, `/orgs/{org}/repos/`, `/user/repos/`,
+    `/rate_limit/`, and for the id-keyed spellings of the first four — `/repositories/{id}/`,
+    `/repositories/{id}/pulls/`, `/organizations/{id}/` and `/organizations/{id}/repos/` — and 200
+    for `/repos/{owner}/{repo}/contents/`. So this fires on the redirect alone — see
+    :func:`_would_redirect_to_the_slash_free_path` — and leaves a trailing slash a route does match
+    to that route.
+
+    The five `x-ratelimit-*` headers ride on this 404, via `rate_limit_headers`, for a caller that
+    sent no `Authorization` header at all, and on no other: the anonymous limit is counted by
+    address, ahead of and independent of routing, where a credential's window only starts once a
+    route is reached. A bearer that fails to resolve gets neither the headers nor a count, which is
+    where real's line falls rather than at `rate_limit_caller`'s "did this token resolve" —
+    anonymous `/repos/psf/requests/` answered `used` 45, 46 then 47 across a pair of bad-bearer 404s
+    that carried no headers and moved no window between them (measured 2026-09-17). A 404 for a
+    route that DID match, on a resource that does not exist, carries the five for either caller.
+
+    `redirect_slashes` is a setting of the whole app's `Router`, shared by every vendor mounted
+    here, and no other vendor's own answer to a trailing slash has been measured — so this
+    intercepts ahead of routing rather than turning the flag off for all of them. Registered inside
+    `resolve_github_id_paths`, so an id-keyed path is already its login-keyed spelling by the time
+    the question is asked and refuses its slash with the rest; and outside `report_github_rate_limit`
+    and the version echo, so a refused path reaches the rate limiter only through the call below and
+    never carries the echo.
+    """
+    path = request.url.path
+    if (
+        path.startswith("/github/")
+        and path.endswith("/")
+        and _would_redirect_to_the_slash_free_path(request)
+    ):
+        response = await _http_exception_handler(request, StarletteHTTPException(status_code=404))
+        if auth.bearer_token(request) is None:
+            headers = github.rate_limit_headers(request, response.status_code, count=True)
+            for name, value in headers.items():
+                response.headers[name] = value
+        return response
+    return await call_next(request)
 
 
 @app.middleware("http")

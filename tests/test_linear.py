@@ -268,9 +268,13 @@ def test_linear_by_id_relation_roots_answer(client, admin_h):
         == "2025-W08"
     )
     label_id = issue["labels"]["nodes"][0]["id"]
-    assert gql(client, "{ issueLabel(id: %s) { name } }" % lit(label_id), admin_h).json()["data"][
-        "issueLabel"
-    ]["name"] in {"bug", "gateway"}
+    label = gql(
+        client, "{ issueLabel(id: %s) { name isGroup groupType } }" % lit(label_id), admin_h
+    ).json()["data"]["issueLabel"]
+    assert label["name"] in {"bug", "gateway"}
+    # `@linear/sdk@95.1.0`'s `IssueLabel` fragment selects `groupType`; `95.0.0`'s does not.
+    assert label["isGroup"] is False
+    assert label["groupType"] is None
 
 
 def test_linear_workflow_states_are_per_team(client, admin_h):
@@ -2198,9 +2202,12 @@ def _linear_client(tmp_path):
 
 
 # --- schema drift against api.linear.app (issue #101) --------------------------------------------
-# Every type below is what introspection of https://api.linear.app/graphql reported on 2026-09-03,
-# copied here as literals so the suite runs offline; `backlot diff --source linear` is the live
-# re-measurement and `backlot/fidelity/baseline/linear.json` the record of the gaps it accepts.
+# Every type below started as what introspection of https://api.linear.app/graphql reported on
+# 2026-09-03, copied here as literals so the suite runs offline; a literal moves when a later
+# measurement finds the vendor has moved. `IntegrationService` has gained two members that way
+# since that date, and the enum in `backlot/graphql/linear.graphql` carries their dates.
+# `backlot diff --source linear` is the live re-measurement and
+# `backlot/fidelity/baseline/linear.json` the record of the gaps it accepts.
 # Most entries were a `breaking` finding in #101: Backlot declared the same name at a different
 # type, or declared a name the vendor does not have. The behaviour tests after the tables pin that
 # the resolvers PRODUCE the corrected types -- a changed declaration on its own is not a fix.
@@ -2266,6 +2273,7 @@ LINEAR_ENUMS = {
     "ExternalSyncService": ["jira", "github", "slack"],
     "IntegrationService": [
         "airbyte",
+        "datadog",
         "discord",
         "figma",
         "figmaPlugin",

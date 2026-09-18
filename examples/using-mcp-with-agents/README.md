@@ -140,7 +140,9 @@ straight to its HTTP client, so the example just sets:
   `localhost` server is reached directly (no Docker/host-gateway aliasing).
 - `NOTION_TOKEN=<token>` — sent as `Authorization: Bearer …`; Backlot resolves it to a user
   and enforces that user's ACL.
-- `NOTION_VERSION=2025-09-03` — Backlot's default (data-sources model).
+- `NOTION_VERSION=2025-09-03` — required, not a preference: Backlot refuses a request that
+  carries no version the way real Notion does, and this value is the one that reads a
+  database through its data source.
 
 ## How `s3.py` connects
 

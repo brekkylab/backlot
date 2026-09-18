@@ -402,6 +402,18 @@ def atlassian_account_id(email: str) -> str:
     return "5b" + _digest("acct:" + email)[:22]
 
 
+def atlassian_cloud_id(org: str) -> str:
+    """The tenant id every Confluence ``ari`` carries, as the UUID real spells it.
+
+    Real's is the site's own cloud id, which `/_edge/tenant_info` answers and a corpus has no
+    equivalent of, so it is seeded from the org name like every other synthetic id here. Stable
+    across a run and across runs on the same org, because an ``ari`` is an address clients store.
+
+    Through :func:`_uuid_from` because real's is a v4 UUID, which a raw digest slice is not.
+    """
+    return _uuid_from("cloudid:" + org)
+
+
 def github_login(email: str) -> str:
     return email.split("@", 1)[0].replace(".", "-")
 

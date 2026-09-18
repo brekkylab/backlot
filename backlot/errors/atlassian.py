@@ -14,6 +14,7 @@ where the two products visibly part — see :func:`integer_conversion_failure`.
 from __future__ import annotations
 
 import http
+import re
 
 from fastapi import HTTPException
 
@@ -84,8 +85,19 @@ class AtlassianError(HTTPException):
     reproduce half of it.
     """
 
-    def __init__(self, status_code: int, body: dict, *, media_type: str | None = None):
-        super().__init__(status_code=status_code, detail=body.get("detail") or body.get("message"))
+    def __init__(
+        self,
+        status_code: int,
+        body: dict,
+        *,
+        media_type: str | None = None,
+        headers: dict[str, str] | None = None,
+    ):
+        super().__init__(
+            status_code=status_code,
+            detail=body.get("detail") or body.get("message"),
+            headers=headers,
+        )
         self.body = body
         self.media_type = media_type
 
@@ -156,6 +168,174 @@ def negative_not_allowed(name: str) -> AtlassianError:
             "statusCode": 400,
             "message": f"java.lang.IllegalArgumentException: {name} cannot be less than zero",
         },
+    )
+
+
+def unsupported_media_type(path: str, content_type: str | None) -> AtlassianError:
+    """Jira's 415 for a POST body it will not read, measured 2026-09-15 on `POST search/jql`.
+
+    RFC 7807 again, the same five keys and the same media type as
+    :func:`integer_conversion_failure`. The ``detail`` names the type that arrived, and a request
+    carrying no ``Content-Type`` at all is named ``'null'`` — the literal string, which is the
+    header's absence rendered by a Java formatter rather than a JSON null.
+    """
+    return AtlassianError(
+        415,
+        {
+            "type": "about:blank",
+            "title": "Unsupported Media Type",
+            "status": 415,
+            "detail": f"Content-Type '{content_type or 'null'}' is not supported.",
+            "instance": _instance(path),
+        },
+        media_type=PROBLEM_JSON,
+    )
+
+
+# The three sentences Jira answers a POST body it cannot turn into an object, measured 2026-09-15.
+# Each arrives as `errorMessages` ALONE — no `errors`, where the refusals below it carry one — so
+# they go through :class:`AtlassianError` rather than :func:`_body`.
+BODY_EMPTY = "No content to map to Object due to end of input"
+BODY_UNPARSEABLE = "There was an error parsing JSON. Check that your request body is valid."
+BODY_NOT_AN_OBJECT = "Invalid request payload. Refer to the REST API documentation and try again."
+
+
+def body_not_read(message: str) -> AtlassianError:
+    """A 400 for a body that did not deserialize. ``message`` is one of the three above."""
+    return AtlassianError(400, {"errorMessages": [message]})
+
+
+def unbounded_jql() -> AtlassianError:
+    """Jira's 400 for `search/jql` given no `jql` at all — on GET or POST, measured 2026-09-16
+    against `brekkylab.atlassian.net`. The sentence is Backlot's own: real answers in the
+    account's language, as it does the `nextPageToken` and `orderBy` refusals.
+    """
+    return AtlassianError(
+        400,
+        {
+            "errorMessages": [
+                "Unbounded JQL queries are not allowed here. Add a search restriction to the query."
+            ],
+            "errors": {},
+        },
+    )
+
+
+def bad_page_token() -> AtlassianError:
+    """Jira's 400 for a ``nextPageToken`` it cannot decode, measured 2026-09-16 on both methods —
+    the query string's token and the body's are refused alike.
+
+    The sentence is Backlot's own, not a transcription: real localises this one to the account's
+    language, as it does the ``orderBy`` refusal (see ``routers.atlassian._jira_order_desc``,
+    measured against the same account). The envelope is reproduced, the wording is not.
+    """
+    return AtlassianError(
+        400,
+        {
+            "errorMessages": ["The provided nextPageToken is invalid or has expired."],
+            "errors": {},
+        },
+    )
+
+
+# What real answers in `Allow` on a Jira 405, per route. Measured on brekkylab.atlassian.net,
+# 2026-09-17, by sending a method the vendor defines on no route of that path. Both Jira mounts were
+# measured and agreed, which is why one row binds `{version}` to both: `PUT /rest/api/2/search/jql`
+# answers `GET, POST` and `POST /rest/api/2/serverInfo` answers `GET`, the sets their `/3` spellings
+# answer. The set is the vendor's rather than this server's, so a 405 answered here for a write the
+# vendor serves carries that method in its own `Allow`.
+#
+# A SET rather than a string: real's order varies per RESPONSE, so no order reproduces it. Three
+# `PUT /rest/api/3/search/jql` in a row answered `POST, GET`, `GET, POST` and `POST, GET`; two
+# `POST /rest/api/3/issue/{key}` answered `DELETE, GET, PUT` and `PUT, GET, DELETE`. The order below
+# is this module's choice and the only part of the header that is not a measurement.
+#
+# Two rows part from Jira's own `swagger-v3.v3.json`, which declares the same set as the measurement
+# for every other route here. `project/search`: the document declares `GET` alone and real answers
+# the three methods `/rest/api/3/project/{projectIdOrKey}` takes, so `search` binds as a project key
+# there and the measurement is what the row states. `project/{key}/role/{id}`: a `POST` with an
+# unknown key is that route's 404 rather than a 405, so no 405 could be measured and its row is the
+# document's four methods alone.
+_JIRA_ALLOW = (
+    ("/rest/api/{version}/serverInfo", ("GET",)),
+    ("/rest/api/{version}/field", ("GET", "POST")),
+    ("/rest/api/{version}/issue/{key}", ("GET", "PUT", "DELETE")),
+    ("/rest/api/{version}/issue/{key}/comment", ("GET", "POST")),
+    ("/rest/api/{version}/search/jql", ("GET", "POST")),
+    ("/rest/api/{version}/issueLinkType", ("GET", "POST")),
+    ("/rest/api/{version}/project/search", ("GET", "PUT", "DELETE")),
+    ("/rest/api/{version}/project/{key}/role", ("GET",)),
+    ("/rest/api/{version}/project/{key}/role/{id}", ("GET", "POST", "PUT", "DELETE")),
+)
+
+
+def _route_regex(template: str) -> re.Pattern[str]:
+    """``template`` with `{version}` bound to the two Jira mounts and every other placeholder to one
+    path segment. Read with ``fullmatch`` below, so `/issue/{key}` never matches
+    `/issue/{key}/comment`."""
+    segments = [
+        "[23]" if seg == "{version}" else "[^/]+" if seg.startswith("{") else re.escape(seg)
+        for seg in template.split("/")
+    ]
+    return re.compile("/".join(segments) + "$")
+
+
+_JIRA_ALLOW_PATTERNS = tuple((_route_regex(t), methods) for t, methods in _JIRA_ALLOW)
+
+
+def jira_allow(path: str) -> str | None:
+    """The `Allow` real sends on a 405 at ``path``, or ``None`` for a Jira route no row above
+    covers. ``path`` is Backlot's, prefix and all."""
+    vendor_path = _instance(path)
+    for pattern, methods in _JIRA_ALLOW_PATTERNS:
+        if pattern.fullmatch(vendor_path):
+            return ", ".join(methods)
+    return None
+
+
+def method_not_allowed(path: str, method: str) -> AtlassianError:
+    """The 405 each product answers for a method it does not serve at ``path``, `HEAD` and
+    `OPTIONS` excepted: both reach this and real answers both rather than refusing them (#255).
+
+    The one refusal the shared envelope :func:`http_body` gets wrong for both products, in two
+    different directions — Confluence's `errors` is a LIST carrying no `Allow`, Jira's is RFC 7807
+    on `application/problem+json` naming the methods that path takes (the table above). A client
+    reading `errors[0]["code"]` is the one this costs: the shared envelope has an `errors` OBJECT,
+    so that read raises against Backlot and works against real Confluence.
+
+    ``headers`` of ``{}`` on the Confluence side is the empty header set, not "no opinion": real
+    sends no `Allow` and Starlette computes one from the routes Backlot happens to declare. ``None``
+    on a Jira route no row above covers keeps Starlette's, which is at least Backlot's own truth.
+    """
+    if is_confluence(path):
+        return AtlassianError(
+            405,
+            {
+                "errors": [
+                    {
+                        "status": 405,
+                        "code": "METHOD_NOT_ALLOWED",
+                        "title": (
+                            "org.springframework.web.HttpRequestMethodNotSupportedException: "
+                            f"Request method '{method}' not supported"
+                        ),
+                    }
+                ]
+            },
+            headers={},
+        )
+    allow = jira_allow(path)
+    return AtlassianError(
+        405,
+        {
+            "type": "about:blank",
+            "title": "Method Not Allowed",
+            "status": 405,
+            "detail": f"Method '{method}' is not supported.",
+            "instance": _instance(path),
+        },
+        media_type=PROBLEM_JSON,
+        headers=None if allow is None else {"Allow": allow},
     )
 
 

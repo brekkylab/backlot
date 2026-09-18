@@ -403,20 +403,22 @@ input IssueFilter {
 #     types the eight counts below (`Issue.customerTicketCount`, `Team.issueCount`, …) `Int!`, and a
 #     real issue answers `customerTicketCount: 0`, not `0.0` (measured 2026-09-03).
 #   * Enums. Eleven fields are enums upstream and were served as bare `String`. Each enum below
-#     carries the vendor's FULL member list as introspection reports it (2026-09-03), so a served
-#     value is checked against the same set the real API would check it against, and
-#     `backlot diff` compares the two lists member for member.
+#     carries the vendor's FULL member list as introspection reports it (2026-09-03, unless the
+#     enum's own description dates it later), so a served value is checked against the same set
+#     the real API would check it against, and `backlot diff` compares the two lists member for
+#     member.
 
 """Linear's `ExternalSyncService`: the service that syncs an external entity to Linear."""
 enum ExternalSyncService { jira github slack }
 
 """Linear's `IntegrationService`: every integration an issue can carry as its
-`integrationSourceType`. The full list as introspected on 2026-09-04 (`origin` arrived between the
-2026-09-03 baseline and then); Backlot serves null for the field (a corpus does not say which
-integration created an issue), the members are here so a client switching on the enum sees the same
-member set."""
+`integrationSourceType`. The full list as introspected on 2026-09-15, in the vendor's own order and
+two members past the 2026-09-03 introspection the comment above dates: `origin` arrived between
+2026-09-03 and 2026-09-04, `datadog` between the scheduled fidelity runs of 2026-09-14 and
+2026-09-15. Backlot serves null for the field (a corpus does not say which integration created an
+issue), the members are here so a client switching on the enum sees the same member set."""
 enum IntegrationService {
-  airbyte discord figma figmaPlugin front github gong githubEnterpriseServer githubCommit
+  airbyte datadog discord figma figmaPlugin front github gong githubEnterpriseServer githubCommit
   githubImport githubPersonal githubCodeAccessPersonal gitlab origin googleCalendarPersonal
   googleSheets
   intercom jira jiraPersonal launchDarkly launchDarklyPersonal loom notion opsgenie pagerDuty
@@ -447,6 +449,9 @@ enum ReleaseNoteGenerationStatus { pending completed }
 """The visibility of a team. A team can be public, private, or restricted within an enclosing
 private-team boundary."""
 enum TeamVisibility { public restricted private }
+
+"""The selection mode of a label group; null for a regular label, per Linear's own description."""
+enum LabelGroupType { singleSelect multiSelect }
 
 type ActorBot {
   avatarUrl: String
@@ -692,6 +697,7 @@ type IssueLabel {
   createdAt: DateTime!
   id: ID!
   isGroup: Boolean!
+  groupType: LabelGroupType
   inheritedFrom: IssueLabel
   parent: IssueLabel
   team: Team

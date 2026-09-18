@@ -40,6 +40,20 @@ router = APIRouter(prefix="/s3", tags=["s3"])
 
 NS = "http://s3.amazonaws.com/doc/2006-03-01/"
 _MAX_KEYS = 1000
+# Only this value of `list-type` selects the V2 shape. Real S3 answers the V1 shape for the
+# parameter absent and for every other value alike — `list-type=1`, `list-type=0` and
+# `list-type=bogus` all come back with `Marker` and without `KeyCount` (measured 2026-09-14).
+_LIST_TYPE_V2 = "2"
+# A parameter that belongs to the other version is refused, not ignored, and before the bucket is
+# looked up: each of these on a bucket that does not exist is the 400 and not NoSuchBucket. The
+# message is its own, the error carries `ArgumentName` and NO `ArgumentValue`, and an empty value
+# is refused the same as any other. A V1 request carrying both of the V2 parameters is refused for
+# `continuation-token`, which is why it comes first here (all measured 2026-09-14).
+_V2_ONLY = (
+    ("continuation-token", "continuation-token only supported in REST.GET.BUCKET with list-type=2"),
+    ("start-after", "startAfter only supported in REST.GET.BUCKET with list-type=2"),
+)
+_V1_ONLY = (("marker", "Marker unsupported with REST.GET.BUCKET in list-type=2"),)
 # ListMultipartUploads' own ceiling, which is also its default: "The limit of 1,000 multipart uploads
 # is also the default value" (the S3 API reference on ListMultipartUploads). A larger `max-uploads`
 # is served at the cap rather than refused (measured: 1001 and 2000 both echo 1000).
@@ -59,16 +73,16 @@ _URL_ENCODING_SAFE = frozenset(
 
 # Read off the raw request rather than through FastAPI signatures, so each has to be declared by
 # hand (see openapi.qp). What is declared is what selects an operation or decides which keys come
-# back: `list-type` is absent because Backlot answers the V2 shape whether or not a caller asks for
-# it, and advertising a parameter that changes nothing is worse than not offering it.
-# ListMultipartUploads' own parameters (`max-uploads`, `key-marker`, `upload-id-marker`,
-# `encoding-type`) are absent for a different reason. They are not inert: _max_uploads and
-# _list_multipart_uploads read all four, `max-uploads`, `key-marker` and `encoding-type` come back
-# echoed, and `max-uploads`, `encoding-type` and `upload-id-marker` can each turn the 200 into an
-# InvalidArgument. What none of them does is decide which uploads a caller gets, because there are
-# never any — all they shape is an echo of the caller's own input on a page that is always empty.
-# Declaring them would advertise a paging surface, a marker to resume from and a page size, over a
-# listing that never has a second page.
+# back, which is why `list-type`, `marker` and `encoding-type` are declared below: the first
+# chooses between the two listings, the second pages the V1 one, and the third changes how every
+# key comes back.
+# ListMultipartUploads' own `max-uploads`, `key-marker` and `upload-id-marker` are absent for a
+# different reason. They are not inert: _int32_param and _list_multipart_uploads read them,
+# `max-uploads` and `key-marker` come back echoed, and `max-uploads` and `upload-id-marker` can
+# each turn the 200 into an InvalidArgument. What none of them does is decide which uploads a
+# caller gets, because there are never any — all they shape is an echo of the caller's own input
+# on a page that is always empty. Declaring them would advertise a paging surface, a marker to
+# resume from and a page size, over a listing that never has a second page.
 _P_BUCKET_GET = [
     qp("prefix"),
     qp(
@@ -76,16 +90,37 @@ _P_BUCKET_GET = [
         description="roll keys sharing a prefix up to this separator into CommonPrefixes; "
         "unset lists every key flat",
     ),
-    qp("start-after", description="seeds the FIRST page only; continuation-token wins over it"),
+    qp(
+        "list-type",
+        description="2 selects ListObjectsV2 (KeyCount, continuation tokens); any other value, "
+        "and the parameter absent, selects ListObjects (Marker, NextMarker, per-object Owner)",
+    ),
+    qp(
+        "marker",
+        description="ListObjects only: resume after this key, or past the CommonPrefixes group "
+        "holding it — refused under list-type=2",
+    ),
+    qp(
+        "start-after",
+        description="ListObjectsV2 only: seeds the FIRST page; continuation-token wins over it — "
+        "refused without list-type=2",
+    ),
+    qp(
+        "encoding-type",
+        description="url: every key and every prefix in the response comes back URL-encoded, and "
+        "so do the echoes of delimiter, start-after and marker, under an EncodingType element; "
+        "any other value is refused",
+    ),
     qp(
         "max-keys",
         "integer",
-        description=f"keys per page, capped at {_MAX_KEYS}, which is also the default",
+        description=f"keys per page, served at most {_MAX_KEYS}, which is also the default; "
+        "MaxKeys echoes the value as parsed, uncapped",
     ),
     qp(
         "continuation-token",
-        description="NextContinuationToken from a listing whose IsTruncated was true — the only "
-        "way to reach a later page",
+        description="ListObjectsV2 only: NextContinuationToken from a page whose IsTruncated was "
+        "true — refused without list-type=2",
     ),
     qp(
         "location",
@@ -167,6 +202,10 @@ _BUCKET_SELECTORS = frozenset(
 _OBJECT_SELECTORS = frozenset(
     {"acl", "annotation", "attributes", "legal-hold", "retention", "tagging", "torrent", "uploadId"}
 )
+# The bucket selectors `bucket_get` answers rather than refusing with 501, written once so that the
+# `Allow` on the HEAD refusal and the GET it names cannot drift apart. No object selector is served,
+# so an object's refusal names no method at all.
+_BUCKET_GETS = frozenset({"location", "uploads"})
 
 
 # --------------------------------------------------------------------------- helpers
@@ -224,6 +263,16 @@ def _argument_error(message: str, name: str, value: str, resource: str) -> Respo
     )
 
 
+def _argument_name(name: str) -> str:
+    """``ArgumentName`` with no ``ArgumentValue`` beside it.
+
+    Real S3 leaves the value out of the three cross-version refusals — the body is ``Code``,
+    ``Message`` and ``ArgumentName`` alone, whatever was sent and for an empty value too (measured
+    2026-09-14) — where every other ``InvalidArgument`` here carries both (see
+    ``_argument_error``)."""
+    return f"<ArgumentName>{escape(name)}</ArgumentName>"
+
+
 def _conflict(selected: list[str], resource: str) -> Response:
     """Two selectors at once, refused as real S3 refuses them (measured).
 
@@ -237,16 +286,29 @@ def _conflict(selected: list[str], resource: str) -> Response:
     )
 
 
-def _head_refusal(selected: list[str]) -> Response:
+def _head_refusal(selected: list[str], served_on_get: frozenset[str]) -> Response:
     """HEAD with a sub-resource selector, refused before the bucket or the key is looked up.
 
     No sub-resource has a HEAD form: real S3 answers ``HEAD /{bucket}?versioning`` and
     ``HEAD /{key}?acl`` 405 with an empty ``application/xml`` body, whether or not the bucket or the
     key exists, and two selectors at once with the conflict's 400 and the same empty body
-    (measured). Real S3 also sends an ``Allow`` naming the methods that sub-resource takes; Backlot
-    takes none of them, so it sends none.
+    (measured). Real S3 also sends an ``Allow`` naming the methods that sub-resource takes, GET and
+    PUT and DELETE among them (measured), and what an ``Allow`` names is the resource answering
+    rather than S3: "a list of the target resource's currently supported methods" (RFC 9110,
+    Section 15.5.6). ``served_on_get`` is that list — the selectors this same path answers on a GET,
+    which is a different set at a bucket's path and at a key's — so each of them gets ``GET``, and a
+    selector whose GET is a 501 gets no header, naming a method there being as false a claim as
+    repeating real's PUT and DELETE.
+
+    No header leaves Section 15.5.6's MUST unmet, and Section 10.2.1's "An empty Allow field value
+    indicates that the resource allows no methods" would meet it and does survive this stack. Real
+    S3 sends an empty ``Allow`` on none of these rows (measured), so the absent header is preferred
+    to a value real never sends.
     """
-    return Response(status_code=400 if len(selected) > 1 else 405, media_type="application/xml")
+    if len(selected) > 1:
+        return Response(status_code=400, media_type="application/xml")
+    headers = {"Allow": "GET"} if selected[0] in served_on_get else None
+    return Response(status_code=405, media_type="application/xml", headers=headers)
 
 
 def _not_implemented(selector: str, resource: str) -> Response:
@@ -281,10 +343,14 @@ def _auth(request: Request):
     return caller, visible, None
 
 
+def _owner_id(request: Request) -> str:
+    """A stable canonical-user-style id for the org that owns every bucket here."""
+    return synth._digest("s3-owner:" + request.app.state.acl.org_name)[:16]
+
+
 def _owner_xml(request: Request) -> str:
     org = request.app.state.acl.org_name
-    oid = synth._digest("s3-owner:" + org)[:16]  # a stable canonical-user-style id
-    return f"<Owner><ID>{oid}</ID><DisplayName>{escape(org)}</DisplayName></Owner>"
+    return f"<Owner><ID>{_owner_id(request)}</ID><DisplayName>{escape(org)}</DisplayName></Owner>"
 
 
 def _bucket_visible(conn, bucket: str, visible) -> bool:
@@ -309,7 +375,7 @@ def _encode_key_token(key: str) -> str:
 def _encode_group_token(group_successor: str) -> str:
     """A cursor that resumes past a WHOLE rolled-up CommonPrefixes group at once, rather than
     past just the last raw key seen — used when the last entry on a page is a CommonPrefix whose
-    raw keys aren't all fetched yet (see ``_list_objects_v2``). ``group_successor`` is already
+    raw keys aren't all fetched yet (see ``_list_objects``). ``group_successor`` is already
     ``store.key_successor(group)``; resumes INCLUSIVE of it (``key >= group_successor``), since
     that's the smallest key that could possibly fall outside the group."""
     return base64.urlsafe_b64encode(("g:" + group_successor).encode()).decode()
@@ -372,7 +438,7 @@ async def head_bucket(request: Request, bucket: str):
     conn = auth.conn(request)
     selected = _selected(request.query_params, _BUCKET_SELECTORS)
     if selected:
-        return _head_refusal(selected)
+        return _head_refusal(selected, _BUCKET_GETS)
     if not _bucket_visible(conn, bucket, visible):
         return Response(status_code=404)
     return Response(status_code=200, headers={"x-amz-bucket-region": "us-east-1"})
@@ -380,59 +446,150 @@ async def head_bucket(request: Request, bucket: str):
 
 @router.get("/{bucket}", openapi_extra={"parameters": _P_BUCKET_GET})
 async def bucket_get(request: Request, bucket: str):
-    """ListObjectsV2 — one page of the keys in this bucket that the caller can read.
+    """ListObjects or ListObjectsV2 — one page of the keys in this bucket that the caller can read.
 
-    Filtered by ``prefix``, rolled up by ``delimiter``, and bounded by ``max-keys``; a page whose
-    ``IsTruncated`` is true carries a ``NextContinuationToken`` to pass back as
-    ``continuation-token``. Two other GETs share this path and are selected the same way: with
-    ``location`` present it answers GetBucketLocation, and with ``uploads`` present
-    ListMultipartUploads, always the empty page because no upload is ever in progress."""
+    ``list-type=2`` selects the V2 shape and anything else the V1 one; the two differ in what they
+    page with and in the elements they carry (see ``_list_objects``). Both are filtered by
+    ``prefix``, rolled up by ``delimiter`` and bounded by ``max-keys``. Two other GETs share this
+    path and are selected the same way: with ``location`` present it answers GetBucketLocation, and
+    with ``uploads`` present ListMultipartUploads, always the empty page because no upload is ever
+    in progress."""
     caller, visible, err = _auth(request)
     if err:
         return err
     conn = auth.conn(request)
-    selected = _selected(request.query_params, _BUCKET_SELECTORS)
+    q = request.query_params
+    resource = f"/{bucket}"
+    selected = _selected(q, _BUCKET_SELECTORS)
     if len(selected) > 1:
         # Before the bucket is looked up: real S3 reports the conflict for a bucket that does not
         # exist too (measured).
-        return _conflict(selected, f"/{bucket}")
-    max_uploads = _MAX_UPLOADS
+        return _conflict(selected, resource)
+    max_uploads, max_keys = _MAX_UPLOADS, _MAX_KEYS
+    v2 = _first(q, "list-type", None) == _LIST_TYPE_V2
     if selected == ["uploads"]:
         # Also before the bucket is looked up: `?uploads&max-uploads=abc` on a bucket that does not
         # exist is the 400, not NoSuchBucket, where `?uploads&max-uploads=-1` on it is NoSuchBucket:
         # the value is parsed here and judged against the range after the lookup (measured). The
         # other parameters are read after it too.
-        max_uploads, err = _max_uploads(request.query_params, f"/{bucket}")
+        max_uploads, err = _int32_param(q, "max-uploads", _MAX_UPLOADS, resource)
         if err:
             return err
+    elif not selected:
+        # The listing straddles the lookup the same way, and in this order: `max-keys` parses first
+        # (`?start-after=x&max-keys=abc` on a V1 request is the max-keys refusal, not start-after's),
+        # then the other version's parameters are refused, and both happen before the bucket is
+        # looked up. The range and `encoding-type` are judged after it, in _list_objects (measured
+        # 2026-09-14).
+        max_keys, err = _int32_param(q, "max-keys", _MAX_KEYS, resource)
+        if err:
+            return err
+        for name, message in _V1_ONLY if v2 else _V2_ONLY:
+            if _first(q, name, None) is not None:
+                return _error("InvalidArgument", message, resource, extra=_argument_name(name))
     if not _bucket_visible(conn, bucket, visible):
         return _error("NoSuchBucket", "The specified bucket does not exist", bucket)
+    if selected and selected[0] not in _BUCKET_GETS:
+        return _not_implemented(selected[0], resource)
     if selected == ["location"]:
         # us-east-1 is represented by an *empty* LocationConstraint element on real S3.
         return _xml(f'<LocationConstraint xmlns="{NS}"></LocationConstraint>')
     if selected == ["uploads"]:
         return _list_multipart_uploads(request, bucket, max_uploads)
-    if selected:
-        return _not_implemented(selected[0], f"/{bucket}")
-    return _list_objects_v2(request, conn, bucket, visible)
+    return _list_objects(request, conn, bucket, visible, v2=v2, max_keys=max_keys)
 
 
-def _list_objects_v2(request: Request, conn, bucket: str, visible) -> Response:
+def _group_of(key: str, prefix: str, delimiter: str) -> str | None:
+    """The CommonPrefixes group ``key`` rolls up into, or ``None`` when it is listed on its own."""
+    if not delimiter or not key.startswith(prefix):
+        return None
+    rest = key[len(prefix) :]
+    idx = rest.find(delimiter)
+    return prefix + rest[: idx + len(delimiter)] if idx != -1 else None
+
+
+def _list_objects(
+    request: Request, conn, bucket: str, visible, *, v2: bool, max_keys: int
+) -> Response:
+    """One page of a bucket's keys, in whichever of the two listings the caller asked for.
+
+    The rows, the ``prefix`` filter and the ``delimiter`` rollup are the same for both. What
+    differs is measured, and it is what a client pages with:
+
+    V1 carries ``Marker`` always, empty when none was sent and echoing it when one was — the API
+    reference says otherwise ("Marker is included in the response if it was sent with the
+    request"), and what real does is send the empty element either way (measured). It carries
+    ``NextMarker`` only when a ``delimiter`` is set and the page is truncated, which the reference
+    states and the measurement agrees with: "This element is returned only if you have the
+    delimiter request parameter specified. If the response does not include the NextMarker element
+    and it is truncated, you can use the value of the last Key element in the response as the
+    marker parameter in the subsequent request". That fallback is botocore's V1 paginator, so
+    sending a cursor where real sends none would make Backlot easier to page than the thing it
+    stands in for. Its ``Contents`` carry an ``Owner``, which in this region is an ``ID`` with no
+    ``DisplayName``. It has no ``KeyCount``.
+
+    V2 carries ``KeyCount``, ``NextContinuationToken`` when truncated, ``ContinuationToken``
+    echoed when one was sent, and ``StartAfter`` echoed when one was and no continuation token
+    displaced it. No ``Owner``.
+
+    A ``marker`` whose own group has already been listed skips that whole group rather than
+    walking back into it: real answers ``?delimiter=/&marker=docs/`` and
+    ``?delimiter=/&marker=docs/a.txt`` alike with the entries after ``docs/``, never ``docs/``
+    again, so paging a delimited V1 listing terminates (measured 2026-09-14 — one page each of
+    ``docs/``, ``notes/`` and a plain key, with no repeat). That is the same bound V2 reaches
+    through ``_encode_group_token``.
+
+    ``MaxKeys`` echoes the value as parsed, uncapped — real answers ``max-keys=1001`` with
+    ``<MaxKeys>1001</MaxKeys>`` and at most ``_MAX_KEYS`` keys, and ``max-keys=05`` with
+    ``<MaxKeys>5</MaxKeys>`` — and ``max-keys=0`` is a page of nothing whose ``IsTruncated`` is
+    false with keys in the bucket (all measured 2026-09-14).
+
+    ``encoding-type`` is judged here, after the bucket lookup and before the range, and refused
+    unless it is ``url`` compared without case. Under it ``Prefix``, ``Delimiter``, ``StartAfter``,
+    ``Marker``, ``NextMarker``, every ``Key`` and every ``CommonPrefixes/Prefix`` come back encoded
+    and the continuation tokens do not — each of those measured, since the reference names only
+    four ("returns encoded key name values in the following response elements: Delimiter, Prefix,
+    Key, and StartAfter", the ListObjectsV2 page) and says nothing about the V1 pair or the tokens.
+    A token keeps its ``/``, ``+`` and ``=``.
+
+    The body carries every ``Contents`` and then every ``CommonPrefixes``, real's order on both
+    listings and not the key order the entries are collected in. The two part company on a page
+    holding both: real answers ``?delimiter=/&max-keys=5`` over ``100%.csv``, ``a b.txt``,
+    ``a+b.txt``, ``run books/x.txt`` and ``zz.txt`` with four ``Contents`` and then
+    ``run books/``, and names ``zz.txt`` as the ``NextMarker`` — the last entry by key, not the
+    element the body ends on (measured 2026-09-16).
+
+    Every parameter is read as real reads it, the first value when one is sent twice (see
+    ``_first``): ``?prefix=a&prefix=zz.txt`` lists under ``a``, and ``?list-type=1&list-type=2``
+    answers V1 where the two the other way round answer V2 (measured).
+    """
     q = request.query_params
-    prefix = q.get("prefix", "")
-    delimiter = q.get("delimiter", "")
-    start_after = q.get("start-after", "")
-    try:
-        max_keys = min(int(q.get("max-keys", _MAX_KEYS)), _MAX_KEYS)
-    except ValueError:
-        return _error("InvalidArgument", "max-keys must be an integer")
+    resource = f"/{bucket}"
+    encoding_type = _first(q, "encoding-type", None)
+    if encoding_type is not None and encoding_type.lower() != "url":
+        return _argument_error(
+            "Invalid Encoding Method specified in Request", "encoding-type", encoding_type, resource
+        )
+    err = _range_refusal(max_keys, "maxKeys", resource)
+    if err:
+        return err
+    enc = _url_encode if encoding_type is not None else (lambda v: v)
+    prefix = _first(q, "prefix")
+    delimiter = _first(q, "delimiter")
+    marker = _first(q, "marker") if not v2 else ""
+    # `None` for absent and `""` for sent empty, which the echo below has to tell apart the way
+    # `continuation` does: real answers `?list-type=2&start-after=` with `<StartAfter></StartAfter>`
+    # and sends no element when the parameter is absent (measured 2026-09-17).
+    start_after = _first(q, "start-after", None) if v2 else None
 
     # A continuation-token (opaque, from a previous page) wins over start-after, exactly like
     # real S3 — start-after only seeds the very first page of a listing. Its mode (exclusive
     # "after" a raw key, vs inclusive "at" a CommonPrefixes-group successor — see
     # _encode_group_token) picks which of list_s3_objects' two independent lower bounds to use.
-    continuation = q.get("continuation-token")
-    after, at = None, None
+    # V1 reaches the same two bounds through `marker` alone: inside a group it resumes past the
+    # whole group, and anywhere else past the key itself.
+    continuation = _first(q, "continuation-token", None) if v2 else None
+    after, at, past_the_end = None, None, False
     if continuation:
         decoded = _decode_token(continuation)
         if decoded is not None:
@@ -443,32 +600,48 @@ def _list_objects_v2(request: Request, conn, bucket: str, visible) -> Response:
                 at = value
     elif start_after:
         after = start_after
+    elif marker:
+        group = _group_of(marker, prefix, delimiter)
+        if group:
+            at = store.key_successor(group)
+            # No successor means the group runs to the end of what a key can spell, so nothing
+            # sorts after it and this page is empty rather than the whole listing over again.
+            past_the_end = at is None
+        else:
+            after = marker
 
     # The one SQL query that replaces the old 100k-row materialize: prefix + keyset (`key >
     # after` / `key >= at`) + ACL all pushed down, walking idx_s3_key(bucket, key) directly in
     # sorted order. Ask for one extra row so IsTruncated is a plain length check (and so we can
     # tell, below, whether a trailing rolled-up group extends past this page) — no separate
-    # COUNT(*) query. max_keys=0: the LIMIT is still 1 (so IsTruncated is still computed), but
-    # `rows` ends up empty after trimming, and every access below is guarded on it.
-    rows = store.list_s3_objects(
-        conn,
-        bucket,
-        prefix=prefix,
-        start_after=after,
-        start_at=at,
-        visible_ids=visible,
-        limit=max_keys + 1,
+    # COUNT(*) query. `served` is what this page may hold: the echo is uncapped but what comes
+    # back is not. served=0 is its own case — `rows` is empty after trimming, IsTruncated is false
+    # the way real answers it, and nothing below reads the overflow row.
+    served = min(max_keys, _MAX_KEYS)
+    rows = (
+        []
+        if past_the_end
+        else store.list_s3_objects(
+            conn,
+            bucket,
+            prefix=prefix,
+            start_after=after,
+            start_at=at,
+            visible_ids=visible,
+            limit=served + 1,
+        )
     )
-    is_truncated = len(rows) > max_keys
-    overflow_row = rows[max_keys] if is_truncated else None  # first not-yet-returned raw row
-    rows = rows[:max_keys]
+    is_truncated = served > 0 and len(rows) > served
+    overflow_row = rows[served] if is_truncated else None  # first not-yet-returned raw row
+    rows = rows[:served]
     by_key = {r["key"]: r for r in rows}
 
     # Split into (CommonPrefixes, Contents) using the delimiter, S3-style. `rows` is already
-    # key-ascending (straight off idx_s3_key), so a first-seen dedup below reproduces the final
-    # sorted order for free — no second sort.
+    # key-ascending (straight off idx_s3_key), so a first-seen dedup below puts `entries` in key
+    # order for free — no second sort. Key order is what KeyCount counts and what both cursors are
+    # cut from; the body is written in real's document order further down, which is not this one.
     #
-    # Bounded rollup: CommonPrefixes are computed only over THIS page (<= max_keys+1 raw rows),
+    # Bounded rollup: CommonPrefixes are computed only over THIS page (<= served+1 raw rows),
     # never the whole bucket/prefix. Real S3 can afford to enumerate every CommonPrefixes for a
     # huge delimited listing in one response because it skips whole key ranges internally without
     # reading every key under them; a plain SQL range scan can't do that skip, so a "folder" (a
@@ -477,15 +650,12 @@ def _list_objects_v2(request: Request, conn, bucket: str, visible) -> Response:
     seen_prefix: set[str] = set()
     for r in rows:
         k = r["key"]
-        if delimiter:
-            rest = k[len(prefix) :]
-            idx = rest.find(delimiter)
-            if idx != -1:
-                cp = prefix + rest[: idx + len(delimiter)]
-                if cp not in seen_prefix:
-                    seen_prefix.add(cp)
-                    entries.append(("cp", cp))
-                continue
+        group = _group_of(k, prefix, delimiter)
+        if group is not None:
+            if group not in seen_prefix:
+                seen_prefix.add(group)
+                entries.append(("cp", group))
+            continue
         entries.append(("obj", k))
 
     # NextContinuationToken: normally the last *raw* key fetched (exclusive keyset bound), same
@@ -497,43 +667,69 @@ def _list_objects_v2(request: Request, conn, bucket: str, visible) -> Response:
     # next page. Instead resume at "key >= key_successor(group)" — past the group's entire key
     # range in one bounded index seek, never re-scanning its rows — so each CommonPrefixes is
     # emitted at most once across all pages, and plain keys still use the last-key cursor.
+    # V1 needs no such split: its cursor IS the last entry, group or key, and a marker naming a
+    # group is read back as that same bound above.
+    last_kind, last_val = entries[-1] if entries else (None, None)
+    group_runs_on = (
+        is_truncated
+        and last_kind == "cp"
+        and overflow_row is not None
+        and overflow_row["key"].startswith(last_val)
+    )
+    group_successor = store.key_successor(last_val) if group_runs_on else None
+    if group_runs_on and group_successor is None:
+        # That group's key range runs to the end of what a key can spell (see
+        # ``store.key_successor``), so every row still unfetched rolls up into the CommonPrefixes
+        # entry this page already carries: the page holds every entry there is, and saying
+        # truncated would leave a client a page it cannot page out of — there is no cursor to give
+        # it and nothing left to fetch with one.
+        is_truncated = False
     next_token = None
-    if is_truncated and rows:
-        last_kind, last_val = entries[-1] if entries else (None, None)
-        if (
-            last_kind == "cp"
-            and overflow_row is not None
-            and overflow_row["key"].startswith(last_val)
-        ):
-            next_token = _encode_group_token(store.key_successor(last_val))
-        else:
-            next_token = _encode_key_token(rows[-1]["key"])
+    if is_truncated and rows and v2:
+        next_token = (
+            _encode_group_token(group_successor)
+            if group_successor is not None
+            else _encode_key_token(rows[-1]["key"])
+        )
+    next_marker = last_val if (is_truncated and entries and not v2 and delimiter) else None
 
     body = [
         f'<ListBucketResult xmlns="{NS}"><Name>{escape(bucket)}</Name>',
-        f"<Prefix>{escape(prefix)}</Prefix>",
-        f"<KeyCount>{len(entries)}</KeyCount><MaxKeys>{max_keys}</MaxKeys>",
-        f"<Delimiter>{escape(delimiter)}</Delimiter>" if delimiter else "",
-        f"<StartAfter>{escape(start_after)}</StartAfter>" if start_after else "",
-        f"<IsTruncated>{'true' if is_truncated else 'false'}</IsTruncated>",
+        f"<Prefix>{escape(enc(prefix))}</Prefix>",
     ]
-    if continuation:
-        body.append(f"<ContinuationToken>{escape(continuation)}</ContinuationToken>")
-    if next_token:
-        body.append(f"<NextContinuationToken>{next_token}</NextContinuationToken>")
-    for kind, val in entries:
-        if kind == "cp":
-            body.append(f"<CommonPrefixes><Prefix>{escape(val)}</Prefix></CommonPrefixes>")
-        else:
-            r = by_key[val]
-            ts = r["updated_ts"] or r["created_ts"]
-            body.append(
-                f"<Contents><Key>{escape(val)}</Key>"
-                f"<LastModified>{synth.s3_iso(ts)}</LastModified>"
-                f"<ETag>{escape(synth.s3_etag(r['key'], r['content']))}</ETag>"
-                f"<Size>{len(r['content'].encode())}</Size>"
-                f"<StorageClass>{escape(r['subtype'] or 'STANDARD')}</StorageClass></Contents>"
-            )
+    if v2:
+        if start_after is not None and not continuation:
+            body.append(f"<StartAfter>{escape(enc(start_after))}</StartAfter>")
+        if continuation:
+            body.append(f"<ContinuationToken>{escape(continuation)}</ContinuationToken>")
+        if next_token:
+            body.append(f"<NextContinuationToken>{next_token}</NextContinuationToken>")
+        body.append(f"<KeyCount>{len(entries)}</KeyCount>")
+    else:
+        body.append(f"<Marker>{escape(enc(marker))}</Marker>")
+        if next_marker is not None:
+            body.append(f"<NextMarker>{escape(enc(next_marker))}</NextMarker>")
+    body.append(f"<MaxKeys>{max_keys}</MaxKeys>")
+    if delimiter:
+        body.append(f"<Delimiter>{escape(enc(delimiter))}</Delimiter>")
+    if encoding_type is not None:
+        body.append(f"<EncodingType>{escape(encoding_type)}</EncodingType>")
+    body.append(f"<IsTruncated>{'true' if is_truncated else 'false'}</IsTruncated>")
+    # Every `Contents`, then every `CommonPrefixes` — real's document order, not the key order
+    # `entries` holds (see this function's docstring).
+    owner = "" if v2 else f"<Owner><ID>{_owner_id(request)}</ID></Owner>"
+    for val in [v for kind, v in entries if kind == "obj"]:
+        r = by_key[val]
+        ts = r["updated_ts"] or r["created_ts"]
+        body.append(
+            f"<Contents><Key>{escape(enc(val))}</Key>"
+            f"<LastModified>{synth.s3_iso(ts)}</LastModified>"
+            f"<ETag>{escape(synth.s3_etag(r['key'], r['content']))}</ETag>"
+            f"<Size>{len(r['content'].encode())}</Size>{owner}"
+            f"<StorageClass>{escape(r['subtype'] or 'STANDARD')}</StorageClass></Contents>"
+        )
+    for val in [v for kind, v in entries if kind == "cp"]:
+        body.append(f"<CommonPrefixes><Prefix>{escape(enc(val))}</Prefix></CommonPrefixes>")
     body.append("</ListBucketResult>")
     return _xml("".join(body))
 
@@ -551,22 +747,28 @@ def _url_encode(value: str) -> str:
     return "".join(out)
 
 
-def _max_uploads(q, resource: str) -> tuple[int, Response | None]:
-    """ListMultipartUploads' ``max-uploads``, parsed the way real S3 parses it (measured).
+def _int32_param(q, name: str, default: int, resource: str) -> tuple[int, Response | None]:
+    """``max-uploads`` and ``max-keys``, parsed the way real S3 parses both (measured).
 
     Absent or empty is the default; a run of digits, with or without a leading ``-``, is read for
     its value, leading zeros and all (``05`` and ``00000000005`` are both 5, twenty zeros and a 5 is
-    5, five thousand zeros is 0, ``-0`` is 0) and returned as parsed, ``_MAX_UPLOADS`` and the
-    range left to ``_list_multipart_uploads``: a value that fits an int32 but comes to less than 0
-    (``-1``, ``-2147483648``) is refused there, after the bucket lookup, with "Argument max-uploads
-    must be an integer between 0 and 2147483647". Anything else — a word, a leading space, a value
-    whose digits do not fit an int32 in either direction (``2147483648``, ``-2147483649``) — is
-    refused here, before the lookup, with "Provided max-uploads not an integer or within integer
-    range". Not ``int()``, which accepts `` 5`` and ``+5`` and has no ceiling.
+    5, five thousand zeros is 0, ``-0`` is 0) and returned as parsed, uncapped and with the range
+    left to ``_range_refusal``: a value that fits an int32 but comes to less than 0 (``-1``,
+    ``-2147483648``) is refused there, after the bucket lookup, and anything else — a word, a
+    leading space, a value whose digits do not fit an int32 in either direction (``2147483648``,
+    ``-2147483649``) — is refused here, before the lookup, with "Provided <name> not an integer or
+    within integer range". Not ``int()``, which accepts `` 5`` and ``+5`` and has no ceiling.
+
+    The two parameters take the same parser because real parses them the same way, which was
+    measured on each separately: the listing refuses ``max-keys=abc``, ``max-keys= 5``,
+    ``max-keys=2147483648`` and ``max-keys=-2147483649`` with this message and serves ``max-keys=``,
+    ``max-keys=05`` and ``max-keys=-0``, as ListMultipartUploads does for its own (2026-09-11 and
+    2026-09-14). Where they differ is the range refusal, which spells the name differently — see
+    ``_range_refusal``.
     """
-    raw = _first(q, "max-uploads")
+    raw = _first(q, name)
     if raw == "":
-        return _MAX_UPLOADS, None
+        return default, None
     negative = raw.startswith("-")
     # Leading zeros come off before the range is judged, because real judges the value and not the
     # length or the sign: `00002147483647` is served and `00002147483648` refused, five thousand
@@ -579,12 +781,26 @@ def _max_uploads(q, resource: str) -> tuple[int, Response | None]:
     ceiling = _INT32_MAX + 1 if negative else _INT32_MAX
     if not re.fullmatch(r"-?[0-9]+", raw) or len(digits) > 10 or int(digits) > ceiling:
         return 0, _argument_error(
-            "Provided max-uploads not an integer or within integer range",
-            "max-uploads",
-            raw,
-            resource,
+            f"Provided {name} not an integer or within integer range", name, raw, resource
         )
     return -int(digits) if negative else int(digits), None
+
+
+def _range_refusal(value: int, name: str, resource: str) -> Response | None:
+    """A parsed ``max-uploads``/``max-keys`` below zero, refused as real refuses it (measured).
+
+    Real judges the range after the bucket lookup and after ``encoding-type``, and names the value
+    as parsed rather than as sent — ``-01`` is reported as ``-1`` (2026-09-11 for ``max-uploads``,
+    2026-09-14 for ``max-keys``). ``name`` is separate from the parse refusal's because the listing
+    spells it differently on either side of that split: ``max-keys=abc`` is refused for ``max-keys``
+    and ``max-keys=-1`` for ``maxKeys``, on both forms of the listing, where ListMultipartUploads
+    spells ``max-uploads`` in both of its messages (measured).
+    """
+    if value >= 0:
+        return None
+    return _argument_error(
+        f"Argument {name} must be an integer between 0 and {_INT32_MAX}", name, str(value), resource
+    )
 
 
 def _list_multipart_uploads(request: Request, bucket: str, max_uploads: int) -> Response:
@@ -612,7 +828,7 @@ def _list_multipart_uploads(request: Request, bucket: str, max_uploads: int) -> 
     ``_url_encode``); ``Bucket`` as it is, a bucket name holding nothing the encoding touches. Each
     parameter is read as real reads it, the first value when one is sent twice (see ``_first``).
 
-    ``max_uploads`` arrives parsed from ``_max_uploads``, negative included: real judges the range
+    ``max_uploads`` arrives parsed from ``_int32_param``, negative included: real judges the range
     after the bucket lookup and after ``encoding-type``, before the markers, and names the value as
     parsed, ``-01`` as ``-1`` (measured 2026-09-11). Past ``_MAX_UPLOADS`` it is served at the cap.
     """
@@ -623,13 +839,9 @@ def _list_multipart_uploads(request: Request, bucket: str, max_uploads: int) -> 
         return _argument_error(
             "Invalid Encoding Method specified in Request", "encoding-type", encoding_type, resource
         )
-    if max_uploads < 0:
-        return _argument_error(
-            f"Argument max-uploads must be an integer between 0 and {_INT32_MAX}",
-            "max-uploads",
-            str(max_uploads),
-            resource,
-        )
+    err = _range_refusal(max_uploads, "max-uploads", resource)
+    if err:
+        return err
     key_marker = _first(q, "key-marker")
     upload_id_marker = _first(q, "upload-id-marker")
     if key_marker and upload_id_marker:
@@ -667,7 +879,9 @@ async def object_get(request: Request, bucket: str, key: str):
     conn = auth.conn(request)
     selected = _selected(request.query_params, _OBJECT_SELECTORS)
     if selected and request.method == "HEAD":
-        return _head_refusal(selected)
+        # An empty set, not `_BUCKET_GETS`: a key's path serves no sub-resource on a GET, so its
+        # 405 names no method even for a selector a bucket's path does serve.
+        return _head_refusal(selected, frozenset())
     if len(selected) > 1:
         return _conflict(selected, f"/{bucket}/{key}")
     if selected == ["uploadId"]:

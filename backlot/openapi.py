@@ -185,6 +185,28 @@ def github_page_parameters(spec: dict, parameters: dict[str, tuple[int, str]]) -
     return spec
 
 
+def jira_search_placement(spec: dict) -> dict:
+    """``spec`` with `search/jql`'s parameters left on the GET and its body on the POST, in place.
+
+    The two methods take the same three parameters in different places — the query string on GET,
+    a `SearchAndReconcileRequestBean` body on POST — which is what both of Atlassian's documents
+    declare and what the live service reads: a `nextPageToken` in the query string of a POST is not
+    read, and `?maxResults=1` with a body that omits it is ignored (measured 2026-09-15).
+
+    Here rather than in two `openapi_extra` dicts on two routes, because ``openapi_extra`` is per
+    ROUTE and a route is per path: splitting the methods into a route each would leave both paths
+    served by two single-method routes, and Starlette fills `Allow` from the one route that
+    partially matched, so a `PUT` would name one method where real names both. One route keeps the
+    header and this keeps the document.
+    """
+    for path, item in spec.get("paths", {}).items():
+        if not path.endswith("/search/jql"):
+            continue
+        item.get("get", {}).pop("requestBody", None)
+        item.get("post", {}).pop("parameters", None)
+    return spec
+
+
 def google_system_parameters(spec: dict) -> dict:
     """``spec`` with `$.xgafv` declared on every Google-family operation, in place.
 
@@ -193,7 +215,14 @@ def google_system_parameters(spec: dict) -> dict:
     read once by the envelope — so it is declared once here rather than on each of the
     twenty-one family routes, where a route added later would forget it and the fidelity diff would
     report the gap again. The declaration is the document's own: ``V1 error format.``, an enum of
-    ``1`` and ``2``. The batch endpoint is not a family path and gets nothing."""
+    ``1`` and ``2``. The batch endpoint is not a family path and gets nothing.
+
+    `$.xgafv` alone, though real's document declares `callback` beside it and Backlot validates that
+    one for the router too (``errors.google.validate_system_parameters``). `callback` is honoured on
+    a Google error answered to a GET — a POST ignores it, as real's POSTs do — and on a SUCCESS only
+    under ``/sheets/v4``, which is where :func:`qp` declares it. The two Sheets POST routes share
+    that declaration and ignore the parameter exactly as real's do, so it promises a caller no more
+    there than the vendor's own document does."""
     for path, item in spec.get("paths", {}).items():
         if gerr.family(path) is None:
             continue

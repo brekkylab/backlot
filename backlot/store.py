@@ -885,6 +885,14 @@ CREATE TABLE IF NOT EXISTS group_members (
     group_id TEXT NOT NULL, user_id TEXT NOT NULL, PRIMARY KEY (group_id, user_id)
 );
 
+-- A roster entry's `deactivated: true` (backlot.importer.byo.load_roster — see its docstring for
+-- the vendor shape this drives), so it lives beside `fireflies_users` rather than widening the
+-- central `principals` row every other vendor reads. A derived roster (no `--roster`) never
+-- inserts here: there is no `deactivated:` key to read.
+CREATE TABLE IF NOT EXISTS slack_deactivated_users (
+    email TEXT PRIMARY KEY REFERENCES principals(id)
+);
+
 -- Build-time facts that cannot be recomputed from the rows. `source_documents` is the count of
 -- documents the corpus OFFERED, which differs from COUNT(*) because faithful parsing promotes
 -- structure inside a document to first-class rows (one Slack transcript -> many messages).
@@ -1467,12 +1475,38 @@ def list_documents(
     return conn.execute(sql, params).fetchall()
 
 
-def key_successor(s: str) -> str:
-    """The smallest string greater than every string with prefix ``s`` (increments its last
-    character), so an S3 prefix becomes the half-open range ``key >= s AND key < key_successor(s)``.
-    The ListObjectsV2 router also uses it to skip a whole CommonPrefixes group in one bound.
-    Undefined for an empty string — callers guard that case."""
-    return s[:-1] + chr(ord(s[-1]) + 1)
+# The highest code point a Python string can hold, and so the one `key_successor` has nothing to
+# increment past. A key or a query parameter can contain it: `chr(0x10FFFF)` survives UTF-8 and
+# SQLite TEXT intact.
+_LAST_CODE_POINT = "\U0010ffff"
+# The surrogate block. A Python string can hold one but UTF-8 cannot encode it, so sqlite3 refuses
+# to bind it and a bound that lands here raises `UnicodeEncodeError` rather than filtering a range.
+# The one character whose step lands in it is U+D7FF, and stepping over the block to U+E000 keeps
+# the bound exact for it: a key that sorts between the two would have to spell a surrogate, which
+# no key stored as UTF-8 does.
+_SURROGATES = range(0xD800, 0xE000)
+
+
+def key_successor(s: str) -> str | None:
+    """The smallest string greater than every string with prefix ``s``, so an S3 prefix becomes the
+    half-open range ``key >= s AND key < key_successor(s)``. The listing router also uses it to skip
+    a whole CommonPrefixes group in one bound.
+
+    Normally this increments the last character. Two ranges of code point have no usable character
+    one step up, and both are reachable from the wire, where ``?prefix=``, ``?delimiter=`` and
+    ``?marker=`` take whatever a client sends. A step into the surrogate block goes over it
+    instead. A trailing run of the last code point has nothing above it at all, so the run comes
+    off and the character before it is incremented — the result is still greater than every
+    string starting with ``s``, since they all share the smaller prefix. A string that is nothing
+    but that code point has no successor, and ``None`` says so: every string with that prefix
+    sorts at the very end, which a caller reads as "no upper bound" or "nothing follows"
+    depending on which side it is bounding. Undefined for an empty string; callers guard that
+    case."""
+    core = s.rstrip(_LAST_CODE_POINT)
+    if not core:
+        return None
+    nxt = ord(core[-1]) + 1
+    return core[:-1] + chr(_SURROGATES.stop if nxt in _SURROGATES else nxt)
 
 
 def list_s3_objects(
@@ -1486,13 +1520,20 @@ def list_s3_objects(
     default case-insensitive LIKE). The byte range hits ``idx_s3_key(bucket, key)`` for both the
     WHERE and the ORDER BY, and is byte-exact like real S3.
 
+    A prefix whose successor does not exist (see ``key_successor``) takes the lower bound alone,
+    which is the same range: every key at or above it starts with it.
+
     ``start_after`` (exclusive) and ``start_at`` (inclusive — the router uses it to resume past a
     whole rolled-up CommonPrefixes group) are independent bounds."""
     sql = "SELECT * FROM s3_objects WHERE bucket = ?"
     params: list = [bucket]
     if prefix:
-        sql += " AND key >= ? AND key < ?"
-        params += [prefix, key_successor(prefix)]
+        sql += " AND key >= ?"
+        params.append(prefix)
+        ceiling = key_successor(prefix)
+        if ceiling is not None:
+            sql += " AND key < ?"
+            params.append(ceiling)
     if start_after:
         sql += " AND key > ?"
         params.append(start_after)
@@ -3746,8 +3787,9 @@ def slack_private_channel_members(conn, channel) -> list[str] | None:
     everyone in the org, so its org grant says nothing about who is in it — see
     :func:`slack_channel_member_emails` for what answers there.
 
-    An empty list is a private channel nobody may read (``"readers": []``, or a grant to a group
-    with no members): it has no membership rather than a membership of everyone.
+    An empty list is a private channel nobody may read (``"readers": []``, a grant to a group with
+    no members, or every grantee deactivated): it has no membership rather than a membership of
+    everyone.
     """
     if container_has_public(conn, "slack", channel):
         return None
@@ -3760,7 +3802,17 @@ def slack_private_channel_members(conn, channel) -> list[str] | None:
             members.add(pid)
         elif ptype == "group":
             members.update(r["id"] for r in group_members(conn, pid))
-    return sorted(members)
+    # Slack drops a deactivated member from every channel and keeps what they wrote: "People
+    # aren't notified when their accounts are deactivated, nor are their messages or files
+    # deleted. They'll be removed from all channels ..." (Slack, "Deactivate a member's account"). The live workspace measured 2026-09-17 is consistent with that rather
+    # than evidence for it: none of its 9 deactivated members appears in any of the 8 readable
+    # channels' conversations.members, but none of them has spoken in one either (10 visible
+    # messages in all, no channel reporting has_more), and absence is equally what real answers
+    # for somebody who was never in the channel. Private channels are outside that token's scopes
+    # as well (types=private_channel answers missing_scope without groups:read), so no live
+    # observation reaches this path at all.
+    deactivated = {r[0] for r in conn.execute("SELECT email FROM slack_deactivated_users")}
+    return sorted(members - deactivated)
 
 
 # --- slack channel membership ----------------------------------------------------------------
@@ -3806,6 +3858,15 @@ def slack_set_membership(conn, channel: str, email: str, state: str) -> None:
         conn.commit()
 
 
+def _slack_deactivated(conn) -> frozenset[str]:
+    """Every deactivated member, for the branches that filter in Python rather than in SQL.
+
+    Read once per question, the way :func:`_slack_explicit` is. The SQL branches name the table
+    directly; both answer the same fact.
+    """
+    return frozenset(r[0] for r in conn.execute("SELECT email FROM slack_deactivated_users"))
+
+
 def _slack_explicit(conn, channel: str) -> tuple[frozenset[str], frozenset[str]]:
     """``(explicitly in, explicitly out)`` for a channel, read once per membership question rather
     than per person. Both empty without an overlay, which is what makes every reader below fall
@@ -3840,7 +3901,14 @@ def _slack_public_members_sql(ins: frozenset[str], outs: frozenset[str]) -> tupl
     for email in sorted(ins):
         sql += " UNION SELECT ?"
         params.append(email)
-    return sql, params
+    # Deactivation is applied OVER the whole set, speakers and explicit joiners alike, because it
+    # outranks both: Slack removes a deactivated member from every channel, so an explicit `in`
+    # cannot put one back. One wrapper rather than a clause per branch, for the reason the tri-state
+    # is one function -- the page and the count read the same set or they disagree.
+    return (
+        f"SELECT email FROM ({sql}) WHERE email NOT IN (SELECT email FROM slack_deactivated_users)",
+        params,
+    )
 
 
 def slack_channel_member_emails(conn, channel, limit=100, offset=0) -> list[str]:
@@ -3862,7 +3930,9 @@ def slack_channel_member_emails(conn, channel, limit=100, offset=0) -> list[str]
     ins, outs = _slack_explicit(conn, channel)
     members = slack_private_channel_members(conn, channel)
     if members is not None:
-        adjusted = sorted((set(members) | set(ins)) - set(outs))
+        # `members` already excludes the deactivated; `ins` has to be filtered too, or an explicit
+        # membership would put back somebody Slack removes from every channel.
+        adjusted = sorted((set(members) | set(ins)) - set(outs) - _slack_deactivated(conn))
         return adjusted[offset : offset + limit]
     sql, params = _slack_public_members_sql(ins, outs)
     return [
@@ -3878,10 +3948,16 @@ def slack_channel_has_author(conn, channel, email) -> bool:
     """Whether ``email`` is a member of a PUBLIC channel — the same set
     :func:`slack_channel_member_emails` pages there, asked about one person.
 
-    An explicit membership answers outright; otherwise it is whether they have spoken, which is
-    index-only on idx_slack_channel_author with equality on both columns, so it is a seek rather
-    than the DISTINCT scan that counting the members is.
+    Deactivation is checked first and answers on its own, ahead of an explicit membership: Slack
+    removes a deactivated member from every channel, so an explicit `in` cannot put one back, and
+    a channel's membership and one person's place in it have to be one fact.
+
+    Otherwise an explicit membership answers outright; failing that it is whether they have spoken,
+    which is index-only on idx_slack_channel_author with equality on both columns, so it is a seek
+    rather than the DISTINCT scan that counting the members is.
     """
+    if email in _slack_deactivated(conn):
+        return False
     state = slack_membership(conn, channel, email)
     if state != "derived":
         return state == "in"
@@ -3901,7 +3977,7 @@ def count_slack_channel_members(conn, channel) -> int:
     ins, outs = _slack_explicit(conn, channel)
     members = slack_private_channel_members(conn, channel)
     if members is not None:
-        return len((set(members) | set(ins)) - set(outs))
+        return len((set(members) | set(ins)) - set(outs) - _slack_deactivated(conn))
     sql, params = _slack_public_members_sql(ins, outs)
     return conn.execute(f"SELECT COUNT(*) FROM ({sql})", (channel, *params)).fetchone()[0]
 
@@ -3934,7 +4010,9 @@ def slack_membership_violations(conn) -> list[tuple[str, str]]:
         for (email,) in conn.execute(
             "SELECT DISTINCT m.author_email FROM slack_messages m "
             "JOIN principals p ON p.id = m.author_email AND p.type = 'user' "
-            "WHERE m.channel = ? ORDER BY m.author_email",
+            "WHERE m.channel = ? "
+            "AND m.author_email NOT IN (SELECT email FROM slack_deactivated_users) "
+            "ORDER BY m.author_email",
             (channel,),
         ):
             if email not in allowed and email not in outs:
@@ -3943,9 +4021,13 @@ def slack_membership_violations(conn) -> list[tuple[str, str]]:
 
 
 def slack_channel_member_counts(conn) -> dict[str, int]:
-    """Every channel's member count in one pass. Per-channel COUNT(DISTINCT) is ~1.9s on the
-    biggest channel measured, and conversations.list shapes every channel in the page, so counting
-    them one at a time would be minutes per request; this is 12.2s once.
+    """Every channel's member count in one pass, paid once at startup instead of per request.
+    conversations.list shapes every channel in the page and a member count is a DISTINCT over that
+    channel's messages, so a page costs that work however it is spread: measured 2026-09-17 on a
+    5.6M-message corpus of 36 channels (the biggest 19,543 distinct authors), this pass is 6.6s and
+    the same counts taken one channel at a time are 6.6s. Both stay index-only on
+    idx_slack_channel_author, with the deactivated set entering the plan as USING INDEX
+    sqlite_autoindex_slack_deactivated_users_1 FOR IN-OPERATOR.
 
     Counted from whatever membership that channel has, so `num_members` and walking
     :func:`slack_channel_member_emails` cannot disagree — the speakers for a public channel, the
@@ -3955,7 +4037,9 @@ def slack_channel_member_counts(conn) -> dict[str, int]:
     counts = {
         r[0]: r[1]
         for r in conn.execute(
-            "SELECT channel, COUNT(DISTINCT author_email) FROM slack_messages GROUP BY channel"
+            "SELECT channel, COUNT(DISTINCT author_email) FROM slack_messages "
+            "WHERE author_email NOT IN (SELECT email FROM slack_deactivated_users) "
+            "GROUP BY channel"
         )
     }
     out = {}
@@ -3977,6 +4061,15 @@ def slack_channel_member_counts(conn) -> dict[str, int]:
 
 def all_user_emails(conn) -> list[str]:
     return [r[0] for r in conn.execute("SELECT id FROM principals WHERE type = 'user' ORDER BY id")]
+
+
+def slack_is_deactivated(conn, email) -> bool:
+    """Whether a roster entry named ``email`` with ``deactivated: true`` — see
+    ``backlot.routers.slack._user_obj`` for the vendor shape this drives."""
+    return (
+        conn.execute("SELECT 1 FROM slack_deactivated_users WHERE email = ?", (email,)).fetchone()
+        is not None
+    )
 
 
 def distinct_slack_author_emails(conn) -> list[str]:

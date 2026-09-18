@@ -604,6 +604,50 @@ def test_list_s3_objects_prefix_no_like_wildcard_semantics(tmp_path):
     assert store.list_s3_objects(conn, "b", prefix="logs%") == []
 
 
+def test_key_successor_carries_past_the_last_code_point_instead_of_raising():
+    """`chr(ord(c) + 1)` has nothing to return for the last code point, and both the prefix and the
+    delimiter a client sends reach this — `?prefix=a\U0010ffff` was a 500 on the wire.
+
+    The trailing run comes off and the character before it is incremented, which is still greater
+    than every string starting with the argument. A string that is only that code point has no
+    successor and says so with None."""
+    assert store.key_successor("logs/") == "logs0"  # '/' + 1
+    assert store.key_successor("a\U0010ffff") == "b"
+    assert store.key_successor("a\U0010ffff\U0010ffff") == "b"
+    assert store.key_successor("ab\U0010ffff") == "ac"
+    assert store.key_successor("\U0010ffff") is None
+    assert store.key_successor("\U0010ffff\U0010ffff") is None
+    # Still an upper bound: every string with the prefix sorts below what comes back.
+    for prefix, probe in (
+        ("a\U0010ffff", "a\U0010ffff\U0010ffff"),
+        ("ab\U0010ffff", "ab\U0010ffffz"),
+    ):
+        assert probe > prefix and probe < store.key_successor(prefix)
+
+
+def test_key_successor_steps_over_the_surrogate_block_instead_of_into_it():
+    """U+D7FF is one step below the surrogate block, which UTF-8 cannot encode and sqlite3 cannot
+    bind, so the step goes over it to U+E000.
+
+    That is still exact: a key sorting between the two would have to spell a surrogate, and a key
+    stored as UTF-8 cannot. `tests/test_s3.py` holds the same bound reaching SQL over the wire."""
+    assert store.key_successor("a\ud7ff") == "a\ue000"
+    assert store.key_successor("\ud7ff") == "\ue000"
+    assert store.key_successor("\ud7ff\U0010ffff") == "\ue000"
+    for prefix in ("a\ud7ff", "\ud7ff"):
+        assert prefix < prefix + "z" < store.key_successor(prefix)
+
+
+def test_the_edge_bounds_key_successor_returns_reach_sql(tmp_path):
+    """Whatever `key_successor` hands back has to work as a bound. The one that steps over the
+    surrogate block is bindable as UTF-8 where U+D800 is not, and a prefix with no successor takes
+    the lower bound alone — the same range, since every key at or above it starts with it."""
+    conn = _s3_mini_db(tmp_path)
+    for prefix in ("a\ud7ff", "\ud7ff", "\U0010ffff", "a\U0010ffff"):
+        assert store.list_s3_objects(conn, "b", prefix=prefix) == []
+    assert store.list_s3_objects(conn, "b", prefix="logs/") != []
+
+
 def test_list_s3_objects_prefix_uses_index_range_not_like(tmp_path):
     """Fix 1 (perf): the prefix filter must compile to an explicit key range on idx_s3_key —
     NOT a LIKE scan — since SQLite only range-optimizes a LIKE under case_sensitive_like=ON,

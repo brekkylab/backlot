@@ -2,6 +2,28 @@
 # action to wait for the routine's next scheduled run. The routine re-reads the queue itself; the
 # issue number sent here is a hint about where to look first, never an instruction.
 #
+# A `/decision` is recognised on the conversation of an issue or pull request and in a review
+# thread alike, so an answer typed inline on a diff rings as well — but only from an owner,
+# organisation member or collaborator. This is a public repository, and a run costs the loop
+# account's daily allowance; a stranger's comment rings nothing. The routine checks the author's
+# write access again before it treats the comment as a decision.
+#
+# A `/decision` is the doorbell's wherever it is posted; a review comment or a failing check on
+# one of the loop's pull requests is the platform's auto-fix's, which wakes the session that
+# opened the pull request. The two do not overlap: a woken session leaves a `/decision` alone, and
+# a comment by the loop's own account never rings.
+#
+# The maintainer hears back at once: 👀 on the issue or the comment when the run is requested,
+# 😕 and a comment when it could not be, and a labelled issue is assigned to the loop's account.
+# Each of those is tried as the loop's own account first and as github-actions when that token
+# is missing or refused, so a token that lapsed or lacks a permission costs the maintainer the
+# name on the reaction, never the reaction. The run adds 🚀 itself when it starts on the item.
+#
+# Run by hand, the doorbell can send the run to a branch of the loop's own files: the routine
+# checks the branch out before it runs the skill, so a change to the skill, the reviewers or this
+# file is tried in the cloud before it is merged. Only a dispatch can name a branch, only the head
+# of an open pull request is accepted, and the run is a rehearsal unless asked to be live.
+#
 # `/fire` is behind a dated beta header. When Anthropic moves it, this file is the only thing in
 # the repository that changes.
 name: Loop doorbell
@@ -11,31 +33,114 @@ on:
     types: [labeled]
   issue_comment:
     types: [created]
+  pull_request_review_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: "Issue or pull request number the run is about"
+        required: true
+        type: string
+      branch:
+        description: "Branch of the loop's files to run; empty runs main. Must head an open pull request."
+        required: false
+        type: string
+      mode:
+        description: "rehearsal writes nothing to GitHub; live is an ordinary run"
+        required: false
+        default: rehearsal
+        type: choice
+        options: [rehearsal, live]
 
-permissions: {}
+permissions:
+  issues: write
+  pull-requests: write
 
 jobs:
   ring:
     if: >
+      github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'issues' && github.event.label.name == 'agent') ||
-      (github.event_name == 'issue_comment' && startsWith(github.event.comment.body, 'decision:'))
+      (github.event_name != 'issues' && startsWith(github.event.comment.body, '/decision') &&
+       contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association))
     runs-on: ubuntu-latest
     steps:
       - name: Fire the routine
         env:
           URL: ${{ secrets.LOOP_FIRE_URL }}
           TOKEN: ${{ secrets.LOOP_FIRE_TOKEN }}
-          ISSUE: ${{ github.event.issue.number }}
+          BOT_TOKEN: ${{ secrets.BREKKYBOT_TOKEN }}
+          ACTIONS_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          ISSUE: ${{ inputs.issue || github.event.issue.number || github.event.pull_request.number }}
+          COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
+          BRANCH: ${{ inputs.branch }}
+          MODE: ${{ inputs.mode }}
+          # Where the acknowledgement lands: the issue for a label or a dispatch, the comment for
+          # a /decision.
+          REACT_TO: >-
+            ${{ (github.event_name == 'issues' || github.event_name == 'workflow_dispatch') && format('issues/{0}/reactions', inputs.issue || github.event.issue.number)
+             || github.event_name == 'issue_comment' && format('issues/comments/{0}/reactions', github.event.comment.id)
+             || format('pulls/comments/{0}/reactions', github.event.comment.id) }}
         run: |
+          # Runs a gh command as the loop's account, and as github-actions when that fails.
+          as_loop() {
+            if [ -n "$BOT_TOKEN" ] && GH_TOKEN="$BOT_TOKEN" "$@" 2>bot.err; then return 0; fi
+            [ -n "$BOT_TOKEN" ] && echo "::warning::the loop's token could not: $(head -c 200 bot.err); using github-actions"
+            GH_TOKEN="$ACTIONS_TOKEN" "$@" || true
+          }
+          react() { as_loop gh api -X POST "repos/$REPO/$REACT_TO" -f content="$1" --silent; }
           # Without the two secrets there is no routine to ring; a green no-op keeps a fork's
           # workflow list quiet rather than red on every label.
           if [ -z "$URL" ] || [ -z "$TOKEN" ]; then
             echo "::notice::LOOP_FIRE_URL / LOOP_FIRE_TOKEN are not set; nothing to ring."
             exit 0
           fi
-          curl -sSf -X POST "$URL" \
+          # The loop's own account is an organisation member, so its replies pass the gate above;
+          # a reply of its own that happens to open with `/decision` must not ring it. The account
+          # is whoever the token is, so no login is written down here.
+          if [ -n "$COMMENT_AUTHOR" ] && [ -n "$BOT_TOKEN" ]; then
+            loop_login=$(GH_TOKEN="$BOT_TOKEN" gh api user --jq .login 2>/dev/null || true)
+            if [ -n "$loop_login" ] && [ "$COMMENT_AUTHOR" = "$loop_login" ]; then
+              echo "::notice::comment by the loop's own account ($loop_login); nothing to ring."
+              exit 0
+            fi
+          fi
+          # A branch is a maintainer's dispatch and nothing else, and it has to be the head of an
+          # open pull request: the payload is an instruction to run that branch's files.
+          text="issue #$ISSUE"
+          if [ -n "$BRANCH" ]; then
+            case "$BRANCH" in
+              *[!A-Za-z0-9._/-]*|-*|*/-*|*..*) echo "::error::branch name '$BRANCH' is not accepted"; exit 1 ;;
+            esac
+            heads=$(GH_TOKEN="$ACTIONS_TOKEN" gh pr list --repo "$REPO" --state open --head "$BRANCH" --json number --jq 'length')
+            if [ "$heads" = 0 ]; then
+              echo "::error::'$BRANCH' is not the head of an open pull request"; exit 1
+            fi
+            text="$text branch: $BRANCH mode: ${MODE:-rehearsal}"
+          elif [ "$EVENT" = workflow_dispatch ] && [ "$MODE" = rehearsal ]; then
+            text="$text mode: rehearsal"
+          fi
+          react eyes
+          # A labelled issue is the loop's from this moment. `@me` is whoever the token is, so
+          # this is only done under the loop's own token; the run assigns itself when it claims.
+          if [ "$EVENT" = issues ] && [ -n "$BOT_TOKEN" ]; then
+            GH_TOKEN="$BOT_TOKEN" gh issue edit "$ISSUE" --repo "$REPO" --add-assignee @me >/dev/null \
+              || echo "::warning::the loop's token could not assign #$ISSUE"
+          fi
+          echo "payload: $text"
+          status=$(curl -sS -o response.json -w '%{http_code}' -X POST "$URL" \
             -H "Authorization: Bearer $TOKEN" \
             -H "anthropic-beta: experimental-cc-routine-2026-04-01" \
             -H "anthropic-version: 2023-06-01" \
             -H "Content-Type: application/json" \
-            -d "{\"text\": \"issue #$ISSUE\"}"
+            -d "$(jq -cn --arg t "$text" '{text: $t}')") || status=000
+          cat response.json; echo
+          case "$status" in
+            2*) exit 0 ;;
+          esac
+          react confused
+          body=$(head -c 300 response.json)
+          as_loop gh issue comment "$ISSUE" --repo "$REPO" --body "The loop could not be started for this: the routine's fire endpoint answered HTTP $status. $body"
+          exit 1

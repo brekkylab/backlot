@@ -402,11 +402,7 @@ def test_jira_compares_both_rest_versions_against_their_own_documents():
 
 def test_a_google_document_is_read_once_for_both_the_contracts_it_carries(monkeypatch):
     """A discovery document describes operations under `resources` AND a batch endpoint in its
-    top-level `batchPath`, and a Google source reads it for both.
-
-    Measured 2026-09-17: the five documents the two Google sources read total 1.3 MB, the largest
-    of them 369 KB, so reading each a second time for the batch check spends a vendor round trip
-    on a document already in hand."""
+    top-level `batchPath`, and a Google source reads it once for both."""
     URL = "https://gmail.invalid/rest"
     doc = {
         "id": "gmail:v1",
@@ -744,34 +740,50 @@ def test_operation_divergences_are_classified_like_schema_ones():
 GOOGLE_BATCH_MOUNT = ("/batch", "/batch/{api}/{version}")
 
 
-def _batch_docs(*declared: str | None) -> list[tuple[str, dict]]:
+def _batch_docs(declared: tuple[str | None, ...], spelled: str = "id") -> list[tuple[str, dict]]:
     """Four documents shaped like `google_drive`'s and in its order, each declaring the batchPath
-    given -- `None` declaring none."""
-    return [
-        (
-            f"https://{who.split(':')[0]}.invalid/rest",
-            {"id": who, **({"batchPath": d} if d else {})},
+    given -- `None` declaring none.
+
+    `spelled` is how a document says which API it is. Google's carry an `id`; the other two are
+    what a finding falls back to when one does not, and they are reached here rather than through
+    `document_id` because the identity a baseline holds is the finding's path."""
+    docs = []
+    for who, d in zip(("drive:v3", "docs:v1", "sheets:v4", "slides:v1"), declared):
+        name, version = who.split(":")
+        says = {"id": {"id": who}, "name and version": {"name": name, "version": version}}
+        docs.append(
+            (
+                f"https://{name}.invalid/rest",
+                {**says.get(spelled, {}), **({"batchPath": d} if d else {})},
+            )
         )
-        for who, d in zip(("drive:v3", "docs:v1", "sheets:v4", "slides:v1"), declared)
-    ]
+    return docs
+
+
+SHORTER = ("batch/v3", "batch", "batch", "batch")
 
 
 @pytest.mark.parametrize(
-    "declared,expected",
+    "declared,spelled,expected",
     [
-        pytest.param(("batch/drive/v3", "batch", "batch", "batch"), [], id="measured-2026-09-17"),
+        pytest.param(
+            ("batch/drive/v3", "batch", "batch", "batch"), "id", [], id="measured-2026-09-17"
+        ),
         pytest.param(
             ("batch", "batch", "batch", "batch"),
+            "id",
             [("extra_batch_route", BREAKING, "/batch/{}/{}")],
             id="drive-moves-to-its-own-host",
         ),
         pytest.param(
             ("batch/drive/v3", None, "batch", "batch"),
+            "id",
             [("extra_batch_api", BREAKING, "docs:v1")],
             id="one-api-drops-batch",
         ),
         pytest.param(
-            ("batch/v3", "batch", "batch", "batch"),
+            SHORTER,
+            "id",
             [
                 ("extra_batch_route", BREAKING, "/batch/{}/{}"),
                 ("missing_batch_path", GAP, "drive:v3 batch/v3"),
@@ -780,6 +792,7 @@ def _batch_docs(*declared: str | None) -> list[tuple[str, dict]]:
         ),
         pytest.param(
             ("batch/drive/v3/files", "batch", "batch", "batch"),
+            "id",
             [
                 ("extra_batch_route", BREAKING, "/batch/{}/{}"),
                 ("missing_batch_path", GAP, "drive:v3 batch/drive/v3/files"),
@@ -787,40 +800,44 @@ def _batch_docs(*declared: str | None) -> list[tuple[str, dict]]:
             id="a-value-longer-than-the-route",
         ),
         pytest.param(
-            ("/batch/drive/v3/", "/batch/", "batch", "batch"), [], id="slashes-at-either-end"
+            ("/batch/drive/v3/", "/batch/", "batch", "batch"), "id", [], id="slashes-at-either-end"
+        ),
+        pytest.param(
+            SHORTER,
+            "name and version",
+            [
+                ("extra_batch_route", BREAKING, "/batch/{}/{}"),
+                ("missing_batch_path", GAP, "drive:v3 batch/v3"),
+            ],
+            id="a-document-carrying-no-id",
+        ),
+        pytest.param(
+            SHORTER,
+            "nothing",
+            [
+                ("extra_batch_route", BREAKING, "/batch/{}/{}"),
+                ("missing_batch_path", GAP, "https://drive.invalid/rest batch/v3"),
+            ],
+            id="a-document-that-names-itself-nowhere",
         ),
     ],
 )
-def test_batch_path_divergences_name_the_document_and_the_route(declared, expected):
+def test_batch_path_divergences_name_the_document_and_the_route(declared, spelled, expected):
     """Both directions, and a value that moved reports as both.
 
     The gap carries the VALUE as well as the document, because a gap is acknowledged by identity
     alone: keyed on the document, an acknowledged move to one shape would go on covering a later
     move to another.
 
-    `extra_batch_route` is the direction no single document can answer. Drive moving to its own
-    host leaves every document declaring `batch`, every declared value answered, and
-    `/batch/{api}/{version}` standing for nobody -- which is what the source's `batch_mount`
-    exists to notice. `one-api-drops-batch` is the other side of that: `/batch` is still selected
-    by the two documents left, so the route is not reported and only the API is.
+    `one-api-drops-batch` is where the two directions come apart: `/batch` is still selected by the
+    two documents left, so only the API is reported and the route is not.
 
     The two length cases are the matcher's segment count. A route that swallowed a differing
     number of segments would report either move as covered."""
-    found = google_discovery_diff.batch_divergences(GOOGLE_BATCH_MOUNT, _batch_docs(*declared))
-    assert [(f.kind, f.severity, f.path) for f in found] == expected
-
-
-def test_a_document_is_identified_by_what_it_calls_itself():
-    """A finding's identity and so a baseline key. Measured 2026-09-17, Google answers the
-    document that calls itself `gmail:v1` at both `gmail.googleapis.com/$discovery/rest?version=v1`
-    and `www.googleapis.com/discovery/v1/apis/gmail/v1/rest`, so repointing the registry from one
-    to the other must not read as a divergence on an API nothing changed about."""
-    assert google_discovery_diff.document_id({"id": "gmail:v1"}, "https://x.invalid") == "gmail:v1"
-    assert (
-        google_discovery_diff.document_id({"name": "drive", "version": "v3"}, "https://x.invalid")
-        == "drive:v3"
+    found = google_discovery_diff.batch_divergences(
+        GOOGLE_BATCH_MOUNT, _batch_docs(declared, spelled)
     )
-    assert google_discovery_diff.document_id({}, "https://x.invalid") == "https://x.invalid"
+    assert [(f.kind, f.severity, f.path) for f in found] == expected
 
 
 CATALOG = {

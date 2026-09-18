@@ -133,11 +133,6 @@ def batch_divergences(
     ``www.googleapis.com`` — the ``drive/v3`` is what discriminates it there. Backlot collapses
     those hosts onto one origin, so one route stands in for several documents and the question
     "does any route still answer this" cannot be asked a document at a time.
-
-    ``batch_mount`` is the source's answer to which routes it speaks for, and it is what makes the
-    reverse direction reportable per source: without it, Drive moving to its own host would leave
-    every document declaring ``batch``, every value answered, and ``/batch/{api}/{version}``
-    standing for nobody behind a green check.
     """
     routes = [canonical(route) for route in batch_mount]
     out: list[Finding] = []

@@ -162,16 +162,10 @@ class GoogleDiscoveryComparison:
     name: str
     specs: tuple[Spec, ...]
     credentials: tuple[Credential, ...] = ()
-    # Which batch routes this source speaks for, as `ProbeComparison.mount` answers the same
-    # question for a probe. NOT a `Spec.mount`, and not foldable into one: a document declares its
-    # batch endpoint in the top-level `batchPath` rather than under `resources`, so a mount that
-    # selected these paths would hand them to the path diff, which would report both as operations
-    # Backlot invented.
-    #
-    # Per source and not per document because Backlot collapses five Google hosts onto one origin:
-    # `/batch` stands in for `gmail.googleapis.com/batch` and for Docs', Sheets' and Slides' at
-    # once, and `/batch/{api}/{version}` for Drive's on the shared `www.googleapis.com`. What the
-    # source owns is the pair; which document selects which of them is measured on every run.
+    # The batch routes this source speaks for, as `ProbeComparison.mount` answers the same question
+    # for a probe. Measured 2026-09-17: Gmail, Docs, Sheets and Slides declare `batch` on their own
+    # hosts and Drive `batch/drive/v3` on the shared `www.googleapis.com`, and Backlot collapses
+    # those hosts onto one origin, so one route stands in for several documents.
     batch_mount: tuple[str, ...] = ()
 
     @property
@@ -409,10 +403,6 @@ GOOGLE_DISCOVERY = {
                 strip="/slides",
             ),
         ),
-        # Both, because this source's four documents need both shapes: Docs, Sheets and Slides
-        # answer batch at the root of their own hosts, and Drive at `batch/drive/v3` on the shared
-        # one. Gmail's source mounts only the first, which is why a Drive move to its own host
-        # reports here and nowhere else.
         batch_mount=("/batch", "/batch/{api}/{version}"),
     ),
 }

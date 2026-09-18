@@ -141,7 +141,7 @@ so the probe adds no dependency and a change to signing breaks both sides at onc
 Every discovery document names a batch endpoint in its top-level `batchPath`, and none declares it
 under `resources`. Measured 2026-09-17:
 
-| Document | `batchPath` | `rootUrl` | Backlot answers it at |
+| Document | `batchPath` | Host (`rootUrl`) | Backlot answers it at |
 |---|---|---|---|
 | `gmail:v1` | `batch` | `gmail.googleapis.com` | `/batch` |
 | `docs:v1` | `batch` | `docs.googleapis.com` | `/batch` |

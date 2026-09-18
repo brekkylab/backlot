@@ -6,8 +6,10 @@
     python examples/using-official-sdk/notion.py --url http://localhost:8000 --token <usr-token>
 
 The only change from talking to real Notion is ``base_url`` — point it at Backlot's ``/notion``
-prefix (the SDK appends ``/v1/`` itself). Backlot defaults to the ``2025-09-03`` API version, so
-a database exposes a *data source* you query for its rows.
+prefix (the SDK appends ``/v1/`` itself). Backlot requires a ``Notion-Version`` on every request,
+as real Notion does, and the SDK sends its own (``2025-09-03`` on notion-client 3.1, overridable
+with ``Client(notion_version=...)``), so a database here exposes a *data source* you query for its
+rows.
 """
 
 import argparse

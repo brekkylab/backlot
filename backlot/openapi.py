@@ -215,7 +215,14 @@ def google_system_parameters(spec: dict) -> dict:
     read once by the envelope — so it is declared once here rather than on each of the
     twenty-one family routes, where a route added later would forget it and the fidelity diff would
     report the gap again. The declaration is the document's own: ``V1 error format.``, an enum of
-    ``1`` and ``2``. The batch endpoint is not a family path and gets nothing."""
+    ``1`` and ``2``. The batch endpoint is not a family path and gets nothing.
+
+    `$.xgafv` alone, though real's document declares `callback` beside it and Backlot validates that
+    one for the router too (``errors.google.validate_system_parameters``). `callback` is honoured on
+    a Google error answered to a GET — a POST ignores it, as real's POSTs do — and on a SUCCESS only
+    under ``/sheets/v4``, which is where :func:`qp` declares it. The two Sheets POST routes share
+    that declaration and ignore the parameter exactly as real's do, so it promises a caller no more
+    there than the vendor's own document does."""
     for path, item in spec.get("paths", {}).items():
         if gerr.family(path) is None:
             continue

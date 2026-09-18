@@ -158,24 +158,27 @@ def test_atlassian_lists_only_the_containers_the_caller_can_open(tmp_path):
         assert spaces({"Authorization": f"Bearer {tokens['ava@acme.com']}"}) == ["engineering"]
         # No anonymous row: `_confluence_caller` refuses before a space is resolved.
 
-        # The space ava reaches no page in is absent on both space-scoped reads, as an unopenable
-        # project is on `project/{key}/role`. Bob, who authored the page in it, reads both. Under
-        # both spellings `_space_container_for_key` resolves: the synthesized key and the name.
+        # The space ava reaches no page in is absent on the space read with the roster asked for and
+        # without it, as an unopenable project is on `project/{key}/role`. Bob, who authored the page
+        # in it, reads both. Under both spellings `_space_container_for_key` resolves: the
+        # synthesized key and the name.
         shut = synth.confluence_space_key("secrets")
         ava = {"Authorization": f"Bearer {tokens['ava@acme.com']}"}
         bob = {"Authorization": f"Bearer {tokens['bob@acme.com']}"}
         for spelling in (shut, "secrets"):
             for path in (
                 f"/wiki/rest/api/space/{spelling}",
-                f"/wiki/rest/api/space/{spelling}/permission",
+                f"/wiki/rest/api/space/{spelling}?expand=permissions",
             ):
                 refused = c.get(f"/atlassian{path}", headers=ava)
                 assert refused.status_code == 404, path
                 assert refused.json()["message"] == "No space with the given key exists"
                 assert c.get(f"/atlassian{path}", headers=bob).status_code == 200, path
         # ... and the roster she is refused names bob against that space.
-        roster = c.get(f"/atlassian/wiki/rest/api/space/{shut}/permission", headers=bob).json()
-        readers = roster["results"][0]["subjects"]["user"]["results"]
+        space = c.get(
+            f"/atlassian/wiki/rest/api/space/{shut}?expand=permissions", headers=bob
+        ).json()
+        readers = space["permissions"][0]["subjects"]["user"]["results"]
         assert [u["email"] for u in readers] == ["bob@acme.com"]
 
 
@@ -572,19 +575,100 @@ def test_atlassian_errors_use_atlassian_envelope(client):
     assert r3.status_code == 404 and "detail" in r3.json() and "message" not in r3.json()
 
 
+def test_confluence_spaces_are_paged_not_served_whole(client, admin_h, tokens):
+    """Measured against a live Confluence Cloud site on 2026-09-17: `space` reads `limit`/`start`
+    and answers a page, with `_links.next`/`.prev` shaped like :func:`confluence_space_links`."""
+    unpaged = client.get("/atlassian/wiki/rest/api/space", headers=admin_h).json()
+    names = [s["name"] for s in unpaged["results"]]
+    assert names == [
+        "handbook",
+        "people-ops",
+    ]  # the order every slice below relies on (see confluence_spaces's own comment on why)
+    assert unpaged["start"] == 0 and unpaged["limit"] == 25 and unpaged["size"] == 2
+    assert unpaged["_links"] == {
+        "base": "http://testserver/wiki",
+        "context": "/wiki",
+        "self": "http://testserver/wiki/rest/api/space",
+    }  # a full page: no next, no prev. `self` carries no query string for a request that sends
+    # none of `limit`/`start`/`expand` — the only parameters this route reads.
+
+    # `_site` echoes the caller's own Host, not a fixed org name — proved here since this route's
+    # `base`/`self` are the only place that claim goes untested.
+    via_alias = client.get(
+        "/atlassian/wiki/rest/api/space", headers={**admin_h, "Host": "example.test"}
+    ).json()
+    assert via_alias["_links"]["base"] == "http://example.test/wiki"
+    assert via_alias["_links"]["self"] == "http://example.test/wiki/rest/api/space"
+
+    first = client.get("/atlassian/wiki/rest/api/space?limit=1", headers=admin_h).json()
+    assert [s["name"] for s in first["results"]] == ["handbook"]
+    assert (first["start"], first["limit"], first["size"]) == (0, 1, 1)
+    assert first["_links"]["next"] == "/rest/api/space?next=true&limit=1&start=1"
+    assert "prev" not in first["_links"]
+
+    second = client.get("/atlassian/wiki/rest/api/space?start=1", headers=admin_h).json()
+    assert [s["name"] for s in second["results"]] == ["people-ops"]
+    assert (second["start"], second["limit"], second["size"]) == (1, 25, 1)
+    assert second["_links"]["prev"] == "/rest/api/space?prev=true&limit=1&start=0"
+    assert "next" not in second["_links"]
+
+    # expand rides into next/prev/self too — see confluence_space_links for the ordering.
+    expanded_first = client.get(
+        "/atlassian/wiki/rest/api/space?limit=1&expand=description", headers=admin_h
+    ).json()
+    # a bare `description` carries no value (see `_space_description`'s own docstring) — its
+    # `_expandable` moving under the per-space entry is enough to prove `expand` reached `_space`.
+    assert expanded_first["results"][0]["description"] == {"_expandable": {"view": "", "plain": ""}}
+    assert (
+        expanded_first["_links"]["next"]
+        == "/rest/api/space?next=true&expand=description&limit=1&start=1"
+    )
+    assert (
+        expanded_first["_links"]["self"]
+        == "http://testserver/wiki/rest/api/space?expand=description"
+    )
+
+    expanded_second = client.get(
+        "/atlassian/wiki/rest/api/space?start=1&limit=1&expand=description", headers=admin_h
+    ).json()
+    assert (
+        expanded_second["_links"]["prev"]
+        == "/rest/api/space?expand=description&prev=true&limit=1&start=0"
+    )
+
+    # a negative or unconvertible value is refused the same way `content` refuses it — shared
+    # through `_confluence_page_params` — proved once here rather than the whole matrix again.
+    negative = client.get("/atlassian/wiki/rest/api/space?limit=-1", headers=admin_h)
+    assert negative.status_code == 400
+    assert (
+        negative.json()["message"]
+        == "java.lang.IllegalArgumentException: limit cannot be less than zero"
+    )
+
+    # ACL-scoped: `total` (and so where `next`/`prev` land) is the caller's own reachable set, not
+    # the corpus's. ava reaches only "handbook", so her one-row page carries neither link.
+    ava_h = {"Authorization": f"Bearer {tokens['ava@acme.com']}"}
+    scoped = client.get("/atlassian/wiki/rest/api/space?limit=1", headers=ava_h).json()
+    assert [s["name"] for s in scoped["results"]] == ["handbook"]
+    assert "next" not in scoped["_links"] and "prev" not in scoped["_links"]
+
+
 def test_confluence_single_space_get(client, admin_h):
     spaces = client.get("/atlassian/wiki/rest/api/space", headers=admin_h).json()["results"]
     assert spaces
     key = spaces[0]["key"]
     r = client.get(f"/atlassian/wiki/rest/api/space/{key}", headers=admin_h)
     assert r.status_code == 200 and r.json()["key"] == key and r.json()["name"] == spaces[0]["name"]
-    # the reader roster is the admin's to read
-    perm = client.get(f"/atlassian/wiki/rest/api/space/{key}/permission", headers=admin_h)
+    # the reader roster is the admin's to read, under the expansion real answers it with
+    perm = client.get(f"/atlassian/wiki/rest/api/space/{key}?expand=permissions", headers=admin_h)
     assert perm.status_code == 200
-    assert perm.json()["results"][0]["operation"] == {"operation": "read", "targetType": "space"}
-    # An unknown space is the same atlassian-shaped 404 on BOTH space-scoped reads, so a space the
-    # caller cannot reach cannot be told apart from one that is not there.
-    for path in ("/wiki/rest/api/space/NOSUCH", "/wiki/rest/api/space/NOSUCH/permission"):
+    assert perm.json()["permissions"][0]["operation"] == {
+        "operation": "read",
+        "targetType": "space",
+    }
+    # An unknown space is the same atlassian-shaped 404 with the expansion and without it, so a
+    # space the caller cannot reach cannot be told apart from one that is not there.
+    for path in ("/wiki/rest/api/space/NOSUCH", "/wiki/rest/api/space/NOSUCH?expand=permissions"):
         absent = client.get(f"/atlassian{path}", headers=admin_h)
         assert absent.status_code == 404, path
         assert absent.json()["message"] == "No space with the given key exists", path
@@ -1663,3 +1747,311 @@ def test_jira_search_still_pages_on_a_token_it_issued(client, admin_h):
         ).json()["issues"][0]["key"]
         != first["issues"][0]["key"]
     )
+
+
+# --- a wrong method: two products, two shapes (#233) ---------------------------------------
+
+
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("get", "/wiki/rest/api/space/{key}/permission"),
+        ("put", "/wiki/rest/api/content"),
+    ],
+)
+def test_confluence_refuses_a_wrong_method_with_springs_errors_list_and_no_allow(
+    client, admin_h, method, path
+):
+    """Both requests measured on brekkylab.atlassian.net, 2026-09-16. The shape and what it costs a
+    client are in ``errors.atlassian.method_not_allowed``; this holds it on the wire, including the
+    title naming the method that arrived."""
+    key = client.get("/atlassian/wiki/rest/api/space", headers=admin_h).json()["results"][0]["key"]
+    r = getattr(client, method)(f"/atlassian{path}".format(key=key), headers=admin_h)
+    assert r.status_code == 405, r.text
+    assert r.headers["content-type"] == "application/json"
+    assert "allow" not in r.headers
+    assert r.json() == {
+        "errors": [
+            {
+                "status": 405,
+                "code": "METHOD_NOT_ALLOWED",
+                "title": (
+                    "org.springframework.web.HttpRequestMethodNotSupportedException: "
+                    f"Request method '{method.upper()}' not supported"
+                ),
+            }
+        ]
+    }
+
+
+@pytest.mark.parametrize(
+    "method,path,allow",
+    [
+        # every row measured on brekkylab.atlassian.net, 2026-09-16, by sending a method the vendor
+        # defines on no route of that path; real's ORDER varies per response, so only the set is
+        # real's and the order below is `_JIRA_ALLOW`'s
+        ("post", "/rest/api/3/serverInfo", "GET"),
+        ("put", "/rest/api/3/field", "GET, POST"),
+        ("post", "/rest/api/3/issue/PAY-1", "GET, PUT, DELETE"),
+        ("put", "/rest/api/3/issue/PAY-1/comment", "GET, POST"),
+        ("put", "/rest/api/2/search/jql", "GET, POST"),
+        # the row the vendor's own document disagrees with: it declares GET alone on `project/search`
+        ("post", "/rest/api/3/project/search", "GET, PUT, DELETE"),
+    ],
+)
+def test_jira_refuses_a_wrong_method_as_rfc_7807_naming_the_methods_it_takes(
+    client, admin_h, method, path, allow
+):
+    r = getattr(client, method)(f"/atlassian{path}", headers=admin_h)
+    assert r.status_code == 405, r.text
+    assert r.headers["content-type"] == errors_atlassian.PROBLEM_JSON
+    assert r.headers["allow"] == allow
+    assert r.json() == {
+        "type": "about:blank",
+        "title": "Method Not Allowed",
+        "status": 405,
+        "detail": f"Method '{method.upper()}' is not supported.",
+        "instance": path,
+    }
+
+
+def test_every_jira_route_carries_a_measured_allow(client):
+    """The `Allow` table is keyed by route, so a route added later without a row would answer a
+    405 naming whatever methods Backlot happens to declare — which is Backlot's truth, not the
+    vendor's. This is the reminder to measure one."""
+    paths = [
+        p for p in client.get("/openapi.json").json()["paths"] if p.startswith("/atlassian/rest")
+    ]
+    assert paths
+    assert [p for p in paths if errors_atlassian.jira_allow(p) is None] == []
+
+
+# --- the space reads (#234) -----------------------------------------------------------------
+
+
+def test_confluence_space_reads_carry_the_identifiers_and_links_real_sends(client, admin_h):
+    """Measured 2026-09-16 on a global space and two personal ones. The two reads agree on every
+    field but `_links`: inside the listing a space carries `webui` and `self` alone, where the
+    single read carries `context`, `collection` and `base` beside them."""
+    from backlot import synth
+    from backlot.config import get_settings
+
+    listed = client.get("/atlassian/wiki/rest/api/space", headers=admin_h).json()["results"][0]
+    key = listed["key"]
+    single = client.get(f"/atlassian/wiki/rest/api/space/{key}", headers=admin_h).json()
+    cloud = synth.atlassian_cloud_id(get_settings().org_name)
+
+    for space in (listed, single):
+        assert space["ari"] == f"ari:cloud:confluence:{cloud}:space/{space['id']}"
+        assert space["alias"] == space["key"]
+        assert space["status"] == "current"
+        assert len(space["_expandable"]) == 13
+        assert space["_expandable"]["permissions"] == ""
+        assert space["_expandable"]["theme"] == f"/rest/api/space/{key}/theme"
+
+    assert sorted(listed["_links"]) == ["self", "webui"]
+    assert sorted(single["_links"]) == ["base", "collection", "context", "self", "webui"]
+    assert single["_links"]["collection"] == "/rest/api/space"
+    assert single["_links"]["webui"] == f"/spaces/{key}"
+
+
+def test_confluence_expands_permissions_with_one_entry_per_grant(tmp_path):
+    """Real's unit is the grant, not the space — see ``_space_permissions`` for the counts behind
+    that. A user grant is a single-user subject; a group or an org grant carries no `subjects` key
+    at all, which is the shape real gives a principal it leaves collapsed. Its own corpus because
+    the shared one carries no user grant on a Confluence space, so neither shape could be told from
+    the other there."""
+    corpus = [
+        {
+            "source_type": "confluence",
+            "space": "open",
+            "title": "Open",
+            "content": "Body.",
+            "author_email": "ava@acme.com",
+            "visibility": "public",
+        },
+        {
+            "source_type": "confluence",
+            "space": "eng-only",
+            "title": "Group",
+            "content": "Body.",
+            "author_email": "ava@acme.com",
+            "author_groups": ["engineering"],
+            "visibility": "group",
+        },
+        {
+            "source_type": "confluence",
+            "space": "shared-private",
+            "title": "Bob's",
+            "content": "Body.",
+            "author_email": "bob@acme.com",
+            "visibility": "private",
+        },
+        {
+            "source_type": "confluence",
+            "space": "shared-private",
+            "title": "Ava's",
+            "content": "Body.",
+            "author_email": "ava@acme.com",
+            "visibility": "private",
+        },
+    ]
+    settings = tiny_corpus(tmp_path, corpus)
+    with client_for(settings, reload=True) as c:
+        admin = {"Authorization": f"Bearer {settings.admin_token}"}
+        spaces = c.get("/atlassian/wiki/rest/api/space?expand=permissions", headers=admin).json()
+        by_name = {s["name"]: s["permissions"] for s in spaces["results"]}
+        assert sorted(by_name) == ["eng-only", "open", "shared-private"]
+
+        for name in ("open", "eng-only"):
+            (entry,) = by_name[name]
+            assert "subjects" not in entry, name
+            assert entry["operation"] == {"operation": "read", "targetType": "space"}
+            # an org grant is every MEMBER, not every visitor, and an anonymous caller is refused
+            # before a space resolves — so neither flag is ever True here
+            assert entry["anonymousAccess"] is False
+            assert entry["unlicensedAccess"] is False
+
+        # two user grants on one space are two entries, which is what makes the id a per-grant id
+        private = by_name["shared-private"]
+        assert len(private) == 2
+        assert len({e["id"] for e in private}) == 2
+        named = []
+        for entry in private:
+            users = entry["subjects"]["user"]
+            assert users["size"] == len(users["results"]) == 1
+            assert entry["subjects"]["_expandable"] == {"group": ""}
+            named.append(users["results"][0]["email"])
+        assert sorted(named) == ["ava@acme.com", "bob@acme.com"]
+
+        ids = [e["id"] for perms in by_name.values() for e in perms]
+        assert len(ids) == len(set(ids))
+
+        # the subject is the object every Confluence read carries: measured 2026-09-17, real sends
+        # the same thirteen keys for a roster subject, a page's `version.by` and its `createdBy`
+        page = c.get(
+            "/atlassian/wiki/rest/api/content?limit=1&expand=version,history", headers=admin
+        ).json()["results"][0]
+        subject = private[0]["subjects"]["user"]["results"][0]
+        assert list(subject) == [
+            "type",
+            "accountId",
+            "accountType",
+            "email",
+            "publicName",
+            "profilePicture",
+            "displayName",
+            "isExternalCollaborator",
+            "isGuest",
+            "locale",
+            "accountStatus",
+            "_expandable",
+            "_links",
+        ]
+        assert subject["accountStatus"] == "active"
+        assert subject["isGuest"] is False and subject["isExternalCollaborator"] is False
+        assert subject["_expandable"] == {"operations": "", "personalSpace": ""}
+        assert subject["_links"]["self"] == (
+            f"http://testserver/wiki/rest/api/user?accountId={subject['accountId']}"
+        )
+        for user in (page["version"]["by"], page["history"]["createdBy"]):
+            assert list(user) == list(subject)
+
+
+def test_confluence_both_space_reads_answer_the_same_roster(client, admin_h):
+    """An expansion that is served leaves `_expandable`, which is how a client tells an expansion it
+    got from one it asked for and did not, and the listing's entry is the single read's."""
+    listed = client.get(
+        "/atlassian/wiki/rest/api/space?expand=permissions", headers=admin_h
+    ).json()["results"][0]
+    single = client.get(
+        f"/atlassian/wiki/rest/api/space/{listed['key']}?expand=permissions", headers=admin_h
+    ).json()
+    for space in (listed, single):
+        assert space["permissions"]
+        assert "permissions" not in space["_expandable"]
+        assert len(space["_expandable"]) == 12
+    assert single["permissions"] == listed["permissions"]
+
+
+@pytest.mark.parametrize(
+    "expand,description,permissions",
+    [
+        ("description", True, False),
+        ("description.plain", True, False),
+        ("description.view,permissions", True, True),
+        ("permissions.bogus", False, True),
+        ("descriptions", False, False),
+        ("bogus", False, False),
+        ("", False, False),
+    ],
+)
+def test_confluence_expands_the_property_the_first_dotted_segment_names(
+    client, admin_h, expand, description, permissions
+):
+    """Measured 2026-09-17 on `space/{key}`: the property is named by the FIRST dotted segment of
+    each term, so `description.plain` and `permissions.bogus` both expand, and a term naming no
+    property is ignored rather than refused — `expand=bogus` answers 200 with `_expandable` whole,
+    as an absent `expand` does.
+
+    Both reads take the expansion, so both are asserted: they share `_space`.
+    """
+    listed = client.get(f"/atlassian/wiki/rest/api/space?expand={expand}", headers=admin_h).json()[
+        "results"
+    ][0]
+    single = client.get(
+        f"/atlassian/wiki/rest/api/space/{listed['key']}?expand={expand}", headers=admin_h
+    ).json()
+    for space in (listed, single):
+        assert ("description" in space) is description
+        assert ("permissions" in space) is permissions
+        assert ("description" in space["_expandable"]) is not description
+        assert ("permissions" in space["_expandable"]) is not permissions
+
+
+@pytest.mark.parametrize(
+    "expand,served,expandable",
+    [
+        ("description", (), {"view": "", "plain": ""}),
+        ("description.plain", ("plain",), {"view": ""}),
+        ("description.view", ("view",), {"plain": ""}),
+        ("description.plain,description.view", ("plain", "view"), None),
+    ],
+)
+def test_confluence_description_carries_a_value_only_for_the_rendering_asked_for(
+    client, admin_h, expand, served, expandable
+):
+    """Measured 2026-09-17 on `space/{key}`: the bare term carries no value at all, `.plain` and
+    `.view` each carry one and leave the other in a nested `_expandable`, and asking for both leaves
+    no `_expandable`. A client reading `description.plain.value` off the bare term gets nothing from
+    real, so answering one there would be a body real does not send."""
+    listed = client.get(f"/atlassian/wiki/rest/api/space?expand={expand}", headers=admin_h).json()[
+        "results"
+    ][0]
+    single = client.get(
+        f"/atlassian/wiki/rest/api/space/{listed['key']}?expand={expand}", headers=admin_h
+    ).json()
+    for space in (listed, single):
+        got = space["description"]
+        assert tuple(k for k in got if k != "_expandable") == served
+        for rendering in served:
+            assert got[rendering] == {
+                "value": f"{space['name']} space",
+                "representation": rendering,
+                "embeddedContent": [],
+            }
+        assert got.get("_expandable") == expandable
+
+
+def test_confluence_refuses_the_permission_read_before_it_resolves_the_key(client, admin_h):
+    """`GET space/NOSUCHSPACE/permission` is the same 405 as the key that names a space, measured
+    2026-09-16 — the method is refused ahead of the lookup, so this route never reports whether a
+    space exists. The space read itself still does, with its 404."""
+    absent = client.get("/atlassian/wiki/rest/api/space/NOSUCHSPACE/permission", headers=admin_h)
+    known = client.get("/atlassian/wiki/rest/api/space", headers=admin_h).json()["results"][0]
+    present = client.get(
+        f"/atlassian/wiki/rest/api/space/{known['key']}/permission", headers=admin_h
+    )
+    assert absent.status_code == present.status_code == 405
+    assert absent.json() == present.json()
+    assert "allow" not in absent.headers

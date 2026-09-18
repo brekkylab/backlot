@@ -30,11 +30,14 @@ from backlot.errors import google as gerr
 from backlot.openapi import qp
 from backlot.pagination import decode_cursor, next_page_token
 
-# `$.xgafv` is checked before any route runs — see `gerr.validate_system_parameters`. A router
-# dependency runs only once a route has MATCHED, so a family path with no route 404s here rather
-# than refusing the value. Nothing to match there: measured 2026-09-14, real answers an unrouted
-# family path from its front end, as HTML — 400 on Sheets and Docs, 404 on Drive — with or without
-# the parameter, so no JSON envelope of its own exists to compare against.
+# `$.xgafv` and `callback` are checked before any route runs — see
+# `gerr.validate_system_parameters`. A router dependency runs only once a route has MATCHED, so a
+# family path with no route 404s here rather than refusing either value — which is why this call
+# records that it ran and `gerr.rendered` wraps nothing without it: an unrouted path must not be
+# answered by calling a name nothing refused. Nothing to match there — measured 2026-09-16, real
+# answers an unrouted family path from its front end, as HTML, 400 on Sheets, Docs and Slides and
+# 404 on Drive and Gmail, with or without either parameter, so no JSON envelope of its own exists
+# to compare against.
 router = APIRouter(tags=["google"], dependencies=[Depends(gerr.validate_system_parameters)])
 
 
@@ -1893,7 +1896,11 @@ async def drive_files_get(file_id: str, request: Request):
             keys = _drive_get_field_keys(request.query_params.get("fields"))
             return _drive_project([_drive_folder_obj(conn, name, caller.email)], keys)[0]
         raise gerr.not_found_file(file_id)
-    if request.query_params.get("alt") == "media":
+    # `gerr.alt_format`, not `.get`: measured 2026-09-17 against this same route, `alt=MEDIA` and
+    # `alt=Media` download the content just as `alt=media` does, and `alt=media&alt=json` downloads
+    # it where `alt=json&alt=media` answers the metadata — the first repeat decides, and
+    # ``QueryParams.get`` answers the last.
+    if gerr.alt_format(request.query_params) == "media":
         # raw download — real API errors on native Docs-editors types (use export)
         if _native(row) is not None:
             raise gerr.not_downloadable()
@@ -2077,8 +2084,18 @@ def _sheets_grid(content: str | None) -> list[list[str]]:
 #   prettyPrint      DEFAULT TRUE -- the body is 2-space indented unless `false` says otherwise,
 #                    and an unparseable value is treated as true rather than refused
 #   alt              `json` only; `media` is 400 "Unsupported alt type ... for non byte stream
-#                    request." and anything else 400 "Invalid value ... for query parameter 'alt'"
-#   callback         JSONP: the body is wrapped and the type becomes text/javascript
+#                    request." and `zzz` 400 "Invalid value ... for query parameter 'alt'". `proto`
+#                    is a third answer real gives and this module does not -- see `_sheets_respond`
+#   callback         JSONP, on a GET: the body is wrapped, the type becomes text/javascript and the
+#                    status becomes 200 -- a name that is not a JavaScript one is refused ahead of
+#                    everything but `$.xgafv` and `alt` (`gerr.validate_system_parameters`), and an
+#                    empty value is no callback at all. Declared here rather than router-wide with
+#                    `$.xgafv`, because Sheets is where a SUCCESS is wrapped: the other four
+#                    families honour it on their errors only, which is less than a router-wide
+#                    declaration would promise. The two POST routes below share this list and so
+#                    declare it as well, which real's document does for every method -- and real
+#                    ignores it on a POST exactly as `gerr.jsonp_callback` does, so the declaration
+#                    promises a caller no more there than the vendor's own does.
 #   quotaUser        a rate-limit bucket label; any string, including empty, and no effect on the
 #                    response -- Backlot enforces no quota, so there is nothing for it to select
 #   upload_protocol  accepted and ignored on a read
@@ -2189,15 +2206,36 @@ def _gmask_apply(tree: dict, value):
 def _sheets_respond(request: Request, body: dict, allowed: dict) -> Response:
     """One Sheets response, with the standard query parameters applied.
 
-    Order matters and is measured: `fields` narrows the body, then `prettyPrint` decides the
-    indentation, then `callback` wraps what is left."""
-    alt = request.query_params.get("alt")
-    if alt is not None and alt != "json":
-        # Measured: `media` gets its own sentence, everything else the generic one.
+    Order matters and is measured: `alt` decides whether the answer can be JSON at all, then
+    `fields` narrows the body, then `prettyPrint` decides the indentation, then `callback` wraps
+    what is left. An unparseable `callback` is refused ahead of all of them, in
+    ``gerr.validate_system_parameters`` — measured, that refusal beats a mistyped `fields` mask —
+    so by here the name is one the answer can be handed to.
+
+    The bytes themselves are ``gerr.respond``'s, which is also what every Google ERROR is rendered
+    through: a success and a failure on the same route come back through the same serializer on
+    real, so they do here."""
+    # `gerr.first_repeat`, not `.get`: real answers a repeated `alt` through the first one, and
+    # `gerr.jsonp_callback` reads the same parameter to decide the wrap -- so one request has to
+    # see one `alt` in both places.
+    alt = gerr.alt_format(request.query_params)
+    if alt and alt != "json":
+        # Measured on `media` and `zzz`: `media` gets its own sentence, everything else the
+        # generic one. NOT `proto`, which the discovery document also declares and which real
+        # answers with a protobuf body ("Proto over HTTP is not allowed for service …") under
+        # `application/x-protobuf` — a format this module does not serve, so it lands on the
+        # generic sentence here.
+        #
+        # The two sentences quote different spellings, measured 2026-09-17 on Sheets: `alt=MEDIA`
+        # answers `Unsupported alt type "media"` with the format lowercased, while `alt=ZZZ`
+        # answers `Invalid value "ZZZ"` through the spelling that arrived. So the generic one
+        # reads the parameter again rather than reusing the folded value.
         raise gerr.invalid_argument(
             f'Unsupported alt type "{alt}" for non byte stream request.'
             if alt == "media"
-            else f"Invalid value \"{alt}\" for query parameter 'alt'"
+            else "Invalid value \"{}\" for query parameter 'alt'".format(
+                gerr.first_repeat(request.query_params, gerr.ALT)
+            )
         )
     mask = request.query_params.get("fields")
     if mask:
@@ -2205,21 +2243,10 @@ def _sheets_respond(request: Request, body: dict, allowed: dict) -> Response:
         _gmask_check(tree, allowed)
         body = _gmask_apply(tree, body)
     # Measured: indented by default, and only the literal `false` spellings turn it off -- an
-    # unparseable value is treated as true rather than refused, unlike the other booleans.
+    # unparseable value is treated as true rather than refused, unlike the other booleans. It is
+    # the success side alone that reads it: an error is indented whatever it says.
     compact = (request.query_params.get("prettyPrint") or "").casefold() in _SHEETS_FALSE
-    # Measured to the byte: compact puts no space after `:` or `,` and ends without a newline,
-    # while the indented form is two spaces deep and DOES end with one. Non-ASCII stays raw.
-    text = (
-        json.dumps(body, ensure_ascii=False, separators=(",", ":"))
-        if compact
-        else json.dumps(body, ensure_ascii=False, indent=2) + "\n"
-    )
-    callback = request.query_params.get("callback")
-    if callback:
-        return Response(
-            f"// API callback\n{callback}({text});", media_type="text/javascript; charset=UTF-8"
-        )
-    return Response(text, media_type="application/json; charset=UTF-8")
+    return gerr.respond(body, compact=compact, callback=gerr.jsonp_callback(request))
 
 
 # What a `fields` mask may name, per response — the fields these routes actually build. A cell's

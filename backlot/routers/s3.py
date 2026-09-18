@@ -120,7 +120,8 @@ _P_BUCKET_GET = [
     qp(
         "continuation-token",
         description="ListObjectsV2 only: NextContinuationToken from a page whose IsTruncated was "
-        "true — refused without list-type=2",
+        "true — refused without list-type=2, and refused as incorrect when it does not decode, "
+        "an empty value included",
     ),
     qp(
         "location",
@@ -266,10 +267,10 @@ def _argument_error(message: str, name: str, value: str, resource: str) -> Respo
 def _argument_name(name: str) -> str:
     """``ArgumentName`` with no ``ArgumentValue`` beside it.
 
-    Real S3 leaves the value out of the three cross-version refusals — the body is ``Code``,
-    ``Message`` and ``ArgumentName`` alone, whatever was sent and for an empty value too (measured
-    2026-09-14) — where every other ``InvalidArgument`` here carries both (see
-    ``_argument_error``)."""
+    Real S3 leaves the value out of the three cross-version refusals and of the unreadable
+    ``continuation-token`` refusal — the body is ``Code``, ``Message`` and ``ArgumentName`` alone,
+    whatever was sent and for an empty value too (measured 2026-09-14 and 2026-09-17). The other
+    ``InvalidArgument`` refusals here carry both (see ``_argument_error``)."""
     return f"<ArgumentName>{escape(name)}</ArgumentName>"
 
 
@@ -384,7 +385,7 @@ def _encode_group_token(group_successor: str) -> str:
 def _decode_token(token: str) -> tuple[str, str] | None:
     """Decode a continuation token to ``(mode, value)`` — ``mode`` is ``"after"`` (exclusive,
     from ``_encode_key_token``) or ``"at"`` (inclusive, from ``_encode_group_token``). ``None``
-    if the token is malformed."""
+    if the token is malformed, which the listing refuses."""
     try:
         raw = base64.urlsafe_b64decode(token.encode()).decode()
     except (ValueError, UnicodeDecodeError):
@@ -479,8 +480,7 @@ async def bucket_get(request: Request, bucket: str):
         # The listing straddles the lookup the same way, and in this order: `max-keys` parses first
         # (`?start-after=x&max-keys=abc` on a V1 request is the max-keys refusal, not start-after's),
         # then the other version's parameters are refused, and both happen before the bucket is
-        # looked up. The range and `encoding-type` are judged after it, in _list_objects (measured
-        # 2026-09-14).
+        # looked up. What is judged after it is in _list_objects, in the order its docstring gives.
         max_keys, err = _int32_param(q, "max-keys", _MAX_KEYS, resource)
         if err:
             return err
@@ -544,13 +544,23 @@ def _list_objects(
     ``<MaxKeys>5</MaxKeys>`` — and ``max-keys=0`` is a page of nothing whose ``IsTruncated`` is
     false with keys in the bucket (all measured 2026-09-14).
 
-    ``encoding-type`` is judged here, after the bucket lookup and before the range, and refused
-    unless it is ``url`` compared without case. Under it ``Prefix``, ``Delimiter``, ``StartAfter``,
-    ``Marker``, ``NextMarker``, every ``Key`` and every ``CommonPrefixes/Prefix`` come back encoded
+    The refusals here come after the bucket lookup, in this order: ``encoding-type``, an
+    unreadable ``continuation-token``, the ``max-keys`` range (measured 2026-09-14 and
+    2026-09-17). ``encoding-type`` is refused unless it is ``url`` compared without case. Under it
+    ``Prefix``, ``Delimiter``, ``StartAfter``, ``Marker``, ``NextMarker``, every ``Key`` and every
+    ``CommonPrefixes/Prefix`` come back encoded
     and the continuation tokens do not — each of those measured, since the reference names only
     four ("returns encoded key name values in the following response elements: Delimiter, Prefix,
     Key, and StartAfter", the ListObjectsV2 page) and says nothing about the V1 pair or the tokens.
     A token keeps its ``/``, ``+`` and ``=``.
+
+    A ``continuation-token`` that does not decode is refused, and an empty one the same way: real
+    answers both "The continuation token provided is incorrect" under ``ArgumentName``
+    ``continuation-token``, with no ``ArgumentValue`` (measured 2026-09-17). What is left is a token
+    that decodes to a bound this listing never handed out — real refuses that too, where Backlot
+    pages from the bound it spells. Backlot's tokens are derived from the bound rather than issued
+    and recorded, so one a caller wrote and one a previous page returned are the same bytes, and
+    refusing either refuses both.
 
     The body carries every ``Contents`` and then every ``CommonPrefixes``, real's order on both
     listings and not the key order the entries are collected in. The two part company on a page
@@ -570,6 +580,23 @@ def _list_objects(
         return _argument_error(
             "Invalid Encoding Method specified in Request", "encoding-type", encoding_type, resource
         )
+    # What a readable token bounds is at `after, at` further down.
+    continuation = _first(q, "continuation-token", None) if v2 else None
+    decoded = None
+    if continuation is not None:
+        decoded = _decode_token(continuation)
+        if decoded is None:
+            # Sent and unreadable is its own input, neither absent nor a token. Judged here because
+            # real does: `?continuation-token=garbage&encoding-type=bogus` is the encoding-type
+            # refusal, `&max-keys=-1` beside it is this one, and a bucket that does not exist is
+            # NoSuchBucket for an unreadable token and an empty one both (measured 2026-09-17; the
+            # shape is in this function's docstring).
+            return _error(
+                "InvalidArgument",
+                "The continuation token provided is incorrect",
+                resource,
+                extra=_argument_name("continuation-token"),
+            )
     err = _range_refusal(max_keys, "maxKeys", resource)
     if err:
         return err
@@ -582,22 +609,19 @@ def _list_objects(
     # and sends no element when the parameter is absent (measured 2026-09-17).
     start_after = _first(q, "start-after", None) if v2 else None
 
-    # A continuation-token (opaque, from a previous page) wins over start-after, exactly like
+    # A continuation-token wins over start-after, exactly like
     # real S3 — start-after only seeds the very first page of a listing. Its mode (exclusive
     # "after" a raw key, vs inclusive "at" a CommonPrefixes-group successor — see
     # _encode_group_token) picks which of list_s3_objects' two independent lower bounds to use.
     # V1 reaches the same two bounds through `marker` alone: inside a group it resumes past the
     # whole group, and anywhere else past the key itself.
-    continuation = _first(q, "continuation-token", None) if v2 else None
     after, at, past_the_end = None, None, False
-    if continuation:
-        decoded = _decode_token(continuation)
-        if decoded is not None:
-            mode, value = decoded
-            if mode == "after":
-                after = value
-            else:
-                at = value
+    if decoded is not None:
+        mode, value = decoded
+        if mode == "after":
+            after = value
+        else:
+            at = value
     elif start_after:
         after = start_after
     elif marker:
@@ -698,9 +722,12 @@ def _list_objects(
         f"<Prefix>{escape(enc(prefix))}</Prefix>",
     ]
     if v2:
-        if start_after is not None and not continuation:
+        # Both echoes turn on whether the parameter was sent, not on whether it has a value: an
+        # empty `start-after` is echoed as the empty element, and an empty token was refused above,
+        # so `is None` is the only reading with an input behind it.
+        if start_after is not None and continuation is None:
             body.append(f"<StartAfter>{escape(enc(start_after))}</StartAfter>")
-        if continuation:
+        if continuation is not None:
             body.append(f"<ContinuationToken>{escape(continuation)}</ContinuationToken>")
         if next_token:
             body.append(f"<NextContinuationToken>{next_token}</NextContinuationToken>")
@@ -789,10 +816,11 @@ def _int32_param(q, name: str, default: int, resource: str) -> tuple[int, Respon
 def _range_refusal(value: int, name: str, resource: str) -> Response | None:
     """A parsed ``max-uploads``/``max-keys`` below zero, refused as real refuses it (measured).
 
-    Real judges the range after the bucket lookup and after ``encoding-type``, and names the value
-    as parsed rather than as sent — ``-01`` is reported as ``-1`` (2026-09-11 for ``max-uploads``,
-    2026-09-14 for ``max-keys``). ``name`` is separate from the parse refusal's because the listing
-    spells it differently on either side of that split: ``max-keys=abc`` is refused for ``max-keys``
+    Real judges the range after the bucket lookup and after ``encoding-type`` (the listing's full
+    order is in ``_list_objects``'s docstring), and names the value as parsed rather than as sent —
+    ``-01`` is reported as ``-1`` (2026-09-11 for ``max-uploads``, 2026-09-14 for ``max-keys``).
+    ``name`` is separate from the parse refusal's because the listing spells it differently on
+    either side of that split: ``max-keys=abc`` is refused for ``max-keys``
     and ``max-keys=-1`` for ``maxKeys``, on both forms of the listing, where ListMultipartUploads
     spells ``max-uploads`` in both of its messages (measured).
     """

@@ -1592,7 +1592,8 @@ def test_angle_brackets_are_escaped_in_a_google_success(tmp_path):
 
 def test_a_callback_changes_nothing_outside_google(client, admin_h):
     """The handler serves Atlassian and GitHub too, and both keep exactly the `JSONResponse` they
-    had, GitHub's own charset (``errors.github.json_media_type``) included.
+    had, each vendor's own charset (``errors.github.json_media_type``,
+    ``errors.atlassian.json_media_type``) included.
 
     Measured 2026-09-15, that is right for both and for different reasons. Jira and Confluence
     ignore `callback` outright — a 404 and a 200 come back identical with and without it. GitHub
@@ -1611,7 +1612,7 @@ def test_a_callback_changes_nothing_outside_google(client, admin_h):
         params={"callback": "cb"},
     )
     assert jira.status_code == 404
-    assert jira.headers["content-type"] == "application/json"
+    assert jira.headers["content-type"] == "application/json;charset=UTF-8"
     assert jira.text == json.dumps(jira.json(), separators=(",", ":"))
 
 

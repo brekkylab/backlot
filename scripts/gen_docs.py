@@ -35,11 +35,17 @@ import re
 import sys
 from pathlib import Path
 
+REPO = Path(__file__).resolve().parent.parent
+
+# Run as `python scripts/gen_docs.py`, sys.path[0] is scripts/, so an unguarded `import backlot`
+# resolves to the installed package: in a worktree with an editable install from the primary
+# checkout, another revision's routes and schemas would be rendered into this tree's files.
+sys.path.insert(0, str(REPO))
+
 from backlot.main import app
 from backlot.openapi import SOURCE_PREFIXES
 from backlot.validation import SERVICE_SCHEMAS
 
-REPO = Path(__file__).resolve().parent.parent
 SOURCES_DOC = REPO / "docs" / "supported-sources.md"
 AUTH_DOC = REPO / "docs" / "auth.md"
 SKILL_DOC = REPO / "skills" / "backlot" / "SKILL.md"

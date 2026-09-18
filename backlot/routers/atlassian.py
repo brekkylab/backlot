@@ -20,7 +20,12 @@ from backlot.acl import Caller
 from backlot.config import get_settings
 from backlot.errors import atlassian as errors_atlassian
 from backlot.openapi import qp
-from backlot.pagination import confluence_next_link, decode_cursor_or_none, next_page_token
+from backlot.pagination import (
+    confluence_next_link,
+    confluence_space_links,
+    decode_cursor_or_none,
+    next_page_token,
+)
 
 router = APIRouter(prefix="/atlassian", tags=["atlassian"])
 
@@ -110,6 +115,7 @@ _P_CQL = {"parameters": [qp("cql", required=True), qp("limit", "integer"), qp("s
 _P_CONTENT = {
     "parameters": [qp("expand"), qp("spaceKey"), qp("limit", "integer"), qp("start", "integer")]
 }
+_P_SPACE = {"parameters": [qp("expand"), qp("limit", "integer"), qp("start", "integer")]}
 
 # The page a comment read serves. Measured against Jira Cloud (2026-09-09) on a real issue,
 # which settles what no document states: `maxResults` is CAPPED at 100 as well as defaulted
@@ -1139,26 +1145,37 @@ def _space(request: Request, conn, container: str, expand: str, *, listed: bool)
     return space
 
 
-@router.get("/wiki/rest/api/space", response_model=ConfluenceResults, openapi_extra=_P_EXPAND)
+@router.get("/wiki/rest/api/space", response_model=ConfluenceResults, openapi_extra=_P_SPACE)
 async def confluence_spaces(request: Request):
+    """Paged the way `content` is (`?limit`/`?start`, both through `_confluence_page_params`), with
+    its own `next`/`prev` shape: measured 2026-09-17, see :func:`confluence_space_links`. `expand`
+    is applied per space through :func:`_space` and carried into `next`/`prev`/`self` too.
+
+    `limit` is echoed uncapped, where real caps it at 1000 — an acknowledged gap that also bounds
+    the page size `next` returns.
+    """
     conn = auth.conn(request)
     ids = auth.visible_ids(request, _confluence_caller(request))
+    limit, start = _confluence_page_params(request)
     expand = _str_param(request, "expand", "") or ""
+    # store.list_containers orders by name; real's own order is none of name, key or id (measured
+    # 2026-09-17).
+    reachable = _reachable_spaces(conn, ids)
+    total = len(reachable)
     results = [
-        _space(request, conn, r["name"], expand, listed=True) for r in _reachable_spaces(conn, ids)
+        _space(request, conn, r["name"], expand, listed=True)
+        for r in reachable[start : start + limit]
     ]
-    # The envelope's own `_links`, measured beside the per-space one on 2026-09-16: `base`,
-    # `context` and `self`. Real carries `next` here too once the page it describes is short of the
-    # collection, which is #207 — this route reads neither `limit` nor `start` yet.
-    links = {
-        "base": f"{_site(request)}/wiki",
-        "context": "/wiki",
-        "self": f"{_site(request)}/wiki/rest/api/space",
-    }
+    links = {"base": f"{_site(request)}/wiki", "context": "/wiki"}
+    links.update(
+        confluence_space_links("/rest/api/space", start, limit, len(results), total, expand)
+    )
+    self_query = f"?expand={expand}" if expand else ""
+    links["self"] = f"{_site(request)}/wiki/rest/api/space{self_query}"
     return {
         "results": results,
-        "start": 0,
-        "limit": len(results),
+        "start": start,
+        "limit": limit,
         "size": len(results),
         "_links": links,
     }

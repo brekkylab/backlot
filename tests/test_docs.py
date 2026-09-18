@@ -185,6 +185,7 @@ def test_gen_docs_renders_from_its_own_tree(tmp_path):
     PYTHONPATH stands in for the editable install: both shapes setuptools gives one (a meta-path
     finder behind PathFinder, or a `.pth` entry after site-packages) answer only after every earlier
     sys.path entry, so sys.path[0] beats them the way it beats PYTHONPATH.
+    """
     shadow = tmp_path / "shadow"
     shutil.copytree(
         REPO / "backlot", shadow / "backlot", ignore=shutil.ignore_patterns("__pycache__")

@@ -100,8 +100,10 @@ gh pr list --state open --json number,title,labels,reviewDecision,headRefName --
 A `routine-fire-payload` may also carry `branch: <name>`: a maintainer is trying the loop's own
 files as they stand on that branch, and the routine's prompt has already checked it out before
 calling you, so the skill and reviewers you are reading are that branch's. Say which branch in your
-summary. It may carry `mode: rehearsal` too, which is the rehearsal above; `mode: live` or no
-`mode` line is an ordinary run.
+summary, and in every comment you post during the run — the claim, a not-eligible line, a
+hand-over — end the first line with `(running branch <name>)`, so a maintainer reading GitHub can
+tell a branch trial from the loop proper. It may carry `mode: rehearsal` too, which is the
+rehearsal above; `mode: live` or no `mode` line is an ordinary run.
 
 A `routine-fire-payload` block naming an issue or pull request means a maintainer just acted on
 that one item — labelled it, or answered a decision on it — and this run is about that item alone.
@@ -119,8 +121,9 @@ three issues starts three runs, and each takes its own. If the named item is not
 payload — the schedule — surveys the whole queue.
 
 Build one worklist in this priority: (a) the loop's open PRs (`claude/` branches) with review comments or failing checks
-you have not answered, or with green checks and neither `ready-for-maintainer` nor
-`needs-maintainer` — a hand-over an earlier run did not finish, which you finish from step 9,
+you have not answered, a merge conflict (`gh pr view <n> --json mergeStateStatus` answers `DIRTY`),
+or green checks and neither `ready-for-maintainer` nor `needs-maintainer` — a hand-over an earlier
+run did not finish, which you finish from step 9,
 (b) `needs-maintainer` issues and pull requests whose newest comment is a `/decision`,
 (c) issues nobody has claimed. Drop anything labelled `hold`. An issue is taken, and dropped, when
 either holds: an open pull request already closes it (`gh pr list --state open --search "closes
@@ -131,6 +134,18 @@ whose newest comment is not a `/decision` is waiting on a person: drop it, and n
 question a second time.
 
 ## 2. Your own pull requests first
+
+A review is unaddressed when a thread has no reply from this account, and also when a review's own
+body — a `changes_requested` or `commented` submission with no inline threads — has had no reply
+from this account since it was posted; answer such a body with a conversation comment. Read both:
+`gh api repos/brekkylab/backlot/pulls/<n>/comments` for threads and `.../pulls/<n>/reviews` for
+bodies.
+
+Before any comment, the branch has to merge: if `gh pr view <n> --json mergeStateStatus` answers
+`DIRTY`, `git fetch origin main && git merge origin/main`, resolve each conflict so that the
+pull request's own change and everything that landed on `main` both survive, run the suite, push,
+and say so in one conversation comment. A reviewer who wrote only "resolve the conflict" is
+answered by exactly that.
 
 For each unaddressed review comment:
 
@@ -262,9 +277,30 @@ When both reviewers pass: wait for `gh pr checks <n> --watch --fail-fast`. Green
 `gh pr view <n> --json assignees` shows none, `gh pr edit <n> --add-assignee @me`; then add
 `ready-for-maintainer` and request review from the maintainers' team:
 `gh pr edit <n> --add-reviewer brekkylab/backlot-reviewer`. Red:
-back to step 2 with the failing check. Comment on each issue you touched with one sentence saying
-what you did and where. End with a one-paragraph summary: issues surveyed, what you picked and why,
-what you filed, what you escalated, the PR.
+back to step 2 with the failing check. Then turn on the platform's auto-fix for the pull request,
+so this session is woken when a reviewer comments or a check fails; the cloud session you run in
+has that ability, and if it does not, say so in your summary. Comment on each issue you touched with
+one sentence saying what you did and where. End with a one-paragraph summary: issues surveyed, what
+you picked and why, what you filed, what you escalated, the PR.
+
+## After hand-over: being woken
+
+Auto-fix wakes this session, not a new run, when the pull request you handed over receives a
+review or a check fails. Everything above still binds; in particular:
+
+- React 🚀 to the pull request first, so a maintainer watching GitHub knows the review was picked
+  up, then work step 2 on it: merge `main` if the branch conflicts, reproduce each unanswered
+  comment and each unanswered review body, fix and reply or reply with the measurement that
+  contradicts it, and run the reviewers again on what you changed.
+- A comment that could mean two changes, or that asks whether Backlot should serve something at
+  all, is answered on GitHub with a decision comment and `needs-maintainer`, never with a question
+  in this session: nobody is reading it.
+- Stay on this pull request. A wake-up is not a survey; other issues and other pull requests are
+  the next run's.
+- A `/decision` is not yours. The doorbell rings a fresh run for every `/decision`, wherever it is
+  posted, and that run acts on it; when the event that woke you is a comment whose first line
+  starts with `/decision`, react nothing, change nothing, and stop.
+- An approval, a merge or a close is the end: react nothing, change nothing, and stop.
 
 ## The working tree is yours alone
 

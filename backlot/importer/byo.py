@@ -306,6 +306,41 @@ def _thread_seconds(where, root_sec, replies):
     return out
 
 
+def _check_edited(where, edited, created_sec, author):
+    """An `edited` block checked against its OWN message, before any row is written.
+
+    Two rules the schema cannot state, because each reads a second field of the same record:
+
+    `edited.user` is the message's own author. `chat.update` is the only Web API method that
+    gives a message an `edited` block, and it answers anyone else `cant_update_message`: "Only
+    messages posted by the authenticated user are able to be updated using this method." A human
+    editing in the client is the other path that sets one — the same page notes "The (edited)
+    label renders only on messages edited by humans" — and Slack's own message-event example
+    carries the rule in its values either way: `user` and `edited.user` are both `U123ABC456`.
+
+    `edited.ts` names a LATER SECOND than `created`. The served `ts` takes its six-digit fraction
+    from a hash of the message (`synth.slack_fmt_ts`), so a corpus author writing `edited.ts` has
+    no way to tell whether a fraction inside the message's own second lands before or after it;
+    only a later second is ordered after the message from outside.
+    """
+    if not edited:
+        return
+    # `author` is never absent here: `author_email` is required on a root and on a reply, and
+    # `format: email` refuses `""`.
+    if edited["user"] != author:
+        raise SystemExit(
+            f"{where}: edited.user must be this message's own author "
+            f"(got {edited['user']!r}, authored by {author!r}) — real Slack only lets the "
+            f"author edit, and answers anyone else cant_update_message"
+        )
+    ts = edited["ts"]
+    if _epoch_field(ts, where, "edited.ts") <= created_sec:
+        raise SystemExit(
+            f"{where}: edited.ts must name a later second than this message's own created "
+            f"(got {ts!r}, created at {created_sec})"
+        )
+
+
 def _service_columns(
     src,
     ex,
@@ -689,6 +724,7 @@ def load_roster(path) -> dict:
             - {name: Ava Chen, email: ava.chen@redwoodinference.com}
             - {name: Bo Ryu, email: bo.ryu@redwoodinference.com,
                groups: [proj-checkout-rework, res-emea-support]}
+            - {name: Cy Ito, email: cy.ito@redwoodinference.com, deactivated: true}
         contacts:                         # principals with NO token (display-only)
           - {name: Zoe Newperson, email: zoe.newperson@redwoodinference.com, group: engineering}
 
@@ -697,6 +733,13 @@ def load_roster(path) -> dict:
     ``slugify``.
     ``contacts`` are people a corpus names who are not accounts — they own and read documents but
     cannot authenticate, the distinction ``tokens.yaml`` draws.
+
+    An entry's ``deactivated: true`` is Slack's own offboarded-member state — the person keeps
+    their token in ``tokens.yaml`` (real answers a deactivated member's own calls with
+    ``account_inactive`` rather than dropping the credential), but ``users.list``/``.info`` answer
+    them ``deleted: true`` and ``conversations.members`` drops them. No other vendor Backlot
+    serves has this concept, so it is read here and acted on only in ``backlot.routers.slack``
+    and ``backlot.store``.
 
     A person may belong to more than one group — a squad, a compliance register, a region-scoped
     grant — which one department slot cannot say. An entry's ``groups`` list adds those memberships
@@ -725,6 +768,22 @@ def load_roster(path) -> dict:
         # are not dropped, `_groups` reads the whole field again as extra memberships.
         return next(iter(_slugs(raw)), None)
 
+    def _deactivated(entry: dict) -> bool:
+        """An entry's ``deactivated:`` — a boolean or nothing, where the readers around it take
+        any shape at all.
+
+        Their tolerance widens what a field accepts; here it would invert what one says. ``bool()``
+        reads the string ``"false"`` as True, and ``"no"`` too, so a quoted value would deactivate
+        the person it states is active. YAML spells the value both ways unquoted already, which
+        leaves nothing for a string to express."""
+        raw = entry.get("deactivated")
+        if raw is None or isinstance(raw, bool):
+            return bool(raw)
+        raise SystemExit(
+            f"roster entry {entry.get('email')!r}: `deactivated: {raw!r}` is not a boolean. "
+            "Write `deactivated: true`, or leave the key out."
+        )
+
     def _groups(entry: dict, primary: str | None) -> list[str]:
         # The primary membership first — a department entry's is its department, a contact's is
         # its own `group:` — then everything either field names. dict.fromkeys keeps first
@@ -735,11 +794,21 @@ def load_roster(path) -> dict:
 
     users: dict[str, dict] = {}
 
-    def _merge(email: str, name: str, groups: list[str], token: bool, *, stated: bool) -> None:
+    def _merge(
+        email: str,
+        name: str,
+        groups: list[str],
+        token: bool,
+        *,
+        stated: bool,
+        deactivated: bool = False,
+    ) -> None:
         # A person may appear more than once — two departments, or a department entry plus a
         # contact carrying extra register memberships. Membership is the UNION: replacing the
         # entry drops the earlier groups, and a `readers: [group:...]` clause then wrongly denies
         # the person it names. A contact never upgrades an account, but it never demotes one.
+        # `deactivated` unions the same way — once any entry for a person states it, they stay
+        # deactivated regardless of order.
         #
         # Names do not union, so first-seen-wins is wrong for them: `name` always has a
         # fallback — one derived from the address — and so never looks absent. An entry that
@@ -748,13 +817,20 @@ def load_roster(path) -> dict:
         # between two stated names the first still wins, as for groups.
         cur = users.get(email)
         if cur is None:
-            users[email] = {"name": name, "groups": groups, "token": token, "_stated": stated}
+            users[email] = {
+                "name": name,
+                "groups": groups,
+                "token": token,
+                "_stated": stated,
+                "deactivated": deactivated,
+            }
             return
         # No empty-string filter here: both operands came from `_groups`, which drops them
         # already. Inside `_groups` the filter is load-bearing — it catches a name whose slug
         # collapses to "" — and repeating it here only suggested it could still happen.
         cur["groups"] = list(dict.fromkeys(cur["groups"] + groups))
         cur["token"] = cur["token"] or token
+        cur["deactivated"] = cur["deactivated"] or deactivated
         if stated and not cur["_stated"]:
             cur["name"] = name
             cur["_stated"] = True
@@ -767,6 +843,7 @@ def load_roster(path) -> dict:
                 _groups(p, slugify(dept) or None),
                 True,
                 stated=bool(p.get("name")),
+                deactivated=_deactivated(p),
             )
     for p in data.get("contacts") or []:
         _merge(
@@ -775,6 +852,7 @@ def load_roster(path) -> dict:
             _groups(p, _primary(p.get("group"))),
             False,
             stated=bool(p.get("name")),
+            deactivated=_deactivated(p),
         )
     for u in users.values():
         u.pop("_stated", None)
@@ -1992,6 +2070,8 @@ class _Loader:
         parent_id = rec.get("parent")
         created = _epoch_field(rec["created"], where, "created")
         updated = _epoch_field(rec.get("updated"), where, "updated")
+        if src == "slack":
+            _check_edited(where, rec.get("edited"), created, author)
 
         replies = rec.get("replies") if src == "slack" else None
         # The ROOT's `ts`, which is what a reply stores as its `thread_ts` — and it is not known
@@ -2510,6 +2590,7 @@ class _Loader:
             # Its second was resolved with the rest of the thread's in `_thread_seconds`,
             # which is where the ordering rule and its refusals live.
             rep_cts = reply_seconds[i - 1]
+            _check_edited(f"{where}: reply {i}", rep.get("edited"), rep_cts, rep_author)
             insert(
                 rep_id,
                 rep_author,
@@ -3423,6 +3504,15 @@ def _load_records(
             "ON CONFLICT(email) DO UPDATE SET served_id=excluded.served_id",
             (email, synth.fireflies_user_id(email)),
         )
+    # The roster is authoritative for `deactivated` on every load, not just the first: a person a
+    # later roster stops marking deactivated is un-deactivated here, the same way `closed` above
+    # treats the whole principal set as replaced by what the roster currently states.
+    if closed:
+        for email, u in roster_data["users"].items():
+            if u["deactivated"]:
+                conn.execute("INSERT OR IGNORE INTO slack_deactivated_users VALUES (?)", (email,))
+            else:
+                conn.execute("DELETE FROM slack_deactivated_users WHERE email = ?", (email,))
     loader.write_containers()
     for g, email in memberships:
         conn.execute("INSERT OR REPLACE INTO group_members VALUES (?,?)", (g, email))

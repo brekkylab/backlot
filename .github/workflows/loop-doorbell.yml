@@ -8,6 +8,11 @@
 # account's daily allowance; a stranger's comment rings nothing. The routine checks the author's
 # write access again before it treats the comment as a decision.
 #
+# A `/decision` is the doorbell's wherever it is posted; a review comment or a failing check on
+# one of the loop's pull requests is the platform's auto-fix's, which wakes the session that
+# opened the pull request. The two do not overlap: a woken session leaves a `/decision` alone, and
+# a comment by the loop's own account never rings.
+#
 # The maintainer hears back at once: 👀 on the issue or the comment when the run is requested,
 # 😕 and a comment when it could not be, and a labelled issue is assigned to the loop's account.
 # Each of those is tried as the loop's own account first and as github-actions when that token
@@ -69,6 +74,7 @@ jobs:
           EVENT: ${{ github.event_name }}
           REPO: ${{ github.repository }}
           ISSUE: ${{ inputs.issue || github.event.issue.number || github.event.pull_request.number }}
+          COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
           BRANCH: ${{ inputs.branch }}
           MODE: ${{ inputs.mode }}
           # Where the acknowledgement lands: the issue for a label or a dispatch, the comment for
@@ -90,6 +96,16 @@ jobs:
           if [ -z "$URL" ] || [ -z "$TOKEN" ]; then
             echo "::notice::LOOP_FIRE_URL / LOOP_FIRE_TOKEN are not set; nothing to ring."
             exit 0
+          fi
+          # The loop's own account is an organisation member, so its replies pass the gate above;
+          # a reply of its own that happens to open with `/decision` must not ring it. The account
+          # is whoever the token is, so no login is written down here.
+          if [ -n "$COMMENT_AUTHOR" ] && [ -n "$BOT_TOKEN" ]; then
+            loop_login=$(GH_TOKEN="$BOT_TOKEN" gh api user --jq .login 2>/dev/null || true)
+            if [ -n "$loop_login" ] && [ "$COMMENT_AUTHOR" = "$loop_login" ]; then
+              echo "::notice::comment by the loop's own account ($loop_login); nothing to ring."
+              exit 0
+            fi
           fi
           # A branch is a maintainer's dispatch and nothing else, and it has to be the head of an
           # open pull request: the payload is an instruction to run that branch's files.

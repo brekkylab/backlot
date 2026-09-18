@@ -186,9 +186,12 @@ def test_gen_docs_renders_from_its_own_tree(tmp_path):
 
     A copy that loads a different schema, not a stub that raises: an unguarded import of a stub
     would fail loudly, and the failure this guards against is the silent one. PYTHONPATH stands in
-    for the editable install: the setuptools finder answers only after PathFinder has tried every
-    sys.path entry, so an entry the script puts at sys.path[0] beats it exactly as it beats the
-    PYTHONPATH one.
+    for the editable install. setuptools documents two shapes for one: a `.pth` file that installs
+    an "import finder (`MetaPathFinder` or `PathEntryFinder`)", which is what the venv this was
+    measured in holds and which sits on sys.meta_path behind PathFinder, or in compat mode a static
+    `.pth` file "to extend `sys.path`", which lands after site-packages. Either answers only after
+    every earlier sys.path entry, so the entry the script puts at sys.path[0] beats both exactly as
+    it beats the PYTHONPATH one.
     """
     shadow = tmp_path / "shadow"
     shutil.copytree(
@@ -227,8 +230,10 @@ def test_gen_docs_renders_from_its_own_tree(tmp_path):
         text=True,
     )
     assert proc.returncode == 0, (
-        f"gen_docs.py rendered from the shadow tree on PYTHONPATH, not from {REPO}:\n"
-        f"{proc.stdout}{proc.stderr}"
+        "scripts/gen_docs.py --check failed with the shadow tree first on PYTHONPATH. If "
+        "test_generated_docs_are_current fails too, the docs are stale and this is that failure "
+        f"again; if it passes, the script rendered from the shadow rather than {REPO}, or did not "
+        f"get as far as rendering:\n{proc.stdout}{proc.stderr}"
     )
 
 

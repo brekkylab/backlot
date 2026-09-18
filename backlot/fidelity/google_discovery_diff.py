@@ -12,7 +12,7 @@ mean a parser that understands neither well:
 
 A discovery document describes a second contract that is not an operation at all: the batch
 endpoint, named in the top-level ``batchPath``. Nothing under ``resources`` declares it, so the
-path diff above has nothing to pair Backlot's batch routes with, and :func:`batch_divergences`
+path diff has nothing to pair Backlot's batch routes with, and :func:`batch_divergences`
 compares the field instead. It reads per SOURCE rather than per document, because Backlot serves
 one batch route for several of them.
 
@@ -127,7 +127,7 @@ def batch_divergences(
 ) -> list[Finding]:
     """Backlot's batch routes against the ``batchPath`` each document declares.
 
-    Per SOURCE, not per document, which is what separates this from the path diff above. Measured
+    Per SOURCE, not per document, which is what separates this from the path diff. Measured
     2026-09-17: ``gmail:v1``, ``docs:v1``, ``sheets:v4`` and ``slides:v1`` declare ``batch`` and
     each answers it on its own host, while ``drive:v3`` declares ``batch/drive/v3`` on the shared
     ``www.googleapis.com`` — the ``drive/v3`` is what discriminates it there. Backlot collapses

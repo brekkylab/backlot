@@ -16,8 +16,8 @@ side is the SDL the server builds its engine from; the vendor's side is a live i
 response, which needs a credential.
 
 For a source compared against a **document its vendor publishes**, the request surface — which
-operations exist, and which query parameters each accepts. Backlot's side is the app's own
-`/openapi.json`. The vendor's side comes in two formats, read by two parsers, because Google does
+operations exist, which query parameters each accepts, and, for Google, the batch endpoint its
+`batchPath` names. Backlot's side is the app's own `/openapi.json`. The vendor's side comes in two formats, read by two parsers, because Google does
 not publish OpenAPI: **OpenAPI** documents for GitHub, Slack, Jira, Confluence, Notion and
 HubSpot, and **Google API Discovery** documents for Gmail and the Drive family. A source is
 compared against as many documents as its vendor publishes for the surface Backlot serves — Jira's
@@ -156,8 +156,10 @@ hosts onto one origin, so one served route stands in for several documents.
 That is why the endpoint is not a mount. A mount selects paths for the path diff, which pairs
 operations — and no document declares this one, so both routes would report as surface Backlot
 invented. The methods that carry the word are a different thing and are compared as operations
-already: `messages.batchModify` on Gmail, `documents.batchUpdate` on Docs, seven `batch*` methods
-on Sheets. Measured across the five documents, no path any of them declares is a `batchPath` value.
+already, and measured 2026-09-17 there are eleven of them: `messages.batchModify` and
+`messages.batchDelete` on Gmail, `documents.batchUpdate` on Docs, seven `batch*` methods on Sheets,
+`presentations.batchUpdate` on Slides, and none on Drive. Measured across the same five documents,
+no path any of them declares is a `batchPath` value.
 
 So each Google source names the batch routes it speaks for in `batch_mount`, and the field is
 compared against them on every run. Three things are reported:

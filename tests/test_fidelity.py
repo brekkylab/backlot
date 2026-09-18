@@ -531,6 +531,12 @@ def test_every_mount_selects_something_backlot_serves():
         # batch route Backlot stopped serving.
         for route in _batch_routes(comparison):
             assert route in served, f"{name}: {route} is not served"
+        # And a Google source names at least one. `batch_mount` defaults to empty and the batch
+        # check is skipped when it is, so a third Google source registered without one would have
+        # every document's `batchPath` go unread while every test above it passed -- the test
+        # beside this one pins the two sources that exist rather than the rule.
+        if isinstance(comparison, comparisons.GoogleDiscoveryComparison):
+            assert comparison.batch_mount, f"{name}: a Google source names no batch route"
 
 
 def _comparison_mounts(comparison) -> tuple[str, ...]:

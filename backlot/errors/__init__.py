@@ -24,8 +24,9 @@ A module in ``_ENVELOPES`` provides:
   envelope.
 - ``json_media_type(path, status_code)``, optional — the `content-type` the vendor puts on a JSON
   body answered at that path with that status, when it is measured to differ from FastAPI's bare
-  `application/json`. GitHub is the one that implements it; a vendor without it keeps the default,
-  which is not a claim about what real sends.
+  `application/json`. GitHub and Atlassian implement it — Atlassian's names Jira's charset and keeps
+  Confluence on the bare type; a vendor without it keeps the default, which is not a claim about
+  what real sends.
 - ``rendered(request, status_code, body, headers)``, optional — the whole ``Response``, for a
   vendor whose error bodies are measured to the byte or whose status the body does not decide. Only
   Google has one: its errors are indented, its `content-type` carries a charset, and a `callback`

@@ -1282,6 +1282,48 @@ def test_confluence_refuses_an_integer_parameter_it_cannot_convert(client, admin
     }
 
 
+def test_jira_json_carries_the_charset_real_sends_and_confluence_does_not(client, admin_h):
+    """Measured on a live Atlassian Cloud site, 2026-09-15 and 2026-09-18: Jira answers
+    `application/json;charset=UTF-8` on its 200s, a 404 under either mount and a plain 400, and the
+    bare `application/json` on the one 403 this server answers, the gateway's for a bearer it cannot
+    read. Confluence answers the bare type on every JSON body measured — its 200s, 404s, 400, 403
+    and 405. The RFC 7807 refusals keep `application/problem+json`, which the middleware never
+    touches. The spelling is pinned here rather than read from the constant, so a reformat into
+    GitHub's `application/json; charset=utf-8` is caught in the file a reader of the Jira rule
+    opens."""
+    jira, bare = "application/json;charset=UTF-8", "application/json"
+    assert errors_atlassian.JIRA_JSON_MEDIA_TYPE == jira
+    unreadable = {"Authorization": "Bearer usr-nope"}
+    cells = [
+        ("/atlassian/rest/api/3/serverInfo", admin_h, 200, jira),
+        ("/atlassian/rest/api/2/serverInfo", {}, 200, jira),
+        ("/atlassian/rest/api/3/project/search", admin_h, 200, jira),
+        ("/atlassian/rest/api/3/issue/NOPE-999999", admin_h, 404, jira),
+        ("/atlassian/rest/api/2/issue/NOPE-999999", admin_h, 404, jira),
+        ("/atlassian/rest/api/3/issue/PAY-7/comment?orderBy=bogus", admin_h, 400, jira),
+        (
+            "/atlassian/rest/api/3/search/jql?maxResults=abc",
+            admin_h,
+            400,
+            errors_atlassian.PROBLEM_JSON,
+        ),
+        ("/atlassian/rest/api/3/serverInfo", unreadable, 403, bare),
+        ("/atlassian/rest/api/3/project/search", unreadable, 403, bare),
+        ("/atlassian/wiki/rest/api/space", admin_h, 200, bare),
+        ("/atlassian/wiki/rest/api/search?cql=type=page", admin_h, 200, bare),
+        ("/atlassian/wiki/rest/api/space/NOPESUCHSPACE", admin_h, 404, bare),
+        ("/atlassian/wiki/rest/api/content/999999999", admin_h, 404, bare),
+        ("/atlassian/wiki/rest/api/space", {}, 403, bare),
+    ]
+    for path, headers, status, ctype in cells:
+        r = client.get(path, headers=headers)
+        assert (r.status_code, r.headers["content-type"]) == (status, ctype), path
+    # the OpenAPI document still keys the JSON body as `application/json`, as real's own spec does:
+    # the charset is on the wire, not in the contract `backlot diff` compares
+    op = client.get("/openapi.json").json()["paths"]["/atlassian/rest/api/3/serverInfo"]["get"]
+    assert list(op["responses"]["200"]["content"]) == ["application/json"]
+
+
 def test_confluence_names_the_comma_join_when_a_repeated_value_will_not_convert(client, admin_h):
     """Where Jira renders the array as a Java `toString`, Confluence renders it as the comma-join
     and reports the array's own type."""

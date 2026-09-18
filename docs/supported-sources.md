@@ -361,6 +361,21 @@ Each method answers on `GET` and `POST` alike, as the real Web API does.
 | `search.files` | |
 | `auth.test` | |
 | `api.test` | Auth-free connectivity check |
+| `chat.postMessage` | `thread_ts` posts a reply in that thread |
+| `chat.postEphemeral` | Stores nothing, as an ephemeral message is in no channel's history |
+| `chat.update` | The author's own message |
+| `chat.delete` | The author's own message, a corpus one included |
+| `chat.getPermalink` | |
+| `reactions.add` | |
+| `reactions.remove` | The caller's own |
+| `reactions.get` | |
+| `reactions.list` | The caller's own, from writes rather than the corpus |
+
+The nine below the reads take writes. They land in a per-server overlay and the corpus file is
+never written; [Writes, and where they go](overlay.md) covers what a read then sees, how to read
+the overlay back and how to reset it. `chat.postMessage`, `chat.postEphemeral`, `chat.update`,
+`chat.delete`, `reactions.add` and `reactions.remove` accept a JSON body as well as a form, which
+is what their `consumes` declares and where `slack_sdk` puts three of them.
 
 A person the [roster](../backlot/schemas/README.md) marks `deactivated: true` is Slack's offboarded
 member: `users.list` and `users.info` answer them `deleted: true`, `conversations.members` and

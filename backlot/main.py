@@ -7,6 +7,7 @@ see `backlot/overlay.py`.
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 from contextlib import asynccontextmanager
@@ -437,11 +438,38 @@ async def report_failed_jira_login(request: Request, call_next):
 
 @app.middleware("http")
 async def parse_slack_form(request: Request, call_next):
-    """Slack SDK POSTs urlencoded params; stash them for the router's param lookup."""
+    """Stash a Slack POST's arguments for the router's param lookup.
+
+    Two body types, because real takes two and the official SDK sends both: urlencoded on most
+    methods, and JSON on the six in :data:`slack.JSON_BODY_METHODS` -- which is where `slack_sdk`
+    puts `chat.postMessage`, `chat.update` and `chat.postEphemeral`. Reading only the form type
+    answered every SDK write `invalid_arguments`.
+
+    A JSON body on a method outside that set is ignored rather than read, which is what real does
+    with one: `POST chat.getPermalink` carrying its arguments as JSON answers `invalid_arguments`
+    on slack.com, its spec declaring the form type alone.
+
+    Values are stringified: `_param` hands what it finds to callers that treat it as the text a
+    form field would have carried, and a JSON `true` or `7` would otherwise arrive as a bool or an
+    int on the JSON path and a string on the form path -- one argument with two types.
+    """
     if request.url.path.startswith("/slack/") and request.method == "POST":
         ctype = request.headers.get("content-type", "")
         if "application/x-www-form-urlencoded" in ctype:
             request.state._form = dict(await request.form())
+        elif "application/json" in ctype:
+            method = request.url.path.rsplit("/", 1)[-1]
+            if method in slack.JSON_BODY_METHODS:
+                try:
+                    body = await request.json()
+                except ValueError:
+                    body = None
+                if isinstance(body, dict):
+                    request.state._form = {
+                        k: v if isinstance(v, str) else json.dumps(v)
+                        for k, v in body.items()
+                        if v is not None
+                    }
     return await call_next(request)
 
 

@@ -20,8 +20,13 @@ import threading
 
 from backlot import store
 
-# One lock for every overlay write. FastAPI runs sync endpoints on a threadpool over the single
-# shared `app.state.conn`, so two concurrent writes would interleave on one connection.
+# One lock for every overlay write, over the single shared `app.state.conn`.
+#
+# Not for the Slack handlers against each other: all of them are `async def`, so they run on the
+# event loop one at a time. It is the two `/_meta/overlay*` handlers that need it -- those are
+# plain `def`, so Starlette runs them on the threadpool, and a `reset` there can land between two
+# statements of a write already in flight.
+#
 # Module-level rather than per-connection because `sqlite3.Connection` has no `__dict__` and
 # cannot be weak-referenced, so there is nowhere to hang per-connection state.
 LOCK = threading.Lock()

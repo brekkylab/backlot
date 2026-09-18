@@ -122,6 +122,28 @@ _P_SEARCH = [
 ]
 _P_SEARCH_FILES = [qp("query", required=True), qp("count", "integer")]
 
+# The methods that read arguments from a JSON body as well as a form. Slack's own spec says which:
+# `consumes` on these six lists `application/json` beside the urlencoded type, and on every other
+# method here -- the reads, and the three write-adjacent methods the spec types GET
+# (`chat.getPermalink`, `reactions.get`, `reactions.list`) -- it lists the form type alone.
+#
+# The split is measured, not assumed. `POST chat.getPermalink` with `channel` and `message_ts` as
+# JSON answers `invalid_arguments` ("missing required field: channel") on slack.com, so real
+# ignores a JSON body exactly where its spec declines one. `slack_sdk` 3.44.1 sends
+# `chat.postMessage`, `chat.update` and `chat.postEphemeral` as JSON
+# (`WebClient.api_call(..., json=kwargs)`) and the rest as form, so a client that works against
+# real works here only if this set is right.
+JSON_BODY_METHODS = frozenset(
+    {
+        "chat.postMessage",
+        "chat.postEphemeral",
+        "chat.update",
+        "chat.delete",
+        "reactions.add",
+        "reactions.remove",
+    }
+)
+
 # The write surface. Each lists what Backlot actually READS, the way every other `_P_` here does:
 # a param the vendor documents but Backlot ignores stays an acknowledged gap in the fidelity
 # baseline rather than a declaration that promises behaviour it does not have.
@@ -1034,12 +1056,20 @@ async def chat_post_message(request: Request):
     ``paths./chat.postMessage.post.responses.default``: `channel_not_found`, `not_in_channel`,
     `is_archived`, `msg_too_long`, `no_text`, `too_many_attachments`. Backlot answers
     `channel_not_found` and `no_text`; `not_in_channel` needs a scope model, `is_archived` needs a
-    channel that can be archived, and the two ceilings are workspace limits no corpus states.
+    channel that can be archived, and `too_many_attachments` is a limit no corpus states.
+
+    `msg_too_long` is none of those: docs.slack.dev puts the number in the platform's own docs
+    ("Slack will truncate messages containing more than 40,000 characters"), so it is reproducible
+    where a workspace setting is not. Backlot does not truncate yet, and a 50,000-character text
+    posts and reads back whole.
 
     Which condition triggers `no_text` is Backlot's decision -- the spec enumerates the string
     without describing when it fires -- and is drawn where `_missing_argument` already draws its
     line: an ABSENT argument is `invalid_arguments`, a present but empty one is about the
     workspace.
+
+    Posting does not join a public channel the caller is not in, and nothing here has to arrange
+    that: membership there is derived from `main.slack_messages`, which a written row never joins.
 
     `thread_ts` posts the message as a reply in that thread. It is honoured rather than ignored
     because an agent told to reply in a thread otherwise gets a top-level message and a `200 ok` --
@@ -1079,7 +1109,6 @@ async def chat_post_message(request: Request):
         thread_ts = parent["thread_ts"] or parent["ts"]
         thread_seq = store.slack_next_thread_seq(conn, name, thread_ts)
     now = int(time.time())
-    was_member = _is_member(conn, name, caller, is_private=_is_private(request, conn, name))
     ts = store.slack_next_ts(conn, name, now)
     store.insert_document(
         conn,
@@ -1095,12 +1124,6 @@ async def chat_post_message(request: Request):
             "subtype": "bot_message" if is_bot else None,
         },
     )
-    # Membership on a public channel is derived from having spoken, so the row just written would
-    # join the poster to it. Real Slack does not join you when you post through the API, so the
-    # derivation is overridden rather than allowed to promote them. `conversations.join` is what
-    # legitimately writes the other state.
-    if not was_member and caller.email:
-        store.slack_set_membership(conn, name, caller.email, "out")
     _invalidate(request, name)
     row = store.document_by_key(conn, "slack", (name, ts))
     return {
@@ -1171,11 +1194,10 @@ async def chat_update(request: Request):
     `is_inactive`. Backlot answers the first three and `no_text`; `edit_window_closed` is a
     workspace retention setting no corpus states, and the rest are limits it does not model.
 
-    That Slack answers `cant_update_message` rather than a permission error is quoted from that
-    enum. WHICH condition fires it is Backlot's decision, since the spec enumerates the string
-    without describing when — here, a message the caller did not write. The admin/service token is
-    refused too: bypassing the ACL is about what a caller may SEE, and authorship is a different
-    question it does not answer.
+    The condition is the vendor's own: docs.slack.dev's error table for chat.update gives
+    `cant_update_message` as "Authenticated user does not have permission to update this message."
+    The admin/service token is refused under it too — bypassing the ACL is about what a caller may
+    SEE, and authorship is a different question it does not answer.
     """
     conn = auth.conn(request)
     caller, err = _caller_or_error(request)
@@ -1222,7 +1244,9 @@ async def chat_delete(request: Request):
 
     Errors quoted from the spec's ``default`` response: `message_not_found`, `channel_not_found`,
     `cant_delete_message`, `compliance_exports_prevent_deletion`. The last is a workspace
-    compliance setting no corpus states.
+    compliance setting no corpus states. `cant_delete_message` carries the vendor's own condition:
+    docs.slack.dev gives it as "Authenticated user does not have permission to delete this
+    message."
 
     A CORPUS message can be deleted. The row stays in the read-only database and is subtracted at
     read time by the overlay's tombstone, which is the only way this can work over a corpus that
@@ -1494,10 +1518,18 @@ async def reactions_list(request: Request):
             }
         )
     count = _int(request, "count", 100)
+    total = len(items)
     return {
         "ok": True,
         "items": items[:count],
-        "paging": {"count": count, "total": len(items), "page": 1, "pages": 1},
+        # `pages` follows from the other two rather than being fixed at 1, which contradicted a
+        # `total` larger than one page.
+        "paging": {
+            "count": count,
+            "total": total,
+            "page": 1,
+            "pages": (total + count - 1) // count if count else 1,
+        },
     }
 
 

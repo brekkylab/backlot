@@ -1132,7 +1132,8 @@ def merged_source(
     One function rather than an inlined union per reader, and keyed on ``source_type`` rather than
     written for Slack: the tombstone and patch correlations are over :func:`id_columns`, which is
     already the registry saying how a document of any source is addressed, and ``SCHEMA`` already
-    generates the eleven ACL tables from it rather than writing eleven blocks that drift.
+    generates the eleven ACL tables from it rather than writing eleven blocks that drift. Every
+    caller pastes the fragment in; none restates the rule.
 
     Columns are projected explicitly. ``SELECT *`` over a ``UNION ALL`` is correct only while both
     sides agree on column ORDER, and when that stops being true the failure is a value in the
@@ -1194,6 +1195,16 @@ def _require_writable(source_type: str) -> None:
         )
 
 
+def _require_patchable(source_type: str, field: str) -> None:
+    """A column outside :data:`PATCHABLE` is refused. An identifier column is never in it: a patch
+    to one would move the row out from under its own ACL grant."""
+    if field not in PATCHABLE.get(source_type, frozenset()):
+        raise ValueError(
+            f"{source_type}.{field} is not patchable — see store.PATCHABLE. An identifier column "
+            f"is never patchable: it would move the row out from under its own ACL grant"
+        )
+
+
 def insert_document(conn, source_type: str, values: dict) -> None:
     """Write one document to the overlay, grant it what its container grants, and index it.
 
@@ -1248,10 +1259,9 @@ def edit_document(conn, source_type: str, key: tuple, field: str, edit, visible_
     """Read one column, transform it, and write it back with the overlay lock held throughout.
 
     `patch_document` alone is not enough for a field a caller MODIFIES rather than replaces. A
-    reaction is read, one user added to it, and written back; two callers reacting to one message
-    on the threadpool that FastAPI runs sync endpoints on would interleave those three steps over
-    the single shared connection and lose one of them — and `already_reacted` would stop being
-    reliable, which is a served answer rather than an internal detail.
+    reaction is read, one user added to it, and written back, and `/_meta/overlay/reset` runs on
+    the threadpool (it is a plain `def` where every Slack handler is `async def`), so a reset can
+    land between those three steps over the single shared connection.
 
     ``edit`` takes the current row and returns the new column value, or raises to abort. Returns
     the row it read, or None if the document is gone.
@@ -1259,6 +1269,7 @@ def edit_document(conn, source_type: str, key: tuple, field: str, edit, visible_
     from backlot import overlay
 
     _require_writable(source_type)
+    _require_patchable(source_type, field)
     with overlay.LOCK:
         row = document_by_key(conn, source_type, key, visible_ids)
         if row is None:
@@ -1277,11 +1288,7 @@ def patch_document(conn, source_type: str, key: tuple, field: str, value) -> Non
     from backlot import overlay
 
     _require_writable(source_type)
-    if field not in PATCHABLE.get(source_type, frozenset()):
-        raise ValueError(
-            f"{source_type}.{field} is not patchable — see store.PATCHABLE. An identifier column "
-            f"is never patchable: it would move the row out from under its own ACL grant"
-        )
+    _require_patchable(source_type, field)
     with overlay.LOCK:
         _patch_locked(conn, source_type, key, field, value)
         conn.commit()
@@ -1289,33 +1296,30 @@ def patch_document(conn, source_type: str, key: tuple, field: str, value) -> Non
 
 def _patch_locked(conn, source_type: str, key: tuple, field: str, value) -> None:
     """The body of a patch, with :data:`overlay.LOCK` already held and the commit left to the
-    caller — so a read-modify-write can hold the lock across all three steps."""
+    caller — so a read-modify-write can hold the lock across all three steps.
+
+    ``field`` is checked by the two callers before they take the lock.
+    """
     from backlot import overlay
 
-    if field not in PATCHABLE.get(source_type, frozenset()):
-        raise ValueError(
-            f"{source_type}.{field} is not patchable — see store.PATCHABLE. An identifier column "
-            f"is never patchable: it would move the row out from under its own ACL grant"
-        )
     names = overlay.table_names(source_type)
     cols = id_columns(source_type)
-    if True:
-        conn.execute(
-            f"INSERT OR REPLACE INTO ov.{names['patch']} ({', '.join(cols)}, field, value) "
-            f"VALUES ({','.join('?' for _ in cols)},?,?)",
-            [*key, field, value],
-        )
-        if field in _fts_text_columns(source_type):
-            # Re-index from the MERGED row, not from `value` alone: an index entry carries every
-            # text column, and a source with both a title and a body would otherwise lose the one
-            # this patch did not touch.
-            row = conn.execute(
-                f"SELECT * FROM {merged_source(conn, source_type)} "
-                f"WHERE {' AND '.join(f'{c} = ?' for c in cols)}",
-                list(key),
-            ).fetchone()
-            if row is not None:
-                _fts_index_overlay(conn, source_type, key, dict(row))
+    conn.execute(
+        f"INSERT OR REPLACE INTO ov.{names['patch']} ({', '.join(cols)}, field, value) "
+        f"VALUES ({','.join('?' for _ in cols)},?,?)",
+        [*key, field, value],
+    )
+    if field in _fts_text_columns(source_type):
+        # Re-index from the MERGED row, not from `value` alone: an index entry carries every text
+        # column, and a source with both a title and a body would otherwise lose the one this
+        # patch did not touch.
+        row = conn.execute(
+            f"SELECT * FROM {merged_source(conn, source_type)} "
+            f"WHERE {' AND '.join(f'{c} = ?' for c in cols)}",
+            list(key),
+        ).fetchone()
+        if row is not None:
+            _fts_index_overlay(conn, source_type, key, dict(row))
 
 
 def tombstone_document(conn, source_type: str, key: tuple) -> None:
@@ -1391,7 +1395,7 @@ def slack_next_ts(conn, channel: str, epoch_sec: int) -> str:
     """
     from backlot import overlay
 
-    tomb = overlay.table_names("slack")["tombstone"] if overlay.is_attached(conn) else None
+    attached = overlay.is_attached(conn)
     for salt in range(synth.SLACK_TS_FRACTIONS):
         candidate = synth.slack_fmt_ts(epoch_sec, f"post:{channel}:{epoch_sec}:{salt}")
         # Asked of the PHYSICAL rows, not of `merged_source`, which subtracts tombstones: a
@@ -1400,7 +1404,7 @@ def slack_next_ts(conn, channel: str, epoch_sec: int) -> str:
         # inside one second is an ordinary sequence, and it 500'd.
         sql = "SELECT 1 FROM main.slack_messages WHERE channel = ? AND ts = ?"
         params = [channel, candidate]
-        if tomb is not None:
+        if attached:
             sql += " UNION ALL SELECT 1 FROM ov.slack_messages WHERE channel = ? AND ts = ?"
             params += [channel, candidate]
         if conn.execute(sql, params).fetchone() is None:
@@ -2743,10 +2747,10 @@ def _fts_query_terms(conn, source_type: str, query: str) -> list[str]:
     index stores `deploi`, not `deploy`, so a Python split would look up terms the vocabulary does
     not contain and score every one of them zero.
 
-    `temp` is per CONNECTION, and the serving connection is shared across the threadpool FastAPI
-    runs sync endpoints on — so the drop/create/insert/read sequence below is four statements two
-    concurrent searches would interleave, one reading the other's terms or finding no table at
-    all. The lock is the overlay's, which is the only writer this can contend with.
+    `temp` is per CONNECTION and the serving connection is shared, so the drop/create/insert/read
+    sequence below is four statements something else on that connection can land between — the
+    `/_meta/overlay*` handlers, which run on the threadpool where every Slack handler is
+    `async def`. The lock is the overlay's, which is what those two take.
     """
     from backlot import overlay
 
@@ -3818,8 +3822,8 @@ def slack_private_channel_members(conn, channel) -> list[str] | None:
 # --- slack channel membership ----------------------------------------------------------------
 #
 # Slack's own, deliberately not generalised: no other served vendor has a channel to be in. The
-# three readers below (`slack_channel_has_author`, `slack_channel_member_emails`,
-# `count_slack_channel_members`, and the bulk `slack_channel_member_counts`) are three answers to
+# four readers below (`slack_channel_has_author`, `slack_channel_member_emails`,
+# `count_slack_channel_members` and the bulk `slack_channel_member_counts`) are four answers to
 # ONE question, and the code has always gone out of its way to keep them from disagreeing. They
 # now share one override, applied in SQL rather than by materialising a member list -- the biggest
 # channel measured has 768k rows, and paging it is meant to be a seek.

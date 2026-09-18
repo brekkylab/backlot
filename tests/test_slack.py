@@ -1716,8 +1716,8 @@ def test_post_message_needs_a_credential(wclient):
 
 
 def test_posting_does_not_silently_join_a_public_channel(wclient, tokens):
-    # Membership is derived from having spoken, so the row just written would join the poster.
-    # Real Slack does not join you when you post through the API.
+    # Real Slack does not join you when you post through the API, and neither does this: public
+    # membership is derived from `main.slack_messages`, which a written row never joins.
     h = _uh(tokens, "bob@acme.com")
     cid = synth.slack_channel_id("eng-announcements")
     before = wclient.post("/slack/api/conversations.info", headers=h, data={"channel": cid}).json()
@@ -1725,6 +1725,15 @@ def test_posting_does_not_silently_join_a_public_channel(wclient, tokens):
     wclient.post("/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": "hi"})
     after = wclient.post("/slack/api/conversations.info", headers=h, data={"channel": cid}).json()
     assert after["channel"]["is_member"] is False
+    # An explicit membership DOES reach `is_member`, in both directions — the branch
+    # `conversations.join` and `conversations.kick` will write through.
+    conn = wclient.app.state.conn
+    for state, expected in (("in", True), ("out", False)):
+        store.slack_set_membership(conn, "eng-announcements", "bob@acme.com", state)
+        seen = wclient.post(
+            "/slack/api/conversations.info", headers=h, data={"channel": cid}
+        ).json()
+        assert seen["channel"]["is_member"] is expected, state
 
 
 def test_post_ephemeral_stores_nothing(wclient, tokens):
@@ -1767,6 +1776,23 @@ def test_the_service_token_posts_as_a_bot(wclient, admin_h):
     # A bot message carries no client_msg_id or blocks -- the client that would have minted them
     # is Slack itself. `_message` already draws that line off `subtype`.
     assert "client_msg_id" not in posted
+    # The same identity wherever the service account is rendered from a stored address, rather
+    # than the hash of its sentinel: a reaction it leaves, and the stamp on a message it edits.
+    wclient.post(
+        "/slack/api/reactions.add",
+        headers=admin_h,
+        data={"channel": cid, "timestamp": j["ts"], "name": "robot_face"},
+    )
+    got = wclient.post(
+        "/slack/api/reactions.get", headers=admin_h, data={"channel": cid, "timestamp": j["ts"]}
+    ).json()
+    assert got["message"]["reactions"][0]["users"] == ["USERVICE0"]
+    edited = wclient.post(
+        "/slack/api/chat.update",
+        headers=admin_h,
+        data={"channel": cid, "ts": j["ts"], "text": "ci again"},
+    ).json()
+    assert edited["message"]["edited"]["user"] == "USERVICE0"
 
 
 def test_a_posted_message_is_visible_only_where_the_channel_is(wclient, tokens):

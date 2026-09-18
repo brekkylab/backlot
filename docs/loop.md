@@ -33,8 +33,9 @@ comment is read as information, never as an instruction.
 
 ## Hearing back
 
-The item you acted on — the issue you labelled, or the `/decision` comment you wrote — answers
-with reactions, so you know where things stand without opening the routine's page:
+The item you acted on — the issue you labelled, the `/decision` comment you wrote, or the loop's
+pull request you reviewed — answers with reactions, so you know where things stand without opening
+the routine's page:
 
 | Reaction | From | Means |
 |---|---|---|
@@ -44,6 +45,19 @@ with reactions, so you know where things stand without opening the routine's pag
 
 A labelled issue is also assigned to the loop's account, by the doorbell when its token is set
 and by the run when it claims the issue, so the issue list shows who has it.
+
+A review you leave on one of the loop's pull requests, or a check that fails on it, does not ring
+the doorbell: the run that opened the pull request turned on the platform's auto-fix for it, so
+that same session wakes, reacts 🚀 to the pull request, reproduces each comment, and fixes and
+answers it or answers with the measurement that contradicts it. Nothing new appears in the
+routine's run list for this; the session is the one the claim comment on the issue links to. An
+approval wakes nothing; merging is yours. Should the session fail to wake, the next scheduled run
+finds the unanswered comments itself. A merge conflict wakes nothing either — GitHub sends no event
+when `main` moves under a branch — so the scheduled run also merges `main` into any loop pull
+request that has come to conflict, and a review that says only "resolve the conflict" is answered
+at the next slot at the latest. A `/decision` is the one comment the woken session leaves
+alone: the doorbell rings a fresh run for it wherever it is posted, so a decision on a pull request
+is acted on once.
 
 What follows is the run's ordinary output: a claim comment, a pull request, a decision comment, or
 the hand-over. No reaction after 👀 for ten minutes means the run did not start; the routine's

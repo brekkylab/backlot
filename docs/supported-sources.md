@@ -362,6 +362,12 @@ Each method answers on `GET` and `POST` alike, as the real Web API does.
 | `auth.test` | |
 | `api.test` | Auth-free connectivity check |
 
+A person the [roster](../backlot/schemas/README.md) marks `deactivated: true` is Slack's offboarded
+member: `users.list` and `users.info` answer them `deleted: true`, `conversations.members` and
+`num_members` drop them from every channel while their messages stay in channel history, and their
+own token is answered `account_inactive`. Slack alone draws it — the same token still reads every
+other source, because the state is Slack's rather than an org-wide suspension.
+
 A channel the caller cannot see is refused by id as well as hidden from the listing:
 `conversations.info`, `.members`, `.history` and `.replies` all answer `channel_not_found`, the same
 answer an id that names nothing gets, so a private room's name, purpose and membership are not

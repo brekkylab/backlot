@@ -199,16 +199,16 @@ async def _validation_exception_handler(request: Request, exc: RequestValidation
 
 
 def _some_github_route_matches(scope) -> bool:
-    """Whether some mounted route answers this scope's path (and method) at all.
+    """Whether some mounted route matches this scope's path, whatever the method.
 
     A 404 for a path no route matches carries neither the ratelimit headers nor the version echo,
-    for an authenticated caller and an anonymous one alike — unlike a 404 for a route that DID
-    match, on a resource that does not exist, which carries both for either caller. Measured
-    against api.github.com 2026-09-16 and 2026-09-19, with a token and with none:
-    `/repos/{owner}/{repo}/<unmatched>` against `/repos/{owner}/{repo}/issues/<missing>`. The
-    anonymous carve-out `refuse_a_trailing_slash_on_github` makes for its own, narrower case does
-    not generalize here — an anonymous `GET /repos/{owner}/{repo}/<unmatched>` (no trailing slash)
-    carried none of the five either, measured the same date.
+    for an authenticated caller and an anonymous one alike — see `refuse_a_trailing_slash_on_github`
+    for what a route that DID match carries instead. Measured against api.github.com 2026-09-16 and
+    2026-09-19, with a token and with none: `/repos/{owner}/{repo}/<unmatched>` against
+    `/repos/{owner}/{repo}/issues/<missing>`. The anonymous carve-out `refuse_a_trailing_slash_on_github`
+    makes for its own, narrower case does not generalize here — an anonymous
+    `GET /repos/{owner}/{repo}/<unmatched>` (no trailing slash) carried none of the five either,
+    measured the same date.
     """
     return any(route.matches(scope)[0] is not Match.NONE for route in app.router.routes)
 

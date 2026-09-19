@@ -5080,9 +5080,8 @@ def test_github_a_trailing_slash_is_404_not_a_redirect(gh_client, gh_admin_h, gh
 
     # a path no route matches at all — not only its trailing-slash spelling — is the same 404,
     # for a valid token and for none: neither the five nor the version echo. A route that DOES
-    # match, on a resource that does not exist, carries both (see `_some_github_route_matches`
-    # for the measurement). Unlike the trailing-slash case above, an anonymous caller gets none
-    # of the five here either — that carve-out is the redirect-refusal's own, not routing's.
+    # match, on a resource that does not exist, carries both (see `_some_github_route_matches`,
+    # which also covers the anonymous case).
     unmatched = c.get("/github/nonexistent-route-zz", headers=gh_admin_h)
     assert unmatched.status_code == 404
     assert not any(n.startswith("x-ratelimit-") for n in unmatched.headers)

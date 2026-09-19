@@ -198,6 +198,20 @@ async def _validation_exception_handler(request: Request, exc: RequestValidation
     return JSONResponse(status_code=status_code, content=body)
 
 
+def _some_github_route_matches(scope) -> bool:
+    """Whether some mounted route matches this scope's path, whatever the method.
+
+    A 404 for a path no route matches carries neither the ratelimit headers nor the version echo —
+    see `refuse_a_trailing_slash_on_github` for what a route that DID match carries instead.
+    Measured against api.github.com 2026-09-16 and 2026-09-19, with a token and with none:
+    `/repos/{owner}/{repo}/<unmatched>` against `/repos/{owner}/{repo}/issues/<missing>`. The
+    anonymous carve-out that `refuse_a_trailing_slash_on_github` makes for its own, narrower case
+    does not generalize here — an anonymous `GET /repos/{owner}/{repo}/<unmatched>` (no trailing
+    slash) carried none of the five either, measured the same date.
+    """
+    return any(route.matches(scope)[0] is not Match.NONE for route in app.router.routes)
+
+
 @app.middleware("http")
 async def echo_github_api_version(request: Request, call_next):
     """Report which API version served the response, as real GitHub does on every github request.
@@ -210,10 +224,15 @@ async def echo_github_api_version(request: Request, call_next):
     A rejected version gets no echo, matching real: it selected nothing. That is `None` from
     ``selected_api_version``, the same call the router's 400 is raised from. Code search gets no
     echo either, whatever it pinned: real's code search backend does not read the header (see
-    ``github.honours_api_version``).
+    ``github.honours_api_version``). Nor does a 404 for a path no route matches at all, whatever
+    the caller's credential — see ``_some_github_route_matches``.
     """
     response = await call_next(request)
-    if request.url.path.startswith("/github") and github.honours_api_version(request):
+    if (
+        request.url.path.startswith("/github")
+        and github.honours_api_version(request)
+        and _some_github_route_matches(request.scope)
+    ):
         version = github.selected_api_version(request)
         if version is not None:
             response.headers[github.SELECTED_VERSION_HEADER] = version
@@ -232,10 +251,11 @@ async def report_github_rate_limit(request: Request, call_next):
     so a `HEAD` runs through here as the GET it is rewritten to and counts once, as it does on real
     (`remaining` 46 → 45 across one `HEAD`, measured 2026-09-09), and the head copies the five
     with the rest of the GET's headers. A path outside `/github` gets nothing: the other vendors'
-    rate-limit answers are not measured.
+    rate-limit answers are not measured. A 404 for a path no route matches at all gets nothing
+    either, whatever the caller's credential — see ``_some_github_route_matches``.
     """
     response = await call_next(request)
-    if request.url.path.startswith("/github"):
+    if request.url.path.startswith("/github") and _some_github_route_matches(request.scope):
         for name, value in github.rate_limit_headers(request, response.status_code).items():
             response.headers[name] = value
     return response
@@ -252,11 +272,10 @@ def _would_redirect_to_the_slash_free_path(request: Request) -> bool:
     same as real answers it.
     """
     scope = request.scope
-    routes = app.router.routes
-    if any(route.matches(scope)[0] is not Match.NONE for route in routes):
+    if _some_github_route_matches(scope):
         return False
     slash_free = {**scope, "path": scope["path"].rstrip("/")}
-    return any(route.matches(slash_free)[0] is not Match.NONE for route in routes)
+    return _some_github_route_matches(slash_free)
 
 
 @app.middleware("http")

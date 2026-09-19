@@ -5077,3 +5077,20 @@ def test_github_a_trailing_slash_is_404_not_a_redirect(gh_client, gh_admin_h, gh
     rl_first = _ratelimit(c.get("/github/rate_limit/"))
     rl_second = _ratelimit(c.get("/github/rate_limit/"))
     assert int(rl_second["used"]) == int(rl_first["used"]) + 1
+
+    # a path no route matches at all — not only its trailing-slash spelling — is the same 404,
+    # for a valid token and for none: neither the five nor the version echo. A route that DOES
+    # match, on a resource that does not exist, carries both (see `_some_github_route_matches`,
+    # which also covers the anonymous case).
+    unmatched = c.get("/github/nonexistent-route-zz", headers=gh_admin_h)
+    assert unmatched.status_code == 404
+    assert not any(n.startswith("x-ratelimit-") for n in unmatched.headers)
+    assert "x-github-api-version-selected" not in unmatched.headers
+    matched = c.get(f"/github/repos/{gh_org}/ghost-zz-9876", headers=gh_admin_h)
+    assert matched.status_code == 404
+    assert any(n.startswith("x-ratelimit-") for n in matched.headers)
+    assert "x-github-api-version-selected" in matched.headers
+    anon_unmatched = c.get("/github/nonexistent-route-zz")
+    assert anon_unmatched.status_code == 404
+    assert not any(n.startswith("x-ratelimit-") for n in anon_unmatched.headers)
+    assert "x-github-api-version-selected" not in anon_unmatched.headers

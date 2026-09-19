@@ -5093,3 +5093,4 @@ def test_github_a_trailing_slash_is_404_not_a_redirect(gh_client, gh_admin_h, gh
     anon_unmatched = c.get("/github/nonexistent-route-zz")
     assert anon_unmatched.status_code == 404
     assert not any(n.startswith("x-ratelimit-") for n in anon_unmatched.headers)
+    assert "x-github-api-version-selected" not in anon_unmatched.headers

@@ -249,6 +249,23 @@ def unbounded_jql() -> AtlassianError:
     )
 
 
+def max_results_out_of_range() -> AtlassianError:
+    """Jira's 400 for `search/jql`'s `maxResults` outside 1-5000, on both methods and both
+    placements — the query string and the POST body. Measured 2026-09-18 against Jira Cloud:
+    `0`, `-1` and `5001` are all refused, `1` and `5000` both answered 200.
+
+    The sentence is Backlot's own, not a transcription, as with :func:`unbounded_jql` and
+    :func:`bad_page_token`: real localises this one too, to the same account language.
+    """
+    return AtlassianError(
+        400,
+        {
+            "errorMessages": ["The maxResults parameter must be between 1 and 5,000."],
+            "errors": {},
+        },
+    )
+
+
 def bad_page_token() -> AtlassianError:
     """Jira's 400 for a ``nextPageToken`` it cannot decode, measured 2026-09-16 on both methods —
     the query string's token and the body's are refused alike.

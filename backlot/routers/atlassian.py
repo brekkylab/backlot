@@ -374,6 +374,74 @@ async def jira_project_role(key: str, role_id: int, request: Request):
     return {"id": role_id, "name": "Users", "actors": actors}
 
 
+# The `SearchAndReconcileRequestBean` fields real's POST form accepts, measured 2026-09-18 against
+# Jira Cloud: `fields`, `fieldsByKeys`, `expand`, `properties` and `reconcileIssues` are all read
+# without a refusal, alongside the three Backlot itself acts on. Backlot implements
+# none of the five, the same gap `_P_EXPAND`'s comment notes for the comment read, but they must
+# stay off the unknown-property refusal below or that refusal would catch a client using them.
+_JIRA_SEARCH_BODY_KEYS = frozenset(
+    {
+        "jql",
+        "maxResults",
+        "nextPageToken",
+        "fields",
+        "fieldsByKeys",
+        "expand",
+        "properties",
+        "reconcileIssues",
+    }
+)
+# search/jql's own maxResults range on both methods; see errors_atlassian.max_results_out_of_range
+# for the measurement. Unlike a type-conversion failure, this range is not either parser's (Jackson
+# reads the body, Spring binds the query string) — it belongs to the operation itself, which is why
+# it applies identically to both placements.
+_JIRA_SEARCH_MAX_RESULTS_RANGE = (1, 5000)
+
+
+def _jira_max_results_was_sent(request: Request) -> bool:
+    """Whether the GET form's `maxResults` is one real would attempt to convert at all, mirroring
+    the cases :func:`_int_param` itself folds into "absent": no parameter, an empty value, or one
+    that is whitespace after Java's own whitespace stripping. `jira_search` uses this to keep
+    Backlot's own default — never something the caller sent — off the 1-5000 range check: a
+    deployment's `default_page_size` is not a value the vendor ever validated.
+    """
+    values = request.query_params.getlist("maxResults")
+    if not values or values[0] == "":
+        return False
+    return errors_atlassian.strip_java_whitespace(values[0]) != ""
+
+
+def _jira_search_max_results(value) -> int:
+    """A POST body's `maxResults`, once the caller has established the key is present, coerced the
+    way Jackson coerces it into the bean's int field. Presence, not this function, is what decides
+    whether the 1-5000 range in :data:`_JIRA_SEARCH_MAX_RESULTS_RANGE` applies at all — see
+    :func:`_jira_max_results_was_sent` for why the GET form needs its own version of that same
+    question.
+
+    A JSON `null` is NOT absence here as it is for `jql`'s own null handling in this endpoint:
+    Jackson reads a null int field as `0`, which then fails the range check like any other
+    out-of-bounds value (measured 2026-09-18, `{"maxResults": null}` draws the same refusal as
+    `{"maxResults": 0}`).
+
+    A digit string and a float are read fine — `"5"` as `5`, `1.5` truncated to `1` — where a
+    non-numeral string and a boolean are refused with the body-wide sentence a body Jackson cannot
+    deserialize at all gets (:data:`errors_atlassian.BODY_NOT_AN_OBJECT`): `bool` is checked before
+    `int`/`float` because Python's `int` is their common base class.
+    """
+    if isinstance(value, bool):
+        raise errors_atlassian.body_not_read(errors_atlassian.BODY_NOT_AN_OBJECT)
+    if value is None:
+        return 0
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            raise errors_atlassian.body_not_read(errors_atlassian.BODY_NOT_AN_OBJECT) from None
+    raise errors_atlassian.body_not_read(errors_atlassian.BODY_NOT_AN_OBJECT)
+
+
 @router.api_route(
     "/rest/api/2/search/jql",
     methods=["GET", "POST"],  # atlassian-python-api uses v2
@@ -393,13 +461,30 @@ async def jira_search(request: Request):
     default_size = get_settings().default_page_size
     if request.method == "POST":
         body = await _jira_search_body(request)
+        if not _JIRA_SEARCH_BODY_KEYS.issuperset(body):
+            # The body deserializes into a fixed bean, and a property it does not declare is a
+            # failure, not surplus (measured 2026-09-18, `{"bogus": 1}` and `{"startAt": 0}` —
+            # `startAt` belongs to the older `search` operation, not this one). Same sentence a
+            # body Jackson cannot deserialize at all gets, below.
+            raise errors_atlassian.body_not_read(errors_atlassian.BODY_NOT_AN_OBJECT)
+        raw_jql = body.get("jql")
+        raw_token = body.get("nextPageToken")
+        if isinstance(raw_jql, (list, dict)) or isinstance(raw_token, (list, dict)):
+            # Measured 2026-09-18 on both fields: a `jql` or `nextPageToken` shaped as a list or an
+            # object is the same refusal as an unknown field, where a scalar (a number, a bool)
+            # instead reaches its own handling below — the JQL parser for `jql`, which
+            # `_str_param`'s docstring already documents as lenient here, and the token decoder for
+            # `nextPageToken`.
+            raise errors_atlassian.body_not_read(errors_atlassian.BODY_NOT_AN_OBJECT)
         # A JSON null is the parameter unsent, not the string "None": real answers
         # `{"jql": null}` with the same unbounded-JQL refusal it gives `{}` (measured 2026-09-16).
-        jql = "" if body.get("jql") is None else str(body["jql"])
-        limit = _int(body.get("maxResults"), default_size)
-        token = body.get("nextPageToken")
+        jql = "" if raw_jql is None else str(raw_jql)
+        max_results_sent = "maxResults" in body
+        limit = _jira_search_max_results(body["maxResults"]) if max_results_sent else default_size
+        token = raw_token
     else:
         jql = _str_param(request, "jql") or ""
+        max_results_sent = _jira_max_results_was_sent(request)
         limit = _int_param(request, "maxResults", default_size)
         token = _str_param(request, "nextPageToken")
     # An undecodable token is refused before the project clause is resolved (measured
@@ -407,6 +492,12 @@ async def jira_search(request: Request):
     offset = decode_cursor_or_none(None if token is None else str(token))
     if offset is None:
         raise errors_atlassian.bad_page_token()
+    if max_results_sent and not (
+        _JIRA_SEARCH_MAX_RESULTS_RANGE[0] <= limit <= _JIRA_SEARCH_MAX_RESULTS_RANGE[1]
+    ):
+        # Checked after the page token and before the unbounded-JQL refusal, both measured too
+        # (2026-09-18).
+        raise errors_atlassian.max_results_out_of_range()
     # No `jql` at all is refused rather than answered as the unfiltered corpus (measured
     # 2026-09-16; see test_jira_search_refuses_no_jql_at_all).
     if not jql.strip():
@@ -1619,18 +1710,12 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
 
 
 def _int(v, default: int) -> int:
-    """A value already read out of a JSON request body, as an int.
+    """One of Confluence's CQL query parameters (`limit`, `start`), read leniently: `int(v)`, or
+    `default` for `None`, `""`, or anything `int()` itself refuses.
 
-    The lenient one, and deliberately so: what parses the POST `search/jql` body on real is Jackson
-    rather than Spring's parameter binding, and it takes values the query string refuses — `1.5`
-    arrives as `1` and `"5"` as `5`. The query string goes through :func:`_int_param` instead, which
-    reproduces Spring's rules, and answers that same `1.5` with
-    `Failed to convert 'maxResults' with value: '1.5'`.
-
-    What Jackson refuses — `"abc"` and `true` — is a body-wide message naming no parameter, and is
-    not reproduced here. The 1-5000 range is NOT Jackson's: it is refused on the query string too,
-    to the character, it names the parameter and it carries `errors` where the two type refusals
-    carry `errorMessages` alone, so it belongs to the operation rather than to either parser.
+    Deliberately lenient rather than routed through :func:`_int_param`'s Spring rules: CQL's own
+    route is not Spring-bound (see the comment at its call site), so a value it cannot convert is a
+    refusal this function does not reproduce.
     """
     try:
         return int(v) if v not in (None, "") else default

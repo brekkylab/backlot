@@ -1,11 +1,13 @@
-"""Read-only coverage: drive each official SDK against Backlot.
+"""Drive each official SDK against Backlot.
 
 Uses the ``live_server`` fixture (a real ``uvicorn`` on the conftest SAMPLE corpus, which
 carries the +α surface) — the official SDKs make real HTTP calls, so they need a listening
 port rather than the in-process ``TestClient``. Exercises every service's SDK read methods — Slack (slack_sdk),
 Gmail+Drive+Sheets (google-api-python-client), GitHub (PyGithub), Jira+Confluence
-(atlassian-python-api) — asserting all return shape-correct data. Skipped unless the optional
-SDKs (``.[official-sdk]``) are installed.
+(atlassian-python-api) — asserting all return shape-correct data, and Slack's write methods,
+which is the only place the request's media type is exercised: `slack_sdk` sends three of them as
+JSON and the rest as a form, so a server that reads one and not the other passes every other test
+here. Skipped unless the optional SDKs (``.[official-sdk]``) are installed.
 """
 
 from __future__ import annotations
@@ -61,6 +63,36 @@ def slack():
             if (m := c.search_messages(query="gateway")["messages"]["matches"])
             else 1 / 0
         )
+    )
+    # The writes. `chat_postMessage`, `chat_update` and `chat_postEphemeral` go out as JSON
+    # (`WebClient.api_call(..., json=kwargs)`) where the rest go as a form, so these three are what
+    # a media-type gap answers `invalid_arguments` to while everything above stays green.
+    posted = c.chat_postMessage(channel=inc, text="sdk wrote this")
+    check("Slack", "chat.postMessage")(lambda: posted["message"]["text"])
+    check("Slack", "chat.update")(
+        lambda: c.chat_update(channel=inc, ts=posted["ts"], text="sdk edited this")["text"]
+    )
+    check("Slack", "chat.postEphemeral")(
+        lambda: c.chat_postEphemeral(channel=inc, user=c.auth_test()["user_id"], text="just you")[
+            "message_ts"
+        ]
+    )
+    check("Slack", "reactions.add")(
+        lambda: c.reactions_add(channel=inc, timestamp=posted["ts"], name="tada")["ok"] and "ok"
+    )
+    check("Slack", "reactions.get")(
+        lambda: c.reactions_get(channel=inc, timestamp=posted["ts"])["message"]["reactions"][0][
+            "name"
+        ]
+    )
+    check("Slack", "reactions.remove")(
+        lambda: c.reactions_remove(channel=inc, timestamp=posted["ts"], name="tada")["ok"] and "ok"
+    )
+    check("Slack", "chat.getPermalink")(
+        lambda: c.chat_getPermalink(channel=inc, message_ts=posted["ts"])["permalink"]
+    )
+    check("Slack", "chat.delete")(
+        lambda: c.chat_delete(channel=inc, ts=posted["ts"])["ok"] and "ok"
     )
 
 

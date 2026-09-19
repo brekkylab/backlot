@@ -28,7 +28,7 @@
 #     — account/billing state, which is not what Backlot models. Backlot's own ACL groups are
 #     a permission mechanism, not Fireflies user-groups, so they are not served under that name.
 #
-# Mutations are deliberately absent: this is a read-only server, so the schema declares no
+# Mutations are deliberately absent: Backlot serves no Fireflies write, so the schema declares no
 # Mutation type at all rather than accepting writes and dropping them.
 
 "Unix epoch milliseconds, which is what Fireflies returns for a meeting date."

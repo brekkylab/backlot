@@ -5079,9 +5079,9 @@ def test_github_a_trailing_slash_is_404_not_a_redirect(gh_client, gh_admin_h, gh
     assert int(rl_second["used"]) == int(rl_first["used"]) + 1
 
     # a path no route matches at all — not only its trailing-slash spelling — is the same 404 for
-    # a valid token: neither the five nor the version echo. A route that DOES match, on a resource
-    # that does not exist, carries both. Measured against api.github.com 2026-09-19:
-    # `/repos/{owner}/{repo}/<unmatched>` against `/repos/{owner}/{repo}/issues/<missing>`.
+    # a valid token as the trailing-slash case above: neither the five nor the version echo. A
+    # route that DOES match, on a resource that does not exist, carries both (see
+    # `_reached_by_routing` for the measurement).
     unmatched = c.get("/github/nonexistent-route-zz", headers=gh_admin_h)
     assert unmatched.status_code == 404
     assert not any(n.startswith("x-ratelimit-") for n in unmatched.headers)

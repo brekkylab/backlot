@@ -4931,7 +4931,7 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
         again = c.get("/github/rate_limit", headers=h)
         assert again.json() == status.json() and _ratelimit(again)["used"] == "4"
         # `resources` is the FIRST key on the wire under this version, which a dict comparison does
-        # not see; real answers it before `rate` (measured against api.github.com, 2026-09-20).
+        # not see; real answers it before `rate`.
         assert list(status.json()) == ["resources", "rate"]
         # A trailing slash answers 404 with a valid token, carrying none of the five ratelimit
         # headers, the same as real answers any other path no route matches. Backlot's own

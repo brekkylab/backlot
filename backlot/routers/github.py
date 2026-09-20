@@ -1505,7 +1505,7 @@ async def get_rate_limit(request: Request):
     }
     if _version(request) not in _HAS_RATE_ALIAS:
         return {"resources": resources}
-    return {"rate": resources["core"], "resources": resources}
+    return {"resources": resources, "rate": resources["core"]}
 
 
 def _repo_visible(conn, repo: str, ids) -> bool:

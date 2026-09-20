@@ -4930,9 +4930,9 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
         assert _ratelimit(status) == {**five, "remaining": "4996", "used": "4"}
         again = c.get("/github/rate_limit", headers=h)
         assert again.json() == status.json() and _ratelimit(again)["used"] == "4"
-        # `rate` is the FIRST key on the wire under this version, which a dict comparison does not
-        # see; real answers it before `resources`.
-        assert list(status.json()) == ["rate", "resources"]
+        # `resources` is the FIRST key on the wire under this version, which a dict comparison does
+        # not see; real answers it before `rate` (measured against api.github.com, 2026-09-20).
+        assert list(status.json()) == ["resources", "rate"]
         # A trailing slash answers 404 with a valid token, carrying none of the five ratelimit
         # headers, the same as real answers any other path no route matches. Backlot's own
         # `/github/nonexistent-route-zz` still carries them — #254.

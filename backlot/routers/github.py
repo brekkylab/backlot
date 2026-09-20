@@ -1482,7 +1482,7 @@ async def get_rate_limit(request: Request):
     carries (`graphql`, `integration_manifest`, `scim`, …) and the five its anonymous one does:
     the rule ``_repo_obj`` applies to url templates, a member iff the resource. `rate`, `core` under
     the name the description calls closing down, is served to `2022-11-28` and not to
-    `2026-03-10`, which removed it (measured 2026-09-10: the body's keys are `rate`, `resources`
+    `2026-03-10`, which removed it (measured 2026-09-20: the body's keys are `resources`, `rate`
     under the one and `resources` alone under the other). A caller with no credential is answered
     at the anonymous limits, as real answers one; a bearer that does not resolve is real's 401
     (measured — see :func:`_validate_bad_credential`, which answers it router-wide before this

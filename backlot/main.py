@@ -220,8 +220,8 @@ def _some_github_route_matches(scope: Scope) -> bool:
 
 @app.middleware("http")
 async def echo_github_api_version(request: Request, call_next):
-    """Report which API version served the response, as real GitHub does on the github answers a
-    version served.
+    """Report which API version served the response, on the `/github` answers real echoes one for,
+    200 and error alike.
 
     Middleware rather than a router dependency: a dependency that sets headers on its injected
     ``Response`` loses them whenever the route returns a ``Response`` itself, which the raw-content

@@ -1572,8 +1572,7 @@ def test_slack_deactivation_changes_every_slack_answer_about_a_member_and_nothin
         }
         assert active_only.isdisjoint(by_email["ava@acme.com"])
         assert active_only <= by_email["bo@acme.com"].keys()
-        # `has_2fa` follows the same split here, and is asserted apart from the set because
-        # deactivation is not the only thing that decides it live — again, see `_user_obj`.
+        # has_2fa follows the same split here; see _user_obj for why it's asserted separately.
         assert "has_2fa" not in by_email["ava@acme.com"]
         assert "has_2fa" in by_email["bo@acme.com"]
 

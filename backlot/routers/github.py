@@ -150,7 +150,7 @@ CODE_SEARCH_PATH = "/github/search/code"
 
 
 def honours_api_version(request: Request) -> bool:
-    """Whether real reads `X-GitHub-Api-Version` on this request's route.
+    """Whether real reads `X-GitHub-Api-Version` on this request.
 
     Every GitHub route does but code search, whose backend is not the rest of the API's: on
     `/search/code` a pinned `1999-01-01` or `garbage` is a 200 where every other route answers the
@@ -158,8 +158,20 @@ def honours_api_version(request: Request) -> bool:
     carries `X-GitHub-Api-Version-Selected` (measured 2026-09-06; `/search/issues` beside it 400s
     the bad version and echoes the good one). So that route neither refuses a version nor echoes
     one, and `backlot.main`'s echo asks this before adding the header.
+
+    `/rate_limit` reads it only from a request that carries an `Authorization` header. With none,
+    a pinned `2026-03-10` there is still `resources` AND `rate` with no echo header and a pinned
+    `1999-01-01` is a 200 rather than the version's 400, where the same two headers under a token
+    answer `resources` alone with `X-GitHub-Api-Version-Selected: 2026-03-10` and a 400. It is the
+    credential's presence and not its resolving that switches this: an unparseable `Basic` value
+    gets the version read as a token does, `resources` alone and the echo under `2026-03-10` and
+    the 400 under `1999-01-01`. The route is the whole of the exception — the same unpinned
+    `1999-01-01` with no credential is a 400 on `/repos/psf/requests`, on `/users/psf` and on
+    `/user/repos` (measured against api.github.com 2026-09-21, on cache-busted urls).
     """
-    return request.url.path != CODE_SEARCH_PATH
+    if request.url.path == CODE_SEARCH_PATH:
+        return False
+    return request.url.path != RATE_LIMIT_PATH or "authorization" in request.headers
 
 
 def selected_api_version(request: Request) -> str | None:
@@ -196,12 +208,14 @@ def _unsupported_version_error(pinned: str) -> HTTPException:
 
 
 def _version(request: Request) -> str:
-    """The API version to build this response for. Never ``None`` where it is asked:
-    ``_validate_api_version`` is a router-wide dependency, so on every route that honours the header
-    an unsupported version never reaches a handler. `/search/code` does let one through, since
-    real's code search does not read the header (see :func:`honours_api_version`), and nothing on
-    that route asks this; the fallback keeps the return a ``str`` and is not a case any route
-    reaches."""
+    """The API version to build this response for.
+
+    A request real does not read the header on is built for :data:`DEFAULT_API_VERSION` whatever it
+    pinned, which is what an anonymous `/rate_limit` serves (see :func:`honours_api_version`).
+    Where real does read it the value is never ``None``: ``_validate_api_version`` is a router-wide
+    dependency, so an unsupported version never reaches a handler on those routes."""
+    if not honours_api_version(request):
+        return DEFAULT_API_VERSION
     return selected_api_version(request) or DEFAULT_API_VERSION
 
 
@@ -296,19 +310,42 @@ async def _canonical_path_repo(request: Request) -> None:
 
 RATE_LIMIT_PATH = "/github/rate_limit"
 RATE_LIMIT_WINDOW = 3600
+#: The two search resources measure a minute, not `core`'s hour: three anonymous `/search/issues`
+#: in the same second answered `used` 1, 2, 3 against one `reset` 60 seconds out and the same
+#: request 65 seconds later answered `used: 1` against a fresh one; `/search/code` under a token
+#: did the same at `limit: 10`, and `/rate_limit` reports every search-family resource's unopened
+#: `reset` 60 seconds out where `core`'s is 3600 (measured against api.github.com 2026-09-21).
+SEARCH_RATE_LIMIT_WINDOW = 60
 
 
-class _HourlyLimit(NamedTuple):
+class _ResourceLimit(NamedTuple):
     anonymous: int
     authenticated: int
+    window: int
 
 
-#: resource -> the requests an hour real allows a caller with no credential and one with a token
-RATE_LIMITS: dict[str, _HourlyLimit] = {
-    "core": _HourlyLimit(60, 5000),
-    "search": _HourlyLimit(10, 30),
-    "code_search": _HourlyLimit(10, 10),
+#: resource -> the requests real allows a caller with no credential and one with a token, and the
+#: seconds its window runs for
+RATE_LIMITS: dict[str, _ResourceLimit] = {
+    "core": _ResourceLimit(60, 5000, RATE_LIMIT_WINDOW),
+    "search": _ResourceLimit(10, 30, SEARCH_RATE_LIMIT_WINDOW),
+    "code_search": _ResourceLimit(10, 10, SEARCH_RATE_LIMIT_WINDOW),
 }
+
+
+def rate_limit_window(resource: str, authenticated: bool) -> tuple[str, int]:
+    """The window a request for ``resource`` lands in, and that window's limit for this caller.
+
+    A caller with no credential has no `code_search` window: an anonymous `GET /rate_limit`
+    reported `code_search` and `core` as one set of four numbers (`limit: 60, used: 29,
+    remaining: 31, reset: 1789960795`), a single anonymous `GET /repos/psf/requests` moved both
+    from 29 to 30, and real's own 401 for an anonymous `/search/code` names
+    `x-ratelimit-resource: core` (measured against api.github.com 2026-09-21). So that caller's
+    code searches are `core`'s window, reported under both names.
+    """
+    counted = "core" if resource == "code_search" and not authenticated else resource
+    limits = RATE_LIMITS[counted]
+    return counted, (limits.authenticated if authenticated else limits.anonymous)
 
 
 def rate_limit_resource(path: str, status_code: int) -> str:
@@ -328,13 +365,14 @@ def rate_limit_resource(path: str, status_code: int) -> str:
 
 
 class RateLimitWindows:
-    """The requests counted so far, per credential and per resource, in hourly windows.
+    """The requests counted so far, per credential and per resource, each in its resource's window.
 
     A window opens at the first request counted or reported under a `(credential, resource)` and
-    closes an hour later; `reset` is its closing second, the same on every answer inside it. The
-    windows measured stayed put across the requests inside them and differed between credentials
-    and between resources (an anonymous caller's `core` and `search` resets 1552 seconds apart),
-    which is a window per pair opened by use rather than one clock hour shared by all. `remaining`
+    closes its resource's length later — an hour for `core`, a minute for the two search resources
+    (:data:`SEARCH_RATE_LIMIT_WINDOW`); `reset` is its closing second, the same on every answer
+    inside it. The windows measured stayed put across the requests inside them and differed between
+    credentials and between resources (an anonymous caller's `core` and `search` resets 1552 seconds
+    apart), which is a window per pair opened by use rather than one shared clock. `remaining`
     stops at 0 and `used` keeps counting past the limit: nothing here refuses a request, because a
     test suite's own volume drives an anonymous client past 60 in an hour, and a mock answering the
     61st request with the 403 or 429 the docs describe fails that suite for pacing it never asked
@@ -349,7 +387,7 @@ class RateLimitWindows:
     def _window(self, key: str, resource: str) -> list[int]:
         now = int(self.clock())
         window = self._windows.get((key, resource))
-        if window is None or now >= window[0] + RATE_LIMIT_WINDOW:
+        if window is None or now >= window[0] + RATE_LIMITS[resource].window:
             window = self._windows[(key, resource)] = [now, 0]
         return window
 
@@ -357,20 +395,20 @@ class RateLimitWindows:
         """The window after counting one more request in it."""
         window = self._window(key, resource)
         window[1] += 1
-        return self._status(window, limit)
+        return self._status(window, resource, limit)
 
     def status(self, key: str, resource: str, limit: int) -> dict[str, int]:
         """The window as it stands, nothing counted."""
-        return self._status(self._window(key, resource), limit)
+        return self._status(self._window(key, resource), resource, limit)
 
     @staticmethod
-    def _status(window: list[int], limit: int) -> dict[str, int]:
+    def _status(window: list[int], resource: str, limit: int) -> dict[str, int]:
         start, used = window
         return {
             "limit": limit,
             "used": used,
             "remaining": max(limit - used, 0),
-            "reset": start + RATE_LIMIT_WINDOW,
+            "reset": start + RATE_LIMITS[resource].window,
         }
 
 
@@ -387,16 +425,47 @@ def rate_limit_caller(request: Request) -> tuple[str, bool]:
 
     The token when it resolves; the client's address otherwise, which is how real counts a caller
     with no credential (the docs' 60 an hour "for unauthenticated requests", `limit: 60` on every
-    anonymous answer measured). A bearer that does not resolve is counted with the anonymous
-    callers from its address, which real does not do: its 401 for one carried none of the five and
-    moved no window, where an anonymous 401 on `/user/repos` carried all five and counted (measured
-    2026-09-17). Callers of this that draw real's line themselves ask `auth.bearer_token` for the
-    presence of the header instead — see `refuse_a_trailing_slash_on_github`."""
+    anonymous answer measured).
+
+    An `Authorization` real cannot parse is served rather than refused, and its requests are
+    counted apart from the bare-anonymous ones from the same address: interleaved on
+    `/repos/psf/requests`, `Basic Zm9vOmJhcg==` and a scheme-less value read `used` 10 through 15
+    at one `reset` while the bare anonymous calls around them read 23, 24, 25 at another, both at
+    `limit: 60` (measured against api.github.com 2026-09-21). That second window is ONE window,
+    not one per value: alternating two values real had not seen before ran the same counter
+    10, 11, 12, 13, 14, 15 rather than two sequences from 1, across `Basic`, `Digest` and
+    scheme-less values alike.
+
+    A bearer that does not resolve is keyed with the address here but never counted: real gives its
+    401 none of the five and moves no window, which :func:`serves_rate_limit_headers` answers
+    before this is asked."""
     token = auth.bearer_token(request)
     if token is not None and auth.resolve_bearer(request) is not None:
         return f"token:{token}", True
     host = request.client.host if request.client is not None else "anonymous"
+    if token is None and "authorization" in request.headers:
+        return f"unparseable:{host}", False
     return f"host:{host}", False
+
+
+def serves_rate_limit_headers(request: Request, *, routed: bool) -> bool:
+    """Whether real puts the five `x-ratelimit-*` headers on this request's answer, and counts it.
+
+    Two answers carry none of the five and move no window, measured against api.github.com on
+    2026-09-21. A credential that arrived and did not resolve: `Bearer` and `token` alike are
+    "Bad credentials" with no `x-ratelimit-*` header on `/repos/psf/requests` and on `/rate_limit`,
+    and the address's `core` window read `used: 13` before them and after. And a path no route
+    matches, asked by ANY caller that sent an `Authorization` header — a valid token, an
+    unparseable `Basic` or scheme-less value, a bad bearer — where the same paths asked with no
+    `Authorization` header at all carry the five and count (`used` 32, 33, 34). `/repos` and
+    `/foo/bar/baz-zz` answer like `/zzz-unrouted-path`; `/repos/psf/ghost-zz-9876`, a path whose
+    route DOES match on a repository that does not exist, carries them for either caller.
+    """
+    if "authorization" not in request.headers:
+        return True
+    if not routed:
+        return False
+    return not (auth.bearer_token(request) is not None and auth.resolve_bearer(request) is None)
 
 
 def rate_limit_headers(
@@ -413,13 +482,12 @@ def rate_limit_headers(
     there is a 404 no route matched, which counts like any other."""
     key, authenticated = rate_limit_caller(request)
     resource = rate_limit_resource(request.url.path, status_code)
-    limits = RATE_LIMITS[resource]
-    limit = limits.authenticated if authenticated else limits.anonymous
+    counted, limit = rate_limit_window(resource, authenticated)
     windows = _rate_limit_windows(request.app)
     if count is None:
         count = request.url.path.rstrip("/") != RATE_LIMIT_PATH
     read = windows.count if count else windows.status
-    window = read(key, resource, limit)
+    window = read(key, counted, limit)
     return {
         "x-ratelimit-limit": str(window["limit"]),
         "x-ratelimit-remaining": str(window["remaining"]),
@@ -1466,14 +1534,18 @@ async def get_rate_limit(request: Request):
     `x-ratelimit-*` headers report (:class:`RateLimitWindows`) without counting the read.
 
     The three resources are the ones Backlot counts, of the fifteen real's authenticated answer
-    carries (`graphql`, `integration_manifest`, `scim`, …) and the five its anonymous one does:
-    the rule ``_repo_obj`` applies to url templates, a member iff the resource. `rate`, `core` under
-    the name the description calls closing down, is served to `2022-11-28` and not to
-    `2026-03-10`, which removed it (measured 2026-09-20: the body's keys are `resources`, `rate`
-    under the one and `resources` alone under the other). A caller with no credential is answered
-    at the anonymous limits, as real answers one; a bearer that does not resolve is real's 401
-    (measured — see :func:`_validate_bad_credential`, which answers it router-wide before this
-    handler runs).
+    carries (`graphql`, `integration_manifest`, `scim`, …) and the five its anonymous one does.
+    They are listed in the order that answer lists them in, which is not the same order for the two
+    callers (:data:`_RESOURCE_ORDER`), and a caller with no credential reads `core`'s own window
+    under `code_search` as well (:func:`rate_limit_window`).
+
+    `rate`, `core` under a second name, is served to `2022-11-28` and not to `2026-03-10`, which
+    removed it (measured 2026-09-20: the body's keys are `resources`, `rate` under the one and
+    `resources` alone under the other) — and only for a request that carries an `Authorization`
+    header, since real reads the version header here for no other (:func:`honours_api_version`). A
+    caller with no credential is answered at the anonymous limits, as real answers one; a bearer
+    that does not resolve is real's 401 (measured — see :func:`_validate_bad_credential`, which
+    answers it router-wide before this handler runs).
 
     Which window real's route reports is not the one its headers had just reported: a minute after
     answers carrying `remaining: 4994`, `used: 6`, `reset: 1789020007`, the route answered
@@ -1484,12 +1556,10 @@ async def get_rate_limit(request: Request):
     """
     key, authenticated = rate_limit_caller(request)
     windows = _rate_limit_windows(request.app)
-    resources = {
-        resource: windows.status(
-            key, resource, limits.authenticated if authenticated else limits.anonymous
-        )
-        for resource, limits in RATE_LIMITS.items()
-    }
+    resources = {}
+    for resource in _RESOURCE_ORDER[authenticated]:
+        counted, limit = rate_limit_window(resource, authenticated)
+        resources[resource] = windows.status(key, counted, limit)
     if _version(request) not in _HAS_RATE_ALIAS:
         return {"resources": resources}
     return {"resources": resources, "rate": resources["core"]}
@@ -3194,6 +3264,14 @@ def _issue_number(row) -> int:
 _HAS_SINGULAR_ASSIGNEE = frozenset({"2022-11-28"})  # 2026-03-10: superseded by `assignees`
 _HAS_MERGE_COMMIT_SHA = frozenset({"2022-11-28"})  # 2026-03-10: removed from every pull body
 _HAS_RATE_ALIAS = frozenset({"2022-11-28"})  # 2026-03-10: `rate` removed from `/rate_limit`
+#: authenticated? -> the order `/rate_limit` lists `resources` in. Real's answer to a token runs
+#: `core`, `search`, …, `code_search` and its answer to a caller with no credential runs
+#: `code_search`, `core`, …, `search`, so the two differ by more than which resources they carry
+#: (measured against api.github.com 2026-09-21).
+_RESOURCE_ORDER = {
+    True: ("core", "search", "code_search"),
+    False: ("code_search", "core", "search"),
+}
 
 
 def _shared_obj(conn, owner: str, repo: str, row, api_base: str, version: str) -> dict:

@@ -203,14 +203,17 @@ def _some_github_route_matches(scope: Scope) -> bool:
     """Whether some mounted route matches this scope's path, whatever the method.
 
     A 404 for a path no route matches at all carries no version echo, and carries the five
-    `x-ratelimit-*` headers only for a caller that sent no credential — the same line
-    `refuse_a_trailing_slash_on_github` draws for the trailing-slash spelling of such a path, which
-    real draws for every spelling. Measured against api.github.com 2026-09-21, anonymously and
-    with a token: `/repos/psf/requests/<unmatched>`, its trailing-slash spelling and a top-level
-    `/<unmatched>` all answered 404 with no echo, where `/repos/psf/requests/issues/<missing>` — a
-    route that DOES match, on a resource that does not exist — carried both for either caller.
-    Anonymously the three carried the five (`limit` 60) and moved `used` by one apiece; with a
-    token they carried none of the five and left the token's `used` at 0.
+    `x-ratelimit-*` headers only for a request that sent no `Authorization` header at all — the
+    same line `refuse_a_trailing_slash_on_github` draws for the trailing-slash spelling of such a
+    path, which real draws for every spelling. Measured against api.github.com 2026-09-21:
+    `/repos/psf/requests/<unmatched>`, its trailing-slash spelling and a top-level `/<unmatched>`
+    all answered 404 with no echo, where `/repos/psf/requests/issues/<missing>` — a route that DOES
+    match, on a resource that does not exist — carried both for either caller. With no
+    `Authorization` header the three carried the five (`limit` 60) and moved `used` by one apiece.
+    Every header value carried none of them and moved no window: a valid token (whose `used` read 0
+    before three of them and 0 after), a bad bearer, `Basic Zm9vOmJhcg==` and a scheme-less value —
+    so what real reads here is that a credential arrived, not that one resolved, where the same
+    unparseable `Basic` on a route that matches is served and counted.
     """
     return any(route.matches(scope)[0] is not Match.NONE for route in app.router.routes)
 
@@ -255,11 +258,12 @@ async def report_github_rate_limit(request: Request, call_next):
     (`remaining` 46 → 45 across one `HEAD`, measured 2026-09-09), and the head copies the five
     with the rest of the GET's headers. A path outside `/github` gets nothing: the other vendors'
     rate-limit answers are not measured. A 404 for a path no route matches at all gets them only
-    for an anonymous caller — see ``_some_github_route_matches``.
+    for a request that carried no `Authorization` header at all — see
+    ``_some_github_route_matches``.
     """
     response = await call_next(request)
     if request.url.path.startswith("/github") and (
-        _some_github_route_matches(request.scope) or auth.bearer_token(request) is None
+        _some_github_route_matches(request.scope) or "authorization" not in request.headers
     ):
         for name, value in github.rate_limit_headers(request, response.status_code).items():
             response.headers[name] = value

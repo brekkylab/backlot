@@ -5094,3 +5094,15 @@ def test_github_a_trailing_slash_is_404_not_a_redirect(gh_client, gh_admin_h, gh
     assert "x-github-api-version-selected" not in anon_unmatched.headers
     anon_again = _ratelimit(c.get("/github/nonexistent-route-zz"))
     assert int(anon_again["used"]) == int(_ratelimit(anon_unmatched)["used"]) + 1
+    # a header real cannot parse is a credential all the same here, where on a route that matches
+    # it is served and counted
+    basic = c.get("/github/nonexistent-route-zz", headers={"Authorization": "Basic Zm9vOmJhcg=="})
+    assert basic.status_code == 404
+    assert not any(n.startswith("x-ratelimit-") for n in basic.headers)
+    assert any(
+        n.startswith("x-ratelimit-")
+        for n in c.get(
+            f"/github/repos/{gh_org}/ghost-zz-9876",
+            headers={"Authorization": "Basic Zm9vOmJhcg=="},
+        ).headers
+    )

@@ -254,11 +254,8 @@ async def report_github_rate_limit(request: Request, call_next):
     so a `HEAD` runs through here as the GET it is rewritten to and counts once, as it does on real
     (`remaining` 46 → 45 across one `HEAD`, measured 2026-09-09), and the head copies the five
     with the rest of the GET's headers. A path outside `/github` gets nothing: the other vendors'
-    rate-limit answers are not measured. A 404 for a path no route matches at all gets them for an
-    anonymous caller, whose window is counted by address ahead of routing, and not for a
-    credentialed one, whose window a request reaching no route never touches — see
-    ``_some_github_route_matches``, and the same line drawn for the trailing-slash spelling in
-    ``refuse_a_trailing_slash_on_github``.
+    rate-limit answers are not measured. A 404 for a path no route matches at all gets them only
+    for an anonymous caller — see ``_some_github_route_matches``.
     """
     response = await call_next(request)
     if request.url.path.startswith("/github") and (

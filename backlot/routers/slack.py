@@ -329,24 +329,13 @@ def _user_obj(conn, email: str) -> dict:
     # OpenAPI declares it a boolean, and on that workspace 5 of the 9 carried it against 0 of the
     # 10 active. A roster states no GDPR erasure, so there is nothing here to derive it from.
     deactivated = bool(u) and store.slack_is_deactivated(conn, email)
-    return {
+    obj = {
         "id": synth.slack_user_id(email),
         "team_id": TEAM_ID,
         "name": _handle(email),
-        "real_name": display,
         "deleted": deactivated,
         "is_bot": is_bot,
         "is_app_user": is_bot,
-        "is_admin": False,
-        "is_owner": False,
-        "is_primary_owner": False,
-        "is_restricted": False,
-        "is_ultra_restricted": False,
-        "has_2fa": False,
-        "tz": "America/Los_Angeles",
-        "tz_label": "Pacific Time",
-        "tz_offset": -28800,
-        "color": synth._digest(email)[:6],
         "updated": updated,
         "profile": {
             "real_name": display,
@@ -364,6 +353,27 @@ def _user_obj(conn, email: str) -> dict:
             "avatar_hash": synth._digest(email)[:12],
         },
     }
+    # Measured live against a real workspace, 2026-09-21 (`users.list`, an active member against a
+    # deactivated one): a deactivated member drops `real_name`, `color`, the admin/ownership/
+    # restriction flags, `has_2fa` and the tz fields entirely — not `false`/empty, absent. Every
+    # active member in that workspace carried all of them.
+    if not deactivated:
+        obj.update(
+            {
+                "real_name": display,
+                "is_admin": False,
+                "is_owner": False,
+                "is_primary_owner": False,
+                "is_restricted": False,
+                "is_ultra_restricted": False,
+                "has_2fa": False,
+                "tz": "America/Los_Angeles",
+                "tz_label": "Pacific Time",
+                "tz_offset": -28800,
+                "color": synth._digest(email)[:6],
+            }
+        )
+    return obj
 
 
 @router.api_route("/api.test", methods=["GET", "POST"], response_model=SlackApiTest)

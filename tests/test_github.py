@@ -5071,6 +5071,9 @@ def test_github_a_trailing_slash_is_404_not_a_redirect(gh_client, gh_admin_h, gh
     }
     assert not any(n.startswith("x-ratelimit-") for n in bad.headers)
     assert int(_ratelimit(c.get(path))["used"]) == int(second["used"]) + 1
+    unparseable = c.get(path, headers={"Authorization": "Basic Zm9vOmJhcg=="})
+    assert unparseable.status_code == 404
+    assert not any(n.startswith("x-ratelimit-") for n in unparseable.headers)
 
     # `/github/rate_limit/` counts here too: unlike the real routed endpoint, this is a "no route
     # matched" 404 and not the route's own report-without-counting answer

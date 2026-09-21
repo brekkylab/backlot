@@ -1565,7 +1565,6 @@ def test_slack_deactivation_changes_every_slack_answer_about_a_member_and_nothin
             "is_primary_owner",
             "is_restricted",
             "is_ultra_restricted",
-            "has_2fa",
             "tz",
             "tz_label",
             "tz_offset",
@@ -1573,12 +1572,16 @@ def test_slack_deactivation_changes_every_slack_answer_about_a_member_and_nothin
         }
         assert active_only.isdisjoint(by_email["ava@acme.com"])
         assert active_only <= by_email["bo@acme.com"].keys()
+        # `has_2fa` follows the same split here, and is asserted apart from the set because
+        # deactivation is not the only thing that decides it live — again, see `_user_obj`.
+        assert "has_2fa" not in by_email["ava@acme.com"]
+        assert "has_2fa" in by_email["bo@acme.com"]
 
         info = client.get(
             "/slack/api/users.info", headers=admin_h, params={"user": ava_uid}
         ).json()["user"]
         assert info["deleted"] is True
-        assert active_only.isdisjoint(info)
+        assert active_only.isdisjoint(info) and "has_2fa" not in info
 
         listed = {
             c["name"]: c

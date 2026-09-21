@@ -323,11 +323,11 @@ def _user_obj(conn, email: str) -> dict:
     is_bot = not u and email.split("@")[0].endswith("bot")  # display-only "*bot" speakers
     # A roster entry's `deactivated: true`. Measured against a live workspace on 2026-09-17:
     # `deleted` is present on all 19 members and true on the 9 deactivated ones, so it is served
-    # unconditionally where Slack's reference allows either ("Otherwise the value is false, or the
-    # field may not appear at all"). `is_forgotten` is a different state, not a spelling of this
-    # one: the same reference gives it as "Whether the user has been GDPR-forgotten" and Slack's
-    # OpenAPI declares it a boolean, and on that workspace 5 of the 9 carried it against 0 of the
-    # 10 active. A roster states no GDPR erasure, so there is nothing here to derive it from.
+    # unconditionally where docs.slack.dev's user object allows either ("Otherwise the value is
+    # false, or the field may not appear at all"). `is_forgotten` is a different state, not a
+    # spelling of this one: the same page types it Boolean and gives it as "Whether the user has
+    # been GDPR-forgotten", and on that workspace 5 of the 9 carried it against 0 of the 10
+    # active. A roster states no GDPR erasure, so there is nothing here to derive it from.
     deactivated = bool(u) and store.slack_is_deactivated(conn, email)
     obj = {
         "id": synth.slack_user_id(email),
@@ -353,10 +353,10 @@ def _user_obj(conn, email: str) -> dict:
             "avatar_hash": synth._digest(email)[:12],
         },
     }
-    # Measured live against a real workspace, 2026-09-21 (`users.list`, an active member against a
-    # deactivated one): a deactivated member drops `real_name`, `color`, the admin/ownership/
-    # restriction flags, `has_2fa` and the tz fields entirely — not `false`/empty, absent. Every
-    # active member in that workspace carried all of them.
+    # Measured live against a real workspace, 2026-09-21 (`users.list`, `users.info`): a
+    # deactivated member drops `real_name`, `color`, the admin/ownership/restriction flags and the
+    # tz fields entirely — not `false`/empty, absent. All 9 deactivated members carried none of
+    # those ten, and all 10 active ones carried all ten.
     if not deactivated:
         obj.update(
             {
@@ -366,13 +366,18 @@ def _user_obj(conn, email: str) -> dict:
                 "is_primary_owner": False,
                 "is_restricted": False,
                 "is_ultra_restricted": False,
-                "has_2fa": False,
                 "tz": "America/Los_Angeles",
                 "tz_label": "Pacific Time",
                 "tz_offset": -28800,
                 "color": synth._digest(email)[:6],
             }
         )
+        # `has_2fa` is absent from the same nine, but deactivation is not the only thing that
+        # decides it. docs.slack.dev's user object gives it as "Only visible if the user executing
+        # the call is an admin", and in that workspace the 2 active bot-shaped members (Slackbot
+        # and an app bot) carried the ten above and not this one, against 8 of 8 active people
+        # carrying both. Backlot serves it to every caller, for every active member.
+        obj["has_2fa"] = False
     return obj
 
 

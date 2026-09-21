@@ -315,7 +315,7 @@ def _handle(email: str) -> str:
     return email.split("@")[0].replace(".", "")
 
 
-def _user_obj(conn, email: str) -> dict:
+def _user_obj(conn, email: str, caller: Caller) -> dict:
     u = store.get_user(conn, email)
     display = u["display_name"] if u else email.split("@")[0]
     parts = display.split()
@@ -372,12 +372,14 @@ def _user_obj(conn, email: str) -> dict:
                 "color": synth._digest(email)[:6],
             }
         )
-        # `has_2fa` is absent from the same nine, but deactivation is not the only thing that
-        # decides it. docs.slack.dev's user object gives it as "Only visible if the user executing
-        # the call is an admin", and in that workspace the 2 active bot-shaped members (Slackbot
-        # and an app bot) carried the ten above and not this one, against 8 of 8 active people
-        # carrying both. Backlot serves it to every caller, for every active member.
-        obj["has_2fa"] = False
+        # `has_2fa` has two conditions of its own, measured the same day over both methods. The
+        # caller: an admin user token carries it for all 8 active people and a bot token for none
+        # of them, which is docs.slack.dev's "Only visible if the user executing the call is an
+        # admin". The member: no `is_bot` one carries it under either caller, against 8 of 8
+        # active people under the admin one. Backlot answers every member `is_admin: false`, so
+        # its admin/service token is the only caller here that is an admin.
+        if caller.is_admin and not is_bot:
+            obj["has_2fa"] = False
     return obj
 
 
@@ -733,7 +735,7 @@ async def users_list(request: Request):
     emails = store.all_user_emails(conn)
     limit = _int(request, "limit", get_settings().default_page_size)
     page = emails[offset : offset + limit]
-    members = [_user_obj(conn, e) for e in page]
+    members = [_user_obj(conn, e, caller) for e in page]
     cursor = next_cursor(offset, len(page), len(emails))
     return {"ok": True, "members": members, "response_metadata": {"next_cursor": cursor}}
 
@@ -752,12 +754,12 @@ async def users_info(request: Request):
     uid = _param(request, "user")
     for e in store.all_user_emails(conn):
         if synth.slack_user_id(e) == uid:
-            return {"ok": True, "user": _user_obj(conn, e)}
+            return {"ok": True, "user": _user_obj(conn, e, caller)}
     # Display-only Slack speakers/bots (deploybot@…, payments-bot slugged to paymentsbot@…) aren't
     # principals; resolve them from the message authors so their IDs don't come back user_not_found.
     email = _slack_author_by_uid(request, conn, uid)
     if email:
-        return {"ok": True, "user": _user_obj(conn, email)}
+        return {"ok": True, "user": _user_obj(conn, email, caller)}
     return _err("user_not_found")
 
 

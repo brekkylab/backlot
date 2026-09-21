@@ -1552,8 +1552,9 @@ def test_slack_file_renders_its_owner_id(tmp_path):
 
 
 def test_slack_has_2fa_answers_the_callers_own_admin_rights_and_only_for_a_person(tmp_path):
-    """`has_2fa` depends on the caller's own admin rights and the member's bot status, not on
-    deactivation — see `_user_obj` for the measurement behind both conditions.
+    """`has_2fa` is gated by deactivation like the other ten fields, and within that carries two
+    conditions of its own: the caller's admin rights and the member's bot status — see `_user_obj`
+    for the measurement behind both.
 
     The key is the caller's own rights and not an ACL oracle: it says nothing about the member it
     is read off, and it is the only key of the object that moves with the caller."""

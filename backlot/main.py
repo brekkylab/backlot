@@ -230,15 +230,18 @@ async def echo_github_api_version(request: Request, call_next):
 
     A rejected version gets no echo, matching real: it selected nothing. That is `None` from
     ``selected_api_version``, the same call the router's 400 is raised from. Code search gets no
-    echo either, whatever it pinned: real's code search backend does not read the header (see
+    echo either, whatever it pinned: real's code search backend does not read the header, and
+    neither does `/rate_limit` asked with no `Authorization` header (see
     ``github.honours_api_version``). Nor does a 404 for a path no route matches at all, whatever
-    the caller's credential — see ``_some_github_route_matches``.
+    the caller's credential — see ``_some_github_route_matches`` — nor real's "Bad credentials"
+    401 (``github.refused_a_credential``).
     """
     response = await call_next(request)
     if (
         request.url.path.startswith("/github")
         and github.honours_api_version(request)
         and _some_github_route_matches(request.scope)
+        and not github.refused_a_credential(request)
     ):
         version = github.selected_api_version(request)
         if version is not None:
@@ -249,7 +252,7 @@ async def echo_github_api_version(request: Request, call_next):
 @app.middleware("http")
 async def report_github_rate_limit(request: Request, call_next):
     """Put the five `x-ratelimit-*` headers on the `/github` answers real carries them on, 200 and
-    error alike, and count each against the caller's hourly window (see
+    error alike, and count each against the caller's window for the resource (see
     ``backlot.routers.github.rate_limit_headers``).
 
     Middleware for the reason the version echo is: the headers ride on answers no route handler
@@ -260,11 +263,14 @@ async def report_github_rate_limit(request: Request, call_next):
     with the rest of the GET's headers. A path outside `/github` gets nothing: the other vendors'
     rate-limit answers are not measured. A 404 for a path no route matches at all gets them only
     for a request that carried no `Authorization` header at all — see
-    ``_some_github_route_matches``.
+    ``_some_github_route_matches`` — and a credential that did not resolve gets them on no path at
+    all (``github.refused_a_credential``).
     """
     response = await call_next(request)
-    if request.url.path.startswith("/github") and (
-        _some_github_route_matches(request.scope) or "authorization" not in request.headers
+    if (
+        request.url.path.startswith("/github")
+        and not github.refused_a_credential(request)
+        and (_some_github_route_matches(request.scope) or "authorization" not in request.headers)
     ):
         for name, value in github.rate_limit_headers(request, response.status_code).items():
             response.headers[name] = value

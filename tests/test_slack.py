@@ -1505,6 +1505,52 @@ def test_slack_edited_renders_the_editors_id(tmp_path):
         assert m["edited"]["user"] == m["user"]
 
 
+def test_slack_file_renders_its_owner_id(tmp_path):
+    """`user` on a file is rendered the same way `edited.user` and `reactions.users` are: the
+    corpus names it by address and `synth.slack_user_id` mints the id, confirmed live against
+    every file `search.files` serves on brekkylab.slack.com (2026-09-21). Every other file field
+    — `id`, `name`, `mimetype`, `title` — passes through unchanged.
+    """
+    import re
+
+    from backlot.routers.slack import _message
+
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "channel": "inc",
+                "content": "here's the graph",
+                "author_email": "ava@x.com",
+                "visibility": "public",
+                "files": [
+                    {
+                        "id": "F1",
+                        "name": "graph.png",
+                        "mimetype": "image/png",
+                        "user": "ava@x.com",
+                    }
+                ],
+            }
+        ],
+    )
+    conn = store.connect_ro(s.db_path)
+    row = store.list_slack_top_level(conn, "inc")[0]
+    files = _message(row)["files"]
+
+    assert files == [
+        {
+            "id": "F1",
+            "name": "graph.png",
+            "mimetype": "image/png",
+            "user": synth.slack_user_id("ava@x.com"),
+        }
+    ]
+    # Slack's own `defs_user_id`, so an id Backlot mints is one the vendor's spec would accept.
+    assert re.fullmatch(r"[UW][A-Z0-9]{2,}", files[0]["user"])
+
+
 def test_slack_deactivation_changes_every_slack_answer_about_a_member_and_nothing_else(tmp_path):
     """A roster's `deactivated: true` (`backlot.importer.byo.load_roster`): the person is
     `deleted: true`, dropped from the membership of both kinds of channel though their messages

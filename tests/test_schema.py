@@ -856,6 +856,17 @@ def test_slack_edited_refuses_an_unknown_key(on):
     ]
 
 
+def test_slack_file_refuses_the_owner_id_a_corpus_cannot_know():
+    """Slack's own OpenAPI leaves `objs_file.user` untyped, but a live `search.files` call found
+    every file this workspace serves carries a `defs_user_id`-shaped (`^[UW][A-Z0-9]{2,}$`) one
+    anyway — the same value `reactions.users` and `edited.user` are already refused for. A record
+    names it by address instead, and the old spelling is REFUSED rather than read as an address
+    that resolves to nobody.
+    """
+    rec = complete("slack", content="c", files=[{"id": "F1", "name": "x", "user": "UC20FA2B1C0"}])
+    assert record_errors(rec) == ["<root> [files/0/user]: 'UC20FA2B1C0' is not a 'email'"]
+
+
 def test_fireflies_schema_rejects_the_slack_replies_array():
     """`replies` is Slack's child-row array. A transcript's child rows are `sentences`, so writing
     `replies` on a transcript is a mistake worth catching rather than silently ignoring."""

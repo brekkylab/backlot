@@ -5078,9 +5078,8 @@ def test_github_a_trailing_slash_is_404_not_a_redirect(gh_client, gh_admin_h, gh
     rl_second = _ratelimit(c.get("/github/rate_limit/"))
     assert int(rl_second["used"]) == int(rl_first["used"]) + 1
 
-    # a path no route matches at all answers like the trailing-slash spelling of one: no version
-    # echo for either caller, and the five only for the anonymous caller, whose window it counts
-    # against. A route that DOES match, on a resource that does not exist, carries both.
+    # a path no route matches at all answers like the trailing-slash spelling of one (see
+    # `_some_github_route_matches`)
     unmatched = c.get("/github/nonexistent-route-zz", headers=gh_admin_h)
     assert unmatched.status_code == 404
     assert not any(n.startswith("x-ratelimit-") for n in unmatched.headers)

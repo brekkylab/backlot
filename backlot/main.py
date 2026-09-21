@@ -220,7 +220,8 @@ def _some_github_route_matches(scope: Scope) -> bool:
 
 @app.middleware("http")
 async def echo_github_api_version(request: Request, call_next):
-    """Report which API version served the response, as real GitHub does on every github request.
+    """Report which API version served the response, as real GitHub does on the github answers a
+    version served.
 
     Middleware rather than a router dependency: a dependency that sets headers on its injected
     ``Response`` loses them whenever the route returns a ``Response`` itself, which the raw-content
@@ -247,8 +248,8 @@ async def echo_github_api_version(request: Request, call_next):
 
 @app.middleware("http")
 async def report_github_rate_limit(request: Request, call_next):
-    """Put the five `x-ratelimit-*` headers on every `/github` answer and count it against the
-    caller's hourly window, as real does on every response it gives, 200 and error alike (see
+    """Put the five `x-ratelimit-*` headers on the `/github` answers real carries them on, 200 and
+    error alike, and count each against the caller's hourly window (see
     ``backlot.routers.github.rate_limit_headers``).
 
     Middleware for the reason the version echo is: the headers ride on answers no route handler

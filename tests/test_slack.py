@@ -1616,9 +1616,8 @@ def test_slack_deactivation_changes_every_slack_answer_about_a_member_and_nothin
     `deleted: true`, dropped from the membership of both kinds of channel though their messages
     stay in history, and refused `account_inactive` on their own Slack token while a non-Slack
     route still answers it. `is_forgotten` stays unserved either way, and their user object drops
-    `real_name`, `color`, the admin/ownership/restriction flags and the timezone fields an active
-    member's carries. See `_user_obj` and `slack_private_channel_members` for the measurement
-    behind each."""
+    the fields `_user_obj` gates on deactivation. See `_user_obj` and
+    `slack_private_channel_members` for the measurement behind each."""
     settings = tiny_corpus(
         tmp_path,
         [

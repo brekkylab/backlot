@@ -856,6 +856,18 @@ def test_slack_edited_refuses_an_unknown_key(on):
     ]
 
 
+@pytest.mark.parametrize("field", ["user", "editor", "last_editor"])
+def test_slack_file_refuses_the_ids_a_corpus_cannot_know(field):
+    """Slack's own OpenAPI types `objs_file.editor` and `objs_file.last_editor` as `defs_user_id`
+    (`^[UW][A-Z0-9]{2,}$`) — the same value `reactions.users` and `edited.user` are already refused
+    for — and leaves `user` untyped, but a live `search.files` call found every file this workspace
+    serves carries one anyway. A record names each by address instead, and the old spelling is
+    REFUSED rather than read as an address that resolves to nobody.
+    """
+    rec = complete("slack", content="c", files=[{"id": "F1", "name": "x", field: "UC20FA2B1C0"}])
+    assert record_errors(rec) == [f"<root> [files/0/{field}]: 'UC20FA2B1C0' is not a 'email'"]
+
+
 def test_fireflies_schema_rejects_the_slack_replies_array():
     """`replies` is Slack's child-row array. A transcript's child rows are `sentences`, so writing
     `replies` on a transcript is a mistake worth catching rather than silently ignoring."""

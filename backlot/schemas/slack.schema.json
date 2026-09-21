@@ -97,6 +97,27 @@
     },
     "files": {
       "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "user": {
+            "type": "string",
+            "format": "email",
+            "description": "The file's owner, by address. Slack's own OpenAPI (`objs_file`) leaves `user` untyped, but a live `search.files` call against brekkylab.slack.com (2026-09-21) found every file this workspace serves carries a `defs_user_id`-shaped (`^[UW][A-Z0-9]{2,}$`) one anyway, so it is rendered the same way `edited.user` and `reactions.users` are: the corpus writes the address and the router mints the id."
+          },
+          "editor": {
+            "type": "string",
+            "format": "email",
+            "description": "Who last edited it, by address. `objs_file.editor` is typed `defs_user_id`, a value a corpus author cannot invent, so it is rendered like `user`."
+          },
+          "last_editor": {
+            "type": "string",
+            "format": "email",
+            "description": "Who edited it before `editor`, by address. `objs_file.last_editor` is typed `defs_user_id`, the same as `editor`."
+          }
+        },
+        "additionalProperties": true
+      },
       "description": "File attachments (Slack files objects)."
     },
     "edited": {
@@ -198,6 +219,27 @@
           },
           "files": {
             "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "user": {
+                  "type": "string",
+                  "format": "email",
+                  "description": "The file's owner, by address. Slack's own OpenAPI (`objs_file`) leaves `user` untyped, but a live `search.files` call against brekkylab.slack.com (2026-09-21) found every file this workspace serves carries a `defs_user_id`-shaped (`^[UW][A-Z0-9]{2,}$`) one anyway, so it is rendered the same way `edited.user` and `reactions.users` are: the corpus writes the address and the router mints the id."
+                },
+                "editor": {
+                  "type": "string",
+                  "format": "email",
+                  "description": "Who last edited it, by address. `objs_file.editor` is typed `defs_user_id`, a value a corpus author cannot invent, so it is rendered like `user`."
+                },
+                "last_editor": {
+                  "type": "string",
+                  "format": "email",
+                  "description": "Who edited it before `editor`, by address. `objs_file.last_editor` is typed `defs_user_id`, the same as `editor`."
+                }
+              },
+              "additionalProperties": true
+            },
             "description": "File attachments (Slack files objects)."
           },
           "edited": {

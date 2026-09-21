@@ -1107,7 +1107,7 @@ def _message(
     reactions = _reactions(row)
     if reactions:
         m["reactions"] = reactions
-    files = store.jcol(row, "files")
+    files = _files(row)
     if files:
         m["files"] = files
     edited = store.jcol(row, "edited", {})
@@ -1176,6 +1176,21 @@ def _reactions(row) -> list[dict]:
                 "count": len(users),
             }
         )
+    return out
+
+
+def _files(row) -> list[dict]:
+    """Renders `user`, `editor` and `last_editor` via `synth.slack_user_id`, the same lift
+    `_reactions` gives `reactions.users` and `_edited` gives `edited.user` (see
+    `backlot/schemas/slack.schema.json` for the vendor shape behind it). Every other field passes
+    through unchanged."""
+    out = []
+    for f in store.jcol(row, "files"):
+        f = dict(f)
+        for key in ("user", "editor", "last_editor"):
+            if key in f:
+                f[key] = synth.slack_user_id(f[key])
+        out.append(f)
     return out
 
 

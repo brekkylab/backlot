@@ -1505,6 +1505,57 @@ def test_slack_edited_renders_the_editors_id(tmp_path):
         assert m["edited"]["user"] == m["user"]
 
 
+def test_slack_file_renders_its_ids(tmp_path):
+    """`user`, `editor` and `last_editor` on a file are rendered the same way `edited.user` and
+    `reactions.users` are: the corpus names each by address and `synth.slack_user_id` mints the id
+    Slack's own spec types `editor`/`last_editor` as (`objs_file`, `defs_user_id`). Every other
+    file field — `id`, `name`, `mimetype`, `title` — passes through unchanged.
+    """
+    import re
+
+    from backlot.routers.slack import _message
+
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "channel": "inc",
+                "content": "here's the graph",
+                "author_email": "ava@x.com",
+                "visibility": "public",
+                "files": [
+                    {
+                        "id": "F1",
+                        "name": "graph.png",
+                        "mimetype": "image/png",
+                        "user": "ava@x.com",
+                        "editor": "bo@x.com",
+                        "last_editor": "ava@x.com",
+                    }
+                ],
+            }
+        ],
+    )
+    conn = store.connect_ro(s.db_path)
+    row = store.list_slack_top_level(conn, "inc")[0]
+    files = _message(row)["files"]
+
+    assert files == [
+        {
+            "id": "F1",
+            "name": "graph.png",
+            "mimetype": "image/png",
+            "user": synth.slack_user_id("ava@x.com"),
+            "editor": synth.slack_user_id("bo@x.com"),
+            "last_editor": synth.slack_user_id("ava@x.com"),
+        }
+    ]
+    # Slack's own `defs_user_id`, so an id Backlot mints is one the vendor's spec would accept.
+    for key in ("user", "editor", "last_editor"):
+        assert re.fullmatch(r"[UW][A-Z0-9]{2,}", files[0][key])
+
+
 def test_slack_deactivation_changes_every_slack_answer_about_a_member_and_nothing_else(tmp_path):
     """A roster's `deactivated: true` (`backlot.importer.byo.load_roster`): the person is
     `deleted: true`, dropped from the membership of both kinds of channel though their messages

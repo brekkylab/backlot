@@ -234,8 +234,7 @@ async def echo_github_api_version(request: Request, call_next):
     neither does `/rate_limit` asked with no `Authorization` header (see
     ``github.honours_api_version``). Nor does a 404 for a path no route matches at all, whatever
     the caller's credential — see ``_some_github_route_matches`` — nor real's "Bad credentials"
-    401, where an anonymous `/user/repos` 401 beside it echoes `2022-11-28`
-    (``github.refused_a_credential``).
+    401 (``github.refused_a_credential``).
     """
     response = await call_next(request)
     if (

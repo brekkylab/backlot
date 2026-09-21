@@ -162,14 +162,11 @@ def honours_api_version(request: Request) -> bool:
     the bad version and echoes the good one). So that route neither refuses a version nor echoes
     one, and `backlot.main`'s echo asks this before adding the header.
 
-    `/rate_limit` reads it only from a request that carries an `Authorization` header. With none,
-    a pinned `2026-03-10` there is still `resources` AND `rate` with no echo header and a pinned
-    `1999-01-01` is a 200 rather than the version's 400, where the same two headers under a token
-    answer `resources` alone with `X-GitHub-Api-Version-Selected: 2026-03-10` and a 400. It is the
-    credential's presence and not its resolving that switches this: an unparseable `Basic` value
-    gets the version read as a token does, `resources` alone and the echo under `2026-03-10` and
-    the 400 under `1999-01-01`. The route is the whole of the exception — the same unpinned
-    `1999-01-01` with no credential is a 400 on `/repos/psf/requests`, on `/users/psf` and on
+    `/rate_limit` reads it only from a request that carries an `Authorization` header: with none, a
+    pinned `2026-03-10` is still `resources` AND `rate` with no echo and a pinned `1999-01-01` is a
+    200 rather than the version's 400, where a token and an unparseable `Basic` alike get
+    `resources` alone with the echo and the 400. The route is the whole of the exception — that
+    same `1999-01-01` with no credential is a 400 on `/repos/psf/requests`, `/users/psf` and
     `/user/repos` (measured against api.github.com 2026-09-21, on cache-busted urls).
     """
     if request.url.path == CODE_SEARCH_PATH:
@@ -214,9 +211,9 @@ def _version(request: Request) -> str:
     """The API version to build this response for.
 
     A request real does not read the header on is built for :data:`DEFAULT_API_VERSION` whatever it
-    pinned, which is what an anonymous `/rate_limit` serves (see :func:`honours_api_version`).
-    Where real does read it the value is never ``None``: ``_validate_api_version`` is a router-wide
-    dependency, so an unsupported version never reaches a handler on those routes."""
+    pinned (see :func:`honours_api_version`). Where real does read it the value is never ``None``:
+    ``_validate_api_version`` is a router-wide dependency, so an unsupported version never reaches
+    a handler on those routes."""
     if not honours_api_version(request):
         return DEFAULT_API_VERSION
     return selected_api_version(request) or DEFAULT_API_VERSION
@@ -315,9 +312,8 @@ RATE_LIMIT_PATH = "/github/rate_limit"
 RATE_LIMIT_WINDOW = 3600
 #: The two search resources measure a minute, not `core`'s hour: three anonymous `/search/issues`
 #: in the same second answered `used` 1, 2, 3 against one `reset` 60 seconds out and the same
-#: request 65 seconds later answered `used: 1` against a fresh one; `/search/code` under a token
-#: did the same at `limit: 10`, and `/rate_limit` reports every search-family resource's unopened
-#: `reset` 60 seconds out where `core`'s is 3600 (measured against api.github.com 2026-09-21).
+#: request 65 seconds later answered `used: 1` against a fresh one, and `/search/code` under a
+#: token did the same at `limit: 10` (measured against api.github.com 2026-09-21).
 SEARCH_RATE_LIMIT_WINDOW = 60
 
 
@@ -339,12 +335,11 @@ RATE_LIMITS: dict[str, _ResourceLimit] = {
 def rate_limit_window(resource: str, authenticated: bool) -> tuple[str, int]:
     """The window a request for ``resource`` lands in, and that window's limit for this caller.
 
-    A caller with no credential has no `code_search` window: an anonymous `GET /rate_limit`
-    reported `code_search` and `core` as one set of four numbers (`limit: 60, used: 29,
-    remaining: 31, reset: 1789960795`), a single anonymous `GET /repos/psf/requests` moved both
-    from 29 to 30, and real's own 401 for an anonymous `/search/code` names
-    `x-ratelimit-resource: core` (measured against api.github.com 2026-09-21). So that caller's
-    code searches are `core`'s window, reported under both names.
+    A caller with no credential has no `code_search` window of its own: an anonymous
+    `GET /rate_limit` reported it and `core` as one set of four numbers (`limit: 60, used: 29,
+    remaining: 31, reset: 1789960795`) and a single anonymous `GET /repos/psf/requests` moved both
+    from 29 to 30, so it is `core`'s window under both names (measured against api.github.com
+    2026-09-21).
     """
     counted = "core" if resource == "code_search" and not authenticated else resource
     limits = RATE_LIMITS[counted]
@@ -439,18 +434,16 @@ def rate_limit_caller(request: Request) -> tuple[str, bool]:
     with no credential (the docs' 60 an hour "for unauthenticated requests", `limit: 60` on every
     anonymous answer measured).
 
-    An `Authorization` real cannot parse is served rather than refused, and its requests are
-    counted apart from the bare-anonymous ones from the same address: interleaved on
-    `/repos/psf/requests`, `Basic Zm9vOmJhcg==` and a scheme-less value read `used` 10 through 15
-    at one `reset` while the bare anonymous calls around them read 23, 24, 25 at another, both at
-    `limit: 60` (measured against api.github.com 2026-09-21). That second window is ONE window,
-    not one per value: alternating two values real had not seen before ran the same counter
-    10, 11, 12, 13, 14, 15 rather than two sequences from 1, across `Basic`, `Digest` and
-    scheme-less values alike.
+    An `Authorization` real cannot parse is served rather than refused, and counted apart from the
+    bare-anonymous requests from the same address, in ONE window shared by every such value: on
+    `/repos/psf/requests`, alternating `Basic`, `Digest` and scheme-less values real had not seen
+    before ran one counter 10 through 15 at one `reset`, while the bare anonymous calls interleaved
+    with them read 23, 24, 25 at another, both at `limit: 60` (measured against api.github.com
+    2026-09-21).
 
-    A bearer that does not resolve is keyed with the address here but never counted: real gives its
-    401 none of the five and moves no window, which :func:`refused_a_credential` answers before
-    this is asked. Callers that draw real's line themselves check `request.headers` for the
+    A bearer that does not resolve is keyed with the address here but never counted — see
+    :func:`refused_a_credential`. Callers that draw real's line themselves check `request.headers`
+    for the
     presence of `Authorization` directly instead of asking `auth.bearer_token`, which is `None` for
     a scheme it does not parse — see `refuse_a_trailing_slash_on_github`."""
     token = auth.bearer_token(request)
@@ -465,12 +458,11 @@ def rate_limit_caller(request: Request) -> tuple[str, bool]:
 def refused_a_credential(request: Request) -> bool:
     """Whether a credential arrived and did not resolve — real's "Bad credentials" 401.
 
-    That answer carries none of the five `x-ratelimit-*` headers, no version echo, and moves no
-    window: `Bearer` and `token` alike are refused with no `x-ratelimit-*` header on
-    `/repos/psf/requests` and on `/rate_limit`, and the address's `core` window read `used: 13`
-    before three of them and after (measured against api.github.com 2026-09-21), where an anonymous
-    401 on `/user/repos` carries all five, counts, and echoes the version. A path no route matches
-    is answered the same way for a wider set of callers — see
+    `Bearer` and `token` alike are refused with none of the five `x-ratelimit-*` headers and no
+    version echo, on `/repos/psf/requests` and on `/rate_limit`, and the address's `core` window
+    read `used: 13` before three of them and after — where an anonymous 401 on `/user/repos`
+    carries all five, counts, and echoes (measured against api.github.com 2026-09-21). A path no
+    route matches is answered the same way for a wider set of callers, see
     ``backlot.main._some_github_route_matches``.
     """
     return auth.bearer_token(request) is not None and auth.resolve_bearer(request) is None
@@ -3272,10 +3264,10 @@ def _issue_number(row) -> int:
 _HAS_SINGULAR_ASSIGNEE = frozenset({"2022-11-28"})  # 2026-03-10: superseded by `assignees`
 _HAS_MERGE_COMMIT_SHA = frozenset({"2022-11-28"})  # 2026-03-10: removed from every pull body
 _HAS_RATE_ALIAS = frozenset({"2022-11-28"})  # 2026-03-10: `rate` removed from `/rate_limit`
-#: authenticated? -> the order `/rate_limit` lists `resources` in. Real's answer to a token runs
-#: `core`, `search`, …, `code_search` and its answer to a caller with no credential runs
-#: `code_search`, `core`, …, `search`, so the two differ by more than which resources they carry
-#: (measured against api.github.com 2026-09-21).
+#: authenticated? -> the order `/rate_limit` lists `resources` in: real runs `core`, `search`, …,
+#: `code_search` for a token and `code_search`, `core`, …, `search` for a caller with no
+#: credential, so the two answers differ in order as well as in membership (measured against
+#: api.github.com 2026-09-21).
 _RESOURCE_ORDER = {
     True: ("core", "search", "code_search"),
     False: ("code_search", "core", "search"),

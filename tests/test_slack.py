@@ -1551,11 +1551,72 @@ def test_slack_file_renders_its_owner_id(tmp_path):
     assert re.fullmatch(r"[UW][A-Z0-9]{2,}", files[0]["user"])
 
 
+def test_slack_has_2fa_answers_the_callers_own_admin_rights_and_only_for_a_person(tmp_path):
+    """`has_2fa` is gated by deactivation like the other ten fields, and within that carries two
+    conditions of its own: the caller's admin rights and the member's bot status — see `_user_obj`
+    for the measurement behind both.
+
+    The key is the caller's own rights and not an ACL oracle: it says nothing about the member it
+    is read off, and it is the only key of the object that moves with the caller."""
+    settings = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "channel": "incidents",
+                "content": "rolling back the deploy now",
+                "author_email": "ava@acme.com",
+            },
+            {
+                "source_type": "slack",
+                "channel": "incidents",
+                "content": "deploy 41f2 is live",
+                "author_email": "deploybot@acme.com",
+            },
+        ],
+    )
+    # BYO registers every author as a principal, and a speaker is only `is_bot` while they are not
+    # one — the shape a corpus whose roster is narrower than its transcripts has, which `users.list`
+    # describes. Dropping the principal is what leaves the speaker.
+    conn = store.connect_rw(settings.db_path)
+    conn.execute("DELETE FROM principals WHERE id = ?", ("deploybot@acme.com",))
+    conn.commit()
+    conn.close()
+
+    # `reload=True`: resolving a speaker's id builds `app.state._slack_uid_map` once, and the
+    # module-level app carries whichever corpus built it first.
+    with client_for(settings, reload=True) as client:
+        tokens = yaml.safe_load(settings.tokens_path.read_text())
+        admin_h = {"Authorization": f"Bearer {tokens['admin_token']}"}
+        ava_h = {"Authorization": f"Bearer {tok(tokens, 'ava@acme.com')}"}
+        ava_uid = synth.slack_user_id("ava@acme.com")
+
+        def info(headers, uid):
+            return client.get(
+                "/slack/api/users.info", headers=headers, params={"user": uid}
+            ).json()["user"]
+
+        as_admin, as_person = info(admin_h, ava_uid), info(ava_h, ava_uid)
+        assert "has_2fa" in as_admin and "has_2fa" not in as_person
+        assert as_admin.keys() - {"has_2fa"} == as_person.keys()
+
+        listed = {
+            u["profile"]["email"]: u
+            for u in client.get("/slack/api/users.list", headers=admin_h).json()["members"]
+        }
+        assert "has_2fa" in listed["ava@acme.com"], "both methods answer the caller alike"
+
+        bot = info(admin_h, synth.slack_user_id("deploybot@acme.com"))
+        assert bot["is_bot"] is True
+        assert "real_name" in bot and "has_2fa" not in bot
+
+
 def test_slack_deactivation_changes_every_slack_answer_about_a_member_and_nothing_else(tmp_path):
     """A roster's `deactivated: true` (`backlot.importer.byo.load_roster`): the person is
     `deleted: true`, dropped from the membership of both kinds of channel though their messages
     stay in history, and refused `account_inactive` on their own Slack token while a non-Slack
-    route still answers it. `is_forgotten` stays unserved either way. See `_user_obj` and
+    route still answers it. `is_forgotten` stays unserved either way, and their user object drops
+    the fields `_user_obj` gates on deactivation. See `_user_obj` and
     `slack_private_channel_members` for the measurement behind each."""
     settings = tiny_corpus(
         tmp_path,
@@ -1602,10 +1663,30 @@ def test_slack_deactivation_changes_every_slack_answer_about_a_member_and_nothin
         assert by_email["bo@acme.com"]["deleted"] is False
         assert "is_forgotten" not in by_email["bo@acme.com"]
 
+        # See _user_obj's comment for the measurement behind this set.
+        active_only = {
+            "real_name",
+            "is_admin",
+            "is_owner",
+            "is_primary_owner",
+            "is_restricted",
+            "is_ultra_restricted",
+            "tz",
+            "tz_label",
+            "tz_offset",
+            "color",
+        }
+        assert active_only.isdisjoint(by_email["ava@acme.com"])
+        assert active_only <= by_email["bo@acme.com"].keys()
+        # has_2fa follows the same split here; see _user_obj for why it's asserted separately.
+        assert "has_2fa" not in by_email["ava@acme.com"]
+        assert "has_2fa" in by_email["bo@acme.com"]
+
         info = client.get(
             "/slack/api/users.info", headers=admin_h, params={"user": ava_uid}
         ).json()["user"]
         assert info["deleted"] is True
+        assert active_only.isdisjoint(info) and "has_2fa" not in info
 
         listed = {
             c["name"]: c

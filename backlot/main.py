@@ -309,12 +309,10 @@ async def refuse_a_trailing_slash_on_github(request: Request, call_next):
     The five `x-ratelimit-*` headers ride on this 404, via `rate_limit_headers`, for a caller that
     sent no `Authorization` header at all, and on no other: the anonymous limit is counted by
     address, ahead of and independent of routing, where a credential's window only starts once a
-    route is reached — the header's presence is the line, not whether what it carried resolved, so
-    a bad bearer, a `Basic` value and a scheme-less one get neither the headers nor a count either
-    (anonymous `/repos/psf/requests/` answered `used` 45, 46 then 47 across a pair of bad-bearer
-    404s that carried no headers and moved no window between them, measured 2026-09-17; the
-    unparseable pair measured 2026-09-21). A 404 for a route that DID match, on a resource that
-    does not exist, carries the five for either caller.
+    route is reached (anonymous `/repos/psf/requests/` answered `used` 45, 46 then 47 across a pair
+    of bad-bearer 404s that carried no headers and moved no window between them, measured
+    2026-09-17) — see `_some_github_route_matches` for the unparseable-credential and matched-route
+    cases, which draw the same line.
 
     `redirect_slashes` is a setting of the whole app's `Router`, shared by every vendor mounted
     here, and no other vendor's own answer to a trailing slash has been measured — so this

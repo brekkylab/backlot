@@ -1552,12 +1552,8 @@ def test_slack_file_renders_its_owner_id(tmp_path):
 
 
 def test_slack_has_2fa_answers_the_callers_own_admin_rights_and_only_for_a_person(tmp_path):
-    """Measured on a real workspace, 2026-09-21, over both `users.list` and `users.info`: an admin
-    user token carries `has_2fa` for all 8 active people and a bot token for none of them, which is
-    docs.slack.dev's "Only visible if the user executing the call is an admin". No `is_bot` member
-    carries it under either caller, against 8 of 8 active people under the admin one. Backlot
-    answers every member `is_admin: false`, so its admin/service token is the only caller that is
-    an admin — see `_user_obj`.
+    """`has_2fa` depends on the caller's own admin rights and the member's bot status, not on
+    deactivation — see `_user_obj` for the measurement behind both conditions.
 
     The key is the caller's own rights and not an ACL oracle: it says nothing about the member it
     is read off, and it is the only key of the object that moves with the caller."""

@@ -4814,6 +4814,10 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
     reports is a fresh window rather than the headers' (see the route's docstring); Backlot reports
     the headers'. Exhaustion is not measured and nothing here refuses: `remaining` stops at 0 and
     `used` keeps counting.
+
+    Five more answers measured 2026-09-21, each against the function that carries its measurement:
+    `SEARCH_RATE_LIMIT_WINDOW`, `rate_limit_window`, `refused_a_credential`, `rate_limit_caller`
+    and `honours_api_version`, with `_RESOURCE_ORDER` for the order the route lists them in.
     """
     from backlot.routers import github as gh
 
@@ -4885,7 +4889,12 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
         assert code.status_code == 200
         assert (_ratelimit(code)["limit"], _ratelimit(code)["resource"]) == ("10", "code_search")
         # a caller with no credential is counted by address at 60, the anonymous code search's
-        # 401 against `core`
+        # 401 against `core`, and the two search windows close a minute out where `core`'s closes
+        # an hour out, within the second two windows opened a request apart can differ by when
+        # each truncated its own `time.time()`
+        search_gap = gh.SEARCH_RATE_LIMIT_WINDOW - gh.RATE_LIMIT_WINDOW
+        assert abs(int(_ratelimit(found)["reset"]) - int(five["reset"]) - search_gap) <= 1
+        assert abs(int(_ratelimit(code)["reset"]) - int(five["reset"]) - search_gap) <= 1
         anonymous = c.get("/github/user/repos")
         assert anonymous.status_code == 401
         assert _ratelimit(anonymous) == {
@@ -4930,12 +4939,11 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
         assert _ratelimit(status) == {**five, "remaining": "4996", "used": "4"}
         again = c.get("/github/rate_limit", headers=h)
         assert again.json() == status.json() and _ratelimit(again)["used"] == "4"
-        # `rate` is the FIRST key on the wire under this version, which a dict comparison does not
-        # see; real answers it before `resources`.
-        assert list(status.json()) == ["rate", "resources"]
+        # `resources` is the FIRST key on the wire under this version, which a dict comparison does
+        # not see; real answers it before `rate`.
+        assert list(status.json()) == ["resources", "rate"]
         # A trailing slash answers 404 with a valid token, carrying none of the five ratelimit
-        # headers, the same as real answers any other path no route matches. Backlot's own
-        # `/github/nonexistent-route-zz` still carries them — #254.
+        # headers, the same as real answers any other path no route matches.
         trailing = c.get("/github/rate_limit/", headers=h, follow_redirects=False)
         assert trailing.status_code == 404
         assert not any(n.startswith("x-ratelimit-") for n in trailing.headers)
@@ -4950,8 +4958,13 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
         assert unauthenticated.status_code == 200
         resources = unauthenticated.json()["resources"]
         assert (resources["core"]["limit"], resources["core"]["used"]) == (60, 2)
-        assert (resources["search"]["limit"], resources["code_search"]["limit"]) == (10, 10)
+        assert resources["search"]["limit"] == 10
+        # that caller has no `code_search` window: it reads `core`'s, limit included
+        assert resources["code_search"] == resources["core"]
         assert _ratelimit(unauthenticated)["limit"] == "60"
+        # listed in real's order for a caller with no credential, which is not the token's order
+        assert list(resources) == ["code_search", "core", "search"]
+        assert list(status.json()["resources"]) == ["core", "search", "code_search"]
         refused = c.get("/github/rate_limit", headers={"Authorization": "Bearer nope"})
         assert refused.status_code == 401
         assert refused.json() == {
@@ -4959,7 +4972,57 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
             "documentation_url": "https://docs.github.com/rest",
             "status": "401",
         }
-        assert _ratelimit(refused)["limit"] == "60"  # counted with the anonymous callers
+        # a credential that did not resolve carries none of the five, no echo, and moves no
+        # window — the address's, where it would have landed, stays put
+        assert not any(n.startswith("x-ratelimit-") for n in refused.headers)
+        assert "x-github-api-version-selected" not in refused.headers
+        assert c.get("/github/rate_limit").json()["resources"]["core"]["used"] == 2
+
+        # a search endpoint's name carries `search` past the route it serves; an empty rest and a
+        # name real serves no endpoint for read `core`
+        assert _ratelimit(c.get("/github/search/issues/extra-zz"))["resource"] == "search"
+        assert _ratelimit(c.get("/github/search/issues/"))["resource"] == "core"
+        assert _ratelimit(c.get("/github/search/nonexistent-zz"))["resource"] == "core"
+
+        # the route reads the version header from any request carrying an `Authorization`, an
+        # unparseable one included, and from no other
+        unparseable = {"Authorization": "Basic Zm9vOmJhcg=="}
+        pinned = c.get(
+            "/github/rate_limit", headers={**unparseable, "X-GitHub-Api-Version": "2026-03-10"}
+        )
+        assert "rate" not in pinned.json()
+        assert pinned.headers["x-github-api-version-selected"] == "2026-03-10"
+        assert (
+            c.get(
+                "/github/rate_limit", headers={**unparseable, "X-GitHub-Api-Version": "1999-01-01"}
+            ).status_code
+            == 400
+        )
+        for pin in ("2026-03-10", "1999-01-01"):
+            anonymous_pin = c.get("/github/rate_limit", headers={"X-GitHub-Api-Version": pin})
+            assert anonymous_pin.status_code == 200
+            assert list(anonymous_pin.json()) == ["resources", "rate"]
+            assert "x-github-api-version-selected" not in anonymous_pin.headers
+        # the same unsupported version with no credential is the 400 on any other route
+        assert c.get(repo, headers={"X-GitHub-Api-Version": "1999-01-01"}).status_code == 400
+
+        # an `Authorization` real cannot parse is counted apart from the address's bare anonymous
+        # calls, in ONE window rather than one per value
+        address = int(_ratelimit(c.get("/github/user/repos"))["used"])
+        first = _ratelimit(c.get("/github/user/repos", headers=unparseable))
+        second = _ratelimit(c.get("/github/user/repos", headers={"Authorization": "other-zz"}))
+        assert (first["limit"], second["limit"]) == ("60", "60")
+        assert int(second["used"]) == int(first["used"]) + 1
+        assert int(first["used"]) < address  # its own window, not the address's
+        assert int(_ratelimit(c.get("/github/user/repos"))["used"]) == address + 1
+
+        # a minute on, the two search windows are new ones where `core`'s is the one it was
+        windows = c.app.state.github_rate_limits
+        opened = windows.clock()
+        windows.clock = lambda: opened + gh.SEARCH_RATE_LIMIT_WINDOW + 1
+        issues = c.get("/github/search/issues", headers=h, params={"q": f"repo:{org}/rl"})
+        assert _ratelimit(issues)["used"] == "1"
+        assert _ratelimit(c.get(repo, headers=h))["used"] == "5"
 
         # an hour on, the window is a new one: `used` starts over and `reset` moves by the hour
         windows = c.app.state.github_rate_limits
@@ -4969,7 +5032,7 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
         assert (rolled["used"], rolled["remaining"]) == ("1", "4999")
         assert int(rolled["reset"]) == int(now) + gh.RATE_LIMIT_WINDOW + 1 + gh.RATE_LIMIT_WINDOW
         # past the limit nothing is refused: `remaining` stops at 0 and `used` keeps counting
-        monkeypatch.setitem(gh.RATE_LIMITS, "core", gh._HourlyLimit(60, 2))
+        monkeypatch.setitem(gh.RATE_LIMITS, "core", gh._ResourceLimit(60, 2, gh.RATE_LIMIT_WINDOW))
         assert _ratelimit(c.get(repo, headers=h)) == {
             **rolled,
             "limit": "2",
@@ -5071,9 +5134,39 @@ def test_github_a_trailing_slash_is_404_not_a_redirect(gh_client, gh_admin_h, gh
     }
     assert not any(n.startswith("x-ratelimit-") for n in bad.headers)
     assert int(_ratelimit(c.get(path))["used"]) == int(second["used"]) + 1
+    unparseable = c.get(path, headers={"Authorization": "Basic Zm9vOmJhcg=="})
+    assert unparseable.status_code == 404
+    assert not any(n.startswith("x-ratelimit-") for n in unparseable.headers)
 
     # `/github/rate_limit/` counts here too: unlike the real routed endpoint, this is a "no route
     # matched" 404 and not the route's own report-without-counting answer
     rl_first = _ratelimit(c.get("/github/rate_limit/"))
     rl_second = _ratelimit(c.get("/github/rate_limit/"))
     assert int(rl_second["used"]) == int(rl_first["used"]) + 1
+
+    # a path no route matches at all answers like the trailing-slash spelling of one (see
+    # `_some_github_route_matches`)
+    unmatched = c.get("/github/nonexistent-route-zz", headers=gh_admin_h)
+    assert unmatched.status_code == 404
+    assert not any(n.startswith("x-ratelimit-") for n in unmatched.headers)
+    assert "x-github-api-version-selected" not in unmatched.headers
+    matched = c.get(f"/github/repos/{gh_org}/ghost-zz-9876", headers=gh_admin_h)
+    assert matched.status_code == 404
+    assert any(n.startswith("x-ratelimit-") for n in matched.headers)
+    assert "x-github-api-version-selected" in matched.headers
+    anon_unmatched = c.get("/github/nonexistent-route-zz")
+    assert anon_unmatched.status_code == 404
+    assert "x-github-api-version-selected" not in anon_unmatched.headers
+    anon_again = _ratelimit(c.get("/github/nonexistent-route-zz"))
+    assert int(anon_again["used"]) == int(_ratelimit(anon_unmatched)["used"]) + 1
+    # see `_some_github_route_matches` for the unparseable-credential measurement
+    basic = c.get("/github/nonexistent-route-zz", headers={"Authorization": "Basic Zm9vOmJhcg=="})
+    assert basic.status_code == 404
+    assert not any(n.startswith("x-ratelimit-") for n in basic.headers)
+    assert any(
+        n.startswith("x-ratelimit-")
+        for n in c.get(
+            f"/github/repos/{gh_org}/ghost-zz-9876",
+            headers={"Authorization": "Basic Zm9vOmJhcg=="},
+        ).headers
+    )

@@ -16,6 +16,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.routing import Match
+from starlette.types import Scope
 
 from backlot import auth, errors, openapi, store, synth
 from backlot.acl import Acl
@@ -198,9 +199,29 @@ async def _validation_exception_handler(request: Request, exc: RequestValidation
     return JSONResponse(status_code=status_code, content=body)
 
 
+def _some_github_route_matches(scope: Scope) -> bool:
+    """Whether some mounted route matches this scope's path, whatever the method.
+
+    A 404 for a path no route matches at all carries no version echo, and carries the five
+    `x-ratelimit-*` headers only for a request that sent no `Authorization` header at all — the
+    same line `refuse_a_trailing_slash_on_github` draws for the trailing-slash spelling of such a
+    path, which real draws for every spelling. Measured against api.github.com 2026-09-21:
+    `/repos/psf/requests/<unmatched>`, its trailing-slash spelling and a top-level `/<unmatched>`
+    all answered 404 with no echo, where `/repos/psf/requests/issues/<missing>` — a route that DOES
+    match, on a resource that does not exist — carried both for either caller. With no
+    `Authorization` header the three carried the five (`limit` 60) and moved `used` by one apiece.
+    Every header value carried none of them and moved no window: a valid token (whose `used` read 0
+    before three of them and 0 after), a bad bearer, `Basic Zm9vOmJhcg==` and a scheme-less value —
+    so what real reads here is that a credential arrived, not that one resolved, where the same
+    unparseable `Basic` on a route that matches is served and counted.
+    """
+    return any(route.matches(scope)[0] is not Match.NONE for route in app.router.routes)
+
+
 @app.middleware("http")
 async def echo_github_api_version(request: Request, call_next):
-    """Report which API version served the response, as real GitHub does on every github request.
+    """Report which API version served the response, on the `/github` answers real echoes one for,
+    200 and error alike.
 
     Middleware rather than a router dependency: a dependency that sets headers on its injected
     ``Response`` loses them whenever the route returns a ``Response`` itself, which the raw-content
@@ -209,11 +230,19 @@ async def echo_github_api_version(request: Request, call_next):
 
     A rejected version gets no echo, matching real: it selected nothing. That is `None` from
     ``selected_api_version``, the same call the router's 400 is raised from. Code search gets no
-    echo either, whatever it pinned: real's code search backend does not read the header (see
-    ``github.honours_api_version``).
+    echo either, whatever it pinned: real's code search backend does not read the header, and
+    neither does `/rate_limit` asked with no `Authorization` header (see
+    ``github.honours_api_version``). Nor does a 404 for a path no route matches at all, whatever
+    the caller's credential — see ``_some_github_route_matches`` — nor real's "Bad credentials"
+    401 (``github.refused_a_credential``).
     """
     response = await call_next(request)
-    if request.url.path.startswith("/github") and github.honours_api_version(request):
+    if (
+        request.url.path.startswith("/github")
+        and github.honours_api_version(request)
+        and _some_github_route_matches(request.scope)
+        and not github.refused_a_credential(request)
+    ):
         version = github.selected_api_version(request)
         if version is not None:
             response.headers[github.SELECTED_VERSION_HEADER] = version
@@ -222,8 +251,8 @@ async def echo_github_api_version(request: Request, call_next):
 
 @app.middleware("http")
 async def report_github_rate_limit(request: Request, call_next):
-    """Put the five `x-ratelimit-*` headers on every `/github` answer and count it against the
-    caller's hourly window, as real does on every response it gives, 200 and error alike (see
+    """Put the five `x-ratelimit-*` headers on the `/github` answers real carries them on, 200 and
+    error alike, and count each against the caller's window for the resource (see
     ``backlot.routers.github.rate_limit_headers``).
 
     Middleware for the reason the version echo is: the headers ride on answers no route handler
@@ -232,10 +261,17 @@ async def report_github_rate_limit(request: Request, call_next):
     so a `HEAD` runs through here as the GET it is rewritten to and counts once, as it does on real
     (`remaining` 46 → 45 across one `HEAD`, measured 2026-09-09), and the head copies the five
     with the rest of the GET's headers. A path outside `/github` gets nothing: the other vendors'
-    rate-limit answers are not measured.
+    rate-limit answers are not measured. A 404 for a path no route matches at all gets them only
+    for a request that carried no `Authorization` header at all — see
+    ``_some_github_route_matches`` — and a credential that did not resolve gets them on no path at
+    all (``github.refused_a_credential``).
     """
     response = await call_next(request)
-    if request.url.path.startswith("/github"):
+    if (
+        request.url.path.startswith("/github")
+        and not github.refused_a_credential(request)
+        and (_some_github_route_matches(request.scope) or "authorization" not in request.headers)
+    ):
         for name, value in github.rate_limit_headers(request, response.status_code).items():
             response.headers[name] = value
     return response
@@ -252,11 +288,10 @@ def _would_redirect_to_the_slash_free_path(request: Request) -> bool:
     same as real answers it.
     """
     scope = request.scope
-    routes = app.router.routes
-    if any(route.matches(scope)[0] is not Match.NONE for route in routes):
+    if _some_github_route_matches(scope):
         return False
     slash_free = {**scope, "path": scope["path"].rstrip("/")}
-    return any(route.matches(slash_free)[0] is not Match.NONE for route in routes)
+    return _some_github_route_matches(slash_free)
 
 
 @app.middleware("http")
@@ -280,11 +315,10 @@ async def refuse_a_trailing_slash_on_github(request: Request, call_next):
     The five `x-ratelimit-*` headers ride on this 404, via `rate_limit_headers`, for a caller that
     sent no `Authorization` header at all, and on no other: the anonymous limit is counted by
     address, ahead of and independent of routing, where a credential's window only starts once a
-    route is reached. A bearer that fails to resolve gets neither the headers nor a count, which is
-    where real's line falls rather than at `rate_limit_caller`'s "did this token resolve" —
-    anonymous `/repos/psf/requests/` answered `used` 45, 46 then 47 across a pair of bad-bearer 404s
-    that carried no headers and moved no window between them (measured 2026-09-17). A 404 for a
-    route that DID match, on a resource that does not exist, carries the five for either caller.
+    route is reached (anonymous `/repos/psf/requests/` answered `used` 45, 46 then 47 across a pair
+    of bad-bearer 404s that carried no headers and moved no window between them, measured
+    2026-09-17) — see `_some_github_route_matches` for the unparseable-credential and matched-route
+    cases, which draw the same line.
 
     `redirect_slashes` is a setting of the whole app's `Router`, shared by every vendor mounted
     here, and no other vendor's own answer to a trailing slash has been measured — so this
@@ -301,7 +335,7 @@ async def refuse_a_trailing_slash_on_github(request: Request, call_next):
         and _would_redirect_to_the_slash_free_path(request)
     ):
         response = await _http_exception_handler(request, StarletteHTTPException(status_code=404))
-        if auth.bearer_token(request) is None:
+        if "authorization" not in request.headers:
             headers = github.rate_limit_headers(request, response.status_code, count=True)
             for name, value in headers.items():
                 response.headers[name] = value

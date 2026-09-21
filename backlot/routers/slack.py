@@ -1180,16 +1180,14 @@ def _reactions(row) -> list[dict]:
 
 
 def _files(row) -> list[dict]:
-    """Renders `user`, `editor` and `last_editor` via `synth.slack_user_id`, the same lift
-    `_reactions` gives `reactions.users` and `_edited` gives `edited.user` (see
-    `backlot/schemas/slack.schema.json` for the vendor shape behind it). Every other field passes
-    through unchanged."""
+    """Renders `user` via `synth.slack_user_id`, the same lift `_reactions` gives
+    `reactions.users` and `_edited` gives `edited.user` (see `backlot/schemas/slack.schema.json`
+    for the vendor shape behind it). Every other field passes through unchanged."""
     out = []
     for f in store.jcol(row, "files"):
         f = dict(f)
-        for key in ("user", "editor", "last_editor"):
-            if key in f:
-                f[key] = synth.slack_user_id(f[key])
+        if "user" in f:
+            f["user"] = synth.slack_user_id(f["user"])
         out.append(f)
     return out
 

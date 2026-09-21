@@ -1505,11 +1505,11 @@ def test_slack_edited_renders_the_editors_id(tmp_path):
         assert m["edited"]["user"] == m["user"]
 
 
-def test_slack_file_renders_its_ids(tmp_path):
-    """`user`, `editor` and `last_editor` on a file are rendered the same way `edited.user` and
-    `reactions.users` are: the corpus names each by address and `synth.slack_user_id` mints the id
-    Slack's own spec types `editor`/`last_editor` as (`objs_file`, `defs_user_id`). Every other
-    file field — `id`, `name`, `mimetype`, `title` — passes through unchanged.
+def test_slack_file_renders_its_owner_id(tmp_path):
+    """`user` on a file is rendered the same way `edited.user` and `reactions.users` are: the
+    corpus names it by address and `synth.slack_user_id` mints the id, confirmed live against
+    every file `search.files` serves on brekkylab.slack.com (2026-09-21). Every other file field
+    — `id`, `name`, `mimetype`, `title` — passes through unchanged.
     """
     import re
 
@@ -1530,8 +1530,6 @@ def test_slack_file_renders_its_ids(tmp_path):
                         "name": "graph.png",
                         "mimetype": "image/png",
                         "user": "ava@x.com",
-                        "editor": "bo@x.com",
-                        "last_editor": "ava@x.com",
                     }
                 ],
             }
@@ -1547,13 +1545,10 @@ def test_slack_file_renders_its_ids(tmp_path):
             "name": "graph.png",
             "mimetype": "image/png",
             "user": synth.slack_user_id("ava@x.com"),
-            "editor": synth.slack_user_id("bo@x.com"),
-            "last_editor": synth.slack_user_id("ava@x.com"),
         }
     ]
     # Slack's own `defs_user_id`, so an id Backlot mints is one the vendor's spec would accept.
-    for key in ("user", "editor", "last_editor"):
-        assert re.fullmatch(r"[UW][A-Z0-9]{2,}", files[0][key])
+    assert re.fullmatch(r"[UW][A-Z0-9]{2,}", files[0]["user"])
 
 
 def test_slack_deactivation_changes_every_slack_answer_about_a_member_and_nothing_else(tmp_path):

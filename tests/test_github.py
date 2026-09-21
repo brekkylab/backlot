@@ -4896,13 +4896,12 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
         assert (_ratelimit(code)["limit"], _ratelimit(code)["resource"]) == ("10", "code_search")
         # a caller with no credential is counted by address at 60, the anonymous code search's
         # 401 against `core`, and the two search windows close a minute out where `core`'s closes
-        # an hour out
-        assert int(_ratelimit(found)["reset"]) - int(five["reset"]) == (
-            gh.SEARCH_RATE_LIMIT_WINDOW - gh.RATE_LIMIT_WINDOW
-        )
-        assert int(_ratelimit(code)["reset"]) - int(five["reset"]) == (
-            gh.SEARCH_RATE_LIMIT_WINDOW - gh.RATE_LIMIT_WINDOW
-        )
+        # an hour out. Each window opens on its own `int(time.time())`, so two windows opened a
+        # request apart can land a second apart too if the wall clock ticks over between them;
+        # the `RATE_LIMIT_WINDOW`-vs-`SEARCH_RATE_LIMIT_WINDOW` gap dwarfs that single second.
+        search_gap = gh.SEARCH_RATE_LIMIT_WINDOW - gh.RATE_LIMIT_WINDOW
+        assert abs(int(_ratelimit(found)["reset"]) - int(five["reset"]) - search_gap) <= 1
+        assert abs(int(_ratelimit(code)["reset"]) - int(five["reset"]) - search_gap) <= 1
         anonymous = c.get("/github/user/repos")
         assert anonymous.status_code == 401
         assert _ratelimit(anonymous) == {

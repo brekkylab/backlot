@@ -4814,6 +4814,16 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
     reports is a fresh window rather than the headers' (see the route's docstring); Backlot reports
     the headers'. Exhaustion is not measured and nothing here refuses: `remaining` stops at 0 and
     `used` keeps counting.
+
+    Six more answers measured 2026-09-21, each carrying its own reference: the two search resources
+    measure a minute where `core` measures an hour (`SEARCH_RATE_LIMIT_WINDOW`); a caller with no
+    credential has no `code_search` window of its own and is reported `core`'s
+    (`rate_limit_window`); a credential that did not resolve and a path no route matches get
+    neither the five nor the version echo (`serves_rate_limit_headers`); an `Authorization` real
+    cannot parse is counted in one window of its own, apart from the address's anonymous one
+    (`rate_limit_caller`); `/rate_limit` reads `X-GitHub-Api-Version` only from a request that
+    carries an `Authorization` header (`honours_api_version`); and the route lists `resources` in
+    one order for a credential and another for a caller with none (`_RESOURCE_ORDER`).
     """
     from backlot.routers import github as gh
 
@@ -4885,7 +4895,14 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
         assert code.status_code == 200
         assert (_ratelimit(code)["limit"], _ratelimit(code)["resource"]) == ("10", "code_search")
         # a caller with no credential is counted by address at 60, the anonymous code search's
-        # 401 against `core`
+        # 401 against `core`, and the two search windows close a minute out where `core`'s closes
+        # an hour out
+        assert int(_ratelimit(found)["reset"]) - int(five["reset"]) == (
+            gh.SEARCH_RATE_LIMIT_WINDOW - gh.RATE_LIMIT_WINDOW
+        )
+        assert int(_ratelimit(code)["reset"]) - int(five["reset"]) == (
+            gh.SEARCH_RATE_LIMIT_WINDOW - gh.RATE_LIMIT_WINDOW
+        )
         anonymous = c.get("/github/user/repos")
         assert anonymous.status_code == 401
         assert _ratelimit(anonymous) == {
@@ -4934,8 +4951,9 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
         # not see; real answers it before `rate`.
         assert list(status.json()) == ["resources", "rate"]
         # A trailing slash answers 404 with a valid token, carrying none of the five ratelimit
-        # headers, the same as real answers any other path no route matches. Backlot's own
-        # `/github/nonexistent-route-zz` still carries them — #254.
+        # headers, the same as real answers any other path no route matches — including a path no
+        # route declares at all, for a credential of any kind, where the same path with no
+        # `Authorization` header carries them and counts.
         trailing = c.get("/github/rate_limit/", headers=h, follow_redirects=False)
         assert trailing.status_code == 404
         assert not any(n.startswith("x-ratelimit-") for n in trailing.headers)
@@ -4950,8 +4968,15 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
         assert unauthenticated.status_code == 200
         resources = unauthenticated.json()["resources"]
         assert (resources["core"]["limit"], resources["core"]["used"]) == (60, 2)
-        assert (resources["search"]["limit"], resources["code_search"]["limit"]) == (10, 10)
+        assert resources["search"]["limit"] == 10
+        # that caller has no `code_search` window: it reads `core`'s four numbers under both names,
+        # and `core`'s own limit rather than the 10 a token gets
+        assert resources["code_search"] == resources["core"]
         assert _ratelimit(unauthenticated)["limit"] == "60"
+        # and the two are listed in real's own order for a caller with no credential, which is not
+        # the order it lists them in for one with a token
+        assert list(resources) == ["code_search", "core", "search"]
+        assert list(status.json()["resources"]) == ["core", "search", "code_search"]
         refused = c.get("/github/rate_limit", headers={"Authorization": "Bearer nope"})
         assert refused.status_code == 401
         assert refused.json() == {
@@ -4959,12 +4984,62 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
             "documentation_url": "https://docs.github.com/rest",
             "status": "401",
         }
-        assert _ratelimit(refused)["limit"] == "60"  # counted with the anonymous callers
+        # a credential that did not resolve carries none of the five, is counted nowhere — the
+        # address's window is where it would have landed, and it stays put — and gets no echo
+        assert not any(n.startswith("x-ratelimit-") for n in refused.headers)
+        assert "x-github-api-version-selected" not in refused.headers
+        assert c.get("/github/rate_limit").json()["resources"]["core"]["used"] == 2
+
         # a search endpoint's name carries `search` past the route it serves; an empty rest and a
         # name real serves no endpoint for read `core`
         assert _ratelimit(c.get("/github/search/issues/extra-zz"))["resource"] == "search"
         assert _ratelimit(c.get("/github/search/issues/"))["resource"] == "core"
         assert _ratelimit(c.get("/github/search/nonexistent-zz"))["resource"] == "core"
+
+        # the route reads the version header from a request that carries an `Authorization` at
+        # all — an unparseable one included — and from no other: with none, `rate` is served
+        # whatever was pinned, an unsupported value is not the 400 it is everywhere else, and
+        # nothing is echoed
+        unparseable = {"Authorization": "Basic Zm9vOmJhcg=="}
+        pinned = c.get(
+            "/github/rate_limit", headers={**unparseable, "X-GitHub-Api-Version": "2026-03-10"}
+        )
+        assert "rate" not in pinned.json()
+        assert pinned.headers["x-github-api-version-selected"] == "2026-03-10"
+        assert (
+            c.get(
+                "/github/rate_limit", headers={**unparseable, "X-GitHub-Api-Version": "1999-01-01"}
+            ).status_code
+            == 400
+        )
+        for pin in ("2026-03-10", "1999-01-01"):
+            anonymous_pin = c.get("/github/rate_limit", headers={"X-GitHub-Api-Version": pin})
+            assert anonymous_pin.status_code == 200
+            assert list(anonymous_pin.json()) == ["resources", "rate"]
+            assert "x-github-api-version-selected" not in anonymous_pin.headers
+        # the same unsupported version with no credential is the 400 on any other route
+        assert c.get(repo, headers={"X-GitHub-Api-Version": "1999-01-01"}).status_code == 400
+
+        # an `Authorization` real cannot parse is counted apart from the bare anonymous calls from
+        # the same address, in ONE window rather than one per value
+        address = int(_ratelimit(c.get("/github/user/repos"))["used"])
+        first = _ratelimit(c.get("/github/user/repos", headers=unparseable))
+        second = _ratelimit(c.get("/github/user/repos", headers={"Authorization": "other-zz"}))
+        assert (first["limit"], second["limit"]) == ("60", "60")
+        assert int(second["used"]) == int(first["used"]) + 1
+        assert int(first["used"]) < address  # its own window, not the address's
+        assert int(_ratelimit(c.get("/github/user/repos"))["used"]) == address + 1
+
+        # a minute on, the two search windows are new ones where `core`'s is the one it was: real
+        # measures the search resources per minute and `core` per hour
+        windows = c.app.state.github_rate_limits
+        opened = windows.clock()
+        windows.clock = lambda: opened + gh.SEARCH_RATE_LIMIT_WINDOW + 1
+        issues = c.get("/github/search/issues", headers=h, params={"q": f"repo:{org}/rl"})
+        assert _ratelimit(issues)["used"] == "1"
+        recoded = c.get("/github/search/code", headers=h, params={"q": "extension:md"})
+        assert _ratelimit(recoded)["used"] == "1"
+        assert _ratelimit(c.get(repo, headers=h))["used"] == "5"
 
         # an hour on, the window is a new one: `used` starts over and `reset` moves by the hour
         windows = c.app.state.github_rate_limits
@@ -4974,7 +5049,7 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
         assert (rolled["used"], rolled["remaining"]) == ("1", "4999")
         assert int(rolled["reset"]) == int(now) + gh.RATE_LIMIT_WINDOW + 1 + gh.RATE_LIMIT_WINDOW
         # past the limit nothing is refused: `remaining` stops at 0 and `used` keeps counting
-        monkeypatch.setitem(gh.RATE_LIMITS, "core", gh._HourlyLimit(60, 2))
+        monkeypatch.setitem(gh.RATE_LIMITS, "core", gh._ResourceLimit(60, 2, gh.RATE_LIMIT_WINDOW))
         assert _ratelimit(c.get(repo, headers=h)) == {
             **rolled,
             "limit": "2",
@@ -5062,19 +5137,18 @@ def test_github_a_trailing_slash_is_404_not_a_redirect(gh_client, gh_admin_h, gh
     assert int(second["remaining"]) == int(first["remaining"]) - 1
 
     # the slash wins over a bad bearer: still the 404, not the credential's own 401 — and real
-    # gives that one none of the five and counts it against no window, the anonymous one included
-    bad = c.get(
-        path,
-        headers={"Authorization": "Bearer usr-not-a-real-token"},
-        follow_redirects=False,
-    )
-    assert bad.status_code == 404
-    assert bad.json() == {
-        "message": "Not Found",
-        "documentation_url": "https://docs.github.com/rest",
-        "status": "404",
-    }
-    assert not any(n.startswith("x-ratelimit-") for n in bad.headers)
+    # gives that one none of the five and counts it against no window, the anonymous one included.
+    # An `Authorization` real cannot parse is the same answer here, although it is served like an
+    # anonymous caller on a route that matches: what carries the five is having sent no header.
+    for credential in ("Bearer usr-not-a-real-token", "Basic Zm9vOmJhcg==", "justsomevalue"):
+        bad = c.get(path, headers={"Authorization": credential}, follow_redirects=False)
+        assert bad.status_code == 404
+        assert bad.json() == {
+            "message": "Not Found",
+            "documentation_url": "https://docs.github.com/rest",
+            "status": "404",
+        }
+        assert not any(n.startswith("x-ratelimit-") for n in bad.headers)
     assert int(_ratelimit(c.get(path))["used"]) == int(second["used"]) + 1
     unparseable = c.get(path, headers={"Authorization": "Basic Zm9vOmJhcg=="})
     assert unparseable.status_code == 404

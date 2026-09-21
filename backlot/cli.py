@@ -152,7 +152,7 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=True,
     context_settings={"help_option_names": ["-h", "--help"]},
-    help="Enterprise SaaS read APIs (Slack, Gmail, Drive, GitHub, Jira, Confluence, Notion, S3, "
+    help="Enterprise SaaS APIs (Slack, Gmail, Drive, GitHub, Jira, Confluence, Notion, S3, "
     "HubSpot, Linear, Fireflies) over your own corpus, with per-document ACLs.",
     epilog="Run `backlot <command> --help` for a command's own options.",
 )

@@ -16,6 +16,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.routing import Match
+from starlette.types import Scope
 
 from backlot import auth, errors, openapi, store, synth
 from backlot.acl import Acl
@@ -198,16 +199,18 @@ async def _validation_exception_handler(request: Request, exc: RequestValidation
     return JSONResponse(status_code=status_code, content=body)
 
 
-def _some_github_route_matches(scope) -> bool:
+def _some_github_route_matches(scope: Scope) -> bool:
     """Whether some mounted route matches this scope's path, whatever the method.
 
-    A 404 for a path no route matches carries neither the ratelimit headers nor the version echo —
-    see `refuse_a_trailing_slash_on_github` for what a route that DID match carries instead.
-    Measured against api.github.com 2026-09-16 and 2026-09-19, with a token and with none:
-    `/repos/{owner}/{repo}/<unmatched>` against `/repos/{owner}/{repo}/issues/<missing>`. The
-    anonymous carve-out that `refuse_a_trailing_slash_on_github` makes for its own, narrower case
-    does not generalize here — an anonymous `GET /repos/{owner}/{repo}/<unmatched>` (no trailing
-    slash) carried none of the five either, measured the same date.
+    A 404 for a path no route matches at all carries no version echo, and carries the five
+    `x-ratelimit-*` headers only for a caller that sent no credential — the same line
+    `refuse_a_trailing_slash_on_github` draws for the trailing-slash spelling of such a path, which
+    real draws for every spelling. Measured against api.github.com 2026-09-21, anonymously and
+    with a token: `/repos/psf/requests/<unmatched>`, its trailing-slash spelling and a top-level
+    `/<unmatched>` all answered 404 with no echo, where `/repos/psf/requests/issues/<missing>` — a
+    route that DOES match, on a resource that does not exist — carried both for either caller.
+    Anonymously the three carried the five (`limit` 60) and moved `used` by one apiece; with a
+    token they carried none of the five and left the token's `used` at 0.
     """
     return any(route.matches(scope)[0] is not Match.NONE for route in app.router.routes)
 
@@ -251,11 +254,16 @@ async def report_github_rate_limit(request: Request, call_next):
     so a `HEAD` runs through here as the GET it is rewritten to and counts once, as it does on real
     (`remaining` 46 → 45 across one `HEAD`, measured 2026-09-09), and the head copies the five
     with the rest of the GET's headers. A path outside `/github` gets nothing: the other vendors'
-    rate-limit answers are not measured. A 404 for a path no route matches at all gets nothing
-    either, whatever the caller's credential — see ``_some_github_route_matches``.
+    rate-limit answers are not measured. A 404 for a path no route matches at all gets them for an
+    anonymous caller, whose window is counted by address ahead of routing, and not for a
+    credentialed one, whose window a request reaching no route never touches — see
+    ``_some_github_route_matches``, and the same line drawn for the trailing-slash spelling in
+    ``refuse_a_trailing_slash_on_github``.
     """
     response = await call_next(request)
-    if request.url.path.startswith("/github") and _some_github_route_matches(request.scope):
+    if request.url.path.startswith("/github") and (
+        _some_github_route_matches(request.scope) or auth.bearer_token(request) is None
+    ):
         for name, value in github.rate_limit_headers(request, response.status_code).items():
             response.headers[name] = value
     return response

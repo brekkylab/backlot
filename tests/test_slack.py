@@ -1510,7 +1510,7 @@ def test_slack_deactivation_changes_every_slack_answer_about_a_member_and_nothin
     `deleted: true`, dropped from the membership of both kinds of channel though their messages
     stay in history, and refused `account_inactive` on their own Slack token while a non-Slack
     route still answers it. `is_forgotten` stays unserved either way, and their user object drops
-    the admin/ownership/timezone/contact fields an active member's carries. See `_user_obj` and
+    the admin/ownership/timezone/identity fields an active member's carries. See `_user_obj` and
     `slack_private_channel_members` for the measurement behind each."""
     settings = tiny_corpus(
         tmp_path,
@@ -1557,9 +1557,7 @@ def test_slack_deactivation_changes_every_slack_answer_about_a_member_and_nothin
         assert by_email["bo@acme.com"]["deleted"] is False
         assert "is_forgotten" not in by_email["bo@acme.com"]
 
-        # Measured live against a real workspace, 2026-09-21: a deactivated member's object drops
-        # `real_name`, `color`, the admin/ownership/restriction flags, `has_2fa` and the tz fields
-        # entirely, while every active member carries all of them.
+        # See _user_obj's comment for the measurement behind this set.
         active_only = {
             "real_name",
             "is_admin",

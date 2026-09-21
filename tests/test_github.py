@@ -4960,6 +4960,11 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
             "status": "401",
         }
         assert _ratelimit(refused)["limit"] == "60"  # counted with the anonymous callers
+        # a search endpoint's name carries `search` past the route it serves; an empty rest and a
+        # name real serves no endpoint for read `core`
+        assert _ratelimit(c.get("/github/search/issues/extra-zz"))["resource"] == "search"
+        assert _ratelimit(c.get("/github/search/issues/"))["resource"] == "core"
+        assert _ratelimit(c.get("/github/search/nonexistent-zz"))["resource"] == "core"
 
         # an hour on, the window is a new one: `used` starts over and `reset` moves by the hour
         windows = c.app.state.github_rate_limits

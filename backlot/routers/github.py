@@ -147,6 +147,9 @@ API_VERSION_HEADER = "X-GitHub-Api-Version"
 SELECTED_VERSION_HEADER = "X-GitHub-Api-Version-Selected"
 # The one route served by a backend that does not read the version header at all.
 CODE_SEARCH_PATH = "/github/search/code"
+SEARCH_PREFIX = "/github/search/"
+# The search endpoints real counts against the `search` resource; `code` is `CODE_SEARCH_PATH`'s.
+SEARCH_ENDPOINTS = frozenset({"commits", "issues", "labels", "repositories", "topics", "users"})
 
 
 def honours_api_version(request: Request) -> bool:
@@ -314,16 +317,25 @@ RATE_LIMITS: dict[str, _HourlyLimit] = {
 def rate_limit_resource(path: str, status_code: int) -> str:
     """The resource a request to ``path`` answered with ``status_code`` counts against.
 
-    `code_search` for code search, `search` for the other search route and `core` for everything
-    else, including the 401 code search answers a caller with no credential: that refusal is the
-    gateway's, not the code search backend's, and counts against `core` (measured: `limit: 60`,
-    `resource: core` on it, where the same route authenticated answers `limit: 10`,
+    `code_search` for code search, `search` for the other search endpoints and `core` for
+    everything else, including the 401 code search answers a caller with no credential: that
+    refusal is the gateway's, not the code search backend's, and counts against `core` (measured:
+    `limit: 60`, `resource: core` on it, where the same route authenticated answers `limit: 10`,
     `resource: code_search`), the same split ``errors.github.json_media_type`` draws for the
-    charset."""
+    charset.
+
+    A search endpoint's name carries its resource past the route: `/search/{name}/{rest}` counts
+    against `search` at `limit: 10` although no route serves it, where `/search/{name}/` with
+    nothing after the slash, a first segment real serves no endpoint for (`/search/nonexistent-zz`,
+    `/search/repositories.zz`) and `/search/code/{rest}` count against `core` at `limit: 60`
+    (measured against api.github.com 2026-09-21 with no credential, across `repositories`,
+    `issues`, `users`, `topics`, `commits` and `labels`)."""
     if path == CODE_SEARCH_PATH:
         return "core" if status_code == 401 else "code_search"
-    if path.startswith("/github/search/"):
-        return "search"
+    if path.startswith(SEARCH_PREFIX):
+        endpoint, slash, rest = path[len(SEARCH_PREFIX) :].partition("/")
+        if endpoint in SEARCH_ENDPOINTS and (not slash or rest):
+            return "search"
     return "core"
 
 

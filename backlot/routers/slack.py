@@ -356,8 +356,7 @@ def _user_obj(conn, email: str, caller: Caller) -> dict:
     # Measured live against a real workspace, 2026-09-21 (`users.list`, `users.info`): a
     # deactivated member drops `real_name`, `color`, the admin/ownership/restriction flags and the
     # tz fields entirely — not `false`/empty, absent. All 9 deactivated members carried none of
-    # those ten, and all 11 active ones (8 people, 3 bot-shaped) carried all ten — one more active
-    # member than the 2026-09-17 count above; the workspace gained a member in between.
+    # those ten, and all 11 active ones (8 people, 3 bot-shaped) carried all ten.
     if not deactivated:
         obj.update(
             {

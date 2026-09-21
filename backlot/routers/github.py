@@ -390,8 +390,9 @@ def rate_limit_caller(request: Request) -> tuple[str, bool]:
     anonymous answer measured). A bearer that does not resolve is counted with the anonymous
     callers from its address, which real does not do: its 401 for one carried none of the five and
     moved no window, where an anonymous 401 on `/user/repos` carried all five and counted (measured
-    2026-09-17). Callers of this that draw real's line themselves ask `auth.bearer_token` for the
-    presence of the header instead — see `refuse_a_trailing_slash_on_github`."""
+    2026-09-17). Callers of this that draw real's line themselves check `request.headers` for the
+    presence of `Authorization` directly instead of asking `auth.bearer_token`, which is `None` for
+    a scheme it does not parse — see `refuse_a_trailing_slash_on_github`."""
     token = auth.bearer_token(request)
     if token is not None and auth.resolve_bearer(request) is not None:
         return f"token:{token}", True

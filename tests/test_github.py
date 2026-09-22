@@ -5063,11 +5063,14 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
         assert spent == {**rolled, "limit": "2", "remaining": "0", "used": "2"}
         over = c.get(repo, headers=h)
         assert over.status_code == 403
-        admin_id = synth.github_user_id("admin")
-        assert over.json() == {
-            "message": f"API rate limit exceeded for user ID {admin_id}.",
-            "documentation_url": gh.RATE_LIMIT_EXCEEDED_DOCS,
-        }
+        # The envelope's shape is real's (`message` + `documentation_url`, no `status`), and
+        # `documentation_url` is the page `RATE_LIMITS`' own numbers come from. `message`'s exact
+        # wording for a TOKEN is not pinned here: no credential in this environment reaches a
+        # token's own cap to read it off the wire (see `_rate_limit_exceeded_message`).
+        body = over.json()
+        assert set(body) == {"message", "documentation_url"}
+        assert body["documentation_url"] == gh.RATE_LIMIT_EXCEEDED_DOCS
+        assert "rate limit exceeded" in body["message"].lower()
         assert _ratelimit(over) == spent  # pinned, not counted
         again = c.get(repo, headers=h)
         assert again.status_code == 403

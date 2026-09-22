@@ -802,9 +802,11 @@ async def unmatched_path(request: Request, rest: str) -> JSONResponse:
 
     The method is part of the URL that check reads: `GET /v1/search` and `GET /v1/pages`, both POST
     routes, and `DELETE`, `PUT`, `PATCH` and `OPTIONS` on `/v1/users/me`, a GET route, are each
-    that same 400 rather than a 405 — which is why this route takes every method rather than the
-    ones the routes above happen to declare, and why no `method_not_allowed` envelope is needed for
-    this vendor. A `HEAD` is the GET's own answer, so it reaches here only where the GET would
+    that same 400 rather than a 405 — which is why this route takes the seven methods below rather
+    than the ones the routes above happen to declare, and why no `method_not_allowed` envelope is
+    needed for this vendor. `TRACE` is the one left off: real refuses it at the front door with
+    nginx's own `405 Not Allowed` HTML page, never reaching the API, and an invented method is a
+    bare 501 — so leaving both unrouted keeps a 405 here rather than trading it for a 400. A `HEAD` is the GET's own answer, so it reaches here only where the GET would
     (`backlot.main.answer_head_as_the_get_without_its_body`), and one trailing slash is dropped
     before routing, so a slashed spelling of a served path does not land here
     (`backlot.main.serve_a_slashed_notion_path_as_the_path_without_it`).

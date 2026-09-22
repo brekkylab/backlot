@@ -149,6 +149,14 @@ def test_notion_a_method_a_route_does_not_answer_is_the_url_400(client, notion_h
     assert r.json()["code"] == "invalid_request_url"
 
 
+def test_notion_trace_is_not_one_of_the_methods_that_400(client, notion_h):
+    """The control for the row above: real refuses `TRACE` with nginx's own `405 Not Allowed` page
+    before the API reads the URL at all, so the catch-all leaves it off its methods and a `TRACE`
+    keeps the framework's 405 rather than joining the 400."""
+    assert client.request("TRACE", "/notion/v1/users/me", headers=notion_h).status_code == 405
+    assert client.request("TRACE", "/notion/v1/nope", headers=notion_h).status_code == 405
+
+
 def test_notion_one_trailing_slash_is_the_path_without_it_and_two_is_not(client, notion_h):
     """Measured: `GET /v1/users/me/` and `POST /v1/search/` answer what the slash-free spelling
     answers, where `GET /v1/users/me//` is the URL 400 — exactly one slash is dropped. Starlette

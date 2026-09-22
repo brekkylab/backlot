@@ -58,7 +58,23 @@ def connect_token_body() -> dict:
 
 
 def owns(path: str) -> bool:
-    return path.startswith(PREFIX)
+    """Whether ``path`` is under the Atlassian mount. The segment has to END there: `/atlassianx`
+    is a path of Backlot's own, and answering it in this envelope -- or with the headers
+    ``backlot.main.report_atlassian_headers`` adds -- would claim a request neither product saw."""
+    return path == PREFIX or path.startswith(f"{PREFIX}/")
+
+
+#: The one segment under the site that is Jira's REST API. Everything that is neither this nor
+#: :data:`WIKI` is the product's own web surface, which answers the HTML page rather than either
+#: API's 404: measured 2026-09-22, `/foo`, `/ex/jira/x`, `/restx/api/3/serverInfo` and `/browse/…`
+#: are `text/html`, where `/rest` and `/rest/nope/thing` are the RFC 7807 :func:`no_endpoint`.
+JIRA_REST = "/rest"
+
+
+def serves_the_jira_api(path: str) -> bool:
+    """Whether ``path`` is under Jira's REST mount, where a path no route serves is RFC 7807."""
+    vendor_path = _instance(path)
+    return vendor_path == JIRA_REST or vendor_path.startswith(f"{JIRA_REST}/")
 
 
 def is_confluence(path: str) -> bool:

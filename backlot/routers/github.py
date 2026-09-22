@@ -2764,7 +2764,12 @@ async def get_readme_for_a_directory(
     Measured 2026-09-22: `readme/Doc` on python/cpython is that directory's README at 200, a
     directory holding none is a 404 whose `documentation_url` names the directory anchor rather
     than the root one, and `readme/` — the empty directory — is the repository's own README, which
-    is why a trailing slash answers 200 here where it is a 404 on the routes around it.
+    is why a trailing slash answers 200 here where it is a 404 on the routes around it. A trailing
+    slash on the directory itself is ignored the same way (`readme/Doc/` is `Doc`'s README).
+
+    WHICH file it serves is where this and real part: real answers whatever the directory's README
+    is, `Doc/README.rst` on python/cpython among them, and this looks for `README.md` alone, as the
+    root route does. A corpus stating `docs/README.rst` gets a 404 here and a 200 there.
     """
     inside = dir.strip("/")
     if not inside:

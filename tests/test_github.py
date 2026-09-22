@@ -41,8 +41,8 @@ from tests._helpers import (
 #   branches/{branch}/            | 404 Branch not found
 #   commits/{sha}/                | 422 No commit found for SHA: {sha with the slash}
 #
-# The fourth case, a trailing slash no route matches at all, is `refuse_a_trailing_slash_on_github`
-# in `backlot.main` and was measured with #232.
+# A trailing slash no route matches at all is `refuse_a_trailing_slash_on_github` in
+# `backlot.main`, measured with #232 and unchanged here.
 
 _REF_SLASH_ROWS = [
     ("git/trees/main/", 404, "Not Found"),
@@ -158,19 +158,55 @@ def test_github_the_id_keyed_spelling_redirects_the_same_way(gh_client, gh_org, 
     assert r.headers["location"].endswith(f"/github/repositories/{rid}/contents/src")
 
 
-def test_github_a_directory_readme_is_acl_scoped(gh_client, gh_org, gh_user_tokens):
-    """The new route reads corpus content, so it answers a caller who cannot see the repository the
-    way every other route here does: the repository's own 404, not the file's."""
-    c, _ = gh_client
-    scoped = next(t for e, t in gh_user_tokens.items() if e != "admin")
-    theirs = {"Authorization": f"Bearer {scoped}"}
-    admin_sees = c.get(
-        f"/github/repos/{gh_org}/codebase/readme",
-        headers={"Authorization": f"Bearer {gh_user_tokens['admin']}"},
+def test_github_a_directory_readme_is_acl_scoped(tmp_path):
+    """The route reads corpus content, so a caller the document is not visible to gets the 404 the
+    repository's own lookup gives rather than the file. Stated in a corpus of its own, since the
+    bundled ones hold no directory README to scope."""
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "github",
+                "doc_id": "gh-acl-root",
+                "repo": "scoped",
+                "subtype": "file",
+                "path": "README.md",
+                "content": "# the repository",
+                "author_email": "owner@x.com",
+                "visibility": "public",
+            },
+            {
+                "source_type": "github",
+                "doc_id": "gh-acl-dir",
+                "repo": "scoped",
+                "subtype": "file",
+                "path": "docs/README.md",
+                "content": "# the directory",
+                "author_email": "owner@x.com",
+                "visibility": "private",
+            },
+            {
+                # a second identity for the corpus to mint a token for, so the private file above
+                # has someone it is private FROM
+                "source_type": "github",
+                "doc_id": "gh-acl-outsider",
+                "repo": "scoped",
+                "title": "unrelated",
+                "content": "x",
+                "author_email": "outsider@x.com",
+                "visibility": "public",
+                "number": 1,
+            },
+        ],
     )
-    assert admin_sees.status_code == 200
-    r = c.get(f"/github/repos/{gh_org}/codebase/readme/src", headers=theirs)
-    assert r.status_code in (403, 404), r.text
+    with client_for(s, reload=True) as c:
+        admin = {"Authorization": f"Bearer {s.admin_token}"}
+        org = c.get("/_meta/users", headers=admin).json()["org"]
+        tokens = yaml.safe_load(s.tokens_path.read_text())["users"]
+        outsider = next(u["token"] for u in tokens if u["email"] != "owner@x.com")
+        url = f"/github/repos/{org}/scoped/readme/docs"
+        assert c.get(url, headers=admin).json()["path"] == "docs/README.md"
+        assert c.get(url, headers={"Authorization": f"Bearer {outsider}"}).status_code == 404
 
 
 def test_github_the_redirect_does_not_precede_the_repository(gh_client, gh_org, gh_admin_h):

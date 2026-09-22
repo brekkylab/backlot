@@ -287,7 +287,7 @@ def _would_redirect_to_the_slash_free_path(request: Request) -> bool:
     matches the empty string — answers its own trailing slash and never reaches the redirect, the
     same as real answers it. What that route then makes of the slash is its own: `contents/{path}/`
     with a path in it is a 302 of real's own (:func:`backlot.routers.github.get_contents`), which is
-    a route's answer rather than a routing rule, and the only redirect real sends here.
+    a route's answer rather than a routing rule, and the one redirect this server sends.
     """
     scope = request.scope
     if _some_github_route_matches(scope):
@@ -305,8 +305,8 @@ async def refuse_a_trailing_slash_on_github(request: Request, call_next):
     answers it is whichever route matches the path as sent. A route ending in a path parameter
     absorbs the slash as an empty segment — `GET /repos/{owner}/{repo}/contents/` is the root
     listing's own 200, like `/contents` beside it — and every other route simply does not match, so
-    the request gets
-    the same 404 a path with no route at all gets, ahead of a bad bearer's own 401. Measured against
+    the request gets the same 404 a path with no route at all gets, ahead of a bad bearer's own 401.
+    Measured against
     api.github.com on 2026-09-15, 2026-09-16 and 2026-09-17: 404 for `/repos/{owner}/{repo}/`,
     `/repos/{owner}/{repo}/pulls/`, `/orgs/{org}/`, `/orgs/{org}/repos/`, `/user/repos/`,
     `/rate_limit/`, and for the id-keyed spellings of the first four — `/repositories/{id}/`,

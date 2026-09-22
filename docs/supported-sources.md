@@ -352,7 +352,16 @@ exception is `?session`: CreateSession is for directory buckets only and real S3
 the listing on a general purpose bucket, so Backlot does too. Two sub-resources at once are
 `InvalidArgument`, as on real S3, and an unknown query key is ignored, as on real S3.
 
-Every call is SigV4-signed; see [auth.md](auth.md).
+A method no operation above serves answers what real answers: the 405 that names the method and
+whether the resource is a `BUCKET`, an `OBJECT` or the `SERVICE`, the 400 an `OPTIONS` without an
+`Origin` gets from real's CORS front end and the 403 it gets with one, the 412 a bucket `POST` gets
+and the 400 a body-less bucket `PUT` gets. The three real answers by writing — `DELETE` on either
+path, and a `PUT` carrying a body — are `NotImplemented` (501), since the corpus is served as it was
+imported. The `Allow` on a 405 names what Backlot serves rather than real's own methods.
+
+Every call that reads is SigV4-signed; see [auth.md](auth.md). The method refusals above are not,
+because real reaches the method before the credential: an unsigned `PATCH` and an unsigned
+`OPTIONS` answer what a signed one answers.
 
 ### Slack — `/slack/api`
 

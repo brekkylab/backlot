@@ -3,7 +3,8 @@
 Path-style endpoint for a client: ``http://<host>/s3`` (boto3: ``endpoint_url=".../s3"`` with
 ``addressing_style=path``; mirage: ``S3Config(endpoint_url=".../s3", path_style=True)``). Auth is
 full AWS SigV4 (``backlot.auth.resolve_sigv4``) against a per-caller access-key/secret derived from a
-bearer token; the admin/service token's key sees everything, a user's key is ACL-filtered.
+bearer token; the admin/service token's key sees everything, a user's key is ACL-filtered. A method
+this router does not serve is refused before any of that, as real refuses one.
 Responses are S3 XML (namespace ``http://s3.amazonaws.com/doc/2006-03-01/``) or raw object bytes;
 errors use the S3 ``<Error>`` envelope.
 
@@ -22,6 +23,8 @@ key-prefix convention surfaced via ListObjectsV2's ``delimiter``/``CommonPrefixe
 from __future__ import annotations
 
 import base64
+import contextvars
+import hashlib
 import re
 from xml.sax.saxutils import escape
 
@@ -149,6 +152,12 @@ _ERR_STATUS = {
     # "A header you provided implies functionality that is not implemented. HTTP Status Code: 501"
     # — S3 API reference, the Error data type's code table.
     "NotImplemented": 501,
+    # The five a method this router does not serve answers with, each measured 2026-09-22.
+    "MethodNotAllowed": 405,
+    "PreconditionFailed": 412,
+    "BadRequest": 400,
+    "IllegalLocationConstraintException": 400,
+    "AccessForbidden": 403,
 }
 
 # The query keys that select an operation other than the listing at a bucket's path, and other
@@ -221,13 +230,40 @@ def _xml(body: str, status: int = 200, headers: dict | None = None) -> Response:
     )
 
 
+# One request id pair per request, so the headers and the error body name the same one. A context
+# variable rather than an argument because `_error` is reached from helpers that read the query
+# string and never the request (`_argument_error`, `_parse_bucket_params`), and the pair is the
+# request's rather than any one refusal's. `backlot.main.answer_s3_with_request_ids` sets it and
+# puts the same pair on every response's headers.
+REQUEST_IDS: contextvars.ContextVar[tuple[str, str] | None] = contextvars.ContextVar(
+    "s3_request_ids", default=None
+)
+
+
+def request_ids(method: str, path: str, query: str) -> tuple[str, str]:
+    """``(x-amz-request-id, x-amz-id-2)`` for one request, at the widths real S3 sends.
+
+    Measured 2026-09-22 against `s3.<region>.amazonaws.com` over twenty-five response shapes: both
+    ride every answer, a success and a refusal alike, the id 16 uppercase hex characters and the
+    extended id 96 of base64. Seeded from the request rather than randomised, so a corpus served
+    twice answers the same pair, which is what an ETag and a synthesised id already do here.
+    """
+    raw = hashlib.shake_256(f"s3-req:{method} {path}?{query}".encode()).digest(80)
+    return raw[:8].hex().upper(), base64.b64encode(raw[8:]).decode("ascii")
+
+
 def _error(
     code: str, message: str, resource: str = "", extra: str = "", headers: dict | None = None
 ) -> Response:
-    body = (
-        f"<Error><Code>{code}</Code><Message>{escape(message)}</Message>"
-        f"<Resource>{escape(resource)}</Resource>{extra}</Error>"
-    )
+    ids = REQUEST_IDS.get()
+    # Real names them last, after the members that describe the failure (measured over eight error
+    # bodies: `NoSuchBucket`, `NoSuchKey`, `InvalidArgument`, `MethodNotAllowed`, `BadRequest`,
+    # `PreconditionFailed`, `IllegalLocationConstraintException` and `AccessForbidden`).
+    tail = f"<RequestId>{ids[0]}</RequestId><HostId>{ids[1]}</HostId>" if ids else ""
+    # An error real sends about no particular resource carries no element for one: its CORS 400
+    # and its method 405 name the method and the resource TYPE and nothing else.
+    named = f"<Resource>{escape(resource)}</Resource>" if resource else ""
+    body = f"<Error><Code>{code}</Code><Message>{escape(message)}</Message>{named}{extra}{tail}</Error>"
     return _xml(body, status=_ERR_STATUS.get(code, 400), headers=headers)
 
 
@@ -425,6 +461,13 @@ async def list_buckets(request: Request):
         f'<ListAllMyBucketsResult xmlns="{NS}">{_owner_xml(request)}'
         f"<Buckets>{items}</Buckets></ListAllMyBucketsResult>"
     )
+
+
+# What this server serves at each path, which is what its `Allow` names — real names its own
+# methods there (`HEAD, DELETE, POST, GET, PUT` on a bucket), and naming those would tell a client
+# about methods this server refuses. The sub-resource 405 already draws that line.
+_ALLOW_BUCKET = "GET, HEAD"
+_ALLOW_OBJECT = "GET, HEAD"
 
 
 @router.head("/{bucket}")
@@ -934,8 +977,6 @@ async def object_get(request: Request, bucket: str, key: str):
         "ETag": synth.s3_etag(row["key"], row["content"]),
         "Last-Modified": synth.s3_http_date(ts),
         "Accept-Ranges": "bytes",
-        # Seeded from the object's own address, which is what identifies the object being served.
-        "x-amz-request-id": synth._digest(f"s3-req:{row['bucket']}/{row['key']}")[:16].upper(),
     }
     ctype = row["content_type"] or "text/plain"
     # Set Content-Type via the headers dict, not the `media_type=` kwarg: Starlette auto-appends
@@ -988,3 +1029,136 @@ def _parse_range(header: str, total: int):
     if start >= total or start > end:
         return None
     return start, min(end, total - 1)
+
+
+# --- methods this router does not serve -----------------------------------------------------
+#
+# A method with no route reached Starlette's own 405 before this module ran: one JSON body for all
+# of them, and an `Allow` naming whichever route Starlette matched first rather than what the path
+# serves. Real answers each method its own way, so each is declared here and answered with the
+# error real sends. Measured 2026-09-22 against `s3.<region>.amazonaws.com`, path-style, against a
+# throwaway bucket created for the probe and deleted at its end:
+#
+#   request                     real
+#   ----------------------------|--------------------------------------------------------------
+#   PATCH, POST on a key        | 405 MethodNotAllowed, `<Method>`, `<ResourceType>OBJECT`
+#   PATCH on a bucket           | 405 MethodNotAllowed, `<ResourceType>BUCKET`
+#   any of the four at the root | 405 MethodNotAllowed, `<ResourceType>SERVICE`, `Allow: GET`
+#   POST on a bucket            | 412 PreconditionFailed, `<Condition>` naming multipart/form-data
+#   PUT on a bucket, no body    | 400 IllegalLocationConstraintException
+#   OPTIONS, no `Origin`        | 400 BadRequest, "Insufficient information..."
+#   OPTIONS with an `Origin`    | 403 AccessForbidden, the CORS message for that path
+#   DELETE, and a PUT carrying a body | the write itself: 204, or 200 for an object PUT
+#
+# The three that mutate are the three Backlot does not serve, so they answer `NotImplemented`
+# (501), the code this router already gives an operation it does not implement. The rest are real's
+# own answers. Two deliberate differences, both stated where they are made: the `Allow` names what
+# Backlot serves rather than what real serves, which is what the sub-resource 405 already does, and
+# a multipart `POST` on a bucket is refused as a non-multipart one is, since an upload is a write.
+#
+# No credential is resolved here, because real answers the method first: an unsigned `PATCH` on a
+# key and at the root answered the same 405 as a signed one, and an unsigned `OPTIONS` the same 400
+# and 403 (measured, same date).
+
+_METHOD_NOT_ALLOWED = "The specified method is not allowed against this resource."
+_CORS_NEEDS_ORIGIN = "Insufficient information. Origin request header needed."
+_CORS_DISABLED = "CORSResponse: CORS is not enabled for this bucket."
+_CORS_NO_BUCKET = "CORSResponse: Bucket not found"
+_WRITE_IS_NOT_SERVED = (
+    "A method you provided writes to the corpus, which this server does not implement: "
+)
+
+
+def _method_type(method: str, resource_type: str) -> str:
+    return f"<Method>{method}</Method><ResourceType>{resource_type}</ResourceType>"
+
+
+def _cors_preflight(request: Request, resource_type: str, message: str) -> Response:
+    """Real's answer to an `OPTIONS`, which its CORS front end gives before anything reads the path.
+
+    Without an `Origin` it is the same 400 on a bucket, a key and the service root; with one it is
+    a 403 whose message says which way the lookup failed, and whose `ResourceType` is `BUCKET` on
+    all three (measured, the service root included)."""
+    if request.headers.get("origin") is None:
+        return _error("BadRequest", _CORS_NEEDS_ORIGIN)
+    return _error("AccessForbidden", message, extra=_method_type("OPTIONS", resource_type))
+
+
+def _refuse_write(method: str, resource: str) -> Response:
+    return _error("NotImplemented", _WRITE_IS_NOT_SERVED + method, resource)
+
+
+@router.api_route(
+    "", methods=["PUT", "POST", "DELETE", "PATCH", "OPTIONS"], include_in_schema=False
+)
+@router.api_route(
+    "/", methods=["PUT", "POST", "DELETE", "PATCH", "OPTIONS"], include_in_schema=False
+)
+async def service_method_refusal(request: Request) -> Response:
+    """The service root serves `ListBuckets` alone, and real refuses every other method there with
+    one 405 naming `SERVICE` (`PUT`, `POST`, `DELETE` and `PATCH` all measured)."""
+    if request.method == "OPTIONS":
+        return _cors_preflight(request, "BUCKET", _CORS_NO_BUCKET)
+    return _error(
+        "MethodNotAllowed",
+        _METHOD_NOT_ALLOWED,
+        extra=_method_type(request.method, "SERVICE"),
+        headers={"Allow": "GET"},
+    )
+
+
+@router.api_route(
+    "/{bucket}", methods=["PUT", "POST", "DELETE", "PATCH", "OPTIONS"], include_in_schema=False
+)
+async def bucket_method_refusal(request: Request, bucket: str) -> Response:
+    """A bucket path takes four methods on real and this serves none of them: `PUT` creates the
+    bucket, `DELETE` removes it, `POST` is a form upload and only `PATCH` is refused as a method at
+    all. Each answers what real answers, except the two writes."""
+    method = request.method
+    if method == "OPTIONS":
+        return _cors_preflight(request, "BUCKET", _CORS_DISABLED)
+    if method == "PATCH":
+        return _error(
+            "MethodNotAllowed",
+            _METHOD_NOT_ALLOWED,
+            extra=_method_type("PATCH", "BUCKET"),
+            headers={"Allow": _ALLOW_BUCKET},
+        )
+    if method == "POST":
+        # Real refuses a bucket POST that is not a form upload before reading anything else; a
+        # multipart one is the upload itself, which is a write, so it is refused here as well.
+        return _error(
+            "PreconditionFailed",
+            "At least one of the pre-conditions you specified did not hold",
+            extra="<Condition>Bucket POST must be of the enclosure-type multipart/form-data</Condition>",
+        )
+    if method == "PUT" and not int(request.headers.get("content-length") or 0):
+        # A `PUT` with no body names no location constraint, which a regional endpoint refuses
+        # before it would have created anything.
+        return _error(
+            "IllegalLocationConstraintException",
+            "The unspecified location constraint is incompatible for the region specific endpoint "
+            "this request was sent to.",
+        )
+    return _refuse_write(method, f"/{bucket}")
+
+
+@router.api_route(
+    "/{bucket}/{key:path}",
+    methods=["PUT", "POST", "DELETE", "PATCH", "OPTIONS"],
+    include_in_schema=False,
+)
+async def object_method_refusal(request: Request, bucket: str, key: str) -> Response:
+    """A key path takes `PUT` and `DELETE` on real, both writes, and refuses `PATCH` and `POST`
+    with the 405 that names `OBJECT`."""
+    method = request.method
+    if method == "OPTIONS":
+        return _cors_preflight(request, "BUCKET", _CORS_DISABLED)
+    if method in ("PATCH", "POST"):
+        return _error(
+            "MethodNotAllowed",
+            _METHOD_NOT_ALLOWED,
+            extra=_method_type(method, "OBJECT"),
+            headers={"Allow": _ALLOW_OBJECT},
+        )
+    return _refuse_write(method, f"/{bucket}/{key}")

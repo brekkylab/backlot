@@ -250,6 +250,27 @@ async def echo_github_api_version(request: Request, call_next):
 
 
 @app.middleware("http")
+async def answer_s3_with_request_ids(request: Request, call_next):
+    """Put `x-amz-request-id` and `x-amz-id-2` on every `/s3` answer, and hand the router the same
+    pair for the body of an error.
+
+    Middleware for the reason the GitHub rate-limit headers are: the pair rides answers no route
+    handler builds, the exception handlers' refusals among them, and real sends it on every
+    response it makes (measured 2026-09-22 over twenty-five shapes, a success and a refusal alike).
+    The pair is set before the route runs so `backlot.routers.s3._error` writes the same one into
+    `<RequestId>` and `<HostId>`, which real repeats there.
+    """
+    if not request.url.path.startswith("/s3"):
+        return await call_next(request)
+    ids = s3.request_ids(request.method, request.url.path, request.url.query)
+    s3.REQUEST_IDS.set(ids)
+    response = await call_next(request)
+    response.headers.setdefault("x-amz-request-id", ids[0])
+    response.headers.setdefault("x-amz-id-2", ids[1])
+    return response
+
+
+@app.middleware("http")
 async def report_github_rate_limit(request: Request, call_next):
     """Put the five `x-ratelimit-*` headers on the `/github` answers real carries them on, 200 and
     error alike, and count each against the caller's window for the resource (see

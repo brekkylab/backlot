@@ -65,6 +65,189 @@ def _sign_get(base_url, path, token, *, tamper=False, extra_headers=None, method
     return url, headers
 
 
+def _signed(base_url, path, token, method="GET", extra_headers=None, body=None):
+    """The response to a signed request, whatever its status — the refusals below are the subject,
+    so an exception for a 4xx would hide them."""
+    import httpx
+
+    url, headers = _sign_get(base_url, path, token, method=method, extra_headers=extra_headers)
+    return httpx.request(method, url, headers=headers, content=body)
+
+
+# The pair real puts on every answer, and the refusal it gives a method this router does not serve.
+# Both measured 2026-09-22 against `s3.<region>.amazonaws.com`, path-style, against a throwaway
+# bucket created for the probe and deleted at its end.
+
+_ID_ROWS = [
+    ("GET", "/s3/", 200),
+    ("HEAD", "/s3/eng-artifacts", 200),
+    ("GET", "/s3/eng-artifacts?list-type=2", 200),
+    ("GET", "/s3/eng-artifacts?location", 200),
+    ("GET", "/s3/eng-artifacts?uploads", 200),
+    ("GET", "/s3/no-such-bucket", 404),
+    ("GET", "/s3/eng-artifacts?versioning", 501),
+    ("GET", "/s3/eng-artifacts?acl&versioning", 400),
+    ("PATCH", "/s3/eng-artifacts", 405),
+]
+
+
+@pytest.mark.parametrize("method, path, status", _ID_ROWS, ids=[r[1] for r in _ID_ROWS])
+def test_s3_every_answer_carries_the_request_id_pair(live_server, method, path, status):
+    """Measured: real sends `x-amz-request-id` (16 characters) and `x-amz-id-2` (96) on every
+    response, a success and a refusal alike, and botocore reads both into `ResponseMetadata`."""
+    base_url, settings = live_server
+    r = _signed(base_url, path, settings.admin_token, method=method)
+    assert r.status_code == status
+    assert len(r.headers["x-amz-request-id"]) == 16
+    assert len(r.headers["x-amz-id-2"]) == 96
+
+
+def test_s3_an_error_body_ends_with_the_pair_the_headers_carry(live_server):
+    """Measured: an error body repeats the pair as its last two members, so a caller reading the
+    body and a caller reading the headers report the same id for support."""
+    base_url, settings = live_server
+    r = _signed(base_url, "/s3/no-such-bucket", settings.admin_token)
+    body = r.text
+    assert body.rstrip().endswith(
+        f"<RequestId>{r.headers['x-amz-request-id']}</RequestId>"
+        f"<HostId>{r.headers['x-amz-id-2']}</HostId></Error>"
+    )
+
+
+def test_s3_the_same_request_gets_the_same_pair_and_another_request_a_different_one(live_server):
+    """The pair is seeded from the request, so a corpus served twice answers the same id, as its
+    ETags and its synthesised ids already do."""
+    base_url, settings = live_server
+    first = _signed(base_url, "/s3/eng-artifacts?location", settings.admin_token)
+    again = _signed(base_url, "/s3/eng-artifacts?location", settings.admin_token)
+    other = _signed(base_url, "/s3/eng-artifacts?uploads", settings.admin_token)
+    assert first.headers["x-amz-request-id"] == again.headers["x-amz-request-id"]
+    assert first.headers["x-amz-id-2"] == again.headers["x-amz-id-2"]
+    assert first.headers["x-amz-request-id"] != other.headers["x-amz-request-id"]
+
+
+_REFUSAL_ROWS = [
+    # path, method, status, code, a member of the body, the Allow this server sends
+    ("/s3/eng-artifacts", "PATCH", 405, "MethodNotAllowed", "<ResourceType>BUCKET</", "GET, HEAD"),
+    (
+        "/s3/eng-artifacts",
+        "POST",
+        412,
+        "PreconditionFailed",
+        "multipart/form-data</Condition>",
+        None,
+    ),
+    (
+        "/s3/eng-artifacts",
+        "PUT",
+        400,
+        "IllegalLocationConstraintException",
+        "location constraint",
+        None,
+    ),
+    ("/s3/eng-artifacts", "OPTIONS", 400, "BadRequest", "Origin request header needed.", None),
+    (
+        "/s3/eng-artifacts/docs/runbook.md",
+        "PATCH",
+        405,
+        "MethodNotAllowed",
+        "<ResourceType>OBJECT</",
+        "GET, HEAD",
+    ),
+    (
+        "/s3/eng-artifacts/docs/runbook.md",
+        "POST",
+        405,
+        "MethodNotAllowed",
+        "<Method>POST</Method>",
+        "GET, HEAD",
+    ),
+    (
+        "/s3/eng-artifacts/docs/runbook.md",
+        "OPTIONS",
+        400,
+        "BadRequest",
+        "Origin request header needed.",
+        None,
+    ),
+    ("/s3/", "PATCH", 405, "MethodNotAllowed", "<ResourceType>SERVICE</", "GET"),
+    ("/s3/", "PUT", 405, "MethodNotAllowed", "<ResourceType>SERVICE</", "GET"),
+    ("/s3/", "OPTIONS", 400, "BadRequest", "Origin request header needed.", None),
+]
+
+
+@pytest.mark.parametrize(
+    "path, method, status, code, member, allow",
+    _REFUSAL_ROWS,
+    ids=[f"{r[1]}-{r[0].rsplit('/', 1)[-1] or 'root'}" for r in _REFUSAL_ROWS],
+)
+def test_s3_a_method_this_router_does_not_serve_answers_reals_own_refusal(
+    live_server, path, method, status, code, member, allow
+):
+    """Each row measured. The body is XML on every one, where Starlette's own 405 answered JSON,
+    and the `Allow` names what this server serves rather than real's own methods, which is the line
+    the sub-resource 405 already draws."""
+    base_url, settings = live_server
+    r = _signed(base_url, path, settings.admin_token, method=method)
+    assert r.status_code == status
+    assert r.headers["content-type"] == "application/xml"
+    assert f"<Code>{code}</Code>" in r.text and member in r.text
+    assert r.headers.get("allow") == allow
+
+
+@pytest.mark.parametrize(
+    "path, method",
+    [
+        ("/s3/eng-artifacts", "DELETE"),
+        ("/s3/eng-artifacts/docs/runbook.md", "DELETE"),
+        ("/s3/eng-artifacts/docs/runbook.md", "PUT"),
+    ],
+)
+def test_s3_a_write_is_refused_as_not_implemented(live_server, path, method):
+    """Real answers these by doing the write: 204 for either `DELETE`, 200 for an object `PUT`.
+    This server serves a corpus it does not change, so they get the code it already gives an
+    operation it does not implement rather than a status that claims the write happened."""
+    base_url, settings = live_server
+    r = _signed(base_url, path, settings.admin_token, method=method)
+    assert r.status_code == 501
+    assert "<Code>NotImplemented</Code>" in r.text
+
+
+@pytest.mark.parametrize(
+    "path, message",
+    [
+        ("/s3/eng-artifacts", "CORS is not enabled for this bucket."),
+        ("/s3/eng-artifacts/docs/runbook.md", "CORS is not enabled for this bucket."),
+        ("/s3/", "Bucket not found"),
+    ],
+)
+def test_s3_an_options_carrying_an_origin_answers_the_cors_refusal(live_server, path, message):
+    """Measured: with an `Origin` the answer is a 403 whose message says which way the CORS lookup
+    failed, and whose `ResourceType` is `BUCKET` on all three paths, the service root included."""
+    base_url, settings = live_server
+    r = _signed(
+        base_url,
+        path,
+        settings.admin_token,
+        method="OPTIONS",
+        extra_headers={"Origin": "https://example.invalid"},
+    )
+    assert r.status_code == 403
+    assert "<Code>AccessForbidden</Code>" in r.text and message in r.text
+    assert "<ResourceType>BUCKET</ResourceType>" in r.text
+
+
+def test_s3_the_method_is_refused_before_the_credential(live_server):
+    """Measured: an unsigned `PATCH` answers the same 405 a signed one does, at a key path and at
+    the service root, so real reaches the method before it reads the credential. Every other route
+    here resolves SigV4 first, which is why this one says so."""
+    import httpx
+
+    base_url, _ = live_server
+    r = httpx.request("PATCH", f"{base_url}/s3/eng-artifacts")
+    assert r.status_code == 405 and "<Code>MethodNotAllowed</Code>" in r.text
+
+
 def test_s3_unknown_access_key_rejected(live_server):
     import urllib.request
 

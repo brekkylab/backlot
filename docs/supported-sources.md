@@ -321,8 +321,8 @@ with nginx's own 405 page. One trailing slash is not part of it — `users/me/` 
 served as `users/me`, where a second slash is a segment and gets the 400 — and a `HEAD` is the
 `GET` with the body left off. A credential that is not `Bearer <token>` — no header, no scheme,
 `Basic`, or GitHub's legacy `token <t>` — is refused by naming the format, where a bearer whose
-token does not resolve is `API token is invalid.`. Every refusal carries a `request_id` in the body
-and `x-notion-request-id` on the response, one value; real's differs per response and this one is
+token does not resolve is `API token is invalid.`. Each refusal named here carries a `request_id` in the
+body and `x-notion-request-id` on the response, one value; real's differs per response and this one is
 derived from the request, so a corpus served twice answers the same id.
 
 | Endpoint | Notes |

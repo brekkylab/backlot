@@ -812,7 +812,8 @@ async def unmatched_path(request: Request, rest: str) -> JSONResponse:
     (`backlot.main.serve_a_slashed_notion_path_as_the_path_without_it`).
 
     Real's own root, `/`, is the one URL this does not reproduce: it is a 302 to the marketing
-    site, a page Backlot does not serve, so `/notion` and `/notion/` keep the answer an unserved
-    URL gets.
+    site, a page Backlot does not serve. `/notion/` gets the answer an unserved URL gets, and
+    `/notion` is Starlette's 307 to it — the one path under `/notion` where its slash redirect can
+    still fire, since this route matches every other.
     """
     return _error(request, 400, "invalid_request_url", "Invalid request URL.")

@@ -357,8 +357,9 @@ async def serve_a_slashed_notion_path_as_the_path_without_it(request: Request, c
     own `redirect_slashes` never sees these paths for the same reason, and its 307 was not what
     real sends either.
 
-    The vendor root is left alone: `/notion/` keeps the 400 every unserved URL gets, where real's
-    `/` is a 302 to its marketing site — a page this server does not serve at all.
+    The vendor root is left alone: `/notion/` keeps the 400 every unserved URL gets, and `/notion`
+    is Starlette's own 307 to that, where real's `/` is a 302 to its marketing site — a page this
+    server does not serve at all.
 
     GitHub's trailing slash is the opposite rule and has its own middleware above; the two are
     measured separately because the vendors answer differently.

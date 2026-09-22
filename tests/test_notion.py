@@ -143,7 +143,8 @@ _WRONG_METHOD_ROWS = [
 def test_notion_a_method_a_route_does_not_answer_is_the_url_400(client, notion_h, method, path):
     """Measured: the method is part of the URL Notion checks. `GET` on the two POST routes and
     `DELETE`, `PUT`, `PATCH` and `OPTIONS` on a GET route are each `invalid_request_url` at 400,
-    not a 405 — so the catch-all takes every method rather than the ones the routes declare."""
+    not a 405 — so the catch-all takes those seven methods rather than the ones the routes
+    declare."""
     r = client.request(method, path, headers=notion_h)
     assert r.status_code == 400, (method, path)
     assert r.json()["code"] == "invalid_request_url"
@@ -172,14 +173,17 @@ def test_notion_one_trailing_slash_is_the_path_without_it_and_two_is_not(client,
     assert twice.status_code == 400 and twice.json()["code"] == "invalid_request_url"
     root = client.get("/notion/", headers=notion_h, follow_redirects=False)
     assert root.status_code == 400 and root.json()["code"] == "invalid_request_url"
+    bare = client.get("/notion", headers=notion_h, follow_redirects=False)
+    assert bare.status_code == 307 and bare.headers["location"].endswith("/notion/")
 
 
 def test_notion_a_head_is_the_get_without_its_body(client, notion_h):
     """Measured with `curl -I` beside each `GET` the same minute: `HEAD /v1/users/me` is the
     credential's 401 and `HEAD /v1/nonexistent_thing/xyz` the URL's 400, each carrying the GET
     body's own `content-length` and `content-type` (178 and 145 bytes) and nothing in the body.
-    FastAPI's `APIRoute` answered every one of these 405, which cannot tell a served URL from an
-    unserved one."""
+    FastAPI's `APIRoute` answered a `HEAD` on a served path with 405 whatever the GET would have
+    answered, and an unserved one with the framework's 404: neither tells a served URL from one
+    this server does not have."""
     rows = [
         ("/notion/v1/users/me", {"Notion-Version": DATA_SOURCES_VERSION}),
         ("/notion/v1/nonexistent_thing/xyz", notion_h),

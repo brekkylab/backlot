@@ -380,12 +380,11 @@ class RateLimitWindows:
     inside it. The windows measured stayed put across the requests inside them and differed between
     credentials and between resources (an anonymous caller's `core` and `search` resets 1552 seconds
     apart), which is a window per pair opened by use rather than one shared clock. `remaining`
-    stops at 0 and the reported `used` is capped at `limit` — see :func:`rate_limit_refusal` for
-    the 403 real answers once a window is spent, on api.github.com 2026-09-17: the 61st anonymous
-    `core` request in the hour, and three more after it, each answered `used: 60` pinned at
-    `limit: 60`, never above it. One process, one set of windows: the server runs a single worker,
-    and a client run against several would see each one's count. ``clock`` is `time.time` unless a
-    test hands in another to move a window."""
+    stops at 0 and the reported `used` is capped at `limit` — see :func:`rate_limit_refusal` and
+    :func:`_rate_limit_exceeded_message` for the measurement behind the 403 real answers once a
+    window is spent. One process, one set of windows: the server runs a single worker, and a
+    client run against several would see each one's count. ``clock`` is `time.time` unless a test
+    hands in another to move a window."""
 
     def __init__(self, clock: Callable[[], float] = time.time):
         self.clock = clock

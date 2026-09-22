@@ -705,11 +705,11 @@ def gh_admin_h(gh_user_tokens):
 def _fresh_github_rate_limits(gh_client):
     """A window per test, not per module.
 
-    `gh_client` is module-scoped — one `app.state`, shared by every test in this file — so with
-    the refusal `rate_limit_refusal` now answers, a shared window carries one test's requests into
-    the next and trips it on volume no single test drove itself: `code_search`'s 10-a-minute cap
-    is the one this file's own tests cross first, well under real's cap, purely from running in
-    the same window as their neighbours."""
+    `gh_client` is module-scoped — one `app.state`, shared by every test in this file — so with the
+    refusal `rate_limit_refusal` answers, a shared window carries one test's requests into the next
+    and trips it on volume no single test drove itself: `code_search`'s 10-a-minute cap is the one
+    this file's own tests cross first, well under real's cap, purely from running in the same
+    window as their neighbours."""
     from backlot.routers.github import RateLimitWindows
 
     c, _ = gh_client

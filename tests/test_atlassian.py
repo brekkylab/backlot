@@ -2759,3 +2759,15 @@ def test_atlassian_the_mount_root_answers_rather_than_redirecting_to_itself(clie
     r = client.get("/atlassian/", headers=admin_h, follow_redirects=False)
     assert r.status_code == 404
     assert r.json()["detail"] == "No endpoint GET /."
+
+
+def test_confluence_escapes_only_what_xml_requires_in_the_url_it_echoes(client, admin_h):
+    """Measured 2026-09-22: `&` in the path comes back `&amp;` in the XML message and `'` comes
+    back as itself. The JSON shape escapes neither, because JSON asks for neither."""
+    xml = client.get("/atlassian/wiki/rest/api/nope&x'quote", headers=admin_h)
+    assert xml.headers["content-type"] == errors_atlassian.JAXRS_XML_MEDIA_TYPE
+    assert "nope&amp;x'quote" in xml.text
+    as_json = client.get(
+        "/atlassian/wiki/rest/api/nope&x'quote", headers={**admin_h, "Accept": "application/json"}
+    )
+    assert as_json.json()["message"].endswith("nope&x'quote")

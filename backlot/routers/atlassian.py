@@ -3,6 +3,10 @@
 
 Auth: HTTP Basic ``email:api_token`` (or Bearer). Jira issue descriptions are ADF;
 Confluence bodies are storage-format XHTML — matching the real APIs.
+
+Beside the routes, this module answers what the two products answer AROUND them: an `OPTIONS`, a
+path neither serves and a method neither declares (:func:`unmatched_path`), and the headers every
+answer carries (:func:`vendor_headers`, put on by ``backlot.main.report_atlassian_headers``).
 """
 
 from __future__ import annotations
@@ -2080,7 +2084,7 @@ _JIRA_BURST_BUCKETS = (
     ("/rest/api/{version}/project/{key}/role/{id}", (200, 500)),
 )
 _JIRA_BURST_PATTERNS = tuple(
-    (errors_atlassian._route_regex(t), bucket) for t, bucket in _JIRA_BURST_BUCKETS
+    (errors_atlassian.route_regex(t), bucket) for t, bucket in _JIRA_BURST_BUCKETS
 )
 
 
@@ -2155,7 +2159,7 @@ CONFLUENCE_DEPRECATION = {
 }
 _NO_DEPRECATION = ("/wiki/rest/api/search", "/wiki/rest/api/content/{id}/restriction/byOperation")
 _NO_DEPRECATION_PATTERNS = tuple(
-    errors_atlassian._route_regex(t)
+    errors_atlassian.route_regex(t)
     for t in (*_NO_DEPRECATION, "/wiki/rest/api/space/{key}/permission")
 )
 

@@ -9,6 +9,11 @@ scalar ``message`` are emitted, since one envelope serves both APIs here.
 One envelope, but not the ONLY one: a refusal real answers in a shape measured to differ carries
 its own body on an :class:`AtlassianError` and is served verbatim. Reading a query parameter is
 where the two products visibly part — see :func:`integer_conversion_failure`.
+
+Nor is the body always JSON. A path neither product serves is Jira's RFC 7807 :func:`no_endpoint`,
+Confluence's JAX-RS 404 in whichever of two shapes `Accept` asks for (:func:`jaxrs_not_found`), or
+the product's HTML page (:data:`HTML_NOT_FOUND`) — three shapes measured on the same day, each one
+what that URL answers rather than what this module would otherwise send.
 """
 
 from __future__ import annotations
@@ -316,7 +321,7 @@ _JIRA_ALLOW = (
 )
 
 
-def _route_regex(template: str) -> re.Pattern[str]:
+def route_regex(template: str) -> re.Pattern[str]:
     """``template`` with `{version}` bound to the two Jira mounts and every other placeholder to one
     path segment. Read with ``fullmatch`` below, so `/issue/{key}` never matches
     `/issue/{key}/comment`."""
@@ -327,7 +332,7 @@ def _route_regex(template: str) -> re.Pattern[str]:
     return re.compile("/".join(segments) + "$")
 
 
-_JIRA_ALLOW_PATTERNS = tuple((_route_regex(t), methods) for t, methods in _JIRA_ALLOW)
+_JIRA_ALLOW_PATTERNS = tuple((route_regex(t), methods) for t, methods in _JIRA_ALLOW)
 
 
 def jira_allow(path: str) -> str | None:
@@ -412,7 +417,7 @@ _JIRA_OPTIONS_ALLOW = (
     ("/rest/api/{version}/project/{key}/role/{id}", "DELETE,POST,PUT,GET,HEAD,OPTIONS"),
 )
 
-_JIRA_OPTIONS_PATTERNS = tuple((_route_regex(t), allow) for t, allow in _JIRA_OPTIONS_ALLOW)
+_JIRA_OPTIONS_PATTERNS = tuple((route_regex(t), allow) for t, allow in _JIRA_OPTIONS_ALLOW)
 
 #: The empty `Accept-Patch` real sends on every Jira `OPTIONS` measured, alongside `Allow`. Empty is
 #: the value, not a placeholder: the header is present with nothing after the colon.
@@ -472,7 +477,13 @@ _JAXRS_MESSAGE = "null for uri: {url}"
 
 
 def jaxrs_not_found(url: str, *, as_json: bool) -> tuple[str, str]:
-    """``(media_type, body)`` for that 404, in whichever of the two shapes ``Accept`` asks for."""
+    """``(media_type, body)`` for that 404, in whichever of the two shapes ``Accept`` asks for.
+
+    The XML escapes what XML requires and nothing else, which is what real does: a path carrying
+    `&` came back `&amp;` and one carrying `'` came back unescaped (2026-09-22). A path carrying
+    `<script>`, encoded or not, never reaches the application there -- the gateway answers its own
+    403 HTML page -- so that one is unmeasurable rather than measured.
+    """
     message = _JAXRS_MESSAGE.format(url=url)
     if as_json:
         return JAXRS_JSON_MEDIA_TYPE, json.dumps(

@@ -5064,13 +5064,14 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
         over = c.get(repo, headers=h)
         assert over.status_code == 403
         # The envelope's shape is real's (`message` + `documentation_url`, no `status`), and
-        # `documentation_url` is the page `RATE_LIMITS`' own numbers come from. `message`'s exact
-        # wording for a TOKEN is not pinned here: no credential in this environment reaches a
-        # token's own cap to read it off the wire (see `_rate_limit_exceeded_message`).
+        # `documentation_url` is the page `RATE_LIMITS`' own numbers come from — both measured.
+        # `message`'s content for a TOKEN is Backlot's own choice, not asserted here: no credential
+        # in this environment reaches a token's own cap to read real's wording off the wire (see
+        # `_rate_limit_exceeded_message`).
         body = over.json()
         assert set(body) == {"message", "documentation_url"}
         assert body["documentation_url"] == gh.RATE_LIMIT_EXCEEDED_DOCS
-        assert "rate limit exceeded" in body["message"].lower()
+        assert isinstance(body["message"], str) and body["message"]
         assert _ratelimit(over) == spent  # pinned, not counted
         again = c.get(repo, headers=h)
         assert again.status_code == 403

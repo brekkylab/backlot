@@ -537,7 +537,15 @@ def rate_limit_refusal(request: Request) -> Response | None:
     :data:`RATE_LIMIT_PATH` is never refused — real keeps answering it through exhaustion, which is
     how a client reads its way out of a spent window — matched the way :func:`rate_limit_headers`
     matches it. Off entirely when :attr:`backlot.config.Settings.github_enforce_rate_limits` is
-    turned off."""
+    turned off.
+
+    Checked ahead of every router dependency — the credential, the API version, the owner — rather
+    than after them: the issue's own measurement answers the refusal from `server: Varnish` where a
+    served answer, version 400 included, is `server: github.com`, which is a different tier in
+    front of the one those dependencies run on. Whether real's edge tier answers a spent window
+    ahead of an unsupported `X-GitHub-Api-Version` on the SAME request, rather than one that is
+    merely spent, is not itself measured; a caller sending both together is the one router-ordering
+    fact this fix does not settle."""
     if not get_settings().github_enforce_rate_limits:
         return None
     if request.url.path.rstrip("/") == RATE_LIMIT_PATH:

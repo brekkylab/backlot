@@ -615,12 +615,12 @@ def test_user_cannot_fetch_others_private_gmail(client, tokens_yaml, admin_h, ro
 # Every case below was MEASURED against the live APIs with real OAuth credentials. The envelope is
 # per-family, not uniform:
 #
-#   family                       errors[]   status                 no Authorization header, GET
-#   -----------------------------|----------|-----------------------|-----------------------------
-#   Drive v3                     | always   | auth failures only    | 403 PERMISSION_DENIED
-#   Gmail v1                     | always   | always                | 401 UNAUTHENTICATED
-#   Docs v1 / Slides v1          | never    | always                | 401 UNAUTHENTICATED
-#   Sheets v4                    | never    | always                | 403 PERMISSION_DENIED
+#   family                       errors[]           status               no Authorization header, GET
+#   -----------------------------|------------------|---------------------|-------------------------
+#   Drive v3                     | always           | auth failures only  | 403 PERMISSION_DENIED
+#   Gmail v1                     | unless $.xgafv=2 | always              | 401 UNAUTHENTICATED
+#   Docs v1 / Slides v1          | $.xgafv=1        | always              | 401 UNAUTHENTICATED
+#   Sheets v4                    | $.xgafv=1        | always              | 403 PERMISSION_DENIED
 #
 # The last column is the GET rule: a POST with no header is 401 UNAUTHENTICATED on all five families.
 # A bad bearer token is 401 UNAUTHENTICATED in every family.

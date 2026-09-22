@@ -2034,7 +2034,16 @@ async def unmatched_path(request: Request, rest: str) -> Response:
         raise errors_atlassian.method_not_allowed(request.url.path, request.method)
     if errors_atlassian.is_confluence(request.url.path):
         return _confluence_not_found(request)
-    raise errors_atlassian.no_endpoint(_echoed_path(request), request.method)
+    if errors_atlassian.serves_the_jira_api(request.url.path):
+        raise errors_atlassian.no_endpoint(_echoed_path(request), request.method)
+    # Neither API's mount: the site's own web surface, which answers the product page. Real's site
+    # root is a redirect to that surface rather than a 404 (`/` answered 302 to `/jira/for-you` on
+    # 2026-09-22), which Backlot has nothing to redirect to, so `/atlassian/` gets the page as well.
+    return Response(
+        errors_atlassian.HTML_NOT_FOUND,
+        status_code=404,
+        media_type=errors_atlassian.HTML_MEDIA_TYPE,
+    )
 
 
 def _some_atlassian_route_matches(request: Request) -> bool:

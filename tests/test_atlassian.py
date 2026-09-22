@@ -2755,10 +2755,50 @@ def test_atlassian_a_refusal_keeps_a_trailing_slash_and_collapses_an_interior_ru
 def test_atlassian_the_mount_root_answers_rather_than_redirecting_to_itself(client, admin_h):
     """`/atlassian/` is the mount rather than a path under it. Stripping its slash would leave a
     path no route matches, and Starlette's slash redirect would send the client back to the
-    spelling it just asked for — so it keeps its slash and reaches the catch-all."""
+    spelling it just asked for — so it keeps its slash and reaches the catch-all, which answers it
+    as the site's own surface (real's `/` is a 302 onto that surface, which Backlot has nothing to
+    redirect to)."""
     r = client.get("/atlassian/", headers=admin_h, follow_redirects=False)
     assert r.status_code == 404
-    assert r.json()["detail"] == "No endpoint GET /."
+    assert r.headers["content-type"] == errors_atlassian.HTML_MEDIA_TYPE
+
+
+@pytest.mark.parametrize(
+    "path,shape",
+    [
+        ("/atlassian/rest", "problem"),
+        ("/atlassian/rest/nope/thing", "problem"),
+        ("/atlassian/wiki/rest/api/nopesuchroute", "xml"),
+        ("/atlassian/wiki/nope", "html"),
+        ("/atlassian/foo", "html"),
+        ("/atlassian/ex/jira/nope/rest/api/3/issue/NOPE-1", "html"),
+        ("/atlassian/browse/NOPE-1", "html"),
+    ],
+)
+def test_atlassian_answers_by_which_mount_the_path_is_under(client, admin_h, path, shape):
+    """Measured 2026-09-22 on the site: `/rest` and `/rest/nope/thing` are Jira's RFC 7807, a
+    segment under `/wiki/rest/api` is JAX-RS's 404, and everything else the host serves — `/foo`,
+    `/ex/jira/x`, `/restx/api/3/serverInfo`, `/browse/…` and `/wiki/nope` — is the product's HTML
+    page. So the mount decides the shape, not `is_confluence` alone."""
+    r = client.get(path, headers=admin_h)
+    assert r.status_code == 404, r.text
+    media = {
+        "problem": errors_atlassian.PROBLEM_JSON,
+        "xml": errors_atlassian.JAXRS_XML_MEDIA_TYPE,
+        "html": errors_atlassian.HTML_MEDIA_TYPE,
+    }[shape]
+    assert r.headers["content-type"] == media
+
+
+def test_a_path_that_only_starts_like_the_atlassian_mount_is_not_atlassian(client, admin_h):
+    """`/atlassianx` is a path of Backlot's own: it gets FastAPI's `{"detail": …}` and none of the
+    headers either product sends, where a prefix test without the boundary would answer it in
+    Jira's envelope and stamp it with a request id."""
+    for path in ("/atlassianx", "/atlassianx/rest/api/3/serverInfo"):
+        r = client.get(path, headers=admin_h)
+        assert r.status_code == 404
+        assert r.json() == {"detail": "Not Found"}, path
+        assert "atl-request-id" not in r.headers, path
 
 
 def test_confluence_escapes_only_what_xml_requires_in_the_url_it_echoes(client, admin_h):

@@ -18,10 +18,10 @@ A module in ``_ENVELOPES`` provides:
   reports one.
 - ``method_not_allowed(path, method)``, optional — the vendor's own 405, as an exception carrying
   its body, media type and headers. The router raises a 405 before any vendor code runs, so a
-  vendor whose 405 differs from the shape its other refusals take says so here; Atlassian's
-  catch-all route raises the same exception itself, because it matches every method on every path
-  it owns and the router therefore never gets to. Atlassian and S3 implement it: what Atlassian's
-  two products answer is in :func:`backlot.errors.atlassian.method_not_allowed`, and S3 answers a
+  vendor whose 405 differs from the shape its other refusals take says so here. Atlassian and S3
+  implement it. What Atlassian's two products answer is in
+  :func:`backlot.errors.atlassian.method_not_allowed`, which its own catch-all route raises rather
+  than the router, because that route matches every method on every path it owns. S3 answers a
   method it defines nothing for with a 400 rather than a 405
   (:func:`backlot.errors.s3.method_not_allowed`). A vendor without it keeps the shared envelope.
 - ``head_content_length(path, status_code)``, optional — whether a `HEAD` declares the length of

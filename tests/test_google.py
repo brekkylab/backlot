@@ -622,7 +622,7 @@ def test_user_cannot_fetch_others_private_gmail(client, tokens_yaml, admin_h, ro
 #   Docs v1 / Slides v1          | $.xgafv=1        | always              | 401 UNAUTHENTICATED
 #   Sheets v4                    | $.xgafv=1        | always              | 403 PERMISSION_DENIED
 #
-# The last column is the GET rule: a POST with no header is 401 UNAUTHENTICATED on all five families.
+# The last column is the GET rule; `errors.google.no_credentials` carries the POST one.
 # A bad bearer token is 401 UNAUTHENTICATED in every family.
 
 

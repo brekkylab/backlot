@@ -272,6 +272,38 @@ def test_s3_a_method_s3_defines_nothing_for_is_the_parse_400(live_server, method
     )
 
 
+def test_s3_a_write_on_a_bucket_that_does_not_exist_is_nosuchbucket(live_server):
+    """Measured: real answers a `DELETE` on an absent bucket, and on a key inside one, with
+    `NoSuchBucket` at 404, where its `PATCH`, `POST` and body-less `PUT` answer an absent bucket
+    exactly as they answer a present one. So the method refusals precede resolution and the write
+    refusal does not."""
+    base_url, settings = live_server
+    for path in ("/s3/no-such-bucket-xyz", "/s3/no-such-bucket-xyz/a/b.txt"):
+        r = _signed(base_url, path, settings.admin_token, method="DELETE")
+        assert r.status_code == 404 and "<Code>NoSuchBucket</Code>" in r.text, path
+    for method, status in (("PATCH", 405), ("POST", 412), ("PUT", 400)):
+        r = _signed(base_url, "/s3/no-such-bucket-xyz", settings.admin_token, method=method)
+        assert r.status_code == status, (method, r.text)
+    present = _signed(base_url, "/s3/eng-artifacts", settings.admin_token, method="DELETE")
+    assert present.status_code == 501 and "<Code>NotImplemented</Code>" in present.text
+
+
+def test_s3_the_parse_400_carries_the_extended_id_real_widens(live_server):
+    """Measured three times each on 2026-09-22: the answer S3's parser refuses carries a 128
+    character `x-amz-id-2` where the 405, the 404 and a 200 carry 96, and the body repeats the same
+    value the header carries."""
+    import re
+
+    base_url, settings = live_server
+    refused = _signed(base_url, "/s3/eng-artifacts", settings.admin_token, method="TRACE")
+    assert refused.status_code == 400 and "<Code>BadRequest</Code>" in refused.text
+    assert len(refused.headers["x-amz-id-2"]) == 128
+    assert re.search(r"<HostId>([^<]+)</HostId>", refused.text)[1] == refused.headers["x-amz-id-2"]
+    for method, path in (("PATCH", "/s3/eng-artifacts"), ("GET", "/s3/no-such-bucket")):
+        other = _signed(base_url, path, settings.admin_token, method=method)
+        assert len(other.headers["x-amz-id-2"]) == 96, method
+
+
 def test_s3_the_method_is_refused_before_the_credential(live_server):
     """Measured: an unsigned `PATCH` answers the same 405 a signed one does, at a key path and at
     the service root, so real reaches the method before it reads the credential. Every other route

@@ -252,6 +252,16 @@ def request_ids(method: str, path: str, query: str) -> tuple[str, str]:
     return raw[:8].hex().upper(), base64.b64encode(raw[8:]).decode("ascii")
 
 
+def wide_extended_id(ids: tuple[str, str]) -> str:
+    """The 128-character `x-amz-id-2` real sends on the answer its parser refuses.
+
+    Measured 2026-09-22, three samples of each answer kind: a `TRACE` at the service root carries
+    128 characters where a 405, a 404 and a 200 carry 96. Derived from the pair this request already
+    has, so the widened id names the same request as the narrow one would have.
+    """
+    return (ids[1] + base64.b64encode(hashlib.shake_256(ids[1].encode()).digest(24)).decode())[:128]
+
+
 def _error(
     code: str, message: str, resource: str = "", extra: str = "", headers: dict | None = None
 ) -> Response:
@@ -1088,7 +1098,22 @@ def _cors_preflight(request: Request, resource_type: str, message: str) -> Respo
     return _error("AccessForbidden", message, extra=_method_type("OPTIONS", resource_type))
 
 
-def _refuse_write(method: str, resource: str) -> Response:
+def _refuse_write(request: Request, bucket: str, method: str, resource: str) -> Response:
+    """The 501 for a write, once the bucket it names resolves.
+
+    Real answers a `DELETE` on a bucket that does not exist — or on a key inside one — with
+    `NoSuchBucket` at 404, where its `PATCH`, `POST` and body-less `PUT` answer the same refusals on
+    an absent bucket as on a present one (measured 2026-09-22 against a name no bucket has). So the
+    method refusals above precede resolution and this one does not: a caller asking to delete
+    something that is not there learns it is not there, and one asking to delete something that is
+    learns this server does not write.
+    """
+    caller, visible, err = _auth(request)
+    if err is not None:
+        return err
+    conn = auth.conn(request)
+    if not _bucket_visible(conn, bucket, visible):
+        return _error("NoSuchBucket", "The specified bucket does not exist", bucket)
     return _error("NotImplemented", _WRITE_IS_NOT_SERVED + method, resource)
 
 
@@ -1145,7 +1170,7 @@ async def bucket_method_refusal(request: Request, bucket: str) -> Response:
             "The unspecified location constraint is incompatible for the region specific endpoint "
             "this request was sent to.",
         )
-    return _refuse_write(method, f"/{bucket}")
+    return _refuse_write(request, bucket, method, f"/{bucket}")
 
 
 @router.api_route(
@@ -1166,4 +1191,4 @@ async def object_method_refusal(request: Request, bucket: str, key: str) -> Resp
             extra=_method_type(method, "OBJECT"),
             headers={"Allow": _ALLOW_OBJECT},
         )
-    return _refuse_write(method, f"/{bucket}/{key}")
+    return _refuse_write(request, bucket, method, f"/{bucket}/{key}")

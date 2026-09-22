@@ -1993,7 +1993,9 @@ def test_github_a_head_is_the_get_with_the_body_left_off(gh_client, gh_admin_h, 
     construction; each is asserted below so that the construction is not the only thing saying so.
     The OpenAPI document is untouched: real's description declares no `head` operation (none in
     the 2026-09-09 read) and neither does Backlot's, so `backlot diff` and the MCP slice see what
-    they saw. The other vendors' `HEAD` answers are not measured and stay the 405 they were.
+    they saw. Notion's `HEAD` is measured too and answered the same way (see
+    ``test_notion_a_head_is_the_get_without_its_body``); the vendors whose `HEAD` is not measured
+    stay the 405 they were.
     """
     c, _ = gh_client
     codebase = f"/github/repos/{gh_org}/codebase"

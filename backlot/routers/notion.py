@@ -799,5 +799,18 @@ async def unmatched_path(request: Request, rest: str) -> JSONResponse:
     a POST to an unknown `/v1` path. A path that does exist answers the credential's 401 instead,
     so the URL is the first thing that API checks. This server answered FastAPI's own
     `{"detail":"Not Found"}` at 404 there.
+
+    The method is part of the URL that check reads: `GET /v1/search` and `GET /v1/pages`, both POST
+    routes, and `DELETE`, `PUT`, `PATCH` and `OPTIONS` on `/v1/users/me`, a GET route, are each
+    that same 400 rather than a 405 — which is why this route takes every method rather than the
+    ones the routes above happen to declare, and why no `method_not_allowed` envelope is needed for
+    this vendor. A `HEAD` is the GET's own answer, so it reaches here only where the GET would
+    (`backlot.main.answer_head_as_the_get_without_its_body`), and one trailing slash is dropped
+    before routing, so a slashed spelling of a served path does not land here
+    (`backlot.main.serve_a_slashed_notion_path_as_the_path_without_it`).
+
+    Real's own root, `/`, is the one URL this does not reproduce: it is a 302 to the marketing
+    site, a page Backlot does not serve, so `/notion` and `/notion/` keep the answer an unserved
+    URL gets.
     """
     return _error(request, 400, "invalid_request_url", "Invalid request URL.")

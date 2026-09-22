@@ -127,6 +127,66 @@ def test_notion_a_path_no_route_matches_is_the_url_400(client, notion_h, path):
         assert r.json()["message"] == "Invalid request URL."
 
 
+_WRONG_METHOD_ROWS = [
+    ("GET", "/notion/v1/search"),
+    ("GET", "/notion/v1/pages"),
+    ("DELETE", "/notion/v1/users/me"),
+    ("PUT", "/notion/v1/users/me"),
+    ("PATCH", "/notion/v1/users/me"),
+    ("OPTIONS", "/notion/v1/users/me"),
+]
+
+
+@pytest.mark.parametrize(
+    "method, path", _WRONG_METHOD_ROWS, ids=lambda v: v.strip("/").replace("/", "-")
+)
+def test_notion_a_method_a_route_does_not_answer_is_the_url_400(client, notion_h, method, path):
+    """Measured: the method is part of the URL Notion checks. `GET` on the two POST routes and
+    `DELETE`, `PUT`, `PATCH` and `OPTIONS` on a GET route are each `invalid_request_url` at 400,
+    not a 405 — so the catch-all takes every method rather than the ones the routes declare."""
+    r = client.request(method, path, headers=notion_h)
+    assert r.status_code == 400, (method, path)
+    assert r.json()["code"] == "invalid_request_url"
+
+
+def test_notion_one_trailing_slash_is_the_path_without_it_and_two_is_not(client, notion_h):
+    """Measured: `GET /v1/users/me/` and `POST /v1/search/` answer what the slash-free spelling
+    answers, where `GET /v1/users/me//` is the URL 400 — exactly one slash is dropped. Starlette
+    redirected the first two with a 307 and, once the catch-all was mounted, would have refused
+    them outright."""
+    plain = client.get("/notion/v1/users/me", headers=notion_h)
+    slashed = client.get("/notion/v1/users/me/", headers=notion_h, follow_redirects=False)
+    assert slashed.status_code == 200 and slashed.json() == plain.json()
+    searched = client.post("/notion/v1/search/", json={}, headers=notion_h, follow_redirects=False)
+    assert searched.status_code == 200
+    assert searched.json() == client.post("/notion/v1/search", json={}, headers=notion_h).json()
+    twice = client.get("/notion/v1/users/me//", headers=notion_h, follow_redirects=False)
+    assert twice.status_code == 400 and twice.json()["code"] == "invalid_request_url"
+    root = client.get("/notion/", headers=notion_h, follow_redirects=False)
+    assert root.status_code == 400 and root.json()["code"] == "invalid_request_url"
+
+
+def test_notion_a_head_is_the_get_without_its_body(client, notion_h):
+    """Measured with `curl -I` beside each `GET` the same minute: `HEAD /v1/users/me` is the
+    credential's 401 and `HEAD /v1/nonexistent_thing/xyz` the URL's 400, each carrying the GET
+    body's own `content-length` and `content-type` (178 and 145 bytes) and nothing in the body.
+    FastAPI's `APIRoute` answered every one of these 405, which cannot tell a served URL from an
+    unserved one."""
+    rows = [
+        ("/notion/v1/users/me", {"Notion-Version": DATA_SOURCES_VERSION}),
+        ("/notion/v1/nonexistent_thing/xyz", notion_h),
+        ("/notion/v1/users/me", notion_h),
+    ]
+    for path, headers in rows:
+        got = client.get(path, headers=headers)
+        head = client.head(path, headers=headers)
+        assert head.status_code == got.status_code, path
+        assert head.content == b"", path
+        assert head.headers["content-length"] == str(len(got.content)), path
+        assert head.headers["content-type"] == got.headers["content-type"], path
+    assert [r.status_code for r in (client.head(p, headers=h) for p, h in rows)] == [401, 400, 200]
+
+
 def test_notion_a_path_that_exists_still_answers_the_credential(client, notion_h):
     """The control for the row above: the URL check comes first, so a path this server does serve
     reaches the credential and answers its 401 rather than the URL's 400."""

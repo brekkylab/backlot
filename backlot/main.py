@@ -6,6 +6,7 @@ Startup opens the read-only DB, loads the ACL/token map, and starts a background
 from __future__ import annotations
 
 import logging
+import re
 import threading
 from contextlib import asynccontextmanager
 
@@ -340,6 +341,45 @@ async def refuse_a_trailing_slash_on_github(request: Request, call_next):
             for name, value in headers.items():
                 response.headers[name] = value
         return response
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def normalise_the_slashes_in_an_atlassian_path(request: Request, call_next):
+    """Route an `/atlassian` path the way the real gateway does: runs of slashes are one, and a
+    trailing slash is not part of the path.
+
+    Measured on brekkylab.atlassian.net, 2026-09-22: `/rest/api/3/serverInfo/`, `/rest/api/2/field/`,
+    `/rest/api/3/issue/{key}/`, `/wiki/rest/api/space/`, `/wiki/rest/api/content/` and
+    `/wiki/rest/api/space/{key}/` each answer 200, as do the same paths with the slash doubled and
+    `/rest/api/3//serverInfo` with the run in the middle; a `HEAD` and an `OPTIONS` on the slashed
+    spelling answer what the slash-free one answers.
+
+    What the request ECHOES is not normalised the same way, which is why the path is kept: real
+    collapses an interior run in `detail`, `instance` and Confluence's `null for uri:` message
+    (`/api/3//nope` comes back `/api/3/nope`) but leaves a trailing slash in all three
+    (`/nopesuchroute/` comes back `/nopesuchroute/`). The collapsed spelling is stashed on the
+    scope for :func:`backlot.routers.atlassian.unmatched_path` to echo.
+
+    Ahead of routing, because the answer for a path no route matches is a route of its own
+    (`atlassian.unmatched_router`), which would otherwise claim every slashed spelling of a served
+    one; Starlette's `redirect_slashes` answered them a 307 before that route existed, which is not
+    what real sends either. GitHub's trailing slash is the opposite rule and has its own middleware
+    above -- the two vendors are measured separately.
+    """
+    path = request.url.path
+    if path.startswith(f"{errors.atlassian.PREFIX}/"):
+        collapsed = re.sub("/{2,}", "/", path)
+        routed = collapsed.rstrip("/")
+        # `/atlassian/` is the mount itself rather than a path under it: stripping its slash leaves
+        # a path no route matches, which Starlette answers with a 307 back to the spelling that
+        # arrived. It keeps its slash and reaches the catch-all like any other unserved path.
+        if routed == errors.atlassian.PREFIX:
+            routed = collapsed
+        request.scope["atlassian_echo_path"] = collapsed
+        if routed != path:
+            request.scope["path"] = routed
+            request.scope["raw_path"] = routed.encode()
     return await call_next(request)
 
 

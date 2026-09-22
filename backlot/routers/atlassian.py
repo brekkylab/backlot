@@ -1930,6 +1930,16 @@ def _vendor_path(path: str) -> str:
     )
 
 
+def _echoed_path(request: Request) -> str:
+    """The path a refusal names, which is not always the one that was routed.
+
+    Real collapses an interior run of slashes in what it echoes and keeps a trailing one, where
+    routing ignores both (``backlot.main.normalise_the_slashes_in_an_atlassian_path``, which
+    stashes the collapsed spelling on the scope for this).
+    """
+    return request.scope.get("atlassian_echo_path", request.url.path)
+
+
 def _wants_json(request: Request) -> bool:
     """Whether the caller asked for JSON by name, which is what picks Confluence's 404 shape.
 
@@ -1956,7 +1966,7 @@ def _confluence_serves_html(vendor_path: str) -> bool:
 
 def _confluence_not_found(request: Request) -> Response:
     """Confluence's answer for a path it serves nothing at: the page, or JAX-RS's own 404."""
-    vendor_path = _vendor_path(request.url.path)
+    vendor_path = _vendor_path(_echoed_path(request))
     if _confluence_serves_html(vendor_path):
         return Response(
             errors_atlassian.HTML_NOT_FOUND,
@@ -2020,7 +2030,7 @@ async def unmatched_path(request: Request, rest: str) -> Response:
         raise errors_atlassian.method_not_allowed(request.url.path, request.method)
     if errors_atlassian.is_confluence(request.url.path):
         return _confluence_not_found(request)
-    raise errors_atlassian.no_endpoint(request.url.path, request.method)
+    raise errors_atlassian.no_endpoint(_echoed_path(request), request.method)
 
 
 def _some_atlassian_route_matches(request: Request) -> bool:

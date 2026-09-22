@@ -296,8 +296,10 @@ different type altogether: the RFC 7807 refusals (a type-conversion 400, the 405
 `application/problem+json;charset=UTF-8`, and the gateway's 403 for a bearer it cannot read as a
 Connect token is the bare `application/json`.
 
-A `HEAD` is the `GET` with the body left off and declares no length, which is where Jira parts from
-Confluence. An `OPTIONS` is 200 with an empty `text/html` body, an empty `Accept-Patch` and an
+A trailing slash is not part of a path on either product, and a run of slashes inside one is a
+single slash — both spellings answer what the canonical one answers, though a refusal echoes the
+path with its trailing slash kept. A `HEAD` is the `GET` with the body left off and declares no
+length, which is where Jira parts from Confluence. An `OPTIONS` is 200 with an empty `text/html` body, an empty `Accept-Patch` and an
 `Allow` naming the methods the vendor serves at that route — the `PUT` and `DELETE` on an issue
 among them, which Backlot does not serve. A path no route serves is RFC 7807 at 404 with
 `No endpoint <METHOD> <path>.`, ahead of the credential. Every answer carries `atl-request-id`,

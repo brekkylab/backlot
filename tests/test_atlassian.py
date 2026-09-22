@@ -2702,3 +2702,60 @@ def test_atlassian_a_method_the_front_door_refuses_carries_none_of_the_headers(
         "x-confluence-request-time",
     ):
         assert absent not in r.headers, absent
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/atlassian/rest/api/3/serverInfo/",
+        "/atlassian/rest/api/3/serverInfo//",
+        "/atlassian/rest/api/3//serverInfo",
+        "/atlassian/rest/api/2/field/",
+        "/atlassian/wiki/rest/api/space/",
+        "/atlassian/wiki/rest/api/content/",
+    ],
+)
+def test_atlassian_serves_a_path_the_gateway_normalises(client, admin_h, path):
+    """Measured 2026-09-22: a trailing slash, a doubled one and a run in the middle each answer
+    what the canonical spelling answers, on both products. Starlette redirected the first two with
+    a 307 and, once the catch-all was mounted, would have refused every one of them outright."""
+    canonical = re.sub("/{2,}", "/", path).rstrip("/")
+    served = client.get(path, headers=admin_h, follow_redirects=False)
+    assert served.status_code == 200, served.text
+    assert served.json() == client.get(canonical, headers=admin_h).json()
+
+
+def test_atlassian_a_head_and_an_options_follow_the_same_normalisation(client, admin_h):
+    """Measured on the slashed spelling: the `HEAD` is the `GET`'s 200 with no body and the
+    `OPTIONS` is the route's own `Allow`, rather than the answer for a path nothing serves."""
+    head = client.head("/atlassian/rest/api/3/serverInfo/", headers=admin_h)
+    assert head.status_code == 200 and head.content == b""
+    options = client.request("OPTIONS", "/atlassian/rest/api/3/serverInfo/", headers=admin_h)
+    assert options.status_code == 200 and options.headers["allow"] == "GET,HEAD,OPTIONS"
+
+
+def test_atlassian_a_refusal_keeps_a_trailing_slash_and_collapses_an_interior_run(client, admin_h):
+    """What a refusal ECHOES is normalised differently from what routing reads. Measured: real
+    answers `No endpoint GET /rest/api/3/nopesuchroute/.` for the trailing slash — the slash kept
+    in both `detail` and `instance` — and `/rest/api/3/nopesuchroute` for `/api/3//nopesuchroute`,
+    the interior run collapsed. Confluence's `null for uri:` message draws the same two lines."""
+    trailing = client.get("/atlassian/rest/api/3/nopesuchroute/", headers=admin_h).json()
+    assert trailing["detail"] == "No endpoint GET /rest/api/3/nopesuchroute/."
+    assert trailing["instance"] == "/rest/api/3/nopesuchroute/"
+    interior = client.get("/atlassian/rest/api/3//nopesuchroute", headers=admin_h).json()
+    assert interior["detail"] == "No endpoint GET /rest/api/3/nopesuchroute."
+    assert interior["instance"] == "/rest/api/3/nopesuchroute"
+    json_headers = {**admin_h, "Accept": "application/json"}
+    conf_trailing = client.get("/atlassian/wiki/rest/api/nopesuchroute/", headers=json_headers)
+    assert conf_trailing.json()["message"].endswith("/wiki/rest/api/nopesuchroute/")
+    conf_interior = client.get("/atlassian/wiki/rest/api//nopesuchroute", headers=json_headers)
+    assert conf_interior.json()["message"].endswith("/wiki/rest/api/nopesuchroute")
+
+
+def test_atlassian_the_mount_root_answers_rather_than_redirecting_to_itself(client, admin_h):
+    """`/atlassian/` is the mount rather than a path under it. Stripping its slash would leave a
+    path no route matches, and Starlette's slash redirect would send the client back to the
+    spelling it just asked for — so it keeps its slash and reaches the catch-all."""
+    r = client.get("/atlassian/", headers=admin_h, follow_redirects=False)
+    assert r.status_code == 404
+    assert r.json()["detail"] == "No endpoint GET /."

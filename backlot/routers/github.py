@@ -539,11 +539,13 @@ def rate_limit_refusal(request: Request) -> Response | None:
     matches it. Off entirely when :attr:`backlot.config.Settings.github_enforce_rate_limits` is
     turned off.
 
-    Checked ahead of every router dependency — the credential, the API version, the owner: the
-    refusal answers from `server: Varnish` where a served answer, version 400 included, answers
-    `server: github.com`, a different tier in front of the one those dependencies run on. Whether
-    real's edge tier answers a spent window ahead of an unsupported `X-GitHub-Api-Version` on the
-    same request is not measured; that ordering is an acknowledged gap."""
+    Checked ahead of every router dependency — the credential, the API version, the owner: real
+    answers the same 403 whether or not the request also carries an unsupported
+    `X-GitHub-Api-Version`, outranking the version check, the credential check and routing alike
+    (measured against api.github.com 2026-09-22, anonymous, driven to the window's own cap).
+    `server: Varnish` on the refusal, where a served answer — the version 400 included — is
+    `server: github.com`, is the mechanism: a tier in front of the one those dependencies run
+    on."""
     if not get_settings().github_enforce_rate_limits:
         return None
     if request.url.path.rstrip("/") == RATE_LIMIT_PATH:

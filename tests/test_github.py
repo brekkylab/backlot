@@ -5118,6 +5118,23 @@ def test_github_rate_limit_refuses_an_anonymous_caller_too_and_the_switch_turns_
         }
         assert _ratelimit(refused) == _ratelimit(second)  # pinned, not counted
 
+        # the refusal outranks the version check too, once the window is actually spent (measured
+        # against api.github.com 2026-09-22, anonymous, driven to the window's own cap): a bad
+        # `X-GitHub-Api-Version` on the same spent resource still answers 403, not the version's
+        # 400, where the identical header on a resource with room left — `search`, untouched here
+        # — gets the version's 400 as its control.
+        bad_version_spent = c.get(
+            "/github/user/repos", headers={"X-GitHub-Api-Version": "1999-01-01"}
+        )
+        assert bad_version_spent.status_code == 403
+        assert _ratelimit(bad_version_spent) == _ratelimit(second)  # still pinned, not counted
+        control = c.get(
+            "/github/search/issues",
+            params={"q": "x"},
+            headers={"X-GitHub-Api-Version": "1999-01-01"},
+        )
+        assert control.status_code == 400
+
         # the switch: no refusal, and `used` still capped in what is reported
         gh.get_settings().github_enforce_rate_limits = False
         try:

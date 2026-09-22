@@ -112,6 +112,19 @@ def test_s3_an_error_body_ends_with_the_pair_the_headers_carry(live_server):
         f"<RequestId>{r.headers['x-amz-request-id']}</RequestId>"
         f"<HostId>{r.headers['x-amz-id-2']}</HostId></Error>"
     )
+    # A success has no `Error` document to repeat them in, and real puts them in no other body.
+    served = _signed(base_url, "/s3/eng-artifacts?location", settings.admin_token)
+    assert served.status_code == 200 and "<RequestId>" not in served.text
+
+
+def test_s3_a_path_outside_the_mount_carries_no_request_id(live_server):
+    """The pair rides what this server answers as S3, and `/s3x` is not one of those: a path that
+    only starts with the same three characters is a 404 from the app, not an S3 answer."""
+    import httpx
+
+    base_url, _ = live_server
+    r = httpx.get(f"{base_url}/s3x")
+    assert r.status_code == 404 and "x-amz-request-id" not in r.headers
 
 
 def test_s3_the_same_request_gets_the_same_pair_and_another_request_a_different_one(live_server):

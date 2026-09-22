@@ -232,7 +232,7 @@ def _xml(body: str, status: int = 200, headers: dict | None = None) -> Response:
 
 # One request id pair per request, so the headers and the error body name the same one. A context
 # variable rather than an argument because `_error` is reached from helpers that read the query
-# string and never the request (`_argument_error`, `_parse_bucket_params`), and the pair is the
+# string and never the request (`_argument_error`, `_int32_param`), and the pair is the
 # request's rather than any one refusal's. `backlot.main.answer_s3_with_request_ids` sets it and
 # puts the same pair on every response's headers.
 REQUEST_IDS: contextvars.ContextVar[tuple[str, str] | None] = contextvars.ContextVar(
@@ -244,7 +244,7 @@ def request_ids(method: str, path: str, query: str) -> tuple[str, str]:
     """``(x-amz-request-id, x-amz-id-2)`` for one request, at the widths real S3 sends.
 
     Measured 2026-09-22 against `s3.<region>.amazonaws.com` over twenty-five response shapes: both
-    ride every answer, a success and a refusal alike, the id 16 uppercase hex characters and the
+    rode every one, a success and a refusal alike, the id 16 uppercase hex characters and the
     extended id 96 of base64. Seeded from the request rather than randomised, so a corpus served
     twice answers the same pair, which is what an ETag and a synthesised id already do here.
     """
@@ -1050,8 +1050,9 @@ def _parse_range(header: str, total: int):
 #   OPTIONS with an `Origin`    | 403 AccessForbidden, the CORS message for that path
 #   DELETE, and a PUT carrying a body | the write itself: 204, or 200 for an object PUT
 #
-# The three that mutate are the three Backlot does not serve, so they answer `NotImplemented`
-# (501), the code this router already gives an operation it does not implement. The rest are real's
+# The methods real answers by doing the write are the ones this server does not serve, so they
+# answer `NotImplemented` (501), the code this router already gives an operation it does not
+# implement. The rest are real's
 # own answers. Two deliberate differences, both stated where they are made: the `Allow` names what
 # Backlot serves rather than what real serves, which is what the sub-resource 405 already does, and
 # a multipart `POST` on a bucket is refused as a non-multipart one is, since an upload is a write.
@@ -1095,8 +1096,8 @@ def _refuse_write(method: str, resource: str) -> Response:
     "/", methods=["PUT", "POST", "DELETE", "PATCH", "OPTIONS"], include_in_schema=False
 )
 async def service_method_refusal(request: Request) -> Response:
-    """The service root serves `ListBuckets` alone, and real refuses every other method there with
-    one 405 naming `SERVICE` (`PUT`, `POST`, `DELETE` and `PATCH` all measured)."""
+    """The service root serves `ListBuckets` alone, and real answers `PUT`, `POST`, `DELETE` and
+    `PATCH` there with one 405 naming `SERVICE`, each measured."""
     if request.method == "OPTIONS":
         return _cors_preflight(request, "BUCKET", _CORS_NO_BUCKET)
     return _error(
@@ -1111,9 +1112,10 @@ async def service_method_refusal(request: Request) -> Response:
     "/{bucket}", methods=["PUT", "POST", "DELETE", "PATCH", "OPTIONS"], include_in_schema=False
 )
 async def bucket_method_refusal(request: Request, bucket: str) -> Response:
-    """A bucket path takes four methods on real and this serves none of them: `PUT` creates the
-    bucket, `DELETE` removes it, `POST` is a form upload and only `PATCH` is refused as a method at
-    all. Each answers what real answers, except the two writes."""
+    """Of the five methods real does not serve here as a read, three do something on real — `PUT`
+    creates the bucket, `DELETE` removes it, `POST` is a form upload — and two are refusals of its
+    own. Real's refusals are answered as real answers them, and a `PUT` that carries a body and a
+    `DELETE` are the two writes this server refuses instead."""
     method = request.method
     if method == "OPTIONS":
         return _cors_preflight(request, "BUCKET", _CORS_DISABLED)

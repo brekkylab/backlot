@@ -2,8 +2,10 @@
 
 Base URL for a client: ``http://<host>/notion/v1/`` (the notion-client SDK appends ``/v1/`` to
 its ``base_url``, so point it at ``http://<host>/notion``). Bearer auth
-(``Authorization: Bearer <token>``); the admin/service token sees everything, a user token is
-ACL-filtered. Errors use Notion's envelope: ``{"object":"error","status","code","message"}``.
+(``Authorization: Bearer <token>``, that scheme and no other); the admin/service token sees
+everything, a user token is ACL-filtered. Errors use Notion's envelope:
+``{"object":"error","status","code","message","request_id"}``, the last of which is also the
+response's ``x-notion-request-id`` (see :func:`_error`).
 
 **Version-aware databases.** Notion moved database querying to the *data sources* model in
 ``2025-09-03``. This router keys off the ``Notion-Version`` request header:
@@ -22,8 +24,9 @@ Backlot has one data source per database, its id assigned at import alongside th
 
 **The header is required** on every route here, as Notion requires it on every REST request: a
 request that omits it -- or names a version Notion does not publish -- is answered
-``missing_version``, behind the 401 that a request with no usable credential gets (see
-``_refusal``). Every route declares it in the spec as well, so a client generated from that spec
+``missing_version``, behind both 401s a request with no usable credential gets -- the one that
+names the bearer format and the one that says the token does not resolve (see ``_refusal``) --
+and behind the 400 a URL no route serves gets ahead of everything (see ``unmatched_path``). Every route declares it in the spec as well, so a client generated from that spec
 -- ``backlot mcp``'s tools among them -- can send what the route asks for.
 
 Object mapping: a Notion *page* is one doc (``subtype='page'``); a *database* is one doc
@@ -181,9 +184,11 @@ def _request_id(request: Request) -> str:
     Measured 2026-09-22 with no credential, which is enough because the URL and the credential are
     checked before anything else: every refusal carries `"request_id": "<uuid>"` and
     `x-notion-request-id` with that same value. Real's is per response — three calls to one URL
-    answered three ids — and this one is derived from the request instead, the choice this
-    repository makes for a synthesised id so that a corpus served twice answers the same thing and
-    a test can assert one.
+    answered three ids — and this one is derived from the method, path and query string instead,
+    the choice this repository makes for a synthesised id so that a corpus served twice answers the
+    same thing and a test can assert one. Two POSTs that differ only in their body share an id
+    here, where real would answer two; the body is left out because a request id is read from a
+    log line beside a URL, not recomputed from what was sent.
     """
     raw = hashlib.shake_256(
         f"notion-req:{request.method} {request.url.path}?{request.url.query}".encode()

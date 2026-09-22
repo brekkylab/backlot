@@ -177,6 +177,31 @@ def test_notion_one_trailing_slash_is_the_path_without_it_and_two_is_not(client,
     assert bare.status_code == 307 and bare.headers["location"].endswith("/notion/")
 
 
+def test_notion_a_slashed_path_is_acl_scoped_like_the_path_without_it(client, admin_h, tokens):
+    """The slash rewrite reaches the corpus routes, so the spelling it produces has to be scoped
+    the way the spelling it replaces is: a page a user token cannot see is that token's 404 with
+    the slash as without it, and the page it can see is the same object either way."""
+    version = {"Notion-Version": DATA_SOURCES_VERSION}
+    admin = {**admin_h, **version}
+    user_token = sorted(tokens.values())[0]
+    user = {"Authorization": f"Bearer {user_token}", **version}
+    everything = {
+        r["id"] for r in client.post("/notion/v1/search", json={}, headers=admin).json()["results"]
+    }
+    theirs = {
+        r["id"] for r in client.post("/notion/v1/search", json={}, headers=user).json()["results"]
+    }
+    hidden = sorted(everything - theirs)
+    assert hidden and theirs, (len(everything), len(theirs))
+    for page in (hidden[0], sorted(theirs)[0]):
+        plain = client.get(f"/notion/v1/pages/{page}", headers=user)
+        slashed = client.get(f"/notion/v1/pages/{page}/", headers=user, follow_redirects=False)
+        assert slashed.status_code == plain.status_code, page
+        assert slashed.json() == plain.json(), page
+    assert client.get(f"/notion/v1/pages/{hidden[0]}/", headers=user).status_code == 404
+    assert client.get(f"/notion/v1/pages/{hidden[0]}/", headers=admin).status_code == 200
+
+
 def test_notion_a_head_is_the_get_without_its_body(client, notion_h):
     """Measured with `curl -I` beside each `GET` the same minute: `HEAD /v1/users/me` is the
     credential's 401 and `HEAD /v1/nonexistent_thing/xyz` the URL's 400, each carrying the GET
@@ -197,6 +222,10 @@ def test_notion_a_head_is_the_get_without_its_body(client, notion_h):
         assert head.headers["content-length"] == str(len(got.content)), path
         assert head.headers["content-type"] == got.headers["content-type"], path
     assert [r.status_code for r in (client.head(p, headers=h) for p, h in rows)] == [401, 400, 200]
+    slashed = client.head("/notion/v1/users/me/", headers=notion_h, follow_redirects=False)
+    assert slashed.status_code == 200 and slashed.content == b""
+    plain = client.get("/notion/v1/users/me", headers=notion_h)
+    assert slashed.headers["content-length"] == str(len(plain.content))
 
 
 def test_notion_a_path_that_exists_still_answers_the_credential(client, notion_h):

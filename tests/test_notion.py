@@ -97,6 +97,17 @@ def test_notion_every_refusal_names_itself_by_a_request_id(client, notion_h):
         assert uuid.UUID(body["request_id"]).version == 4, path
 
 
+def test_notion_the_same_request_gets_the_same_id_and_another_a_different_one(client, notion_h):
+    """Real answers a new id per response — three calls to one URL gave three. This server derives
+    one from the request instead, so a corpus served twice answers the same id and a test can
+    assert one; the divergence is deliberate and is what this pins."""
+    first = client.get("/notion/v1/users/me", headers={"Notion-Version": DATA_SOURCES_VERSION})
+    again = client.get("/notion/v1/users/me", headers={"Notion-Version": DATA_SOURCES_VERSION})
+    other = client.get("/notion/v1/nonexistent_thing/xyz", headers=notion_h)
+    assert first.json()["request_id"] == again.json()["request_id"]
+    assert first.json()["request_id"] != other.json()["request_id"]
+
+
 @pytest.mark.parametrize(
     "path",
     [

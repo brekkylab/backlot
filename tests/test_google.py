@@ -615,12 +615,14 @@ def test_user_cannot_fetch_others_private_gmail(client, tokens_yaml, admin_h, ro
 # Every case below was MEASURED against the live APIs with real OAuth credentials. The envelope is
 # per-family, not uniform:
 #
-#   family                       errors[]   status                 no Authorization header
-#   -----------------------------|----------|-----------------------|------------------------
+#   family                       errors[]   status                 no Authorization header, GET
+#   -----------------------------|----------|-----------------------|-----------------------------
 #   Drive v3                     | always   | auth failures only    | 403 PERMISSION_DENIED
 #   Gmail v1                     | always   | always                | 401 UNAUTHENTICATED
-#   Docs v1 / Sheets v4 / Slides | never    | always                | 401 UNAUTHENTICATED
+#   Docs v1 / Slides v1          | never    | always                | 401 UNAUTHENTICATED
+#   Sheets v4                    | never    | always                | 403 PERMISSION_DENIED
 #
+# The last column is the GET rule: a POST with no header is 401 UNAUTHENTICATED on all five families.
 # A bad bearer token is 401 UNAUTHENTICATED in every family.
 
 
@@ -1055,6 +1057,26 @@ def test_a_missing_header_differs_by_family(client, path, code, status):
     if code == 403:
         assert "unregistered callers" in e["message"]
     else:
+        assert "missing required authentication credential" in e["message"]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/sheets/v4/spreadsheets/x/values:batchGetByDataFilter",
+        "/sheets/v4/spreadsheets/x:getByDataFilter",
+    ],
+)
+def test_an_anonymous_post_is_401_on_sheets_too(client, path):
+    """Measured 2026-09-22 on all five families with no `Authorization` header: the 403 unregistered
+    caller is a GET's answer on Drive and Sheets; a POST on any family, these two Sheets reads over
+    POST included, is 401 UNAUTHENTICATED with the missing-credential sentence, with or without
+    `$.xgafv=1`. These two are the only non-GET operations Backlot serves under the five families."""
+    for params in ({}, {"$.xgafv": "1"}):
+        r = client.post(path, json={"dataFilters": [{"a1Range": "Sheet1!A1"}]}, params=params)
+        assert r.status_code == 401
+        e = _gerr(r)
+        assert e["code"] == 401 and e["status"] == "UNAUTHENTICATED"
         assert "missing required authentication credential" in e["message"]
 
 

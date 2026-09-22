@@ -8,18 +8,19 @@ status codes were already right.
 Everything here was measured against the live Docs / Drive / Gmail / Sheets / Slides APIs. The
 envelope is NOT uniform — three families differ in which optional members they carry:
 
-    family                  errors[]           status               no Authorization header
-    ------------------------|------------------|---------------------|------------------------
+    family                  errors[]           status               no Authorization header, GET
+    ------------------------|------------------|---------------------|-----------------------------
     Drive v3                | always           | auth failures only  | 403 PERMISSION_DENIED
     Gmail v1                | unless $.xgafv=2 | always              | 401 UNAUTHENTICATED
     Docs v1 / Slides v1     | $.xgafv=1        | always              | 401 UNAUTHENTICATED
     Sheets v4               | $.xgafv=1        | always              | 403 PERMISSION_DENIED
 
-Sheets parts from the other two editor APIs on that last column: measured, a request with no
+Sheets parts from the other two editor APIs on that last column: measured, a GET with no
 Authorization header is 403 PERMISSION_DENIED with the unregistered-caller sentence, where Docs
-answers 401 UNAUTHENTICATED with the missing-credential one. A present-but-invalid token is 401
-UNAUTHENTICATED in every family, which is why a missing header and a bad token are separate
-constructors here rather than one "unauthorized".
+answers 401 UNAUTHENTICATED with the missing-credential one. The column is the GET rule only: a
+POST with no header is 401 UNAUTHENTICATED on all five families (:func:`no_credentials`). A
+present-but-invalid token is 401 UNAUTHENTICATED in every family, which is why a missing header and
+a bad token are separate constructors here rather than one "unauthorized".
 
 `errors[]` is what `$.xgafv` selects, and the middle column above is the whole rule
 (:func:`has_errors_array`). It is a SYSTEM parameter — a top-level entry of a discovery document's
@@ -276,10 +277,13 @@ def unregistered_caller() -> GoogleError:
     )
 
 
-def no_credentials(path: str) -> GoogleError:
-    """The right anonymous-request error for this path. Sheets shares the editor ENVELOPE with Docs
-    and Slides but not this behaviour, so it is resolved from the path rather than the family."""
-    if family(path) == DRIVE or path.startswith("/sheets/v4"):
+def no_credentials(path: str, method: str) -> GoogleError:
+    """The right anonymous-request error for this path and method. Sheets shares the editor ENVELOPE
+    with Docs and Slides but not this behaviour, so it is resolved from the path rather than the
+    family; and the path is half the rule. Measured 2026-09-22 with no ``Authorization`` header on
+    all five families: a GET on Drive or Sheets is the 403 unregistered caller, and a POST on any of
+    the five — Sheets' two data-filter reads included — is the 401 missing credential."""
+    if method == "GET" and (family(path) == DRIVE or path.startswith("/sheets/v4")):
         return unregistered_caller()
     return missing_credentials()
 

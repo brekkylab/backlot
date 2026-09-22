@@ -191,13 +191,13 @@ async def batch(request: Request, api: str = "", version: str = "") -> Response:
 def _require(request: Request) -> Caller:
     """The caller, or the error real Google gives — NOT the shared ``auth.require_bearer``, because
     Google's answer is not one status. Measured: a present-but-invalid bearer is 401 UNAUTHENTICATED
-    everywhere, while NO Authorization header at all is 403 PERMISSION_DENIED on Drive and Sheets
-    (they accept API keys, so an anonymous request is a caller with no established identity) and 401
-    on the OAuth-only Gmail/Docs/Slides."""
+    everywhere, while NO Authorization header at all is 403 PERMISSION_DENIED on a Drive or Sheets
+    GET (they accept API keys, so an anonymous read is a caller with no established identity) and
+    401 on the OAuth-only Gmail/Docs/Slides and on a POST to any family."""
     caller = auth.resolve_bearer(request)
     if caller is None:
         if not request.headers.get("authorization"):
-            raise gerr.no_credentials(request.url.path)
+            raise gerr.no_credentials(request.url.path, request.method)
         raise gerr.bad_token()
     return caller
 

@@ -214,43 +214,35 @@ def test_github_link_header_percent_encodes_its_param_values():
     assert " " not in h[h.index("<") : h.index(">")]
 
 
-def test_confluence_next_link():
-    assert (
-        pg.confluence_next_link("/wiki/rest/api/content", {"type": "page"}, 0, 25, 25, 60)
-        is not None
-    )
-    assert pg.confluence_next_link("/wiki/rest/api/content", {}, 50, 25, 10, 60) is None
-
-
-def test_confluence_space_links():
-    """See :func:`pg.confluence_space_links` for the measurement behind each case."""
+def test_confluence_page_links():
+    """See :func:`pg.confluence_page_links` for the measurement behind each case."""
     path = "/rest/api/space"
     # page one: no `prev`, `next` walks forward by the requested `limit`
-    assert pg.confluence_space_links(path, 0, 1, 1, 3) == {
+    assert pg.confluence_page_links(path, 0, 1, 1, 3) == {
         "next": f"{path}?next=true&limit=1&start=1"
     }
-    assert pg.confluence_space_links(path, 1, 25, 2, 3) == {
+    assert pg.confluence_page_links(path, 1, 25, 2, 3) == {
         "prev": f"{path}?prev=true&limit=1&start=0"
     }
     # a full page in the middle carries both — pins insertion order, since `==` on the dict alone
-    # would not catch a reversion (see confluence_space_links for why `next` leads).
-    both = pg.confluence_space_links(path, 2, 2, 1, 5)
+    # would not catch a reversion (see confluence_page_links for why `next` leads).
+    both = pg.confluence_page_links(path, 2, 2, 1, 5)
     assert both == {
         "prev": f"{path}?prev=true&limit=2&start=0",
         "next": f"{path}?next=true&limit=2&start=3",
     }
     assert list(both) == ["next", "prev"]
     # `?limit=0`: an empty page, but `next` still answers — real does not special-case `size == 0`
-    assert pg.confluence_space_links(path, 0, 0, 0, 3) == {
+    assert pg.confluence_page_links(path, 0, 0, 0, 3) == {
         "next": f"{path}?next=true&limit=0&start=0"
     }
     # past the end: no rows left to serve, so no `next`, and `prev` walks back a full page
-    assert pg.confluence_space_links(path, 100, 25, 0, 3) == {
+    assert pg.confluence_page_links(path, 100, 25, 0, 3) == {
         "prev": f"{path}?prev=true&limit=25&start=75"
     }
     # `expand` rides both links, but sorts differently on each side: `next=true` still leads, while
     # on `prev` the marker does not, so `expand` lands ahead of it there.
-    expanded = pg.confluence_space_links(path, 1, 1, 1, 3, "description")
+    expanded = pg.confluence_page_links(path, 1, 1, 1, 3, "expand=description&")
     assert expanded == {
         "next": f"{path}?next=true&expand=description&limit=1&start=2",
         "prev": f"{path}?expand=description&prev=true&limit=1&start=0",

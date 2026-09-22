@@ -419,51 +419,49 @@ def github_cursor_link_header(
 # --- Confluence: start/limit + relative _links.next -----------------------------
 
 
-def confluence_next_link(
-    path: str, params: dict, start: int, limit: int, size: int, total: int
-) -> str | None:
-    nxt = start + size
-    if nxt >= total or size == 0:
-        return None
-    q = "&".join(f"{k}={v}" for k, v in {**params, "start": nxt, "limit": limit}.items())
-    return f"{path}?{q}"
-
-
-def confluence_space_links(
-    path: str, start: int, limit: int, size: int, total: int, expand: str = ""
+def confluence_page_links(
+    path: str,
+    start: int,
+    limit: int,
+    size: int,
+    total: int,
+    before: str = "",
+    after: str = "",
+    cursor: str | None = None,
 ) -> dict:
-    """`space`'s own `next`/`prev`, for a request carrying only `limit`/`start`/`expand` — the only
-    parameters that route reads today. Literal for literal with what real answers THOSE requests.
+    """The `next` and `prev` every paged Confluence listing answers, literal for literal.
 
-    Measured against a live Confluence Cloud site on 2026-09-17, on a three-space site. `next` and
-    `prev` each carry their own marker (`next=true`/`prev=true`) ahead of `limit` and `start`, which
-    :func:`confluence_next_link` does not add. `prev` walks back by `limit`, clamped to zero rather
-    than negative, so `start=1` at the default `limit=25` answers `limit=1&start=0` — the single row
-    actually skipped, not the requested page size. And `next` is answered even where `size` is
-    0 (`?limit=0`, an empty page rather than a refusal): real does not take this module's
-    `size == 0` shortcut either, and a caller sending `limit=0` gets the same link back forever,
-    which is what it asked for. `next` is built ahead of `prev` here because real emits `_links`
-    alphabetically and a caller reading key order sees `next` first.
+    Measured against a live Confluence Cloud site on 2026-09-17 and again on 2026-09-22, on
+    `space`, `content`, the CQL `search` and the three listings under `content/{id}`. What they
+    share:
 
-    `expand` is carried into both links when the caller sent one, and it sorts differently on each
-    side: `next=true` always leads, so `?limit=1&expand=description` answers `next` of
-    `next=true&expand=description&limit=1&start=1`; on `prev` the marker does not lead, so the same
-    request once `start` also lands the caller there answers `expand=description&prev=true&limit=1
-    &start=0` — `expand` ahead of `prev=true`. Re-measured today against the live site: both shapes
-    still hold, and `self` (built in `confluence_spaces`, not here) carries the same `?expand=...`
-    with no other change.
+    - each link carries its own marker, `next=true` or `prev=true`, which nothing else names;
+    - `next` is answered whenever the rows served have not reached `total` — `start + size`, not
+      "the page came back full", so a three-space site answers `?limit=3` no `next` and `?limit=2`
+      a `start=2`. An empty page advances nothing, so `?limit=0` answers a link to the page it is
+      on rather than withholding one, where a `start` past `total` answers none;
+    - `prev` walks back by `limit` clamped at zero, and its own `limit` is the number of rows
+      actually skipped, so `?start=1` at the default 25 answers `limit=1&start=0`;
+    - `next` is built before `prev`, because real emits `_links` alphabetically and a caller
+      reading key order sees `next` first.
 
-    `space` accepts no other parameter today, so `expand` is the only one carried; a future
-    parameter would need its own place in this ordering rather than a generic sort, since a bare
-    alphabetical sort of every key together does not reproduce the `prev` case above (`limit` sorts
-    ahead of `prev` alphabetically, but real answers `prev` ahead of `limit`).
+    Where the other parameters of the request sit is not a rule worth chasing. Measured on one
+    request each: `bogus` lands after the marker and before `limit`, `zebra` ahead of the marker,
+    `nonce` after `start`, and `expand` after the marker on `next` but ahead of it on `prev`. Three
+    positions for three names is a Java map's iteration order, not an ordering a client can rely
+    on, so ``before`` carries the names whose position is measured (`expand`) and ``after`` carries
+    the rest, which puts them where `cql` and `nonce` were seen. ``cursor`` is the CQL search's own,
+    which rides `next` alone, between the marker and `limit`.
     """
     links = {}
-    extra = f"expand={expand}&" if expand else ""
+    lead = (f"cursor={cursor}&" if cursor else "") + before
+    tail = f"&{after}" if after else ""
     nxt = start + size
     if nxt < total:
-        links["next"] = f"{path}?next=true&{extra}limit={limit}&start={nxt}"
+        links["next"] = f"{path}?next=true&{lead}limit={limit}&start={nxt}{tail}"
     if start > 0:
         prev_start = max(0, start - limit)
-        links["prev"] = f"{path}?{extra}prev=true&limit={start - prev_start}&start={prev_start}"
+        links["prev"] = (
+            f"{path}?{before}prev=true&limit={start - prev_start}&start={prev_start}{tail}"
+        )
     return links

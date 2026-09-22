@@ -186,6 +186,29 @@ def integer_conversion_failure(path: str, name: str, values: list[str]) -> Atlas
     )
 
 
+def start_too_large() -> AtlassianError:
+    """`content`'s refusal of a `start` above 100000, which `space` does not share.
+
+    Measured 2026-09-22: `content?start=100001` is a 400 whose body carries the `data` object
+    Confluence puts on the refusals its API service layer raises, where the conversion 400 and the
+    negative 400 above carry `statusCode` and `message` alone. `start=100000` is a 200, so the
+    bound is inclusive.
+    """
+    return AtlassianError(
+        400,
+        {
+            "statusCode": 400,
+            "data": {"authorized": True, "valid": True, "errors": [], "successful": True},
+            "message": (
+                "com.atlassian.confluence.api.service.exceptions.api.BadRequestException: "
+                "Start of this size is no longer supported. If you need to fetch this amount of "
+                "content, please use either the search endpoint or get the content by a space at "
+                "a time."
+            ),
+        },
+    )
+
+
 def negative_not_allowed(name: str) -> AtlassianError:
     """Confluence's refusal of a negative ``limit`` or ``start``, measured 2026-09-14 on both
     listings. Jira does NOT share it — a negative there clamps to the floor and answers 200 — so

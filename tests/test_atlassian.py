@@ -1800,9 +1800,10 @@ def test_jira_search_post_refuses_the_leading_bytes_real_refuses(client, admin_h
 
 
 def test_jira_search_advertises_both_its_methods_when_it_refuses_a_third(client, admin_h):
-    """Measured: real answers `PUT` with `Allow: POST, GET`. Starlette fills the header from the
-    single route that partially matched, so serving the two methods from a route each would
-    advertise one of them — which is why the per-method split is made in the served document
+    """Measured: real answers `PUT` with `Allow: POST, GET`. The header comes from the measured
+    table (`errors.atlassian.jira_allow`), and before that from Starlette, which filled it from the
+    single route that partially matched — either way, serving the two methods from a route each
+    would advertise one of them, which is why the per-method split is made in the served document
     instead (see `openapi.jira_search_placement`)."""
     for version in ("2", "3"):
         r = client.request("PUT", f"/atlassian/rest/api/{version}/search/jql", headers=admin_h)
@@ -2771,6 +2772,7 @@ def test_atlassian_the_mount_root_answers_rather_than_redirecting_to_itself(clie
         ("/atlassian/wiki/rest/api/nopesuchroute", "xml"),
         ("/atlassian/wiki/nope", "html"),
         ("/atlassian/foo", "html"),
+        ("/atlassian/restx/api/3/serverInfo", "html"),
         ("/atlassian/ex/jira/nope/rest/api/3/issue/NOPE-1", "html"),
         ("/atlassian/browse/NOPE-1", "html"),
     ],

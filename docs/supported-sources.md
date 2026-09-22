@@ -299,11 +299,12 @@ Connect token is the bare `application/json`.
 A trailing slash is not part of a path on either product, and a run of slashes inside one is a
 single slash — both spellings answer what the canonical one answers, though a refusal echoes the
 path with its trailing slash kept. A `HEAD` is the `GET` with the body left off and declares no
-length, which is where Jira parts from Confluence. An `OPTIONS` is 200 with an empty `text/html` body, an empty `Accept-Patch` and an
-`Allow` naming the methods the vendor serves at that route — the `PUT` and `DELETE` on an issue
-among them, which Backlot does not serve. A path no route serves is RFC 7807 at 404 with
-`No endpoint <METHOD> <path>.`, ahead of the credential — under `/atlassian/rest` only, since
-everything the site serves outside the two API mounts answers the product's HTML page instead. Every answer carries `atl-request-id`,
+length, which is where Jira parts from Confluence. An `OPTIONS` is 200 with an empty `text/html`
+body, an empty `Accept-Patch` and an `Allow` naming the methods the vendor serves at that route —
+the `PUT` and `DELETE` on an issue among them, which Backlot does not serve. A path no route serves
+is RFC 7807 at 404 with `No endpoint <METHOD> <path>.`, ahead of the credential — under
+`/atlassian/rest` only, since everything the site serves outside the two API mounts answers the
+product's HTML page instead. Every answer carries `atl-request-id`,
 `atl-traceid`, `x-arequestid`, `cache-control` and `x-content-type-options`; a caller whose
 credential resolves also gets its own `x-aaccountid` and the burst quota's four
 (`ratelimit`, `ratelimit-policy`, `x-ratelimit-limit`, `x-ratelimit-remaining`), which an anonymous

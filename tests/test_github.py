@@ -28,6 +28,161 @@ from tests._helpers import (
     tok,
 )
 
+# What a trailing slash means on a `/github` path, per route. Measured against api.github.com on
+# 2026-09-22 with a token, each request carrying its own cache-buster:
+#
+#   path                          real
+#   ------------------------------|------------------------------------------------------------
+#   readme/                       | 200, the repository's own README (the empty directory)
+#   readme/{dir}                  | that directory's README, or a 404 naming the directory anchor
+#   contents/{path}/              | 302 to /repositories/{id}/contents/{path}, before resolving
+#   git/trees/{ref}/, git/ref/…/  | 404 Not Found — the slash is part of the ref
+#   statuses/{sha}/               | 404 Not Found
+#   branches/{branch}/            | 404 Branch not found
+#   commits/{sha}/                | 422 No commit found for SHA: {sha with the slash}
+#
+# The fourth case, a trailing slash no route matches at all, is `refuse_a_trailing_slash_on_github`
+# in `backlot.main` and was measured with #232.
+
+_REF_SLASH_ROWS = [
+    ("git/trees/main/", 404, "Not Found"),
+    ("git/ref/heads/main/", 404, "Not Found"),
+    ("statuses/main/", 404, "Not Found"),
+    ("branches/main/", 404, "Branch not found"),
+    ("commits/main/", 422, "No commit found for SHA: main/"),
+    # the protection route does not match the slash, so the branch route answers it, as on real
+    ("branches/main/protection/", 404, "Branch not found"),
+]
+
+
+@pytest.mark.parametrize(
+    "suffix, status, message", _REF_SLASH_ROWS, ids=[r[0] for r in _REF_SLASH_ROWS]
+)
+def test_github_a_ref_ending_in_a_slash_is_refused(
+    gh_client, gh_org, gh_admin_h, suffix, status, message
+):
+    """Measured: real reads the slash as part of the ref, so each route answers its own refusal for
+    a ref naming nothing. Backlot stripped it and served the ref beside it at 200."""
+    c, _ = gh_client
+    r = c.get(f"/github/repos/{gh_org}/codebase/{suffix}", headers=gh_admin_h)
+    assert r.status_code == status, r.text
+    assert r.json()["message"] == message
+
+
+@pytest.mark.parametrize(
+    "suffix", ["git/trees/main", "git/ref/heads/main", "branches/main", "commits/main"]
+)
+def test_github_the_slash_free_spelling_still_answers(gh_client, gh_org, gh_admin_h, suffix):
+    """The control: only the trailing slash changed."""
+    c, _ = gh_client
+    r = c.get(f"/github/repos/{gh_org}/codebase/{suffix}", headers=gh_admin_h)
+    assert r.status_code == 200, r.text
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["contents/src/", "contents/src/main.py/", "contents/no-such-dir/"],
+)
+def test_github_a_contents_path_ending_in_a_slash_redirects(gh_client, gh_org, gh_admin_h, path):
+    """Measured: a 302 to the id-keyed spelling without the slash, before the path resolves to
+    anything — a file, a directory and a path that names neither all redirect."""
+    from backlot import synth
+
+    c, _ = gh_client
+    r = c.get(f"/github/repos/{gh_org}/codebase/{path}", headers=gh_admin_h, follow_redirects=False)
+    assert r.status_code == 302
+    rid = synth.github_user_id("codebase")
+    assert r.headers["location"].endswith(f"/github/repositories/{rid}/{path.rstrip('/')}")
+    assert "?" not in r.headers["location"]
+
+
+def test_github_the_contents_redirect_drops_the_ref_and_is_followable(
+    gh_client, gh_org, gh_admin_h
+):
+    """Measured: `?ref=main` is not carried into the `Location`. Following it answers the listing,
+    which is what makes the redirect usable rather than a dead end."""
+    c, _ = gh_client
+    r = c.get(
+        f"/github/repos/{gh_org}/codebase/contents/src/?ref=main",
+        headers=gh_admin_h,
+        follow_redirects=False,
+    )
+    assert r.status_code == 302 and "ref=" not in r.headers["location"]
+    followed = c.get(r.headers["location"], headers=gh_admin_h)
+    assert followed.status_code == 200 and isinstance(followed.json(), list)
+
+
+def test_github_a_bad_credential_is_answered_before_the_contents_redirect(gh_client, gh_org):
+    """Measured: an anonymous caller gets the 302 and a bearer real cannot read gets `Bad
+    credentials` first, so the credential is the earlier of the two."""
+    c, _ = gh_client
+    r = c.get(
+        f"/github/repos/{gh_org}/codebase/contents/src/",
+        headers={"Authorization": "Bearer nope"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 401 and r.json()["message"] == "Bad credentials"
+
+
+def test_github_readme_with_an_empty_directory_is_the_repositorys_own(
+    gh_client, gh_org, gh_admin_h
+):
+    """Measured: `readme/` is a 200 carrying the repository's README, where the routes around it
+    answer a trailing slash with a refusal."""
+    c, _ = gh_client
+    root = c.get(f"/github/repos/{gh_org}/codebase/readme", headers=gh_admin_h).json()
+    empty = c.get(f"/github/repos/{gh_org}/codebase/readme/", headers=gh_admin_h)
+    assert empty.status_code == 200 and empty.json()["path"] == root["path"]
+
+
+def test_github_readme_for_a_directory_holding_none_is_the_directory_anchors_404(
+    gh_client, gh_org, gh_admin_h
+):
+    """Measured: the 404 names `#get-a-repository-readme-for-a-directory`, where the root route's
+    names `#get-a-repository-readme`."""
+    c, _ = gh_client
+    r = c.get(f"/github/repos/{gh_org}/codebase/readme/docs", headers=gh_admin_h)
+    assert r.status_code == 404
+    assert r.json()["documentation_url"].endswith("#get-a-repository-readme-for-a-directory")
+
+
+def test_github_readme_for_a_directory_serves_that_directorys_readme(tmp_path):
+    """Measured on python/cpython: `readme/Doc` is that directory's README, not the repository's.
+    No bundled corpus holds a nested README, so this one states it."""
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "github",
+                "doc_id": "gh-root-readme",
+                "repo": "nested",
+                "subtype": "file",
+                "path": "README.md",
+                "content": "# the repository",
+                "author_email": "a@x.com",
+                "visibility": "public",
+            },
+            {
+                "source_type": "github",
+                "doc_id": "gh-dir-readme",
+                "repo": "nested",
+                "subtype": "file",
+                "path": "docs/README.md",
+                "content": "# the directory",
+                "author_email": "a@x.com",
+                "visibility": "public",
+            },
+        ],
+    )
+    with client_for(s, reload=True) as c:
+        h = {"Authorization": f"Bearer {s.admin_token}"}
+        org = c.get("/_meta/users", headers=h).json()["org"]
+        got = c.get(f"/github/repos/{org}/nested/readme/docs", headers=h).json()
+        assert got["path"] == "docs/README.md"
+        assert base64.b64decode(got["content"]).decode() == "# the directory"
+        root = c.get(f"/github/repos/{org}/nested/readme", headers=h).json()
+        assert root["path"] == "README.md"
+
 
 def test_github_serves_a_comment_dated_at_the_epoch(tmp_path):
     """A comment id is an INTEGER and `synth.epoch` hashes a string, so a comment

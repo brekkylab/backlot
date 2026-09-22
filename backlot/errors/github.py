@@ -91,6 +91,10 @@ ROUTE_DOCS: dict[str, str] = {
     "/github/repos/{owner}/{repo}/branches/{branch}": _DOCS + "branches/branches#get-a-branch",
     "/github/repos/{owner}/{repo}/commits/{sha}": _DOCS + "commits/commits#get-a-commit",
     "/github/repos/{owner}/{repo}/readme": _DOCS + "repos/contents#get-a-repository-readme",
+    # The directory route names its own anchor, which is how real spells its 404 there.
+    "/github/repos/{owner}/{repo}/readme/{dir}": (
+        _DOCS + "repos/contents#get-a-repository-readme-for-a-directory"
+    ),
     "/github/repos/{owner}/{repo}/collaborators": (
         _DOCS + "collaborators/collaborators#list-repository-collaborators"
     ),

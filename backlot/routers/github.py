@@ -2188,7 +2188,11 @@ async def commit_statuses(
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     _require_repo(conn, repo, ids)  # a repo this caller cannot see must not answer for its shas
-    if sha.strip("/") not in _commit_ish(conn, owner, repo, ids):
+    # A trailing slash is part of the name real reads (measured 2026-09-22: `git/trees/main/`
+    # and `git/ref/heads/main/` are 404 `Not Found`, `branches/main/` a 404 `Branch not found`,
+    # `statuses/main/` a 404, and `commits/main/` a 422 whose message echoes the slash). Only a
+    # LEADING one is dropped, which is how a ref arriving as `//main` reaches the lookup.
+    if sha.lstrip("/") not in _commit_ish(conn, owner, repo, ids):
         raise HTTPException(status_code=404, detail="Not Found")
     page, per_page = _clamp(page, per_page)
     return _paged(request, 0, {}, [], page, per_page)
@@ -2248,7 +2252,11 @@ async def get_git_ref(owner: str, repo: str, ref: str, request: Request):
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     _require_repo(conn, repo, ids)
-    ref = ref.strip("/")
+    # A trailing slash is part of the name real reads (measured 2026-09-22: `git/trees/main/`
+    # and `git/ref/heads/main/` are 404 `Not Found`, `branches/main/` a 404 `Branch not found`,
+    # `statuses/main/` a 404, and `commits/main/` a 422 whose message echoes the slash). Only a
+    # LEADING one is dropped, which is how a ref arriving as `//main` reaches the lookup.
+    ref = ref.lstrip("/")
     if not _ref_exists(conn, owner, repo, ref, ids):
         raise HTTPException(status_code=404, detail="Not Found")
     ab = _api_base(request)
@@ -2336,7 +2344,11 @@ async def get_tree(
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     _require_repo(conn, repo, ids)
-    ref = ref.strip("/")
+    # A trailing slash is part of the name real reads (measured 2026-09-22: `git/trees/main/`
+    # and `git/ref/heads/main/` are 404 `Not Found`, `branches/main/` a 404 `Branch not found`,
+    # `statuses/main/` a 404, and `commits/main/` a 422 whose message echoes the slash). Only a
+    # LEADING one is dropped, which is how a ref arriving as `//main` reaches the lookup.
+    ref = ref.lstrip("/")
     ab = _api_base(request)
     rows = store.list_repo_files(conn, repo, ids)
     entries = _tree_from_paths(owner, repo, rows, ab)
@@ -2464,8 +2476,31 @@ async def get_contents(
 ):
     """`ref` selects a SNAPSHOT of the file when the corpus named one; see store.get_repo_file for
     why an unnamed ref answers HEAD instead of 404. A directory listing ignores it — the tree has
-    no per-ref shape here (the no-history simplification in :func:`get_tree`)."""
+    no per-ref shape here (the no-history simplification in :func:`get_tree`).
+
+    A path ending in a slash is a 302 to the id-keyed spelling without it, which is real's own
+    answer and the one exception to a trailing slash meaning whatever the matched route makes of
+    it. Measured 2026-09-22: `contents/backlot/`, `contents/README.md/` and `contents/no-such-dir/`
+    all answer `302` to `https://api.github.com/repositories/{id}/contents/{path}`, so the redirect
+    is reached before the path resolves to anything; the `Location` carries no query, `?ref=main`
+    included; and the id-keyed spelling redirects to itself the same way. A credential that does
+    not resolve is answered first, ahead of the redirect, which is where `_require` already sits.
+    """
+    caller_checked = _require(request)  # the 401 a bad credential gets comes before the redirect
+    del caller_checked
+    if path.endswith("/"):
+        target = _redirect_to_the_slash_free_contents_path(request, repo, path)
+        return Response(status_code=302, headers={"Location": target})
     return await _contents_response(owner, repo, path, request, ref)
+
+
+def _redirect_to_the_slash_free_contents_path(request: Request, repo: str, path: str) -> str:
+    """Where real points a `contents` path that ends in a slash: the id-keyed spelling of the same
+    path with the slash gone, absolute, and carrying no query."""
+    return (
+        f"{_api_base(request)}/repositories/{synth.github_user_id(repo)}"
+        f"/contents/{path.rstrip('/')}"
+    )
 
 
 @router.get("/repos/{owner}/{repo}/git/blobs/{sha}")
@@ -2646,7 +2681,11 @@ async def get_branch(owner: str, repo: str, branch: str, request: Request):
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     _require_repo(conn, repo, ids)
-    branch = branch.strip("/")
+    # A trailing slash is part of the name real reads (measured 2026-09-22: `git/trees/main/`
+    # and `git/ref/heads/main/` are 404 `Not Found`, `branches/main/` a 404 `Branch not found`,
+    # `statuses/main/` a 404, and `commits/main/` a 422 whose message echoes the slash). Only a
+    # LEADING one is dropped, which is how a ref arriving as `//main` reaches the lookup.
+    branch = branch.lstrip("/")
     found = next((b for b in _branch_rows(conn, owner, repo, ids) if b["name"] == branch), None)
     if found is None:
         raise HTTPException(status_code=404, detail="Branch not found")
@@ -2691,7 +2730,11 @@ async def get_commit(owner: str, repo: str, sha: str, request: Request):
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     _require_repo(conn, repo, ids)
-    sha = sha.strip("/")
+    # A trailing slash is part of the name real reads (measured 2026-09-22: `git/trees/main/`
+    # and `git/ref/heads/main/` are 404 `Not Found`, `branches/main/` a 404 `Branch not found`,
+    # `statuses/main/` a 404, and `commits/main/` a 422 whose message echoes the slash). Only a
+    # LEADING one is dropped, which is how a ref arriving as `//main` reaches the lookup.
+    sha = sha.lstrip("/")
     if sha not in _commit_ish(conn, owner, repo, ids):
         raise _no_commit_for_sha(sha)
     # A NAME resolves to the commit it stands for rather than being echoed back as one: real
@@ -2715,6 +2758,35 @@ async def get_commit(owner: str, repo: str, sha: str, request: Request):
         "url": f"{ab}/repos/{owner}/{repo}/commits/{sha}",
         "html_url": f"https://github.com/{owner}/{repo}/commit/{sha}",
     }
+
+
+@router.get("/repos/{owner}/{repo}/readme/{dir:path}")
+async def get_readme_for_a_directory(
+    owner: str, repo: str, dir: str, request: Request, ref: str | None = Query(None)
+):
+    """The README of a directory, which real serves at its own route beside the root one.
+
+    Measured 2026-09-22: `readme/Doc` on python/cpython is that directory's README at 200, a
+    directory holding none is a 404 whose `documentation_url` names the directory anchor rather
+    than the root one, and `readme/` — the empty directory — is the repository's own README, which
+    is why a trailing slash answers 200 here where it is a 404 on the routes around it.
+    """
+    inside = dir.strip("/")
+    if not inside:
+        return await get_readme(owner, repo, request, ref)
+    conn = auth.conn(request)
+    caller = _require(request)
+    ids = auth.visible_ids(request, caller)
+    _require_repo(conn, repo, ids)
+    _require_ref(conn, owner, repo, ref, ids)
+    row = store.get_repo_file(conn, repo, f"{inside}/README.md", ids, ref=ref) or (
+        store.get_repo_file(conn, repo, f"{inside}/readme.md", ids, ref=ref)
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    return _raw_response(request, row["content"], _CONTENT_RAW_TYPE) or _file_obj(
+        owner, repo, row, _api_base(request), ref
+    )
 
 
 @router.get("/repos/{owner}/{repo}/readme")

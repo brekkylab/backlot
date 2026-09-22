@@ -4081,12 +4081,6 @@
     {
       "kind": "missing_operation",
       "severity": "gap",
-      "path": "GET /repos/{}/{}/readme/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
       "path": "GET /repos/{}/{}/releases",
       "detail": "the vendor serves it; Backlot does not"
     },

@@ -96,6 +96,26 @@ def test_github_a_contents_path_ending_in_a_slash_redirects(gh_client, gh_org, g
     assert "?" not in r.headers["location"]
 
 
+def test_github_the_contents_redirect_removes_one_slash_and_names_a_content_type(
+    gh_client, gh_org, gh_admin_h
+):
+    """Measured: real removes ONE trailing slash per redirect — `contents/src//` points at
+    `contents/src/`, which redirects again — and the 302 carries `text/html;charset=utf-8` with an
+    empty body, spelt without the space."""
+    c, _ = gh_client
+    r = c.get(
+        f"/github/repos/{gh_org}/codebase/contents/src//",
+        headers=gh_admin_h,
+        follow_redirects=False,
+    )
+    assert r.status_code == 302
+    assert r.headers["location"].endswith("/contents/src/")
+    assert r.headers["content-type"] == "text/html;charset=utf-8"
+    assert r.content == b""
+    again = c.get(r.headers["location"], headers=gh_admin_h, follow_redirects=False)
+    assert again.status_code == 302 and again.headers["location"].endswith("/contents/src")
+
+
 def test_github_the_contents_redirect_drops_the_ref_and_is_followable(
     gh_client, gh_org, gh_admin_h
 ):

@@ -2486,17 +2486,24 @@ async def get_contents(
         caller = _require(request)
         _require_repo(conn, repo, auth.visible_ids(request, caller))
         target = _redirect_to_the_slash_free_contents_path(request, repo, path)
-        return Response(status_code=302, headers={"Location": target})
+        # Real's redirect carries an HTML content type and an empty body, spelt without the space
+        # its own header has ("text/html;charset=utf-8"), measured on four of these.
+        return Response(
+            status_code=302,
+            headers={"Location": target, "Content-Type": "text/html;charset=utf-8"},
+        )
     return await _contents_response(owner, repo, path, request, ref)
 
 
 def _redirect_to_the_slash_free_contents_path(request: Request, repo: str, path: str) -> str:
     """Where real points a `contents` path that ends in a slash: the id-keyed spelling of the same
-    path with the slash gone, absolute, and carrying no query."""
-    return (
-        f"{_api_base(request)}/repositories/{synth.github_user_id(repo)}"
-        f"/contents/{path.rstrip('/')}"
-    )
+    path with ONE slash gone, absolute, and carrying no query.
+
+    One, not all of them: measured 2026-09-22, `contents/backlot//` points at `contents/backlot/`
+    and `contents///` at `contents//`, so a path carrying several takes a hop per slash and a
+    client following redirects walks them off one at a time.
+    """
+    return f"{_api_base(request)}/repositories/{synth.github_user_id(repo)}/contents/{path[:-1]}"
 
 
 @router.get("/repos/{owner}/{repo}/git/blobs/{sha}")

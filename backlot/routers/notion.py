@@ -267,7 +267,9 @@ def _refusal(request: Request, caller) -> JSONResponse | None:
 
     The credential first: on 2026-09-15 an invalid token answered ``unauthorized`` on both query
     paths under 2022-06-28, under 2025-09-03 and with no version header at all, so the version is
-    never what a request without a usable credential hears about.
+    never what a request without a usable credential hears about. Which of that 401's two messages
+    it gets is :func:`_bearer_credential`: a header that is not a bearer credential is told the
+    format, and a bearer the server cannot resolve is told the token.
 
     Then the version, which Notion requires on every request and refuses when it is one Notion
     does not publish. Both halves answer ``missing_version``, and each has its own message:

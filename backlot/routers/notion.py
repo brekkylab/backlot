@@ -34,7 +34,9 @@ Object mapping: a Notion *page* is one doc (``subtype='page'``); a *database* is
 
 from __future__ import annotations
 
+import hashlib
 import json
+import uuid
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -45,6 +47,9 @@ from backlot.openapi import qp
 from backlot.routers import json_body
 
 router = APIRouter(prefix="/notion/v1", tags=["notion"])
+# Everything under `/notion` that no route above answers. Mounted after `router` in
+# `backlot.main`, so a real route wins and only what is left reaches this one.
+unmatched_router = APIRouter(prefix="/notion", include_in_schema=False)
 
 _PAGE_MAX = 100  # Notion caps page_size at 100
 # The version that split databases into data sources, so the cut between the two models: a
@@ -166,11 +171,54 @@ _B_QUERY_DATABASE = _query_extra("versions up to and including 2022-06-28", "202
 # --------------------------------------------------------------------------- helpers
 
 
-def _error(status: int, code: str, message: str) -> JSONResponse:
+_BEARER_REQUIRED = 'Authorization header must use the format "Bearer <token>".'
+_TOKEN_INVALID = "API token is invalid."
+
+
+def _request_id(request: Request) -> str:
+    """The id every Notion answer names itself by, in the body and on the response.
+
+    Measured 2026-09-22 with no credential, which is enough because the URL and the credential are
+    checked before anything else: every refusal carries `"request_id": "<uuid>"` and
+    `x-notion-request-id` with that same value. Real's is per response — three calls to one URL
+    answered three ids — and this one is derived from the request instead, the choice this
+    repository makes for a synthesised id so that a corpus served twice answers the same thing and
+    a test can assert one.
+    """
+    raw = hashlib.shake_256(
+        f"notion-req:{request.method} {request.url.path}?{request.url.query}".encode()
+    )
+    return str(uuid.UUID(bytes=raw.digest(16), version=4))
+
+
+def _error(request: Request, status: int, code: str, message: str) -> JSONResponse:
+    request_id = _request_id(request)
     return JSONResponse(
         status_code=status,
-        content={"object": "error", "status": status, "code": code, "message": message},
+        content={
+            "object": "error",
+            "status": status,
+            "code": code,
+            "message": message,
+            "request_id": request_id,
+        },
+        headers={"x-notion-request-id": request_id},
     )
+
+
+def _bearer_credential(request: Request) -> str | None:
+    """The token from `Authorization: Bearer <t>`, and from nothing else.
+
+    `auth.bearer_token` also takes GitHub's legacy `token <t>`, which Notion does not: measured
+    2026-09-22, `token <anything>`, `Basic …`, a bare value with no scheme, a `Bearer` with no
+    token and no header at all are each refused as a header that is not a bearer credential, where
+    `Bearer <a token that does not resolve>` is refused as a token. The scheme match is
+    case-insensitive on both sides.
+    """
+    parts = (request.headers.get("authorization") or "").split(None, 1)
+    if len(parts) == 2 and parts[0].lower() == "bearer" and parts[1].strip():
+        return parts[1].strip()
+    return None
 
 
 def _version(request: Request) -> str:
@@ -227,18 +275,21 @@ def _refusal(request: Request, caller) -> JSONResponse | None:
     An empty header value is a value rather than a missing one, and real answers it the
     enumerating way -- so it is refused here too, which is what keeps it from sorting below
     2025-09-03 and quietly picking the legacy model for a caller that named nothing."""
+    if _bearer_credential(request) is None:
+        return _error(request, 401, "unauthorized", _BEARER_REQUIRED)
     if caller is None:
-        return _error(401, "unauthorized", "API token is invalid.")
+        return _error(request, 401, "unauthorized", _TOKEN_INVALID)
     version = request.headers.get("notion-version")
     if version is None:
         return _error(
+            request,
             400,
             "missing_version",
             "Notion-Version header failed validation: Notion-Version header should be defined, "
             "instead was `undefined`.",
         )
     if version not in PUBLISHED_VERSIONS:
-        return _error(400, "missing_version", _unknown_version(version))
+        return _error(request, 400, "missing_version", _unknown_version(version))
     return None
 
 
@@ -260,7 +311,7 @@ def _unmounted_here(request: Request, *, data_sources: bool) -> JSONResponse | N
     made-up path", so the message here is what api.notion.com answered on 2026-09-15 for a path no
     version mounts at all."""
     if _data_sources_model(_version(request)) is not data_sources:
-        return _error(400, "invalid_request_url", "Invalid request URL.")
+        return _error(request, 400, "invalid_request_url", "Invalid request URL.")
     return None
 
 
@@ -462,7 +513,7 @@ async def get_page(page_id: str, request: Request):
     # redirect to a different row (see store.notion_by_id).
     row = store.notion_by_id(conn, _norm(page_id), auth.visible_ids(request, caller))
     if row is None or row["subtype"] == "database":
-        return _error(404, "object_not_found", f"Could not find page with ID: {page_id}.")
+        return _error(request, 404, "object_not_found", f"Could not find page with ID: {page_id}.")
     return _page_obj(conn, row)
 
 
@@ -474,7 +525,9 @@ async def get_block(block_id: str, request: Request):
     conn = auth.conn(request)
     row = store.notion_by_id(conn, _norm(block_id), auth.visible_ids(request, caller))
     if row is None:
-        return _error(404, "object_not_found", f"Could not find block with ID: {block_id}.")
+        return _error(
+            request, 404, "object_not_found", f"Could not find block with ID: {block_id}."
+        )
     bid = row["id"]
     kind = "child_database" if row["subtype"] == "database" else "child_page"
     return {
@@ -503,7 +556,9 @@ async def get_block_children(block_id: str, request: Request):
     conn = auth.conn(request)
     row = store.notion_by_id(conn, _norm(block_id), auth.visible_ids(request, caller))
     if row is None:
-        return _error(404, "object_not_found", f"Could not find block with ID: {block_id}.")
+        return _error(
+            request, 404, "object_not_found", f"Could not find block with ID: {block_id}."
+        )
     blocks = synth.notion_blocks(row["id"], row["content"])
     offset = pagination.decode_cursor(request.query_params.get("start_cursor"))
     limit = _page_size(request.query_params.get("page_size"))
@@ -522,7 +577,9 @@ async def get_database(database_id: str, request: Request):
     conn = auth.conn(request)
     row = store.notion_by_id(conn, _norm(database_id), auth.visible_ids(request, caller))
     if row is None or row["subtype"] != "database":
-        return _error(404, "object_not_found", f"Could not find database with ID: {database_id}.")
+        return _error(
+            request, 404, "object_not_found", f"Could not find database with ID: {database_id}."
+        )
     return _database_obj(conn, row, _version(request))
 
 
@@ -543,7 +600,10 @@ async def get_data_source(data_source_id: str, request: Request):
     )
     if row is None:
         return _error(
-            404, "object_not_found", f"Could not find data source with ID: {data_source_id}."
+            request,
+            404,
+            "object_not_found",
+            f"Could not find data source with ID: {data_source_id}.",
         )
     return _data_source_obj(conn, row)
 
@@ -565,7 +625,7 @@ async def _query_rows(request: Request, row_id: str, *, data_sources: bool):
     visible = auth.visible_ids(request, caller)
     db = store.get_document(conn, "notion", db_id, visible_ids=visible) if db_id else None
     if db is None or db["subtype"] != "database":
-        return _error(404, "object_not_found", "Could not find the requested database.")
+        return _error(request, 404, "object_not_found", "Could not find the requested database.")
     body = await json_body(request)
     offset = pagination.decode_cursor(body.get("start_cursor"))
     limit = _page_size(body.get("page_size"))
@@ -681,7 +741,7 @@ async def get_user(user_id: str, request: Request):
     for u in store.list_users(conn):
         if _norm(synth.notion_user_id(u["email"])) == key:
             return _user_obj(conn, u["email"])
-    return _error(404, "object_not_found", f"Could not find user with ID: {user_id}.")
+    return _error(request, 404, "object_not_found", f"Could not find user with ID: {user_id}.")
 
 
 # --------------------------------------------------------------------------- comments
@@ -725,3 +785,19 @@ async def list_comments(request: Request):
 
 
 # --------------------------------------------------------------------------- misc
+
+
+@unmatched_router.api_route(
+    "/{rest:path}", methods=["GET", "POST", "PATCH", "PUT", "DELETE", "HEAD", "OPTIONS"]
+)
+async def unmatched_path(request: Request, rest: str) -> JSONResponse:
+    """Notion's answer for a URL it does not serve, which it gives before it reads anything else.
+
+    Measured 2026-09-22 with no credential at all: `/v1/nonexistent_thing/xyz` answers 400
+    `invalid_request_url` with `Invalid request URL.`, and so do the same path carrying a token
+    that cannot resolve, the same path with no `Notion-Version`, a path outside `/v1` entirely, and
+    a POST to an unknown `/v1` path. A path that does exist answers the credential's 401 instead,
+    so the URL is the first thing that API checks. This server answered FastAPI's own
+    `{"detail":"Not Found"}` at 404 there.
+    """
+    return _error(request, 400, "invalid_request_url", "Invalid request URL.")

@@ -39,6 +39,91 @@ def _notion_routes() -> list[tuple[str, str]]:
     ]
 
 
+# What a Notion refusal carries, measured against api.notion.com on 2026-09-22 with no valid
+# credential — which is enough, because that API checks the URL and then the credential before
+# anything else. Three calls to one URL answered three different ids there; this server derives one
+# from the request instead, which is the choice it makes for every synthesised id.
+
+_NOT_A_BEARER = 'Authorization header must use the format "Bearer <token>".'
+
+_SCHEME_ROWS = [
+    ("no header", None),
+    ("no scheme", "nope"),
+    ("basic", "Basic YTpi"),
+    ("bearer with no token", "Bearer"),
+    ("github's legacy scheme", "token {token}"),
+]
+
+
+@pytest.mark.parametrize("label, header", _SCHEME_ROWS, ids=[r[0] for r in _SCHEME_ROWS])
+def test_notion_a_header_that_is_not_a_bearer_says_so(client, admin_h, label, header):
+    """Measured: real refuses a header that is not `Bearer <token>` by naming the format, where a
+    bearer whose token does not resolve is `API token is invalid.`. The legacy `token <t>` scheme
+    GitHub takes is refused here too, and this server answered it 200."""
+    headers = {"Notion-Version": DATA_SOURCES_VERSION}
+    if header is not None:
+        headers["Authorization"] = header.format(token=admin_h["Authorization"].split()[1])
+    r = client.get("/notion/v1/users/me", headers=headers)
+    assert r.status_code == 401
+    assert r.json()["message"] == _NOT_A_BEARER, label
+
+
+@pytest.mark.parametrize("scheme", ["Bearer", "bearer"])
+def test_notion_a_bearer_that_does_not_resolve_is_the_token_message(client, scheme):
+    """Measured: the scheme match is case-insensitive on real, and a token it cannot read is
+    `API token is invalid.` rather than the format message."""
+    r = client.get(
+        "/notion/v1/users/me",
+        headers={"Authorization": f"{scheme} nope", "Notion-Version": DATA_SOURCES_VERSION},
+    )
+    assert r.status_code == 401 and r.json()["message"] == "API token is invalid."
+
+
+def test_notion_every_refusal_names_itself_by_a_request_id(client, notion_h):
+    """Measured: the body carries `request_id` and the response `x-notion-request-id`, one value.
+    Three refusal kinds here: the credential's 401, the version's 400 and a page's 404."""
+    import uuid
+
+    rows = [
+        ("/notion/v1/users/me", {"Notion-Version": DATA_SOURCES_VERSION}),
+        ("/notion/v1/users/me", {"Authorization": notion_h["Authorization"]}),
+        ("/notion/v1/pages/00000000000000000000000000000000", notion_h),
+    ]
+    for path, headers in rows:
+        r = client.get(path, headers=headers)
+        assert r.status_code >= 400, path
+        body = r.json()
+        assert body["request_id"] == r.headers["x-notion-request-id"], path
+        assert uuid.UUID(body["request_id"]).version == 4, path
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/notion/v1/nonexistent_thing/xyz",
+        "/notion/v1/pages",
+        "/notion/foo",
+    ],
+)
+def test_notion_a_path_no_route_matches_is_the_url_400(client, notion_h, path):
+    """Measured: a URL that API does not serve is 400 `invalid_request_url`, and it answers that
+    before it reads the credential or the version — a path outside `/v1` included. This server
+    answered FastAPI's `{"detail":"Not Found"}` at 404."""
+    for headers in ({}, {"Authorization": "Bearer nope"}, notion_h):
+        r = client.get(path, headers=headers)
+        assert r.status_code == 400, (path, headers)
+        assert r.json()["code"] == "invalid_request_url"
+        assert r.json()["message"] == "Invalid request URL."
+
+
+def test_notion_a_path_that_exists_still_answers_the_credential(client, notion_h):
+    """The control for the row above: the URL check comes first, so a path this server does serve
+    reaches the credential and answers its 401 rather than the URL's 400."""
+    r = client.get("/notion/v1/users/me", headers={"Notion-Version": DATA_SOURCES_VERSION})
+    assert r.status_code == 401
+    assert client.get("/notion/v1/users/me", headers=notion_h).status_code == 200
+
+
 def test_notion_page_retrieve_and_blocks(client, notion_h):
     pid = synth.notion_id("nt-runbook")
     r = client.get(f"/notion/v1/pages/{pid}", headers=notion_h)
@@ -147,6 +232,7 @@ def test_notion_query_rows_one_path_per_version(client, notion_h):
         gone = client.post(f"/notion/v1/{refused}/query", json={}, headers=h)
         assert gone.status_code == 400, version
         assert gone.json() == {
+            "request_id": gone.headers["x-notion-request-id"],
             "object": "error",
             "status": 400,
             "code": "invalid_request_url",
@@ -192,6 +278,7 @@ def test_notion_every_route_requires_the_version_header(client, admin_h, notion_
         r = client.request(method, url, headers=admin_h, json={} if method == "POST" else None)
         assert r.status_code == 400, (method, url)
         assert r.json() == {
+            "request_id": r.headers["x-notion-request-id"],
             "object": "error",
             "status": 400,
             "code": "missing_version",
@@ -234,6 +321,7 @@ def test_notion_refuses_a_version_it_does_not_publish(client, admin_h):
         )
         assert r.status_code == 400, (method, url)
         assert r.json() == {
+            "request_id": r.headers["x-notion-request-id"],
             "object": "error",
             "status": 400,
             "code": "missing_version",
@@ -292,6 +380,7 @@ def test_notion_data_source_retrieve_is_mounted_only_above_the_cut(client, notio
         gone = client.get(f"/notion/v1/data_sources/{dsid}", headers=h)
         assert gone.status_code == 400, version
         assert gone.json() == {
+            "request_id": gone.headers["x-notion-request-id"],
             "object": "error",
             "status": 400,
             "code": "invalid_request_url",

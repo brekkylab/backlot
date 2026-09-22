@@ -314,6 +314,13 @@ Every route requires a `Notion-Version` header and answers `missing_version` wit
 with a version Notion does not publish — as the real API does; the value picks the database model,
 which is what the notes below name.
 
+A URL no route serves is `invalid_request_url` at 400, which the real API answers before it reads
+the credential or the version. A credential that is not `Bearer <token>` — no header, no scheme,
+`Basic`, or GitHub's legacy `token <t>` — is refused by naming the format, where a bearer whose
+token does not resolve is `API token is invalid.`. Every refusal carries a `request_id` in the body
+and `x-notion-request-id` on the response, one value; real's differs per response and this one is
+derived from the request, so a corpus served twice answers the same id.
+
 | Endpoint | Notes |
 |---|---|
 | `POST search` | |

@@ -611,6 +611,8 @@ app.include_router(google.router)
 app.include_router(github.router)
 app.include_router(atlassian.router)
 app.include_router(notion.router)
+# after the routes it serves, so only a path none of them match reaches it
+app.include_router(notion.unmatched_router)
 app.include_router(s3.router)
 app.include_router(hubspot.router)
 app.include_router(linear.router)

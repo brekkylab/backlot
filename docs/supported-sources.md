@@ -130,9 +130,9 @@ resource, `reset` the second that window closes, `resource` the one the request 
 runs out is refused, 403, with the five headers pinned at `limit` and real's own message, for a
 caller with no credential and for a token alike (measured against api.github.com 2026-09-17); the
 refused request is not itself counted, which is why `used` holds at `limit` rather than climbing
-past it. `BACKLOT_GITHUB_ENFORCE_RATE_LIMITS=false` turns the refusal off for a long-lived
-`serve()` whose own test volume would rather not meet real's 10-a-minute code search window.
-`GET /rate_limit` reports the same windows, does not count, and is never refused — the one route a
+past it. `BACKLOT_GITHUB_ENFORCE_RATE_LIMITS` turns the refusal off (see
+[configuration](configuration.md#github)). `GET /rate_limit` reports the same windows, does not
+count, and is never refused — the one route a
 client reads its way out of a spent window with. Two answers carry none of the five and count
 nowhere, as real's do not: a credential that does not resolve, and a path no route matches asked by
 a caller that sent one (measured 2026-09-10 and 2026-09-21).

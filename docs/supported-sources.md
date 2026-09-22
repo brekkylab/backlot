@@ -357,7 +357,7 @@ whether the resource is a `BUCKET`, an `OBJECT` or the `SERVICE`, the 400 an `OP
 `Origin` gets from real's CORS front end and the 403 it gets with one, the 412 a bucket `POST` gets
 and the 400 a body-less bucket `PUT` gets. The three real answers by writing — `DELETE` on either
 path, and a `PUT` carrying a body — are `NotImplemented` (501), since the corpus is served as it was
-imported. The `Allow` on a 405 names what Backlot serves rather than real's own methods.
+imported. The `Allow` on a 405 names what Backlot serves rather than real's own methods. A method S3 defines nothing for at all, `TRACE` among them, is the 400 real answers it with rather than a 405.
 
 Every call that reads is SigV4-signed; see [auth.md](auth.md). The method refusals above are not,
 because real reaches the method before the credential: an unsigned `PATCH` and an unsigned

@@ -250,6 +250,28 @@ def test_s3_an_options_carrying_an_origin_answers_the_cors_refusal(live_server, 
     assert "<ResourceType>BUCKET</ResourceType>" in r.text
 
 
+@pytest.mark.parametrize("method", ["TRACE", "LINK", "PROPFIND"])
+@pytest.mark.parametrize("path", ["/s3/", "/s3/eng-artifacts", "/s3/eng-artifacts/docs/runbook.md"])
+def test_s3_a_method_s3_defines_nothing_for_is_the_parse_400(live_server, method, path):
+    """Measured 2026-09-22 with `TRACE`, `LINK` and `PROPFIND` at the service root: real answers
+    each the same 400 `BadRequest`, `application/xml`, with no `Allow`. No route can be declared
+    for a method that is not named, so `backlot.errors.s3` answers these where Starlette's own 405
+    would have."""
+    import httpx
+
+    base_url, _ = live_server
+    r = httpx.request(method, f"{base_url}{path}")
+    assert r.status_code == 400
+    assert r.headers["content-type"] == "application/xml"
+    assert "<Code>BadRequest</Code>" in r.text
+    assert "parsing the HTTP request." in r.text
+    assert "allow" not in r.headers
+    assert r.text.rstrip().endswith(
+        f"<RequestId>{r.headers['x-amz-request-id']}</RequestId>"
+        f"<HostId>{r.headers['x-amz-id-2']}</HostId></Error>"
+    )
+
+
 def test_s3_the_method_is_refused_before_the_credential(live_server):
     """Measured: an unsigned `PATCH` answers the same 405 a signed one does, at a key path and at
     the service root, so real reaches the method before it reads the credential. Every other route

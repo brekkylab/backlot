@@ -1049,6 +1049,9 @@ def _parse_range(header: str, total: int):
 #   OPTIONS, no `Origin`        | 400 BadRequest, "Insufficient information..."
 #   OPTIONS with an `Origin`    | 403 AccessForbidden, the CORS message for that path
 #   DELETE, and a PUT carrying a body | the write itself: 204, or 200 for an object PUT
+#   a method S3 defines nothing for | 400 BadRequest, "An error occurred when parsing the HTTP
+#                                   | request." — `backlot.errors.s3` answers those, since no route
+#                                   | here can be declared for a method that is not named
 #
 # The methods real answers by doing the write are the ones this server does not serve, so they
 # answer `NotImplemented` (501), the code this router already gives an operation it does not

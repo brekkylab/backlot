@@ -2264,3 +2264,410 @@ def test_confluence_refuses_the_permission_read_before_it_resolves_the_key(clien
     assert absent.status_code == present.status_code == 405
     assert absent.json() == present.json()
     assert "allow" not in absent.headers
+
+
+# --- what answers before, and around, a route (#311, #315, #325) -----------------------------
+
+
+@pytest.fixture(scope="module")
+def keys(client, admin_h) -> dict[str, str]:
+    """One served key of each kind, so the sweeps below ask real routes about real resources."""
+    space = client.get("/atlassian/wiki/rest/api/space", headers=admin_h).json()["results"][0]
+    content = client.get("/atlassian/wiki/rest/api/content", headers=admin_h).json()["results"][0]
+    issue = crawl_jira(client, admin_h)[0]
+    return {"space": space["key"], "content": str(content["id"]), "issue": issue}
+
+
+def _routes(keys: dict[str, str]) -> list[str]:
+    """Every Atlassian route, addressed at a resource the corpus serves."""
+    k, c, i = keys["space"], keys["content"], keys["issue"]
+    return [
+        "/atlassian/rest/api/2/serverInfo",
+        "/atlassian/rest/api/3/serverInfo",
+        "/atlassian/rest/api/2/field",
+        "/atlassian/rest/api/3/field",
+        "/atlassian/rest/api/3/issueLinkType",
+        "/atlassian/rest/api/3/project/search",
+        f"/atlassian/rest/api/2/issue/{i}",
+        f"/atlassian/rest/api/3/issue/{i}",
+        f"/atlassian/rest/api/2/issue/{i}/comment",
+        f"/atlassian/rest/api/3/issue/{i}/comment",
+        "/atlassian/rest/api/2/search/jql?jql=&maxResults=1",
+        "/atlassian/rest/api/3/search/jql?jql=&maxResults=1",
+        "/atlassian/wiki/rest/api/space",
+        f"/atlassian/wiki/rest/api/space/{k}",
+        "/atlassian/wiki/rest/api/content",
+        f"/atlassian/wiki/rest/api/content/{c}",
+        f"/atlassian/wiki/rest/api/content/{c}/child/page",
+        f"/atlassian/wiki/rest/api/content/{c}/child/comment",
+        f"/atlassian/wiki/rest/api/content/{c}/label",
+        f"/atlassian/wiki/rest/api/content/{c}/restriction/byOperation",
+        "/atlassian/wiki/rest/api/search?cql=type%3Dpage",
+    ]
+
+
+def test_atlassian_a_head_is_the_get_without_its_body(client, admin_h, keys):
+    """Measured on brekkylab.atlassian.net 2026-09-22, a `HEAD` beside each `GET` the same minute
+    over all 24 routes: both products answer the `GET`'s status and `content-type` with nothing in
+    the body, where FastAPI's ``APIRoute`` answered every one of them 405.
+
+    The length is where the two part, and why ``errors.head_content_length`` exists. Jira declares
+    none on either method. Confluence declares the `GET` body's own length on every 200 but
+    `search`'s — `space` 1103, `content` 1536, `content/{id}` 3909, `child/comment` 214,
+    `child/page` 211, `label` 207, `restriction/byOperation` 801, `space/{key}` 695, each read with
+    `curl -I` against the `GET` beside it — and none on the 404, the 405 or the CQL 400.
+    """
+    for path in _routes(keys):
+        got = client.get(path, headers=admin_h)
+        head = client.head(path, headers=admin_h)
+        assert head.status_code == got.status_code, path
+        assert head.content == b"", path
+        assert head.headers["content-type"] == got.headers["content-type"], path
+        if "/wiki/" in path and not path.startswith("/atlassian/wiki/rest/api/search"):
+            assert head.headers["content-length"] == str(len(got.content)), path
+        else:
+            assert "content-length" not in head.headers, path
+
+
+def test_atlassian_a_head_on_a_refusal_declares_no_length_either(client, admin_h, keys):
+    """The other half of the rule above, on the answers that are not 200s: real declares no length
+    on Confluence's 404 for an unknown space, its 405, or Jira's 404 for an unknown issue."""
+    for path in (
+        "/atlassian/wiki/rest/api/space/NOPESUCH",
+        "/atlassian/rest/api/3/issue/NOPE-1",
+    ):
+        got = client.get(path, headers=admin_h)
+        head = client.head(path, headers=admin_h)
+        assert head.status_code == got.status_code == 404, path
+        assert head.content == b"" and "content-length" not in head.headers, path
+
+
+@pytest.mark.parametrize(
+    "path,allow",
+    [
+        # measured on brekkylab.atlassian.net 2026-09-22, one OPTIONS per route; the set is real's
+        # and the order is one measured spelling, since it varied between two requests
+        ("/atlassian/rest/api/3/serverInfo", "GET,HEAD,OPTIONS"),
+        ("/atlassian/rest/api/2/field", "POST,GET,HEAD,OPTIONS"),
+        ("/atlassian/rest/api/3/issue/NOPE-1", "PUT,GET,HEAD,DELETE,OPTIONS"),
+        ("/atlassian/rest/api/3/issue/NOPE-1/comment", "GET,HEAD,POST,OPTIONS"),
+        ("/atlassian/rest/api/2/search/jql", "GET,HEAD,POST,OPTIONS"),
+        ("/atlassian/rest/api/3/issueLinkType", "POST,GET,HEAD,OPTIONS"),
+        # the row that parts from the 405 table: its 405 resolves `/project/{idOrKey}` with
+        # `search` read as a key and names five methods, where its OPTIONS names three
+        ("/atlassian/rest/api/3/project/search", "GET,HEAD,OPTIONS"),
+    ],
+)
+def test_jira_answers_an_options_with_the_vendors_methods(client, admin_h, path, allow):
+    """Real answers 200 with an empty `text/html` body and an `Allow` naming the methods the VENDOR
+    serves at that route — `PUT` and `DELETE` on an issue, `POST` on `field` — which Backlot serves
+    none of. `Accept-Patch` rides along with an empty value on every one measured."""
+    r = client.request("OPTIONS", path, headers=admin_h)
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"] == errors_atlassian.JIRA_OPTIONS_MEDIA_TYPE
+    assert r.headers["allow"] == allow
+    assert r.headers["accept-patch"] == ""
+    assert r.content == b""
+
+
+def test_confluence_answers_an_options_with_a_404_and_search_with_a_204(client, admin_h, keys):
+    """Measured 2026-09-22: an `OPTIONS` on a Confluence route is 404 in the `errors` list its 405
+    uses, on every route but `search`, which answers 204 naming its three methods."""
+    for path in (
+        "/atlassian/wiki/rest/api/space",
+        f"/atlassian/wiki/rest/api/space/{keys['space']}",
+        "/atlassian/wiki/rest/api/content",
+        "/atlassian/wiki/rest/api/space/NOPESUCH",
+    ):
+        r = client.request("OPTIONS", path, headers=admin_h)
+        assert r.status_code == 404, path
+        assert r.json() == errors_atlassian.CONFLUENCE_OPTIONS_NOT_FOUND, path
+    search = client.request("OPTIONS", "/atlassian/wiki/rest/api/search", headers=admin_h)
+    assert search.status_code == 204
+    assert search.headers["allow"] == errors_atlassian.CONFLUENCE_OPTIONS_204_ALLOW
+    assert search.content == b""
+
+
+def test_every_jira_route_carries_a_measured_options_allow(client):
+    """The sibling of ``test_every_jira_route_carries_a_measured_allow``, for the OPTIONS table: a
+    route added later without a row would answer an OPTIONS with no `Allow` at all."""
+    paths = [
+        p for p in client.get("/openapi.json").json()["paths"] if p.startswith("/atlassian/rest")
+    ]
+    assert paths
+    assert [p for p in paths if errors_atlassian.jira_options_allow(p) is None] == []
+
+
+@pytest.mark.parametrize("method", ["GET", "POST", "DELETE", "OPTIONS", "PATCH"])
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/atlassian/rest/api/3/nopesuchroute",
+        "/atlassian/rest/api/2/nopesuchroute",
+        "/atlassian/rest/api/3/serverInfo/extra",
+        "/atlassian/rest/api/3/issue/NOPE-1/nope",
+        "/atlassian/rest/api/4/serverInfo",
+        "/atlassian/rest/nope/thing",
+    ],
+)
+def test_jira_answers_a_path_it_mounts_nothing_at_as_rfc_7807(client, admin_h, method, path):
+    """Measured 2026-09-22 on each of these paths: 404 `application/problem+json` naming the method
+    as sent and the vendor path twice. Backlot answered the shared `statusCode` envelope."""
+    r = client.request(method, path, headers=admin_h)
+    vendor_path = path[len("/atlassian") :]
+    assert r.status_code == 404, r.text
+    assert r.headers["content-type"] == errors_atlassian.PROBLEM_JSON
+    assert r.json() == {
+        "type": "about:blank",
+        "title": "Not Found",
+        "status": 404,
+        "detail": f"No endpoint {method} {vendor_path}.",
+        "instance": vendor_path,
+    }
+
+
+def test_jira_no_endpoint_names_the_path_without_its_query(client, admin_h):
+    """Real's `detail` and `instance` carry the path alone: the same request with a query string
+    answered the same two fields."""
+    plain = client.get("/atlassian/rest/api/3/nopesuchroute", headers=admin_h).json()
+    with_query = client.get(
+        "/atlassian/rest/api/3/nopesuchroute", headers=admin_h, params={"a": "1", "b": "2"}
+    ).json()
+    assert with_query == plain
+    assert "?" not in plain["detail"] and "?" not in plain["instance"]
+
+
+@pytest.mark.parametrize(
+    "accept,media_type",
+    [
+        ("application/json", errors_atlassian.JAXRS_JSON_MEDIA_TYPE),
+        ("*/*", errors_atlassian.JAXRS_XML_MEDIA_TYPE),
+        ("application/xml", errors_atlassian.JAXRS_XML_MEDIA_TYPE),
+    ],
+)
+def test_confluence_answers_an_unclaimed_segment_in_the_shape_accept_asks_for(
+    client, admin_h, accept, media_type
+):
+    """Measured 2026-09-22: the shape follows `Accept` and not the credential — `application/json`
+    by name answers JSON, and an absent header, `*/*` and `application/xml` each answer the XML
+    document. The message carries the full request URL, query string included."""
+    r = client.get(
+        "/atlassian/wiki/rest/api/nopesuchroute",
+        headers={**admin_h, "Accept": accept},
+        params={"a": "1"},
+    )
+    assert r.status_code == 404, r.text
+    assert r.headers["content-type"] == media_type
+    assert "/wiki/rest/api/nopesuchroute?a=1" in r.text
+    if media_type == errors_atlassian.JAXRS_JSON_MEDIA_TYPE:
+        assert r.json()["status-code"] == 404
+        assert r.json()["message"].startswith("null for uri: http")
+    else:
+        assert r.text.startswith('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><status>')
+        assert "<status-code>404</status-code>" in r.text
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/atlassian/wiki/rest/api/space/{space}/nope",
+        "/atlassian/wiki/rest/api/space/NOPESUCH/deeper",
+        "/atlassian/wiki/rest/api/content/{content}/nope",
+        "/atlassian/wiki/rest/api/content/nope/deeper",
+        "/atlassian/wiki/rest/nope",
+        "/atlassian/wiki/nope",
+    ],
+)
+def test_confluence_answers_the_products_page_below_a_resource_it_serves(
+    client, admin_h, keys, path
+):
+    """Measured 2026-09-22: a path below `space/` or `content/`, and anything under `/wiki` outside
+    the API mount, is the product's HTML 404 rather than the API's. Real's body is a ~30KB
+    build-specific shell, so this serves the status and the media type with a stub."""
+    r = client.get(path.format(**keys), headers=admin_h)
+    assert r.status_code == 404, r.text
+    assert r.headers["content-type"] == errors_atlassian.HTML_MEDIA_TYPE
+    assert r.text == errors_atlassian.HTML_NOT_FOUND
+
+
+def test_atlassian_a_method_a_route_does_not_declare_still_gets_the_405(client, admin_h):
+    """The control for the catch-all: it takes every method on every path under `/atlassian`, so
+    the 405s measured for both products have to survive it rather than turn into its 404."""
+    jira = client.post("/atlassian/rest/api/3/serverInfo", headers=admin_h)
+    assert jira.status_code == 405 and jira.headers["allow"] == "GET"
+    conf = client.post("/atlassian/wiki/rest/api/space", headers=admin_h)
+    assert conf.status_code == 405 and "allow" not in conf.headers
+    assert conf.json()["errors"][0]["code"] == "METHOD_NOT_ALLOWED"
+
+
+_UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
+
+
+def test_atlassian_every_answer_names_the_request(client, admin_h, keys):
+    """Measured 2026-09-22 over 78 responses: both products put `atl-request-id` and `atl-traceid`
+    on every answer, the second being the first without its dashes, and Jira adds a 32-hex
+    `x-arequestid`. Backlot answered four headers and none of them an identifier.
+
+    Real mints a new value per response; this one is derived from the request, the divergence
+    ``backlot.routers.atlassian.request_ids`` states and this pins — a corpus served twice answers
+    the same id, and two different requests do not share one.
+    """
+    answers = {
+        "jira 200": client.get("/atlassian/rest/api/3/serverInfo", headers=admin_h),
+        "jira 404": client.get("/atlassian/rest/api/3/nopesuchroute", headers=admin_h),
+        "jira 405": client.post("/atlassian/rest/api/3/serverInfo", headers=admin_h),
+        "jira options": client.request(
+            "OPTIONS", "/atlassian/rest/api/3/serverInfo", headers=admin_h
+        ),
+        "confluence 200": client.get("/atlassian/wiki/rest/api/space", headers=admin_h),
+        "confluence 404": client.get("/atlassian/wiki/rest/api/space/NOPESUCH", headers=admin_h),
+        "confluence options": client.request(
+            "OPTIONS", "/atlassian/wiki/rest/api/space", headers=admin_h
+        ),
+    }
+    for label, r in answers.items():
+        request_id = r.headers["atl-request-id"]
+        assert _UUID.fullmatch(request_id), (label, request_id)
+        assert r.headers["atl-traceid"] == request_id.replace("-", ""), label
+        if label.startswith("jira"):
+            assert re.fullmatch(r"[0-9a-f]{32}", r.headers["x-arequestid"]), label
+        else:
+            assert "x-arequestid" not in r.headers, label
+    again = client.get("/atlassian/rest/api/3/serverInfo", headers=admin_h)
+    assert again.headers["atl-request-id"] == answers["jira 200"].headers["atl-request-id"]
+    assert (
+        answers["jira 200"].headers["atl-request-id"]
+        != answers["jira 404"].headers["atl-request-id"]
+    )
+
+
+@pytest.fixture
+def frozen_burst(client):
+    """The burst windows on a clock that does not move, so counting is the only thing that does."""
+    from backlot.routers.atlassian import JiraBurstWindows
+
+    app = client.app
+    before = getattr(app.state, "jira_burst_windows", None)
+    app.state.jira_burst_windows = JiraBurstWindows(clock=lambda: 1_000.0)
+    yield
+    app.state.jira_burst_windows = before
+
+
+@pytest.mark.parametrize(
+    "path,policy,limit",
+    [
+        # every row measured 2026-09-22, reading the four headers off that route's own answer
+        ("/atlassian/rest/api/3/serverInfo", 100, 350),
+        ("/atlassian/rest/api/3/project/search", 100, 350),
+        ("/atlassian/rest/api/3/issue/NOPE-1", 150, 400),
+        ("/atlassian/rest/api/3/project/ENG/role/10002", 200, 500),
+    ],
+)
+def test_jira_reports_the_burst_quota_of_the_route(
+    client, admin_h, frozen_burst, path, policy, limit
+):
+    """Real's quota is per route: 350 on most, 400 on an issue, 500 on a project role. `remaining`
+    counts down inside the window the policy names — a burst of six read 349…344 — and a second
+    route under the same limit shares the count."""
+    first = client.get(path, headers=admin_h)
+    assert first.headers["x-ratelimit-limit"] == str(limit)
+    assert first.headers["x-ratelimit-remaining"] == str(limit - 1)
+    assert first.headers["ratelimit"] == f'"jira-burst-based";r={limit - 1};t=1'
+    assert first.headers["ratelimit-policy"] == f'"jira-burst-based";q={policy};w=1'
+    again = client.get(path, headers=admin_h)
+    assert again.headers["x-ratelimit-remaining"] == str(limit - 2)
+
+
+def test_jira_burst_quota_is_shared_by_the_routes_under_one_limit(client, admin_h, frozen_burst):
+    """Measured: `field` and `serverInfo` sit in the 350 bucket and counted down together, where
+    `issue/{key}` has a bucket of its own."""
+    client.get("/atlassian/rest/api/3/serverInfo", headers=admin_h)
+    field = client.get("/atlassian/rest/api/3/field", headers=admin_h)
+    assert field.headers["x-ratelimit-remaining"] == "348"
+    issue = client.get("/atlassian/rest/api/3/issue/NOPE-1", headers=admin_h)
+    assert issue.headers["x-ratelimit-remaining"] == "399"
+
+
+@pytest.mark.parametrize("headers", UNRESOLVABLE)
+def test_jira_sends_no_quota_and_no_account_id_to_an_anonymous_caller(client, headers):
+    """Measured 2026-09-22: an anonymous request carries the two ids, `x-arequestid` and the
+    `cache-control`, and none of the five that describe the caller or its quota."""
+    r = client.get("/atlassian/rest/api/3/serverInfo", headers=headers)
+    assert r.status_code == 200
+    assert r.headers["atl-request-id"] and r.headers["x-arequestid"]
+    assert r.headers["cache-control"] == "no-cache, no-store, no-transform"
+    for absent in (
+        "x-aaccountid",
+        "ratelimit",
+        "ratelimit-policy",
+        "x-ratelimit-limit",
+        "x-ratelimit-remaining",
+    ):
+        assert absent not in r.headers, absent
+
+
+def test_jira_sends_no_quota_on_a_path_it_mounts_nothing_at(client, admin_h):
+    """The other half of that rule: the no-endpoint 404 carried the ids and the account id but none
+    of the rate-limit four, measured on `/rest/api/3/nopesuchroute` with a credential."""
+    r = client.get("/atlassian/rest/api/3/nopesuchroute", headers=admin_h)
+    assert r.status_code == 404
+    assert r.headers["atl-request-id"] and r.headers["x-aaccountid"]
+    assert "x-ratelimit-limit" not in r.headers
+
+
+def test_jira_echoes_the_callers_own_account_id(client, tokens):
+    """Real echoes the caller's account id on every Jira answer once the credential resolves; here
+    it is the same id the corpus serves that user under (``synth.atlassian_account_id``)."""
+    from backlot import synth
+
+    email, token = sorted(tokens.items())[0]
+    r = client.get("/atlassian/rest/api/3/serverInfo", headers={"Authorization": f"Bearer {token}"})
+    assert r.headers["x-aaccountid"] == synth.atlassian_account_id(email)
+
+
+def test_confluence_says_its_v1_rest_api_is_deprecated(client, admin_h, keys):
+    """Measured 2026-09-22: the content and space services send the three headers on every answer
+    they give, their 404s included, and `search`, `restriction/byOperation` and the 405 at
+    `space/{key}/permission` send none. The dates are real's own, a removal date already past."""
+    carries = [
+        "/atlassian/wiki/rest/api/space",
+        f"/atlassian/wiki/rest/api/space/{keys['space']}",
+        "/atlassian/wiki/rest/api/content",
+        f"/atlassian/wiki/rest/api/content/{keys['content']}/child/page",
+        f"/atlassian/wiki/rest/api/content/{keys['content']}/label",
+        "/atlassian/wiki/rest/api/space/NOPESUCH",
+    ]
+    for path in carries:
+        r = client.get(path, headers=admin_h)
+        assert r.headers["deprecation"] == "Wed, 1 Mar 2023 00:00:00 GMT", path
+        assert r.headers["warning"].startswith('299 - "Deprecated API'), path
+        assert 'rel="deprecation"' in r.headers["link"], path
+    for path in (
+        "/atlassian/wiki/rest/api/search?cql=type%3Dpage",
+        f"/atlassian/wiki/rest/api/content/{keys['content']}/restriction/byOperation",
+    ):
+        assert "deprecation" not in client.get(path, headers=admin_h).headers, path
+
+
+def test_confluence_sends_no_deprecation_notice_to_a_caller_it_refuses(client):
+    """Measured: the 403 an anonymous request gets carries the ids and the clock, and none of the
+    three — it never reached the service that stamps them."""
+    r = client.get("/atlassian/wiki/rest/api/space")
+    assert r.status_code == 403
+    assert r.headers["atl-request-id"] and r.headers["x-confluence-request-time"]
+    assert "deprecation" not in r.headers and "warning" not in r.headers
+
+
+def test_confluence_stamps_a_millisecond_clock_and_jira_does_not(client, admin_h):
+    """`x-confluence-request-time` is a 13-digit millisecond epoch on every Confluence answer
+    measured, and no Jira answer carries one."""
+    conf = client.get("/atlassian/wiki/rest/api/space", headers=admin_h)
+    assert re.fullmatch(r"\d{13}", conf.headers["x-confluence-request-time"])
+    jira = client.get("/atlassian/rest/api/3/serverInfo", headers=admin_h)
+    assert "x-confluence-request-time" not in jira.headers
+
+
+def test_atlassian_answers_carry_nosniff(client, admin_h):
+    """`x-content-type-options: nosniff` is on every answer either product gives."""
+    for path in ("/atlassian/rest/api/3/serverInfo", "/atlassian/wiki/rest/api/space"):
+        assert client.get(path, headers=admin_h).headers["x-content-type-options"] == "nosniff"

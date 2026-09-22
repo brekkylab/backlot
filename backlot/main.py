@@ -368,21 +368,24 @@ async def resolve_github_id_paths(request: Request, call_next):
     return await call_next(request)
 
 
-# The path prefixes whose `HEAD` is the GET with the body left off. GitHub because it is measured to
-# be, and none of the other vendors' `HEAD` answers is, so a vendor is added here once its own is
-# rather than by a rewrite that assumes they share GitHub's. `/health` and `/_meta` are Backlot's
+# The path prefixes whose `HEAD` is the GET with the body left off. GitHub and Atlassian because
+# each is measured to be, and a vendor is added here once its own is rather than by a rewrite that
+# assumes they share GitHub's: both Atlassian products answered a `HEAD` with the `GET`'s status and
+# `content-type` and nothing in the body, on all 24 routes served here, measured 2026-09-22. What
+# they do NOT share is the length — see ``errors.head_content_length``, asked below. `/health` and `/_meta` are Backlot's
 # own routes, with no vendor to measure against: a `HEAD /health` is the shape a liveness probe
 # takes, and `FastAPI`'s `APIRoute` refused it with the same 405 for the same reason.
-_HEAD_IS_THE_GET_WITHOUT_ITS_BODY = ("/github", "/health", "/_meta")
+_HEAD_IS_THE_GET_WITHOUT_ITS_BODY = ("/github", "/atlassian", "/health", "/_meta")
 
 
 @app.middleware("http")
 async def answer_head_as_the_get_without_its_body(request: Request, call_next):
-    """Answer a `HEAD` as the `GET` with the body left off, which is how real GitHub answers one.
+    """Answer a `HEAD` as the `GET` with the body left off, which is how real GitHub and both
+    Atlassian products answer one.
 
-    Every GitHub route here is declared `GET` alone, and FastAPI's ``APIRoute`` does not add `HEAD`
-    to a GET route the way Starlette's ``Route`` does, so a `HEAD` reached Starlette's 405 with
-    `allow: GET` on every route, whatever the GET would have answered. Real answers the GET's own
+    Every route of theirs here is declared `GET` alone, and FastAPI's ``APIRoute`` does not add
+    `HEAD` to a GET route the way Starlette's ``Route`` does, so a `HEAD` reached Starlette's 405
+    with `allow: GET` on every route, whatever the GET would have answered. Real answers the GET's own
     status and headers with nothing in the body: `content-length` of the body the GET would have
     carried and `Link` where the GET has one, on the 200s, the 404 for a repository that does not
     exist, the 401 for no credential, the 422 for a blank search `q` and code search's text/plain
@@ -401,7 +404,11 @@ async def answer_head_as_the_get_without_its_body(request: Request, call_next):
     it rewrites the copied `content-type` as it does the GET's. The body is read to the end to be
     measured rather than sent, because the `content-length` a client reads a `HEAD` for is the GET
     body's length and computing the body is the only way to have that number; a `HEAD` costs what
-    its GET costs, here as on real. The method goes back to `HEAD` on the scope once the GET has
+    its GET costs, here as on real. What the two vendors do NOT share is the `content-length`:
+    GitHub declares the length of the body its `GET` would have carried, Jira declares none on
+    either method, and Confluence declares one on its 200s alone -- so that header is asked for
+    rather than assumed, through ``errors.head_content_length``.
+    The method goes back to `HEAD` on the scope once the GET has
     answered, because the
     server frames the response by it: uvicorn's httptools protocol reads ``scope["method"]`` when it
     writes the body, sends nothing for a `HEAD`, and for a `GET` holds the body to the declared
@@ -422,7 +429,11 @@ async def answer_head_as_the_get_without_its_body(request: Request, call_next):
     async for chunk in response.body_iterator:
         length += len(chunk)
     head = Response(status_code=response.status_code, headers=response.headers)
-    head.headers["content-length"] = str(length)
+    declares = errors.head_content_length(request.url.path, response.status_code)
+    if declares is False:
+        del head.headers["content-length"]
+    else:
+        head.headers["content-length"] = str(length)
     return head
 
 
@@ -459,6 +470,33 @@ async def report_failed_jira_login(request: Request, call_next):
     if request.url.path.startswith("/atlassian/rest/") and auth.basic_names_a_user(request):
         if auth.atlassian_caller(request).is_anonymous:
             response.headers["X-Seraph-LoginReason"] = "AUTHENTICATED_FAILED"
+    return response
+
+
+@app.middleware("http")
+async def report_atlassian_headers(request: Request, call_next):
+    """Put on every `/atlassian` answer the headers real sends beside the body.
+
+    Both products name the request: `atl-request-id` and `atl-traceid`, the second being the first
+    without its dashes. Jira adds `x-arequestid`, its own `cache-control`, and — once a credential
+    resolves — the caller's account id and the burst quota's four, where an anonymous request gets
+    none of those five and neither does the 404 for a path it mounts no endpoint at. Confluence
+    stamps a millisecond clock and says its v1 REST API is deprecated on the services that do.
+    What each is and what it is measured from is in ``backlot.routers.atlassian.vendor_headers``.
+
+    Middleware for the reason GitHub's rate-limit headers are: they ride on answers no route
+    handler builds — the exception handlers' refusals, the Connect-token 403 above, the catch-all's
+    404 — and a client logging an id for a failed call needs the failed calls to carry one.
+
+    Deliberately not served: `set-cookie`, which real sends as an XSRF token on an ANONYMOUS Jira
+    200 alone (measured 2026-09-22; none of the authenticated answers carried one) and which would
+    change what a browser-shaped client does next, and `atl-confluence-via`, whose value names the
+    Atlassian host that served the request and which Backlot has nothing to derive from.
+    """
+    response = await call_next(request)
+    if errors.atlassian.owns(request.url.path):
+        for name, value in atlassian.vendor_headers(request, response.status_code).items():
+            response.headers[name] = value
     return response
 
 
@@ -610,6 +648,8 @@ app.include_router(slack.router)
 app.include_router(google.router)
 app.include_router(github.router)
 app.include_router(atlassian.router)
+# after the routes it serves, so only a path none of them match reaches it
+app.include_router(atlassian.unmatched_router)
 app.include_router(notion.router)
 app.include_router(s3.router)
 app.include_router(hubspot.router)

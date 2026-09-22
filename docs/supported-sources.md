@@ -53,6 +53,15 @@ operation an ACL states.
 A JSON body is the bare `application/json` on every Confluence route served — the 200s, the 404s,
 the 400, 403 and 405 measured. The charset Jira names is Jira's alone.
 
+A `HEAD` is the `GET` with the body left off, and declares the length that body would have had on
+every 200 but `search`'s. An `OPTIONS` is a 404 in the `errors` list the 405 uses, except on
+`search`, which answers 204 naming its three methods. A path no route serves is JAX-RS's own 404 —
+JSON when the caller asks for `application/json` by name, the `<status>` XML document otherwise —
+and a path below `space/` or `content/`, or anything under `/wiki` outside the API mount, is the
+product's HTML 404 page instead. Every answer carries `atl-request-id`, `atl-traceid` (the same
+value without its dashes), `x-confluence-request-time` and `x-content-type-options`, and the
+content and space services add the three headers that say the v1 REST API is deprecated.
+
 ### Fireflies — `/fireflies/graphql`
 
 **GraphQL only**, one `POST`. Root `Query` fields:
@@ -286,6 +295,16 @@ upper-case — as real's is on every route and status measured, except where rea
 different type altogether: the RFC 7807 refusals (a type-conversion 400, the 405, the 415) are
 `application/problem+json;charset=UTF-8`, and the gateway's 403 for a bearer it cannot read as a
 Connect token is the bare `application/json`.
+
+A `HEAD` is the `GET` with the body left off and declares no length, which is where Jira parts from
+Confluence. An `OPTIONS` is 200 with an empty `text/html` body, an empty `Accept-Patch` and an
+`Allow` naming the methods the vendor serves at that route — the `PUT` and `DELETE` on an issue
+among them, which Backlot does not serve. A path no route serves is RFC 7807 at 404 with
+`No endpoint <METHOD> <path>.`, ahead of the credential. Every answer carries `atl-request-id`,
+`atl-traceid`, `x-arequestid`, `cache-control` and `x-content-type-options`; a caller whose
+credential resolves also gets its own `x-aaccountid` and the burst quota's four
+(`ratelimit`, `ratelimit-policy`, `x-ratelimit-limit`, `x-ratelimit-remaining`), which an anonymous
+request and the no-endpoint 404 carry none of.
 
 ### Linear — `/linear/graphql`
 

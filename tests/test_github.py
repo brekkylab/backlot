@@ -22,6 +22,7 @@ from backlot.pagination import encode_cursor
 from tests._helpers import (
     build_corpus,
     client_for,
+    corpus_client,
     crawl_github_repo,
     db_count,
     tiny_corpus,
@@ -698,6 +699,21 @@ def gh_user_tokens(gh_client):
 @pytest.fixture(scope="module")
 def gh_admin_h(gh_user_tokens):
     return {"Authorization": f"Bearer {gh_user_tokens['admin']}"}
+
+
+@pytest.fixture(autouse=True)
+def _fresh_github_rate_limits(gh_client):
+    """A window per test, not per module.
+
+    `gh_client` is module-scoped — one `app.state`, shared by every test in this file — so with
+    the refusal `rate_limit_refusal` now answers, a shared window carries one test's requests into
+    the next and trips it on volume no single test drove itself: `code_search`'s 10-a-minute cap
+    is the one this file's own tests cross first, well under real's cap, purely from running in
+    the same window as their neighbours."""
+    from backlot.routers.github import RateLimitWindows
+
+    c, _ = gh_client
+    c.app.state.github_rate_limits = RateLimitWindows()
 
 
 def test_github_tree_recursive(gh_client, gh_admin_h, gh_org):
@@ -2455,14 +2471,23 @@ def test_github_code_search_refuses_an_unparseable_page_value_in_text_plain(
         r.json()
 
 
-def test_github_code_search_page_refusal_is_the_parse_and_comes_before_q(gh_client, gh_admin_h):
+def test_github_code_search_page_refusal_is_the_parse_and_comes_before_q(
+    gh_client, gh_admin_h, monkeypatch
+):
     """What is refused is the parse, not the range or the query: `0`, `01` and 4294967295 (the
     largest value real's unsigned 32-bit parameter holds) are each a 200, `01` served as 1, and so
     are an encoded `+` before the digits (`%2B5`, `page=%2B2`), 5000 leading zeros and `sort` given
     twice; a blank `q` beside `per_page=abc` is this 400 and not the blank-query 422, as is a blank
     `q` given twice; a bad `per_page` on `/search/issues` is still absorbed, and so is a repeated
     `q` there; and the OpenAPI slice still declares the parameter an integer, since the refusal is
-    the route's and not the validator's (all measured 2026-09-06 and 2026-09-07)."""
+    the route's and not the validator's (all measured 2026-09-06 and 2026-09-07).
+
+    Fifteen `code_search` calls of its own, well past real's 10-a-minute cap — this is the shape
+    the enforcement switch exists for (see `Settings.github_enforce_rate_limits`): checking query
+    parsing, not pacing."""
+    from backlot.routers import github as gh
+
+    monkeypatch.setattr(gh.get_settings(), "github_enforce_rate_limits", False)
     c, _ = gh_client
     full = c.get("/github/search/code?q=extension:md", headers=gh_admin_h).json()
     assert full["total_count"] >= 2
@@ -4812,8 +4837,8 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
     beside them under `2022-11-28` and not under `2026-03-10`, carrying the five itself and not
     counting (two reads in a row both `used: 0`); a bad bearer on it the 401. What real's route
     reports is a fresh window rather than the headers' (see the route's docstring); Backlot reports
-    the headers'. Exhaustion is not measured and nothing here refuses: `remaining` stops at 0 and
-    `used` keeps counting.
+    the headers'. Past the limit, real refuses (403, `used` pinned at `limit`) — see
+    `rate_limit_refusal` for that measurement, taken 2026-09-17.
 
     Five more answers measured 2026-09-21, each against the function that carries its measurement:
     `SEARCH_RATE_LIMIT_WINDOW`, `rate_limit_window`, `refused_a_credential`, `rate_limit_caller`
@@ -5031,17 +5056,72 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
         rolled = _ratelimit(c.get(repo, headers=h))
         assert (rolled["used"], rolled["remaining"]) == ("1", "4999")
         assert int(rolled["reset"]) == int(now) + gh.RATE_LIMIT_WINDOW + 1 + gh.RATE_LIMIT_WINDOW
-        # past the limit nothing is refused: `remaining` stops at 0 and `used` keeps counting
+        # past the limit the window refuses: 403, the five headers with `used` pinned at `limit`,
+        # and the request itself is not counted (`used` stays put across repeats)
         monkeypatch.setitem(gh.RATE_LIMITS, "core", gh._ResourceLimit(60, 2, gh.RATE_LIMIT_WINDOW))
-        assert _ratelimit(c.get(repo, headers=h)) == {
-            **rolled,
+        spent = _ratelimit(c.get(repo, headers=h))
+        assert spent == {**rolled, "limit": "2", "remaining": "0", "used": "2"}
+        over = c.get(repo, headers=h)
+        assert over.status_code == 403
+        admin_id = synth.github_user_id("admin")
+        assert over.json() == {
+            "message": f"API rate limit exceeded for user ID {admin_id}.",
+            "documentation_url": gh.RATE_LIMIT_EXCEEDED_DOCS,
+        }
+        assert _ratelimit(over) == spent  # pinned, not counted
+        again = c.get(repo, headers=h)
+        assert again.status_code == 403
+        assert _ratelimit(again) == spent  # still pinned on a second refusal
+        # `/rate_limit` keeps answering through the same exhaustion — the one route a client reads
+        # its way out of a spent window with
+        assert c.get("/github/rate_limit", headers=h).status_code == 200
+
+
+def test_github_rate_limit_refuses_an_anonymous_caller_too_and_the_switch_turns_it_off(
+    tmp_path, monkeypatch
+):
+    """Refusal is not token-only: a caller with no credential is refused the same as a token once
+    its own window is spent, with real's message naming the caller's own address (measured against
+    api.github.com 2026-09-17, see `_rate_limit_exceeded_message`).
+
+    `Settings.github_enforce_rate_limits` is the escape hatch instead of a non-refusing default:
+    off, nothing is refused, but the reported `used` still never climbs past `limit`."""
+    from backlot.routers import github as gh
+
+    with corpus_client(tmp_path, []) as (c, _):
+        monkeypatch.setitem(
+            gh.RATE_LIMITS, "core", gh._ResourceLimit(2, 5000, gh.RATE_LIMIT_WINDOW)
+        )
+        first = c.get("/github/user/repos")
+        second = c.get("/github/user/repos")
+        assert (first.status_code, second.status_code) == (401, 401)
+        assert _ratelimit(second) == {
             "limit": "2",
             "remaining": "0",
             "used": "2",
+            "reset": _ratelimit(second)["reset"],
+            "resource": "core",
         }
-        over = c.get(repo, headers=h)
-        assert over.status_code == 200
-        assert (_ratelimit(over)["remaining"], _ratelimit(over)["used"]) == ("0", "3")
+        refused = c.get("/github/user/repos")
+        assert refused.status_code == 403
+        assert refused.json() == {
+            "message": (
+                "API rate limit exceeded for testclient. (But here's the good news: "
+                "Authenticated requests get a higher rate limit. Check out the documentation "
+                "for more details.)"
+            ),
+            "documentation_url": gh.RATE_LIMIT_EXCEEDED_DOCS,
+        }
+        assert _ratelimit(refused) == _ratelimit(second)  # pinned, not counted
+
+        # the switch: no refusal, and `used` still capped in what is reported
+        gh.get_settings().github_enforce_rate_limits = False
+        try:
+            let_through = c.get("/github/user/repos")
+            assert let_through.status_code == 401
+            assert _ratelimit(let_through) == {**_ratelimit(second), "used": "2"}
+        finally:
+            gh.get_settings().github_enforce_rate_limits = True
 
 
 def test_github_a_trailing_slash_is_404_not_a_redirect(gh_client, gh_admin_h, gh_org):

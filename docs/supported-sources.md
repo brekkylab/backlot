@@ -126,12 +126,16 @@ it says and no response from it carries the `Selected` header (measured 2026-09-
 included: `limit` at real's numbers (60 an hour for a caller with no credential, 5000 for a token,
 30 and 10 for `search` and `code_search`), `remaining` and `used` counted per credential and per
 resource, `reset` the second that window closes, `resource` the one the request counted against.
-`core` measures an hour and the two search resources measure a minute, as real's do. Nothing is
-refused when a window runs out: `remaining` stops at 0 and `used` keeps counting, so a client that
-paces by the headers sees its real pace and a test suite is never failed for its own volume.
-`GET /rate_limit` reports the same windows and does not count. Two answers carry none of the five
-and count nowhere, as real's do not: a credential that does not resolve, and a path no route
-matches asked by a caller that sent one (measured 2026-09-10 and 2026-09-21).
+`core` measures an hour and the two search resources measure a minute, as real's do. A window that
+runs out is refused, 403, with the five headers pinned at `limit` and real's own message, for a
+caller with no credential and for a token alike (measured against api.github.com 2026-09-17); the
+refused request is not itself counted, which is why `used` holds at `limit` rather than climbing
+past it. `BACKLOT_GITHUB_ENFORCE_RATE_LIMITS=false` turns the refusal off for a long-lived
+`serve()` whose own test volume would rather not meet real's 10-a-minute code search window.
+`GET /rate_limit` reports the same windows, does not count, and is never refused — the one route a
+client reads its way out of a spent window with. Two answers carry none of the five and count
+nowhere, as real's do not: a credential that does not resolve, and a path no route matches asked by
+a caller that sent one (measured 2026-09-10 and 2026-09-21).
 
 An issue body and a pull body are the two distinct field sets real serves — a pull carries `_links`
 and its `*_url` siblings and none of the issue-only fields, `pull_request` included. A repository

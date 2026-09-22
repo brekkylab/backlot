@@ -251,9 +251,10 @@ async def echo_github_api_version(request: Request, call_next):
 
 @app.middleware("http")
 async def report_github_rate_limit(request: Request, call_next):
-    """Put the five `x-ratelimit-*` headers on the `/github` answers real carries them on, 200 and
-    error alike, and count each against the caller's window for the resource (see
-    ``backlot.routers.github.rate_limit_headers``).
+    """Refuse a `/github` request whose window is already spent, real's 403 (see
+    ``backlot.routers.github.rate_limit_refusal``), and otherwise put the five `x-ratelimit-*`
+    headers on the answer real carries them on, 200 and error alike, counting each against the
+    caller's window for the resource (``backlot.routers.github.rate_limit_headers``).
 
     Middleware for the reason the version echo is: the headers ride on answers no route handler
     builds, the exception handlers' 401s and 404s and the raw and diff media types' own responses
@@ -264,14 +265,20 @@ async def report_github_rate_limit(request: Request, call_next):
     rate-limit answers are not measured. A 404 for a path no route matches at all gets them only
     for a request that carried no `Authorization` header at all — see
     ``_some_github_route_matches`` — and a credential that did not resolve gets them on no path at
-    all (``github.refused_a_credential``).
+    all (``github.refused_a_credential``); the refusal check shares that same gate, so neither is
+    ever refused by it.
     """
-    response = await call_next(request)
-    if (
+    gated = (
         request.url.path.startswith("/github")
         and not github.refused_a_credential(request)
         and (_some_github_route_matches(request.scope) or "authorization" not in request.headers)
-    ):
+    )
+    if gated:
+        refusal = github.rate_limit_refusal(request)
+        if refusal is not None:
+            return refusal
+    response = await call_next(request)
+    if gated:
         for name, value in github.rate_limit_headers(request, response.status_code).items():
             response.headers[name] = value
     return response

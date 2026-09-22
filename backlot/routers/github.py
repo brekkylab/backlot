@@ -380,12 +380,12 @@ class RateLimitWindows:
     inside it. The windows measured stayed put across the requests inside them and differed between
     credentials and between resources (an anonymous caller's `core` and `search` resets 1552 seconds
     apart), which is a window per pair opened by use rather than one shared clock. `remaining`
-    stops at 0 and `used` keeps counting past the limit: nothing here refuses a request, because a
-    test suite's own volume drives an anonymous client past 60 in an hour, and a mock answering the
-    61st request with the 403 or 429 the docs describe fails that suite for pacing it never asked
-    for. Exhaustion is docs only; nothing was driven to it. One process, one set of windows: the
-    server runs a single worker, and a client run against several would see each one's count.
-    ``clock`` is `time.time` unless a test hands in another to move a window."""
+    stops at 0 and the reported `used` is capped at `limit` — see :func:`rate_limit_refusal` for
+    the 403 real answers once a window is spent, on api.github.com 2026-09-17: the 61st anonymous
+    `core` request in the hour, and three more after it, each answered `used: 60` pinned at
+    `limit: 60`, never above it. One process, one set of windows: the server runs a single worker,
+    and a client run against several would see each one's count. ``clock`` is `time.time` unless a
+    test hands in another to move a window."""
 
     def __init__(self, clock: Callable[[], float] = time.time):
         self.clock = clock
@@ -413,7 +413,7 @@ class RateLimitWindows:
         start, used = window
         return {
             "limit": limit,
-            "used": used,
+            "used": min(used, limit),
             "remaining": max(limit - used, 0),
             "reset": start + RATE_LIMITS[resource].window,
         }
@@ -495,6 +495,73 @@ def rate_limit_headers(
         "x-ratelimit-reset": str(window["reset"]),
         "x-ratelimit-resource": resource,
     }
+
+
+#: What real's docs anchor the rate-limit-exceeded 403 to (the same page :data:`RATE_LIMITS`'
+#: numbers come from).
+RATE_LIMIT_EXCEEDED_DOCS = (
+    "https://docs.github.com/rest/overview/resources-in-the-rest-api#rate-limiting"
+)
+
+
+def _rate_limit_exceeded_message(request: Request, authenticated: bool) -> str:
+    """Real's `message` on the spent-window 403.
+
+    A caller with no credential: this sentence, with the caller's own address, measured against
+    api.github.com 2026-09-17 (the 61st anonymous `core` request in the hour and three more after
+    it, `used: 60` pinned at `limit: 60` on each, `server: Varnish` where a served answer is
+    `server: github.com`).
+
+    A token: this session's own outbound network reauthenticates every `api.github.com` call with
+    its own installation credential — `GET /rate_limit` sent with no `Authorization` header still
+    answers `x-ratelimit-limit: 15000` (measured 2026-09-22) — so a token cannot be driven to its
+    own cap from here to read this sentence off the wire. What follows is GitHub's documented
+    wording for that case rather than a wire reading."""
+    if not authenticated:
+        host = request.client.host if request.client is not None else "anonymous"
+        return (
+            f"API rate limit exceeded for {host}. (But here's the good news: Authenticated "
+            "requests get a higher rate limit. Check out the documentation for more details.)"
+        )
+    caller = auth.resolve_bearer(request)
+    email = caller.email if caller is not None and caller.email is not None else "admin"
+    return f"API rate limit exceeded for user ID {synth.github_user_id(email)}."
+
+
+def rate_limit_refusal(request: Request) -> Response | None:
+    """Real's 403 for a `/github` request whose window is already spent, or ``None`` to let the
+    request reach its handler as usual.
+
+    A read of the window's current status, never a count: the refused request itself is not
+    counted, which is why the reported `used` holds at `limit` across every answer until `reset`
+    rather than climbing past it (see :func:`_rate_limit_exceeded_message` for the measurement).
+    :data:`RATE_LIMIT_PATH` is never refused — real keeps answering it through exhaustion, which is
+    how a client reads its way out of a spent window — matched the way :func:`rate_limit_headers`
+    matches it. Off entirely when :attr:`backlot.config.Settings.github_enforce_rate_limits` is
+    turned off."""
+    if not get_settings().github_enforce_rate_limits:
+        return None
+    if request.url.path.rstrip("/") == RATE_LIMIT_PATH:
+        return None
+    key, authenticated = rate_limit_caller(request)
+    resource = rate_limit_resource(request.url.path, 401 if not authenticated else 200)
+    counted, limit = rate_limit_window(resource, authenticated)
+    windows = _rate_limit_windows(request.app)
+    status = windows.status(key, counted, limit)
+    if status["used"] < limit:
+        return None
+    headers = {
+        "x-ratelimit-limit": str(status["limit"]),
+        "x-ratelimit-remaining": str(status["remaining"]),
+        "x-ratelimit-used": str(status["used"]),
+        "x-ratelimit-reset": str(status["reset"]),
+        "x-ratelimit-resource": resource,
+    }
+    body = {
+        "message": _rate_limit_exceeded_message(request, authenticated),
+        "documentation_url": RATE_LIMIT_EXCEEDED_DOCS,
+    }
+    return JSONResponse(body, status_code=403, headers=headers)
 
 
 router = APIRouter(

@@ -90,7 +90,7 @@ def test_meta_users_directory(client, tokens_yaml, org):
 
 
 def test_unauthenticated_is_rejected(client):
-    # Drive accepts API keys, so an anonymous request is an "unregistered caller" -> 403, not 401.
+    # Drive accepts API keys, so an anonymous GET is an "unregistered caller" -> 403, not 401.
     # A present-but-invalid bearer IS 401. Both measured; see the Google-envelope tests below.
     assert client.get("/drive/v3/files").status_code == 403
     assert (

@@ -316,7 +316,8 @@ which is what the notes below name.
 
 A URL no route serves is `invalid_request_url` at 400, which the real API answers before it reads
 the credential or the version. The method is part of that URL: a `GET` on a route that answers
-`POST` is the same 400 rather than a 405. One trailing slash is not part of it — `users/me/` is
+`POST` is the same 400 rather than a 405, with `TRACE` the exception real refuses at the front door
+with nginx's own 405 page. One trailing slash is not part of it — `users/me/` is
 served as `users/me`, where a second slash is a segment and gets the 400 — and a `HEAD` is the
 `GET` with the body left off. A credential that is not `Bearer <token>` — no header, no scheme,
 `Basic`, or GitHub's legacy `token <t>` — is refused by naming the format, where a bearer whose

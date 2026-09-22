@@ -222,6 +222,20 @@ def negative_not_allowed(name: str) -> AtlassianError:
     )
 
 
+def zero_limit_not_allowed() -> AtlassianError:
+    """`label`'s refusal of `?limit=0`, which no other Confluence listing shares.
+
+    Measured 2026-09-22 with a cache-buster on each request: `content`, `space`, the CQL search,
+    `child/page`, `child/comment` and `child/attachment` all answer `?limit=0` with an empty page
+    at 200, and `content/{id}/label` alone answers this 400. `?limit=1` and `?limit=2` are 200
+    there, so it is the zero it refuses rather than a small page. The message is the bare exception
+    string with no name in it, where the negative refusal beside it names the parameter.
+    """
+    return AtlassianError(
+        400, {"statusCode": 400, "message": "java.lang.IllegalArgumentException: null"}
+    )
+
+
 def unsupported_media_type(path: str, content_type: str | None) -> AtlassianError:
     """Jira's 415 for a POST body it will not read, measured 2026-09-15 on `POST search/jql`.
 

@@ -439,7 +439,9 @@ def confluence_page_links(
     - `next` is answered whenever the rows served have not reached `total` — `start + size`, not
       "the page came back full", so a three-space site answers `?limit=3` no `next` and `?limit=2`
       a `start=2`. An empty page advances nothing, so `?limit=0` answers a link to the page it is
-      on rather than withholding one, where a `start` past `total` answers none;
+      on rather than withholding one, where a `start` past `total` answers none. `content`,
+      `space`, the CQL search, `child/page` and `child/comment` all answer a zero `limit` that way;
+      `label` refuses it outright, which is that route's own rule rather than this one's;
     - `prev` walks back by `limit` clamped at zero, and its own `limit` is the number of rows
       actually skipped, so `?start=1` at the default 25 answers `limit=1&start=0`;
     - `next` is built before `prev`, because real emits `_links` alphabetically and a caller

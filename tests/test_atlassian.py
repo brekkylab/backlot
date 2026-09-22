@@ -1442,11 +1442,11 @@ def test_confluence_every_paged_listing_answers_base_context_and_self(client, ad
     assert links["self"].endswith(path.replace("/atlassian", "") + "?bogus=x"), links["self"]
 
 
-@pytest.mark.parametrize("route", ["child/page", "child/comment", "label"])
+@pytest.mark.parametrize("route", ["child/page", "child/comment"])
 def test_confluence_child_listings_read_limit_and_start(client, admin_h, route):
     """Measured: each reads both, so `?limit=0` is an empty page whose `next` names the page it is
-    on and `?start=1` carries a `prev`. Before this they served the whole collection with `limit`
-    restating the count, which is what the `limit` assertion below reads."""
+    on and `?start=1` carries a `prev`. `label` reads them too but refuses a zero `limit`, which the
+    test below pins."""
     api = "/atlassian/wiki/rest/api"
     holder = None
     for page in client.get(f"{api}/content?limit=100", headers=admin_h).json()["results"]:
@@ -1460,6 +1460,37 @@ def test_confluence_child_listings_read_limit_and_start(client, admin_h, route):
     second = client.get(f"{api}/content/{holder}/{route}?limit=1&start=1", headers=admin_h).json()
     assert second["start"] == 1 and second["limit"] == 1
     assert second["_links"]["prev"].endswith("prev=true&limit=1&start=0")
+
+
+def test_confluence_label_refuses_a_zero_limit_where_its_siblings_serve_one(client, admin_h):
+    """Measured 2026-09-22 with a cache-buster per request: `content`, `space`, the CQL search,
+    `child/page`, `child/comment` and `child/attachment` all answer `?limit=0` with an empty page at
+    200, and `label` alone answers 400 `java.lang.IllegalArgumentException: null` — the bare
+    exception string, where the negative refusal beside it names the parameter. `?limit=1` is a 200
+    there, so it is the zero it refuses."""
+    api = "/atlassian/wiki/rest/api"
+    cid = client.get(f"{api}/content?limit=1", headers=admin_h).json()["results"][0]["id"]
+    refused = client.get(f"{api}/content/{cid}/label?limit=0", headers=admin_h)
+    assert refused.status_code == 400
+    assert refused.json() == {
+        "statusCode": 400,
+        "message": "java.lang.IllegalArgumentException: null",
+    }
+    assert client.get(f"{api}/content/{cid}/label?limit=1", headers=admin_h).status_code == 200
+    for sibling in ("child/page", "child/comment"):
+        served = client.get(f"{api}/content/{cid}/{sibling}?limit=0", headers=admin_h)
+        assert served.status_code == 200, sibling
+
+
+def test_confluence_a_carried_parameter_sits_where_it_was_measured(client, admin_h):
+    """`expand` leads `limit`/`start` and a name real does not read trails `start`. Where real puts
+    the latter is a Java map's iteration order rather than a rule (`bogus` after the marker,
+    `zebra` ahead of it, `nonce` after `start`, each on its own request), so this pins the placement
+    this server chose rather than claiming real's."""
+    api = "/atlassian/wiki/rest/api"
+    links = client.get(f"{api}/content?limit=1&bogus=x", headers=admin_h).json()["_links"]
+    assert links["next"].endswith("next=true&limit=1&start=1&bogus=x")
+    assert links["self"].endswith("/content?bogus=x")
 
 
 def test_confluence_label_serves_one_of_two_labels_and_a_next(client, admin_h):

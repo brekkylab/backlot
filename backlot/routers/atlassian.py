@@ -1527,7 +1527,7 @@ async def confluence_labels(content_id: int, request: Request):
     row = store.get_document(conn, "confluence", content_id, visible_ids=ids)
     if row is None:
         raise HTTPException(status_code=404, detail="No content found with id")
-    limit, start = _confluence_page_params(request, default=200, cap=200)
+    limit, start = _confluence_page_params(request, default=200, cap=200, refuse_zero=True)
     labels = store.jcol(row, "labels")
     results = [
         {"prefix": "global", "name": lbl, "id": str(synth.confluence_id(lbl)), "label": lbl}
@@ -1916,6 +1916,7 @@ def _confluence_page_params(
     default: int = 25,
     cap: int | None = None,
     start_bound: int | None = None,
+    refuse_zero: bool = False,
 ) -> tuple[int, int]:
     """Confluence's `limit` and `start`, which refuse a negative where Jira's clamp one.
 
@@ -1937,6 +1938,9 @@ def _confluence_page_params(
     start=100001` the bound, and `?spaceKey=NOPE&start=100001` the bound rather than the unknown
     space's 404.
 
+    ``refuse_zero`` is `label`'s alone: it answers `?limit=0` with a 400 where every other listing
+    answers an empty page (:func:`backlot.errors.atlassian.zero_limit_not_allowed`).
+
     ``default`` and ``cap`` are per route, measured 2026-09-22 on a live site: `content`, `space`
     and `child/comment` cap `limit` at 1000, `label` defaults to 200 and caps there, `child/page`
     defaults to 25 and caps nowhere (`?limit=1001` is echoed), and the CQL search caps nowhere
@@ -1947,6 +1951,8 @@ def _confluence_page_params(
     start = _int_param(request, "start", 0)
     if start_bound is not None and start > start_bound:
         raise errors_atlassian.start_too_large()
+    if refuse_zero and limit == 0:
+        raise errors_atlassian.zero_limit_not_allowed()
     _refuse_negative_page_params(limit, start)
     if cap is not None:
         limit = min(limit, cap)

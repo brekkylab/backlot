@@ -116,10 +116,10 @@ _P_CONTENT = {
     "parameters": [qp("expand"), qp("spaceKey"), qp("limit", "integer"), qp("start", "integer")]
 }
 _P_SPACE = {"parameters": [qp("expand"), qp("limit", "integer"), qp("start", "integer")]}
-# The three listings under `content/{id}`, which read the same pair with their own defaults
-# and caps. `child/page` takes an `expand` as well; the other two take neither.
+# The three listings under `content/{id}`, which read the same pair with their own defaults and
+# caps. `child/page` is the one of them this router also reads an `expand` on.
 _P_CHILD_PAGE = {"parameters": [qp("expand"), qp("limit", "integer"), qp("start", "integer")]}
-_P_PAGED = {"parameters": [qp("limit", "integer"), qp("start", "integer")]}
+_P_CONTENT_CHILD = {"parameters": [qp("limit", "integer"), qp("start", "integer")]}
 
 # The page a comment read serves. Measured against Jira Cloud (2026-09-09) on a real issue,
 # which settles what no document states: `maxResults` is CAPPED at 100 as well as defaulted
@@ -1468,7 +1468,7 @@ async def confluence_child_pages(content_id: int, request: Request):
     }
 
 
-@router.get("/wiki/rest/api/content/{content_id}/child/comment", openapi_extra=_P_PAGED)
+@router.get("/wiki/rest/api/content/{content_id}/child/comment", openapi_extra=_P_CONTENT_CHILD)
 async def confluence_comments(content_id: int, request: Request):
     conn = auth.conn(request)
     caller = _confluence_caller(request)
@@ -1519,7 +1519,7 @@ async def confluence_comments(content_id: int, request: Request):
     }
 
 
-@router.get("/wiki/rest/api/content/{content_id}/label", openapi_extra=_P_PAGED)
+@router.get("/wiki/rest/api/content/{content_id}/label", openapi_extra=_P_CONTENT_CHILD)
 async def confluence_labels(content_id: int, request: Request):
     conn = auth.conn(request)
     caller = _confluence_caller(request)
@@ -1955,7 +1955,9 @@ def _confluence_page_params(
 
 # `content` alone refuses a `start` past this, inclusive of the bound itself (measured 2026-09-22:
 # `start=100000` is a 200 with an empty page, `start=100001` the 400 `start_too_large` builds).
-# `space` and the CQL search answer any `start` with an empty page.
+# The same `start` is a 200 on the neighbours: an empty page on `space` and on `child/page`, and on
+# the CQL search a page holding a row, since that route pages by the cursor it carries rather than
+# by the offset. What this server answers there is the empty slice, which is its own gap.
 _CONTENT_START_BOUND = 100_000
 
 

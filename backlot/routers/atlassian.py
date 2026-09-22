@@ -116,6 +116,10 @@ _P_CONTENT = {
     "parameters": [qp("expand"), qp("spaceKey"), qp("limit", "integer"), qp("start", "integer")]
 }
 _P_SPACE = {"parameters": [qp("expand"), qp("limit", "integer"), qp("start", "integer")]}
+# The three listings under `content/{id}`, which read the same pair with their own defaults
+# and caps. `child/page` takes an `expand` as well; the other two take neither.
+_P_CHILD_PAGE = {"parameters": [qp("expand"), qp("limit", "integer"), qp("start", "integer")]}
+_P_PAGED = {"parameters": [qp("limit", "integer"), qp("start", "integer")]}
 
 # The page a comment read serves. Measured against Jira Cloud (2026-09-09) on a real issue,
 # which settles what no document states: `maxResults` is CAPPED at 100 as well as defaulted
@@ -1239,8 +1243,9 @@ def _space(request: Request, conn, container: str, expand: str, *, listed: bool)
 @router.get("/wiki/rest/api/space", response_model=ConfluenceResults, openapi_extra=_P_SPACE)
 async def confluence_spaces(request: Request):
     """Paged the way `content` is (`?limit`/`?start`, both through `_confluence_page_params`), with
-    its own `next`/`prev` shape: measured 2026-09-17, see :func:`confluence_space_links`. `expand`
-    is applied per space through :func:`_space` and carried into `next`/`prev`/`self` too.
+    its own `next`/`prev` shape: measured 2026-09-17 and 2026-09-22, see
+    :func:`backlot.pagination.confluence_page_links`. `expand` is applied per space through
+    :func:`_space` and carried into `next`/`prev`/`self` too.
 
     `limit` is capped at 1000, as real caps it.
     """
@@ -1397,9 +1402,7 @@ async def confluence_content_list(request: Request):
     ids = auth.visible_ids(request, caller)
     expand = _str_param(request, "expand", "") or ""
     space_key = _str_param(request, "spaceKey")
-    limit, start = _confluence_page_params(request, cap=1000)
-    if start > _CONTENT_START_BOUND:
-        raise errors_atlassian.start_too_large()
+    limit, start = _confluence_page_params(request, cap=1000, start_bound=_CONTENT_START_BOUND)
     if space_key:
         container = _space_container_for_key(conn, space_key)
         if container is None:
@@ -1436,7 +1439,7 @@ async def confluence_content_get(content_id: int, request: Request):
 @router.get(
     "/wiki/rest/api/content/{content_id}/child/page",
     response_model=ConfluenceResults,
-    openapi_extra=_P_EXPAND,
+    openapi_extra=_P_CHILD_PAGE,
 )
 async def confluence_child_pages(content_id: int, request: Request):
     conn = auth.conn(request)
@@ -1465,7 +1468,7 @@ async def confluence_child_pages(content_id: int, request: Request):
     }
 
 
-@router.get("/wiki/rest/api/content/{content_id}/child/comment")
+@router.get("/wiki/rest/api/content/{content_id}/child/comment", openapi_extra=_P_PAGED)
 async def confluence_comments(content_id: int, request: Request):
     conn = auth.conn(request)
     caller = _confluence_caller(request)
@@ -1516,7 +1519,7 @@ async def confluence_comments(content_id: int, request: Request):
     }
 
 
-@router.get("/wiki/rest/api/content/{content_id}/label")
+@router.get("/wiki/rest/api/content/{content_id}/label", openapi_extra=_P_PAGED)
 async def confluence_labels(content_id: int, request: Request):
     conn = auth.conn(request)
     caller = _confluence_caller(request)
@@ -1908,7 +1911,11 @@ def _str_param(request: Request, name: str, default: str | None = None) -> str |
 
 
 def _confluence_page_params(
-    request: Request, *, default: int = 25, cap: int | None = None
+    request: Request,
+    *,
+    default: int = 25,
+    cap: int | None = None,
+    start_bound: int | None = None,
 ) -> tuple[int, int]:
     """Confluence's `limit` and `start`, which refuse a negative where Jira's clamp one.
 
@@ -1925,6 +1932,11 @@ def _confluence_page_params(
     as a bodiless 404. It shares :func:`_refuse_negative_page_params`, which is measured on that
     route too.
 
+    ``start_bound`` is `content`'s alone and sits between the two refusals above, measured with
+    both wrong at once: `?limit=abc&start=100001` is the conversion failure, `?limit=-1&
+    start=100001` the bound, and `?spaceKey=NOPE&start=100001` the bound rather than the unknown
+    space's 404.
+
     ``default`` and ``cap`` are per route, measured 2026-09-22 on a live site: `content`, `space`
     and `child/comment` cap `limit` at 1000, `label` defaults to 200 and caps there, `child/page`
     defaults to 25 and caps nowhere (`?limit=1001` is echoed), and the CQL search caps nowhere
@@ -1933,6 +1945,8 @@ def _confluence_page_params(
     """
     limit = _int_param(request, "limit", default)
     start = _int_param(request, "start", 0)
+    if start_bound is not None and start > start_bound:
+        raise errors_atlassian.start_too_large()
     _refuse_negative_page_params(limit, start)
     if cap is not None:
         limit = min(limit, cap)

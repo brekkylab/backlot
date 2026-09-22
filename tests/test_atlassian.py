@@ -577,7 +577,7 @@ def test_atlassian_errors_use_atlassian_envelope(client):
 
 def test_confluence_spaces_are_paged_not_served_whole(client, admin_h, tokens):
     """Measured against a live Confluence Cloud site on 2026-09-17: `space` reads `limit`/`start`
-    and answers a page, with `_links.next`/`.prev` shaped like :func:`confluence_space_links`."""
+    and answers a page, with `_links.next`/`.prev` shaped like :func:`backlot.pagination.confluence_page_links`."""
     unpaged = client.get("/atlassian/wiki/rest/api/space", headers=admin_h).json()
     names = [s["name"] for s in unpaged["results"]]
     assert names == [
@@ -612,7 +612,7 @@ def test_confluence_spaces_are_paged_not_served_whole(client, admin_h, tokens):
     assert second["_links"]["prev"] == "/rest/api/space?prev=true&limit=1&start=0"
     assert "next" not in second["_links"]
 
-    # expand rides into next/prev/self too — see confluence_space_links for the ordering.
+    # expand rides into next/prev/self too — see confluence_page_links for the ordering.
     expanded_first = client.get(
         "/atlassian/wiki/rest/api/space?limit=1&expand=description", headers=admin_h
     ).json()
@@ -1404,6 +1404,23 @@ def test_confluence_content_refuses_a_start_above_the_bound_where_space_serves_o
     assert body["data"] == {"authorized": True, "valid": True, "errors": [], "successful": True}
     assert "Start of this size is no longer supported" in body["message"]
     assert client.get(f"{api}/space?start=100001", headers=admin_h).status_code == 200
+
+
+@pytest.mark.parametrize(
+    "query, want",
+    [
+        ("limit=abc&start=100001", "MethodArgumentTypeMismatchException"),
+        ("limit=-1&start=100001", "Start of this size is no longer supported"),
+        ("spaceKey=NOPE&start=100001", "Start of this size is no longer supported"),
+    ],
+    ids=["conversion-first", "bound-over-negative", "bound-over-unknown-space"],
+)
+def test_confluence_content_refuses_in_the_order_real_refuses(client, admin_h, query, want):
+    """Measured with two wrong at once: conversion is reached first, then the `start` bound, and
+    the bound is reached ahead of the negative refusal and ahead of an unknown `spaceKey`."""
+    r = client.get(f"/atlassian/wiki/rest/api/content?{query}", headers=admin_h)
+    assert r.status_code == 400, r.text
+    assert want in r.json()["message"]
 
 
 _PAGED = ["content", "space", "child/page", "child/comment", "label"]

@@ -127,10 +127,10 @@ included: `limit` at real's numbers (60 an hour for a caller with no credential,
 30 and 10 for `search` and `code_search`), `remaining` and `used` counted per credential and per
 resource, `reset` the second that window closes, `resource` the one the request counted against.
 `core` measures an hour and the two search resources measure a minute, as real's do. A window that
-runs out is refused, 403, with the five headers pinned at `limit` and real's own message, for a
-caller with no credential and for a token alike (measured against api.github.com 2026-09-17); the
-refused request is not itself counted, which is why `used` holds at `limit` rather than climbing
-past it. `BACKLOT_GITHUB_ENFORCE_RATE_LIMITS` turns the refusal off (see
+runs out is refused, 403, with `used` pinned at `limit` across the five headers and real's own
+message, for a caller with no credential and for a token alike (measured against api.github.com
+2026-09-17); the refused request is not itself counted, which is why `used` holds at `limit` rather
+than climbing past it. `BACKLOT_GITHUB_ENFORCE_RATE_LIMITS` turns the refusal off (see
 [configuration](configuration.md#github)). `GET /rate_limit` reports the same windows, does not
 count, and is never refused — the one route a
 client reads its way out of a spent window with. Two answers carry none of the five and count

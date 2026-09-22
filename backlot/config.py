@@ -68,12 +68,9 @@ class Settings(BaseSettings):
     max_page_size: int = 1000
 
     # --- github ---
-    # Real refuses a `/github` request once the caller's rate-limit window is spent, 403, both for
-    # a caller with no credential and for a token (see
-    # ``backlot.routers.github.RateLimitWindows``). On by default, since a mock that lets more
-    # through than the vendor does hides a client's coming production 403; a long-lived ``serve()``
-    # whose own test volume would rather not meet real's 10-per-minute code search window turns it
-    # off instead of working around it per test.
+    # On by default: a mock more permissive than the vendor hides a client's coming production 403
+    # (see ``backlot.routers.github.rate_limit_refusal``). docs/configuration.md's GitHub section
+    # has what the switch does and when to flip it.
     github_enforce_rate_limits: bool = True
 
     # --- sqlite read tuning (serving connection; see store.connect_ro) ---

@@ -11,6 +11,11 @@ schedule, so a vendor changing its schema in March is noticed in March.
 Backlot's own schema against the vendor's own schema, **in both directions**, over arguments as
 well as fields:
 
+For **Slack**, whose vendor publishes no machine-readable description of its Web API at all, two
+contracts: the reference documentation for the request surface and slack.com itself for what a
+response carries. That is its own section, [Slack is documented and asked, never read off a
+spec](#slack-is-documented-and-asked-never-read-off-a-spec).
+
 For a **GraphQL** source, the schemas themselves — field by field, argument by argument. Backlot's
 side is the SDL the server builds its engine from; the vendor's side is a live introspection
 response, which needs a credential.
@@ -18,7 +23,7 @@ response, which needs a credential.
 For a source compared against a **document its vendor publishes**, the request surface — which
 operations exist, which query parameters each accepts, and, for Google, the batch endpoint its
 `batchPath` names. Backlot's side is the app's own `/openapi.json`. The vendor's side comes in two formats, read by two parsers, because Google does
-not publish OpenAPI: **OpenAPI** documents for GitHub, Slack, Jira, Confluence, Notion and
+not publish OpenAPI: **OpenAPI** documents for GitHub, Jira, Confluence, Notion and
 HubSpot, and **Google API Discovery** documents for Gmail and the Drive family. A source is
 compared against as many documents as its vendor publishes for the surface Backlot serves — Jira's
 two REST versions, Drive alongside Docs, Sheets and Slides, HubSpot's CRM and associations. All
@@ -35,7 +40,8 @@ clean schema while ten fields and four arguments were missing, because every one
 side it did not walk.
 
 ```bash
-backlot diff --source slack                        # no credential: a published document is public
+backlot diff --source github                       # no credential: a published document is public
+backlot diff --source slack                        # reads SLACK_USER_TOKEN from the environment
 backlot diff --source fireflies                    # reads FIREFLIES_API_KEY from the environment
 backlot diff --source fireflies --credential api_key=…   # or pass it, see the caveat below
 backlot diff --source fireflies --update-baseline  # accept what it found
@@ -61,7 +67,7 @@ Each source **declares** the credentials it needs, by a logical name and the env
 it is read from, and `--credential NAME=VALUE` repeats for as many as a source declares. A single
 `--token` would not stretch: a vendor authenticated with SigV4 needs an access key *and* a secret,
 and a Google service account needs a client id, a client secret and a private key. Declaring them
-also means a name a source does not take is **refused** rather than ignored — nine of the eleven
+also means a name a source does not take is **refused** rather than ignored — eight of the eleven
 sources need no credential at all, and that is exactly where a silently accepted option goes
 unnoticed.
 
@@ -72,7 +78,7 @@ Exit codes are distinct on purpose: `1` is "the contracts disagree", `2` is "the
 could not be read", and `3` is "a credential this source declares is not set anywhere". A vendor
 outage is not a fidelity finding, and a credential nobody set is this repository's problem rather
 than either — the scheduled run fails on `3` for that reason, because warned about and left green
-it would leave the two introspection sources uncompared night after night.
+it would leave the three sources that need one uncompared night after night.
 
 ## A published spec is weaker evidence than introspection
 
@@ -81,9 +87,6 @@ document only *describes* the contract, and it lags, omits paid tiers, and docum
 the server accepts two. Every `extra_operation` this has reported so far was the spec being
 incomplete rather than Backlot being wrong:
 
-- Slack's spec documents one verb per method, and of the search methods only `search.messages`:
-  `search.all` and `search.files` are absent. Measured against slack.com, all fourteen answer
-  `200/ok` over **both** GET and POST.
 - GitHub's spec describes neither `contents` without a path nor the legacy per-sha statuses read.
   Measured against api.github.com, both answer `200`.
 - Atlassian's published Confluence v1 document no longer describes the content and space reads
@@ -95,6 +98,12 @@ incomplete rather than Backlot being wrong:
 
 So on a REST source, read `missing_*` as reliable and `extra_*` as *undocumented by the vendor —
 verify by hand*, never as proof of a bug. Those measurements are what the baseline notes carry.
+
+Asking the vendor instead of reading its document does not remove that rule, it only changes what
+weakens the evidence. A live probe's `extra_field` is bounded by one caller's one sample: a field
+Slack serves only on an edited message, or only to a token holding `users:read.email`, comes back
+absent from an answer that is otherwise complete. So Slack's `extra_field` findings are verified by
+hand too, and the baseline note beside each records which of the two it was.
 
 ## Severities
 
@@ -135,6 +144,82 @@ children are what keep the two listings apart: `?list-type=2` and a bare bucket 
 
 Requests are signed with [`backlot.sigv4`](../backlot/sigv4.py) — the module that verifies them —
 so the probe adds no dependency and a change to signing breaks both sides at once.
+
+## Slack is documented and asked, never read off a spec
+
+Slack publishes no machine-readable description of its Web API. It published an OpenAPI 2.0
+document once, in the `slackapi/slack-api-specs` repository; that repository was archived in 2021
+and its last content change is dated 2020-10-06, so fetching it "live" retrieves a 2020 file whose
+age the fetch date hides. Measured 2026-09-22 it declares 174 operations where the maintained
+reference lists 324 — missing `canvases.*`, `bookmarks.*`, `assistant.threads.*`, `functions.*` and
+`apps.datastore.*` entirely, and still carrying ten the reference no longer lists, among them
+`oauth.token`, `workflows.updateStep` and the six `apps.permissions.*`.
+`api.slack.com/specs/openapi/v2/slack_web.json` is a 1.7.0 copy of the same document with four
+fewer paths — it lacks `apps.permissions.users.list`, `apps.permissions.users.request`,
+`workflows.stepCompleted` and `workflows.updateStep` — and no document under `docs.slack.dev` is
+one: 0 of the 3201 pages in its sitemap.
+
+So Slack's vendor side is split by what each source can actually state.
+
+**Operations and arguments come from the reference documentation.** It is official and maintained,
+and Slack publishes every page of it as markdown — `docs.slack.dev/llms.txt` states the
+convention, and appending `.md` to any page's URL serves it. Measured 2026-09-22, all 324 method
+pages carry YAML frontmatter naming the method and its HTTP verb, and the 1442 arguments across
+them are written in one line shape, so the vendor side here is parsed text rather than scraped
+HTML.
+
+**Methods are compared, not verbs.** Slack's Web API is RPC over POST and most methods answer GET
+as well, while the documentation names one verb per method. Measured against slack.com on
+2026-09-22, all twelve methods Backlot serves answer `200/ok` over **both**. So the verb is not a
+contract for this vendor: comparing on it pairs one served method with two units and calls
+whichever verb the documentation left out surface Backlot invented. A method is identified by its
+own name, the way Slack names it.
+
+**What a response carries is asked of slack.com**, because the documentation cannot state it. Its
+`users.list` page shows two example members that disagree with each other about `is_app_user`, both
+place `profile` in the middle of the object where all 20 members of a live workspace place it last,
+and its common-fields table says in as many words that it lists fields you *might* encounter. It
+records neither the `cache_ts` the real envelope carries nor the fields a deactivated member drops.
+This is the layer, and the only layer, that reports `missing_field` and `extra_field` for this
+source.
+
+Both sides of that probe are running servers, as they are for S3, but the pairing is different:
+Backlot is asked **beside** the vendor rather than alone. Backlot's half runs on a corpus the probe
+itself supplies — two channels, a threaded message, a message carrying a file, a reaction, an edit —
+so it is the same on every run and a finding reproduces with `backlot.serve(records=...)`. The
+vendor's half is a live workspace, and everything the calls need is discovered through the API
+itself — a channel the caller has joined, a message with replies in it, an active person, and a
+word out of that channel's own text that the workspace's search can find. A workspace missing any
+of them is reported as one that cannot be probed rather than probed clean. Slack has no query that
+means "everything" to fall back on: measured 2026-09-22, `*` answered `search.messages` with one
+match out of the eleven messages the workspace holds, and with two an hour earlier.
+
+Three things bound what that probe can see, and they are why its `extra_field` findings are
+verified by hand exactly like every other `extra_*`:
+
+- **A list empty on either side hides its members.** A field under `members[]` says nothing when
+  one side returned no members, so a path is compared only where both sides looked inside the
+  object holding it. Backlot's `search.files` serves no matches by construction, so a file object is
+  compared through the `files[]` a `conversations.history` message carries instead and the
+  `search.files` projection is covered only as far as its envelope. An empty *object* is not the
+  same answer and does not suppress: it was looked at and carries no fields, so the other side's
+  fields under it are a real divergence — which is the whole of what `conversations.list` and
+  `conversations.info` have to report, 31 gaps under the `properties` Backlot answers as `{}`.
+- **A field the vendor serves conditionally reads as absent.** `edited` and `reactions` are on a
+  message only when it has been edited or reacted to, `last_read` is on a thread's parent message
+  only for a caller subscribed to that thread, and a workspace or caller that does not meet the
+  condition cannot demonstrate them.
+- **The token's scopes and identity bound the answer.** `email` comes back only to a token holding
+  `users:read.email`. `has_2fa` is narrower still: an admin caller gets it on every person, where a
+  non-admin caller gets it only on their own — one of 20 in a live `users.list`, and it is the
+  caller. The probe's own credential is required to be a workspace admin (`discover` refuses any
+  other before comparing), so what it measures is the admin-sees-every-person half; a non-admin
+  caller's own self-view is an acknowledged gap of its own.
+
+Presence, never conditions. That `has_2fa` is bounded by caller identity and that a deactivated
+member drops thirteen fields — Backlot drops eleven of them itself, and the baseline carries the
+other two (`is_email_confirmed`, `who_can_share_contact_card`) as acknowledged gaps — are not facts
+a set of field paths can hold; they are measured by hand and held by `tests/test_slack.py`.
 
 ## Google's batch endpoint is a field, not an operation
 
@@ -256,7 +341,7 @@ each of those is compared, and a test fails if the two sets ever drift apart.
 |---|---|---|
 | Fireflies | GraphQL introspection | `api_key` — `FIREFLIES_API_KEY`, sent as `Bearer <key>` |
 | Linear | GraphQL introspection | `api_key` — `LINEAR_API_KEY`, sent **bare** |
-| Slack | published OpenAPI | none |
+| Slack | reference documentation for the request surface, slack.com **probed** for response fields — see [Slack is documented and asked, never read off a spec](#slack-is-documented-and-asked-never-read-off-a-spec) | `user_token` — `SLACK_USER_TOKEN`, sent as `Bearer <token>` |
 | Gmail | Google Discovery, operations and `batchPath` | none |
 | Google Drive (`google_drive`) | Google Discovery — Drive, Docs, Sheets and Slides, operations and `batchPath` | none |
 | GitHub | published OpenAPI | none |

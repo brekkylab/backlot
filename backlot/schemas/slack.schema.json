@@ -69,7 +69,7 @@
       "type": "array",
       "items": {
         "type": "object",
-        "description": "One reaction. Slack's own OpenAPI (`objs_reaction`) requires `name`, `users` and `count` together, and types each entry of `users` as a `defs_user_id` matching `^[UW][A-Z0-9]{2,}$` — a value a corpus author cannot know, since it is what `synth.slack_user_id` will make of an address. So the corpus writes the ADDRESS and the router renders the id, the same way `author_email` becomes a message's `user`. `count` is rendered from `users` too: real Slack may send a larger one, since it truncates `users` and says so on `reactions.get`, but Backlot serves every reactor a record names, so that length is the count. Stating it would add a second place to be wrong, so the item is closed and a record that states one, or misspells a key, is refused rather than read and dropped.",
+        "description": "One reaction. `reactions.get`'s own success example answers `name`, `users` and `count` together on every reaction, and gives each entry of `users` as a user id (`\"users\": [\"W222222\"]`) — a value a corpus author cannot know, since it is what `synth.slack_user_id` will make of an address. So the corpus writes the ADDRESS and the router renders the id, the same way `author_email` becomes a message's `user`. `count` is rendered from `users` too: real Slack may send a larger one, since it truncates `users` and says so on `reactions.get`, but Backlot serves every reactor a record names, so that length is the count. Stating it would add a second place to be wrong, so the item is closed and a record that states one, or misspells a key, is refused rather than read and dropped.",
         "properties": {
           "name": {
             "type": "string",
@@ -103,7 +103,7 @@
           "user": {
             "type": "string",
             "format": "email",
-            "description": "The file's owner, by address. Slack's own OpenAPI (`objs_file`) leaves `user` untyped, but a live `search.files` call against brekkylab.slack.com (2026-09-21) found every file this workspace serves carries a `defs_user_id`-shaped (`^[UW][A-Z0-9]{2,}$`) one anyway, so it is rendered the same way `edited.user` and `reactions.users` are: the corpus writes the address and the router mints the id."
+            "description": "The file's owner, by address. Slack's file object reference types `user` as \"the ID of the user who created the object\", and a live `search.files` call (2026-09-21) found every file that workspace serves carries one, so it is rendered the same way `edited.user` and `reactions.users` are: the corpus writes the address and the router mints the id."
           }
         },
         "additionalProperties": true
@@ -116,7 +116,7 @@
         "user": {
           "type": "string",
           "format": "email",
-          "description": "Who last edited it, by address. Real Slack's `edited.user` is a `defs_user_id` (`^[UW][A-Z0-9]{2,}$`) a corpus author cannot invent, so it is rendered the same way `reactions.users` is: the corpus writes the address and the router mints the id. It is this message's own author: `chat.update` answers anyone else `cant_update_message`, which the importer checks."
+          "description": "Who last edited it, by address. Real Slack's `edited.user` is a user id a corpus author cannot invent — the message reference's edited example is `\"edited\": {\"user\": \"U123ABC456\", \"ts\": \"1355517536.000001\"}` — so it is rendered the same way `reactions.users` is: the corpus writes the address and the router mints the id. It is this message's own author: `chat.update` answers anyone else `cant_update_message`, which the importer checks."
         },
         "ts": {
           "type": "string",
@@ -181,7 +181,7 @@
             "type": "array",
             "items": {
               "type": "object",
-              "description": "One reaction. Slack's own OpenAPI (`objs_reaction`) requires `name`, `users` and `count` together, and types each entry of `users` as a `defs_user_id` matching `^[UW][A-Z0-9]{2,}$` — a value a corpus author cannot know, since it is what `synth.slack_user_id` will make of an address. So the corpus writes the ADDRESS and the router renders the id, the same way `author_email` becomes a message's `user`. `count` is rendered from `users` too: real Slack may send a larger one, since it truncates `users` and says so on `reactions.get`, but Backlot serves every reactor a record names, so that length is the count. Stating it would add a second place to be wrong, so the item is closed and a record that states one, or misspells a key, is refused rather than read and dropped.",
+              "description": "One reaction. `reactions.get`'s own success example answers `name`, `users` and `count` together on every reaction, and gives each entry of `users` as a user id (`\"users\": [\"W222222\"]`) — a value a corpus author cannot know, since it is what `synth.slack_user_id` will make of an address. So the corpus writes the ADDRESS and the router renders the id, the same way `author_email` becomes a message's `user`. `count` is rendered from `users` too: real Slack may send a larger one, since it truncates `users` and says so on `reactions.get`, but Backlot serves every reactor a record names, so that length is the count. Stating it would add a second place to be wrong, so the item is closed and a record that states one, or misspells a key, is refused rather than read and dropped.",
               "properties": {
                 "name": {
                   "type": "string",
@@ -215,7 +215,7 @@
                 "user": {
                   "type": "string",
                   "format": "email",
-                  "description": "The file's owner, by address. Slack's own OpenAPI (`objs_file`) leaves `user` untyped, but a live `search.files` call against brekkylab.slack.com (2026-09-21) found every file this workspace serves carries a `defs_user_id`-shaped (`^[UW][A-Z0-9]{2,}$`) one anyway, so it is rendered the same way `edited.user` and `reactions.users` are: the corpus writes the address and the router mints the id."
+                  "description": "The file's owner, by address. Slack's file object reference types `user` as \"the ID of the user who created the object\", and a live `search.files` call (2026-09-21) found every file that workspace serves carries one, so it is rendered the same way `edited.user` and `reactions.users` are: the corpus writes the address and the router mints the id."
                 }
               },
               "additionalProperties": true
@@ -228,7 +228,7 @@
               "user": {
                 "type": "string",
                 "format": "email",
-                "description": "Who last edited it, by address. Real Slack's `edited.user` is a `defs_user_id` (`^[UW][A-Z0-9]{2,}$`) a corpus author cannot invent, so it is rendered the same way `reactions.users` is: the corpus writes the address and the router mints the id. It is this message's own author: `chat.update` answers anyone else `cant_update_message`, which the importer checks."
+                "description": "Who last edited it, by address. Real Slack's `edited.user` is a user id a corpus author cannot invent — the message reference's edited example is `\"edited\": {\"user\": \"U123ABC456\", \"ts\": \"1355517536.000001\"}` — so it is rendered the same way `reactions.users` is: the corpus writes the address and the router mints the id. It is this message's own author: `chat.update` answers anyone else `cant_update_message`, which the importer checks."
               },
               "ts": {
                 "type": "string",

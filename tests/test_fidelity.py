@@ -20,6 +20,7 @@ from backlot.fidelity import (
     BREAKING,
     GAP,
     Baseline,
+    CredentialsMissing,
     FidelityError,
     Finding,
     baseline_path,
@@ -29,6 +30,8 @@ from backlot.fidelity import (
     openapi_diff,
     operations,
     s3_probe,
+    slack_docs,
+    slack_probe,
 )
 from backlot.fidelity.comparisons import (
     COMPARISONS,
@@ -36,6 +39,7 @@ from backlot.fidelity.comparisons import (
     GRAPHQL,
     OPENAPI,
     PROBE,
+    SLACK,
     UNCOMPARED,
 )
 from backlot.fidelity.graphql_diff import backlot_schema, diff_schemas
@@ -496,6 +500,7 @@ def test_every_comparison_is_registered_once_as_the_class_its_registry_implies()
         (GOOGLE_DISCOVERY, comparisons.GoogleDiscoveryComparison),
         (GRAPHQL, comparisons.GraphQLComparison),
         (PROBE, comparisons.ProbeComparison),
+        (SLACK, comparisons.SlackComparison),
     ]
     assert sum(len(r) for r, _ in registries) == len(COMPARISONS)
     for registry, expected in registries:
@@ -699,15 +704,13 @@ def test_a_placeholders_name_is_not_a_divergence():
 
 
 def test_the_mount_comes_off_only_where_the_vendor_does_not_repeat_it():
-    """Slack's spec starts at /conversations.list so its mount comes off. Google differs per
-    DOCUMENT, which is why `strip` sits on the Spec: Drive's own document spells `drive/v3`, so
-    nothing comes off there, while the Sheets document declares an empty `servicePath` and spells
-    `v4/spreadsheets/...` itself, so its mount does. Jira and Confluence share /atlassian and must
-    not capture each other."""
+    """Google differs per DOCUMENT, which is why `strip` sits on the Spec: Drive's own document
+    spells `drive/v3`, so nothing comes off there, while the Sheets document declares an empty
+    `servicePath` and spells `v4/spreadsheets/...` itself, so its mount does. Jira and Confluence
+    share /atlassian and must not capture each other."""
     served = {
         "paths": dict.fromkeys(
             [
-                "/slack/api/conversations.list",
                 "/drive/v3/files",
                 "/sheets/v4/spreadsheets/{spreadsheet_id}",
                 "/atlassian/rest/api/3/field",
@@ -725,7 +728,6 @@ def test_the_mount_comes_off_only_where_the_vendor_does_not_repeat_it():
             for _, p in operations.from_backlot(served, spec.mount, spec.strip)
         }
 
-    assert mounted("slack") == {"conversations.list"}
     assert mounted("google_drive") == {"drive/v3/files", "v4/spreadsheets/{}"}
     assert mounted("jira") == {"rest/api/3/field"}
     assert mounted("confluence") == {"wiki/rest/api/space"}
@@ -1019,6 +1021,339 @@ def test_a_probe_declares_its_prober_and_the_dispatcher_only_hands_over(monkeypa
     assert seen["base_url"].startswith("http")
 
 
+# --------------------------------------------------------------------------- slack
+
+# One row of the reference index and one method page, as docs.slack.dev serves them: the index is
+# a markdown table of links, and a page carries YAML frontmatter and one line per argument. Both
+# abbreviated to the parts the two parsers read.
+DOCS_INDEX = """---
+title: "Methods"
+---
+
+| Name | Description |
+|------|-------------|
+| [users.list](https://docs.slack.dev/reference/methods/users.list.md) | Lists all users. |
+| [chat.postMessage](https://docs.slack.dev/reference/methods/chat.postmessage.md) | Sends one. |
+"""
+
+DOCS_PAGE = """---
+method_name: "users.list"
+http_method: "GET"
+---
+
+## Arguments {#arguments}
+
+### Required arguments
+
+**`token`**`string`Required
+
+Authentication token bearing required scopes.
+
+### Optional arguments
+
+**`limit`**`number`Optional
+
+The maximum number of items to return.
+
+**`team_id`**Optional
+
+encoded team id to list users in
+
+## Usage info {#usage-info}
+
+**`not_an_argument`**`string`Required
+"""
+
+
+def test_the_slack_reference_is_read_off_its_index_and_its_pages():
+    """The index is the whole inventory; a page is read only for a method Backlot serves.
+
+    `team_id` is written in the shape 187 of the 1442 arguments measured 2026-09-22 share — a name
+    and `Optional` with no type between them — and 34 of those 187 are `team_id` itself; it parses
+    as an argument like the rest. The bolded line under `## Usage info` is not one: the section
+    boundary is what keeps a page's prose out of its argument list."""
+    assert slack_docs.documented_methods(DOCS_INDEX) == {
+        "users.list": "https://docs.slack.dev/reference/methods/users.list.md",
+        "chat.postMessage": "https://docs.slack.dev/reference/methods/chat.postmessage.md",
+    }
+    assert slack_docs.arguments(DOCS_PAGE) == {"token", "limit", "team_id"}
+
+
+def test_a_slack_method_is_one_comparison_unit_over_both_verbs():
+    """Slack's Web API is RPC over POST and most methods answer GET too, while the documentation
+    names one verb. Measured against slack.com 2026-09-22, all twelve methods Backlot serves answer
+    200/ok over both — so the verb is not a contract here, and reading the two verbs separately
+    pairs one served method with two units and calls the undocumented one surface Backlot
+    invented."""
+    served = {
+        "paths": {
+            "/slack/api/users.list": {
+                "get": {"parameters": [{"name": "limit", "in": "query"}]},
+                "post": {"parameters": [{"name": "cursor", "in": "query"}]},
+            },
+            "/gmail/v1/users/{user_id}/messages": {"get": {}},
+        }
+    }
+    assert slack_docs.from_backlot(served, ("/slack/api",)) == {
+        "users.list": slack_docs.Method("users.list", frozenset({"limit", "cursor"}))
+    }
+
+
+def test_slack_method_divergences_are_classified_like_operation_ones():
+    served = {"a": slack_docs.Method("a", frozenset({"x", "y"})), "c": slack_docs.Method("c", ())}
+    real = {"a": slack_docs.Method("a", frozenset({"x", "z"})), "b": slack_docs.Method("b", ())}
+    found = {(f.kind, f.path): f.severity for f in slack_docs.diff_methods(served, real)}
+    assert found == {
+        ("extra_operation", "c"): BREAKING,
+        ("missing_operation", "b"): GAP,
+        ("extra_param", "a?y"): BREAKING,
+        ("missing_param", "a?z"): GAP,
+    }
+
+
+def test_a_reference_page_for_another_method_is_refused(monkeypatch):
+    """The index and the page are separate fetches. A redirect answering a different method would
+    otherwise be read as this method's argument list, which is a quieter wrong answer than a
+    failure — the arguments would simply not be the ones compared."""
+    monkeypatch.setattr(
+        slack_docs,
+        "_fetch_text",
+        lambda url, timeout: DOCS_INDEX if url.endswith("methods.md") else DOCS_PAGE,
+    )
+    monkeypatch.setattr(
+        slack_docs, "from_backlot", lambda spec, mount: {"chat.postMessage": object()}
+    )
+    with pytest.raises(FidelityError, match="states method_name users.list, not chat.postMessage"):
+        slack_docs.divergences(COMPARISONS["slack"])
+
+
+def test_a_response_is_reduced_to_the_paths_a_client_can_read():
+    """An array contributes one path for its members, not one per member, and a field on ANY
+    member counts as present — Slack drops fields per object, so intersecting would report the
+    vendor as missing what it serves on every other one.
+
+    A key that is not a field name is a map entry and collapses to `{}`. Measured 2026-09-22, the
+    only ones Slack answers with are the conversation ids keying a file's `shares.public` and
+    `shares.private`; left alone they write one path per channel a file was shared into."""
+    shape = slack_probe.shape_of(
+        {
+            "ok": True,
+            "members": [{"id": "U1", "profile": {"email": "a@b.c"}}, {"id": "U2", "deleted": True}],
+            "shares": {"public": {"C0AAA": [{"ts": "1.0"}]}},
+            "matches": [],
+        }
+    )
+    assert set(shape.fields) == {
+        "ok",
+        "members",
+        "members[].id",
+        "members[].profile",
+        "members[].profile.email",
+        "members[].deleted",
+        "shares",
+        "shares.public",
+        "shares.public.{}",
+        "shares.public.{}[].ts",
+        "matches",
+    }
+    assert shape.fields["members[].id"] == frozenset({"string"})
+    assert shape.fields["ok"] == frozenset({"boolean"})
+    # `matches` was answered empty, so nothing under it was looked at and it is not a container.
+    assert "matches[]" not in shape.containers and "members[]" in shape.containers
+
+
+def test_an_empty_list_hides_its_members_and_an_empty_object_does_not():
+    """A list with no elements is nothing to look at; an object with no keys is a shape that was
+    looked at. So the first suppresses — Backlot's `search.files` serves no matches by
+    construction, and a workspace can answer a search with none, and reported either way round
+    every field of the other side's match becomes a finding — while the second reports, which is
+    what surfaced the 31 gaps under a channel's `properties` that Backlot answers as `{}`."""
+    populated = slack_probe.shape_of({"matches": [{"id": "F1", "name": "x"}]})
+    empty = slack_probe.shape_of({"matches": []})
+    assert slack_probe.diff_shapes("search.files", populated, empty) == []
+    assert slack_probe.diff_shapes("search.files", empty, populated) == []
+    assert slack_probe.diff_shapes(
+        "conversations.list",
+        slack_probe.shape_of({"properties": {}}),
+        slack_probe.shape_of({"properties": {"use_case": "welcome"}}),
+    ) == [
+        Finding(
+            "missing_field",
+            GAP,
+            "conversations.list properties.use_case",
+            "the real API serves it; Backlot does not",
+        )
+    ]
+    # And where both sides DID look inside it, the difference is reported in both directions.
+    other = slack_probe.shape_of({"matches": [{"id": "F1", "user": "U1"}]})
+    assert {
+        (f.kind, f.path): f.severity for f in slack_probe.diff_shapes("m", populated, other)
+    } == {
+        ("extra_field", "m matches[].name"): BREAKING,
+        ("missing_field", "m matches[].user"): GAP,
+    }
+
+
+def test_a_field_null_on_one_side_is_not_a_type_mismatch():
+    """A field this workspace happens to leave null and this corpus fills in is one field at one
+    type. Reported as a mismatch, the comparison becomes a report on two sets of contents."""
+    assert slack_probe.diff_shapes(
+        "m",
+        slack_probe.shape_of({"a": "s", "b": 1}),
+        slack_probe.shape_of({"a": None, "b": "1"}),
+    ) == [
+        Finding("type_mismatch", BREAKING, "m b", "real: string, Backlot: number"),
+    ]
+
+
+def test_a_method_that_could_not_be_called_is_not_a_divergence():
+    """Slack answers HTTP 200 with `ok: false`, so a scope the token lacks would otherwise be read
+    as a response shape with one field in it — and reported as the vendor missing everything else.
+    """
+    call = slack_probe._Caller("https://slack.invalid/api", "t", pace=0.0, timeout=1.0)
+
+    def refuse(url, params=None, headers=None, timeout=None):
+        return httpx.Response(200, json={"ok": False, "error": "x"})
+
+    with pytest.MonkeyPatch.context() as m:
+        m.setattr(slack_probe.httpx, "get", refuse)
+        with pytest.raises(
+            FidelityError, match="answered .x., so users.list could not be compared"
+        ):
+            call("users.list")
+
+
+def test_a_non_admin_token_is_refused_before_has_2fa_would_be_compared():
+    """Backlot's side of the probe is always its admin/service token, which serves `has_2fa` on
+    every person. A real caller who is not an admin gets it only on their own member object
+    (measured 2026-09-23), which `diff_shapes` would otherwise read as Backlot inventing the
+    field on every other member — a caller-identity difference the shape comparison can't see, so
+    `discover` refuses the token instead of reporting it as one. This repository's own
+    misconfiguration, not the vendor's, so the refusal is `CredentialsMissing`."""
+    answers = {
+        "auth.test": {"ok": True, "user_id": "U1"},
+        "users.info": {"ok": True, "user": {"id": "U1", "is_admin": False}},
+    }
+    call = lambda method, **kw: answers[method]  # noqa: E731
+    with pytest.raises(CredentialsMissing, match="not a workspace admin"):
+        slack_probe.discover(call, require_admin=True)
+
+    # An admin token, or no check at all, reaches the rest of discovery instead. Asked about
+    # directly (`users.info` on the caller's own id), not by paging `users.list` for it — a
+    # workspace with more than one page of members would otherwise miss an admin on a later page.
+    answers["auth.test"] = {"ok": True, "user_id": "U2"}
+    answers["users.info"] = {"ok": True, "user": {"id": "U2", "is_admin": True}}
+    answers["users.list"] = {"ok": True, "members": []}
+    answers["conversations.list"] = {"ok": True, "channels": []}
+    with pytest.raises(FidelityError, match="message with replies"):
+        slack_probe.discover(call, require_admin=True)
+
+
+def test_probe_refuses_a_non_admin_real_caller_before_asking_backlot_anything():
+    """Pins `probe()`'s own wiring: `require_admin` is passed for the real side's `discover` call,
+    not Backlot's, and the refusal happens before Backlot is asked a single question — `discover`
+    on the real side raises first, so the loop that calls Backlot's side never starts."""
+    real_answers = {
+        "auth.test": {"ok": True, "user_id": "U1"},
+        "users.info": {"ok": True, "user": {"id": "U1", "is_admin": False}},
+    }
+    real = lambda method, **kw: real_answers[method]  # noqa: E731
+    backlot_calls: list[str] = []
+
+    def backlot(method, **kw):
+        backlot_calls.append(method)
+        raise AssertionError(f"Backlot's side should not have been asked {method}")
+
+    with pytest.raises(CredentialsMissing, match="not a workspace admin"):
+        slack_probe.probe(backlot, real)
+    assert backlot_calls == []
+
+
+def test_a_workspace_with_nothing_to_sample_cannot_be_probed():
+    """Not a clean comparison: everything every call but `api.test` and `auth.test` needs is
+    discovered through the API itself, so a workspace holding no thread leaves
+    `conversations.replies` with nothing to ask about, and one whose search finds none of its own
+    words leaves a match's fields compared against nothing — which is the whole of what the three
+    search methods add over their envelopes."""
+    answers = {
+        "conversations.list": {"ok": True, "channels": [{"id": "C1", "is_member": True}]},
+        "conversations.history": {"ok": True, "messages": [{"ts": "1.0", "text": "<@U1> bullet"}]},
+        "users.list": {"ok": True, "members": [{"id": "U1"}]},
+        "search.messages": {"ok": True, "messages": {"matches": []}},
+    }
+    call = lambda method, **kw: answers[method]  # noqa: E731
+    with pytest.raises(FidelityError, match="message with replies"):
+        slack_probe.discover(call)
+
+    answers["conversations.history"]["messages"][0]["reply_count"] = 1
+    with pytest.raises(FidelityError, match="candidate words"):
+        slack_probe.discover(call)
+
+    # Longest first and deterministic, out of text with Slack's markup taken off. Both rules have
+    # to be pinned by the same fixture: with the markup left in, `<@U0BCVV6G3M1>` would itself
+    # parse as an 11-character word and sort first; with the sort merely alphabetical, "ants" would
+    # sort before "zebra" despite being shorter.
+    assert slack_probe._searchable_words([{"text": "<@U0BCVV6G3M1> zebra ants"}]) == [
+        "zebra",
+        "ants",
+    ]
+
+
+def test_the_probe_corpus_answers_every_shape_the_probe_compares(tmp_path):
+    """The Backlot half of the probe is only as good as the corpus under it, and nothing else holds
+    that corpus to what the comparison needs. A corpus that stopped producing a thread would leave
+    `discover` raising, which `backlot diff` reports as a contract it could not read — exit 2, and
+    the source uncompared night after night with nothing saying so.
+
+    `search.files` is the one method asked for here without a populated collection: Backlot serves
+    no file matches by construction, so its envelope is all this comparison can reach and a file
+    object is read off `conversations.history` instead.
+    """
+    from tests._helpers import client_for, tiny_corpus
+
+    settings = tiny_corpus(tmp_path, list(slack_probe.PROBE_CORPUS))
+    with client_for(settings, reload=True) as client:
+        headers = {"Authorization": f"Bearer {settings.admin_token}"}
+
+        def call(method, **arguments):
+            body = client.get(f"/slack/api/{method}", headers=headers, params=arguments).json()
+            assert body.get("ok"), (method, body)
+            return body
+
+        answers = {
+            m: call(m, **a) for m, a in slack_probe._calls(slack_probe.discover(call, "drosophila"))
+        }
+
+    assert len(answers["conversations.list"]["channels"]) == 2
+    assert len(answers["users.list"]["members"]) >= 2
+    assert answers["conversations.members"]["members"]
+    assert answers["users.info"]["user"]["id"]
+    assert answers["search.messages"]["messages"]["matches"]
+    assert answers["search.all"]["messages"]["matches"]
+    assert answers["search.files"]["files"]["matches"] == []
+    assert len(answers["conversations.replies"]["messages"]) == 2
+    history = answers["conversations.history"]["messages"]
+    carried = {
+        key
+        for message in history
+        for key in ("edited", "reactions", "files", "reply_count")
+        if key in message
+    }
+    assert carried == {"edited", "reactions", "files", "reply_count"}
+
+
+def test_the_two_slack_contracts_are_reported_as_one(monkeypatch):
+    """One source, two vendor sides, one baseline. Both endpoints are recorded so a reader of the
+    file can see which of the two a finding came from."""
+    docs = [Finding("missing_operation", GAP, "chat.postMessage", "d")]
+    probed = [Finding("missing_field", GAP, "users.list cache_ts", "d")]
+    monkeypatch.setattr(slack_docs, "divergences", lambda source, timeout: docs)
+    monkeypatch.setattr(slack_probe, "divergences", lambda source, creds, timeout: probed)
+    comparison = COMPARISONS["slack"]
+    assert comparison.endpoints == (comparison.docs_url, comparison.live_url)
+    assert comparison.divergences({"user_token": "t"}) == docs + probed
+
+
 # --------------------------------------------------------------------------- the command
 
 
@@ -1179,8 +1514,8 @@ def test_a_document_that_is_json_but_not_an_object_is_not_a_divergence(monkeypat
 
 
 def test_a_credential_nobody_set_exits_three_not_two(monkeypatch, tmp_path, capsys):
-    """Its own status because it is not a vendor outage: reported as one and left green, the two
-    sources whose contract is introspection would go uncompared night after night."""
+    """Its own status because it is not a vendor outage: reported as one and left green, the three
+    sources that declare a credential would go uncompared night after night."""
     monkeypatch.delenv("FIREFLIES_API_KEY", raising=False)
     assert cli.main(["diff", "-s", "fireflies", "--baseline-dir", str(tmp_path)]) == 3
     assert "FIREFLIES_API_KEY" in capsys.readouterr().err

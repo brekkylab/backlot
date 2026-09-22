@@ -6,12 +6,20 @@ or call the response builder directly.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 import yaml
 
 from backlot import store, synth
 from backlot.routers import slack
 from tests._helpers import client_for, corpus_client, crawl_slack, db_count, tiny_corpus, tok
+
+# The shape Slack states for a user id, so an id Backlot mints is one a client written against
+# Slack will accept: `docs.slack.dev/enterprise#user_ids` gives an enterprise id as "a user ID
+# beginning with `U` or `W`" and a legacy one as beginning with `U`, and every id in the
+# reference's own examples is uppercase alphanumeric after that prefix.
+USER_ID = re.compile(r"[UW][A-Z0-9]{2,}")
 
 
 def test_admin_slack_crawls_all(client, admin_h, ro_conn):
@@ -163,9 +171,10 @@ def test_slack_auth_error_split_is_uniform_across_methods(client):
 def test_slack_auth_test_identifies_the_caller(client, admin_h, tokens):
     """`auth.test` answers "who am I", and both fields it answers with are the caller's own.
 
-    Slack's spec fixes their shape — `slack_web_openapi_v2.json`,
-    `paths./auth.test.get.responses.200` is `"user": "grace"`, `"user_id": "W12345678"` — so `user`
-    is a handle rather than an address, and `user_id` is that person's id.
+    Measured 2026-09-22 with a user token, `auth.test` answers `user` as that person's handle and
+    `user_id` as their own `U…`; the method's own reference fixes the same shape, its user-token
+    success example being `"user": "grace"`, `"user_id": "W12345678"`. So `user` is a handle rather
+    than an address, and `user_id` is that person's id.
 
     The id is asserted against `conversations.history`, not against `users.list`: the scenario the
     issue describes is a client matching `auth.test` to the author of a message to find its own, and
@@ -653,12 +662,16 @@ def test_slack_an_absent_argument_is_not_a_thing_that_was_not_found(
     assert j == {"ok": False, "error": error}
 
 
-def test_slack_search_all(client, admin_h):
+def test_slack_search_all_answers_both_blocks_and_search_files_only_its_own(client, admin_h):
     # slack-go's Search()/SearchContext() hits search.all; it must return both messages + files.
     j = client.post("/slack/api/search.all", headers=admin_h, data={"query": "the"}).json()
     assert j["ok"] is True
     assert "messages" in j and "files" in j
     assert j["files"]["total"] == 0 and j["files"]["matches"] == []
+    # search.files must not carry `messages`: a client reading it off a file search gets a
+    # KeyError from the real API (see SlackFileSearch's docstring in backlot/routers/slack.py).
+    f = client.post("/slack/api/search.files", headers=admin_h, data={"query": "the"}).json()
+    assert set(f) == {"ok", "query", "files"}
 
 
 def test_slack_replies_resolve_from_a_reply_ts(client, admin_h):
@@ -1365,10 +1378,11 @@ def test_slack_a_private_channels_members_are_its_readers(tmp_path):
 
 def test_slack_one_person_has_one_handle_across_the_surface(tmp_path):
     """`users.list` names a person by `name` and `search.messages` names the same person by
-    `username`, and Slack spells both the handle: this method's own spec example carries
-    `"username": "roach"` (`slack_web_openapi_v2.json`,
-    `paths./search.messages.get.responses.200`). A client that reads the id off `user` and the
-    label off `username` gets one person, so the two must not answer two spellings of them.
+    `username`, and Slack spells both the handle: this method's own reference example carries
+    `"username": "roach"` beside `"user": "U2U85N1RV"`
+    (`docs.slack.dev/reference/methods/search.messages`, read 2026-09-22). A client that reads the
+    id off `user` and the label off `username` gets one person, so the two must not answer two
+    spellings of them.
 
     A dotted address is what separates the two derivations — the handle drops the dot, and the raw
     local part does not — and no address in the module's shared fixture has one, so the case is
@@ -1411,7 +1425,6 @@ def test_slack_reaction_ids_and_count_are_derived_from_the_addresses(tmp_path):
     message's own `user` report for that person, so a client that groups a reaction's users against
     message authors gets one answer rather than two.
     """
-    import re
 
     from backlot.routers.slack import _message
 
@@ -1445,20 +1458,18 @@ def test_slack_reaction_ids_and_count_are_derived_from_the_addresses(tmp_path):
         },
         {"name": "+1", "users": [synth.slack_user_id("bo@x.com")], "count": 1},
     ]
-    # Slack's own `defs_user_id`, so an id Backlot mints is one the vendor's spec would accept.
-    assert all(re.fullmatch(r"[UW][A-Z0-9]{2,}", u) for r in reactions for u in r["users"])
+    assert all(USER_ID.fullmatch(u) for r in reactions for u in r["users"])
 
 
 def test_slack_edited_renders_the_editors_id(tmp_path):
     """`edited.user` is rendered the same way `reactions.users` is: the corpus names the editor by
-    address and `synth.slack_user_id` mints the id Slack's own spec types it as. `ts` is passed
+    address and `synth.slack_user_id` mints the id Slack answers there. `ts` is passed
     through unchanged — it is information only the corpus holds, not a value to derive.
 
     A reply carries the same block, and `_message` is the single renderer for history, replies and
     search hits, so both are read here off the rows each is served from. The editor is the author
     on both, which is the only pairing real Slack produces (see `_check_edited`).
     """
-    import re
 
     from backlot.routers.slack import _message
 
@@ -1498,8 +1509,7 @@ def test_slack_edited_renders_the_editors_id(tmp_path):
     }
     for row in (root, reply):
         m = _message(row)
-        # Slack's own `defs_user_id`, so an id Backlot mints is one the vendor's spec would accept.
-        assert re.fullmatch(r"[UW][A-Z0-9]{2,}", m["edited"]["user"])
+        assert USER_ID.fullmatch(m["edited"]["user"])
         # The editor is the author on the surface a client reads, which is the identity Slack's
         # own message-event example shows (`user` and `edited.user` are both `U123ABC456`).
         assert m["edited"]["user"] == m["user"]
@@ -1507,11 +1517,12 @@ def test_slack_edited_renders_the_editors_id(tmp_path):
 
 def test_slack_file_renders_its_owner_id(tmp_path):
     """`user` on a file is rendered the same way `edited.user` and `reactions.users` are: the
-    corpus names it by address and `synth.slack_user_id` mints the id, confirmed live against
-    every file `search.files` serves on brekkylab.slack.com (2026-09-21). Every other file field
+    corpus names it by address and `synth.slack_user_id` mints the id. Slack's file object
+    reference types `user` as "the ID of the user who created the object", and a live
+    `search.files` call (2026-09-21) found one on every file the workspace served. Every other
+    file field
     — `id`, `name`, `mimetype`, `title` — passes through unchanged.
     """
-    import re
 
     from backlot.routers.slack import _message
 
@@ -1547,8 +1558,7 @@ def test_slack_file_renders_its_owner_id(tmp_path):
             "user": synth.slack_user_id("ava@x.com"),
         }
     ]
-    # Slack's own `defs_user_id`, so an id Backlot mints is one the vendor's spec would accept.
-    assert re.fullmatch(r"[UW][A-Z0-9]{2,}", files[0]["user"])
+    assert USER_ID.fullmatch(files[0]["user"])
 
 
 def test_slack_has_2fa_answers_the_callers_own_admin_rights_and_only_for_a_person(tmp_path):

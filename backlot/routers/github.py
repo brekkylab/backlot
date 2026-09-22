@@ -2188,11 +2188,7 @@ async def commit_statuses(
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     _require_repo(conn, repo, ids)  # a repo this caller cannot see must not answer for its shas
-    # A trailing slash is part of the name real reads (measured 2026-09-22: `git/trees/main/`
-    # and `git/ref/heads/main/` are 404 `Not Found`, `branches/main/` a 404 `Branch not found`,
-    # `statuses/main/` a 404, and `commits/main/` a 422 whose message echoes the slash). Only a
-    # LEADING one is dropped, which is how a ref arriving as `//main` reaches the lookup.
-    if sha.lstrip("/") not in _commit_ish(conn, owner, repo, ids):
+    if _ref_as_sent(sha) not in _commit_ish(conn, owner, repo, ids):
         raise HTTPException(status_code=404, detail="Not Found")
     page, per_page = _clamp(page, per_page)
     return _paged(request, 0, {}, [], page, per_page)
@@ -2252,11 +2248,7 @@ async def get_git_ref(owner: str, repo: str, ref: str, request: Request):
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     _require_repo(conn, repo, ids)
-    # A trailing slash is part of the name real reads (measured 2026-09-22: `git/trees/main/`
-    # and `git/ref/heads/main/` are 404 `Not Found`, `branches/main/` a 404 `Branch not found`,
-    # `statuses/main/` a 404, and `commits/main/` a 422 whose message echoes the slash). Only a
-    # LEADING one is dropped, which is how a ref arriving as `//main` reaches the lookup.
-    ref = ref.lstrip("/")
+    ref = _ref_as_sent(ref)
     if not _ref_exists(conn, owner, repo, ref, ids):
         raise HTTPException(status_code=404, detail="Not Found")
     ab = _api_base(request)
@@ -2344,11 +2336,7 @@ async def get_tree(
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     _require_repo(conn, repo, ids)
-    # A trailing slash is part of the name real reads (measured 2026-09-22: `git/trees/main/`
-    # and `git/ref/heads/main/` are 404 `Not Found`, `branches/main/` a 404 `Branch not found`,
-    # `statuses/main/` a 404, and `commits/main/` a 422 whose message echoes the slash). Only a
-    # LEADING one is dropped, which is how a ref arriving as `//main` reaches the lookup.
-    ref = ref.lstrip("/")
+    ref = _ref_as_sent(ref)
     ab = _api_base(request)
     rows = store.list_repo_files(conn, repo, ids)
     entries = _tree_from_paths(owner, repo, rows, ab)
@@ -2483,12 +2471,20 @@ async def get_contents(
     it. Measured 2026-09-22: `contents/backlot/`, `contents/README.md/` and `contents/no-such-dir/`
     all answer `302` to `https://api.github.com/repositories/{id}/contents/{path}`, so the redirect
     is reached before the path resolves to anything; the `Location` carries no query, `?ref=main`
-    included; and the id-keyed spelling redirects to itself the same way. A credential that does
-    not resolve is answered first, ahead of the redirect, which is where `_require` already sits.
+    included; and the id-keyed spelling redirects to itself the same way.
+
+    What it does NOT precede is the repository: a repository that does not exist, an owner that
+    does not, and one the caller cannot see are each a 404 rather than a redirect (measured the
+    same day on three such paths), so the credential and the repository are resolved first and the
+    redirect answers only for a repository this caller can read.
     """
-    caller_checked = _require(request)  # the 401 a bad credential gets comes before the redirect
-    del caller_checked
     if path.endswith("/"):
+        # The redirect sits between the repository and the path: measured, a repository that does
+        # not exist or that the caller cannot see is a 404 here, and a path that names nothing
+        # inside one that does is still the 302.
+        conn = auth.conn(request)
+        caller = _require(request)
+        _require_repo(conn, repo, auth.visible_ids(request, caller))
         target = _redirect_to_the_slash_free_contents_path(request, repo, path)
         return Response(status_code=302, headers={"Location": target})
     return await _contents_response(owner, repo, path, request, ref)
@@ -2681,11 +2677,7 @@ async def get_branch(owner: str, repo: str, branch: str, request: Request):
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     _require_repo(conn, repo, ids)
-    # A trailing slash is part of the name real reads (measured 2026-09-22: `git/trees/main/`
-    # and `git/ref/heads/main/` are 404 `Not Found`, `branches/main/` a 404 `Branch not found`,
-    # `statuses/main/` a 404, and `commits/main/` a 422 whose message echoes the slash). Only a
-    # LEADING one is dropped, which is how a ref arriving as `//main` reaches the lookup.
-    branch = branch.lstrip("/")
+    branch = _ref_as_sent(branch)
     found = next((b for b in _branch_rows(conn, owner, repo, ids) if b["name"] == branch), None)
     if found is None:
         raise HTTPException(status_code=404, detail="Branch not found")
@@ -2730,11 +2722,7 @@ async def get_commit(owner: str, repo: str, sha: str, request: Request):
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     _require_repo(conn, repo, ids)
-    # A trailing slash is part of the name real reads (measured 2026-09-22: `git/trees/main/`
-    # and `git/ref/heads/main/` are 404 `Not Found`, `branches/main/` a 404 `Branch not found`,
-    # `statuses/main/` a 404, and `commits/main/` a 422 whose message echoes the slash). Only a
-    # LEADING one is dropped, which is how a ref arriving as `//main` reaches the lookup.
-    sha = sha.lstrip("/")
+    sha = _ref_as_sent(sha)
     if sha not in _commit_ish(conn, owner, repo, ids):
         raise _no_commit_for_sha(sha)
     # A NAME resolves to the commit it stands for rather than being echoed back as one: real
@@ -3065,6 +3053,20 @@ def _commit_ish(conn, owner: str, repo: str, ids) -> set[str]:
     branches = _branch_rows(conn, owner, repo, ids, pulls=pulls)
     names = {b["name"] for b in branches} | set(_repo_tags(conn, repo))
     return names | _commit_shas(repo, pulls)
+
+
+def _ref_as_sent(ref: str) -> str:
+    """The ref the caller sent, with only a LEADING slash dropped.
+
+    A TRAILING one is part of the name real reads, and each route refuses the name it then fails to
+    find: measured 2026-09-22, `git/trees/main/` and `git/ref/heads/main/` are 404 `Not Found`,
+    `statuses/main/` a 404, `branches/main/` a 404 `Branch not found`, and `commits/main/` a 422
+    whose message echoes the slash. Dropping it served the ref beside it at 200 on all five.
+
+    The leading slash is dropped because a ref arriving as `//main` — a client joining a base and a
+    ref that both carry one — otherwise reaches the lookup with a name no corpus holds.
+    """
+    return ref.lstrip("/")
 
 
 def _no_commit_for_sha(sha: str) -> HTTPException:

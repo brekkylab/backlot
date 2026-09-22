@@ -124,6 +124,48 @@ def test_github_a_bad_credential_is_answered_before_the_contents_redirect(gh_cli
     assert r.status_code == 401 and r.json()["message"] == "Bad credentials"
 
 
+def test_github_the_id_keyed_spelling_redirects_the_same_way(gh_client, gh_org, gh_admin_h):
+    """Measured: `/repositories/{id}/contents/{path}/` answers the same 302 the login-keyed
+    spelling does, to the id-keyed path without the slash."""
+    from backlot import synth
+
+    c, _ = gh_client
+    rid = synth.github_user_id("codebase")
+    r = c.get(
+        f"/github/repositories/{rid}/contents/src/", headers=gh_admin_h, follow_redirects=False
+    )
+    assert r.status_code == 302
+    assert r.headers["location"].endswith(f"/github/repositories/{rid}/contents/src")
+
+
+def test_github_a_directory_readme_is_acl_scoped(gh_client, gh_org, gh_user_tokens):
+    """The new route reads corpus content, so it answers a caller who cannot see the repository the
+    way every other route here does: the repository's own 404, not the file's."""
+    c, _ = gh_client
+    scoped = next(t for e, t in gh_user_tokens.items() if e != "admin")
+    theirs = {"Authorization": f"Bearer {scoped}"}
+    admin_sees = c.get(
+        f"/github/repos/{gh_org}/codebase/readme",
+        headers={"Authorization": f"Bearer {gh_user_tokens['admin']}"},
+    )
+    assert admin_sees.status_code == 200
+    r = c.get(f"/github/repos/{gh_org}/codebase/readme/src", headers=theirs)
+    assert r.status_code in (403, 404), r.text
+
+
+def test_github_the_redirect_does_not_precede_the_repository(gh_client, gh_org, gh_admin_h):
+    """Measured: a repository that does not exist answers 404 rather than the redirect, so the
+    redirect cannot be built before the repository resolves. Without this, a caller could tell a
+    repository the corpus holds from one it does not by whether the slash redirected."""
+    c, _ = gh_client
+    r = c.get(
+        f"/github/repos/{gh_org}/no-such-repo-xyz/contents/src/",
+        headers=gh_admin_h,
+        follow_redirects=False,
+    )
+    assert r.status_code == 404, r.text
+
+
 def test_github_readme_with_an_empty_directory_is_the_repositorys_own(
     gh_client, gh_org, gh_admin_h
 ):

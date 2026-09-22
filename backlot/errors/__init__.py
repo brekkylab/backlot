@@ -18,12 +18,11 @@ A module in ``_ENVELOPES`` provides:
   reports one.
 - ``method_not_allowed(path, method)``, optional — the vendor's own 405, as an exception carrying
   its body, media type and headers. Starlette raises a 405 before any vendor code runs, so a
-  vendor whose 405 differs from the shape its other refusals take says so here; Atlassian's
-  catch-all route raises the same exception itself, because it matches every method on every path
-  it owns and Starlette therefore never gets to. Atlassian is the
+  vendor whose 405 differs from the shape its other refusals take says so here. Atlassian is the
   one that implements it; what its two products answer is in
-  :func:`backlot.errors.atlassian.method_not_allowed`. A vendor without it keeps the shared
-  envelope.
+  :func:`backlot.errors.atlassian.method_not_allowed`, which its own catch-all route raises rather
+  than Starlette, because that route matches every method on every path it owns. A vendor without
+  it keeps the shared envelope.
 - ``head_content_length(path, status_code)``, optional — whether a `HEAD` declares the length of
   the body its `GET` would have carried, or ``None`` to keep the `GET`'s own header. Atlassian is
   the one that implements it: Confluence declares a length its chunked `GET` does not, and Jira

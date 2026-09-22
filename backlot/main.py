@@ -372,8 +372,8 @@ async def resolve_github_id_paths(request: Request, call_next):
 # each is measured to be, and a vendor is added here once its own is rather than by a rewrite that
 # assumes they share GitHub's: both Atlassian products answered a `HEAD` with the `GET`'s status and
 # `content-type` and nothing in the body, on all 24 routes served here, measured 2026-09-22. What
-# they do NOT share is the length — see ``errors.head_content_length``, asked below. `/health` and `/_meta` are Backlot's
-# own routes, with no vendor to measure against: a `HEAD /health` is the shape a liveness probe
+# they do NOT share is the length — see ``errors.head_content_length``, asked below.
+# `/health` and `/_meta` are Backlot's own routes, with no vendor to measure against: a `HEAD /health` is the shape a liveness probe
 # takes, and `FastAPI`'s `APIRoute` refused it with the same 405 for the same reason.
 _HEAD_IS_THE_GET_WITHOUT_ITS_BODY = ("/github", "/atlassian", "/health", "/_meta")
 

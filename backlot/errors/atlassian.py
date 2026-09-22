@@ -354,9 +354,12 @@ def method_not_allowed(path: str, method: str) -> AtlassianError:
     reading `errors[0]["code"]` is the one this costs: the shared envelope has an `errors` OBJECT,
     so that read raises against Backlot and works against real Confluence.
 
-    ``headers`` of ``{}`` on the Confluence side is the empty header set, not "no opinion": real
-    sends no `Allow` and Starlette computes one from the routes Backlot happens to declare. ``None``
-    on a Jira route no row above covers keeps Starlette's, which is at least Backlot's own truth.
+    ``headers`` of ``{}`` is the empty header set, not "no opinion": real sends no `Allow` on the
+    Confluence side, and none on a path no Jira route covers either — a method the front door
+    refuses is 405 with `Allow` absent, measured 2026-09-22 with `TRACE` on a served route and on
+    `nopesuchroute` alike. Starlette would compute one there from the catch-all
+    (``backlot.routers.atlassian.unmatched_path``), which takes seven methods on every path it
+    owns, so what it would advertise is neither the vendor's set nor anything Backlot serves.
     """
     if is_confluence(path):
         return AtlassianError(
@@ -375,7 +378,7 @@ def method_not_allowed(path: str, method: str) -> AtlassianError:
             },
             headers={},
         )
-    allow = jira_allow(path)
+    allow = jira_allow(path) if method in SERVED_METHODS else None
     return AtlassianError(
         405,
         {
@@ -386,7 +389,7 @@ def method_not_allowed(path: str, method: str) -> AtlassianError:
             "instance": _instance(path),
         },
         media_type=PROBLEM_JSON,
-        headers=None if allow is None else {"Allow": allow},
+        headers={} if allow is None else {"Allow": allow},
     )
 
 
@@ -423,6 +426,15 @@ def jira_options_allow(path: str) -> str | None:
         if pattern.fullmatch(vendor_path):
             return allow
     return None
+
+
+#: The methods the application behind the gateway ever sees. A `TRACE` is refused at the front door
+#: with 405 and an invented method with 403, both the gateway's own HTML page carrying no `Allow`
+#: and none of the headers the application adds — on a served route and on an unserved path alike,
+#: measured 2026-09-22. So a method outside this set gets neither the vendor `Allow` below nor the
+#: headers in ``backlot.routers.atlassian.vendor_headers``; the body it gets here is still this
+#: module's JSON, where real's is that HTML page.
+SERVED_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD")
 
 
 def no_endpoint(path: str, method: str) -> AtlassianError:

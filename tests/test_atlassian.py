@@ -2671,3 +2671,34 @@ def test_atlassian_answers_carry_nosniff(client, admin_h):
     """`x-content-type-options: nosniff` is on every answer either product gives."""
     for path in ("/atlassian/rest/api/3/serverInfo", "/atlassian/wiki/rest/api/space"):
         assert client.get(path, headers=admin_h).headers["x-content-type-options"] == "nosniff"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/atlassian/rest/api/3/serverInfo",
+        "/atlassian/rest/api/3/nopesuchroute",
+        "/atlassian/wiki/rest/api/space",
+    ],
+)
+def test_atlassian_a_method_the_front_door_refuses_carries_none_of_the_headers(
+    client, admin_h, path
+):
+    """The control for the catch-all's method list and for the header middleware. Real refuses a
+    `TRACE` with 405 and an invented method with 403, the gateway's own HTML page, carrying no
+    `Allow` and none of the ids, quota or deprecation headers the application adds — on a served
+    route and on an unserved path alike, measured 2026-09-22. `TRACE` is left off the catch-all's
+    methods for that reason, so what answers it here is a 405 too, and this holds that the 405
+    advertises nothing: Starlette would otherwise name the seven methods the catch-all takes."""
+    r = client.request("TRACE", path, headers=admin_h)
+    assert r.status_code == 405, r.text
+    assert "allow" not in r.headers
+    for absent in (
+        "atl-request-id",
+        "atl-traceid",
+        "x-arequestid",
+        "x-ratelimit-limit",
+        "deprecation",
+        "x-confluence-request-time",
+    ):
+        assert absent not in r.headers, absent

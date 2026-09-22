@@ -1906,10 +1906,11 @@ def _refuse_negative_page_params(limit: int, start: int) -> None:
 
 # ======================== what answers before, and around, a route ==========================
 
-#: Every method the catch-all below takes. `TRACE` and `CONNECT` are left off because nothing
-#: measured them and Starlette answers them its own way; every other method a client sends reaches
-#: this router, which is the point of it.
-_UNMATCHED_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]
+#: Every method the catch-all below takes, which is every method the application behind the real
+#: gateway ever sees (``errors.atlassian.SERVED_METHODS``). A `TRACE` is left off because the
+#: gateway refuses it before the application, so what answers one here is Starlette's 405 rather
+#: than this route.
+_UNMATCHED_METHODS = list(errors_atlassian.SERVED_METHODS)
 
 #: The Confluence resources whose unmatched sub-paths real answers with the product's HTML page
 #: rather than the API's 404, measured 2026-09-22. `space/MFS/nope`, `space/nope/deeper`,
@@ -2169,6 +2170,10 @@ def vendor_headers(request: Request, status_code: int) -> dict[str, str]:
     deliberately not here is in `backlot.main.report_atlassian_headers`.
     """
     path = request.url.path
+    if request.method not in errors_atlassian.SERVED_METHODS:
+        # A method the front door refuses never reaches the application that stamps these; the
+        # measurement is on ``errors.atlassian.SERVED_METHODS``.
+        return {}
     headers = {**request_ids(request), "x-content-type-options": "nosniff"}
     if errors_atlassian.is_confluence(path):
         headers["x-confluence-request-time"] = str(int(time.time() * 1000))

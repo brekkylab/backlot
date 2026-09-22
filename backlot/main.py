@@ -354,8 +354,8 @@ async def serve_a_slashed_notion_path_as_the_path_without_it(request: Request, c
     like any other. The rewrite runs ahead of routing because the answer for a path no route
     matches is now a route of its own (``notion.unmatched_router``), which would otherwise claim
     every slashed spelling and answer 400 where real answers what the route answers; Starlette's
-    own `redirect_slashes` never sees these paths for the same reason, and its 307 was not what
-    real sends either.
+    own `redirect_slashes` no longer fires under `/notion/` for the same reason, and its 307 was
+    not what real sends either.
 
     The vendor root is left alone: `/notion/` keeps the 400 every unserved URL gets, and `/notion`
     is Starlette's own 307 to that, where real's `/` is a 302 to its marketing site — a page this

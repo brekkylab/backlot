@@ -67,6 +67,12 @@ class Settings(BaseSettings):
     default_page_size: int = 100
     max_page_size: int = 1000
 
+    # --- github ---
+    # On by default: a mock more permissive than the vendor hides a client's coming production 403
+    # (see ``backlot.routers.github.rate_limit_refusal``). docs/configuration.md's GitHub section
+    # has what the switch does and when to flip it.
+    github_enforce_rate_limits: bool = True
+
     # --- sqlite read tuning (serving connection; see store.connect_ro) ---
     # Sized for the corpus most people serve — their own, or the bundled one, which is under a
     # megabyte. A multi-GB corpus wants all three raised, and a deployment that serves one says so

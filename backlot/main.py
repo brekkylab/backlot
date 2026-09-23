@@ -255,9 +255,10 @@ async def answer_s3_with_request_ids(request: Request, call_next):
     pair for the body of an error.
 
     Middleware for the reason the GitHub rate-limit headers are: the pair rides answers no route
-    handler builds, the exception handlers' refusals among them.
-    The pair is set before the route runs so `backlot.routers.s3._error` writes the same one into
-    `<RequestId>` and `<HostId>`, which real repeats there.
+    handler builds, the exception handlers' refusals among them. The pair is set before the route
+    runs so `backlot.routers.s3._error` writes the same one into `<RequestId>` and `<HostId>`, which
+    real repeats there. Each header is set only where the answer has none, because the parse 400
+    carries an id of its own shape (`backlot.errors.s3.method_not_allowed`).
     """
     if not errors.s3.owns(request.url.path):
         return await call_next(request)

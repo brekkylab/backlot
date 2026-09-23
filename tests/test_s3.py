@@ -80,31 +80,68 @@ def _signed(base_url, path, token, method="GET", extra_headers=None, body=None):
 # 2026-09-23 against `s3.us-east-1.amazonaws.com`, the region this server presents, path-style,
 # against a bucket name nobody owns.
 
+# The id real's own answers carry, and the one its parse 400 carries: 16 of the 32 symbols it uses,
+# and hex that never starts with `0` (`backlot.routers.s3.request_ids`,
+# `backlot.errors.s3.method_not_allowed`).
+_S3_ID = r"[0-9A-HJKMNP-TV-Z]{16}"
+_PARSE_ID = r"[1-9A-F][0-9A-F]{0,15}"
+
 _ID_ROWS = [
-    ("GET", "/s3/", 200),
-    ("HEAD", "/s3/eng-artifacts", 200),
-    ("GET", "/s3/eng-artifacts?list-type=2", 200),
-    ("GET", "/s3/eng-artifacts?location", 200),
-    ("GET", "/s3/eng-artifacts?uploads", 200),
-    ("GET", "/s3/no-such-bucket", 404),
-    ("GET", "/s3/eng-artifacts?versioning", 501),
-    ("GET", "/s3/eng-artifacts?acl&versioning", 400),
-    ("PATCH", "/s3/eng-artifacts", 405),
-    ("TRACE", "/s3/eng-artifacts", 400),
+    ("GET", "/s3/", 200, _S3_ID),
+    ("HEAD", "/s3/", 405, _S3_ID),
+    ("HEAD", "/s3/eng-artifacts", 200, _S3_ID),
+    ("GET", "/s3/eng-artifacts?list-type=2", 200, _S3_ID),
+    ("GET", "/s3/eng-artifacts?location", 200, _S3_ID),
+    ("GET", "/s3/eng-artifacts?uploads", 200, _S3_ID),
+    ("GET", "/s3/no-such-bucket", 404, _S3_ID),
+    ("GET", "/s3/eng-artifacts?versioning", 501, _S3_ID),
+    ("GET", "/s3/eng-artifacts?acl&versioning", 400, _S3_ID),
+    ("PATCH", "/s3/eng-artifacts", 405, _S3_ID),
+    ("TRACE", "/s3/eng-artifacts", 400, _PARSE_ID),
 ]
 
 
-@pytest.mark.parametrize("method, path, status", _ID_ROWS, ids=[r[1] for r in _ID_ROWS])
-def test_s3_every_answer_carries_the_request_id_pair(live_server, method, path, status):
-    """Measured: real sends `x-amz-request-id` (16 characters) and `x-amz-id-2` on every response
-    measured, a success and a refusal alike, and botocore reads both into `ResponseMetadata`. The
-    extended id's width varies from one real answer to the next, the parser's 400 included, so this
-    server sends one width everywhere (`backlot.routers.s3.request_ids`)."""
+@pytest.mark.parametrize(
+    "method, path, status, shape", _ID_ROWS, ids=[f"{r[0]}-{r[1]}" for r in _ID_ROWS]
+)
+def test_s3_every_answer_carries_the_request_id_pair_in_reals_shape(
+    live_server, method, path, status, shape
+):
+    """Measured: real sends `x-amz-request-id` and `x-amz-id-2` on every response measured, a
+    success and a refusal alike, and botocore reads both into `ResponseMetadata`. The id's shape is
+    the answer's: S3's own and the parse 400's differ. The extended id's width varies from one real
+    answer to the next, the parser's 400 included, so this server sends one width everywhere
+    (`backlot.routers.s3.request_ids`)."""
     base_url, settings = live_server
     r = _signed(base_url, path, settings.admin_token, method=method)
     assert r.status_code == status
-    assert len(r.headers["x-amz-request-id"]) == 16
+    assert re.fullmatch(shape, r.headers["x-amz-request-id"])
     assert len(r.headers["x-amz-id-2"]) == 96
+
+
+def test_s3_a_request_id_uses_every_symbol_real_does_and_the_parse_400_is_unpadded_hex():
+    """Over two hundred requests every one of real's 32 symbols turns up and no other, which a hex
+    id never would, and the parse 400's id, never starting with `0`, is sometimes shorter than 16:
+    the two shapes measured (`backlot.routers.s3.request_ids`,
+    `backlot.errors.s3.method_not_allowed`)."""
+    from backlot.errors import s3 as s3_errors
+    from backlot.routers import s3 as s3_router
+
+    pairs = [s3_router.request_ids("GET", f"/s3/bucket-{i}", "") for i in range(200)]
+    assert {len(request_id) for request_id, _ in pairs} == {16}
+    assert set("".join(request_id for request_id, _ in pairs)) == set(
+        "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+    )
+    parse_ids = []
+    for pair in pairs:
+        token = s3_router.REQUEST_IDS.set(pair)
+        try:
+            refusal = s3_errors.method_not_allowed("/s3/bucket", "TRACE")
+        finally:
+            s3_router.REQUEST_IDS.reset(token)
+        parse_ids.append(refusal.headers["x-amz-request-id"])
+    assert all(re.fullmatch(_PARSE_ID, request_id) for request_id in parse_ids)
+    assert min(len(request_id) for request_id in parse_ids) < 16
 
 
 def test_s3_an_error_body_ends_with_the_pair_the_headers_carry(live_server):
@@ -201,6 +238,26 @@ def test_s3_a_method_this_router_does_not_serve_answers_reals_own_refusal(
     assert r.headers["content-type"] == "application/xml"
     assert f"<Code>{code}</Code>" in r.text and member in r.text
     assert r.headers.get("allow") == allow
+
+
+@pytest.mark.parametrize("path", ["/s3", "/s3/", "/s3/?acl"])
+def test_s3_a_head_at_the_service_root_is_the_405_without_its_body(live_server, path):
+    """Measured 2026-09-23, signed and unsigned, bare and with `?acl` and `?versioning`: real
+    answers a `HEAD` at the service root 405 with `Allow: GET` and an empty `application/xml` body,
+    not the parse 400 a method S3 defines nothing for gets. The GET on the same path is the
+    listing, so the refusal is the method's."""
+    import httpx
+
+    base_url, settings = live_server
+    for r in (
+        _signed(base_url, path, settings.admin_token, method="HEAD"),
+        httpx.head(f"{base_url}{path}"),
+    ):
+        assert r.status_code == 405
+        assert r.headers["allow"] == "GET"
+        assert r.headers["content-type"] == "application/xml"
+        assert r.content == b""
+    assert _signed(base_url, path, settings.admin_token).status_code == 200
 
 
 def test_s3_every_selector_a_get_reads_has_an_answer_for_the_other_methods():

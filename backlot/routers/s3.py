@@ -234,25 +234,34 @@ def _xml(body: str, status: int = 200, headers: dict | None = None) -> Response:
 # variable rather than an argument because `_error` is reached from helpers that read the query
 # string and never the request (`_argument_error`, `_int32_param`), and the pair is the
 # request's rather than any one refusal's. `backlot.main.answer_s3_with_request_ids` sets it and
-# puts the same pair on every response's headers.
+# puts the same pair on the headers of every answer this router gives.
 REQUEST_IDS: contextvars.ContextVar[tuple[str, str] | None] = contextvars.ContextVar(
     "s3_request_ids", default=None
 )
 
+# Every symbol real S3's own answers put in a request id: `0`-`9` and `A`-`Z` without `I`, `L`, `O`
+# and `U` (`request_ids` has the measurement).
+_REQUEST_ID_SYMBOLS = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
 
 def request_ids(method: str, path: str, query: str) -> tuple[str, str]:
-    """``(x-amz-request-id, x-amz-id-2)`` for one request, at the widths real S3 sends most often.
+    """``(x-amz-request-id, x-amz-id-2)`` for one request, in the shape real S3's own answers give.
 
     Measured 2026-09-22 at ap-northeast-2 over twenty-five response shapes, a success and a refusal
-    alike: both rode
-    every one. The id is 16 uppercase hex characters on every sample; the extended id is base64 whose
-    width is not a property of the answer — forty samples each on 2026-09-23 (us-east-1) gave a
-    `TRACE` 128, 96 and 120 characters, a 404 96 and 76, a 405 96 and 76 — so this sends the 96 that
-    is the most common of them. Seeded from the request rather than randomised, so a corpus served
-    twice answers the same pair, which is what an ETag and a synthesised id already do here.
+    alike: both rode every one. Their shape was measured 2026-09-23 over forty each of a 200, a GET
+    404, a HEAD 404 and a 405, in each of us-east-1 and ap-northeast-2: the id was 16 characters on
+    all 320, and `_REQUEST_ID_SYMBOLS` is every symbol those 320 used. The parse 400 carries an id of
+    another shape (``backlot.errors.s3.method_not_allowed``). The extended id is base64 whose width
+    is not a property of the answer: over those 320 and eighty parse 400s it was 96 characters 240
+    times, 76 108 times, 128 46 times, 120 five times and 108 once, and every kind of answer came at
+    more than one width, so this sends the 96. Seeded from the request rather than randomised, so a
+    corpus served twice answers the same pair, which is what an ETag and a synthesised id already
+    do here.
     """
-    raw = hashlib.shake_256(f"s3-req:{method} {path}?{query}".encode()).digest(80)
-    return raw[:8].hex().upper(), base64.b64encode(raw[8:]).decode("ascii")
+    raw = hashlib.shake_256(f"s3-req:{method} {path}?{query}".encode()).digest(82)
+    n = int.from_bytes(raw[:10])
+    request_id = "".join(_REQUEST_ID_SYMBOLS[(n >> shift) & 31] for shift in range(75, -1, -5))
+    return request_id, base64.b64encode(raw[10:]).decode("ascii")
 
 
 def _error(
@@ -1046,6 +1055,7 @@ def _parse_range(header: str, total: int):
 #   PATCH, POST on a key             | 405 MethodNotAllowed, `<Method>`, `<ResourceType>OBJECT`
 #   PATCH on a bucket                | 405 MethodNotAllowed, `<ResourceType>BUCKET`
 #   any of the four at the root      | 405 MethodNotAllowed, `<ResourceType>SERVICE`, `Allow: GET`
+#   HEAD at the root                 | 405, `Allow: GET`, an empty `application/xml` body
 #   POST on a bucket                 | 412 PreconditionFailed, `<Condition>` naming
 #                                    | multipart/form-data
 #   a selector, a method it lacks    | 405 MethodNotAllowed naming the selector's own resource type
@@ -1067,9 +1077,10 @@ def _parse_range(header: str, total: int):
 # (`_cors_preflight`).
 #
 # No credential is resolved before a method refusal, because real answers the method first: an
-# unsigned `PATCH` on a bucket, on a key and at the root, and an unsigned `PATCH` or `POST` naming a
-# selector that lacks it, answered the same 405 as a signed one, and an unsigned `OPTIONS` the same
-# 400 and 403. A write resolves the credential and the bucket before its 501 (`_refuse_write`).
+# unsigned `PATCH` on a bucket, on a key and at the root, an unsigned `HEAD` at the root, and an
+# unsigned `PATCH` or `POST` naming a selector that lacks it, answered the same 405 as a signed one,
+# and an unsigned `OPTIONS` the same 400 and 403. A write resolves the credential and the bucket
+# before its 501 (`_refuse_write`).
 
 _METHOD_NOT_ALLOWED = "The specified method is not allowed against this resource."
 _CORS_NEEDS_ORIGIN = "Insufficient information. Origin request header needed."
@@ -1221,15 +1232,18 @@ def _selector_refusal(
 
 
 @router.api_route(
-    "", methods=["PUT", "POST", "DELETE", "PATCH", "OPTIONS"], include_in_schema=False
+    "", methods=["HEAD", "PUT", "POST", "DELETE", "PATCH", "OPTIONS"], include_in_schema=False
 )
 @router.api_route(
-    "/", methods=["PUT", "POST", "DELETE", "PATCH", "OPTIONS"], include_in_schema=False
+    "/", methods=["HEAD", "PUT", "POST", "DELETE", "PATCH", "OPTIONS"], include_in_schema=False
 )
 async def service_method_refusal(request: Request) -> Response:
     """The service root serves `ListBuckets` alone, and real answers `PUT`, `POST`, `DELETE` and
     `PATCH` there with one 405 naming `SERVICE`, each measured, and the same with a selector on
-    `PATCH`, `POST` and `PUT`."""
+    `PATCH`, `POST` and `PUT`. A `HEAD` is the same 405, with or without `?acl` or `?versioning`
+    (measured 2026-09-23), and like any answer to a `HEAD` it goes out without its body; it is
+    declared here because a method no route here takes is answered by ``backlot.errors.s3`` as the
+    parse 400."""
     if request.method == "OPTIONS":
         return _cors_preflight(request, _CORS_NO_BUCKET)
     return _error(

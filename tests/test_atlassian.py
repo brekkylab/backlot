@@ -577,7 +577,8 @@ def test_atlassian_errors_use_atlassian_envelope(client):
 
 def test_confluence_spaces_are_paged_not_served_whole(client, admin_h, tokens):
     """Measured against a live Confluence Cloud site on 2026-09-17: `space` reads `limit`/`start`
-    and answers a page, with `_links.next`/`.prev` shaped like :func:`backlot.pagination.confluence_page_links`."""
+    and answers a page, with `_links.next`/`.prev` shaped like
+    :func:`backlot.pagination.confluence_page_links`."""
     unpaged = client.get("/atlassian/wiki/rest/api/space", headers=admin_h).json()
     names = [s["name"] for s in unpaged["results"]]
     assert names == [
@@ -1465,10 +1466,9 @@ def test_confluence_listings_read_limit_and_start(client, admin_h, route, zero_r
 
 
 def test_confluence_a_carried_parameter_sits_where_it_was_measured(client, admin_h):
-    """`expand` leads `limit`/`start` and a name real does not read trails `start`. Where real puts
-    the latter is a Java map's iteration order rather than a rule (`bogus` after the marker,
-    `zebra` ahead of it, `nonce` after `start`, each on its own request), so this pins the placement
-    this server chose rather than claiming real's."""
+    """`expand` leads `limit`/`start` and a name real does not read trails `start`: the placement
+    :func:`backlot.routers.atlassian._confluence_carried` chose, since real's own for the latter is
+    no rule a client can rely on."""
     api = "/atlassian/wiki/rest/api"
     links = client.get(f"{api}/content?limit=1&bogus=x", headers=admin_h).json()["_links"]
     assert links["next"].endswith("next=true&limit=1&start=1&bogus=x")
@@ -1598,8 +1598,7 @@ def test_confluence_takes_the_integer_spellings_the_real_api_takes(
     client, admin_h, query, want_limit
 ):
     """The conversion rules are shared with Jira, and were pinned only on Jira: giving both
-    `_confluence_page_params` reads `width=JAVA_LONG` left this file green. What the route echoes
-    for a converted value above its cap is the cap, which the row above pins."""
+    `_confluence_page_params` reads `width=JAVA_LONG` left this file green."""
     r = client.get(f"/atlassian/wiki/rest/api/content?{query}", headers=admin_h)
     assert r.status_code == 200, r.text
     assert r.json()["limit"] == want_limit

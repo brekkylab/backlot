@@ -1242,10 +1242,9 @@ def _space(request: Request, conn, container: str, expand: str, *, listed: bool)
 
 @router.get("/wiki/rest/api/space", response_model=ConfluenceResults, openapi_extra=_P_SPACE)
 async def confluence_spaces(request: Request):
-    """Paged the way `content` is (`?limit`/`?start`, both through `_confluence_page_params`), with
-    its own `next`/`prev` shape: measured 2026-09-17 and 2026-09-22, see
-    :func:`backlot.pagination.confluence_page_links`. `expand` is applied per space through
-    :func:`_space` and carried into `next`/`prev`/`self` too.
+    """Paged the way `content` is (`?limit`/`?start`, both through `_confluence_page_params`), and
+    answering the `_links` every paged listing answers (:func:`_confluence_envelope`). `expand` is
+    applied per space through :func:`_space` and carried into `next`/`prev`/`self` too.
 
     `limit` is capped at 1000, as real caps it.
     """
@@ -1336,7 +1335,7 @@ async def confluence_cql_search(request: Request):
     # the Spring 400 — while `?limit=%20` and `?limit=` are 200 with the default. Serving `content`'s
     # refusal here would trade one divergence for another, so the lenient read stays until #216
     # reproduces the 404. The NEGATIVE check is shared, and measured on this route: `?limit=-1` and
-    # `?start=-1` are the same `IllegalArgumentException` 400 both listings give.
+    # `?start=-1` are the same `IllegalArgumentException` 400 `content` gives.
     limit = _int(request.query_params.get("limit"), 25)
     start = _int(request.query_params.get("start"), 0)
     _refuse_negative_page_params(limit, start)
@@ -1921,9 +1920,10 @@ def _confluence_page_params(
 ) -> tuple[int, int]:
     """Confluence's `limit` and `start`, which refuse a negative where Jira's clamp one.
 
-    Measured on both listings: `?limit=-1` and `?start=-1` are 400. Unclamped they reached SQLite,
-    which reads a negative LIMIT as no limit at all — so the answer to `?limit=-1` was the whole
-    collection.
+    Measured on the five routes that call it, `content` and `space` on 2026-09-14 and the three
+    under `content/{id}` on 2026-09-23: `?limit=-1` and `?start=-1` are 400. Unclamped they reached
+    SQLite, which reads a negative LIMIT as no limit at all — so the answer to `?limit=-1` was the
+    whole collection.
 
     Order is measured too, because both parameters can be wrong at once. Conversion comes first for
     BOTH — `?limit=-1&start=abc` is the conversion failure about `abc`, not the negative about
@@ -1962,11 +1962,9 @@ def _confluence_page_params(
     return limit, start
 
 
-# `content` alone refuses a `start` past this, inclusive of the bound itself (measured 2026-09-22:
-# `start=100000` is a 200 with an empty page, `start=100001` the 400 `start_too_large` builds).
-# The same `start` is a 200 on the neighbours: an empty page on `space` and on `child/page`, and on
-# the CQL search a page holding a row, since that route pages by the cursor it carries rather than
-# by the offset. What this server answers there is the empty slice, which is its own gap.
+# The `start` past which `content` answers `start_too_large`. The same `start` is a 200 on the
+# neighbours: an empty page on `space` and on `child/page`, and on the CQL search a page holding a
+# row, where this server answers the empty slice (:func:`_cql_cursor` says why).
 _CONTENT_START_BOUND = 100_000
 
 

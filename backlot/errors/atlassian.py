@@ -210,9 +210,10 @@ def start_too_large() -> AtlassianError:
 
 
 def negative_not_allowed(name: str) -> AtlassianError:
-    """Confluence's refusal of a negative ``limit`` or ``start``, measured 2026-09-14 on both
-    listings. Jira does NOT share it — a negative there clamps to the floor and answers 200 — so
-    this is Confluence's alone, and its body is the bare exception string again."""
+    """Confluence's refusal of a negative ``limit`` or ``start``, measured 2026-09-14 on `content`
+    and `space` and 2026-09-23 on the three listings under `content/{id}`. Jira does NOT share
+    it — a negative there clamps to the floor and answers 200 — so this is Confluence's alone,
+    and its body is the bare exception string again."""
     return AtlassianError(
         400,
         {

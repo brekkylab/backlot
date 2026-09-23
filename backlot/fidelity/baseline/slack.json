@@ -11,35 +11,14 @@
       "severity": "breaking",
       "path": "conversations.history messages[].edited",
       "detail": "Backlot serves it; the real API's answer has no such field",
-      "note": "The real API serves `edited` on a message that has been edited and on no other. `docs.slack.dev/reference/events/message` documents it: \"If the message has been edited after posting, it will include an `edited` property, which includes the user ID of the editor and the timestamp for when the edit occurred.\" Measured 2026-09-22, no message in any of the eight channels this probe's caller can read carries one, so the vendor's half of the run had nothing to pair with the probe corpus's edited message. A field served conditionally cannot be told apart from one never served by a single caller's sample, which is why this comparison's `extra_field` findings are verified by hand like every other `extra_*`."
+      "note": "The real API serves `edited` on a message that has been edited and on no other. `docs.slack.dev/reference/events/message` documents it: \"If the message has been edited after posting, it will include an `edited` property, which includes the user ID of the editor and the timestamp for when the edit occurred.\" Measured 2026-09-23, the one edited message in the eight channels this probe's caller can read is a thread reply, which this method does not return; on `conversations.replies`, which does, it pairs with the probe corpus's edited message with no divergence under `edited`. So this method's vendor half had nothing to pair with. A field served conditionally cannot be told apart from one never served by a single caller's sample, which is why this comparison's `extra_field` findings are verified by hand like every other `extra_*`."
     },
     {
       "kind": "extra_field",
       "severity": "breaking",
       "path": "conversations.history messages[].reactions",
       "detail": "Backlot serves it; the real API's answer has no such field",
-      "note": "The real API serves `reactions` on a message that has been reacted to and on no other. `docs.slack.dev/reference/events/message` documents it: \"The `reactions` property, if present, contains any reactions that have been added to the message\", and `reactions.get`'s own success example carries the same shape Backlot serves \u2014 `name`, `users`, `count`. Measured 2026-09-22, no message in any of the eight channels this probe's caller can read carries one, so the vendor's half of the run had nothing to pair with the probe corpus's reacted message."
-    },
-    {
-      "kind": "extra_field",
-      "severity": "breaking",
-      "path": "conversations.replies messages[].edited",
-      "detail": "Backlot serves it; the real API's answer has no such field",
-      "note": "The real API serves `edited` on a message that has been edited and on no other. `docs.slack.dev/reference/events/message` documents it: \"If the message has been edited after posting, it will include an `edited` property, which includes the user ID of the editor and the timestamp for when the edit occurred.\" Measured 2026-09-22, no message in any of the eight channels this probe's caller can read carries one, so the vendor's half of the run had nothing to pair with the probe corpus's edited message. A field served conditionally cannot be told apart from one never served by a single caller's sample, which is why this comparison's `extra_field` findings are verified by hand like every other `extra_*`."
-    },
-    {
-      "kind": "extra_field",
-      "severity": "breaking",
-      "path": "conversations.replies messages[].files",
-      "detail": "Backlot serves it; the real API's answer has no such field",
-      "note": "Measured 2026-09-22: the real API's `conversations.history` answer in this same run carries `messages[].files`, so a message is not a shape without it \u2014 the one thread this workspace holds carries no file on any of its three messages, and `conversations.replies` is the only projection that went unpaired. The 30 file fields Backlot does not serve are acknowledged as gaps under `conversations.history messages[].files[]` below."
-    },
-    {
-      "kind": "extra_field",
-      "severity": "breaking",
-      "path": "conversations.replies messages[].reactions",
-      "detail": "Backlot serves it; the real API's answer has no such field",
-      "note": "The real API serves `reactions` on a message that has been reacted to and on no other. `docs.slack.dev/reference/events/message` documents it: \"The `reactions` property, if present, contains any reactions that have been added to the message\", and `reactions.get`'s own success example carries the same shape Backlot serves \u2014 `name`, `users`, `count`. Measured 2026-09-22, no message in any of the eight channels this probe's caller can read carries one, so the vendor's half of the run had nothing to pair with the probe corpus's reacted message."
+      "note": "The real API serves `reactions` on a message that has been reacted to and on no other. `docs.slack.dev/reference/events/message` documents it: \"The `reactions` property, if present, contains any reactions that have been added to the message\", and `reactions.get`'s own success example carries the same shape Backlot serves \u2014 `name`, `users`, `count`. Measured 2026-09-23, the one reacted message in the eight channels this probe's caller can read is a thread reply, which this method does not return; on `conversations.replies`, which does, it pairs with the probe corpus's reacted message with no divergence under `reactions`. So this method's vendor half had nothing to pair with."
     },
     {
       "kind": "extra_field",
@@ -1424,7 +1403,7 @@
       "severity": "gap",
       "path": "conversations.history messages[].last_read",
       "detail": "the real API serves it; Backlot does not",
-      "note": "`last_read` sits on a thread's parent message only for a caller subscribed to that thread. Measured 2026-09-23 with a caller not subscribed to this workspace's one thread (`subscribed: false`), neither this method's nor `conversations.replies`' answer carries it, so this entry does not reproduce for every caller \u2014 conditional on the caller, not a shape Backlot invented."
+      "note": "`last_read` sits on a thread's parent message only for a caller subscribed to that thread. Measured 2026-09-23, a caller subscribed to this workspace's threads gets it on each parent, and one not subscribed (`subscribed: false`) gets it on neither this method's nor `conversations.replies`' answer carries it, so this entry does not reproduce for every caller \u2014 conditional on the caller, not a shape Backlot invented."
     },
     {
       "kind": "missing_field",
@@ -1621,9 +1600,201 @@
     {
       "kind": "missing_field",
       "severity": "gap",
+      "path": "conversations.replies messages[].display_as_bot",
+      "detail": "the real API serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "conversations.replies messages[].files[].created",
+      "detail": "the real API serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "conversations.replies messages[].files[].display_as_bot",
+      "detail": "the real API serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "conversations.replies messages[].files[].edit_link",
+      "detail": "the real API serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "conversations.replies messages[].files[].editable",
+      "detail": "the real API serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "conversations.replies messages[].files[].external_type",
+      "detail": "the real API serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "conversations.replies messages[].files[].file_access",
+      "detail": "the real API serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "conversations.replies messages[].files[].filetype",
+      "detail": "the real API serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "conversations.replies messages[].files[].has_rich_preview",
+      "detail": "the real API serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "conversations.replies messages[].files[].is_external",
+      "detail": "the real API serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "conversations.replies messages[].files[].is_modified_by_ai",
+      "detail": "the real API serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "conversations.replies messages[].files[].is_public",
+      "detail": "the real API serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "conversations.replies messages[].files[].is_starred",
+      "detail": "the real API serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "conversations.replies messages[].files[].lines",
+      "detail": "the real API serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "conversations.replies messages[].files[].lines_more",
+      "detail": "the real API serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "conversations.replies messages[].files[].mode",
+      "detail": "the real API serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "conversations.replies messages[].files[].permalink",
+      "detail": "the real API serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "conversations.replies messages[].files[].permalink_public",
+      "detail": "the real API serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "conversations.replies messages[].files[].pretty_type",
+      "detail": "the real API serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "conversations.replies messages[].files[].preview",
+      "detail": "the real API serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "conversations.replies messages[].files[].preview_highlight",
+      "detail": "the real API serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "conversations.replies messages[].files[].preview_is_truncated",
+      "detail": "the real API serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "conversations.replies messages[].files[].public_url_shared",
+      "detail": "the real API serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "conversations.replies messages[].files[].size",
+      "detail": "the real API serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "conversations.replies messages[].files[].skipped_shares",
+      "detail": "the real API serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "conversations.replies messages[].files[].timestamp",
+      "detail": "the real API serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "conversations.replies messages[].files[].url_private",
+      "detail": "the real API serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "conversations.replies messages[].files[].url_private_download",
+      "detail": "the real API serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "conversations.replies messages[].files[].user",
+      "detail": "the real API serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "conversations.replies messages[].files[].user_team",
+      "detail": "the real API serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "conversations.replies messages[].files[].username",
+      "detail": "the real API serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
       "path": "conversations.replies messages[].last_read",
       "detail": "the real API serves it; Backlot does not",
-      "note": "`last_read` sits on a thread's parent message only for a caller subscribed to that thread. Measured 2026-09-23 with a caller not subscribed to this workspace's one thread (`subscribed: false`), neither this method's nor `conversations.history`'s answer carries it, so this entry does not reproduce for every caller \u2014 conditional on the caller, not a shape Backlot invented."
+      "note": "`last_read` sits on a thread's parent message only for a caller subscribed to that thread. Measured 2026-09-23, a caller subscribed to this workspace's threads gets it on each parent, and one not subscribed (`subscribed: false`) gets it on neither this method's nor `conversations.history`'s answer carries it, so this entry does not reproduce for every caller \u2014 conditional on the caller, not a shape Backlot invented."
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "conversations.replies messages[].upload",
+      "detail": "the real API serves it; Backlot does not"
     },
     {
       "kind": "missing_param",

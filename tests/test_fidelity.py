@@ -1358,9 +1358,15 @@ def test_a_workspace_with_nothing_to_sample_cannot_be_probed():
     answers["users.list"]["members"] = [{"id": "B1", "is_bot": True}, {"id": "USLACKBOT"}]
     answers["users.list"]["members"] += [{"id": "U0", "deleted": True}, {"id": "U1"}]
     answers["search.messages"]["messages"]["matches"] = [{}]
-    answers["conversations.history"]["messages"].append({"ts": "2.0", "text": "alphabet"})
+    answers["conversations.history"]["messages"].append(
+        {"ts": "2.0", "text": "alphabet", "reply_count": 3}
+    )
     sample = slack_probe.discover(call)
-    assert (sample.users, sample.queries) == (("U1",), ("bullet", "alphabet"))
+    assert (sample.threads, sample.users, sample.queries) == (
+        (("C1", "1.0"), ("C1", "2.0")),
+        ("U1",),
+        ("bullet", "alphabet"),
+    )
     answers["users.list"]["members"] = answers["users.list"]["members"][:3]
     with pytest.raises(FidelityError, match="no active person"):
         slack_probe.discover(call)

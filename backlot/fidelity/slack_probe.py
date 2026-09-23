@@ -291,7 +291,7 @@ class Sample:
     """
 
     channel: str
-    thread_ts: str
+    threads: tuple[tuple[str, str], ...]
     channels: tuple[str, ...]
     users: tuple[str, ...]
     queries: tuple[str, ...]
@@ -318,19 +318,20 @@ def _searchable_words(messages: Any) -> list[str]:
 
 
 def discover(call: _Caller, query: str = "", *, require_admin: bool = False) -> Sample:
-    """Find the channels, a threaded message, the people and the queries to aim the probe at.
+    """Find the channels, the threads, the people and the queries to aim the probe at.
 
     Each is a condition this workspace either meets or does not. Where it does not, that is reported as a contract the probe could not read rather
     than as a clean comparison, because a search that matches nothing leaves a match's own fields
     compared against nothing at all — and that is the whole of what the three search methods add
     over their envelopes.
 
-    Every channel and every active person the listings answered with is kept, not one of each:
-    Slack drops fields per object, and measured 2026-09-23 a single sampled person or channel left
-    out up to four `users.info` or three `conversations.info` fields the others carry, and the
-    `conversations.history` of a channel holding only join messages left out eleven — so which one
-    a listing happened to put first would decide the findings. Every candidate
-    word that matches is kept too, for the reason :func:`_searchable_words` gives.
+    Every channel, thread and active person the listings answered with is kept, not one of each:
+    Slack drops fields per object. Measured 2026-09-23, a single sampled person or channel left out
+    up to four `users.info` or three `conversations.info` fields the others carry, the
+    `conversations.history` of a channel holding only join messages left out eleven, and one of two
+    threads left out thirty-two of the `conversations.replies` fields the other carries — so which
+    one a listing happened to put first would decide the findings. Every candidate word that
+    matches is kept too, for the reason :func:`_searchable_words` gives.
 
     ``query`` is passed only for Backlot's side, where the corpus plants a word; the vendor's is
     derived, because Slack has no query that means "everything".
@@ -349,14 +350,21 @@ def discover(call: _Caller, query: str = "", *, require_admin: bool = False) -> 
             )
     members = call("users.list", limit=200).get("members") or []
     channels = call("conversations.list", limit=200).get("channels") or []
-    # A channel the caller has joined first: a joined channel is the one most likely to hold a
-    # thread this caller has actually taken part in, which is what the rest of the probe needs.
-    for channel in sorted(channels, key=lambda c: not c.get("is_member")):
-        messages = call("conversations.history", channel=channel["id"], limit=200).get("messages")
-        parents = [m for m in messages or () if m.get("reply_count")]
-        if parents:
-            break
-    else:
+    # Every thread in every channel, and a channel the caller has joined first as the one the
+    # channel-scoped calls and the search words are drawn from: a joined channel is the one most
+    # likely to hold a thread this caller has actually taken part in.
+    threads: list[tuple[str, str]] = []
+    channel: dict | None = None
+    messages: list[dict] = []
+    for listed in sorted(channels, key=lambda c: not c.get("is_member")):
+        history = (
+            call("conversations.history", channel=listed["id"], limit=200).get("messages") or []
+        )
+        parents = [(listed["id"], m["ts"]) for m in history if m.get("reply_count")]
+        if parents and channel is None:
+            channel, messages = listed, history
+        threads += parents
+    if channel is None:
         raise FidelityError(
             "no channel readable by this caller holds a message with replies, so "
             "conversations.replies cannot be probed"
@@ -381,7 +389,7 @@ def discover(call: _Caller, query: str = "", *, require_admin: bool = False) -> 
         )
     return Sample(
         channel["id"],
-        parents[0]["ts"],
+        tuple(threads),
         tuple(c["id"] for c in channels),
         tuple(p["id"] for p in people),
         queries,
@@ -398,7 +406,7 @@ def _calls(sample: Sample) -> list[tuple[str, dict[str, Any]]]:
         *(("conversations.info", {"channel": channel}) for channel in sample.channels),
         *(("conversations.history", {"channel": c, "limit": 200}) for c in sample.channels),
         ("conversations.members", {"channel": sample.channel}),
-        ("conversations.replies", {"channel": sample.channel, "ts": sample.thread_ts}),
+        *(("conversations.replies", {"channel": c, "ts": ts}) for c, ts in sample.threads),
         *(
             (method, {"query": query, "count": 20})
             for query in sample.queries

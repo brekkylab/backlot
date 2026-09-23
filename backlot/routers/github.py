@@ -526,8 +526,8 @@ def _rate_limit_exceeded_message(request: Request, authenticated: bool) -> str:
     the Support/Terms-of-Service sentence past it is not reproduced, because it names a request id
     and a timestamp that come from `x-github-request-id` — a header Backlot sends on no `/github`
     answer today (real sends it on every answer, 200 and refusal alike, and its own last field is
-    that answer's `Date` to the second). That header, once Backlot serves it, is where the rest of
-    this sentence belongs, not a synthesized or placeholder value here."""
+    that answer's `Date` to the second). That header is #333's; the rest of this sentence belongs
+    there, not a synthesized or placeholder value here."""
     if not authenticated:
         host = request.client.host if request.client is not None else "anonymous"
         return (

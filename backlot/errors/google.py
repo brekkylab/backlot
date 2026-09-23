@@ -257,7 +257,7 @@ def missing_credentials() -> GoogleError:
 
     One answer for all of them: measured 2026-09-14, Gmail, Docs and Slides send the same long
     top-level message and the same `errors[]` entry, the short ``Login Required.`` at ``location:
-    Authorization``, and measured 2026-09-23 the two Sheets data-filter POSTs send both too. Which
+    Authorization``, and measured 2026-09-22 the two Sheets data-filter POSTs send both too. Which
     of them SHOWS that entry still differs — Gmail carries it unless `$.xgafv=2`, the editor
     families only at `1` — but that is `has_errors_array`'s rule, not a difference in the error."""
     return GoogleError(

@@ -8,18 +8,19 @@ status codes were already right.
 Everything here was measured against the live Docs / Drive / Gmail / Sheets / Slides APIs. The
 envelope is NOT uniform — three families differ in which optional members they carry:
 
-    family                  errors[]           status               no Authorization header
-    ------------------------|------------------|---------------------|------------------------
+    family                  errors[]           status               no Authorization header, GET
+    ------------------------|------------------|---------------------|-----------------------------
     Drive v3                | always           | auth failures only  | 403 PERMISSION_DENIED
     Gmail v1                | unless $.xgafv=2 | always              | 401 UNAUTHENTICATED
     Docs v1 / Slides v1     | $.xgafv=1        | always              | 401 UNAUTHENTICATED
     Sheets v4               | $.xgafv=1        | always              | 403 PERMISSION_DENIED
 
-Sheets parts from the other two editor APIs on that last column: measured, a request with no
+Sheets parts from the other two editor APIs on that last column: measured, a GET with no
 Authorization header is 403 PERMISSION_DENIED with the unregistered-caller sentence, where Docs
-answers 401 UNAUTHENTICATED with the missing-credential one. A present-but-invalid token is 401
-UNAUTHENTICATED in every family, which is why a missing header and a bad token are separate
-constructors here rather than one "unauthorized".
+answers 401 UNAUTHENTICATED with the missing-credential one. The column is the GET rule only
+(:func:`no_credentials`). A present-but-invalid token is 401 UNAUTHENTICATED in every family, which
+is why a missing header and a bad token are separate constructors here rather than one
+"unauthorized".
 
 `errors[]` is what `$.xgafv` selects, and the middle column above is the whole rule
 (:func:`has_errors_array`). It is a SYSTEM parameter — a top-level entry of a discovery document's
@@ -41,11 +42,12 @@ Inside `errors[]` the entry follows the constructor that raised it, and each one
 measurement. Measured on Sheets and Docs at `$.xgafv=1`: a typed value the proto layer refuses is
 ``reason: invalid`` with NO ``domain`` (:func:`invalid_field_value`); every other measured 400 is
 ``badRequest`` under ``global`` (:func:`invalid_argument`, :func:`bad_field_mask`); a 404 is
-``notFound``; a bad token ``authError`` at ``location: Authorization``; an anonymous Sheets request
-``forbidden``; an anonymous request on any of the three OAuth-only APIs ``required`` with the short
-``Login Required.``. The two editor 400s NOT measured keep whatever their constructor already
-renders — ``Invalid gridRange`` is :func:`invalid_argument`, so ``badRequest``, but an Office file
-read as a native document is :func:`failed_precondition`, so ``failedPrecondition``.
+``notFound``; a bad token ``authError`` at ``location: Authorization``; an anonymous Sheets GET
+``forbidden``; the missing credential — any anonymous POST, and a GET on the three OAuth-only APIs
+— ``required`` with the short ``Login Required.``. The two editor 400s NOT measured keep whatever
+their constructor already renders — ``Invalid gridRange`` is :func:`invalid_argument`, so
+``badRequest``, but an Office file read as a native document is :func:`failed_precondition`, so
+``failedPrecondition``.
 """
 
 from __future__ import annotations
@@ -250,13 +252,14 @@ def bad_token() -> GoogleError:
 
 
 def missing_credentials() -> GoogleError:
-    """No Authorization header, on an OAuth-only API (Gmail, Docs, Slides).
+    """No Authorization header, on an OAuth-only API (Gmail, Docs, Slides), or on a POST to any
+    of the five.
 
-    One answer for the three: measured 2026-09-14, Gmail, Docs and Slides send the same long
+    One answer for all of them: measured 2026-09-14, Gmail, Docs and Slides send the same long
     top-level message and the same `errors[]` entry, the short ``Login Required.`` at ``location:
-    Authorization``. Which of them SHOWS that entry still differs — Gmail carries it unless
-    `$.xgafv=2`, the editor families only at `1` — but that is `has_errors_array`'s rule, not a
-    difference in the error."""
+    Authorization``, and measured 2026-09-22 the two Sheets data-filter POSTs send both too. Which
+    of them SHOWS that entry still differs — Gmail carries it unless `$.xgafv=2`, the editor
+    families only at `1` — but that is `has_errors_array`'s rule, not a difference in the error."""
     return GoogleError(
         401,
         MISSING_CREDENTIALS_MESSAGE,
@@ -269,17 +272,20 @@ def missing_credentials() -> GoogleError:
 
 
 def unregistered_caller() -> GoogleError:
-    """No Authorization header, on an API that also accepts API keys (Drive, Sheets) — so an
-    anonymous request is a caller with no established identity rather than a missing credential."""
+    """No Authorization header, on a GET to an API that also accepts API keys (Drive, Sheets) — so
+    an anonymous GET is a caller with no established identity rather than a missing credential."""
     return GoogleError(
         403, UNREGISTERED_CALLER_MESSAGE, reason="forbidden", status="PERMISSION_DENIED"
     )
 
 
-def no_credentials(path: str) -> GoogleError:
-    """The right anonymous-request error for this path. Sheets shares the editor ENVELOPE with Docs
-    and Slides but not this behaviour, so it is resolved from the path rather than the family."""
-    if family(path) == DRIVE or path.startswith("/sheets/v4"):
+def no_credentials(path: str, method: str) -> GoogleError:
+    """The right anonymous-request error for this path and method. Sheets shares the editor ENVELOPE
+    with Docs and Slides but not this behaviour, so it is resolved from the path rather than the
+    family; and the path is half the rule. Measured 2026-09-22 with no ``Authorization`` header on
+    all five families: a GET on Drive or Sheets is the 403 unregistered caller, and a POST on any of
+    the five — Sheets' two data-filter reads included — is the 401 missing credential."""
+    if method == "GET" and (family(path) == DRIVE or path.startswith("/sheets/v4")):
         return unregistered_caller()
     return missing_credentials()
 

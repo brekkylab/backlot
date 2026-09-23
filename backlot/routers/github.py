@@ -305,8 +305,8 @@ async def _canonical_path_repo(request: Request) -> None:
 # version 400 each carry the five and count (`remaining` 46, 45, 44 across a GET, a HEAD and a 404
 # in a row); `reset` is epoch seconds and stayed put across every answer inside one window. The
 # docs page "Rate limits for the REST API" states the 60 and the 5,000 and the five headers'
-# meanings; the numbers below are the wire's. Nothing here refuses a request, see
-# :class:`RateLimitWindows`.
+# meanings; the numbers below are the wire's. A spent window is refused — see
+# ``rate_limit_refusal`` — everything below only reports the count, see :class:`RateLimitWindows`.
 
 RATE_LIMIT_PATH = "/github/rate_limit"
 RATE_LIMIT_WINDOW = 3600
@@ -380,12 +380,11 @@ class RateLimitWindows:
     inside it. The windows measured stayed put across the requests inside them and differed between
     credentials and between resources (an anonymous caller's `core` and `search` resets 1552 seconds
     apart), which is a window per pair opened by use rather than one shared clock. `remaining`
-    stops at 0 and `used` keeps counting past the limit: nothing here refuses a request, because a
-    test suite's own volume drives an anonymous client past 60 in an hour, and a mock answering the
-    61st request with the 403 or 429 the docs describe fails that suite for pacing it never asked
-    for. Exhaustion is docs only; nothing was driven to it. One process, one set of windows: the
-    server runs a single worker, and a client run against several would see each one's count.
-    ``clock`` is `time.time` unless a test hands in another to move a window."""
+    stops at 0 and the reported `used` is capped at `limit` — see :func:`rate_limit_refusal` and
+    :func:`_rate_limit_exceeded_message` for the measurement behind the 403 real answers once a
+    window is spent. One process, one set of windows: the server runs a single worker, and a
+    client run against several would see each one's count. ``clock`` is `time.time` unless a test
+    hands in another to move a window."""
 
     def __init__(self, clock: Callable[[], float] = time.time):
         self.clock = clock
@@ -413,7 +412,7 @@ class RateLimitWindows:
         start, used = window
         return {
             "limit": limit,
-            "used": used,
+            "used": min(used, limit),
             "remaining": max(limit - used, 0),
             "reset": start + RATE_LIMITS[resource].window,
         }
@@ -468,25 +467,19 @@ def refused_a_credential(request: Request) -> bool:
     return auth.bearer_token(request) is not None and auth.resolve_bearer(request) is None
 
 
-def rate_limit_headers(
-    request: Request, status_code: int, *, count: bool | None = None
-) -> dict[str, str]:
+def rate_limit_headers(request: Request, status_code: int) -> dict[str, str]:
     """The five `x-ratelimit-*` headers for a `/github` answer.
 
     Counts the request against the window, except on :data:`RATE_LIMIT_PATH`, which reports its
     window without counting: two `GET /rate_limit` in a row both answered `remaining: 5000`,
     `used: 0`, each carrying the five with `resource: core`, and the description's own note says
-    the route does not count. That default rstrips the path, so `/rate_limit/` falls into the
-    no-count branch as well; `count` overrides it for a caller that is not the routed endpoint
-    itself, and `refuse_a_trailing_slash_on_github` passes `count=True` because a trailing slash
-    there is a 404 no route matched, which counts like any other."""
+    the route does not count. `/rate_limit/` never reaches this — see
+    ``backlot.main.refuse_a_trailing_slash_on_github``."""
     key, authenticated = rate_limit_caller(request)
     resource = rate_limit_resource(request.url.path, status_code)
     counted, limit = rate_limit_window(resource, authenticated)
     windows = _rate_limit_windows(request.app)
-    if count is None:
-        count = request.url.path.rstrip("/") != RATE_LIMIT_PATH
-    read = windows.count if count else windows.status
+    read = windows.count if request.url.path != RATE_LIMIT_PATH else windows.status
     window = read(key, counted, limit)
     return {
         "x-ratelimit-limit": str(window["limit"]),
@@ -495,6 +488,99 @@ def rate_limit_headers(
         "x-ratelimit-reset": str(window["reset"]),
         "x-ratelimit-resource": resource,
     }
+
+
+#: What real's docs anchor an ANONYMOUS caller's rate-limit-exceeded 403 to (the same page
+#: :data:`RATE_LIMITS`' numbers come from).
+RATE_LIMIT_EXCEEDED_DOCS = (
+    "https://docs.github.com/rest/overview/resources-in-the-rest-api#rate-limiting"
+)
+
+#: A token's own anchor for the same 403 — a different page from the anonymous caller's; see
+#: :func:`_rate_limit_exceeded_message` for the measurement.
+TOKEN_RATE_LIMIT_EXCEEDED_DOCS = (
+    "https://docs.github.com/en/rest/using-the-rest-api/getting-started-with-the-rest-api"
+    "#rate-limiting"
+)
+
+
+def _rate_limit_exceeded_message(request: Request, authenticated: bool) -> str:
+    """Real's `message` on the spent-window 403.
+
+    A caller with no credential: this sentence, with the caller's own address, measured against
+    api.github.com 2026-09-17 (the 61st anonymous `core` request in the hour and three more after
+    it, `used: 60` pinned at `limit: 60` on each, `server: Varnish` where a served answer is
+    `server: github.com`).
+
+    A token: measured against api.github.com 2026-09-23, a `search` window (30 a minute) driven to
+    its cap. Real's sentence there is `API rate limit exceeded for user ID <id>. If you reach out
+    to GitHub Support for help, please include the request ID <x-github-request-id> and timestamp
+    <YYYY-MM-DD HH:MM:SS> UTC. For more on scraping GitHub and how it may affect your rights,
+    please review our Terms of Service (…)`. This returns real's sentence up to `user ID <id>.`;
+    the Support/Terms-of-Service sentence past it is not reproduced, because it names a request id
+    and a timestamp that come from `x-github-request-id` — a header Backlot sends on no `/github`
+    answer today (real sends it on every answer, 200 and refusal alike, and its own last field is
+    that answer's `Date` to the second). That header is #333's; the rest of this sentence belongs
+    there, not a synthesized or placeholder value here."""
+    if not authenticated:
+        host = request.client.host if request.client is not None else "anonymous"
+        return (
+            f"API rate limit exceeded for {host}. (But here's the good news: Authenticated "
+            "requests get a higher rate limit. Check out the documentation for more details.)"
+        )
+    caller = auth.resolve_bearer(request)
+    email = caller.email if caller is not None and caller.email is not None else "admin"
+    return f"API rate limit exceeded for user ID {synth.github_user_id(email)}."
+
+
+def rate_limit_refusal(request: Request) -> Response | None:
+    """Real's 403 for a `/github` request whose window is already spent, or ``None`` to let the
+    request reach its handler as usual.
+
+    A read of the window's current status, never a count — docs/supported-sources.md's GitHub
+    section has why the reported `used` holds at `limit` instead of climbing past it.
+    :data:`RATE_LIMIT_PATH` is never refused — real keeps answering it through exhaustion, which is
+    how a client reads its way out of a spent window. Its trailing-slash spelling never reaches
+    this — see ``backlot.main.refuse_a_trailing_slash_on_github``. Off entirely when
+    :attr:`backlot.config.Settings.github_enforce_rate_limits` is turned off.
+
+    Checked ahead of every router dependency and routing itself, for the requests
+    ``backlot.main.report_github_rate_limit`` gates: a bearer that does not resolve is not one of
+    them, and gets its own 401 with the window spent as with it fresh — docs/supported-sources.md's
+    GitHub section has the measurement and its dates. `server: Varnish` on an anonymous refusal,
+    where a served answer — the version 400 included — runs on `server: github.com`, is that
+    caller's mechanism: a tier in front of the one those dependencies run on. A token's own refusal
+    answers from `server: github.com` instead, so the tier split explains the anonymous order
+    rather than the order in general. The envelope differs by caller too (same doc section;
+    :data:`TOKEN_RATE_LIMIT_EXCEEDED_DOCS` is the token's own `documentation_url`)."""
+    if not get_settings().github_enforce_rate_limits:
+        return None
+    if request.url.path == RATE_LIMIT_PATH:
+        return None
+    key, authenticated = rate_limit_caller(request)
+    resource = rate_limit_resource(request.url.path, 401 if not authenticated else 200)
+    counted, limit = rate_limit_window(resource, authenticated)
+    windows = _rate_limit_windows(request.app)
+    status = windows.status(key, counted, limit)
+    if status["used"] < limit:
+        return None
+    headers = {
+        "x-ratelimit-limit": str(status["limit"]),
+        "x-ratelimit-remaining": str(status["remaining"]),
+        "x-ratelimit-used": str(status["used"]),
+        "x-ratelimit-reset": str(status["reset"]),
+        "x-ratelimit-resource": resource,
+    }
+    message = _rate_limit_exceeded_message(request, authenticated)
+    if authenticated:
+        body = {
+            "message": message,
+            "documentation_url": TOKEN_RATE_LIMIT_EXCEEDED_DOCS,
+            "status": "403",
+        }
+    else:
+        body = {"message": message, "documentation_url": RATE_LIMIT_EXCEEDED_DOCS}
+    return JSONResponse(body, status_code=403, headers=headers)
 
 
 router = APIRouter(

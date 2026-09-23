@@ -316,16 +316,15 @@ def first_repeat(query: Mapping[str, str] | None, name: str) -> str | None:
 
     Real reads a repeated query parameter from one end or the other, and no rule divides the two:
     `prettyPrint` and `$.xgafv` are both system parameters, `pageSize` and `majorDimension` both
-    method parameters, and each pair has one of either kind. So this is a table, one ordered pair
-    per row, each sent both ways round so the answer names the end that was read -- with a
-    credential, except `$.xgafv`, whose pair was sent to the anonymous refusal it decides.
+    method parameters, and in each pair one is read first and the other last. So this is a table,
+    one ordered pair per row, each sent both ways round so the answer names the end that was read.
     ``QueryParams.get`` answers the last repeat; the parameters in the first group are read through
     here and the ones in the second off ``.get``::
 
         read first          the pair, and what real answers       measured on
         ------------------|--------------------------------------|-------------------------------
-        callback          | `cb&dd` calls `cb`                   | Sheets values.get 2026-09-15
-        alt               | `media&json` is the `media` refusal  | Sheets values.get 2026-09-15
+        callback          | `cb&dd` calls `cb`                   | Sheets 2026-09-15
+        alt               | `media&json` is the `media` refusal  | Sheets 2026-09-15
                           |                                      | Drive files.get 2026-09-17
         fields            | `<mask>&bogus` answers the mask,     | Sheets values.get,
                           | `bogus&<mask>` a 400                 | spreadsheets.get and both
@@ -344,7 +343,7 @@ def first_repeat(query: Mapping[str, str] | None, name: str) -> str | None:
 
         read last
         ------------------|--------------------------------------|-------------------------------
-        $.xgafv           | `1&2` has no `errors[]`, `2&1` has   | Sheets values.get 2026-09-15
+        $.xgafv           | `1&2` has no `errors[]`, `2&1` has   | Sheets 2026-09-15
                           |                                      | Gmail 2026-09-22
         majorDimension    | `ROWS&COLUMNS` answers `COLUMNS`     | Sheets values.get 2026-09-23
         valueRenderOption | `FORMULA&FORMATTED_VALUE` answers    | Sheets values.get 2026-09-23
@@ -353,17 +352,18 @@ def first_repeat(query: Mapping[str, str] | None, name: str) -> str | None:
                           |                                      | 2026-09-22
 
     An empty first repeat is read as itself rather than skipped, measured 2026-09-23:
-    `q=&q=<folders>` lists every file, `fields=&fields=id` on Drive `files.get` answers ``{}``, and
-    `prettyPrint=&prettyPrint=false` is indented, each what the empty value alone answers.
+    `q=&q=<folders>` is the unfiltered listing, `fields=&fields=id` on Drive `files.get` answers
+    ``{}``, and `prettyPrint=&prettyPrint=false` is indented, each what the empty value alone
+    answers.
 
     A second repeat of a parameter read first is not validated, measured 2026-09-23:
     `fields=id&fields=bogus`, `q=<folders>&q=<a clause Drive cannot parse>`,
     `orderBy=name&orderBy=bogus`, `pageToken=<valid>&pageToken=BOGUS` and
     `mimeType=text/csv&mimeType=bogus/type` each answer what their first value alone does, as
-    `callback=cb&callback=a b` did on 2026-09-15. `pageSize` is the exception, and so are the Sheets
-    parameters read last: `pageSize=2&pageSize=NOPE` and
-    `valueRenderOption=FORMATTED_VALUE&valueRenderOption=NOPE` are each a 400 whichever end the bad
-    value is at, measured the same day.
+    `callback=cb&callback=a b` did on 2026-09-15. `pageSize` is the exception:
+    `pageSize=2&pageSize=NOPE` is a 400 whichever end the bad value is at, and so is a bad value at
+    either end of `valueRenderOption` or `includeGridData`, measured the same day, and of
+    `majorDimension`, measured 2026-09-22.
 
     Gmail's `q`, `pageToken` and `maxResults` stay on ``.get`` because their end is unmeasured: a
     Gmail list answers 200 only to a scope the measuring credential cannot be granted.

@@ -375,12 +375,12 @@ def _user_obj(conn, email: str, caller: Caller) -> dict:
         # `has_2fa` has two conditions of its own, measured over both methods. The caller: an
         # admin user token carries it for all 8 active people and a bot token for none of them
         # (2026-09-21), which is docs.slack.dev's "Only visible if the user executing the call is
-        # an admin", and a user token that is not an admin carries it on its own member alone
-        # (2026-09-23: on 1 of 20 members in `users.list`, the caller's, and in `users.info` for
-        # the caller and for none of the 7 other active people). The member: no `is_bot` one
-        # carries it under either caller, against 8 of 8 active people under the admin one.
-        # Backlot answers every member `is_admin: false`, so its admin/service token is the only
-        # caller here that is an admin.
+        # an admin". The docs do not name the caller's own member: a user token that is not an
+        # admin carries it there alone (2026-09-23: on 1 of 20 members in `users.list`, the
+        # caller's, and in `users.info` for the caller and for none of the 7 other active
+        # people). The member: no `is_bot` one carries it under the admin user token or the bot
+        # token. Backlot answers every member `is_admin: false`, so its admin/service token is
+        # the only caller here that is an admin.
         if (caller.is_admin or email == caller.email) and not is_bot:
             obj["has_2fa"] = False
     return obj

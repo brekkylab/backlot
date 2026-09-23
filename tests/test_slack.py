@@ -1604,7 +1604,7 @@ def test_slack_has_2fa_answers_an_admin_caller_or_the_callers_own_member_and_onl
                 "/slack/api/users.info", headers=headers, params={"user": uid}
             ).json()["user"]
 
-        # the caller reading themselves, an admin reading them, and the caller reading someone else
+        # the caller reading themselves and someone else, and the admin token reading both
         own, as_admin = info(ava_h, ava_uid), info(admin_h, ava_uid)
         other, other_as_admin = info(ava_h, bo_uid), info(admin_h, bo_uid)
         assert "has_2fa" in own and "has_2fa" in as_admin and own.keys() == as_admin.keys()

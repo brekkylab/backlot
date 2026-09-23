@@ -547,9 +547,12 @@ def rate_limit_refusal(request: Request) -> Response | None:
     counted, which is why the reported `used` holds at `limit` across every answer until `reset`
     rather than climbing past it (see :func:`_rate_limit_exceeded_message` for the measurement).
     :data:`RATE_LIMIT_PATH` is never refused — real keeps answering it through exhaustion, which is
-    how a client reads its way out of a spent window — matched the way :func:`rate_limit_headers`
-    matches it. Off entirely when :attr:`backlot.config.Settings.github_enforce_rate_limits` is
-    turned off.
+    how a client reads its way out of a spent window. Matched on the exact path only, unlike
+    :func:`rate_limit_headers`'s own rstripped comparison: a trailing slash on it matches no route
+    in real either (see `test_github_a_trailing_slash_is_404_not_a_redirect`'s own `used` assertion
+    on it), so it is an ordinary unmatched path here too, refused with the 403 like any other once
+    an anonymous caller's window is spent rather than exempted alongside the literal route. Off
+    entirely when :attr:`backlot.config.Settings.github_enforce_rate_limits` is turned off.
 
     Checked ahead of every router dependency — the credential, the API version, the owner — and
     ahead of routing itself: real answers the same 403 whether or not the request also carries an

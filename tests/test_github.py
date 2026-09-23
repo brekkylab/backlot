@@ -5162,6 +5162,15 @@ def test_github_rate_limit_refuses_an_anonymous_caller_too_and_the_switch_turns_
         assert trailing_slash.status_code == 403
         assert _ratelimit(trailing_slash) == _ratelimit(second)  # pinned, not counted
 
+        # `RATE_LIMIT_PATH` itself stays the one escape hatch — real keeps answering it through
+        # exhaustion — but its trailing-slash spelling matches no route in real either, so it is
+        # an ordinary unmatched path, refused like `/user/repos/` above rather than exempted.
+        rate_limit_exact = c.get("/github/rate_limit")
+        assert rate_limit_exact.status_code == 200
+        rate_limit_slash = c.get("/github/rate_limit/", follow_redirects=False)
+        assert rate_limit_slash.status_code == 403
+        assert _ratelimit(rate_limit_slash) == _ratelimit(second)  # pinned, not counted
+
         # a credential the gate treats specially — one that arrived but does not parse — still
         # gets the ordinary 404 for a path no route matches, not this refusal: the gate needs a
         # matched route OR no `Authorization` header at all (see `_some_github_route_matches`),

@@ -1551,13 +1551,15 @@ def test_slack_file_renders_its_owner_id(tmp_path):
     assert re.fullmatch(r"[UW][A-Z0-9]{2,}", files[0]["user"])
 
 
-def test_slack_has_2fa_answers_the_callers_own_admin_rights_and_only_for_a_person(tmp_path):
+def test_slack_has_2fa_answers_an_admin_caller_or_the_callers_own_member_and_only_a_person(
+    tmp_path,
+):
     """`has_2fa` is gated by deactivation like the other ten fields, and within that carries two
-    conditions of its own: the caller's admin rights and the member's bot status — see `_user_obj`
-    for the measurement behind both.
+    conditions of its own: the caller is an admin or is the member, and the member is not a bot —
+    see `_user_obj` for the measurement behind both.
 
-    The key is the caller's own rights and not an ACL oracle: it says nothing about the member it
-    is read off, and it is the only key of the object that moves with the caller."""
+    It is not an ACL oracle: what it says about a member reaches an admin and that member, and it
+    is the only key of the object that moves with the caller."""
     settings = tiny_corpus(
         tmp_path,
         [
@@ -1566,6 +1568,12 @@ def test_slack_has_2fa_answers_the_callers_own_admin_rights_and_only_for_a_perso
                 "channel": "incidents",
                 "content": "rolling back the deploy now",
                 "author_email": "ava@acme.com",
+            },
+            {
+                "source_type": "slack",
+                "channel": "incidents",
+                "content": "thanks ava",
+                "author_email": "bo@acme.com",
             },
             {
                 "source_type": "slack",
@@ -1589,22 +1597,27 @@ def test_slack_has_2fa_answers_the_callers_own_admin_rights_and_only_for_a_perso
         tokens = yaml.safe_load(settings.tokens_path.read_text())
         admin_h = {"Authorization": f"Bearer {tokens['admin_token']}"}
         ava_h = {"Authorization": f"Bearer {tok(tokens, 'ava@acme.com')}"}
-        ava_uid = synth.slack_user_id("ava@acme.com")
+        ava_uid, bo_uid = synth.slack_user_id("ava@acme.com"), synth.slack_user_id("bo@acme.com")
 
         def info(headers, uid):
             return client.get(
                 "/slack/api/users.info", headers=headers, params={"user": uid}
             ).json()["user"]
 
-        as_admin, as_person = info(admin_h, ava_uid), info(ava_h, ava_uid)
-        assert "has_2fa" in as_admin and "has_2fa" not in as_person
-        assert as_admin.keys() - {"has_2fa"} == as_person.keys()
+        # the caller reading themselves and someone else, and the admin token reading both
+        own, as_admin = info(ava_h, ava_uid), info(admin_h, ava_uid)
+        other, other_as_admin = info(ava_h, bo_uid), info(admin_h, bo_uid)
+        assert "has_2fa" in own and "has_2fa" in as_admin and own.keys() == as_admin.keys()
+        assert "has_2fa" not in other and "has_2fa" in other_as_admin
+        assert other_as_admin.keys() - {"has_2fa"} == other.keys()
 
-        listed = {
-            u["profile"]["email"]: u
-            for u in client.get("/slack/api/users.list", headers=admin_h).json()["members"]
-        }
-        assert "has_2fa" in listed["ava@acme.com"], "both methods answer the caller alike"
+        def listed(headers):
+            members = client.get("/slack/api/users.list", headers=headers).json()["members"]
+            return {u["profile"]["email"]: u for u in members}
+
+        by_ava, by_admin = listed(ava_h), listed(admin_h)
+        assert "has_2fa" in by_ava["ava@acme.com"] and "has_2fa" not in by_ava["bo@acme.com"]
+        assert "has_2fa" in by_admin["ava@acme.com"] and "has_2fa" in by_admin["bo@acme.com"]
 
         bot = info(admin_h, synth.slack_user_id("deploybot@acme.com"))
         assert bot["is_bot"] is True

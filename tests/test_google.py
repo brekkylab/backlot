@@ -12,7 +12,7 @@ import csv
 import io
 import json
 import re
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import httpx
 import jwt
@@ -714,9 +714,12 @@ def test_drive_not_found_names_the_file_id(client, admin_h):
     assert e["message"] == "File not found: abc123xyz."
 
 
-def test_drive_export_requires_mime_type_with_googles_wording(client, admin_h):
-    doc = _drive_find(client, admin_h, "Brand")["id"]
-    e = _gerr(client.get(f"/drive/v3/files/{doc}/export", headers=admin_h))
+@pytest.mark.parametrize("name", ["Brand", "Whitepaper", None])
+def test_drive_export_requires_mime_type_with_googles_wording(client, admin_h, name):
+    """Asked of a document, of a PDF and of a file that does not exist, in the order
+    `drive_files_export`'s docstring records."""
+    fid = _drive_find(client, admin_h, name)["id"] if name else "nosuchfileid123"
+    e = _gerr(client.get(f"/drive/v3/files/{fid}/export", headers=admin_h))
     assert e["code"] == 400 and e["message"] == "Required parameter: mimeType"
     assert e["errors"][0] == {
         "message": "Required parameter: mimeType",
@@ -728,9 +731,348 @@ def test_drive_export_requires_mime_type_with_googles_wording(client, admin_h):
 
 
 @pytest.mark.parametrize(
+    "mime",
+    [
+        "text/plain",
+        "bogus/type",
+        "application/vnd.google-apps.document",
+        "",
+        "text/csv ",
+        "text/csv;charset=utf-8",
+    ],
+)
+def test_drive_export_refuses_a_format_the_type_does_not_export_to(client, admin_h, mime):
+    """The values `gerr.unsupported_conversion` records, on a spreadsheet that exports as
+    `text/csv`; a file that does not exist is its 404 whatever it asks for."""
+    sheet = _drive_find(client, admin_h, "Q1 Revenue Model")["id"]
+    url = f"/drive/v3/files/{sheet}/export"
+    e = _gerr(client.get(url, headers=admin_h, params={"mimeType": mime}))
+    assert e["code"] == 400
+    assert e["errors"] == [
+        {
+            "message": "The requested conversion is not supported.",
+            "domain": "global",
+            "reason": "badRequest",
+            "location": "convertTo",
+            "locationType": "parameter",
+        }
+    ]
+    assert client.get(url, headers=admin_h, params={"mimeType": "text/csv"}).status_code == 200
+    missing = client.get(
+        "/drive/v3/files/nosuchfileid123/export", headers=admin_h, params={"mimeType": mime}
+    )
+    assert missing.status_code == 404
+
+
+@pytest.mark.parametrize(
+    "asked, canonical",
+    [
+        ("TEXT/CSV", "text/csv"),
+        ("Text/Csv", "text/csv"),
+    ],
+)
+def test_drive_export_matches_the_format_without_regard_to_case(client, admin_h, asked, canonical):
+    """The case rule `drive_files_export`'s docstring records. The TSV spelling is
+    `test_tsv_export_reserialises_the_grid_rather_than_serving_content`'s, over a grid."""
+    sheet = _drive_find(client, admin_h, "Q1 Revenue Model")["id"]
+    url = f"/drive/v3/files/{sheet}/export"
+    got = client.get(url, headers=admin_h, params={"mimeType": asked})
+    assert got.status_code == 200
+    assert got.headers["content-type"].startswith(asked)
+    assert got.text == client.get(url, headers=admin_h, params={"mimeType": canonical}).text
+
+
+_RANGE = "Invalid value '{}'. Values must be within the range: [value: 1\n, value: 1000\n]"
+
+
+@pytest.mark.parametrize(
+    "value, answer",
+    [
+        ("0", "0"),
+        ("-1", "-1"),
+        ("-0", "0"),
+        ("1001", "1001"),
+        ("2147483647", "2147483647"),
+        ("2147483648", None),
+        (" 2", None),
+        ("2 ", None),
+        ("1_0", None),
+        ("2.0", None),
+        ("0x10", None),
+        ("1e2", None),
+        ("", None),
+        ("+2", 2),
+        ("02", 2),
+        ("1000", 1000),
+    ],
+)
+def test_drive_page_size_is_an_int32_from_1_to_1000(client, admin_h, value, answer):
+    """Measured 2026-09-23, each value alone. A string is the range refusal naming the value as an
+    int, `None` the proto layer's `TYPE_INT32` one, and a number the page size served."""
+    total = len(
+        client.get("/drive/v3/files", headers=admin_h, params={"pageSize": 1000}).json()["files"]
+    )
+    r = client.get("/drive/v3/files", headers=admin_h, params={"pageSize": value})
+    if isinstance(answer, int):
+        assert r.status_code == 200, r.text
+        assert len(r.json()["files"]) == min(answer, total)
+        return
+    e = _gerr(r)
+    assert e["code"] == 400
+    if isinstance(answer, str):
+        assert e["errors"] == [
+            {
+                "message": _RANGE.format(answer),
+                "domain": "global",
+                "reason": "invalidParameter",
+                "location": "page_size",
+                "locationType": "parameter",
+            }
+        ]
+        assert "status" not in e and "details" not in e
+    else:
+        message = f"Invalid value at 'page_size' (TYPE_INT32), \"{value}\""
+        assert e["errors"] == [{"message": message, "reason": "invalid"}]
+        assert e["status"] == "INVALID_ARGUMENT"
+        assert e["details"][0]["fieldViolations"] == [
+            {"field": "page_size", "description": message}
+        ]
+
+
+@pytest.mark.parametrize(
+    "query, size",
+    [
+        ("pageSize=0&pageSize=2", 500),
+        ("pageSize=-1&pageSize=2", 500),
+        ("pageSize=0&pageSize=0", 500),
+        ("pageSize=0&pageSize=1001", 500),
+        ("pageSize=1001&pageSize=2", 1000),
+        ("pageSize=1001&pageSize=1001", 1000),
+        ("pageSize=2&pageSize=1001", 2),
+        ("pageSize=3&pageSize=0", 3),
+        ("pageSize=2&pageSize=0", 2),
+        ("pageSize=7", 7),
+        ("", 100),
+    ],
+)
+@pytest.mark.parametrize("max_page_size", [1000, 2000, 5])
+def test_a_repeated_page_size_is_read_first_and_not_range_checked(
+    monkeypatch, query, size, max_page_size
+):
+    """Pins `_drive_page_size`'s measurement, read off the reader because the bundled corpus holds
+    fewer than 500 files and a listing could not tell the sizes apart. A deployment's
+    `max_page_size` caps the result on top of real's own rule; an absent `pageSize` is the default
+    whatever the cap."""
+    from types import SimpleNamespace
+
+    from starlette.requests import Request
+
+    from backlot.routers import google
+
+    monkeypatch.setattr(
+        google,
+        "get_settings",
+        lambda: SimpleNamespace(default_page_size=100, max_page_size=max_page_size),
+    )
+    request = Request({"type": "http", "query_string": query.encode(), "headers": []})
+    sizes = google._drive_typed(request, page_size=True)["pageSize"]
+    assert google._drive_page_size(sizes) == (min(size, max_page_size) if query else size)
+
+
+def test_drive_a_page_token_it_did_not_issue_is_refused(client, admin_h):
+    """Measured 2026-09-23: `BOGUS` is 400 `Invalid Value` at `pageToken`, where an empty token is
+    the first page and the one a listing issued is the next."""
+    files = "/drive/v3/files"
+    e = _gerr(client.get(files, headers=admin_h, params={"pageToken": "BOGUS"}))
+    assert e["code"] == 400
+    assert e["errors"] == [
+        {
+            "message": "Invalid Value",
+            "domain": "global",
+            "reason": "invalid",
+            "location": "pageToken",
+            "locationType": "parameter",
+        }
+    ]
+    assert "status" not in e
+    first = client.get(files, headers=admin_h, params={"pageSize": 1}).json()
+    empty = client.get(files, headers=admin_h, params={"pageSize": 1, "pageToken": ""}).json()
+    assert empty == first
+    token = client.get(
+        files, headers=admin_h, params={"pageSize": 1, "pageToken": first["nextPageToken"]}
+    )
+    assert token.status_code == 200 and token.json()["files"] != first["files"]
+
+
+@pytest.mark.parametrize(
+    "query, location",
+    [
+        ([("pageToken", "BOGUS"), ("pageSize", "NOPE")], None),
+        ([("fields", "bogus"), ("pageSize", "0")], "page_size"),
+        ([("fields", "bogus"), ("pageToken", "BOGUS")], "pageToken"),
+        ([("pageToken", "BOGUS"), ("fields", "bogus")], "pageToken"),
+        ([("pageToken", "BOGUS"), ("q", "nosuchfield = 1")], "q"),
+        ([("fields", "bogus"), ("q", "nosuchfield = 1")], "q"),
+        ([("q", "nosuchfield = 1"), ("orderBy", "bogus")], "orderBy"),
+        ([("orderBy", "bogus"), ("q", "nosuchfield = 1")], "orderBy"),
+        ([("fields", "bogus"), ("orderBy", "bogus")], "orderBy"),
+    ],
+)
+def test_drive_files_list_refuses_in_reals_order(client, admin_h, query, location):
+    """Two bad values at once, each pair in the order `drive_files_list`'s comment records. A
+    `pageSize` the proto layer cannot read has no `location`."""
+    e = _gerr(client.get("/drive/v3/files", headers=admin_h, params=query))
+    assert e["code"] == 400
+    assert e["errors"][0].get("location") == location
+
+
+_DRIVE_BOOL_ROUTES = [
+    ("/drive/v3/files", "supportsAllDrives"),
+    ("/drive/v3/files", "supportsTeamDrives"),
+    ("/drive/v3/files", "includeItemsFromAllDrives"),
+    ("/drive/v3/files", "includeTeamDriveItems"),
+    ("/drive/v3/files/{doc}", "acknowledgeAbuse"),
+    ("/drive/v3/files/{doc}", "supportsAllDrives"),
+    ("/drive/v3/files/{doc}", "supportsTeamDrives"),
+    ("/drive/v3/files/{doc}/permissions", "supportsAllDrives"),
+    ("/drive/v3/files/{doc}/permissions", "supportsTeamDrives"),
+    ("/drive/v3/files/{doc}/permissions", "useDomainAdminAccess"),
+    ("/drive/v3/drives", "useDomainAdminAccess"),
+]
+
+
+@pytest.mark.parametrize("path, param", _DRIVE_BOOL_ROUTES)
+@pytest.mark.parametrize(
+    "value, accepted",
+    [("1", True), ("y", True), ("No", True), ("on", False), ("", False), ("NOPE", False)],
+)
+def test_drive_a_typed_boolean_takes_the_protobuf_spellings(
+    client, admin_h, path, param, value, accepted
+):
+    """Measured 2026-09-23 on each of these, one request per value; the whole spelling rule is
+    `_sheets_bool_value`'s, swept over 30 values on `files.list`'s `supportsAllDrives`. `true`
+    itself is left out: on four of these real answers a `true` with a check of its own (a 403 for
+    `includeItemsFromAllDrives` without `supportsAllDrives`), which Backlot does not model."""
+    doc = _drive_find(client, admin_h, "Brand")["id"]
+    r = client.get(path.format(doc=doc), headers=admin_h, params={param: value})
+    if accepted:
+        assert r.status_code == 200, r.text
+        return
+    field = re.sub(r"(?<!^)(?=[A-Z])", "_", param).lower()
+    message = f"Invalid value at '{field}' (TYPE_BOOL), \"{value}\""
+    e = _gerr(r)
+    assert (e["code"], e["message"]) == (400, message)
+    assert e["details"][0]["fieldViolations"] == [{"field": field, "description": message}]
+
+
+@pytest.mark.parametrize(
+    "value, accepted",
+    [(v, True) for v in ("true", "FALSE", "tRuE", "0", "t", "F", "Y", "no", "YES")]
+    + [(v, False) for v in ("off", "2", "01", "00", "1.0", "-1", "+1", " true", "true ")],
+)
+def test_drive_supports_all_drives_takes_the_spellings_real_takes(client, admin_h, value, accepted):
+    """The rest of the 30-value sweep on `files.list`, measured 2026-09-23."""
+    r = client.get("/drive/v3/files", headers=admin_h, params={"supportsAllDrives": value})
+    assert (r.status_code == 200) is accepted, r.text
+
+
+@pytest.mark.parametrize(
+    "path", ["/drive/v3/files/{doc}/export?mimeType=text/plain", "/drive/v3/about?fields=user"]
+)
+def test_drive_a_route_that_declares_no_boolean_ignores_one(client, admin_h, path):
+    """Measured 2026-09-23: `files.export` and `about.get` declare no `supportsAllDrives`, and real
+    answers `supportsAllDrives=NOPE` on them as though it were not sent."""
+    doc = _drive_find(client, admin_h, "Brand")["id"]
+    url = path.format(doc=doc)
+    assert client.get(url + "&supportsAllDrives=NOPE", headers=admin_h).status_code == 200
+
+
+@pytest.mark.parametrize(
+    "path, query",
+    [
+        ("/drive/v3/files/nosuchfileid123", "acknowledgeAbuse=NOPE"),
+        ("/drive/v3/files/nosuchfileid123/permissions", "supportsAllDrives=NOPE"),
+        ("/sheets/v4/spreadsheets/nosuchspreadsheet000/values/Sheet1!A1", "majorDimension=NOPE"),
+        ("/sheets/v4/spreadsheets/nosuchspreadsheet000/values:batchGet", "valueRenderOption=NOPE"),
+        ("/sheets/v4/spreadsheets/nosuchspreadsheet000", "includeGridData=NOPE"),
+    ],
+)
+def test_a_typed_refusal_comes_after_the_credential_and_before_the_lookup(
+    client, admin_h, path, query
+):
+    """Measured 2026-09-23: a value the proto layer cannot read is refused for a file or a
+    spreadsheet that does not exist, so it answers the same whatever the caller can see; a missing
+    or bad credential is still refused first. Without the bad value the same path is the 404."""
+    url = f"{path}?{query}"
+    assert _gerr(client.get(url, headers=admin_h))["code"] == 400
+    assert client.get(path, headers=admin_h).status_code == 404
+    assert client.get(url).status_code == 403
+    assert client.get(url, headers=BAD_TOKEN).status_code == 401
+
+
+@pytest.mark.parametrize("path", ["/drive/v3/files/{doc}/permissions", "/drive/v3/drives"])
+@pytest.mark.parametrize(
+    "query, answer",
+    [
+        ("pageSize=0", "0"),
+        ("pageSize=101", "101"),
+        ("pageSize=1000", "1000"),
+        ("pageSize=NOPE", None),
+        ("pageSize=", None),
+        ("pageSize=2147483648", None),
+        ("pageSize=1", 200),
+        ("pageSize=100", 200),
+        ("pageSize=2&pageSize=NOPE", None),
+    ],
+)
+def test_drive_a_short_listing_takes_a_page_size_from_1_to_100(
+    client, admin_h, path, query, answer
+):
+    """Measured 2026-09-23 on `permissions.list` and `drives.list`, which read no page size here but
+    declare one, and whose range is 1-100 where `files.list`'s is 1-1000. A string is the range
+    refusal naming that value, `None` the `TYPE_INT32` one."""
+    doc = _drive_find(client, admin_h, "Brand")["id"]
+    r = client.get(f"{path.format(doc=doc)}?{query}", headers=admin_h)
+    if answer == 200:
+        assert r.status_code == 200, r.text
+    elif answer is None:
+        assert _gerr(r)["details"][0]["fieldViolations"][0]["field"] == "page_size"
+    else:
+        assert _gerr(r)["errors"][0] == {
+            "message": (
+                f"Invalid value '{answer}'. Values must be within the range: [value: 1\n, "
+                "value: 100\n]"
+            ),
+            "domain": "global",
+            "reason": "invalidParameter",
+            "location": "page_size",
+            "locationType": "parameter",
+        }
+
+
+@pytest.mark.parametrize("mask", ["", " "])
+def test_drive_a_blank_fields_mask_selects_nothing(client, admin_h, mask):
+    """The blank mask `_drive_get_field_keys` describes, on a listing, a file and a folder, and
+    `about`'s missing-mask 400 for the same mask. An absent mask is the default object."""
+    doc = _drive_find(client, admin_h, "Brand")["id"]
+    folder = client.get(
+        "/drive/v3/files",
+        headers=admin_h,
+        params={"q": "mimeType='application/vnd.google-apps.folder'"},
+    ).json()["files"][0]["id"]
+    for path in ("/drive/v3/files", f"/drive/v3/files/{doc}", f"/drive/v3/files/{folder}"):
+        assert client.get(path, headers=admin_h, params={"fields": mask}).json() == {}, path
+        assert client.get(path, headers=admin_h).json(), path
+    about = _gerr(client.get(ABOUT, headers=admin_h, params={"fields": mask}))
+    assert about["message"] == "The 'fields' parameter is required for this method."
+
+
+@pytest.mark.parametrize(
     "path, reason, location",
     [
         ("/drive/v3/files/{pdf}/export?mimeType=text/plain", "fileNotExportable", None),
+        # measured 2026-09-23: the empty value is still a file that is not a Docs Editors one
+        ("/drive/v3/files/{pdf}/export?mimeType=", "fileNotExportable", None),
         ("/drive/v3/files/{doc}?alt=media", "fileNotDownloadable", "alt"),
     ],
 )
@@ -1402,9 +1744,7 @@ _CELLS = "sheets.data.rowData.values.formattedValue"
 # tests of their own above, and `valueRenderOption` has rows in
 # `test_the_render_options_differ_over_typed_cells`, since the bundled corpus states no typed cell
 # for the options to render differently. `{sid}` is the spreadsheet, `{folder}` a folder and
-# `{token}` a valid page token. The `pageToken` row pairs the token with an empty value rather than
-# the table's `BOGUS`: Backlot answers `BOGUS` alone with the first page where real refuses it, a
-# gap of its own, and a row built on it could not tell the two ends apart.
+# `{token}` a valid page token.
 REPEATED = [
     ("GET", _FILES, {}, "fields", "files(id)", "bogus", "first", _keys),
     ("GET", _FILES + "/{sid}", {}, "fields", "id", "bogus", "first", _keys),
@@ -1437,7 +1777,8 @@ REPEATED = [
     ("GET", _FILES, {}, "q", "", _FOLDERS, "first", _mimes),
     ("GET", _FILES, {}, "q", _FOLDERS, "nosuchfield = 1", "first", _mimes),
     ("GET", _FILES, {}, "pageSize", "1", "3", "first", _ids),
-    ("GET", _FILES, {"pageSize": "1"}, "pageToken", "{token}", "", "first", _ids),
+    ("GET", _FILES, {"pageSize": "1"}, "pageToken", "{token}", "BOGUS", "first", _ids),
+    ("GET", _FILES, {"pageSize": "1"}, "pageToken", "", "{token}", "first", _ids),
     ("GET", _FILES, {"pageSize": "3"}, "orderBy", "name", "name desc", "first", _names),
     ("GET", _FILES, {"pageSize": "3"}, "orderBy", "name", "bogus", "first", _names),
     (
@@ -2287,6 +2628,8 @@ def test_drive_about_export_formats_are_honoured_by_files_export(client, admin_h
     # every native type Backlot serves is covered; the folder type is not exportable anywhere
     assert set(formats) == {DOC_MIME, SHEET_MIME, "application/vnd.google-apps.presentation"}
     assert "text/csv" in formats[SHEET_MIME]
+    # measured 2026-09-23, real exports a Doc to both Markdown types and lists them
+    assert {"text/markdown", "text/x-markdown"} <= set(formats[DOC_MIME])
 
 
 def test_drive_about_shared_drive_fields_agree_with_the_drives_listing(client, admin_h):
@@ -2847,9 +3190,11 @@ def test_sheets_values_get_rejects_a_bad_enum(base, admin_h, sheet_id, params, f
     r = _values(base, admin_h, sheet_id, "Sheet1!A1:A2", **params)
     assert r.status_code == 400
     bad = next(iter(params.values()))
-    assert r.json()["error"]["message"] == (
+    message = (
         f"Invalid value at '{field}' (type.googleapis.com/google.apps.sheets.v4.{enum}), \"{bad}\""
     )
+    assert r.json()["error"]["message"] == message
+    assert r.json()["error"]["details"] == _bad_request([(field, message)])
 
 
 @pytest.mark.parametrize(
@@ -2895,7 +3240,234 @@ def test_a_boolean_query_param_refuses_what_is_not_a_boolean(base, admin_h, shee
         f"{base}/sheets/v4/spreadsheets/{sheet_id}", headers=admin_h, params={param: value}
     )
     assert r.status_code == 400
-    assert r.json()["error"]["message"] == f"Invalid value at '{field}' (TYPE_BOOL), \"{value}\""
+    message = f"Invalid value at '{field}' (TYPE_BOOL), \"{value}\""
+    assert r.json()["error"]["message"] == message
+    assert r.json()["error"]["details"] == _bad_request([(field, message)])
+
+
+def _bad_request(violations):
+    return [
+        {
+            "@type": "type.googleapis.com/google.rpc.BadRequest",
+            "fieldViolations": [{"field": f, "description": m} for f, m in violations],
+        }
+    ]
+
+
+_DIM = "Invalid value at 'major_dimension' (type.googleapis.com/google.apps.sheets.v4.Dimension), "
+_RENDER = (
+    "Invalid value at 'value_render_option' "
+    "(type.googleapis.com/google.apps.sheets.v4.ValueRenderOption), "
+)
+_DATETIME = (
+    "Invalid value at 'date_time_render_option' "
+    "(type.googleapis.com/google.apps.sheets.v4.DateTimeRenderOption), "
+)
+_PAGE_SIZE = "Invalid value at 'page_size' (TYPE_INT32), "
+_GRID = "Invalid value at 'include_grid_data' (TYPE_BOOL), "
+
+
+@pytest.mark.parametrize(
+    "method, path, query, body, refused",
+    [
+        # a bad value at either end of a parameter read last, and both of two bad ones
+        (
+            "GET",
+            "values",
+            [("majorDimension", "NOPE"), ("majorDimension", "ROWS")],
+            None,
+            [("major_dimension", _DIM + '"NOPE"')],
+        ),
+        (
+            "GET",
+            "values",
+            [("majorDimension", "ROWS"), ("majorDimension", "NOPE")],
+            None,
+            [("major_dimension", _DIM + '"NOPE"')],
+        ),
+        (
+            "GET",
+            "values",
+            [("majorDimension", "NOPE1"), ("majorDimension", "NOPE2")],
+            None,
+            [("major_dimension", _DIM + '"NOPE1"'), ("major_dimension", _DIM + '"NOPE2"')],
+        ),
+        # several parameters: each one's refusals together and in query order, the parameters in
+        # an order real varies from one request to the next
+        (
+            "GET",
+            "values",
+            [("valueRenderOption", "NOPE"), ("majorDimension", "NOPE")],
+            None,
+            [("value_render_option", _RENDER + '"NOPE"'), ("major_dimension", _DIM + '"NOPE"')],
+        ),
+        (
+            "GET",
+            "values",
+            [
+                ("majorDimension", "NOPE1"),
+                ("valueRenderOption", "NOPE2"),
+                ("majorDimension", "NOPE3"),
+            ],
+            None,
+            [
+                ("major_dimension", _DIM + '"NOPE1"'),
+                ("value_render_option", _RENDER + '"NOPE2"'),
+                ("major_dimension", _DIM + '"NOPE3"'),
+            ],
+        ),
+        (
+            "GET",
+            "values",
+            [
+                ("dateTimeRenderOption", "NOPE"),
+                ("majorDimension", "NOPE"),
+                ("valueRenderOption", "NOPE"),
+            ],
+            None,
+            [
+                ("date_time_render_option", _DATETIME + '"NOPE"'),
+                ("major_dimension", _DIM + '"NOPE"'),
+                ("value_render_option", _RENDER + '"NOPE"'),
+            ],
+        ),
+        # a typed refusal is reached ahead of a mask the response has no field for
+        (
+            "GET",
+            "values",
+            [("fields", "bogus"), ("majorDimension", "NOPE")],
+            None,
+            [("major_dimension", _DIM + '"NOPE"')],
+        ),
+        (
+            "GET",
+            "book",
+            [("includeGridData", "true"), ("includeGridData", "NOPE")],
+            None,
+            [("include_grid_data", _GRID + '"NOPE"')],
+        ),
+        (
+            "GET",
+            "book",
+            [("includeGridData", "NOPE"), ("includeGridData", "true")],
+            None,
+            [("include_grid_data", _GRID + '"NOPE"')],
+        ),
+        # Drive's pageSize is read first, and every repeat is still parsed
+        (
+            "GET",
+            "files",
+            [("pageSize", "2"), ("pageSize", "NOPE")],
+            None,
+            [("page_size", _PAGE_SIZE + '"NOPE"')],
+        ),
+        (
+            "GET",
+            "files",
+            [("pageSize", "NOPE"), ("pageSize", "2")],
+            None,
+            [("page_size", _PAGE_SIZE + '"NOPE"')],
+        ),
+        (
+            "GET",
+            "files",
+            [("pageSize", "NOPE1"), ("pageSize", "NOPE2")],
+            None,
+            [("page_size", _PAGE_SIZE + '"NOPE1"'), ("page_size", _PAGE_SIZE + '"NOPE2"')],
+        ),
+        (
+            "GET",
+            "files",
+            [("pageSize", "0"), ("pageSize", "NOPE")],
+            None,
+            [("page_size", _PAGE_SIZE + '"NOPE"')],
+        ),
+        # Drive's typed booleans join `pageSize`'s refusal
+        (
+            "GET",
+            "files",
+            [
+                ("pageSize", "NOPE"),
+                ("supportsAllDrives", "NOPE"),
+                ("includeItemsFromAllDrives", "N2"),
+            ],
+            None,
+            [
+                ("page_size", _PAGE_SIZE + '"NOPE"'),
+                (
+                    "supports_all_drives",
+                    "Invalid value at 'supports_all_drives' (TYPE_BOOL), \"NOPE\"",
+                ),
+                (
+                    "include_items_from_all_drives",
+                    "Invalid value at 'include_items_from_all_drives' (TYPE_BOOL), \"N2\"",
+                ),
+            ],
+        ),
+        # every bad enum in a JSON body
+        (
+            "POST",
+            "values_by_filter",
+            [],
+            {
+                "dataFilters": [{"a1Range": "Sheet1!A1"}],
+                "majorDimension": "NOPE",
+                "valueRenderOption": "NOPE2",
+                "dateTimeRenderOption": "NOPE3",
+            },
+            [
+                ("major_dimension", _DIM + '"NOPE"'),
+                ("value_render_option", _RENDER + '"NOPE2"'),
+                ("date_time_render_option", _DATETIME + '"NOPE3"'),
+            ],
+        ),
+        # the same refusal from a JSON body
+        (
+            "POST",
+            "by_filter",
+            [],
+            {"dataFilters": [{"a1Range": "Sheet1!A1"}], "includeGridData": "NOPE"},
+            [("include_grid_data", _GRID + '"NOPE"')],
+        ),
+    ],
+)
+def test_every_typed_value_is_parsed_and_every_one_refused_is_named(
+    base, admin_h, sheet_id, method, path, query, body, refused
+):
+    """Measured 2026-09-23 on Sheets and Drive: every repeat of a typed parameter is parsed, not
+    only the one read, and a request with several values the proto layer cannot read is one 400
+    whose message joins theirs with newlines and whose `details` names each. `refused` is in query
+    order; the comparison keeps each field's refusals in that order and leaves the order between
+    fields open, as `_typed_query` records real does."""
+    url = {
+        "values": f"/sheets/v4/spreadsheets/{sheet_id}/values/Sheet1!A1",
+        "book": f"/sheets/v4/spreadsheets/{sheet_id}",
+        "by_filter": f"/sheets/v4/spreadsheets/{sheet_id}:getByDataFilter",
+        "values_by_filter": f"/sheets/v4/spreadsheets/{sheet_id}/values:batchGetByDataFilter",
+        "files": "/drive/v3/files",
+    }[path]
+    # The query string is built here rather than handed to httpx as `params`, which groups a
+    # repeated key's values together and so would never send an interleaved query.
+    target = base + url + ("?" + urlencode(query) if query else "")
+    r = httpx.request(method, target, headers=admin_h, json=body)
+    assert r.status_code == 400, r.text
+    err = r.json()["error"]
+    [bad_request] = err["details"]
+    assert bad_request["@type"] == "type.googleapis.com/google.rpc.BadRequest"
+    got = [(v["field"], v["description"]) for v in bad_request["fieldViolations"]]
+    assert err["message"] == "\n".join(m for _, m in got)
+    assert err["status"] == "INVALID_ARGUMENT"
+
+    def by_field(pairs):
+        grouped = {}
+        for field, message in pairs:
+            grouped.setdefault(field, []).append(message)
+        return grouped
+
+    assert by_field(got) == by_field(refused)
+    # each field's refusals are contiguous
+    fields = [f for f, _ in got]
+    assert fields == sorted(fields, key=fields.index)
 
 
 @pytest.mark.parametrize(
@@ -4620,13 +5192,14 @@ def test_csv_export_of_a_gridded_spreadsheet_serialises_its_first_sheet(gc, gh, 
     assert _export(gc, gh, book, "text/csv").text == "Region,Deals,\r\nEMEA,12,TRUE"
 
 
-def test_tsv_export_reserialises_the_grid_rather_than_serving_content(gc, gh, hostile):
+@pytest.mark.parametrize("mime", ["text/tab-separated-values", "TEXT/TAB-SEPARATED-VALUES"])
+def test_tsv_export_reserialises_the_grid_rather_than_serving_content(gc, gh, hostile, mime):
     """`content` is the first sheet's CSV, so serving it for TSV too would answer commas and
     quotes. The lossy space-substitution is `sheets_grid.to_tsv`'s own test; this is the route
-    reaching it."""
-    assert _export(gc, gh, hostile, "text/tab-separated-values").text == (
-        'with,comma\twith"quote\twith newline'
-    )
+    reaching it, spelled either way `drive_files_export` accepts."""
+    r = _export(gc, gh, hostile, mime)
+    assert r.text == 'with,comma\twith"quote\twith newline'
+    assert r.headers["content-type"].startswith(mime)
 
 
 def test_a_prose_spreadsheet_still_exports_verbatim(gc, gh, prose):

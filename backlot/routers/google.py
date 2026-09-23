@@ -20,7 +20,7 @@ from http import HTTPStatus
 from typing import NamedTuple
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import PlainTextResponse, Response
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from pydantic import BaseModel, ConfigDict
 
 from backlot import auth, sheets_grid, store, synth
@@ -28,7 +28,7 @@ from backlot.acl import Caller
 from backlot.config import get_settings
 from backlot.errors import google as gerr
 from backlot.openapi import qp
-from backlot.pagination import decode_cursor, next_page_token
+from backlot.pagination import decode_cursor, decode_cursor_or_none, next_page_token
 
 # `$.xgafv` and `callback` are checked before any route runs — see
 # `gerr.validate_system_parameters`. A router dependency runs only once a route has MATCHED, so a
@@ -1409,16 +1409,22 @@ def _drive_file_field_keys(fields: str | None) -> set[str] | None:
 def _drive_get_field_keys(fields: str | None) -> set[str] | None:
     """The same projection for ``files.get``, whose mask names file fields directly
     (``fields=id,name,size``). Applying it is what makes one file look the same whether a client
-    read it out of a listing or resolved it by id."""
-    if not (fields or "").strip():
+    read it out of a listing or resolved it by id.
+
+    A mask that is empty or blank selects nothing, which is not the same as no mask: measured
+    2026-09-23, `fields=` and `fields=%20` answer ``{}`` where an absent `fields` answers the
+    default object. So an absent mask is ``None`` and a blank one the empty set."""
+    if fields is None:
         return None
+    if not fields.strip():
+        return set()
     keys = _mask_names(fields)
     _check_mask(keys, _DRIVE_FILE_FIELDS)
     return None if "*" in keys else (keys or None)
 
 
 def _drive_project(files: list[dict], keys: set[str] | None) -> list[dict]:
-    return files if not keys else [{k: v for k, v in f.items() if k in keys} for f in files]
+    return files if keys is None else [{k: v for k, v in f.items() if k in keys} for f in files]
 
 
 def _drive_fill_shared(conn, files: list[dict], stored: set[str]) -> None:
@@ -1636,14 +1642,18 @@ def _drive_about_field_keys(fields: str | None) -> set[str] | None:
 # Google's real values even though Backlot is read-only: a client that reads them to decide what
 # to ask for must branch the same way it would against real Drive.
 
-# What `files.export` can turn each native type into. Kept to the three native types Backlot
-# actually stores (`_NATIVE` minus the folder, which is not exportable anywhere).
+# What `files.export` can turn each native type into, in the order real `about.exportFormats`
+# lists them (measured 2026-09-23), and what `drive_files_export` accepts. Kept to the three
+# native types Backlot actually stores (`_NATIVE` minus the folder, which is not exportable
+# anywhere).
 _DRIVE_EXPORT_FORMATS = {
     DRIVE_DOC_MIME: [
         "application/rtf",
         "application/vnd.oasis.opendocument.text",
         "text/html",
         "application/pdf",
+        "text/x-markdown",
+        "text/markdown",
         "application/epub+zip",
         "application/zip",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -1653,10 +1663,10 @@ _DRIVE_EXPORT_FORMATS = {
         "application/x-vnd.oasis.opendocument.spreadsheet",
         "text/tab-separated-values",
         "application/pdf",
-        "application/vnd.oasis.opendocument.spreadsheet",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "text/csv",
         "application/zip",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.oasis.opendocument.spreadsheet",
     ],
     "application/vnd.google-apps.presentation": [
         "application/vnd.oasis.opendocument.presentation",
@@ -1783,6 +1793,9 @@ async def drive_shared_drives(request: Request):
     """Shared (Team) Drives — Backlot's corpus lives entirely in My Drive, so this is empty.
     Present so shared-drive-aware clients don't 404 while enumerating."""
     _require(request)
+    _drive_page_size_in_range(
+        _drive_typed(request, "useDomainAdminAccess", page_size=True)["pageSize"], 100
+    )
     return {"kind": "drive#driveList", "drives": []}
 
 
@@ -1797,14 +1810,33 @@ async def drive_files_list(request: Request):
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     me = caller.email
-    # Each read off the first repeat, as real reads them -- see `gerr.first_repeat`.
+    # Each read off the first repeat, as real reads them -- see `gerr.first_repeat`. Refused in
+    # real's order, measured 2026-09-23 by sending two bad values at once: `pageSize` first, then
+    # `orderBy`, `q`, `pageToken` and `fields`, whichever order the query names them in.
     params = request.query_params
-    limit = _int(gerr.first_repeat(params, "pageSize"), get_settings().default_page_size)
-    offset = decode_cursor(gerr.first_repeat(params, "pageToken"))
-    q = gerr.first_repeat(params, "q") or ""
-    keys = _drive_file_field_keys(gerr.first_repeat(params, "fields"))  # 400 on an unknown field
+    typed = _drive_typed(
+        request,
+        "supportsAllDrives",
+        "supportsTeamDrives",
+        "includeItemsFromAllDrives",
+        "includeTeamDriveItems",
+        page_size=True,
+    )
+    limit = _drive_page_size(typed["pageSize"])
     order = _drive_order_specs(gerr.first_repeat(params, "orderBy"))  # 400 on an unusable key
+    q = gerr.first_repeat(params, "q") or ""
     query = _drive_q_parse(q)  # 400 on a clause Backlot cannot evaluate; None when there is no q
+    # Measured: a token the API did not issue is 400 `Invalid Value`, where an empty one is the
+    # first page.
+    offset = decode_cursor_or_none(gerr.first_repeat(params, "pageToken"))
+    if offset is None:
+        raise gerr.invalid_value("pageToken")
+    mask = gerr.first_repeat(params, "fields")
+    if mask is not None and not mask.strip():
+        # The blank mask `_drive_get_field_keys` describes; on a listing it drops `kind` and
+        # `files` too, so the typed response model is bypassed.
+        return JSONResponse({})
+    keys = _drive_file_field_keys(mask)  # 400 on an unknown field
     conjuncts = _drive_q_conjuncts(query)
     hits = _drive_q_fulltext(conn, query, ids)
     # A parent every match has to be under; one under an `or` scopes nothing.
@@ -1891,6 +1923,7 @@ async def drive_files_list(request: Request):
 async def drive_files_get(file_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
+    _drive_typed(request, "acknowledgeAbuse", "supportsAllDrives", "supportsTeamDrives")
     ids = auth.visible_ids(request, caller)
     row = store.gdrive_by_id(conn, file_id, visible_ids=ids)
     if row is None:
@@ -1918,8 +1951,16 @@ async def drive_files_get(file_id: str, request: Request):
 
 @router.get("/drive/v3/files/{file_id}/export", openapi_extra={"parameters": _P_DRIVE_EXPORT})
 async def drive_files_export(file_id: str, request: Request):
+    """Measured 2026-09-23, the refusals come in this order: an absent `mimeType` ahead of the file
+    lookup (a file that does not exist is still `Required parameter: mimeType`), then the 404,
+    then a file that is not a Docs Editors one, then a format its type does not export to. That
+    last one is matched without regard to case -- `TEXT/CSV` exports, under `TEXT/CSV` -- and an
+    empty `mimeType=` is one of them rather than an absent parameter."""
     conn = auth.conn(request)
     caller = _require(request)
+    requested = gerr.first_repeat(request.query_params, "mimeType")
+    if requested is None:
+        raise gerr.required("mimeType")
     ids = auth.visible_ids(request, caller)
     row = store.gdrive_by_id(conn, file_id, visible_ids=ids)
     if row is None:
@@ -1927,9 +1968,9 @@ async def drive_files_export(file_id: str, request: Request):
     native = _native(row)
     if native is None or native[2] is None:  # binary or folder — not exportable
         raise gerr.not_exportable()
-    requested = gerr.first_repeat(request.query_params, "mimeType")
-    if not requested:  # the real API requires an explicit target format
-        raise gerr.required("mimeType")
+    target = requested.casefold()
+    if target not in {f.casefold() for f in _DRIVE_EXPORT_FORMATS.get(native[0], ())}:
+        raise gerr.unsupported_conversion()
     # honor the requested target format; CSV/TSV serve the cells, others prefix the title.
     #
     # CSV needs no branch for either kind of document: a document that STATES a grid has its
@@ -1938,12 +1979,12 @@ async def drive_files_export(file_id: str, request: Request):
     # mechanism and collapses an embedded newline or tab to a single space — so a stated grid
     # re-serialises for it. A prose document exports verbatim either way: its cells ARE its lines,
     # so there is nothing to re-serialise.
-    if requested == "text/tab-separated-values":
+    if target == "text/tab-separated-values":
         stored = store.gdrive_sheets_for(conn, file_id)
         if stored:
             grid = json.loads(stored[0]["grid"])
             return PlainTextResponse(sheets_grid.to_tsv(grid), media_type=requested)
-    plain = requested in ("text/csv", "text/tab-separated-values")
+    plain = target in ("text/csv", "text/tab-separated-values")
     body = row["content"] if plain else f"{row['title']}\n\n{row['content']}"
     return PlainTextResponse(body, media_type=requested)
 
@@ -1952,6 +1993,10 @@ async def drive_files_export(file_id: str, request: Request):
 async def drive_files_permissions(file_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
+    sizes = _drive_typed(
+        request, "supportsAllDrives", "supportsTeamDrives", "useDomainAdminAccess", page_size=True
+    )["pageSize"]
+    _drive_page_size_in_range(sizes, 100)
     ids = auth.visible_ids(request, caller)
     row = store.gdrive_by_id(conn, file_id, visible_ids=ids)
     if row is None:
@@ -2350,17 +2395,28 @@ async def sheets_get(spreadsheet_id: str, request: Request):
     whole grid would hand a reader cells the real API never would, so the document it assembles
     would differ between the two backends. With the flag, ``ranges`` scopes the returned rows
     (measured: 5.7 MB -> 11 KB for ``A1:B2``)."""
-    row, sheets = _workbook(request, spreadsheet_id)
-    mask = gerr.first_repeat(request.query_params, "fields")
+    # The credential, then the typed values, then the lookup -- `_typed_query` records the order.
+    _require(request)
     # A mask that reaches the cells decides the grid, and `includeGridData` is then ignored rather
     # than consulted -- the vendor's own wording. Still parsed, so a bad value is still refused.
-    grid = _sheets_bool(request, "includeGridData", "include_grid_data")
+    flags = _typed_query(
+        request,
+        {
+            "includeGridData": lambda raw: _sheets_bool_value(raw, "include_grid_data"),
+            "excludeTablesInBandedRanges": lambda raw: _sheets_bool_value(
+                raw, "exclude_tables_in_banded_ranges"
+            ),
+        },
+    )
+    grid = (flags["includeGridData"] or [False])[-1]
+    row, sheets = _workbook(request, spreadsheet_id)
+    mask = gerr.first_repeat(request.query_params, "fields")
     if mask:
         grid = _gmask_wants_grid(mask)
-    # Validated and then unused, deliberately: it drops the tables that sit inside a banded range,
-    # and a corpus states neither tables nor banded ranges, so there is nothing here to exclude.
-    # Leaving it unvalidated instead would accept the one thing a client can get wrong about it.
-    _sheets_bool(request, "excludeTablesInBandedRanges", "exclude_tables_in_banded_ranges")
+    # `excludeTablesInBandedRanges` is validated above and then unused, deliberately: it drops the
+    # tables that sit inside a banded range, and a corpus states neither tables nor banded ranges,
+    # so there is nothing here to exclude. Leaving it unvalidated instead would accept the one
+    # thing a client can get wrong about it.
     return _sheets_respond(
         request,
         _sheets_book(spreadsheet_id, row, sheets, request.query_params.getlist("ranges"), grid),
@@ -2712,13 +2768,9 @@ _SHEETS_FALSE = frozenset({"0", "f", "false", "n", "no"})
 _PRETTY_PRINT_FALSE = frozenset({"false", "0"})
 
 
-def _sheets_bool(request: Request, param: str, field: str) -> bool:
-    """One of the boolean query params, parsed the way the real one is."""
-    return _sheets_bool_value(request.query_params.get(param), field)
-
-
 def _sheets_bool_value(raw, field: str) -> bool:
-    """The rule itself, so a read that carries the flag in a JSON BODY applies the same one.
+    """One of the boolean params, parsed the way the real one is, from the query or a JSON BODY
+    alike.
 
     Measured: `1`, `t`, `y` and `yes` mean true and `0`, `f`, `n` and `no` mean false, matched
     case-insensitively; anything else 400s as ``Invalid value at '<field>' (TYPE_BOOL), "<value>"``,
@@ -2736,7 +2788,7 @@ def _sheets_bool_value(raw, field: str) -> bool:
         return True
     if folded in _SHEETS_FALSE:
         return False
-    raise gerr.invalid_field_value(f"Invalid value at '{field}' (TYPE_BOOL), \"{raw}\"")
+    raise gerr.invalid_field_value(field, f"Invalid value at '{field}' (TYPE_BOOL), \"{raw}\"")
 
 
 def _a1_find(title: str, sheets: list[_Sheet]) -> _Sheet | None:
@@ -3078,26 +3130,19 @@ def _workbook(request: Request, spreadsheet_id: str) -> tuple:
     ]
 
 
-def _sheets_enum(request: Request, param: str, field: str, enum: str, allowed, default: str) -> str:
-    """One of the read enums, validated and canonicalised.
+def _sheets_enum_value(raw, field: str, enum: str, allowed, default: str) -> str:
+    """One of the read enums, validated and canonicalised, from the query or a JSON BODY alike.
 
     Measured, and identical for all three: the match is CASE-INSENSITIVE (``majorDimension=rows``
     answers 200) and the response echoes the canonical upper-case spelling whatever the request
     used; an unknown value 400s, naming the proto field and type and quoting the value as the
     client sent it; and an EMPTY value is not an absent one — it 400s rather than falling back to
-    the default."""
-    return _sheets_enum_value(request.query_params.get(param), field, enum, allowed, default)
-
-
-def _sheets_enum_value(raw, field: str, enum: str, allowed, default: str) -> str:
-    """The rule itself, so a read that carries its enums in a JSON BODY applies the same one.
-
-    Absent means the default; present means validated, and an empty string is present."""
+    the default. Absent means the default."""
     if raw is None:
         return default
     value = str(raw).upper()
     if value not in allowed:
-        raise gerr.invalid_field_value(_a1_enum_error(field, enum, raw))
+        raise gerr.invalid_field_value(field, _a1_enum_error(field, enum, raw))
     return value
 
 
@@ -3106,33 +3151,35 @@ def _sheets_options(request: Request) -> tuple[str, str]:
     on an unknown value; accepting one silently would hand back ROWS-shaped data to a client that
     asked for columns, and a silently unapplied option is worse than a refusal.
     """
-    major = _sheets_enum(
-        request, "majorDimension", "major_dimension", "Dimension", _A1_MAJOR, "ROWS"
-    )
-    # Measured over typed cells: FORMATTED_VALUE gives the display string "12", UNFORMATTED_VALUE
-    # the JSON number 12, and FORMULA the same raw value as UNFORMATTED_VALUE for every cell that
-    # is not a formula. A spreadsheet whose cells are lines of stored text has only strings, so
-    # all three agree on one; a spreadsheet that STATES its grid does not.
-    render = _sheets_enum(
+    enums = _typed_query(
         request,
-        "valueRenderOption",
-        "value_render_option",
-        "ValueRenderOption",
-        _A1_RENDER,
-        "FORMATTED_VALUE",
+        {
+            "majorDimension": lambda raw: _sheets_enum_value(
+                raw, "major_dimension", "Dimension", _A1_MAJOR, "ROWS"
+            ),
+            # Measured over typed cells: FORMATTED_VALUE gives the display string "12",
+            # UNFORMATTED_VALUE the JSON number 12, and FORMULA the same raw value as
+            # UNFORMATTED_VALUE for every cell that is not a formula. A spreadsheet whose cells are
+            # lines of stored text has only strings, so all three agree on one; a spreadsheet that
+            # STATES its grid does not.
+            "valueRenderOption": lambda raw: _sheets_enum_value(
+                raw, "value_render_option", "ValueRenderOption", _A1_RENDER, "FORMATTED_VALUE"
+            ),
+            # Validated and then unused, deliberately. It selects between a date cell's serial
+            # number and its formatted string, and a corpus states no date cells — every cell is a
+            # string, a number, a boolean or empty — so the two renderings coincide here. Leaving
+            # it unvalidated instead would accept the one thing a client can get wrong about it.
+            "dateTimeRenderOption": lambda raw: _sheets_enum_value(
+                raw,
+                "date_time_render_option",
+                "DateTimeRenderOption",
+                _A1_DATETIME,
+                "SERIAL_NUMBER",
+            ),
+        },
     )
-    # Validated and then unused, deliberately. It selects between a date cell's serial number and
-    # its formatted string, and a corpus states no date cells — every cell is a string, a number, a
-    # boolean or empty — so the two renderings coincide here. Leaving it unvalidated instead would
-    # accept the one thing a client can get wrong about it.
-    _sheets_enum(
-        request,
-        "dateTimeRenderOption",
-        "date_time_render_option",
-        "DateTimeRenderOption",
-        _A1_DATETIME,
-        "SERIAL_NUMBER",
-    )
+    major = (enums["majorDimension"] or ["ROWS"])[-1]
+    render = (enums["valueRenderOption"] or ["FORMATTED_VALUE"])[-1]
     return major, render
 
 
@@ -3159,8 +3206,9 @@ async def sheets_values_batch_get(spreadsheet_id: str, request: Request):
     With no ``ranges`` at all, nothing is selected and ``valueRanges`` is omitted. NOTE: that is
     the natural reading of a parameter with no default, NOT a response diffed against real
     Sheets — unlike the rest of this module's behaviour, it is unverified."""
-    _row, sheets = _workbook(request, spreadsheet_id)
+    _require(request)
     major, render = _sheets_options(request)
+    _row, sheets = _workbook(request, spreadsheet_id)
     ranges = request.query_params.getlist("ranges")
     body = {"spreadsheetId": spreadsheet_id}
     if ranges:
@@ -3174,8 +3222,9 @@ async def sheets_values_batch_get(spreadsheet_id: str, request: Request):
 )
 async def sheets_values_get(spreadsheet_id: str, a1_range: str, request: Request):
     """One range of a spreadsheet, ACL-enforced through the same lookup as ``spreadsheets.get``."""
-    _row, sheets = _workbook(request, spreadsheet_id)
+    _require(request)
     major, render = _sheets_options(request)
+    _row, sheets = _workbook(request, spreadsheet_id)
     return _sheets_respond(
         request, _sheets_value_range(a1_range, sheets, major, render), _F_VALUE_RANGE
     )
@@ -3232,21 +3281,23 @@ def _sheets_int32(raw, field: str, default: int) -> int:
     if raw is None:
         return default
     if isinstance(raw, bool):
-        raise gerr.invalid_field_value(f"Invalid value at '{field}' (TYPE_INT32), \"{raw}\"")
+        raise gerr.invalid_field_value(field, f"Invalid value at '{field}' (TYPE_INT32), \"{raw}\"")
     value = raw
     if isinstance(value, str):
         try:
             value = int(value, 10)
         except ValueError:
             raise gerr.invalid_field_value(
-                f"Invalid value at '{field}' (TYPE_INT32), \"{raw}\""
+                field, f"Invalid value at '{field}' (TYPE_INT32), \"{raw}\""
             ) from None
     if isinstance(value, float):
         if not value.is_integer():
-            raise gerr.invalid_field_value(f"Invalid value at '{field}' (TYPE_INT32), \"{raw}\"")
+            raise gerr.invalid_field_value(
+                field, f"Invalid value at '{field}' (TYPE_INT32), \"{raw}\""
+            )
         value = int(value)
     if not isinstance(value, int) or value < 0:
-        raise gerr.invalid_field_value(f"Invalid value at '{field}' (TYPE_INT32), \"{raw}\"")
+        raise gerr.invalid_field_value(field, f"Invalid value at '{field}' (TYPE_INT32), \"{raw}\"")
     return value
 
 
@@ -3301,24 +3352,28 @@ async def sheets_values_batch_get_by_data_filter(spreadsheet_id: str, request: R
     body, specs = await _sheets_filters(request, sheets, required=True, indexed=True)
     # The same three enums the query-string reads take, and the same rule for them — including
     # that an empty value is not an absent one, and that `dateTimeRenderOption` is validated even
-    # though a corpus states no date cell for it to render.
-    major = _sheets_enum_value(
-        body.get("majorDimension"), "major_dimension", "Dimension", _A1_MAJOR, "ROWS"
-    )
-    render = _sheets_enum_value(
-        body.get("valueRenderOption"),
-        "value_render_option",
-        "ValueRenderOption",
-        _A1_RENDER,
-        "FORMATTED_VALUE",
-    )
-    _sheets_enum_value(
-        body.get("dateTimeRenderOption"),
-        "date_time_render_option",
-        "DateTimeRenderOption",
-        _A1_DATETIME,
-        "SERIAL_NUMBER",
-    )
+    # though a corpus states no date cell for it to render. Measured 2026-09-23, six requests: a
+    # body with all three bad is one 400 naming all three, in the order the body names them.
+    readers = {
+        "majorDimension": lambda raw: _sheets_enum_value(
+            raw, "major_dimension", "Dimension", _A1_MAJOR, "ROWS"
+        ),
+        "valueRenderOption": lambda raw: _sheets_enum_value(
+            raw, "value_render_option", "ValueRenderOption", _A1_RENDER, "FORMATTED_VALUE"
+        ),
+        "dateTimeRenderOption": lambda raw: _sheets_enum_value(
+            raw, "date_time_render_option", "DateTimeRenderOption", _A1_DATETIME, "SERIAL_NUMBER"
+        ),
+    }
+    enums, refused = {}, []
+    for name in [k for k in body if k in readers] + [k for k in readers if k not in body]:
+        try:
+            enums[name] = readers[name](body.get(name))
+        except gerr.GoogleError as exc:
+            refused += gerr.field_violations(exc)
+    if refused:
+        raise gerr.invalid_field_values(refused)
+    major, render = enums["majorDimension"], enums["valueRenderOption"]
 
     # NOT the order the filters arrived in. Measured: the answers come back sorted by where each
     # range starts, column before row — `Data!A2` precedes `Data!B1`, `Data!B9` precedes
@@ -3570,6 +3625,106 @@ def _drive_permissions(conn, file_id: str, *, folder: str | None = None) -> list
             },
         )
     return perms
+
+
+def _typed_query(request: Request, readers: dict) -> dict[str, list]:
+    """Every repeat of each typed query parameter in ``readers``, parsed and keyed by name, in the
+    order the query sent them.
+
+    Real parses every repeat of a typed parameter, not only the one it reads, and refuses all it
+    cannot parse in one 400 (:func:`gerr.invalid_field_values`): measured 2026-09-23,
+    `pageSize=2&pageSize=NOPE` and its reverse are both that 400, and so is
+    `majorDimension=NOPE&majorDimension=ROWS`. Which repeat is then READ is the caller's to pick,
+    by the table in :func:`gerr.first_repeat`.
+
+    The refusals are grouped by parameter, each parameter's in query order, and the groups come in
+    the order their parameters first appear. Measured the same day, eight identical requests each:
+    `majorDimension=NOPE1&valueRenderOption=NOPE2&majorDimension=NOPE3` kept the two
+    `major_dimension` refusals together and in that order every time, while which parameter came
+    first varied from one request to the next (`valueRenderOption=NOPE&majorDimension=NOPE`
+    answered each order four times), so first appearance is one of the orders real gives."""
+    parsed: dict[str, list] = {name: [] for name in readers}
+    refused: dict[str, list[tuple[str, str]]] = {}
+    for name, raw in request.query_params.multi_items():
+        if name not in readers:
+            continue
+        try:
+            parsed[name].append(readers[name](raw))
+        except gerr.GoogleError as exc:
+            violations = gerr.field_violations(exc)
+            if not violations:
+                raise
+            refused.setdefault(name, []).extend(violations)
+    if refused:
+        raise gerr.invalid_field_values([v for group in refused.values() for v in group])
+    return parsed
+
+
+# The typed booleans each Drive method Backlot serves declares, as the proto field its refusal
+# names. Parsed only, never read: none of them changes what a My Drive corpus answers. Measured
+# 2026-09-23 on each of them: the Sheets boolean spellings (`_sheets_bool_value`), 30 of them swept
+# on `supportsAllDrives`, and a refusal ahead of the file lookup. `files.export` and `about.get`
+# declare none, and real ignores `supportsAllDrives=NOPE` on both.
+_DRIVE_BOOLS = {
+    "supportsAllDrives": "supports_all_drives",
+    "supportsTeamDrives": "supports_team_drives",
+    "includeItemsFromAllDrives": "include_items_from_all_drives",
+    "includeTeamDriveItems": "include_team_drive_items",
+    "acknowledgeAbuse": "acknowledge_abuse",
+    "useDomainAdminAccess": "use_domain_admin_access",
+}
+
+
+def _drive_typed(request: Request, *bools: str, page_size: bool = False) -> dict[str, list]:
+    """`_typed_query` over the booleans a Drive method declares, and its `pageSize` if it has
+    one."""
+    readers = {
+        name: (lambda raw, field=_DRIVE_BOOLS[name]: _sheets_bool_value(raw, field))
+        for name in bools
+    }
+    if page_size:
+        readers["pageSize"] = _drive_int32
+    return _typed_query(request, readers)
+
+
+# An int32 as the Drive query parser takes one. Measured 2026-09-23 on `pageSize`: `+2` and `02`
+# are 2 and `-0` is 0, while a padded ` 2` or `2 `, `1_0`, `2.0`, `0x10`, `1e2` and a value past
+# 2**31 - 1 are the `TYPE_INT32` refusal.
+_INT32 = re.compile(r"[+-]?[0-9]+")
+
+
+def _drive_int32(raw: str) -> int:
+    if _INT32.fullmatch(raw) and -(2**31) <= int(raw) < 2**31:
+        return int(raw)
+    raise gerr.invalid_field_value(
+        "page_size", f"Invalid value at 'page_size' (TYPE_INT32), \"{raw}\""
+    )
+
+
+def _drive_page_size_in_range(sizes: list[int], top: int) -> None:
+    """Refuse one `pageSize` outside 1 to ``top`` with real's range sentence. Measured 2026-09-23:
+    ``top`` is 1000 on `files.list` and 100 on `permissions.list` and `drives.list`, `0` and
+    ``top + 1`` refused alike, and two or more values are not range-checked at all."""
+    if len(sizes) == 1 and not 1 <= sizes[0] <= top:
+        raise gerr.invalid_parameter(
+            "page_size",
+            f"Invalid value '{sizes[0]}'. Values must be within the range: [value: 1\n, value: "
+            f"{top}\n]",
+        )
+
+
+def _drive_page_size(sizes: list[int]) -> int:
+    """The page size a `files.list` asks for, from the `pageSize` values `_drive_typed` parsed.
+
+    Measured 2026-09-23: two or more values are read from the first, one past 1000 answering 1000
+    files and one at or below 0 answering 500 (`0&2`, `0&0`, `-1&2` and `0&1001` all did, with
+    more than 500 files to list), where `2&0` is 2 and `3&0` is 3. Absent is the default of 100."""
+    _drive_page_size_in_range(sizes, 1000)
+    if not sizes:
+        return get_settings().default_page_size
+    first = sizes[0]
+    size = 1000 if first > 1000 else 500 if first < 1 else first
+    return min(size, get_settings().max_page_size)
 
 
 def _int(v: str | None, default: int) -> int:

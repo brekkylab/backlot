@@ -255,8 +255,7 @@ async def answer_s3_with_request_ids(request: Request, call_next):
     pair for the body of an error.
 
     Middleware for the reason the GitHub rate-limit headers are: the pair rides answers no route
-    handler builds, the exception handlers' refusals among them, and real sent it on every
-    response measured (2026-09-22, twenty-five shapes, a success and a refusal alike).
+    handler builds, the exception handlers' refusals among them.
     The pair is set before the route runs so `backlot.routers.s3._error` writes the same one into
     `<RequestId>` and `<HostId>`, which real repeats there.
     """

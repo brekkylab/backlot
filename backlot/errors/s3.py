@@ -57,11 +57,10 @@ def rendered(request: Request, status_code: int, body: dict, headers=None) -> Re
 def method_not_allowed(path: str, method: str) -> S3Error:
     """Real's answer to a method S3 defines nothing for: the parse 400, not a 405.
 
-    ``headers`` carries the request id pair rather than being empty, because this is the one answer
-    whose extended id real widens: sampled three times each on 2026-09-22, the parse 400's
-    `x-amz-id-2` is 128 characters where the 405, the 404 and a 200 all carry 96. No `Allow` rides
-    it — real sends none, where Starlette would compute one from the routes this server happens to
-    declare — and the router's middleware leaves a header this sets alone.
+    ``headers`` carries the request id pair with the widened extended id this answer gets
+    (:func:`backlot.routers.s3.wide_extended_id`). No `Allow` rides it — real sends none, where
+    Starlette would compute one from the routes this server happens to declare — and the router's
+    middleware leaves a header this sets alone.
     """
     from backlot.routers.s3 import REQUEST_IDS, wide_extended_id
 

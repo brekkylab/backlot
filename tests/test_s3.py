@@ -197,9 +197,8 @@ _REFUSAL_ROWS = [
 def test_s3_a_method_this_router_does_not_serve_answers_reals_own_refusal(
     live_server, path, method, status, code, member, allow
 ):
-    """Each row measured. The body is XML on every one, where Starlette's own 405 answered JSON,
-    and the `Allow` names what this server serves rather than real's own methods, which is the line
-    the sub-resource 405 already draws."""
+    """Each row measured. The body is XML on every one, and the `Allow` names what this server
+    serves rather than real's own methods, which is the line the sub-resource 405 already draws."""
     base_url, settings = live_server
     r = _signed(base_url, path, settings.admin_token, method=method)
     assert r.status_code == status

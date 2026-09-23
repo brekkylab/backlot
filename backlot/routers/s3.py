@@ -4,7 +4,8 @@ Path-style endpoint for a client: ``http://<host>/s3`` (boto3: ``endpoint_url=".
 ``addressing_style=path``; mirage: ``S3Config(endpoint_url=".../s3", path_style=True)``). Auth is
 full AWS SigV4 (``backlot.auth.resolve_sigv4``) against a per-caller access-key/secret derived from a
 bearer token; the admin/service token's key sees everything, a user's key is ACL-filtered. A method
-this router does not serve is refused before any of that, as real refuses one.
+this router does not serve is refused before any of that, as real refuses one; a write resolves
+the credential and the bucket first.
 Responses are S3 XML (namespace ``http://s3.amazonaws.com/doc/2006-03-01/``) or raw object bytes;
 errors use the S3 ``<Error>`` envelope.
 
@@ -270,7 +271,7 @@ def _error(
     # bodies: `NoSuchBucket`, `NoSuchKey`, `InvalidArgument`, `MethodNotAllowed`, `BadRequest`,
     # `PreconditionFailed`, `IllegalLocationConstraintException` and `AccessForbidden`).
     tail = f"<RequestId>{ids[0]}</RequestId><HostId>{ids[1]}</HostId>" if ids else ""
-    # An error real sends about no particular resource carries no element for one: its CORS 400
+    # An error real sends about no particular resource carries no element for one: its CORS 403
     # and its method 405 name the method and the resource TYPE and nothing else.
     named = f"<Resource>{escape(resource)}</Resource>" if resource else ""
     body = f"<Error><Code>{code}</Code><Message>{escape(message)}</Message>{named}{extra}{tail}</Error>"
@@ -1043,11 +1044,9 @@ def _parse_range(header: str, total: int):
 
 # --- methods this router does not serve -----------------------------------------------------
 #
-# A method with no route reached Starlette's own 405 before this module ran: one JSON body for all
-# of them, and an `Allow` naming whichever route Starlette matched first rather than what the path
-# serves. Real answers each method its own way, so each is declared here and answered with the
-# error real sends. Measured 2026-09-22 against `s3.<region>.amazonaws.com`, path-style, against a
-# throwaway bucket created for the probe and deleted at its end:
+# Real answers each method its own way, so each is declared here and answered with the error real
+# sends. Measured 2026-09-22 against `s3.<region>.amazonaws.com`, path-style, against a throwaway
+# bucket created for the probe and deleted at its end:
 #
 #   request                     real
 #   ----------------------------|--------------------------------------------------------------
@@ -1070,9 +1069,10 @@ def _parse_range(header: str, total: int):
 # Backlot serves rather than what real serves, which is what the sub-resource 405 already does, and
 # a multipart `POST` on a bucket is refused as a non-multipart one is, since an upload is a write.
 #
-# No credential is resolved here, because real answers the method first: an unsigned `PATCH` on a
-# key and at the root answered the same 405 as a signed one, and an unsigned `OPTIONS` the same 400
-# and 403 (measured, same date).
+# No credential is resolved before a method refusal, because real answers the method first: an
+# unsigned `PATCH` on a key and at the root answered the same 405 as a signed one, and an unsigned
+# `OPTIONS` the same 400 and 403 (measured, same date). A write resolves the credential and the
+# bucket before its 501 (`_refuse_write`).
 
 _METHOD_NOT_ALLOWED = "The specified method is not allowed against this resource."
 _CORS_NEEDS_ORIGIN = "Insufficient information. Origin request header needed."

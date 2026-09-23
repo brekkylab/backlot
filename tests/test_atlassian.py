@@ -9,7 +9,7 @@ from __future__ import annotations
 import base64
 import json
 import re
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 import pytest
 import yaml
@@ -577,7 +577,8 @@ def test_atlassian_errors_use_atlassian_envelope(client):
 
 def test_confluence_spaces_are_paged_not_served_whole(client, admin_h, tokens):
     """Measured against a live Confluence Cloud site on 2026-09-17: `space` reads `limit`/`start`
-    and answers a page, with `_links.next`/`.prev` shaped like :func:`confluence_space_links`."""
+    and answers a page, with `_links.next`/`.prev` shaped like
+    :func:`backlot.pagination.confluence_page_links`."""
     unpaged = client.get("/atlassian/wiki/rest/api/space", headers=admin_h).json()
     names = [s["name"] for s in unpaged["results"]]
     assert names == [
@@ -612,7 +613,7 @@ def test_confluence_spaces_are_paged_not_served_whole(client, admin_h, tokens):
     assert second["_links"]["prev"] == "/rest/api/space?prev=true&limit=1&start=0"
     assert "next" not in second["_links"]
 
-    # expand rides into next/prev/self too — see confluence_space_links for the ordering.
+    # expand rides into next/prev/self too — see confluence_page_links for the ordering.
     expanded_first = client.get(
         "/atlassian/wiki/rest/api/space?limit=1&expand=description", headers=admin_h
     ).json()
@@ -1345,6 +1346,236 @@ def test_confluence_refuses_a_negative_limit_where_jira_clamps_one(client, admin
     }
 
 
+# The bounds and the envelope every paged Confluence listing answers, measured 2026-09-22 against a
+# live Cloud site whose `content` listing holds 9 items, `space` 3, and one page 2 children.
+
+_CAPS = [
+    ("content", None, 1001, 1000),
+    ("content", None, 2147483647, 1000),
+    ("space", None, 1001, 1000),
+    ("space", None, 5000, 1000),
+    ("child/comment", "comment", 1001, 1000),
+    ("label", "label", 1001, 200),
+    ("child/page", "child", 1001, 1001),  # the one listing real caps nowhere
+]
+
+
+@pytest.mark.parametrize("route, kind, sent, want", _CAPS, ids=[f"{r[0]}-{r[2]}" for r in _CAPS])
+def test_confluence_caps_limit_where_real_caps_it(client, admin_h, route, kind, sent, want):
+    """Each cap measured on its own route: `content`, `space` and `child/comment` at 1000, `label`
+    at 200, `child/page` nowhere. A value above the cap is answered with the cap, not refused."""
+    if kind is None:
+        path = f"/atlassian/wiki/rest/api/{route}"
+    else:
+        cid = client.get("/atlassian/wiki/rest/api/content?limit=1", headers=admin_h).json()[
+            "results"
+        ][0]["id"]
+        path = f"/atlassian/wiki/rest/api/content/{cid}/{route}"
+    r = client.get(f"{path}?limit={sent}", headers=admin_h)
+    assert r.status_code == 200, r.text
+    assert r.json()["limit"] == want
+
+
+def test_confluence_label_defaults_to_two_hundred_where_the_others_default_to_25(client, admin_h):
+    """Measured: with no `limit`, `label` answers 200 and `content`, `space`, `child/page` and
+    `child/comment` answer 25."""
+    api = "/atlassian/wiki/rest/api"
+    cid = client.get(f"{api}/content?limit=1", headers=admin_h).json()["results"][0]["id"]
+    assert client.get(f"{api}/content/{cid}/label", headers=admin_h).json()["limit"] == 200
+    for path in (
+        f"{api}/content",
+        f"{api}/space",
+        f"{api}/content/{cid}/child/page",
+        f"{api}/content/{cid}/child/comment",
+    ):
+        assert client.get(path, headers=admin_h).json()["limit"] == 25, path
+
+
+def test_confluence_content_refuses_a_start_above_the_bound_where_space_serves_one(client, admin_h):
+    """Measured: `content?start=100001` is a 400 carrying the `data` object Confluence's service
+    layer adds, `start=100000` a 200 with an empty page, and `space?start=100001` a 200 — the bound
+    is `content`'s alone."""
+    api = "/atlassian/wiki/rest/api"
+    ok = client.get(f"{api}/content?start=100000&limit=1", headers=admin_h)
+    assert ok.status_code == 200 and ok.json()["size"] == 0
+    refused = client.get(f"{api}/content?start=100001&limit=1", headers=admin_h)
+    assert refused.status_code == 400
+    body = refused.json()
+    assert sorted(body) == ["data", "message", "statusCode"]
+    assert body["data"] == {"authorized": True, "valid": True, "errors": [], "successful": True}
+    assert "Start of this size is no longer supported" in body["message"]
+    assert client.get(f"{api}/space?start=100001", headers=admin_h).status_code == 200
+
+
+_PAGED = ["content", "space", "child/page", "child/comment", "label"]
+
+
+@pytest.mark.parametrize("route", _PAGED)
+def test_confluence_every_paged_listing_answers_base_context_and_self(client, admin_h, route):
+    """Measured: all three ride every page, `context` is `/wiki`, and `self` is the request's URL
+    with `limit`, `start` and the markers removed and every other parameter kept."""
+    api = "/atlassian/wiki/rest/api"
+    if route in ("content", "space"):
+        path = f"{api}/{route}"
+    else:
+        cid = client.get(f"{api}/content?limit=1", headers=admin_h).json()["results"][0]["id"]
+        path = f"{api}/content/{cid}/{route}"
+    links = client.get(f"{path}?limit=1&start=0&bogus=x", headers=admin_h).json()["_links"]
+    assert links["context"] == "/wiki"
+    assert links["base"].endswith("/wiki")
+    assert links["self"].endswith(path.replace("/atlassian", "") + "?bogus=x"), links["self"]
+
+
+@pytest.mark.parametrize(
+    "route, zero_refused",
+    [
+        ("content", None),
+        ("child/page", None),
+        ("child/comment", None),
+        ("label", "java.lang.IllegalArgumentException: null"),
+    ],
+)
+def test_confluence_listings_read_limit_and_start(client, admin_h, route, zero_refused):
+    """Measured: each reads both, so `?limit=0` is an empty page whose `next` names the page it is
+    on, or on `label` the 400 of :func:`backlot.errors.atlassian.zero_limit_not_allowed`; `?start=1`
+    carries a `prev`; and a `start` past the collection answers a `prev` and no `next`."""
+    api = "/atlassian/wiki/rest/api"
+    path = f"{api}/content"
+    if route != "content":
+        holder = None
+        for page in client.get(f"{api}/content?limit=100", headers=admin_h).json()["results"]:
+            if client.get(f"{api}/content/{page['id']}/{route}", headers=admin_h).json()["size"]:
+                holder = page["id"]
+                break
+        assert holder, f"the bundled corpus holds no {route} row to page"
+        path = f"{api}/content/{holder}/{route}"
+    zero = client.get(f"{path}?limit=0", headers=admin_h)
+    if zero_refused:
+        assert zero.status_code == 400
+        assert zero.json() == {"statusCode": 400, "message": zero_refused}
+    else:
+        assert zero.status_code == 200, zero.text
+        assert zero.json()["limit"] == 0 and zero.json()["size"] == 0
+        assert zero.json()["_links"]["next"].endswith("next=true&limit=0&start=0")
+    second = client.get(f"{path}?limit=1&start=1", headers=admin_h)
+    assert second.status_code == 200, second.text
+    assert second.json()["start"] == 1 and second.json()["limit"] == 1
+    assert second.json()["_links"]["prev"].endswith("prev=true&limit=1&start=0")
+    past = client.get(f"{path}?limit=1&start=99999", headers=admin_h).json()["_links"]
+    assert "next" not in past and "prev" in past
+
+
+def test_confluence_a_carried_parameter_sits_where_it_was_measured(client, admin_h):
+    """`expand` leads `limit`/`start` and a name real does not read trails `start`: the placement
+    :func:`backlot.routers.atlassian._confluence_carried` chose, since real's own for the latter is
+    no rule a client can rely on."""
+    api = "/atlassian/wiki/rest/api"
+    links = client.get(f"{api}/content?limit=1&bogus=x", headers=admin_h).json()["_links"]
+    assert links["next"].endswith("next=true&limit=1&start=1&bogus=x")
+    assert links["self"].endswith("/content?bogus=x")
+
+
+def test_confluence_label_serves_one_of_two_labels_and_a_next(client, admin_h):
+    """`label` is the one listing the bundled corpus holds two rows for, so it is where a page
+    smaller than the collection can be read: one row, and a `next` to the second."""
+    api = "/atlassian/wiki/rest/api"
+    holder = next(
+        page["id"]
+        for page in client.get(f"{api}/content?limit=100", headers=admin_h).json()["results"]
+        if client.get(f"{api}/content/{page['id']}/label", headers=admin_h).json()["size"] > 1
+    )
+    page = client.get(f"{api}/content/{holder}/label?limit=1&start=0", headers=admin_h).json()
+    assert page["size"] == 1 and page["limit"] == 1
+    assert page["_links"]["next"].endswith("next=true&limit=1&start=1")
+
+
+@pytest.mark.parametrize("route", ["child/page", "child/comment", "label"])
+def test_confluence_child_listings_refuse_a_limit_they_cannot_convert(client, admin_h, route):
+    """Measured: each answers Spring's two-key 400, the same body `content` gives."""
+    api = "/atlassian/wiki/rest/api"
+    cid = client.get(f"{api}/content?limit=1", headers=admin_h).json()["results"][0]["id"]
+    r = client.get(f"{api}/content/{cid}/{route}?limit=abc", headers=admin_h)
+    assert r.status_code == 400
+    assert sorted(r.json()) == ["message", "statusCode"]
+    assert "MethodArgumentTypeMismatchException" in r.json()["message"]
+
+
+@pytest.fixture(scope="module")
+def searchable(tmp_path_factory):
+    """Four Confluence pages one CQL term matches, so a page of two leaves rows behind it: the
+    bundled corpus matches two at most, where a page served ahead of the last one needs three."""
+    settings = tiny_corpus(
+        tmp_path_factory.mktemp("searchable"),
+        [
+            {
+                "source_type": "confluence",
+                "doc_id": f"cf-rollback-{n}",
+                "space": "handbook",
+                "title": f"Rollback {n}",
+                "content": "rollback steps",
+                "author_email": "a@x.com",
+                "visibility": "public",
+            }
+            for n in range(4)
+        ],
+    )
+    with client_for(settings, reload=True) as client:
+        tok = yaml.safe_load(settings.tokens_path.read_text())["admin_token"]
+        yield client, {"Authorization": f"Bearer {tok}"}
+
+
+_CQL = '/atlassian/wiki/rest/api/search?cql=text~"rollback"'
+
+
+def _cursors(link: str) -> list[str]:
+    return re.findall(r"cursor=([^&]*)", link)
+
+
+def _named_row(token: str) -> str:
+    """The content id a cursor names, read back out of its base64 payload."""
+    payload = re.fullmatch(r"_t_(.+)_h_W10=", unquote(token)).group(1)
+    return json.loads(base64.b64decode(payload))[0].strip()
+
+
+def test_confluence_cql_cursor_names_the_last_row_the_page_served(searchable):
+    """Measured 2026-09-23: the token names the last row served, so the second match at `limit=2`,
+    and on an empty page the first match whatever `start` says."""
+    client, h = searchable
+    page = client.get(f"{_CQL}&limit=2", headers=h).json()
+    assert page["totalSize"] == 4
+    served = [r["content"]["id"] for r in page["results"]]
+    assert _named_row(_cursors(page["_links"]["next"])[0]) == served[-1] != served[0]
+    first = client.get(f"{_CQL}&limit=1", headers=h).json()["results"][0]["content"]["id"]
+    empty = client.get(f"{_CQL}&limit=0&start=3", headers=h).json()
+    assert _named_row(_cursors(empty["_links"]["next"])[0]) == first
+
+
+def test_confluence_cql_links_carry_one_cursor_and_prev_the_one_sent(searchable):
+    """Measured 2026-09-23 following `next` three hops at `limit=0`, `1` and `2`: `next` carries
+    the new cursor alone, `self` none, and `prev` leads with the one the request sent, at `start=0`
+    too. With a cursor sent, `prev`'s own `limit` is the request's rather than the rows skipped."""
+    client, h = searchable
+    for limit in (0, 1):
+        page = client.get(f"{_CQL}&limit={limit}", headers=h).json()
+        nxt = page["_links"]["next"]
+        assert re.match(rf"/rest/api/search\?next=true&cursor=[^&]+&limit={limit}&start=", nxt)
+        assert "cursor=" not in page["_links"]["self"]
+        for _hop in range(3):
+            sent = _cursors(page["_links"]["next"])
+            assert len(sent) == 1, page["_links"]["next"]
+            page = client.get("/atlassian/wiki" + page["_links"]["next"], headers=h).json()
+            links = page["_links"]
+            assert "cursor=" not in links["self"]
+            assert links["prev"].startswith(f"/rest/api/search?cursor={sent[0]}&prev=true&")
+    token = _cursors(client.get(f"{_CQL}&limit=1", headers=h).json()["_links"]["next"])[0]
+    with_cursor = client.get(f"{_CQL}&cursor={token}&limit=3&start=1", headers=h).json()
+    assert with_cursor["_links"]["prev"].startswith(
+        f"/rest/api/search?cursor={token}&prev=true&limit=3&start=0&"
+    )
+    without = client.get(f"{_CQL}&limit=3&start=1", headers=h).json()
+    assert without["_links"]["prev"].startswith("/rest/api/search?prev=true&limit=1&start=0&")
+
+
 def test_confluence_reads_the_first_of_a_repeated_integer_parameter(client, admin_h):
     r = client.get("/atlassian/wiki/rest/api/content?limit=1&limit=25", headers=admin_h)
     assert r.status_code == 200, r.text
@@ -1359,7 +1590,8 @@ def test_confluence_reads_the_first_of_a_repeated_integer_parameter(client, admi
         ("limit=%203%20", 3),
         ("limit=3%204", 34),
         ("limit=%D9%A3", 3),
-        ("limit=2147483647", 2147483647),
+        # Java's `int` ceiling converts, and `content` then answers its own cap for it.
+        ("limit=2147483647", 1000),
     ],
 )
 def test_confluence_takes_the_integer_spellings_the_real_api_takes(
@@ -1502,19 +1734,31 @@ def test_confluence_names_the_trimmed_value_where_jira_names_the_raw_one(client,
 
 
 @pytest.mark.parametrize(
-    "query,want",
+    "route,query,want",
     [
         # conversion comes first for BOTH parameters, so a bad `start` outranks a negative `limit`
-        ("limit=-1&start=abc", 'For input string: "abc"'),
-        ("limit=abc&start=-1", 'For input string: "abc"'),
+        ("content", "limit=-1&start=abc", 'For input string: "abc"'),
+        ("content", "limit=abc&start=-1", 'For input string: "abc"'),
         # and among two negatives it is `start` that gets named
-        ("limit=-1&start=-1", "start cannot be less than zero"),
+        ("content", "limit=-1&start=-1", "start cannot be less than zero"),
+        # `content`'s `start` bound comes after conversion, and ahead of both the negative and an
+        # unknown `spaceKey`
+        ("content", "limit=abc&start=100001", "MethodArgumentTypeMismatchException"),
+        ("content", "limit=-1&start=100001", "Start of this size is no longer supported"),
+        ("content", "spaceKey=NOPE&start=100001", "Start of this size is no longer supported"),
+        # `label`'s zero-`limit` refusal comes after conversion and after the negative
+        ("label", "limit=0&start=abc", 'For input string: "abc"'),
+        ("label", "limit=0&start=-1", "start cannot be less than zero"),
     ],
 )
 def test_confluence_refuses_the_parameter_real_names_when_both_are_wrong(
-    client, admin_h, query, want
+    client, admin_h, route, query, want
 ):
-    r = client.get(f"/atlassian/wiki/rest/api/content?{query}", headers=admin_h)
+    api = "/atlassian/wiki/rest/api"
+    if route == "label":
+        cid = client.get(f"{api}/content?limit=1", headers=admin_h).json()["results"][0]["id"]
+        route = f"content/{cid}/label"
+    r = client.get(f"{api}/{route}?{query}", headers=admin_h)
     assert r.status_code == 400, r.text
     assert want in r.json()["message"]
 

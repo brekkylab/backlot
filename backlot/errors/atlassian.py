@@ -186,16 +186,54 @@ def integer_conversion_failure(path: str, name: str, values: list[str]) -> Atlas
     )
 
 
+def start_too_large() -> AtlassianError:
+    """`content`'s refusal of a `start` above 100000, which `space` does not share.
+
+    Measured 2026-09-22: `content?start=100001` is a 400 whose body carries the `data` object
+    Confluence puts on the refusals its API service layer raises, where the conversion 400 and the
+    negative 400 above carry `statusCode` and `message` alone. `start=100000` is a 200, so the
+    bound is inclusive.
+    """
+    return AtlassianError(
+        400,
+        {
+            "statusCode": 400,
+            "data": {"authorized": True, "valid": True, "errors": [], "successful": True},
+            "message": (
+                "com.atlassian.confluence.api.service.exceptions.api.BadRequestException: "
+                "Start of this size is no longer supported. If you need to fetch this amount of "
+                "content, please use either the search endpoint or get the content by a space at "
+                "a time."
+            ),
+        },
+    )
+
+
 def negative_not_allowed(name: str) -> AtlassianError:
-    """Confluence's refusal of a negative ``limit`` or ``start``, measured 2026-09-14 on both
-    listings. Jira does NOT share it — a negative there clamps to the floor and answers 200 — so
-    this is Confluence's alone, and its body is the bare exception string again."""
+    """Confluence's refusal of a negative ``limit`` or ``start``, measured 2026-09-14 on `content`
+    and `space` and 2026-09-23 on the three listings under `content/{id}`. Jira does NOT share
+    it — a negative there clamps to the floor and answers 200 — so this is Confluence's alone,
+    and its body is the bare exception string again."""
     return AtlassianError(
         400,
         {
             "statusCode": 400,
             "message": f"java.lang.IllegalArgumentException: {name} cannot be less than zero",
         },
+    )
+
+
+def zero_limit_not_allowed() -> AtlassianError:
+    """`label`'s refusal of `?limit=0`, which no other Confluence listing shares.
+
+    Measured 2026-09-22 with a cache-buster on each request: `content`, `space`, the CQL search,
+    `child/page`, `child/comment` and `child/attachment` all answer `?limit=0` with an empty page
+    at 200, and `content/{id}/label` alone answers this 400. `?limit=1` and `?limit=2` are 200
+    there, so it is the zero it refuses rather than a small page. The message is the bare exception
+    string with no name in it, where the negative refusal beside it names the parameter.
+    """
+    return AtlassianError(
+        400, {"statusCode": 400, "message": "java.lang.IllegalArgumentException: null"}
     )
 
 

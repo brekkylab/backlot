@@ -1373,120 +1373,60 @@ def _keys(r):
     return r.status_code, sorted(r.json())
 
 
-_FOLDERS = "mimeType='application/vnd.google-apps.folder'"
-_SHEETS = "mimeType='application/vnd.google-apps.spreadsheet'"
-_GBDF = {"dataFilters": [{"a1Range": "Sheet1!A1"}]}
+def _values_of(r):
+    return r.status_code, r.json().get("values")
 
-# One row per measured pair in `gerr.first_repeat`'s table, each sent the way real was sent it:
-# (method, path, fixed params, parameter, first value, second value, which end real reads, what to
-# compare). `{sid}` is the spreadsheet, `{token}` a valid page token. `pageToken`'s second value is
-# the empty one rather than the `BOGUS` of the table, because Backlot reads `BOGUS` alone as the
-# first page where real refuses it -- a separate gap, and one that would make the two ends agree.
+
+def _grid(r):
+    """The keys, and whether any sheet came back carrying cells: a mask that reaches the cells is
+    what decides the grid, so a route that read one end for the grid and the other for the body
+    answers the right keys without the cells."""
+    sheets = r.json().get("sheets", [])
+    return r.status_code, sorted(r.json()), any("data" in s for s in sheets)
+
+
+_FILES = "/drive/v3/files"
+_VALUES = "/sheets/v4/spreadsheets/{sid}/values/Sheet1!A1"
+_BOOK = "/sheets/v4/spreadsheets/{sid}"
+_BY_FILTER = "/sheets/v4/spreadsheets/{sid}:getByDataFilter"
+_VALUES_BY_FILTER = "/sheets/v4/spreadsheets/{sid}/values:batchGetByDataFilter"
+_BY_FILTER_BODY = {"dataFilters": [{"a1Range": "Sheet1!A1"}]}
+_FOLDERS = "mimeType='application/vnd.google-apps.folder'"
+_SPREADSHEETS = "mimeType='application/vnd.google-apps.spreadsheet'"
+_CELLS = "sheets.data.rowData.values.formattedValue"
+
+# One row per measured pair in `gerr.first_repeat`'s table, sent the way real was sent it:
+# (method, path, fixed params, parameter, one value, the other, the end real reads, what to
+# compare). `{sid}` is the spreadsheet, `{folder}` a folder and `{token}` a valid page token. The
+# `pageToken` row pairs the token with an empty value rather than the table's `BOGUS`: Backlot
+# answers `BOGUS` alone with the first page where real refuses it, a gap of its own, and a row
+# built on it could not tell the two ends apart.
 REPEATED = [
-    ("GET", "/drive/v3/files", {}, "fields", "files(id)", "bogus", "first", _keys),
-    ("GET", "/drive/v3/files/{sid}", {}, "fields", "id", "bogus", "first", _keys),
+    ("GET", _FILES, {}, "fields", "files(id)", "bogus", "first", _keys),
+    ("GET", _FILES + "/{sid}", {}, "fields", "id", "bogus", "first", _keys),
+    ("GET", _FILES + "/{folder}", {}, "fields", "id", "bogus", "first", _keys),
     ("GET", "/drive/v3/about", {}, "fields", "user", "bogus", "first", _keys),
     ("GET", "/drive/v3/about", {}, "fields", "", "user", "first", _keys),
+    ("GET", _VALUES, {}, "fields", "range", "bogus", "first", _keys),
+    ("GET", _VALUES, {}, "fields", "", "range", "first", _keys),
+    ("GET", _BOOK, {}, "fields", _CELLS, "spreadsheetId", "first", _grid),
+    ("POST", _BY_FILTER, {}, "fields", _CELLS, "spreadsheetId", "first", _grid),
+    ("POST", _BY_FILTER, {}, "fields", "spreadsheetId", "bogus", "first", _keys),
+    ("POST", _VALUES_BY_FILTER, {}, "fields", "spreadsheetId", "bogus", "first", _keys),
+    ("GET", _VALUES, {}, "prettyPrint", "false", "true", "first", _compact),
+    ("GET", _VALUES, {}, "prettyPrint", "", "false", "first", _compact),
+    ("POST", _BY_FILTER, {}, "prettyPrint", "false", "true", "first", _compact),
+    ("POST", _VALUES_BY_FILTER, {}, "prettyPrint", "false", "true", "first", _compact),
+    ("GET", _FILES, {}, "q", _FOLDERS, _SPREADSHEETS, "first", _mimes),
+    ("GET", _FILES, {}, "q", "", _FOLDERS, "first", _mimes),
+    ("GET", _FILES, {}, "q", _FOLDERS, "nosuchfield = 1", "first", _mimes),
+    ("GET", _FILES, {}, "pageSize", "1", "3", "first", _ids),
+    ("GET", _FILES, {"pageSize": "1"}, "pageToken", "{token}", "", "first", _ids),
+    ("GET", _FILES, {"pageSize": "3"}, "orderBy", "name", "name desc", "first", _names),
+    ("GET", _FILES, {"pageSize": "3"}, "orderBy", "name", "bogus", "first", _names),
     (
         "GET",
-        "/sheets/v4/spreadsheets/{sid}/values/Sheet1!A1",
-        {},
-        "fields",
-        "range",
-        "bogus",
-        "first",
-        _keys,
-    ),
-    (
-        "GET",
-        "/sheets/v4/spreadsheets/{sid}/values/Sheet1!A1",
-        {},
-        "fields",
-        "",
-        "range",
-        "first",
-        _keys,
-    ),
-    (
-        "GET",
-        "/sheets/v4/spreadsheets/{sid}",
-        {},
-        "fields",
-        "spreadsheetId",
-        "sheets.data.rowData.values.formattedValue",
-        "first",
-        _keys,
-    ),
-    (
-        "POST",
-        "/sheets/v4/spreadsheets/{sid}:getByDataFilter",
-        {},
-        "fields",
-        "spreadsheetId",
-        "bogus",
-        "first",
-        _keys,
-    ),
-    (
-        "POST",
-        "/sheets/v4/spreadsheets/{sid}/values:batchGetByDataFilter",
-        {},
-        "fields",
-        "spreadsheetId",
-        "bogus",
-        "first",
-        _keys,
-    ),
-    (
-        "GET",
-        "/sheets/v4/spreadsheets/{sid}/values/Sheet1!A1",
-        {},
-        "prettyPrint",
-        "false",
-        "true",
-        "first",
-        _compact,
-    ),
-    (
-        "GET",
-        "/sheets/v4/spreadsheets/{sid}/values/Sheet1!A1",
-        {},
-        "prettyPrint",
-        "",
-        "false",
-        "first",
-        _compact,
-    ),
-    (
-        "POST",
-        "/sheets/v4/spreadsheets/{sid}:getByDataFilter",
-        {},
-        "prettyPrint",
-        "false",
-        "true",
-        "first",
-        _compact,
-    ),
-    (
-        "POST",
-        "/sheets/v4/spreadsheets/{sid}/values:batchGetByDataFilter",
-        {},
-        "prettyPrint",
-        "false",
-        "true",
-        "first",
-        _compact,
-    ),
-    ("GET", "/drive/v3/files", {}, "q", _FOLDERS, _SHEETS, "first", _mimes),
-    ("GET", "/drive/v3/files", {}, "q", "", _FOLDERS, "first", _mimes),
-    ("GET", "/drive/v3/files", {}, "q", _FOLDERS, "nosuchfield = 1", "first", _mimes),
-    ("GET", "/drive/v3/files", {}, "pageSize", "1", "3", "first", _ids),
-    ("GET", "/drive/v3/files", {"pageSize": "1"}, "pageToken", "{token}", "", "first", _ids),
-    ("GET", "/drive/v3/files", {"pageSize": "3"}, "orderBy", "name", "name desc", "first", _names),
-    ("GET", "/drive/v3/files", {"pageSize": "3"}, "orderBy", "name", "bogus", "first", _names),
-    (
-        "GET",
-        "/drive/v3/files/{sid}/export",
+        _FILES + "/{sid}/export",
         {},
         "mimeType",
         "text/csv",
@@ -1494,26 +1434,8 @@ REPEATED = [
         "first",
         lambda r: r.headers["content-type"],
     ),
-    (
-        "GET",
-        "/sheets/v4/spreadsheets/{sid}/values/Sheet1!A1:B2",
-        {},
-        "majorDimension",
-        "ROWS",
-        "COLUMNS",
-        "last",
-        lambda r: r.json()["values"],
-    ),
-    (
-        "GET",
-        "/sheets/v4/spreadsheets/{sid}",
-        {},
-        "includeGridData",
-        "true",
-        "false",
-        "last",
-        lambda r: "data" in r.json()["sheets"][0],
-    ),
+    ("GET", _VALUES + ":B2", {}, "majorDimension", "ROWS", "COLUMNS", "last", _values_of),
+    ("GET", _BOOK, {}, "includeGridData", "true", "false", "last", _grid),
 ]
 
 
@@ -1527,23 +1449,15 @@ def test_a_repeated_parameter_is_read_from_the_end_real_reads_it_from(
 ):
     """Each pair both ways round answers what the end real reads answers on its own, and the two
     values alone answer differently, so the row could tell the two ends apart."""
-    token = httpx.get(f"{base}/drive/v3/files", headers=admin_h, params={"pageSize": "1"}).json()[
-        "nextPageToken"
-    ]
-    url = base + path.format(sid=sheet_id)
-    first, second = (v.format(token=token) for v in (first, second))
+    listing = httpx.get(f"{base}{_FILES}", headers=admin_h, params={"pageSize": "1"}).json()
+    folders = httpx.get(f"{base}{_FILES}", headers=admin_h, params={"q": _FOLDERS}).json()
+    url = base + path.format(sid=sheet_id, folder=folders["files"][0]["id"])
+    first, second = (v.format(token=listing["nextPageToken"]) for v in (first, second))
+    body = _BY_FILTER_BODY if method == "POST" else None
 
     def send(*values):
         params = [*fixed.items(), *((name, v) for v in values)]
-        return seen(
-            httpx.request(
-                method,
-                url,
-                headers=admin_h,
-                params=params,
-                json=_GBDF if method == "POST" else None,
-            )
-        )
+        return seen(httpx.request(method, url, headers=admin_h, params=params, json=body))
 
     alone = {v: send(v) for v in (first, second)}
     assert alone[first] != alone[second], alone

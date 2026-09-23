@@ -252,6 +252,19 @@ on their 200s. Measured against the live Sheets, Docs, Drive, Gmail and Slides A
 2026-09-16 and 2026-09-17: the wrap, the indent and the charset first, the suppression across the
 four non-Sheets families next, and the escape set and the case-insensitive `alt` last.
 
+**A repeated query parameter is read from the end real reads it from**, which is the first for some
+parameters and the last for others. The first repeat decides `fields`, `q`, `pageSize`, `pageToken`
+and `orderBy` on Drive's `files.list`, `fields` on `files.get` and `about`, and `mimeType` on
+`files.export`, and on Sheets `fields` and `prettyPrint`, as it decides `callback` and `alt`; the
+last decides `$.xgafv`, `majorDimension`, `valueRenderOption` and `includeGridData`. An empty first
+repeat is read as the empty value, not skipped. Gmail's `q`, `pageToken` and `maxResults` are read
+here from the last, and which end real reads is unmeasured, since a Gmail list answers 200 only to a
+scope the measuring credential cannot be granted. On a Sheets success, `prettyPrint` is compact at
+exactly `false` or `0`, and `FALSE`, `no` or `f` leave it indented. Measured against the live Drive,
+Sheets and Gmail APIs, each pair sent both ways round: `callback`, `alt` and the Sheets `$.xgafv`
+between 2026-09-15 and 2026-09-17, `includeGridData` and the Gmail `$.xgafv` on 2026-09-22, and the
+rest on 2026-09-23.
+
 ### HubSpot — `/hubspot/crm/v3` `/hubspot/crm/v4`
 
 | Endpoint | Notes |

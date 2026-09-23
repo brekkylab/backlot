@@ -1137,8 +1137,8 @@ def test_prettyprint_does_not_reach_an_error(base, admin_h, sheet_id, pretty):
     """Measured on all five families, each on an error of its own: every one came back two-space
     indented with no parameter, with `false` and with `true` alike, byte for byte. A SUCCESS under
     `false` is compact, which is what makes an indented error a rule and not a default — that half
-    is `test_pretty_print_is_on_by_default_and_only_false_turns_it_off`, pinned to the byte in both
-    spellings."""
+    is `test_pretty_print_indents_by_default_and_is_compact_to_the_byte_when_off`, pinned to the
+    byte both ways."""
     params = {} if pretty is None else {"prettyPrint": pretty}
     bad = _values(base, admin_h, sheet_id, "NOPE!!", **params)
     assert bad.status_code == 400, bad.text
@@ -1351,6 +1351,205 @@ def test_a_repeated_alt_decides_the_wrap_from_the_first_one(base, admin_h, sheet
     assert "Unsupported alt type" in _gerr(media_first)["message"]
     json_first = httpx.get(f"{url}?callback=cb&alt=json&alt=media", headers=admin_h)
     assert _jsonp(json_first, "cb")["range"] == "Sheet1!A1"
+
+
+def _compact(r):
+    return r.status_code, not r.text.startswith("{\n")
+
+
+def _mimes(r):
+    return r.status_code, sorted({f["mimeType"] for f in r.json().get("files", [])})
+
+
+def _names(r):
+    return r.status_code, [f["name"] for f in r.json().get("files", [])]
+
+
+def _ids(r):
+    return r.status_code, [f["id"] for f in r.json().get("files", [])]
+
+
+def _keys(r):
+    return r.status_code, sorted(r.json())
+
+
+_FOLDERS = "mimeType='application/vnd.google-apps.folder'"
+_SHEETS = "mimeType='application/vnd.google-apps.spreadsheet'"
+_GBDF = {"dataFilters": [{"a1Range": "Sheet1!A1"}]}
+
+# One row per measured pair in `gerr.first_repeat`'s table, each sent the way real was sent it:
+# (method, path, fixed params, parameter, first value, second value, which end real reads, what to
+# compare). `{sid}` is the spreadsheet, `{token}` a valid page token. `pageToken`'s second value is
+# the empty one rather than the `BOGUS` of the table, because Backlot reads `BOGUS` alone as the
+# first page where real refuses it -- a separate gap, and one that would make the two ends agree.
+REPEATED = [
+    ("GET", "/drive/v3/files", {}, "fields", "files(id)", "bogus", "first", _keys),
+    ("GET", "/drive/v3/files/{sid}", {}, "fields", "id", "bogus", "first", _keys),
+    ("GET", "/drive/v3/about", {}, "fields", "user", "bogus", "first", _keys),
+    ("GET", "/drive/v3/about", {}, "fields", "", "user", "first", _keys),
+    (
+        "GET",
+        "/sheets/v4/spreadsheets/{sid}/values/Sheet1!A1",
+        {},
+        "fields",
+        "range",
+        "bogus",
+        "first",
+        _keys,
+    ),
+    (
+        "GET",
+        "/sheets/v4/spreadsheets/{sid}/values/Sheet1!A1",
+        {},
+        "fields",
+        "",
+        "range",
+        "first",
+        _keys,
+    ),
+    (
+        "GET",
+        "/sheets/v4/spreadsheets/{sid}",
+        {},
+        "fields",
+        "spreadsheetId",
+        "sheets.data.rowData.values.formattedValue",
+        "first",
+        _keys,
+    ),
+    (
+        "POST",
+        "/sheets/v4/spreadsheets/{sid}:getByDataFilter",
+        {},
+        "fields",
+        "spreadsheetId",
+        "bogus",
+        "first",
+        _keys,
+    ),
+    (
+        "POST",
+        "/sheets/v4/spreadsheets/{sid}/values:batchGetByDataFilter",
+        {},
+        "fields",
+        "spreadsheetId",
+        "bogus",
+        "first",
+        _keys,
+    ),
+    (
+        "GET",
+        "/sheets/v4/spreadsheets/{sid}/values/Sheet1!A1",
+        {},
+        "prettyPrint",
+        "false",
+        "true",
+        "first",
+        _compact,
+    ),
+    (
+        "GET",
+        "/sheets/v4/spreadsheets/{sid}/values/Sheet1!A1",
+        {},
+        "prettyPrint",
+        "",
+        "false",
+        "first",
+        _compact,
+    ),
+    (
+        "POST",
+        "/sheets/v4/spreadsheets/{sid}:getByDataFilter",
+        {},
+        "prettyPrint",
+        "false",
+        "true",
+        "first",
+        _compact,
+    ),
+    (
+        "POST",
+        "/sheets/v4/spreadsheets/{sid}/values:batchGetByDataFilter",
+        {},
+        "prettyPrint",
+        "false",
+        "true",
+        "first",
+        _compact,
+    ),
+    ("GET", "/drive/v3/files", {}, "q", _FOLDERS, _SHEETS, "first", _mimes),
+    ("GET", "/drive/v3/files", {}, "q", "", _FOLDERS, "first", _mimes),
+    ("GET", "/drive/v3/files", {}, "q", _FOLDERS, "nosuchfield = 1", "first", _mimes),
+    ("GET", "/drive/v3/files", {}, "pageSize", "1", "3", "first", _ids),
+    ("GET", "/drive/v3/files", {"pageSize": "1"}, "pageToken", "{token}", "", "first", _ids),
+    ("GET", "/drive/v3/files", {"pageSize": "3"}, "orderBy", "name", "name desc", "first", _names),
+    ("GET", "/drive/v3/files", {"pageSize": "3"}, "orderBy", "name", "bogus", "first", _names),
+    (
+        "GET",
+        "/drive/v3/files/{sid}/export",
+        {},
+        "mimeType",
+        "text/csv",
+        "text/tab-separated-values",
+        "first",
+        lambda r: r.headers["content-type"],
+    ),
+    (
+        "GET",
+        "/sheets/v4/spreadsheets/{sid}/values/Sheet1!A1:B2",
+        {},
+        "majorDimension",
+        "ROWS",
+        "COLUMNS",
+        "last",
+        lambda r: r.json()["values"],
+    ),
+    (
+        "GET",
+        "/sheets/v4/spreadsheets/{sid}",
+        {},
+        "includeGridData",
+        "true",
+        "false",
+        "last",
+        lambda r: "data" in r.json()["sheets"][0],
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "method, path, fixed, name, first, second, reads, seen",
+    REPEATED,
+    ids=[f"{r[3]}-{r[4] or 'empty'}-then-{r[5] or 'empty'}-{r[1]}" for r in REPEATED],
+)
+def test_a_repeated_parameter_is_read_from_the_end_real_reads_it_from(
+    base, admin_h, sheet_id, method, path, fixed, name, first, second, reads, seen
+):
+    """Each pair both ways round answers what the end real reads answers on its own, and the two
+    values alone answer differently, so the row could tell the two ends apart."""
+    token = httpx.get(f"{base}/drive/v3/files", headers=admin_h, params={"pageSize": "1"}).json()[
+        "nextPageToken"
+    ]
+    url = base + path.format(sid=sheet_id)
+    first, second = (v.format(token=token) for v in (first, second))
+
+    def send(*values):
+        params = [*fixed.items(), *((name, v) for v in values)]
+        return seen(
+            httpx.request(
+                method,
+                url,
+                headers=admin_h,
+                params=params,
+                json=_GBDF if method == "POST" else None,
+            )
+        )
+
+    alone = {v: send(v) for v in (first, second)}
+    assert alone[first] != alone[second], alone
+    end = 0 if reads == "first" else -1
+    assert send(first, second) == alone[(first, second)[end]]
+    assert send(second, first) == alone[(second, first)[end]]
 
 
 def test_every_google_get_refuses_a_callback_it_cannot_call_and_no_post_reads_one(client):
@@ -4619,7 +4818,7 @@ def test_a_fields_mask_naming_no_field_is_refused(gc, gh, book, mask):
     ]
 
 
-def test_pretty_print_is_on_by_default_and_only_false_turns_it_off(gc, gh, book):
+def test_pretty_print_indents_by_default_and_is_compact_to_the_byte_when_off(gc, gh, book):
     """Measured to the byte: indented two spaces and newline-terminated by default; compact with
     no space after `:` or `,` and no trailing newline when off. An unparseable value is treated as
     true rather than refused, unlike the other booleans."""
@@ -4629,6 +4828,32 @@ def test_pretty_print_is_on_by_default_and_only_false_turns_it_off(gc, gh, book)
     off = gc.get(url, headers=gh, params={"prettyPrint": "false"}).text
     assert off.startswith('{"range":"Summary!A1"') and not off.endswith("\n")
     assert gc.get(url, headers=gh, params={"prettyPrint": "NOPE"}).status_code == 200
+
+
+@pytest.mark.parametrize(
+    "value, compact",
+    [
+        ("false", True),
+        ("0", True),
+        ("FALSE", False),
+        ("False", False),
+        ("f", False),
+        ("F", False),
+        ("no", False),
+        ("n", False),
+        ("00", False),
+        (" false", False),
+        ("", False),
+    ],
+)
+def test_pretty_print_is_turned_off_by_two_spellings_matched_exactly(gc, gh, book, value, compact):
+    """Measured 2026-09-23 on `values.get`, one request per spelling: `false` and `0` are compact
+    and every other value is indented. So `prettyPrint` does not take the spellings the Sheets
+    booleans do, where `f`, `no` and `n` mean false and case does not matter."""
+    url = f"/sheets/v4/spreadsheets/{book}/values/Summary!A1:A1"
+    r = gc.get(url, headers=gh, params={"prettyPrint": value})
+    assert r.status_code == 200
+    assert (not r.text.startswith("{\n")) is compact
 
 
 @pytest.mark.parametrize(

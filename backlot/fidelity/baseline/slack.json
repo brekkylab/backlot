@@ -4,7 +4,7 @@
     "https://docs.slack.dev/reference/methods.md",
     "https://slack.com/api"
   ],
-  "measured": "2026-09-22",
+  "measured": "2026-09-23",
   "acknowledged": [
     {
       "kind": "extra_field",
@@ -1424,7 +1424,7 @@
       "severity": "gap",
       "path": "conversations.history messages[].last_read",
       "detail": "the real API serves it; Backlot does not",
-      "note": "`last_read` sits on a thread's parent message only for a caller subscribed to that thread. Measured 2026-09-23 with a caller not subscribed to this workspace's one thread (`subscribed: false`), neither this method's nor `conversations.replies`' answer carries it, so this entry does not reproduce for every caller — conditional on the caller, not a shape Backlot invented."
+      "note": "`last_read` sits on a thread's parent message only for a caller subscribed to that thread. Measured 2026-09-23 with a caller not subscribed to this workspace's one thread (`subscribed: false`), neither this method's nor `conversations.replies`' answer carries it, so this entry does not reproduce for every caller \u2014 conditional on the caller, not a shape Backlot invented."
     },
     {
       "kind": "missing_field",
@@ -1449,6 +1449,24 @@
       "severity": "gap",
       "path": "conversations.history?token",
       "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "conversations.info channel.is_read_only",
+      "detail": "the real API serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "conversations.info channel.is_thread_only",
+      "detail": "the real API serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "conversations.info channel.properties.is_dormant",
+      "detail": "the real API serves it; Backlot does not"
     },
     {
       "kind": "missing_field",
@@ -1605,7 +1623,7 @@
       "severity": "gap",
       "path": "conversations.replies messages[].last_read",
       "detail": "the real API serves it; Backlot does not",
-      "note": "`last_read` sits on a thread's parent message only for a caller subscribed to that thread. Measured 2026-09-23 with a caller not subscribed to this workspace's one thread (`subscribed: false`), neither this method's nor `conversations.history`'s answer carries it, so this entry does not reproduce for every caller — conditional on the caller, not a shape Backlot invented."
+      "note": "`last_read` sits on a thread's parent message only for a caller subscribed to that thread. Measured 2026-09-23 with a caller not subscribed to this workspace's one thread (`subscribed: false`), neither this method's nor `conversations.history`'s answer carries it, so this entry does not reproduce for every caller \u2014 conditional on the caller, not a shape Backlot invented."
     },
     {
       "kind": "missing_param",
@@ -2096,6 +2114,12 @@
     {
       "kind": "missing_field",
       "severity": "gap",
+      "path": "search.all messages.matches[].files",
+      "detail": "the real API serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
       "path": "search.all messages.matches[].iid",
       "detail": "the real API serves it; Backlot does not"
     },
@@ -2243,6 +2267,12 @@
       "kind": "missing_field",
       "severity": "gap",
       "path": "search.messages messages.matches[].db_message",
+      "detail": "the real API serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "search.messages messages.matches[].files",
       "detail": "the real API serves it; Backlot does not"
     },
     {
@@ -2518,6 +2548,12 @@
     {
       "kind": "missing_field",
       "severity": "gap",
+      "path": "users.info user.is_invited_user",
+      "detail": "the real API serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
       "path": "users.info user.profile.huddle_state",
       "detail": "the real API serves it; Backlot does not"
     },
@@ -2525,6 +2561,12 @@
       "kind": "missing_field",
       "severity": "gap",
       "path": "users.info user.profile.huddle_state_expiration_ts",
+      "detail": "the real API serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "users.info user.profile.image_1024",
       "detail": "the real API serves it; Backlot does not"
     },
     {
@@ -2561,6 +2603,24 @@
       "kind": "missing_field",
       "severity": "gap",
       "path": "users.info user.profile.image_72",
+      "detail": "the real API serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "users.info user.profile.image_original",
+      "detail": "the real API serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "users.info user.profile.is_custom_image",
+      "detail": "the real API serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "users.info user.profile.start_date",
       "detail": "the real API serves it; Backlot does not"
     },
     {

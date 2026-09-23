@@ -30,12 +30,13 @@ from backlot.fidelity.findings import BREAKING, GAP, Finding
 _FIELD_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 
 # Seconds between two calls to the vendor. Slack applies its limits "per API method per
-# workspace/team per app" (`docs.slack.dev/apis/web-api/rate-limits`), and every method here is
-# asked once or twice except `conversations.history`, which discovery asks once per channel until
-# it finds a thread. Eleven of the twelve are Tier 2 at worst (20+ per minute) and that one is
-# Tier 3 (50+); `auth.test` names no tier at all, only "Special rate limits apply". So the pace is
-# set by the published floor rather than by a method's own budget, and one call every 1.2s stays
-# inside it without a retry loop to get wrong.
+# workspace/team per app" (`docs.slack.dev/apis/web-api/rate-limits`). The methods asked once per
+# channel or per person are `conversations.history` and `conversations.info` (Tier 3, 50+ per
+# minute) and `users.info` (Tier 4, 100+); the Tier 2 ones (20+) are asked at most twice each,
+# except `search.messages`, asked twice per candidate word, at most `2 * _QUERY_ATTEMPTS`;
+# `auth.test` names no tier, only "Special rate limits apply". One call every 1.2s is 50 a minute,
+# the Tier 3 floor, so no method is asked faster than its tier allows without a retry loop to get
+# wrong.
 _PACE = 1.2
 
 PROBE_CORPUS: tuple[dict[str, Any], ...] = (
@@ -100,9 +101,9 @@ _BACKLOT_QUERY = "drosophila"
 # off first, so `<@U0BCVV6G3M1>` contributes no token and neither does a link's target.
 _WORD = re.compile(r"\w{4,}")
 _MARKUP = re.compile(r"<[^>]*>")
-# How many of those the probe will try before giving up. Search is the vendor's most restricted
-# tier here (Tier 2), and a word drawn from a message that Slack's index does have should match on
-# the first or second try.
+# How many of those the probe searches for, keeping each that matches. Search is the vendor's most
+# restricted tier here (Tier 2); measured 2026-09-23, words from the three messages carrying the
+# most fields produced every finding that all seven of the channel's words did.
 _QUERY_ATTEMPTS = 3
 
 
@@ -147,7 +148,8 @@ def shape_of(body: Any) -> Shape:
     """Every field path a response carries, with the JSON types seen at each.
 
     An array contributes one path for its members rather than one per member, so two pages of the
-    same listing read the same. A field present on ANY member counts as present: Slack drops
+    same listing read the same, and that path, ``<array>[]``, carries the members' own types — the
+    only place a list of ids answered as a list of objects can show. A field present on ANY member counts as present: Slack drops
     fields per object — a deactivated member carries thirteen fewer — and intersecting would
     report the vendor as missing what it serves on every other member.
 
@@ -171,16 +173,22 @@ def shape_of(body: Any) -> Shape:
                 child = f"{path}.{name}" if path else name
                 fields.setdefault(child, set()).add(_json_type(value))
                 walk(value, child)
-        elif isinstance(node, list):
+        elif isinstance(node, list) and node:
+            members = f"{path}[]"
+            containers.add(members)
             for item in node:
-                walk(item, f"{path}[]")
+                fields.setdefault(members, set()).add(_json_type(item))
+                walk(item, members)
 
     walk(body, "")
     return Shape({k: frozenset(v) for k, v in fields.items()}, frozenset(containers))
 
 
 def _container(path: str) -> str:
-    """The path of the object a field sits in — everything before its own name."""
+    """The path of the object a field sits in — everything before its own name. An array's
+    members path is its own container: it exists only where that side's array had members."""
+    if path.endswith("[]"):
+        return path
     return path.rsplit(".", 1)[0] if "." in path else ""
 
 
@@ -284,45 +292,51 @@ class Sample:
 
     channel: str
     thread_ts: str
-    user: str
-    query: str
+    channels: tuple[str, ...]
+    users: tuple[str, ...]
+    queries: tuple[str, ...]
 
 
 def _searchable_words(messages: Any) -> list[str]:
-    """Candidate queries, out of the text of messages the probe has already read.
+    """Candidate queries, one per message, out of messages the probe has already read.
 
-    Longest first, because a long word is the one most likely to be indexed as itself rather than
-    swallowed by a stop list, and deterministic for a given history so two runs against an
-    unchanged workspace ask the same question.
+    A match carries what its message carries, so the candidates come from different messages, the
+    ones carrying the most fields first: measured 2026-09-23 over the six messages of a live
+    workspace's threaded channel, `matches[].files` came back only for a word drawn from the one
+    message carrying a file, 2 of the 7 words that history held. Within a message the longest word,
+    because a long word is the one most likely to be indexed as itself rather than swallowed by a
+    stop list. Deterministic for a given history, so two runs against an unchanged workspace ask
+    the same questions.
     """
-    words = {
-        w for m in messages or () for w in _WORD.findall(_MARKUP.sub(" ", m.get("text") or ""))
-    }
-    return sorted(words, key=lambda w: (-len(w), w))
+    out: list[str] = []
+    for message in sorted(messages or (), key=lambda m: (-len(m), m.get("ts") or "")):
+        text = _MARKUP.sub(" ", message.get("text") or "")
+        words = sorted(set(_WORD.findall(text)) - set(out), key=lambda w: (-len(w), w))
+        if words:
+            out.append(words[0])
+    return out
 
 
 def discover(call: _Caller, query: str = "", *, require_admin: bool = False) -> Sample:
-    """Find a channel, a threaded message, a person and a query to aim the rest of the probe at.
+    """Find the channels, a threaded message, the people and the queries to aim the probe at.
 
-    Discovered rather than configured: an id the probe cannot reach as a client is one it cannot
-    ask questions about either, and each of the four is a condition this workspace either meets or
-    does not. Where it does not, that is reported as a contract the probe could not read rather
+    Each is a condition this workspace either meets or does not. Where it does not, that is reported as a contract the probe could not read rather
     than as a clean comparison, because a search that matches nothing leaves a match's own fields
     compared against nothing at all — and that is the whole of what the three search methods add
     over their envelopes.
 
+    Every channel and every active person the listings answered with is kept, not one of each:
+    `conversations.info` and `users.info` describe one object, Slack drops fields per object, and
+    measured 2026-09-23 a single sampled person or channel left out up to four fields the others
+    carry — so which one a listing happened to put first would decide the findings. Every candidate
+    word that matches is kept too, for the reason :func:`_searchable_words` gives.
+
     ``query`` is passed only for Backlot's side, where the corpus plants a word; the vendor's is
     derived, because Slack has no query that means "everything".
 
-    ``require_admin`` checks the caller's own identity before anything else, by asking `users.info`
-    about `auth.test`'s own `user_id` rather than paging `users.list` to find it — a workspace with
-    more than one page of members would otherwise put an admin's own entry on a page this probe
-    never reads. Backlot's side of the probe is always its admin/service token; a real caller who
-    is not an admin gets `has_2fa` on their own member object only, not on every person the way
-    Backlot's does, which is a difference in what the *caller* is, not one this probe's shape
-    comparison can see. This repository's own misconfiguration — the wrong kind of token set, not
-    the vendor's problem — so it raises :class:`~backlot.fidelity.errors.CredentialsMissing`
-    rather than a plain contract-unreadable error, the same as a credential nobody set at all.
+    ``require_admin`` asks `users.info` about `auth.test`'s `user_id` before anything else and
+    refuses a non-admin caller as :class:`~backlot.fidelity.errors.CredentialsMissing`; why an
+    admin is required is `SLACK`'s Credential comment in `backlot/fidelity/comparisons.py`.
     """
     if require_admin:
         me = call("auth.test")
@@ -354,42 +368,71 @@ def discover(call: _Caller, query: str = "", *, require_admin: bool = False) -> 
     if not people:
         raise FidelityError("this workspace lists no active person, so users.info cannot be probed")
     candidates = [query] if query else _searchable_words(messages)[:_QUERY_ATTEMPTS]
-    for candidate in candidates:
-        found = call("search.messages", query=candidate, count=1).get("messages") or {}
-        if found.get("matches"):
-            return Sample(channel["id"], parents[0]["ts"], people[0]["id"], candidate)
-    raise FidelityError(
-        f"none of the {len(candidates)} candidate words drawn from the discovered channel's "
-        "history matched a search, so a search match cannot be probed"
+    queries = tuple(
+        candidate
+        for candidate in candidates
+        if (call("search.messages", query=candidate, count=1).get("messages") or {}).get("matches")
+    )
+    if not queries:
+        raise FidelityError(
+            f"none of the {len(candidates)} candidate words drawn from the discovered channel's "
+            "history matched a search, so a search match cannot be probed"
+        )
+    return Sample(
+        channel["id"],
+        parents[0]["ts"],
+        tuple(c["id"] for c in channels),
+        tuple(p["id"] for p in people),
+        queries,
     )
 
 
 def _calls(sample: Sample) -> list[tuple[str, dict[str, Any]]]:
-    """Every method Backlot serves, with the arguments this side is asked for."""
+    """Every method Backlot serves, with the arguments this side is asked for — a method once per
+    channel, person or query where the sample holds several."""
     return [
         ("api.test", {}),
         ("auth.test", {}),
         ("conversations.list", {"limit": 200}),
-        ("conversations.info", {"channel": sample.channel}),
+        *(("conversations.info", {"channel": channel}) for channel in sample.channels),
         ("conversations.history", {"channel": sample.channel, "limit": 200}),
         ("conversations.members", {"channel": sample.channel}),
         ("conversations.replies", {"channel": sample.channel, "ts": sample.thread_ts}),
-        ("search.all", {"query": sample.query, "count": 20}),
-        ("search.files", {"query": sample.query, "count": 20}),
-        ("search.messages", {"query": sample.query, "count": 20}),
-        ("users.info", {"user": sample.user}),
+        *(
+            (method, {"query": query, "count": 20})
+            for query in sample.queries
+            for method in ("search.all", "search.files", "search.messages")
+        ),
+        *(("users.info", {"user": user}) for user in sample.users),
         ("users.list", {"limit": 200}),
     ]
 
 
+def _union(shapes: list[Shape]) -> Shape:
+    """Several answers to one method as one shape, the way :func:`shape_of` reads an array's
+    members: a field on any of them is present."""
+    fields: dict[str, frozenset[str]] = {}
+    for shape in shapes:
+        for path, types in shape.fields.items():
+            fields[path] = fields.get(path, frozenset()) | types
+    return Shape(fields, frozenset().union(*(shape.containers for shape in shapes)))
+
+
+def _shapes(call: _Caller, sample: Sample) -> dict[str, Shape]:
+    """One shape per method, over every call this side's sample aims that method at."""
+    answers: dict[str, list[Shape]] = {}
+    for method, arguments in _calls(sample):
+        answers.setdefault(method, []).append(shape_of(call(method, **arguments)))
+    return {method: _union(shapes) for method, shapes in answers.items()}
+
+
 def probe(backlot: _Caller, real: _Caller) -> list[Finding]:
     """Ask both servers the same twelve methods and compare the shapes that come back."""
-    theirs = dict(_calls(discover(real, require_admin=True)))
+    theirs = _shapes(real, discover(real, require_admin=True))
+    ours = _shapes(backlot, discover(backlot, _BACKLOT_QUERY))
     out: list[Finding] = []
-    for method, ours in _calls(discover(backlot, _BACKLOT_QUERY)):
-        out += diff_shapes(
-            method, shape_of(backlot(method, **ours)), shape_of(real(method, **theirs[method]))
-        )
+    for method in ours:
+        out += diff_shapes(method, ours[method], theirs[method])
     return sorted(out, key=lambda f: (f.severity != BREAKING, f.path, f.kind))
 
 

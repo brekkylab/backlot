@@ -1128,9 +1128,9 @@ def test_a_reference_page_for_another_method_is_refused(monkeypatch):
 
 
 def test_a_response_is_reduced_to_the_paths_a_client_can_read():
-    """An array contributes one path for its members, not one per member, and a field on ANY
-    member counts as present — Slack drops fields per object, so intersecting would report the
-    vendor as missing what it serves on every other one.
+    """An array contributes one path for its members, not one per member, carrying their types,
+    and a field on ANY member counts as present — Slack drops fields per object, so intersecting
+    would report the vendor as missing what it serves on every other one.
 
     A key that is not a field name is a map entry and collapses to `{}`. Measured 2026-09-22, the
     only ones Slack answers with are the conversation ids keying a file's `shares.public` and
@@ -1146,6 +1146,7 @@ def test_a_response_is_reduced_to_the_paths_a_client_can_read():
     assert set(shape.fields) == {
         "ok",
         "members",
+        "members[]",
         "members[].id",
         "members[].profile",
         "members[].profile.email",
@@ -1153,10 +1154,12 @@ def test_a_response_is_reduced_to_the_paths_a_client_can_read():
         "shares",
         "shares.public",
         "shares.public.{}",
+        "shares.public.{}[]",
         "shares.public.{}[].ts",
         "matches",
     }
     assert shape.fields["members[].id"] == frozenset({"string"})
+    assert shape.fields["members[]"] == frozenset({"object"})
     assert shape.fields["ok"] == frozenset({"boolean"})
     # `matches` was answered empty, so nothing under it was looked at and it is not a container.
     assert "matches[]" not in shape.containers and "members[]" in shape.containers
@@ -1194,79 +1197,142 @@ def test_an_empty_list_hides_its_members_and_an_empty_object_does_not():
     }
 
 
-def test_a_field_null_on_one_side_is_not_a_type_mismatch():
+def test_a_type_mismatch_is_two_sides_sharing_no_type_but_null():
     """A field this workspace happens to leave null and this corpus fills in is one field at one
-    type. Reported as a mismatch, the comparison becomes a report on two sets of contents."""
+    type, whichever side left it null. Reported as a mismatch, the comparison becomes a report on
+    two sets of contents. A field seen at two types on one side matches the other side's one.
+
+    An array's members are compared the same way: a list of ids answered as a list of objects is a
+    mismatch at `ids[]`, and the objects' own fields are surface the real API has no container for.
+    """
     assert slack_probe.diff_shapes(
         "m",
-        slack_probe.shape_of({"a": "s", "b": 1}),
-        slack_probe.shape_of({"a": None, "b": "1"}),
+        slack_probe.shape_of(
+            {"a": "s", "b": 1, "c": None, "t": [{"v": 1}, {"v": "1"}], "ids": [{"id": "U1"}]}
+        ),
+        slack_probe.shape_of({"a": None, "b": "1", "c": "s", "t": [{"v": "1"}], "ids": ["U1"]}),
     ) == [
+        Finding(
+            "extra_field",
+            BREAKING,
+            "m ids[].id",
+            "Backlot serves it; the real API's answer has no such field",
+        ),
         Finding("type_mismatch", BREAKING, "m b", "real: string, Backlot: number"),
+        Finding("type_mismatch", BREAKING, "m ids[]", "real: string, Backlot: object"),
     ]
 
 
-def test_a_method_that_could_not_be_called_is_not_a_divergence():
+@pytest.mark.parametrize(
+    "ask, answer, message",
+    [
+        (
+            "probe",
+            httpx.Response(200, json={"ok": False, "error": "x"}),
+            "answered .x., so users.list",
+        ),
+        ("probe", httpx.Response(502, text="<html>bad gateway</html>"), "answered 502, not JSON"),
+        ("probe", httpx.ConnectError("no route to host"), "went unanswered"),
+        ("docs", httpx.Response(404, text="not found"), "answered 404"),
+        ("docs", httpx.ConnectError("no route to host"), "unreachable"),
+    ],
+    ids=["probe-not-ok", "probe-not-json", "probe-unreachable", "docs-404", "docs-unreachable"],
+)
+def test_a_method_that_could_not_be_called_is_not_a_divergence(ask, answer, message, monkeypatch):
     """Slack answers HTTP 200 with `ok: false`, so a scope the token lacks would otherwise be read
     as a response shape with one field in it — and reported as the vendor missing everything else.
-    """
-    call = slack_probe._Caller("https://slack.invalid/api", "t", pace=0.0, timeout=1.0)
+    Anything else that escapes either module reaches `backlot diff` as status 1, the status a
+    scheduled run files a divergence for."""
 
-    def refuse(url, params=None, headers=None, timeout=None):
-        return httpx.Response(200, json={"ok": False, "error": "x"})
+    def get(*a, **k):
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
 
-    with pytest.MonkeyPatch.context() as m:
-        m.setattr(slack_probe.httpx, "get", refuse)
-        with pytest.raises(
-            FidelityError, match="answered .x., so users.list could not be compared"
-        ):
-            call("users.list")
+    monkeypatch.setattr(httpx, "get", get)
+    with pytest.raises(FidelityError, match=message):
+        if ask == "probe":
+            slack_probe._Caller("https://slack.invalid/api", "t", pace=0.0, timeout=1.0)(
+                "users.list"
+            )
+        else:
+            slack_docs._fetch_text("https://docs.slack.invalid/methods.md", timeout=1.0)
 
 
-def test_a_non_admin_token_is_refused_before_has_2fa_would_be_compared():
+def _stub(answers: dict, calls: list[str] | None = None):
+    """A caller answering from `answers`, where a callable answer is given the call's arguments."""
+
+    def call(method, **arguments):
+        if calls is not None:
+            calls.append(method)
+        answer = answers[method]
+        return answer(**arguments) if callable(answer) else answer
+
+    return call
+
+
+def test_only_the_real_side_must_be_an_admin_and_each_side_is_compared_over_every_object():
     """Backlot's side of the probe is always its admin/service token, which serves `has_2fa` on
     every person. A real caller who is not an admin gets it only on their own member object
-    (measured 2026-09-23), which `diff_shapes` would otherwise read as Backlot inventing the
-    field on every other member — a caller-identity difference the shape comparison can't see, so
-    `discover` refuses the token instead of reporting it as one. This repository's own
-    misconfiguration, not the vendor's, so the refusal is `CredentialsMissing`."""
-    answers = {
+    (measured 2026-09-23), a caller-identity difference the shape comparison would read as Backlot
+    inventing the field on every other member — so a non-admin real token is refused before
+    Backlot is asked anything, as this repository's own misconfiguration (`CredentialsMissing`),
+    and Backlot's own side is never asked who it is.
+
+    Past that, `users.info` is asked about every person on each side and read as one shape, so a
+    field one person carries is present whichever person a listing puts first."""
+    real = {
         "auth.test": {"ok": True, "user_id": "U1"},
         "users.info": {"ok": True, "user": {"id": "U1", "is_admin": False}},
     }
-    call = lambda method, **kw: answers[method]  # noqa: E731
-    with pytest.raises(CredentialsMissing, match="not a workspace admin"):
-        slack_probe.discover(call, require_admin=True)
-
-    # An admin token, or no check at all, reaches the rest of discovery instead. Asked about
-    # directly (`users.info` on the caller's own id), not by paging `users.list` for it — a
-    # workspace with more than one page of members would otherwise miss an admin on a later page.
-    answers["auth.test"] = {"ok": True, "user_id": "U2"}
-    answers["users.info"] = {"ok": True, "user": {"id": "U2", "is_admin": True}}
-    answers["users.list"] = {"ok": True, "members": []}
-    answers["conversations.list"] = {"ok": True, "channels": []}
-    with pytest.raises(FidelityError, match="message with replies"):
-        slack_probe.discover(call, require_admin=True)
-
-
-def test_probe_refuses_a_non_admin_real_caller_before_asking_backlot_anything():
-    """Pins `probe()`'s own wiring: `require_admin` is passed for the real side's `discover` call,
-    not Backlot's, and the refusal happens before Backlot is asked a single question — `discover`
-    on the real side raises first, so the loop that calls Backlot's side never starts."""
-    real_answers = {
-        "auth.test": {"ok": True, "user_id": "U1"},
-        "users.info": {"ok": True, "user": {"id": "U1", "is_admin": False}},
-    }
-    real = lambda method, **kw: real_answers[method]  # noqa: E731
     backlot_calls: list[str] = []
-
-    def backlot(method, **kw):
-        backlot_calls.append(method)
-        raise AssertionError(f"Backlot's side should not have been asked {method}")
-
+    backlot = _stub({}, backlot_calls)
     with pytest.raises(CredentialsMissing, match="not a workspace admin"):
-        slack_probe.probe(backlot, real)
+        slack_probe.probe(backlot, _stub(real))
     assert backlot_calls == []
+
+    people = {"U1": {"id": "U1", "is_admin": True}, "U2": {"id": "U2", "start_date": "2026-01-05"}}
+    common = {
+        "users.list": {"ok": True, "members": [{"id": "U1"}, {"id": "U2"}]},
+        "conversations.list": {"ok": True, "channels": [{"id": "C1"}]},
+        "conversations.history": {
+            "ok": True,
+            "messages": [{"ts": "1.0", "reply_count": 1, "text": "zebra"}],
+        },
+        "search.messages": {"ok": True, "messages": {"matches": [{}]}},
+        **{
+            m: {"ok": True}
+            for m in (
+                "api.test",
+                "conversations.info",
+                "conversations.members",
+                "conversations.replies",
+                "search.all",
+                "search.files",
+            )
+        },
+    }
+    real.update(common, **{"users.info": lambda user: {"ok": True, "user": people[user]}})
+    ours = {
+        **common,
+        "auth.test": {"ok": True, "user_id": "U1"},
+        "users.info": lambda user: {"ok": True, "user": {"id": user}},
+    }
+    assert slack_probe.probe(_stub(ours, backlot_calls), _stub(real)) == [
+        Finding(
+            "missing_field",
+            GAP,
+            "users.info user.is_admin",
+            "the real API serves it; Backlot does not",
+        ),
+        Finding(
+            "missing_field",
+            GAP,
+            "users.info user.start_date",
+            "the real API serves it; Backlot does not",
+        ),
+    ]
+    assert backlot_calls[0] == "users.list"
 
 
 def test_a_workspace_with_nothing_to_sample_cannot_be_probed():
@@ -1281,7 +1347,7 @@ def test_a_workspace_with_nothing_to_sample_cannot_be_probed():
         "users.list": {"ok": True, "members": [{"id": "U1"}]},
         "search.messages": {"ok": True, "messages": {"matches": []}},
     }
-    call = lambda method, **kw: answers[method]  # noqa: E731
+    call = _stub(answers)
     with pytest.raises(FidelityError, match="message with replies"):
         slack_probe.discover(call)
 
@@ -1289,14 +1355,26 @@ def test_a_workspace_with_nothing_to_sample_cannot_be_probed():
     with pytest.raises(FidelityError, match="candidate words"):
         slack_probe.discover(call)
 
-    # Longest first and deterministic, out of text with Slack's markup taken off. Both rules have
-    # to be pinned by the same fixture: with the markup left in, `<@U0BCVV6G3M1>` would itself
-    # parse as an 11-character word and sort first; with the sort merely alphabetical, "ants" would
-    # sort before "zebra" despite being shorter.
-    assert slack_probe._searchable_words([{"text": "<@U0BCVV6G3M1> zebra ants"}]) == [
-        "zebra",
-        "ants",
-    ]
+    answers["users.list"]["members"] = [{"id": "B1", "is_bot": True}, {"id": "USLACKBOT"}]
+    answers["users.list"]["members"] += [{"id": "U0", "deleted": True}, {"id": "U1"}]
+    answers["search.messages"]["messages"]["matches"] = [{}]
+    answers["conversations.history"]["messages"].append({"ts": "2.0", "text": "alphabet"})
+    sample = slack_probe.discover(call)
+    assert (sample.users, sample.queries) == (("U1",), ("bullet", "alphabet"))
+    answers["users.list"]["members"] = answers["users.list"]["members"][:3]
+    with pytest.raises(FidelityError, match="no active person"):
+        slack_probe.discover(call)
+
+    # One word per message, the messages carrying the most fields first, and within one the
+    # longest word, out of text with Slack's markup taken off: with the markup left in,
+    # `<@U0BCVV6G3M1>` would parse as an 11-character word; with the sort merely alphabetical,
+    # "ants" would come before "zebra"; in history order, "kiwi" would be drawn from the second.
+    assert slack_probe._searchable_words(
+        [
+            {"ts": "1", "text": "zebra kiwi"},
+            {"ts": "2", "files": [], "text": "<@U0BCVV6G3M1> zebra ants"},
+        ]
+    ) == ["zebra", "kiwi"]
 
 
 def test_the_probe_corpus_answers_every_shape_the_probe_compares(tmp_path):
@@ -1320,10 +1398,15 @@ def test_the_probe_corpus_answers_every_shape_the_probe_compares(tmp_path):
             assert body.get("ok"), (method, body)
             return body
 
-        answers = {
-            m: call(m, **a) for m, a in slack_probe._calls(slack_probe.discover(call, "drosophila"))
-        }
+        calls = slack_probe._calls(slack_probe.discover(call, "drosophila"))
+        answers = {m: call(m, **a) for m, a in calls}
+        served = slack_docs.from_backlot(client.app.openapi(), COMPARISONS["slack"].mount)
 
+    # Every method Backlot serves is asked, so a route added later is compared rather than left
+    # to the documentation's request surface alone.
+    assert set(answers) == set(served)
+    asked = [m for m, _ in calls]
+    assert (asked.count("conversations.info"), asked.count("users.info")) == (2, 2)
     assert len(answers["conversations.list"]["channels"]) == 2
     assert len(answers["users.list"]["members"]) >= 2
     assert answers["conversations.members"]["members"]

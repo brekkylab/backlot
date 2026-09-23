@@ -17,11 +17,16 @@ A module in ``_ENVELOPES`` provides:
   *parameter* through a router-raised ``GoogleError``, so the validator is not the path that
   reports one.
 - ``method_not_allowed(path, method)``, optional — the vendor's own 405, as an exception carrying
-  its body, media type and headers. The router raises a 405 before any vendor code runs, so a
+  its body, media type and headers. Starlette raises a 405 before any vendor code runs, so a
   vendor whose 405 differs from the shape its other refusals take says so here. Atlassian is the
   one that implements it; what its two products answer is in
-  :func:`backlot.errors.atlassian.method_not_allowed`. A vendor without it keeps the shared
-  envelope.
+  :func:`backlot.errors.atlassian.method_not_allowed`, which its own catch-all route raises rather
+  than Starlette, because that route matches every method on every path it owns. A vendor without
+  it keeps the shared envelope.
+- ``head_content_length(path, status_code)``, optional — whether a `HEAD` declares the length of
+  the body its `GET` would have carried, or ``None`` to keep the `GET`'s own header. Atlassian is
+  the one that implements it: Confluence declares a length its chunked `GET` does not, and Jira
+  declares none on either method.
 - ``json_media_type(path, status_code)``, optional — the `content-type` the vendor puts on a JSON
   body answered at that path with that status, when it is measured to differ from FastAPI's bare
   `application/json`. GitHub and Atlassian implement it — Atlassian's names Jira's charset and keeps
@@ -75,6 +80,20 @@ def method_not_allowed(path: str, method: str):
         if envelope.owns(path):
             answer = getattr(envelope, "method_not_allowed", None)
             return answer(path, method) if answer is not None else None
+    return None
+
+
+def head_content_length(path: str, status_code: int) -> bool | None:
+    """Whether a `HEAD` at ``path`` declares the length of the body its `GET` would have carried,
+    or ``None`` where the vendor has no measured opinion and the `HEAD` keeps the `GET`'s header.
+
+    Atlassian is the one that implements it, because its two products disagree: Confluence declares
+    a length on its 200s where Jira declares none at all.
+    """
+    for envelope in _ENVELOPES:
+        if envelope.owns(path):
+            answer = getattr(envelope, "head_content_length", None)
+            return answer(path, status_code) if answer is not None else None
     return None
 
 

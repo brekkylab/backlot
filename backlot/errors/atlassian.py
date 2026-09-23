@@ -9,12 +9,19 @@ scalar ``message`` are emitted, since one envelope serves both APIs here.
 One envelope, but not the ONLY one: a refusal real answers in a shape measured to differ carries
 its own body on an :class:`AtlassianError` and is served verbatim. Reading a query parameter is
 where the two products visibly part — see :func:`integer_conversion_failure`.
+
+Nor is the body always JSON. A path neither product serves is Jira's RFC 7807 :func:`no_endpoint`,
+Confluence's JAX-RS 404 in whichever of two shapes `Accept` asks for (:func:`jaxrs_not_found`), or
+the product's HTML page (:data:`HTML_NOT_FOUND`) — three shapes measured on the same day, each one
+what that URL answers rather than what this module would otherwise send.
 """
 
 from __future__ import annotations
 
 import http
+import json
 import re
+from xml.sax.saxutils import escape
 
 from fastapi import HTTPException
 
@@ -51,7 +58,23 @@ def connect_token_body() -> dict:
 
 
 def owns(path: str) -> bool:
-    return path.startswith(PREFIX)
+    """Whether ``path`` is under the Atlassian mount. The segment has to END there: `/atlassianx`
+    is a path of Backlot's own, and answering it in this envelope -- or with the headers
+    ``backlot.main.report_atlassian_headers`` adds -- would claim a request neither product saw."""
+    return path == PREFIX or path.startswith(f"{PREFIX}/")
+
+
+#: The one segment under the site that is Jira's REST API. Everything that is neither this nor
+#: :data:`WIKI` is the product's own web surface, which answers the HTML page rather than either
+#: API's 404: measured 2026-09-22, `/foo`, `/ex/jira/x`, `/restx/api/3/serverInfo` and `/browse/…`
+#: are `text/html`, where `/rest` and `/rest/nope/thing` are the RFC 7807 :func:`no_endpoint`.
+JIRA_REST = "/rest"
+
+
+def serves_the_jira_api(path: str) -> bool:
+    """Whether ``path`` is under Jira's REST mount, where a path no route serves is RFC 7807."""
+    vendor_path = _instance(path)
+    return vendor_path == JIRA_REST or vendor_path.startswith(f"{JIRA_REST}/")
 
 
 def is_confluence(path: str) -> bool:
@@ -314,7 +337,7 @@ _JIRA_ALLOW = (
 )
 
 
-def _route_regex(template: str) -> re.Pattern[str]:
+def route_regex(template: str) -> re.Pattern[str]:
     """``template`` with `{version}` bound to the two Jira mounts and every other placeholder to one
     path segment. Read with ``fullmatch`` below, so `/issue/{key}` never matches
     `/issue/{key}/comment`."""
@@ -325,7 +348,7 @@ def _route_regex(template: str) -> re.Pattern[str]:
     return re.compile("/".join(segments) + "$")
 
 
-_JIRA_ALLOW_PATTERNS = tuple((_route_regex(t), methods) for t, methods in _JIRA_ALLOW)
+_JIRA_ALLOW_PATTERNS = tuple((route_regex(t), methods) for t, methods in _JIRA_ALLOW)
 
 
 def jira_allow(path: str) -> str | None:
@@ -339,8 +362,12 @@ def jira_allow(path: str) -> str | None:
 
 
 def method_not_allowed(path: str, method: str) -> AtlassianError:
-    """The 405 each product answers for a method it does not serve at ``path``, `HEAD` and
-    `OPTIONS` excepted: both reach this and real answers both rather than refusing them (#255).
+    """The 405 each product answers for a method it does not serve at ``path``.
+
+    `HEAD` and `OPTIONS` are not among them, because real answers both rather than refusing them:
+    a `HEAD` is rewritten to its GET before routing
+    (``backlot.main.answer_head_as_the_get_without_its_body``) and an `OPTIONS` is answered by
+    ``backlot.routers.atlassian._options_answer``, so neither arrives here.
 
     The one refusal the shared envelope :func:`http_body` gets wrong for both products, in two
     different directions — Confluence's `errors` is a LIST carrying no `Allow`, Jira's is RFC 7807
@@ -348,9 +375,12 @@ def method_not_allowed(path: str, method: str) -> AtlassianError:
     reading `errors[0]["code"]` is the one this costs: the shared envelope has an `errors` OBJECT,
     so that read raises against Backlot and works against real Confluence.
 
-    ``headers`` of ``{}`` on the Confluence side is the empty header set, not "no opinion": real
-    sends no `Allow` and Starlette computes one from the routes Backlot happens to declare. ``None``
-    on a Jira route no row above covers keeps Starlette's, which is at least Backlot's own truth.
+    ``headers`` of ``{}`` is the empty header set, not "no opinion": real sends no `Allow` on the
+    Confluence side, and none on a path no Jira route covers either — a method the front door
+    refuses is 405 with `Allow` absent, measured 2026-09-22 with `TRACE` on a served route and on
+    `nopesuchroute` alike. Starlette would compute one there from the catch-all
+    (``backlot.routers.atlassian.unmatched_path``), which takes seven methods on every path it
+    owns, so what it would advertise is neither the vendor's set nor anything Backlot serves.
     """
     if is_confluence(path):
         return AtlassianError(
@@ -369,7 +399,7 @@ def method_not_allowed(path: str, method: str) -> AtlassianError:
             },
             headers={},
         )
-    allow = jira_allow(path)
+    allow = jira_allow(path) if method in SERVED_METHODS else None
     return AtlassianError(
         405,
         {
@@ -380,8 +410,144 @@ def method_not_allowed(path: str, method: str) -> AtlassianError:
             "instance": _instance(path),
         },
         media_type=PROBLEM_JSON,
-        headers=None if allow is None else {"Allow": allow},
+        headers={} if allow is None else {"Allow": allow},
     )
+
+
+# What real Jira names in `Allow` on an `OPTIONS`, which is NOT the set it names on a 405 above.
+# Measured on brekkylab.atlassian.net, 2026-09-22, one request per route: eight of the nine rows are
+# that route's 405 set plus `HEAD` and `OPTIONS`, and `project/search` is the exception — its 405
+# resolves `/project/{projectIdOrKey}` with `search` read as a key, where its `OPTIONS` reaches the
+# search route itself and names three methods rather than five. Real spells the list without spaces
+# after the commas, where its 405 `Allow` has them, and the order of the set varied between two
+# requests, so the order below is one measured spelling and not a sequence a client can rely on.
+_JIRA_OPTIONS_ALLOW = (
+    ("/rest/api/{version}/serverInfo", "GET,HEAD,OPTIONS"),
+    ("/rest/api/{version}/field", "POST,GET,HEAD,OPTIONS"),
+    ("/rest/api/{version}/issue/{key}", "PUT,GET,HEAD,DELETE,OPTIONS"),
+    ("/rest/api/{version}/issue/{key}/comment", "GET,HEAD,POST,OPTIONS"),
+    ("/rest/api/{version}/search/jql", "GET,HEAD,POST,OPTIONS"),
+    ("/rest/api/{version}/issueLinkType", "POST,GET,HEAD,OPTIONS"),
+    ("/rest/api/{version}/project/search", "GET,HEAD,OPTIONS"),
+    ("/rest/api/{version}/project/{key}/role", "GET,HEAD,OPTIONS"),
+    ("/rest/api/{version}/project/{key}/role/{id}", "DELETE,POST,PUT,GET,HEAD,OPTIONS"),
+)
+
+_JIRA_OPTIONS_PATTERNS = tuple((route_regex(t), allow) for t, allow in _JIRA_OPTIONS_ALLOW)
+
+#: The empty `Accept-Patch` real sends on every Jira `OPTIONS` measured, alongside `Allow`. Empty is
+#: the value, not a placeholder: the header is present with nothing after the colon.
+JIRA_OPTIONS_MEDIA_TYPE = "text/html;charset=UTF-8"
+
+
+def jira_options_allow(path: str) -> str | None:
+    """The `Allow` real sends on an `OPTIONS` at ``path``, or ``None`` for a path no row covers."""
+    vendor_path = _instance(path)
+    for pattern, allow in _JIRA_OPTIONS_PATTERNS:
+        if pattern.fullmatch(vendor_path):
+            return allow
+    return None
+
+
+#: The methods the application behind the gateway ever sees. A `TRACE` is refused at the front door
+#: with 405 and an invented method with 403, both the gateway's own HTML page carrying no `Allow`
+#: and none of the headers the application adds — on a served route and on an unserved path alike,
+#: measured 2026-09-22. So a method outside this set gets neither the vendor `Allow` below nor the
+#: headers in ``backlot.routers.atlassian.vendor_headers``; the body it gets here is still this
+#: module's JSON, where real's is that HTML page.
+SERVED_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD")
+
+
+def no_endpoint(path: str, method: str) -> AtlassianError:
+    """Jira's 404 for a path it mounts no endpoint at, in the RFC 7807 shape its other refusals use.
+
+    Measured on brekkylab.atlassian.net, 2026-09-22: `/rest/api/3/nopesuchroute`, the same under
+    `/rest/api/2`, `/rest/api/4/serverInfo`, `/rest/nope/thing`, and the paths that extend a served
+    route (`serverInfo/extra`, `issue/NOPE-1/nope`, `project/search/extra`) each answer this body.
+    `detail` names the method as sent -- `GET`, `POST`, `DELETE` and `OPTIONS` each came back in it
+    -- and both fields carry the vendor path with the query string left off. A credential changes
+    nothing, and neither does `Accept`.
+    """
+    vendor_path = _instance(path)
+    return AtlassianError(
+        404,
+        {
+            "type": "about:blank",
+            "title": "Not Found",
+            "status": 404,
+            "detail": f"No endpoint {method} {vendor_path}.",
+            "instance": vendor_path,
+        },
+        media_type=PROBLEM_JSON,
+    )
+
+
+#: Confluence's JAX-RS 404 for a segment under `/wiki/rest/api/` that no resource claims. The shape
+#: follows `Accept` rather than the credential: measured 2026-09-22 on `nopesuchroute` and
+#: `nope/deeper/still`, `Accept: application/json` answers the JSON below and every other value --
+#: absent, `*/*`, `application/xml` -- answers the XML, with or without a credential. The message
+#: carries the full request URL, query string included.
+JAXRS_XML_MEDIA_TYPE = "application/xml"
+JAXRS_JSON_MEDIA_TYPE = "application/json"
+_JAXRS_MESSAGE = "null for uri: {url}"
+
+
+def jaxrs_not_found(url: str, *, as_json: bool) -> tuple[str, str]:
+    """``(media_type, body)`` for that 404, in whichever of the two shapes ``Accept`` asks for.
+
+    The XML escapes what XML requires and nothing else, which is what real does: a path carrying
+    `&` came back `&amp;` and one carrying `'` came back unescaped (2026-09-22). A path carrying
+    `<script>`, encoded or not, never reaches the application there -- the gateway answers its own
+    403 HTML page -- so that one is unmeasurable rather than measured.
+    """
+    message = _JAXRS_MESSAGE.format(url=url)
+    if as_json:
+        return JAXRS_JSON_MEDIA_TYPE, json.dumps(
+            {"message": message, "status-code": 404}, separators=(",", ":")
+        )
+    return JAXRS_XML_MEDIA_TYPE, (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f"<status><status-code>404</status-code><message>{escape(message)}</message></status>"
+    )
+
+
+#: Confluence answers the product's own HTML page, not the API 404, for a path that extends a
+#: resource it serves -- measured 2026-09-22 on `space/MFS/nope`, `space/nope/deeper`,
+#: `content/65851/nope`, `content/65851/child/page/nope` and `content/nope/deeper`, and on
+#: `/wiki/rest/nope` outside the API mount, with `Accept: application/json` and without it alike.
+#: Real's body is a ~30KB build-specific shell whose script tags name the deploy; this is a stub
+#: with the status and the media type, which is the part a client branches on.
+HTML_MEDIA_TYPE = "text/html;charset=UTF-8"
+HTML_NOT_FOUND = (
+    "<!DOCTYPE html><html><head><title>Not Found</title></head>"
+    "<body><p>This page could not be found.</p></body></html>"
+)
+
+#: What an `OPTIONS` on a Confluence route answers: the 404 above in the `errors` list its 405 uses,
+#: on every route measured 2026-09-22 but `search`, which answers 204 with its own `Allow`.
+CONFLUENCE_OPTIONS_NOT_FOUND = {
+    "errors": [{"status": 404, "code": "NOT_FOUND", "title": "Not Found"}]
+}
+CONFLUENCE_OPTIONS_204 = "/wiki/rest/api/search"
+CONFLUENCE_OPTIONS_204_ALLOW = "OPTIONS,HEAD,GET"
+
+
+#: Which Confluence answers declare the length of the body their `GET` would have carried, on a
+#: `HEAD`. Measured with `curl -I` beside each `GET` the same minute, 2026-09-22: every 200 but
+#: `search` declares it, to the byte (`space` 1103, `content` 1536, `content/{id}` 3909,
+#: `child/comment` 214, `child/page` 211, `label` 207, `restriction/byOperation` 801, `space/{key}`
+#: 695), and the 404s, the 405 and the CQL 400 declare none. Jira declares none on anything: its
+#: `GET` is chunked and its `HEAD` says nothing about a length either.
+_CONFLUENCE_HEAD_NO_LENGTH = "/wiki/rest/api/search"
+
+
+def head_content_length(path: str, status_code: int) -> bool:
+    """Whether a `HEAD` at ``path`` declares the `GET` body's length, as real does."""
+    if not is_confluence(path):
+        return False
+    if _instance(path) == _CONFLUENCE_HEAD_NO_LENGTH:
+        return False
+    return 200 <= status_code < 300
 
 
 def _body(status_code: int, detail) -> dict:
@@ -400,10 +566,11 @@ def _body(status_code: int, detail) -> dict:
 
 
 def http_body(path: str, exc, query=None) -> dict:
-    """``path`` and ``query`` are both unused: one envelope covers every Atlassian route, unlike
+    """``path`` and ``query`` are both unused: one envelope covers every Atlassian ROUTE, unlike
     Google's per-family split, and no Atlassian refusal is selected by a query parameter the way
     Google's is by `$.xgafv`. They are in the signature so the dispatch in ``__init__`` can treat
-    every module alike.
+    every module alike. A path that is not a route is answered elsewhere and in a shape of its own
+    — see :func:`no_endpoint`, :func:`jaxrs_not_found` and :data:`HTML_NOT_FOUND`.
 
     An :class:`AtlassianError` is the exception to the one envelope and says so by carrying its
     own body, which is served as it stands."""

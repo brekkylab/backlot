@@ -1619,7 +1619,9 @@ def test_angle_brackets_are_escaped_in_a_google_success(tmp_path):
 def test_a_callback_changes_nothing_outside_google(client, admin_h):
     """The handler serves Atlassian and GitHub too, and both keep exactly the `JSONResponse` they
     had, each vendor's own charset (``errors.github.json_media_type``,
-    ``errors.atlassian.json_media_type``) included.
+    ``errors.atlassian.json_media_type``) included. The Jira half asks a route that exists for a
+    resource that does not, so what it pins is the shared envelope rather than the RFC 7807 shape a
+    path with no route answers (``errors.atlassian.no_endpoint``).
 
     Measured 2026-09-15, that is right for both and for different reasons. Jira and Confluence
     ignore `callback` outright — a 404 and a 200 come back identical with and without it. GitHub
@@ -1633,9 +1635,7 @@ def test_a_callback_changes_nothing_outside_google(client, admin_h):
     assert gh.headers["content-type"] == "application/json; charset=utf-8"
     assert gh.text == json.dumps(gh.json(), separators=(",", ":"))
     jira = client.get(
-        "/atlassian/ex/jira/nope/rest/api/3/issue/NOPE-1",
-        headers=admin_h,
-        params={"callback": "cb"},
+        "/atlassian/rest/api/3/issue/NOPE-1", headers=admin_h, params={"callback": "cb"}
     )
     assert jira.status_code == 404
     assert jira.headers["content-type"] == "application/json;charset=UTF-8"

@@ -362,8 +362,7 @@ def first_repeat(query: Mapping[str, str] | None, name: str) -> str | None:
     method parameters, and in each pair one is read first and the other last. So this is a table,
     one ordered pair per row, each sent both ways round so the answer names the end that was read.
     ``QueryParams.get`` answers the last repeat, so the untyped parameters in the first group are
-    read through here and those in the second off ``.get``. A typed one -- `pageSize`,
-    `majorDimension`, `valueRenderOption`, `includeGridData` -- has every repeat parsed by
+    read through here and those in the second off ``.get``; a typed one has every repeat parsed by
     ``routers.google._typed_query`` and is read from the end its group names::
 
         read first          the pair, and what real answers       measured on
@@ -410,8 +409,9 @@ def first_repeat(query: Mapping[str, str] | None, name: str) -> str | None:
     `mimeType=text/csv&mimeType=bogus/type` each answer what their first value alone does, as
     `callback=cb&callback=a b` did on 2026-09-15. `pageSize` is the exception:
     `pageSize=2&pageSize=NOPE` is a 400 whichever end the bad value is at, and so is a bad value at
-    either end of `valueRenderOption` or `includeGridData`, measured the same day, and of
-    `majorDimension`, measured 2026-09-22.
+    either end of `valueRenderOption`, `dateTimeRenderOption`, `includeGridData` or
+    `excludeTablesInBandedRanges`, measured the same day, and of `majorDimension`, measured
+    2026-09-22.
 
     Gmail's `q`, `pageToken` and `maxResults` stay on ``.get`` because their end is unmeasured: a
     Gmail list answers 200 only to a scope the measuring credential cannot be granted.

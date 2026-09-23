@@ -1793,6 +1793,9 @@ async def drive_shared_drives(request: Request):
     """Shared (Team) Drives — Backlot's corpus lives entirely in My Drive, so this is empty.
     Present so shared-drive-aware clients don't 404 while enumerating."""
     _require(request)
+    _drive_page_size_in_range(
+        _drive_typed(request, "useDomainAdminAccess", page_size=True)["pageSize"], 100
+    )
     return {"kind": "drive#driveList", "drives": []}
 
 
@@ -1811,7 +1814,15 @@ async def drive_files_list(request: Request):
     # real's order, measured 2026-09-23 by sending two bad values at once: `pageSize` first, then
     # `orderBy`, `q`, `pageToken` and `fields`, whichever order the query names them in.
     params = request.query_params
-    limit = _drive_page_size(request)
+    typed = _drive_typed(
+        request,
+        "supportsAllDrives",
+        "supportsTeamDrives",
+        "includeItemsFromAllDrives",
+        "includeTeamDriveItems",
+        page_size=True,
+    )
+    limit = _drive_page_size(typed["pageSize"])
     order = _drive_order_specs(gerr.first_repeat(params, "orderBy"))  # 400 on an unusable key
     q = gerr.first_repeat(params, "q") or ""
     query = _drive_q_parse(q)  # 400 on a clause Backlot cannot evaluate; None when there is no q
@@ -1912,6 +1923,7 @@ async def drive_files_list(request: Request):
 async def drive_files_get(file_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
+    _drive_typed(request, "acknowledgeAbuse", "supportsAllDrives", "supportsTeamDrives")
     ids = auth.visible_ids(request, caller)
     row = store.gdrive_by_id(conn, file_id, visible_ids=ids)
     if row is None:
@@ -1981,6 +1993,10 @@ async def drive_files_export(file_id: str, request: Request):
 async def drive_files_permissions(file_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
+    sizes = _drive_typed(
+        request, "supportsAllDrives", "supportsTeamDrives", "useDomainAdminAccess", page_size=True
+    )["pageSize"]
+    _drive_page_size_in_range(sizes, 100)
     ids = auth.visible_ids(request, caller)
     row = store.gdrive_by_id(conn, file_id, visible_ids=ids)
     if row is None:
@@ -2379,8 +2395,8 @@ async def sheets_get(spreadsheet_id: str, request: Request):
     whole grid would hand a reader cells the real API never would, so the document it assembles
     would differ between the two backends. With the flag, ``ranges`` scopes the returned rows
     (measured: 5.7 MB -> 11 KB for ``A1:B2``)."""
-    row, sheets = _workbook(request, spreadsheet_id)
-    mask = gerr.first_repeat(request.query_params, "fields")
+    # The credential, then the typed values, then the lookup -- `_typed_query` records the order.
+    _require(request)
     # A mask that reaches the cells decides the grid, and `includeGridData` is then ignored rather
     # than consulted -- the vendor's own wording. Still parsed, so a bad value is still refused.
     flags = _typed_query(
@@ -2393,6 +2409,8 @@ async def sheets_get(spreadsheet_id: str, request: Request):
         },
     )
     grid = (flags["includeGridData"] or [False])[-1]
+    row, sheets = _workbook(request, spreadsheet_id)
+    mask = gerr.first_repeat(request.query_params, "fields")
     if mask:
         grid = _gmask_wants_grid(mask)
     # `excludeTablesInBandedRanges` is validated above and then unused, deliberately: it drops the
@@ -3188,8 +3206,9 @@ async def sheets_values_batch_get(spreadsheet_id: str, request: Request):
     With no ``ranges`` at all, nothing is selected and ``valueRanges`` is omitted. NOTE: that is
     the natural reading of a parameter with no default, NOT a response diffed against real
     Sheets — unlike the rest of this module's behaviour, it is unverified."""
-    _row, sheets = _workbook(request, spreadsheet_id)
+    _require(request)
     major, render = _sheets_options(request)
+    _row, sheets = _workbook(request, spreadsheet_id)
     ranges = request.query_params.getlist("ranges")
     body = {"spreadsheetId": spreadsheet_id}
     if ranges:
@@ -3203,8 +3222,9 @@ async def sheets_values_batch_get(spreadsheet_id: str, request: Request):
 )
 async def sheets_values_get(spreadsheet_id: str, a1_range: str, request: Request):
     """One range of a spreadsheet, ACL-enforced through the same lookup as ``spreadsheets.get``."""
-    _row, sheets = _workbook(request, spreadsheet_id)
+    _require(request)
     major, render = _sheets_options(request)
+    _row, sheets = _workbook(request, spreadsheet_id)
     return _sheets_respond(
         request, _sheets_value_range(a1_range, sheets, major, render), _F_VALUE_RANGE
     )
@@ -3332,24 +3352,28 @@ async def sheets_values_batch_get_by_data_filter(spreadsheet_id: str, request: R
     body, specs = await _sheets_filters(request, sheets, required=True, indexed=True)
     # The same three enums the query-string reads take, and the same rule for them — including
     # that an empty value is not an absent one, and that `dateTimeRenderOption` is validated even
-    # though a corpus states no date cell for it to render.
-    major = _sheets_enum_value(
-        body.get("majorDimension"), "major_dimension", "Dimension", _A1_MAJOR, "ROWS"
-    )
-    render = _sheets_enum_value(
-        body.get("valueRenderOption"),
-        "value_render_option",
-        "ValueRenderOption",
-        _A1_RENDER,
-        "FORMATTED_VALUE",
-    )
-    _sheets_enum_value(
-        body.get("dateTimeRenderOption"),
-        "date_time_render_option",
-        "DateTimeRenderOption",
-        _A1_DATETIME,
-        "SERIAL_NUMBER",
-    )
+    # though a corpus states no date cell for it to render. Measured 2026-09-23, six requests: a
+    # body with all three bad is one 400 naming all three, in the order the body names them.
+    readers = {
+        "majorDimension": lambda raw: _sheets_enum_value(
+            raw, "major_dimension", "Dimension", _A1_MAJOR, "ROWS"
+        ),
+        "valueRenderOption": lambda raw: _sheets_enum_value(
+            raw, "value_render_option", "ValueRenderOption", _A1_RENDER, "FORMATTED_VALUE"
+        ),
+        "dateTimeRenderOption": lambda raw: _sheets_enum_value(
+            raw, "date_time_render_option", "DateTimeRenderOption", _A1_DATETIME, "SERIAL_NUMBER"
+        ),
+    }
+    enums, refused = {}, []
+    for name in [k for k in body if k in readers] + [k for k in readers if k not in body]:
+        try:
+            enums[name] = readers[name](body.get(name))
+        except gerr.GoogleError as exc:
+            refused += gerr.field_violations(exc)
+    if refused:
+        raise gerr.invalid_field_values(refused)
+    major, render = enums["majorDimension"], enums["valueRenderOption"]
 
     # NOT the order the filters arrived in. Measured: the answers come back sorted by where each
     # range starts, column before row — `Data!A2` precedes `Data!B1`, `Data!B9` precedes
@@ -3636,6 +3660,33 @@ def _typed_query(request: Request, readers: dict) -> dict[str, list]:
     return parsed
 
 
+# The typed booleans each Drive method Backlot serves declares, as the proto field its refusal
+# names. Parsed only, never read: none of them changes what a My Drive corpus answers. Measured
+# 2026-09-23 on each of them: the Sheets boolean spellings (`_sheets_bool_value`), 30 of them swept
+# on `supportsAllDrives`, and a refusal ahead of the file lookup. `files.export` and `about.get`
+# declare none, and real ignores `supportsAllDrives=NOPE` on both.
+_DRIVE_BOOLS = {
+    "supportsAllDrives": "supports_all_drives",
+    "supportsTeamDrives": "supports_team_drives",
+    "includeItemsFromAllDrives": "include_items_from_all_drives",
+    "includeTeamDriveItems": "include_team_drive_items",
+    "acknowledgeAbuse": "acknowledge_abuse",
+    "useDomainAdminAccess": "use_domain_admin_access",
+}
+
+
+def _drive_typed(request: Request, *bools: str, page_size: bool = False) -> dict[str, list]:
+    """`_typed_query` over the booleans a Drive method declares, and its `pageSize` if it has
+    one."""
+    readers = {
+        name: (lambda raw, field=_DRIVE_BOOLS[name]: _sheets_bool_value(raw, field))
+        for name in bools
+    }
+    if page_size:
+        readers["pageSize"] = _drive_int32
+    return _typed_query(request, readers)
+
+
 # An int32 as the Drive query parser takes one. Measured 2026-09-23 on `pageSize`: `+2` and `02`
 # are 2 and `-0` is 0, while a padded ` 2` or `2 `, `1_0`, `2.0`, `0x10`, `1e2` and a value past
 # 2**31 - 1 are the `TYPE_INT32` refusal.
@@ -3650,28 +3701,29 @@ def _drive_int32(raw: str) -> int:
     )
 
 
-def _drive_page_size(request: Request) -> int:
-    """The page size a `files.list` asks for.
+def _drive_page_size_in_range(sizes: list[int], top: int) -> None:
+    """Refuse one `pageSize` outside 1 to ``top`` with real's range sentence. Measured 2026-09-23:
+    ``top`` is 1000 on `files.list` and 100 on `permissions.list` and `drives.list`, `0` and
+    ``top + 1`` refused alike, and two or more values are not range-checked at all."""
+    if len(sizes) == 1 and not 1 <= sizes[0] <= top:
+        raise gerr.invalid_parameter(
+            "page_size",
+            f"Invalid value '{sizes[0]}'. Values must be within the range: [value: 1\n, value: "
+            f"{top}\n]",
+        )
 
-    Measured 2026-09-23: one `pageSize` outside 1-1000 is refused with the range sentence below, `0`
-    and `1001` alike. Two or more are not range-checked at all: the first is read, one past 1000
-    answers 1000 files and one at or below 0 answers 500 (`0&2`, `0&0`, `-1&2` and `0&1001` all did,
-    with more than 500 files to list), where `2&0` is 2 and `3&0` is 3. Absent is the default of
-    100."""
-    sizes = _typed_query(request, {"pageSize": _drive_int32})["pageSize"]
+
+def _drive_page_size(sizes: list[int]) -> int:
+    """The page size a `files.list` asks for, from the `pageSize` values `_drive_typed` parsed.
+
+    Measured 2026-09-23: two or more values are read from the first, one past 1000 answering 1000
+    files and one at or below 0 answering 500 (`0&2`, `0&0`, `-1&2` and `0&1001` all did, with
+    more than 500 files to list), where `2&0` is 2 and `3&0` is 3. Absent is the default of 100."""
+    _drive_page_size_in_range(sizes, 1000)
     if not sizes:
         return get_settings().default_page_size
     first = sizes[0]
-    if len(sizes) == 1:
-        if not 1 <= first <= 1000:
-            raise gerr.invalid_parameter(
-                "page_size",
-                f"Invalid value '{first}'. Values must be within the range: [value: 1\n, value: "
-                "1000\n]",
-            )
-        size = first
-    else:
-        size = 1000 if first > 1000 else 500 if first < 1 else first
+    size = 1000 if first > 1000 else 500 if first < 1 else first
     return min(size, get_settings().max_page_size)
 
 

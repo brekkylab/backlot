@@ -18,9 +18,9 @@ envelope is NOT uniform — three families differ in which optional members they
 Sheets parts from the other two editor APIs on that last column: measured, a GET with no
 Authorization header is 403 PERMISSION_DENIED with the unregistered-caller sentence, where Docs
 answers 401 UNAUTHENTICATED with the missing-credential one. The column is the GET rule only
-(:func:`no_credentials`). A
-present-but-invalid token is 401 UNAUTHENTICATED in every family, which is why a missing header and
-a bad token are separate constructors here rather than one "unauthorized".
+(:func:`no_credentials`). A present-but-invalid token is 401 UNAUTHENTICATED in every family, which
+is why a missing header and a bad token are separate constructors here rather than one
+"unauthorized".
 
 `errors[]` is what `$.xgafv` selects, and the middle column above is the whole rule
 (:func:`has_errors_array`). It is a SYSTEM parameter — a top-level entry of a discovery document's
@@ -43,10 +43,11 @@ measurement. Measured on Sheets and Docs at `$.xgafv=1`: a typed value the proto
 ``reason: invalid`` with NO ``domain`` (:func:`invalid_field_value`); every other measured 400 is
 ``badRequest`` under ``global`` (:func:`invalid_argument`, :func:`bad_field_mask`); a 404 is
 ``notFound``; a bad token ``authError`` at ``location: Authorization``; an anonymous Sheets GET
-``forbidden``; the missing credential — any anonymous POST, and a GET on the three OAuth-only APIs —
-``required`` with the short ``Login Required.``. The two editor 400s NOT measured keep whatever their constructor already
-renders — ``Invalid gridRange`` is :func:`invalid_argument`, so ``badRequest``, but an Office file
-read as a native document is :func:`failed_precondition`, so ``failedPrecondition``.
+``forbidden``; the missing credential — any anonymous POST, and a GET on the three OAuth-only APIs
+— ``required`` with the short ``Login Required.``. The two editor 400s NOT measured keep whatever
+their constructor already renders — ``Invalid gridRange`` is :func:`invalid_argument`, so
+``badRequest``, but an Office file read as a native document is :func:`failed_precondition`, so
+``failedPrecondition``.
 """
 
 from __future__ import annotations
@@ -254,11 +255,11 @@ def missing_credentials() -> GoogleError:
     """No Authorization header, on an OAuth-only API (Gmail, Docs, Slides), or on a POST to any
     of the five.
 
-    One answer for the three: measured 2026-09-14, Gmail, Docs and Slides send the same long
+    One answer for all of them: measured 2026-09-14, Gmail, Docs and Slides send the same long
     top-level message and the same `errors[]` entry, the short ``Login Required.`` at ``location:
-    Authorization``. Which of them SHOWS that entry still differs — Gmail carries it unless
-    `$.xgafv=2`, the editor families only at `1` — but that is `has_errors_array`'s rule, not a
-    difference in the error."""
+    Authorization``, and measured 2026-09-23 the two Sheets data-filter POSTs send both too. Which
+    of them SHOWS that entry still differs — Gmail carries it unless `$.xgafv=2`, the editor
+    families only at `1` — but that is `has_errors_array`'s rule, not a difference in the error."""
     return GoogleError(
         401,
         MISSING_CREDENTIALS_MESSAGE,
@@ -272,7 +273,7 @@ def missing_credentials() -> GoogleError:
 
 def unregistered_caller() -> GoogleError:
     """No Authorization header, on a GET to an API that also accepts API keys (Drive, Sheets) — so
-    an anonymous read is a caller with no established identity rather than a missing credential."""
+    an anonymous GET is a caller with no established identity rather than a missing credential."""
     return GoogleError(
         403, UNREGISTERED_CALLER_MESSAGE, reason="forbidden", status="PERMISSION_DENIED"
     )

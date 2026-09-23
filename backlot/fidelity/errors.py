@@ -8,9 +8,8 @@ class FidelityError(RuntimeError):
 
 
 class CredentialsMissing(FidelityError):
-    """A credential a comparison declares is not set anywhere.
+    """A credential a comparison declares is not set anywhere, or is set to one it cannot use.
 
-    Its own type because it is not a vendor problem: answering it like an outage leaves the two
-    sources whose contract is introspection silently uncompared, night after night, with the run
-    green.
+    Its own type because it is not a vendor problem: answering it like an outage leaves the three
+    sources that declare a credential silently uncompared, night after night, with the run green.
     """

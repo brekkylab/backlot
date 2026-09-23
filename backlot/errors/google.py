@@ -305,9 +305,8 @@ def bad_system_parameter(name: str, value: str) -> GoogleError:
 def xgafv(query: Mapping[str, str] | None) -> str | None:
     """The `$.xgafv` a request sent, or ``None``. Starlette's ``QueryParams.get`` answers the LAST
     repeat, which is the one real reads -- and `$.xgafv` is the one system parameter that works
-    that way. Measured 2026-09-15 on Sheets: `1&2` carries no `errors[]` where `2&1` does, while
-    `callback`, `alt`, `fields` and `prettyPrint` each answer their FIRST repeat -- the table of
-    which parameter is read from which end is :func:`first_repeat`'s."""
+    that way. Measured 2026-09-15 on Sheets: `1&2` carries no `errors[]` where `2&1` does. Which
+    end every other measured parameter is read from is :func:`first_repeat`'s table."""
     return None if query is None else query.get(XGAFV)
 
 
@@ -327,12 +326,15 @@ def first_repeat(query: Mapping[str, str] | None, name: str) -> str | None:
         alt               | `media&json` is the `media` refusal  | Sheets 2026-09-15
                           |                                      | Drive files.get 2026-09-17
         fields            | `<mask>&bogus` answers the mask,     | Sheets values.get,
-                          | `bogus&<mask>` a 400                 | spreadsheets.get and both
+                          | `bogus&<mask>` a 400                 | values:batchGet,
+                          |                                      | spreadsheets.get and both
                           |                                      | POSTs; Drive files.list,
                           |                                      | files.get and about;
                           |                                      | 2026-09-23
-        prettyPrint       | `false&true` is compact,             | Sheets values.get and both
-                          | `true&false` indented                | POSTs 2026-09-23
+        prettyPrint       | `false&true` is compact,             | Sheets values.get,
+                          | `true&false` indented                | values:batchGet,
+                          |                                      | spreadsheets.get and both
+                          |                                      | POSTs; 2026-09-23
         q                 | `<folders>&<sheets>` lists folders   | Drive files.list 2026-09-23
         pageSize          | `1&3` is one file                    | Drive files.list 2026-09-23
         pageToken         | `<valid>&BOGUS` is the next page,    | Drive files.list 2026-09-23

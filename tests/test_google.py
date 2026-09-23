@@ -1390,6 +1390,7 @@ _VALUES = "/sheets/v4/spreadsheets/{sid}/values/Sheet1!A1"
 _BOOK = "/sheets/v4/spreadsheets/{sid}"
 _BY_FILTER = "/sheets/v4/spreadsheets/{sid}:getByDataFilter"
 _VALUES_BY_FILTER = "/sheets/v4/spreadsheets/{sid}/values:batchGetByDataFilter"
+_BATCH_GET = "/sheets/v4/spreadsheets/{sid}/values:batchGet"
 _BY_FILTER_BODY = {"dataFilters": [{"a1Range": "Sheet1!A1"}]}
 _FOLDERS = "mimeType='application/vnd.google-apps.folder'"
 _SPREADSHEETS = "mimeType='application/vnd.google-apps.spreadsheet'"
@@ -1398,8 +1399,9 @@ _CELLS = "sheets.data.rowData.values.formattedValue"
 # The pairs `gerr.first_repeat` records, on each route Backlot reads the parameter on, and the
 # empty first repeat and unvalidated second repeat it describes: (method, path, fixed params,
 # parameter, one value, the other, the end real reads, what to compare). `callback`, `alt` and
-# `$.xgafv` have tests of their own above, and `valueRenderOption` has one beside the gridded
-# corpus, since the bundled corpus states no typed cell for the options to render differently. `{sid}` is the spreadsheet, `{folder}` a folder and `{token}` a valid page token. The
+# `$.xgafv` have tests of their own above, and `valueRenderOption` has rows in
+# `test_the_render_options_differ_over_typed_cells`, since the bundled corpus states no typed cell
+# for the options to render differently. `{sid}` is the spreadsheet, `{folder}` a folder and `{token}` a valid page token. The
 # `pageToken` row pairs the token with an empty value rather than the table's `BOGUS`: Backlot
 # answers `BOGUS` alone with the first page where real refuses it, a gap of its own, and a row
 # built on it could not tell the two ends apart.
@@ -1413,10 +1415,22 @@ REPEATED = [
     ("GET", _VALUES, {}, "fields", "", "range", "first", _keys),
     ("GET", _BOOK, {}, "fields", _CELLS, "spreadsheetId", "first", _grid),
     ("POST", _BY_FILTER, {}, "fields", _CELLS, "spreadsheetId", "first", _grid),
+    (
+        "GET",
+        _BATCH_GET,
+        {"ranges": "Sheet1!A1"},
+        "fields",
+        "spreadsheetId",
+        "bogus",
+        "first",
+        _keys,
+    ),
     ("POST", _BY_FILTER, {}, "fields", "spreadsheetId", "bogus", "first", _keys),
     ("POST", _VALUES_BY_FILTER, {}, "fields", "spreadsheetId", "bogus", "first", _keys),
     ("GET", _VALUES, {}, "prettyPrint", "false", "true", "first", _compact),
     ("GET", _VALUES, {}, "prettyPrint", "", "false", "first", _compact),
+    ("GET", _BOOK, {}, "prettyPrint", "false", "true", "first", _compact),
+    ("GET", _BATCH_GET, {"ranges": "Sheet1!A1"}, "prettyPrint", "false", "true", "first", _compact),
     ("POST", _BY_FILTER, {}, "prettyPrint", "false", "true", "first", _compact),
     ("POST", _VALUES_BY_FILTER, {}, "prettyPrint", "false", "true", "first", _compact),
     ("GET", _FILES, {}, "q", _FOLDERS, _SPREADSHEETS, "first", _mimes),
@@ -4434,6 +4448,9 @@ def test_an_empty_cell_carries_no_value_object(gc, gh, book):
         # the identical raw value for every cell that is not a formula
         ("UNFORMATTED_VALUE", [["EMEA", 12, True]]),
         ("FORMULA", [["EMEA", 12, True]]),
+        # measured 2026-09-23 on a number cell: a repeated option is read from its LAST repeat
+        (["FORMATTED_VALUE", "UNFORMATTED_VALUE"], [["EMEA", 12, True]]),
+        (["UNFORMATTED_VALUE", "FORMATTED_VALUE"], [["EMEA", "12", "TRUE"]]),
     ],
 )
 def test_the_render_options_differ_over_typed_cells(gc, gh, book, render, want):
@@ -4659,22 +4676,6 @@ def test_a_prose_export_round_trips_through_its_lines_not_through_a_csv_parser(g
 # --- the standard query parameters every Sheets read accepts ------------------------------------
 
 
-def test_a_repeated_value_render_option_is_read_from_the_last(gc, gh, book):
-    """The read-last row the bundled corpus cannot hold. Measured 2026-09-23 on a cell holding the
-    number 12: `FORMATTED_VALUE` alone answers `"12"` and `UNFORMATTED_VALUE` alone `12`, and each
-    pair of the two answers what its second value alone does."""
-    url = f"/sheets/v4/spreadsheets/{book}/values/Summary!B2"
-
-    def values(*options):
-        params = [("valueRenderOption", o) for o in options]
-        return gc.get(url, headers=gh, params=params).json()["values"]
-
-    assert values("FORMATTED_VALUE") == [["12"]]
-    assert values("UNFORMATTED_VALUE") == [[12]]
-    assert values("FORMATTED_VALUE", "UNFORMATTED_VALUE") == [[12]]
-    assert values("UNFORMATTED_VALUE", "FORMATTED_VALUE") == [["12"]]
-
-
 @pytest.mark.parametrize(
     "mask, want",
     [
@@ -4779,9 +4780,8 @@ def test_pretty_print_indents_by_default_and_is_compact_to_the_byte_when_off(gc,
     ],
 )
 def test_pretty_print_is_turned_off_by_two_spellings_matched_exactly(gc, gh, book, value, compact):
-    """Measured 2026-09-23 on `values.get`, twenty spellings one request each: `false` and `0`
-    are compact and the other eighteen indented, these among them. So `prettyPrint` does not take the spellings the Sheets
-    booleans do, where `f`, `no` and `n` mean false and case does not matter."""
+    """Pins the spellings `_sheets_respond`'s comment records: an exact match on `false` and `0`,
+    no casefolding, and not the Sheets boolean set."""
     url = f"/sheets/v4/spreadsheets/{book}/values/Summary!A1:A1"
     r = gc.get(url, headers=gh, params={"prettyPrint": value})
     assert r.status_code == 200

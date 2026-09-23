@@ -244,8 +244,7 @@ it and an `alt` naming a format other than `json` suppresses the wrap altogether
 matched without regard to case and an empty `alt=` names none, so `alt=JSON`, `alt=Json` and
 `alt=` each ask for the JSON the default serves rather than for a format of their own. An empty
 `callback=` is no
-callback; a repeated one is answered through the first name where `$.xgafv` is answered through the
-last; and a POST ignores the parameter outright, as real does, since JSONP is what a `<script>`
+callback, and a POST ignores the parameter outright, as real does, since JSONP is what a `<script>`
 element fetches and a `<script>` element issues a GET. A SUCCESS body is wrapped and indented on
 the `/sheets/v4` routes only; the other four families honour `callback` on their errors and not yet
 on their 200s. Measured against the live Sheets, Docs, Drive, Gmail and Slides APIs on 2026-09-15,

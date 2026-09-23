@@ -233,11 +233,12 @@ anything else is read, ahead of a bad token or an unparseable range, with real's
 array the entry follows the error: a typed value the proto layer refuses (an enum, a bool, an
 int32) is `reason: invalid` and carries no `domain`; an Office file read as a native document is
 `failedPrecondition` under `domain: global`; everything else is `badRequest` under the same domain;
-and a missing credential on any of the three OAuth-only APIs — Gmail, Docs and Slides — is the
-short `Login Required.` at `location: Authorization`, which Gmail shows by default where the editor
-families show it only at `1`. Measured against the live Sheets, Docs and Drive APIs on 2026-09-12,
-and against Slides and Gmail on 2026-09-14 through the errors a request with no Authorization
-header reaches.
+and a missing credential — any anonymous POST, the two Sheets data-filter reads included, and a GET
+on Gmail, Docs and Slides — is the short `Login Required.` at `location: Authorization`, which Gmail
+shows by default where the editor families show it only at `1`. Measured against the live Sheets,
+Docs and Drive APIs on 2026-09-12, against Slides and Gmail on 2026-09-14 through the errors a
+request with no Authorization header reaches, and against the Sheets data-filter POSTs on
+2026-09-22.
 
 **Every Google error body is rendered the way real renders one** — two spaces deep with a trailing
 newline whatever `prettyPrint` says, `application/json; charset=UTF-8`, and the 209 characters

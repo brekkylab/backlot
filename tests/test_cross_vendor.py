@@ -23,8 +23,8 @@ def test_unauthenticated_request_reports_the_vendors_own_401_detail(client):
     error has to keep matching — which is why the shared guard takes it as a parameter.
 
     GitHub only: Google does not go through `auth.require_bearer`, because its answer is not one
-    status (403 on Drive/Sheets, 401 on the OAuth-only families) and it carries Google's own error
-    envelope, not `detail`. That surface is covered by the tests below.
+    status (403 on a Drive or Sheets GET, 401 on the OAuth-only families and on any POST) and it
+    carries Google's own error envelope, not `detail`. That surface is covered by the tests below.
 
     GitHub carries its own envelope too, and splits the 401 by cause the way real does: a request
     with no usable credential is "Requires authentication", a credential that arrived and did not
@@ -90,7 +90,7 @@ def test_meta_users_directory(client, tokens_yaml, org):
 
 
 def test_unauthenticated_is_rejected(client):
-    # Drive accepts API keys, so an anonymous request is an "unregistered caller" -> 403, not 401.
+    # Drive accepts API keys, so an anonymous GET is an "unregistered caller" -> 403, not 401.
     # A present-but-invalid bearer IS 401. Both measured; see the Google-envelope tests below.
     assert client.get("/drive/v3/files").status_code == 403
     assert (

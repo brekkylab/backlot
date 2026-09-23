@@ -243,7 +243,8 @@ REQUEST_IDS: contextvars.ContextVar[tuple[str, str] | None] = contextvars.Contex
 def request_ids(method: str, path: str, query: str) -> tuple[str, str]:
     """``(x-amz-request-id, x-amz-id-2)`` for one request, at the widths real S3 sends most often.
 
-    Measured 2026-09-22 over twenty-five response shapes, a success and a refusal alike: both rode
+    Measured 2026-09-22 at ap-northeast-2 over twenty-five response shapes, a success and a refusal
+    alike: both rode
     every one. The id is 16 uppercase hex characters on every sample; the extended id is base64 whose
     width is not a property of the answer — forty samples each on 2026-09-23 (us-east-1) gave a
     `TRACE` 128, 96 and 120 characters, a 404 96 and 76, a 405 96 and 76 — so this sends the 96 that
@@ -1058,10 +1059,11 @@ def _parse_range(header: str, total: int):
 #
 # The methods real answers by doing the write are the ones this server does not serve, so they
 # answer `NotImplemented` (501), the code this router already gives an operation it does not
-# implement. The rest are real's own answers. Two deliberate differences, both stated where they
-# are made: the `Allow` names what Backlot serves rather than what real serves, which is what the
-# sub-resource 405 already does, and a multipart `POST` on a bucket is refused as a non-multipart
-# one is, since an upload is a write.
+# implement. The rest are real's own answers. Three more deliberate differences, each stated where
+# it is made: the `Allow` names what Backlot serves rather than what real serves, which is what the
+# sub-resource 405 already does; a multipart `POST` on a bucket is refused as a non-multipart one
+# is, since an upload is a write; and a preflight names every bucket path as present
+# (`_cors_preflight`).
 #
 # No credential is resolved before a method refusal, because real answers the method first: an
 # unsigned `PATCH` on a bucket, on a key and at the root, and an unsigned `PATCH` or `POST` naming a
@@ -1171,8 +1173,8 @@ def _refuse_write(
     its method refusals answer an absent bucket as they answer a present one (measured 2026-09-23).
     So the method refusals precede resolution and this one does not: a caller asking to delete
     something that is not there learns it is not there, and one asking to delete something that is
-    learns this server does not write. A bare bucket `PUT` is CreateBucket, which real never answers
-    with `NoSuchBucket`, so it is refused with ``resolve=False`` and says nothing about the name.
+    learns this server does not write. A bare bucket `PUT` is CreateBucket, which real answered with
+    `BucketAlreadyExists` for a taken name and by creating a free one, not with `NoSuchBucket`, so it is refused with ``resolve=False`` and says nothing about the name.
     """
     caller, visible, err = _auth(request)
     if err is not None:
@@ -1223,7 +1225,8 @@ def _selector_refusal(
 )
 async def service_method_refusal(request: Request) -> Response:
     """The service root serves `ListBuckets` alone, and real answers `PUT`, `POST`, `DELETE` and
-    `PATCH` there with one 405 naming `SERVICE`, each measured, a selector or not."""
+    `PATCH` there with one 405 naming `SERVICE`, each measured, and the same with a selector on
+    `PATCH`, `POST` and `PUT`."""
     if request.method == "OPTIONS":
         return _cors_preflight(request, _CORS_NO_BUCKET)
     return _error(

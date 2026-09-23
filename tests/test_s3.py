@@ -76,7 +76,7 @@ def _signed(base_url, path, token, method="GET", extra_headers=None, body=None):
 
 
 # The pair real puts on every answer, and the refusal it gives a method this router does not serve.
-# The pair measured 2026-09-22 over twenty-five response shapes; the refusals 2026-09-23 against
+# The pair measured 2026-09-22 at ap-northeast-2 over twenty-five response shapes; the refusals 2026-09-23 against
 # `s3.us-east-1.amazonaws.com`, the region this server presents, path-style, against a bucket name
 # nobody owns.
 
@@ -312,8 +312,8 @@ def test_s3_a_write_names_its_bucket_before_the_501_and_createbucket_names_none(
     """Measured: real answers a write naming an absent bucket — a `DELETE`, a selector's own method
     such as `POST ?delete` or `PUT ?acl`, a key's `POST ?uploads` — with `NoSuchBucket` at 404,
     where its method refusals answer an absent bucket exactly as they answer a present one. A bare
-    bucket `PUT` is CreateBucket, which real answers with the bucket or with `BucketAlreadyExists`
-    and never with `NoSuchBucket`, so its 501 does not depend on the name."""
+    bucket `PUT` is CreateBucket, which real answered with the bucket for a free name and with
+    `BucketAlreadyExists` for a taken one, so its 501 does not depend on the name."""
     base_url, settings = live_server
     absent = "/s3/no-such-bucket-xyz"
     for method, path in (

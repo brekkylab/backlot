@@ -2274,7 +2274,7 @@ async def commit_statuses(
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     _require_repo(conn, repo, ids)  # a repo this caller cannot see must not answer for its shas
-    if sha.strip("/") not in _commit_ish(conn, owner, repo, ids):
+    if _ref_as_sent(sha) not in _commit_ish(conn, owner, repo, ids):
         raise HTTPException(status_code=404, detail="Not Found")
     page, per_page = _clamp(page, per_page)
     return _paged(request, 0, {}, [], page, per_page)
@@ -2334,7 +2334,7 @@ async def get_git_ref(owner: str, repo: str, ref: str, request: Request):
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     _require_repo(conn, repo, ids)
-    ref = ref.strip("/")
+    ref = _ref_as_sent(ref)
     if not _ref_exists(conn, owner, repo, ref, ids):
         raise HTTPException(status_code=404, detail="Not Found")
     ab = _api_base(request)
@@ -2422,7 +2422,7 @@ async def get_tree(
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     _require_repo(conn, repo, ids)
-    ref = ref.strip("/")
+    ref = _ref_as_sent(ref)
     ab = _api_base(request)
     rows = store.list_repo_files(conn, repo, ids)
     entries = _tree_from_paths(owner, repo, rows, ab)
@@ -2550,8 +2550,46 @@ async def get_contents(
 ):
     """`ref` selects a SNAPSHOT of the file when the corpus named one; see store.get_repo_file for
     why an unnamed ref answers HEAD instead of 404. A directory listing ignores it — the tree has
-    no per-ref shape here (the no-history simplification in :func:`get_tree`)."""
+    no per-ref shape here (the no-history simplification in :func:`get_tree`).
+
+    A path ending in a slash is a 302 to the id-keyed spelling without it, which is real's own
+    answer and the one exception to a trailing slash meaning whatever the matched route makes of
+    it. Measured 2026-09-22: `contents/backlot/`, `contents/README.md/` and `contents/no-such-dir/`
+    all answer `302` to `https://api.github.com/repositories/{id}/contents/{path}`, so the redirect
+    is reached before the path resolves to anything; the `Location` carries no query, `?ref=main`
+    included; and the id-keyed spelling redirects to itself the same way.
+
+    What it does NOT precede is the repository: a repository that does not exist, an owner that
+    does not, and one the caller cannot see are each a 404 rather than a redirect (measured the
+    same day on three such paths), so the credential and the repository are resolved first and the
+    redirect answers only for a repository this caller can read.
+    """
+    if path.endswith("/"):
+        # The redirect sits between the repository and the path: measured, a repository that does
+        # not exist or that the caller cannot see is a 404 here, and a path that names nothing
+        # inside one that does is still the 302.
+        conn = auth.conn(request)
+        caller = _require(request)
+        _require_repo(conn, repo, auth.visible_ids(request, caller))
+        target = _redirect_to_the_slash_free_contents_path(request, repo, path)
+        # Real's redirect carries an HTML content type and an empty body, spelt without the space
+        # its own header has ("text/html;charset=utf-8"), measured on four of these.
+        return Response(
+            status_code=302,
+            headers={"Location": target, "Content-Type": "text/html;charset=utf-8"},
+        )
     return await _contents_response(owner, repo, path, request, ref)
+
+
+def _redirect_to_the_slash_free_contents_path(request: Request, repo: str, path: str) -> str:
+    """Where real points a `contents` path that ends in a slash: the id-keyed spelling of the same
+    path with ONE slash gone, absolute, and carrying no query.
+
+    One, not all of them: measured 2026-09-22, `contents/backlot//` points at `contents/backlot/`
+    and `contents///` at `contents//`, so a path carrying several takes a hop per slash and a
+    client following redirects walks them off one at a time.
+    """
+    return f"{_api_base(request)}/repositories/{synth.github_user_id(repo)}/contents/{path[:-1]}"
 
 
 @router.get("/repos/{owner}/{repo}/git/blobs/{sha}")
@@ -2732,7 +2770,7 @@ async def get_branch(owner: str, repo: str, branch: str, request: Request):
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     _require_repo(conn, repo, ids)
-    branch = branch.strip("/")
+    branch = _ref_as_sent(branch)
     found = next((b for b in _branch_rows(conn, owner, repo, ids) if b["name"] == branch), None)
     if found is None:
         raise HTTPException(status_code=404, detail="Branch not found")
@@ -2777,7 +2815,7 @@ async def get_commit(owner: str, repo: str, sha: str, request: Request):
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     _require_repo(conn, repo, ids)
-    sha = sha.strip("/")
+    sha = _ref_as_sent(sha)
     if sha not in _commit_ish(conn, owner, repo, ids):
         raise _no_commit_for_sha(sha)
     # A NAME resolves to the commit it stands for rather than being echoed back as one: real
@@ -2801,6 +2839,40 @@ async def get_commit(owner: str, repo: str, sha: str, request: Request):
         "url": f"{ab}/repos/{owner}/{repo}/commits/{sha}",
         "html_url": f"https://github.com/{owner}/{repo}/commit/{sha}",
     }
+
+
+@router.get("/repos/{owner}/{repo}/readme/{dir:path}")
+async def get_readme_for_a_directory(
+    owner: str, repo: str, dir: str, request: Request, ref: str | None = Query(None)
+):
+    """The README of a directory, which real serves at its own route beside the root one.
+
+    Measured 2026-09-22: `readme/Doc` on python/cpython is that directory's README at 200, a
+    directory holding none is a 404 whose `documentation_url` names the directory anchor rather
+    than the root one, and `readme/` — the empty directory — is the repository's own README, which
+    is why a trailing slash answers 200 here where it is a 404 on the routes around it. A trailing
+    slash on the directory itself is ignored the same way (`readme/Doc/` is `Doc`'s README).
+
+    WHICH file it serves is where this and real part: real answers whatever the directory's README
+    is, `Doc/README.rst` on python/cpython among them, and this looks for `README.md` alone, as the
+    root route does. A corpus stating `docs/README.rst` gets a 404 here and a 200 there.
+    """
+    inside = dir.strip("/")
+    if not inside:
+        return await get_readme(owner, repo, request, ref)
+    conn = auth.conn(request)
+    caller = _require(request)
+    ids = auth.visible_ids(request, caller)
+    _require_repo(conn, repo, ids)
+    _require_ref(conn, owner, repo, ref, ids)
+    row = store.get_repo_file(conn, repo, f"{inside}/README.md", ids, ref=ref) or (
+        store.get_repo_file(conn, repo, f"{inside}/readme.md", ids, ref=ref)
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    return _raw_response(request, row["content"], _CONTENT_RAW_TYPE) or _file_obj(
+        owner, repo, row, _api_base(request), ref
+    )
 
 
 @router.get("/repos/{owner}/{repo}/readme")
@@ -3079,6 +3151,20 @@ def _commit_ish(conn, owner: str, repo: str, ids) -> set[str]:
     branches = _branch_rows(conn, owner, repo, ids, pulls=pulls)
     names = {b["name"] for b in branches} | set(_repo_tags(conn, repo))
     return names | _commit_shas(repo, pulls)
+
+
+def _ref_as_sent(ref: str) -> str:
+    """The ref the caller sent, with only a LEADING slash dropped.
+
+    A TRAILING one is part of the name real reads, and each route refuses the name it then fails to
+    find: measured 2026-09-22, `git/trees/main/` and `git/ref/heads/main/` are 404 `Not Found`,
+    `statuses/main/` a 404, `branches/main/` a 404 `Branch not found`, and `commits/main/` a 422
+    whose message echoes the slash. Dropping it served the ref beside it at 200 on all five.
+
+    The leading slash is dropped because a ref arriving as `//main` — a client joining a base and a
+    ref that both carry one — otherwise reaches the lookup with a name no corpus holds.
+    """
+    return ref.lstrip("/")
 
 
 def _no_commit_for_sha(sha: str) -> HTTPException:

@@ -615,12 +615,14 @@ def test_user_cannot_fetch_others_private_gmail(client, tokens_yaml, admin_h, ro
 # Every case below was MEASURED against the live APIs with real OAuth credentials. The envelope is
 # per-family, not uniform:
 #
-#   family                       errors[]   status                 no Authorization header
-#   -----------------------------|----------|-----------------------|------------------------
-#   Drive v3                     | always   | auth failures only    | 403 PERMISSION_DENIED
-#   Gmail v1                     | always   | always                | 401 UNAUTHENTICATED
-#   Docs v1 / Sheets v4 / Slides | never    | always                | 401 UNAUTHENTICATED
+#   family                       errors[]           status               no Authorization header, GET
+#   -----------------------------|------------------|---------------------|-------------------------
+#   Drive v3                     | always           | auth failures only  | 403 PERMISSION_DENIED
+#   Gmail v1                     | unless $.xgafv=2 | always              | 401 UNAUTHENTICATED
+#   Docs v1 / Slides v1          | $.xgafv=1        | always              | 401 UNAUTHENTICATED
+#   Sheets v4                    | $.xgafv=1        | always              | 403 PERMISSION_DENIED
 #
+# The last column is the GET rule; `errors.google.no_credentials` carries the POST one.
 # A bad bearer token is 401 UNAUTHENTICATED in every family.
 
 
@@ -937,13 +939,25 @@ def test_the_errors_entry_at_xgafv_1_is_the_one_real_answers(client, admin_h, pa
     assert e["message"] == entry["message"]
 
 
+_A1_FILTER = {"dataFilters": [{"a1Range": "Sheet1!A1"}]}
+_SHEETS_FILTER_READ = "/sheets/v4/spreadsheets/x/values:batchGetByDataFilter"
+
+
+def _anonymous(client, method, path, params):
+    return client.request(
+        method, path, params=params, json=_A1_FILTER if method == "POST" else None
+    )
+
+
 def test_the_credential_entries(client):
     """The three credential failures, which differ from each other rather than by family: a bad
-    token, an anonymous Sheets request, an anonymous request on an OAuth-only API.
+    token, an anonymous Sheets GET, and the missing credential, which is an anonymous GET on an
+    OAuth-only API or an anonymous POST on any family.
 
     The last of those is asked of Gmail with NO parameter, because Gmail carries the array by
-    default, and of Docs and Slides at `$.xgafv=1`, because they do not. Real answers all three the
-    same entry — measured 2026-09-14, a request with no Authorization header needs no credential to
+    default, and of Docs, Slides and the Sheets data-filter POST at `$.xgafv=1`, because they do
+    not. Real answers all four the same entry — measured on Gmail, Docs and Slides 2026-09-14 and
+    on the Sheets POST 2026-09-22; a request with no Authorization header needs no credential to
     send."""
     e = _gerr(client.get("/sheets/v4/spreadsheets/x", headers=BAD_TOKEN, params={"$.xgafv": "1"}))
     assert e["errors"] == [
@@ -967,20 +981,26 @@ def test_the_credential_entries(client):
         "location": "Authorization",
         "locationType": "header",
     }
-    for path, params in (
-        ("/docs/v1/documents/x", {"$.xgafv": "1"}),
-        ("/slides/v1/presentations/x", {"$.xgafv": "1"}),
-        ("/gmail/v1/users/me/labels", {}),
+    for method, path, params in (
+        ("GET", "/docs/v1/documents/x", {"$.xgafv": "1"}),
+        ("GET", "/slides/v1/presentations/x", {"$.xgafv": "1"}),
+        ("POST", _SHEETS_FILTER_READ, {"$.xgafv": "1"}),
+        ("GET", "/gmail/v1/users/me/labels", {}),
     ):
-        e = _gerr(client.get(path, params=params))
+        e = _gerr(_anonymous(client, method, path, params))
         assert e["code"] == 401, path
         assert e["errors"] == [entry], path
     # The array is the only member the parameter moves: on the editor families it is what `1` adds,
     # and on Gmail, which carries it already, `1` adds nothing at all.
-    for path in ("/docs/v1/documents/x", "/slides/v1/presentations/x"):
-        bare = _gerr(client.get(path))
+    for method, path in (
+        ("GET", "/docs/v1/documents/x"),
+        ("GET", "/slides/v1/presentations/x"),
+        ("POST", _SHEETS_FILTER_READ),
+    ):
+        bare = _gerr(_anonymous(client, method, path, {}))
         assert "errors" not in bare, path
-        assert _gerr(client.get(path, params={"$.xgafv": "1"})) == {**bare, "errors": [entry]}, path
+        verbose = _gerr(_anonymous(client, method, path, {"$.xgafv": "1"}))
+        assert verbose == {**bare, "errors": [entry]}, path
     gmail = _gerr(client.get("/gmail/v1/users/me/labels"))
     assert _gerr(client.get("/gmail/v1/users/me/labels", params={"$.xgafv": "1"})) == gmail
 
@@ -1035,20 +1055,25 @@ def test_no_google_baseline_acknowledges_the_system_parameter_any_more():
 
 
 @pytest.mark.parametrize(
-    "path, code, status",
+    "method, path, code, status",
     [
-        ("/drive/v3/files", 403, "PERMISSION_DENIED"),  # Drive accepts API keys, so anonymous
-        ("/sheets/v4/spreadsheets/x", 403, "PERMISSION_DENIED"),  # ...is an "unregistered caller"
-        ("/gmail/v1/users/me/profile", 401, "UNAUTHENTICATED"),  # OAuth-only APIs say the
-        ("/docs/v1/documents/x", 401, "UNAUTHENTICATED"),  # ...credentials are missing
-        ("/slides/v1/presentations/x", 401, "UNAUTHENTICATED"),
+        ("GET", "/drive/v3/files", 403, "PERMISSION_DENIED"),  # a GET on an API that accepts
+        ("GET", "/sheets/v4/spreadsheets/x", 403, "PERMISSION_DENIED"),  # ...keys is "unregistered"
+        ("GET", "/gmail/v1/users/me/profile", 401, "UNAUTHENTICATED"),  # OAuth-only APIs say the
+        ("GET", "/docs/v1/documents/x", 401, "UNAUTHENTICATED"),  # ...credentials are missing
+        ("GET", "/slides/v1/presentations/x", 401, "UNAUTHENTICATED"),
+        # the two data-filter reads, the only non-GET operations under the five families
+        ("POST", "/sheets/v4/spreadsheets/x/values:batchGetByDataFilter", 401, "UNAUTHENTICATED"),
+        ("POST", "/sheets/v4/spreadsheets/x:getByDataFilter", 401, "UNAUTHENTICATED"),
     ],
 )
-def test_a_missing_header_differs_by_family(client, path, code, status):
-    """The surprise, measured: no `Authorization` header at all is NOT uniformly 401. Drive and
-    Sheets answer 403 PERMISSION_DENIED, Gmail and the Docs/Slides APIs answer 401. A bad token is
-    401 everywhere — so the two cases are genuinely distinct and Backlot conflated them."""
-    r = client.get(path)
+def test_a_missing_header_differs_by_family_and_method(client, method, path, code, status):
+    """The surprise, measured: no `Authorization` header at all is NOT uniformly 401, and the path
+    is half the rule. A GET on Drive or Sheets is 403 PERMISSION_DENIED, a GET on Gmail, Docs or
+    Slides is 401, and a POST is 401 on every family, the two Sheets reads issued over POST
+    included. A bad token is 401 everywhere — so the two cases are genuinely distinct and Backlot
+    conflated them."""
+    r = _anonymous(client, method, path, {})
     assert r.status_code == code
     e = _gerr(r)
     assert e["code"] == code and e["status"] == status
@@ -1070,8 +1095,9 @@ def test_a_missing_header_differs_by_family(client, path, code, status):
 #   indentation   two spaces and a trailing newline on an error, whatever `prettyPrint` says
 #   charset       `application/json; charset=UTF-8` on the plain body
 #
-# The five anonymous errors below are the same five `test_a_missing_header_differs_by_family`
-# measures, reused because one request per family is what real was asked.
+# The five anonymous errors below are the GET rows of
+# `test_a_missing_header_differs_by_family_and_method`, reused because one request per family is
+# what real was asked.
 
 JSONP_FAMILY_ERRORS = [
     ("/drive/v3/files", 403),
@@ -1118,7 +1144,7 @@ def test_a_google_error_is_indented_and_names_its_charset(client, path, code):
 
 def test_the_indented_error_is_the_body_real_sends_to_the_byte(client):
     """One family spelled out, so the shape is pinned by something other than the serializer that
-    produced it. Sheets answers an anonymous read 403 PERMISSION_DENIED with the
+    produced it. Sheets answers an anonymous GET 403 PERMISSION_DENIED with the
     unregistered-caller sentence."""
     r = client.get("/sheets/v4/spreadsheets/x")
     assert r.text == (
@@ -2077,7 +2103,7 @@ def test_drive_about_rejects_a_mask_that_selects_nothing(client, admin_h):
 
 
 def test_drive_about_needs_auth(client):
-    # no header at all -> 403 on Drive (an unregistered caller); a bad token -> 401
+    # no header at all on a Drive GET -> 403 (an unregistered caller); a bad token -> 401
     assert client.get(ABOUT, params={"fields": "user"}).status_code == 403
     bad = {"Authorization": "Bearer nope"}
     assert client.get(ABOUT, params={"fields": "user"}, headers=bad).status_code == 401

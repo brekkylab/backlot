@@ -326,9 +326,10 @@ def discover(call: _Caller, query: str = "", *, require_admin: bool = False) -> 
     over their envelopes.
 
     Every channel and every active person the listings answered with is kept, not one of each:
-    `conversations.info` and `users.info` describe one object, Slack drops fields per object, and
-    measured 2026-09-23 a single sampled person or channel left out up to four fields the others
-    carry — so which one a listing happened to put first would decide the findings. Every candidate
+    Slack drops fields per object, and measured 2026-09-23 a single sampled person or channel left
+    out up to four `users.info` or three `conversations.info` fields the others carry, and the
+    `conversations.history` of a channel holding only join messages left out eleven — so which one
+    a listing happened to put first would decide the findings. Every candidate
     word that matches is kept too, for the reason :func:`_searchable_words` gives.
 
     ``query`` is passed only for Backlot's side, where the corpus plants a word; the vendor's is
@@ -395,7 +396,7 @@ def _calls(sample: Sample) -> list[tuple[str, dict[str, Any]]]:
         ("auth.test", {}),
         ("conversations.list", {"limit": 200}),
         *(("conversations.info", {"channel": channel}) for channel in sample.channels),
-        ("conversations.history", {"channel": sample.channel, "limit": 200}),
+        *(("conversations.history", {"channel": c, "limit": 200}) for c in sample.channels),
         ("conversations.members", {"channel": sample.channel}),
         ("conversations.replies", {"channel": sample.channel, "ts": sample.thread_ts}),
         *(

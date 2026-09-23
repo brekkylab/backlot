@@ -191,12 +191,12 @@ so it is the same on every run and a finding reproduces with `backlot.serve(reco
 vendor's half is a live workspace, and everything the calls need is discovered through the API
 itself — a channel the caller has joined, a message with replies in it, the active people, and words
 out of that channel's own text that the workspace's search can find. A workspace missing any of
-them is reported as one that cannot be probed rather than probed clean. A method describing one
-object — `users.info`, `conversations.info` — is asked about every person or channel the listing
-returned and read as one shape, and the search methods about a word from each of the three messages
-carrying the most fields: measured 2026-09-23, asking about whichever person, channel or word came
-first left out up to four fields the others carried, so which one a listing put first decided the
-findings. Slack has no query that
+them is reported as one that cannot be probed rather than probed clean. `users.info` is asked
+about every person the listing returned, `conversations.info` and `conversations.history` about
+every channel, and the search methods about a word from each of the three messages carrying the
+most fields, each method read as one shape: measured 2026-09-23, asking about whichever person,
+channel or word came first left out up to eleven fields the others carried, so which one a listing
+put first decided the findings. Slack has no query that
 means "everything" to fall back on: measured 2026-09-22, `*` answered `search.messages` with one
 match out of the eleven messages the workspace holds, and with two an hour earlier.
 

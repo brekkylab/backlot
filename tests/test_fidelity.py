@@ -1399,14 +1399,16 @@ def test_the_probe_corpus_answers_every_shape_the_probe_compares(tmp_path):
             return body
 
         calls = slack_probe._calls(slack_probe.discover(call, "drosophila"))
-        answers = {m: call(m, **a) for m, a in calls}
+        bodies = [(m, call(m, **a)) for m, a in calls]
+        answers = dict(bodies)
         served = slack_docs.from_backlot(client.app.openapi(), COMPARISONS["slack"].mount)
 
     # Every method Backlot serves is asked, so a route added later is compared rather than left
     # to the documentation's request surface alone.
     assert set(answers) == set(served)
     asked = [m for m, _ in calls]
-    assert (asked.count("conversations.info"), asked.count("users.info")) == (2, 2)
+    methods = ("conversations.info", "conversations.history", "users.info")
+    assert {m: asked.count(m) for m in methods} == dict.fromkeys(methods, 2)
     assert len(answers["conversations.list"]["channels"]) == 2
     assert len(answers["users.list"]["members"]) >= 2
     assert answers["conversations.members"]["members"]
@@ -1415,7 +1417,9 @@ def test_the_probe_corpus_answers_every_shape_the_probe_compares(tmp_path):
     assert answers["search.all"]["messages"]["matches"]
     assert answers["search.files"]["files"]["matches"] == []
     assert len(answers["conversations.replies"]["messages"]) == 2
-    history = answers["conversations.history"]["messages"]
+    history = [
+        m for method, body in bodies if method == "conversations.history" for m in body["messages"]
+    ]
     carried = {
         key
         for message in history

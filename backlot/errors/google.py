@@ -201,14 +201,14 @@ def invalid_field_value(field: str, message: str) -> GoogleError:
 
 def invalid_field_values(violations: list[tuple[str, str]]) -> GoogleError:
     """One refusal for every typed value the proto layer could not read, as ``(field, message)``
-    pairs in the order they were read.
+    pairs in the order to report them.
 
     Measured 2026-09-23 on Sheets `values.get`, `spreadsheets.get` and `:getByDataFilter` and on
     Drive `files.list`, over query parameters and a JSON body alike: each refused value is a
     ``google.rpc.BadRequest`` field violation in `details`, naming the field the way its message
     does and repeating the message as its description, and a request with several is one 400 whose
-    message joins theirs with newlines -- `majorDimension=NOPE&valueRenderOption=NOPE` answers
-    both, in that order, and the reverse in the reverse."""
+    message joins theirs with newlines, in the order `details` lists them. Which order that is,
+    is ``routers.google._typed_query``'s."""
     return GoogleError(
         400,
         "\n".join(message for _, message in violations),
@@ -361,8 +361,10 @@ def first_repeat(query: Mapping[str, str] | None, name: str) -> str | None:
     `prettyPrint` and `$.xgafv` are both system parameters, `pageSize` and `majorDimension` both
     method parameters, and in each pair one is read first and the other last. So this is a table,
     one ordered pair per row, each sent both ways round so the answer names the end that was read.
-    ``QueryParams.get`` answers the last repeat; the parameters in the first group are read through
-    here and the ones in the second off ``.get``::
+    ``QueryParams.get`` answers the last repeat, so the untyped parameters in the first group are
+    read through here and those in the second off ``.get``. A typed one -- `pageSize`,
+    `majorDimension`, `valueRenderOption`, `includeGridData` -- has every repeat parsed by
+    ``routers.google._typed_query`` and is read from the end its group names::
 
         read first          the pair, and what real answers       measured on
         ------------------|--------------------------------------|-------------------------------

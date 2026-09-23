@@ -266,16 +266,17 @@ the Gmail `$.xgafv` on 2026-09-22, and the rest on 2026-09-23.
 
 **A typed query parameter is parsed in every repeat, and every value it cannot read is refused in
 one 400**: the message joins theirs with newlines and `details` carries a `google.rpc.BadRequest`
-field violation for each, in query order, on Sheets' `majorDimension`, `valueRenderOption`,
-`dateTimeRenderOption`, `includeGridData` and `excludeTablesInBandedRanges` and Drive's `pageSize`
-alike, and a JSON body's typed values carry the same `details`. On Drive's `files.list`, one
-`pageSize` outside 1-1000 is refused with the range sentence, while a repeated one is read from the
-first and never range-checked; a `pageToken` it did not issue is 400 `Invalid Value`; and the
-refusals come in the order `pageSize`, `orderBy`, `q`, `pageToken`, `fields`. A blank `fields` on
-`files.list` or `files.get` answers `{}`. `files.export` refuses a format the file's type does not
-export to, the empty `mimeType=` among them, with `The requested conversion is not supported.`,
-matching the format without regard to case, and refuses an absent `mimeType` ahead of looking the
-file up. Measured against the live Drive and Sheets APIs on 2026-09-23.
+field violation for each, a parameter's repeats together and in query order, on Sheets'
+`majorDimension`, `valueRenderOption`, `dateTimeRenderOption`, `includeGridData` and
+`excludeTablesInBandedRanges` and Drive's `pageSize` alike, and a JSON body's typed values carry the
+same `details`. On Drive's `files.list`, one `pageSize` outside 1-1000 is refused with the range
+sentence, while a repeated one is read from the first and never range-checked; a `pageToken` it did
+not issue is 400 `Invalid Value`; and the refusals come in the order `pageSize`, `orderBy`, `q`,
+`pageToken`, `fields`. A blank `fields` on `files.list` or `files.get` answers `{}`. `files.export`
+refuses a format the file's type does not export to, the empty `mimeType=` among them, with `The
+requested conversion is not supported.`, matching the format without regard to case, and refuses an
+absent `mimeType` ahead of looking the file up. Measured against the live Drive and Sheets APIs on
+2026-09-23.
 
 ### HubSpot — `/hubspot/crm/v3` `/hubspot/crm/v4`
 

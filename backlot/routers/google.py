@@ -1642,14 +1642,18 @@ def _drive_about_field_keys(fields: str | None) -> set[str] | None:
 # Google's real values even though Backlot is read-only: a client that reads them to decide what
 # to ask for must branch the same way it would against real Drive.
 
-# What `files.export` can turn each native type into. Kept to the three native types Backlot
-# actually stores (`_NATIVE` minus the folder, which is not exportable anywhere).
+# What `files.export` can turn each native type into, in the order real `about.exportFormats`
+# lists them (measured 2026-09-23), and what `drive_files_export` accepts. Kept to the three
+# native types Backlot actually stores (`_NATIVE` minus the folder, which is not exportable
+# anywhere).
 _DRIVE_EXPORT_FORMATS = {
     DRIVE_DOC_MIME: [
         "application/rtf",
         "application/vnd.oasis.opendocument.text",
         "text/html",
         "application/pdf",
+        "text/x-markdown",
+        "text/markdown",
         "application/epub+zip",
         "application/zip",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -1659,10 +1663,10 @@ _DRIVE_EXPORT_FORMATS = {
         "application/x-vnd.oasis.opendocument.spreadsheet",
         "text/tab-separated-values",
         "application/pdf",
-        "application/vnd.oasis.opendocument.spreadsheet",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "text/csv",
         "application/zip",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.oasis.opendocument.spreadsheet",
     ],
     "application/vnd.google-apps.presentation": [
         "application/vnd.oasis.opendocument.presentation",
@@ -1818,7 +1822,8 @@ async def drive_files_list(request: Request):
         raise gerr.invalid_value("pageToken")
     mask = gerr.first_repeat(params, "fields")
     if mask is not None and not mask.strip():
-        # Measured: `fields=` and `fields=%20` answer `{}`, with no `kind` and no `files` either.
+        # The blank mask `_drive_get_field_keys` describes; on a listing it drops `kind` and
+        # `files` too, so the typed response model is bypassed.
         return JSONResponse({})
     keys = _drive_file_field_keys(mask)  # 400 on an unknown field
     conjuncts = _drive_q_conjuncts(query)
@@ -2746,7 +2751,8 @@ _PRETTY_PRINT_FALSE = frozenset({"false", "0"})
 
 
 def _sheets_bool_value(raw, field: str) -> bool:
-    """The rule itself, so a read that carries the flag in a JSON BODY applies the same one.
+    """One of the boolean params, parsed the way the real one is, from the query or a JSON BODY
+    alike.
 
     Measured: `1`, `t`, `y` and `yes` mean true and `0`, `f`, `n` and `no` mean false, matched
     case-insensitively; anything else 400s as ``Invalid value at '<field>' (TYPE_BOOL), "<value>"``,
@@ -3605,9 +3611,16 @@ def _typed_query(request: Request, readers: dict) -> dict[str, list]:
     cannot parse in one 400 (:func:`gerr.invalid_field_values`): measured 2026-09-23,
     `pageSize=2&pageSize=NOPE` and its reverse are both that 400, and so is
     `majorDimension=NOPE&majorDimension=ROWS`. Which repeat is then READ is the caller's to pick,
-    by the table in :func:`gerr.first_repeat`."""
+    by the table in :func:`gerr.first_repeat`.
+
+    The refusals are grouped by parameter, each parameter's in query order, and the groups come in
+    the order their parameters first appear. Measured the same day, eight identical requests each:
+    `majorDimension=NOPE1&valueRenderOption=NOPE2&majorDimension=NOPE3` kept the two
+    `major_dimension` refusals together and in that order every time, while which parameter came
+    first varied from one request to the next (`valueRenderOption=NOPE&majorDimension=NOPE`
+    answered each order four times), so first appearance is one of the orders real gives."""
     parsed: dict[str, list] = {name: [] for name in readers}
-    refused: list[tuple[str, str]] = []
+    refused: dict[str, list[tuple[str, str]]] = {}
     for name, raw in request.query_params.multi_items():
         if name not in readers:
             continue
@@ -3617,9 +3630,9 @@ def _typed_query(request: Request, readers: dict) -> dict[str, list]:
             violations = gerr.field_violations(exc)
             if not violations:
                 raise
-            refused += violations
+            refused.setdefault(name, []).extend(violations)
     if refused:
-        raise gerr.invalid_field_values(refused)
+        raise gerr.invalid_field_values([v for group in refused.values() for v in group])
     return parsed
 
 
@@ -3640,10 +3653,11 @@ def _drive_int32(raw: str) -> int:
 def _drive_page_size(request: Request) -> int:
     """The page size a `files.list` asks for.
 
-    Measured 2026-09-23: one `pageSize` outside 1-1000 is refused with the range sentence below,
-    `0` and `1001` alike. Two or more are not range-checked at all: the first is read, one past
-    1000 answers 1000 files and one at or below 0 answers 500 (`0&2`, `0&0`, `-1&2` and `0&1001`
-    all did, with more than 500 files to list), where `2&0` is 2. Absent is the default of 100."""
+    Measured 2026-09-23: one `pageSize` outside 1-1000 is refused with the range sentence below, `0`
+    and `1001` alike. Two or more are not range-checked at all: the first is read, one past 1000
+    answers 1000 files and one at or below 0 answers 500 (`0&2`, `0&0`, `-1&2` and `0&1001` all did,
+    with more than 500 files to list), where `2&0` is 2 and `3&0` is 3. Absent is the default of
+    100."""
     sizes = _typed_query(request, {"pageSize": _drive_int32})["pageSize"]
     if not sizes:
         return get_settings().default_page_size

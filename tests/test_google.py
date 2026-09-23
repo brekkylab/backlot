@@ -12,7 +12,7 @@ import csv
 import io
 import json
 import re
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import httpx
 import jwt
@@ -765,15 +765,23 @@ def test_drive_export_refuses_a_format_the_type_does_not_export_to(client, admin
     assert missing.status_code == 404
 
 
-def test_drive_export_matches_the_format_without_regard_to_case(client, admin_h):
-    """Measured 2026-09-23: `TEXT/CSV` exports the spreadsheet and names its type the way it was
-    asked for."""
+@pytest.mark.parametrize(
+    "asked, canonical",
+    [
+        ("TEXT/CSV", "text/csv"),
+        ("Text/Csv", "text/csv"),
+    ],
+)
+def test_drive_export_matches_the_format_without_regard_to_case(client, admin_h, asked, canonical):
+    """Measured 2026-09-23 on a spreadsheet: each spelling exports the bytes its lowercase one does
+    and names its type the way it was asked for. The TSV spelling is
+    `test_tsv_export_reserialises_the_grid_rather_than_serving_content`'s, over a grid."""
     sheet = _drive_find(client, admin_h, "Q1 Revenue Model")["id"]
     url = f"/drive/v3/files/{sheet}/export"
-    upper = client.get(url, headers=admin_h, params={"mimeType": "TEXT/CSV"})
-    assert upper.status_code == 200
-    assert upper.headers["content-type"].startswith("TEXT/CSV")
-    assert upper.text == client.get(url, headers=admin_h, params={"mimeType": "text/csv"}).text
+    got = client.get(url, headers=admin_h, params={"mimeType": asked})
+    assert got.status_code == 200
+    assert got.headers["content-type"].startswith(asked)
+    assert got.text == client.get(url, headers=admin_h, params={"mimeType": canonical}).text
 
 
 _RANGE = "Invalid value '{}'. Values must be within the range: [value: 1\n, value: 1000\n]"
@@ -844,20 +852,33 @@ def test_drive_page_size_is_an_int32_from_1_to_1000(client, admin_h, value, answ
         ("pageSize=1001&pageSize=1001", 1000),
         ("pageSize=2&pageSize=1001", 2),
         ("pageSize=3&pageSize=0", 3),
+        ("pageSize=2&pageSize=0", 2),
         ("pageSize=7", 7),
         ("", 100),
     ],
 )
-def test_a_repeated_page_size_is_read_first_and_not_range_checked(query, size):
-    """Measured 2026-09-23 on a Drive holding more than 1,000 files, so each size is what real
+@pytest.mark.parametrize("max_page_size", [1000, 2000, 5])
+def test_a_repeated_page_size_is_read_first_and_not_range_checked(
+    monkeypatch, query, size, max_page_size
+):
+    """Measured 2026-09-23 on a Drive holding at least 1,000 files, so each size is what real
     served. The bundled corpus holds fewer than 500, which a listing could not tell apart, so the
-    size is read off the reader the route uses."""
+    size is read off the reader the route uses. A deployment's `max_page_size` caps it on top:
+    raising the setting past 1000 does not lift real's own cap, and lowering it lowers the page.
+    An absent `pageSize` is the default whatever the cap, as it has been for every Drive listing."""
+    from types import SimpleNamespace
+
     from starlette.requests import Request
 
     from backlot.routers import google
 
+    monkeypatch.setattr(
+        google,
+        "get_settings",
+        lambda: SimpleNamespace(default_page_size=100, max_page_size=max_page_size),
+    )
     request = Request({"type": "http", "query_string": query.encode(), "headers": []})
-    assert google._drive_page_size(request) == size
+    assert google._drive_page_size(request) == (min(size, max_page_size) if query else size)
 
 
 def test_drive_a_page_token_it_did_not_issue_is_refused(client, admin_h):
@@ -900,9 +921,8 @@ def test_drive_a_page_token_it_did_not_issue_is_refused(client, admin_h):
     ],
 )
 def test_drive_files_list_refuses_in_reals_order(client, admin_h, query, location):
-    """Two bad values at once, measured 2026-09-23: `pageSize` is refused first, then `orderBy`,
-    `q`, `pageToken` and `fields`, whichever order the query names them in. A `pageSize` the
-    proto layer cannot read has no `location`."""
+    """Two bad values at once, each pair in the order `drive_files_list`'s comment records. A
+    `pageSize` the proto layer cannot read has no `location`."""
     e = _gerr(client.get("/drive/v3/files", headers=admin_h, params=query))
     assert e["code"] == 400
     assert e["errors"][0].get("location") == location
@@ -910,8 +930,8 @@ def test_drive_files_list_refuses_in_reals_order(client, admin_h, query, locatio
 
 @pytest.mark.parametrize("mask", ["", " "])
 def test_drive_a_blank_fields_mask_selects_nothing(client, admin_h, mask):
-    """Measured 2026-09-23: `fields=` and `fields=%20` answer `{}` on `files.list` and `files.get`,
-    and are still `about`'s missing-mask 400. An absent mask is the default object."""
+    """The blank mask `_drive_get_field_keys` describes, on a listing, a file and a folder, and
+    `about`'s missing-mask 400 for the same mask. An absent mask is the default object."""
     doc = _drive_find(client, admin_h, "Brand")["id"]
     folder = client.get(
         "/drive/v3/files",
@@ -2486,6 +2506,8 @@ def test_drive_about_export_formats_are_honoured_by_files_export(client, admin_h
     # every native type Backlot serves is covered; the folder type is not exportable anywhere
     assert set(formats) == {DOC_MIME, SHEET_MIME, "application/vnd.google-apps.presentation"}
     assert "text/csv" in formats[SHEET_MIME]
+    # measured 2026-09-23, real exports a Doc to both Markdown types and lists them
+    assert {"text/markdown", "text/x-markdown"} <= set(formats[DOC_MIME])
 
 
 def test_drive_about_shared_drive_fields_agree_with_the_drives_listing(client, admin_h):
@@ -3148,7 +3170,8 @@ _GRID = "Invalid value at 'include_grid_data' (TYPE_BOOL), "
             None,
             [("major_dimension", _DIM + '"NOPE1"'), ("major_dimension", _DIM + '"NOPE2"')],
         ),
-        # several parameters, in the order the query names them
+        # several parameters: each one's refusals together and in query order, the parameters in
+        # an order real varies from one request to the next
         (
             "GET",
             "values",
@@ -3159,9 +3182,17 @@ _GRID = "Invalid value at 'include_grid_data' (TYPE_BOOL), "
         (
             "GET",
             "values",
-            [("majorDimension", "NOPE"), ("valueRenderOption", "NOPE")],
+            [
+                ("majorDimension", "NOPE1"),
+                ("valueRenderOption", "NOPE2"),
+                ("majorDimension", "NOPE3"),
+            ],
             None,
-            [("major_dimension", _DIM + '"NOPE"'), ("value_render_option", _RENDER + '"NOPE"')],
+            [
+                ("major_dimension", _DIM + '"NOPE1"'),
+                ("value_render_option", _RENDER + '"NOPE2"'),
+                ("major_dimension", _DIM + '"NOPE3"'),
+            ],
         ),
         (
             "GET",
@@ -3244,19 +3275,37 @@ def test_every_typed_value_is_parsed_and_every_one_refused_is_named(
 ):
     """Measured 2026-09-23 on Sheets and Drive: every repeat of a typed parameter is parsed, not
     only the one read, and a request with several values the proto layer cannot read is one 400
-    whose message joins theirs with newlines and whose `details` names each, in query order."""
+    whose message joins theirs with newlines and whose `details` names each. `refused` is in query
+    order; the comparison keeps each field's refusals in that order and leaves the order between
+    fields open, as `_typed_query` records real does."""
     url = {
         "values": f"/sheets/v4/spreadsheets/{sheet_id}/values/Sheet1!A1",
         "book": f"/sheets/v4/spreadsheets/{sheet_id}",
         "by_filter": f"/sheets/v4/spreadsheets/{sheet_id}:getByDataFilter",
         "files": "/drive/v3/files",
     }[path]
-    r = httpx.request(method, base + url, headers=admin_h, params=query, json=body)
+    # The query string is built here rather than handed to httpx as `params`, which groups a
+    # repeated key's values together and so would never send an interleaved query.
+    target = base + url + ("?" + urlencode(query) if query else "")
+    r = httpx.request(method, target, headers=admin_h, json=body)
     assert r.status_code == 400, r.text
     err = r.json()["error"]
-    assert err["message"] == "\n".join(m for _, m in refused)
+    [bad_request] = err["details"]
+    assert bad_request["@type"] == "type.googleapis.com/google.rpc.BadRequest"
+    got = [(v["field"], v["description"]) for v in bad_request["fieldViolations"]]
+    assert err["message"] == "\n".join(m for _, m in got)
     assert err["status"] == "INVALID_ARGUMENT"
-    assert err["details"] == _bad_request(refused)
+
+    def by_field(pairs):
+        grouped = {}
+        for field, message in pairs:
+            grouped.setdefault(field, []).append(message)
+        return grouped
+
+    assert by_field(got) == by_field(refused)
+    # each field's refusals are contiguous
+    fields = [f for f, _ in got]
+    assert fields == sorted(fields, key=fields.index)
 
 
 @pytest.mark.parametrize(
@@ -4981,13 +5030,13 @@ def test_csv_export_of_a_gridded_spreadsheet_serialises_its_first_sheet(gc, gh, 
     assert _export(gc, gh, book, "text/csv").text == "Region,Deals,\r\nEMEA,12,TRUE"
 
 
-def test_tsv_export_reserialises_the_grid_rather_than_serving_content(gc, gh, hostile):
+@pytest.mark.parametrize("mime", ["text/tab-separated-values", "TEXT/TAB-SEPARATED-VALUES"])
+def test_tsv_export_reserialises_the_grid_rather_than_serving_content(gc, gh, hostile, mime):
     """`content` is the first sheet's CSV, so serving it for TSV too would answer commas and
     quotes. The lossy space-substitution is `sheets_grid.to_tsv`'s own test; this is the route
-    reaching it."""
-    assert _export(gc, gh, hostile, "text/tab-separated-values").text == (
-        'with,comma\twith"quote\twith newline'
-    )
+    reaching it. The format matches without regard to case, measured 2026-09-23, so the capitals
+    reach it too."""
+    assert _export(gc, gh, hostile, mime).text == 'with,comma\twith"quote\twith newline'
 
 
 def test_a_prose_spreadsheet_still_exports_verbatim(gc, gh, prose):

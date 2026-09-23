@@ -467,25 +467,19 @@ def refused_a_credential(request: Request) -> bool:
     return auth.bearer_token(request) is not None and auth.resolve_bearer(request) is None
 
 
-def rate_limit_headers(
-    request: Request, status_code: int, *, count: bool | None = None
-) -> dict[str, str]:
+def rate_limit_headers(request: Request, status_code: int) -> dict[str, str]:
     """The five `x-ratelimit-*` headers for a `/github` answer.
 
     Counts the request against the window, except on :data:`RATE_LIMIT_PATH`, which reports its
     window without counting: two `GET /rate_limit` in a row both answered `remaining: 5000`,
     `used: 0`, each carrying the five with `resource: core`, and the description's own note says
-    the route does not count. That default rstrips the path, so `/rate_limit/` falls into the
-    no-count branch as well; `count` overrides it for a caller that is not the routed endpoint
-    itself, and `refuse_a_trailing_slash_on_github` passes `count=True` because a trailing slash
-    there is a 404 no route matched, which counts like any other."""
+    the route does not count. `/rate_limit/` never reaches this — see
+    ``backlot.main.refuse_a_trailing_slash_on_github``."""
     key, authenticated = rate_limit_caller(request)
     resource = rate_limit_resource(request.url.path, status_code)
     counted, limit = rate_limit_window(resource, authenticated)
     windows = _rate_limit_windows(request.app)
-    if count is None:
-        count = request.url.path.rstrip("/") != RATE_LIMIT_PATH
-    read = windows.count if count else windows.status
+    read = windows.count if request.url.path != RATE_LIMIT_PATH else windows.status
     window = read(key, counted, limit)
     return {
         "x-ratelimit-limit": str(window["limit"]),
@@ -546,14 +540,13 @@ def rate_limit_refusal(request: Request) -> Response | None:
     A read of the window's current status, never a count — docs/supported-sources.md's GitHub
     section has why the reported `used` holds at `limit` instead of climbing past it.
     :data:`RATE_LIMIT_PATH` is never refused — real keeps answering it through exhaustion, which is
-    how a client reads its way out of a spent window. Matched on the exact path only, unlike
-    :func:`rate_limit_headers`'s own rstripped comparison: a trailing slash on it matches no route
-    in real either (see `test_github_a_trailing_slash_is_404_not_a_redirect`'s own `used` assertion
-    on it), so it is an ordinary unmatched path here too, refused with the 403 like any other once
-    an anonymous caller's window is spent rather than exempted alongside the literal route. Off
-    entirely when :attr:`backlot.config.Settings.github_enforce_rate_limits` is turned off.
+    how a client reads its way out of a spent window. Its trailing-slash spelling never reaches
+    this — see ``backlot.main.refuse_a_trailing_slash_on_github``. Off entirely when
+    :attr:`backlot.config.Settings.github_enforce_rate_limits` is turned off.
 
-    Checked ahead of every router dependency and routing itself — docs/supported-sources.md's
+    Checked ahead of every router dependency and routing itself, for the requests
+    ``backlot.main.report_github_rate_limit`` gates: a bearer that does not resolve is not one of
+    them, and gets its own 401 with the window spent as with it fresh — docs/supported-sources.md's
     GitHub section has the measurement and its dates. `server: Varnish` on an anonymous refusal,
     where a served answer — the version 400 included — runs on `server: github.com`, is that
     caller's mechanism: a tier in front of the one those dependencies run on. A token's own refusal

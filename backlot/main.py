@@ -13,7 +13,7 @@ import yaml
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.routing import Match
 from starlette.types import Scope
@@ -342,6 +342,13 @@ async def refuse_a_trailing_slash_on_github(request: Request, call_next):
     is unaffected: the same window spent under a token still answers this 404 (measured the same
     day, on `/search/issues/`), which is why the refusal is checked only for a caller with no
     `Authorization` header, matching the header-reporting branch below it.
+
+    `/rate_limit/` with no `Authorization` header is neither: it is answered by the `server:
+    fasthttp` front that answers `/rate_limit` itself, `404 Not Found` in `text/plain` with none of
+    the five, never counted (`used` stayed put across two of them) and never refused, the anonymous
+    `core` window spent or not (measured against api.github.com 2026-09-23). Any `Authorization`
+    header — a valid token, a bad bearer or `Basic` — gets the JSON 404 below, from `server:
+    github.com`.
     """
     path = request.url.path
     if (
@@ -349,13 +356,16 @@ async def refuse_a_trailing_slash_on_github(request: Request, call_next):
         and path.endswith("/")
         and _would_redirect_to_the_slash_free_path(request)
     ):
-        if "authorization" not in request.headers:
+        anonymous = "authorization" not in request.headers
+        if anonymous and path.rstrip("/") == github.RATE_LIMIT_PATH:
+            return PlainTextResponse("404 Not Found", status_code=404)
+        if anonymous:
             refusal = github.rate_limit_refusal(request)
             if refusal is not None:
                 return refusal
         response = await _http_exception_handler(request, StarletteHTTPException(status_code=404))
-        if "authorization" not in request.headers:
-            headers = github.rate_limit_headers(request, response.status_code, count=True)
+        if anonymous:
+            headers = github.rate_limit_headers(request, response.status_code)
             for name, value in headers.items():
                 response.headers[name] = value
         return response

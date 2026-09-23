@@ -5160,14 +5160,21 @@ def test_github_rate_limit_refuses_an_anonymous_caller_too_and_the_switch_turns_
         assert trailing_slash.status_code == 403
         assert _ratelimit(trailing_slash) == _ratelimit(second)  # pinned, not counted
 
-        # `RATE_LIMIT_PATH` itself stays the one escape hatch — real keeps answering it through
-        # exhaustion — but its trailing-slash spelling matches no route in real either, so it is
-        # an ordinary unmatched path, refused like `/user/repos/` above rather than exempted.
-        rate_limit_exact = c.get("/github/rate_limit")
-        assert rate_limit_exact.status_code == 200
-        rate_limit_slash = c.get("/github/rate_limit/", follow_redirects=False)
-        assert rate_limit_slash.status_code == 403
-        assert _ratelimit(rate_limit_slash) == _ratelimit(second)  # pinned, not counted
+        # `RATE_LIMIT_PATH` stays the one escape hatch — real keeps answering it through
+        # exhaustion — and its trailing-slash spelling is not refused either: the front that
+        # answers `/rate_limit` answers it, a plain-text 404 with none of the five
+        assert c.get("/github/rate_limit").status_code == 200
+        for slashed in ("/github/rate_limit/", "/github/rate_limit//"):
+            rate_limit_slash = c.get(slashed, follow_redirects=False)
+            assert rate_limit_slash.status_code == 404, slashed
+            assert rate_limit_slash.headers["content-type"] == "text/plain; charset=utf-8"
+            assert rate_limit_slash.text == "404 Not Found"
+            assert not any(n.startswith("x-ratelimit-") for n in rate_limit_slash.headers)
+
+        # a bearer that does not resolve is its own 401 on the spent window, not the refusal
+        bad_bearer = c.get("/github/user/repos", headers={"Authorization": "Bearer nope"})
+        assert bad_bearer.status_code == 401
+        assert not any(n.startswith("x-ratelimit-") for n in bad_bearer.headers)
 
         # a credential the gate treats specially — one that arrived but does not parse — still
         # gets the ordinary 404 for a path no route matches, not this refusal: the gate needs a
@@ -5190,13 +5197,10 @@ def test_github_rate_limit_refuses_an_anonymous_caller_too_and_the_switch_turns_
         assert _ratelimit(search_refused)["resource"] == "search"
 
         # the switch: no refusal, and `used` still capped in what is reported
-        gh.get_settings().github_enforce_rate_limits = False
-        try:
-            let_through = c.get("/github/user/repos")
-            assert let_through.status_code == 401
-            assert _ratelimit(let_through) == {**_ratelimit(second), "used": "2"}
-        finally:
-            gh.get_settings().github_enforce_rate_limits = True
+        monkeypatch.setattr(gh.get_settings(), "github_enforce_rate_limits", False)
+        let_through = c.get("/github/user/repos")
+        assert let_through.status_code == 401
+        assert _ratelimit(let_through) == {**_ratelimit(second), "used": "2"}
 
 
 def test_github_a_trailing_slash_is_404_not_a_redirect(gh_client, gh_admin_h, gh_org):
@@ -5204,10 +5208,10 @@ def test_github_a_trailing_slash_is_404_not_a_redirect(gh_client, gh_admin_h, gh
     id-keyed spellings of four of them among them: each 404 with a valid token, carrying neither the
     five `x-ratelimit-*` headers nor the API-version echo; a valid token's window does not move
     across two of them; a bad bearer answers the same 404 rather than its own 401, and is counted
-    nowhere either; two
-    anonymous requests in a row carry the five and count. A route that ends in a path parameter
-    answers its own trailing slash instead, so `/contents/` keeps the root listing's 200. See that
-    middleware's docstring for the measurement.
+    nowhere either; two anonymous requests in a row carry the five and count, except on
+    `/rate_limit/`, whose anonymous 404 is plain text and carries none. A route that ends in a path
+    parameter answers its own trailing slash instead, so `/contents/` keeps the root listing's 200.
+    See that middleware's docstring for the measurement.
     """
     c, _ = gh_client
     repo_id = synth.github_user_id("codebase")
@@ -5293,11 +5297,14 @@ def test_github_a_trailing_slash_is_404_not_a_redirect(gh_client, gh_admin_h, gh
     assert unparseable.status_code == 404
     assert not any(n.startswith("x-ratelimit-") for n in unparseable.headers)
 
-    # `/github/rate_limit/` counts here too: unlike the real routed endpoint, this is a "no route
-    # matched" 404 and not the route's own report-without-counting answer
-    rl_first = _ratelimit(c.get("/github/rate_limit/"))
-    rl_second = _ratelimit(c.get("/github/rate_limit/"))
-    assert int(rl_second["used"]) == int(rl_first["used"]) + 1
+    # except `/rate_limit/`: anonymous, it is a plain-text 404 that carries none and counts nowhere
+    before = _ratelimit(c.get("/github/rate_limit"))
+    for _ in range(2):
+        rate_limit_slash = c.get("/github/rate_limit/", follow_redirects=False)
+        assert (rate_limit_slash.status_code, rate_limit_slash.text) == (404, "404 Not Found")
+        assert rate_limit_slash.headers["content-type"] == "text/plain; charset=utf-8"
+        assert not any(n.startswith("x-ratelimit-") for n in rate_limit_slash.headers)
+    assert _ratelimit(c.get("/github/rate_limit"))["used"] == before["used"]
 
     # a path no route matches at all answers like the trailing-slash spelling of one (see
     # `_some_github_route_matches`)

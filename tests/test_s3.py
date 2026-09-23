@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
@@ -75,8 +76,9 @@ def _signed(base_url, path, token, method="GET", extra_headers=None, body=None):
 
 
 # The pair real puts on every answer, and the refusal it gives a method this router does not serve.
-# Both measured 2026-09-22 against `s3.<region>.amazonaws.com`, path-style, against a throwaway
-# bucket created for the probe and deleted at its end.
+# The pair measured 2026-09-22 over twenty-five response shapes; the refusals 2026-09-23 against
+# `s3.us-east-1.amazonaws.com`, the region this server presents, path-style, against a bucket name
+# nobody owns.
 
 _ID_ROWS = [
     ("GET", "/s3/", 200),
@@ -88,13 +90,16 @@ _ID_ROWS = [
     ("GET", "/s3/eng-artifacts?versioning", 501),
     ("GET", "/s3/eng-artifacts?acl&versioning", 400),
     ("PATCH", "/s3/eng-artifacts", 405),
+    ("TRACE", "/s3/eng-artifacts", 400),
 ]
 
 
 @pytest.mark.parametrize("method, path, status", _ID_ROWS, ids=[r[1] for r in _ID_ROWS])
 def test_s3_every_answer_carries_the_request_id_pair(live_server, method, path, status):
-    """Measured: real sends `x-amz-request-id` (16 characters) and `x-amz-id-2` (96) on every
-    response, a success and a refusal alike, and botocore reads both into `ResponseMetadata`."""
+    """Measured: real sends `x-amz-request-id` (16 characters) and `x-amz-id-2` on every response
+    measured, a success and a refusal alike, and botocore reads both into `ResponseMetadata`. The
+    extended id's width varies from one real answer to the next, the parser's 400 included, so this
+    server sends one width everywhere (`backlot.routers.s3.request_ids`)."""
     base_url, settings = live_server
     r = _signed(base_url, path, settings.admin_token, method=method)
     assert r.status_code == status
@@ -139,6 +144,8 @@ def test_s3_the_same_request_gets_the_same_pair_and_another_request_a_different_
     assert first.headers["x-amz-request-id"] != other.headers["x-amz-request-id"]
 
 
+_KEY = "/s3/eng-artifacts/docs/runbook.md"
+
 _REFUSAL_ROWS = [
     # path, method, status, code, a member of the body, the Allow this server sends
     ("/s3/eng-artifacts", "PATCH", 405, "MethodNotAllowed", "<ResourceType>BUCKET</", "GET, HEAD"),
@@ -150,42 +157,31 @@ _REFUSAL_ROWS = [
         "multipart/form-data</Condition>",
         None,
     ),
-    (
-        "/s3/eng-artifacts",
-        "PUT",
-        400,
-        "IllegalLocationConstraintException",
-        "location constraint",
-        None,
-    ),
     ("/s3/eng-artifacts", "OPTIONS", 400, "BadRequest", "Origin request header needed.", None),
-    (
-        "/s3/eng-artifacts/docs/runbook.md",
-        "PATCH",
-        405,
-        "MethodNotAllowed",
-        "<ResourceType>OBJECT</",
-        "GET, HEAD",
-    ),
-    (
-        "/s3/eng-artifacts/docs/runbook.md",
-        "POST",
-        405,
-        "MethodNotAllowed",
-        "<Method>POST</Method>",
-        "GET, HEAD",
-    ),
-    (
-        "/s3/eng-artifacts/docs/runbook.md",
-        "OPTIONS",
-        400,
-        "BadRequest",
-        "Origin request header needed.",
-        None,
-    ),
+    (_KEY, "PATCH", 405, "MethodNotAllowed", "<ResourceType>OBJECT</", "GET, HEAD"),
+    (_KEY, "POST", 405, "MethodNotAllowed", "<Method>POST</Method>", "GET, HEAD"),
+    (_KEY, "OPTIONS", 400, "BadRequest", "Origin request header needed.", None),
     ("/s3/", "PATCH", 405, "MethodNotAllowed", "<ResourceType>SERVICE</", "GET"),
     ("/s3/", "PUT", 405, "MethodNotAllowed", "<ResourceType>SERVICE</", "GET"),
     ("/s3/", "OPTIONS", 400, "BadRequest", "Origin request header needed.", None),
+    # A selector the method is not an operation of: the 405 names the selector's own type, and the
+    # `Allow` is `GET` only where this server answers that selector on a GET.
+    ("/s3/eng-artifacts?acl", "PATCH", 405, "MethodNotAllowed", "<ResourceType>ACL</", None),
+    ("/s3/eng-artifacts?location", "PUT", 405, "MethodNotAllowed", ">LOCATION</", "GET"),
+    ("/s3/eng-artifacts?delete", "PUT", 405, "MethodNotAllowed", ">MULTI_OBJECT_DELETE</", None),
+    ("/s3/eng-artifacts?versioning", "DELETE", 405, "MethodNotAllowed", ">VERSIONING</", None),
+    (f"{_KEY}?tagging", "POST", 405, "MethodNotAllowed", ">OBJECT_TAGGING</", None),
+    (f"{_KEY}?restore", "DELETE", 405, "MethodNotAllowed", ">RESTORE</", None),
+    (f"{_KEY}?partNumber=1&uploadId=u", "PATCH", 405, "MethodNotAllowed", ">PART</", None),
+    ("/s3/?acl", "PATCH", 405, "MethodNotAllowed", "<ResourceType>SERVICE</", "GET"),
+    (
+        "/s3/eng-artifacts?acl&versioning",
+        "PATCH",
+        400,
+        "InvalidArgument",
+        "Conflicting query string parameters: acl, versioning",
+        None,
+    ),
 ]
 
 
@@ -207,20 +203,45 @@ def test_s3_a_method_this_router_does_not_serve_answers_reals_own_refusal(
     assert r.headers.get("allow") == allow
 
 
+def test_s3_every_selector_a_get_reads_has_an_answer_for_the_other_methods():
+    """A selector added to what a GET reads without a row in the write tables would reach the bare
+    path's refusal on `PUT`, `POST`, `DELETE` and `PATCH`, which is the answer real gives no
+    selector."""
+    from backlot.routers import s3 as s3_router
+
+    assert s3_router._BUCKET_SELECTORS <= set(s3_router._BUCKET_WRITE_SELECTORS)
+    assert s3_router._OBJECT_SELECTORS <= set(s3_router._OBJECT_WRITE_SELECTORS)
+
+
+_WRITE_ROWS = [
+    ("/s3/eng-artifacts", "DELETE", None),
+    ("/s3/eng-artifacts", "PUT", None),
+    ("/s3/eng-artifacts", "PUT", b"<CreateBucketConfiguration/>"),
+    ("/s3/eng-artifacts?delete", "POST", b"<Delete/>"),
+    ("/s3/eng-artifacts?acl", "PUT", None),
+    ("/s3/eng-artifacts?cors", "DELETE", None),
+    (_KEY, "DELETE", None),
+    (_KEY, "PUT", b"new bytes"),
+    (f"{_KEY}?uploads", "POST", None),
+    (f"{_KEY}?partNumber=1&uploadId=u", "PUT", b"part"),
+    (f"{_KEY}?uploadId=u", "DELETE", None),
+    (f"{_KEY}?tagging", "DELETE", None),
+]
+
+
 @pytest.mark.parametrize(
-    "path, method",
-    [
-        ("/s3/eng-artifacts", "DELETE"),
-        ("/s3/eng-artifacts/docs/runbook.md", "DELETE"),
-        ("/s3/eng-artifacts/docs/runbook.md", "PUT"),
-    ],
+    "path, method, body",
+    _WRITE_ROWS,
+    ids=[f"{r[1]}-{r[0].rsplit('/', 1)[-1]}{'-body' if r[2] else ''}" for r in _WRITE_ROWS],
 )
-def test_s3_a_write_is_refused_as_not_implemented(live_server, path, method):
-    """Real answers these by doing the write: 204 for either `DELETE`, 200 for an object `PUT`.
-    This server serves a corpus it does not change, so they get the code it already gives an
-    operation it does not implement rather than a status that claims the write happened."""
+def test_s3_a_write_is_refused_as_not_implemented(live_server, path, method, body):
+    """Real answers each of these by doing the write, a selector's own method among them (`POST
+    ?delete` is DeleteObjects, a key's `POST ?uploads` the CreateMultipartUpload boto3's
+    `upload_file` sends). This server serves a corpus it does not change, so they get the code it
+    already gives an operation it does not implement rather than a status that claims the write
+    happened."""
     base_url, settings = live_server
-    r = _signed(base_url, path, settings.admin_token, method=method)
+    r = _signed(base_url, path, settings.admin_token, method=method, body=body)
     assert r.status_code == 501
     assert "<Code>NotImplemented</Code>" in r.text
 
@@ -229,33 +250,49 @@ def test_s3_a_write_is_refused_as_not_implemented(live_server, path, method):
     "path, message",
     [
         ("/s3/eng-artifacts", "CORS is not enabled for this bucket."),
-        ("/s3/eng-artifacts/docs/runbook.md", "CORS is not enabled for this bucket."),
+        (_KEY, "CORS is not enabled for this bucket."),
         ("/s3/", "Bucket not found"),
     ],
 )
-def test_s3_an_options_carrying_an_origin_answers_the_cors_refusal(live_server, path, message):
+@pytest.mark.parametrize("asked", [None, "GET", "DELETE"])
+def test_s3_an_options_carrying_an_origin_answers_the_cors_refusal(
+    live_server, path, message, asked
+):
     """Measured: with an `Origin` the answer is a 403 whose message says which way the CORS lookup
-    failed, and whose `ResourceType` is `BUCKET` on all three paths, the service root included."""
+    failed, whose `ResourceType` is `BUCKET` on all three paths, the service root included, and
+    whose `Method` is the method the preflight asks about, or `OPTIONS` when it names none."""
     base_url, settings = live_server
-    r = _signed(
-        base_url,
-        path,
-        settings.admin_token,
-        method="OPTIONS",
-        extra_headers={"Origin": "https://example.invalid"},
-    )
+    headers = {"Origin": "https://example.invalid"}
+    if asked:
+        headers["Access-Control-Request-Method"] = asked
+    r = _signed(base_url, path, settings.admin_token, method="OPTIONS", extra_headers=headers)
     assert r.status_code == 403
     assert "<Code>AccessForbidden</Code>" in r.text and message in r.text
-    assert "<ResourceType>BUCKET</ResourceType>" in r.text
+    assert f"<Method>{asked or 'OPTIONS'}</Method><ResourceType>BUCKET</ResourceType>" in r.text
+
+
+@pytest.mark.parametrize("asked", ["put", "Get", "TRACE"])
+def test_s3_a_preflight_asking_about_a_method_real_does_not_accept_is_a_400(live_server, asked):
+    """Measured: real's preflight takes `GET`, `HEAD`, `POST`, `PUT`, `DELETE`, `PATCH` and
+    `OPTIONS` as written, and answers any other value, a lowercase one included, with a 400 naming
+    it. The same preflight asking about `PUT` is the 403, so the value is what is refused."""
+    base_url, settings = live_server
+    headers = {"Origin": "https://example.invalid", "Access-Control-Request-Method": asked}
+    r = _signed(base_url, _KEY, settings.admin_token, method="OPTIONS", extra_headers=headers)
+    assert r.status_code == 400
+    assert f"<Message>Invalid Access-Control-Request-Method: {asked}</Message>" in r.text
+    headers["Access-Control-Request-Method"] = "PUT"
+    control = _signed(base_url, _KEY, settings.admin_token, method="OPTIONS", extra_headers=headers)
+    assert control.status_code == 403
 
 
 @pytest.mark.parametrize("method", ["TRACE", "LINK", "PROPFIND"])
 @pytest.mark.parametrize("path", ["/s3/", "/s3/eng-artifacts", "/s3/eng-artifacts/docs/runbook.md"])
 def test_s3_a_method_s3_defines_nothing_for_is_the_parse_400(live_server, method, path):
-    """Measured 2026-09-22 with `TRACE`, `LINK` and `PROPFIND` at the service root: real answers
-    each the same 400 `BadRequest`, `application/xml`, with no `Allow`. No route can be declared
-    for a method that is not named, so `backlot.errors.s3` answers these where Starlette's own 405
-    would have."""
+    """Measured 2026-09-22 with `TRACE`, `LINK` and `PROPFIND` at the service root, and 2026-09-23
+    with `TRACE` on all three paths, `LINK` on a bucket and `PROPFIND` on a key: real answers each
+    the same 400 `BadRequest`, `application/xml`, with no `Allow`. No route can be declared for a
+    method that is not named, so `backlot.errors.s3` answers these."""
     import httpx
 
     base_url, _ = live_server
@@ -271,47 +308,89 @@ def test_s3_a_method_s3_defines_nothing_for_is_the_parse_400(live_server, method
     )
 
 
-def test_s3_a_write_on_a_bucket_that_does_not_exist_is_nosuchbucket(live_server):
-    """Measured: real answers a `DELETE` on an absent bucket, and on a key inside one, with
-    `NoSuchBucket` at 404, where its `PATCH`, `POST` and body-less `PUT` answer an absent bucket
-    exactly as they answer a present one. So the method refusals precede resolution and the write
-    refusal does not."""
+def test_s3_a_write_names_its_bucket_before_the_501_and_createbucket_names_none(live_server):
+    """Measured: real answers a write naming an absent bucket — a `DELETE`, a selector's own method
+    such as `POST ?delete` or `PUT ?acl`, a key's `POST ?uploads` — with `NoSuchBucket` at 404,
+    where its method refusals answer an absent bucket exactly as they answer a present one. A bare
+    bucket `PUT` is CreateBucket, which real answers with the bucket or with `BucketAlreadyExists`
+    and never with `NoSuchBucket`, so its 501 does not depend on the name."""
     base_url, settings = live_server
-    for path in ("/s3/no-such-bucket-xyz", "/s3/no-such-bucket-xyz/a/b.txt"):
-        r = _signed(base_url, path, settings.admin_token, method="DELETE")
-        assert r.status_code == 404 and "<Code>NoSuchBucket</Code>" in r.text, path
-    for method, status in (("PATCH", 405), ("POST", 412), ("PUT", 400)):
-        r = _signed(base_url, "/s3/no-such-bucket-xyz", settings.admin_token, method=method)
-        assert r.status_code == status, (method, r.text)
+    absent = "/s3/no-such-bucket-xyz"
+    for method, path in (
+        ("DELETE", absent),
+        ("DELETE", f"{absent}/a/b.txt"),
+        ("POST", f"{absent}?delete"),
+        ("PUT", f"{absent}?acl"),
+        ("POST", f"{absent}/a/b.txt?uploads"),
+    ):
+        r = _signed(base_url, path, settings.admin_token, method=method)
+        assert r.status_code == 404 and "<Code>NoSuchBucket</Code>" in r.text, (method, path)
+    for method, path, status in (
+        ("PATCH", absent, 405),
+        ("POST", absent, 412),
+        ("PATCH", f"{absent}?acl", 405),
+        ("PUT", absent, 501),
+    ):
+        r = _signed(base_url, path, settings.admin_token, method=method)
+        assert r.status_code == status, (method, path, r.text)
     present = _signed(base_url, "/s3/eng-artifacts", settings.admin_token, method="DELETE")
     assert present.status_code == 501 and "<Code>NotImplemented</Code>" in present.text
 
 
-def test_s3_the_parse_400_carries_the_extended_id_real_widens(live_server):
-    """Measured three times each on 2026-09-22: the answer S3's parser refuses carries a 128
-    character `x-amz-id-2` where the 405, the 404 and a 200 carry 96, and the body repeats the same
-    value the header carries."""
-    import re
-
+def test_s3_a_write_on_a_bucket_the_caller_cannot_see_is_nosuchbucket(live_server):
+    """The write refusal reads the bucket, so it is scoped as a listing is: `people-vault` holds one
+    group-visible object, so an engineer is told it does not exist where the admin gets the 501.
+    CreateBucket reads no bucket and a method refusal comes first, so both answer the two callers
+    alike."""
     base_url, settings = live_server
-    refused = _signed(base_url, "/s3/eng-artifacts", settings.admin_token, method="TRACE")
-    assert refused.status_code == 400 and "<Code>BadRequest</Code>" in refused.text
-    assert len(refused.headers["x-amz-id-2"]) == 128
-    assert re.search(r"<HostId>([^<]+)</HostId>", refused.text)[1] == refused.headers["x-amz-id-2"]
-    for method, path in (("PATCH", "/s3/eng-artifacts"), ("GET", "/s3/no-such-bucket")):
-        other = _signed(base_url, path, settings.admin_token, method=method)
-        assert len(other.headers["x-amz-id-2"]) == 96, method
+    tokens = {
+        u["email"]: u["token"] for u in yaml.safe_load(settings.tokens_path.read_text())["users"]
+    }
+    scoped_token = tokens["ava@acme.com"]
+    for method, path in (
+        ("DELETE", "/s3/people-vault"),
+        ("POST", "/s3/people-vault?delete"),
+        ("PUT", "/s3/people-vault/x.txt"),
+        ("DELETE", "/s3/people-vault/x.txt?tagging"),
+    ):
+        scoped = _signed(base_url, path, scoped_token, method=method)
+        admin = _signed(base_url, path, settings.admin_token, method=method)
+        assert scoped.status_code == 404 and "<Code>NoSuchBucket</Code>" in scoped.text, path
+        assert admin.status_code == 501, path
+    for method, status in (("PUT", 501), ("PATCH", 405)):
+        scoped = _signed(base_url, "/s3/people-vault", scoped_token, method=method)
+        admin = _signed(base_url, "/s3/people-vault", settings.admin_token, method=method)
+        assert scoped.status_code == admin.status_code == status, method
 
 
-def test_s3_the_method_is_refused_before_the_credential(live_server):
-    """Measured: an unsigned `PATCH` answers the same 405 a signed one does, at a key path and at
-    the service root, so real reaches the method before it reads the credential. Every other route
-    here resolves SigV4 first, which is why this one says so."""
+@pytest.mark.parametrize(
+    "method, path, write",
+    [
+        ("PATCH", "/s3/eng-artifacts", "DELETE"),
+        ("PATCH", _KEY, "DELETE"),
+        ("PATCH", "/s3/", None),
+        ("PATCH", "/s3/eng-artifacts?acl", "PUT"),
+        ("POST", "/s3/eng-artifacts?tagging", "DELETE"),
+        ("OPTIONS", _KEY, "DELETE"),
+    ],
+)
+def test_s3_the_method_is_refused_before_the_credential(live_server, method, path, write):
+    """Measured: an unsigned request answers each of these as a signed one does, so real reaches
+    the method before it reads the credential. A write resolves the credential first, so the same
+    path unsigned under the method that writes there is the missing-signature refusal; the service
+    root has no such method."""
     import httpx
 
-    base_url, _ = live_server
-    r = httpx.request("PATCH", f"{base_url}/s3/eng-artifacts")
-    assert r.status_code == 405 and "<Code>MethodNotAllowed</Code>" in r.text
+    base_url, settings = live_server
+    unsigned = httpx.request(method, f"{base_url}{path}")
+    signed = _signed(base_url, path, settings.admin_token, method=method)
+    assert unsigned.status_code == signed.status_code != 403
+    code = re.search(r"<Code>([^<]+)</Code>", signed.text)[1]
+    assert f"<Code>{code}</Code>" in unsigned.text
+    if write:
+        refused = httpx.request(write, f"{base_url}{path}")
+        assert refused.status_code == 403, write
+        assert "<Code>MissingSecurityHeader</Code>" in refused.text
 
 
 def test_s3_unknown_access_key_rejected(live_server):

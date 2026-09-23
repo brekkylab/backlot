@@ -3,10 +3,12 @@
 `backlot.routers.s3` builds its own `<Error>` documents, so this module answers the one refusal the
 router never sees: a method Starlette rejects before any route runs. The five methods real defines
 an answer for at a bucket, a key or the service root are declared as routes there and answered
-there. What is left is a method S3 defines nothing for at all, and real answers every one of those
-the same way — measured 2026-09-22 with `TRACE`, `LINK` and `PROPFIND` at the service root: 400
-`BadRequest`, "An error occurred when parsing the HTTP request.", `application/xml`, and no `Allow`,
-where Starlette's own 405 sends a JSON body and an `Allow` naming whichever route it matched first.
+there. What is left is a method S3 defines nothing for at all, and real answers each one measured
+the same way — measured 2026-09-22 with `TRACE`, `LINK` and `PROPFIND` at the service root, and
+2026-09-23 against `s3.us-east-1.amazonaws.com` with `TRACE` at all three, `LINK` at a bucket and
+`PROPFIND` at a key: 400 `BadRequest`, "An error occurred when parsing the HTTP request.",
+`application/xml`, and no `Allow`, where Starlette's own 405 sends a JSON body and an `Allow` naming
+whichever route it matched first.
 """
 
 from __future__ import annotations
@@ -57,22 +59,14 @@ def rendered(request: Request, status_code: int, body: dict, headers=None) -> Re
 def method_not_allowed(path: str, method: str) -> S3Error:
     """Real's answer to a method S3 defines nothing for: the parse 400, not a 405.
 
-    ``headers`` carries the request id pair with the widened extended id this answer gets
-    (:func:`backlot.routers.s3.wide_extended_id`). No `Allow` rides it — real sends none, where
-    Starlette would compute one from the routes this server happens to declare — and the router's
-    middleware leaves a header this sets alone.
+    ``headers`` is empty rather than ``None`` so that no `Allow` rides it — real sends none, where
+    Starlette would compute one from the routes this server happens to declare. The request id pair
+    is the middleware's to add, as on every other answer; the body names the same pair.
     """
-    from backlot.routers.s3 import REQUEST_IDS, wide_extended_id
+    from backlot.routers.s3 import REQUEST_IDS
 
     ids = REQUEST_IDS.get()
-    if ids is None:
-        return S3Error(
-            400, f"<Error><Code>BadRequest</Code><Message>{_UNPARSEABLE}</Message></Error>", {}
-        )
-    request_id, extended = ids[0], wide_extended_id(ids)
-    tail = f"<RequestId>{request_id}</RequestId><HostId>{extended}</HostId>"
+    tail = f"<RequestId>{ids[0]}</RequestId><HostId>{ids[1]}</HostId>" if ids else ""
     return S3Error(
-        400,
-        f"<Error><Code>BadRequest</Code><Message>{_UNPARSEABLE}</Message>{tail}</Error>",
-        {"x-amz-request-id": request_id, "x-amz-id-2": extended},
+        400, f"<Error><Code>BadRequest</Code><Message>{_UNPARSEABLE}</Message>{tail}</Error>", {}
     )

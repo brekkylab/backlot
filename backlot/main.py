@@ -259,8 +259,7 @@ async def answer_s3_with_request_ids(request: Request, call_next):
     The pair is set before the route runs so `backlot.routers.s3._error` writes the same one into
     `<RequestId>` and `<HostId>`, which real repeats there.
     """
-    path = request.url.path
-    if path != "/s3" and not path.startswith("/s3/"):
+    if not errors.s3.owns(request.url.path):
         return await call_next(request)
     ids = s3.request_ids(request.method, request.url.path, request.url.query)
     s3.REQUEST_IDS.set(ids)

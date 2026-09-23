@@ -354,16 +354,19 @@ the listing on a general purpose bucket, so Backlot does too. Two sub-resources 
 
 A method no operation above serves answers what real answers: the 405 that names the method and
 whether the resource is a `BUCKET`, an `OBJECT` or the `SERVICE`, the 400 an `OPTIONS` without an
-`Origin` gets from real's CORS front end and the 403 it gets with one, the 412 a bucket `POST` gets
-and the 400 a body-less bucket `PUT` gets. The methods real answers by writing — a `PUT` on a key,
-a `PUT` carrying a body on a bucket, and a `DELETE` on either path — are `NotImplemented` (501)
-once the bucket resolves, since the corpus is served as it was imported; a write naming a bucket
-that does not exist is `NoSuchBucket` instead, as on real. The `Allow` on a 405 names what Backlot
-serves rather than real's own methods. A method S3 defines nothing for at all, `TRACE` among them,
-is the 400 real answers it with rather than a 405.
+`Origin` gets from real's CORS front end and the 403 it gets with one, and the 412 a bucket `POST`
+gets. A sub-resource selector decides for itself, as on real: `PATCH ?acl` is the 405 naming `ACL`,
+and two selectors are the conflict a GET gets. The methods real answers by writing — a `PUT` or
+`DELETE` on a key, a `DELETE` on a bucket, a bare bucket `PUT` (CreateBucket), and a selector's own
+write method such as `POST ?delete`, `PUT ?acl` or a key's `POST ?uploads` — are `NotImplemented`
+(501), since the corpus is served as it was imported. Every one of them but CreateBucket first
+resolves the bucket it names, and one that does not exist, or that the caller cannot see, is
+`NoSuchBucket` instead, as on real. The `Allow` on a 405 names what Backlot serves rather than
+real's own methods. A method S3 defines nothing for at all, `TRACE` among them, is the 400 real
+answers it with rather than a 405.
 
-Every call that reads is SigV4-signed; see [auth.md](auth.md). The method refusals above are not,
-because real reaches the method before the credential: an unsigned `PATCH` and an unsigned
+Every call that reads or writes is SigV4-signed; see [auth.md](auth.md). The method refusals above
+are not, because real reaches the method before the credential: an unsigned `PATCH` and an unsigned
 `OPTIONS` answer what a signed one answers.
 
 ### Slack — `/slack/api`

@@ -305,8 +305,8 @@ async def _canonical_path_repo(request: Request) -> None:
 # version 400 each carry the five and count (`remaining` 46, 45, 44 across a GET, a HEAD and a 404
 # in a row); `reset` is epoch seconds and stayed put across every answer inside one window. The
 # docs page "Rate limits for the REST API" states the 60 and the 5,000 and the five headers'
-# meanings; the numbers below are the wire's. Nothing here refuses a request, see
-# :class:`RateLimitWindows`.
+# meanings; the numbers below are the wire's. A spent window is refused — see
+# ``rate_limit_refusal`` — everything below only reports the count, see :class:`RateLimitWindows`.
 
 RATE_LIMIT_PATH = "/github/rate_limit"
 RATE_LIMIT_WINDOW = 3600
@@ -543,9 +543,8 @@ def rate_limit_refusal(request: Request) -> Response | None:
     """Real's 403 for a `/github` request whose window is already spent, or ``None`` to let the
     request reach its handler as usual.
 
-    A read of the window's current status, never a count: the refused request itself is not
-    counted, which is why the reported `used` holds at `limit` across every answer until `reset`
-    rather than climbing past it (see :func:`_rate_limit_exceeded_message` for the measurement).
+    A read of the window's current status, never a count — docs/supported-sources.md's GitHub
+    section has why the reported `used` holds at `limit` instead of climbing past it.
     :data:`RATE_LIMIT_PATH` is never refused — real keeps answering it through exhaustion, which is
     how a client reads its way out of a spent window. Matched on the exact path only, unlike
     :func:`rate_limit_headers`'s own rstripped comparison: a trailing slash on it matches no route
@@ -554,17 +553,13 @@ def rate_limit_refusal(request: Request) -> Response | None:
     an anonymous caller's window is spent rather than exempted alongside the literal route. Off
     entirely when :attr:`backlot.config.Settings.github_enforce_rate_limits` is turned off.
 
-    Checked ahead of every router dependency — the credential, the API version, the owner — and
-    ahead of routing itself: real answers the same 403 whether or not the request also carries an
-    unsupported `X-GitHub-Api-Version`, for a caller with no credential and for a token alike
-    (measured against api.github.com 2026-09-22 anonymous and 2026-09-23 under a token's own
-    `search` window). `server: Varnish` on an anonymous refusal, where a served answer — the
-    version 400 included — runs on `server: github.com`, is that caller's mechanism: a tier in
-    front of the one those dependencies run on. A token's own refusal answers from `server:
-    github.com` instead, so the tier split explains the anonymous order rather than the order in
-    general. The envelope differs by caller too: an anonymous body carries `message` and
-    `documentation_url` alone; a token's carries `status` as a third member and its own
-    `documentation_url` (:data:`TOKEN_RATE_LIMIT_EXCEEDED_DOCS`)."""
+    Checked ahead of every router dependency and routing itself — docs/supported-sources.md's
+    GitHub section has the measurement and its dates. `server: Varnish` on an anonymous refusal,
+    where a served answer — the version 400 included — runs on `server: github.com`, is that
+    caller's mechanism: a tier in front of the one those dependencies run on. A token's own refusal
+    answers from `server: github.com` instead, so the tier split explains the anonymous order
+    rather than the order in general. The envelope differs by caller too (same doc section;
+    :data:`TOKEN_RATE_LIMIT_EXCEEDED_DOCS` is the token's own `documentation_url`)."""
     if not get_settings().github_enforce_rate_limits:
         return None
     if request.url.path == RATE_LIMIT_PATH:

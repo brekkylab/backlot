@@ -76,9 +76,9 @@ def _signed(base_url, path, token, method="GET", extra_headers=None, body=None):
 
 
 # The pair real puts on every answer, and the refusal it gives a method this router does not serve.
-# The pair measured 2026-09-22 at ap-northeast-2 over twenty-five response shapes; the refusals 2026-09-23 against
-# `s3.us-east-1.amazonaws.com`, the region this server presents, path-style, against a bucket name
-# nobody owns.
+# The pair measured 2026-09-22 at ap-northeast-2 over twenty-five response shapes; the refusals
+# 2026-09-23 against `s3.us-east-1.amazonaws.com`, the region this server presents, path-style,
+# against a bucket name nobody owns.
 
 _ID_ROWS = [
     ("GET", "/s3/", 200),

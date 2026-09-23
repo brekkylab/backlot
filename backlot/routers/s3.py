@@ -259,9 +259,9 @@ def _error(
     code: str, message: str, resource: str = "", extra: str = "", headers: dict | None = None
 ) -> Response:
     ids = REQUEST_IDS.get()
-    # Real names them last, after the members that describe the failure (measured over eight error
+    # Real names them last, after the members that describe the failure (measured over seven error
     # bodies: `NoSuchBucket`, `NoSuchKey`, `InvalidArgument`, `MethodNotAllowed`, `BadRequest`,
-    # `PreconditionFailed`, `IllegalLocationConstraintException` and `AccessForbidden`).
+    # `PreconditionFailed` and `AccessForbidden`).
     tail = f"<RequestId>{ids[0]}</RequestId><HostId>{ids[1]}</HostId>" if ids else ""
     # An error real sends about no particular resource carries no element for one: its CORS 403
     # and its method 405 name the method and the resource TYPE and nothing else.
@@ -1038,15 +1038,16 @@ def _parse_range(header: str, total: int):
 #
 # Real answers each method its own way, so each is declared here and answered with the error real
 # sends. Measured 2026-09-23 against `s3.us-east-1.amazonaws.com`, the region this server presents
-# (`x-amz-bucket-region`, the empty `LocationConstraint`), path-style, signed and unsigned, against a
-# bucket name nobody owns:
+# (`x-amz-bucket-region`, the empty `LocationConstraint`), path-style, signed and unsigned, against
+# a bucket name nobody owns:
 #
 #   request                          real
 #   ---------------------------------|---------------------------------------------------------
 #   PATCH, POST on a key             | 405 MethodNotAllowed, `<Method>`, `<ResourceType>OBJECT`
 #   PATCH on a bucket                | 405 MethodNotAllowed, `<ResourceType>BUCKET`
 #   any of the four at the root      | 405 MethodNotAllowed, `<ResourceType>SERVICE`, `Allow: GET`
-#   POST on a bucket                 | 412 PreconditionFailed, `<Condition>` naming multipart/form-data
+#   POST on a bucket                 | 412 PreconditionFailed, `<Condition>` naming
+#                                    | multipart/form-data
 #   a selector, a method it lacks    | 405 MethodNotAllowed naming the selector's own resource type
 #   two selectors                    | 400 InvalidArgument, the conflict a GET gets
 #   OPTIONS, no `Origin`             | 400 BadRequest, "Insufficient information..."
@@ -1079,14 +1080,15 @@ _WRITE_IS_NOT_SERVED = (
 )
 
 # What real answers a sub-resource selector with on the three methods a write can take: the resource
-# type its 405 names, and the methods that are an operation there. Measured 2026-09-23 as above, every
-# selector below on each of `PUT`, `POST`, `DELETE` and `PATCH`, 156 requests: a method in the set answered
-# `NoSuchBucket` for the absent bucket, which is the write resolving it, and every other method the
-# 405 naming the type, before the bucket, and with an `Allow` that is exactly the set plus `GET` where
-# the selector has a GET form. A key's `tagging` is a different type from a bucket's, so the two paths
-# keep their own tables. `delete` (DeleteObjects), and a key's `uploads`, `restore` and `select`, are
-# not among the selectors a GET reads here (`_BUCKET_SELECTORS`, `_OBJECT_SELECTORS`); `session` and
-# `renameObject` answered as the bare path does and are left out.
+# type its 405 names, and the methods that are an operation there. Measured 2026-09-23 as above,
+# every selector below on each of `PUT`, `POST`, `DELETE` and `PATCH`, 156 requests: a method in the
+# set answered `NoSuchBucket` for the absent bucket, which is the write resolving it, and every
+# other method the 405 naming the type, before the bucket, and with an `Allow` that is exactly the
+# set plus `GET` where the selector has a GET form. A key's `tagging` is a different type from a
+# bucket's, so the two paths keep their own tables. `delete` (DeleteObjects), and a key's `uploads`,
+# `restore` and `select`, are not among the selectors a GET reads here (`_BUCKET_SELECTORS`,
+# `_OBJECT_SELECTORS`); `session` and `renameObject` answered as the bare path does and are left
+# out.
 _BUCKET_WRITE_SELECTORS: dict[str, tuple[str, frozenset[str]]] = {
     "abac": ("BUCKET_ABAC", frozenset({"PUT"})),
     "accelerate": ("ACCELERATE", frozenset({"PUT"})),
@@ -1174,7 +1176,8 @@ def _refuse_write(
     So the method refusals precede resolution and this one does not: a caller asking to delete
     something that is not there learns it is not there, and one asking to delete something that is
     learns this server does not write. A bare bucket `PUT` is CreateBucket, which real answered with
-    `BucketAlreadyExists` for a taken name and by creating a free one, not with `NoSuchBucket`, so it is refused with ``resolve=False`` and says nothing about the name.
+    `BucketAlreadyExists` for a taken name and by creating a free one, not with `NoSuchBucket`, so
+    it is refused with ``resolve=False`` and says nothing about the name.
     """
     caller, visible, err = _auth(request)
     if err is not None:
@@ -1241,9 +1244,10 @@ async def service_method_refusal(request: Request) -> Response:
     "/{bucket}", methods=["PUT", "POST", "DELETE", "PATCH", "OPTIONS"], include_in_schema=False
 )
 async def bucket_method_refusal(request: Request, bucket: str) -> Response:
-    """Without a selector, `PUT` creates the bucket on real, `DELETE` removes it and `POST` is a form
-    upload, and `PATCH` is a refusal of real's own; with one, the selector decides. Real's refusals
-    are answered as real answers them, and its writes are the ones this server refuses instead."""
+    """Without a selector, `PUT` creates the bucket on real, `DELETE` removes it and `POST` is a
+    form upload, and `PATCH` is a refusal of real's own; with one, the selector decides. Real's
+    refusals are answered as real answers them, and its writes are the ones this server refuses
+    instead."""
     method = request.method
     if method == "OPTIONS":
         return _cors_preflight(request, _CORS_DISABLED)

@@ -126,11 +126,20 @@ it says and no response from it carries the `Selected` header (measured 2026-09-
 included: `limit` at real's numbers (60 an hour for a caller with no credential, 5000 for a token,
 30 and 10 for `search` and `code_search`), `remaining` and `used` counted per credential and per
 resource, `reset` the second that window closes, `resource` the one the request counted against.
-`core` measures an hour and the two search resources measure a minute, as real's do. Nothing is
-refused when a window runs out: `remaining` stops at 0 and `used` keeps counting, so a client that
-paces by the headers sees its real pace and a test suite is never failed for its own volume.
-`GET /rate_limit` reports the same windows and does not count. Two answers carry none of the five
-and count nowhere, as real's do not: a credential that does not resolve, and a path no route
+`core` measures an hour and the two search resources measure a minute, as real's do. A window that
+runs out is refused, 403, with `used` pinned at `limit` across the five headers, ahead of the API
+version check, the 401 a route that needs a credential answers a caller without one, and routing
+alike, for a caller with no credential (measured against api.github.com 2026-09-17 and 2026-09-22)
+and for a token (2026-09-23) alike; a bearer that does not resolve still gets its own 401, window
+spent or not (2026-09-23). The refused request is not itself counted, which is why `used` holds at
+`limit` rather than climbing past it. The body differs by caller: two members (`message`,
+`documentation_url`) for a caller with no credential, three (`status` besides) for a token, each
+with its own `documentation_url`. `BACKLOT_GITHUB_ENFORCE_RATE_LIMITS` turns the refusal off (see
+[configuration](configuration.md#github)). `GET /rate_limit` reports the same windows, does not
+count, and is never refused — the one route a client reads its way out of a spent window with;
+`/rate_limit/` asked with no `Authorization` header is a plain-text `404 Not Found` that carries
+none of the five and counts nowhere, spent window or not (2026-09-23). Two answers carry none of the
+five and count nowhere, as real's do not: a credential that does not resolve, and a path no route
 matches asked by a caller that sent one (measured 2026-09-10 and 2026-09-21).
 
 An issue body and a pull body are the two distinct field sets real serves — a pull carries `_links`
@@ -224,11 +233,12 @@ anything else is read, ahead of a bad token or an unparseable range, with real's
 array the entry follows the error: a typed value the proto layer refuses (an enum, a bool, an
 int32) is `reason: invalid` and carries no `domain`; an Office file read as a native document is
 `failedPrecondition` under `domain: global`; everything else is `badRequest` under the same domain;
-and a missing credential on any of the three OAuth-only APIs — Gmail, Docs and Slides — is the
-short `Login Required.` at `location: Authorization`, which Gmail shows by default where the editor
-families show it only at `1`. Measured against the live Sheets, Docs and Drive APIs on 2026-09-12,
-and against Slides and Gmail on 2026-09-14 through the errors a request with no Authorization
-header reaches.
+and a missing credential — any anonymous POST, the two Sheets data-filter reads included, and a GET
+on Gmail, Docs and Slides — is the short `Login Required.` at `location: Authorization`, which Gmail
+shows by default where the editor families show it only at `1`. Measured against the live Sheets,
+Docs and Drive APIs on 2026-09-12, against Slides and Gmail on 2026-09-14 through the errors a
+request with no Authorization header reaches, and against the Sheets data-filter POSTs on
+2026-09-22.
 
 **Every Google error body is rendered the way real renders one** — two spaces deep with a trailing
 newline whatever `prettyPrint` says, `application/json; charset=UTF-8`, and the 209 characters

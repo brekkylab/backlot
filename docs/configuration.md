@@ -4,7 +4,7 @@
 
 Every setting is an env var with a `BACKLOT_` prefix, and a `.env` file in the working directory is
 read too — copy [`.env.example`](../.env.example) and edit. Defaults are what the server uses when
-the var is unset. There are nine, and this page is all of them.
+the var is unset. There are ten, and this page is all of them.
 
 ## Corpus and identity
 
@@ -29,6 +29,12 @@ with default 30, and api.github.com answers exactly that); Fireflies clamps `lim
 than erroring, and HubSpot to 100 — the value its official client pages at. Neither variable moves
 any of these, because a client that gets 1000 rows from a call the real API caps at 100 is a client
 that breaks in production.
+
+## GitHub
+
+| Env var | Default | What it does |
+|---|---|---|
+| `BACKLOT_GITHUB_ENFORCE_RATE_LIMITS` | `true` | Refuse a `/github` request once the caller's rate-limit window is spent, 403, the way api.github.com does — for a caller with no credential and for a token alike. Turn it off for a long-lived `serve()` whose own test volume would rather not meet real's 10-a-minute code search window than fix the tests that cross it |
 
 ## SQLite
 

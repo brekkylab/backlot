@@ -244,13 +244,25 @@ it and an `alt` naming a format other than `json` suppresses the wrap altogether
 matched without regard to case and an empty `alt=` names none, so `alt=JSON`, `alt=Json` and
 `alt=` each ask for the JSON the default serves rather than for a format of their own. An empty
 `callback=` is no
-callback; a repeated one is answered through the first name where `$.xgafv` is answered through the
-last; and a POST ignores the parameter outright, as real does, since JSONP is what a `<script>`
+callback, and a POST ignores the parameter outright, as real does, since JSONP is what a `<script>`
 element fetches and a `<script>` element issues a GET. A SUCCESS body is wrapped and indented on
 the `/sheets/v4` routes only; the other four families honour `callback` on their errors and not yet
 on their 200s. Measured against the live Sheets, Docs, Drive, Gmail and Slides APIs on 2026-09-15,
 2026-09-16 and 2026-09-17: the wrap, the indent and the charset first, the suppression across the
 four non-Sheets families next, and the escape set and the case-insensitive `alt` last.
+
+**A repeated query parameter is read from the end real reads it from**, which is the first for some
+parameters and the last for others. The first repeat decides `fields`, `q`, `pageSize`, `pageToken`
+and `orderBy` on Drive's `files.list`, `fields` on `files.get` and `about`, and `mimeType` on
+`files.export`, and on Sheets `fields` and `prettyPrint`, as it decides `callback` and `alt`; the
+last decides `$.xgafv`, `majorDimension`, `valueRenderOption` and `includeGridData`. An empty first
+repeat is read as the empty value, not skipped. Gmail's `q`, `pageToken` and `maxResults` are read
+here from the last, and which end real reads is unmeasured, since a Gmail list answers 200 only to a
+scope the measuring credential cannot be granted. On a Sheets success, `prettyPrint` is compact at
+`false` and `0` and at none of the eighteen other spellings measured, `FALSE`, `no` and `f` among
+them. Measured against the live Drive, Sheets and Gmail APIs, each pair sent both ways round:
+`callback`, `alt` and the Sheets `$.xgafv` between 2026-09-15 and 2026-09-17, `includeGridData` and
+the Gmail `$.xgafv` on 2026-09-22, and the rest on 2026-09-23.
 
 ### HubSpot — `/hubspot/crm/v3` `/hubspot/crm/v4`
 

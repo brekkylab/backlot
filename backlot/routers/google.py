@@ -561,7 +561,7 @@ async def gmail_messages_list(user_id: str, request: Request):
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     mailbox = _mailbox_container(conn, caller, user_id)  # None = all mailboxes
-    limit = _int(request, "maxResults", get_settings().default_page_size)
+    limit = _int(request.query_params.get("maxResults"), get_settings().default_page_size)
     offset = decode_cursor(request.query_params.get("pageToken"))
     q = request.query_params.get("q", "") or ""
     if q.strip():  # search: filter the ACL-visible set by the query, then paginate
@@ -635,7 +635,7 @@ async def gmail_threads_list(user_id: str, request: Request):
     # received, and `q` was already scoping by container, so the two halves of this one listing
     # disagreed about what a thread list is.
     mailbox = _mailbox_container(conn, caller, user_id)
-    limit = _int(request, "maxResults", get_settings().default_page_size)
+    limit = _int(request.query_params.get("maxResults"), get_settings().default_page_size)
     offset = decode_cursor(request.query_params.get("pageToken"))
     q = request.query_params.get("q", "") or ""
     if q.strip():
@@ -1744,7 +1744,8 @@ async def drive_about(request: Request):
     omitting ``kind``, and a typed model's defaults would put the unasked-for keys back."""
     conn = auth.conn(request)
     caller = _require(request)
-    keys = _drive_about_field_keys(request.query_params.get("fields"))  # 400s on absent/unknown
+    # 400s on an absent or unknown mask
+    keys = _drive_about_field_keys(gerr.first_repeat(request.query_params, "fields"))
     ids = auth.visible_ids(request, caller)
     # A caller with no mailbox of their own is the admin/service token; real Drive reports a
     # concrete address here either way, as gmail.users.getProfile already does.
@@ -1796,11 +1797,13 @@ async def drive_files_list(request: Request):
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     me = caller.email
-    limit = _int(request, "pageSize", get_settings().default_page_size)
-    offset = decode_cursor(request.query_params.get("pageToken"))
-    q = request.query_params.get("q", "") or ""
-    keys = _drive_file_field_keys(request.query_params.get("fields"))  # 400 on an unknown field
-    order = _drive_order_specs(request.query_params.get("orderBy"))  # 400 on an unusable key
+    # Each read off the first repeat, as real reads them -- see `gerr.first_repeat`.
+    params = request.query_params
+    limit = _int(gerr.first_repeat(params, "pageSize"), get_settings().default_page_size)
+    offset = decode_cursor(gerr.first_repeat(params, "pageToken"))
+    q = gerr.first_repeat(params, "q") or ""
+    keys = _drive_file_field_keys(gerr.first_repeat(params, "fields"))  # 400 on an unknown field
+    order = _drive_order_specs(gerr.first_repeat(params, "orderBy"))  # 400 on an unusable key
     query = _drive_q_parse(q)  # 400 on a clause Backlot cannot evaluate; None when there is no q
     conjuncts = _drive_q_conjuncts(query)
     hits = _drive_q_fulltext(conn, query, ids)
@@ -1893,7 +1896,7 @@ async def drive_files_get(file_id: str, request: Request):
     if row is None:
         name = _drive_folder_name_by_id(conn, file_id)  # folders aren't stored as rows
         if name is not None:
-            keys = _drive_get_field_keys(request.query_params.get("fields"))
+            keys = _drive_get_field_keys(gerr.first_repeat(request.query_params, "fields"))
             return _drive_project([_drive_folder_obj(conn, name, caller.email)], keys)[0]
         raise gerr.not_found_file(file_id)
     # `gerr.alt_format`, not `.get`: measured 2026-09-17 against this same route, `alt=MEDIA` and
@@ -1909,7 +1912,7 @@ async def drive_files_get(file_id: str, request: Request):
     # Same projection as files.list: a file resolved by id and the same file read out of a listing
     # must come back identical, or caching/diffing behaves differently depending on which call
     # produced the row.
-    keys = _drive_get_field_keys(request.query_params.get("fields"))
+    keys = _drive_get_field_keys(gerr.first_repeat(request.query_params, "fields"))
     return _drive_project([_drive_file(conn, row, me=caller.email)], keys)[0]
 
 
@@ -1924,7 +1927,7 @@ async def drive_files_export(file_id: str, request: Request):
     native = _native(row)
     if native is None or native[2] is None:  # binary or folder — not exportable
         raise gerr.not_exportable()
-    requested = request.query_params.get("mimeType")
+    requested = gerr.first_repeat(request.query_params, "mimeType")
     if not requested:  # the real API requires an explicit target format
         raise gerr.required("mimeType")
     # honor the requested target format; CSV/TSV serve the cells, others prefix the title.
@@ -2081,7 +2084,7 @@ def _sheets_grid(content: str | None) -> list[list[str]]:
 # Measured on the live API, all on `values.get` unless noted:
 #
 #   fields           a partial-response mask; see `_gmask`
-#   prettyPrint      DEFAULT TRUE -- the body is 2-space indented unless `false` says otherwise,
+#   prettyPrint      DEFAULT TRUE -- the body is 2-space indented unless `false` or `0` turns it off,
 #                    and an unparseable value is treated as true rather than refused
 #   alt              `json` only; `media` is 400 "Unsupported alt type ... for non byte stream
 #                    request." and `zzz` 400 "Invalid value ... for query parameter 'alt'". `proto`
@@ -2237,15 +2240,16 @@ def _sheets_respond(request: Request, body: dict, allowed: dict) -> Response:
                 gerr.first_repeat(request.query_params, gerr.ALT)
             )
         )
-    mask = request.query_params.get("fields")
+    mask = gerr.first_repeat(request.query_params, "fields")
     if mask:
         tree = _gmask_parse(mask)
         _gmask_check(tree, allowed)
         body = _gmask_apply(tree, body)
-    # Measured: indented by default, and only the literal `false` spellings turn it off -- an
-    # unparseable value is treated as true rather than refused, unlike the other booleans. It is
-    # the success side alone that reads it: an error is indented whatever it says.
-    compact = (request.query_params.get("prettyPrint") or "").casefold() in _SHEETS_FALSE
+    # Measured 2026-09-23, twenty spellings one request each: `false` and `0` turn it off and the
+    # other eighteen leave it indented, `FALSE`, `False`, `f`, `no`, `n`, `00` and a padded ` false`
+    # among them -- none is refused, where the other booleans refuse a value they cannot read. It
+    # is the success side alone that reads it: an error is indented whatever it says.
+    compact = gerr.first_repeat(request.query_params, "prettyPrint") in _PRETTY_PRINT_FALSE
     return gerr.respond(body, compact=compact, callback=gerr.jsonp_callback(request))
 
 
@@ -2347,7 +2351,7 @@ async def sheets_get(spreadsheet_id: str, request: Request):
     would differ between the two backends. With the flag, ``ranges`` scopes the returned rows
     (measured: 5.7 MB -> 11 KB for ``A1:B2``)."""
     row, sheets = _workbook(request, spreadsheet_id)
-    mask = request.query_params.get("fields")
+    mask = gerr.first_repeat(request.query_params, "fields")
     # A mask that reaches the cells decides the grid, and `includeGridData` is then ignored rather
     # than consulted -- the vendor's own wording. Still parsed, so a bad value is still refused.
     grid = _sheets_bool(request, "includeGridData", "include_grid_data")
@@ -2704,6 +2708,8 @@ def _a1_enum_error(field: str, enum: str, value: str) -> str:
 # `on`/`off`, a padded `" true"`, `2`, `01` and `1.0` are all refused.
 _SHEETS_TRUE = frozenset({"1", "t", "true", "y", "yes"})
 _SHEETS_FALSE = frozenset({"0", "f", "false", "n", "no"})
+# The two values that turn `prettyPrint` off, matched exactly -- see `_sheets_respond`.
+_PRETTY_PRINT_FALSE = frozenset({"false", "0"})
 
 
 def _sheets_bool(request: Request, param: str, field: str) -> bool:
@@ -3348,7 +3354,7 @@ async def sheets_get_by_data_filter(spreadsheet_id: str, request: Request):
     row, sheets = _workbook(request, spreadsheet_id)
     body, specs = await _sheets_filters(request, sheets, required=False, indexed=False)
     grid = _sheets_bool_value(body.get("includeGridData"), "include_grid_data")
-    if mask := request.query_params.get("fields"):
+    if mask := gerr.first_repeat(request.query_params, "fields"):
         grid = _gmask_wants_grid(mask)
     return _sheets_respond(
         request, _sheets_book(spreadsheet_id, row, sheets, specs, grid), _F_SPREADSHEET
@@ -3566,8 +3572,7 @@ def _drive_permissions(conn, file_id: str, *, folder: str | None = None) -> list
     return perms
 
 
-def _int(request: Request, key: str, default: int) -> int:
-    v = request.query_params.get(key)
+def _int(v: str | None, default: int) -> int:
     try:
         return min(int(v), get_settings().max_page_size) if v else default
     except ValueError:

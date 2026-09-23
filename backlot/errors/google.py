@@ -305,29 +305,70 @@ def bad_system_parameter(name: str, value: str) -> GoogleError:
 def xgafv(query: Mapping[str, str] | None) -> str | None:
     """The `$.xgafv` a request sent, or ``None``. Starlette's ``QueryParams.get`` answers the LAST
     repeat, which is the one real reads -- and `$.xgafv` is the one system parameter that works
-    that way. Measured 2026-09-15 on Sheets: `1&2` carries no `errors[]` where `2&1` does, while
-    `callback`, `alt`, `fields` and `prettyPrint` each answer their FIRST repeat
-    (:func:`first_repeat`)."""
+    that way. Measured 2026-09-15 on Sheets: `1&2` carries no `errors[]` where `2&1` does. Which
+    end every other measured parameter is read from is :func:`first_repeat`'s table."""
     return None if query is None else query.get(XGAFV)
 
 
 def first_repeat(query: Mapping[str, str] | None, name: str) -> str | None:
-    """The FIRST repeat of ``name``, which is the one real reads for the system parameters that are
-    not `$.xgafv`.
+    """The FIRST repeat of ``name``, or ``None`` when the request does not send it.
 
-    Measured 2026-09-15 on Sheets and Drive, one pair per parameter: `callback=cb&callback=dd` is
-    called through `cb`, `alt=media&alt=json` answers the `media` refusal, `fields=range&fields=
-    bogus` answers a 200 carrying `range` where `bogus` first is a 400, and
-    `prettyPrint=false&prettyPrint=true` is compact. A second repeat is not even validated --
-    `callback=cb&callback=a b` answers the success through `cb`. ``QueryParams.get`` answers the
-    last, so reading one of these off it is wrong wherever a caller repeats it.
+    Real reads a repeated query parameter from one end or the other, and no rule divides the two:
+    `prettyPrint` and `$.xgafv` are both system parameters, `pageSize` and `majorDimension` both
+    method parameters, and in each pair one is read first and the other last. So this is a table,
+    one ordered pair per row, each sent both ways round so the answer names the end that was read.
+    ``QueryParams.get`` answers the last repeat; the parameters in the first group are read through
+    here and the ones in the second off ``.get``::
 
-    Read through here by `callback` and by `alt`, which :func:`jsonp_callback` needs to agree with
-    ``routers.google._sheets_respond`` on. The other parameters still come off ``QueryParams.get``
-    at their own read sites, which is right for some of them and wrong for the rest: measured the
-    same day, `majorDimension` and `includeGridData` really are read last, while `fields`,
-    `prettyPrint`, `pageSize`, `pageToken`, `q`, `orderBy` and `mimeType` are read first and are
-    not yet fixed here.
+        read first          the pair, and what real answers       measured on
+        ------------------|--------------------------------------|-------------------------------
+        callback          | `cb&dd` calls `cb`                   | Sheets 2026-09-15
+        alt               | `media&json` is the `media` refusal  | Sheets 2026-09-15
+                          |                                      | Drive files.get 2026-09-17
+        fields            | `<mask>&bogus` answers the mask,     | Sheets values.get,
+                          | `bogus&<mask>` a 400                 | values:batchGet,
+                          |                                      | spreadsheets.get and both
+                          |                                      | POSTs; Drive files.list,
+                          |                                      | files.get and about;
+                          |                                      | 2026-09-23
+        prettyPrint       | `false&true` is compact,             | Sheets values.get,
+                          | `true&false` indented                | values:batchGet,
+                          |                                      | spreadsheets.get and both
+                          |                                      | POSTs; 2026-09-23
+        q                 | `<folders>&<sheets>` lists folders   | Drive files.list 2026-09-23
+        pageSize          | `1&3` is one file                    | Drive files.list 2026-09-23
+        pageToken         | `<valid>&BOGUS` is the next page,    | Drive files.list 2026-09-23
+                          | `BOGUS&<valid>` a 400                |
+        orderBy           | `name&name desc` ascends             | Drive files.list 2026-09-23
+        mimeType          | `text/csv&text/tab-separated-values` | Drive files.export 2026-09-23
+                          | answers CSV                          |
+
+        read last
+        ------------------|--------------------------------------|-------------------------------
+        $.xgafv           | `1&2` has no `errors[]`, `2&1` has   | Sheets 2026-09-15
+                          |                                      | Gmail 2026-09-22
+        majorDimension    | `ROWS&COLUMNS` answers `COLUMNS`     | Sheets values.get 2026-09-23
+        valueRenderOption | `FORMULA&FORMATTED_VALUE` answers    | Sheets values.get 2026-09-23
+                          | the value, the reverse the formula   |
+        includeGridData   | `true&false` answers no grid         | Sheets spreadsheets.get
+                          |                                      | 2026-09-22
+
+    An empty first repeat is read as itself rather than skipped, measured 2026-09-23:
+    `q=&q=<folders>` is the unfiltered listing, `fields=&fields=id` on Drive `files.get` answers
+    ``{}``, and `prettyPrint=&prettyPrint=false` is indented, each what the empty value alone
+    answers.
+
+    A second repeat of a parameter read first is not validated, measured 2026-09-23:
+    `fields=id&fields=bogus`, `q=<folders>&q=<a clause Drive cannot parse>`,
+    `orderBy=name&orderBy=bogus`, `pageToken=<valid>&pageToken=BOGUS` and
+    `mimeType=text/csv&mimeType=bogus/type` each answer what their first value alone does, as
+    `callback=cb&callback=a b` did on 2026-09-15. `pageSize` is the exception:
+    `pageSize=2&pageSize=NOPE` is a 400 whichever end the bad value is at, and so is a bad value at
+    either end of `valueRenderOption` or `includeGridData`, measured the same day, and of
+    `majorDimension`, measured 2026-09-22.
+
+    Gmail's `q`, `pageToken` and `maxResults` stay on ``.get`` because their end is unmeasured: a
+    Gmail list answers 200 only to a scope the measuring credential cannot be granted.
     """
     if query is None:
         return None

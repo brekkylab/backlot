@@ -2084,7 +2084,7 @@ def _sheets_grid(content: str | None) -> list[list[str]]:
 # Measured on the live API, all on `values.get` unless noted:
 #
 #   fields           a partial-response mask; see `_gmask`
-#   prettyPrint      DEFAULT TRUE -- the body is 2-space indented unless `false` says otherwise,
+#   prettyPrint      DEFAULT TRUE -- the body is 2-space indented unless `false` or `0` says so,
 #                    and an unparseable value is treated as true rather than refused
 #   alt              `json` only; `media` is 400 "Unsupported alt type ... for non byte stream
 #                    request." and `zzz` 400 "Invalid value ... for query parameter 'alt'". `proto`
@@ -2245,10 +2245,10 @@ def _sheets_respond(request: Request, body: dict, allowed: dict) -> Response:
         tree = _gmask_parse(mask)
         _gmask_check(tree, allowed)
         body = _gmask_apply(tree, body)
-    # Measured 2026-09-23: indented by default, and only `false` and `0` turn it off, spelled
-    # exactly -- `FALSE`, `False`, `f`, `no`, `n`, `00` and a padded ` false` are indented, as is
-    # any other value, rather than refused the way the other booleans refuse one. It is the success
-    # side alone that reads it: an error is indented whatever it says.
+    # Measured 2026-09-23, twenty spellings one request each: `false` and `0` turn it off and the
+    # other eighteen leave it indented, `FALSE`, `False`, `f`, `no`, `n`, `00` and a padded ` false`
+    # among them -- none is refused, where the other booleans refuse a value they cannot read. It
+    # is the success side alone that reads it: an error is indented whatever it says.
     compact = gerr.first_repeat(request.query_params, "prettyPrint") in _PRETTY_PRINT_FALSE
     return gerr.respond(body, compact=compact, callback=gerr.jsonp_callback(request))
 

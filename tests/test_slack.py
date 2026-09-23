@@ -1520,8 +1520,7 @@ def test_slack_file_renders_its_owner_id(tmp_path):
     corpus names it by address and `synth.slack_user_id` mints the id. Slack's file object
     reference types `user` as "the ID of the user who created the object", and a live
     `search.files` call (2026-09-21) found one on every file the workspace served. Every other
-    file field
-    — `id`, `name`, `mimetype`, `title` — passes through unchanged.
+    file field — `id`, `name`, `mimetype`, `title` — passes through unchanged.
     """
 
     from backlot.routers.slack import _message

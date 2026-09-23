@@ -75,10 +75,11 @@ Prefer the environment. A value passed on the command line is visible to any pro
 `ps`, and it lands in shell history.
 
 Exit codes are distinct on purpose: `1` is "the contracts disagree", `2` is "the vendor's contract
-could not be read", and `3` is "a credential this source declares is not set anywhere". A vendor
-outage is not a fidelity finding, and a credential nobody set is this repository's problem rather
-than either — the scheduled run fails on `3` for that reason, because warned about and left green
-it would leave the three sources that need one uncompared night after night.
+could not be read", and `3` is "a credential this source declares is not set anywhere, or is set
+to one the source cannot use". A vendor outage is not a fidelity finding, and a credential nobody
+set, or the wrong kind set, is this repository's problem rather than either — the scheduled run
+fails on `3` for that reason, because warned about and left green it would leave the three sources
+that need one uncompared night after night.
 
 ## A published spec is weaker evidence than introspection
 
@@ -103,7 +104,7 @@ Asking the vendor instead of reading its document does not remove that rule, it 
 weakens the evidence. A live probe's `extra_field` is bounded by one caller's one sample: a field
 Slack serves only on an edited message, or only to a token holding `users:read.email`, comes back
 absent from an answer that is otherwise complete. So Slack's `extra_field` findings are verified by
-hand too, and the baseline note beside each records which of the two it was.
+hand too, and the baseline note beside each records what bounded it.
 
 ## Severities
 
@@ -188,9 +189,14 @@ Backlot is asked **beside** the vendor rather than alone. Backlot's half runs on
 itself supplies — two channels, a threaded message, a message carrying a file, a reaction, an edit —
 so it is the same on every run and a finding reproduces with `backlot.serve(records=...)`. The
 vendor's half is a live workspace, and everything the calls need is discovered through the API
-itself — a channel the caller has joined, a message with replies in it, an active person, and a
-word out of that channel's own text that the workspace's search can find. A workspace missing any
-of them is reported as one that cannot be probed rather than probed clean. Slack has no query that
+itself — a channel the caller has joined, a message with replies in it, the active people, and words
+out of that channel's own text that the workspace's search can find. A workspace missing any of
+them is reported as one that cannot be probed rather than probed clean. A method describing one
+object — `users.info`, `conversations.info` — is asked about every person or channel the listing
+returned and read as one shape, and the search methods about a word from each of the three messages
+carrying the most fields: measured 2026-09-23, asking about whichever person, channel or word came
+first left out up to four fields the others carried, so which one a listing put first decided the
+findings. Slack has no query that
 means "everything" to fall back on: measured 2026-09-22, `*` answered `search.messages` with one
 match out of the eleven messages the workspace holds, and with two an hour earlier.
 
@@ -214,7 +220,7 @@ verified by hand exactly like every other `extra_*`:
   non-admin caller gets it only on their own — one of 20 in a live `users.list`, and it is the
   caller. The probe's own credential is required to be a workspace admin (`discover` refuses any
   other before comparing), so what it measures is the admin-sees-every-person half; a non-admin
-  caller's own self-view is an acknowledged gap of its own.
+  caller's own self-view is a gap this probe cannot see.
 
 Presence, never conditions. That `has_2fa` is bounded by caller identity and that a deactivated
 member drops thirteen fields — Backlot drops eleven of them itself, and the baseline carries the

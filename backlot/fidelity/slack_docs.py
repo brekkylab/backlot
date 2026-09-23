@@ -1,8 +1,8 @@
 """Slack is compared against its reference documentation, because it publishes nothing else.
 
 Every other document source here reads a machine-readable description its vendor maintains. Slack
-has none: the OpenAPI 2.0 document it once published is archived and five years stale, and nothing
-replaced it. ``docs/fidelity.md``, "Slack is documented and asked, never read off a spec", carries
+has none: the OpenAPI 2.0 document it once published is archived, its last content change dated
+2020-10-06, and nothing replaced it. ``docs/fidelity.md``, "Slack is documented and asked, never read off a spec", carries
 that measurement.
 
 What Slack does maintain is the reference itself. ``docs/fidelity.md``, "Operations and arguments

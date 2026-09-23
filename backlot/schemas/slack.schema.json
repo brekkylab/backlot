@@ -121,7 +121,7 @@
         "ts": {
           "type": "string",
           "pattern": "^\\d{10}\\.\\d{6}$",
-          "description": "When it was last edited, as a Slack ts (`defs_ts`: `^\\d{10}\\.\\d{6}$` — every live `ts` this project has read is a quoted string in this shape, never a bare number). Stated rather than derived — an edit time is information the author holds, not a value the response can work out from something else — and checked at import to name a later SECOND than `created`, since the served `ts` takes its six-digit fraction from a hash and a corpus author cannot tell which fractions of the message's own second fall after it."
+          "description": "When it was last edited, as a Slack ts (`^\\d{10}\\.\\d{6}$`, the shape of the message reference's own `\"ts\": \"1355517536.000001\"` — every live `ts` this project has read is a quoted string in this shape, never a bare number). Stated rather than derived — an edit time is information the author holds, not a value the response can work out from something else — and checked at import to name a later SECOND than `created`, since the served `ts` takes its six-digit fraction from a hash and a corpus author cannot tell which fractions of the message's own second fall after it."
         }
       },
       "required": [
@@ -233,7 +233,7 @@
               "ts": {
                 "type": "string",
                 "pattern": "^\\d{10}\\.\\d{6}$",
-                "description": "When it was last edited, as a Slack ts (`defs_ts`: `^\\d{10}\\.\\d{6}$` — every live `ts` this project has read is a quoted string in this shape, never a bare number). Stated rather than derived — an edit time is information the author holds, not a value the response can work out from something else — and checked at import to name a later SECOND than this reply's own `created`, since the served `ts` takes its six-digit fraction from a hash and a corpus author cannot tell which fractions of the message's own second fall after it."
+                "description": "When it was last edited, as a Slack ts (`^\\d{10}\\.\\d{6}$`, the shape of the message reference's own `\"ts\": \"1355517536.000001\"` — every live `ts` this project has read is a quoted string in this shape, never a bare number). Stated rather than derived — an edit time is information the author holds, not a value the response can work out from something else — and checked at import to name a later SECOND than this reply's own `created`, since the served `ts` takes its six-digit fraction from a hash and a corpus author cannot tell which fractions of the message's own second fall after it."
               }
             },
             "required": [

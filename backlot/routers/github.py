@@ -522,11 +522,12 @@ def _rate_limit_exceeded_message(request: Request, authenticated: bool) -> str:
     its cap. Real's sentence there is `API rate limit exceeded for user ID <id>. If you reach out
     to GitHub Support for help, please include the request ID <x-github-request-id> and timestamp
     <YYYY-MM-DD HH:MM:SS> UTC. For more on scraping GitHub and how it may affect your rights,
-    please review our Terms of Service (…)` — naming a request id and a timestamp Backlot has
-    neither of. This returns real's sentence up to `user ID <id>.` and stops there instead of
-    inventing either; the rest is unreproduced pending a maintainer's choice among synthesizing a
-    request id (and sending it as `x-github-request-id` for the sentence to point at),
-    reproducing the fixed text around a placeholder, or leaving the prefix as the whole of it."""
+    please review our Terms of Service (…)`. This returns real's sentence up to `user ID <id>.`;
+    the Support/Terms-of-Service sentence past it is not reproduced, because it names a request id
+    and a timestamp that come from `x-github-request-id` — a header Backlot sends on no `/github`
+    answer today (real sends it on every answer, 200 and refusal alike, and its own last field is
+    that answer's `Date` to the second). That header, once Backlot serves it, is where the rest of
+    this sentence belongs, not a synthesized or placeholder value here."""
     if not authenticated:
         host = request.client.host if request.client is not None else "anonymous"
         return (

@@ -13,7 +13,7 @@ import yaml
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.routing import Match
 from starlette.types import Scope
@@ -272,9 +272,10 @@ async def answer_s3_with_request_ids(request: Request, call_next):
 
 @app.middleware("http")
 async def report_github_rate_limit(request: Request, call_next):
-    """Put the five `x-ratelimit-*` headers on the `/github` answers real carries them on, 200 and
-    error alike, and count each against the caller's window for the resource (see
-    ``backlot.routers.github.rate_limit_headers``).
+    """Refuse a `/github` request whose window is already spent, real's 403 (see
+    ``backlot.routers.github.rate_limit_refusal``), and otherwise put the five `x-ratelimit-*`
+    headers on the answer real carries them on, 200 and error alike, counting each against the
+    caller's window for the resource (``backlot.routers.github.rate_limit_headers``).
 
     Middleware for the reason the version echo is: the headers ride on answers no route handler
     builds, the exception handlers' 401s and 404s and the raw and diff media types' own responses
@@ -285,14 +286,20 @@ async def report_github_rate_limit(request: Request, call_next):
     rate-limit answers are not measured. A 404 for a path no route matches at all gets them only
     for a request that carried no `Authorization` header at all — see
     ``_some_github_route_matches`` — and a credential that did not resolve gets them on no path at
-    all (``github.refused_a_credential``).
+    all (``github.refused_a_credential``); the refusal check shares that same gate, so neither is
+    ever refused by it.
     """
-    response = await call_next(request)
-    if (
+    gated = (
         request.url.path.startswith("/github")
         and not github.refused_a_credential(request)
         and (_some_github_route_matches(request.scope) or "authorization" not in request.headers)
-    ):
+    )
+    if gated:
+        refusal = github.rate_limit_refusal(request)
+        if refusal is not None:
+            return refusal
+    response = await call_next(request)
+    if gated:
         for name, value in github.rate_limit_headers(request, response.status_code).items():
             response.headers[name] = value
     return response
@@ -348,6 +355,21 @@ async def refuse_a_trailing_slash_on_github(request: Request, call_next):
     the question is asked and refuses its slash with the rest; and outside `report_github_rate_limit`
     and the version echo, so a refused path reaches the rate limiter only through the call below and
     never carries the echo.
+
+    An anonymous caller's spent rate-limit window outranks this 404 too: `GET /repos/{owner}/{repo}/`
+    answers real's 403 rather than this 404 once the window is spent, `server: Varnish` (measured
+    against api.github.com 2026-09-23) — this middleware runs OUTSIDE `report_github_rate_limit`, so
+    a path this branch intercepts would otherwise never reach ``rate_limit_refusal`` at all. A token
+    is unaffected: the same window spent under a token still answers this 404 (measured the same
+    day, on `/search/issues/`), which is why the refusal is checked only for a caller with no
+    `Authorization` header, matching the header-reporting branch below it.
+
+    `/rate_limit/` with no `Authorization` header is neither: it is answered by the `server:
+    fasthttp` front that answers `/rate_limit` itself, `404 Not Found` in `text/plain` with none of
+    the five, never counted (`used` stayed put across two of them) and never refused, the anonymous
+    `core` window spent or not (measured against api.github.com 2026-09-23). Any `Authorization`
+    header — a valid token, a bad bearer or `Basic` — gets the JSON 404 below, from `server:
+    github.com`.
     """
     path = request.url.path
     if (
@@ -355,9 +377,16 @@ async def refuse_a_trailing_slash_on_github(request: Request, call_next):
         and path.endswith("/")
         and _would_redirect_to_the_slash_free_path(request)
     ):
+        anonymous = "authorization" not in request.headers
+        if anonymous and path.rstrip("/") == github.RATE_LIMIT_PATH:
+            return PlainTextResponse("404 Not Found", status_code=404)
+        if anonymous:
+            refusal = github.rate_limit_refusal(request)
+            if refusal is not None:
+                return refusal
         response = await _http_exception_handler(request, StarletteHTTPException(status_code=404))
-        if "authorization" not in request.headers:
-            headers = github.rate_limit_headers(request, response.status_code, count=True)
+        if anonymous:
+            headers = github.rate_limit_headers(request, response.status_code)
             for name, value in headers.items():
                 response.headers[name] = value
         return response

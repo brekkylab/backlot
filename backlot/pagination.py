@@ -428,6 +428,7 @@ def confluence_page_links(
     before: str = "",
     after: str = "",
     cursor: str | None = None,
+    sent_cursor: str | None = None,
 ) -> dict:
     """The `next` and `prev` every paged Confluence listing answers, literal for literal.
 
@@ -436,24 +437,26 @@ def confluence_page_links(
     share:
 
     - each link carries its own marker, `next=true` or `prev=true`, which nothing else names;
-    - `next` is answered whenever the rows served have not reached `total` — `start + size`, not
-      "the page came back full", so a three-space site answers `?limit=3` no `next` and `?limit=2`
-      a `start=2`. An empty page advances nothing, so `?limit=0` answers a link to the page it is
-      on rather than withholding one, where a `start` past `total` answers none. `content`,
-      `space`, the CQL search, `child/page` and `child/comment` all answer a zero `limit` that way;
-      `label` refuses it outright, which is that route's own rule rather than this one's;
+    - `next` is answered whenever the rows served have not reached `total`, not "the page came back
+      full", so a three-space site answers `?limit=3` no `next` and `?limit=2` a `start=2`. An
+      empty page advances nothing, so `?limit=0` answers a link to the page it is on rather than
+      withholding one, where a `start` past `total` answers none. The rows are counted from `start`
+      on every listing but the CQL search, which counts them from its cursor
+      (:func:`backlot.routers.atlassian._cql_cursor`);
     - `prev` walks back by `limit` clamped at zero, and its own `limit` is the number of rows
-      actually skipped, so `?start=1` at the default 25 answers `limit=1&start=0`;
+      actually skipped, so `?start=1` at the default 25 answers `limit=1&start=0`, and
+      `?limit=5&start=2` answers `limit=2&start=0` on all six (measured 2026-09-23);
     - `next` is built before `prev`, because real emits `_links` alphabetically and a caller
       reading key order sees `next` first.
 
-    Where the other parameters of the request sit is not a rule worth chasing. Measured on one
-    request each: `bogus` lands after the marker and before `limit`, `zebra` ahead of the marker,
-    `nonce` after `start`, and `expand` after the marker on `next` but ahead of it on `prev`. Three
-    positions for three names is a Java map's iteration order, not an ordering a client can rely
-    on, so ``before`` carries the names whose position is measured (`expand`) and ``after`` carries
-    the rest, which puts them where `cql` and `nonce` were seen. ``cursor`` is the CQL search's own,
-    which rides `next` alone, between the marker and `limit`.
+    ``before`` and ``after`` are the request's other parameters, split where
+    :func:`backlot.routers.atlassian._confluence_carried` says real puts them.
+
+    ``cursor`` and ``sent_cursor`` are the CQL search's. ``cursor`` rides `next` alone, between the
+    marker and `limit`. ``sent_cursor`` is the one the request brought, and it changes `prev`,
+    measured 2026-09-23: `prev` leads with it, ahead of `expand` and the marker, is answered at
+    `start=0` as well, and its own `limit` is the request's rather than the rows skipped, so
+    `?cursor=…&limit=5&start=2` answers `prev` of `cursor=…&prev=true&limit=5&start=0`.
     """
     links = {}
     lead = (f"cursor={cursor}&" if cursor else "") + before
@@ -461,7 +464,12 @@ def confluence_page_links(
     nxt = start + size
     if nxt < total:
         links["next"] = f"{path}?next=true&{lead}limit={limit}&start={nxt}{tail}"
-    if start > 0:
+    if sent_cursor:
+        links["prev"] = (
+            f"{path}?cursor={sent_cursor}&{before}prev=true&limit={limit}"
+            f"&start={max(0, start - limit)}{tail}"
+        )
+    elif start > 0:
         prev_start = max(0, start - limit)
         links["prev"] = (
             f"{path}?{before}prev=true&limit={start - prev_start}&start={prev_start}{tail}"

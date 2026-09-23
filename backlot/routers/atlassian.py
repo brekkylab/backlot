@@ -1381,7 +1381,8 @@ async def confluence_cql_search(request: Request):
         limit=limit,
         size=len(results),
         total=total,
-        cursor=_cql_cursor(matched),
+        cursor=_cql_cursor(rows, matched),
+        sent_cursor=request.query_params.get("cursor"),
     )
     return {
         "results": results,
@@ -1939,7 +1940,9 @@ def _confluence_page_params(
     space's 404.
 
     ``refuse_zero`` is `label`'s alone: it answers `?limit=0` with a 400 where every other listing
-    answers an empty page (:func:`backlot.errors.atlassian.zero_limit_not_allowed`).
+    answers an empty page (:func:`backlot.errors.atlassian.zero_limit_not_allowed`). It is reached
+    after both refusals above, measured 2026-09-23: `?limit=0&start=abc` is the conversion failure
+    and `?limit=0&start=-1` the negative about `start`.
 
     ``default`` and ``cap`` are per route, measured 2026-09-22 on a live site: `content`, `space`
     and `child/comment` cap `limit` at 1000, `label` defaults to 200 and caps there, `child/page`
@@ -1951,9 +1954,9 @@ def _confluence_page_params(
     start = _int_param(request, "start", 0)
     if start_bound is not None and start > start_bound:
         raise errors_atlassian.start_too_large()
+    _refuse_negative_page_params(limit, start)
     if refuse_zero and limit == 0:
         raise errors_atlassian.zero_limit_not_allowed()
-    _refuse_negative_page_params(limit, start)
     if cap is not None:
         limit = min(limit, cap)
     return limit, start
@@ -1967,24 +1970,31 @@ def _confluence_page_params(
 _CONTENT_START_BOUND = 100_000
 
 
-def _cql_cursor(matched: list) -> str | None:
-    """The `cursor` real's CQL search carries on `next`, and nothing else does.
+def _cql_cursor(served: list, matched: list) -> str | None:
+    """The `cursor` real's CQL search carries on `next`: a token naming the last row the page
+    served, or the first match when it served none.
 
-    Measured 2026-09-22 on a nine-page site: `next` is `search?next=true&cursor=<token>&limit=…&
-    start=…&cql=…`, `prev` carries no cursor, and the token is the same string for `start=0`,
-    `start=1` and `limit=0` — it names where the result set begins rather than where the page does.
-    Real's token is opaque and carries the first match's id inside a base64 payload; this builds one
-    of its own from the same thing, so a client sees a token shaped like real's, and the route
-    answers a request that sends one back by reading `start` as it always has.
+    Measured 2026-09-23 on a nine-page site: the token names the second match at `limit=2` and the
+    fifth at `limit=5`, moves with each `next` followed, and on an empty page sent no cursor names
+    the first match whatever `start` says. Real's token is opaque and carries that row's id inside
+    a base64 payload; this builds one of its own from the same thing, so a client sees a token
+    shaped like real's.
+
+    The route does not read a cursor sent back. Real positions the page by it and not by `start`,
+    which it echoes and advances without reading: `?limit=1&start=5` with no cursor serves the first
+    match, and following `next` from `?limit=0` moves the token one row per hop. This server
+    positions by `start`, which following its own `next` keeps in step with the cursor whenever
+    `limit` is above zero; those two cases are where it answers otherwise.
     """
-    if not matched:
+    row = served[-1] if served else (matched[0] if matched else None)
+    if row is None:
         return None
-    payload = base64.b64encode(f'["\t{matched[0]["id"]}"]'.encode()).decode("ascii")
+    payload = base64.b64encode(f'["\\t{row["id"]}"]'.encode()).decode("ascii")
     return quote(f"_t_{payload}_h_W10=", safe="")
 
 
 def _confluence_carried(
-    request: Request, *, first: tuple[str, ...] = ("expand",)
+    request: Request, *, first: tuple[str, ...] = ("expand",), own: tuple[str, ...] = ()
 ) -> tuple[str, str]:
     """The request's other parameters, split into what leads `limit`/`start` in a page link and
     what trails `start`.
@@ -1994,10 +2004,12 @@ def _confluence_carried(
     than a rule — `bogus` after the marker, `zebra` ahead of it, `nonce` and `cql` after `start`,
     each on its own request — so the names in ``first`` lead and everything else trails in the
     order the caller sent it, which reproduces the `cql` and `nonce` cases and not the other two.
+
+    ``own`` names what the route writes into its links itself, so it is not carried as well.
     """
     lead, trail = [], []
     for name, value in request.query_params.multi_items():
-        if name in ("limit", "start", "next", "prev"):
+        if name in ("limit", "start", "next", "prev", *own):
             continue
         (lead if name in first else trail).append(f"{name}={quote(str(value), safe='')}")
     return ("&".join(lead) + "&" if lead else "", "&".join(trail))
@@ -2012,6 +2024,7 @@ def _confluence_envelope(
     size: int,
     total: int,
     cursor: str | None = None,
+    sent_cursor: str | None = None,
 ) -> dict:
     """`_links` as every paged Confluence listing answers it: `base`, `context` and `self` on every
     page, plus `next`/`prev` from :func:`backlot.pagination.confluence_page_links`.
@@ -2020,15 +2033,21 @@ def _confluence_envelope(
     `content/{id}`: all three keys ride every page, `context` is the product's own prefix and
     `self` is the request's URL with `limit`, `start` and the two markers removed and every other
     parameter kept — a cache-buster sent with the request comes back inside `self`.
+
+    ``cursor`` and ``sent_cursor`` are the CQL search's: the token this page's `next` carries and
+    the one the request brought. Measured 2026-09-23 following `next` three hops at `limit=0`, `1`
+    and `2`: the sent one is not carried the way other parameters are, so `self` holds no cursor
+    and `next` the new one alone, and `prev` is where it goes back out.
     """
-    lead, trail = _confluence_carried(request)
+    lead, trail = _confluence_carried(request, own=() if sent_cursor is None else ("cursor",))
     query = "&".join(p for p in (lead.rstrip("&"), trail) if p)
     links = {
         "base": f"{_site(request)}/wiki",
         "context": "/wiki",
         "self": f"{_site(request)}/wiki{route}" + (f"?{query}" if query else ""),
     }
-    links.update(confluence_page_links(route, start, limit, size, total, lead, trail, cursor))
+    sent = quote(sent_cursor, safe="") if sent_cursor else None
+    links.update(confluence_page_links(route, start, limit, size, total, lead, trail, cursor, sent))
     return links
 
 

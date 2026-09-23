@@ -247,6 +247,18 @@ def test_confluence_page_links():
         "next": f"{path}?next=true&expand=description&limit=1&start=2",
         "prev": f"{path}?expand=description&prev=true&limit=1&start=0",
     }
+    # the CQL search's cursors: the new one rides `next`, the sent one leads `prev` ahead of
+    # `expand`, and with one sent `prev` answers at `start=0` and keeps the request's `limit`
+    search = "/rest/api/search"
+    assert pg.confluence_page_links(
+        search, 0, 0, 0, 4, "expand=space&", cursor="NEW", sent_cursor="SENT"
+    ) == {
+        "next": f"{search}?next=true&cursor=NEW&expand=space&limit=0&start=0",
+        "prev": f"{search}?cursor=SENT&expand=space&prev=true&limit=0&start=0",
+    }
+    assert pg.confluence_page_links(search, 2, 5, 2, 4, sent_cursor="SENT") == {
+        "prev": f"{search}?cursor=SENT&prev=true&limit=5&start=0"
+    }
 
 
 # --- Linear: Relay connections ----------------------------------------------------

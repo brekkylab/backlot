@@ -502,8 +502,8 @@ RATE_LIMIT_EXCEEDED_DOCS = (
     "https://docs.github.com/rest/overview/resources-in-the-rest-api#rate-limiting"
 )
 
-#: A token's own anchor for the same 403 — a different page from the anonymous caller's (measured
-#: against api.github.com 2026-09-23, a token's `search` window driven to its cap).
+#: A token's own anchor for the same 403 — a different page from the anonymous caller's; see
+#: :func:`_rate_limit_exceeded_message` for the measurement.
 TOKEN_RATE_LIMIT_EXCEEDED_DOCS = (
     "https://docs.github.com/en/rest/using-the-rest-api/getting-started-with-the-rest-api"
     "#rate-limiting"

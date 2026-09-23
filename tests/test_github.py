@@ -5064,10 +5064,8 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
         over = c.get(repo, headers=h)
         assert over.status_code == 403
         # The envelope's shape and `documentation_url` are real's for a TOKEN — three members,
-        # `status` included, and a different anchor from the anonymous caller's (measured against
-        # api.github.com 2026-09-23, a token's `search` window driven to its cap). `message`'s
-        # content past the "user ID <id>." prefix is Backlot's own choice — see
-        # `_rate_limit_exceeded_message` for why the rest is unreproduced.
+        # `status` included, and its own anchor; see `_rate_limit_exceeded_message` for the
+        # measurement and why `message`'s tail past the "user ID <id>." prefix is unreproduced.
         admin_id = synth.github_user_id("admin")
         assert over.json() == {
             "message": f"API rate limit exceeded for user ID {admin_id}.",

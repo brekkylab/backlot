@@ -10,7 +10,8 @@ envelope is NOT uniform — three families differ in which optional members they
 
     family                  errors[]           status               no Authorization header
     ------------------------|------------------|---------------------|------------------------
-    Drive v3                | always           | auth failures only  | 403 PERMISSION_DENIED
+    Drive v3                | always           | auth failures and   | 403 PERMISSION_DENIED
+                            |                  | typed values only   |
     Gmail v1                | unless $.xgafv=2 | always              | 401 UNAUTHENTICATED
     Docs v1 / Slides v1     | $.xgafv=1        | always              | 401 UNAUTHENTICATED
     Sheets v4               | $.xgafv=1        | always              | 403 PERMISSION_DENIED
@@ -57,8 +58,9 @@ from collections.abc import Mapping
 from fastapi import HTTPException, Request, Response
 
 DRIVE, GMAIL, EDITOR = "drive", "gmail", "editor"
-# `status` needs no per-family flag: Drive's parameter failures simply do not have one, while every
-# Gmail and editor error does, so "the error carries a status" is the whole condition.
+# `status` needs no per-family flag: Drive's parameter failures other than a typed value simply do
+# not have one, while every Gmail and editor error does, so "the error carries a status" is the
+# whole condition.
 _PREFIX_FAMILY = (
     ("/drive/v3", DRIVE),
     ("/gmail/v1", GMAIL),
@@ -190,11 +192,53 @@ def invalid_argument(message: str) -> GoogleError:
     return GoogleError(400, message, reason="badRequest", status="INVALID_ARGUMENT")
 
 
-def invalid_field_value(message: str) -> GoogleError:
+def invalid_field_value(field: str, message: str) -> GoogleError:
     """The proto layer's refusal of a typed value — ``Invalid value at '<field>' (<type>),
     "<value>"`` for an enum, a bool or an int32. Measured at `$.xgafv=1`, its `errors[]` entry is
     ``reason: invalid`` and carries no ``domain``, which no other Google error measured does."""
-    return GoogleError(400, message, reason="invalid", status="INVALID_ARGUMENT", domain=None)
+    return invalid_field_values([(field, message)])
+
+
+def invalid_field_values(violations: list[tuple[str, str]]) -> GoogleError:
+    """One refusal for every typed value the proto layer could not read, as ``(field, message)``
+    pairs in the order they were read.
+
+    Measured 2026-09-23 on Sheets `values.get`, `spreadsheets.get` and `:getByDataFilter` and on
+    Drive `files.list`, over query parameters and a JSON body alike: each refused value is a
+    ``google.rpc.BadRequest`` field violation in `details`, naming the field the way its message
+    does and repeating the message as its description, and a request with several is one 400 whose
+    message joins theirs with newlines -- `majorDimension=NOPE&valueRenderOption=NOPE` answers
+    both, in that order, and the reverse in the reverse."""
+    return GoogleError(
+        400,
+        "\n".join(message for _, message in violations),
+        reason="invalid",
+        status="INVALID_ARGUMENT",
+        domain=None,
+        details=[
+            {
+                "@type": "type.googleapis.com/google.rpc.BadRequest",
+                "fieldViolations": [
+                    {"field": field, "description": message} for field, message in violations
+                ],
+            }
+        ],
+    )
+
+
+def field_violations(exc: GoogleError) -> list[tuple[str, str]]:
+    """The ``(field, message)`` pairs an :func:`invalid_field_values` refusal carries, so a caller
+    reading several values can gather every refusal into one."""
+    return [(v["field"], v["description"]) for d in exc.details or () for v in d["fieldViolations"]]
+
+
+def unsupported_conversion() -> GoogleError:
+    """`files.export` asked for a format the file's type does not export to. Measured 2026-09-23
+    on a spreadsheet: `text/plain`, `bogus/type`, a native Google type, a padded `text/csv ` and an
+    empty value each answer this, ``badRequest`` at ``location: convertTo``."""
+    return GoogleError(
+        400, "The requested conversion is not supported.", reason="badRequest", location="convertTo"
+    )
 
 
 def bad_field_mask(path: str) -> GoogleError:

@@ -101,10 +101,10 @@ _BACKLOT_QUERY = "drosophila"
 # off first, so `<@U0BCVV6G3M1>` contributes no token and neither does a link's target.
 _WORD = re.compile(r"\w{4,}")
 _MARKUP = re.compile(r"<[^>]*>")
-# How many of those the probe searches for, keeping each that matches. Search is the vendor's most
-# restricted tier here (Tier 2); measured 2026-09-23, words from the three messages carrying the
-# most fields produced every finding that all seven of the channel's words did.
-_QUERY_ATTEMPTS = 3
+# The most words the probe searches for, keeping each that matches. Search is the vendor's most
+# restricted tier here (Tier 2, 20+ a minute), and `search.messages` is asked twice per word; a
+# history whose messages need more than this to cover their fields is covered as far as it goes.
+_QUERY_ATTEMPTS = 5
 
 
 class LiveProbeTarget(Protocol):
@@ -300,20 +300,30 @@ class Sample:
 def _searchable_words(messages: Any) -> list[str]:
     """Candidate queries, one per message, out of messages the probe has already read.
 
-    A match carries what its message carries, so the candidates come from different messages, the
-    ones carrying the most fields first: measured 2026-09-23 over the six messages of a live
-    workspace's threaded channel, `matches[].files` came back only for a word drawn from the one
-    message carrying a file, 2 of the 7 words that history held. Within a message the longest word,
-    because a long word is the one most likely to be indexed as itself rather than swallowed by a
-    stop list. Deterministic for a given history, so two runs against an unchanged workspace ask
-    the same questions.
+    A match carries what its message carries, so the messages are chosen to cover every top-level
+    field the history holds: repeatedly the one adding the most fields not yet covered, the
+    earliest on a tie, until none adds any. Ranking by field count alone is not enough — measured
+    2026-09-23, one edited and reacted-to message pushed the only file-carrying one out of the
+    three richest, and `matches[].files` went unasked. Within a message the longest word, because
+    a long word is the one most likely to be indexed as itself rather than swallowed by a stop
+    list. Deterministic for a given history, so two runs against an unchanged workspace ask the
+    same questions.
     """
+    remaining = [
+        (set(m), _WORD.findall(_MARKUP.sub(" ", m.get("text") or "")))
+        for m in sorted(messages or (), key=lambda m: m.get("ts") or "")
+    ]
+    covered: set[str] = set()
     out: list[str] = []
-    for message in sorted(messages or (), key=lambda m: (-len(m), m.get("ts") or "")):
-        text = _MARKUP.sub(" ", message.get("text") or "")
-        words = sorted(set(_WORD.findall(text)) - set(out), key=lambda w: (-len(w), w))
-        if words:
-            out.append(words[0])
+    while remaining:
+        keys, words = max(remaining, key=lambda r: len(r[0] - covered))
+        if not keys - covered:
+            break
+        remaining.remove((keys, words))
+        fresh = sorted(set(words) - set(out), key=lambda w: (-len(w), w))
+        if fresh:
+            covered |= keys
+            out.append(fresh[0])
     return out
 
 

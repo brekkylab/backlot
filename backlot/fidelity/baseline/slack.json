@@ -9,20 +9,6 @@
     {
       "kind": "extra_field",
       "severity": "breaking",
-      "path": "conversations.history messages[].edited",
-      "detail": "Backlot serves it; the real API's answer has no such field",
-      "note": "The real API serves `edited` on a message that has been edited and on no other. `docs.slack.dev/reference/events/message` documents it: \"If the message has been edited after posting, it will include an `edited` property, which includes the user ID of the editor and the timestamp for when the edit occurred.\" Measured 2026-09-23, the one edited message in the eight channels this probe's caller can read is a thread reply, which this method does not return; on `conversations.replies`, which does, it pairs with the probe corpus's edited message with no divergence under `edited`. So this method's vendor half had nothing to pair with. A field served conditionally cannot be told apart from one never served by a single caller's sample, which is why this comparison's `extra_field` findings are verified by hand like every other `extra_*`."
-    },
-    {
-      "kind": "extra_field",
-      "severity": "breaking",
-      "path": "conversations.history messages[].reactions",
-      "detail": "Backlot serves it; the real API's answer has no such field",
-      "note": "The real API serves `reactions` on a message that has been reacted to and on no other. `docs.slack.dev/reference/events/message` documents it: \"The `reactions` property, if present, contains any reactions that have been added to the message\", and `reactions.get`'s own success example carries the same shape Backlot serves \u2014 `name`, `users`, `count`. Measured 2026-09-23, the one reacted message in the eight channels this probe's caller can read is a thread reply, which this method does not return; on `conversations.replies`, which does, it pairs with the probe corpus's reacted message with no divergence under `reactions`. So this method's vendor half had nothing to pair with."
-    },
-    {
-      "kind": "extra_field",
-      "severity": "breaking",
       "path": "users.info user.profile.email",
       "detail": "Backlot serves it; the real API's answer has no such field",
       "note": "The real API serves `email` only to a token holding `users:read.email`; the probe's token holds `users:read` alone, and measured 2026-09-22 its answers omit the field. `docs.slack.dev/reference/methods/users.list` states the rule: \"The `users:read.email` OAuth scope is now required to access the `email` field in user objects returned by the `users.list` and `users.info` web API methods.\" This is the probe's scope showing through, not a shape Backlot invented."

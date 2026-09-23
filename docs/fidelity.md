@@ -194,9 +194,10 @@ channel's own text that the workspace's search can find. A workspace missing any
 reported as one that cannot be probed rather than probed clean. `users.info` is asked about every
 person the listing returned, `conversations.info` and `conversations.history` about every channel,
 `conversations.replies` about every thread, and the search methods about a word from each of the
-three messages carrying the most fields, each method read as one shape: measured 2026-09-23,
-asking about whichever person, channel, thread or word came first left out up to thirty-two fields
-the others carried, so which one a listing put first decided the findings. Slack has no query that
+messages that together cover every top-level field the channel's history carries, each method read
+as one shape: measured 2026-09-23, asking about whichever person, channel, thread or word came
+first left out up to thirty-two fields the others carried, so which one a listing put first decided
+the findings. Slack has no query that
 means "everything" to fall back on: measured 2026-09-22, `*` answered `search.messages` with one
 match out of the eleven messages the workspace holds, and with two an hour earlier.
 
@@ -214,7 +215,8 @@ verified by hand exactly like every other `extra_*`:
 - **A field the vendor serves conditionally reads as absent.** `edited` and `reactions` are on a
   message only when it has been edited or reacted to, `last_read` is on a thread's parent message
   only for a caller subscribed to that thread, and a workspace or caller that does not meet the
-  condition cannot demonstrate them.
+  condition cannot demonstrate them. Measured 2026-09-23, the probed workspace holds an edited,
+  reacted-to message both at the top level and in a thread, and Backlot's pair with both.
 - **The token's scopes and identity bound the answer.** `email` comes back only to a token holding
   `users:read.email`. `has_2fa` is narrower still: an admin caller gets it on every person, where a
   non-admin caller gets it only on their own — one of 20 in a live `users.list`, and it is the

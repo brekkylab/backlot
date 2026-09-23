@@ -1339,8 +1339,7 @@ def test_a_workspace_with_nothing_to_sample_cannot_be_probed():
     """Not a clean comparison: everything every call but `api.test` and `auth.test` needs is
     discovered through the API itself, so a workspace holding no thread leaves
     `conversations.replies` with nothing to ask about, and one whose search finds none of its own
-    words leaves a match's fields compared against nothing — which is the whole of what the three
-    search methods add over their envelopes."""
+    words leaves a match's fields compared against nothing."""
     answers = {
         "conversations.list": {"ok": True, "channels": [{"id": "C1", "is_member": True}]},
         "conversations.history": {"ok": True, "messages": [{"ts": "1.0", "text": "<@U1> bullet"}]},
@@ -1358,8 +1357,9 @@ def test_a_workspace_with_nothing_to_sample_cannot_be_probed():
     answers["users.list"]["members"] = [{"id": "B1", "is_bot": True}, {"id": "USLACKBOT"}]
     answers["users.list"]["members"] += [{"id": "U0", "deleted": True}, {"id": "U1"}]
     answers["search.messages"]["messages"]["matches"] = [{}]
+    answers["conversations.history"]["messages"][0]["edited"] = {}
     answers["conversations.history"]["messages"].append(
-        {"ts": "2.0", "text": "alphabet", "reply_count": 3}
+        {"ts": "2.0", "text": "alphabet", "reply_count": 3, "files": []}
     )
     sample = slack_probe.discover(call)
     assert (sample.threads, sample.users, sample.queries) == (
@@ -1371,16 +1371,22 @@ def test_a_workspace_with_nothing_to_sample_cannot_be_probed():
     with pytest.raises(FidelityError, match="no active person"):
         slack_probe.discover(call)
 
-    # One word per message, the messages carrying the most fields first, and within one the
-    # longest word, out of text with Slack's markup taken off: with the markup left in,
-    # `<@U0BCVV6G3M1>` would parse as an 11-character word; with the sort merely alphabetical,
-    # "ants" would come before "zebra"; in history order, "kiwi" would be drawn from the second.
+    # One word per message, from the messages that together cover every top-level field — the one
+    # adding the most first, then the next, until none adds any — and within one the longest word,
+    # out of text with Slack's markup taken off. With the markup left in, `<@U0BCVV6G3M1>` would
+    # parse as an 11-character word; sorted merely alphabetically, "ants" would come before
+    # "zebra"; in history order "ants" would be drawn from the second message; and asked of every
+    # message, the third would add a word for fields already covered. The fourth has no word, so
+    # its field is still uncovered and the fifth is asked for it.
     assert slack_probe._searchable_words(
         [
-            {"ts": "1", "text": "zebra kiwi"},
-            {"ts": "2", "files": [], "text": "<@U0BCVV6G3M1> zebra ants"},
+            {"ts": "1", "edited": {}, "text": "zebra kiwi"},
+            {"ts": "2", "files": [], "reactions": [], "text": "<@U0BCVV6G3M1> zebra ants"},
+            {"ts": "3", "text": "plain words"},
+            {"ts": "4", "subtype": "channel_join", "text": ""},
+            {"ts": "5", "subtype": "bot_message", "text": "robots"},
         ]
-    ) == ["zebra", "kiwi"]
+    ) == ["zebra", "kiwi", "robots"]
 
 
 def test_the_probe_corpus_answers_every_shape_the_probe_compares(tmp_path):

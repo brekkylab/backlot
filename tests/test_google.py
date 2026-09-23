@@ -1396,15 +1396,15 @@ _FOLDERS = "mimeType='application/vnd.google-apps.folder'"
 _SPREADSHEETS = "mimeType='application/vnd.google-apps.spreadsheet'"
 _CELLS = "sheets.data.rowData.values.formattedValue"
 
-# The pairs `gerr.first_repeat` records, on each route Backlot reads the parameter on, and the
-# empty first repeat and unvalidated second repeat it describes: (method, path, fixed params,
-# parameter, one value, the other, the end real reads, what to compare). `callback`, `alt` and
-# `$.xgafv` have tests of their own above, and `valueRenderOption` has rows in
+# The pairs `gerr.first_repeat` records, on each route Backlot reads the parameter on, and the empty
+# first repeat and unvalidated second repeat it describes: (method, path, fixed params, parameter,
+# one value, the other, the end real reads, what to compare). `callback`, `alt` and `$.xgafv` have
+# tests of their own above, and `valueRenderOption` has rows in
 # `test_the_render_options_differ_over_typed_cells`, since the bundled corpus states no typed cell
-# for the options to render differently. `{sid}` is the spreadsheet, `{folder}` a folder and `{token}` a valid page token. The
-# `pageToken` row pairs the token with an empty value rather than the table's `BOGUS`: Backlot
-# answers `BOGUS` alone with the first page where real refuses it, a gap of its own, and a row
-# built on it could not tell the two ends apart.
+# for the options to render differently. `{sid}` is the spreadsheet, `{folder}` a folder and
+# `{token}` a valid page token. The `pageToken` row pairs the token with an empty value rather than
+# the table's `BOGUS`: Backlot answers `BOGUS` alone with the first page where real refuses it, a
+# gap of its own, and a row built on it could not tell the two ends apart.
 REPEATED = [
     ("GET", _FILES, {}, "fields", "files(id)", "bogus", "first", _keys),
     ("GET", _FILES + "/{sid}", {}, "fields", "id", "bogus", "first", _keys),

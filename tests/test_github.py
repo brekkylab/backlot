@@ -2482,9 +2482,9 @@ def test_github_code_search_page_refusal_is_the_parse_and_comes_before_q(
     `q` there; and the OpenAPI slice still declares the parameter an integer, since the refusal is
     the route's and not the validator's (all measured 2026-09-06 and 2026-09-07).
 
-    Fifteen `code_search` calls of its own, well past real's 10-a-minute cap — this is the shape
-    the enforcement switch exists for (see `Settings.github_enforce_rate_limits`): checking query
-    parsing, not pacing."""
+    Eighteen `code_search` calls of its own (and two more against `search`), well past real's
+    10-a-minute cap — this is the shape the enforcement switch exists for (see
+    `Settings.github_enforce_rate_limits`): checking query parsing, not pacing."""
     from backlot.routers import github as gh
 
     monkeypatch.setattr(gh.get_settings(), "github_enforce_rate_limits", False)
@@ -5063,15 +5063,20 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
         assert spent == {**rolled, "limit": "2", "remaining": "0", "used": "2"}
         over = c.get(repo, headers=h)
         assert over.status_code == 403
-        # The envelope's shape is real's (`message` + `documentation_url`, no `status`), and
-        # `documentation_url` is the page `RATE_LIMITS`' own numbers come from — both measured.
-        # `message`'s content for a TOKEN is Backlot's own choice, not asserted here: no credential
-        # in this environment reaches a token's own cap to read real's wording off the wire (see
-        # `_rate_limit_exceeded_message`).
-        body = over.json()
-        assert set(body) == {"message", "documentation_url"}
-        assert body["documentation_url"] == gh.RATE_LIMIT_EXCEEDED_DOCS
-        assert isinstance(body["message"], str) and body["message"]
+        # The envelope's shape and `documentation_url` are real's for a TOKEN — three members,
+        # `status` included, and a different anchor from the anonymous caller's (measured against
+        # api.github.com 2026-09-23, a token's `search` window driven to its cap). `message`'s
+        # content past the "user ID <id>." prefix is Backlot's own choice — see
+        # `_rate_limit_exceeded_message` for why the rest is unreproduced.
+        admin_id = synth.github_user_id("admin")
+        assert over.json() == {
+            "message": f"API rate limit exceeded for user ID {admin_id}.",
+            "documentation_url": (
+                "https://docs.github.com/en/rest/using-the-rest-api/"
+                "getting-started-with-the-rest-api#rate-limiting"
+            ),
+            "status": "403",
+        }
         assert _ratelimit(over) == spent  # pinned, not counted
         again = c.get(repo, headers=h)
         assert again.status_code == 403
@@ -5079,6 +5084,17 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
         # `/rate_limit` keeps answering through the same exhaustion — the one route a client reads
         # its way out of a spent window with
         assert c.get("/github/rate_limit", headers=h).status_code == 200
+
+        # the refusal is per-resource, not always `core`: driving `code_search` to its own
+        # (separately monkeypatched) cap refuses with `x-ratelimit-resource: code_search`
+        monkeypatch.setitem(
+            gh.RATE_LIMITS, "code_search", gh._ResourceLimit(10, 1, gh.SEARCH_RATE_LIMIT_WINDOW)
+        )
+        first_code = c.get("/github/search/code", headers=h, params={"q": "extension:md"})
+        assert first_code.status_code == 200
+        code_refused = c.get("/github/search/code", headers=h, params={"q": "extension:md"})
+        assert code_refused.status_code == 403
+        assert _ratelimit(code_refused)["resource"] == "code_search"
 
 
 def test_github_rate_limit_refuses_an_anonymous_caller_too_and_the_switch_turns_it_off(
@@ -5114,7 +5130,9 @@ def test_github_rate_limit_refuses_an_anonymous_caller_too_and_the_switch_turns_
                 "Authenticated requests get a higher rate limit. Check out the documentation "
                 "for more details.)"
             ),
-            "documentation_url": gh.RATE_LIMIT_EXCEEDED_DOCS,
+            "documentation_url": (
+                "https://docs.github.com/rest/overview/resources-in-the-rest-api#rate-limiting"
+            ),
         }
         assert _ratelimit(refused) == _ratelimit(second)  # pinned, not counted
 
@@ -5134,6 +5152,35 @@ def test_github_rate_limit_refuses_an_anonymous_caller_too_and_the_switch_turns_
             headers={"X-GitHub-Api-Version": "1999-01-01"},
         )
         assert control.status_code == 400
+
+        # the refusal outranks `refuse_a_trailing_slash_on_github`'s own 404 for a trailing slash
+        # on an existing route too — that middleware runs OUTSIDE this one, so a path it intercepts
+        # would otherwise never reach the refusal at all (measured against api.github.com
+        # 2026-09-23, anonymous, the same spent window): `/user/repos/`, real's own 404 case per
+        # that middleware's docstring, answers this 403 instead once the window is spent.
+        trailing_slash = c.get("/github/user/repos/", follow_redirects=False)
+        assert trailing_slash.status_code == 403
+        assert _ratelimit(trailing_slash) == _ratelimit(second)  # pinned, not counted
+
+        # a credential the gate treats specially — one that arrived but does not parse — still
+        # gets the ordinary 404 for a path no route matches, not this refusal: the gate needs a
+        # matched route OR no `Authorization` header at all (see `_some_github_route_matches`),
+        # and `Basic ...` on an unmatched path satisfies neither.
+        basic_unmatched = c.get(
+            "/github/nonexistent-zz", headers={"Authorization": "Basic Zm9vOmJhcg=="}
+        )
+        assert basic_unmatched.status_code == 404
+        assert not any(n.startswith("x-ratelimit-") for n in basic_unmatched.headers)
+
+        # the refusal is per-resource, not always `core`: driving `search` to its own (separately
+        # monkeypatched, already-spent-by-`control`-above) cap refuses with
+        # `x-ratelimit-resource: search`
+        monkeypatch.setitem(
+            gh.RATE_LIMITS, "search", gh._ResourceLimit(1, 30, gh.SEARCH_RATE_LIMIT_WINDOW)
+        )
+        search_refused = c.get("/github/search/issues", params={"q": "x"})
+        assert search_refused.status_code == 403
+        assert _ratelimit(search_refused)["resource"] == "search"
 
         # the switch: no refusal, and `used` still capped in what is reported
         gh.get_settings().github_enforce_rate_limits = False

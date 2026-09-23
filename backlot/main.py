@@ -334,6 +334,14 @@ async def refuse_a_trailing_slash_on_github(request: Request, call_next):
     the question is asked and refuses its slash with the rest; and outside `report_github_rate_limit`
     and the version echo, so a refused path reaches the rate limiter only through the call below and
     never carries the echo.
+
+    An anonymous caller's spent rate-limit window outranks this 404 too: `GET /repos/{owner}/{repo}/`
+    answers real's 403 rather than this 404 once the window is spent, `server: Varnish` (measured
+    against api.github.com 2026-09-23) — this middleware runs OUTSIDE `report_github_rate_limit`, so
+    a path this branch intercepts would otherwise never reach ``rate_limit_refusal`` at all. A token
+    is unaffected: the same window spent under a token still answers this 404 (measured the same
+    day, on `/search/issues/`), which is why the refusal is checked only for a caller with no
+    `Authorization` header, matching the header-reporting branch below it.
     """
     path = request.url.path
     if (
@@ -341,6 +349,10 @@ async def refuse_a_trailing_slash_on_github(request: Request, call_next):
         and path.endswith("/")
         and _would_redirect_to_the_slash_free_path(request)
     ):
+        if "authorization" not in request.headers:
+            refusal = github.rate_limit_refusal(request)
+            if refusal is not None:
+                return refusal
         response = await _http_exception_handler(request, StarletteHTTPException(status_code=404))
         if "authorization" not in request.headers:
             headers = github.rate_limit_headers(request, response.status_code, count=True)

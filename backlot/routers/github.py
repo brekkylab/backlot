@@ -496,10 +496,17 @@ def rate_limit_headers(
     }
 
 
-#: What real's docs anchor the rate-limit-exceeded 403 to (the same page :data:`RATE_LIMITS`'
-#: numbers come from).
+#: What real's docs anchor an ANONYMOUS caller's rate-limit-exceeded 403 to (the same page
+#: :data:`RATE_LIMITS`' numbers come from).
 RATE_LIMIT_EXCEEDED_DOCS = (
     "https://docs.github.com/rest/overview/resources-in-the-rest-api#rate-limiting"
+)
+
+#: A token's own anchor for the same 403 — a different page from the anonymous caller's (measured
+#: against api.github.com 2026-09-23, a token's `search` window driven to its cap).
+TOKEN_RATE_LIMIT_EXCEEDED_DOCS = (
+    "https://docs.github.com/en/rest/using-the-rest-api/getting-started-with-the-rest-api"
+    "#rate-limiting"
 )
 
 
@@ -511,11 +518,15 @@ def _rate_limit_exceeded_message(request: Request, authenticated: bool) -> str:
     it, `used: 60` pinned at `limit: 60` on each, `server: Varnish` where a served answer is
     `server: github.com`).
 
-    A token: this session's own outbound network reauthenticates every `api.github.com` call with
-    its own installation credential — `GET /rate_limit` sent with no `Authorization` header still
-    answers `x-ratelimit-limit: 15000` (measured 2026-09-22) — so a token cannot be driven to its
-    own cap from here to read this sentence off the wire. What follows is GitHub's documented
-    wording for that case rather than a wire reading."""
+    A token: measured against api.github.com 2026-09-23, a `search` window (30 a minute) driven to
+    its cap. Real's sentence there is `API rate limit exceeded for user ID <id>. If you reach out
+    to GitHub Support for help, please include the request ID <x-github-request-id> and timestamp
+    <YYYY-MM-DD HH:MM:SS> UTC. For more on scraping GitHub and how it may affect your rights,
+    please review our Terms of Service (…)` — naming a request id and a timestamp Backlot has
+    neither of. This returns real's sentence up to `user ID <id>.` and stops there instead of
+    inventing either; the rest is unreproduced pending a maintainer's choice among synthesizing a
+    request id (and sending it as `x-github-request-id` for the sentence to point at),
+    reproducing the fixed text around a placeholder, or leaving the prefix as the whole of it."""
     if not authenticated:
         host = request.client.host if request.client is not None else "anonymous"
         return (
@@ -539,16 +550,20 @@ def rate_limit_refusal(request: Request) -> Response | None:
     matches it. Off entirely when :attr:`backlot.config.Settings.github_enforce_rate_limits` is
     turned off.
 
-    Checked ahead of every router dependency — the credential, the API version, the owner: real
-    answers the same 403 whether or not the request also carries an unsupported
-    `X-GitHub-Api-Version`, outranking the version check, the credential check and routing alike
-    (measured against api.github.com 2026-09-22, anonymous, driven to the window's own cap).
-    `server: Varnish` on the refusal, where a served answer — the version 400 included — is
-    `server: github.com`, is the mechanism: a tier in front of the one those dependencies run
-    on."""
+    Checked ahead of every router dependency — the credential, the API version, the owner — and
+    ahead of routing itself: real answers the same 403 whether or not the request also carries an
+    unsupported `X-GitHub-Api-Version`, for a caller with no credential and for a token alike
+    (measured against api.github.com 2026-09-22 anonymous and 2026-09-23 under a token's own
+    `search` window). `server: Varnish` on an anonymous refusal, where a served answer — the
+    version 400 included — runs on `server: github.com`, is that caller's mechanism: a tier in
+    front of the one those dependencies run on. A token's own refusal answers from `server:
+    github.com` instead, so the tier split explains the anonymous order rather than the order in
+    general. The envelope differs by caller too: an anonymous body carries `message` and
+    `documentation_url` alone; a token's carries `status` as a third member and its own
+    `documentation_url` (:data:`TOKEN_RATE_LIMIT_EXCEEDED_DOCS`)."""
     if not get_settings().github_enforce_rate_limits:
         return None
-    if request.url.path.rstrip("/") == RATE_LIMIT_PATH:
+    if request.url.path == RATE_LIMIT_PATH:
         return None
     key, authenticated = rate_limit_caller(request)
     resource = rate_limit_resource(request.url.path, 401 if not authenticated else 200)
@@ -564,10 +579,15 @@ def rate_limit_refusal(request: Request) -> Response | None:
         "x-ratelimit-reset": str(status["reset"]),
         "x-ratelimit-resource": resource,
     }
-    body = {
-        "message": _rate_limit_exceeded_message(request, authenticated),
-        "documentation_url": RATE_LIMIT_EXCEEDED_DOCS,
-    }
+    message = _rate_limit_exceeded_message(request, authenticated)
+    if authenticated:
+        body = {
+            "message": message,
+            "documentation_url": TOKEN_RATE_LIMIT_EXCEEDED_DOCS,
+            "status": "403",
+        }
+    else:
+        body = {"message": message, "documentation_url": RATE_LIMIT_EXCEEDED_DOCS}
     return JSONResponse(body, status_code=403, headers=headers)
 
 

@@ -7,6 +7,7 @@ Confluence bodies are storage-format XHTML — matching the real APIs.
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 from html import escape
@@ -21,8 +22,7 @@ from backlot.config import get_settings
 from backlot.errors import atlassian as errors_atlassian
 from backlot.openapi import qp
 from backlot.pagination import (
-    confluence_next_link,
-    confluence_space_links,
+    confluence_page_links,
     decode_cursor_or_none,
     next_page_token,
 )
@@ -116,6 +116,10 @@ _P_CONTENT = {
     "parameters": [qp("expand"), qp("spaceKey"), qp("limit", "integer"), qp("start", "integer")]
 }
 _P_SPACE = {"parameters": [qp("expand"), qp("limit", "integer"), qp("start", "integer")]}
+# The three listings under `content/{id}`, which read the same pair with their own defaults and
+# caps. `child/page` is the one of them this router also reads an `expand` on.
+_P_CHILD_PAGE = {"parameters": [qp("expand"), qp("limit", "integer"), qp("start", "integer")]}
+_P_CONTENT_CHILD = {"parameters": [qp("limit", "integer"), qp("start", "integer")]}
 
 # The page a comment read serves. Measured against Jira Cloud (2026-09-09) on a real issue,
 # which settles what no document states: `maxResults` is CAPPED at 100 as well as defaulted
@@ -1238,16 +1242,15 @@ def _space(request: Request, conn, container: str, expand: str, *, listed: bool)
 
 @router.get("/wiki/rest/api/space", response_model=ConfluenceResults, openapi_extra=_P_SPACE)
 async def confluence_spaces(request: Request):
-    """Paged the way `content` is (`?limit`/`?start`, both through `_confluence_page_params`), with
-    its own `next`/`prev` shape: measured 2026-09-17, see :func:`confluence_space_links`. `expand`
-    is applied per space through :func:`_space` and carried into `next`/`prev`/`self` too.
+    """Paged the way `content` is (`?limit`/`?start`, both through `_confluence_page_params`), and
+    answering the `_links` every paged listing answers (:func:`_confluence_envelope`). `expand` is
+    applied per space through :func:`_space` and carried into `next`/`prev`/`self` too.
 
-    `limit` is echoed uncapped, where real caps it at 1000 — an acknowledged gap that also bounds
-    the page size `next` returns.
+    `limit` is capped at 1000, as real caps it.
     """
     conn = auth.conn(request)
     ids = auth.visible_ids(request, _confluence_caller(request))
-    limit, start = _confluence_page_params(request)
+    limit, start = _confluence_page_params(request, cap=1000)
     expand = _str_param(request, "expand", "") or ""
     # store.list_containers orders by name; real's own order is none of name, key or id (measured
     # 2026-09-17).
@@ -1257,12 +1260,9 @@ async def confluence_spaces(request: Request):
         _space(request, conn, r["name"], expand, listed=True)
         for r in reachable[start : start + limit]
     ]
-    links = {"base": f"{_site(request)}/wiki", "context": "/wiki"}
-    links.update(
-        confluence_space_links("/rest/api/space", start, limit, len(results), total, expand)
+    links = _confluence_envelope(
+        request, "/rest/api/space", start=start, limit=limit, size=len(results), total=total
     )
-    self_query = f"?expand={expand}" if expand else ""
-    links["self"] = f"{_site(request)}/wiki/rest/api/space{self_query}"
     return {
         "results": results,
         "start": start,
@@ -1335,7 +1335,7 @@ async def confluence_cql_search(request: Request):
     # the Spring 400 — while `?limit=%20` and `?limit=` are 200 with the default. Serving `content`'s
     # refusal here would trade one divergence for another, so the lenient read stays until #216
     # reproduces the 404. The NEGATIVE check is shared, and measured on this route: `?limit=-1` and
-    # `?start=-1` are the same `IllegalArgumentException` 400 both listings give.
+    # `?start=-1` are the same `IllegalArgumentException` 400 `content` gives.
     limit = _int(request.query_params.get("limit"), 25)
     start = _int(request.query_params.get("start"), 0)
     _refuse_negative_page_params(limit, start)
@@ -1373,10 +1373,16 @@ async def confluence_cql_search(request: Request):
                 ),
             }
         )
-    links = {"base": f"{_site(request)}/wiki"}
-    if start + limit < total:
-        params = {"cql": cql, "start": start + limit, "limit": limit}
-        links["next"] = "/rest/api/search?" + "&".join(f"{k}={v}" for k, v in params.items())
+    links = _confluence_envelope(
+        request,
+        "/rest/api/search",
+        start=start,
+        limit=limit,
+        size=len(results),
+        total=total,
+        cursor=_cql_cursor(rows, matched),
+        sent_cursor=request.query_params.get("cursor"),
+    )
     return {
         "results": results,
         "start": start,
@@ -1396,28 +1402,24 @@ async def confluence_content_list(request: Request):
     ids = auth.visible_ids(request, caller)
     expand = _str_param(request, "expand", "") or ""
     space_key = _str_param(request, "spaceKey")
-    limit, start = _confluence_page_params(request)
+    limit, start = _confluence_page_params(request, cap=1000, start_bound=_CONTENT_START_BOUND)
     if space_key:
         container = _space_container_for_key(conn, space_key)
         if container is None:
             # spaceKey given but unresolvable: real Confluence returns zero matches, never the
             # unfiltered corpus — do not let this collapse to the "no spaceKey" (container=None) case.
-            links = {"base": f"{_site(request)}/wiki"}
+            links = _confluence_envelope(
+                request, "/rest/api/content", start=start, limit=limit, size=0, total=0
+            )
             return {"results": [], "start": start, "limit": limit, "size": 0, "_links": links}
     else:
         container = None
     total = store.count_documents(conn, "confluence", container, ids)
     rows = store.list_documents(conn, "confluence", container, ids, limit=limit, offset=start)
     results = [_confluence_page(conn, request, r, expand) for r in rows]
-    params = {"type": "page"}
-    if space_key:
-        params["spaceKey"] = space_key
-    if expand:
-        params["expand"] = expand
-    nxt = confluence_next_link("/wiki/rest/api/content", params, start, limit, len(rows), total)
-    links = {"base": f"{_site(request)}/wiki"}
-    if nxt:
-        links["next"] = nxt
+    links = _confluence_envelope(
+        request, "/rest/api/content", start=start, limit=limit, size=len(rows), total=total
+    )
     return {"results": results, "start": start, "limit": limit, "size": len(rows), "_links": links}
 
 
@@ -1437,7 +1439,7 @@ async def confluence_content_get(content_id: int, request: Request):
 @router.get(
     "/wiki/rest/api/content/{content_id}/child/page",
     response_model=ConfluenceResults,
-    openapi_extra=_P_EXPAND,
+    openapi_extra=_P_CHILD_PAGE,
 )
 async def confluence_child_pages(content_id: int, request: Request):
     conn = auth.conn(request)
@@ -1446,26 +1448,37 @@ async def confluence_child_pages(content_id: int, request: Request):
     if store.get_document(conn, "confluence", content_id, visible_ids=ids) is None:
         raise HTTPException(status_code=404, detail="No content found with id")
     expand = _str_param(request, "expand", "") or ""
+    limit, start = _confluence_page_params(request)
     kids = store.children(conn, "confluence", content_id, visible_ids=ids)
-    results = [_confluence_page(conn, request, k, expand) for k in kids]
+    page = kids[start : start + limit]
+    results = [_confluence_page(conn, request, k, expand) for k in page]
     return {
         "results": results,
-        "start": 0,
-        "limit": len(results),
+        "start": start,
+        "limit": limit,
         "size": len(results),
-        "_links": {"base": f"{_site(request)}/wiki"},
+        "_links": _confluence_envelope(
+            request,
+            f"/rest/api/content/{content_id}/child/page",
+            start=start,
+            limit=limit,
+            size=len(results),
+            total=len(kids),
+        ),
     }
 
 
-@router.get("/wiki/rest/api/content/{content_id}/child/comment")
+@router.get("/wiki/rest/api/content/{content_id}/child/comment", openapi_extra=_P_CONTENT_CHILD)
 async def confluence_comments(content_id: int, request: Request):
     conn = auth.conn(request)
     caller = _confluence_caller(request)
     ids = auth.visible_ids(request, caller)
     if store.get_document(conn, "confluence", content_id, visible_ids=ids) is None:
         raise HTTPException(status_code=404, detail="No content found with id")
+    limit, start = _confluence_page_params(request, cap=1000)
+    comments = store.doc_comments(conn, "confluence", content_id)
     results = []
-    for c in store.doc_comments(conn, "confluence", content_id):
+    for c in comments[start : start + limit]:
         ts = c["created_ts"] if c["created_ts"] is not None else synth.epoch(str(c["id"]))
         author = c["author_email"] or "unknown"
         cid = synth.atlassian_comment_id(c["id"])
@@ -1490,10 +1503,23 @@ async def confluence_comments(content_id: int, request: Request):
                 "_links": {"webui": f"/spaces/x/pages/{content_id}?focusedCommentId={cid}"},
             }
         )
-    return {"results": results, "start": 0, "limit": len(results), "size": len(results)}
+    return {
+        "results": results,
+        "start": start,
+        "limit": limit,
+        "size": len(results),
+        "_links": _confluence_envelope(
+            request,
+            f"/rest/api/content/{content_id}/child/comment",
+            start=start,
+            limit=limit,
+            size=len(results),
+            total=len(comments),
+        ),
+    }
 
 
-@router.get("/wiki/rest/api/content/{content_id}/label")
+@router.get("/wiki/rest/api/content/{content_id}/label", openapi_extra=_P_CONTENT_CHILD)
 async def confluence_labels(content_id: int, request: Request):
     conn = auth.conn(request)
     caller = _confluence_caller(request)
@@ -1501,12 +1527,26 @@ async def confluence_labels(content_id: int, request: Request):
     row = store.get_document(conn, "confluence", content_id, visible_ids=ids)
     if row is None:
         raise HTTPException(status_code=404, detail="No content found with id")
+    limit, start = _confluence_page_params(request, default=200, cap=200, refuse_zero=True)
     labels = store.jcol(row, "labels")
     results = [
         {"prefix": "global", "name": lbl, "id": str(synth.confluence_id(lbl)), "label": lbl}
-        for lbl in labels
+        for lbl in labels[start : start + limit]
     ]
-    return {"results": results, "start": 0, "limit": 200, "size": len(results)}
+    return {
+        "results": results,
+        "start": start,
+        "limit": limit,
+        "size": len(results),
+        "_links": _confluence_envelope(
+            request,
+            f"/rest/api/content/{content_id}/label",
+            start=start,
+            limit=limit,
+            size=len(results),
+            total=len(labels),
+        ),
+    }
 
 
 @router.get("/wiki/rest/api/content/{content_id}/restriction/byOperation")
@@ -1870,12 +1910,20 @@ def _str_param(request: Request, name: str, default: str | None = None) -> str |
     return ",".join(values) if values else default
 
 
-def _confluence_page_params(request: Request) -> tuple[int, int]:
+def _confluence_page_params(
+    request: Request,
+    *,
+    default: int = 25,
+    cap: int | None = None,
+    start_bound: int | None = None,
+    refuse_zero: bool = False,
+) -> tuple[int, int]:
     """Confluence's `limit` and `start`, which refuse a negative where Jira's clamp one.
 
-    Measured on both listings: `?limit=-1` and `?start=-1` are 400. Unclamped they reached SQLite,
-    which reads a negative LIMIT as no limit at all — so the answer to `?limit=-1` was the whole
-    collection.
+    Measured on the five routes that call it, `content` and `space` on 2026-09-14 and the three
+    under `content/{id}` on 2026-09-23: `?limit=-1` and `?start=-1` are 400. Unclamped they reached
+    SQLite, which reads a negative LIMIT as no limit at all — so the answer to `?limit=-1` was the
+    whole collection.
 
     Order is measured too, because both parameters can be wrong at once. Conversion comes first for
     BOTH — `?limit=-1&start=abc` is the conversion failure about `abc`, not the negative about
@@ -1883,13 +1931,122 @@ def _confluence_page_params(request: Request) -> tuple[int, int]:
     `start cannot be less than zero`.
 
     The CQL search reads its own pair: it is not Spring-bound and refuses a value it cannot convert
-    as a bodiless 404 (#216). It shares :func:`_refuse_negative_page_params`, which is measured on
-    that route too.
+    as a bodiless 404. It shares :func:`_refuse_negative_page_params`, which is measured on that
+    route too.
+
+    ``start_bound`` is `content`'s alone and sits between the two refusals above, measured with
+    both wrong at once: `?limit=abc&start=100001` is the conversion failure, `?limit=-1&
+    start=100001` the bound, and `?spaceKey=NOPE&start=100001` the bound rather than the unknown
+    space's 404.
+
+    ``refuse_zero`` is `label`'s alone: it answers `?limit=0` with a 400 where every other listing
+    answers an empty page (:func:`backlot.errors.atlassian.zero_limit_not_allowed`). It is reached
+    after both refusals above, measured 2026-09-23: `?limit=0&start=abc` is the conversion failure
+    and `?limit=0&start=-1` the negative about `start`.
+
+    ``default`` and ``cap`` are per route, measured 2026-09-22 on a live site: `content`, `space`
+    and `child/comment` cap `limit` at 1000, `label` defaults to 200 and caps there, `child/page`
+    defaults to 25 and caps nowhere (`?limit=1001` is echoed), and the CQL search caps nowhere
+    either. A value above the cap is answered with the cap rather than refused, so a client asking
+    for more than real serves gets real's page size back.
     """
-    limit = _int_param(request, "limit", 25)
+    limit = _int_param(request, "limit", default)
     start = _int_param(request, "start", 0)
+    if start_bound is not None and start > start_bound:
+        raise errors_atlassian.start_too_large()
     _refuse_negative_page_params(limit, start)
+    if refuse_zero and limit == 0:
+        raise errors_atlassian.zero_limit_not_allowed()
+    if cap is not None:
+        limit = min(limit, cap)
     return limit, start
+
+
+# The `start` past which `content` answers `start_too_large`. The same `start` is a 200 on the
+# neighbours: an empty page on `space` and on `child/page`, and on the CQL search a page holding a
+# row, where this server answers the empty slice (:func:`_cql_cursor` says why).
+_CONTENT_START_BOUND = 100_000
+
+
+def _cql_cursor(served: list, matched: list) -> str | None:
+    """The `cursor` real's CQL search carries on `next`: a token naming the last row the page
+    served, or the first match when it served none.
+
+    Measured 2026-09-23 on a nine-page site: the token names the second match at `limit=2` and the
+    fifth at `limit=5`, moves with each `next` followed, and on an empty page sent no cursor names
+    the first match whatever `start` says. Real's token is opaque and carries that row's id inside
+    a base64 payload; this builds one of its own from the same thing, so a client sees a token
+    shaped like real's.
+
+    The route does not read a cursor sent back. Real positions the page by it and not by `start`,
+    which it echoes and advances without reading: `?limit=1&start=5` with no cursor serves the first
+    match, and following `next` from `?limit=0` moves the token one row per hop. This server
+    positions by `start`, which following its own `next` keeps in step with the cursor whenever
+    `limit` is above zero; those two cases are where it answers otherwise.
+    """
+    row = served[-1] if served else (matched[0] if matched else None)
+    if row is None:
+        return None
+    payload = base64.b64encode(f'["\\t{row["id"]}"]'.encode()).decode("ascii")
+    return quote(f"_t_{payload}_h_W10=", safe="")
+
+
+def _confluence_carried(
+    request: Request, *, first: tuple[str, ...] = ("expand",), own: tuple[str, ...] = ()
+) -> tuple[str, str]:
+    """The request's other parameters, split into what leads `limit`/`start` in a page link and
+    what trails `start`.
+
+    Measured 2026-09-17 and 2026-09-22: `expand` leads `limit`/`start`, and on `prev` it leads the
+    marker as well. Where a name real does not read lands is a Java map's iteration order rather
+    than a rule — `bogus` after the marker, `zebra` ahead of it, `nonce` and `cql` after `start`,
+    each on its own request — so the names in ``first`` lead and everything else trails in the
+    order the caller sent it, which reproduces the `cql` and `nonce` cases and not the other two.
+
+    ``own`` names what the route writes into its links itself, so it is not carried as well.
+    """
+    lead, trail = [], []
+    for name, value in request.query_params.multi_items():
+        if name in ("limit", "start", "next", "prev", *own):
+            continue
+        (lead if name in first else trail).append(f"{name}={quote(str(value), safe='')}")
+    return ("&".join(lead) + "&" if lead else "", "&".join(trail))
+
+
+def _confluence_envelope(
+    request: Request,
+    route: str,
+    *,
+    start: int,
+    limit: int,
+    size: int,
+    total: int,
+    cursor: str | None = None,
+    sent_cursor: str | None = None,
+) -> dict:
+    """`_links` as every paged Confluence listing answers it: `base`, `context` and `self` on every
+    page, plus `next`/`prev` from :func:`backlot.pagination.confluence_page_links`.
+
+    Measured 2026-09-22 on `content`, `space`, the CQL `search` and the three listings under
+    `content/{id}`: all three keys ride every page, `context` is the product's own prefix and
+    `self` is the request's URL with `limit`, `start` and the two markers removed and every other
+    parameter kept — a cache-buster sent with the request comes back inside `self`.
+
+    ``cursor`` and ``sent_cursor`` are the CQL search's: the token this page's `next` carries and
+    the one the request brought. Measured 2026-09-23 following `next` three hops at `limit=0`, `1`
+    and `2`: the sent one is not carried the way other parameters are, so `self` holds no cursor
+    and `next` the new one alone, and `prev` is where it goes back out.
+    """
+    lead, trail = _confluence_carried(request, own=() if sent_cursor is None else ("cursor",))
+    query = "&".join(p for p in (lead.rstrip("&"), trail) if p)
+    links = {
+        "base": f"{_site(request)}/wiki",
+        "context": "/wiki",
+        "self": f"{_site(request)}/wiki{route}" + (f"?{query}" if query else ""),
+    }
+    sent = quote(sent_cursor, safe="") if sent_cursor else None
+    links.update(confluence_page_links(route, start, limit, size, total, lead, trail, cursor, sent))
+    return links
 
 
 def _refuse_negative_page_params(limit: int, start: int) -> None:

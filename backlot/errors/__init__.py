@@ -18,10 +18,11 @@ A module in ``_ENVELOPES`` provides:
   reports one.
 - ``method_not_allowed(path, method)``, optional — the vendor's own 405, as an exception carrying
   its body, media type and headers. The router raises a 405 before any vendor code runs, so a
-  vendor whose 405 differs from the shape its other refusals take says so here. Atlassian is the
-  one that implements it; what its two products answer is in
-  :func:`backlot.errors.atlassian.method_not_allowed`. A vendor without it keeps the shared
-  envelope.
+  vendor whose 405 differs from the shape its other refusals take says so here. Atlassian and S3
+  implement it: what Atlassian's two products answer is in
+  :func:`backlot.errors.atlassian.method_not_allowed`, and S3 answers a method it defines nothing
+  for with a 400 rather than a 405 (:func:`backlot.errors.s3.method_not_allowed`). A vendor without
+  it keeps the shared envelope.
 - ``json_media_type(path, status_code)``, optional — the `content-type` the vendor puts on a JSON
   body answered at that path with that status, when it is measured to differ from FastAPI's bare
   `application/json`. GitHub and Atlassian implement it — Atlassian's names Jira's charset and keeps
@@ -50,9 +51,9 @@ from __future__ import annotations
 
 from fastapi import Request, Response
 
-from backlot.errors import atlassian, github, google
+from backlot.errors import atlassian, github, google, s3
 
-_ENVELOPES = (atlassian, github, google)
+_ENVELOPES = (atlassian, github, google, s3)
 
 
 def http_body(path: str, exc, query=None) -> dict | None:

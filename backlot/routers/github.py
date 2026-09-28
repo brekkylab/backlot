@@ -2581,6 +2581,15 @@ async def get_contents(
     return await _contents_response(owner, repo, path, request, ref)
 
 
+# What the contents redirect's `Location` leaves unencoded, beside the letters, digits and `-._~`
+# that `quote` always leaves. Measured 2026-09-28 by sending each byte 0x01-0x7F percent-encoded in
+# `contents/x%XXy/` on python/cpython: these come back as the character, `%2F` included as a `/`,
+# and every other byte comes back as `%XX` in upper case (the controls, the space, the backtick
+# and `"#$%<>?@\^{|}`), as does UTF-8 (`%C3%A9`, and `%eb` sent is `%EB`). So real decodes the
+# path and encodes it again rather than echoing what was sent: `%28` sent is `(` in the `Location`.
+_CONTENTS_LOCATION_SAFE = "/!&'()*+,:;=[]"
+
+
 def _redirect_to_the_slash_free_contents_path(request: Request, repo: str, path: str) -> str:
     """Where real points a `contents` path that ends in a slash: the id-keyed spelling of the same
     path with ONE slash gone, absolute, and carrying no query.
@@ -2588,8 +2597,13 @@ def _redirect_to_the_slash_free_contents_path(request: Request, repo: str, path:
     One, not all of them: measured 2026-09-22, `contents/backlot//` points at `contents/backlot/`
     and `contents///` at `contents//`, so a path carrying several takes a hop per slash and a
     client following redirects walks them off one at a time.
+
+    `path` arrives decoded, so it is encoded again the way real encodes it
+    (``_CONTENTS_LOCATION_SAFE``): `contents/a%3Fb/` points at `contents/a%3Fb`, where the decoded
+    `a?b` would name the file `a` with a query.
     """
-    return f"{_api_base(request)}/repositories/{synth.github_user_id(repo)}/contents/{path[:-1]}"
+    rest = quote(path[:-1], safe=_CONTENTS_LOCATION_SAFE)
+    return f"{_api_base(request)}/repositories/{synth.github_user_id(repo)}/contents/{rest}"
 
 
 @router.get("/repos/{owner}/{repo}/git/blobs/{sha}")
@@ -2850,23 +2864,35 @@ async def get_readme_for_a_directory(
     Measured 2026-09-22: `readme/Doc` on python/cpython is that directory's README at 200, a
     directory holding none is a 404 whose `documentation_url` names the directory anchor rather
     than the root one, and `readme/` — the empty directory — is the repository's own README, which
-    is why a trailing slash answers 200 here where it is a 404 on the routes around it. A trailing
-    slash on the directory itself is ignored the same way (`readme/Doc/` is `Doc`'s README).
+    is why a trailing slash answers 200 here where it is a refusal on the routes around it.
+
+    The empty directory is a directory like any other, so it is looked up here rather than handed
+    to :func:`get_readme`, whose stub would answer 200: measured 2026-09-28, `readme/` on a
+    repository holding no README (octocat/test-repo1) is the same directory-anchor 404.
+
+    Slashes, measured 2026-09-28 on github/gitignore and python/cpython: a path ending in up to two
+    still names the directory, and one ending in three does not. `readme//` and `readme/Doc//` are
+    still the README, `readme///` and `readme/Doc///` are the directory 404, and a doubled slash
+    before the directory (`readme//Doc`) is `Doc`'s README. The slash 404 comes after the
+    credential and after `?ref=` (`readme///?ref=nope` is the ref's own 404).
 
     WHICH file it serves is where this and real part: real answers whatever the directory's README
-    is, `Doc/README.rst` on python/cpython among them, and this looks for `README.md` alone, as the
-    root route does. A corpus stating `docs/README.rst` gets a 404 here and a 200 there.
+    is, `Doc/README.rst` on python/cpython among them, and this looks for `README.md` and then
+    `readme.md`, as the root route does. A corpus stating `docs/README.rst` gets a 404 here and a
+    200 there.
     """
-    inside = dir.strip("/")
-    if not inside:
-        return await get_readme(owner, repo, request, ref)
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     _require_repo(conn, repo, ids)
     _require_ref(conn, owner, repo, ref, ids)
-    row = store.get_repo_file(conn, repo, f"{inside}/README.md", ids, ref=ref) or (
-        store.get_repo_file(conn, repo, f"{inside}/readme.md", ids, ref=ref)
+    sent = f"/{dir}"
+    if len(sent) - len(sent.rstrip("/")) > 2:
+        raise HTTPException(status_code=404, detail="Not Found")
+    inside = dir.strip("/")
+    prefix = f"{inside}/" if inside else ""
+    row = store.get_repo_file(conn, repo, f"{prefix}README.md", ids, ref=ref) or (
+        store.get_repo_file(conn, repo, f"{prefix}readme.md", ids, ref=ref)
     )
     if row is None:
         raise HTTPException(status_code=404, detail="Not Found")

@@ -52,6 +52,7 @@ _SCHEME_ROWS = [
     ("basic", "Basic YTpi"),
     ("bearer with no token", "Bearer"),
     ("github's legacy scheme", "token {token}"),
+    ("bearer with two words", "Bearer a b"),
 ]
 
 
@@ -59,7 +60,7 @@ _SCHEME_ROWS = [
 def test_notion_a_header_that_is_not_a_bearer_says_so(client, admin_h, label, header):
     """Measured: real refuses a header that is not `Bearer <token>` by naming the format, where a
     bearer whose token does not resolve is `API token is invalid.`. The legacy `token <t>` scheme
-    GitHub takes is refused here too, and this server answered it 200."""
+    GitHub takes is refused here too, and so is a bearer with a second word after its token."""
     headers = {"Notion-Version": DATA_SOURCES_VERSION}
     if header is not None:
         headers["Authorization"] = header.format(token=admin_h["Authorization"].split()[1])
@@ -68,13 +69,23 @@ def test_notion_a_header_that_is_not_a_bearer_says_so(client, admin_h, label, he
     assert r.json()["message"] == _NOT_A_BEARER, label
 
 
-@pytest.mark.parametrize("scheme", ["Bearer", "bearer"])
-def test_notion_a_bearer_that_does_not_resolve_is_the_token_message(client, scheme):
-    """Measured: the scheme match is case-insensitive on real, and a token it cannot read is
-    `API token is invalid.` rather than the format message."""
+_TOKEN_ROWS = [
+    ("Bearer", "Bearer nope"),
+    ("bearer", "bearer nope"),
+    ("BEARER", "BEARER nope"),
+    ("two spaces", "Bearer  nope"),
+    ("a tab", "Bearer" + chr(9) + "nope"),
+]
+
+
+@pytest.mark.parametrize("label, header", _TOKEN_ROWS, ids=[r[0] for r in _TOKEN_ROWS])
+def test_notion_a_bearer_that_does_not_resolve_is_the_token_message(client, label, header):
+    """Measured: real reads the scheme in each of these cases and with two spaces or a tab before
+    the token, and a token it cannot read is `API token is invalid.` rather than the format
+    message."""
     r = client.get(
         "/notion/v1/users/me",
-        headers={"Authorization": f"{scheme} nope", "Notion-Version": DATA_SOURCES_VERSION},
+        headers={"Authorization": header, "Notion-Version": DATA_SOURCES_VERSION},
     )
     assert r.status_code == 401 and r.json()["message"] == "API token is invalid."
 
@@ -108,61 +119,109 @@ def test_notion_the_same_request_gets_the_same_id_and_another_a_different_one(cl
     assert first.json()["request_id"] != other.json()["request_id"]
 
 
-@pytest.mark.parametrize(
-    "path",
-    [
-        "/notion/v1/nonexistent_thing/xyz",
-        "/notion/v1/pages",
-        "/notion/foo",
-    ],
-)
-def test_notion_a_path_no_route_matches_is_the_url_400(client, notion_h, path):
-    """Measured: a URL that API does not serve is 400 `invalid_request_url`, and it answers that
-    before it reads the credential or the version — a path outside `/v1` included. This server
-    answered FastAPI's `{"detail":"Not Found"}` at 404."""
+_ID = "5c6a2821-6bb1-4a7e-b6e1-c50111515c3d"
+
+# URLs Notion does not publish: paths it has no operation on, and paths it publishes only under
+# another method
+_UNPUBLISHED_ROWS = [
+    ("GET", "/notion/v1/nonexistent_thing/xyz"),
+    ("GET", "/notion/v1/pages"),
+    ("GET", "/notion/foo"),
+    ("PUT", f"/notion/v1/pages/{_ID}"),
+    ("PATCH", "/notion/v1/pages/"),
+    ("DELETE", f"/notion/v1/blocks/{_ID}//"),
+    ("GET", "/notion/v1/oauth/token"),
+    ("POST", "/notion/v1/oauth/other"),
+]
+
+
+@pytest.mark.parametrize("method, path", _UNPUBLISHED_ROWS)
+def test_notion_a_url_notion_does_not_publish_is_the_url_400(client, notion_h, method, path):
+    """Measured: a URL Notion does not publish is 400 `invalid_request_url`, and it answers that
+    before it reads the credential or the version — a path outside `/v1` included."""
     for headers in ({}, {"Authorization": "Bearer nope"}, notion_h):
-        r = client.get(path, headers=headers)
+        r = client.request(method, path, headers=headers)
         assert r.status_code == 400, (path, headers)
         assert r.json()["code"] == "invalid_request_url"
         assert r.json()["message"] == "Invalid request URL."
 
 
-_WRONG_METHOD_ROWS = [
-    ("GET", "/notion/v1/search"),
-    ("GET", "/notion/v1/pages"),
-    ("DELETE", "/notion/v1/users/me"),
-    ("PUT", "/notion/v1/users/me"),
-    ("PATCH", "/notion/v1/users/me"),
-    ("OPTIONS", "/notion/v1/users/me"),
+# (method, path) for operations Notion publishes and no route here serves
+_PUBLISHED_NOT_SERVED_ROWS = [
+    ("PATCH", f"/notion/v1/pages/{_ID}"),
+    ("POST", "/notion/v1/pages"),
+    ("POST", "/notion/v1/comments"),
+    ("GET", f"/notion/v1/comments/{_ID}"),
+    ("GET", "/notion/v1/file_uploads"),
+    ("GET", f"/notion/v1/pages/{_ID}/properties/title"),
+    ("DELETE", f"/notion/v1/blocks/{_ID}"),
+    ("DELETE", f"/notion/v1/views/{_ID}/queries/{_ID}"),
+    ("PATCH", "/notion/v1/pages/abc"),
+    ("PATCH", f"/notion/v1/pages/{_ID}/"),
 ]
 
 
-@pytest.mark.parametrize(
-    "method, path", _WRONG_METHOD_ROWS, ids=lambda v: v.strip("/").replace("/", "-")
-)
-def test_notion_a_method_a_route_does_not_answer_is_the_url_400(client, notion_h, method, path):
+@pytest.mark.parametrize("method, path", _PUBLISHED_NOT_SERVED_ROWS)
+def test_notion_an_operation_notion_publishes_answers_the_credential(
+    client, notion_h, method, path
+):
+    """Measured: an operation Notion publishes answers the credential's two 401s whether or not
+    Backlot serves it, with `abc` in an id's place and with one trailing slash, where the same
+    path under a method Notion does not publish for it is the URL's 400 (the rows above).
+    A token and a version that clear both get the URL's 400 here, as Backlot has no operation to
+    run: the gap the baseline's `missing_operation` row acknowledges."""
+    body = {} if method in ("POST", "PATCH") else None
+    bare = client.request(method, path, json=body)
+    assert bare.status_code == 401 and bare.json()["message"] == _NOT_A_BEARER, path
+    wrong = client.request(method, path, json=body, headers={"Authorization": "Bearer nope"})
+    assert wrong.status_code == 401 and wrong.json()["message"] == "API token is invalid.", path
+    cleared = client.request(method, path, json=body, headers=notion_h)
+    assert cleared.status_code == 400 and cleared.json()["code"] == "invalid_request_url", path
+
+
+@pytest.mark.parametrize("operation", ["token", "introspect", "revoke"])
+def test_notion_an_oauth_client_endpoint_refuses_as_a_client(client, notion_h, operation):
+    """Measured: the three endpoints Notion puts behind Basic auth refuse a request as an unknown
+    client, `{"error":"invalid_client","request_id":…}` at 401 with `WWW-Authenticate`, rather than
+    in the envelope the bearer routes use — with no header, a bearer and a Basic credential alike.
+    The admin token is refused the same way, as Backlot registers no OAuth client."""
+    basic = {"Authorization": "Basic YTpi"}
+    for headers in ({}, {"Authorization": "Bearer nope"}, basic, notion_h):
+        r = client.post(f"/notion/v1/oauth/{operation}", json={}, headers=headers)
+        assert r.status_code == 401, headers
+        request_id = r.headers["x-notion-request-id"]
+        assert r.json() == {"error": "invalid_client", "request_id": request_id}, headers
+        assert r.headers["www-authenticate"] == 'Basic realm="OAuth"', headers
+
+
+_WRONG_METHOD_ROWS = [
+    ("GET", "/notion/v1/search", 400),
+    ("GET", "/notion/v1/pages", 400),
+    ("DELETE", "/notion/v1/users/me", 400),
+    ("PUT", "/notion/v1/users/me", 400),
+    ("PATCH", "/notion/v1/users/me", 400),
+    ("OPTIONS", "/notion/v1/users/me", 400),
+    ("TRACE", "/notion/v1/users/me", 405),
+    ("TRACE", "/notion/v1/nope", 405),
+]
+
+
+@pytest.mark.parametrize("method, path, status", _WRONG_METHOD_ROWS)
+def test_notion_a_method_a_route_does_not_answer(client, notion_h, method, path, status):
     """Measured: the method is part of the URL Notion checks. `GET` on the two POST routes and
     `DELETE`, `PUT`, `PATCH` and `OPTIONS` on a GET route are each `invalid_request_url` at 400,
-    not a 405 — so the catch-all takes those seven methods rather than the ones the routes
-    declare."""
+    not a 405 — so the catch-all takes those methods rather than the ones the routes declare.
+    `TRACE` is refused with Cloudflare's own `405 Not Allowed` page before the API reads the URL,
+    so the catch-all leaves it off and it is the framework's 405."""
     r = client.request(method, path, headers=notion_h)
-    assert r.status_code == 400, (method, path)
-    assert r.json()["code"] == "invalid_request_url"
-
-
-def test_notion_trace_is_not_one_of_the_methods_that_400(client, notion_h):
-    """The control for the row above: real refuses `TRACE` with nginx's own `405 Not Allowed` page
-    before the API reads the URL at all, so the catch-all leaves it off its methods and a `TRACE`
-    keeps the framework's 405 rather than joining the 400."""
-    assert client.request("TRACE", "/notion/v1/users/me", headers=notion_h).status_code == 405
-    assert client.request("TRACE", "/notion/v1/nope", headers=notion_h).status_code == 405
+    assert r.status_code == status, (method, path)
+    if status == 400:
+        assert r.json()["code"] == "invalid_request_url"
 
 
 def test_notion_one_trailing_slash_is_the_path_without_it_and_two_is_not(client, notion_h):
     """Measured: `GET /v1/users/me/` and `POST /v1/search/` answer what the slash-free spelling
-    answers, where `GET /v1/users/me//` is the URL 400 — exactly one slash is dropped. Starlette
-    redirected the first two with a 307 and, once the catch-all was mounted, would have refused
-    them outright."""
+    answers, where `GET /v1/users/me//` is the URL 400 — exactly one slash is dropped."""
     plain = client.get("/notion/v1/users/me", headers=notion_h)
     slashed = client.get("/notion/v1/users/me/", headers=notion_h, follow_redirects=False)
     assert slashed.status_code == 200 and slashed.json() == plain.json()
@@ -205,35 +264,42 @@ def test_notion_a_slashed_path_is_acl_scoped_like_the_path_without_it(client, ad
 def test_notion_a_head_is_the_get_without_its_body(client, notion_h):
     """Measured with `curl -I` beside each `GET` the same minute: `HEAD /v1/users/me` is the
     credential's 401 and `HEAD /v1/nonexistent_thing/xyz` the URL's 400, each carrying the GET
-    body's own `content-length` and `content-type` (178 and 145 bytes) and nothing in the body.
-    FastAPI's `APIRoute` answered a `HEAD` on a served path with 405 whatever the GET would have
-    answered, and an unserved one with the framework's 404: neither tells a served URL from one
-    this server does not have."""
+    body's own `content-length` and `content-type` (178 and 145 bytes) and nothing in the body;
+    `HEAD /v1/comments/{id}`, an operation Backlot does not serve, was the credential's 401 at 178
+    on 2026-09-28."""
+    from starlette.testclient import TestClient
+
     rows = [
         ("/notion/v1/users/me", {"Notion-Version": DATA_SOURCES_VERSION}),
         ("/notion/v1/nonexistent_thing/xyz", notion_h),
         ("/notion/v1/users/me", notion_h),
+        (f"/notion/v1/comments/{_ID}", {}),
+        ("/notion/v1/users/me/", notion_h),
     ]
+    sent = []
+
+    async def recording(scope, receive, send):
+        async def record(message):
+            sent.append(message)
+            await send(message)
+
+        await client.app(scope, receive, record)
+
+    statuses = []
     for path, headers in rows:
-        got = client.get(path, headers=headers)
-        head = client.head(path, headers=headers)
+        got = client.get(path.rstrip("/"), headers=headers)
+        head = client.head(path, headers=headers, follow_redirects=False)
         assert head.status_code == got.status_code, path
-        assert head.content == b"", path
         assert head.headers["content-length"] == str(len(got.content)), path
         assert head.headers["content-type"] == got.headers["content-type"], path
-    assert [r.status_code for r in (client.head(p, headers=h) for p, h in rows)] == [401, 400, 200]
-    slashed = client.head("/notion/v1/users/me/", headers=notion_h, follow_redirects=False)
-    assert slashed.status_code == 200 and slashed.content == b""
-    plain = client.get("/notion/v1/users/me", headers=notion_h)
-    assert slashed.headers["content-length"] == str(len(plain.content))
-
-
-def test_notion_a_path_that_exists_still_answers_the_credential(client, notion_h):
-    """The control for the row above: the URL check comes first, so a path this server does serve
-    reaches the credential and answers its 401 rather than the URL's 400."""
-    r = client.get("/notion/v1/users/me", headers={"Notion-Version": DATA_SOURCES_VERSION})
-    assert r.status_code == 401
-    assert client.get("/notion/v1/users/me", headers=notion_h).status_code == 200
+        statuses.append(head.status_code)
+        # The test client drops a HEAD body itself, so what the app sends is read at the ASGI
+        # layer. No `with`: a second lifespan would overwrite the state `client` started.
+        sent.clear()
+        TestClient(recording).head(path, headers=headers, follow_redirects=False)
+        bodies = [m.get("body", b"") for m in sent if m["type"] == "http.response.body"]
+        assert b"".join(bodies) == b"", path
+    assert statuses == [401, 400, 200, 401, 200]
 
 
 def test_notion_page_retrieve_and_blocks(client, notion_h):
@@ -295,6 +361,7 @@ def test_notion_users(client, notion_h):
 def test_notion_unauth_is_401(client):
     r = client.get(f"/notion/v1/pages/{synth.notion_id('nt-runbook')}")
     assert r.status_code == 401 and r.json()["code"] == "unauthorized"
+    assert r.json()["message"] == _NOT_A_BEARER
 
 
 def test_notion_acl_hides_group_doc_from_outsider(client, tokens_yaml):

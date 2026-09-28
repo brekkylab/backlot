@@ -401,15 +401,13 @@ async def serve_a_slashed_notion_path_as_the_path_without_it(request: Request, c
     Measured against api.notion.com on 2026-09-22: `GET /v1/users/me/` and `POST /v1/search/`
     answer the credential's 401, the same as without the slash, where `GET /v1/users/me//` is
     `invalid_request_url` at 400 — so exactly one slash is dropped and a second is a path segment
-    like any other. The rewrite runs ahead of routing because the answer for a path no route
-    matches is now a route of its own (``notion.unmatched_router``), which would otherwise claim
-    every slashed spelling and answer 400 where real answers what the route answers; Starlette's
-    own `redirect_slashes` no longer fires under `/notion/` for the same reason, and its 307 was
-    not what real sends either.
+    like any other. The rewrite runs ahead of routing because ``notion.unmatched_router`` would
+    otherwise claim every slashed spelling and answer 400 where real answers what the route
+    answers.
 
-    The vendor root is left alone: `/notion/` keeps the 400 every unserved URL gets, and `/notion`
-    is Starlette's own 307 to that, where real's `/` is a 302 to its marketing site — a page this
-    server does not serve at all.
+    The vendor root is left alone: `/notion/` is the URL's 400, and `/notion` is Starlette's own
+    307 to that, where real's `/` is a 302 to its marketing site — a page this server does not
+    serve at all.
 
     GitHub's trailing slash is the opposite rule and has its own middleware above; the two are
     measured separately because the vendors answer differently.

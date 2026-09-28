@@ -5,7 +5,8 @@ its ``base_url``, so point it at ``http://<host>/notion``). Bearer auth
 (``Authorization: Bearer <token>``, that scheme and no other); the admin/service token sees
 everything, a user token is ACL-filtered. Errors use Notion's envelope:
 ``{"object":"error","status","code","message","request_id"}``, the last of which is also the
-response's ``x-notion-request-id`` (see :func:`_error`).
+response's ``x-notion-request-id`` (see :func:`_error`). The OAuth client endpoints Notion puts
+behind Basic auth refuse in their own shape, ``{"error","request_id"}`` (see ``unmatched_path``).
 
 **Version-aware databases.** Notion moved database querying to the *data sources* model in
 ``2025-09-03``. This router keys off the ``Notion-Version`` request header:
@@ -26,8 +27,9 @@ Backlot has one data source per database, its id assigned at import alongside th
 request that omits it -- or names a version Notion does not publish -- is answered
 ``missing_version``, behind both 401s a request with no usable credential gets -- the one that
 names the bearer format and the one that says the token does not resolve (see ``_refusal``) --
-and behind the 400 a URL no route serves gets ahead of everything (see ``unmatched_path``). Every route declares it in the spec as well, so a client generated from that spec
--- ``backlot mcp``'s tools among them -- can send what the route asks for.
+and behind the 400 a URL Notion does not publish gets ahead of everything (see
+``unmatched_path``). Every route declares it in the spec as well, so a client generated from that
+spec -- ``backlot mcp``'s tools among them -- can send what the route asks for.
 
 Object mapping: a Notion *page* is one doc (``subtype='page'``); a *database* is one doc
 (``subtype='database'``, ``content`` → its description); a *database row* is a page whose
@@ -39,7 +41,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
+from pathlib import Path
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -217,12 +221,15 @@ def _bearer_credential(request: Request) -> str | None:
     `auth.bearer_token` also takes GitHub's legacy `token <t>`, which Notion does not: measured
     2026-09-22, `token <anything>`, `Basic …`, a bare value with no scheme, a `Bearer` with no
     token and no header at all are each refused as a header that is not a bearer credential, where
-    `Bearer <a token that does not resolve>` is refused as a token. The scheme match is
-    case-insensitive on both sides.
+    `Bearer <a token that does not resolve>` is refused as a token. The header is exactly two
+    words: on 2026-09-28 `Bearer a b`, `Bearer a  b` and `Bearer nope x` were told the format, and
+    `Bearer  nope` with two spaces, `Bearer` and `nope` with a tab between them, `bearer nope` and
+    `BEARER nope` were told the token: two spaces or a tab separate the words as one space does,
+    and the scheme is read without its case.
     """
-    parts = (request.headers.get("authorization") or "").split(None, 1)
-    if len(parts) == 2 and parts[0].lower() == "bearer" and parts[1].strip():
-        return parts[1].strip()
+    parts = (request.headers.get("authorization") or "").split()
+    if len(parts) == 2 and parts[0].lower() == "bearer":
+        return parts[1]
     return None
 
 
@@ -794,33 +801,95 @@ async def list_comments(request: Request):
 # --------------------------------------------------------------------------- misc
 
 
+# The baseline `backlot diff --source notion` keeps, the file ``backlot.fidelity.baseline_path``
+# names; read here without importing that package, whose ``__init__`` loads the comparison modules.
+_BASELINE = Path(__file__).resolve().parent.parent / "fidelity" / "baseline" / "notion.json"
+
+
+def _published_operations_not_served() -> tuple[tuple[str, re.Pattern[str]], ...]:
+    """The operations Notion publishes and no route here serves, as (method, path pattern): the
+    baseline's ``missing_operation`` rows, each ``{}`` one path segment. Read off that file rather
+    than listed here, so an operation Notion adds reaches ``unmatched_path`` once the baseline
+    acknowledges it; a route added here wins over ``unmatched_path`` whatever the file says."""
+    operations = []
+    for row in json.loads(_BASELINE.read_text())["acknowledged"]:
+        if row["kind"] == "missing_operation":
+            method, path = row["path"].split(" ", 1)
+            pattern = "[^/]+".join(re.escape(part) for part in path.split("{}"))
+            operations.append((method, re.compile(pattern)))
+    return tuple(operations)
+
+
+_PUBLISHED_NOT_SERVED = _published_operations_not_served()
+# The three operations Notion's document puts behind `basicAuth` rather than the `bearerAuth`
+# every other operation inherits (read 2026-09-28): its OAuth client endpoints.
+_CLIENT_AUTH_OPERATIONS = frozenset(
+    {("POST", "/v1/oauth/token"), ("POST", "/v1/oauth/introspect"), ("POST", "/v1/oauth/revoke")}
+)
+
+
+def _invalid_client(request: Request) -> JSONResponse:
+    """An OAuth client endpoint's refusal, in its own shape rather than Notion's envelope.
+
+    Measured 2026-09-28: `POST /v1/oauth/token`, `/v1/oauth/introspect` and `/v1/oauth/revoke`
+    each answered 401 `{"error":"invalid_client","request_id":"<uuid>"}` with the id in
+    `x-notion-request-id` too and `WWW-Authenticate: Basic realm="OAuth"`, with no header, with
+    `Bearer nope` and with `Basic YTpi`. Backlot registers no OAuth client, so there is no header
+    this answers any other way."""
+    request_id = _request_id(request)
+    return JSONResponse(
+        status_code=401,
+        content={"error": "invalid_client", "request_id": request_id},
+        headers={"x-notion-request-id": request_id, "www-authenticate": 'Basic realm="OAuth"'},
+    )
+
+
 @unmatched_router.api_route(
-    "/{rest:path}", methods=["GET", "POST", "PATCH", "PUT", "DELETE", "HEAD", "OPTIONS"]
+    "/{rest:path}", methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"]
 )
 async def unmatched_path(request: Request, rest: str) -> JSONResponse:
-    """Notion's answer for a URL it does not serve, which it gives before it reads anything else.
+    """Notion's answer for a URL no route here serves: the credential's refusal where Notion
+    publishes the operation, and otherwise the URL's 400, which it gives before it reads anything
+    else.
 
     Measured 2026-09-22 with no credential at all: `/v1/nonexistent_thing/xyz` answers 400
     `invalid_request_url` with `Invalid request URL.`, and so do the same path carrying a token
     that cannot resolve, the same path with no `Notion-Version`, a path outside `/v1` entirely, and
     a POST to an unknown `/v1` path. A path that does exist answers the credential's 401 instead,
-    so the URL is the first thing that API checks. This server answered FastAPI's own
-    `{"detail":"Not Found"}` at 404 there.
+    so the URL is the first thing that API checks.
+
+    A published operation exists for that check whether or not Backlot serves it. On 2026-09-28
+    each of the 53 the baseline lists as ``missing_operation`` (see
+    :func:`_published_operations_not_served`) answered the format's 401 with no header and the
+    token's 401 with `Bearer nope`, the two a served route answers, apart from the three OAuth
+    client endpoints and their own refusal (see :func:`_invalid_client`). A request that clears
+    the credential and the version on one of the other fifty gets the URL's 400 here, as
+    Backlot has no operation to run: that is the gap each of those rows acknowledges.
 
     The method is part of the URL that check reads: `GET /v1/search` and `GET /v1/pages`, both POST
-    routes, and `DELETE`, `PUT`, `PATCH` and `OPTIONS` on `/v1/users/me`, a GET route, are each
-    that same 400 rather than a 405 — which is why this route takes the seven methods below rather
-    than the ones the routes above happen to declare, and why no `method_not_allowed` envelope is
-    needed for this vendor. `TRACE` is the one left off: real refuses it at the front door with
-    nginx's own `405 Not Allowed` HTML page, never reaching the API, and an invented method is a
-    bare 501 — so leaving both unrouted keeps a 405 here rather than trading it for a 400. A `HEAD` is the GET's own answer, so it reaches here only where the GET would
-    (`backlot.main.answer_head_as_the_get_without_its_body`), and one trailing slash is dropped
-    before routing, so a slashed spelling of a served path does not land here
-    (`backlot.main.serve_a_slashed_notion_path_as_the_path_without_it`).
+    routes, `DELETE`, `PUT`, `PATCH` and `OPTIONS` on `/v1/users/me`, a GET route, and `PUT` on
+    `/v1/pages/{id}`, which Notion publishes for `GET` and `PATCH`, are each that same 400 rather
+    than a 405 — which is why this route takes the six methods below rather than the ones the
+    routes above happen to declare, and why no `method_not_allowed` envelope is needed for this
+    vendor. `TRACE` is left off: real refuses it at the front door with Cloudflare's own `405 Not
+    Allowed` HTML page, never reaching the API, and an invented method such as `FOO` is a bare
+    501, so leaving both unrouted keeps a 405 here rather than trading it for a 400. A `HEAD`
+    arrives as the GET it is rewritten to (`backlot.main.answer_head_as_the_get_without_its_body`),
+    and one trailing slash is dropped before routing, so a slashed spelling of a served path does
+    not land here (`backlot.main.serve_a_slashed_notion_path_as_the_path_without_it`).
 
-    Real's own root, `/`, is the one URL this does not reproduce: it is a 302 to the marketing
-    site, a page Backlot does not serve. `/notion/` gets the answer an unserved URL gets, and
-    `/notion` is Starlette's 307 to it — the one path under `/notion` where its slash redirect can
-    still fire, since this route matches every other.
+    Not reproduced here: real's own root, `/`, a 302 to the marketing site, a page Backlot does not
+    serve; a path in another case, which real routes as the lower-case one (`GET /V1/USERS/ME`
+    and `PATCH /v1/Pages/{id}` were each the format's 401 on 2026-09-28) and this answers the URL's
+    400; and a method outside the six that the front door passes on to the API, `PROPFIND` and
+    `QUERY` among them, which real answered the URL's 400 on 2026-09-28 and this answers the
+    framework's 405. `/notion/` gets the URL's 400, and `/notion` is Starlette's 307 to it — the one
+    path under `/notion` where its slash redirect fires, since this route matches every other.
     """
+    path = request.url.path.removeprefix("/notion")
+    if any(m == request.method and p.fullmatch(path) for m, p in _PUBLISHED_NOT_SERVED):
+        if (request.method, path) in _CLIENT_AUTH_OPERATIONS:
+            return _invalid_client(request)
+        if (refusal := _refusal(request, auth.resolve_bearer(request))) is not None:
+            return refusal
     return _error(request, 400, "invalid_request_url", "Invalid request URL.")

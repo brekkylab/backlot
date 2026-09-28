@@ -2222,7 +2222,7 @@ def _some_atlassian_route_matches(request: Request) -> bool:
 
 #: The two ids both products put on every answer, and Jira's third. Real mints a new value per
 #: response; these are derived from the request, the choice this repository makes for a synthesised
-#: id (as the `x-amz-request-id` on an S3 object read is), so that a corpus served twice answers
+#: id (as S3's two are, in `backlot.routers.s3.request_ids`), so that a corpus served twice answers
 #: the same id and a test can assert one. Measured on Atlassian Cloud 2026-09-22 over 78
 #: responses: `atl-request-id` is a UUID, `atl-traceid` is that same 32 hex WITHOUT the dashes, and
 #: Jira's `x-arequestid` is 32 hex of its own.

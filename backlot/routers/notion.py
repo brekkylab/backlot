@@ -872,11 +872,13 @@ async def unmatched_path(request: Request, rest: str) -> JSONResponse:
     than a 405 — which is why this route takes the six methods below rather than the ones the
     routes above happen to declare, and why no `method_not_allowed` envelope is needed for this
     vendor. `TRACE` is left off: real refuses it at the front door with Cloudflare's own `405 Not
-    Allowed` HTML page, never reaching the API, and an invented method such as `FOO` is a bare
-    501, so leaving both unrouted keeps a 405 here rather than trading it for a 400. A `HEAD`
-    arrives as the GET it is rewritten to (`backlot.main.answer_head_as_the_get_without_its_body`),
-    and one trailing slash is dropped before routing, so a slashed spelling of a served path does
-    not land here (`backlot.main.serve_a_slashed_notion_path_as_the_path_without_it`).
+    Allowed` HTML page, never reaching the API, so leaving it unrouted keeps the framework's 405
+    here rather than trading it for a 400. An invented method such as `FOO` is a bare 501 there,
+    and over uvicorn it never reaches this app: the server's parser answers it 400 `Invalid HTTP
+    request received.` (both measured 2026-09-28). A `HEAD` arrives as the GET it is rewritten to
+    (`backlot.main.answer_head_as_the_get_without_its_body`), and one trailing slash is dropped
+    before routing, so a slashed spelling of a served path does not land here
+    (`backlot.main.serve_a_slashed_notion_path_as_the_path_without_it`).
 
     Not reproduced here: real's own root, `/`, a 302 to the marketing site, a page Backlot does not
     serve; a path in another case, which real routes as the lower-case one (`GET /V1/USERS/ME`

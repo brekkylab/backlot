@@ -399,7 +399,7 @@ async def normalise_the_slashes_in_an_atlassian_path(request: Request, call_next
     """Route an `/atlassian` path the way the real gateway does: runs of slashes are one, and a
     trailing slash is not part of the path.
 
-    Measured on brekkylab.atlassian.net, 2026-09-22: `/rest/api/3/serverInfo/`, `/rest/api/2/field/`,
+    Measured on Atlassian Cloud, 2026-09-22: `/rest/api/3/serverInfo/`, `/rest/api/2/field/`,
     `/rest/api/3/issue/{key}/`, `/wiki/rest/api/space/`, `/wiki/rest/api/content/` and
     `/wiki/rest/api/space/{key}/` each answer 200, as do the same paths with the slash doubled and
     `/rest/api/3//serverInfo` with the run in the middle; a `HEAD` and an `OPTIONS` on the slashed

@@ -2150,7 +2150,7 @@ def _options_answer(request: Request) -> Response:
     endpoint a client is asking about, so it is copied rather than derived from what this server
     happens to implement (`errors.atlassian.jira_options_allow`). Confluence answers 404 in the
     `errors` list its 405 uses, on every route measured but `search`, which answers 204 and names
-    its three methods. Measured on brekkylab.atlassian.net, 2026-09-22, over all 24 routes here.
+    its three methods. Measured on Atlassian Cloud, 2026-09-22, over all 24 routes here.
     """
     path = request.url.path
     if errors_atlassian.is_confluence(path):
@@ -2223,7 +2223,7 @@ def _some_atlassian_route_matches(request: Request) -> bool:
 #: The two ids both products put on every answer, and Jira's third. Real mints a new value per
 #: response; these are derived from the request, the choice this repository makes for a synthesised
 #: id (as the `x-amz-request-id` on an S3 object read is), so that a corpus served twice answers
-#: the same id and a test can assert one. Measured on brekkylab.atlassian.net 2026-09-22 over 78
+#: the same id and a test can assert one. Measured on Atlassian Cloud 2026-09-22 over 78
 #: responses: `atl-request-id` is a UUID, `atl-traceid` is that same 32 hex WITHOUT the dashes, and
 #: Jira's `x-arequestid` is 32 hex of its own.
 def request_ids(request: Request) -> dict[str, str]:
@@ -2346,7 +2346,7 @@ def vendor_headers(request: Request, status_code: int) -> dict[str, str]:
     Both products: the two ids and `x-content-type-options`. Jira: `x-arequestid` and its
     `cache-control`, plus the caller's own account id and the rate-limit four once a credential
     resolves. Confluence: the millisecond clock it stamps every answer with, and the deprecation
-    trio where the v1 services send it. Measured on brekkylab.atlassian.net 2026-09-22; what is
+    trio where the v1 services send it. Measured on Atlassian Cloud 2026-09-22; what is
     deliberately not here is in `backlot.main.report_atlassian_headers`.
     """
     path = request.url.path

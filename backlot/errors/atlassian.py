@@ -453,7 +453,7 @@ def method_not_allowed(path: str, method: str) -> AtlassianError:
 
 
 # What real Jira names in `Allow` on an `OPTIONS`, which is NOT the set it names on a 405 above.
-# Measured on brekkylab.atlassian.net, 2026-09-22, one request per route: eight of the nine rows are
+# Measured on Jira Cloud, 2026-09-22, one request per route: eight of the nine rows are
 # that route's 405 set plus `HEAD` and `OPTIONS`, and `project/search` is the exception — its 405
 # resolves `/project/{projectIdOrKey}` with `search` read as a key, where its `OPTIONS` reaches the
 # search route itself and names three methods rather than five. Real spells the list without spaces
@@ -499,7 +499,7 @@ SERVED_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD")
 def no_endpoint(path: str, method: str) -> AtlassianError:
     """Jira's 404 for a path it mounts no endpoint at, in the RFC 7807 shape its other refusals use.
 
-    Measured on brekkylab.atlassian.net, 2026-09-22: `/rest/api/3/nopesuchroute`, the same under
+    Measured on Jira Cloud, 2026-09-22: `/rest/api/3/nopesuchroute`, the same under
     `/rest/api/2`, `/rest/api/4/serverInfo`, `/rest/nope/thing`, and the paths that extend a served
     route (`serverInfo/extra`, `issue/NOPE-1/nope`, `project/search/extra`) each answer this body.
     `detail` names the method as sent -- `GET`, `POST`, `DELETE` and `OPTIONS` each came back in it

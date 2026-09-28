@@ -2552,7 +2552,7 @@ def _routes(keys: dict[str, str]) -> list[str]:
 
 
 def test_atlassian_a_head_is_the_get_without_its_body(client, admin_h, keys):
-    """Measured on brekkylab.atlassian.net 2026-09-22, a `HEAD` beside each `GET` the same minute
+    """Measured on Atlassian Cloud 2026-09-22, a `HEAD` beside each `GET` the same minute
     over all 24 routes: both products answer the `GET`'s status and `content-type` with nothing in
     the body, where FastAPI's ``APIRoute`` answered every one of them 405.
 
@@ -2590,7 +2590,7 @@ def test_atlassian_a_head_on_a_refusal_declares_no_length_either(client, admin_h
 @pytest.mark.parametrize(
     "path,allow",
     [
-        # measured on brekkylab.atlassian.net 2026-09-22, one OPTIONS per route; the set is real's
+        # measured on Jira Cloud 2026-09-22, one OPTIONS per route; the set is real's
         # and the order is one measured spelling, since it varied between two requests
         ("/atlassian/rest/api/3/serverInfo", "GET,HEAD,OPTIONS"),
         ("/atlassian/rest/api/2/field", "POST,GET,HEAD,OPTIONS"),

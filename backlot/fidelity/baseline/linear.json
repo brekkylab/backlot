@@ -28,7 +28,7 @@
       "severity": "gap",
       "path": "AgentSession.codingHarness",
       "detail": "vendor serves codingHarness: AgentSessionCodingHarness; Backlot does not",
-      "note": "Linear's own description marks it internal: \"[Internal] Coding harness metadata for this cloud or local session.\" It joins the family whose gap is recorded on `Query.agentSession`, and it carries a note of its own because the 2026-09-24 scheduled run read it as new surface. Measured against api.linear.app on 2026-09-29: it takes no argument and answers an `AgentSessionCodingHarness` (\"[Internal] Coding harness metadata for a cloud or local coding session.\"), an object of two fields, `harness` and `modelLabel`, which this schema does not declare."
+      "note": "Linear's own description marks it internal: \"[Internal] Coding harness metadata for this cloud or local session.\" It joins the family whose gap is recorded on `Query.agentSession`, and it carries a note of its own because the 2026-09-24 scheduled run read it as new surface. Measured against api.linear.app on 2026-09-29: it takes no argument and answers an `AgentSessionCodingHarness` (\"[Internal] Coding harness metadata for a cloud or local coding session.\"), an object of two fields, `harness` and `modelLabel`."
     },
     {
       "kind": "missing_field",
@@ -3066,7 +3066,7 @@
       "severity": "gap",
       "path": "Query.dependencyPackageMetadata",
       "detail": "vendor serves dependencyPackageMetadata: [DependencyPackageMetadataResult!]!; Backlot does not",
-      "note": "No corpus states it: it answers package-registry data rather than anything a Linear workspace holds. Linear's own description: \"Registry metadata (license, publish date, weekly download count) for a batch of dependency package versions, used by the dependency lock file diff preview. Cached across all workspaces since registry data isn't workspace-specific. A package the registry has no data for (or an unsupported ecosystem) is simply omitted from the result rather than erroring. At most 500 packages per request.\" Measured against api.linear.app on 2026-09-29: it takes one argument, `packages: [DependencyPackageInput!]!`, each an `ecosystem`, a `name` and a `version`, and answers `[DependencyPackageMetadataResult!]!`, whose five fields are `name`, `version`, `license`, `publishedAt` and `weeklyDownloads`. This schema declares none of those types."
+      "note": "No corpus states it: it answers package-registry data rather than anything a Linear workspace holds. Linear's own description: \"Registry metadata (license, publish date, weekly download count) for a batch of dependency package versions, used by the dependency lock file diff preview. Cached across all workspaces since registry data isn't workspace-specific. A package the registry has no data for (or an unsupported ecosystem) is simply omitted from the result rather than erroring. At most 500 packages per request.\" Measured against api.linear.app on 2026-09-29: it takes one argument, `packages: [DependencyPackageInput!]!`, each an `ecosystem`, a `name` and a `version`, and answers `[DependencyPackageMetadataResult!]!`, whose five fields are `name`, `version`, `license`, `publishedAt` and `weeklyDownloads`. This schema declares neither type."
     },
     {
       "kind": "missing_field",

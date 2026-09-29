@@ -2044,10 +2044,8 @@ def test_jira_search_post_refuses_the_leading_bytes_real_refuses(client, admin_h
 
 
 def test_jira_search_advertises_both_its_methods_when_it_refuses_a_third(client, admin_h):
-    """Measured: real answers `PUT` with `Allow: POST, GET`. Starlette fills the header from the
-    single route that partially matched, so serving the two methods from a route each would
-    advertise one of them — which is why the per-method split is made in the served document
-    instead (see `openapi.jira_search_placement`)."""
+    """Measured: real answers `PUT` with `Allow: POST, GET`. The header is the measured table's
+    (`errors.atlassian.jira_allow`), which is keyed by the path whatever route serves it."""
     for version in ("2", "3"):
         r = client.request("PUT", f"/atlassian/rest/api/{version}/search/jql", headers=admin_h)
         assert r.status_code == 405, r.text

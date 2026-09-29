@@ -2066,11 +2066,13 @@ def _refuse_negative_page_params(limit: int, start: int) -> None:
 
 # ======================== what answers before, and around, a route ==========================
 
-#: Every method the catch-all below takes, which is every method the application behind the real
-#: gateway ever sees (``errors.atlassian.SERVED_METHODS``). A `TRACE` is left off because the
-#: gateway refuses it before the application, so what answers one here is Starlette's 405 rather
-#: than this route.
-_UNMATCHED_METHODS = list(errors_atlassian.SERVED_METHODS)
+#: Every method the catch-all below takes: the methods the application behind the real gateway ever
+#: sees (``errors.atlassian.SERVED_METHODS``) but `HEAD`, which
+#: ``backlot.main.answer_head_as_the_get_without_its_body`` turns into its GET before routing, so
+#: that none reaches a route. `TRACE` and `PATCH` are left off because the gateway refuses them
+#: before the application, so what answers one here is Starlette's 405, which
+#: ``errors.atlassian.method_not_allowed`` turns into the front door's answer.
+_UNMATCHED_METHODS = [m for m in errors_atlassian.SERVED_METHODS if m != "HEAD"]
 
 #: The Confluence resources whose unmatched sub-paths real answers with the product's HTML page
 #: rather than the API's 404, measured 2026-09-22. `space/MFS/nope`, `space/nope/deeper`,
@@ -2216,6 +2218,17 @@ def _some_atlassian_route_matches(request: Request) -> bool:
     return any(route.matches(request.scope)[0] is not Match.NONE for route in router.routes)
 
 
+def _a_route_answers(request: Request) -> bool:
+    """Whether a route above takes this request's method at its path, a `HEAD` read as its GET.
+
+    ``Match.FULL`` only: an `OPTIONS` or a method a route does not take is answered around the
+    route (see :func:`unmatched_path`), and a path no route matches by the catch-all.
+    """
+    method = "GET" if request.method == "HEAD" else request.method
+    scope = {**request.scope, "method": method}
+    return any(route.matches(scope)[0] is Match.FULL for route in router.routes)
+
+
 # ============================== the headers real puts on every answer ========================
 
 
@@ -2312,8 +2325,11 @@ def rate_limit_headers(request: Request, caller: Caller) -> dict[str, str]:
 #: space services give — including their 404s. Measured 2026-09-22: `content`, `content/{id}`,
 #: `child/comment`, `child/page`, `label`, `space`, `space/{key}` and the 404s for an unknown space
 #: and an unknown content id all carry them; `search`, `restriction/byOperation`, the 405 at
-#: `space/{key}/permission` and the 403 an anonymous request gets carry none. The dates are real's
-#: own, a removal date that has already passed.
+#: `space/{key}/permission`, the 403 an anonymous request gets and an `OPTIONS` on `space`,
+#: `space/{key}`, an unknown space and `permission` carry none. Nor does an answer the catch-all
+#: gives, measured 2026-09-30 over twenty of them on ten paths: the JAX-RS 404 in both shapes and
+#: the product's HTML page, under `space/` and `content/` and outside the API mount. The dates are
+#: real's own, a removal date that has already passed.
 CONFLUENCE_DEPRECATION = {
     "deprecation": "Wed, 1 Mar 2023 00:00:00 GMT",
     "link": (
@@ -2339,26 +2355,43 @@ def sends_deprecation(path: str, status_code: int) -> bool:
     return not any(pattern.fullmatch(vendor_path) for pattern in _NO_DEPRECATION_PATTERNS)
 
 
+def _gateway_headers(request: Request) -> dict[str, str]:
+    """What the gateway in front of either product puts on a refusal it gives itself: the two ids
+    both products carry and `nosniff`, without Jira's `x-arequestid`."""
+    ids = {k: v for k, v in request_ids(request).items() if k != "x-arequestid"}
+    return {**ids, "x-content-type-options": "nosniff"}
+
+
 def vendor_headers(request: Request, status_code: int) -> dict[str, str]:
     """Everything real puts on an `/atlassian` answer that is not the body's own.
 
     Both products: the two ids and `x-content-type-options`. Jira: `x-arequestid` and its
     `cache-control`, plus the caller's own account id and the rate-limit four once a credential
-    resolves. Confluence: the millisecond clock it stamps every answer with, and the deprecation
-    trio where the v1 services send it. Measured on Atlassian Cloud 2026-09-22; what is
+    resolves — on every answer Jira gives, where the gateway's own refusals (the Connect-token 403
+    and a `PATCH`) carry the two ids and `nosniff` and nothing else, and the CDN's (a `TRACE`) carry
+    nothing. Confluence: the millisecond clock it stamps every answer with, and the deprecation trio
+    where the v1 services send it. Measured on Atlassian Cloud 2026-09-22 and 2026-09-30; what is
     deliberately not here is in `backlot.main.report_atlassian_headers`.
     """
     path = request.url.path
     if request.method not in errors_atlassian.SERVED_METHODS:
-        # A method the front door refuses never reaches the application that stamps these; the
+        # A method refused in front of the application never reaches what stamps the rest; the
         # measurement is on ``errors.atlassian.SERVED_METHODS``.
+        if request.method in errors_atlassian.GATEWAY_REFUSED:
+            return _gateway_headers(request)
         return {}
     headers = {**request_ids(request), "x-content-type-options": "nosniff"}
     if errors_atlassian.is_confluence(path):
         headers["x-confluence-request-time"] = str(int(time.time() * 1000))
-        if sends_deprecation(path, status_code):
+        # the notice rides on what a v1 service answers: a route's own answer, not one given around it
+        if sends_deprecation(path, status_code) and _a_route_answers(request):
             headers.update(CONFLUENCE_DEPRECATION)
         return headers
+    if status_code == 403 and auth.atlassian_bearer_unreadable(request):
+        # The Connect-token 403 is the gateway's
+        # (``backlot.main.refuse_a_bearer_jira_cannot_read``): real puts the two ids and `nosniff`
+        # on it and none of Jira's own, measured 2026-09-30 on fifteen of them.
+        return _gateway_headers(request)
     headers["cache-control"] = "no-cache, no-store, no-transform"
     caller = auth.atlassian_caller(request)
     if caller.is_anonymous:

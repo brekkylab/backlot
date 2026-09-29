@@ -417,8 +417,10 @@ def method_not_allowed(path: str, method: str) -> AtlassianError:
     Confluence side, and none on a path no Jira route covers either — a method the front door
     refuses is 405 with `Allow` absent, measured 2026-09-22 with `TRACE` on a served route and on
     `nopesuchroute` alike. Starlette would compute one there from the catch-all
-    (``backlot.routers.atlassian.unmatched_path``), which takes seven methods on every path it
-    owns, so what it would advertise is neither the vendor's set nor anything Backlot serves.
+    (``backlot.routers.atlassian.unmatched_path``), which takes every method it lists on every path
+    it owns, so what it would advertise is neither the vendor's set nor anything Backlot serves.
+    The front door answers Jira's `PATCH` with 400 rather than 405 (:data:`SERVED_METHODS`), which
+    :data:`_JIRA_FRONT_DOOR_STATUS` carries.
     """
     if is_confluence(path):
         return AtlassianError(
@@ -438,12 +440,13 @@ def method_not_allowed(path: str, method: str) -> AtlassianError:
             headers={},
         )
     allow = jira_allow(path) if method in SERVED_METHODS else None
+    status = _JIRA_FRONT_DOOR_STATUS.get(method, 405)
     return AtlassianError(
-        405,
+        status,
         {
             "type": "about:blank",
-            "title": "Method Not Allowed",
-            "status": 405,
+            "title": http.HTTPStatus(status).phrase,
+            "status": status,
             "detail": f"Method '{method}' is not supported.",
             "instance": _instance(path),
         },
@@ -487,13 +490,23 @@ def jira_options_allow(path: str) -> str | None:
     return None
 
 
-#: The methods the application behind the gateway ever sees. A `TRACE` is refused at the front door
-#: with 405 and an invented method with 403, both the gateway's own HTML page carrying no `Allow`
-#: and none of the headers the application adds — on a served route and on an unserved path alike,
-#: measured 2026-09-22. So a method outside this set gets neither the vendor `Allow` below nor the
-#: headers in ``backlot.routers.atlassian.vendor_headers``; the body it gets here is still this
-#: module's JSON, where real's is that HTML page.
-SERVED_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD")
+#: The methods the application behind the gateway ever sees. Two layers in front of it refuse the
+#: rest, each with its own HTML page and no `Allow`, on a served route and on an unserved path
+#: alike. The CDN (`server: CloudFront`) answers a `TRACE` with 405 and an invented method with
+#: 403, carrying none of the headers below (measured 2026-09-22 and 2026-09-30). The gateway behind
+#: it (`server: AtlassianEdge`) answers a `PATCH` — Jira's nginx with 400 on `nopesuchroute`,
+#: `serverInfo` and an issue, Confluence's openresty with 405 on `space` and `nopesuchroute` — and
+#: puts its two ids and `nosniff` on that refusal and none of the application's headers (measured
+#: 2026-09-30, :data:`GATEWAY_REFUSED`). So a method outside this set gets no vendor `Allow` below
+#: and none of the application's headers in ``backlot.routers.atlassian.vendor_headers``; the body
+#: it gets here is still this module's JSON, where real's is that HTML page.
+SERVED_METHODS = ("GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD")
+
+#: The methods the gateway refuses itself, rather than the CDN in front of it.
+GATEWAY_REFUSED = ("PATCH",)
+
+#: The gateway's status for a method it refuses on Jira, where that is not a 405.
+_JIRA_FRONT_DOOR_STATUS = {"PATCH": 400}
 
 
 def no_endpoint(path: str, method: str) -> AtlassianError:

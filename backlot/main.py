@@ -5,6 +5,7 @@ Startup opens the read-only DB, loads the ACL/token map, and starts a background
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import threading
@@ -487,6 +488,30 @@ async def resolve_github_id_paths(request: Request, call_next):
     return await call_next(request)
 
 
+@app.middleware("http")
+async def refuse_a_bearer_jira_cannot_read(request: Request, call_next):
+    """Refuse a Jira read whose bearer the real gateway would not read, before the route runs.
+
+    Unlike the Basic pair, which Jira serves anonymously, an unreadable bearer is refused — and
+    refused ahead of everything, so `serverInfo` and `field` answer it too even though neither
+    needs a credential. That is why this short-circuits rather than living in
+    ``atlassian._jira_caller``. Confluence is not here: it answers its own 403 for any credential
+    that fails, which ``atlassian._confluence_caller`` already gives. Measured against
+    ecosystem.atlassian.net and brekkylab.atlassian.net on 2026-09-04.
+
+    The body is spelled the way real spells it, a space after the colon (fifteen of them on
+    2026-09-30), and this runs inside :func:`answer_head_as_the_get_without_its_body`: a `HEAD` is
+    refused as its GET is and so carries no `content-length`, as real's did on `serverInfo` and on
+    `nopesuchroute` the same day.
+    """
+    if request.url.path.startswith("/atlassian/rest/") and auth.atlassian_bearer_unreadable(
+        request
+    ):
+        body = json.dumps(errors.atlassian.connect_token_body())
+        return Response(body, status_code=403, media_type="application/json")
+    return await call_next(request)
+
+
 # The path prefixes whose `HEAD` is the GET with the body left off. GitHub, Atlassian and Notion
 # because each is measured to be, and a vendor is added here once its own is rather than by a
 # rewrite that assumes they share GitHub's: both Atlassian products answered a `HEAD` with the
@@ -521,12 +546,12 @@ async def answer_head_as_the_get_without_its_body(request: Request, call_next):
     `head` operation at all, so declaring it would hand `backlot diff --source github` operations
     real lacks and the MCP slice tools that answer nothing a GET does not. The method is rewritten
     on the scope before routing, so the GET runs in full: the router's dependencies, the handler and
-    the three middlewares inside this one, the version echo, the rate-limit count and the id-path
-    rewrite, see a GET and land on the answer by construction, and the charset middleware outside it
-    rewrites the copied `content-type` as it does the GET's. The body is read to the end to be
-    measured rather than sent, because the `content-length` a client reads a `HEAD` for is the GET
-    body's length and computing the body is the only way to have that number; a `HEAD` costs what
-    its GET costs, here as on real.
+    every middleware defined above this one — the version echo, the rate-limit count, the slash and
+    id-path rewrites and the Connect-token refusal among them — see a GET and land on the answer by
+    construction, and the charset middleware outside it rewrites the copied `content-type` as it
+    does the GET's. The body is read to the end to be measured rather than sent, because the
+    `content-length` a client reads a `HEAD` for is the GET body's length and computing the body is
+    the only way to have that number; a `HEAD` costs what its GET costs, here as on real.
 
     What the vendors do NOT share is the `content-length`: GitHub and Notion declare the length of
     the body the `GET` would have carried, Jira declares none on either method, and Confluence
@@ -542,8 +567,10 @@ async def answer_head_as_the_get_without_its_body(request: Request, call_next):
     `requests.Session` that sent a `HEAD` had its following `GET /health` fail with
     `ConnectionResetError`; with the method restored that request is a 200 and the log is clean).
     """
-    if request.method != "HEAD" or not request.url.path.startswith(
-        _HEAD_IS_THE_GET_WITHOUT_ITS_BODY
+    path = request.url.path
+    if request.method != "HEAD" or not any(
+        path == prefix or path.startswith(f"{prefix}/")
+        for prefix in _HEAD_IS_THE_GET_WITHOUT_ITS_BODY
     ):
         return await call_next(request)
     request.scope["method"] = "GET"
@@ -559,24 +586,6 @@ async def answer_head_as_the_get_without_its_body(request: Request, call_next):
     else:
         head.headers["content-length"] = str(length)
     return head
-
-
-@app.middleware("http")
-async def refuse_a_bearer_jira_cannot_read(request: Request, call_next):
-    """Refuse a Jira read whose bearer the real gateway would not read, before the route runs.
-
-    Unlike the Basic pair, which Jira serves anonymously, an unreadable bearer is refused — and
-    refused ahead of everything, so `serverInfo` and `field` answer it too even though neither
-    needs a credential. That is why this short-circuits rather than living in
-    ``atlassian._jira_caller``. Confluence is not here: it answers its own 403 for any credential
-    that fails, which ``atlassian._confluence_caller`` already gives. Measured against
-    ecosystem.atlassian.net and brekkylab.atlassian.net on 2026-09-04.
-    """
-    if request.url.path.startswith("/atlassian/rest/") and auth.atlassian_bearer_unreadable(
-        request
-    ):
-        return JSONResponse(status_code=403, content=errors.atlassian.connect_token_body())
-    return await call_next(request)
 
 
 @app.middleware("http")
@@ -604,9 +613,10 @@ async def report_atlassian_headers(request: Request, call_next):
     Both products name the request: `atl-request-id` and `atl-traceid`, the second being the first
     without its dashes. Jira adds `x-arequestid`, its own `cache-control`, and — once a credential
     resolves — the caller's account id and the burst quota's four, where an anonymous request gets
-    none of those five and neither does the 404 for a path it mounts no endpoint at. Confluence
-    stamps a millisecond clock and says its v1 REST API is deprecated on the services that do.
-    What each is and what it is measured from is in ``backlot.routers.atlassian.vendor_headers``.
+    none of those five and the 404 for a path it mounts no endpoint at gets the account id but none
+    of the four. Confluence stamps a millisecond clock and says its v1 REST API is deprecated on the
+    services that do. What each is and what it is measured from is in
+    ``backlot.routers.atlassian.vendor_headers``.
 
     Middleware for the reason GitHub's rate-limit headers are: they ride on answers no route
     handler builds — the exception handlers' refusals, the Connect-token 403 above, the catch-all's

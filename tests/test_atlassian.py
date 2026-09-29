@@ -208,10 +208,16 @@ def test_jira_refuses_a_bearer_it_cannot_read_as_a_connect_token(client):
     )
     assert r.status_code == 403
     # The whole body, not a subset: this one route answers with a single `error` key, where every
-    # other Atlassian error here carries message/statusCode/errorMessages.
-    assert r.json() == {"error": "Failed to parse Connect Session Auth Token"}
+    # other Atlassian error here carries message/statusCode/errorMessages. Byte for byte, a space
+    # after the colon, as fifteen of real's read on 2026-09-30.
+    assert r.content == b'{"error": "Failed to parse Connect Session Auth Token"}'
     # No Seraph header either — that one reports a failed Basic username, and this is not one.
     assert "x-seraph-loginreason" not in r.headers
+    # The gateway's refusal carries the two ids and `nosniff`, and none of Jira's own headers.
+    assert r.headers["atl-traceid"] == r.headers["atl-request-id"].replace("-", "")
+    assert r.headers["x-content-type-options"] == "nosniff"
+    for absent in ("x-arequestid", "cache-control", "x-aaccountid", "x-ratelimit-limit"):
+        assert absent not in r.headers, absent
     # And it is refused ahead of the route: serverInfo needs no credential and still answers 403,
     # which is why the check is not in the caller helper.
     info = client.get(
@@ -2590,15 +2596,17 @@ def test_atlassian_a_head_is_the_get_without_its_body(client, admin_h, keys):
         await client.app(scope, receive, record)
 
     rows = [
-        *_routes(keys),
-        "/atlassian/wiki/rest/api/space/NOPESUCH",
-        "/atlassian/rest/api/3/issue/NOPE-1",
-        "/atlassian/rest/api/3/serverInfo/",
+        *((path, admin_h) for path in _routes(keys)),
+        ("/atlassian/wiki/rest/api/space/NOPESUCH", admin_h),
+        ("/atlassian/rest/api/3/issue/NOPE-1", admin_h),
+        ("/atlassian/rest/api/3/serverInfo/", admin_h),
+        # the gateway's Connect-token 403, measured 2026-09-30 on `serverInfo`
+        ("/atlassian/rest/api/3/serverInfo", {"Authorization": "Bearer nope"}),
     ]
     statuses = []
-    for path in rows:
-        got = client.get(path, headers=admin_h)
-        head = client.head(path, headers=admin_h)
+    for path, headers in rows:
+        got = client.get(path, headers=headers)
+        head = client.head(path, headers=headers)
         assert head.status_code == got.status_code, path
         assert head.headers["content-type"] == got.headers["content-type"], path
         search = path.startswith("/atlassian/wiki/rest/api/search")
@@ -2609,10 +2617,10 @@ def test_atlassian_a_head_is_the_get_without_its_body(client, admin_h, keys):
         statuses.append(head.status_code)
         # No `with`: a second lifespan would overwrite the state `client` started.
         sent.clear()
-        TestClient(recording).head(path, headers=admin_h)
+        TestClient(recording).head(path, headers=headers)
         bodies = [m.get("body", b"") for m in sent if m["type"] == "http.response.body"]
         assert b"".join(bodies) == b"", path
-    assert statuses[-3:] == [404, 404, 200]
+    assert statuses[-4:] == [404, 404, 200, 403]
 
 
 @pytest.mark.parametrize(
@@ -2681,8 +2689,10 @@ _NO_ENDPOINT_PATHS = [
         *[
             (method, path, path.removeprefix("/atlassian"))
             for path in _NO_ENDPOINT_PATHS
-            for method in ("GET", "POST", "DELETE", "OPTIONS", "PATCH")
+            for method in ("GET", "POST", "DELETE", "OPTIONS")
         ],
+        # measured anonymously on 2026-09-30 (a `PATCH` is the front door's, see `_ANSWERS`)
+        ("PUT", "/atlassian/rest/api/3/nopesuchroute", "/rest/api/3/nopesuchroute"),
         # What a refusal ECHOES is normalised differently from what routing reads: the query
         # string is in neither field, a trailing slash is kept in both and an interior run is
         # collapsed. Confluence's `null for uri:` message draws the same two slash lines.
@@ -2754,17 +2764,27 @@ _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9
 
 
 _ANSWERS = [
-    # (label, method, path, whether the application answered it)
-    ("jira 200", "GET", "/atlassian/rest/api/3/serverInfo", True),
-    ("jira 404", "GET", "/atlassian/rest/api/3/nopesuchroute", True),
-    ("jira 405", "POST", "/atlassian/rest/api/3/serverInfo", True),
-    ("jira options", "OPTIONS", "/atlassian/rest/api/3/serverInfo", True),
-    ("confluence 200", "GET", "/atlassian/wiki/rest/api/space", True),
-    ("confluence 404", "GET", "/atlassian/wiki/rest/api/space/NOPESUCH", True),
-    ("confluence options", "OPTIONS", "/atlassian/wiki/rest/api/space", True),
-    ("jira trace", "TRACE", "/atlassian/rest/api/3/serverInfo", False),
-    ("jira trace, unserved", "TRACE", "/atlassian/rest/api/3/nopesuchroute", False),
-    ("confluence trace", "TRACE", "/atlassian/wiki/rest/api/space", False),
+    # (label, method, path, and for a method refused in front of the application its status and
+    # which layer refused it: the CDN, which adds nothing, or the gateway, which adds its two ids)
+    ("jira 200", "GET", "/atlassian/rest/api/3/serverInfo", None),
+    ("jira 404", "GET", "/atlassian/rest/api/3/nopesuchroute", None),
+    ("jira 405", "POST", "/atlassian/rest/api/3/serverInfo", None),
+    ("jira options", "OPTIONS", "/atlassian/rest/api/3/serverInfo", None),
+    ("confluence 200", "GET", "/atlassian/wiki/rest/api/space", None),
+    ("confluence 404", "GET", "/atlassian/wiki/rest/api/space/NOPESUCH", None),
+    ("confluence options", "OPTIONS", "/atlassian/wiki/rest/api/space", None),
+    ("jira trace", "TRACE", "/atlassian/rest/api/3/serverInfo", (405, "cdn")),
+    ("jira trace, unserved", "TRACE", "/atlassian/rest/api/3/nopesuchroute", (405, "cdn")),
+    ("confluence trace", "TRACE", "/atlassian/wiki/rest/api/space", (405, "cdn")),
+    ("jira patch", "PATCH", "/atlassian/rest/api/3/serverInfo", (400, "gateway")),
+    ("jira patch, unserved", "PATCH", "/atlassian/rest/api/3/nopesuchroute", (400, "gateway")),
+    ("confluence patch", "PATCH", "/atlassian/wiki/rest/api/space", (405, "gateway")),
+    (
+        "confluence patch, unserved",
+        "PATCH",
+        "/atlassian/wiki/rest/api/nopesuchroute",
+        (405, "gateway"),
+    ),
 ]
 
 
@@ -2780,20 +2800,26 @@ def test_atlassian_headers_ride_every_answer_but_the_front_doors(client, admin_h
 
     Real refuses a `TRACE` with 405 and an invented method with 403, the gateway's own HTML page,
     carrying no `Allow` and none of these headers — on a served route and on an unserved path
-    alike, measured the same day. `TRACE` is left off the catch-all's methods for that reason, so
-    what answers it here is a 405 too, and its rows hold that it advertises nothing: Starlette
-    would otherwise name the methods the catch-all takes.
+    alike, measured the same day. Those are the CDN's (`server: CloudFront`). The gateway behind it
+    (`server: AtlassianEdge`) refuses a `PATCH` itself, 400 on Jira and 405 on Confluence, and puts
+    the two ids and `nosniff` on it and none of the application's headers (measured 2026-09-30).
+    Both methods are left off the catch-all's methods for that reason, so what answers one here is
+    the refusing layer's status, and their rows hold that it advertises nothing: Starlette would
+    otherwise name the methods the catch-all takes.
     """
     answers = {}
-    for label, method, path, answered in _ANSWERS:
+    for label, method, path, refused in _ANSWERS:
         r = client.request(method, path, headers=admin_h)
-        if not answered:
-            assert r.status_code == 405, (label, r.text)
+        if refused is not None:
+            status, layer = refused
+            assert r.status_code == status, (label, r.text)
             assert "allow" not in r.headers, label
+            gateway = ("atl-request-id", "atl-traceid", "x-content-type-options")
+            for name in gateway:
+                assert (name in r.headers) == (layer == "gateway"), (label, name)
             for absent in (
-                "atl-request-id",
-                "atl-traceid",
                 "x-arequestid",
+                "cache-control",
                 "x-ratelimit-limit",
                 "deprecation",
                 "x-confluence-request-time",
@@ -2908,29 +2934,37 @@ def test_jira_names_the_caller_and_counts_its_quota_once_a_credential_resolves(
 
 
 @pytest.mark.parametrize(
-    "path,anonymous,carries",
+    "method,path,anonymous,carries",
     [
-        ("/atlassian/wiki/rest/api/space", False, True),
-        ("/atlassian/wiki/rest/api/space/{space}", False, True),
-        ("/atlassian/wiki/rest/api/content", False, True),
-        ("/atlassian/wiki/rest/api/content/{content}/child/page", False, True),
-        ("/atlassian/wiki/rest/api/content/{content}/label", False, True),
-        ("/atlassian/wiki/rest/api/space/NOPESUCH", False, True),
-        ("/atlassian/wiki/rest/api/search?cql=type%3Dpage", False, False),
-        ("/atlassian/wiki/rest/api/content/{content}/restriction/byOperation", False, False),
-        ("/atlassian/wiki/rest/api/space/{space}/permission", False, False),
+        ("GET", "/atlassian/wiki/rest/api/space", False, True),
+        ("GET", "/atlassian/wiki/rest/api/space/{space}", False, True),
+        ("GET", "/atlassian/wiki/rest/api/content", False, True),
+        ("GET", "/atlassian/wiki/rest/api/content/{content}/child/page", False, True),
+        ("GET", "/atlassian/wiki/rest/api/content/{content}/label", False, True),
+        ("GET", "/atlassian/wiki/rest/api/space/NOPESUCH", False, True),
+        ("HEAD", "/atlassian/wiki/rest/api/space", False, True),
+        ("GET", "/atlassian/wiki/rest/api/search?cql=type%3Dpage", False, False),
+        ("GET", "/atlassian/wiki/rest/api/content/{content}/restriction/byOperation", False, False),
+        ("GET", "/atlassian/wiki/rest/api/space/{space}/permission", False, False),
         # the 403 an anonymous request gets never reached the service that stamps them
-        ("/atlassian/wiki/rest/api/space", True, False),
+        ("GET", "/atlassian/wiki/rest/api/space", True, False),
+        # an `OPTIONS` is answered around the route, and a path no route serves by the catch-all
+        ("OPTIONS", "/atlassian/wiki/rest/api/space", False, False),
+        ("OPTIONS", "/atlassian/wiki/rest/api/space/{space}", False, False),
+        ("GET", "/atlassian/wiki/rest/api/nopesuchroute", False, False),
+        ("GET", "/atlassian/wiki/rest/api/space/{space}/nope", False, False),
+        ("GET", "/atlassian/wiki/nope", False, False),
     ],
 )
 def test_confluence_says_its_v1_rest_api_is_deprecated(
-    client, admin_h, keys, path, anonymous, carries
+    client, admin_h, keys, method, path, anonymous, carries
 ):
     """Measured 2026-09-22: the content and space services send the three headers on every answer
-    they give, their 404s included, and `search`, `restriction/byOperation`, the 405 at
-    `space/{key}/permission` and the 403 an anonymous request gets send none, though each carries
-    the ids and the clock. The dates are real's own, a removal date already past."""
-    r = client.get(path.format(**keys), headers={} if anonymous else admin_h)
+    they give, their 404s and a `HEAD` included, and `search`, `restriction/byOperation`, the 405 at
+    `space/{key}/permission`, the 403 an anonymous request gets and an `OPTIONS` send none, though
+    each carries the ids and the clock; nor does an answer the catch-all gives (measured
+    2026-09-30). The dates are real's own, a removal date already past."""
+    r = client.request(method, path.format(**keys), headers={} if anonymous else admin_h)
     if anonymous:
         assert r.status_code == 403
     assert r.headers["atl-request-id"] and r.headers["x-confluence-request-time"]

@@ -2553,11 +2553,11 @@ async def get_contents(
     no per-ref shape here (the no-history simplification in :func:`get_tree`).
 
     A path ending in a slash is a 302 to the id-keyed spelling without it, which is real's own
-    answer and the one exception to a trailing slash meaning whatever the matched route makes of
-    it. Measured 2026-09-22: `contents/backlot/`, `contents/README.md/` and `contents/no-such-dir/`
-    all answer `302` to `https://api.github.com/repositories/{id}/contents/{path}`, so the redirect
-    is reached before the path resolves to anything; the `Location` carries no query, `?ref=main`
-    included; and the id-keyed spelling redirects to itself the same way.
+    answer. Measured 2026-09-22: `contents/backlot/`, `contents/README.md/` and
+    `contents/no-such-dir/` all answer `302` to
+    `https://api.github.com/repositories/{id}/contents/{path}`, so the redirect is reached before
+    the path resolves to anything; the `Location` carries no query, `?ref=main` included; and the
+    id-keyed spelling redirects to itself the same way.
 
     What it does NOT precede is the repository: a repository that does not exist, an owner that
     does not, and one the caller cannot see are each a 404 rather than a redirect (measured the
@@ -2565,9 +2565,6 @@ async def get_contents(
     redirect answers only for a repository this caller can read.
     """
     if path.endswith("/"):
-        # The redirect sits between the repository and the path: measured, a repository that does
-        # not exist or that the caller cannot see is a 404 here, and a path that names nothing
-        # inside one that does is still the 302.
         conn = auth.conn(request)
         caller = _require(request)
         _require_repo(conn, repo, auth.visible_ids(request, caller))
@@ -3185,7 +3182,7 @@ def _ref_as_sent(ref: str) -> str:
     A TRAILING one is part of the name real reads, and each route refuses the name it then fails to
     find: measured 2026-09-22, `git/trees/main/` and `git/ref/heads/main/` are 404 `Not Found`,
     `statuses/main/` a 404, `branches/main/` a 404 `Branch not found`, and `commits/main/` a 422
-    whose message echoes the slash. Dropping it served the ref beside it at 200 on all five.
+    whose message echoes the slash.
 
     The leading slash is dropped because a ref arriving as `//main` — a client joining a base and a
     ref that both carry one — otherwise reaches the lookup with a name no corpus holds.

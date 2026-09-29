@@ -46,7 +46,7 @@ from tests._helpers import (
 #   commits/{sha}/                | 422 No commit found for SHA: {sha with the slash}
 #
 # A trailing slash no route matches at all is `refuse_a_trailing_slash_on_github` in
-# `backlot.main`, measured with #232 and unchanged here.
+# `backlot.main`.
 
 _REF_SLASH_ROWS = [
     ("git/trees/main/", 404, "Not Found"),
@@ -66,7 +66,7 @@ def test_github_a_ref_ending_in_a_slash_is_refused(
     gh_client, gh_org, gh_admin_h, suffix, status, message
 ):
     """Measured: real reads the slash as part of the ref, so each route answers its own refusal for
-    a ref naming nothing. Backlot stripped it and served the ref beside it at 200."""
+    a ref naming nothing."""
     c, _ = gh_client
     r = c.get(f"/github/repos/{gh_org}/codebase/{suffix}", headers=gh_admin_h)
     assert r.status_code == status, r.text
@@ -108,7 +108,7 @@ def test_github_a_contents_path_ending_in_a_slash_redirects(
 ):
     """Measured: a 302 to the id-keyed spelling without the slash, before the path resolves to
     anything — a file, a directory and a path that names neither all redirect — with the path
-    encoded the way real encodes it rather than as it arrives, decoded."""
+    encoded the way real encodes it."""
     from backlot import synth
 
     c, _ = gh_client
@@ -304,7 +304,7 @@ def test_github_readme_with_an_empty_directory_is_the_repositorys_own(
 _DIRECTORY_README_404_ROWS = [
     # repo, path, message, where documentation_url ends
     ("codebase", "readme/docs", "Not Found", "#get-a-repository-readme-for-a-directory"),
-    # a repository holding no README: the root route's stub is not this route's answer
+    # a repository holding no README
     ("gateway", "readme/", "Not Found", "#get-a-repository-readme-for-a-directory"),
     # a README the path would find, behind one slash more than real reads past
     ("codebase", "readme///", "Not Found", "#get-a-repository-readme-for-a-directory"),

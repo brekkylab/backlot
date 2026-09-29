@@ -2773,7 +2773,8 @@
       "kind": "missing_operation",
       "severity": "gap",
       "path": "GET /repos/{}/{}/actions/jobs/{}/steps/{}/logs",
-      "detail": "the vendor serves it; Backlot does not"
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Published in GitHub's description (`actions/workflow-jobs`, \"Download step logs for a workflow run job\", read 2026-09-29) but not answered: measured against api.github.com on 2026-09-29 with a token, `steps/1/logs` through `steps/3/logs` of a completed job answer 404 `Not Found` on a repository the token administers, while the same job's `logs` answers 302, and a public repository's job answers the same way for its first two steps."
     },
     {
       "kind": "missing_operation",
@@ -3807,7 +3808,7 @@
       "severity": "gap",
       "path": "GET /repos/{}/{}/issues/{}/relates_to",
       "detail": "the vendor serves it; Backlot does not",
-      "note": "No corpus states that one issue relates to another: no field in `backlot/schemas/github.schema.json` links an issue record to a second issue, the absence the `dependencies/blocked_by`, `dependencies/blocking`, `sub_issues` and `parent` entries record for GitHub's other issue relationships. GitHub's description, read 2026-09-29, publishes three `relates_to` operations under `issues/issues`: this list, the `POST` that adds a related issue and the `DELETE` on `relates_to/{issue_id}` that removes one."
+      "note": "No corpus states that one issue relates to another: no field in `backlot/schemas/github.schema.json` links an issue record to a second issue. GitHub's other issue relationships (`dependencies/blocked_by`, `dependencies/blocking`, `sub_issues`, `parent`) are acknowledged gaps in this file as well. GitHub's description, read 2026-09-29, publishes three `relates_to` operations under `issues/issues`: this list, the `POST` that adds a related issue and the `DELETE` on `relates_to/{issue_id}` that removes one. Measured against api.github.com on 2026-09-29 with a token, the list answers 200 `[]` for two issues of a public repository that relate to none."
     },
     {
       "kind": "missing_operation",

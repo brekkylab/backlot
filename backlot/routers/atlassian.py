@@ -80,8 +80,7 @@ class ConfluencePage(_ALoose):
 # POST form in a `SearchAndReconcileRequestBean` body. Both of Atlassian's documents split them this
 # way, down to the schema name, and the live service follows. Both placements are declared here and
 # separated per method after FastAPI has built the document, by
-# :func:`backlot.openapi.jira_search_placement`. One ROUTE serves both methods, because Starlette
-# fills `Allow` from the single route that partially matched and real names both.
+# :func:`backlot.openapi.jira_search_placement`, because one ROUTE serves both methods.
 _X_JIRA_SEARCH = {
     "parameters": [qp("jql"), qp("maxResults", "integer"), qp("nextPageToken")],
     "requestBody": {

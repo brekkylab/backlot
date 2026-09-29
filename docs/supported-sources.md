@@ -55,12 +55,18 @@ the 400, 403 and 405 measured. The charset Jira names is Jira's alone.
 
 A `HEAD` is the `GET` with the body left off, and declares the length that body would have had on
 every 200 but `search`'s. An `OPTIONS` is a 404 in the `errors` list the 405 uses, except on
-`search`, which answers 204 naming its three methods. A path no route serves is JAX-RS's own 404 —
-JSON when the caller asks for `application/json` by name, the `<status>` XML document otherwise —
-and a path below `space/` or `content/`, or anything under `/wiki` outside the API mount, is the
-product's HTML 404 page instead. Every answer carries `atl-request-id`, `atl-traceid` (the same
-value without its dashes), `x-confluence-request-time` and `x-content-type-options`, and the
-content and space services add the three headers that say the v1 REST API is deprecated.
+`search`, which answers by `Accept` as JAX-RS does: its WADL for `*/*`, `application/xml` or no
+`Accept` at all, and 204 for `application/json` or `text/html`, naming its three methods either way.
+A path no route serves is JAX-RS's own 404 — JSON when the caller asks for `application/json` by
+name, the `<status>` XML document otherwise — and a path below `space/` or `content/`, or anything
+under `/wiki` outside the API mount, is the product's HTML 404 page instead; a caller with no
+credential is sent from `/wiki/…` outside `/wiki/rest` to log in. An operation Confluence publishes
+that no route here serves refuses a caller with no credential with a served route's 403, or from a
+few services with `Current user not permitted to use Confluence`, and a caller whose credential
+resolves gets the 404 an unserved path gets. Every answer carries `atl-request-id`, `atl-traceid`
+(the same value without its dashes), `x-confluence-request-time`, `x-content-type-options` and
+`x-xss-protection`, and what the content and space services' routes answer adds the three headers
+that say the v1 REST API is deprecated.
 
 ### Fireflies — `/fireflies/graphql`
 
@@ -310,16 +316,24 @@ Connect token is the bare `application/json`.
 A trailing slash is not part of a path on either product, and a run of slashes inside one is a
 single slash — both spellings answer what the canonical one answers, though a refusal echoes the
 path with its trailing slash kept. A `HEAD` is the `GET` with the body left off and declares no
-length, which is where Jira parts from Confluence. An `OPTIONS` is 200 with an empty `text/html`
-body, an empty `Accept-Patch` and an `Allow` naming the methods the vendor serves at that route —
-the `PUT` and `DELETE` on an issue among them, which Backlot does not serve. A path no route serves
-is RFC 7807 at 404 with `No endpoint <METHOD> <path>.`, ahead of the credential — under
-`/atlassian/rest` only, since everything the site serves outside the two API mounts answers the
-product's HTML page instead. Every answer carries `atl-request-id`,
-`atl-traceid`, `x-arequestid`, `cache-control` and `x-content-type-options`; a caller whose
-credential resolves also gets its own `x-aaccountid` and the burst quota's four
+length but on the gateway's 401, which is where Jira parts from Confluence. An `OPTIONS` is 200 for
+a caller whose credential resolves, with an empty `text/html` body, an empty `Accept-Patch`, an
+`Allow` naming the methods the vendor serves at that route — the `PUT` and `DELETE` on an issue
+among them, which Backlot does not serve — and a quota of its own; anyone else gets the gateway's
+401. A `PATCH` never reaches either product: the gateway answers 400 on Jira and 405 on Confluence,
+and a `TRACE` is the CDN's 405. A path no route serves is RFC 7807 at 404 with
+`No endpoint <METHOD> <path>.` where Jira publishes nothing at it; at an operation it publishes and
+no route here serves, a caller with no credential gets the gateway's 401
+`Client must be authenticated to access this resource.` where the operation will not run anonymously
+(`backlot/fidelity/jira_gateway.json`), and otherwise that 404, the gap the baseline acknowledges.
+That is under `/atlassian/rest` only: outside the two API mounts the site is its web app, `/browse`
+at 200, the root a redirect to log in or to `/jira/for-you`, and Jira's own not-found page for the
+rest. Every answer carries `atl-request-id`, `atl-traceid`, `x-content-type-options` and
+`x-xss-protection`, and Jira's own answers add `x-arequestid`, `cache-control` and
+`timing-allow-origin`, which the gateway's refusals (the Connect-token 403, a `PATCH`) do not carry;
+a caller whose credential resolves also gets its own `x-aaccountid` and the burst quota's four
 (`ratelimit`, `ratelimit-policy`, `x-ratelimit-limit`, `x-ratelimit-remaining`), which an anonymous
-request and the no-endpoint 404 carry none of.
+request carries none of and the no-endpoint 404 carries only the account id of.
 
 ### Linear — `/linear/graphql`
 

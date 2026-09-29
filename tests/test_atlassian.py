@@ -216,7 +216,14 @@ def test_jira_refuses_a_bearer_it_cannot_read_as_a_connect_token(client):
     # The gateway's refusal carries the two ids and `nosniff`, and none of Jira's own headers.
     assert r.headers["atl-traceid"] == r.headers["atl-request-id"].replace("-", "")
     assert r.headers["x-content-type-options"] == "nosniff"
-    for absent in ("x-arequestid", "cache-control", "x-aaccountid", "x-ratelimit-limit"):
+    assert r.headers["x-xss-protection"] == "1; mode=block"
+    for absent in (
+        "x-arequestid",
+        "cache-control",
+        "timing-allow-origin",
+        "x-aaccountid",
+        "x-ratelimit-limit",
+    ):
         assert absent not in r.headers, absent
     # And it is refused ahead of the route: serverInfo needs no credential and still answers 403,
     # which is why the check is not in the caller helper.
@@ -2577,7 +2584,8 @@ def test_atlassian_a_head_is_the_get_without_its_body(client, admin_h, keys):
     spelling.
 
     The length is where the two part, and why ``errors.head_content_length`` exists. Jira declares
-    none on either method. Confluence declares the `GET` body's own length on every 200 but
+    none on either method, but on the gateway's 401, which carries its 53 bytes (measured
+    2026-09-30). Confluence declares the `GET` body's own length on every 200 but
     `search`'s — `space` 1103, `content` 1536, `content/{id}` 3909, `child/comment` 214,
     `child/page` 211, `label` 207, `restriction/byOperation` 801, `space/{key}` 695, each read with
     `curl -I` against the `GET` beside it — and none on the 404, the 405 or the CQL 400.
@@ -2602,6 +2610,8 @@ def test_atlassian_a_head_is_the_get_without_its_body(client, admin_h, keys):
         ("/atlassian/rest/api/3/serverInfo/", admin_h),
         # the gateway's Connect-token 403, measured 2026-09-30 on `serverInfo`
         ("/atlassian/rest/api/3/serverInfo", {"Authorization": "Bearer nope"}),
+        # and its 401, which declares its 53 bytes, measured 2026-09-30 on `myself`
+        ("/atlassian/rest/api/3/myself", {}),
     ]
     statuses = []
     for path, headers in rows:
@@ -2610,7 +2620,8 @@ def test_atlassian_a_head_is_the_get_without_its_body(client, admin_h, keys):
         assert head.status_code == got.status_code, path
         assert head.headers["content-type"] == got.headers["content-type"], path
         search = path.startswith("/atlassian/wiki/rest/api/search")
-        if "/wiki/" in path and got.status_code == 200 and not search:
+        confluence_200 = "/wiki/" in path and got.status_code == 200 and not search
+        if confluence_200 or ("/wiki/" not in path and got.status_code == 401):
             assert head.headers["content-length"] == str(len(got.content)), path
         else:
             assert "content-length" not in head.headers, path
@@ -2620,7 +2631,7 @@ def test_atlassian_a_head_is_the_get_without_its_body(client, admin_h, keys):
         TestClient(recording).head(path, headers=headers)
         bodies = [m.get("body", b"") for m in sent if m["type"] == "http.response.body"]
         assert b"".join(bodies) == b"", path
-    assert statuses[-4:] == [404, 404, 200, 403]
+    assert statuses[-5:] == [404, 404, 200, 403, 401]
 
 
 @pytest.mark.parametrize(
@@ -2653,24 +2664,56 @@ def test_jira_answers_an_options_with_the_vendors_methods(client, admin_h, path,
     assert r.headers["allow"] == allow
     assert r.headers["accept-patch"] == ""
     assert r.content == b""
+    # not the burst bucket the route's reads count in: the same four on `serverInfo` and on an
+    # issue, measured 2026-09-30
+    assert r.headers["x-ratelimit-limit"] == "1000000000000"
+    assert r.headers["x-ratelimit-remaining"] == "999999999999"
+    assert r.headers["ratelimit-policy"] == '"jira-burst-based";q=1000000000000;w=1'
+    assert r.headers["ratelimit"] == '"jira-burst-based";r=999999999999;t=1'
 
 
-def test_confluence_answers_an_options_with_a_404_and_search_with_a_204(client, admin_h, keys):
+@pytest.mark.parametrize(
+    "path,accept,status,media_type",
+    [
+        ("/atlassian/wiki/rest/api/space", "*/*", 404, "application/json"),
+        ("/atlassian/wiki/rest/api/space/{space}", "*/*", 404, "application/json"),
+        ("/atlassian/wiki/rest/api/content", "*/*", 404, "application/json"),
+        ("/atlassian/wiki/rest/api/space/NOPESUCH", "*/*", 404, "application/json"),
+        ("/atlassian/wiki/rest/api/search", "*/*", 200, "application/xml"),
+        ("/atlassian/wiki/rest/api/search", "application/xml", 200, "application/xml"),
+        ("/atlassian/wiki/rest/api/search", None, 200, "application/vnd.sun.wadl+xml"),
+        ("/atlassian/wiki/rest/api/search", "application/json", 204, None),
+        ("/atlassian/wiki/rest/api/search", "text/html", 204, None),
+    ],
+)
+def test_confluence_answers_an_options_by_route_and_accept(
+    client, admin_h, keys, path, accept, status, media_type
+):
     """Measured 2026-09-22: an `OPTIONS` on a Confluence route is 404 in the `errors` list its 405
-    uses, on every route but `search`, which answers 204 naming its three methods."""
-    for path in (
-        "/atlassian/wiki/rest/api/space",
-        f"/atlassian/wiki/rest/api/space/{keys['space']}",
-        "/atlassian/wiki/rest/api/content",
-        "/atlassian/wiki/rest/api/space/NOPESUCH",
-    ):
-        r = client.request("OPTIONS", path, headers=admin_h)
-        assert r.status_code == 404, path
-        assert r.json() == errors_atlassian.CONFLUENCE_OPTIONS_NOT_FOUND, path
-    search = client.request("OPTIONS", "/atlassian/wiki/rest/api/search", headers=admin_h)
-    assert search.status_code == 204
-    assert search.headers["allow"] == errors_atlassian.CONFLUENCE_OPTIONS_204_ALLOW
-    assert search.content == b""
+    uses, on every route but `search`. Measured 2026-09-30: `search` answers by `Accept`, the way
+    JAX-RS does — its WADL for `*/*` and `application/xml`, the same document as
+    `application/vnd.sun.wadl+xml` for a request with no `Accept` at all, and 204 with no body for
+    `application/json` and `text/html` — naming its three methods each time. The WADL is real's,
+    3016 bytes on a site whose origin is 31 characters, with this server's origin in its two
+    URLs."""
+    request = client.build_request("OPTIONS", path.format(**keys), headers=admin_h)
+    if accept is None:
+        del request.headers["accept"]
+    else:
+        request.headers["accept"] = accept
+    r = client.send(request)
+    assert r.status_code == status, r.text
+    if status == 404:
+        assert r.json() == errors_atlassian.CONFLUENCE_OPTIONS_NOT_FOUND
+        return
+    assert r.headers["allow"] == errors_atlassian.CONFLUENCE_OPTIONS_204_ALLOW
+    if status == 204:
+        assert r.content == b"" and "content-type" not in r.headers
+        return
+    assert r.headers["content-type"] == media_type
+    assert r.text.startswith('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><application')
+    assert 'resources base="http://testserver/wiki/rest/api/"' in r.text
+    assert len(r.content) == 3016 - 2 * 31 + 2 * len("http://testserver")
 
 
 _NO_ENDPOINT_PATHS = [
@@ -2718,6 +2761,83 @@ def test_jira_answers_a_path_it_mounts_nothing_at_as_rfc_7807(
     }
 
 
+_CREDENTIALS = {
+    "none": {},
+    "failed-pair": FAILED_PAIR,
+    "unknown-scheme": {"Authorization": "Bogus xyz"},
+    "unreadable-bearer": {"Authorization": "Bearer nope"},
+}
+
+
+@pytest.mark.parametrize(
+    "method,path,credential,status",
+    [
+        # an operation Jira publishes, no route here serves and the gateway will not run anonymously
+        ("GET", "/atlassian/rest/api/3/myself", "none", 401),
+        ("GET", "/atlassian/rest/api/3/myself", "failed-pair", 401),
+        ("GET", "/atlassian/rest/api/3/myself", "unknown-scheme", 401),
+        ("DELETE", "/atlassian/rest/api/3/screens/999999999", "none", 401),
+        # the controls: one that runs anonymously on real, where Backlot has no operation to run,
+        # and the same gated path with a credential, both the baseline's gap; and a bearer it
+        # cannot read on a GET, which is the Connect-token 403 before any of this
+        ("GET", "/atlassian/rest/api/3/dashboard", "none", 404),
+        ("GET", "/atlassian/rest/api/3/myself", "admin", 404),
+        ("GET", "/atlassian/rest/api/3/myself", "unreadable-bearer", 403),
+        # an `OPTIONS` on a path Jira publishes something at, served here or not
+        ("OPTIONS", "/atlassian/rest/api/3/serverInfo", "none", 401),
+        ("OPTIONS", "/atlassian/rest/api/3/serverInfo", "failed-pair", 401),
+        ("OPTIONS", "/atlassian/rest/api/3/serverInfo", "unknown-scheme", 401),
+        ("OPTIONS", "/atlassian/rest/api/3/serverInfo", "unreadable-bearer", 401),
+        ("OPTIONS", "/atlassian/rest/api/3/issue/NOPE-1", "none", 401),
+        ("OPTIONS", "/atlassian/rest/api/3/dashboard", "none", 401),
+        ("OPTIONS", "/atlassian/rest/api/3/serverInfo", "admin", 200),
+        # and on a path it publishes nothing at, the URL's 404 whatever the credential
+        ("OPTIONS", "/atlassian/rest/api/3/nopesuchroute", "none", 404),
+        ("OPTIONS", "/atlassian/rest/api/3/nopesuchroute", "unreadable-bearer", 404),
+    ],
+)
+def test_jira_gateway_refuses_what_it_will_not_run_for_a_caller_it_cannot_name(
+    client, admin_h, method, path, credential, status
+):
+    """Measured on 2026-09-30: an operation whose `security` in Jira's document has no `{}` is
+    refused before Jira runs it, for a caller with no credential, the Basic pair it rejects or an
+    unknown scheme, with `401 text/html` `Client must be authenticated to access this resource.`,
+    `WWW-Authenticate: OAuth realm` naming the site and `X-Frame-Options: SAMEORIGIN`
+    (``scripts/gen_atlassian_gateway.py`` has the sweep). An `OPTIONS` gets the same 401 on any path
+    Jira publishes something at, an unreadable bearer included, and on a path it publishes nothing
+    at the URL answers first."""
+    headers = admin_h if credential == "admin" else _CREDENTIALS[credential]
+    r = client.request(method, path, headers=headers)
+    assert r.status_code == status, r.text
+    if status != 401:
+        assert "www-authenticate" not in r.headers
+        return
+    assert r.content == b"Client must be authenticated to access this resource."
+    assert r.headers["content-type"] == "text/html;charset=UTF-8"
+    assert r.headers["www-authenticate"] == 'OAuth realm="http%3A%2F%2Ftestserver"'
+    assert r.headers["x-frame-options"] == "SAMEORIGIN"
+    assert r.headers["cache-control"] == "no-cache, no-store, no-transform"
+    for name in ("x-arequestid", "atl-request-id", "timing-allow-origin", "x-xss-protection"):
+        assert name in r.headers, name
+    assert "x-aaccountid" not in r.headers
+    if credential == "failed-pair":
+        assert r.headers["x-seraph-loginreason"] == "AUTHENTICATED_FAILED"
+
+
+def test_the_gateways_operations_are_ones_no_route_serves():
+    """``backlot/fidelity/jira_gateway.json`` is written from the baseline's `missing_operation`
+    rows; a route added for one of them drops it from the baseline, and this is the reminder to
+    regenerate the file (``scripts/gen_atlassian_gateway.py``), which would otherwise refuse a
+    served operation's path for a method no route takes."""
+    from backlot.fidelity.comparisons import baseline_path
+
+    rows = json.loads(baseline_path("jira").read_text())["acknowledged"]
+    unserved = {row["path"] for row in rows if row["kind"] == "missing_operation"}
+    gateway = baseline_path("jira").parent.parent / "jira_gateway.json"
+    gated = json.loads(gateway.read_text())["operations"]
+    assert gated and set(gated) <= unserved
+
+
 @pytest.mark.parametrize(
     "path,accept,shape,echoed",
     [
@@ -2748,6 +2868,7 @@ def test_confluence_answers_an_unclaimed_segment_in_the_shape_accept_asks_for(
     headers = admin_h if accept is None else {**admin_h, "Accept": accept}
     r = client.get(path, headers=headers)
     assert r.status_code == 404, r.text
+    assert r.headers["cache-control"] == "no-transform"
     if shape == "json":
         assert r.headers["content-type"] == errors_atlassian.JAXRS_JSON_MEDIA_TYPE
         assert r.json()["status-code"] == 404
@@ -2791,8 +2912,9 @@ _ANSWERS = [
 def test_atlassian_headers_ride_every_answer_but_the_front_doors(client, admin_h):
     """Measured 2026-09-22 over 78 responses: both products put `atl-request-id` and `atl-traceid`
     on every answer, the second being the first without its dashes, and
-    `x-content-type-options: nosniff`; Jira adds a 32-hex `x-arequestid` and Confluence a 13-digit
-    millisecond `x-confluence-request-time`.
+    `x-content-type-options: nosniff` and `x-xss-protection: 1; mode=block`; Jira adds a 32-hex
+    `x-arequestid` and `timing-allow-origin: *`, and Confluence a 13-digit millisecond
+    `x-confluence-request-time`.
 
     Real mints a new value per response; this one is derived from the request, the divergence
     ``backlot.routers.atlassian.request_ids`` states and this pins — a corpus served twice answers
@@ -2814,12 +2936,18 @@ def test_atlassian_headers_ride_every_answer_but_the_front_doors(client, admin_h
             status, layer = refused
             assert r.status_code == status, (label, r.text)
             assert "allow" not in r.headers, label
-            gateway = ("atl-request-id", "atl-traceid", "x-content-type-options")
+            gateway = (
+                "atl-request-id",
+                "atl-traceid",
+                "x-content-type-options",
+                "x-xss-protection",
+            )
             for name in gateway:
                 assert (name in r.headers) == (layer == "gateway"), (label, name)
             for absent in (
                 "x-arequestid",
                 "cache-control",
+                "timing-allow-origin",
                 "x-ratelimit-limit",
                 "deprecation",
                 "x-confluence-request-time",
@@ -2831,11 +2959,14 @@ def test_atlassian_headers_ride_every_answer_but_the_front_doors(client, admin_h
         assert _UUID.fullmatch(request_id), (label, request_id)
         assert r.headers["atl-traceid"] == request_id.replace("-", ""), label
         assert r.headers["x-content-type-options"] == "nosniff", label
+        assert r.headers["x-xss-protection"] == "1; mode=block", label
         if label.startswith("jira"):
             assert re.fullmatch(r"[0-9a-f]{32}", r.headers["x-arequestid"]), label
+            assert r.headers["timing-allow-origin"] == "*", label
             assert "x-confluence-request-time" not in r.headers, label
         else:
             assert "x-arequestid" not in r.headers, label
+            assert "timing-allow-origin" not in r.headers, label
             assert re.fullmatch(r"\d{13}", r.headers["x-confluence-request-time"]), label
     again = client.get("/atlassian/rest/api/3/serverInfo", headers=admin_h)
     assert again.headers["atl-request-id"] == answers["jira 200"].headers["atl-request-id"]
@@ -2883,8 +3014,10 @@ def test_jira_reports_the_burst_quota_of_the_route(
 
 def test_jira_burst_quota_is_shared_by_the_routes_under_one_limit(client, admin_h, frozen_burst):
     """Measured: `field` and `serverInfo` sit in the 350 bucket and counted down together, where
-    `issue/{key}` has a bucket of its own."""
+    `issue/{key}` has a bucket of its own; an `OPTIONS` reports a quota of its own and counts in
+    neither (measured 2026-09-30)."""
     client.get("/atlassian/rest/api/3/serverInfo", headers=admin_h)
+    client.request("OPTIONS", "/atlassian/rest/api/3/serverInfo", headers=admin_h)
     field = client.get("/atlassian/rest/api/3/field", headers=admin_h)
     assert field.headers["x-ratelimit-remaining"] == "348"
     issue = client.get("/atlassian/rest/api/3/issue/NOPE-1", headers=admin_h)
@@ -2998,51 +3131,195 @@ def test_atlassian_serves_a_path_the_gateway_normalises(client, admin_h, path):
 
 
 @pytest.mark.parametrize(
-    "path,shape",
+    "method,path,anonymous,refusal",
     [
-        ("/atlassian/rest", "problem"),
-        ("/atlassian/rest/nope/thing", "problem"),
-        ("/atlassian/wiki/rest/api/nopesuchroute", "xml"),
-        ("/atlassian/wiki/nope", "html"),
-        ("/atlassian/wiki/rest/nope", "html"),
-        ("/atlassian/foo", "html"),
-        ("/atlassian/restx/api/3/serverInfo", "html"),
-        ("/atlassian/ex/jira/nope/rest/api/3/issue/NOPE-1", "html"),
-        ("/atlassian/browse/NOPE-1", "html"),
-        # below a resource the API serves, the product's page rather than the API's 404
-        ("/atlassian/wiki/rest/api/space/{space}/nope", "html"),
-        ("/atlassian/wiki/rest/api/space/NOPESUCH/deeper", "html"),
-        ("/atlassian/wiki/rest/api/content/{content}/nope", "html"),
-        ("/atlassian/wiki/rest/api/content/nope/deeper", "html"),
-        # The mount itself keeps its slash: stripped, it would be a path no route matches, and
-        # Starlette's slash redirect would send the client back to the spelling it asked for.
-        # Real's `/` is a 302 onto the site's page, which Backlot has nothing to redirect to.
-        ("/atlassian/", "html"),
-        # Backlot's own paths that only start like the mount: FastAPI's 404 and none of the
-        # products' headers, where a prefix test without the boundary would answer them as Jira.
-        ("/atlassianx", "backlot"),
-        ("/atlassianx/rest/api/3/serverInfo", "backlot"),
+        ("GET", "/atlassian/wiki/rest/api/user/current", True, "forbidden"),
+        ("GET", "/atlassian/wiki/rest/api/content/{content}/restriction", True, "forbidden"),
+        ("DELETE", "/atlassian/wiki/rest/api/content/{content}/label/nope", True, "forbidden"),
+        # served on real, published in no document
+        ("GET", "/atlassian/wiki/rest/api/content/{content}/history", True, "forbidden"),
+        ("GET", "/atlassian/wiki/rest/api/space/{space}/content", True, "forbidden"),
+        ("GET", "/atlassian/wiki/rest/api/audit", True, "not-permitted"),
+        ("GET", "/atlassian/wiki/rest/api/template/blueprint", True, "not-permitted"),
+        (
+            "GET",
+            "/atlassian/wiki/rest/atlassian-connect/1/app/module/dynamic",
+            True,
+            "not-permitted",
+        ),
+        # the controls: one real runs with no credential at all, and a caller whose credential
+        # resolves, which both get what an unserved path gets — the gap the baseline acknowledges
+        ("GET", "/atlassian/wiki/rest/api/contentbody/convert/async/bulk/tasks", True, None),
+        ("GET", "/atlassian/wiki/rest/api/user/current", False, None),
+        ("GET", "/atlassian/wiki/rest/api/content/{content}/history", False, None),
     ],
 )
-def test_atlassian_answers_by_which_mount_the_path_is_under(client, admin_h, keys, path, shape):
+def test_confluence_refuses_an_operation_it_publishes_to_a_caller_it_cannot_name(
+    client, admin_h, keys, method, path, anonymous, refusal
+):
+    """Measured on 2026-09-30 with no credential, on each GET the Confluence baseline lists as
+    `missing_operation` and on writes and operations outside the document: a served route's 403, in
+    real's two members (190 bytes); or, from the services named in
+    ``backlot.routers.atlassian._CONFLUENCE_NOT_PERMITTED``,
+    `Current user not permitted to use Confluence`, with a `cache-control` and a 1970 `expires` on
+    all but the Connect module path."""
+    r = client.request(method, path.format(**keys), headers={} if anonymous else admin_h)
+    if refusal is None:
+        assert r.status_code == 404, r.text
+        return
+    assert r.status_code == 403
+    assert r.headers["content-type"] == "application/json"
+    if refusal == "forbidden":
+        assert r.content == errors_atlassian.CONFLUENCE_FORBIDDEN_BODY
+        assert len(r.content) == 190
+        assert "expires" not in r.headers
+        return
+    assert (
+        r.content == b'{"message":"Current user not permitted to use Confluence","statusCode":403}'
+    )
+    if path.endswith("/app/module/dynamic"):
+        assert "expires" not in r.headers and "cache-control" not in r.headers
+    else:
+        assert r.headers["cache-control"] == "no-cache, no-store, must-revalidate"
+        assert r.headers["expires"] == "Thu, 01 Jan 1970 00:00:00 GMT"
+
+
+_PROBLEM = errors_atlassian.PROBLEM_JSON
+_JAXRS_XML = errors_atlassian.JAXRS_XML_MEDIA_TYPE
+_PAGE = errors_atlassian.HTML_MEDIA_TYPE
+_JIRA_PAGE = errors_atlassian.JIRA_SITE_HTML_MEDIA_TYPE
+
+
+@pytest.mark.parametrize(
+    "path,anonymous,status,media_type,location,cache",
+    [
+        ("/atlassian/rest", False, 404, _PROBLEM, None, "no-cache, no-store, no-transform"),
+        (
+            "/atlassian/rest/nope/thing",
+            False,
+            404,
+            _PROBLEM,
+            None,
+            "no-cache, no-store, no-transform",
+        ),
+        ("/atlassian/wiki/rest/api/nopesuchroute", False, 404, _JAXRS_XML, None, "no-transform"),
+        ("/atlassian/wiki/rest/nope", False, 404, _PAGE, None, None),
+        ("/atlassian/wiki/rest/nope", True, 404, _PAGE, None, None),
+        # below a resource the API serves, the product's page rather than the API's 404
+        ("/atlassian/wiki/rest/api/space/{space}/nope", False, 404, _PAGE, None, None),
+        ("/atlassian/wiki/rest/api/space/NOPESUCH/deeper", False, 404, _PAGE, None, None),
+        ("/atlassian/wiki/rest/api/content/{content}/nope", False, 404, _PAGE, None, None),
+        ("/atlassian/wiki/rest/api/content/{content}/nope", True, 404, _PAGE, None, None),
+        ("/atlassian/wiki/rest/api/content/nope/deeper", False, 404, _PAGE, None, None),
+        # the Confluence web app sends a caller with no credential to log in
+        ("/atlassian/wiki/nope", False, 404, _PAGE, None, None),
+        (
+            "/atlassian/wiki/nope",
+            True,
+            302,
+            None,
+            "{site}/login?application=confluence&dest-url=%2Fwiki%2Fnope",
+            None,
+        ),
+        # Jira's own not-found page, its charset in lower case
+        ("/atlassian/foo", False, 404, _JIRA_PAGE, None, None),
+        ("/atlassian/foo", True, 404, _JIRA_PAGE, None, None),
+        ("/atlassian/restx/api/3/serverInfo", False, 404, _JIRA_PAGE, None, None),
+        ("/atlassian/ex/jira/nope/rest/api/3/issue/NOPE-1", False, 404, _JIRA_PAGE, None, None),
+        # the Jira web app
+        (
+            "/atlassian/browse",
+            True,
+            200,
+            "text/html;charset=UTF-8",
+            None,
+            "no-cache, no-store, must-revalidate",
+        ),
+        (
+            "/atlassian/browse/",
+            True,
+            200,
+            "text/html",
+            None,
+            "no-store, max-age=0, stale-if-error=0",
+        ),
+        (
+            "/atlassian/browse/",
+            False,
+            200,
+            "text/html",
+            None,
+            "no-store, max-age=0, stale-if-error=0",
+        ),
+        (
+            "/atlassian/browse/NOPE-1",
+            True,
+            200,
+            "text/html",
+            None,
+            "no-store, max-age=0, stale-if-error=0",
+        ),
+        (
+            "/atlassian/browse/NOPE-1",
+            False,
+            200,
+            "text/html; charset=utf-8",
+            None,
+            "no-store, max-age=0, stale-if-error=0",
+        ),
+        # The mount itself keeps its slash, since stripped it would be a path no route matches and
+        # Starlette's slash redirect would send the client back to the spelling it asked for; it
+        # is the site's root, which redirects.
+        (
+            "/atlassian/",
+            True,
+            302,
+            None,
+            "{site}/login.jsp?os_destination=http%3A%2F%2Ftestserver%2F",
+            None,
+        ),
+        ("/atlassian/", False, 302, None, "{site}/jira/for-you", None),
+        # Backlot's own paths that only start like the mount: FastAPI's 404 and none of the
+        # products' headers, where a prefix test without the boundary would answer them as Jira.
+        ("/atlassianx", False, 404, "backlot", None, None),
+        ("/atlassianx/rest/api/3/serverInfo", False, 404, "backlot", None, None),
+    ],
+)
+def test_atlassian_answers_by_which_mount_the_path_is_under(
+    client, admin_h, keys, path, anonymous, status, media_type, location, cache
+):
     """Measured 2026-09-22 on the site: `/rest` and `/rest/nope/thing` are Jira's RFC 7807, a
     segment under `/wiki/rest/api` is JAX-RS's 404, and everything else the host serves — `/foo`,
-    `/ex/jira/x`, `/restx/api/3/serverInfo`, `/browse/…`, `/wiki/nope`, and a path below `space/`
-    or `content/` — is the product's HTML page. So the mount decides the shape, not `is_confluence`
-    alone. Real's page is a ~30KB build-specific shell, so this serves its status and media type
-    with a stub."""
-    r = client.get(path.format(**keys), headers=admin_h, follow_redirects=False)
-    assert r.status_code == 404, r.text
-    if shape == "backlot":
+    `/ex/jira/x`, `/restx/api/3/serverInfo`, `/wiki/nope`, and a path below `space/` or `content/`
+    — is a product's HTML page. So the mount decides the shape, not `is_confluence` alone. Real's
+    pages are build-specific shells tens of kilobytes long, so this serves their status and media
+    type with a stub.
+
+    Measured 2026-09-30, with a credential and without one: Jira's page spells its charset in lower
+    case and Confluence's in upper; the Confluence web app sends a caller with no credential from
+    `/wiki/nope` to log in, where under `/wiki/rest` the page answers either way; `/browse` is the
+    Jira web app at 200, its media type by path and by caller; and the root is a 302, to log in or
+    to `/jira/for-you`. The caching each says is its own: Jira's API
+    `no-cache, no-store, no-transform`, JAX-RS's 404 `no-transform`, `/browse` and its static shell
+    below their own two, and the pages and the root nothing."""
+    r = client.get(
+        path.format(**keys), headers={} if anonymous else admin_h, follow_redirects=False
+    )
+    assert r.status_code == status, r.text
+    if media_type == "backlot":
         assert r.json() == {"detail": "Not Found"}
         assert "atl-request-id" not in r.headers
         return
     assert "atl-request-id" in r.headers
-    media = {
-        "problem": errors_atlassian.PROBLEM_JSON,
-        "xml": errors_atlassian.JAXRS_XML_MEDIA_TYPE,
-        "html": errors_atlassian.HTML_MEDIA_TYPE,
-    }[shape]
-    assert r.headers["content-type"] == media
-    if shape == "html":
+    assert r.headers.get("cache-control") == cache
+    # the web app's static shell is served without Jira's request id
+    assert ("x-arequestid" in r.headers) == (
+        not path.startswith(("/atlassian/wiki", "/atlassian/browse/"))
+    )
+    if location is not None:
+        assert r.headers["location"] == location.format(site="http://testserver")
+        assert r.content == b"" and "content-type" not in r.headers
+        return
+    assert r.headers["content-type"] == media_type
+    if status == 404 and media_type in (_PAGE, _JIRA_PAGE):
         assert r.text == errors_atlassian.HTML_NOT_FOUND

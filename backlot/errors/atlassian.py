@@ -44,6 +44,11 @@ CONFLUENCE_FORBIDDEN = (
     '403 FORBIDDEN "Request rejected because caller cannot access Confluence"'
 )
 CONFLUENCE_UNAUTHORIZED = "Unauthorized"
+#: That 403 as real sends it, byte for byte: two members, 190 bytes on 2026-09-30, where the shared
+#: envelope a served route renders it in (:func:`http_body`) adds three more.
+CONFLUENCE_FORBIDDEN_BODY = json.dumps(
+    {"statusCode": 403, "message": CONFLUENCE_FORBIDDEN}, separators=(",", ":")
+).encode()
 
 # What a `<site>.atlassian.net` gateway answers a `Bearer` it cannot read as a Connect session
 # JWT, on every Jira route — `serverInfo` and `field`, which need no credential, included. One
@@ -55,6 +60,23 @@ CONNECT_TOKEN_UNREADABLE = "Failed to parse Connect Session Auth Token"
 
 def connect_token_body() -> dict:
     return {"error": CONNECT_TOKEN_UNREADABLE}
+
+
+# What the gateway answers a request with no credential it resolves — none, a Basic pair it read
+# and rejected, an unknown scheme, and on an `OPTIONS` an unreadable bearer too — for an operation
+# it will not run anonymously: `401 text/html`, this line and nothing else, 53 bytes, with
+# `WWW-Authenticate: OAuth realm="<the site, percent-encoded>"` and `X-Frame-Options: SAMEORIGIN`.
+# Which operations those are is ``backlot.routers.atlassian.unmatched_path``'s to say; measured on
+# brekkylab.atlassian.net on 2026-09-30.
+GATEWAY_UNAUTHENTICATED = "Client must be authenticated to access this resource."
+
+# Confluence's second anonymous refusal, which a few of its services give instead of
+# :data:`CONFLUENCE_FORBIDDEN`: the members in the other order, and on every one measured but the
+# Connect module path, `cache-control: no-cache, no-store, must-revalidate` and a 1970 `expires`
+# beside it. Measured 2026-09-30; the paths are ``backlot.routers.atlassian``'s.
+CONFLUENCE_NOT_PERMITTED_BODY = (
+    b'{"message":"Current user not permitted to use Confluence","statusCode":403}'
+)
 
 
 def owns(path: str) -> bool:
@@ -569,6 +591,9 @@ def jaxrs_not_found(url: str, *, as_json: bool) -> tuple[str, str]:
 #: Real's body is a ~30KB build-specific shell whose script tags name the deploy; this is a stub
 #: with the status and the media type, which is the part a client branches on.
 HTML_MEDIA_TYPE = "text/html;charset=UTF-8"
+#: Jira's own site page for a path it serves nothing at — `/foo`, `/ex/jira/x`, `/restx/api/3/…`,
+#: titled "Oops, you've found a dead link." — spells the charset in lower case, measured 2026-09-30.
+JIRA_SITE_HTML_MEDIA_TYPE = "text/html;charset=utf-8"
 HTML_NOT_FOUND = (
     "<!DOCTYPE html><html><head><title>Not Found</title></head>"
     "<body><p>This page could not be found.</p></body></html>"
@@ -595,7 +620,9 @@ _CONFLUENCE_HEAD_NO_LENGTH = "/wiki/rest/api/search"
 def head_content_length(path: str, status_code: int) -> bool:
     """Whether a `HEAD` at ``path`` declares the `GET` body's length, as real does."""
     if not is_confluence(path):
-        return False
+        # Jira's own answers are chunked, so a `HEAD` declares no length; the gateway's 401 carries
+        # one, and the `HEAD` beside it does too (53 on `myself`, measured 2026-09-30)
+        return status_code == 401
     if _instance(path) == _CONFLUENCE_HEAD_NO_LENGTH:
         return False
     return 200 <= status_code < 300

@@ -502,10 +502,13 @@ async def refuse_a_bearer_jira_cannot_read(request: Request, call_next):
     The body is spelled the way real spells it, a space after the colon (fifteen of them on
     2026-09-30), and this runs inside :func:`answer_head_as_the_get_without_its_body`: a `HEAD` is
     refused as its GET is and so carries no `content-length`, as real's did on `serverInfo` and on
-    `nopesuchroute` the same day.
+    `nopesuchroute` the same day. An `OPTIONS` is not refused here: real answers one with an
+    unreadable bearer as it answers one with none (``backlot.routers.atlassian._options_answer``).
     """
-    if request.url.path.startswith("/atlassian/rest/") and auth.atlassian_bearer_unreadable(
-        request
+    if (
+        request.method != "OPTIONS"
+        and request.url.path.startswith("/atlassian/rest/")
+        and auth.atlassian_bearer_unreadable(request)
     ):
         body = json.dumps(errors.atlassian.connect_token_body())
         return Response(body, status_code=403, media_type="application/json")
@@ -611,7 +614,8 @@ async def report_atlassian_headers(request: Request, call_next):
     """Put on every `/atlassian` answer the headers real sends beside the body.
 
     Both products name the request: `atl-request-id` and `atl-traceid`, the second being the first
-    without its dashes. Jira adds `x-arequestid`, its own `cache-control`, and — once a credential
+    without its dashes, beside `x-content-type-options` and `x-xss-protection`. Jira adds
+    `x-arequestid`, its own `cache-control`, `timing-allow-origin`, and — once a credential
     resolves — the caller's account id and the burst quota's four, where an anonymous request gets
     none of those five and the 404 for a path it mounts no endpoint at gets the account id but none
     of the four. Confluence stamps a millisecond clock and says its v1 REST API is deprecated on the
@@ -624,8 +628,12 @@ async def report_atlassian_headers(request: Request, call_next):
 
     Deliberately not served: `set-cookie`, which real sends as an XSRF token on an ANONYMOUS Jira
     200 alone (measured 2026-09-22; none of the authenticated answers carried one) and which would
-    change what a browser-shaped client does next, and `atl-confluence-via`, whose value names the
-    Atlassian host that served the request and which Backlot has nothing to derive from.
+    change what a browser-shaped client does next; `atl-confluence-via`, whose value names the
+    Atlassian host that served the request and which Backlot has nothing to derive from;
+    `strict-transport-security`, which real's CDN sends on every answer and which pins a host to
+    HTTPS in a browser that reads it, so it has no place on a server reached over plain HTTP; and
+    `vary`, which names the negotiation real's edge does on `Accept-Encoding` and this server does
+    not do.
     """
     response = await call_next(request)
     if errors.atlassian.owns(request.url.path):

@@ -3,7 +3,7 @@
   "endpoints": [
     "https://api.linear.app/graphql"
   ],
-  "measured": "2026-09-17",
+  "measured": "2026-09-29",
   "acknowledged": [
     {
       "kind": "missing_field",
@@ -22,6 +22,13 @@
       "severity": "gap",
       "path": "AgentSession.archivedAt",
       "detail": "vendor serves archivedAt: DateTime; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "AgentSession.codingHarness",
+      "detail": "vendor serves codingHarness: AgentSessionCodingHarness; Backlot does not",
+      "note": "Linear's own description marks it internal: \"[Internal] Coding harness metadata for this cloud or local session.\" It joins the family whose gap is recorded on `Query.agentSession`, and it carries a note of its own because the 2026-09-24 scheduled run read it as new surface. Measured against api.linear.app on 2026-09-29: it takes no argument and answers an `AgentSessionCodingHarness` (\"[Internal] Coding harness metadata for a cloud or local coding session.\"), an object of two fields, `harness` and `modelLabel`, which this schema does not declare."
     },
     {
       "kind": "missing_field",
@@ -2865,7 +2872,7 @@
       "severity": "gap",
       "path": "Query.agentSession",
       "detail": "vendor serves agentSession: AgentSession!; Backlot does not",
-      "note": "No corpus states an agent session. A Linear record here is an issue with its team, its comments and the people on it; nothing in it says an agent was delegated a piece of work, what it did while it held it, or what machine it ran on, so the whole family is a gap \u2014 `agentSession`, `agentSessions`, `agentSessionSandbox`, `agentSessionSshAddress`, `agentActivity`, `agentActivities`, `agentSkill` and `agentSkills`. Backlot states that absence rather than leaving it open: `User.supportsAgentSessions` resolves to `false` and `Comment.agentSession` to null, and `AgentSession` itself is the id-only stub that field and the `@linear/sdk` fragments need in order to validate. Measured against api.linear.app on 2026-09-10, the vendor's `AgentSession` carries 31 fields, five of them deprecated, and the 30 it declares beyond `id` are the `AgentSession.*` entries this file opens with; most are live session state (`status`, `startedAt`, `endedAt`, `summary`, `plan`, `context`, `sourceMetadata`, `activities`, `pullRequest`, `pullRequests`, `codingHarnessModelLabel`), over `AgentSessionStatus`, `AgentActivityConnection`, `PullRequest` and `AgentSessionToPullRequestConnection`, none of which this schema declares."
+      "note": "No corpus states an agent session. A Linear record here is an issue with its team, its comments and the people on it; nothing in it says an agent was delegated a piece of work, what it did while it held it, or what machine it ran on, so the whole family is a gap \u2014 `agentSession`, `agentSessions`, `agentSessionSandbox`, `agentSessionSshAddress`, `agentActivity`, `agentActivities`, `agentSkill` and `agentSkills`. Backlot states that absence rather than leaving it open: `User.supportsAgentSessions` resolves to `false` and `Comment.agentSession` to null, and `AgentSession` itself is the id-only stub that field and the `@linear/sdk` fragments need in order to validate. Measured against api.linear.app on 2026-09-29, the vendor's `AgentSession` carries 32 fields, five of them deprecated, and the 31 it declares beyond `id` are the `AgentSession.*` entries this file opens with; most are live session state (`status`, `startedAt`, `endedAt`, `summary`, `plan`, `context`, `sourceMetadata`, `activities`, `pullRequest`, `pullRequests`, `codingHarnessModelLabel`, `codingHarness`), over `AgentSessionStatus`, `AgentActivityConnection`, `PullRequest`, `AgentSessionToPullRequestConnection` and `AgentSessionCodingHarness`, none of which this schema declares."
     },
     {
       "kind": "missing_field",
@@ -3053,6 +3060,13 @@
       "severity": "gap",
       "path": "Query.cycles",
       "detail": "vendor serves cycles: CycleConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.dependencyPackageMetadata",
+      "detail": "vendor serves dependencyPackageMetadata: [DependencyPackageMetadataResult!]!; Backlot does not",
+      "note": "No corpus states it: it answers package-registry data rather than anything a Linear workspace holds. Linear's own description: \"Registry metadata (license, publish date, weekly download count) for a batch of dependency package versions, used by the dependency lock file diff preview. Cached across all workspaces since registry data isn't workspace-specific. A package the registry has no data for (or an unsupported ecosystem) is simply omitted from the result rather than erroring. At most 500 packages per request.\" Measured against api.linear.app on 2026-09-29: it takes one argument, `packages: [DependencyPackageInput!]!`, each an `ecosystem`, a `name` and a `version`, and answers `[DependencyPackageMetadataResult!]!`, whose five fields are `name`, `version`, `license`, `publishedAt` and `weeklyDownloads`. This schema declares none of those types."
     },
     {
       "kind": "missing_field",

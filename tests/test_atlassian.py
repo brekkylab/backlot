@@ -2044,11 +2044,8 @@ def test_jira_search_post_refuses_the_leading_bytes_real_refuses(client, admin_h
 
 
 def test_jira_search_advertises_both_its_methods_when_it_refuses_a_third(client, admin_h):
-    """Measured: real answers `PUT` with `Allow: POST, GET`. The header comes from the measured
-    table (`errors.atlassian.jira_allow`), and before that from Starlette, which filled it from the
-    single route that partially matched — either way, serving the two methods from a route each
-    would advertise one of them, which is why the per-method split is made in the served document
-    instead (see `openapi.jira_search_placement`)."""
+    """Measured: real answers `PUT` with `Allow: POST, GET`. The header is the measured table's
+    (`errors.atlassian.jira_allow`), which is keyed by the path whatever route serves it."""
     for version in ("2", "3"):
         r = client.request("PUT", f"/atlassian/rest/api/{version}/search/jql", headers=admin_h)
         assert r.status_code == 405, r.text
@@ -2511,7 +2508,7 @@ def test_confluence_refuses_the_permission_read_before_it_resolves_the_key(clien
     assert "allow" not in absent.headers
 
 
-# --- what answers before, and around, a route (#311, #315, #325) -----------------------------
+# --- what answers before, and around, a route ------------------------------------------------
 
 
 @pytest.fixture(scope="module")
@@ -2554,7 +2551,7 @@ def _routes(keys: dict[str, str]) -> list[str]:
 def test_atlassian_a_head_is_the_get_without_its_body(client, admin_h, keys):
     """Measured on Atlassian Cloud 2026-09-22, a `HEAD` beside each `GET` the same minute
     over all 24 routes: both products answer the `GET`'s status and `content-type` with nothing in
-    the body, where FastAPI's ``APIRoute`` answered every one of them 405.
+    the body.
 
     The length is where the two part, and why ``errors.head_content_length`` exists. Jira declares
     none on either method. Confluence declares the `GET` body's own length on every 200 but
@@ -2657,7 +2654,7 @@ def test_every_jira_route_carries_a_measured_options_allow(client):
 )
 def test_jira_answers_a_path_it_mounts_nothing_at_as_rfc_7807(client, admin_h, method, path):
     """Measured 2026-09-22 on each of these paths: 404 `application/problem+json` naming the method
-    as sent and the vendor path twice. Backlot answered the shared `statusCode` envelope."""
+    as sent and the vendor path twice."""
     r = client.request(method, path, headers=admin_h)
     vendor_path = path[len("/atlassian") :]
     assert r.status_code == 404, r.text
@@ -2751,7 +2748,7 @@ _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9
 def test_atlassian_every_answer_names_the_request(client, admin_h, keys):
     """Measured 2026-09-22 over 78 responses: both products put `atl-request-id` and `atl-traceid`
     on every answer, the second being the first without its dashes, and Jira adds a 32-hex
-    `x-arequestid`. Backlot answered four headers and none of them an identifier.
+    `x-arequestid`.
 
     Real mints a new value per response; this one is derived from the request, the divergence
     ``backlot.routers.atlassian.request_ids`` states and this pins — a corpus served twice answers
@@ -2962,8 +2959,7 @@ def test_atlassian_a_method_the_front_door_refuses_carries_none_of_the_headers(
 )
 def test_atlassian_serves_a_path_the_gateway_normalises(client, admin_h, path):
     """Measured 2026-09-22: a trailing slash, a doubled one and a run in the middle each answer
-    what the canonical spelling answers, on both products. Starlette redirected the first two with
-    a 307 and, once the catch-all was mounted, would have refused every one of them outright."""
+    what the canonical spelling answers, on both products."""
     canonical = re.sub("/{2,}", "/", path).rstrip("/")
     served = client.get(path, headers=admin_h, follow_redirects=False)
     assert served.status_code == 200, served.text

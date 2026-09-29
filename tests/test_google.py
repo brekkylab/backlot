@@ -1617,8 +1617,8 @@ def test_angle_brackets_are_escaped_in_a_google_success(tmp_path):
 
 
 def test_a_callback_changes_nothing_outside_google(client, admin_h):
-    """The handler serves Atlassian and GitHub too, and both keep exactly the `JSONResponse` they
-    had, each vendor's own charset (``errors.github.json_media_type``,
+    """The handler serves Atlassian and GitHub too, and a `callback` leaves each answering its own
+    `JSONResponse`, each vendor's own charset (``errors.github.json_media_type``,
     ``errors.atlassian.json_media_type``) included. The Jira half asks a route that exists for a
     resource that does not, so what it pins is the shared envelope rather than the RFC 7807 shape a
     path with no route answers (``errors.atlassian.no_endpoint``).

@@ -2180,9 +2180,9 @@ async def unmatched_path(request: Request, rest: str) -> Response:
     A path with no route is Jira's RFC 7807 `No endpoint <METHOD> <path>.` (see
     `errors.atlassian.no_endpoint`) or Confluence's own pair of shapes (see
     :func:`_confluence_not_found`), and an `OPTIONS` on such a path is that same answer — measured
-    on both products 2026-09-22. A method a route does not declare keeps the 405 each product
-    already answers (`errors.atlassian.method_not_allowed`), because that 405 is measured too and
-    this route is the only thing standing between the request and it; `OPTIONS` is the exception,
+    on both products 2026-09-22. A method a route does not declare is the 405 each product answers
+    (`errors.atlassian.method_not_allowed`, measured too), raised here because this route takes
+    every method on every path it owns and so receives that request; `OPTIONS` is the exception,
     and :func:`_options_answer` is what real gives it.
     """
     if _some_atlassian_route_matches(request):

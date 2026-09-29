@@ -413,9 +413,8 @@ async def normalise_the_slashes_in_an_atlassian_path(request: Request, call_next
 
     Ahead of routing, because the answer for a path no route matches is a route of its own
     (`atlassian.unmatched_router`), which would otherwise claim every slashed spelling of a served
-    one; Starlette's `redirect_slashes` answered them a 307 before that route existed, which is not
-    what real sends either. GitHub's trailing slash is the opposite rule and has its own middleware
-    above -- the two vendors are measured separately.
+    one. GitHub's trailing slash is the opposite rule and has its own middleware above -- the two
+    vendors are measured separately.
     """
     path = request.url.path
     if path.startswith(f"{errors.atlassian.PREFIX}/"):
@@ -474,34 +473,36 @@ async def answer_head_as_the_get_without_its_body(request: Request, call_next):
     Atlassian products answer one.
 
     Every route of theirs here is declared `GET` alone, and FastAPI's ``APIRoute`` does not add
-    `HEAD` to a GET route the way Starlette's ``Route`` does, so a `HEAD` reached Starlette's 405
-    with `allow: GET` on every route, whatever the GET would have answered. Real answers the GET's own
-    status and headers with nothing in the body: `content-length` of the body the GET would have
-    carried and `Link` where the GET has one, on the 200s, the 404 for a repository that does not
-    exist, the 401 for no credential, the 422 for a blank search `q` and code search's text/plain
-    400 alike (measured against api.github.com on 2026-09-07 with `curl -I`, each `HEAD` beside its
-    `GET` the same minute). An existence check, `requests.head(url)` or `curl -I`, is what a client
-    sends a `HEAD` for, and a 405 for both the repository that exists and the one that does not
-    cannot tell them apart.
+    `HEAD` to a GET route the way Starlette's ``Route`` does, so without this a `HEAD` is
+    Starlette's 405 with `allow: GET` on every route, whatever the GET answers. Real answers the
+    GET's own status and headers with nothing in the body: `content-length` of the body the GET
+    would have carried and `Link` where the GET has one, on the 200s, the 404 for a repository that
+    does not exist, the 401 for no credential, the 422 for a blank search `q` and code search's
+    text/plain 400 alike (measured against api.github.com on 2026-09-07 with `curl -I`, each `HEAD`
+    beside its `GET` the same minute). An existence check, `requests.head(url)` or `curl -I`, is
+    what a client sends a `HEAD` for, and a 405 for both the repository that exists and the one that
+    does not cannot tell them apart.
 
     A middleware rather than `HEAD` in each route's ``methods``: FastAPI writes a `head` operation
-    into `/openapi.json` for every method a route declares, where real's own description declares
-    no `head` operation at all, so declaring it would hand `backlot diff --source github` operations
+    into `/openapi.json` for every method a route declares, where real's own description declares no
+    `head` operation at all, so declaring it would hand `backlot diff --source github` operations
     real lacks and the MCP slice tools that answer nothing a GET does not. The method is rewritten
     on the scope before routing, so the GET runs in full: the router's dependencies, the handler and
     the three middlewares inside this one, the version echo, the rate-limit count and the id-path
-    rewrite, see a GET and land on the answer by construction, and the charset middleware outside
-    it rewrites the copied `content-type` as it does the GET's. The body is read to the end to be
+    rewrite, see a GET and land on the answer by construction, and the charset middleware outside it
+    rewrites the copied `content-type` as it does the GET's. The body is read to the end to be
     measured rather than sent, because the `content-length` a client reads a `HEAD` for is the GET
     body's length and computing the body is the only way to have that number; a `HEAD` costs what
-    its GET costs, here as on real. What the two vendors do NOT share is the `content-length`:
-    GitHub declares the length of the body its `GET` would have carried, Jira declares none on
-    either method, and Confluence declares one on its 200s alone -- so that header is asked for
-    rather than assumed, through ``errors.head_content_length``.
-    The method goes back to `HEAD` on the scope once the GET has
-    answered, because the
-    server frames the response by it: uvicorn's httptools protocol reads ``scope["method"]`` when it
-    writes the body, sends nothing for a `HEAD`, and for a `GET` holds the body to the declared
+    its GET costs, here as on real.
+
+    What the two vendors do NOT share is the `content-length`: GitHub declares the length of the
+    body its `GET` would have carried, Jira declares none on either method, and Confluence declares
+    one on its 200s alone -- so that header is asked for rather than assumed, through
+    ``errors.head_content_length``.
+
+    The method goes back to `HEAD` on the scope once the GET has answered, because the server frames
+    the response by it: uvicorn's httptools protocol reads ``scope["method"]`` when it writes the
+    body, sends nothing for a `HEAD`, and for a `GET` holds the body to the declared
     `content-length`, so with the scope left saying `GET` the empty body this middleware sends was
     `RuntimeError: Response content shorter than Content-Length` in the server log and a reset
     connection for the client's next request (measured over uvicorn on a one-record corpus: a

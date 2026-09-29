@@ -29,6 +29,323 @@ from tests._helpers import (
     tok,
 )
 
+# What a trailing slash means on a `/github` path, per route. Measured against api.github.com on
+# 2026-09-22 with a token, each request carrying its own cache-buster (the readme rows' README-less
+# repository and three slashes on 2026-09-28):
+#
+#   path                          real
+#   ------------------------------|------------------------------------------------------------
+#   readme/, readme//             | 200, the repository's own README (the empty directory), or
+#                                 | the directory 404 when it holds none
+#   readme/{dir}                  | that directory's README, or a 404 naming the directory anchor
+#   readme///, readme/{dir}///    | the directory 404: the path may end in at most two slashes
+#   contents/{path}/              | 302 to /repositories/{id}/contents/{path}, before resolving
+#   git/trees/{ref}/, git/ref/…/  | 404 Not Found — the slash is part of the ref
+#   statuses/{sha}/               | 404 Not Found
+#   branches/{branch}/            | 404 Branch not found
+#   commits/{sha}/                | 422 No commit found for SHA: {sha with the slash}
+#
+# A trailing slash no route matches at all is `refuse_a_trailing_slash_on_github` in
+# `backlot.main`.
+
+_REF_SLASH_ROWS = [
+    # suffix, its status and message, and the status of the same suffix without the slash
+    ("git/trees/main/", 404, "Not Found", 200),
+    ("git/ref/heads/main/", 404, "Not Found", 200),
+    ("statuses/main/", 404, "Not Found", 200),
+    ("branches/main/", 404, "Branch not found", 200),
+    ("commits/main/", 422, "No commit found for SHA: main/", 200),
+    # the protection route does not match the slash, so the branch route answers it, as on real;
+    # without the slash it is the protection route's own 404
+    ("branches/main/protection/", 404, "Branch not found", 404),
+]
+
+
+@pytest.mark.parametrize(
+    "suffix, status, message, slash_free", _REF_SLASH_ROWS, ids=[r[0] for r in _REF_SLASH_ROWS]
+)
+def test_github_a_ref_ending_in_a_slash_is_refused(
+    gh_client, gh_org, gh_admin_h, suffix, status, message, slash_free
+):
+    """Measured: real reads the slash as part of the ref, so each route answers its own refusal for
+    a ref naming nothing."""
+    c, _ = gh_client
+    url = f"/github/repos/{gh_org}/codebase/{suffix}"
+    r = c.get(url, headers=gh_admin_h)
+    assert r.status_code == status, r.text
+    assert r.json()["message"] == message
+    # the control: the same URL without the slash
+    assert c.get(url.removesuffix("/"), headers=gh_admin_h).status_code == slash_free
+
+
+_CONTENTS_REDIRECT_ROWS = [
+    ("contents/src/", "contents/src"),
+    ("contents/src/main.py/", "contents/src/main.py"),
+    ("contents/no-such-dir/", "contents/no-such-dir"),
+    # measured on python/cpython: what the Location keeps encoded, what it decodes, and that a
+    # lower-case escape comes back upper-case (`_CONTENTS_LOCATION_SAFE`)
+    ("contents/a%3Fb/", "contents/a%3Fb"),
+    ("contents/a%23b/", "contents/a%23b"),
+    ("contents/my%20dir/", "contents/my%20dir"),
+    ("contents/a%24b%40c/", "contents/a%24b%40c"),
+    ("contents/%EB%AC%B8%EC%84%9C/", "contents/%EB%AC%B8%EC%84%9C"),
+    ("contents/%eb%ac%b8/", "contents/%EB%AC%B8"),
+    ("contents/a%28b%29/", "contents/a(b)"),
+    ("contents/a%2Fb/", "contents/a/b"),
+]
+
+
+@pytest.mark.parametrize(
+    "path, target", _CONTENTS_REDIRECT_ROWS, ids=[r[0] for r in _CONTENTS_REDIRECT_ROWS]
+)
+def test_github_a_contents_path_ending_in_a_slash_redirects(
+    gh_client, gh_org, gh_admin_h, path, target
+):
+    """Measured: a 302 to the id-keyed spelling without the slash, before the path resolves to
+    anything — a file, a directory and a path that names neither all redirect — with the path
+    encoded the way real encodes it."""
+    c, _ = gh_client
+    r = c.get(f"/github/repos/{gh_org}/codebase/{path}", headers=gh_admin_h, follow_redirects=False)
+    # the row is what went on the wire, not a spelling the client normalised first
+    assert r.request.url.raw_path.decode().endswith(f"/codebase/{path}")
+    assert r.status_code == 302
+    rid = synth.github_user_id("codebase")
+    assert r.headers["location"].endswith(f"/github/repositories/{rid}/{target}")
+    assert "?" not in r.headers["location"]
+
+
+def test_github_the_contents_redirect_removes_one_slash_and_names_a_content_type(
+    gh_client, gh_org, gh_admin_h
+):
+    """Measured: real removes ONE trailing slash per redirect — `contents/src//` points at
+    `contents/src/`, which redirects again — and the 302 carries `text/html;charset=utf-8`, no
+    space, and an empty body."""
+    c, _ = gh_client
+    r = c.get(
+        f"/github/repos/{gh_org}/codebase/contents/src//",
+        headers=gh_admin_h,
+        follow_redirects=False,
+    )
+    assert r.status_code == 302
+    assert r.headers["location"].endswith("/contents/src/")
+    assert r.headers["content-type"] == "text/html;charset=utf-8"
+    assert r.content == b""
+    again = c.get(r.headers["location"], headers=gh_admin_h, follow_redirects=False)
+    assert again.status_code == 302 and again.headers["location"].endswith("/contents/src")
+
+
+def test_github_the_contents_redirect_drops_the_ref_and_is_followable(
+    gh_client, gh_org, gh_admin_h
+):
+    """Measured: `?ref=main` is not carried into the `Location`. Following it answers the listing,
+    which is what makes the redirect usable rather than a dead end."""
+    c, _ = gh_client
+    r = c.get(
+        f"/github/repos/{gh_org}/codebase/contents/src/?ref=main",
+        headers=gh_admin_h,
+        follow_redirects=False,
+    )
+    assert r.status_code == 302 and "ref=" not in r.headers["location"]
+    followed = c.get(r.headers["location"], headers=gh_admin_h)
+    assert followed.status_code == 200 and isinstance(followed.json(), list)
+
+
+def test_github_a_bad_credential_is_answered_before_the_contents_redirect(gh_client, gh_org):
+    """Measured: an anonymous caller gets the 302 and a bearer real cannot read gets `Bad
+    credentials` first, so the credential is the earlier of the two."""
+    c, _ = gh_client
+    r = c.get(
+        f"/github/repos/{gh_org}/codebase/contents/src/",
+        headers={"Authorization": "Bearer nope"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 401 and r.json()["message"] == "Bad credentials"
+
+
+def test_github_the_id_keyed_spelling_redirects_the_same_way(gh_client, gh_org, gh_admin_h):
+    """Measured: `/repositories/{id}/contents/{path}/` answers the same 302 the login-keyed
+    spelling does, to the id-keyed path without the slash."""
+    c, _ = gh_client
+    rid = synth.github_user_id("codebase")
+    r = c.get(
+        f"/github/repositories/{rid}/contents/src/", headers=gh_admin_h, follow_redirects=False
+    )
+    assert r.status_code == 302
+    assert r.headers["location"].endswith(f"/github/repositories/{rid}/contents/src")
+
+
+def test_github_a_directory_readme_is_that_directorys_and_acl_scoped(tmp_path):
+    """Measured on python/cpython: `readme/Doc` is that directory's README, not the repository's,
+    with as many slashes around it as real reads past. The route reads corpus content, so a caller
+    the document is not visible to gets the 404 the repository's own lookup gives rather than the
+    file. Stated in a corpus of its own, since the bundled ones hold no directory README, none
+    spelt `readme.md`, and none to scope."""
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "github",
+                "doc_id": "gh-acl-root",
+                "repo": "scoped",
+                "subtype": "file",
+                "path": "README.md",
+                "content": "# the repository",
+                "author_email": "owner@x.com",
+                "visibility": "public",
+            },
+            {
+                "source_type": "github",
+                "doc_id": "gh-acl-dir",
+                "repo": "scoped",
+                "subtype": "file",
+                "path": "docs/README.md",
+                "content": "# the directory",
+                "author_email": "owner@x.com",
+                "visibility": "private",
+            },
+            {
+                # a second identity for the corpus to mint a token for, so the private file above
+                # has someone it is private FROM
+                "source_type": "github",
+                "doc_id": "gh-acl-outsider",
+                "repo": "scoped",
+                "title": "unrelated",
+                "content": "x",
+                "author_email": "outsider@x.com",
+                "visibility": "public",
+                "number": 1,
+            },
+            {
+                "source_type": "github",
+                "doc_id": "gh-lower-readme",
+                "repo": "lower",
+                "subtype": "file",
+                "path": "readme.md",
+                "content": "# spelt in lower case",
+                "author_email": "owner@x.com",
+                "visibility": "public",
+            },
+        ],
+    )
+    with client_for(s, reload=True) as c:
+        admin = {"Authorization": f"Bearer {s.admin_token}"}
+        org = c.get("/_meta/users", headers=admin).json()["org"]
+        tokens = yaml.safe_load(s.tokens_path.read_text())["users"]
+        outsider = next(u["token"] for u in tokens if u["email"] == "outsider@x.com")
+        url = f"/github/repos/{org}/scoped/readme/docs"
+        got = c.get(url, headers=admin).json()
+        assert got["path"] == "docs/README.md"
+        assert base64.b64decode(got["content"]).decode() == "# the directory"
+        root = c.get(f"/github/repos/{org}/scoped/readme", headers=admin).json()
+        assert root["path"] == "README.md"
+        # measured on python/cpython `Doc`: two trailing slashes and a doubled leading one still
+        # name the directory, a third trailing one does not
+        for tail in ("readme/docs/", "readme/docs//", "readme//docs"):
+            r = c.get(f"/github/repos/{org}/scoped/{tail}", headers=admin)
+            assert r.status_code == 200 and r.json()["path"] == "docs/README.md", tail
+        assert c.get(f"/github/repos/{org}/scoped/readme/docs///", headers=admin).status_code == 404
+        # measured on sindresorhus/awesome: a README spelt `readme.md` is the empty directory's too
+        lower = c.get(f"/github/repos/{org}/lower/readme/", headers=admin)
+        assert lower.status_code == 200 and lower.json()["path"] == "readme.md"
+        assert c.get(url, headers={"Authorization": f"Bearer {outsider}"}).status_code == 404
+
+
+def test_github_the_redirect_does_not_precede_the_repository(tmp_path):
+    """Measured: a repository that does not exist, an owner that does not, and a repository the
+    caller cannot see each answer 404 rather than the redirect, so the redirect cannot be built
+    before the repository resolves. Without this, a caller could tell a repository the corpus holds
+    from one it does not by whether the slash redirected, and read its id off the `Location`. The
+    admin's 302 on the same path is the control. Stated in a corpus of its own, since the bundled
+    ones hold no repository whose every document is private."""
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "github",
+                "doc_id": "gh-hidden-file",
+                "repo": "hidden",
+                "subtype": "file",
+                "path": "src/a.md",
+                "content": "x",
+                "author_email": "owner@x.com",
+                "visibility": "private",
+            },
+            {
+                # a second identity for the corpus to mint a token for, so the repository above
+                # has someone it is private FROM
+                "source_type": "github",
+                "doc_id": "gh-open-issue",
+                "repo": "open",
+                "title": "unrelated",
+                "content": "x",
+                "author_email": "outsider@x.com",
+                "visibility": "public",
+                "number": 1,
+            },
+        ],
+    )
+    with client_for(s, reload=True) as c:
+        admin = {"Authorization": f"Bearer {s.admin_token}"}
+        org = c.get("/_meta/users", headers=admin).json()["org"]
+        tokens = yaml.safe_load(s.tokens_path.read_text())["users"]
+        outsider = next(u["token"] for u in tokens if u["email"] == "outsider@x.com")
+
+        def slash(owner_repo, headers):
+            url = f"/github/repos/{owner_repo}/contents/src/"
+            return c.get(url, headers=headers, follow_redirects=False)
+
+        assert slash(f"{org}/hidden", admin).status_code == 302
+        for owner_repo, headers in (
+            (f"{org}/hidden", {"Authorization": f"Bearer {outsider}"}),
+            (f"{org}/no-such-repo-xyz", admin),
+            ("no-such-owner-xyz/hidden", admin),
+        ):
+            r = slash(owner_repo, headers)
+            assert r.status_code == 404, (owner_repo, r.text)
+            assert "location" not in r.headers
+
+
+@pytest.mark.parametrize("tail", ["readme/", "readme//"])
+def test_github_readme_with_an_empty_directory_is_the_repositorys_own(
+    gh_client, gh_org, gh_admin_h, tail
+):
+    """Measured: `readme/` and `readme//` are a 200 carrying the repository's README, where the
+    routes around it answer a trailing slash with a refusal."""
+    c, _ = gh_client
+    root = c.get(f"/github/repos/{gh_org}/codebase/readme", headers=gh_admin_h).json()
+    empty = c.get(f"/github/repos/{gh_org}/codebase/{tail}", headers=gh_admin_h)
+    assert empty.status_code == 200 and empty.json()["path"] == root["path"]
+
+
+_DIRECTORY_README_404_ROWS = [
+    # repo, path, message, where documentation_url ends
+    ("codebase", "readme/docs", "Not Found", "#get-a-repository-readme-for-a-directory"),
+    # a repository holding no README
+    ("gateway", "readme/", "Not Found", "#get-a-repository-readme-for-a-directory"),
+    # a README the path would find, behind one slash more than real reads past
+    ("codebase", "readme///", "Not Found", "#get-a-repository-readme-for-a-directory"),
+    # the ref is refused before the slashes are (measured: `readme///?ref=nope`)
+    ("codebase", "readme///?ref=nope", "No commit found for the ref nope", "/v3/repos/contents/"),
+]
+
+
+@pytest.mark.parametrize(
+    "repo, tail, message, anchor",
+    _DIRECTORY_README_404_ROWS,
+    ids=[f"{r[0]}-{r[1]}" for r in _DIRECTORY_README_404_ROWS],
+)
+def test_github_readme_for_a_directory_holding_none_is_the_directory_anchors_404(
+    gh_client, gh_org, gh_admin_h, repo, tail, message, anchor
+):
+    """Measured: the 404 names `#get-a-repository-readme-for-a-directory`, where the root route's
+    names `#get-a-repository-readme`, and it is also what `readme/` answers on a repository
+    holding no README and what a path ending in three slashes answers."""
+    c, _ = gh_client
+    r = c.get(f"/github/repos/{gh_org}/{repo}/{tail}", headers=gh_admin_h)
+    assert r.status_code == 404
+    assert r.json()["message"] == message
+    assert r.json()["documentation_url"].endswith(anchor)
+
 
 def test_github_serves_a_comment_dated_at_the_epoch(tmp_path):
     """A comment id is an INTEGER and `synth.epoch` hashes a string, so a comment
@@ -2009,9 +2326,10 @@ def test_github_a_head_is_the_get_with_the_body_left_off(gh_client, gh_admin_h, 
     construction; each is asserted below so that the construction is not the only thing saying so.
     Real's description declares no `head` operation (none in the 2026-09-09 read) and neither does
     Backlot's OpenAPI document, so `backlot diff` and the MCP slice have no `HEAD` to read.
-    Atlassian's `HEAD` is measured too and answered the same way (see
-    ``test_atlassian_a_head_is_the_get_without_its_body``, which pins the `content-length` the two
-    vendors disagree about); a vendor whose `HEAD` is not measured answers it 405, Slack's below.
+    Atlassian's and Notion's `HEAD` are measured too and answered the same way (see
+    ``test_atlassian_a_head_is_the_get_without_its_body``, which pins the `content-length` Jira and
+    Confluence disagree about, and ``test_notion_a_head_is_the_get_without_its_body``); a vendor
+    whose `HEAD` is not measured answers it 405, Slack's below.
     """
     c, _ = gh_client
     codebase = f"/github/repos/{gh_org}/codebase"

@@ -942,13 +942,27 @@ _DRIVE_BOOL_ROUTES = [
     ("/drive/v3/drives", "useDomainAdminAccess"),
 ]
 
+_DRIVE_BOOL_ROWS = [
+    (path, param, value, accepted)
+    for path, param in _DRIVE_BOOL_ROUTES
+    for value, accepted in [
+        ("1", True),
+        ("y", True),
+        ("No", True),
+        ("on", False),
+        ("", False),
+        ("NOPE", False),
+    ]
+] + [
+    # `files.export` and `about.get` declare no `supportsAllDrives`, and real answers
+    # `supportsAllDrives=NOPE` on them as though it were not sent
+    ("/drive/v3/files/{doc}/export?mimeType=text/plain", "supportsAllDrives", "NOPE", True),
+    ("/drive/v3/about?fields=user", "supportsAllDrives", "NOPE", True),
+]
 
-@pytest.mark.parametrize("path, param", _DRIVE_BOOL_ROUTES)
-@pytest.mark.parametrize(
-    "value, accepted",
-    [("1", True), ("y", True), ("No", True), ("on", False), ("", False), ("NOPE", False)],
-)
-def test_drive_a_typed_boolean_takes_the_protobuf_spellings(
+
+@pytest.mark.parametrize("path, param, value, accepted", _DRIVE_BOOL_ROWS)
+def test_drive_a_declared_boolean_takes_the_protobuf_spellings_and_another_is_ignored(
     client, admin_h, path, param, value, accepted
 ):
     """Measured 2026-09-23 on each of these, one request per value; the whole spelling rule is
@@ -956,7 +970,9 @@ def test_drive_a_typed_boolean_takes_the_protobuf_spellings(
     itself is left out: on four of these real answers a `true` with a check of its own (a 403 for
     `includeItemsFromAllDrives` without `supportsAllDrives`), which Backlot does not model."""
     doc = _drive_find(client, admin_h, "Brand")["id"]
-    r = client.get(path.format(doc=doc), headers=admin_h, params={param: value})
+    url = path.format(doc=doc)
+    # the query string is built here because httpx's `params` replaces the one the row's path has
+    r = client.get(f"{url}{'&' if '?' in url else '?'}{urlencode({param: value})}", headers=admin_h)
     if accepted:
         assert r.status_code == 200, r.text
         return
@@ -976,17 +992,6 @@ def test_drive_supports_all_drives_takes_the_spellings_real_takes(client, admin_
     """The rest of the 30-value sweep on `files.list`, measured 2026-09-23."""
     r = client.get("/drive/v3/files", headers=admin_h, params={"supportsAllDrives": value})
     assert (r.status_code == 200) is accepted, r.text
-
-
-@pytest.mark.parametrize(
-    "path", ["/drive/v3/files/{doc}/export?mimeType=text/plain", "/drive/v3/about?fields=user"]
-)
-def test_drive_a_route_that_declares_no_boolean_ignores_one(client, admin_h, path):
-    """Measured 2026-09-23: `files.export` and `about.get` declare no `supportsAllDrives`, and real
-    answers `supportsAllDrives=NOPE` on them as though it were not sent."""
-    doc = _drive_find(client, admin_h, "Brand")["id"]
-    url = path.format(doc=doc)
-    assert client.get(url + "&supportsAllDrives=NOPE", headers=admin_h).status_code == 200
 
 
 @pytest.mark.parametrize(

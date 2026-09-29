@@ -41,53 +41,42 @@ def _notion_routes() -> list[tuple[str, str]]:
 
 # What a Notion refusal carries, measured against api.notion.com on 2026-09-22 with no valid
 # credential — which is enough, because that API checks the URL and then the credential before
-# anything else. Three calls to one URL answered three different ids there; this server derives one
-# from the request instead, which is the choice it makes for every synthesised id.
+# anything else.
 
 _NOT_A_BEARER = 'Authorization header must use the format "Bearer <token>".'
 
-_SCHEME_ROWS = [
-    ("no header", None),
-    ("no scheme", "nope"),
-    ("basic", "Basic YTpi"),
-    ("bearer with no token", "Bearer"),
-    ("github's legacy scheme", "token {token}"),
-    ("bearer with two words", "Bearer a b"),
+_CREDENTIAL_ROWS = [
+    # label, the `Authorization` sent, and which of the two 401 messages it gets
+    ("no header", None, _NOT_A_BEARER),
+    ("no scheme", "nope", _NOT_A_BEARER),
+    ("basic", "Basic YTpi", _NOT_A_BEARER),
+    ("bearer with no token", "Bearer", _NOT_A_BEARER),
+    ("github's legacy scheme", "token {token}", _NOT_A_BEARER),
+    ("bearer with two words", "Bearer a b", _NOT_A_BEARER),
+    ("Bearer", "Bearer nope", "API token is invalid."),
+    ("bearer", "bearer nope", "API token is invalid."),
+    ("BEARER", "BEARER nope", "API token is invalid."),
+    ("two spaces", "Bearer  nope", "API token is invalid."),
+    ("a tab", "Bearer" + chr(9) + "nope", "API token is invalid."),
 ]
 
 
-@pytest.mark.parametrize("label, header", _SCHEME_ROWS, ids=[r[0] for r in _SCHEME_ROWS])
-def test_notion_a_header_that_is_not_a_bearer_says_so(client, admin_h, label, header):
+@pytest.mark.parametrize(
+    "label, header, message", _CREDENTIAL_ROWS, ids=[r[0] for r in _CREDENTIAL_ROWS]
+)
+def test_notion_a_credential_it_cannot_use_names_the_format_or_the_token(
+    client, admin_h, label, header, message
+):
     """Measured: real refuses a header that is not `Bearer <token>` by naming the format, where a
     bearer whose token does not resolve is `API token is invalid.`. The legacy `token <t>` scheme
-    GitHub takes is refused here too, and so is a bearer with a second word after its token."""
+    GitHub takes is refused here too, and so is a bearer with a second word after its token; the
+    scheme is read without its case, and two spaces or a tab between the words count as one."""
     headers = {"Notion-Version": DATA_SOURCES_VERSION}
     if header is not None:
         headers["Authorization"] = header.format(token=admin_h["Authorization"].split()[1])
     r = client.get("/notion/v1/users/me", headers=headers)
     assert r.status_code == 401
-    assert r.json()["message"] == _NOT_A_BEARER, label
-
-
-_TOKEN_ROWS = [
-    ("Bearer", "Bearer nope"),
-    ("bearer", "bearer nope"),
-    ("BEARER", "BEARER nope"),
-    ("two spaces", "Bearer  nope"),
-    ("a tab", "Bearer" + chr(9) + "nope"),
-]
-
-
-@pytest.mark.parametrize("label, header", _TOKEN_ROWS, ids=[r[0] for r in _TOKEN_ROWS])
-def test_notion_a_bearer_that_does_not_resolve_is_the_token_message(client, label, header):
-    """Measured: real reads the scheme in each of these cases and with two spaces or a tab before
-    the token, and a token it cannot read is `API token is invalid.` rather than the format
-    message."""
-    r = client.get(
-        "/notion/v1/users/me",
-        headers={"Authorization": header, "Notion-Version": DATA_SOURCES_VERSION},
-    )
-    assert r.status_code == 401 and r.json()["message"] == "API token is invalid."
+    assert r.json()["message"] == message, label
 
 
 def test_notion_every_refusal_names_itself_by_a_request_id(client, notion_h):
@@ -109,9 +98,8 @@ def test_notion_every_refusal_names_itself_by_a_request_id(client, notion_h):
 
 
 def test_notion_the_same_request_gets_the_same_id_and_another_a_different_one(client, notion_h):
-    """Real answers a new id per response — three calls to one URL gave three. This server derives
-    one from the request instead, so a corpus served twice answers the same id and a test can
-    assert one; the divergence is deliberate and is what this pins."""
+    """Pins the divergence ``backlot.routers.notion._request_id`` states: one request answers one
+    id, and another request a different one."""
     first = client.get("/notion/v1/users/me", headers={"Notion-Version": DATA_SOURCES_VERSION})
     again = client.get("/notion/v1/users/me", headers={"Notion-Version": DATA_SOURCES_VERSION})
     other = client.get("/notion/v1/nonexistent_thing/xyz", headers=notion_h)

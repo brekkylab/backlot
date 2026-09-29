@@ -292,16 +292,17 @@ are the GraphQL POSTs at `/fireflies/graphql` and `/linear/graphql`, which their
 covers — introspection, not a path map, so there is no mount to say so. Walking `app.routes`
 instead was ruled out for `gen_docs.py`, and the same reasoning holds here.
 
-Served, not declared: a `HEAD` under `/github`, `/atlassian`, `/health` or `/_meta` is answered as
-the `GET` with the body left off (`backlot.main.answer_head_as_the_get_without_its_body`), and no
-`head` operation is written for it, because real's own description declares none either. Real GitHub
-and both Atlassian products answer a `HEAD` that way on every route measured, so what can diverge
-here is whether the method is served, not whether it is documented. But a path diff reads methods
-off the two documents, and neither mentions this one, so nothing here would catch it going away. The
-middleware's prefix tuple is the record of which vendors it covers; a vendor joins it once its own
-`HEAD` is measured. What the `HEAD` declares about the body's length is a second such gap:
-Confluence declares it and Jira does not (`backlot.errors.atlassian.head_content_length`), and
-`tests/test_atlassian.py` is the record.
+Served, not declared: a `HEAD` under `/github`, `/atlassian`, `/notion`, `/health` or `/_meta` is
+answered as the `GET` with the body left off
+(`backlot.main.answer_head_as_the_get_without_its_body`), and no `head` operation is written for it,
+because real's own description declares none either. Real GitHub, both Atlassian products and Notion
+answer a `HEAD` that way on every route measured, so what can diverge here is whether the method is
+served, not whether it is documented. But a path diff reads methods off the two documents, and
+neither mentions this one, so nothing here would catch it going away. The middleware's prefix tuple
+is the record of which vendors it covers; a vendor joins it once its own `HEAD` is measured. What
+the `HEAD` declares about the body's length is a second such gap: Confluence declares it and Jira
+does not (`backlot.errors.atlassian.head_content_length`), and `tests/test_atlassian.py` is the
+record.
 
 An `OPTIONS` is a third. Jira answers 200 with the methods that route takes and Confluence a 404,
 neither of which any document here declares — real's own description has no `options` operation and

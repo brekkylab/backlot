@@ -503,19 +503,18 @@ _HEAD_IS_THE_GET_WITHOUT_ITS_BODY = ("/github", "/atlassian", "/notion", "/healt
 
 @app.middleware("http")
 async def answer_head_as_the_get_without_its_body(request: Request, call_next):
-    """Answer a `HEAD` as the `GET` with the body left off, which is how real GitHub and both
-    Atlassian products answer one.
+    """Answer a `HEAD` as the `GET` with the body left off, which is how real GitHub, both Atlassian
+    products and Notion answer one.
 
-    Every route of theirs here is declared `GET` alone, and FastAPI's ``APIRoute`` does not add
-    `HEAD` to a GET route the way Starlette's ``Route`` does, so without this a `HEAD` is
-    Starlette's 405 with `allow: GET` on every route, whatever the GET answers. Real answers the
-    GET's own status and headers with nothing in the body: `content-length` of the body the GET
-    would have carried and `Link` where the GET has one, on the 200s, the 404 for a repository that
-    does not exist, the 401 for no credential, the 422 for a blank search `q` and code search's
-    text/plain 400 alike (measured against api.github.com on 2026-09-07 with `curl -I`, each `HEAD`
-    beside its `GET` the same minute). An existence check, `requests.head(url)` or `curl -I`, is
-    what a client sends a `HEAD` for, and a 405 for both the repository that exists and the one that
-    does not cannot tell them apart.
+    FastAPI's ``APIRoute`` does not add `HEAD` to a GET route the way Starlette's ``Route`` does, so
+    without this a `HEAD` on a route that serves the GET is a 405, whatever the GET answers. Real
+    GitHub answers the GET's own status and headers with nothing in the body: `content-length` of
+    the body the GET would have carried and `Link` where the GET has one, on the 200s, the 404 for a
+    repository that does not exist, the 401 for no credential, the 422 for a blank search `q` and
+    code search's text/plain 400 alike (measured against api.github.com on 2026-09-07 with
+    `curl -I`, each `HEAD` beside its `GET` the same minute). An existence check,
+    `requests.head(url)` or `curl -I`, is what a client sends a `HEAD` for, and a 405 for both the
+    repository that exists and the one that does not cannot tell them apart.
 
     A middleware rather than `HEAD` in each route's ``methods``: FastAPI writes a `head` operation
     into `/openapi.json` for every method a route declares, where real's own description declares no
@@ -529,9 +528,9 @@ async def answer_head_as_the_get_without_its_body(request: Request, call_next):
     body's length and computing the body is the only way to have that number; a `HEAD` costs what
     its GET costs, here as on real.
 
-    What the two vendors do NOT share is the `content-length`: GitHub declares the length of the
-    body its `GET` would have carried, Jira declares none on either method, and Confluence declares
-    one on its 200s alone -- so that header is asked for rather than assumed, through
+    What the vendors do NOT share is the `content-length`: GitHub and Notion declare the length of
+    the body the `GET` would have carried, Jira declares none on either method, and Confluence
+    declares one on its 200s alone -- so that header is asked for rather than assumed, through
     ``errors.head_content_length``.
 
     The method goes back to `HEAD` on the scope once the GET has answered, because the server frames

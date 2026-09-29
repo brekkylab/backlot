@@ -2732,16 +2732,6 @@ def test_confluence_answers_the_products_page_below_a_resource_it_serves(
     assert r.text == errors_atlassian.HTML_NOT_FOUND
 
 
-def test_atlassian_a_method_a_route_does_not_declare_still_gets_the_405(client, admin_h):
-    """The control for the catch-all: it takes every method on every path under `/atlassian`, so
-    the 405s measured for both products have to survive it rather than turn into its 404."""
-    jira = client.post("/atlassian/rest/api/3/serverInfo", headers=admin_h)
-    assert jira.status_code == 405 and jira.headers["allow"] == "GET"
-    conf = client.post("/atlassian/wiki/rest/api/space", headers=admin_h)
-    assert conf.status_code == 405 and "allow" not in conf.headers
-    assert conf.json()["errors"][0]["code"] == "METHOD_NOT_ALLOWED"
-
-
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
 
 

@@ -325,6 +325,26 @@ Every route requires a `Notion-Version` header and answers `missing_version` wit
 with a version Notion does not publish — as the real API does; the value picks the database model,
 which is what the notes below name.
 
+A URL Notion does not publish is `invalid_request_url` at 400, which the real API answers before it
+reads the credential or the version. The method is part of that URL: a `GET` on a route that
+answers `POST` is the same 400 rather than a 405, with `TRACE` the exception real refuses at the
+front door with Cloudflare's own 405 page. An operation Notion publishes and Backlot does not serve
+(`PATCH pages/{id}`, `POST comments` and the other `missing_operation` rows in
+`backlot/fidelity/baseline/notion.json`) answers the credential's 401 as a served route does, and
+a request that clears the credential and the version gets the 400, as there is no operation to run.
+The three OAuth client endpoints among them, `POST oauth/token`, `oauth/introspect` and
+`oauth/revoke`, answer `{"error":"invalid_client"}` at 401 instead, whatever the credential, as
+Backlot registers no OAuth client. One trailing slash is not part of a URL (`users/me/` is served
+as `users/me`, where a second slash is a segment and gets the 400), and a `HEAD` is the `GET` with
+the body left off. A path in another case is the 400 here, where real routes it as the lower-case
+path, and `PROPFIND` or `QUERY` is the framework's 405 here, where real answers the URL's 400. A
+credential that is not `Bearer <token>` (no header, no scheme, `Basic`, GitHub's legacy
+`token <t>`, or a bearer with a second word after its token) is refused by naming the format, where
+a bearer whose token does not resolve is `API token is invalid.`. Each refusal named here but the
+framework's 405 carries a `request_id` in the body and `x-notion-request-id` on the response, one
+value; real's differs per response and this one is derived from the request, so a corpus served
+twice answers the same id.
+
 | Endpoint | Notes |
 |---|---|
 | `POST search` | |

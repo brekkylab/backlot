@@ -315,7 +315,8 @@ def _would_redirect_to_the_slash_free_path(request: Request) -> bool:
     matches the empty string — answers its own trailing slash and never reaches the redirect, the
     same as real answers it. What that route then makes of the slash is its own: `contents/{path}/`
     with a path in it is a 302 of real's own (:func:`backlot.routers.github.get_contents`), which is
-    a route's answer rather than a routing rule, and the one redirect this server sends.
+    a route's answer rather than a routing rule, and the one redirect this server sends under
+    `/github`.
     """
     scope = request.scope
     if _some_github_route_matches(scope):

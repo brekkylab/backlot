@@ -2569,8 +2569,8 @@ async def get_contents(
         caller = _require(request)
         _require_repo(conn, repo, auth.visible_ids(request, caller))
         target = _redirect_to_the_slash_free_contents_path(request, repo, path)
-        # Real's redirect carries an HTML content type and an empty body, spelt without the space
-        # its own header has ("text/html;charset=utf-8"), measured on four of these.
+        # Real's redirect carries `text/html;charset=utf-8`, no space, and an empty body, measured
+        # on the four redirects the docstring lists.
         return Response(
             status_code=302,
             headers={"Location": target, "Content-Type": "text/html;charset=utf-8"},

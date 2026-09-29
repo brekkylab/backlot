@@ -118,8 +118,8 @@ def test_github_the_contents_redirect_removes_one_slash_and_names_a_content_type
     gh_client, gh_org, gh_admin_h
 ):
     """Measured: real removes ONE trailing slash per redirect — `contents/src//` points at
-    `contents/src/`, which redirects again — and the 302 carries `text/html;charset=utf-8` with an
-    empty body, spelt without the space."""
+    `contents/src/`, which redirects again — and the 302 carries `text/html;charset=utf-8`, no
+    space, and an empty body."""
     c, _ = gh_client
     r = c.get(
         f"/github/repos/{gh_org}/codebase/contents/src//",

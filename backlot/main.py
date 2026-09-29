@@ -405,7 +405,7 @@ async def serve_a_slashed_notion_path_as_the_path_without_it(request: Request, c
     otherwise claim every slashed spelling and answer 400 where real answers what the route
     answers.
 
-    The vendor root is left alone: `/notion/` is the URL's 400, and `/notion` is Starlette's own
+    The vendor root is not rewritten: `/notion/` is the URL's 400, and `/notion` is Starlette's own
     307 to that, where real's `/` is a 302 to its marketing site — a page this server does not
     serve at all.
 

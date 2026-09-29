@@ -2007,9 +2007,9 @@ def test_github_a_head_is_the_get_with_the_body_left_off(gh_client, gh_admin_h, 
     answered by ``backlot.main.answer_head_as_the_get_without_its_body``, which runs the GET and
     keeps its headers, so the version echo, the charset and the id-path rewrite land on a `HEAD` by
     construction; each is asserted below so that the construction is not the only thing saying so.
-    The OpenAPI document is untouched: real's description declares no `head` operation (none in
-    the 2026-09-09 read) and neither does Backlot's, so `backlot diff` and the MCP slice see what
-    they saw. Notion's `HEAD` is measured too and answered the same way (see
+    Real's description declares no `head` operation (none in the 2026-09-09 read) and neither does
+    Backlot's OpenAPI document, so `backlot diff` and the MCP slice have no `HEAD` to read.
+    Notion's `HEAD` is measured too and answered the same way (see
     ``test_notion_a_head_is_the_get_without_its_body``); a vendor whose `HEAD` is not measured
     answers it 405, Slack's below.
     """

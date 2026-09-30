@@ -18,6 +18,7 @@ what that URL answers rather than what this module would otherwise send.
 
 from __future__ import annotations
 
+import codecs
 import http
 import json
 import re
@@ -62,15 +63,18 @@ def connect_token_body() -> dict:
     return {"error": CONNECT_TOKEN_UNREADABLE}
 
 
-# What the gateway answers a request with no credential it resolves — none, a Basic pair it read and
-# rejected, an unknown scheme, and on an `OPTIONS` an unreadable bearer too — for an operation it
+# What Jira answers a request with no credential it resolves — none, a Basic pair it read and
+# rejected, an unknown scheme, and on an `OPTIONS` an unreadable bearer too — at an operation that
 # will not run anonymously: 401, this line and nothing else, 53 bytes, with
 # `WWW-Authenticate: OAuth realm="<the site, percent-encoded>"` and `X-Frame-Options: SAMEORIGIN`.
-# Which operations those are is ``backlot.routers.atlassian.unmatched_path``'s to say; measured on
-# Jira Cloud, 2026-09-30. The media type follows `Accept` there: `text/html;charset=UTF-8` for
-# `*/*`, the one this server sends whatever `Accept` says, `text/plain` with no `Accept` and
-# `application/json` for `application/json` (on `myself` and `OPTIONS serverInfo`, the same day).
-GATEWAY_UNAUTHENTICATED = "Client must be authenticated to access this resource."
+# Jira's own answer, not the gateway's: it carries what ``backlot.routers.atlassian.vendor_headers``
+# puts on Jira's answers and not what that puts on the gateway's own refusals, and an operation's
+# media-type check (:func:`refuse_a_media_type`) answers before it. Which operations those are is
+# ``backlot.routers.atlassian.unmatched_path``'s to say; measured on Jira Cloud, 2026-09-30. The
+# media type follows `Accept` there: `text/html;charset=UTF-8` for `*/*`, the one this server sends
+# whatever `Accept` says, `text/plain` with no `Accept` and `application/json` for
+# `application/json` (on `myself` and `OPTIONS serverInfo`, the same day).
+JIRA_UNAUTHENTICATED = "Client must be authenticated to access this resource."
 
 # Confluence's second anonymous refusal, which a few of its services give instead of
 # :data:`CONFLUENCE_FORBIDDEN`: the members in the other order, and on every one measured but the
@@ -302,6 +306,123 @@ def unsupported_media_type(path: str, content_type: str | None) -> AtlassianErro
             "instance": _instance(path),
         },
         media_type=PROBLEM_JSON,
+    )
+
+
+#: A token, as Spring's `MimeType` checks one: ASCII, no control character, no separator.
+_TOKEN = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
+
+
+def _parse_media_type(value: str) -> str | None:
+    """``value`` as Spring's `MimeTypeUtils.parseMimeType` reads it, `type/subtype;name=value`, or
+    None where it cannot read it; the type is split off at the first `;`, the parameters at every
+    `;` outside double quotes."""
+    full, _, rest = value.partition(";")
+    full = full.strip()
+    if full == "*":
+        full = "*/*"
+    kind, _, subtype = full.partition("/")
+    if not (_TOKEN.fullmatch(kind) and _TOKEN.fullmatch(subtype)) or (kind == "*" != subtype):
+        return None
+    parsed = f"{kind.lower()}/{subtype.lower()}"
+    parameters, current, quoted = [], "", False
+    for ch in rest:
+        if ch == ";" and not quoted:
+            parameters.append(current)
+            current = ""
+            continue
+        quoted = not quoted if ch == '"' else quoted
+        current += ch
+    parameters.append(current)
+    for parameter in parameters:
+        name, eq, given = parameter.strip().partition("=")
+        if not eq:
+            continue
+        name, given = name.strip(), given.strip()
+        is_quoted = len(given) >= 2 and given[0] == given[-1] and given[0] in "\"'"
+        if not _TOKEN.fullmatch(name) or not (is_quoted or _TOKEN.fullmatch(given)):
+            return None
+        if name.lower() == "charset":
+            try:
+                codecs.lookup(given[1:-1] if is_quoted else given)
+            except LookupError:
+                return None
+        parsed += f";{name}={given}"
+    return parsed
+
+
+def _takes(consumes: tuple[str, ...], media_type: str) -> bool:
+    kind, subtype = media_type.split(";", 1)[0].split("/")
+    for taken in consumes:
+        taken_kind, _, taken_subtype = taken.partition("/")
+        if taken_kind == "*" or (taken_kind == kind and taken_subtype in ("*", subtype)):
+            return True
+    return False
+
+
+def _has_body(headers) -> bool:
+    """Whether Spring counts the request as carrying a body: a `Transfer-Encoding`, or a
+    `Content-Length` other than `0`."""
+    length = (headers.get("content-length") or "").strip()
+    return bool((headers.get("transfer-encoding") or "").strip()) or (length not in ("", "0"))
+
+
+def refuse_a_media_type(
+    path: str, headers, consumes: tuple[str, ...], *, body_optional: bool = False
+) -> AtlassianError | None:
+    """Jira's 415 for a request whose `Content-Type` an operation that ``consumes`` those types does
+    not take, or None where it takes it.
+
+    Spring's check, and the first thing the operation does: ahead of the 401 a caller with no
+    credential gets (:data:`JIRA_UNAUTHENTICATED`) and of the operation itself for one whose
+    credential resolves, and behind the gateway's Connect-token 403. Measured on Jira Cloud on
+    2026-09-30, on the operations ``backlot/data/jira_unserved.json`` lists:
+
+    - the media type is compared without its parameters and whatever its case, and a type only a
+      wildcard would cover (`application/*`, `*/*`, `*`) is refused where the operation does not
+      take `*/*`
+    - an absent `Content-Type` and an empty one are named `'null'`, and the check refuses both
+      unless the operation takes `*/*`
+    - where the body is optional, a request that carries none (:func:`_has_body`) is not checked
+    - a value Spring cannot read (:func:`_parse_media_type`) — `foo`, `application/json,text/plain`,
+      an unquoted space in a parameter, an unknown charset (`charset=nope`, `Charset=nope`) — is
+      `Could not parse Content-Type.`, where `charset=latin1` and a quoted `charset="utf-8"` are
+      read, and a parameter with no `=` is left out
+    - ``detail`` names the type as read: type and subtype lower-cased and each parameter as sent
+      after a bare `;`, `TEXT/Plain;Charset=UTF-8;X=Y` as `text/plain;Charset=UTF-8;X=Y`
+    - `Accept` names ``consumes``, joined by `, `, on every 415; `Accept` on the request changes
+      none of it
+
+    A charset is looked up in Python's codec registry rather than Java's, which agree on the ones
+    above.
+    """
+    if body_optional and not _has_body(headers):
+        return None
+    value = headers.get("content-type")
+    if not value:
+        if "*/*" in consumes:
+            return None
+        detail = "Content-Type 'null' is not supported."
+    else:
+        media_type = _parse_media_type(value)
+        if media_type is not None and _takes(consumes, media_type):
+            return None
+        detail = (
+            "Could not parse Content-Type."
+            if media_type is None
+            else f"Content-Type '{media_type}' is not supported."
+        )
+    return AtlassianError(
+        415,
+        {
+            "type": "about:blank",
+            "title": "Unsupported Media Type",
+            "status": 415,
+            "detail": detail,
+            "instance": _instance(path),
+        },
+        media_type=PROBLEM_JSON,
+        headers={"Accept": ", ".join(consumes)},
     )
 
 
@@ -650,9 +771,10 @@ def head_content_length(path: str, status_code: int) -> bool:
     Measured with `curl -I` beside each `GET` the same minute. Confluence, 2026-09-22: every 200 but
     `search` declares it, to the byte (`space` 1103, `content` 1536, `content/{id}` 3909,
     `child/comment` 214, `child/page` 211, `label` 207, `restriction/byOperation` 801, `space/{key}`
-    695), and the 404s, the 405 and the CQL 400 declare none. Jira's own answers are chunked and
-    declare none on either method (2026-09-22), where the gateway's 401 in front of Jira declares
-    its 53 bytes and the `HEAD` beside it declares the same (`myself`, 2026-09-30).
+    695), and the 404s, the 405 and the CQL 400 declare none. Jira's answers are chunked and
+    declare none on either method (2026-09-22), but for the 401 it refuses a caller with no
+    credential with (:data:`JIRA_UNAUTHENTICATED`), which declares its 53 bytes, and the `HEAD`
+    beside it declares the same (`myself`, 2026-09-30).
     """
     if not is_confluence(path):
         return status_code == 401

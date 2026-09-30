@@ -2112,11 +2112,17 @@ def _published_not_served(source: str) -> tuple[tuple[str, re.Pattern[str]], ...
 
 _JIRA_PUBLISHED = _published_not_served("jira")
 _CONFLUENCE_PUBLISHED = _published_not_served("confluence")
-#: Of those, the Jira operations the gateway will not run for a caller with no credential it
-#: resolves; ``scripts/gen_atlassian_gateway.py`` writes the file from Jira's documents and says how
-#: that was measured.
-_JIRA_GATED = _operations(
-    json.loads((_PACKAGE / "data" / "jira_gateway.json").read_text())["operations"]
+#: What real answers before each Jira operation of those runs; ``scripts/gen_jira_unserved.py``
+#: writes the file from Jira's documents and says how that was measured.
+_JIRA_UNSERVED = json.loads((_PACKAGE / "data" / "jira_unserved.json").read_text())["refused"]
+#: The Jira operations that will not run for a caller with no credential they resolve.
+_JIRA_REFUSED = _operations(_JIRA_UNSERVED)
+#: Of those, the ones that check the request's media type first, for any caller the gateway lets
+#: through: (method, pattern, the types taken, whether the body is optional).
+_JIRA_CONSUMES = tuple(
+    (method, pattern, tuple(entry["consumes"]), entry.get("body") == "optional")
+    for (method, pattern), entry in zip(_JIRA_REFUSED, _JIRA_UNSERVED.values(), strict=True)
+    if "consumes" in entry
 )
 
 #: The Confluence services whose refusal of a caller with no credential is
@@ -2182,16 +2188,29 @@ def _is(operations, method: str | None, vendor_path: str) -> bool:
     )
 
 
-def _gateway_unauthenticated(request: Request) -> Response:
-    """The gateway's 401 for an operation it will not run for this caller, as real spells it (see
-    ``errors.atlassian.GATEWAY_UNAUTHENTICATED``); the realm is the site, percent-encoded."""
+def _jira_unauthenticated(request: Request) -> Response:
+    """Jira's 401 for an operation that will not run for this caller, as real spells it (see
+    ``errors.atlassian.JIRA_UNAUTHENTICATED``); the realm is the site, percent-encoded."""
     realm = quote(_site(request), safe="")
     return Response(
-        errors_atlassian.GATEWAY_UNAUTHENTICATED,
+        errors_atlassian.JIRA_UNAUTHENTICATED,
         status_code=401,
         media_type=errors_atlassian.HTML_MEDIA_TYPE,
         headers={"WWW-Authenticate": f'OAuth realm="{realm}"', "X-Frame-Options": "SAMEORIGIN"},
     )
+
+
+def _jira_media_refusal(
+    request: Request, vendor_path: str
+) -> errors_atlassian.AtlassianError | None:
+    """The 415 an operation :data:`_JIRA_CONSUMES` names answers for a `Content-Type` it does not
+    take (``errors.atlassian.refuse_a_media_type``), or None."""
+    for method, pattern, consumes, body_optional in _JIRA_CONSUMES:
+        if method == request.method and pattern.fullmatch(vendor_path):
+            return errors_atlassian.refuse_a_media_type(
+                _echoed_path(request), request.headers, consumes, body_optional=body_optional
+            )
+    return None
 
 
 def _confluence_refusal(request: Request, vendor_path: str) -> Response | None:
@@ -2298,7 +2317,7 @@ def _options_answer(request: Request) -> Response:
 
     Jira's 200 is for a caller whose credential resolves. Anyone else — no credential, the Basic
     pair it rejects, an unknown scheme, and here an unreadable bearer too, which a `GET` draws the
-    Connect-token 403 with — gets the gateway's 401 (:func:`_gateway_unauthenticated`), measured
+    Connect-token 403 with — gets Jira's 401 (:func:`_jira_unauthenticated`), measured
     2026-09-30 on `serverInfo` and an issue with each of those four. Confluence's 404 does not
     depend on the credential.
     """
@@ -2308,7 +2327,7 @@ def _options_answer(request: Request) -> Response:
             return _search_options(request)
         return JSONResponse(status_code=404, content=errors_atlassian.CONFLUENCE_OPTIONS_NOT_FOUND)
     if auth.atlassian_caller(request).is_anonymous:
-        return _gateway_unauthenticated(request)
+        return _jira_unauthenticated(request)
     allow = errors_atlassian.jira_options_allow(path)
     # present with nothing after the colon, on every Jira `OPTIONS` measured: empty is the value
     headers = {"Accept-Patch": ""}
@@ -2406,12 +2425,13 @@ async def unmatched_path(request: Request, rest: str) -> Response:
     and :func:`_options_answer` is what real gives it.
 
     Those are the answers where the vendor publishes nothing at the path. An operation it does
-    publish is looked at first, since real reaches it whether or not Backlot serves it: Jira's
-    gateway refuses a caller with no credential it resolves where the operation will not run
-    anonymously, and any `OPTIONS` on one (:func:`_gateway_unauthenticated`), and Confluence
-    refuses such a caller on every one (:func:`_confluence_refusal`), each measured 2026-09-30. A
-    caller the vendor would serve gets the answer above, which is the gap the baseline's
-    `missing_operation` row acknowledges. Outside both API mounts the site is its web app
+    publish is looked at first, since real reaches it whether or not Backlot serves it: Jira checks
+    the request's media type where the operation does, for any caller the gateway lets through
+    (:func:`_jira_media_refusal`), then refuses a caller with no credential it resolves where the
+    operation will not run anonymously, and any `OPTIONS` on one (:func:`_jira_unauthenticated`),
+    and Confluence refuses such a caller on every one (:func:`_confluence_refusal`), each measured
+    2026-09-30. A caller the vendor would serve gets the answer above, which is the gap the
+    baseline's `missing_operation` row acknowledges. Outside both API mounts the site is its web app
     (:func:`_site_surface`).
     """
     if _some_atlassian_route_matches(request):
@@ -2448,14 +2468,17 @@ async def unmatched_path(request: Request, rest: str) -> Response:
             )
         return _confluence_not_found(request)
     if errors_atlassian.serves_the_jira_api(path):
-        # An operation Jira publishes is refused at the gateway for this caller where the operation
-        # will not run anonymously, and so is any `OPTIONS` on one (see ``_JIRA_GATED``); on a path
+        # An operation Jira publishes refuses this caller where it will not run anonymously, and so
+        # does any `OPTIONS` on one (see ``_JIRA_REFUSED``), after the media-type check; on a path
         # Jira publishes nothing at, the URL is what answers.
+        refused = _jira_media_refusal(request, vendor_path)
+        if refused is not None:
+            raise refused
         if anonymous and (
-            _is(_JIRA_GATED, request.method, vendor_path)
+            _is(_JIRA_REFUSED, request.method, vendor_path)
             or (request.method == "OPTIONS" and _is(_JIRA_PUBLISHED, None, vendor_path))
         ):
-            return _gateway_unauthenticated(request)
+            return _jira_unauthenticated(request)
         raise errors_atlassian.no_endpoint(_echoed_path(request), request.method)
     return _site_surface(request)
 

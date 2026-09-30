@@ -1,0 +1,2458 @@
+{
+  "about": "What real answers before each Jira operation no route serves runs. Written by scripts/gen_jira_unserved.py, which says how it was measured; do not edit by hand.",
+  "documents": [
+    "https://developer.atlassian.com/cloud/jira/platform/swagger-v3.v3.json",
+    "https://developer.atlassian.com/cloud/jira/platform/swagger.v3.json"
+  ],
+  "refused": {
+    "DELETE /rest/api/2/config/fieldschemes/fields": {},
+    "DELETE /rest/api/2/config/fieldschemes/fields/parameters": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "DELETE /rest/api/2/config/fieldschemes/{}": {},
+    "DELETE /rest/api/2/dashboard/{}/gadget/{}": {},
+    "DELETE /rest/api/2/field/association": {},
+    "DELETE /rest/api/2/field/{}": {},
+    "DELETE /rest/api/2/field/{}/context/{}": {},
+    "DELETE /rest/api/2/field/{}/context/{}/option/{}": {},
+    "DELETE /rest/api/2/field/{}/context/{}/option/{}/issue": {},
+    "DELETE /rest/api/2/field/{}/option/{}": {},
+    "DELETE /rest/api/2/field/{}/option/{}/issue": {},
+    "DELETE /rest/api/2/fieldconfiguration/{}": {},
+    "DELETE /rest/api/2/fieldconfigurationscheme/{}": {},
+    "DELETE /rest/api/2/group": {},
+    "DELETE /rest/api/2/group/user": {},
+    "DELETE /rest/api/2/issue/properties/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "DELETE /rest/api/2/issuesecurityschemes/{}": {},
+    "DELETE /rest/api/2/issuesecurityschemes/{}/level/{}": {},
+    "DELETE /rest/api/2/issuesecurityschemes/{}/level/{}/member/{}": {},
+    "DELETE /rest/api/2/issuetypescheme/{}": {},
+    "DELETE /rest/api/2/issuetypescheme/{}/issuetype/{}": {},
+    "DELETE /rest/api/2/issuetypescreenscheme/{}": {},
+    "DELETE /rest/api/2/mypreferences": {},
+    "DELETE /rest/api/2/notificationscheme/{}": {},
+    "DELETE /rest/api/2/notificationscheme/{}/notification/{}": {},
+    "DELETE /rest/api/2/permissionscheme/{}": {},
+    "DELETE /rest/api/2/permissionscheme/{}/permission/{}": {},
+    "DELETE /rest/api/2/plans/plan/{}/team/atlassian/{}": {},
+    "DELETE /rest/api/2/plans/plan/{}/team/planonly/{}": {},
+    "DELETE /rest/api/2/priority/{}": {},
+    "DELETE /rest/api/2/priorityscheme/{}": {},
+    "DELETE /rest/api/2/project-template/remove-template": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "DELETE /rest/api/2/project/{}/classification-level/default": {},
+    "DELETE /rest/api/2/projectCategory/{}": {},
+    "DELETE /rest/api/2/resolution/{}": {},
+    "DELETE /rest/api/2/role/{}": {},
+    "DELETE /rest/api/2/role/{}/actors": {},
+    "DELETE /rest/api/2/screens/{}": {},
+    "DELETE /rest/api/2/screenscheme/{}": {},
+    "DELETE /rest/api/2/statuses": {},
+    "DELETE /rest/api/2/uiModifications/{}": {},
+    "DELETE /rest/api/2/user/properties/{}": {},
+    "DELETE /rest/api/2/webhook": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "DELETE /rest/api/2/workflow/{}": {},
+    "DELETE /rest/api/2/workflowscheme/{}": {},
+    "DELETE /rest/api/2/workflowscheme/{}/default": {},
+    "DELETE /rest/api/2/workflowscheme/{}/draft": {},
+    "DELETE /rest/api/2/workflowscheme/{}/draft/default": {},
+    "DELETE /rest/api/2/workflowscheme/{}/draft/issuetype/{}": {},
+    "DELETE /rest/api/2/workflowscheme/{}/draft/workflow": {},
+    "DELETE /rest/api/2/workflowscheme/{}/issuetype/{}": {},
+    "DELETE /rest/api/2/workflowscheme/{}/workflow": {},
+    "DELETE /rest/api/3/config/fieldschemes/fields": {},
+    "DELETE /rest/api/3/config/fieldschemes/fields/parameters": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "DELETE /rest/api/3/config/fieldschemes/{}": {},
+    "DELETE /rest/api/3/dashboard/{}/gadget/{}": {},
+    "DELETE /rest/api/3/field/association": {},
+    "DELETE /rest/api/3/field/{}": {},
+    "DELETE /rest/api/3/field/{}/context/{}": {},
+    "DELETE /rest/api/3/field/{}/context/{}/option/{}": {},
+    "DELETE /rest/api/3/field/{}/context/{}/option/{}/issue": {},
+    "DELETE /rest/api/3/field/{}/option/{}": {},
+    "DELETE /rest/api/3/field/{}/option/{}/issue": {},
+    "DELETE /rest/api/3/fieldconfiguration/{}": {},
+    "DELETE /rest/api/3/fieldconfigurationscheme/{}": {},
+    "DELETE /rest/api/3/group": {},
+    "DELETE /rest/api/3/group/user": {},
+    "DELETE /rest/api/3/issue/properties/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "DELETE /rest/api/3/issuesecurityschemes/{}": {},
+    "DELETE /rest/api/3/issuesecurityschemes/{}/level/{}": {},
+    "DELETE /rest/api/3/issuesecurityschemes/{}/level/{}/member/{}": {},
+    "DELETE /rest/api/3/issuetypescheme/{}": {},
+    "DELETE /rest/api/3/issuetypescheme/{}/issuetype/{}": {},
+    "DELETE /rest/api/3/issuetypescreenscheme/{}": {},
+    "DELETE /rest/api/3/mypreferences": {},
+    "DELETE /rest/api/3/notificationscheme/{}": {},
+    "DELETE /rest/api/3/notificationscheme/{}/notification/{}": {},
+    "DELETE /rest/api/3/permissionscheme/{}": {},
+    "DELETE /rest/api/3/permissionscheme/{}/permission/{}": {},
+    "DELETE /rest/api/3/plans/plan/{}/team/atlassian/{}": {},
+    "DELETE /rest/api/3/plans/plan/{}/team/planonly/{}": {},
+    "DELETE /rest/api/3/priority/{}": {},
+    "DELETE /rest/api/3/priorityscheme/{}": {},
+    "DELETE /rest/api/3/project-template/remove-template": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "DELETE /rest/api/3/project/{}/classification-level/default": {},
+    "DELETE /rest/api/3/projectCategory/{}": {},
+    "DELETE /rest/api/3/resolution/{}": {},
+    "DELETE /rest/api/3/role/{}": {},
+    "DELETE /rest/api/3/role/{}/actors": {},
+    "DELETE /rest/api/3/screens/{}": {},
+    "DELETE /rest/api/3/screenscheme/{}": {},
+    "DELETE /rest/api/3/statuses": {},
+    "DELETE /rest/api/3/uiModifications/{}": {},
+    "DELETE /rest/api/3/user/properties/{}": {},
+    "DELETE /rest/api/3/webhook": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "DELETE /rest/api/3/workflow/{}": {},
+    "DELETE /rest/api/3/workflowscheme/{}": {},
+    "DELETE /rest/api/3/workflowscheme/{}/default": {},
+    "DELETE /rest/api/3/workflowscheme/{}/draft": {},
+    "DELETE /rest/api/3/workflowscheme/{}/draft/default": {},
+    "DELETE /rest/api/3/workflowscheme/{}/draft/issuetype/{}": {},
+    "DELETE /rest/api/3/workflowscheme/{}/draft/workflow": {},
+    "DELETE /rest/api/3/workflowscheme/{}/issuetype/{}": {},
+    "DELETE /rest/api/3/workflowscheme/{}/workflow": {},
+    "DELETE /rest/atlassian-connect/1/addons/{}/properties/{}": {},
+    "DELETE /rest/atlassian-connect/1/app/module/dynamic": {},
+    "DELETE /rest/forge/1/app/properties/{}": {},
+    "GET /rest/api/2/announcementBanner": {},
+    "GET /rest/api/2/app/field/{}/context/configuration": {},
+    "GET /rest/api/2/application-properties": {},
+    "GET /rest/api/2/application-properties/advanced-settings": {},
+    "GET /rest/api/2/applicationrole": {},
+    "GET /rest/api/2/applicationrole/{}": {},
+    "GET /rest/api/2/auditing/record": {},
+    "GET /rest/api/2/classification-levels": {},
+    "GET /rest/api/2/config/fieldschemes": {},
+    "GET /rest/api/2/config/fieldschemes/projects": {},
+    "GET /rest/api/2/config/fieldschemes/{}": {},
+    "GET /rest/api/2/config/fieldschemes/{}/fields": {},
+    "GET /rest/api/2/config/fieldschemes/{}/fields/{}/parameters": {},
+    "GET /rest/api/2/config/fieldschemes/{}/projects": {},
+    "GET /rest/api/2/configuration": {},
+    "GET /rest/api/2/configuration/timetracking": {},
+    "GET /rest/api/2/configuration/timetracking/list": {},
+    "GET /rest/api/2/configuration/timetracking/options": {},
+    "GET /rest/api/2/dashboard/gadgets": {},
+    "GET /rest/api/2/data-policy": {},
+    "GET /rest/api/2/data-policy/project": {},
+    "GET /rest/api/2/events": {},
+    "GET /rest/api/2/field/search": {},
+    "GET /rest/api/2/field/search/trashed": {},
+    "GET /rest/api/2/field/{}/association/project": {},
+    "GET /rest/api/2/field/{}/context": {},
+    "GET /rest/api/2/field/{}/context/defaultValue": {},
+    "GET /rest/api/2/field/{}/context/defaultValues": {},
+    "GET /rest/api/2/field/{}/context/issuetypemapping": {},
+    "GET /rest/api/2/field/{}/context/projectmapping": {},
+    "GET /rest/api/2/field/{}/context/{}/option": {},
+    "GET /rest/api/2/field/{}/option": {},
+    "GET /rest/api/2/field/{}/option/suggestions/edit": {},
+    "GET /rest/api/2/field/{}/option/suggestions/search": {},
+    "GET /rest/api/2/field/{}/option/{}": {},
+    "GET /rest/api/2/fieldconfiguration": {},
+    "GET /rest/api/2/fieldconfiguration/{}/fields": {},
+    "GET /rest/api/2/fieldconfigurationscheme": {},
+    "GET /rest/api/2/fieldconfigurationscheme/mapping": {},
+    "GET /rest/api/2/fieldconfigurationscheme/project": {},
+    "GET /rest/api/2/group": {},
+    "GET /rest/api/2/group/bulk": {},
+    "GET /rest/api/2/group/member": {},
+    "GET /rest/api/2/instance/license": {},
+    "GET /rest/api/2/issue/limit/adf/report": {},
+    "GET /rest/api/2/issue/limit/report": {},
+    "GET /rest/api/2/issuesecurityschemes": {},
+    "GET /rest/api/2/issuesecurityschemes/level": {},
+    "GET /rest/api/2/issuesecurityschemes/level/member": {},
+    "GET /rest/api/2/issuesecurityschemes/project": {},
+    "GET /rest/api/2/issuesecurityschemes/search": {},
+    "GET /rest/api/2/issuesecurityschemes/{}": {},
+    "GET /rest/api/2/issuesecurityschemes/{}/members": {},
+    "GET /rest/api/2/issuetypescheme": {},
+    "GET /rest/api/2/issuetypescheme/mapping": {},
+    "GET /rest/api/2/issuetypescheme/project": {},
+    "GET /rest/api/2/issuetypescreenscheme": {},
+    "GET /rest/api/2/issuetypescreenscheme/mapping": {},
+    "GET /rest/api/2/issuetypescreenscheme/project": {},
+    "GET /rest/api/2/issuetypescreenscheme/{}/project": {},
+    "GET /rest/api/2/jql/function/computation": {},
+    "GET /rest/api/2/label": {},
+    "GET /rest/api/2/license/approximateLicenseCount": {},
+    "GET /rest/api/2/license/approximateLicenseCount/product/{}": {},
+    "GET /rest/api/2/mypreferences": {},
+    "GET /rest/api/2/myself": {},
+    "GET /rest/api/2/notificationscheme": {},
+    "GET /rest/api/2/notificationscheme/project": {},
+    "GET /rest/api/2/notificationscheme/{}": {},
+    "GET /rest/api/2/permissionscheme": {},
+    "GET /rest/api/2/permissionscheme/{}": {},
+    "GET /rest/api/2/permissionscheme/{}/permission": {},
+    "GET /rest/api/2/permissionscheme/{}/permission/{}": {},
+    "GET /rest/api/2/plans/plan": {},
+    "GET /rest/api/2/plans/plan/{}": {},
+    "GET /rest/api/2/plans/plan/{}/team": {},
+    "GET /rest/api/2/plans/plan/{}/team/atlassian/{}": {},
+    "GET /rest/api/2/plans/plan/{}/team/planonly/{}": {},
+    "GET /rest/api/2/priority/search": {},
+    "GET /rest/api/2/priorityscheme": {},
+    "GET /rest/api/2/priorityscheme/priorities/available": {},
+    "GET /rest/api/2/priorityscheme/{}/priorities": {},
+    "GET /rest/api/2/priorityscheme/{}/projects": {},
+    "GET /rest/api/2/project-template/live-template": {},
+    "GET /rest/api/2/project/{}/classification-config": {},
+    "GET /rest/api/2/project/{}/classification-level/default": {},
+    "GET /rest/api/2/project/{}/email": {},
+    "GET /rest/api/2/project/{}/features": {},
+    "GET /rest/api/2/project/{}/hierarchy": {},
+    "GET /rest/api/2/project/{}/issuesecuritylevelscheme": {},
+    "GET /rest/api/2/project/{}/notificationscheme": {},
+    "GET /rest/api/2/project/{}/permissionscheme": {},
+    "GET /rest/api/2/projectCategory": {},
+    "GET /rest/api/2/projectCategory/{}": {},
+    "GET /rest/api/2/projects/fields": {},
+    "GET /rest/api/2/projectvalidate/key": {},
+    "GET /rest/api/2/projectvalidate/validProjectKey": {},
+    "GET /rest/api/2/projectvalidate/validProjectName": {},
+    "GET /rest/api/2/redact/status/{}": {},
+    "GET /rest/api/2/resolution/search": {},
+    "GET /rest/api/2/role": {},
+    "GET /rest/api/2/role/{}": {},
+    "GET /rest/api/2/role/{}/actors": {},
+    "GET /rest/api/2/screens": {},
+    "GET /rest/api/2/screens/tabs": {},
+    "GET /rest/api/2/screenscheme": {},
+    "GET /rest/api/2/settings/columns": {},
+    "GET /rest/api/2/statuses": {},
+    "GET /rest/api/2/statuses/byNames": {},
+    "GET /rest/api/2/statuses/search": {},
+    "GET /rest/api/2/statuses/{}/project/{}/issueTypeUsages": {},
+    "GET /rest/api/2/statuses/{}/projectUsages": {},
+    "GET /rest/api/2/statuses/{}/workflowUsages": {},
+    "GET /rest/api/2/task/{}": {},
+    "GET /rest/api/2/uiModifications": {},
+    "GET /rest/api/2/user/bulk": {},
+    "GET /rest/api/2/user/bulk/migration": {},
+    "GET /rest/api/2/user/email": {},
+    "GET /rest/api/2/user/email/bulk": {},
+    "GET /rest/api/2/user/properties": {},
+    "GET /rest/api/2/user/properties/{}": {},
+    "GET /rest/api/2/user/search/query": {},
+    "GET /rest/api/2/user/search/query/key": {},
+    "GET /rest/api/2/webhook": {},
+    "GET /rest/api/2/webhook/failed": {},
+    "GET /rest/api/2/workflow/rule/config": {},
+    "GET /rest/api/2/workflow/search": {},
+    "GET /rest/api/2/workflow/{}/project/{}/issueTypeUsages": {},
+    "GET /rest/api/2/workflow/{}/projectUsages": {},
+    "GET /rest/api/2/workflow/{}/workflowSchemes": {},
+    "GET /rest/api/2/workflows/capabilities": {},
+    "GET /rest/api/2/workflows/defaultEditor": {},
+    "GET /rest/api/2/workflows/search": {},
+    "GET /rest/api/2/workflowscheme": {},
+    "GET /rest/api/2/workflowscheme/project": {},
+    "GET /rest/api/2/workflowscheme/{}": {},
+    "GET /rest/api/2/workflowscheme/{}/default": {},
+    "GET /rest/api/2/workflowscheme/{}/draft": {},
+    "GET /rest/api/2/workflowscheme/{}/draft/default": {},
+    "GET /rest/api/2/workflowscheme/{}/draft/issuetype/{}": {},
+    "GET /rest/api/2/workflowscheme/{}/draft/workflow": {},
+    "GET /rest/api/2/workflowscheme/{}/issuetype/{}": {},
+    "GET /rest/api/2/workflowscheme/{}/projectUsages": {},
+    "GET /rest/api/2/workflowscheme/{}/workflow": {},
+    "GET /rest/api/2/worklog/deleted": {},
+    "GET /rest/api/2/worklog/updated": {},
+    "GET /rest/api/3/announcementBanner": {},
+    "GET /rest/api/3/app/field/{}/context/configuration": {},
+    "GET /rest/api/3/application-properties": {},
+    "GET /rest/api/3/application-properties/advanced-settings": {},
+    "GET /rest/api/3/applicationrole": {},
+    "GET /rest/api/3/applicationrole/{}": {},
+    "GET /rest/api/3/auditing/record": {},
+    "GET /rest/api/3/bulk/issues/fields": {},
+    "GET /rest/api/3/bulk/issues/transition": {},
+    "GET /rest/api/3/bulk/queue/{}": {},
+    "GET /rest/api/3/classification-levels": {},
+    "GET /rest/api/3/config/fieldschemes": {},
+    "GET /rest/api/3/config/fieldschemes/projects": {},
+    "GET /rest/api/3/config/fieldschemes/{}": {},
+    "GET /rest/api/3/config/fieldschemes/{}/fields": {},
+    "GET /rest/api/3/config/fieldschemes/{}/fields/{}/parameters": {},
+    "GET /rest/api/3/config/fieldschemes/{}/projects": {},
+    "GET /rest/api/3/configuration": {},
+    "GET /rest/api/3/configuration/timetracking": {},
+    "GET /rest/api/3/configuration/timetracking/list": {},
+    "GET /rest/api/3/configuration/timetracking/options": {},
+    "GET /rest/api/3/dashboard/gadgets": {},
+    "GET /rest/api/3/data-policy": {},
+    "GET /rest/api/3/data-policy/project": {},
+    "GET /rest/api/3/events": {},
+    "GET /rest/api/3/field/search": {},
+    "GET /rest/api/3/field/search/trashed": {},
+    "GET /rest/api/3/field/{}/association/project": {},
+    "GET /rest/api/3/field/{}/context": {},
+    "GET /rest/api/3/field/{}/context/defaultValue": {},
+    "GET /rest/api/3/field/{}/context/defaultValues": {},
+    "GET /rest/api/3/field/{}/context/issuetypemapping": {},
+    "GET /rest/api/3/field/{}/context/projectmapping": {},
+    "GET /rest/api/3/field/{}/context/{}/option": {},
+    "GET /rest/api/3/field/{}/option": {},
+    "GET /rest/api/3/field/{}/option/suggestions/edit": {},
+    "GET /rest/api/3/field/{}/option/suggestions/search": {},
+    "GET /rest/api/3/field/{}/option/{}": {},
+    "GET /rest/api/3/fieldconfiguration": {},
+    "GET /rest/api/3/fieldconfiguration/{}/fields": {},
+    "GET /rest/api/3/fieldconfigurationscheme": {},
+    "GET /rest/api/3/fieldconfigurationscheme/mapping": {},
+    "GET /rest/api/3/fieldconfigurationscheme/project": {},
+    "GET /rest/api/3/group": {},
+    "GET /rest/api/3/group/bulk": {},
+    "GET /rest/api/3/group/member": {},
+    "GET /rest/api/3/instance/license": {},
+    "GET /rest/api/3/issue/limit/adf/report": {},
+    "GET /rest/api/3/issue/limit/report": {},
+    "GET /rest/api/3/issuesecurityschemes": {},
+    "GET /rest/api/3/issuesecurityschemes/level": {},
+    "GET /rest/api/3/issuesecurityschemes/level/member": {},
+    "GET /rest/api/3/issuesecurityschemes/project": {},
+    "GET /rest/api/3/issuesecurityschemes/search": {},
+    "GET /rest/api/3/issuesecurityschemes/{}": {},
+    "GET /rest/api/3/issuesecurityschemes/{}/members": {},
+    "GET /rest/api/3/issuetypescheme": {},
+    "GET /rest/api/3/issuetypescheme/mapping": {},
+    "GET /rest/api/3/issuetypescheme/project": {},
+    "GET /rest/api/3/issuetypescreenscheme": {},
+    "GET /rest/api/3/issuetypescreenscheme/mapping": {},
+    "GET /rest/api/3/issuetypescreenscheme/project": {},
+    "GET /rest/api/3/issuetypescreenscheme/{}/project": {},
+    "GET /rest/api/3/jql/function/computation": {},
+    "GET /rest/api/3/label": {},
+    "GET /rest/api/3/license/approximateLicenseCount": {},
+    "GET /rest/api/3/license/approximateLicenseCount/product/{}": {},
+    "GET /rest/api/3/mypreferences": {},
+    "GET /rest/api/3/myself": {},
+    "GET /rest/api/3/notificationscheme": {},
+    "GET /rest/api/3/notificationscheme/project": {},
+    "GET /rest/api/3/notificationscheme/{}": {},
+    "GET /rest/api/3/permissionscheme": {},
+    "GET /rest/api/3/permissionscheme/{}": {},
+    "GET /rest/api/3/permissionscheme/{}/permission": {},
+    "GET /rest/api/3/permissionscheme/{}/permission/{}": {},
+    "GET /rest/api/3/plans/plan": {},
+    "GET /rest/api/3/plans/plan/{}": {},
+    "GET /rest/api/3/plans/plan/{}/team": {},
+    "GET /rest/api/3/plans/plan/{}/team/atlassian/{}": {},
+    "GET /rest/api/3/plans/plan/{}/team/planonly/{}": {},
+    "GET /rest/api/3/priority/search": {},
+    "GET /rest/api/3/priorityscheme": {},
+    "GET /rest/api/3/priorityscheme/priorities/available": {},
+    "GET /rest/api/3/priorityscheme/{}/priorities": {},
+    "GET /rest/api/3/priorityscheme/{}/projects": {},
+    "GET /rest/api/3/project-template/live-template": {},
+    "GET /rest/api/3/project/{}/classification-config": {},
+    "GET /rest/api/3/project/{}/classification-level/default": {},
+    "GET /rest/api/3/project/{}/email": {},
+    "GET /rest/api/3/project/{}/features": {},
+    "GET /rest/api/3/project/{}/hierarchy": {},
+    "GET /rest/api/3/project/{}/issuesecuritylevelscheme": {},
+    "GET /rest/api/3/project/{}/notificationscheme": {},
+    "GET /rest/api/3/project/{}/permissionscheme": {},
+    "GET /rest/api/3/projectCategory": {},
+    "GET /rest/api/3/projectCategory/{}": {},
+    "GET /rest/api/3/projects/fields": {},
+    "GET /rest/api/3/projectvalidate/key": {},
+    "GET /rest/api/3/projectvalidate/validProjectKey": {},
+    "GET /rest/api/3/projectvalidate/validProjectName": {},
+    "GET /rest/api/3/redact/status/{}": {},
+    "GET /rest/api/3/resolution/search": {},
+    "GET /rest/api/3/role": {},
+    "GET /rest/api/3/role/{}": {},
+    "GET /rest/api/3/role/{}/actors": {},
+    "GET /rest/api/3/screens": {},
+    "GET /rest/api/3/screens/tabs": {},
+    "GET /rest/api/3/screenscheme": {},
+    "GET /rest/api/3/settings/columns": {},
+    "GET /rest/api/3/statuses": {},
+    "GET /rest/api/3/statuses/byNames": {},
+    "GET /rest/api/3/statuses/search": {},
+    "GET /rest/api/3/statuses/{}/project/{}/issueTypeUsages": {},
+    "GET /rest/api/3/statuses/{}/projectUsages": {},
+    "GET /rest/api/3/statuses/{}/workflowUsages": {},
+    "GET /rest/api/3/task/{}": {},
+    "GET /rest/api/3/uiModifications": {},
+    "GET /rest/api/3/user/bulk": {},
+    "GET /rest/api/3/user/bulk/migration": {},
+    "GET /rest/api/3/user/email": {},
+    "GET /rest/api/3/user/email/bulk": {},
+    "GET /rest/api/3/user/properties": {},
+    "GET /rest/api/3/user/properties/{}": {},
+    "GET /rest/api/3/user/search/query": {},
+    "GET /rest/api/3/user/search/query/key": {},
+    "GET /rest/api/3/webhook": {},
+    "GET /rest/api/3/webhook/failed": {},
+    "GET /rest/api/3/workflow/rule/config": {},
+    "GET /rest/api/3/workflow/search": {},
+    "GET /rest/api/3/workflow/{}/project/{}/issueTypeUsages": {},
+    "GET /rest/api/3/workflow/{}/projectUsages": {},
+    "GET /rest/api/3/workflow/{}/workflowSchemes": {},
+    "GET /rest/api/3/workflows/capabilities": {},
+    "GET /rest/api/3/workflows/defaultEditor": {},
+    "GET /rest/api/3/workflows/search": {},
+    "GET /rest/api/3/workflowscheme": {},
+    "GET /rest/api/3/workflowscheme/project": {},
+    "GET /rest/api/3/workflowscheme/{}": {},
+    "GET /rest/api/3/workflowscheme/{}/default": {},
+    "GET /rest/api/3/workflowscheme/{}/draft": {},
+    "GET /rest/api/3/workflowscheme/{}/draft/default": {},
+    "GET /rest/api/3/workflowscheme/{}/draft/issuetype/{}": {},
+    "GET /rest/api/3/workflowscheme/{}/draft/workflow": {},
+    "GET /rest/api/3/workflowscheme/{}/issuetype/{}": {},
+    "GET /rest/api/3/workflowscheme/{}/projectUsages": {},
+    "GET /rest/api/3/workflowscheme/{}/workflow": {},
+    "GET /rest/api/3/worklog/deleted": {},
+    "GET /rest/api/3/worklog/updated": {},
+    "GET /rest/atlassian-connect/1/addons/{}/properties": {},
+    "GET /rest/atlassian-connect/1/addons/{}/properties/{}": {},
+    "GET /rest/atlassian-connect/1/app/module/dynamic": {},
+    "GET /rest/atlassian-connect/1/migration/{}/{}/task": {},
+    "GET /rest/atlassian-connect/1/service-registry": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "GET /rest/forge/1/app/properties": {},
+    "GET /rest/forge/1/app/properties/{}": {},
+    "POST /rest/api/2/app/field/context/configuration/list": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/app/field/value": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/changelog/bulkfetch": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/config/fieldschemes": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/config/fieldschemes/{}/clone": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/dashboard/{}/gadget": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/field/{}/context": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/field/{}/context/mapping": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/field/{}/context/{}/issuetype/remove": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/field/{}/context/{}/option": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/field/{}/context/{}/project/remove": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/field/{}/option": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/field/{}/restore": {},
+    "POST /rest/api/2/field/{}/trash": {},
+    "POST /rest/api/2/fieldconfiguration": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/fieldconfigurationscheme": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/fieldconfigurationscheme/{}/mapping/delete": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/forge/panel/action/bulk/async": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/forge/panel/action/bulk/status": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/group": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/group/user": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/issue/properties": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/issue/properties/multi": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/issuesecurityschemes": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/issuetypescheme": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/issuetypescreenscheme": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/issuetypescreenscheme/{}/mapping/remove": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/jql/function/computation": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/jql/function/computation/search": {},
+    "POST /rest/api/2/jql/match": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/jql/pdcleaner": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/jql/sanitize": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/notificationscheme": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/permissionscheme": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/permissionscheme/{}/permission": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/plans/plan": {},
+    "POST /rest/api/2/plans/plan/{}/duplicate": {},
+    "POST /rest/api/2/plans/plan/{}/team/atlassian": {},
+    "POST /rest/api/2/plans/plan/{}/team/planonly": {},
+    "POST /rest/api/2/priority": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/priorityscheme": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/priorityscheme/mappings": {},
+    "POST /rest/api/2/project-template": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/project-template/save-template": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/projectCategory": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/redact": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/resolution": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/role": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/role/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/role/{}/actors": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/screens": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/screenscheme": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/statuses": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/task/{}/cancel": {},
+    "POST /rest/api/2/uiModifications": {
+      "consumes": [
+        "application/json"
+      ],
+      "body": "optional"
+    },
+    "POST /rest/api/2/webhook": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/workflow/history": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/workflow/history/list": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/workflows": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/workflows/copy": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/workflows/create": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/workflows/create/validation": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/workflows/preview": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/workflows/update": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/workflows/update/validation": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/workflowscheme": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/workflowscheme/project/switch": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/workflowscheme/read": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/workflowscheme/update": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/workflowscheme/update/mappings": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/workflowscheme/{}/createdraft": {},
+    "POST /rest/api/2/workflowscheme/{}/draft/publish": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/2/worklog/list": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/app/field/context/configuration/list": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/app/field/value": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/bulk/issues/delete": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/bulk/issues/fields": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/bulk/issues/move": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/bulk/issues/transition": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/bulk/issues/unwatch": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/bulk/issues/watch": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/changelog/bulkfetch": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/config/fieldschemes": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/config/fieldschemes/{}/clone": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/dashboard/{}/gadget": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/field/{}/context": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/field/{}/context/mapping": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/field/{}/context/{}/issuetype/remove": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/field/{}/context/{}/option": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/field/{}/context/{}/project/remove": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/field/{}/option": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/field/{}/restore": {},
+    "POST /rest/api/3/field/{}/trash": {},
+    "POST /rest/api/3/fieldconfiguration": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/fieldconfigurationscheme": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/fieldconfigurationscheme/{}/mapping/delete": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/forge/panel/action/bulk/async": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/forge/panel/action/bulk/status": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/group": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/group/user": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/issue/properties": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/issue/properties/multi": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/issuesecurityschemes": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/issuetypescheme": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/issuetypescreenscheme": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/issuetypescreenscheme/{}/mapping/remove": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/jql/function/computation": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/jql/function/computation/search": {},
+    "POST /rest/api/3/jql/match": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/jql/pdcleaner": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/jql/sanitize": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/notificationscheme": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/permissionscheme": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/permissionscheme/{}/permission": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/plans/plan": {},
+    "POST /rest/api/3/plans/plan/{}/duplicate": {},
+    "POST /rest/api/3/plans/plan/{}/team/atlassian": {},
+    "POST /rest/api/3/plans/plan/{}/team/planonly": {},
+    "POST /rest/api/3/priority": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/priorityscheme": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/priorityscheme/mappings": {},
+    "POST /rest/api/3/project-template": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/project-template/save-template": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/projectCategory": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/redact": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/resolution": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/role": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/role/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/role/{}/actors": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/screens": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/screenscheme": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/statuses": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/task/{}/cancel": {},
+    "POST /rest/api/3/uiModifications": {
+      "consumes": [
+        "application/json"
+      ],
+      "body": "optional"
+    },
+    "POST /rest/api/3/webhook": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/workflow/history": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/workflow/history/list": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/workflows": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/workflows/copy": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/workflows/create": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/workflows/create/validation": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/workflows/preview": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/workflows/update": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/workflows/update/validation": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/workflowscheme": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/workflowscheme/project/switch": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/workflowscheme/read": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/workflowscheme/update": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/workflowscheme/update/mappings": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/workflowscheme/{}/createdraft": {},
+    "POST /rest/api/3/workflowscheme/{}/draft/publish": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/worklog/list": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/atlassian-connect/1/app/module/dynamic": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/atlassian-connect/1/migration/workflow/rule/search": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/atlassian-connect/1/migration/{}/{}/task": {},
+    "POST /rest/internal/api/latest/worklog/bulk": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/announcementBanner": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/app/field/{}/context/configuration": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/app/field/{}/value": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/application-properties/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/config/fieldschemes/fields": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/config/fieldschemes/fields/parameters": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/config/fieldschemes/projects": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/config/fieldschemes/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/configuration/timetracking": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/configuration/timetracking/options": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/dashboard/bulk/edit": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/dashboard/{}/gadget/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/field/association": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/field/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/field/{}/context/defaultValue": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/field/{}/context/defaultValues": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/field/{}/context/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/field/{}/context/{}/issuetype": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/field/{}/context/{}/option": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/field/{}/context/{}/option/move": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/field/{}/context/{}/project": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/field/{}/option/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/fieldconfiguration/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/fieldconfiguration/{}/fields": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/fieldconfigurationscheme/project": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/fieldconfigurationscheme/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/fieldconfigurationscheme/{}/mapping": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/issue/properties/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/issues/archive/export": {
+      "consumes": [
+        "application/json"
+      ],
+      "body": "optional"
+    },
+    "PUT /rest/api/2/issuesecurityschemes/level/default": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/issuesecurityschemes/project": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/issuesecurityschemes/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/issuesecurityschemes/{}/level": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/issuesecurityschemes/{}/level/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/issuesecurityschemes/{}/level/{}/member": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/issuetypescheme/project": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/issuetypescheme/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/issuetypescheme/{}/issuetype": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/issuetypescheme/{}/issuetype/move": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/issuetypescreenscheme/project": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/issuetypescreenscheme/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/issuetypescreenscheme/{}/mapping": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/issuetypescreenscheme/{}/mapping/default": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/mypreferences": {
+      "consumes": [
+        "application/json",
+        "text/plain"
+      ]
+    },
+    "PUT /rest/api/2/mypreferences/locale": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/notificationscheme/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/notificationscheme/{}/notification": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/permissionscheme/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/plans/plan/{}": {
+      "consumes": [
+        "application/json-patch+json"
+      ]
+    },
+    "PUT /rest/api/2/plans/plan/{}/archive": {},
+    "PUT /rest/api/2/plans/plan/{}/team/atlassian/{}": {
+      "consumes": [
+        "application/json-patch+json"
+      ]
+    },
+    "PUT /rest/api/2/plans/plan/{}/team/planonly/{}": {
+      "consumes": [
+        "application/json-patch+json"
+      ]
+    },
+    "PUT /rest/api/2/plans/plan/{}/trash": {},
+    "PUT /rest/api/2/priority/default": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/priority/move": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/priority/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/priorityscheme/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/project-template/edit-template": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/project/{}/classification-level/default": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/project/{}/email": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/project/{}/features/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/project/{}/permissionscheme": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/projectCategory/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/resolution/default": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/resolution/move": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/resolution/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/role/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/screens/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/screenscheme/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/settings/columns": {
+      "consumes": [
+        "multipart/form-data",
+        "*/*"
+      ]
+    },
+    "PUT /rest/api/2/statuses": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/uiModifications/{}": {
+      "consumes": [
+        "application/json"
+      ],
+      "body": "optional"
+    },
+    "PUT /rest/api/2/user/properties/{}": {},
+    "PUT /rest/api/2/webhook/refresh": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/workflow/rule/config": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/workflow/rule/config/delete": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/workflowscheme/project": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/workflowscheme/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/workflowscheme/{}/default": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/workflowscheme/{}/draft": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/workflowscheme/{}/draft/default": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/workflowscheme/{}/draft/issuetype/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/workflowscheme/{}/draft/workflow": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/workflowscheme/{}/issuetype/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/2/workflowscheme/{}/workflow": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/announcementBanner": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/app/field/{}/context/configuration": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/app/field/{}/value": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/application-properties/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/config/fieldschemes/fields": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/config/fieldschemes/fields/parameters": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/config/fieldschemes/projects": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/config/fieldschemes/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/configuration/timetracking": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/configuration/timetracking/options": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/dashboard/bulk/edit": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/dashboard/{}/gadget/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/field/association": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/field/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/field/{}/context/defaultValue": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/field/{}/context/defaultValues": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/field/{}/context/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/field/{}/context/{}/issuetype": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/field/{}/context/{}/option": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/field/{}/context/{}/option/move": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/field/{}/context/{}/project": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/field/{}/option/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/fieldconfiguration/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/fieldconfiguration/{}/fields": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/fieldconfigurationscheme/project": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/fieldconfigurationscheme/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/fieldconfigurationscheme/{}/mapping": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/issue/properties/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/issues/archive/export": {
+      "consumes": [
+        "application/json"
+      ],
+      "body": "optional"
+    },
+    "PUT /rest/api/3/issuesecurityschemes/level/default": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/issuesecurityschemes/project": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/issuesecurityschemes/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/issuesecurityschemes/{}/level": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/issuesecurityschemes/{}/level/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/issuesecurityschemes/{}/level/{}/member": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/issuetypescheme/project": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/issuetypescheme/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/issuetypescheme/{}/issuetype": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/issuetypescheme/{}/issuetype/move": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/issuetypescreenscheme/project": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/issuetypescreenscheme/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/issuetypescreenscheme/{}/mapping": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/issuetypescreenscheme/{}/mapping/default": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/mypreferences": {
+      "consumes": [
+        "application/json",
+        "text/plain"
+      ]
+    },
+    "PUT /rest/api/3/mypreferences/locale": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/notificationscheme/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/notificationscheme/{}/notification": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/permissionscheme/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/plans/plan/{}": {
+      "consumes": [
+        "application/json-patch+json"
+      ]
+    },
+    "PUT /rest/api/3/plans/plan/{}/archive": {},
+    "PUT /rest/api/3/plans/plan/{}/team/atlassian/{}": {
+      "consumes": [
+        "application/json-patch+json"
+      ]
+    },
+    "PUT /rest/api/3/plans/plan/{}/team/planonly/{}": {
+      "consumes": [
+        "application/json-patch+json"
+      ]
+    },
+    "PUT /rest/api/3/plans/plan/{}/trash": {},
+    "PUT /rest/api/3/priority/default": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/priority/move": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/priority/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/priorityscheme/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/project-template/edit-template": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/project/{}/classification-level/default": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/project/{}/email": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/project/{}/features/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/project/{}/permissionscheme": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/projectCategory/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/resolution/default": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/resolution/move": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/resolution/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/role/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/screens/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/screenscheme/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/settings/columns": {
+      "consumes": [
+        "multipart/form-data",
+        "*/*"
+      ]
+    },
+    "PUT /rest/api/3/statuses": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/uiModifications/{}": {
+      "consumes": [
+        "application/json"
+      ],
+      "body": "optional"
+    },
+    "PUT /rest/api/3/user/properties/{}": {},
+    "PUT /rest/api/3/webhook/refresh": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/workflow/rule/config": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/workflow/rule/config/delete": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/workflowscheme/project": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/workflowscheme/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/workflowscheme/{}/default": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/workflowscheme/{}/draft": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/workflowscheme/{}/draft/default": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/workflowscheme/{}/draft/issuetype/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/workflowscheme/{}/draft/workflow": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/workflowscheme/{}/issuetype/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/api/3/workflowscheme/{}/workflow": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/atlassian-connect/1/addons/{}/properties/{}": {},
+    "PUT /rest/atlassian-connect/1/migration/field": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/atlassian-connect/1/migration/properties/{}": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "PUT /rest/forge/1/app/properties/{}": {}
+  },
+  "run": [
+    "DELETE /rest/api/2/attachment/{}",
+    "DELETE /rest/api/2/comment/{}/properties/{}",
+    "DELETE /rest/api/2/component/{}",
+    "DELETE /rest/api/2/dashboard/{}",
+    "DELETE /rest/api/2/dashboard/{}/items/{}/properties/{}",
+    "DELETE /rest/api/2/filter/{}",
+    "DELETE /rest/api/2/filter/{}/columns",
+    "DELETE /rest/api/2/filter/{}/favourite",
+    "DELETE /rest/api/2/filter/{}/permission/{}",
+    "DELETE /rest/api/2/issue/{}",
+    "DELETE /rest/api/2/issue/{}/comment/{}",
+    "DELETE /rest/api/2/issue/{}/properties/{}",
+    "DELETE /rest/api/2/issue/{}/remotelink",
+    "DELETE /rest/api/2/issue/{}/remotelink/{}",
+    "DELETE /rest/api/2/issue/{}/votes",
+    "DELETE /rest/api/2/issue/{}/watchers",
+    "DELETE /rest/api/2/issue/{}/worklog",
+    "DELETE /rest/api/2/issue/{}/worklog/{}",
+    "DELETE /rest/api/2/issue/{}/worklog/{}/properties/{}",
+    "DELETE /rest/api/2/issueLink/{}",
+    "DELETE /rest/api/2/issueLinkType/{}",
+    "DELETE /rest/api/2/issuetype/{}",
+    "DELETE /rest/api/2/issuetype/{}/properties/{}",
+    "DELETE /rest/api/2/project/{}",
+    "DELETE /rest/api/2/project/{}/avatar/{}",
+    "DELETE /rest/api/2/project/{}/properties/{}",
+    "DELETE /rest/api/2/project/{}/role/{}",
+    "DELETE /rest/api/2/screens/{}/tabs/{}",
+    "DELETE /rest/api/2/screens/{}/tabs/{}/fields/{}",
+    "DELETE /rest/api/2/universal_avatar/type/{}/owner/{}/avatar/{}",
+    "DELETE /rest/api/2/user",
+    "DELETE /rest/api/2/user/columns",
+    "DELETE /rest/api/2/version/{}",
+    "DELETE /rest/api/2/version/{}/relatedwork/{}",
+    "DELETE /rest/api/3/attachment/{}",
+    "DELETE /rest/api/3/comment/{}/properties/{}",
+    "DELETE /rest/api/3/component/{}",
+    "DELETE /rest/api/3/dashboard/{}",
+    "DELETE /rest/api/3/dashboard/{}/items/{}/properties/{}",
+    "DELETE /rest/api/3/filter/{}",
+    "DELETE /rest/api/3/filter/{}/columns",
+    "DELETE /rest/api/3/filter/{}/favourite",
+    "DELETE /rest/api/3/filter/{}/permission/{}",
+    "DELETE /rest/api/3/issue/{}",
+    "DELETE /rest/api/3/issue/{}/comment/{}",
+    "DELETE /rest/api/3/issue/{}/properties/{}",
+    "DELETE /rest/api/3/issue/{}/remotelink",
+    "DELETE /rest/api/3/issue/{}/remotelink/{}",
+    "DELETE /rest/api/3/issue/{}/votes",
+    "DELETE /rest/api/3/issue/{}/watchers",
+    "DELETE /rest/api/3/issue/{}/worklog",
+    "DELETE /rest/api/3/issue/{}/worklog/{}",
+    "DELETE /rest/api/3/issue/{}/worklog/{}/properties/{}",
+    "DELETE /rest/api/3/issueLink/{}",
+    "DELETE /rest/api/3/issueLinkType/{}",
+    "DELETE /rest/api/3/issuetype/{}",
+    "DELETE /rest/api/3/issuetype/{}/properties/{}",
+    "DELETE /rest/api/3/project/{}",
+    "DELETE /rest/api/3/project/{}/avatar/{}",
+    "DELETE /rest/api/3/project/{}/properties/{}",
+    "DELETE /rest/api/3/project/{}/role/{}",
+    "DELETE /rest/api/3/screens/{}/tabs/{}",
+    "DELETE /rest/api/3/screens/{}/tabs/{}/fields/{}",
+    "DELETE /rest/api/3/universal_avatar/type/{}/owner/{}/avatar/{}",
+    "DELETE /rest/api/3/user",
+    "DELETE /rest/api/3/user/columns",
+    "DELETE /rest/api/3/version/{}",
+    "DELETE /rest/api/3/version/{}/relatedwork/{}",
+    "GET /rest/api/2/attachment/content/{}",
+    "GET /rest/api/2/attachment/meta",
+    "GET /rest/api/2/attachment/thumbnail/{}",
+    "GET /rest/api/2/attachment/{}",
+    "GET /rest/api/2/attachment/{}/expand/human",
+    "GET /rest/api/2/attachment/{}/expand/raw",
+    "GET /rest/api/2/avatar/{}/system",
+    "GET /rest/api/2/comment/{}/properties",
+    "GET /rest/api/2/comment/{}/properties/{}",
+    "GET /rest/api/2/component",
+    "GET /rest/api/2/component/{}",
+    "GET /rest/api/2/component/{}/relatedIssueCounts",
+    "GET /rest/api/2/customFieldOption/{}",
+    "GET /rest/api/2/dashboard",
+    "GET /rest/api/2/dashboard/search",
+    "GET /rest/api/2/dashboard/{}",
+    "GET /rest/api/2/dashboard/{}/gadget",
+    "GET /rest/api/2/dashboard/{}/items/{}/properties",
+    "GET /rest/api/2/dashboard/{}/items/{}/properties/{}",
+    "GET /rest/api/2/field/{}/contexts",
+    "GET /rest/api/2/field/{}/screens",
+    "GET /rest/api/2/filter/defaultShareScope",
+    "GET /rest/api/2/filter/favourite",
+    "GET /rest/api/2/filter/my",
+    "GET /rest/api/2/filter/search",
+    "GET /rest/api/2/filter/{}",
+    "GET /rest/api/2/filter/{}/columns",
+    "GET /rest/api/2/filter/{}/permission",
+    "GET /rest/api/2/filter/{}/permission/{}",
+    "GET /rest/api/2/groups/picker",
+    "GET /rest/api/2/groupuserpicker",
+    "GET /rest/api/2/issue/createmeta",
+    "GET /rest/api/2/issue/createmeta/{}/issuetypes",
+    "GET /rest/api/2/issue/createmeta/{}/issuetypes/{}",
+    "GET /rest/api/2/issue/picker",
+    "GET /rest/api/2/issue/{}/changelog",
+    "GET /rest/api/2/issue/{}/comment/{}",
+    "GET /rest/api/2/issue/{}/editmeta",
+    "GET /rest/api/2/issue/{}/properties",
+    "GET /rest/api/2/issue/{}/properties/{}",
+    "GET /rest/api/2/issue/{}/remotelink",
+    "GET /rest/api/2/issue/{}/remotelink/{}",
+    "GET /rest/api/2/issue/{}/transitions",
+    "GET /rest/api/2/issue/{}/votes",
+    "GET /rest/api/2/issue/{}/watchers",
+    "GET /rest/api/2/issue/{}/worklog",
+    "GET /rest/api/2/issue/{}/worklog/{}",
+    "GET /rest/api/2/issue/{}/worklog/{}/properties",
+    "GET /rest/api/2/issue/{}/worklog/{}/properties/{}",
+    "GET /rest/api/2/issueLink/{}",
+    "GET /rest/api/2/issueLinkType",
+    "GET /rest/api/2/issueLinkType/{}",
+    "GET /rest/api/2/issuetype",
+    "GET /rest/api/2/issuetype/project",
+    "GET /rest/api/2/issuetype/{}",
+    "GET /rest/api/2/issuetype/{}/alternatives",
+    "GET /rest/api/2/issuetype/{}/properties",
+    "GET /rest/api/2/issuetype/{}/properties/{}",
+    "GET /rest/api/2/jql/autocompletedata",
+    "GET /rest/api/2/jql/autocompletedata/suggestions",
+    "GET /rest/api/2/mypermissions",
+    "GET /rest/api/2/mypreferences/locale",
+    "GET /rest/api/2/permissions",
+    "GET /rest/api/2/priority",
+    "GET /rest/api/2/priority/{}",
+    "GET /rest/api/2/project",
+    "GET /rest/api/2/project/recent",
+    "GET /rest/api/2/project/search",
+    "GET /rest/api/2/project/type",
+    "GET /rest/api/2/project/type/accessible",
+    "GET /rest/api/2/project/type/{}",
+    "GET /rest/api/2/project/type/{}/accessible",
+    "GET /rest/api/2/project/{}",
+    "GET /rest/api/2/project/{}/avatars",
+    "GET /rest/api/2/project/{}/component",
+    "GET /rest/api/2/project/{}/components",
+    "GET /rest/api/2/project/{}/properties",
+    "GET /rest/api/2/project/{}/properties/{}",
+    "GET /rest/api/2/project/{}/role",
+    "GET /rest/api/2/project/{}/role/{}",
+    "GET /rest/api/2/project/{}/roledetails",
+    "GET /rest/api/2/project/{}/securitylevel",
+    "GET /rest/api/2/project/{}/statuses",
+    "GET /rest/api/2/project/{}/version",
+    "GET /rest/api/2/project/{}/versions",
+    "GET /rest/api/2/resolution",
+    "GET /rest/api/2/resolution/{}",
+    "GET /rest/api/2/screens/{}/availableFields",
+    "GET /rest/api/2/screens/{}/tabs",
+    "GET /rest/api/2/screens/{}/tabs/{}/fields",
+    "GET /rest/api/2/search",
+    "GET /rest/api/2/securitylevel/{}",
+    "GET /rest/api/2/status",
+    "GET /rest/api/2/status/{}",
+    "GET /rest/api/2/statuscategory",
+    "GET /rest/api/2/statuscategory/{}",
+    "GET /rest/api/2/universal_avatar/type/{}/owner/{}",
+    "GET /rest/api/2/universal_avatar/view/type/{}",
+    "GET /rest/api/2/universal_avatar/view/type/{}/avatar/{}",
+    "GET /rest/api/2/universal_avatar/view/type/{}/owner/{}",
+    "GET /rest/api/2/user",
+    "GET /rest/api/2/user/assignable/multiProjectSearch",
+    "GET /rest/api/2/user/assignable/search",
+    "GET /rest/api/2/user/columns",
+    "GET /rest/api/2/user/groups",
+    "GET /rest/api/2/user/permission/search",
+    "GET /rest/api/2/user/picker",
+    "GET /rest/api/2/user/search",
+    "GET /rest/api/2/user/viewissue/search",
+    "GET /rest/api/2/users",
+    "GET /rest/api/2/users/search",
+    "GET /rest/api/2/version/{}",
+    "GET /rest/api/2/version/{}/relatedIssueCounts",
+    "GET /rest/api/2/version/{}/relatedwork",
+    "GET /rest/api/2/version/{}/unresolvedIssueCount",
+    "GET /rest/api/3/attachment/content/{}",
+    "GET /rest/api/3/attachment/meta",
+    "GET /rest/api/3/attachment/thumbnail/{}",
+    "GET /rest/api/3/attachment/{}",
+    "GET /rest/api/3/attachment/{}/expand/human",
+    "GET /rest/api/3/attachment/{}/expand/raw",
+    "GET /rest/api/3/avatar/{}/system",
+    "GET /rest/api/3/comment/{}/properties",
+    "GET /rest/api/3/comment/{}/properties/{}",
+    "GET /rest/api/3/component",
+    "GET /rest/api/3/component/{}",
+    "GET /rest/api/3/component/{}/relatedIssueCounts",
+    "GET /rest/api/3/customFieldOption/{}",
+    "GET /rest/api/3/dashboard",
+    "GET /rest/api/3/dashboard/search",
+    "GET /rest/api/3/dashboard/{}",
+    "GET /rest/api/3/dashboard/{}/gadget",
+    "GET /rest/api/3/dashboard/{}/items/{}/properties",
+    "GET /rest/api/3/dashboard/{}/items/{}/properties/{}",
+    "GET /rest/api/3/field/{}/contexts",
+    "GET /rest/api/3/field/{}/screens",
+    "GET /rest/api/3/filter/defaultShareScope",
+    "GET /rest/api/3/filter/favourite",
+    "GET /rest/api/3/filter/my",
+    "GET /rest/api/3/filter/search",
+    "GET /rest/api/3/filter/{}",
+    "GET /rest/api/3/filter/{}/columns",
+    "GET /rest/api/3/filter/{}/permission",
+    "GET /rest/api/3/filter/{}/permission/{}",
+    "GET /rest/api/3/groups/picker",
+    "GET /rest/api/3/groupuserpicker",
+    "GET /rest/api/3/issue/createmeta",
+    "GET /rest/api/3/issue/createmeta/{}/issuetypes",
+    "GET /rest/api/3/issue/createmeta/{}/issuetypes/{}",
+    "GET /rest/api/3/issue/picker",
+    "GET /rest/api/3/issue/{}/changelog",
+    "GET /rest/api/3/issue/{}/comment/{}",
+    "GET /rest/api/3/issue/{}/editmeta",
+    "GET /rest/api/3/issue/{}/properties",
+    "GET /rest/api/3/issue/{}/properties/{}",
+    "GET /rest/api/3/issue/{}/remotelink",
+    "GET /rest/api/3/issue/{}/remotelink/{}",
+    "GET /rest/api/3/issue/{}/transitions",
+    "GET /rest/api/3/issue/{}/votes",
+    "GET /rest/api/3/issue/{}/watchers",
+    "GET /rest/api/3/issue/{}/worklog",
+    "GET /rest/api/3/issue/{}/worklog/{}",
+    "GET /rest/api/3/issue/{}/worklog/{}/properties",
+    "GET /rest/api/3/issue/{}/worklog/{}/properties/{}",
+    "GET /rest/api/3/issueLink/{}",
+    "GET /rest/api/3/issueLinkType/{}",
+    "GET /rest/api/3/issuetype",
+    "GET /rest/api/3/issuetype/project",
+    "GET /rest/api/3/issuetype/{}",
+    "GET /rest/api/3/issuetype/{}/alternatives",
+    "GET /rest/api/3/issuetype/{}/properties",
+    "GET /rest/api/3/issuetype/{}/properties/{}",
+    "GET /rest/api/3/jql/autocompletedata",
+    "GET /rest/api/3/jql/autocompletedata/suggestions",
+    "GET /rest/api/3/mypermissions",
+    "GET /rest/api/3/mypreferences/locale",
+    "GET /rest/api/3/permissions",
+    "GET /rest/api/3/priority",
+    "GET /rest/api/3/priority/{}",
+    "GET /rest/api/3/project",
+    "GET /rest/api/3/project/recent",
+    "GET /rest/api/3/project/type",
+    "GET /rest/api/3/project/type/accessible",
+    "GET /rest/api/3/project/type/{}",
+    "GET /rest/api/3/project/type/{}/accessible",
+    "GET /rest/api/3/project/{}",
+    "GET /rest/api/3/project/{}/avatars",
+    "GET /rest/api/3/project/{}/component",
+    "GET /rest/api/3/project/{}/components",
+    "GET /rest/api/3/project/{}/properties",
+    "GET /rest/api/3/project/{}/properties/{}",
+    "GET /rest/api/3/project/{}/roledetails",
+    "GET /rest/api/3/project/{}/securitylevel",
+    "GET /rest/api/3/project/{}/statuses",
+    "GET /rest/api/3/project/{}/version",
+    "GET /rest/api/3/project/{}/versions",
+    "GET /rest/api/3/resolution",
+    "GET /rest/api/3/resolution/{}",
+    "GET /rest/api/3/screens/{}/availableFields",
+    "GET /rest/api/3/screens/{}/tabs",
+    "GET /rest/api/3/screens/{}/tabs/{}/fields",
+    "GET /rest/api/3/search",
+    "GET /rest/api/3/securitylevel/{}",
+    "GET /rest/api/3/status",
+    "GET /rest/api/3/status/{}",
+    "GET /rest/api/3/statuscategory",
+    "GET /rest/api/3/statuscategory/{}",
+    "GET /rest/api/3/universal_avatar/type/{}/owner/{}",
+    "GET /rest/api/3/universal_avatar/view/type/{}",
+    "GET /rest/api/3/universal_avatar/view/type/{}/avatar/{}",
+    "GET /rest/api/3/universal_avatar/view/type/{}/owner/{}",
+    "GET /rest/api/3/user",
+    "GET /rest/api/3/user/assignable/multiProjectSearch",
+    "GET /rest/api/3/user/assignable/search",
+    "GET /rest/api/3/user/columns",
+    "GET /rest/api/3/user/groups",
+    "GET /rest/api/3/user/permission/search",
+    "GET /rest/api/3/user/picker",
+    "GET /rest/api/3/user/search",
+    "GET /rest/api/3/user/viewissue/search",
+    "GET /rest/api/3/users",
+    "GET /rest/api/3/users/search",
+    "GET /rest/api/3/version/{}",
+    "GET /rest/api/3/version/{}/relatedIssueCounts",
+    "GET /rest/api/3/version/{}/relatedwork",
+    "GET /rest/api/3/version/{}/unresolvedIssueCount",
+    "POST /rest/api/2/comment/list",
+    "POST /rest/api/2/component",
+    "POST /rest/api/2/dashboard",
+    "POST /rest/api/2/dashboard/{}/copy",
+    "POST /rest/api/2/expression/analyse",
+    "POST /rest/api/2/expression/eval",
+    "POST /rest/api/2/expression/evaluate",
+    "POST /rest/api/2/field",
+    "POST /rest/api/2/filter",
+    "POST /rest/api/2/filter/{}/permission",
+    "POST /rest/api/2/issue",
+    "POST /rest/api/2/issue/archive",
+    "POST /rest/api/2/issue/bulk",
+    "POST /rest/api/2/issue/bulkfetch",
+    "POST /rest/api/2/issue/watching",
+    "POST /rest/api/2/issue/{}/attachments",
+    "POST /rest/api/2/issue/{}/changelog/list",
+    "POST /rest/api/2/issue/{}/comment",
+    "POST /rest/api/2/issue/{}/notify",
+    "POST /rest/api/2/issue/{}/remotelink",
+    "POST /rest/api/2/issue/{}/transitions",
+    "POST /rest/api/2/issue/{}/votes",
+    "POST /rest/api/2/issue/{}/watchers",
+    "POST /rest/api/2/issue/{}/worklog",
+    "POST /rest/api/2/issue/{}/worklog/move",
+    "POST /rest/api/2/issueLink",
+    "POST /rest/api/2/issueLinkType",
+    "POST /rest/api/2/issuetype",
+    "POST /rest/api/2/issuetype/{}/avatar2",
+    "POST /rest/api/2/jql/autocompletedata",
+    "POST /rest/api/2/jql/parse",
+    "POST /rest/api/2/permissions/check",
+    "POST /rest/api/2/permissions/project",
+    "POST /rest/api/2/project",
+    "POST /rest/api/2/project/{}/archive",
+    "POST /rest/api/2/project/{}/avatar2",
+    "POST /rest/api/2/project/{}/delete",
+    "POST /rest/api/2/project/{}/restore",
+    "POST /rest/api/2/project/{}/role/{}",
+    "POST /rest/api/2/screens/addToDefault/{}",
+    "POST /rest/api/2/screens/{}/tabs",
+    "POST /rest/api/2/screens/{}/tabs/{}/fields",
+    "POST /rest/api/2/screens/{}/tabs/{}/fields/{}/move",
+    "POST /rest/api/2/screens/{}/tabs/{}/move/{}",
+    "POST /rest/api/2/search",
+    "POST /rest/api/2/search/approximate-count",
+    "POST /rest/api/2/universal_avatar/type/{}/owner/{}",
+    "POST /rest/api/2/user",
+    "POST /rest/api/2/version",
+    "POST /rest/api/2/version/{}/move",
+    "POST /rest/api/2/version/{}/relatedwork",
+    "POST /rest/api/2/version/{}/removeAndSwap",
+    "POST /rest/api/3/comment/list",
+    "POST /rest/api/3/component",
+    "POST /rest/api/3/dashboard",
+    "POST /rest/api/3/dashboard/{}/copy",
+    "POST /rest/api/3/expression/analyse",
+    "POST /rest/api/3/expression/eval",
+    "POST /rest/api/3/expression/evaluate",
+    "POST /rest/api/3/field",
+    "POST /rest/api/3/filter",
+    "POST /rest/api/3/filter/{}/permission",
+    "POST /rest/api/3/issue",
+    "POST /rest/api/3/issue/archive",
+    "POST /rest/api/3/issue/bulk",
+    "POST /rest/api/3/issue/bulkfetch",
+    "POST /rest/api/3/issue/watching",
+    "POST /rest/api/3/issue/{}/attachments",
+    "POST /rest/api/3/issue/{}/changelog/list",
+    "POST /rest/api/3/issue/{}/comment",
+    "POST /rest/api/3/issue/{}/notify",
+    "POST /rest/api/3/issue/{}/remotelink",
+    "POST /rest/api/3/issue/{}/transitions",
+    "POST /rest/api/3/issue/{}/votes",
+    "POST /rest/api/3/issue/{}/watchers",
+    "POST /rest/api/3/issue/{}/worklog",
+    "POST /rest/api/3/issue/{}/worklog/move",
+    "POST /rest/api/3/issueLink",
+    "POST /rest/api/3/issueLinkType",
+    "POST /rest/api/3/issuetype",
+    "POST /rest/api/3/issuetype/{}/avatar2",
+    "POST /rest/api/3/jql/autocompletedata",
+    "POST /rest/api/3/jql/parse",
+    "POST /rest/api/3/permissions/check",
+    "POST /rest/api/3/permissions/project",
+    "POST /rest/api/3/project",
+    "POST /rest/api/3/project/{}/archive",
+    "POST /rest/api/3/project/{}/avatar2",
+    "POST /rest/api/3/project/{}/delete",
+    "POST /rest/api/3/project/{}/restore",
+    "POST /rest/api/3/project/{}/role/{}",
+    "POST /rest/api/3/screens/addToDefault/{}",
+    "POST /rest/api/3/screens/{}/tabs",
+    "POST /rest/api/3/screens/{}/tabs/{}/fields",
+    "POST /rest/api/3/screens/{}/tabs/{}/fields/{}/move",
+    "POST /rest/api/3/screens/{}/tabs/{}/move/{}",
+    "POST /rest/api/3/search",
+    "POST /rest/api/3/search/approximate-count",
+    "POST /rest/api/3/universal_avatar/type/{}/owner/{}",
+    "POST /rest/api/3/user",
+    "POST /rest/api/3/version",
+    "POST /rest/api/3/version/{}/move",
+    "POST /rest/api/3/version/{}/relatedwork",
+    "POST /rest/api/3/version/{}/removeAndSwap",
+    "PUT /rest/api/2/comment/{}/properties/{}",
+    "PUT /rest/api/2/component/{}",
+    "PUT /rest/api/2/dashboard/{}",
+    "PUT /rest/api/2/dashboard/{}/items/{}/properties/{}",
+    "PUT /rest/api/2/filter/defaultShareScope",
+    "PUT /rest/api/2/filter/{}",
+    "PUT /rest/api/2/filter/{}/columns",
+    "PUT /rest/api/2/filter/{}/favourite",
+    "PUT /rest/api/2/filter/{}/owner",
+    "PUT /rest/api/2/issue/archive",
+    "PUT /rest/api/2/issue/unarchive",
+    "PUT /rest/api/2/issue/{}",
+    "PUT /rest/api/2/issue/{}/assignee",
+    "PUT /rest/api/2/issue/{}/comment/{}",
+    "PUT /rest/api/2/issue/{}/properties/{}",
+    "PUT /rest/api/2/issue/{}/remotelink/{}",
+    "PUT /rest/api/2/issue/{}/worklog/{}",
+    "PUT /rest/api/2/issue/{}/worklog/{}/properties/{}",
+    "PUT /rest/api/2/issueLinkType/{}",
+    "PUT /rest/api/2/issuetype/{}",
+    "PUT /rest/api/2/issuetype/{}/properties/{}",
+    "PUT /rest/api/2/project/{}",
+    "PUT /rest/api/2/project/{}/avatar",
+    "PUT /rest/api/2/project/{}/properties/{}",
+    "PUT /rest/api/2/project/{}/role/{}",
+    "PUT /rest/api/2/screens/{}/tabs/{}",
+    "PUT /rest/api/2/user/columns",
+    "PUT /rest/api/2/version/{}",
+    "PUT /rest/api/2/version/{}/mergeto/{}",
+    "PUT /rest/api/2/version/{}/relatedwork",
+    "PUT /rest/api/3/comment/{}/properties/{}",
+    "PUT /rest/api/3/component/{}",
+    "PUT /rest/api/3/dashboard/{}",
+    "PUT /rest/api/3/dashboard/{}/items/{}/properties/{}",
+    "PUT /rest/api/3/filter/defaultShareScope",
+    "PUT /rest/api/3/filter/{}",
+    "PUT /rest/api/3/filter/{}/columns",
+    "PUT /rest/api/3/filter/{}/favourite",
+    "PUT /rest/api/3/filter/{}/owner",
+    "PUT /rest/api/3/issue/archive",
+    "PUT /rest/api/3/issue/unarchive",
+    "PUT /rest/api/3/issue/{}",
+    "PUT /rest/api/3/issue/{}/assignee",
+    "PUT /rest/api/3/issue/{}/comment/{}",
+    "PUT /rest/api/3/issue/{}/properties/{}",
+    "PUT /rest/api/3/issue/{}/remotelink/{}",
+    "PUT /rest/api/3/issue/{}/worklog/{}",
+    "PUT /rest/api/3/issue/{}/worklog/{}/properties/{}",
+    "PUT /rest/api/3/issueLinkType/{}",
+    "PUT /rest/api/3/issuetype/{}",
+    "PUT /rest/api/3/issuetype/{}/properties/{}",
+    "PUT /rest/api/3/project/{}",
+    "PUT /rest/api/3/project/{}/avatar",
+    "PUT /rest/api/3/project/{}/properties/{}",
+    "PUT /rest/api/3/project/{}/role/{}",
+    "PUT /rest/api/3/screens/{}/tabs/{}",
+    "PUT /rest/api/3/user/columns",
+    "PUT /rest/api/3/version/{}",
+    "PUT /rest/api/3/version/{}/mergeto/{}",
+    "PUT /rest/api/3/version/{}/relatedwork"
+  ]
+}

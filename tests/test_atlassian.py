@@ -2755,13 +2755,13 @@ _CREDENTIALS = {
 @pytest.mark.parametrize(
     "method,path,credential,status",
     [
-        # an operation Jira publishes, no route here serves and the gateway will not run anonymously
+        # an operation Jira publishes and no route here serves, which will not run anonymously
         ("GET", "/atlassian/rest/api/3/myself", "none", 401),
         ("GET", "/atlassian/rest/api/3/myself", "failed-pair", 401),
         ("GET", "/atlassian/rest/api/3/myself", "unknown-scheme", 401),
         ("DELETE", "/atlassian/rest/api/3/screens/999999999", "none", 401),
         # the controls: one that runs anonymously on real, where Backlot has no operation to run,
-        # and the same gated path with a credential, both the baseline's gap; and a bearer it
+        # and the same refused path with a credential, both the baseline's gap; and a bearer it
         # cannot read on a GET, which is the Connect-token 403 before any of this
         ("GET", "/atlassian/rest/api/3/dashboard", "none", 404),
         ("GET", "/atlassian/rest/api/3/myself", "admin", 404),
@@ -2779,12 +2779,12 @@ _CREDENTIALS = {
         ("OPTIONS", "/atlassian/rest/api/3/nopesuchroute", "unreadable-bearer", 404),
     ],
 )
-def test_jira_gateway_refuses_what_it_will_not_run_for_a_caller_it_cannot_name(
+def test_jira_refuses_what_it_will_not_run_for_a_caller_it_cannot_name(
     client, admin_h, method, path, credential, status
 ):
-    """Pins the 401 the comment on ``errors.atlassian.GATEWAY_UNAUTHENTICATED`` describes, in the
+    """Pins the 401 the comment on ``errors.atlassian.JIRA_UNAUTHENTICATED`` describes, in the
     `text/html` it has for the test client's `Accept: */*`: on the operations
-    ``scripts/gen_atlassian_gateway.py`` lists and on an `OPTIONS` wherever Jira publishes
+    ``backlot/data/jira_unserved.json`` refuses and on an `OPTIONS` wherever Jira publishes
     something, for each credential that comment names. Where Jira publishes nothing, the URL's 404
     answers first."""
     headers = admin_h if credential == "admin" else _CREDENTIALS[credential]
@@ -2805,19 +2805,143 @@ def test_jira_gateway_refuses_what_it_will_not_run_for_a_caller_it_cannot_name(
         assert r.headers["x-seraph-loginreason"] == "AUTHENTICATED_FAILED"
 
 
-def test_the_gateways_operations_are_ones_no_route_serves():
-    """``backlot/data/jira_gateway.json`` is written from the baseline's `missing_operation` rows; a
-    route added for one of them drops it from the baseline, and this is the reminder to regenerate
-    the file (``scripts/gen_atlassian_gateway.py``), which would otherwise refuse a served
-    operation's path for a method no route takes."""
+_BANNER = "/atlassian/rest/api/3/announcementBanner"
+_PLAN = "/atlassian/rest/api/3/plans/plan/1"
+_UI = "/atlassian/rest/api/3/uiModifications/1"
+_REMOVE_TEMPLATE = "/atlassian/rest/api/3/project-template/remove-template"
+_SERVICE_REGISTRY = "/atlassian/rest/atlassian-connect/1/service-registry?serviceIds=1"
+_COLUMNS = "/atlassian/rest/api/2/settings/columns"
+_PREFERENCES = "/atlassian/rest/api/3/mypreferences"
+#: a `Content-Type` Spring cannot read, which the 415 names no type for
+_UNREAD = object()
+_JSON = "application/json"
+
+
+@pytest.mark.parametrize(
+    "method,path,credential,content_type,body,status,named,accept",
+    [
+        # an operation no route serves, which takes JSON and needs a body
+        ("PUT", _BANNER, "none", None, None, 415, "null", _JSON),
+        ("PUT", _BANNER, "none", "", "{}", 415, "null", _JSON),
+        (
+            "PUT",
+            _BANNER,
+            "none",
+            "TEXT/Plain;Charset=UTF-8;X=Y",
+            "x",
+            415,
+            "text/plain;Charset=UTF-8;X=Y",
+            _JSON,
+        ),
+        ("PUT", _BANNER, "none", "application/*", "{}", 415, "application/*", _JSON),
+        ("PUT", _BANNER, "none", "*", "{}", 415, "*/*", _JSON),
+        ("PUT", _BANNER, "none", "application/json;charset=nope", "{}", 415, _UNREAD, _JSON),
+        ("PUT", _BANNER, "none", "application/json;a=b c", "{}", 415, _UNREAD, _JSON),
+        ("PUT", _BANNER, "none", "text/plain", "", 415, "text/plain", _JSON),
+        ("PUT", f"{_BANNER}/", "none", "text/plain", "x", 415, "text/plain", _JSON),
+        ("PUT", f"{_BANNER}/", "none", _JSON, "{}", 401, None, None),
+        ("PUT", _BANNER, "none", _JSON, "{}", 401, None, None),
+        ("PUT", _BANNER, "none", _JSON, "", 401, None, None),
+        ("PUT", _BANNER, "none", "application/json;charset=latin1", "{}", 401, None, None),
+        ("PUT", _BANNER, "none", 'application/json;charset="utf-8"', "{}", 401, None, None),
+        ("PUT", _BANNER, "none", "application/json;x", "{}", 401, None, None),
+        # an `OPTIONS` is not checked, and an unreadable bearer is refused before the check
+        ("OPTIONS", _BANNER, "none", "text/plain", "x", 401, None, None),
+        ("PUT", _BANNER, "unreadable-bearer", "text/plain", "x", 403, None, None),
+        # one that takes JSON Patch, which refuses JSON whatever the credential
+        ("PUT", _PLAN, "none", _JSON, "{}", 415, _JSON, "application/json-patch+json"),
+        ("PUT", _PLAN, "admin", _JSON, "{}", 415, _JSON, "application/json-patch+json"),
+        ("PUT", _PLAN, "failed-pair", _JSON, "{}", 415, _JSON, "application/json-patch+json"),
+        ("PUT", _PLAN, "unknown-scheme", _JSON, "{}", 415, _JSON, "application/json-patch+json"),
+        ("PUT", _PLAN, "none", "application/json-patch+json", "[]", 401, None, None),
+        ("PUT", _PLAN, "none", "APPLICATION/JSON-PATCH+JSON; Charset=UTF-8", "[]", 401, None, None),
+        ("PUT", _PLAN, "admin", "application/json-patch+json", "[]", 404, None, None),
+        # one whose body is optional, which checks only a request that carries one
+        ("PUT", _UI, "none", None, None, 401, None, None),
+        ("PUT", _UI, "none", "", None, 401, None, None),
+        ("PUT", _UI, "none", "text/plain", "", 401, None, None),
+        ("PUT", _UI, "none", None, "{}", 415, "null", _JSON),
+        ("PUT", _UI, "none", "text/plain", "x", 415, "text/plain", _JSON),
+        # one documented with a body that checks nothing, and one documented with none
+        ("POST", "/atlassian/rest/api/3/plans/plan", "none", "foo", "x", 401, None, None),
+        (
+            "DELETE",
+            "/atlassian/rest/api/3/plans/plan/1/team/atlassian/2",
+            "none",
+            "foo",
+            "x",
+            401,
+            None,
+            None,
+        ),
+        # two the documents give no body that check for JSON all the same, a GET among them
+        ("DELETE", _REMOVE_TEMPLATE, "none", None, None, 415, "null", _JSON),
+        ("DELETE", _REMOVE_TEMPLATE, "none", _JSON, "{}", 401, None, None),
+        ("GET", _SERVICE_REGISTRY, "none", None, None, 415, "null", _JSON),
+        ("GET", _SERVICE_REGISTRY, "none", _JSON, None, 401, None, None),
+        # one that takes `*/*`, which refuses only what does not parse, and one that takes two
+        ("PUT", _COLUMNS, "none", None, None, 401, None, None),
+        ("PUT", _COLUMNS, "none", "image/png", "x", 401, None, None),
+        ("PUT", _COLUMNS, "none", "foo", "x", 415, _UNREAD, "multipart/form-data, */*"),
+        (
+            "PUT",
+            _PREFERENCES,
+            "none",
+            "application/xml",
+            "x",
+            415,
+            "application/xml",
+            "application/json, text/plain",
+        ),
+        ("PUT", _PREFERENCES, "none", "text/plain", "x", 401, None, None),
+    ],
+)
+def test_jira_checks_the_media_type_an_operation_takes_before_anything_else(
+    client, admin_h, method, path, credential, content_type, body, status, named, accept
+):
+    """Pins the 415 ``errors.atlassian.refuse_a_media_type`` describes, on the operations
+    ``backlot/data/jira_unserved.json`` says check one. Each row's control is the same URL
+    answering past the check: the 401 a caller with no credential gets, or the 404 an operation no
+    route serves gives a caller whose credential resolves."""
+    headers = dict(admin_h if credential == "admin" else _CREDENTIALS[credential])
+    if content_type is not None:
+        headers["Content-Type"] = content_type
+    r = client.request(method, path, headers=headers, content=body)
+    assert r.status_code == status, r.text
+    if status != 415:
+        assert "accept" not in r.headers
+        return
+    assert r.headers["content-type"] == errors_atlassian.PROBLEM_JSON
+    assert r.headers["accept"] == accept
+    assert r.json() == {
+        "type": "about:blank",
+        "title": "Unsupported Media Type",
+        "status": 415,
+        "detail": (
+            "Could not parse Content-Type."
+            if named is _UNREAD
+            else f"Content-Type '{named}' is not supported."
+        ),
+        "instance": path.split("?")[0].removeprefix("/atlassian"),
+    }
+
+
+def test_jira_unserved_sorts_every_operation_no_route_serves():
+    """``backlot/data/jira_unserved.json`` sorts each `missing_operation` row of the Jira baseline
+    into `refused` or `run` and holds nothing else, so a row the file has lost, or one the baseline
+    has gained or dropped since the file was written, fails here: the reminder to rerun
+    ``scripts/gen_jira_unserved.py``. A route added for one of them drops it from the baseline, and
+    the file would otherwise refuse a served operation's path for a method no route takes. Which
+    list a row belongs in is read off Jira's documents, which that script's `--check` compares on
+    the schedule in `.github/workflows/fidelity.yml`."""
     import backlot
     from backlot.fidelity.comparisons import baseline_path
 
     rows = json.loads(baseline_path("jira").read_text())["acknowledged"]
-    unserved = {row["path"] for row in rows if row["kind"] == "missing_operation"}
-    gateway = Path(backlot.__file__).resolve().parent / "data" / "jira_gateway.json"
-    gated = json.loads(gateway.read_text())["operations"]
-    assert gated and set(gated) <= unserved
+    unserved = [row["path"] for row in rows if row["kind"] == "missing_operation"]
+    table = Path(backlot.__file__).resolve().parent / "data" / "jira_unserved.json"
+    content = json.loads(table.read_text())
+    assert sorted([*content["refused"], *content["run"]]) == sorted(unserved)
 
 
 @pytest.mark.parametrize(
@@ -3129,6 +3253,8 @@ def test_jira_counts_a_burst_per_method_and_route(
         pytest.param(
             "admin", "DELETE", "/atlassian/rest/api/3/serverInfo", 405, False, id="admin-delete-405"
         ),
+        pytest.param("admin", "PUT", _PLAN, 415, False, id="admin-unserved-415"),
+        pytest.param({}, "PUT", _PLAN, 415, False, id="anonymous-unserved-415"),
         pytest.param(
             "admin", "HEAD", "/atlassian/rest/api/3/serverInfo", 200, True, id="admin-head"
         ),

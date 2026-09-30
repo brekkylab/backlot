@@ -213,7 +213,8 @@ def test_jira_refuses_a_bearer_it_cannot_read_as_a_connect_token(client):
     assert r.content == b'{"error": "Failed to parse Connect Session Auth Token"}'
     # No Seraph header either — that one reports a failed Basic username, and this is not one.
     assert "x-seraph-loginreason" not in r.headers
-    # The gateway's refusal carries the two ids and `nosniff`, and none of Jira's own headers.
+    # The gateway's refusal carries the two ids, `nosniff` and `x-xss-protection`, and none of
+    # Jira's own headers.
     assert r.headers["atl-traceid"] == r.headers["atl-request-id"].replace("-", "")
     assert r.headers["x-content-type-options"] == "nosniff"
     assert r.headers["x-xss-protection"] == "1; mode=block"
@@ -2583,12 +2584,8 @@ def test_atlassian_a_head_is_the_get_without_its_body(client, admin_h, keys):
     the body, and so do an unknown issue's and an unknown space's 404 and a route's slashed
     spelling.
 
-    The length is where the two part, and why ``errors.head_content_length`` exists. Jira declares
-    none on either method, but on the gateway's 401, which carries its 53 bytes (measured
-    2026-09-30). Confluence declares the `GET` body's own length on every 200 but
-    `search`'s — `space` 1103, `content` 1536, `content/{id}` 3909, `child/comment` 214,
-    `child/page` 211, `label` 207, `restriction/byOperation` 801, `space/{key}` 695, each read with
-    `curl -I` against the `GET` beside it — and none on the 404, the 405 or the CQL 400.
+    The length is where the two part, and which answers declare one is
+    ``errors.atlassian.head_content_length``, measured there.
 
     The test client drops a `HEAD` body itself, so what the app sends is read at the ASGI layer.
     """
@@ -2650,7 +2647,8 @@ def test_atlassian_a_head_is_the_get_without_its_body(client, admin_h, keys):
         ("/atlassian/rest/api/3/project/NOPE/role", "GET,HEAD,OPTIONS"),
         ("/atlassian/rest/api/3/project/NOPE/role/10002", "DELETE,POST,PUT,GET,HEAD,OPTIONS"),
         # the row that parts from the 405 table: its 405 resolves `/project/{idOrKey}` with
-        # `search` read as a key and names five methods, where its OPTIONS names three
+        # `search` read as a key and names that route's `GET, PUT, DELETE`, where its OPTIONS
+        # reaches the search route and names `GET` beside `HEAD` and `OPTIONS`
         ("/atlassian/rest/api/3/project/search", "GET,HEAD,OPTIONS"),
     ],
 )
@@ -2700,7 +2698,7 @@ def test_confluence_answers_an_options_by_route_and_accept(
     if status == 404:
         assert r.json() == errors_atlassian.CONFLUENCE_OPTIONS_NOT_FOUND
         return
-    assert r.headers["allow"] == errors_atlassian.CONFLUENCE_OPTIONS_204_ALLOW
+    assert r.headers["allow"] == errors_atlassian.CONFLUENCE_SEARCH_OPTIONS_ALLOW
     if status == 204:
         assert r.content == b"" and "content-type" not in r.headers
         return
@@ -2914,14 +2912,14 @@ def test_atlassian_headers_ride_every_answer_but_the_front_doors(client, admin_h
     ``backlot.routers.atlassian.request_ids`` states and this pins — a corpus served twice answers
     the same id, and two different requests do not share one.
 
-    Real refuses a `TRACE` with 405 and an invented method with 403, the gateway's own HTML page,
+    Real refuses a `TRACE` with 405 and an invented method with 403, each its own HTML page,
     carrying no `Allow` and none of these headers — on a served route and on an unserved path
     alike, measured the same day. Those are the CDN's (`server: CloudFront`). The gateway behind it
     (`server: AtlassianEdge`) refuses a `PATCH` itself, 400 on Jira and 405 on Confluence, and puts
-    the two ids and `nosniff` on it and none of the application's headers (measured 2026-09-30).
-    Both methods are left off the catch-all's methods for that reason, so what answers one here is
-    the refusing layer's status, and their rows hold that it advertises nothing: Starlette would
-    otherwise name the methods the catch-all takes.
+    the two ids, `nosniff` and `x-xss-protection` on it and none of the application's headers
+    (measured 2026-09-30). Those methods are left off the catch-all's methods for that reason, so
+    what answers one here is the refusing layer's status, and their rows hold that it advertises
+    nothing: Starlette would otherwise name the methods the catch-all takes.
     """
     answers = {}
     for label, method, path, refused in _ANSWERS:

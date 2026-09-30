@@ -63,10 +63,10 @@ under `/wiki` outside the API mount, is the product's HTML 404 page instead; a c
 credential is sent from `/wiki/…` outside `/wiki/rest` to log in. An operation Confluence publishes
 that no route here serves refuses a caller with no credential with a served route's 403, or from a
 few services with `Current user not permitted to use Confluence`, and a caller whose credential
-resolves gets the 404 an unserved path gets. Every answer carries `atl-request-id`, `atl-traceid`
-(the same value without its dashes), `x-confluence-request-time`, `x-content-type-options` and
-`x-xss-protection`, and what the content and space services' routes answer adds the three headers
-that say the v1 REST API is deprecated.
+resolves gets the 404 an unserved path gets. Every answer Confluence itself gives carries
+`atl-request-id`, `atl-traceid` (the same value without its dashes), `x-confluence-request-time`,
+`x-content-type-options` and `x-xss-protection`, and what the content and space services' routes
+answer adds the three headers that say the v1 REST API is deprecated.
 
 ### Fireflies — `/fireflies/graphql`
 
@@ -328,13 +328,14 @@ no route here serves, a caller with no credential gets the gateway's 401
 (`backlot/fidelity/jira_gateway.json`), and otherwise that 404, the gap the baseline acknowledges.
 That is under `/atlassian/rest` only: outside the two API mounts the site is its web app, `/browse`
 at 200, the root a redirect to log in or to `/jira/for-you`, and Jira's own not-found page for the
-rest. Every answer past the CDN (which refuses a `TRACE` itself) carries `atl-request-id`, `atl-traceid`,
-`x-content-type-options` and `x-xss-protection`, and Jira's own answers add `x-arequestid`,
-`cache-control` and `timing-allow-origin`, which the gateway's refusals (the Connect-token 403, a
-`PATCH`) do not carry; a caller whose credential resolves also gets its own `x-aaccountid`, and the
-burst quota's four (`ratelimit`, `ratelimit-policy`, `x-ratelimit-limit`, `x-ratelimit-remaining`)
-where a route answers or an `OPTIONS` asks at one, counted per method and route. An anonymous
-request carries none of those five, and the no-endpoint 404 and a 405 carry the account id alone.
+rest. Every answer past the CDN (which refuses a `TRACE` itself) carries `atl-request-id`,
+`atl-traceid`, `x-content-type-options` and `x-xss-protection`, and Jira's own answers add
+`x-arequestid`, `cache-control` and `timing-allow-origin`, which the gateway's refusals (the
+Connect-token 403, a `PATCH`) do not carry; a caller whose credential resolves also gets its own
+`x-aaccountid`, and the burst quota's four (`ratelimit`, `ratelimit-policy`, `x-ratelimit-limit`,
+`x-ratelimit-remaining`) where a route answers or an `OPTIONS` asks at one, counted per method and
+route. An anonymous request carries none of those five, and the no-endpoint 404 and a 405 carry the
+account id alone.
 
 ### Linear — `/linear/graphql`
 

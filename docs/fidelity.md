@@ -300,14 +300,14 @@ answer a `HEAD` that way on every route measured, so what can diverge here is wh
 served, not whether it is documented. But a path diff reads methods off the two documents, and
 neither mentions this one, so nothing here would catch it going away. The middleware's prefix tuple
 is the record of which vendors it covers; a vendor joins it once its own `HEAD` is measured. What
-the `HEAD` declares about the body's length is a second such gap: Confluence declares it and Jira
-does not (`backlot.errors.atlassian.head_content_length`), and `tests/test_atlassian.py` is the
+the `HEAD` declares about the body's length is a second such gap: which Atlassian answers declare
+it is `backlot.errors.atlassian.head_content_length`'s to say, and `tests/test_atlassian.py` is the
 record.
 
-An `OPTIONS` is a third. Jira answers 200 with the methods that route takes and Confluence a 404,
-neither of which any document here declares — real's own description has no `options` operation and
-neither does Backlot's — so the two `Allow` tables in `backlot.errors.atlassian` and the tests
-beside them are what hold them.
+An `OPTIONS` is a third. Jira answers 200 with the methods that route takes, and Confluence a 404 on
+every route but `search`, which answers by `Accept`. No document here declares any of it — real's
+own description has no `options` operation and neither does Backlot's — so the two `Allow` tables
+in `backlot.errors.atlassian` and the tests beside them are what hold them.
 
 The five `x-ratelimit-*` headers are the same kind of gap. Every `/github` answer carries them
 (`backlot.main.report_github_rate_limit`), as every answer real gives does, but the comparison reads

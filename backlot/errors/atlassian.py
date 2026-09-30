@@ -67,7 +67,7 @@ def connect_token_body() -> dict:
 # it will not run anonymously: `401 text/html`, this line and nothing else, 53 bytes, with
 # `WWW-Authenticate: OAuth realm="<the site, percent-encoded>"` and `X-Frame-Options: SAMEORIGIN`.
 # Which operations those are is ``backlot.routers.atlassian.unmatched_path``'s to say; measured on
-# brekkylab.atlassian.net on 2026-09-30.
+# Jira Cloud, 2026-09-30.
 GATEWAY_UNAUTHENTICATED = "Client must be authenticated to access this resource."
 
 # Confluence's second anonymous refusal, which a few of its services give instead of
@@ -498,8 +498,7 @@ _JIRA_OPTIONS_ALLOW = (
 
 _JIRA_OPTIONS_PATTERNS = tuple((route_regex(t), allow) for t, allow in _JIRA_OPTIONS_ALLOW)
 
-#: The empty `Accept-Patch` real sends on every Jira `OPTIONS` measured, alongside `Allow`. Empty is
-#: the value, not a placeholder: the header is present with nothing after the colon.
+#: The `content-type` real sends on a Jira `OPTIONS`, over an empty body.
 JIRA_OPTIONS_MEDIA_TYPE = "text/html;charset=UTF-8"
 
 
@@ -518,10 +517,11 @@ def jira_options_allow(path: str) -> str | None:
 #: 403, carrying none of the headers below (measured 2026-09-22 and 2026-09-30). The gateway behind
 #: it (`server: AtlassianEdge`) answers a `PATCH` — Jira's nginx with 400 on `nopesuchroute`,
 #: `serverInfo` and an issue, Confluence's openresty with 405 on `space` and `nopesuchroute` — and
-#: puts its two ids and `nosniff` on that refusal and none of the application's headers (measured
-#: 2026-09-30, :data:`GATEWAY_REFUSED`). So a method outside this set gets no vendor `Allow` below
-#: and none of the application's headers in ``backlot.routers.atlassian.vendor_headers``; the body
-#: it gets here is still this module's JSON, where real's is that HTML page.
+#: puts its two ids, `nosniff` and `x-xss-protection` on that refusal and none of the application's
+#: headers (measured 2026-09-30, :data:`GATEWAY_REFUSED`). So a method outside this set gets no
+#: vendor `Allow` below and none of the application's headers in
+#: ``backlot.routers.atlassian.vendor_headers``; the body it gets here is still this module's JSON,
+#: where real's is that HTML page.
 SERVED_METHODS = ("GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD")
 
 #: The methods the gateway refuses itself, rather than the CDN in front of it.
@@ -600,28 +600,31 @@ HTML_NOT_FOUND = (
 )
 
 #: What an `OPTIONS` on a Confluence route answers: the 404 above in the `errors` list its 405 uses,
-#: on every route measured 2026-09-22 but `search`, which answers 204 with its own `Allow`.
+#: on every route measured 2026-09-22 but `search`, which answers by `Accept`
+#: (``backlot.routers.atlassian._search_options``).
 CONFLUENCE_OPTIONS_NOT_FOUND = {
     "errors": [{"status": 404, "code": "NOT_FOUND", "title": "Not Found"}]
 }
-CONFLUENCE_OPTIONS_204 = "/wiki/rest/api/search"
-CONFLUENCE_OPTIONS_204_ALLOW = "OPTIONS,HEAD,GET"
+CONFLUENCE_OPTIONS_BY_ACCEPT = "/wiki/rest/api/search"
+CONFLUENCE_SEARCH_OPTIONS_ALLOW = "OPTIONS,HEAD,GET"
 
 
-#: Which Confluence answers declare the length of the body their `GET` would have carried, on a
-#: `HEAD`. Measured with `curl -I` beside each `GET` the same minute, 2026-09-22: every 200 but
-#: `search` declares it, to the byte (`space` 1103, `content` 1536, `content/{id}` 3909,
-#: `child/comment` 214, `child/page` 211, `label` 207, `restriction/byOperation` 801, `space/{key}`
-#: 695), and the 404s, the 405 and the CQL 400 declare none. Jira declares none on anything: its
-#: `GET` is chunked and its `HEAD` says nothing about a length either.
+#: The Confluence route whose 200 declares no length on a `HEAD` (:func:`head_content_length`).
 _CONFLUENCE_HEAD_NO_LENGTH = "/wiki/rest/api/search"
 
 
 def head_content_length(path: str, status_code: int) -> bool:
-    """Whether a `HEAD` at ``path`` declares the `GET` body's length, as real does."""
+    """Whether a `HEAD` at ``path`` declares the length of the body its `GET` would have carried,
+    as real does.
+
+    Measured with `curl -I` beside each `GET` the same minute. Confluence, 2026-09-22: every 200 but
+    `search` declares it, to the byte (`space` 1103, `content` 1536, `content/{id}` 3909,
+    `child/comment` 214, `child/page` 211, `label` 207, `restriction/byOperation` 801, `space/{key}`
+    695), and the 404s, the 405 and the CQL 400 declare none. Jira's own answers are chunked and
+    declare none on either method (2026-09-22), where the gateway's 401 in front of Jira declares
+    its 53 bytes and the `HEAD` beside it declares the same (`myself`, 2026-09-30).
+    """
     if not is_confluence(path):
-        # Jira's own answers are chunked, so a `HEAD` declares no length; the gateway's 401 carries
-        # one, and the `HEAD` beside it does too (53 on `myself`, measured 2026-09-30)
         return status_code == 401
     if _instance(path) == _CONFLUENCE_HEAD_NO_LENGTH:
         return False

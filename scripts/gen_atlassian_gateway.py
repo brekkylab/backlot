@@ -9,7 +9,7 @@ no credential it resolves: `401 text/html` `Client must be authenticated to acce
 Which operations those are is read off each operation's `security` in the documents
 ``backlot.fidelity.comparisons.COMPARISONS["jira"]`` names: an operation whose requirements do not
 include the empty one, ``{}``, is refused; one that does is run, and what it answers then is the
-operation's own. Measured on brekkylab.atlassian.net on 2026-09-30, anonymously, over every GET
+operation's own. Measured on Jira Cloud on 2026-09-30, anonymously, over every GET
 the Jira baseline lists as ``missing_operation``: all 300 without ``{}`` answered that 401, and all
 226 with it reached the operation (a 200, a 404 for the key or id that names nothing, a 400, a 403,
 a 410, or a 401 of the operation's own); of eighteen DELETEs, PUTs and POSTs, eight of the nine

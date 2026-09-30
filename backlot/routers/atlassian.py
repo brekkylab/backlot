@@ -2120,8 +2120,8 @@ _JIRA_GATED = _operations(
 
 #: The Confluence services whose refusal of a caller with no credential is
 #: ``errors.atlassian.CONFLUENCE_NOT_PERMITTED_BODY`` rather than the one every other operation
-#: gives. Measured 2026-09-30 with no credential on each of the 63 GETs the Confluence baseline lists
-#: as `missing_operation`: these nineteen answered that body, 42 the other, and two ran
+#: gives. Measured 2026-09-30 with no credential on each of the 63 GETs the Confluence baseline
+#: lists as `missing_operation`: these nineteen answered that body, 42 the other, and two ran
 #: (:data:`_CONFLUENCE_RUN_ANONYMOUSLY`). No field of the vendor's document separates the two
 #: refusals, so the services are named.
 _CONFLUENCE_NOT_PERMITTED = _operations(
@@ -2244,11 +2244,7 @@ def _echoed_path(request: Request) -> str:
 
 
 def _wants_json(request: Request) -> bool:
-    """Whether the caller asked for JSON by name, which is what picks Confluence's 404 shape.
-
-    Measured 2026-09-22: `Accept: application/json` answers the JSON body, and an absent header,
-    `*/*` and `application/xml` each answer the XML document. The credential changes neither.
-    """
+    """Whether the caller asked for JSON by name, which is what picks Confluence's 404 shape."""
     return "application/json" in (request.headers.get("accept") or "")
 
 
@@ -2306,12 +2302,13 @@ def _options_answer(request: Request) -> Response:
     """
     path = request.url.path
     if errors_atlassian.is_confluence(path):
-        if _vendor_path(path) == errors_atlassian.CONFLUENCE_OPTIONS_204:
+        if _vendor_path(path) == errors_atlassian.CONFLUENCE_OPTIONS_BY_ACCEPT:
             return _search_options(request)
         return JSONResponse(status_code=404, content=errors_atlassian.CONFLUENCE_OPTIONS_NOT_FOUND)
     if auth.atlassian_caller(request).is_anonymous:
         return _gateway_unauthenticated(request)
     allow = errors_atlassian.jira_options_allow(path)
+    # present with nothing after the colon, on every Jira `OPTIONS` measured: empty is the value
     headers = {"Accept-Patch": ""}
     if allow is not None:
         headers["Allow"] = allow
@@ -2333,7 +2330,7 @@ def _search_options(request: Request) -> Response:
     `application/vnd.sun.wadl+xml`, and `application/json` and `text/html` are 204 with no body.
     All name the three methods in `Allow`.
     """
-    headers = {"Allow": errors_atlassian.CONFLUENCE_OPTIONS_204_ALLOW}
+    headers = {"Allow": errors_atlassian.CONFLUENCE_SEARCH_OPTIONS_ALLOW}
     accept = request.headers.get("accept")
     if accept is None:
         media_type = "application/vnd.sun.wadl+xml"
@@ -2505,11 +2502,12 @@ def request_ids(request: Request) -> dict[str, str]:
     return ids
 
 
-#: Jira's burst quota. Measured 2026-09-22 and 2026-09-30: `x-ratelimit-limit` is 350 on every
-#: route here but three — 400 on `issue/{key}`, 500 on `project/{key}/role/{id}` and 200 on a
-#: `POST` to `search/jql` — and the policy's `q` is 100, 150, 200 and 100 against those four, always
-#: with `w=1`. A `HEAD` and an `OPTIONS` read a quota of their own, `q` and `x-ratelimit-limit` both
-#: 1000000000000, on `serverInfo`, `field`, `search/jql`, `project/search` and an issue alike.
+#: Jira's burst quota. Measured 2026-09-22 and 2026-09-30: `x-ratelimit-limit` is 350 on a `GET` of
+#: every route here but two, 400 on `issue/{key}` and 500 on `project/{key}/role/{id}`, and 200 on a
+#: `POST` to `search/jql`; the policy's `q` is 100, 150, 200 and 100 against those four limits,
+#: always with `w=1`. A `HEAD` and an `OPTIONS` read a quota of their own, `q` and
+#: `x-ratelimit-limit` both 1000000000000, on `serverInfo`, `field`, `search/jql`, `project/search`
+#: and an issue alike.
 _JIRA_BURST_POLICY = "jira-burst-based"
 _JIRA_BURST_WINDOW = 1
 _JIRA_BURST_DEFAULT = (100, 350)
@@ -2637,7 +2635,7 @@ _EDGE = {"x-content-type-options": "nosniff", "x-xss-protection": "1; mode=block
 
 def _gateway_headers(request: Request) -> dict[str, str]:
     """What the gateway in front of either product puts on a refusal it gives itself: the two ids
-    both products carry and `nosniff`, without Jira's `x-arequestid`."""
+    both products carry and :data:`_EDGE`, without Jira's `x-arequestid`."""
     ids = {k: v for k, v in request_ids(request).items() if k != "x-arequestid"}
     return {**ids, **_EDGE}
 
@@ -2645,12 +2643,13 @@ def _gateway_headers(request: Request) -> dict[str, str]:
 def vendor_headers(request: Request, status_code: int) -> dict[str, str]:
     """Everything real puts on an `/atlassian` answer that is not the body's own.
 
-    Both products: the two ids and `x-content-type-options`. Jira: `x-arequestid` and its
-    `cache-control`, plus the caller's own account id and the rate-limit four once a credential
-    resolves — on every answer Jira gives, where the gateway's own refusals (the Connect-token 403
-    and a `PATCH`) carry the two ids and `nosniff` and nothing else, and the CDN's (a `TRACE`) carry
-    nothing. Confluence: the millisecond clock it stamps every answer with, and the deprecation trio
-    where the v1 services send it. Measured on Atlassian Cloud 2026-09-22 and 2026-09-30; what is
+    Both products: the two ids and :data:`_EDGE`. Jira adds `x-arequestid`, `timing-allow-origin`
+    and a `cache-control`, its API's or the web app's page by page, and once a credential resolves
+    the caller's own account id, with the rate-limit four where a route answers or an `OPTIONS`
+    asks at its path. The gateway's own refusals (the Connect-token 403 and a `PATCH`) carry the
+    two ids and :data:`_EDGE` and nothing else, and the CDN's (a `TRACE`) carry nothing.
+    Confluence: the millisecond clock it stamps every answer with, and the deprecation trio where
+    the v1 services send it. Measured on Atlassian Cloud 2026-09-22 and 2026-09-30; what is
     deliberately not here is in `backlot.main.report_atlassian_headers`.
     """
     path = request.url.path
@@ -2663,14 +2662,15 @@ def vendor_headers(request: Request, status_code: int) -> dict[str, str]:
     headers = {**request_ids(request), **_EDGE}
     if errors_atlassian.is_confluence(path):
         headers["x-confluence-request-time"] = str(int(time.time() * 1000))
-        # the notice rides on what a v1 service answers: a route's own answer, not one given around it
+        # the notice rides on what a v1 service answers: a route's own answer, not one given
+        # around it
         if sends_deprecation(path, status_code) and _a_route_answers(request):
             headers.update(CONFLUENCE_DEPRECATION)
         return headers
     if status_code == 403 and auth.atlassian_bearer_unreadable(request):
         # The Connect-token 403 is the gateway's
-        # (``backlot.main.refuse_a_bearer_jira_cannot_read``): real puts the two ids and `nosniff`
-        # on it and none of Jira's own, measured 2026-09-30 on fifteen of them.
+        # (``backlot.main.refuse_a_bearer_jira_cannot_read``): real puts the two ids and
+        # :data:`_EDGE` on it and none of Jira's own, measured 2026-09-30 on fifteen of them.
         return _gateway_headers(request)
     headers["timing-allow-origin"] = "*"
     if errors_atlassian.serves_the_jira_api(path):

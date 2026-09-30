@@ -496,8 +496,8 @@ async def refuse_a_bearer_jira_cannot_read(request: Request, call_next):
     refused ahead of everything, so `serverInfo` and `field` answer it too even though neither
     needs a credential. That is why this short-circuits rather than living in
     ``atlassian._jira_caller``. Confluence is not here: it answers its own 403 for any credential
-    that fails, which ``atlassian._confluence_caller`` already gives. Measured against
-    ecosystem.atlassian.net and brekkylab.atlassian.net on 2026-09-04.
+    that fails, which ``atlassian._confluence_caller`` already gives. Measured on two Jira Cloud
+    sites on 2026-09-04.
 
     The body is spelled the way real spells it, a space after the colon (fifteen of them on
     2026-09-30), and this runs inside :func:`answer_head_as_the_get_without_its_body`: a `HEAD` is
@@ -557,9 +557,8 @@ async def answer_head_as_the_get_without_its_body(request: Request, call_next):
     the only way to have that number; a `HEAD` costs what its GET costs, here as on real.
 
     What the vendors do NOT share is the `content-length`: GitHub and Notion declare the length of
-    the body the `GET` would have carried, Jira declares none on either method, and Confluence
-    declares one on its 200s alone -- so that header is asked for rather than assumed, through
-    ``errors.head_content_length``.
+    the body the `GET` would have carried and Atlassian's answers split, so that header is asked
+    for rather than assumed, through ``errors.head_content_length``.
 
     The method goes back to `HEAD` on the scope once the GET has answered, because the server frames
     the response by it: uvicorn's httptools protocol reads ``scope["method"]`` when it writes the
@@ -611,16 +610,8 @@ async def report_failed_jira_login(request: Request, call_next):
 
 @app.middleware("http")
 async def report_atlassian_headers(request: Request, call_next):
-    """Put on every `/atlassian` answer the headers real sends beside the body.
-
-    Both products name the request: `atl-request-id` and `atl-traceid`, the second being the first
-    without its dashes, beside `x-content-type-options` and `x-xss-protection`. Jira adds
-    `x-arequestid`, its own `cache-control`, `timing-allow-origin`, and — once a credential
-    resolves — the caller's account id and the burst quota's four, where an anonymous request gets
-    none of those five and the 404 for a path it mounts no endpoint at gets the account id but none
-    of the four. Confluence stamps a millisecond clock and says its v1 REST API is deprecated on the
-    services that do. What each is and what it is measured from is in
-    ``backlot.routers.atlassian.vendor_headers``.
+    """Put on every `/atlassian` answer the headers real sends beside the body: which ones, on
+    which answers, and what each is measured from is ``backlot.routers.atlassian.vendor_headers``.
 
     Middleware for the reason GitHub's rate-limit headers are: they ride on answers no route
     handler builds — the exception handlers' refusals, the Connect-token 403 above, the catch-all's

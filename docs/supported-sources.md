@@ -17,7 +17,7 @@ Generated from `backlot/schemas/*.schema.json` and the app's own `/openapi.json`
 |---|---|---|---|---|---|
 | `confluence` | Confluence | `/atlassian/wiki/rest/api` | 9 | [`confluence.schema.json`](../backlot/schemas/confluence.schema.json) | A Confluence page or blogpost. |
 | `fireflies` | Fireflies | `/fireflies/graphql` | GraphQL (one `POST`) | [`fireflies.schema.json`](../backlot/schemas/fireflies.schema.json) | A Fireflies.ai meeting transcript. |
-| `github` | GitHub | `/github` | 33 | [`github.schema.json`](../backlot/schemas/github.schema.json) | A GitHub issue, pull request, file, or the repository itself. |
+| `github` | GitHub | `/github` | 34 | [`github.schema.json`](../backlot/schemas/github.schema.json) | A GitHub issue, pull request, file, or the repository itself. |
 | `gmail` | Gmail | `/gmail/v1` | 8 | [`gmail.schema.json`](../backlot/schemas/gmail.schema.json) | A Gmail message. |
 | `google_drive` | Google Drive, Docs, Sheets, Slides | `/drive/v3` `/docs/v1` `/sheets/v4` `/slides/v1` | 13 | [`google_drive.schema.json`](../backlot/schemas/google_drive.schema.json) | A Google Drive file. |
 | `hubspot` | HubSpot | `/hubspot` | 5 | [`hubspot.schema.json`](../backlot/schemas/hubspot.schema.json) | A HubSpot CRM record (contact, company, deal, ticket, note, …). |
@@ -92,6 +92,7 @@ Field names are snake_case, as Fireflies' own schema has them. Full introspectio
 | `repos/{o}/{r}/pulls/{n}/commits` | |
 | `repos/{o}/{r}/pulls/comments/{id}` | |
 | `repos/{o}/{r}/readme` | |
+| `repos/{o}/{r}/readme/{dir}` | That directory's README, and the repository's own for the empty directory a trailing slash sends |
 | `repos/{o}/{r}/contents[/{path}]` | |
 | `repos/{o}/{r}/git/trees/{ref}` | |
 | `repos/{o}/{r}/git/blobs/{sha}` | |
@@ -335,6 +336,26 @@ compiled into SQL, and full introspection.
 Every route requires a `Notion-Version` header and answers `missing_version` without one — or
 with a version Notion does not publish — as the real API does; the value picks the database model,
 which is what the notes below name.
+
+A URL Notion does not publish is `invalid_request_url` at 400, which the real API answers before it
+reads the credential or the version. The method is part of that URL: a `GET` on a route that
+answers `POST` is the same 400 rather than a 405, with `TRACE` the exception real refuses at the
+front door with Cloudflare's own 405 page. An operation Notion publishes and Backlot does not serve
+(`PATCH pages/{id}`, `POST comments` and the other `missing_operation` rows in
+`backlot/fidelity/baseline/notion.json`) answers the credential's 401 as a served route does, and
+a request that clears the credential and the version gets the 400, as there is no operation to run.
+The three OAuth client endpoints among them, `POST oauth/token`, `oauth/introspect` and
+`oauth/revoke`, answer `{"error":"invalid_client"}` at 401 instead, whatever the credential, as
+Backlot registers no OAuth client. One trailing slash is not part of a URL (`users/me/` is served
+as `users/me`, where a second slash is a segment and gets the 400), and a `HEAD` is the `GET` with
+the body left off. A path in another case is the 400 here, where real routes it as the lower-case
+path, and `PROPFIND` or `QUERY` is the framework's 405 here, where real answers the URL's 400. A
+credential that is not `Bearer <token>` (no header, no scheme, `Basic`, GitHub's legacy
+`token <t>`, or a bearer with a second word after its token) is refused by naming the format, where
+a bearer whose token does not resolve is `API token is invalid.`. Each refusal named here but the
+framework's 405 carries a `request_id` in the body and `x-notion-request-id` on the response, one
+value; real's differs per response and this one is derived from the request, so a corpus served
+twice answers the same id.
 
 | Endpoint | Notes |
 |---|---|

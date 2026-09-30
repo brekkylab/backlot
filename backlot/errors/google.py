@@ -236,8 +236,9 @@ def field_violations(exc: GoogleError) -> list[tuple[str, str]]:
 
 def unsupported_conversion() -> GoogleError:
     """`files.export` asked for a format the file's type does not export to. Measured 2026-09-23
-    on a spreadsheet: `text/plain`, `bogus/type`, a native Google type, a padded `text/csv ` and an
-    empty value each answer this, ``badRequest`` at ``location: convertTo``."""
+    on a spreadsheet: `text/plain`, `bogus/type`, a native Google type, a padded `text/csv `,
+    `text/csv;charset=utf-8` and an empty value each answer this, ``badRequest`` at
+    ``location: convertTo``."""
     return GoogleError(
         400, "The requested conversion is not supported.", reason="badRequest", location="convertTo"
     )

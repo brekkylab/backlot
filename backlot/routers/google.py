@@ -3358,8 +3358,9 @@ async def sheets_values_batch_get_by_data_filter(spreadsheet_id: str, request: R
     body, specs = await _sheets_filters(request, sheets, required=True, indexed=True)
     # The same three enums the query-string reads take, and the same rule for them — including
     # that an empty value is not an absent one, and that `dateTimeRenderOption` is validated even
-    # though a corpus states no date cell for it to render. Measured 2026-09-23, six requests: a
-    # body with all three bad is one 400 naming all three, in the order the body names them.
+    # though a corpus states no date cell for it to render. Measured 2026-09-30, four requests in
+    # each of five key orders, one of them with `dataFilters` between the enums: a body with all
+    # three bad is one 400 naming all three, in the order the body names them.
     readers = {
         "majorDimension": lambda raw: _sheets_enum_value(
             raw, "major_dimension", "Dimension", _A1_MAJOR, "ROWS"
@@ -3638,17 +3639,23 @@ def _typed_query(request: Request, readers: dict) -> dict[str, list]:
     order the query sent them.
 
     Real parses every repeat of a typed parameter, not only the one it reads, and refuses all it
-    cannot parse in one 400 (:func:`gerr.invalid_field_values`): measured 2026-09-23,
-    `pageSize=2&pageSize=NOPE` and its reverse are both that 400, and so is
-    `majorDimension=NOPE&majorDimension=ROWS`. Which repeat is then READ is the caller's to pick,
-    by the table in :func:`gerr.first_repeat`.
+    cannot parse in one 400 (:func:`gerr.invalid_field_values`). :func:`gerr.first_repeat` names
+    the parameters a bad value at either end was measured on, and the end each is READ from, which
+    is the caller's to pick.
 
     The refusals are grouped by parameter, each parameter's in query order, and the groups come in
-    the order their parameters first appear. Measured the same day, eight identical requests each:
+    the order their parameters first appear. Measured 2026-09-23, eight identical requests each:
     `majorDimension=NOPE1&valueRenderOption=NOPE2&majorDimension=NOPE3` kept the two
     `major_dimension` refusals together and in that order every time, while which parameter came
     first varied from one request to the next (`valueRenderOption=NOPE&majorDimension=NOPE`
-    answered each order four times), so first appearance is one of the orders real gives."""
+    answered each order four times), so first appearance is one of the orders real gives.
+
+    Its callers run it after the credential and before the lookup, measured 2026-09-30 on Drive
+    `files.get` and `permissions.list` and on Sheets `values.get`, `values:batchGet` and
+    `spreadsheets.get`: with no credential or a bad one, a bad value is answered with the
+    credential's refusal, and with a good one it is this 400 for an id that does not exist, where
+    the same request without the bad value is the 404. `permissions.list` checks its `pageSize`
+    range at the same point, as real does: `pageSize=0` on a missing file is the range refusal."""
     parsed: dict[str, list] = {name: [] for name in readers}
     refused: dict[str, list[tuple[str, str]]] = {}
     for name, raw in request.query_params.multi_items():
@@ -3669,8 +3676,8 @@ def _typed_query(request: Request, readers: dict) -> dict[str, list]:
 # The typed booleans each Drive method Backlot serves declares, as the proto field its refusal
 # names. Parsed only, never read: none of them changes what a My Drive corpus answers. Measured
 # 2026-09-23 on each of them: the Sheets boolean spellings (`_sheets_bool_value`), 30 of them swept
-# on `supportsAllDrives`, and a refusal ahead of the file lookup. `files.export` and `about.get`
-# declare none, and real ignores `supportsAllDrives=NOPE` on both.
+# on `supportsAllDrives`. `files.export` and `about.get` declare none, and real ignores
+# `supportsAllDrives=NOPE` on both.
 _DRIVE_BOOLS = {
     "supportsAllDrives": "supports_all_drives",
     "supportsTeamDrives": "supports_team_drives",

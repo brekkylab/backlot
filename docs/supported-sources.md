@@ -254,14 +254,43 @@ credential, an unparseable range and a mistyped `fields` mask, though `$.xgafv` 
 it and an `alt` naming a format other than `json` suppresses the wrap altogether — the format is
 matched without regard to case and an empty `alt=` names none, so `alt=JSON`, `alt=Json` and
 `alt=` each ask for the JSON the default serves rather than for a format of their own. An empty
-`callback=` is no
-callback; a repeated one is answered through the first name where `$.xgafv` is answered through the
-last; and a POST ignores the parameter outright, as real does, since JSONP is what a `<script>`
-element fetches and a `<script>` element issues a GET. A SUCCESS body is wrapped and indented on
-the `/sheets/v4` routes only; the other four families honour `callback` on their errors and not yet
-on their 200s. Measured against the live Sheets, Docs, Drive, Gmail and Slides APIs on 2026-09-15,
-2026-09-16 and 2026-09-17: the wrap, the indent and the charset first, the suppression across the
-four non-Sheets families next, and the escape set and the case-insensitive `alt` last.
+`callback=` is no callback, and a POST ignores the parameter outright, as real does, since JSONP is
+what a `<script>` element fetches and a `<script>` element issues a GET. A SUCCESS body is wrapped
+and indented on the `/sheets/v4` routes only; the other four families honour `callback` on their
+errors and not yet on their 200s. Measured against the live Sheets, Docs, Drive, Gmail and Slides
+APIs on 2026-09-15, 2026-09-16 and 2026-09-17: the wrap, the indent and the charset first, the
+suppression across the four non-Sheets families next, and the escape set and the case-insensitive
+`alt` last.
+
+**A repeated query parameter is read from the end real reads it from**, which is the first for some
+parameters and the last for others. The first repeat decides `fields`, `q`, `pageSize`, `pageToken`
+and `orderBy` on Drive's `files.list`, `fields` on `files.get` and `about`, and `mimeType` on
+`files.export`, and on Sheets `fields` and `prettyPrint`, as it decides `callback` and `alt`; the
+last decides `$.xgafv`, `majorDimension`, `valueRenderOption` and `includeGridData`. An empty first
+repeat is read as the empty value, not skipped. Gmail's `q`, `pageToken` and `maxResults` are read
+here from the last, and which end real reads is unmeasured. On a Sheets success, `prettyPrint` is
+compact at `false` and `0` and at none of the eighteen other spellings measured, `FALSE`, `no` and
+`f` among them. Measured against the live Drive, Sheets and Gmail APIs, each pair sent both ways
+round: `callback`, `alt` and the Sheets `$.xgafv` between 2026-09-15 and 2026-09-17,
+`includeGridData` and the Gmail `$.xgafv` on 2026-09-22, and the rest on 2026-09-23.
+
+**A typed query parameter is parsed in every repeat, and every value it cannot read is refused in
+one 400**: the message joins theirs with newlines and `details` carries a `google.rpc.BadRequest`
+field violation for each, a parameter's repeats together and in query order, on Sheets'
+`majorDimension`, `valueRenderOption`, `dateTimeRenderOption`, `includeGridData` and
+`excludeTablesInBandedRanges`, Drive's `pageSize` and the booleans each served Drive method declares
+(`supportsAllDrives`, `includeItemsFromAllDrives`, `acknowledgeAbuse`, `useDomainAdminAccess` and
+the two deprecated team-drive ones) alike, and a JSON body's enums and `includeGridData` carry the
+same `details`. A typed refusal comes after the credential check and before the file or spreadsheet
+is looked up. On Drive's `files.list`, one `pageSize` outside 1-1000 is refused with the range
+sentence (1-100 on `permissions.list` and `drives.list`), while a repeated one is read from the
+first and never range-checked; a `pageToken` it did not issue is 400 `Invalid Value`; and the
+refusals come in the order `pageSize`, `orderBy`, `q`, `pageToken`, `fields`. A blank `fields` on
+`files.list` or `files.get` answers `{}`. `files.export` refuses a format the file's type does not
+export to, the empty `mimeType=` among them, with `The requested conversion is not supported.`,
+matching the format without regard to case, refuses an absent `mimeType` ahead of looking the file
+up, and serves an export under the `mimeType` exactly as sent, with no `charset`. Measured against
+the live Drive and Sheets APIs on 2026-09-23, and the export's `Content-Type` on 2026-09-30.
 
 ### HubSpot — `/hubspot/crm/v3` `/hubspot/crm/v4`
 

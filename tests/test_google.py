@@ -716,12 +716,27 @@ def test_drive_not_found_names_the_file_id(client, admin_h):
     assert e["message"] == "File not found: abc123xyz."
 
 
-@pytest.mark.parametrize("name", ["Brand", "Whitepaper", None])
-def test_drive_export_requires_mime_type_with_googles_wording(client, admin_h, name):
-    """Asked of a document, of a PDF and of a file that does not exist, in the order
-    `drive_files_export`'s docstring records."""
+@pytest.mark.parametrize(
+    "name, caller",
+    [
+        ("Brand", None),
+        ("Whitepaper", None),
+        (None, None),
+        # a spreadsheet the scoped token cannot see, which with a `mimeType` is its 404
+        ("Q1 Revenue Model", "mia@acme.com"),
+    ],
+)
+def test_drive_export_requires_mime_type_with_googles_wording(
+    client, admin_h, tokens, name, caller
+):
+    """Asked of a document, of a PDF, of a file that does not exist and of one the caller cannot
+    see, in the order `drive_files_export`'s docstring records."""
     fid = _drive_find(client, admin_h, name)["id"] if name else "nosuchfileid123"
-    e = _gerr(client.get(f"/drive/v3/files/{fid}/export", headers=admin_h))
+    headers = {"Authorization": f"Bearer {tokens[caller]}"} if caller else admin_h
+    url = f"/drive/v3/files/{fid}/export"
+    if caller:
+        assert client.get(url, headers=headers, params={"mimeType": "text/csv"}).status_code == 404
+    e = _gerr(client.get(url, headers=headers))
     assert e["code"] == 400 and e["message"] == "Required parameter: mimeType"
     assert e["errors"][0] == {
         "message": "Required parameter: mimeType",
@@ -733,33 +748,47 @@ def test_drive_export_requires_mime_type_with_googles_wording(client, admin_h, n
 
 
 @pytest.mark.parametrize(
-    "mime",
+    "name, mime, served",
     [
-        "text/plain",
-        "bogus/type",
-        "application/vnd.google-apps.document",
-        "",
-        "text/csv ",
-        "text/csv;charset=utf-8",
+        ("Q1 Revenue Model", "text/plain", None),
+        ("Q1 Revenue Model", "bogus/type", None),
+        ("Q1 Revenue Model", "application/vnd.google-apps.document", None),
+        ("Q1 Revenue Model", "", None),
+        ("Q1 Revenue Model", "text/csv ", None),
+        ("Q1 Revenue Model", "text/csv;charset=utf-8", None),
+        ("Q1 Revenue Model", "text/csv", "text/csv"),
+        ("Q1 Revenue Model", "TEXT/CSV", "text/csv"),
+        ("Q1 Revenue Model", "Text/Csv", "text/csv"),
+        ("Brand", "text/markdown", "text/markdown"),
+        ("Brand", "TEXT/MARKDOWN", "text/markdown"),
     ],
 )
-def test_drive_export_refuses_a_format_the_type_does_not_export_to(client, admin_h, mime):
-    """The values `gerr.unsupported_conversion` records, on a spreadsheet that exports as
-    `text/csv`; a file that does not exist is its 404 whatever it asks for."""
-    sheet = _drive_find(client, admin_h, "Q1 Revenue Model")["id"]
-    url = f"/drive/v3/files/{sheet}/export"
-    e = _gerr(client.get(url, headers=admin_h, params={"mimeType": mime}))
-    assert e["code"] == 400
-    assert e["errors"] == [
-        {
-            "message": "The requested conversion is not supported.",
-            "domain": "global",
-            "reason": "badRequest",
-            "location": "convertTo",
-            "locationType": "parameter",
-        }
-    ]
-    assert client.get(url, headers=admin_h, params={"mimeType": "text/csv"}).status_code == 200
+def test_drive_export_serves_a_format_its_type_exports_to_under_the_name_asked(
+    client, admin_h, name, mime, served
+):
+    """`None` is the refusal `gerr.unsupported_conversion` records, and a format the export that
+    format answers, matched without regard to case and served under the `mimeType` exactly as
+    sent, as `drive_files_export`'s docstring records. A file that does not exist is its 404
+    whatever it asks for. The TSV spelling is
+    `test_tsv_export_reserialises_the_grid_rather_than_serving_content`'s, over a grid."""
+    url = f"/drive/v3/files/{_drive_find(client, admin_h, name)['id']}/export"
+    r = client.get(url, headers=admin_h, params={"mimeType": mime})
+    if served is None:
+        e = _gerr(r)
+        assert e["code"] == 400
+        assert e["errors"] == [
+            {
+                "message": "The requested conversion is not supported.",
+                "domain": "global",
+                "reason": "badRequest",
+                "location": "convertTo",
+                "locationType": "parameter",
+            }
+        ]
+    else:
+        assert r.status_code == 200, r.text
+        assert r.headers["content-type"] == mime
+        assert r.text == client.get(url, headers=admin_h, params={"mimeType": served}).text
     missing = client.get(
         "/drive/v3/files/nosuchfileid123/export", headers=admin_h, params={"mimeType": mime}
     )
@@ -767,64 +796,65 @@ def test_drive_export_refuses_a_format_the_type_does_not_export_to(client, admin
 
 
 @pytest.mark.parametrize(
-    "asked, canonical",
+    "path, top",
     [
-        ("TEXT/CSV", "text/csv"),
-        ("Text/Csv", "text/csv"),
+        ("/drive/v3/files", 1000),
+        ("/drive/v3/files/{doc}/permissions", 100),
+        ("/drive/v3/drives", 100),
     ],
 )
-def test_drive_export_matches_the_format_without_regard_to_case(client, admin_h, asked, canonical):
-    """The case rule `drive_files_export`'s docstring records. The TSV spelling is
-    `test_tsv_export_reserialises_the_grid_rather_than_serving_content`'s, over a grid."""
-    sheet = _drive_find(client, admin_h, "Q1 Revenue Model")["id"]
-    url = f"/drive/v3/files/{sheet}/export"
-    got = client.get(url, headers=admin_h, params={"mimeType": asked})
-    assert got.status_code == 200
-    assert got.headers["content-type"].startswith(asked)
-    assert got.text == client.get(url, headers=admin_h, params={"mimeType": canonical}).text
-
-
-_RANGE = "Invalid value '{}'. Values must be within the range: [value: 1\n, value: 1000\n]"
-
-
 @pytest.mark.parametrize(
-    "value, answer",
+    "values, kind, named",
     [
-        ("0", "0"),
-        ("-1", "-1"),
-        ("-0", "0"),
-        ("1001", "1001"),
-        ("2147483647", "2147483647"),
-        ("2147483648", None),
-        (" 2", None),
-        ("2 ", None),
-        ("1_0", None),
-        ("2.0", None),
-        ("0x10", None),
-        ("1e2", None),
-        ("", None),
-        ("+2", 2),
-        ("02", 2),
-        ("1000", 1000),
+        (["0"], "range", "0"),
+        (["-1"], "range", "-1"),
+        (["-0"], "range", "0"),
+        (["{above}"], "range", "{above}"),
+        (["2147483647"], "range", "2147483647"),
+        (["2147483648"], "int32", "2147483648"),
+        ([" 2"], "int32", " 2"),
+        (["2 "], "int32", "2 "),
+        (["1_0"], "int32", "1_0"),
+        (["2.0"], "int32", "2.0"),
+        (["0x10"], "int32", "0x10"),
+        (["1e2"], "int32", "1e2"),
+        ([""], "int32", ""),
+        (["NOPE"], "int32", "NOPE"),
+        (["2", "NOPE"], "int32", "NOPE"),
+        (["NOPE", "2"], "int32", "NOPE"),
+        (["+2"], "size", "2"),
+        (["02"], "size", "2"),
+        (["1"], "size", "1"),
+        (["{top}"], "size", "{top}"),
     ],
 )
-def test_drive_page_size_is_an_int32_from_1_to_1000(client, admin_h, value, answer):
-    """Measured 2026-09-23, each value alone. A string is the range refusal naming the value as an
-    int, `None` the proto layer's `TYPE_INT32` one, and a number the page size served."""
-    total = len(
-        client.get("/drive/v3/files", headers=admin_h, params={"pageSize": 1000}).json()["files"]
-    )
-    r = client.get("/drive/v3/files", headers=admin_h, params={"pageSize": value})
-    if isinstance(answer, int):
+def test_drive_a_listing_takes_an_int32_page_size_from_1_to_its_top(
+    client, admin_h, path, top, values, kind, named
+):
+    """Measured on `files.list` 2026-09-23 and on all three 2026-09-30, each value alone unless the
+    row lists two. `range` is the range refusal naming the value as an int, `int32` the proto
+    layer's `TYPE_INT32` one quoting it, and `size` a 200, which on `files.list` lists that many
+    files; `permissions.list` and `drives.list` declare a page size and read none here. The top is
+    the one `_drive_page_size_in_range` records."""
+    fill = {"top": top, "above": top + 1}
+    named = named.format(**fill)
+    url = path.format(doc=_drive_find(client, admin_h, "Brand")["id"])
+    r = client.get(url, headers=admin_h, params=[("pageSize", v.format(**fill)) for v in values])
+    if kind == "size":
         assert r.status_code == 200, r.text
-        assert len(r.json()["files"]) == min(answer, total)
+        if path == "/drive/v3/files":
+            total = len(client.get(url, headers=admin_h, params={"pageSize": 1000}).json()["files"])
+            assert len(r.json()["files"]) == min(int(named), total)
         return
     e = _gerr(r)
     assert e["code"] == 400
-    if isinstance(answer, str):
+    if kind == "range":
         assert e["errors"] == [
             {
-                "message": _RANGE.format(answer),
+                "message": (
+                    f"Invalid value '{named}'. Values must be within the range: [value: 1\n, "
+                    f"value: {top}\n]"
+                ),
                 "domain": "global",
                 "reason": "invalidParameter",
                 "location": "page_size",
@@ -833,7 +863,7 @@ def test_drive_page_size_is_an_int32_from_1_to_1000(client, admin_h, value, answ
         ]
         assert "status" not in e and "details" not in e
     else:
-        message = f"Invalid value at 'page_size' (TYPE_INT32), \"{value}\""
+        message = f"Invalid value at 'page_size' (TYPE_INT32), \"{named}\""
         assert e["errors"] == [{"message": message, "reason": "invalid"}]
         assert e["status"] == "INVALID_ARGUMENT"
         assert e["details"][0]["fieldViolations"] == [
@@ -942,23 +972,34 @@ _DRIVE_BOOL_ROUTES = [
     ("/drive/v3/drives", "useDomainAdminAccess"),
 ]
 
-_DRIVE_BOOL_ROWS = [
-    (path, param, value, accepted)
-    for path, param in _DRIVE_BOOL_ROUTES
-    for value, accepted in [
-        ("1", True),
-        ("y", True),
-        ("No", True),
-        ("on", False),
-        ("", False),
-        ("NOPE", False),
+_DRIVE_BOOL_ROWS = (
+    [
+        (path, param, value, accepted)
+        for path, param in _DRIVE_BOOL_ROUTES
+        for value, accepted in [
+            ("1", True),
+            ("y", True),
+            ("No", True),
+            ("on", False),
+            ("", False),
+            ("NOPE", False),
+        ]
     ]
-] + [
-    # `files.export` and `about.get` declare no `supportsAllDrives`, and real answers
-    # `supportsAllDrives=NOPE` on them as though it were not sent
-    ("/drive/v3/files/{doc}/export?mimeType=text/plain", "supportsAllDrives", "NOPE", True),
-    ("/drive/v3/about?fields=user", "supportsAllDrives", "NOPE", True),
-]
+    + [
+        # the rest of the spellings swept on `files.list`'s `supportsAllDrives`
+        ("/drive/v3/files", "supportsAllDrives", value, accepted)
+        for value, accepted in [
+            (v, True) for v in ("true", "FALSE", "tRuE", "0", "t", "F", "Y", "no", "YES")
+        ]
+        + [(v, False) for v in ("off", "2", "01", "00", "1.0", "-1", "+1", " true", "true ")]
+    ]
+    + [
+        # `files.export` and `about.get` declare no `supportsAllDrives`, and real answers
+        # `supportsAllDrives=NOPE` on them as though it were not sent
+        ("/drive/v3/files/{doc}/export?mimeType=text/plain", "supportsAllDrives", "NOPE", True),
+        ("/drive/v3/about?fields=user", "supportsAllDrives", "NOPE", True),
+    ]
+)
 
 
 @pytest.mark.parametrize("path, param, value, accepted", _DRIVE_BOOL_ROWS)
@@ -966,9 +1007,10 @@ def test_drive_a_declared_boolean_takes_the_protobuf_spellings_and_another_is_ig
     client, admin_h, path, param, value, accepted
 ):
     """Measured 2026-09-23 on each of these, one request per value; the whole spelling rule is
-    `_sheets_bool_value`'s, swept over 30 values on `files.list`'s `supportsAllDrives`. `true`
-    itself is left out: on four of these real answers a `true` with a check of its own (a 403 for
-    `includeItemsFromAllDrives` without `supportsAllDrives`), which Backlot does not model."""
+    `_sheets_bool_value`'s, swept over 30 values on `files.list`'s `supportsAllDrives`, 24 of
+    which are that flag's rows here. `true` is sent to that flag alone: four of the others answer
+    a `true` with a check of their own (a 403 for `includeItemsFromAllDrives` without
+    `supportsAllDrives`), which Backlot does not model."""
     doc = _drive_find(client, admin_h, "Brand")["id"]
     url = path.format(doc=doc)
     # the query string is built here because httpx's `params` replaces the one the row's path has
@@ -984,77 +1026,37 @@ def test_drive_a_declared_boolean_takes_the_protobuf_spellings_and_another_is_ig
 
 
 @pytest.mark.parametrize(
-    "value, accepted",
-    [(v, True) for v in ("true", "FALSE", "tRuE", "0", "t", "F", "Y", "no", "YES")]
-    + [(v, False) for v in ("off", "2", "01", "00", "1.0", "-1", "+1", " true", "true ")],
-)
-def test_drive_supports_all_drives_takes_the_spellings_real_takes(client, admin_h, value, accepted):
-    """The rest of the 30-value sweep on `files.list`, measured 2026-09-23."""
-    r = client.get("/drive/v3/files", headers=admin_h, params={"supportsAllDrives": value})
-    assert (r.status_code == 200) is accepted, r.text
-
-
-@pytest.mark.parametrize(
     "path, query",
     [
-        ("/drive/v3/files/nosuchfileid123", "acknowledgeAbuse=NOPE"),
-        ("/drive/v3/files/nosuchfileid123/permissions", "supportsAllDrives=NOPE"),
-        ("/sheets/v4/spreadsheets/nosuchspreadsheet000/values/Sheet1!A1", "majorDimension=NOPE"),
-        ("/sheets/v4/spreadsheets/nosuchspreadsheet000/values:batchGet", "valueRenderOption=NOPE"),
-        ("/sheets/v4/spreadsheets/nosuchspreadsheet000", "includeGridData=NOPE"),
+        ("/drive/v3/files/{id}", "acknowledgeAbuse=NOPE"),
+        ("/drive/v3/files/{id}/permissions", "supportsAllDrives=NOPE"),
+        ("/drive/v3/files/{id}/permissions", "pageSize=0"),
+        ("/sheets/v4/spreadsheets/{id}/values/Sheet1!A1", "majorDimension=NOPE"),
+        ("/sheets/v4/spreadsheets/{id}/values:batchGet", "valueRenderOption=NOPE"),
+        ("/sheets/v4/spreadsheets/{id}", "includeGridData=NOPE"),
     ],
 )
 def test_a_typed_refusal_comes_after_the_credential_and_before_the_lookup(
-    client, admin_h, path, query
+    client, admin_h, tokens, path, query
 ):
-    """Measured 2026-09-23: a value the proto layer cannot read is refused for a file or a
-    spreadsheet that does not exist, so it answers the same whatever the caller can see; a missing
-    or bad credential is still refused first. Without the bad value the same path is the 404."""
-    url = f"{path}?{query}"
-    assert _gerr(client.get(url, headers=admin_h))["code"] == 400
-    assert client.get(path, headers=admin_h).status_code == 404
-    assert client.get(url).status_code == 403
-    assert client.get(url, headers=BAD_TOKEN).status_code == 401
-
-
-@pytest.mark.parametrize("path", ["/drive/v3/files/{doc}/permissions", "/drive/v3/drives"])
-@pytest.mark.parametrize(
-    "query, answer",
-    [
-        ("pageSize=0", "0"),
-        ("pageSize=101", "101"),
-        ("pageSize=1000", "1000"),
-        ("pageSize=NOPE", None),
-        ("pageSize=", None),
-        ("pageSize=2147483648", None),
-        ("pageSize=1", 200),
-        ("pageSize=100", 200),
-        ("pageSize=2&pageSize=NOPE", None),
-    ],
-)
-def test_drive_a_short_listing_takes_a_page_size_from_1_to_100(
-    client, admin_h, path, query, answer
-):
-    """Measured 2026-09-23 on `permissions.list` and `drives.list`, which read no page size here but
-    declare one, and whose range is 1-100 where `files.list`'s is 1-1000. A string is the range
-    refusal naming that value, `None` the `TYPE_INT32` one."""
-    doc = _drive_find(client, admin_h, "Brand")["id"]
-    r = client.get(f"{path.format(doc=doc)}?{query}", headers=admin_h)
-    if answer == 200:
-        assert r.status_code == 200, r.text
-    elif answer is None:
-        assert _gerr(r)["details"][0]["fieldViolations"][0]["field"] == "page_size"
-    else:
-        assert _gerr(r)["errors"][0] == {
-            "message": (
-                f"Invalid value '{answer}'. Values must be within the range: [value: 1\n, "
-                "value: 100\n]"
-            ),
-            "domain": "global",
-            "reason": "invalidParameter",
-            "location": "page_size",
-            "locationType": "parameter",
-        }
+    """The order `_typed_query`'s docstring records. The refusal is the same bytes for a
+    spreadsheet the scoped token cannot see as for one that does not exist, where without the bad
+    value the first is a 200 to the admin and both are the 404 to the scoped token. With no
+    credential or a bad one the bad value changes nothing: the answer is the credential's refusal,
+    the 401 for a bad one."""
+    scoped = {"Authorization": f"Bearer {tokens['mia@acme.com']}"}
+    missing = path.format(id="nosuchspreadsheet000")
+    hidden = path.format(id=_drive_find(client, admin_h, "Q1 Revenue Model")["id"])
+    refused = client.get(f"{missing}?{query}", headers=scoped)
+    assert _gerr(refused)["code"] == 400
+    assert client.get(f"{hidden}?{query}", headers=scoped).content == refused.content
+    assert client.get(hidden, headers=admin_h).status_code == 200
+    assert client.get(hidden, headers=scoped).status_code == 404
+    assert client.get(missing, headers=scoped).status_code == 404
+    assert client.get(missing, headers=BAD_TOKEN).status_code == 401
+    for headers in ({}, BAD_TOKEN):
+        without = client.get(missing, headers=headers).content
+        assert client.get(f"{missing}?{query}", headers=headers).content == without
 
 
 @pytest.mark.parametrize("mask", ["", " "])
@@ -2188,7 +2190,7 @@ def test_drive_responses_unchanged_by_enrichment(client, admin_h):
 
 
 def test_drive_export_and_media_stay_non_json(client, admin_h):
-    # A native doc exports as PlainTextResponse; response_model must NOT be attached to these.
+    # A native doc exports as a raw Response; response_model must NOT be attached to these.
     doc = _drive_find(client, admin_h, "Brand")
     exp = client.get(
         f"/drive/v3/files/{doc['id']}/export", params={"mimeType": "text/plain"}, headers=admin_h
@@ -3435,7 +3437,7 @@ _GRID = "Invalid value at 'include_grid_data' (TYPE_BOOL), "
                 ),
             ],
         ),
-        # every bad enum in a JSON body
+        # every bad enum in a JSON body, in the body's order
         (
             "POST",
             "values_by_filter",
@@ -3450,6 +3452,22 @@ _GRID = "Invalid value at 'include_grid_data' (TYPE_BOOL), "
                 ("major_dimension", _DIM + '"NOPE"'),
                 ("value_render_option", _RENDER + '"NOPE2"'),
                 ("date_time_render_option", _DATETIME + '"NOPE3"'),
+            ],
+        ),
+        (
+            "POST",
+            "values_by_filter",
+            [],
+            {
+                "dateTimeRenderOption": "NOPE3",
+                "majorDimension": "NOPE",
+                "dataFilters": [{"a1Range": "Sheet1!A1"}],
+                "valueRenderOption": "NOPE2",
+            },
+            [
+                ("date_time_render_option", _DATETIME + '"NOPE3"'),
+                ("major_dimension", _DIM + '"NOPE"'),
+                ("value_render_option", _RENDER + '"NOPE2"'),
             ],
         ),
         # the same refusal from a JSON body
@@ -3467,9 +3485,10 @@ def test_every_typed_value_is_parsed_and_every_one_refused_is_named(
 ):
     """Measured 2026-09-23 on Sheets and Drive: every repeat of a typed parameter is parsed, not
     only the one read, and a request with several values the proto layer cannot read is one 400
-    whose message joins theirs with newlines and whose `details` names each. `refused` is in query
-    order; the comparison keeps each field's refusals in that order and leaves the order between
-    fields open, as `_typed_query` records real does."""
+    whose message joins theirs with newlines and whose `details` names each. `refused` is in the
+    order sent. A body's refusals are compared exactly, in the order
+    `sheets_values_batch_get_by_data_filter` records; a query's keep each field's refusals in that
+    order and leave the order between fields open, as `_typed_query` records real does."""
     url = {
         "values": f"/sheets/v4/spreadsheets/{sheet_id}/values/Sheet1!A1",
         "book": f"/sheets/v4/spreadsheets/{sheet_id}",
@@ -3488,6 +3507,10 @@ def test_every_typed_value_is_parsed_and_every_one_refused_is_named(
     got = [(v["field"], v["description"]) for v in bad_request["fieldViolations"]]
     assert err["message"] == "\n".join(m for _, m in got)
     assert err["status"] == "INVALID_ARGUMENT"
+
+    if body is not None:
+        assert got == refused
+        return
 
     def by_field(pairs):
         grouped = {}
@@ -5230,7 +5253,7 @@ def test_tsv_export_reserialises_the_grid_rather_than_serving_content(gc, gh, ho
     reaching it, spelled either way `drive_files_export` accepts."""
     r = _export(gc, gh, hostile, mime)
     assert r.text == 'with,comma\twith"quote\twith newline'
-    assert r.headers["content-type"].startswith(mime)
+    assert r.headers["content-type"] == mime
 
 
 def test_a_prose_spreadsheet_still_exports_verbatim(gc, gh, prose):

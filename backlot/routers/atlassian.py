@@ -2505,37 +2505,53 @@ def request_ids(request: Request) -> dict[str, str]:
     return ids
 
 
-#: Jira's burst quota, per route. Measured 2026-09-22: `x-ratelimit-limit` is 350 on every route
-#: here but two — 400 on `issue/{key}` and 500 on `project/{key}/role/{id}` — and the policy's `q`
-#: is 100, 150 and 200 against those three limits, always with `w=1`. A burst of six requests on one
-#: route counted `remaining` down 349…344 and was back at 349 three seconds later, and a second
-#: route sharing the 350 bucket shared the count, so the window is the second the policy names and
-#: the bucket is the quota rather than the path.
+#: Jira's burst quota. Measured 2026-09-22 and 2026-09-30: `x-ratelimit-limit` is 350 on every
+#: route here but three — 400 on `issue/{key}`, 500 on `project/{key}/role/{id}` and 200 on a
+#: `POST` to `search/jql` — and the policy's `q` is 100, 150, 200 and 100 against those four, always
+#: with `w=1`. A `HEAD` and an `OPTIONS` read a quota of their own, `q` and `x-ratelimit-limit` both
+#: 1000000000000, on `serverInfo`, `field`, `search/jql`, `project/search` and an issue alike.
 _JIRA_BURST_POLICY = "jira-burst-based"
 _JIRA_BURST_WINDOW = 1
 _JIRA_BURST_DEFAULT = (100, 350)
 _JIRA_BURST_BUCKETS = (
-    ("/rest/api/{version}/issue/{key}", (150, 400)),
-    ("/rest/api/{version}/project/{key}/role/{id}", (200, 500)),
+    ("GET", "/rest/api/{version}/issue/{key}", (150, 400)),
+    ("GET", "/rest/api/{version}/project/{key}/role/{id}", (200, 500)),
+    ("POST", "/rest/api/{version}/search/jql", (100, 200)),
 )
 _JIRA_BURST_PATTERNS = tuple(
-    (errors_atlassian.route_regex(t), bucket) for t, bucket in _JIRA_BURST_BUCKETS
+    (method, errors_atlassian.route_regex(t), bucket) for method, t, bucket in _JIRA_BURST_BUCKETS
 )
+_JIRA_UNMETERED = (1000000000000, 1000000000000)
+_JIRA_MOUNT = re.compile(r"/rest/api/[23]/")
 
 
-def _jira_burst_bucket(path: str) -> tuple[int, int]:
+def _jira_burst_bucket(method: str, path: str) -> tuple[int, int]:
+    if method in ("HEAD", "OPTIONS"):
+        return _JIRA_UNMETERED
     vendor_path = _vendor_path(path)
-    for pattern, bucket in _JIRA_BURST_PATTERNS:
-        if pattern.fullmatch(vendor_path):
+    for verb, pattern, bucket in _JIRA_BURST_PATTERNS:
+        if verb == method and pattern.fullmatch(vendor_path):
             return bucket
     return _JIRA_BURST_DEFAULT
 
 
-class JiraBurstWindows:
-    """What a caller has spent of a burst quota in the current second, per quota.
+def _route_template(request: Request) -> str:
+    """The template of the route at this request's path, either Jira mount read as one."""
+    for route in router.routes:
+        if route.matches(request.scope)[0] is not Match.NONE:
+            return _JIRA_MOUNT.sub("/rest/api/{version}/", route.path, count=1)
+    return request.url.path
 
-    One window per `(credential, limit)` rather than per path, because two routes under the same
-    limit were measured sharing a count. `remaining` stops at zero and nothing is refused here: no
+
+class JiraBurstWindows:
+    """What a caller has spent of a burst quota in the current second, per method and route.
+
+    A window counts one method on one route template, `{version}` read as either mount and a path
+    parameter as any value. Measured 2026-09-30 with five requests of each pair sent together:
+    `serverInfo` and `field` each read 349…345, where the `/2` and `/3` spellings of `serverInfo`
+    read 349…340 between them, and two issue keys read 399…390, as did an issue key beside one that
+    does not exist; a `HEAD` and an `OPTIONS` on `serverInfo` each counted their own, and three
+    `HEAD`s left the `GET` after them at 349. `remaining` stops at zero and nothing is refused: no
     429 was measured, and a mock that invents one fails a suite for pacing it never asked for —
     the same line ``backlot.routers.github.RateLimitWindows`` draws, whose shape this follows.
     ``clock`` is `time.time` unless a test hands in another.
@@ -2543,14 +2559,14 @@ class JiraBurstWindows:
 
     def __init__(self, clock: Callable[[], float] = time.time):
         self.clock = clock
-        self._windows: dict[tuple[str, int], list[int]] = {}
+        self._windows: dict[tuple[str, str, str], list[int]] = {}
 
-    def count(self, key: str, limit: int) -> int:
-        """`remaining` after counting one more request against ``limit``."""
+    def count(self, key: tuple[str, str, str], limit: int) -> int:
+        """`remaining` after counting one more request in ``key``'s window against ``limit``."""
         now = int(self.clock())
-        window = self._windows.get((key, limit))
+        window = self._windows.get(key)
         if window is None or now >= window[0] + _JIRA_BURST_WINDOW:
-            window = self._windows[(key, limit)] = [now, 0]
+            window = self._windows[key] = [now, 0]
         window[1] += 1
         return max(limit - window[1], 0)
 
@@ -2563,13 +2579,15 @@ def _burst_windows(app) -> JiraBurstWindows:
 
 
 def rate_limit_headers(request: Request, caller: Caller) -> dict[str, str]:
-    """Jira's four, for a caller whose credential resolved.
+    """Jira's four, for a caller whose credential resolved, counted in its window.
 
     An anonymous request carries none of them, and neither does the 404 for a path Jira mounts no
-    endpoint at — both measured 2026-09-22 — so this is asked only where real answers them.
+    endpoint at (both measured 2026-09-22) or a 405 (`POST serverInfo`, `PUT search/jql`,
+    `POST issue/{key}`, measured 2026-09-30), so this is asked only where real answers them.
     """
-    q, limit = _jira_burst_bucket(request.url.path)
-    remaining = _burst_windows(request.app).count(caller.email or "anonymous", limit)
+    q, limit = _jira_burst_bucket(request.method, request.url.path)
+    key = (caller.email or "anonymous", request.method, _route_template(request))
+    remaining = _burst_windows(request.app).count(key, limit)
     return {
         "ratelimit": f'"{_JIRA_BURST_POLICY}";r={remaining};t={_JIRA_BURST_WINDOW}',
         "ratelimit-policy": f'"{_JIRA_BURST_POLICY}";q={q};w={_JIRA_BURST_WINDOW}',
@@ -2615,16 +2633,6 @@ def sends_deprecation(path: str, status_code: int) -> bool:
 #: What the edge puts on every answer that passes it, a gateway's own refusal included and a CDN's
 #: not: on all 78 of 2026-09-22 and on the Connect-token 403 and a `PATCH` measured 2026-09-30.
 _EDGE = {"x-content-type-options": "nosniff", "x-xss-protection": "1; mode=block"}
-
-#: The quota an `OPTIONS` reports to a caller whose credential resolves, which is not the burst
-#: bucket its route counts in: the same four values on `serverInfo` and on an issue, measured
-#: 2026-09-30, and nothing counted against the route's own window.
-_OPTIONS_QUOTA = {
-    "ratelimit": f'"{_JIRA_BURST_POLICY}";r=999999999999;t={_JIRA_BURST_WINDOW}',
-    "ratelimit-policy": f'"{_JIRA_BURST_POLICY}";q=1000000000000;w={_JIRA_BURST_WINDOW}',
-    "x-ratelimit-limit": "1000000000000",
-    "x-ratelimit-remaining": "999999999999",
-}
 
 
 def _gateway_headers(request: Request) -> dict[str, str]:
@@ -2684,9 +2692,9 @@ def vendor_headers(request: Request, status_code: int) -> dict[str, str]:
     # The admin/service token resolves to a caller with no address; `"unknown"` is what the rest
     # of this module seeds an account id from for one (see :func:`_conf_user`).
     headers["x-aaccountid"] = synth.atlassian_account_id(caller.email or "unknown")
-    if _some_atlassian_route_matches(request):
-        if request.method == "OPTIONS":
-            headers.update(_OPTIONS_QUOTA)
-        else:
-            headers.update(rate_limit_headers(request, caller))
+    # the quota rides on what a route answers, and on an `OPTIONS` at its path; a 405 carries none
+    if _a_route_answers(request) or (
+        request.method == "OPTIONS" and _some_atlassian_route_matches(request)
+    ):
+        headers.update(rate_limit_headers(request, caller))
     return headers

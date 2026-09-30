@@ -328,12 +328,13 @@ no route here serves, a caller with no credential gets the gateway's 401
 (`backlot/fidelity/jira_gateway.json`), and otherwise that 404, the gap the baseline acknowledges.
 That is under `/atlassian/rest` only: outside the two API mounts the site is its web app, `/browse`
 at 200, the root a redirect to log in or to `/jira/for-you`, and Jira's own not-found page for the
-rest. Every answer carries `atl-request-id`, `atl-traceid`, `x-content-type-options` and
-`x-xss-protection`, and Jira's own answers add `x-arequestid`, `cache-control` and
-`timing-allow-origin`, which the gateway's refusals (the Connect-token 403, a `PATCH`) do not carry;
-a caller whose credential resolves also gets its own `x-aaccountid` and the burst quota's four
-(`ratelimit`, `ratelimit-policy`, `x-ratelimit-limit`, `x-ratelimit-remaining`), which an anonymous
-request carries none of and the no-endpoint 404 carries only the account id of.
+rest. Every answer past the CDN (which refuses a `TRACE` itself) carries `atl-request-id`, `atl-traceid`,
+`x-content-type-options` and `x-xss-protection`, and Jira's own answers add `x-arequestid`,
+`cache-control` and `timing-allow-origin`, which the gateway's refusals (the Connect-token 403, a
+`PATCH`) do not carry; a caller whose credential resolves also gets its own `x-aaccountid`, and the
+burst quota's four (`ratelimit`, `ratelimit-policy`, `x-ratelimit-limit`, `x-ratelimit-remaining`)
+where a route answers or an `OPTIONS` asks at one, counted per method and route. An anonymous
+request carries none of those five, and the no-endpoint 404 and a 405 carry the account id alone.
 
 ### Linear — `/linear/graphql`
 

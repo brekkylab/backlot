@@ -2664,12 +2664,6 @@ def test_jira_answers_an_options_with_the_vendors_methods(client, admin_h, path,
     assert r.headers["allow"] == allow
     assert r.headers["accept-patch"] == ""
     assert r.content == b""
-    # not the burst bucket the route's reads count in: the same four on `serverInfo` and on an
-    # issue, measured 2026-09-30
-    assert r.headers["x-ratelimit-limit"] == "1000000000000"
-    assert r.headers["x-ratelimit-remaining"] == "999999999999"
-    assert r.headers["ratelimit-policy"] == '"jira-burst-based";q=1000000000000;w=1'
-    assert r.headers["ratelimit"] == '"jira-burst-based";r=999999999999;t=1'
 
 
 @pytest.mark.parametrize(
@@ -2988,65 +2982,157 @@ def frozen_burst(client):
     app.state.jira_burst_windows = before
 
 
+_UNMETERED = 1000000000000
+_JQL = "/atlassian/rest/api/3/search/jql"
+
+
 @pytest.mark.parametrize(
-    "path,policy,limit",
+    "method,path,policy,limit",
     [
-        # every row measured 2026-09-22, reading the four headers off that route's own answer
-        ("/atlassian/rest/api/3/serverInfo", 100, 350),
-        ("/atlassian/rest/api/3/project/search", 100, 350),
-        ("/atlassian/rest/api/3/issue/NOPE-1", 150, 400),
-        ("/atlassian/rest/api/3/project/ENG/role/10002", 200, 500),
+        # the GET rows measured 2026-09-22 and the rest 2026-09-30, reading the four headers off
+        # that route's own answer
+        ("GET", "/atlassian/rest/api/3/serverInfo", 100, 350),
+        ("GET", "/atlassian/rest/api/3/project/search", 100, 350),
+        ("GET", "/atlassian/rest/api/3/issue/NOPE-1", 150, 400),
+        ("GET", "/atlassian/rest/api/3/project/ENG/role/10002", 200, 500),
+        ("POST", _JQL, 100, 200),
+        ("HEAD", "/atlassian/rest/api/3/serverInfo", _UNMETERED, _UNMETERED),
+        ("HEAD", "/atlassian/rest/api/3/issue/NOPE-1", _UNMETERED, _UNMETERED),
+        ("OPTIONS", "/atlassian/rest/api/3/serverInfo", _UNMETERED, _UNMETERED),
+        ("OPTIONS", "/atlassian/rest/api/3/issue/NOPE-1", _UNMETERED, _UNMETERED),
     ],
 )
 def test_jira_reports_the_burst_quota_of_the_route(
-    client, admin_h, frozen_burst, path, policy, limit
+    client, admin_h, frozen_burst, method, path, policy, limit
 ):
-    """Real's quota is per route: 350 on most, 400 on an issue, 500 on a project role. `remaining`
-    counts down inside the window the policy names — a burst of six read 349…344."""
-    first = client.get(path, headers=admin_h)
+    """Real's quota is per method and route: 350 on most reads, 400 on an issue, 500 on a project
+    role and 200 on a `POST` to `search/jql`, and a `HEAD` or an `OPTIONS` reads 1000000000000.
+    `remaining` counts down inside the window the policy names."""
+    body = {"jql": "project = ENG"} if method == "POST" else None
+    first = client.request(method, path, headers=admin_h, json=body)
     assert first.headers["x-ratelimit-limit"] == str(limit)
     assert first.headers["x-ratelimit-remaining"] == str(limit - 1)
     assert first.headers["ratelimit"] == f'"jira-burst-based";r={limit - 1};t=1'
     assert first.headers["ratelimit-policy"] == f'"jira-burst-based";q={policy};w=1'
-    again = client.get(path, headers=admin_h)
+    again = client.request(method, path, headers=admin_h, json=body)
     assert again.headers["x-ratelimit-remaining"] == str(limit - 2)
 
 
-def test_jira_burst_quota_is_shared_by_the_routes_under_one_limit(client, admin_h, frozen_burst):
-    """Measured: `field` and `serverInfo` sit in the 350 bucket and counted down together, where
-    `issue/{key}` has a bucket of its own; an `OPTIONS` reports a quota of its own and counts in
-    neither (measured 2026-09-30)."""
-    client.get("/atlassian/rest/api/3/serverInfo", headers=admin_h)
-    client.request("OPTIONS", "/atlassian/rest/api/3/serverInfo", headers=admin_h)
-    field = client.get("/atlassian/rest/api/3/field", headers=admin_h)
-    assert field.headers["x-ratelimit-remaining"] == "348"
-    issue = client.get("/atlassian/rest/api/3/issue/NOPE-1", headers=admin_h)
-    assert issue.headers["x-ratelimit-remaining"] == "399"
+@pytest.mark.parametrize(
+    "before,last,remaining",
+    [
+        # measured 2026-09-30, five of each pair sent together: a window is one method on one
+        # route template, either mount and any value of a path parameter read as one
+        pytest.param(
+            ("GET", "/rest/api/3/serverInfo"), ("GET", "/rest/api/3/field"), 349, id="two-routes"
+        ),
+        pytest.param(
+            ("GET", "/rest/api/3/serverInfo"),
+            ("GET", "/rest/api/2/serverInfo"),
+            348,
+            id="two-mounts",
+        ),
+        pytest.param(
+            ("GET", "/rest/api/3/issue/NOPE-1"),
+            ("GET", "/rest/api/3/issue/NOPE-2"),
+            398,
+            id="two-keys",
+        ),
+        pytest.param(
+            ("GET", "/rest/api/3/search/jql"),
+            ("POST", "/rest/api/3/search/jql"),
+            199,
+            id="two-methods",
+        ),
+        pytest.param(
+            ("HEAD", "/rest/api/3/serverInfo"),
+            ("GET", "/rest/api/3/serverInfo"),
+            349,
+            id="head-then-get",
+        ),
+        pytest.param(
+            ("OPTIONS", "/rest/api/3/serverInfo"),
+            ("GET", "/rest/api/3/serverInfo"),
+            349,
+            id="options-then-get",
+        ),
+        pytest.param(
+            ("HEAD", "/rest/api/3/serverInfo"),
+            ("HEAD", "/rest/api/2/serverInfo"),
+            _UNMETERED - 2,
+            id="head-two-mounts",
+        ),
+        pytest.param(
+            ("HEAD", "/rest/api/3/serverInfo"),
+            ("OPTIONS", "/rest/api/3/serverInfo"),
+            _UNMETERED - 1,
+            id="head-then-options",
+        ),
+    ],
+)
+def test_jira_counts_a_burst_per_method_and_route(
+    client, admin_h, frozen_burst, before, last, remaining
+):
+    """What one request leaves of the next one's window: ``remaining`` is what ``last`` reads after
+    ``before``, both sent with one credential in the same second."""
+    for method, path in (before, last):
+        body = {"jql": "project = ENG"} if method == "POST" else None
+        r = client.request(method, f"/atlassian{path}", headers=admin_h, json=body)
+    assert r.headers["x-ratelimit-remaining"] == str(remaining)
 
 
 @pytest.mark.parametrize(
-    "credential,path,status,quota",
+    "credential,method,path,status,quota",
     [
         *[
-            pytest.param(p.values[0], "/atlassian/rest/api/3/serverInfo", 200, False, id=p.id)
+            pytest.param(
+                p.values[0], "GET", "/atlassian/rest/api/3/serverInfo", 200, False, id=p.id
+            )
             for p in UNRESOLVABLE
         ],
-        # the no-endpoint 404 named the caller and counted nothing, measured with a credential
+        # the no-endpoint 404 named the caller and counted nothing, measured with a credential,
+        # and so did a 405 and a `HEAD` or an `OPTIONS` at a path Jira mounts nothing at
+        # (2026-09-30)
         pytest.param(
-            "admin", "/atlassian/rest/api/3/nopesuchroute", 404, False, id="admin-no-endpoint"
+            "admin",
+            "GET",
+            "/atlassian/rest/api/3/nopesuchroute",
+            404,
+            False,
+            id="admin-no-endpoint",
         ),
-        pytest.param("user", "/atlassian/rest/api/3/serverInfo", 200, True, id="user"),
+        pytest.param(
+            "admin", "HEAD", "/atlassian/rest/api/3/nopesuchroute", 404, False, id="admin-head-404"
+        ),
+        pytest.param(
+            "admin",
+            "OPTIONS",
+            "/atlassian/rest/api/3/nopesuchroute",
+            404,
+            False,
+            id="admin-options-404",
+        ),
+        pytest.param(
+            "admin", "POST", "/atlassian/rest/api/3/serverInfo", 405, False, id="admin-405"
+        ),
+        pytest.param(
+            "admin", "DELETE", "/atlassian/rest/api/3/serverInfo", 405, False, id="admin-delete-405"
+        ),
+        pytest.param(
+            "admin", "HEAD", "/atlassian/rest/api/3/serverInfo", 200, True, id="admin-head"
+        ),
+        pytest.param("user", "GET", "/atlassian/rest/api/3/serverInfo", 200, True, id="user"),
     ],
 )
 def test_jira_names_the_caller_and_counts_its_quota_once_a_credential_resolves(
-    client, admin_h, tokens, credential, path, status, quota
+    client, admin_h, tokens, credential, method, path, status, quota
 ):
-    """Measured 2026-09-22: every Jira answer carries the two ids, `x-arequestid` and the
-    `cache-control`; once the credential resolves it carries the caller's `x-aaccountid` too, and
-    the four rate-limit headers where a route answered. An anonymous request gets none of those
-    five. The account id is the one the corpus serves that user under
-    (``synth.atlassian_account_id``); the admin token, which has no address, gets the one seeded
-    from `"unknown"`."""
+    """Measured 2026-09-22 and 2026-09-30: every answer Jira's API gives carries the two ids,
+    `x-arequestid` and the `cache-control`; once the credential resolves it carries the caller's
+    `x-aaccountid` too, and the four rate-limit headers where a route answered. An anonymous
+    request gets none of those five, and a 405 gets the account id and none of the four. The
+    account id is the one the corpus serves that user under (``synth.atlassian_account_id``); the
+    admin token, which has no address, gets the one seeded from `"unknown"`."""
     from backlot import synth
 
     if credential == "admin":
@@ -3057,7 +3143,7 @@ def test_jira_names_the_caller_and_counts_its_quota_once_a_credential_resolves(
         account = synth.atlassian_account_id(email)
     else:
         headers, account = credential, None
-    r = client.get(path, headers=headers)
+    r = client.request(method, path, headers=headers)
     assert r.status_code == status
     assert r.headers["atl-request-id"] and r.headers["x-arequestid"]
     assert r.headers["cache-control"] == "no-cache, no-store, no-transform"

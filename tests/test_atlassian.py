@@ -2681,12 +2681,10 @@ def test_jira_answers_an_options_with_the_vendors_methods(client, admin_h, path,
 def test_confluence_answers_an_options_by_route_and_accept(
     client, admin_h, keys, path, accept, status, media_type
 ):
-    """Measured 2026-09-22: an `OPTIONS` on a Confluence route is 404 in the `errors` list its 405
-    uses, on every route but `search`. Measured 2026-09-30: `search` answers by `Accept`, the way
-    JAX-RS does — its WADL for `*/*` and `application/xml`, the same document as
-    `application/vnd.sun.wadl+xml` for a request with no `Accept` at all, and 204 with no body for
-    `application/json` and `text/html` — naming its three methods each time. The WADL is real's,
-    3016 bytes on a site whose origin is 31 characters, with this server's origin in its two
+    """An `OPTIONS` on a Confluence route is the 404 in the `errors` list its 405 uses
+    (``errors.atlassian.CONFLUENCE_OPTIONS_NOT_FOUND``), on every route but `search`, which answers
+    by `Accept` (``backlot.routers.atlassian._search_options``, where the measurement is) and
+    names its three methods each time. The WADL is real's, with this server's origin in its two
     URLs."""
     request = client.build_request("OPTIONS", path.format(**keys), headers=admin_h)
     if accept is None:
@@ -3004,9 +3002,8 @@ _JQL = "/atlassian/rest/api/3/search/jql"
 def test_jira_reports_the_burst_quota_of_the_route(
     client, admin_h, frozen_burst, method, path, policy, limit
 ):
-    """Real's quota is per method and route: 350 on most reads, 400 on an issue, 500 on a project
-    role and 200 on a `POST` to `search/jql`, and a `HEAD` or an `OPTIONS` reads 1000000000000.
-    `remaining` counts down inside the window the policy names."""
+    """Real's quota is per method and route (``backlot.routers.atlassian._JIRA_BURST_BUCKETS``,
+    where the measurement is), and `remaining` counts down inside the window the policy names."""
     body = {"jql": "project = ENG"} if method == "POST" else None
     first = client.request(method, path, headers=admin_h, json=body)
     assert first.headers["x-ratelimit-limit"] == str(limit)

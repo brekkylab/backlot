@@ -2874,10 +2874,22 @@ def test_confluence_answers_an_unclaimed_segment_in_the_shape_accept_asks_for(
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
 
 
+def _spelled(client, method):
+    """A client whose requests reach the app under ``method`` as spelled, which the test client's
+    transport would upper-case. No `with`: a second lifespan would overwrite the state `client`
+    started."""
+    from starlette.testclient import TestClient
+
+    async def app(scope, receive, send):
+        await client.app({**scope, "method": method}, receive, send)
+
+    return TestClient(app)
+
+
 _ANSWERS = [
     # (label, method, path, and for a method refused in front of the application its status and
-    # which layer refused it: the CDN, which adds nothing to a `TRACE` and the edge's two headers to
-    # a method it does not know, or the gateway, which adds its two ids beside those)
+    # which layer refused it: the CDN, which adds nothing to its 405 and its 400 and the edge's two
+    # headers to its 403, or the gateway, which adds its two ids beside those)
     ("jira 200", "GET", "/atlassian/rest/api/3/serverInfo", None),
     ("jira 404", "GET", "/atlassian/rest/api/3/nopesuchroute", None),
     ("jira 405", "POST", "/atlassian/rest/api/3/serverInfo", None),
@@ -2888,9 +2900,30 @@ _ANSWERS = [
     ("jira trace", "TRACE", "/atlassian/rest/api/3/serverInfo", (405, "cdn")),
     ("jira trace, unserved", "TRACE", "/atlassian/rest/api/3/nopesuchroute", (405, "cdn")),
     ("confluence trace", "TRACE", "/atlassian/wiki/rest/api/space", (405, "cdn")),
+    ("jira connect", "CONNECT", "/atlassian/rest/api/3/serverInfo", (405, "cdn")),
+    (
+        "confluence connect, unserved",
+        "CONNECT",
+        "/atlassian/wiki/rest/api/nopesuchroute",
+        (405, "cdn"),
+    ),
     ("jira propfind", "PROPFIND", "/atlassian/rest/api/3/serverInfo", (403, "cdn edge")),
     ("jira link, unserved", "LINK", "/atlassian/rest/api/3/nopesuchroute", (403, "cdn edge")),
     ("confluence search", "SEARCH", "/atlassian/wiki/rest/api/space", (403, "cdn edge")),
+    ("jira hyphen", "M-SEARCH", "/atlassian/rest/api/3/serverInfo", (403, "cdn edge")),
+    ("confluence underscore", "FOO_BAR", "/atlassian/wiki/rest/api/space", (403, "cdn edge")),
+    ("confluence nine letters", "ABCDEFGHI", "/atlassian/wiki/rest/api/space", (403, "cdn edge")),
+    ("jira ten letters", "ABCDEFGHIJ", "/atlassian/rest/api/3/serverInfo", (400, "cdn")),
+    ("confluence ten, registered", "MKACTIVITY", "/atlassian/wiki/rest/api/space", (400, "cdn")),
+    ("jira lower case", "get", "/atlassian/rest/api/3/serverInfo", (400, "cdn")),
+    (
+        "confluence mixed case, unserved",
+        "Get",
+        "/atlassian/wiki/rest/api/nopesuchroute",
+        (400, "cdn"),
+    ),
+    ("jira digit, unserved", "FOO1", "/atlassian/rest/api/3/nopesuchroute", (400, "cdn")),
+    ("confluence full stop", "G.T", "/atlassian/wiki/rest/api/space", (400, "cdn")),
     ("jira patch", "PATCH", "/atlassian/rest/api/3/serverInfo", (400, "gateway")),
     ("jira patch, unserved", "PATCH", "/atlassian/rest/api/3/nopesuchroute", (400, "gateway")),
     ("confluence patch", "PATCH", "/atlassian/wiki/rest/api/space", (405, "gateway")),
@@ -2914,19 +2947,20 @@ def test_atlassian_headers_ride_every_answer_but_the_front_doors(client, admin_h
     ``backlot.routers.atlassian.request_ids`` states and this pins — a corpus served twice answers
     the same id, and two different requests do not share one.
 
-    Real refuses a `TRACE` with 405 and none of these headers, and a method it does not know with
-    403 and `nosniff` and `x-xss-protection` alone, each its own HTML page with no `Allow` — on a
-    served route and on an unserved path alike, measured 2026-09-22 and 2026-09-30. Those are the
-    CDN's (`server: CloudFront`). The gateway behind it (`server: AtlassianEdge`) refuses a `PATCH`
-    itself, 400 on Jira and 405 on Confluence, and puts the two ids, `nosniff` and
-    `x-xss-protection` on it and none of the application's headers (measured 2026-09-30). Those
-    methods are left off the catch-all's methods for that reason, so what answers one here is the
-    refusing layer's status, and their rows hold that it advertises nothing: Starlette would
-    otherwise name the methods the catch-all takes.
+    Real's CDN (`server: CloudFront`) refuses `TRACE` and `CONNECT` with 405 and none of these
+    headers, and any other method it does not pass on by its spelling: 403 with `nosniff` and
+    `x-xss-protection` alone for one to nine of `A`-`Z`, `-` and `_`, and 400 with neither for any
+    other spelling. Each is its own HTML page with no `Allow`, on a served route and on an unserved
+    path alike (``errors.atlassian.SERVED_METHODS`` has the sweep, 2026-09-22 and 2026-09-30). The
+    gateway behind it (`server: AtlassianEdge`) refuses a `PATCH` itself, 400 on Jira and 405 on
+    Confluence, and puts the two ids, `nosniff` and `x-xss-protection` on it and none of the
+    application's headers (measured 2026-09-30). Those methods are left off the catch-all's methods
+    for that reason, so what answers one here is the refusing layer's status, and their rows hold
+    that it advertises nothing: Starlette would otherwise name the methods the catch-all takes.
     """
     answers = {}
     for label, method, path, refused in _ANSWERS:
-        r = client.request(method, path, headers=admin_h)
+        r = _spelled(client, method).request("GET", path, headers=admin_h)
         if refused is not None:
             status, layer = refused
             assert r.status_code == status, (label, r.text)

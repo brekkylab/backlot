@@ -2070,9 +2070,10 @@ def _refuse_negative_page_params(limit: int, start: int) -> None:
 #: Every method the catch-all below takes: the methods the application behind the real gateway ever
 #: sees (``errors.atlassian.SERVED_METHODS``) but `HEAD`, which
 #: ``backlot.main.answer_head_as_the_get_without_its_body`` turns into its GET before routing, so
-#: that none reaches a route. `TRACE` and `PATCH` are left off because the gateway refuses them
-#: before the application, so what answers one here is Starlette's 405, which
-#: ``errors.atlassian.method_not_allowed`` turns into the front door's answer.
+#: that none reaches a route. Every method outside `SERVED_METHODS` is left off because a layer in
+#: front of the application refuses it (see ``errors.atlassian.SERVED_METHODS``), so what answers
+#: one here is Starlette's 405, which ``errors.atlassian.method_not_allowed`` turns into that
+#: layer's answer.
 _UNMATCHED_METHODS = [m for m in errors_atlassian.SERVED_METHODS if m != "HEAD"]
 
 #: The Confluence resources whose unmatched sub-paths real answers with the product's HTML page
@@ -2629,8 +2630,8 @@ def sends_deprecation(path: str, status_code: int) -> bool:
 
 
 #: What the edge puts on every answer that passes it, a gateway's own refusal included, and on the
-#: CDN's 403 for a method it does not know, where its `TRACE` 405 carries neither: on all 78 of
-#: 2026-09-22, and on the Connect-token 403, a `PATCH` and twelve of those 403s measured 2026-09-30.
+#: CDN's 403, where its 405 and its 400 carry neither (``errors.atlassian.SERVED_METHODS`` has
+#: those): on all 78 of 2026-09-22, and on the Connect-token 403 and a `PATCH` measured 2026-09-30.
 _EDGE = {"x-content-type-options": "nosniff", "x-xss-protection": "1; mode=block"}
 
 
@@ -2648,10 +2649,10 @@ def vendor_headers(request: Request, status_code: int) -> dict[str, str]:
     and a `cache-control`, its API's or the web app's page by page, and once a credential resolves
     the caller's own account id, with the rate-limit four where a route answers or an `OPTIONS` asks
     at its path. The gateway's own refusals (the Connect-token 403 and a `PATCH`) carry the two ids
-    and :data:`_EDGE` and nothing else; the CDN's carry :data:`_EDGE` alone, or nothing on a
-    `TRACE`. Confluence: the millisecond clock it stamps every answer with, and the deprecation trio
-    where the v1 services send it. Measured on Atlassian Cloud 2026-09-22 and 2026-09-30; what is
-    deliberately not here is in `backlot.main.report_atlassian_headers`.
+    and :data:`_EDGE` and nothing else; the CDN's carry :data:`_EDGE` on its 403 and nothing on its
+    405 or its 400. Confluence: the millisecond clock it stamps every answer with, and the
+    deprecation trio where the v1 services send it. Measured on Atlassian Cloud 2026-09-22 and
+    2026-09-30; what is deliberately not here is in `backlot.main.report_atlassian_headers`.
     """
     path = request.url.path
     if request.method not in errors_atlassian.SERVED_METHODS:
@@ -2659,8 +2660,8 @@ def vendor_headers(request: Request, status_code: int) -> dict[str, str]:
         # measurement is on ``errors.atlassian.SERVED_METHODS``.
         if request.method in errors_atlassian.GATEWAY_REFUSED:
             return _gateway_headers(request)
-        # the CDN's own: nothing on its `TRACE` 405, the edge's two on its 403
-        return {} if request.method in errors_atlassian.CDN_405 else dict(_EDGE)
+        # the CDN's own: the edge's two on its 403, nothing on its 405 or its 400
+        return dict(_EDGE) if errors_atlassian.cdn_forbids(request.method) else {}
     headers = {**request_ids(request), **_EDGE}
     if errors_atlassian.is_confluence(path):
         headers["x-confluence-request-time"] = str(int(time.time() * 1000))

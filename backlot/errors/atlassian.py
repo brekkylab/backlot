@@ -441,8 +441,9 @@ def method_not_allowed(path: str, method: str) -> AtlassianError:
     `nopesuchroute` alike. Starlette would compute one there from the catch-all
     (``backlot.routers.atlassian.unmatched_path``), which takes every method it lists on every path
     it owns, so what it would advertise is neither the vendor's set nor anything Backlot serves.
-    The front door answers Jira's `PATCH` with 400 and a method the CDN does not know with 403
-    rather than 405 (:data:`SERVED_METHODS`), which :func:`_refused_status` carries.
+    The front door answers Jira's `PATCH` with 400, and a method the CDN refuses by its spelling
+    with 403 or 400, rather than 405 (:data:`SERVED_METHODS`), which :func:`_refused_status`
+    carries.
     """
     status = _refused_status(path, method)
     if is_confluence(path):
@@ -513,24 +514,38 @@ def jira_options_allow(path: str) -> str | None:
 
 #: The methods the application behind the gateway ever sees. Two layers in front of it refuse the
 #: rest, each with its own HTML page and no `Allow`, on a served route and on an unserved path
-#: alike. The CDN (`server: CloudFront`) answers a `TRACE` with 405 and none of the headers below,
-#: and any other method it does not know — `PROPFIND`, `LINK`, `SEARCH` and an invented `FOO`, each
-#: on `serverInfo`, `space` and `nopesuchroute` — with 403 and `x-content-type-options` and
-#: `x-xss-protection` alone (measured 2026-09-22 and 2026-09-30). The gateway behind it
+#: alike: measured 2026-09-30 with the 40 methods of the IANA registry on `serverInfo`, `space` and
+#: `nopesuchroute` under both mounts, and with `AB` followed by each of the 94 ASCII characters
+#: from `!` to `~` on `serverInfo` and `space` (and `TRACE` on 2026-09-22 too). The CDN
+#: (`server: CloudFront`) answers `TRACE` and `CONNECT` with 405 and none of the headers below
+#: (:data:`CDN_405`). Any other method it answers by spelling (:func:`cdn_forbids`): one to nine
+#: characters of `A`-`Z`, `-` and `_` — `PROPFIND`, `QUERY`, `M-SEARCH`, `ABCDEFGHI` — with 403 and
+#: `x-content-type-options` and `x-xss-protection` alone, and every other spelling with 400 and
+#: neither — ten characters or more (`MKACTIVITY`, `VERSION-CONTROL`), a lower-case letter (`get`,
+#: `Get`), a digit (`FOO1`) or any other punctuation (`G.T`). The gateway behind it
 #: (`server: AtlassianEdge`) answers a `PATCH` — Jira's nginx with 400 on `nopesuchroute`,
 #: `serverInfo` and an issue, Confluence's openresty with 405 on `space` and `nopesuchroute` — and
 #: puts its two ids, `nosniff` and `x-xss-protection` on that refusal and none of the application's
-#: headers (measured 2026-09-30, :data:`GATEWAY_REFUSED`). So a method outside this set gets no
-#: vendor `Allow` below and none of the application's headers in
-#: ``backlot.routers.atlassian.vendor_headers``; the body it gets here is still this module's JSON,
-#: where real's is that HTML page.
+#: headers (:data:`GATEWAY_REFUSED`). So a method outside this set gets no vendor `Allow` below and
+#: none of the application's headers in ``backlot.routers.atlassian.vendor_headers``; the body it
+#: gets here is still this module's JSON, where real's is that HTML page. Over `backlot.serve()`,
+#: uvicorn's parser answers a method it has no name for (`FOO`, `get`) with its own 400 before the
+#: application sees it; the ones it names (`CONNECT`, `PROPFIND`, `MKACTIVITY`) reach the rule here.
 SERVED_METHODS = ("GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD")
 
 #: The methods the gateway refuses itself, rather than the CDN in front of it.
 GATEWAY_REFUSED = ("PATCH",)
 
-#: The one method the CDN refuses with 405 rather than 403.
-CDN_405 = ("TRACE",)
+#: The methods the CDN refuses with 405, where it refuses the others by their spelling.
+CDN_405 = ("TRACE", "CONNECT")
+
+_CDN_403_SPELLING = re.compile(r"[A-Z_-]{1,9}")
+
+
+def cdn_forbids(method: str) -> bool:
+    """Whether the CDN answers ``method``, one it does not pass on, with its 403 and the edge's two
+    headers rather than its 405 or its 400 (:data:`SERVED_METHODS` has the measurement)."""
+    return method not in CDN_405 and _CDN_403_SPELLING.fullmatch(method) is not None
 
 
 def _refused_status(path: str, method: str) -> int:
@@ -540,7 +555,7 @@ def _refused_status(path: str, method: str) -> int:
         return 405
     if method in GATEWAY_REFUSED:
         return 405 if is_confluence(path) else 400
-    return 403
+    return 403 if cdn_forbids(method) else 400
 
 
 def no_endpoint(path: str, method: str) -> AtlassianError:

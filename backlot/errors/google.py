@@ -355,8 +355,8 @@ def bad_system_parameter(name: str, value: str) -> GoogleError:
 def xgafv(query: Mapping[str, str] | None) -> str | None:
     """The `$.xgafv` a request sent, or ``None``. Starlette's ``QueryParams.get`` answers the LAST
     repeat, which is the one real reads -- and `$.xgafv` is the one system parameter that works
-    that way. Measured 2026-09-15 on Sheets: `1&2` carries no `errors[]` where `2&1` does. Which
-    end every other measured parameter is read from is :func:`first_repeat`'s table."""
+    that way. The pair that measured it, and the end every other measured parameter is read from,
+    are :func:`first_repeat`'s table."""
     return None if query is None else query.get(XGAFV)
 
 

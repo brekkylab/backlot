@@ -3,7 +3,7 @@
   "endpoints": [
     "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json"
   ],
-  "measured": "2026-09-16",
+  "measured": "2026-09-29",
   "acknowledged": [
     {
       "kind": "extra_operation",
@@ -59,24 +59,6 @@
       "kind": "missing_operation",
       "severity": "gap",
       "path": "DELETE /enterprises/{}/copilot/policies/coding_agent/organizations",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /enterprises/{}/teams/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /enterprises/{}/teams/{}/memberships/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /enterprises/{}/teams/{}/organizations/{}",
       "detail": "the vendor serves it; Backlot does not"
     },
     {
@@ -467,6 +449,12 @@
       "kind": "missing_operation",
       "severity": "gap",
       "path": "DELETE /orgs/{}/projectsV2/{}/items/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "DELETE /orgs/{}/properties/installations/values/{}",
       "detail": "the vendor serves it; Backlot does not"
     },
     {
@@ -869,6 +857,12 @@
       "kind": "missing_operation",
       "severity": "gap",
       "path": "DELETE /repos/{}/{}/issues/{}/reactions/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "DELETE /repos/{}/{}/issues/{}/relates_to/{}",
       "detail": "the vendor serves it; Backlot does not"
     },
     {
@@ -1390,48 +1384,6 @@
     {
       "kind": "missing_operation",
       "severity": "gap",
-      "path": "GET /enterprises/{}/members/{}/teams",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /enterprises/{}/teams",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /enterprises/{}/teams/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /enterprises/{}/teams/{}/memberships",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /enterprises/{}/teams/{}/memberships/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /enterprises/{}/teams/{}/organizations",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /enterprises/{}/teams/{}/organizations/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
       "path": "GET /events",
       "detail": "the vendor serves it; Backlot does not"
     },
@@ -1812,7 +1764,7 @@
       "severity": "gap",
       "path": "GET /orgs/{}/actions/policies",
       "detail": "the vendor serves it; Backlot does not",
-      "note": "No corpus record states an organization's or repository's workflow-execution policy, so this family of ten routes — list/create at the org and repo level, get/update/delete per policy id — 404 rather than answer an invented enforcement state, and six of the ten are writes besides. Read from the vendor's published OpenAPI document (github/rest-api-description) on 2026-09-16; each `actions-policy` object carries `enforcement`, `conditions` and `rules` describing workflow-execution restriction, an org/repo admin setting rather than corpus content."
+      "note": "No corpus record states an organization's or repository's workflow-execution policy, so this family of ten routes \u2014 list/create at the org and repo level, get/update/delete per policy id \u2014 404 rather than answer an invented enforcement state, and six of the ten are writes besides. Read from the vendor's published OpenAPI document (github/rest-api-description) on 2026-09-16; each `actions-policy` object carries `enforcement`, `conditions` and `rules` describing workflow-execution restriction, an org/repo admin setting rather than corpus content."
     },
     {
       "kind": "missing_operation",
@@ -2568,6 +2520,18 @@
     {
       "kind": "missing_operation",
       "severity": "gap",
+      "path": "GET /orgs/{}/properties/installations",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /orgs/{}/properties/installations/schema",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
       "path": "GET /orgs/{}/properties/schema",
       "detail": "the vendor serves it; Backlot does not"
     },
@@ -2804,6 +2768,13 @@
       "severity": "gap",
       "path": "GET /repos/{}/{}/actions/jobs/{}/logs",
       "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /repos/{}/{}/actions/jobs/{}/steps/{}/logs",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Published in GitHub's description (`actions/workflow-jobs`, \"Download step logs for a workflow run job\", read 2026-09-29) but not answered: measured against api.github.com on 2026-09-29 with a token, `steps/1/logs` through `steps/3/logs` of a completed job answer 404 `Not Found` on a repository the token administers, while the same job's `logs` answers 302, and a public repository's job answers the same way for its first two steps."
     },
     {
       "kind": "missing_operation",
@@ -3835,6 +3806,13 @@
     {
       "kind": "missing_operation",
       "severity": "gap",
+      "path": "GET /repos/{}/{}/issues/{}/relates_to",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "No corpus states that one issue relates to another: no field in `backlot/schemas/github.schema.json` links an issue record to a second issue. GitHub's other issue relationships (`dependencies/blocked_by`, `dependencies/blocking`, `sub_issues`, `parent`) are acknowledged gaps in this file as well. GitHub's description, read 2026-09-29, publishes three `relates_to` operations under `issues/issues`: this list, the `POST` that adds a related issue and the `DELETE` on `relates_to/{issue_id}` that removes one. Measured against api.github.com on 2026-09-29 with a token, the list answers 200 `[]` for two issues of a public repository that relate to none."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
       "path": "GET /repos/{}/{}/issues/{}/sub_issues",
       "detail": "the vendor serves it; Backlot does not"
     },
@@ -4077,12 +4055,6 @@
       "severity": "gap",
       "path": "GET /repos/{}/{}/pulls?head",
       "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /repos/{}/{}/readme/{}",
-      "detail": "the vendor serves it; Backlot does not"
     },
     {
       "kind": "missing_operation",
@@ -5055,12 +5027,6 @@
     {
       "kind": "missing_operation",
       "severity": "gap",
-      "path": "PATCH /enterprises/{}/teams/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
       "path": "PATCH /gists/{}",
       "detail": "the vendor serves it; Backlot does not"
     },
@@ -5171,6 +5137,18 @@
       "kind": "missing_operation",
       "severity": "gap",
       "path": "PATCH /orgs/{}/projectsV2/{}/items/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "PATCH /orgs/{}/properties/installations/values",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "PATCH /orgs/{}/properties/installations/values/{}",
       "detail": "the vendor serves it; Backlot does not"
     },
     {
@@ -5531,36 +5509,6 @@
     {
       "kind": "missing_operation",
       "severity": "gap",
-      "path": "POST /enterprises/{}/teams",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /enterprises/{}/teams/{}/memberships/add",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /enterprises/{}/teams/{}/memberships/remove",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /enterprises/{}/teams/{}/organizations/add",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /enterprises/{}/teams/{}/organizations/remove",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
       "path": "POST /gists",
       "detail": "the vendor serves it; Backlot does not"
     },
@@ -5856,6 +5804,12 @@
       "kind": "missing_operation",
       "severity": "gap",
       "path": "POST /orgs/{}/projectsV2/{}/views",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /orgs/{}/properties/installations",
       "detail": "the vendor serves it; Backlot does not"
     },
     {
@@ -6269,6 +6223,12 @@
     {
       "kind": "missing_operation",
       "severity": "gap",
+      "path": "POST /repos/{}/{}/issues/{}/relates_to",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
       "path": "POST /repos/{}/{}/issues/{}/sub_issues",
       "detail": "the vendor serves it; Backlot does not"
     },
@@ -6666,18 +6626,6 @@
       "kind": "missing_operation",
       "severity": "gap",
       "path": "PUT /enterprises/{}/dependabot/repository-access/default-level",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PUT /enterprises/{}/teams/{}/memberships/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PUT /enterprises/{}/teams/{}/organizations/{}",
       "detail": "the vendor serves it; Backlot does not"
     },
     {

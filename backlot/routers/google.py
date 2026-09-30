@@ -2129,8 +2129,7 @@ def _sheets_grid(content: str | None) -> list[list[str]]:
 # Measured on the live API, all on `values.get` unless noted:
 #
 #   fields           a partial-response mask; see `_gmask`
-#   prettyPrint      DEFAULT TRUE -- the body is 2-space indented unless `false` or `0` turns it off,
-#                    and an unparseable value is treated as true rather than refused
+#   prettyPrint      DEFAULT TRUE -- indented unless `false` or `0`; see `_sheets_respond`
 #   alt              `json` only; `media` is 400 "Unsupported alt type ... for non byte stream
 #                    request." and `zzz` 400 "Invalid value ... for query parameter 'alt'". `proto`
 #                    is a third answer real gives and this module does not -- see `_sheets_respond`

@@ -4474,7 +4474,7 @@ def test_an_empty_cell_carries_no_value_object(gc, gh, book):
         # the identical raw value for every cell that is not a formula
         ("UNFORMATTED_VALUE", [["EMEA", 12, True]]),
         ("FORMULA", [["EMEA", 12, True]]),
-        # measured 2026-09-23 on a number cell: a repeated option is read from its LAST repeat
+        # a repeated option is read from its LAST repeat (gerr.first_repeat)
         (["FORMATTED_VALUE", "UNFORMATTED_VALUE"], [["EMEA", 12, True]]),
         (["UNFORMATTED_VALUE", "FORMATTED_VALUE"], [["EMEA", "12", "TRUE"]]),
     ],
@@ -4777,21 +4777,17 @@ def test_a_fields_mask_naming_no_field_is_refused(gc, gh, book, mask):
     ]
 
 
-def test_pretty_print_indents_by_default_and_is_compact_to_the_byte_when_off(gc, gh, book):
-    """Measured to the byte: indented two spaces and newline-terminated by default; compact with
-    no space after `:` or `,` and no trailing newline when off. An unparseable value is treated as
-    true rather than refused, unlike the other booleans."""
-    url = f"/sheets/v4/spreadsheets/{book}/values/Summary!A1:A1"
-    assert gc.get(url, headers=gh).text.endswith("\n")
-    assert '"range": "Summary!A1"' in gc.get(url, headers=gh).text
-    off = gc.get(url, headers=gh, params={"prettyPrint": "false"}).text
-    assert off.startswith('{"range":"Summary!A1"') and not off.endswith("\n")
-    assert gc.get(url, headers=gh, params={"prettyPrint": "NOPE"}).status_code == 200
+_A1_INDENTED = (
+    b'{\n  "range": "Summary!A1",\n  "majorDimension": "ROWS",\n  "values": [\n    [\n'
+    b'      "Region"\n    ]\n  ]\n}\n'
+)
+_A1_COMPACT = b'{"range":"Summary!A1","majorDimension":"ROWS","values":[["Region"]]}'
 
 
 @pytest.mark.parametrize(
     "value, compact",
     [
+        (None, False),
         ("false", True),
         ("0", True),
         ("FALSE", False),
@@ -4803,15 +4799,19 @@ def test_pretty_print_indents_by_default_and_is_compact_to_the_byte_when_off(gc,
         ("00", False),
         (" false", False),
         ("", False),
+        ("NOPE", False),
     ],
 )
-def test_pretty_print_is_turned_off_by_two_spellings_matched_exactly(gc, gh, book, value, compact):
-    """Pins the spellings `_sheets_respond`'s comment records: an exact match on `false` and `0`,
-    no casefolding, and not the Sheets boolean set."""
+def test_pretty_print_indents_by_default_and_is_compact_to_the_byte_when_off(
+    gc, gh, book, value, compact
+):
+    """Pins `gerr.respond`'s two renderings to the byte: compact at the spellings
+    `_sheets_respond` records, indented with no parameter and at every other value, and a 200
+    whatever the value, `NOPE` included."""
     url = f"/sheets/v4/spreadsheets/{book}/values/Summary!A1:A1"
-    r = gc.get(url, headers=gh, params={"prettyPrint": value})
+    r = gc.get(url, headers=gh, params={} if value is None else {"prettyPrint": value})
     assert r.status_code == 200
-    assert (not r.text.startswith("{\n")) is compact
+    assert r.content == (_A1_COMPACT if compact else _A1_INDENTED)
 
 
 @pytest.mark.parametrize(

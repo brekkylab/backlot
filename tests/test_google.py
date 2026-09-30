@@ -717,63 +717,56 @@ def test_drive_not_found_names_the_file_id(client, admin_h):
 
 
 @pytest.mark.parametrize(
-    "name, caller",
+    "name, caller, mime, answer",
     [
-        ("Brand", None),
-        ("Whitepaper", None),
-        (None, None),
-        # a spreadsheet the scoped token cannot see, which with a `mimeType` is its 404
-        ("Q1 Revenue Model", "mia@acme.com"),
+        # no `mimeType`: a document, a PDF, a file that does not exist, and a spreadsheet the scoped
+        # token cannot see, which with a `mimeType` is its 404
+        ("Brand", None, None, "required"),
+        ("Whitepaper", None, None, "required"),
+        (None, None, None, "required"),
+        ("Q1 Revenue Model", "mia@acme.com", None, "required"),
+        # a format the spreadsheet does not export to
+        ("Q1 Revenue Model", None, "text/plain", "unsupported"),
+        ("Q1 Revenue Model", None, "bogus/type", "unsupported"),
+        ("Q1 Revenue Model", None, "application/vnd.google-apps.document", "unsupported"),
+        ("Q1 Revenue Model", None, "", "unsupported"),
+        ("Q1 Revenue Model", None, "text/csv ", "unsupported"),
+        ("Q1 Revenue Model", None, "text/csv;charset=utf-8", "unsupported"),
+        # a format its type exports to, in any case, and the one it answers as
+        ("Q1 Revenue Model", None, "text/csv", "text/csv"),
+        ("Q1 Revenue Model", None, "TEXT/CSV", "text/csv"),
+        ("Q1 Revenue Model", None, "Text/Csv", "text/csv"),
+        ("Brand", None, "text/markdown", "text/markdown"),
+        ("Brand", None, "TEXT/MARKDOWN", "text/markdown"),
     ],
 )
-def test_drive_export_requires_mime_type_with_googles_wording(
-    client, admin_h, tokens, name, caller
+def test_drive_export_answers_a_mime_type_the_way_real_does(
+    client, admin_h, tokens, name, caller, mime, answer
 ):
-    """Asked of a document, of a PDF, of a file that does not exist and of one the caller cannot
-    see, in the order `drive_files_export`'s docstring records."""
+    """The order and the matching `drive_files_export`'s docstring records. `required` is the
+    absent-`mimeType` refusal, `unsupported` the one `gerr.unsupported_conversion` records, and a
+    format the export that format answers, served under the `mimeType` exactly as sent. With a
+    `mimeType`, a file that does not exist is its 404. The TSV spelling is
+    `test_tsv_export_reserialises_the_grid_rather_than_serving_content`'s, over a grid."""
     fid = _drive_find(client, admin_h, name)["id"] if name else "nosuchfileid123"
     headers = {"Authorization": f"Bearer {tokens[caller]}"} if caller else admin_h
     url = f"/drive/v3/files/{fid}/export"
-    if caller:
-        assert client.get(url, headers=headers, params={"mimeType": "text/csv"}).status_code == 404
-    e = _gerr(client.get(url, headers=headers))
-    assert e["code"] == 400 and e["message"] == "Required parameter: mimeType"
-    assert e["errors"][0] == {
-        "message": "Required parameter: mimeType",
-        "domain": "global",
-        "reason": "required",
-        "location": "mimeType",
-        "locationType": "parameter",
-    }
-
-
-@pytest.mark.parametrize(
-    "name, mime, served",
-    [
-        ("Q1 Revenue Model", "text/plain", None),
-        ("Q1 Revenue Model", "bogus/type", None),
-        ("Q1 Revenue Model", "application/vnd.google-apps.document", None),
-        ("Q1 Revenue Model", "", None),
-        ("Q1 Revenue Model", "text/csv ", None),
-        ("Q1 Revenue Model", "text/csv;charset=utf-8", None),
-        ("Q1 Revenue Model", "text/csv", "text/csv"),
-        ("Q1 Revenue Model", "TEXT/CSV", "text/csv"),
-        ("Q1 Revenue Model", "Text/Csv", "text/csv"),
-        ("Brand", "text/markdown", "text/markdown"),
-        ("Brand", "TEXT/MARKDOWN", "text/markdown"),
-    ],
-)
-def test_drive_export_serves_a_format_its_type_exports_to_under_the_name_asked(
-    client, admin_h, name, mime, served
-):
-    """`None` is the refusal `gerr.unsupported_conversion` records, and a format the export that
-    format answers, matched without regard to case and served under the `mimeType` exactly as
-    sent, as `drive_files_export`'s docstring records. A file that does not exist is its 404
-    whatever it asks for. The TSV spelling is
-    `test_tsv_export_reserialises_the_grid_rather_than_serving_content`'s, over a grid."""
-    url = f"/drive/v3/files/{_drive_find(client, admin_h, name)['id']}/export"
-    r = client.get(url, headers=admin_h, params={"mimeType": mime})
-    if served is None:
+    r = client.get(url, headers=headers, params={} if mime is None else {"mimeType": mime})
+    if answer == "required":
+        e = _gerr(r)
+        assert e["code"] == 400 and e["message"] == "Required parameter: mimeType"
+        assert e["errors"][0] == {
+            "message": "Required parameter: mimeType",
+            "domain": "global",
+            "reason": "required",
+            "location": "mimeType",
+            "locationType": "parameter",
+        }
+        if caller:
+            ok = client.get(url, headers=headers, params={"mimeType": "text/csv"})
+            assert ok.status_code == 404
+        return
+    if answer == "unsupported":
         e = _gerr(r)
         assert e["code"] == 400
         assert e["errors"] == [
@@ -788,7 +781,7 @@ def test_drive_export_serves_a_format_its_type_exports_to_under_the_name_asked(
     else:
         assert r.status_code == 200, r.text
         assert r.headers["content-type"] == mime
-        assert r.text == client.get(url, headers=admin_h, params={"mimeType": served}).text
+        assert r.text == client.get(url, headers=admin_h, params={"mimeType": answer}).text
     missing = client.get(
         "/drive/v3/files/nosuchfileid123/export", headers=admin_h, params={"mimeType": mime}
     )

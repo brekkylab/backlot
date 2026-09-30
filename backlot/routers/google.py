@@ -3718,9 +3718,11 @@ def _drive_int32(raw: str) -> int:
 
 
 def _drive_page_size_in_range(sizes: list[int], top: int) -> None:
-    """Refuse one `pageSize` outside 1 to ``top`` with real's range sentence. Measured 2026-09-23:
-    ``top`` is 1000 on `files.list` and 100 on `permissions.list` and `drives.list`, `0` and
-    ``top + 1`` refused alike, and two or more values are not range-checked at all."""
+    """Refuse one `pageSize` outside 1 to ``top`` with real's range sentence, which names the value
+    as an int. Measured 2026-09-23, and on each of the three routes again 2026-09-30: ``top`` is
+    1000 on `files.list` and 100 on `permissions.list` and `drives.list`; `0`, `-1`, `-0` (named
+    `0`), ``top + 1`` and `2147483647` are refused alike; and two or more values are not
+    range-checked at all."""
     if len(sizes) == 1 and not 1 <= sizes[0] <= top:
         raise gerr.invalid_parameter(
             "page_size",

@@ -824,7 +824,7 @@ def test_drive_export_answers_a_mime_type_the_way_real_does(
 def test_drive_a_listing_takes_an_int32_page_size_from_1_to_its_top(
     client, admin_h, path, top, values, kind, named
 ):
-    """The values `_INT32` and `_drive_page_size_in_range` record, on each route, each value alone
+    """The rules `_INT32` and `_drive_page_size_in_range` record, on each route, each value alone
     unless the row lists two. `range` is the range refusal naming the value as an int, `int32` the
     proto layer's `TYPE_INT32` one quoting it, and `size` a 200, which on `files.list` lists that
     many files; `permissions.list` and `drives.list` declare a page size and read none here."""

@@ -2791,7 +2791,8 @@ def test_jira_gateway_refuses_what_it_will_not_run_for_a_caller_it_cannot_name(
 ):
     """Measured on 2026-09-30: an operation whose `security` in Jira's document has no `{}` is
     refused before Jira runs it, for a caller with no credential, the Basic pair it rejects or an
-    unknown scheme, with `401 text/html` `Client must be authenticated to access this resource.`,
+    unknown scheme, with the 401 `Client must be authenticated to access this resource.` (in
+    `text/html` for the test client's `Accept: */*`, ``errors.atlassian.GATEWAY_UNAUTHENTICATED``),
     `WWW-Authenticate: OAuth realm` naming the site and `X-Frame-Options: SAMEORIGIN`
     (``scripts/gen_atlassian_gateway.py`` has the sweep). An `OPTIONS` gets the same 401 on any path
     Jira publishes something at, an unreadable bearer included, and on a path it publishes nothing
@@ -2947,16 +2948,11 @@ def test_atlassian_headers_ride_every_answer_but_the_front_doors(client, admin_h
     ``backlot.routers.atlassian.request_ids`` states and this pins — a corpus served twice answers
     the same id, and two different requests do not share one.
 
-    Real's CDN (`server: CloudFront`) refuses `TRACE` and `CONNECT` with 405 and none of these
-    headers, and any other method it does not pass on by its spelling: 403 with `nosniff` and
-    `x-xss-protection` alone for one to nine of `A`-`Z`, `-` and `_`, and 400 with neither for any
-    other spelling. Each is its own HTML page with no `Allow`, on a served route and on an unserved
-    path alike (``errors.atlassian.SERVED_METHODS`` has the sweep, 2026-09-22 and 2026-09-30). The
-    gateway behind it (`server: AtlassianEdge`) refuses a `PATCH` itself, 400 on Jira and 405 on
-    Confluence, and puts the two ids, `nosniff` and `x-xss-protection` on it and none of the
-    application's headers (measured 2026-09-30). Those methods are left off the catch-all's methods
-    for that reason, so what answers one here is the refusing layer's status, and their rows hold
-    that it advertises nothing: Starlette would otherwise name the methods the catch-all takes.
+    A method the CDN (`server: CloudFront`) or the gateway behind it (`server: AtlassianEdge`)
+    refuses before the application gets that layer's status and headers and no `Allow`, measured
+    at ``errors.atlassian.SERVED_METHODS``; each such row names the layer. Those methods are left
+    off the catch-all's methods for that reason, and their rows hold that what answers one here
+    advertises nothing: Starlette would otherwise name the methods the catch-all takes.
     """
     answers = {}
     for label, method, path, refused in _ANSWERS:

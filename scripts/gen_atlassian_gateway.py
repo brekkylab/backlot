@@ -5,7 +5,7 @@
     python scripts/gen_atlassian_gateway.py --check    # exit 1 if the file is stale
 
 The file lists the Jira operations the gateway refuses before Jira runs them when the caller has
-no credential it resolves: `401 text/html` `Client must be authenticated to access this resource.`
+no credential it resolves: the 401 `Client must be authenticated to access this resource.`
 Which operations those are is read off each operation's `security` in the documents
 ``backlot.fidelity.comparisons.COMPARISONS["jira"]`` names: an operation whose requirements do not
 include the empty one, ``{}``, is refused; one that does is run, and what it answers then is the

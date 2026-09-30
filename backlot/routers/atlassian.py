@@ -2292,8 +2292,9 @@ def _options_answer(request: Request) -> Response:
     on an issue, `POST` on `field` — which Backlot serves none of: the header describes the
     endpoint a client is asking about, so it is copied rather than derived from what this server
     happens to implement (`errors.atlassian.jira_options_allow`). Confluence answers 404 in the
-    `errors` list its 405 uses, on every route measured but `search` (:func:`_search_options`).
-    Measured on Atlassian Cloud, 2026-09-22, over all 24 routes here.
+    `errors` list its 405 uses, on every route measured but `search` (:func:`_search_options`), for
+    the `Accept` values ``errors.atlassian.CONFLUENCE_OPTIONS_NOT_FOUND`` names. Measured on
+    Atlassian Cloud, 2026-09-22, over all 24 routes here.
 
     Jira's 200 is for a caller whose credential resolves. Anyone else — no credential, the Basic
     pair it rejects, an unknown scheme, and here an unreadable bearer too, which a `GET` draws the

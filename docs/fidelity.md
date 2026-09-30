@@ -304,10 +304,11 @@ the `HEAD` declares about the body's length is a second such gap: which Atlassia
 it is `backlot.errors.atlassian.head_content_length`'s to say, and `tests/test_atlassian.py` is the
 record.
 
-An `OPTIONS` is a third. Jira answers 200 with the methods that route takes, and Confluence a 404 on
-every route but `search`, which answers by `Accept`. No document here declares any of it — real's
-own description has no `options` operation and neither does Backlot's — so the two `Allow` tables
-in `backlot.errors.atlassian` and the tests beside them are what hold them.
+An `OPTIONS` is a third. Jira answers a caller it can name 200 with the methods that route takes,
+and Confluence answers a JSON, wildcard or absent `Accept` with a 404 on every route but `search`,
+which answers by `Accept` too. No document here declares any of it — real's own description has no
+`options` operation and neither does Backlot's — so the two `Allow` tables in
+`backlot.errors.atlassian` and the tests beside them are what hold them.
 
 The five `x-ratelimit-*` headers are the same kind of gap. Every `/github` answer carries them
 (`backlot.main.report_github_rate_limit`), as every answer real gives does, but the comparison reads

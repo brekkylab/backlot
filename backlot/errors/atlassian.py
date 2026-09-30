@@ -62,12 +62,14 @@ def connect_token_body() -> dict:
     return {"error": CONNECT_TOKEN_UNREADABLE}
 
 
-# What the gateway answers a request with no credential it resolves — none, a Basic pair it read
-# and rejected, an unknown scheme, and on an `OPTIONS` an unreadable bearer too — for an operation
-# it will not run anonymously: `401 text/html`, this line and nothing else, 53 bytes, with
+# What the gateway answers a request with no credential it resolves — none, a Basic pair it read and
+# rejected, an unknown scheme, and on an `OPTIONS` an unreadable bearer too — for an operation it
+# will not run anonymously: 401, this line and nothing else, 53 bytes, with
 # `WWW-Authenticate: OAuth realm="<the site, percent-encoded>"` and `X-Frame-Options: SAMEORIGIN`.
 # Which operations those are is ``backlot.routers.atlassian.unmatched_path``'s to say; measured on
-# Jira Cloud, 2026-09-30.
+# Jira Cloud, 2026-09-30. The media type follows `Accept` there: `text/html;charset=UTF-8` for
+# `*/*`, the one this server sends whatever `Accept` says, `text/plain` with no `Accept` and
+# `application/json` for `application/json` (on `myself` and `OPTIONS serverInfo`, the same day).
 GATEWAY_UNAUTHENTICATED = "Client must be authenticated to access this resource."
 
 # Confluence's second anonymous refusal, which a few of its services give instead of
@@ -517,12 +519,12 @@ def jira_options_allow(path: str) -> str | None:
 #: alike: measured 2026-09-30 with the 40 methods of the IANA registry on `serverInfo`, `space` and
 #: `nopesuchroute` under both mounts, and with `AB` followed by each of the 94 ASCII characters
 #: from `!` to `~` on `serverInfo` and `space` (and `TRACE` on 2026-09-22 too). The CDN
-#: (`server: CloudFront`) answers `TRACE` and `CONNECT` with 405 and none of the headers below
-#: (:data:`CDN_405`). Any other method it answers by spelling (:func:`cdn_forbids`): one to nine
-#: characters of `A`-`Z`, `-` and `_` — `PROPFIND`, `QUERY`, `M-SEARCH`, `ABCDEFGHI` — with 403 and
-#: `x-content-type-options` and `x-xss-protection` alone, and every other spelling with 400 and
-#: neither — ten characters or more (`MKACTIVITY`, `VERSION-CONTROL`), a lower-case letter (`get`,
-#: `Get`), a digit (`FOO1`) or any other punctuation (`G.T`). The gateway behind it
+#: (`server: CloudFront`) answers `TRACE` and `CONNECT` with 405 and neither
+#: `x-content-type-options` nor `x-xss-protection` (:data:`CDN_405`). Any other method it answers
+#: by spelling (:func:`cdn_forbids`): one to nine characters of `A`-`Z`, `-` and `_` — `PROPFIND`,
+#: `QUERY`, `M-SEARCH`, `ABCDEFGHI` — with 403 and those two alone, and the other spellings measured
+#: with 400 and neither — ten characters or more (`MKACTIVITY`, `VERSION-CONTROL`), a lower-case
+#: letter (`get`, `Get`), a digit (`FOO1`) or any other punctuation (`G.T`). The gateway behind it
 #: (`server: AtlassianEdge`) answers a `PATCH` — Jira's nginx with 400 on `nopesuchroute`,
 #: `serverInfo` and an issue, Confluence's openresty with 405 on `space` and `nopesuchroute` — and
 #: puts its two ids, `nosniff` and `x-xss-protection` on that refusal and none of the application's
@@ -628,7 +630,9 @@ HTML_NOT_FOUND = (
 
 #: What an `OPTIONS` on a Confluence route answers: the 404 above in the `errors` list its 405 uses,
 #: on every route measured 2026-09-22 but `search`, which answers by `Accept`
-#: (``backlot.routers.atlassian._search_options``).
+#: (``backlot.routers.atlassian._search_options``). That is for `*/*`, `application/json` or no
+#: `Accept`; `text/html` or `application/xml` is a 403 HTML page there instead, measured on each of
+#: those routes 2026-09-30, which this server does not answer.
 CONFLUENCE_OPTIONS_NOT_FOUND = {
     "errors": [{"status": 404, "code": "NOT_FOUND", "title": "Not Found"}]
 }

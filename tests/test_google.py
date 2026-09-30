@@ -2648,11 +2648,37 @@ def test_drive_about_export_formats_are_honoured_by_files_export(client, admin_h
             f"/drive/v3/files/{doc['id']}/export", headers=admin_h, params={"mimeType": target}
         )
         assert r.status_code == 200, target
-    # every native type Backlot serves is covered; the folder type is not exportable anywhere
-    assert set(formats) == {DOC_MIME, SHEET_MIME, "application/vnd.google-apps.presentation"}
-    assert "text/csv" in formats[SHEET_MIME]
-    # both Markdown types, as `_DRIVE_EXPORT_FORMATS` records
-    assert {"text/markdown", "text/x-markdown"} <= set(formats[DOC_MIME])
+    # every native type Backlot serves, each with real's list in real's order, which is what
+    # `_DRIVE_EXPORT_FORMATS` records; the folder type is not exportable anywhere
+    assert formats == {
+        DOC_MIME: [
+            "application/rtf",
+            "application/vnd.oasis.opendocument.text",
+            "text/html",
+            "application/pdf",
+            "text/x-markdown",
+            "text/markdown",
+            "application/epub+zip",
+            "application/zip",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "text/plain",
+        ],
+        SHEET_MIME: [
+            "application/x-vnd.oasis.opendocument.spreadsheet",
+            "text/tab-separated-values",
+            "application/pdf",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "text/csv",
+            "application/zip",
+            "application/vnd.oasis.opendocument.spreadsheet",
+        ],
+        "application/vnd.google-apps.presentation": [
+            "application/vnd.oasis.opendocument.presentation",
+            "application/pdf",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "text/plain",
+        ],
+    }
 
 
 def test_drive_about_shared_drive_fields_agree_with_the_drives_listing(client, admin_h):
@@ -5851,6 +5877,7 @@ def test_include_grid_data_in_the_body_follows_the_query_strings_rule(gc, gh, bo
         ({"sheetId": 0, "startRowIndex": "abc"}, 400),  # was a 500
         ({"sheetId": 0, "startRowIndex": 1.7}, 400),  # was silently 1
         ({"sheetId": 0, "startRowIndex": -1}, 400),
+        ({"sheetId": 0, "startRowIndex": True}, 400),
         ({"sheetId": 0, "startRowIndex": 2, "endRowIndex": 1}, 400),  # answered 3 rows
         ({"sheetId": 0, "startRowIndex": 0, "endRowIndex": 0}, 400),
         # proto3's JSON mapping takes a decimal string for an int32

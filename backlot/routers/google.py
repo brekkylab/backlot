@@ -3283,7 +3283,9 @@ def _sheets_int32(raw, field: str, default: int) -> int:
     fraction, a non-numeric string or a negative index -- each of which reached `_a1_name`
     unchecked before, turning a client's typo into a 500 or into a silently truncated index.
 
-    Backlot's own wording: the real API's message for these was not measured."""
+    Backlot's own wording: the real API's message for these was not measured. A JSON boolean is
+    refused as well, as real refuses one: `"startRowIndex": true` answered a 400, measured
+    2026-09-30."""
     if raw is None:
         return default
     if isinstance(raw, bool):

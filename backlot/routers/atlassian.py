@@ -2628,8 +2628,9 @@ def sends_deprecation(path: str, status_code: int) -> bool:
     return not any(pattern.fullmatch(vendor_path) for pattern in _NO_DEPRECATION_PATTERNS)
 
 
-#: What the edge puts on every answer that passes it, a gateway's own refusal included and a CDN's
-#: not: on all 78 of 2026-09-22 and on the Connect-token 403 and a `PATCH` measured 2026-09-30.
+#: What the edge puts on every answer that passes it, a gateway's own refusal included, and on the
+#: CDN's 403 for a method it does not know, where its `TRACE` 405 carries neither: on all 78 of
+#: 2026-09-22, and on the Connect-token 403, a `PATCH` and twelve of those 403s measured 2026-09-30.
 _EDGE = {"x-content-type-options": "nosniff", "x-xss-protection": "1; mode=block"}
 
 
@@ -2645,11 +2646,11 @@ def vendor_headers(request: Request, status_code: int) -> dict[str, str]:
 
     Both products: the two ids and :data:`_EDGE`. Jira adds `x-arequestid`, `timing-allow-origin`
     and a `cache-control`, its API's or the web app's page by page, and once a credential resolves
-    the caller's own account id, with the rate-limit four where a route answers or an `OPTIONS`
-    asks at its path. The gateway's own refusals (the Connect-token 403 and a `PATCH`) carry the
-    two ids and :data:`_EDGE` and nothing else, and the CDN's (a `TRACE`) carry nothing.
-    Confluence: the millisecond clock it stamps every answer with, and the deprecation trio where
-    the v1 services send it. Measured on Atlassian Cloud 2026-09-22 and 2026-09-30; what is
+    the caller's own account id, with the rate-limit four where a route answers or an `OPTIONS` asks
+    at its path. The gateway's own refusals (the Connect-token 403 and a `PATCH`) carry the two ids
+    and :data:`_EDGE` and nothing else; the CDN's carry :data:`_EDGE` alone, or nothing on a
+    `TRACE`. Confluence: the millisecond clock it stamps every answer with, and the deprecation trio
+    where the v1 services send it. Measured on Atlassian Cloud 2026-09-22 and 2026-09-30; what is
     deliberately not here is in `backlot.main.report_atlassian_headers`.
     """
     path = request.url.path
@@ -2658,7 +2659,8 @@ def vendor_headers(request: Request, status_code: int) -> dict[str, str]:
         # measurement is on ``errors.atlassian.SERVED_METHODS``.
         if request.method in errors_atlassian.GATEWAY_REFUSED:
             return _gateway_headers(request)
-        return {}
+        # the CDN's own: nothing on its `TRACE` 405, the edge's two on its 403
+        return {} if request.method in errors_atlassian.CDN_405 else dict(_EDGE)
     headers = {**request_ids(request), **_EDGE}
     if errors_atlassian.is_confluence(path):
         headers["x-confluence-request-time"] = str(int(time.time() * 1000))

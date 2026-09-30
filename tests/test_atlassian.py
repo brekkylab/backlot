@@ -2878,7 +2878,8 @@ _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9
 
 _ANSWERS = [
     # (label, method, path, and for a method refused in front of the application its status and
-    # which layer refused it: the CDN, which adds nothing, or the gateway, which adds its two ids)
+    # which layer refused it: the CDN, which adds nothing to a `TRACE` and the edge's two headers to
+    # a method it does not know, or the gateway, which adds its two ids beside those)
     ("jira 200", "GET", "/atlassian/rest/api/3/serverInfo", None),
     ("jira 404", "GET", "/atlassian/rest/api/3/nopesuchroute", None),
     ("jira 405", "POST", "/atlassian/rest/api/3/serverInfo", None),
@@ -2889,6 +2890,9 @@ _ANSWERS = [
     ("jira trace", "TRACE", "/atlassian/rest/api/3/serverInfo", (405, "cdn")),
     ("jira trace, unserved", "TRACE", "/atlassian/rest/api/3/nopesuchroute", (405, "cdn")),
     ("confluence trace", "TRACE", "/atlassian/wiki/rest/api/space", (405, "cdn")),
+    ("jira propfind", "PROPFIND", "/atlassian/rest/api/3/serverInfo", (403, "cdn edge")),
+    ("jira link, unserved", "LINK", "/atlassian/rest/api/3/nopesuchroute", (403, "cdn edge")),
+    ("confluence search", "SEARCH", "/atlassian/wiki/rest/api/space", (403, "cdn edge")),
     ("jira patch", "PATCH", "/atlassian/rest/api/3/serverInfo", (400, "gateway")),
     ("jira patch, unserved", "PATCH", "/atlassian/rest/api/3/nopesuchroute", (400, "gateway")),
     ("confluence patch", "PATCH", "/atlassian/wiki/rest/api/space", (405, "gateway")),
@@ -2912,14 +2916,15 @@ def test_atlassian_headers_ride_every_answer_but_the_front_doors(client, admin_h
     ``backlot.routers.atlassian.request_ids`` states and this pins — a corpus served twice answers
     the same id, and two different requests do not share one.
 
-    Real refuses a `TRACE` with 405 and an invented method with 403, each its own HTML page,
-    carrying no `Allow` and none of these headers — on a served route and on an unserved path
-    alike, measured the same day. Those are the CDN's (`server: CloudFront`). The gateway behind it
-    (`server: AtlassianEdge`) refuses a `PATCH` itself, 400 on Jira and 405 on Confluence, and puts
-    the two ids, `nosniff` and `x-xss-protection` on it and none of the application's headers
-    (measured 2026-09-30). Those methods are left off the catch-all's methods for that reason, so
-    what answers one here is the refusing layer's status, and their rows hold that it advertises
-    nothing: Starlette would otherwise name the methods the catch-all takes.
+    Real refuses a `TRACE` with 405 and none of these headers, and a method it does not know with
+    403 and `nosniff` and `x-xss-protection` alone, each its own HTML page with no `Allow` — on a
+    served route and on an unserved path alike, measured 2026-09-22 and 2026-09-30. Those are the
+    CDN's (`server: CloudFront`). The gateway behind it (`server: AtlassianEdge`) refuses a `PATCH`
+    itself, 400 on Jira and 405 on Confluence, and puts the two ids, `nosniff` and
+    `x-xss-protection` on it and none of the application's headers (measured 2026-09-30). Those
+    methods are left off the catch-all's methods for that reason, so what answers one here is the
+    refusing layer's status, and their rows hold that it advertises nothing: Starlette would
+    otherwise name the methods the catch-all takes.
     """
     answers = {}
     for label, method, path, refused in _ANSWERS:
@@ -2928,14 +2933,10 @@ def test_atlassian_headers_ride_every_answer_but_the_front_doors(client, admin_h
             status, layer = refused
             assert r.status_code == status, (label, r.text)
             assert "allow" not in r.headers, label
-            gateway = (
-                "atl-request-id",
-                "atl-traceid",
-                "x-content-type-options",
-                "x-xss-protection",
-            )
-            for name in gateway:
+            for name in ("atl-request-id", "atl-traceid"):
                 assert (name in r.headers) == (layer == "gateway"), (label, name)
+            for name in ("x-content-type-options", "x-xss-protection"):
+                assert (name in r.headers) == (layer != "cdn"), (label, name)
             for absent in (
                 "x-arequestid",
                 "cache-control",

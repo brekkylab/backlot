@@ -254,13 +254,13 @@ credential, an unparseable range and a mistyped `fields` mask, though `$.xgafv` 
 it and an `alt` naming a format other than `json` suppresses the wrap altogether — the format is
 matched without regard to case and an empty `alt=` names none, so `alt=JSON`, `alt=Json` and
 `alt=` each ask for the JSON the default serves rather than for a format of their own. An empty
-`callback=` is no
-callback, and a POST ignores the parameter outright, as real does, since JSONP is what a `<script>`
-element fetches and a `<script>` element issues a GET. A SUCCESS body is wrapped and indented on
-the `/sheets/v4` routes only; the other four families honour `callback` on their errors and not yet
-on their 200s. Measured against the live Sheets, Docs, Drive, Gmail and Slides APIs on 2026-09-15,
-2026-09-16 and 2026-09-17: the wrap, the indent and the charset first, the suppression across the
-four non-Sheets families next, and the escape set and the case-insensitive `alt` last.
+`callback=` is no callback, and a POST ignores the parameter outright, as real does, since JSONP is
+what a `<script>` element fetches and a `<script>` element issues a GET. A SUCCESS body is wrapped
+and indented on the `/sheets/v4` routes only; the other four families honour `callback` on their
+errors and not yet on their 200s. Measured against the live Sheets, Docs, Drive, Gmail and Slides
+APIs on 2026-09-15, 2026-09-16 and 2026-09-17: the wrap, the indent and the charset first, the
+suppression across the four non-Sheets families next, and the escape set and the case-insensitive
+`alt` last.
 
 **A repeated query parameter is read from the end real reads it from**, which is the first for some
 parameters and the last for others. The first repeat decides `fields`, `q`, `pageSize`, `pageToken`

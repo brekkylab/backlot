@@ -337,9 +337,9 @@ does not pass on is its 403 or 400 by how the method is spelled. A path no route
 at 404 with `No endpoint <METHOD> <path>.` where Jira publishes nothing at it; at an operation it
 publishes and no route here serves, a caller with no credential gets the gateway's 401
 `Client must be authenticated to access this resource.` where the operation will not run anonymously
-(`backlot/fidelity/jira_gateway.json`), and otherwise that 404, the gap the baseline acknowledges.
-That is under `/atlassian/rest` only: outside the two API mounts the site is its web app, `/browse`
-at 200, the root a redirect to log in or to `/jira/for-you`, and Jira's own not-found page for the
+(`backlot/data/jira_gateway.json`), and otherwise that 404, the gap the baseline acknowledges. That
+is under `/atlassian/rest` only: outside the two API mounts the site is its web app, `/browse` at
+200, the root a redirect to log in or to `/jira/for-you`, and Jira's own not-found page for the
 rest. Every answer past the CDN carries `atl-request-id`, `atl-traceid`, `x-content-type-options`
 and `x-xss-protection`, and Jira's own answers add `x-arequestid`, `cache-control` and
 `timing-allow-origin`, which the gateway's refusals (the Connect-token 403, a `PATCH`) do not carry;

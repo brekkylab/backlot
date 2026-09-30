@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regenerate backlot/fidelity/jira_gateway.json from Jira's own documents.
+"""Regenerate backlot/data/jira_gateway.json from Jira's own documents.
 
     python scripts/gen_atlassian_gateway.py            # rewrite the file
     python scripts/gen_atlassian_gateway.py --check    # exit 1 if the file is stale
@@ -40,7 +40,7 @@ sys.path.insert(0, str(REPO))
 from backlot.fidelity.comparisons import COMPARISONS, baseline_path  # noqa: E402
 from backlot.fidelity.fetch import fetch_json  # noqa: E402
 
-OUT = REPO / "backlot" / "fidelity" / "jira_gateway.json"
+OUT = REPO / "backlot" / "data" / "jira_gateway.json"
 METHODS = ("get", "put", "post", "delete", "patch", "head", "options")
 # measured reaching the operation with no credential although the documents give it no `security`
 REACHED_WITHOUT_SECURITY = {"GET /rest/atlassian-connect/1/service-registry"}

@@ -2116,7 +2116,7 @@ _CONFLUENCE_PUBLISHED = _published_not_served("confluence")
 #: resolves; ``scripts/gen_atlassian_gateway.py`` writes the file from Jira's documents and says how
 #: that was measured.
 _JIRA_GATED = _operations(
-    json.loads((_PACKAGE / "fidelity" / "jira_gateway.json").read_text())["operations"]
+    json.loads((_PACKAGE / "data" / "jira_gateway.json").read_text())["operations"]
 )
 
 #: The Confluence services whose refusal of a caller with no credential is

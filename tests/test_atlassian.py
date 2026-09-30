@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import json
 import re
+from pathlib import Path
 from urllib.parse import quote, unquote
 
 import pytest
@@ -2805,15 +2806,16 @@ def test_jira_gateway_refuses_what_it_will_not_run_for_a_caller_it_cannot_name(
 
 
 def test_the_gateways_operations_are_ones_no_route_serves():
-    """``backlot/fidelity/jira_gateway.json`` is written from the baseline's `missing_operation`
-    rows; a route added for one of them drops it from the baseline, and this is the reminder to
-    regenerate the file (``scripts/gen_atlassian_gateway.py``), which would otherwise refuse a
-    served operation's path for a method no route takes."""
+    """``backlot/data/jira_gateway.json`` is written from the baseline's `missing_operation` rows; a
+    route added for one of them drops it from the baseline, and this is the reminder to regenerate
+    the file (``scripts/gen_atlassian_gateway.py``), which would otherwise refuse a served
+    operation's path for a method no route takes."""
+    import backlot
     from backlot.fidelity.comparisons import baseline_path
 
     rows = json.loads(baseline_path("jira").read_text())["acknowledged"]
     unserved = {row["path"] for row in rows if row["kind"] == "missing_operation"}
-    gateway = baseline_path("jira").parent.parent / "jira_gateway.json"
+    gateway = Path(backlot.__file__).resolve().parent / "data" / "jira_gateway.json"
     gated = json.loads(gateway.read_text())["operations"]
     assert gated and set(gated) <= unserved
 

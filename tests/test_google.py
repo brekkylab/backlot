@@ -831,11 +831,10 @@ def test_drive_export_serves_a_format_its_type_exports_to_under_the_name_asked(
 def test_drive_a_listing_takes_an_int32_page_size_from_1_to_its_top(
     client, admin_h, path, top, values, kind, named
 ):
-    """Measured on `files.list` 2026-09-23 and on all three 2026-09-30, each value alone unless the
-    row lists two. `range` is the range refusal naming the value as an int, `int32` the proto
-    layer's `TYPE_INT32` one quoting it, and `size` a 200, which on `files.list` lists that many
-    files; `permissions.list` and `drives.list` declare a page size and read none here. The top is
-    the one `_drive_page_size_in_range` records."""
+    """The values `_INT32` and `_drive_page_size_in_range` record, on each route, each value alone
+    unless the row lists two. `range` is the range refusal naming the value as an int, `int32` the
+    proto layer's `TYPE_INT32` one quoting it, and `size` a 200, which on `files.list` lists that
+    many files; `permissions.list` and `drives.list` declare a page size and read none here."""
     fill = {"top": top, "above": top + 1}
     named = named.format(**fill)
     url = path.format(doc=_drive_find(client, admin_h, "Brand")["id"])
@@ -912,8 +911,8 @@ def test_a_repeated_page_size_is_read_first_and_not_range_checked(
 
 
 def test_drive_a_page_token_it_did_not_issue_is_refused(client, admin_h):
-    """Measured 2026-09-23: `BOGUS` is 400 `Invalid Value` at `pageToken`, where an empty token is
-    the first page and the one a listing issued is the next."""
+    """The `pageToken` rule `drive_files_list`'s comment records, on `BOGUS`, beside an empty token
+    and the one a listing issued, which is the next page."""
     files = "/drive/v3/files"
     e = _gerr(client.get(files, headers=admin_h, params={"pageToken": "BOGUS"}))
     assert e["code"] == 400
@@ -986,7 +985,7 @@ _DRIVE_BOOL_ROWS = (
         ]
     ]
     + [
-        # the rest of the spellings swept on `files.list`'s `supportsAllDrives`
+        # the rest of the sweep the docstring names
         ("/drive/v3/files", "supportsAllDrives", value, accepted)
         for value, accepted in [
             (v, True) for v in ("true", "FALSE", "tRuE", "0", "t", "F", "Y", "no", "YES")
@@ -994,8 +993,7 @@ _DRIVE_BOOL_ROWS = (
         + [(v, False) for v in ("off", "2", "01", "00", "1.0", "-1", "+1", " true", "true ")]
     ]
     + [
-        # `files.export` and `about.get` declare no `supportsAllDrives`, and real answers
-        # `supportsAllDrives=NOPE` on them as though it were not sent
+        # the two routes `_DRIVE_BOOLS` records as declaring none
         ("/drive/v3/files/{doc}/export?mimeType=text/plain", "supportsAllDrives", "NOPE", True),
         ("/drive/v3/about?fields=user", "supportsAllDrives", "NOPE", True),
     ]
@@ -1006,11 +1004,10 @@ _DRIVE_BOOL_ROWS = (
 def test_drive_a_declared_boolean_takes_the_protobuf_spellings_and_another_is_ignored(
     client, admin_h, path, param, value, accepted
 ):
-    """Measured 2026-09-23 on each of these, one request per value; the whole spelling rule is
-    `_sheets_bool_value`'s, swept over 30 values on `files.list`'s `supportsAllDrives`, 24 of
-    which are that flag's rows here. `true` is sent to that flag alone: four of the others answer
-    a `true` with a check of their own (a 403 for `includeItemsFromAllDrives` without
-    `supportsAllDrives`), which Backlot does not model."""
+    """The spellings `_DRIVE_BOOLS` records, one request per value on each route; the `files.list`
+    `supportsAllDrives` rows are 24 of the 30 swept. `true` is sent on those rows alone: measured
+    2026-09-23, four of the other flags answer a `true` with a check of their own (a 403 for
+    `includeItemsFromAllDrives` without `supportsAllDrives`), which Backlot does not model."""
     doc = _drive_find(client, admin_h, "Brand")["id"]
     url = path.format(doc=doc)
     # the query string is built here because httpx's `params` replaces the one the row's path has
@@ -1080,7 +1077,7 @@ def test_drive_a_blank_fields_mask_selects_nothing(client, admin_h, mask):
     "path, reason, location",
     [
         ("/drive/v3/files/{pdf}/export?mimeType=text/plain", "fileNotExportable", None),
-        # measured 2026-09-23: the empty value is still a file that is not a Docs Editors one
+        # the empty value is present, so in the order `drive_files_export` records it meets the 403
         ("/drive/v3/files/{pdf}/export?mimeType=", "fileNotExportable", None),
         ("/drive/v3/files/{doc}?alt=media", "fileNotDownloadable", "alt"),
     ],
@@ -2661,7 +2658,7 @@ def test_drive_about_export_formats_are_honoured_by_files_export(client, admin_h
     # every native type Backlot serves is covered; the folder type is not exportable anywhere
     assert set(formats) == {DOC_MIME, SHEET_MIME, "application/vnd.google-apps.presentation"}
     assert "text/csv" in formats[SHEET_MIME]
-    # measured 2026-09-23, real exports a Doc to both Markdown types and lists them
+    # both Markdown types, as `_DRIVE_EXPORT_FORMATS` records
     assert {"text/markdown", "text/x-markdown"} <= set(formats[DOC_MIME])
 
 
@@ -3483,9 +3480,8 @@ _GRID = "Invalid value at 'include_grid_data' (TYPE_BOOL), "
 def test_every_typed_value_is_parsed_and_every_one_refused_is_named(
     base, admin_h, sheet_id, method, path, query, body, refused
 ):
-    """Measured 2026-09-23 on Sheets and Drive: every repeat of a typed parameter is parsed, not
-    only the one read, and a request with several values the proto layer cannot read is one 400
-    whose message joins theirs with newlines and whose `details` names each. `refused` is in the
+    """The rule `_typed_query` and `gerr.invalid_field_values` record, on Sheets and Drive: every
+    repeat parsed and every value the proto layer cannot read named in one 400. `refused` is in the
     order sent. A body's refusals are compared exactly, in the order
     `sheets_values_batch_get_by_data_filter` records; a query's keep each field's refusals in that
     order and leave the order between fields open, as `_typed_query` records real does."""

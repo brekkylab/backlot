@@ -90,8 +90,8 @@ class DrivePermissionList(_GLoose):
     permissions: list[dict] = []
 
 
-# drive_files_get / .export return a raw Response on some branches — they get
-# openapi_extra params only (no JSON response_model, which would mis-serialize the raw body).
+# drive_files_get / .export return a raw Response on some branches — they get openapi_extra params
+# only (no JSON response_model, which would mis-serialize the raw body).
 _P_DRIVE_LIST = [qp("pageSize", "integer"), qp("pageToken"), qp("q"), qp("fields"), qp("orderBy")]
 _P_DRIVE_ALT = [qp("alt"), qp("fields")]
 _P_DRIVE_EXPORT = [qp("mimeType", required=True)]
@@ -1826,8 +1826,8 @@ async def drive_files_list(request: Request):
     order = _drive_order_specs(gerr.first_repeat(params, "orderBy"))  # 400 on an unusable key
     q = gerr.first_repeat(params, "q") or ""
     query = _drive_q_parse(q)  # 400 on a clause Backlot cannot evaluate; None when there is no q
-    # Measured: a token the API did not issue is 400 `Invalid Value`, where an empty one is the
-    # first page.
+    # Measured 2026-09-23: a token the API did not issue is 400 `Invalid Value`, where an empty one
+    # is the first page.
     offset = decode_cursor_or_none(gerr.first_repeat(params, "pageToken"))
     if offset is None:
         raise gerr.invalid_value("pageToken")
@@ -3700,9 +3700,10 @@ def _drive_typed(request: Request, *bools: str, page_size: bool = False) -> dict
     return _typed_query(request, readers)
 
 
-# An int32 as the Drive query parser takes one. Measured 2026-09-23 on `pageSize`: `+2` and `02`
-# are 2 and `-0` is 0, while a padded ` 2` or `2 `, `1_0`, `2.0`, `0x10`, `1e2` and a value past
-# 2**31 - 1 are the `TYPE_INT32` refusal.
+# An int32 as the Drive query parser takes one. Measured on `pageSize`, on `files.list` 2026-09-23
+# and on `permissions.list` and `drives.list` 2026-09-30: `+2` and `02` are 2 and `-0` is 0, while
+# a padded ` 2` or `2 `, `1_0`, `2.0`, `0x10`, `1e2`, an empty value and a value past 2**31 - 1 are
+# the `TYPE_INT32` refusal.
 _INT32 = re.compile(r"[+-]?[0-9]+")
 
 

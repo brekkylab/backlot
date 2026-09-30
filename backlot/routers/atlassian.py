@@ -2357,10 +2357,10 @@ def _site_surface(request: Request) -> Response:
     `/browse` is the Jira web app: 200, `text/html;charset=UTF-8` at `/browse` itself, a 55-byte
     `text/html` shell at `/browse/`, and below it `text/html` for a caller with no credential and
     `text/html; charset=utf-8` for one — a key that names nothing included. Everything else is
-    Jira's own not-found page, `text/html;charset=utf-8` with the charset in lower case (`/foo`,
-    `/ex/jira/x` and `/restx/api/3/serverInfo`, both ways). What is not copied: a caller whose
-    credential resolves is redirected from `/browse` to a project it last looked at, which Backlot
-    has no record of, so it gets the anonymous page.
+    Jira's own not-found page (``errors.atlassian.JIRA_SITE_HTML_MEDIA_TYPE``), with a credential
+    and without one. What is not copied: a caller whose credential resolves is redirected from
+    `/browse` to a project it last looked at, which Backlot has no record of, so it gets the
+    anonymous page.
     """
     echoed = _vendor_path(_echoed_path(request))
     site = _site(request)

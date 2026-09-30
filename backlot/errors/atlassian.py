@@ -438,9 +438,8 @@ def method_not_allowed(path: str, method: str) -> AtlassianError:
     so that read raises against Backlot and works against real Confluence.
 
     ``headers`` of ``{}`` is the empty header set, not "no opinion": real sends no `Allow` on the
-    Confluence side, and none on a path no Jira route covers either — a method the front door
-    refuses is 405 with `Allow` absent, measured 2026-09-22 with `TRACE` on a served route and on
-    `nopesuchroute` alike. Starlette would compute one there from the catch-all
+    Confluence side, nor for a method a layer in front of the application refuses, on a served route
+    or not (:data:`SERVED_METHODS`). Starlette would compute one there from the catch-all
     (``backlot.routers.atlassian.unmatched_path``), which takes every method it lists on every path
     it owns, so what it would advertise is neither the vendor's set nor anything Backlot serves.
     The front door answers Jira's `PATCH` with 400, and a method the CDN refuses by its spelling
@@ -563,12 +562,12 @@ def _refused_status(path: str, method: str) -> int:
 def no_endpoint(path: str, method: str) -> AtlassianError:
     """Jira's 404 for a path it mounts no endpoint at, in the RFC 7807 shape its other refusals use.
 
-    Measured on Jira Cloud, 2026-09-22: `/rest/api/3/nopesuchroute`, the same under
-    `/rest/api/2`, `/rest/api/4/serverInfo`, `/rest/nope/thing`, and the paths that extend a served
-    route (`serverInfo/extra`, `issue/NOPE-1/nope`, `project/search/extra`) each answer this body.
-    `detail` names the method as sent -- `GET`, `POST`, `DELETE` and `OPTIONS` each came back in it
-    -- and both fields carry the vendor path with the query string left off. A credential changes
-    nothing, and neither does `Accept`.
+    Measured on Jira Cloud, 2026-09-22: `/rest/api/3/nopesuchroute`, the same under `/rest/api/2`,
+    `/rest/api/4/serverInfo`, `/rest/nope/thing`, and the paths that extend a served route
+    (`serverInfo/extra`, `issue/NOPE-1/nope`, `project/search/extra`) each answer this body.
+    `detail` names the method as sent -- `GET`, `POST`, `DELETE` and `OPTIONS` each came back in it,
+    and `PUT` with no credential on 2026-09-30 -- and both fields carry the vendor path with the
+    query string left off. A credential changes nothing, and neither does `Accept`.
     """
     vendor_path = _instance(path)
     return AtlassianError(

@@ -208,13 +208,12 @@ def test_jira_refuses_a_bearer_it_cannot_read_as_a_connect_token(client):
     )
     assert r.status_code == 403
     # The whole body, not a subset: this one route answers with a single `error` key, where every
-    # other Atlassian error here carries message/statusCode/errorMessages. Byte for byte, a space
-    # after the colon, as fifteen of real's read on 2026-09-30.
+    # other Atlassian error here carries message/statusCode/errorMessages. Byte for byte, spelled as
+    # ``backlot.main.refuse_a_bearer_jira_cannot_read`` says real spells it.
     assert r.content == b'{"error": "Failed to parse Connect Session Auth Token"}'
     # No Seraph header either — that one reports a failed Basic username, and this is not one.
     assert "x-seraph-loginreason" not in r.headers
-    # The gateway's refusal carries the two ids, `nosniff` and `x-xss-protection`, and none of
-    # Jira's own headers.
+    # The gateway's own headers and none of Jira's (``backlot.routers.atlassian._gateway_headers``).
     assert r.headers["atl-traceid"] == r.headers["atl-request-id"].replace("-", "")
     assert r.headers["x-content-type-options"] == "nosniff"
     assert r.headers["x-xss-protection"] == "1; mode=block"
@@ -2579,10 +2578,9 @@ def _routes(keys: dict[str, str]) -> list[str]:
 
 
 def test_atlassian_a_head_is_the_get_without_its_body(client, admin_h, keys):
-    """Measured on Atlassian Cloud 2026-09-22, a `HEAD` beside each `GET` the same minute
-    over all 24 routes: both products answer the `GET`'s status and `content-type` with nothing in
-    the body, and so do an unknown issue's and an unknown space's 404 and a route's slashed
-    spelling.
+    """Pins the rule the comment on ``backlot.main._HEAD_IS_THE_GET_WITHOUT_ITS_BODY`` records for
+    both products, on each route, on the 404s it names and on a slashed spelling
+    (``backlot.main.normalise_the_slashes_in_an_atlassian_path``).
 
     The length is where the two part, and which answers declare one is
     ``errors.atlassian.head_content_length``, measured there.
@@ -2605,9 +2603,9 @@ def test_atlassian_a_head_is_the_get_without_its_body(client, admin_h, keys):
         ("/atlassian/wiki/rest/api/space/NOPESUCH", admin_h),
         ("/atlassian/rest/api/3/issue/NOPE-1", admin_h),
         ("/atlassian/rest/api/3/serverInfo/", admin_h),
-        # the gateway's Connect-token 403, measured 2026-09-30 on `serverInfo`
+        # the gateway's Connect-token 403 (``backlot.main.refuse_a_bearer_jira_cannot_read``)
         ("/atlassian/rest/api/3/serverInfo", {"Authorization": "Bearer nope"}),
-        # and its 401, which declares its 53 bytes, measured 2026-09-30 on `myself`
+        # and its 401, which declares its 53 bytes (``errors.atlassian.head_content_length``)
         ("/atlassian/rest/api/3/myself", {}),
     ]
     statuses = []
@@ -2634,10 +2632,9 @@ def test_atlassian_a_head_is_the_get_without_its_body(client, admin_h, keys):
 @pytest.mark.parametrize(
     "path,allow",
     [
-        # measured on Jira Cloud 2026-09-22, one OPTIONS per route; the set is real's
-        # and the order is one measured spelling, since it varied between two requests
+        # the `Allow` ``errors.atlassian._JIRA_OPTIONS_ALLOW`` copies, route by route
         ("/atlassian/rest/api/3/serverInfo", "GET,HEAD,OPTIONS"),
-        # its slashed spelling, the same day, answers the route's own
+        # its slashed spelling answers the route's own
         ("/atlassian/rest/api/3/serverInfo/", "GET,HEAD,OPTIONS"),
         ("/atlassian/rest/api/2/field", "POST,GET,HEAD,OPTIONS"),
         ("/atlassian/rest/api/3/issue/NOPE-1", "PUT,GET,HEAD,DELETE,OPTIONS"),
@@ -2646,16 +2643,13 @@ def test_atlassian_a_head_is_the_get_without_its_body(client, admin_h, keys):
         ("/atlassian/rest/api/3/issueLinkType", "POST,GET,HEAD,OPTIONS"),
         ("/atlassian/rest/api/3/project/NOPE/role", "GET,HEAD,OPTIONS"),
         ("/atlassian/rest/api/3/project/NOPE/role/10002", "DELETE,POST,PUT,GET,HEAD,OPTIONS"),
-        # the row that parts from the 405 table: its 405 resolves `/project/{idOrKey}` with
-        # `search` read as a key and names that route's `GET, PUT, DELETE`, where its OPTIONS
-        # reaches the search route and names `GET` beside `HEAD` and `OPTIONS`
+        # the row that parts from the 405 table (see ``errors.atlassian._JIRA_OPTIONS_ALLOW``)
         ("/atlassian/rest/api/3/project/search", "GET,HEAD,OPTIONS"),
     ],
 )
 def test_jira_answers_an_options_with_the_vendors_methods(client, admin_h, path, allow):
-    """Real answers 200 with an empty `text/html` body and an `Allow` naming the methods the VENDOR
-    serves at that route — `PUT` and `DELETE` on an issue, `POST` on `field` — which Backlot serves
-    none of. `Accept-Patch` rides along with an empty value on every one measured."""
+    """Pins the Jira half of ``backlot.routers.atlassian._options_answer``: 200, an empty
+    `text/html` body and `Accept-Patch`, and the vendor's `Allow` for the route."""
     r = client.request("OPTIONS", path, headers=admin_h)
     assert r.status_code == 200, r.text
     assert r.headers["content-type"] == errors_atlassian.JIRA_OPTIONS_MEDIA_TYPE
@@ -2681,11 +2675,10 @@ def test_jira_answers_an_options_with_the_vendors_methods(client, admin_h, path,
 def test_confluence_answers_an_options_by_route_and_accept(
     client, admin_h, keys, path, accept, status, media_type
 ):
-    """An `OPTIONS` on a Confluence route is the 404 in the `errors` list its 405 uses
-    (``errors.atlassian.CONFLUENCE_OPTIONS_NOT_FOUND``), on every route but `search`, which answers
-    by `Accept` (``backlot.routers.atlassian._search_options``, where the measurement is) and
-    names its three methods each time. The WADL is real's, with this server's origin in its two
-    URLs."""
+    """Pins the Confluence half of ``backlot.routers.atlassian._options_answer``:
+    ``errors.atlassian.CONFLUENCE_OPTIONS_NOT_FOUND`` on each route but `search`, and on `search`
+    what ``backlot.routers.atlassian._search_options`` answers each `Accept`, its three methods
+    every time. The WADL is real's, with this server's origin in its two URLs."""
     request = client.build_request("OPTIONS", path.format(**keys), headers=admin_h)
     if accept is None:
         del request.headers["accept"]
@@ -2724,11 +2717,10 @@ _NO_ENDPOINT_PATHS = [
             for path in _NO_ENDPOINT_PATHS
             for method in ("GET", "POST", "DELETE", "OPTIONS")
         ],
-        # measured anonymously on 2026-09-30 (a `PATCH` is the front door's, see `_ANSWERS`)
+        # and `PUT` (a `PATCH` is the front door's, see `_ANSWERS`)
         ("PUT", "/atlassian/rest/api/3/nopesuchroute", "/rest/api/3/nopesuchroute"),
-        # What a refusal ECHOES is normalised differently from what routing reads: the query
-        # string is in neither field, a trailing slash is kept in both and an interior run is
-        # collapsed. Confluence's `null for uri:` message draws the same two slash lines.
+        # what a refusal echoes: no query string (``errors.atlassian.no_endpoint``), and the slashes
+        # ``backlot.main.normalise_the_slashes_in_an_atlassian_path`` describes
         ("GET", "/atlassian/rest/api/3/nopesuchroute?a=1&b=2", "/rest/api/3/nopesuchroute"),
         ("GET", "/atlassian/rest/api/3/nopesuchroute/", "/rest/api/3/nopesuchroute/"),
         ("GET", "/atlassian/rest/api/3//nopesuchroute", "/rest/api/3/nopesuchroute"),
@@ -2737,8 +2729,8 @@ _NO_ENDPOINT_PATHS = [
 def test_jira_answers_a_path_it_mounts_nothing_at_as_rfc_7807(
     client, admin_h, method, path, echoed
 ):
-    """Measured 2026-09-22 on each of these paths: 404 `application/problem+json` naming the method
-    as sent and the vendor path twice."""
+    """Pins the body ``errors.atlassian.no_endpoint`` describes, on each path and method it
+    names."""
     r = client.request(method, path, headers=admin_h)
     assert r.status_code == 404, r.text
     assert r.headers["content-type"] == errors_atlassian.PROBLEM_JSON
@@ -2789,14 +2781,11 @@ _CREDENTIALS = {
 def test_jira_gateway_refuses_what_it_will_not_run_for_a_caller_it_cannot_name(
     client, admin_h, method, path, credential, status
 ):
-    """Measured on 2026-09-30: an operation whose `security` in Jira's document has no `{}` is
-    refused before Jira runs it, for a caller with no credential, the Basic pair it rejects or an
-    unknown scheme, with the 401 `Client must be authenticated to access this resource.` (in
-    `text/html` for the test client's `Accept: */*`, ``errors.atlassian.GATEWAY_UNAUTHENTICATED``),
-    `WWW-Authenticate: OAuth realm` naming the site and `X-Frame-Options: SAMEORIGIN`
-    (``scripts/gen_atlassian_gateway.py`` has the sweep). An `OPTIONS` gets the same 401 on any path
-    Jira publishes something at, an unreadable bearer included, and on a path it publishes nothing
-    at the URL answers first."""
+    """Pins the 401 the comment on ``errors.atlassian.GATEWAY_UNAUTHENTICATED`` describes, in the
+    `text/html` it has for the test client's `Accept: */*`: on the operations
+    ``scripts/gen_atlassian_gateway.py`` lists and on an `OPTIONS` wherever Jira publishes
+    something, for each credential that comment names. Where Jira publishes nothing, the URL's 404
+    answers first."""
     headers = admin_h if credential == "admin" else _CREDENTIALS[credential]
     r = client.request(method, path, headers=headers)
     assert r.status_code == status, r.text
@@ -2844,8 +2833,7 @@ def test_the_gateways_operations_are_ones_no_route_serves():
             "json",
             "/api/nopesuchroute",
         ),
-        # `&` comes back `&amp;` in the XML and `'` as itself; the JSON escapes neither, because
-        # JSON asks for neither
+        # what ``errors.atlassian.jaxrs_not_found`` escapes in the XML; the JSON escapes neither
         ("/atlassian/wiki/rest/api/nope&x'quote", None, "xml", "nope&amp;x'quote"),
         ("/atlassian/wiki/rest/api/nope&x'quote", "application/json", "json", "nope&x'quote"),
     ],
@@ -2853,9 +2841,8 @@ def test_the_gateways_operations_are_ones_no_route_serves():
 def test_confluence_answers_an_unclaimed_segment_in_the_shape_accept_asks_for(
     client, admin_h, path, accept, shape, echoed
 ):
-    """Measured 2026-09-22: the shape follows `Accept` and not the credential — `application/json`
-    by name answers JSON, and an absent header, `*/*` and `application/xml` each answer the XML
-    document. The message carries the full request URL, query string included."""
+    """Pins the JAX-RS 404 the comment on ``errors.atlassian.JAXRS_XML_MEDIA_TYPE`` describes,
+    `Accept` by `Accept`."""
     headers = admin_h if accept is None else {**admin_h, "Accept": accept}
     r = client.get(path, headers=headers)
     assert r.status_code == 404, r.text
@@ -2938,11 +2925,10 @@ _ANSWERS = [
 
 
 def test_atlassian_headers_ride_every_answer_but_the_front_doors(client, admin_h):
-    """Measured 2026-09-22 over 78 responses: both products put `atl-request-id` and `atl-traceid`
-    on every answer, the second being the first without its dashes, and
-    `x-content-type-options: nosniff` and `x-xss-protection: 1; mode=block`; Jira adds a 32-hex
-    `x-arequestid` and `timing-allow-origin: *`, and Confluence a 13-digit millisecond
-    `x-confluence-request-time`.
+    """Pins the headers ``backlot.routers.atlassian.vendor_headers`` puts on every answer the
+    application gives: the ids ``backlot.routers.atlassian.request_ids`` derives,
+    ``backlot.routers.atlassian._EDGE``, and Jira's `timing-allow-origin` or Confluence's
+    millisecond clock.
 
     Real mints a new value per response; this one is derived from the request, the divergence
     ``backlot.routers.atlassian.request_ids`` states and this pins — a corpus served twice answers
@@ -3016,8 +3002,6 @@ _JQL = "/atlassian/rest/api/3/search/jql"
 @pytest.mark.parametrize(
     "method,path,policy,limit",
     [
-        # the GET rows measured 2026-09-22 and the rest 2026-09-30, reading the four headers off
-        # that route's own answer
         ("GET", "/atlassian/rest/api/3/serverInfo", 100, 350),
         ("GET", "/atlassian/rest/api/3/project/search", 100, 350),
         ("GET", "/atlassian/rest/api/3/issue/NOPE-1", 150, 400),
@@ -3047,8 +3031,8 @@ def test_jira_reports_the_burst_quota_of_the_route(
 @pytest.mark.parametrize(
     "before,last,remaining",
     [
-        # measured 2026-09-30, five of each pair sent together: a window is one method on one
-        # route template, either mount and any value of a path parameter read as one
+        # a window is one method on one route template
+        # (``backlot.routers.atlassian.JiraBurstWindows``)
         pytest.param(
             ("GET", "/rest/api/3/serverInfo"), ("GET", "/rest/api/3/field"), 349, id="two-routes"
         ),
@@ -3116,9 +3100,8 @@ def test_jira_counts_a_burst_per_method_and_route(
             )
             for p in UNRESOLVABLE
         ],
-        # the no-endpoint 404 named the caller and counted nothing, measured with a credential,
-        # and so did a 405 and a `HEAD` or an `OPTIONS` at a path Jira mounts nothing at
-        # (2026-09-30)
+        # where no route answers, the caller is named and nothing is counted
+        # (``backlot.routers.atlassian.vendor_headers``)
         pytest.param(
             "admin",
             "GET",
@@ -3153,12 +3136,11 @@ def test_jira_counts_a_burst_per_method_and_route(
 def test_jira_names_the_caller_and_counts_its_quota_once_a_credential_resolves(
     client, admin_h, tokens, credential, method, path, status, quota
 ):
-    """Measured 2026-09-22 and 2026-09-30: every answer Jira's API gives carries the two ids,
-    `x-arequestid` and the `cache-control`; once the credential resolves it carries the caller's
-    `x-aaccountid` too, and the four rate-limit headers where a route answered. An anonymous
-    request gets none of those five, and a 405 gets the account id and none of the four. The
-    account id is the one the corpus serves that user under (``synth.atlassian_account_id``); the
-    admin token, which has no address, gets the one seeded from `"unknown"`."""
+    """Pins what ``backlot.routers.atlassian.vendor_headers`` puts on a Jira answer by caller: the
+    two ids, `x-arequestid` and `cache-control` for everyone, and for a credential that resolves the
+    account id the corpus serves that user under (``synth.atlassian_account_id``), with the quota
+    four where a route answered. The admin token, which has no address, gets the one seeded from
+    `"unknown"`."""
     from backlot import synth
 
     if credential == "admin":
@@ -3204,11 +3186,8 @@ def test_jira_names_the_caller_and_counts_its_quota_once_a_credential_resolves(
 def test_confluence_says_its_v1_rest_api_is_deprecated(
     client, admin_h, keys, method, path, anonymous, carries
 ):
-    """Measured 2026-09-22: the content and space services send the three headers on every answer
-    they give, their 404s and a `HEAD` included, and `search`, `restriction/byOperation`, the 405 at
-    `space/{key}/permission`, the 403 an anonymous request gets and an `OPTIONS` send none, though
-    each carries the ids and the clock; nor does an answer the catch-all gives (measured
-    2026-09-30). The dates are real's own, a removal date already past."""
+    """Pins where the comment on ``backlot.routers.atlassian.CONFLUENCE_DEPRECATION`` says the three
+    headers ride and where it says they do not, the ids and the clock riding on both."""
     r = client.request(method, path.format(**keys), headers={} if anonymous else admin_h)
     if anonymous:
         assert r.status_code == 403
@@ -3234,8 +3213,8 @@ def test_confluence_says_its_v1_rest_api_is_deprecated(
     ],
 )
 def test_atlassian_serves_a_path_the_gateway_normalises(client, admin_h, path):
-    """Measured 2026-09-22: a trailing slash, a doubled one and a run in the middle each answer
-    what the canonical spelling answers, on both products."""
+    """Pins the routing ``backlot.main.normalise_the_slashes_in_an_atlassian_path`` describes: each
+    spelling answers what the canonical one answers."""
     canonical = re.sub("/{2,}", "/", path).rstrip("/")
     served = client.get(path, headers=admin_h, follow_redirects=False)
     assert served.status_code == 200, served.text
@@ -3260,7 +3239,7 @@ def test_atlassian_serves_a_path_the_gateway_normalises(client, admin_h, path):
             "not-permitted",
         ),
         # the controls: one real runs with no credential at all, and a caller whose credential
-        # resolves, which both get what an unserved path gets — the gap the baseline acknowledges
+        # resolves (``backlot.routers.atlassian._confluence_refusal``)
         ("GET", "/atlassian/wiki/rest/api/contentbody/convert/async/bulk/tasks", True, None),
         ("GET", "/atlassian/wiki/rest/api/user/current", False, None),
         ("GET", "/atlassian/wiki/rest/api/content/{content}/history", False, None),
@@ -3269,12 +3248,10 @@ def test_atlassian_serves_a_path_the_gateway_normalises(client, admin_h, path):
 def test_confluence_refuses_an_operation_it_publishes_to_a_caller_it_cannot_name(
     client, admin_h, keys, method, path, anonymous, refusal
 ):
-    """Measured on 2026-09-30 with no credential, on each GET the Confluence baseline lists as
-    `missing_operation` and on writes and operations outside the document: a served route's 403, in
-    real's two members (190 bytes); or, from the services named in
-    ``backlot.routers.atlassian._CONFLUENCE_NOT_PERMITTED``,
-    `Current user not permitted to use Confluence`, with a `cache-control` and a 1970 `expires` on
-    all but the Connect module path."""
+    """Pins the anonymous refusals ``backlot.routers.atlassian._confluence_refusal`` gives:
+    ``errors.atlassian.CONFLUENCE_FORBIDDEN_BODY``, or on the services
+    ``backlot.routers.atlassian._CONFLUENCE_NOT_PERMITTED`` names
+    ``errors.atlassian.CONFLUENCE_NOT_PERMITTED_BODY`` with the headers its comment names."""
     r = client.request(method, path.format(**keys), headers={} if anonymous else admin_h)
     if refusal is None:
         assert r.status_code == 404, r.text
@@ -3400,20 +3377,14 @@ _JIRA_PAGE = errors_atlassian.JIRA_SITE_HTML_MEDIA_TYPE
 def test_atlassian_answers_by_which_mount_the_path_is_under(
     client, admin_h, keys, path, anonymous, status, media_type, location, cache
 ):
-    """Measured 2026-09-22 on the site: `/rest` and `/rest/nope/thing` are Jira's RFC 7807, a
-    segment under `/wiki/rest/api` is JAX-RS's 404, and everything else the host serves — `/foo`,
-    `/ex/jira/x`, `/restx/api/3/serverInfo`, `/wiki/nope`, and a path below `space/` or `content/`
-    — is a product's HTML page. So the mount decides the shape, not `is_confluence` alone. Real's
-    pages are build-specific shells tens of kilobytes long, so this serves their status and media
-    type with a stub.
-
-    Measured 2026-09-30, with a credential and without one: Jira's page spells its charset in lower
-    case and Confluence's in upper; the Confluence web app sends a caller with no credential from
-    `/wiki/nope` to log in, where under `/wiki/rest` the page answers either way; `/browse` is the
-    Jira web app at 200, its media type by path and by caller; and the root is a 302, to log in or
-    to `/jira/for-you`. The caching each says is its own: Jira's API
-    `no-cache, no-store, no-transform`, JAX-RS's 404 `no-transform`, `/browse` and its static shell
-    below their own two, and the pages and the root nothing."""
+    """Pins the answer each mount gives: Jira's RFC 7807 under ``errors.atlassian.JIRA_REST``, the
+    JAX-RS 404 under Confluence's API mount, a product's page below the resources
+    ``backlot.routers.atlassian._CONFLUENCE_HTML_RESOURCES`` names, the Confluence web app's login
+    redirect for a caller with no credential, and outside both mounts what
+    ``backlot.routers.atlassian._site_surface`` answers. The pages are stubs with real's status and
+    media type, and the caching is what ``backlot.routers.atlassian.vendor_headers`` and
+    ``backlot.routers.atlassian._confluence_not_found`` say. So the mount decides the shape, not
+    `is_confluence` alone."""
     r = client.get(
         path.format(**keys), headers={} if anonymous else admin_h, follow_redirects=False
     )

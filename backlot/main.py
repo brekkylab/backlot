@@ -313,7 +313,10 @@ def _would_redirect_to_the_slash_free_path(request: Request) -> bool:
     intercepted. Starlette redirects only when the path AS SENT matches no route and the slash-free
     spelling matches one, so a route whose last segment is a `{path:path}` — `/contents/{path:path}`
     matches the empty string — answers its own trailing slash and never reaches the redirect, the
-    same as real answers it.
+    same as real answers it. What that route then makes of the slash is its own: `contents/{path}/`
+    with a path in it is a 302 of real's own (:func:`backlot.routers.github.get_contents`), which is
+    a route's answer rather than a routing rule, and the one redirect this server sends under
+    `/github`.
     """
     scope = request.scope
     if _some_github_route_matches(scope):
@@ -327,18 +330,18 @@ async def refuse_a_trailing_slash_on_github(request: Request, call_next):
     """A trailing slash on `/github` that matches no route is a 404, not the 307 to the slash-free
     path that Starlette's router answers by default.
 
-    Real runs no slash redirect at all: a trailing slash is just part of the path, and what answers
-    it is whichever route matches the path as sent. A route ending in a path parameter absorbs the
-    slash as an empty segment — `GET /repos/{owner}/{repo}/contents/` is the root listing's own 200,
-    like `/contents` beside it — and every other route simply does not match, so the request gets
-    the same 404 a path with no route at all gets, ahead of a bad bearer's own 401. Measured against
-    api.github.com on 2026-09-15, 2026-09-16 and 2026-09-17: 404 for `/repos/{owner}/{repo}/`,
-    `/repos/{owner}/{repo}/pulls/`, `/orgs/{org}/`, `/orgs/{org}/repos/`, `/user/repos/`,
-    `/rate_limit/`, and for the id-keyed spellings of the first four — `/repositories/{id}/`,
-    `/repositories/{id}/pulls/`, `/organizations/{id}/` and `/organizations/{id}/repos/` — and 200
-    for `/repos/{owner}/{repo}/contents/`. So this fires on the redirect alone — see
-    :func:`_would_redirect_to_the_slash_free_path` — and leaves a trailing slash a route does match
-    to that route.
+    Real runs no routing-level slash redirect: a trailing slash is just part of the path, and what
+    answers it is whichever route matches the path as sent. A route ending in a path parameter
+    absorbs the slash as an empty segment — `GET /repos/{owner}/{repo}/contents/` is the root
+    listing's own 200, like `/contents` beside it — and every other route simply does not match, so
+    the request gets the same 404 a path with no route at all gets, ahead of a bad bearer's own 401.
+    Measured against api.github.com on 2026-09-15, 2026-09-16 and 2026-09-17: 404 for
+    `/repos/{owner}/{repo}/`, `/repos/{owner}/{repo}/pulls/`, `/orgs/{org}/`, `/orgs/{org}/repos/`,
+    `/user/repos/`, `/rate_limit/`, and for the id-keyed spellings of the first four —
+    `/repositories/{id}/`, `/repositories/{id}/pulls/`, `/organizations/{id}/` and
+    `/organizations/{id}/repos/` — and 200 for `/repos/{owner}/{repo}/contents/`. So this fires on
+    the redirect alone — see :func:`_would_redirect_to_the_slash_free_path` — and leaves a trailing
+    slash a route does match to that route.
 
     The five `x-ratelimit-*` headers ride on this 404, via `rate_limit_headers`, for a caller that
     sent no `Authorization` header at all, and on no other: the anonymous limit is counted by
@@ -394,6 +397,33 @@ async def refuse_a_trailing_slash_on_github(request: Request, call_next):
 
 
 @app.middleware("http")
+async def serve_a_slashed_notion_path_as_the_path_without_it(request: Request, call_next):
+    """One trailing slash on a `/notion` path is not part of the path: real serves what the
+    slash-free spelling serves.
+
+    Measured against api.notion.com on 2026-09-22: `GET /v1/users/me/` and `POST /v1/search/`
+    answer the credential's 401, the same as without the slash, where `GET /v1/users/me//` is
+    `invalid_request_url` at 400 — so exactly one slash is dropped and a second is a path segment
+    like any other. The rewrite runs ahead of routing because ``notion.unmatched_router`` would
+    otherwise claim every slashed spelling and answer 400 where real answers what the route
+    answers.
+
+    The vendor root is not rewritten: `/notion/` is the URL's 400, and `/notion` is Starlette's own
+    307 to that, where real's `/` is a 302 to its marketing site — a page this server does not
+    serve at all.
+
+    GitHub's trailing slash is the opposite rule and has its own middleware above; the two are
+    measured separately because the vendors answer differently.
+    """
+    path = request.url.path
+    if path.startswith("/notion/") and path.endswith("/") and len(path) > len("/notion/"):
+        trimmed = path[:-1]
+        request.scope["path"] = trimmed
+        request.scope["raw_path"] = trimmed.encode()
+    return await call_next(request)
+
+
+@app.middleware("http")
 async def resolve_github_id_paths(request: Request, call_next):
     """Serve `/github/repositories/{id}/…` and `/github/organizations/{id}/…` as what the
     login-keyed paths serve, because that is the form real's page urls take (see
@@ -418,12 +448,14 @@ async def resolve_github_id_paths(request: Request, call_next):
     return await call_next(request)
 
 
-# The path prefixes whose `HEAD` is the GET with the body left off. GitHub because it is measured to
-# be, and none of the other vendors' `HEAD` answers is, so a vendor is added here once its own is
-# rather than by a rewrite that assumes they share GitHub's. `/health` and `/_meta` are Backlot's
+# The path prefixes whose `HEAD` is the GET with the body left off. GitHub and Notion because each
+# is measured to be, and a vendor is added here once its own is rather than by a rewrite that
+# assumes they share GitHub's: api.notion.com answered `HEAD /v1/users/me` the credential's 401 and
+# `HEAD /v1/nonexistent_thing/xyz` the URL's 400 on 2026-09-22, each with the `content-length` and
+# `content-type` of the GET body beside it (178 and 145 bytes). `/health` and `/_meta` are Backlot's
 # own routes, with no vendor to measure against: a `HEAD /health` is the shape a liveness probe
 # takes, and `FastAPI`'s `APIRoute` refused it with the same 405 for the same reason.
-_HEAD_IS_THE_GET_WITHOUT_ITS_BODY = ("/github", "/health", "/_meta")
+_HEAD_IS_THE_GET_WITHOUT_ITS_BODY = ("/github", "/notion", "/health", "/_meta")
 
 
 @app.middleware("http")
@@ -661,6 +693,8 @@ app.include_router(google.router)
 app.include_router(github.router)
 app.include_router(atlassian.router)
 app.include_router(notion.router)
+# after the routes it serves, so only a path none of them match reaches it
+app.include_router(notion.unmatched_router)
 app.include_router(s3.router)
 app.include_router(hubspot.router)
 app.include_router(linear.router)

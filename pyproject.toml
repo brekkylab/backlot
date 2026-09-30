@@ -208,6 +208,8 @@ backlot = [
     "schemas/*.json",
     "schemas/*.md",
     "graphql/*.graphql",
+    "data/*.json",
     "data/*.jsonl",
+    "data/*.wadl",
     "fidelity/baseline/*.json",
 ]

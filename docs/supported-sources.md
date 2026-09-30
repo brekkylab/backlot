@@ -53,6 +53,21 @@ operation an ACL states.
 A JSON body is the bare `application/json` on every Confluence route served — the 200s, the 404s,
 the 400, 403 and 405 measured. The charset Jira names is Jira's alone.
 
+A `HEAD` is the `GET` with the body left off, and declares the length that body would have had on
+every 200 but `search`'s. An `OPTIONS` is a 404 in the `errors` list the 405 uses, except on
+`search`, which answers by `Accept` as JAX-RS does: its WADL for `*/*`, `application/xml` or no
+`Accept` at all, and 204 for `application/json` or `text/html`, naming its three methods either way.
+A path no route serves is JAX-RS's own 404 — JSON when the caller asks for `application/json` by
+name, the `<status>` XML document otherwise — and a path below `space/` or `content/`, or anything
+under `/wiki` outside the API mount, is the product's HTML 404 page instead; a caller with no
+credential is sent from `/wiki/…` outside `/wiki/rest` to log in. An operation Confluence publishes
+that no route here serves refuses a caller with no credential with a served route's 403, or from a
+few services with `Current user not permitted to use Confluence`, and a caller whose credential
+resolves gets the 404 an unserved path gets. Every answer Confluence itself gives carries
+`atl-request-id`, `atl-traceid` (the same value without its dashes), `x-confluence-request-time`,
+`x-content-type-options` and `x-xss-protection`, and what the content and space services' routes
+answer adds the three headers that say the v1 REST API is deprecated.
+
 ### Fireflies — `/fireflies/graphql`
 
 **GraphQL only**, one `POST`. Root `Query` fields:
@@ -326,6 +341,32 @@ upper-case — as real's is on every route and status measured, except where rea
 different type altogether: the RFC 7807 refusals (a type-conversion 400, the 405, the 415) are
 `application/problem+json;charset=UTF-8`, and the gateway's 403 for a bearer it cannot read as a
 Connect token is the bare `application/json`.
+
+A trailing slash is not part of a path on either product, and a run of slashes inside one is a
+single slash — both spellings answer what the canonical one answers, though a refusal echoes the
+path with its trailing slash kept. A `HEAD` is the `GET` with the body left off and declares no
+length but on Jira's 401 to an unauthenticated caller, which is where Jira parts from Confluence. An
+`OPTIONS` is 200 for a caller whose credential resolves, with an empty `text/html` body, an empty
+`Accept-Patch`, an `Allow` naming the methods the vendor serves at that route — the `PUT` and
+`DELETE` on an issue among them, which Backlot does not serve — and a quota of its own; anyone else
+gets Jira's 401. A `PATCH` never reaches either product: the gateway answers 400 on Jira and 405 on
+Confluence. Nor does a method the CDN refuses itself: `TRACE` and `CONNECT` are its 405, and any
+other method it does not pass on is its 403 or 400 by how the method is spelled. A path no route
+serves is RFC 7807 at 404 with `No endpoint <METHOD> <path>.` where Jira publishes nothing at it; at
+an operation it publishes and no route here serves, a `Content-Type` the operation does not take is
+its 415 for any caller the gateway lets through, and after that a caller with no credential gets
+Jira's 401 `Client must be authenticated to access this resource.` where the operation will not run
+anonymously (`backlot/data/jira_unserved.json`), and otherwise that 404, the gap the baseline
+acknowledges. That is under `/atlassian/rest` only: outside the two API mounts the site is its web
+app, `/browse` at 200, the root a redirect to log in or to `/jira/for-you`, and Jira's own not-found
+page for the rest. Every answer past the CDN carries `atl-request-id`, `atl-traceid`,
+`x-content-type-options` and `x-xss-protection`, and Jira's own answers add `x-arequestid`,
+`cache-control` and `timing-allow-origin`, which the gateway's refusals (the Connect-token 403, a
+`PATCH`) do not carry; a caller whose credential resolves also gets its own `x-aaccountid`, and the
+burst quota's four (`ratelimit`, `ratelimit-policy`, `x-ratelimit-limit`, `x-ratelimit-remaining`)
+where a route answers or an `OPTIONS` asks at one, counted per method and route. An anonymous
+request carries none of those five, and the no-endpoint 404, a 405 and an unserved operation's 415
+carry the account id alone.
 
 ### Linear — `/linear/graphql`
 

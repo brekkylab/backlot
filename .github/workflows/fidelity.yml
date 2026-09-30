@@ -155,3 +155,19 @@ jobs:
       - name: Fail the run so the schedule shows red
         if: steps.diff.outputs.status == '1'
         run: exit 1
+
+      # backlot/data/jira_unserved.json is written from Jira's documents, so a change to them makes
+      # it stale, and that is this schedule's to find rather than a pull request's. The tests catch
+      # a baseline the file was not rewritten after, which needs no network. Run whatever the
+      # comparison found, so a divergence does not hide it; 2 is a document it could not read.
+      - name: Check the table written from Jira's documents
+        if: ${{ !cancelled() && matrix.source == 'jira' }}
+        run: |
+          set +e
+          python scripts/gen_jira_unserved.py --check
+          status=$?
+          if [ "$status" = 2 ]; then
+            echo "::warning::Jira's documents could not be read; backlot/data/jira_unserved.json went unchecked."
+            exit 0
+          fi
+          exit "$status"

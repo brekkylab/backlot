@@ -292,13 +292,23 @@ are the GraphQL POSTs at `/fireflies/graphql` and `/linear/graphql`, which their
 covers — introspection, not a path map, so there is no mount to say so. Walking `app.routes`
 instead was ruled out for `gen_docs.py`, and the same reasoning holds here.
 
-Served, not declared: a `HEAD` under `/github`, `/health` or `/_meta` is answered as the `GET` with
-the body left off (`backlot.main.answer_head_as_the_get_without_its_body`), and no `head` operation
-is written for it, because real's own description declares none either. Real GitHub answers a `HEAD`
-that way on every route measured, so the divergence was the method missing, not the method being
-undocumented. But a path diff reads methods off the two documents, and neither mentions this one,
-so nothing here would catch it going away. The middleware's prefix tuple is the record of which
-vendors it covers; a vendor joins it once its own `HEAD` is measured.
+Served, not declared: a `HEAD` under `/github`, `/atlassian`, `/notion`, `/health` or `/_meta` is
+answered as the `GET` with the body left off
+(`backlot.main.answer_head_as_the_get_without_its_body`), and no `head` operation is written for it,
+because real's own description declares none either. Real GitHub, both Atlassian products and Notion
+answer a `HEAD` that way on every route measured, so what can diverge here is whether the method is
+served, not whether it is documented. But a path diff reads methods off the two documents, and
+neither mentions this one, so nothing here would catch it going away. The middleware's prefix tuple
+is the record of which vendors it covers; a vendor joins it once its own `HEAD` is measured. What
+the `HEAD` declares about the body's length is a second such gap: which Atlassian answers declare
+it is `backlot.errors.atlassian.head_content_length`'s to say, and `tests/test_atlassian.py` is the
+record.
+
+An `OPTIONS` is a third. Jira answers a caller it can name 200 with the methods that route takes,
+and Confluence answers a JSON, wildcard or absent `Accept` with a 404 on every route but `search`,
+which answers by `Accept` too. No document here declares any of it — real's own description has no
+`options` operation and neither does Backlot's — so the two `Allow` tables in
+`backlot.errors.atlassian` and the tests beside them are what hold them.
 
 The five `x-ratelimit-*` headers are the same kind of gap. Every `/github` answer carries them
 (`backlot.main.report_github_rate_limit`), as every answer real gives does, but the comparison reads

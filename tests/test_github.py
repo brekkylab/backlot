@@ -2326,9 +2326,10 @@ def test_github_a_head_is_the_get_with_the_body_left_off(gh_client, gh_admin_h, 
     construction; each is asserted below so that the construction is not the only thing saying so.
     Real's description declares no `head` operation (none in the 2026-09-09 read) and neither does
     Backlot's OpenAPI document, so `backlot diff` and the MCP slice have no `HEAD` to read.
-    Notion's `HEAD` is measured too and answered the same way (see
-    ``test_notion_a_head_is_the_get_without_its_body``); a vendor whose `HEAD` is not measured
-    answers it 405, Slack's below.
+    Atlassian's and Notion's `HEAD` are measured too and answered the same way (see
+    ``test_atlassian_a_head_is_the_get_without_its_body``, which pins the `content-length` Jira and
+    Confluence disagree about, and ``test_notion_a_head_is_the_get_without_its_body``); a vendor
+    whose `HEAD` is not measured answers it 405, Slack's below.
     """
     c, _ = gh_client
     codebase = f"/github/repos/{gh_org}/codebase"

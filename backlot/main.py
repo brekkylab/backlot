@@ -5,7 +5,9 @@ Startup opens the read-only DB, loads the ACL/token map, and starts a background
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 import threading
 from contextlib import asynccontextmanager
 
@@ -424,6 +426,44 @@ async def serve_a_slashed_notion_path_as_the_path_without_it(request: Request, c
 
 
 @app.middleware("http")
+async def normalise_the_slashes_in_an_atlassian_path(request: Request, call_next):
+    """Route an `/atlassian` path the way the real gateway does: runs of slashes are one, and a
+    trailing slash is not part of the path.
+
+    Measured on Atlassian Cloud, 2026-09-22: `/rest/api/3/serverInfo/`, `/rest/api/2/field/`,
+    `/rest/api/3/issue/{key}/`, `/wiki/rest/api/space/`, `/wiki/rest/api/content/` and
+    `/wiki/rest/api/space/{key}/` each answer 200, as do the same paths with the slash doubled and
+    `/rest/api/3//serverInfo` with the run in the middle; a `HEAD` and an `OPTIONS` on the slashed
+    spelling answer what the slash-free one answers.
+
+    What the request ECHOES is not normalised the same way, which is why the path is kept: real
+    collapses an interior run in `detail`, `instance` and Confluence's `null for uri:` message
+    (`/api/3//nope` comes back `/api/3/nope`) but leaves a trailing slash in all three
+    (`/nopesuchroute/` comes back `/nopesuchroute/`). The collapsed spelling is stashed on the
+    scope for :func:`backlot.routers.atlassian.unmatched_path` to echo.
+
+    Ahead of routing, because the answer for a path no route matches is a route of its own
+    (`atlassian.unmatched_router`), which would otherwise claim every slashed spelling of a served
+    one. GitHub's trailing slash is the opposite rule and has its own middleware above -- the two
+    vendors are measured separately.
+    """
+    path = request.url.path
+    if path.startswith(f"{errors.atlassian.PREFIX}/"):
+        collapsed = re.sub("/{2,}", "/", path)
+        routed = collapsed.rstrip("/")
+        # `/atlassian/` is the mount itself rather than a path under it: stripping its slash leaves
+        # a path no route matches, which Starlette answers with a 307 back to the spelling that
+        # arrived. It keeps its slash and reaches the catch-all like any other unserved path.
+        if routed == errors.atlassian.PREFIX:
+            routed = collapsed
+        request.scope["atlassian_echo_path"] = collapsed
+        if routed != path:
+            request.scope["path"] = routed
+            request.scope["raw_path"] = routed.encode()
+    return await call_next(request)
+
+
+@app.middleware("http")
 async def resolve_github_id_paths(request: Request, call_next):
     """Serve `/github/repositories/{id}/…` and `/github/organizations/{id}/…` as what the
     login-keyed paths serve, because that is the form real's page urls take (see
@@ -448,53 +488,91 @@ async def resolve_github_id_paths(request: Request, call_next):
     return await call_next(request)
 
 
-# The path prefixes whose `HEAD` is the GET with the body left off. GitHub and Notion because each
-# is measured to be, and a vendor is added here once its own is rather than by a rewrite that
-# assumes they share GitHub's: api.notion.com answered `HEAD /v1/users/me` the credential's 401 and
-# `HEAD /v1/nonexistent_thing/xyz` the URL's 400 on 2026-09-22, each with the `content-length` and
-# `content-type` of the GET body beside it (178 and 145 bytes). `/health` and `/_meta` are Backlot's
-# own routes, with no vendor to measure against: a `HEAD /health` is the shape a liveness probe
-# takes, and `FastAPI`'s `APIRoute` refused it with the same 405 for the same reason.
-_HEAD_IS_THE_GET_WITHOUT_ITS_BODY = ("/github", "/notion", "/health", "/_meta")
+@app.middleware("http")
+async def refuse_a_bearer_jira_cannot_read(request: Request, call_next):
+    """Refuse a Jira read whose bearer the real gateway would not read, before the route runs.
+
+    Unlike the Basic pair, which Jira serves anonymously, an unreadable bearer is refused — and
+    refused ahead of everything, so `serverInfo` and `field` answer it too even though neither
+    needs a credential. That is why this short-circuits rather than living in
+    ``atlassian._jira_caller``. Confluence is not here: it answers its own 403 for any credential
+    that fails, which ``atlassian._confluence_caller`` already gives. Measured on two Jira Cloud
+    sites on 2026-09-04.
+
+    The body is spelled the way real spells it, a space after the colon (fifteen of them on
+    2026-09-30), and this runs inside :func:`answer_head_as_the_get_without_its_body`: a `HEAD` is
+    refused as its GET is and so carries no `content-length`, as real's did on `serverInfo` and on
+    `nopesuchroute` the same day. An `OPTIONS` is not refused here: real answers one with an
+    unreadable bearer as it answers one with none (``backlot.routers.atlassian._options_answer``).
+    """
+    if (
+        request.method != "OPTIONS"
+        and request.url.path.startswith("/atlassian/rest/")
+        and auth.atlassian_bearer_unreadable(request)
+    ):
+        body = json.dumps(errors.atlassian.connect_token_body())
+        return Response(body, status_code=403, media_type="application/json")
+    return await call_next(request)
+
+
+# The path prefixes whose `HEAD` is the GET with the body left off. GitHub, Atlassian and Notion
+# because each is measured to be, and a vendor is added here once its own is rather than by a
+# rewrite that assumes they share GitHub's: both Atlassian products answered a `HEAD` with the
+# `GET`'s status and `content-type` and nothing in the body, on all 24 routes served here and on an
+# unknown issue's and an unknown space's 404, measured 2026-09-22, and api.notion.com answered
+# `HEAD /v1/users/me` the credential's 401 and `HEAD /v1/nonexistent_thing/xyz` the URL's 400 on
+# 2026-09-22, each with the `content-length` and `content-type` of the GET body beside it (178 and
+# 145 bytes). What the vendors do NOT share is the length — see ``errors.head_content_length``,
+# asked below. `/health` and `/_meta` are Backlot's own routes, with no vendor to measure against: a
+# `HEAD /health` is the shape a liveness probe takes, and with `/health` left out of this tuple it
+# is the 405 with `allow: GET` a GitHub route gets with `/github` left out.
+_HEAD_IS_THE_GET_WITHOUT_ITS_BODY = ("/github", "/atlassian", "/notion", "/health", "/_meta")
 
 
 @app.middleware("http")
 async def answer_head_as_the_get_without_its_body(request: Request, call_next):
-    """Answer a `HEAD` as the `GET` with the body left off, which is how real GitHub answers one.
+    """Answer a `HEAD` as the `GET` with the body left off, which is how real GitHub, both Atlassian
+    products and Notion answer one.
 
-    Every GitHub route here is declared `GET` alone, and FastAPI's ``APIRoute`` does not add `HEAD`
-    to a GET route the way Starlette's ``Route`` does, so a `HEAD` reached Starlette's 405 with
-    `allow: GET` on every route, whatever the GET would have answered. Real answers the GET's own
-    status and headers with nothing in the body: `content-length` of the body the GET would have
-    carried and `Link` where the GET has one, on the 200s, the 404 for a repository that does not
-    exist, the 401 for no credential, the 422 for a blank search `q` and code search's text/plain
-    400 alike (measured against api.github.com on 2026-09-07 with `curl -I`, each `HEAD` beside its
-    `GET` the same minute). An existence check, `requests.head(url)` or `curl -I`, is what a client
-    sends a `HEAD` for, and a 405 for both the repository that exists and the one that does not
-    cannot tell them apart.
+    FastAPI's ``APIRoute`` does not add `HEAD` to a GET route the way Starlette's ``Route`` does, so
+    without this a `HEAD` on a route that serves the GET is a 405, whatever the GET answers. Real
+    GitHub answers the GET's own status and headers with nothing in the body: `content-length` of
+    the body the GET would have carried and `Link` where the GET has one, on the 200s, the 404 for a
+    repository that does not exist, the 401 for no credential, the 422 for a blank search `q` and
+    code search's text/plain 400 alike (measured against api.github.com on 2026-09-07 with
+    `curl -I`, each `HEAD` beside its `GET` the same minute). An existence check,
+    `requests.head(url)` or `curl -I`, is what a client sends a `HEAD` for, and a 405 for both the
+    repository that exists and the one that does not cannot tell them apart.
 
     A middleware rather than `HEAD` in each route's ``methods``: FastAPI writes a `head` operation
-    into `/openapi.json` for every method a route declares, where real's own description declares
-    no `head` operation at all, so declaring it would hand `backlot diff --source github` operations
+    into `/openapi.json` for every method a route declares, where real's own description declares no
+    `head` operation at all, so declaring it would hand `backlot diff --source github` operations
     real lacks and the MCP slice tools that answer nothing a GET does not. The method is rewritten
     on the scope before routing, so the GET runs in full: the router's dependencies, the handler and
-    the three middlewares inside this one, the version echo, the rate-limit count and the id-path
-    rewrite, see a GET and land on the answer by construction, and the charset middleware outside
-    it rewrites the copied `content-type` as it does the GET's. The body is read to the end to be
-    measured rather than sent, because the `content-length` a client reads a `HEAD` for is the GET
-    body's length and computing the body is the only way to have that number; a `HEAD` costs what
-    its GET costs, here as on real. The method goes back to `HEAD` on the scope once the GET has
-    answered, because the
-    server frames the response by it: uvicorn's httptools protocol reads ``scope["method"]`` when it
-    writes the body, sends nothing for a `HEAD`, and for a `GET` holds the body to the declared
+    every middleware defined above this one — the version echo, the rate-limit count, the slash and
+    id-path rewrites and the Connect-token refusal among them — see a GET and land on the answer by
+    construction, and the charset middleware outside it rewrites the copied `content-type` as it
+    does the GET's. The body is read to the end to be measured rather than sent, because the
+    `content-length` a client reads a `HEAD` for is the GET body's length and computing the body is
+    the only way to have that number; a `HEAD` costs what its GET costs, here as on real.
+
+    What the vendors do NOT share is the `content-length`: GitHub and Notion declare the length of
+    the body the `GET` would have carried and Atlassian's answers split, so that header is asked
+    for rather than assumed, through ``errors.head_content_length``.
+
+    The method goes back to `HEAD` on the scope once the GET has answered, because the server frames
+    the response by it: uvicorn's httptools protocol reads ``scope["method"]`` when it writes the
+    body, sends nothing for a `HEAD`, and for a `GET` holds the body to the declared
     `content-length`, so with the scope left saying `GET` the empty body this middleware sends was
     `RuntimeError: Response content shorter than Content-Length` in the server log and a reset
     connection for the client's next request (measured over uvicorn on a one-record corpus: a
     `requests.Session` that sent a `HEAD` had its following `GET /health` fail with
     `ConnectionResetError`; with the method restored that request is a 200 and the log is clean).
     """
-    if request.method != "HEAD" or not request.url.path.startswith(
-        _HEAD_IS_THE_GET_WITHOUT_ITS_BODY
+    path = request.url.path
+    if request.method != "HEAD" or not any(
+        path == prefix or path.startswith(f"{prefix}/")
+        for prefix in _HEAD_IS_THE_GET_WITHOUT_ITS_BODY
     ):
         return await call_next(request)
     request.scope["method"] = "GET"
@@ -504,26 +582,12 @@ async def answer_head_as_the_get_without_its_body(request: Request, call_next):
     async for chunk in response.body_iterator:
         length += len(chunk)
     head = Response(status_code=response.status_code, headers=response.headers)
-    head.headers["content-length"] = str(length)
+    declares = errors.head_content_length(request.url.path, response.status_code)
+    if declares is False:
+        del head.headers["content-length"]
+    else:
+        head.headers["content-length"] = str(length)
     return head
-
-
-@app.middleware("http")
-async def refuse_a_bearer_jira_cannot_read(request: Request, call_next):
-    """Refuse a Jira read whose bearer the real gateway would not read, before the route runs.
-
-    Unlike the Basic pair, which Jira serves anonymously, an unreadable bearer is refused — and
-    refused ahead of everything, so `serverInfo` and `field` answer it too even though neither
-    needs a credential. That is why this short-circuits rather than living in
-    ``atlassian._jira_caller``. Confluence is not here: it answers its own 403 for any credential
-    that fails, which ``atlassian._confluence_caller`` already gives. Measured against
-    ecosystem.atlassian.net and brekkylab.atlassian.net on 2026-09-04.
-    """
-    if request.url.path.startswith("/atlassian/rest/") and auth.atlassian_bearer_unreadable(
-        request
-    ):
-        return JSONResponse(status_code=403, content=errors.atlassian.connect_token_body())
-    return await call_next(request)
 
 
 @app.middleware("http")
@@ -541,6 +605,31 @@ async def report_failed_jira_login(request: Request, call_next):
     if request.url.path.startswith("/atlassian/rest/") and auth.basic_names_a_user(request):
         if auth.atlassian_caller(request).is_anonymous:
             response.headers["X-Seraph-LoginReason"] = "AUTHENTICATED_FAILED"
+    return response
+
+
+@app.middleware("http")
+async def report_atlassian_headers(request: Request, call_next):
+    """Put on every `/atlassian` answer the headers real sends beside the body: which ones, on
+    which answers, and what each is measured from is ``backlot.routers.atlassian.vendor_headers``.
+
+    Middleware for the reason GitHub's rate-limit headers are: they ride on answers no route
+    handler builds — the exception handlers' refusals, the Connect-token 403 above, the catch-all's
+    404 — and a client logging an id for a failed call needs the failed calls to carry one.
+
+    Deliberately not served: `set-cookie`, which real sends as an XSRF token on an ANONYMOUS Jira
+    200 alone (measured 2026-09-22; none of the authenticated answers carried one) and which would
+    change what a browser-shaped client does next; `atl-confluence-via`, whose value names the
+    Atlassian host that served the request and which Backlot has nothing to derive from;
+    `strict-transport-security`, which real's CDN sends on every answer and which pins a host to
+    HTTPS in a browser that reads it, so it has no place on a server reached over plain HTTP; and
+    `vary`, which names the negotiation real's edge does on `Accept-Encoding` and this server does
+    not do.
+    """
+    response = await call_next(request)
+    if errors.atlassian.owns(request.url.path):
+        for name, value in atlassian.vendor_headers(request, response.status_code).items():
+            response.headers[name] = value
     return response
 
 
@@ -692,6 +781,8 @@ app.include_router(slack.router)
 app.include_router(google.router)
 app.include_router(github.router)
 app.include_router(atlassian.router)
+# after the routes it serves, so only a path none of them match reaches it
+app.include_router(atlassian.unmatched_router)
 app.include_router(notion.router)
 # after the routes it serves, so only a path none of them match reaches it
 app.include_router(notion.unmatched_router)

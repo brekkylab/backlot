@@ -288,8 +288,9 @@ first and never range-checked; a `pageToken` it did not issue is 400 `Invalid Va
 refusals come in the order `pageSize`, `orderBy`, `q`, `pageToken`, `fields`. A blank `fields` on
 `files.list` or `files.get` answers `{}`. `files.export` refuses a format the file's type does not
 export to, the empty `mimeType=` among them, with `The requested conversion is not supported.`,
-matching the format without regard to case, and refuses an absent `mimeType` ahead of looking the
-file up. Measured against the live Drive and Sheets APIs on 2026-09-23.
+matching the format without regard to case, refuses an absent `mimeType` ahead of looking the file
+up, and serves an export under the `mimeType` exactly as sent, with no `charset`. Measured against
+the live Drive and Sheets APIs on 2026-09-23, and the export's `Content-Type` on 2026-09-30.
 
 ### HubSpot — `/hubspot/crm/v3` `/hubspot/crm/v4`
 

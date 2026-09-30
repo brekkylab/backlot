@@ -20,7 +20,7 @@ from http import HTTPStatus
 from typing import NamedTuple
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import JSONResponse, PlainTextResponse, Response
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict
 
 from backlot import auth, sheets_grid, store, synth
@@ -90,7 +90,7 @@ class DrivePermissionList(_GLoose):
     permissions: list[dict] = []
 
 
-# drive_files_get / .export return raw Response/PlainTextResponse on some branches — they get
+# drive_files_get / .export return a raw Response on some branches — they get
 # openapi_extra params only (no JSON response_model, which would mis-serialize the raw body).
 _P_DRIVE_LIST = [qp("pageSize", "integer"), qp("pageToken"), qp("q"), qp("fields"), qp("orderBy")]
 _P_DRIVE_ALT = [qp("alt"), qp("fields")]
@@ -1954,8 +1954,15 @@ async def drive_files_export(file_id: str, request: Request):
     """Measured 2026-09-23, the refusals come in this order: an absent `mimeType` ahead of the file
     lookup (a file that does not exist is still `Required parameter: mimeType`), then the 404,
     then a file that is not a Docs Editors one, then a format its type does not export to. That
-    last one is matched without regard to case -- `TEXT/CSV` exports, under `TEXT/CSV` -- and an
-    empty `mimeType=` is one of them rather than an absent parameter."""
+    last one is matched without regard to case -- `TEXT/CSV` exports -- and an empty `mimeType=`
+    is one of them rather than an absent parameter.
+
+    The export's `Content-Type` is the `mimeType` as sent and nothing more, measured 2026-09-30 on
+    eleven formats of a spreadsheet and a document under five `Accept` values each (none, `*/*`,
+    `application/json`, `text/html`, `application/xml`): `text/csv`, `TEXT/CSV`, `Text/Csv`,
+    `text/markdown` and `text/html` each came back as exactly that, with no `charset`. So the
+    header is set whole, where a ``media_type`` would have Starlette append `; charset=utf-8` to a
+    lower-case `text/` type."""
     conn = auth.conn(request)
     caller = _require(request)
     requested = gerr.first_repeat(request.query_params, "mimeType")
@@ -1983,10 +1990,10 @@ async def drive_files_export(file_id: str, request: Request):
         stored = store.gdrive_sheets_for(conn, file_id)
         if stored:
             grid = json.loads(stored[0]["grid"])
-            return PlainTextResponse(sheets_grid.to_tsv(grid), media_type=requested)
+            return Response(sheets_grid.to_tsv(grid), headers={"content-type": requested})
     plain = target in ("text/csv", "text/tab-separated-values")
     body = row["content"] if plain else f"{row['title']}\n\n{row['content']}"
-    return PlainTextResponse(body, media_type=requested)
+    return Response(body, headers={"content-type": requested})
 
 
 @router.get("/drive/v3/files/{file_id}/permissions", response_model=DrivePermissionList)

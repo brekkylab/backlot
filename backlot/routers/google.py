@@ -492,8 +492,8 @@ _GMAIL_HEX = re.compile(r"[0-9a-fA-F]+\Z")
 
 def _gmail_check_shape(served_id: str) -> None:
     """Raises if ``served_id`` isn't a parsable, in-range hex id — the check every gmail
-    id-resolving path (except attachment download) must run BEFORE any lookup, so an unparsable id is 400 INVALID_ARGUMENT
-    regardless of whether it would otherwise resolve.
+    id-resolving path but ``attachments.get`` must run BEFORE any lookup, so an unparsable id is
+    400 INVALID_ARGUMENT regardless of whether it would otherwise resolve.
 
     Measured against the real API: 400 INVALID_ARGUMENT "Invalid id value" for a non-hex id or one
     >= 2**63, 404 only for a well-formed id it does not hold. `7fffffffffffffff` is well-formed;

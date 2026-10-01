@@ -119,14 +119,11 @@ def gmail():
     check("Gmail", "messages.list q (free text)")(lambda: f"{len(qres)} match" if qres else 1 / 0)
     fres = svc.users().messages().list(userId="me", q="from:ceo").execute().get("messages", [])
     check("Gmail", "messages.list q (from:)")(lambda: f"{len(fres)} match" if fres else 1 / 0)
-    check("Gmail", "threads.list")(
-        lambda: (
-            f"{len(svc.users().threads().list(userId='me').execute().get('threads', []))} threads"
-        )
-    )
+    threads = svc.users().threads().list(userId="me").execute().get("threads", [])
+    check("Gmail", "threads.list")(lambda: f"{len(threads)} threads" if threads else 1 / 0)
     check("Gmail", "threads.get")(
         lambda: (
-            f"{len(svc.users().threads().get(userId='me', id=msgs[0]['id']).execute()['messages'])} msgs"
+            f"{len(svc.users().threads().get(userId='me', id=threads[0]['id']).execute()['messages'])} msgs"
         )
     )
     # Served ids must look like Gmail's own: 16 lowercase hex under 2**63. A dsid would be

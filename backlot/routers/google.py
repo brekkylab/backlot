@@ -607,7 +607,7 @@ async def gmail_attachment(user_id: str, msg_id: str, att_id: str, request: Requ
     ids = auth.visible_ids(request, caller)
     row = _gmail_doc(conn, ids, msg_id)
     if row is None:
-        raise gerr.not_found_entity()
+        raise gerr.invalid_attachment_token()
     message_id = row["id"]
     found = next(
         (
@@ -617,7 +617,9 @@ async def gmail_attachment(user_id: str, msg_id: str, att_id: str, request: Requ
         ),
         None,
     )
-    body = _att_content(message_id, found[0], found[1]) if found else f"attachment {att_id}"
+    if not found:
+        raise gerr.invalid_attachment_token()
+    body = _att_content(message_id, found[0], found[1])
     return {"attachmentId": att_id, "size": len(body), "data": _b64url(body)}
 
 

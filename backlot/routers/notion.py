@@ -768,15 +768,39 @@ async def list_comments(request: Request):
         return refusal
     conn = auth.conn(request)
     block_id = request.query_params.get("block_id")
+    # Real refuses a comments query whose `block_id` is absent or not a uuid before it looks at
+    # anything (measured 2026-10-01), and one that names a database as restricted rather than
+    # answering it -- where a page's id is the 200 list both sides agree on.
+    if block_id is None:
+        return _error(
+            request,
+            400,
+            "validation_error",
+            "query failed validation: query.block_id should be defined, instead was `undefined`.",
+        )
+    try:
+        uuid.UUID(block_id)
+    except ValueError:
+        return _error(
+            request,
+            400,
+            "validation_error",
+            f'query failed validation: query.block_id should be a valid uuid, instead was `"{block_id}"`.',
+        )
     # One ACL-scoped query (the parent must itself be visible to the caller), not
     # a resolve followed by a get_document refetch of the same row -- see get_page and friends.
-    row = (
-        store.notion_by_id(conn, _norm(block_id), auth.visible_ids(request, caller))
-        if block_id
-        else None
-    )
+    row = store.notion_by_id(conn, _norm(block_id), auth.visible_ids(request, caller))
     if row is None:
-        return _list_obj([], 0, 0, 0, "comment")
+        return _error(
+            request, 404, "object_not_found", f"Could not find block with ID: {block_id}."
+        )
+    if row["subtype"] == "database":
+        return _error(
+            request,
+            403,
+            "restricted_resource",
+            "This object is managed by Notion and isn’t accessible via MCP",
+        )
     parent_id = row["id"]
     comments = store.doc_comments(conn, "notion", parent_id)
     offset = pagination.decode_cursor(request.query_params.get("start_cursor"))

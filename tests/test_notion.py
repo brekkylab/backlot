@@ -327,6 +327,53 @@ def test_notion_search_and_comments(client, notion_h):
     assert c["results"][0]["object"] == "comment"
 
 
+def test_notion_comments_refuses_a_block_id_it_cannot_use(client, notion_h):
+    """Issue #393: real Notion refuses a comments query whose `block_id` is absent or unusable,
+    where Backlot answers an empty list. Measured against api.notion.com on 2026-10-01 with
+    `Notion-Version: 2025-09-03`: no `block_id` and a non-uuid one are 400 `validation_error`,
+    a uuid that names no block is 404 `object_not_found`, and a database's id is 403
+    `restricted_resource` -- each in Notion's error envelope."""
+    # no block_id at all
+    r = client.get("/notion/v1/comments", headers=notion_h)
+    assert r.status_code == 400, r.text
+    body = r.json()
+    assert body["object"] == "error" and body["status"] == 400
+    assert body["code"] == "validation_error"
+    assert body["message"] == (
+        "query failed validation: query.block_id should be defined, instead was `undefined`."
+    )
+    # a block_id that is not a uuid
+    r = client.get("/notion/v1/comments", params={"block_id": "nope"}, headers=notion_h)
+    assert r.status_code == 400, r.text
+    body = r.json()
+    assert body["object"] == "error" and body["status"] == 400
+    assert body["code"] == "validation_error"
+    assert body["message"] == (
+        'query failed validation: query.block_id should be a valid uuid, instead was `"nope"`.'
+    )
+    # a uuid that names no block
+    r = client.get(
+        "/notion/v1/comments",
+        params={"block_id": "00000000-0000-0000-0000-000000000000"},
+        headers=notion_h,
+    )
+    assert r.status_code == 404, r.text
+    body = r.json()
+    assert body["object"] == "error" and body["status"] == 404
+    assert body["code"] == "object_not_found"
+    assert body["message"].startswith(
+        "Could not find block with ID: 00000000-0000-0000-0000-000000000000."
+    )
+    # a database's id
+    r = client.get(
+        "/notion/v1/comments", params={"block_id": synth.notion_id("nt-tasks-db")}, headers=notion_h
+    )
+    assert r.status_code == 403, r.text
+    body = r.json()
+    assert body["object"] == "error" and body["status"] == 403
+    assert body["code"] == "restricted_resource"
+
+
 def test_notion_search_filter_database_only(client, notion_h):
     s = client.post(
         "/notion/v1/search",

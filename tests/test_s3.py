@@ -99,6 +99,7 @@ def _signed(base_url, path, token, method="GET", extra_headers=None, body=None):
 
 # A payload hash naming a trailing checksum (``backlot.routers.s3._TRAILERS``).
 _TRAILER = "STREAMING-UNSIGNED-PAYLOAD-TRAILER"
+_TRAILER_SENT = {"x-amz-content-sha256": _TRAILER}
 
 # The pair real puts on every answer, and the refusal it gives a method this router does not serve.
 # The pair measured 2026-09-22 at ap-northeast-2 over twenty-five response shapes; the refusals
@@ -210,18 +211,13 @@ def test_s3_the_same_request_gets_the_same_pair_and_another_request_a_different_
 
 _KEY = "/s3/eng-artifacts/docs/runbook.md"
 
+# fmt: off
 _REFUSAL_ROWS = [
     # path, method, status, code, a member of the body, the Allow this server sends, and any
     # headers the request carries beyond the signature's
     ("/s3/eng-artifacts", "PATCH", 405, "MethodNotAllowed", "<ResourceType>BUCKET</", "GET, HEAD"),
-    (
-        "/s3/eng-artifacts",
-        "POST",
-        412,
-        "PreconditionFailed",
-        "multipart/form-data</Condition>",
-        None,
-    ),
+    ("/s3/eng-artifacts", "POST", 412, "PreconditionFailed", "multipart/form-data</Condition>",
+     None),
     ("/s3/eng-artifacts", "OPTIONS", 400, "BadRequest", "Origin request header needed.", None),
     (_KEY, "PATCH", 405, "MethodNotAllowed", "<ResourceType>OBJECT</", "GET, HEAD"),
     (_KEY, "POST", 405, "MethodNotAllowed", "<Method>POST</Method>", "GET, HEAD"),
@@ -259,33 +255,15 @@ _REFUSAL_ROWS = [
         )
         for method in ("GET", "POST", "DELETE", "PATCH")
     ],
-    (
-        "/s3/eng-artifacts?metadataJournalTable=v",
-        "GET",
-        405,
-        "MethodNotAllowed",
-        ">BUCKET_METADATA_JOURNAL_TABLE_CONFIGURATION</",
-        None,
-    ),
+    ("/s3/eng-artifacts?metadataJournalTable=v", "GET", 405, "MethodNotAllowed",
+     ">BUCKET_METADATA_JOURNAL_TABLE_CONFIGURATION</", None),
     (f"{_KEY}?delete", "GET", 405, "MethodNotAllowed", ">MULTI_OBJECT_DELETE</", None),
     (f"{_KEY}?encryption", "GET", 405, "MethodNotAllowed", ">OBJECT_ENCRYPTION</", None),
     (f"{_KEY}?restore", "GET", 405, "MethodNotAllowed", ">RESTORE</", None),
-    (
-        f"{_KEY}?select",
-        "GET",
-        405,
-        "MethodNotAllowed",
-        "<Method>GET</Method><ResourceType>SELECT</",
-        None,
-    ),
-    (
-        "/s3/eng-artifacts?acl&delete",
-        "GET",
-        400,
-        "InvalidArgument",
-        "parameters: acl, delete",
-        None,
-    ),
+    (f"{_KEY}?select", "GET", 405, "MethodNotAllowed", "<Method>GET</Method><ResourceType>SELECT</",
+     None),
+    ("/s3/eng-artifacts?acl&delete", "GET", 400, "InvalidArgument", "parameters: acl, delete",
+     None),
     (f"{_KEY}?uploads&acl", "GET", 400, "InvalidArgument", "parameters: acl, uploads", None),
     # `partNumber` at a bucket's path, on any method, and beside `uploadId` or a selector.
     ("/s3/eng-artifacts?partNumber=1", "PATCH", 400, "InvalidRequest", "valid key name.", None),
@@ -303,15 +281,10 @@ _REFUSAL_ROWS = [
     (f"{_KEY}?versioning", "PATCH", 405, "MethodNotAllowed", ">VERSIONING</", "GET"),
     (f"{_KEY}?location", "PUT", 405, "MethodNotAllowed", ">LOCATION</", "GET"),
     (f"{_KEY}?cors&acl", "PUT", 400, "InvalidArgument", "parameters: acl, cors", None),
-    (
-        "/s3/eng-artifacts?acl&versioning",
-        "PATCH",
-        400,
-        "InvalidArgument",
-        "Conflicting query string parameters: acl, versioning",
-        None,
-    ),
+    ("/s3/eng-artifacts?acl&versioning", "PATCH", 400, "InvalidArgument",
+     "Conflicting query string parameters: acl, versioning", None),
 ]
+# fmt: on
 
 
 @pytest.mark.parametrize(
@@ -406,8 +379,8 @@ _WRITE_ROWS = [
     ids=[f"{r[1]}-{r[0].rsplit('/', 1)[-1]}{'-body' if r[2] else ''}" for r in _WRITE_ROWS],
 )
 def test_s3_a_write_is_refused_as_not_implemented(live_server, path, method, body):
-    """Real answers each of these by doing the write, a selector's own method among them (`POST
-    ?delete` is DeleteObjects, a key's `POST ?uploads` the CreateMultipartUpload boto3's
+    """Real answers each of these by doing the write, a selector's own method among them
+    (`POST ?delete` is DeleteObjects, a key's `POST ?uploads` the CreateMultipartUpload boto3's
     `upload_file` sends). This server serves a corpus it does not change, so they get the code it
     already gives an operation it does not implement rather than a status that claims the write
     happened."""
@@ -600,15 +573,12 @@ def test_s3_the_method_is_refused_before_the_credential(live_server, method, pat
 
 # A credential refusal as it goes out, status, code, message and members: the headers of each row
 # built when it runs, so the date is the clock's (measured 2026-09-29).
+# fmt: off
 _WIRE_REFUSAL_ROWS = [
-    (
-        "unknown key",
-        lambda now: {"authorization": _v4("AKIABOGUS0000000BOGUS", now), "x-amz-date": now},
-        403,
-        "InvalidAccessKeyId",
-        "The AWS Access Key Id you provided does not exist in our records.",
-        "<AWSAccessKeyId>AKIABOGUS0000000BOGUS</AWSAccessKeyId>",
-    ),
+    ("unknown key",
+     lambda now: {"authorization": _v4("AKIABOGUS0000000BOGUS", now), "x-amz-date": now}, 403,
+     "InvalidAccessKeyId", "The AWS Access Key Id you provided does not exist in our records.",
+     "<AWSAccessKeyId>AKIABOGUS0000000BOGUS</AWSAccessKeyId>"),
     (
         "a date past 9999",
         lambda now: {
@@ -633,6 +603,7 @@ _WIRE_REFUSAL_ROWS = [
         "<RequestedRegion>us-east-1</RequestedRegion><RegionSet>us-west-2</RegionSet>",
     ),
 ]
+# fmt: on
 
 
 @pytest.mark.parametrize(
@@ -716,6 +687,7 @@ def test_s3_tampered_signature_rejected(live_server, method, path, status):
 
 # Each row is real's answer for a name nobody owns (2026-09-29), which every corpus bucket gets here
 # too, an unsigned request seeing no bucket (``backlot.routers.s3._auth``).
+# fmt: off
 _ANONYMOUS_ROWS = [
     ("GET", "/s3/eng-artifacts?list-type=2", 404, "NoSuchBucket"),
     ("GET", "/s3/eng-artifacts?location", 404, "NoSuchBucket"),
@@ -730,12 +702,8 @@ _ANONYMOUS_ROWS = [
     ("GET", "/s3/eng-artifacts?list-type=2&X-Amz-Signature=00", 404, "NoSuchBucket"),
     # The admin's own key, which the test puts in for `{admin_key}`.
     ("GET", "/s3/eng-artifacts?list-type=2&AWSAccessKeyId={admin_key}", 404, "NoSuchBucket"),
-    (
-        "GET",
-        "/s3/eng-artifacts?list-type=2&Expires=9999999999&AWSAccessKeyId=x",
-        404,
-        "NoSuchBucket",
-    ),
+    ("GET", "/s3/eng-artifacts?list-type=2&Expires=9999999999&AWSAccessKeyId=x", 404,
+     "NoSuchBucket"),
     # Nor does an empty `Authorization` with no credential in the query
     # (``backlot.auth.resolve_sigv4``).
     *[
@@ -745,6 +713,7 @@ _ANONYMOUS_ROWS = [
     # ListBuckets, which real answers with a 307 to the product page and no body.
     ("GET", "/s3/", 307, None),
 ]
+# fmt: on
 
 
 @pytest.mark.parametrize(
@@ -1342,6 +1311,7 @@ def _max_buckets(value):
 # ListBuckets' refusals as real answered them signed (2026-09-29, us-east-1): the query, the message
 # and the members after it (None: the listing), and the status real answered the request with
 # unsigned and over a bad secret, where it was sent so (same date).
+# fmt: off
 _LIST_BUCKETS_REFUSAL_ROWS = [
     ("max-buckets=abc", _BUCKET_PARSE, _max_buckets("abc"), 400, 400),
     ("max-buckets=%201", _BUCKET_PARSE, _max_buckets(" 1"), None, None),
@@ -1354,55 +1324,20 @@ _LIST_BUCKETS_REFUSAL_ROWS = [
     ("max-buckets=0&bucket-region=zz", _BUCKET_RANGE, _max_buckets("0"), None, None),
     ("bucket-region=zz", "Argument value zz is not a valid AWS Region", _BUCKET_REGION, 400, 400),
     ("bucket-region=", "Argument value  is not a valid AWS Region", _BUCKET_REGION, None, None),
-    (
-        "bucket-region=Z%26Z",
-        "Argument value Z&amp;Z is not a valid AWS Region",
-        _BUCKET_REGION,
-        None,
-        None,
-    ),
-    (
-        "bucket-region=us-east-1%20",
-        "Argument value us-east-1  is not a valid AWS Region",
-        _BUCKET_REGION,
-        None,
-        None,
-    ),
-    (
-        "bucket-region=%20us-east-1",
-        "Argument value  us-east-1 is not a valid AWS Region",
-        _BUCKET_REGION,
-        None,
-        None,
-    ),
-    (
-        "bucket-region=us-east-1%09",
-        "Argument value us-east-1\t is not a valid AWS Region",
-        _BUCKET_REGION,
-        None,
-        None,
-    ),
-    (
-        "bucket-region=zz&bucket-region=us-east-1",
-        "Argument value zz is not a valid AWS Region",
-        _BUCKET_REGION,
-        None,
-        None,
-    ),
-    (
-        "continuation-token=garbage&bucket-region=zz",
-        "Argument value zz is not a valid AWS Region",
-        _BUCKET_REGION,
-        None,
-        None,
-    ),
-    (
-        "prefix=&bucket-region=zz",
-        "Argument value zz is not a valid AWS Region",
-        _BUCKET_REGION,
-        None,
-        None,
-    ),
+    ("bucket-region=Z%26Z", "Argument value Z&amp;Z is not a valid AWS Region", _BUCKET_REGION,
+     None, None),
+    ("bucket-region=us-east-1%20", "Argument value us-east-1  is not a valid AWS Region",
+     _BUCKET_REGION, None, None),
+    ("bucket-region=%20us-east-1", "Argument value  us-east-1 is not a valid AWS Region",
+     _BUCKET_REGION, None, None),
+    ("bucket-region=us-east-1%09", "Argument value us-east-1\t is not a valid AWS Region",
+     _BUCKET_REGION, None, None),
+    ("bucket-region=zz&bucket-region=us-east-1", "Argument value zz is not a valid AWS Region",
+     _BUCKET_REGION, None, None),
+    ("continuation-token=garbage&bucket-region=zz", "Argument value zz is not a valid AWS Region",
+     _BUCKET_REGION, None, None),
+    ("prefix=&bucket-region=zz", "Argument value zz is not a valid AWS Region", _BUCKET_REGION,
+     None, None),
     ("bucket-region=ap-northeast-2", _BUCKET_ENDPOINT, _BUCKET_REGION, 400, 400),
     ("bucket-region=US-WEST-2", _BUCKET_ENDPOINT, _BUCKET_REGION, None, None),
     ("bucket-region=eu-west-1", _BUCKET_ENDPOINT, _BUCKET_REGION, None, None),
@@ -1412,6 +1347,7 @@ _LIST_BUCKETS_REFUSAL_ROWS = [
     ("continuation-token=Zzp4", _BUCKET_TOKEN, _TOKEN_ARGUMENT, 307, 403),
     ("prefix=x", None, None, 307, 403),
 ]
+# fmt: on
 
 
 @pytest.mark.parametrize(
@@ -1479,158 +1415,60 @@ def test_list_objects_v2_delimiter_common_prefixes(live_server):
 
 # What real answered each selector's GET with on a bucket nobody configured: status, Content-Type
 # and the body as sent, request ids aside (2026-09-29, us-east-1).
+# fmt: off
 _CONFIGURATION_ROWS = [
-    (
-        "abac",
-        200,
-        None,
-        '<?xml version="1.0" encoding="UTF-8"?>\n<AbacStatus xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Status>Disabled</Status></AbacStatus>',
-    ),
-    (
-        "accelerate",
-        200,
-        None,
-        '<?xml version="1.0" encoding="UTF-8"?>\n<AccelerateConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"/>',
-    ),
-    (
-        "acl",
-        200,
-        "application/xml",
-        '<?xml version="1.0" encoding="UTF-8"?>\n<AccessControlPolicy xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Owner><ID>{owner}</ID></Owner><AccessControlList><Grant><Grantee xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="CanonicalUser"><ID>{owner}</ID></Grantee><Permission>FULL_CONTROL</Permission></Grant></AccessControlList></AccessControlPolicy>',
-    ),
-    (
-        "analytics",
-        200,
-        None,
-        '<ListBucketAnalyticsConfigurationsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>false</IsTruncated></ListBucketAnalyticsConfigurationsResult>',
-    ),
-    (
-        "cors",
-        404,
-        "application/xml",
-        '<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>NoSuchCORSConfiguration</Code><Message>The CORS configuration does not exist</Message><BucketName>{bucket}</BucketName><RequestId/><HostId/></Error>',
-    ),
-    (
-        "encryption",
-        200,
-        None,
-        '<?xml version="1.0" encoding="UTF-8"?>\n<ServerSideEncryptionConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Rule><BucketKeyEnabled>false</BucketKeyEnabled><ApplyServerSideEncryptionByDefault><SSEAlgorithm>AES256</SSEAlgorithm></ApplyServerSideEncryptionByDefault><BlockedEncryptionTypes><EncryptionType>SSE-C</EncryptionType></BlockedEncryptionTypes></Rule></ServerSideEncryptionConfiguration>',
-    ),
-    (
-        "intelligent-tiering",
-        200,
-        None,
-        '<ListIntelligentTieringConfigurationsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>false</IsTruncated></ListIntelligentTieringConfigurationsResult>',
-    ),
-    (
-        "inventory",
-        200,
-        None,
-        '<?xml version="1.0" encoding="UTF-8"?><ListInventoryConfigurationsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>false</IsTruncated></ListInventoryConfigurationsResult>',
-    ),
-    (
-        "lifecycle",
-        404,
-        "application/xml",
-        "<Error><Code>NoSuchLifecycleConfiguration</Code><Message>The lifecycle configuration does not exist</Message><BucketName>{bucket}</BucketName><RequestId/><HostId/></Error>",
-    ),
-    (
-        "location",
-        200,
-        "application/xml",
-        '<?xml version="1.0" encoding="UTF-8"?>\n<LocationConstraint xmlns="http://s3.amazonaws.com/doc/2006-03-01/"/>',
-    ),
-    (
-        "logging",
-        200,
-        "application/xml",
-        '<?xml version="1.0" encoding="UTF-8"?>\n\n<BucketLoggingStatus xmlns="http://s3.amazonaws.com/doc/2006-03-01/">\n  <!--<LoggingEnabled><TargetBucket>myLogsBucket</TargetBucket><TargetPrefix>add/this/prefix/to/my/log/files/access_log-</TargetPrefix></LoggingEnabled>-->\n</BucketLoggingStatus>\n',
-    ),
-    (
-        "metadataConfiguration",
-        404,
-        "application/xml",
-        "<Error><Code>MetadataConfigurationNotFound</Code><Message>The metadata configuration was not found</Message><BucketName>{bucket}</BucketName><RequestId/><HostId/></Error>",
-    ),
-    (
-        "metadataTable",
-        405,
-        "application/xml",
-        "<Error><Code>V1APIsNotAllowed</Code><Message>The V1 GetBucketMetadataTableConfiguration API operation isn't available for this account. Use the corresponding V2 GetBucketMetadataConfiguration API operation instead.</Message><Method>GET</Method><RequestId/><HostId/></Error>",
-    ),
-    (
-        "metrics",
-        200,
-        None,
-        '<?xml version="1.0" encoding="UTF-8"?><ListMetricsConfigurationsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>false</IsTruncated></ListMetricsConfigurationsResult>',
-    ),
-    (
-        "notification",
-        200,
-        None,
-        '<?xml version="1.0" encoding="UTF-8"?>\n<NotificationConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"/>',
-    ),
-    (
-        "object-lock",
-        404,
-        "application/xml",
-        '<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>ObjectLockConfigurationNotFoundError</Code><Message>Object Lock configuration does not exist for this bucket</Message><BucketName>{bucket}</BucketName><RequestId/><HostId/></Error>',
-    ),
-    (
-        "ownershipControls",
-        200,
-        None,
-        '<?xml version="1.0" encoding="UTF-8"?>\n<OwnershipControls xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Rule><ObjectOwnership>BucketOwnerEnforced</ObjectOwnership></Rule></OwnershipControls>',
-    ),
-    (
-        "policy",
-        404,
-        "application/xml",
-        '<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>NoSuchBucketPolicy</Code><Message>The bucket policy does not exist</Message><BucketName>{bucket}</BucketName><RequestId/><HostId/></Error>',
-    ),
-    (
-        "policyStatus",
-        404,
-        "application/xml",
-        '<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>NoSuchBucketPolicy</Code><Message>The bucket policy does not exist</Message><BucketName>{bucket}</BucketName><RequestId/><HostId/></Error>',
-    ),
-    (
-        "publicAccessBlock",
-        200,
-        None,
-        '<?xml version="1.0" encoding="UTF-8"?>\n<PublicAccessBlockConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><BlockPublicAcls>true</BlockPublicAcls><IgnorePublicAcls>true</IgnorePublicAcls><BlockPublicPolicy>true</BlockPublicPolicy><RestrictPublicBuckets>true</RestrictPublicBuckets></PublicAccessBlockConfiguration>',
-    ),
-    (
-        "replication",
-        404,
-        "application/xml",
-        '<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>ReplicationConfigurationNotFoundError</Code><Message>The replication configuration was not found</Message><BucketName>{bucket}</BucketName><RequestId/><HostId/></Error>',
-    ),
-    (
-        "requestPayment",
-        200,
-        None,
-        '<?xml version="1.0" encoding="UTF-8"?>\n<RequestPaymentConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Payer>BucketOwner</Payer></RequestPaymentConfiguration>',
-    ),
-    (
-        "tagging",
-        404,
-        "application/xml",
-        '<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>NoSuchTagSet</Code><Message>The TagSet does not exist</Message><BucketName>{bucket}</BucketName><RequestId/><HostId/></Error>',
-    ),
-    (
-        "versioning",
-        200,
-        None,
-        '<?xml version="1.0" encoding="UTF-8"?>\n<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"/>',
-    ),
-    (
-        "website",
-        404,
-        "application/xml",
-        '<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>NoSuchWebsiteConfiguration</Code><Message>The specified bucket does not have a website configuration</Message><BucketName>{bucket}</BucketName><RequestId/><HostId/></Error>',
-    ),
+    ("abac", 200, None,
+     '<?xml version="1.0" encoding="UTF-8"?>\n<AbacStatus xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Status>Disabled</Status></AbacStatus>'),
+    ("accelerate", 200, None,
+     '<?xml version="1.0" encoding="UTF-8"?>\n<AccelerateConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"/>'),
+    ("acl", 200, "application/xml",
+     '<?xml version="1.0" encoding="UTF-8"?>\n<AccessControlPolicy xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Owner><ID>{owner}</ID></Owner><AccessControlList><Grant><Grantee xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="CanonicalUser"><ID>{owner}</ID></Grantee><Permission>FULL_CONTROL</Permission></Grant></AccessControlList></AccessControlPolicy>'),
+    ("analytics", 200, None,
+     '<ListBucketAnalyticsConfigurationsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>false</IsTruncated></ListBucketAnalyticsConfigurationsResult>'),
+    ("cors", 404, "application/xml",
+     '<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>NoSuchCORSConfiguration</Code><Message>The CORS configuration does not exist</Message><BucketName>{bucket}</BucketName><RequestId/><HostId/></Error>'),
+    ("encryption", 200, None,
+     '<?xml version="1.0" encoding="UTF-8"?>\n<ServerSideEncryptionConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Rule><BucketKeyEnabled>false</BucketKeyEnabled><ApplyServerSideEncryptionByDefault><SSEAlgorithm>AES256</SSEAlgorithm></ApplyServerSideEncryptionByDefault><BlockedEncryptionTypes><EncryptionType>SSE-C</EncryptionType></BlockedEncryptionTypes></Rule></ServerSideEncryptionConfiguration>'),
+    ("intelligent-tiering", 200, None,
+     '<ListIntelligentTieringConfigurationsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>false</IsTruncated></ListIntelligentTieringConfigurationsResult>'),
+    ("inventory", 200, None,
+     '<?xml version="1.0" encoding="UTF-8"?><ListInventoryConfigurationsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>false</IsTruncated></ListInventoryConfigurationsResult>'),
+    ("lifecycle", 404, "application/xml",
+     "<Error><Code>NoSuchLifecycleConfiguration</Code><Message>The lifecycle configuration does not exist</Message><BucketName>{bucket}</BucketName><RequestId/><HostId/></Error>"),
+    ("location", 200, "application/xml",
+     '<?xml version="1.0" encoding="UTF-8"?>\n<LocationConstraint xmlns="http://s3.amazonaws.com/doc/2006-03-01/"/>'),
+    ("logging", 200, "application/xml",
+     '<?xml version="1.0" encoding="UTF-8"?>\n\n<BucketLoggingStatus xmlns="http://s3.amazonaws.com/doc/2006-03-01/">\n  <!--<LoggingEnabled><TargetBucket>myLogsBucket</TargetBucket><TargetPrefix>add/this/prefix/to/my/log/files/access_log-</TargetPrefix></LoggingEnabled>-->\n</BucketLoggingStatus>\n'),
+    ("metadataConfiguration", 404, "application/xml",
+     "<Error><Code>MetadataConfigurationNotFound</Code><Message>The metadata configuration was not found</Message><BucketName>{bucket}</BucketName><RequestId/><HostId/></Error>"),
+    ("metadataTable", 405, "application/xml",
+     "<Error><Code>V1APIsNotAllowed</Code><Message>The V1 GetBucketMetadataTableConfiguration API operation isn't available for this account. Use the corresponding V2 GetBucketMetadataConfiguration API operation instead.</Message><Method>GET</Method><RequestId/><HostId/></Error>"),
+    ("metrics", 200, None,
+     '<?xml version="1.0" encoding="UTF-8"?><ListMetricsConfigurationsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>false</IsTruncated></ListMetricsConfigurationsResult>'),
+    ("notification", 200, None,
+     '<?xml version="1.0" encoding="UTF-8"?>\n<NotificationConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"/>'),
+    ("object-lock", 404, "application/xml",
+     '<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>ObjectLockConfigurationNotFoundError</Code><Message>Object Lock configuration does not exist for this bucket</Message><BucketName>{bucket}</BucketName><RequestId/><HostId/></Error>'),
+    ("ownershipControls", 200, None,
+     '<?xml version="1.0" encoding="UTF-8"?>\n<OwnershipControls xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Rule><ObjectOwnership>BucketOwnerEnforced</ObjectOwnership></Rule></OwnershipControls>'),
+    ("policy", 404, "application/xml",
+     '<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>NoSuchBucketPolicy</Code><Message>The bucket policy does not exist</Message><BucketName>{bucket}</BucketName><RequestId/><HostId/></Error>'),
+    ("policyStatus", 404, "application/xml",
+     '<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>NoSuchBucketPolicy</Code><Message>The bucket policy does not exist</Message><BucketName>{bucket}</BucketName><RequestId/><HostId/></Error>'),
+    ("publicAccessBlock", 200, None,
+     '<?xml version="1.0" encoding="UTF-8"?>\n<PublicAccessBlockConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><BlockPublicAcls>true</BlockPublicAcls><IgnorePublicAcls>true</IgnorePublicAcls><BlockPublicPolicy>true</BlockPublicPolicy><RestrictPublicBuckets>true</RestrictPublicBuckets></PublicAccessBlockConfiguration>'),
+    ("replication", 404, "application/xml",
+     '<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>ReplicationConfigurationNotFoundError</Code><Message>The replication configuration was not found</Message><BucketName>{bucket}</BucketName><RequestId/><HostId/></Error>'),
+    ("requestPayment", 200, None,
+     '<?xml version="1.0" encoding="UTF-8"?>\n<RequestPaymentConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Payer>BucketOwner</Payer></RequestPaymentConfiguration>'),
+    ("tagging", 404, "application/xml",
+     '<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>NoSuchTagSet</Code><Message>The TagSet does not exist</Message><BucketName>{bucket}</BucketName><RequestId/><HostId/></Error>'),
+    ("versioning", 200, None,
+     '<?xml version="1.0" encoding="UTF-8"?>\n<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"/>'),
+    ("website", 404, "application/xml",
+     '<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>NoSuchWebsiteConfiguration</Code><Message>The specified bucket does not have a website configuration</Message><BucketName>{bucket}</BucketName><RequestId/><HostId/></Error>'),
 ]
+# fmt: on
 
 
 def _without_request_ids(body: str) -> str:
@@ -1710,6 +1548,7 @@ _TORRENT = (
 # An object's sub-resources as real answered them on a GET (2026-09-29, us-east-1), at a key the
 # bucket has and at one it does not: the query, the headers sent, the status, the Content-Type and
 # the body with the request ids aside. `{owner}`, `{etag}` and `{size}` are the object's own.
+# fmt: off
 _OBJECT_SUBRESOURCE_ROWS = [
     (
         "acl",
@@ -1732,15 +1571,10 @@ _OBJECT_SUBRESOURCE_ROWS = [
         _DECL
         + "<Error><Code>NoSuchKey</Code><Message>The specified key does not exist.</Message><Key>{bucket}/{missing}</Key><RequestId/><HostId/></Error>",
     ),
-    (
-        "attributes",
-        {},
-        400,
-        "application/xml",
-        "<Error><Code>InvalidRequest</Code><Message>The x-amz-object-attributes header specifying the attributes to be retrieved is either missing or empty</Message><RequestId/><HostId/></Error>",
-        400,
-        "<Error><Code>InvalidRequest</Code><Message>The x-amz-object-attributes header specifying the attributes to be retrieved is either missing or empty</Message><RequestId/><HostId/></Error>",
-    ),
+    ("attributes", {}, 400, "application/xml",
+     "<Error><Code>InvalidRequest</Code><Message>The x-amz-object-attributes header specifying the attributes to be retrieved is either missing or empty</Message><RequestId/><HostId/></Error>",
+     400,
+     "<Error><Code>InvalidRequest</Code><Message>The x-amz-object-attributes header specifying the attributes to be retrieved is either missing or empty</Message><RequestId/><HostId/></Error>"),
     (
         "attributes",
         {"x-amz-object-attributes": "ETag,Checksum,ObjectParts,StorageClass,ObjectSize"},
@@ -1784,15 +1618,9 @@ _OBJECT_SUBRESOURCE_ROWS = [
         404,
         "<Error><Code>NoSuchKey</Code><Message>The specified key does not exist.</Message><Key>{missing}</Key><RequestId/><HostId/></Error>",
     ),
-    (
-        "attributes",
-        {"x-amz-object-attributes": "ObjectParts"},
-        200,
-        None,
-        _DECL + '<GetObjectAttributesResponse xmlns="http://s3.amazonaws.com/doc/2006-03-01/"/>',
-        404,
-        "<Error><Code>NoSuchKey</Code><Message>The specified key does not exist.</Message><Key>{missing}</Key><RequestId/><HostId/></Error>",
-    ),
+    ("attributes", {"x-amz-object-attributes": "ObjectParts"}, 200, None,
+     _DECL + '<GetObjectAttributesResponse xmlns="http://s3.amazonaws.com/doc/2006-03-01/"/>', 404,
+     "<Error><Code>NoSuchKey</Code><Message>The specified key does not exist.</Message><Key>{missing}</Key><RequestId/><HostId/></Error>"),
     ("legal-hold", {}, 400, "application/xml", _OBJECT_LOCK, 400, _OBJECT_LOCK),
     ("retention", {}, 400, "application/xml", _OBJECT_LOCK, 400, _OBJECT_LOCK),
     ("torrent", {}, 405, "application/xml", _TORRENT, 405, _TORRENT),
@@ -1917,6 +1745,7 @@ _OBJECT_SUBRESOURCE_ROWS = [
         + "<Error><Code>InvalidArgument</Code><Message>Invalid version id specified</Message><ArgumentName>versionId</ArgumentName><ArgumentValue>NULL</ArgumentValue><RequestId/><HostId/></Error>",
     ),
 ]
+# fmt: on
 
 
 @pytest.mark.parametrize(
@@ -1988,6 +1817,23 @@ _NO_SUCH_PART = (
     "</PartNumberRequested><ActualPartCount>1</ActualPartCount>"
 )
 _NO_BUCKET = "The specified bucket does not exist"
+
+
+def _argued(name, value=None):
+    """`InvalidArgument`'s members: the name, and the value where real names one."""
+    value = "" if value is None else f"<ArgumentValue>{value}</ArgumentValue>"
+    return f"<ArgumentName>{name}</ArgumentName>{value}"
+
+
+def _argument_value(value):
+    """An `InvalidArgument` asserted by the value member it names."""
+    return (400, "InvalidArgument", f"<ArgumentValue>{value}</ArgumentValue>")
+
+
+def _attributes(value):
+    return {"x-amz-object-attributes": value}
+
+
 # The answers the rows below repeat.
 _ANNOTATION_COUNT_RANGE = (400, "InvalidArgument", _ANNOTATION_RANGE)
 _ANNOTATION_COUNT_PARSE = (400, "InvalidArgument", _ANNOTATION_PARSE)
@@ -1997,21 +1843,23 @@ _VERSION_ID_REFUSED = (400, "InvalidArgument", _NO_VERSION_ID)
 _VERSION_ID_EMPTY = (400, "InvalidArgument", _VERSION_EMPTY)
 _BAD_ATTRIBUTE = (400, "InvalidArgument", _BAD_NAME)
 _VERSION_ID_INVALID = (400, "InvalidArgument", _BAD_VERSION)
-_ARGUMENT_00 = (400, "InvalidArgument", "<ArgumentValue>00<")
-_ARGUMENT_ETAG = (400, "InvalidArgument", "<ArgumentValue>etag<")
-_ARGUMENT_EMPTY = (400, "InvalidArgument", "<ArgumentValue></ArgumentValue>")
+_ARGUMENT_00 = _argument_value("00")
+_ARGUMENT_ETAG = _argument_value("etag")
+_ARGUMENT_EMPTY = _argument_value("")
 _PART_OUT_OF_RANGE = (400, "InvalidArgument", _PART_RANGE)
 _PART_BESIDE_RANGE = (400, "InvalidRequest", _PART_AND_RANGE)
 _KEY_MISSING = (404, "NoSuchKey", "<Key>no/such.md</Key>")
 _PART_2_MISSING = (416, "InvalidPartNumber", _NO_SUCH_PART.format(2))
 _NULL_VERSION_MISSING = (404, "NoSuchVersion", "<VersionId>null</VersionId>")
 _CHECKSUM_MODE_REFUSED = (400, "InvalidRequest", _BAD_CHECKSUM_MODE)
+_GARBAGE_MODE = {"x-amz-checksum-mode": "garbage"}
 
 # Where each of an object's refusals sits against the bucket and the credential, as real answered
 # (2026-09-29, us-east-1): at a key in a bucket that does not exist (`absent`), at the object over a
 # bad secret (`tampered`), at the object signed (`present`) and at a key the bucket does not hold
 # (`missing`), two refusals at once among them; the query, the headers, and the status, code and
 # message fragment.
+# fmt: off
 _OBJECT_ORDER_ROWS = [
     ("absent", "annotation&max-annotation-results=0", {}, *_ANNOTATION_COUNT_RANGE),
     ("tampered", "annotation&max-annotation-results=0", {}, *_ANNOTATION_COUNT_RANGE),
@@ -2030,8 +1878,8 @@ _OBJECT_ORDER_ROWS = [
     ("tampered", "versionId=garbage", {}, *_SIGNATURE_MISMATCH),
     ("absent", "versionId=null", {}, *_BUCKET_ABSENT),
     ("tampered", "versionId=null", {}, *_SIGNATURE_MISMATCH),
-    ("absent", "attributes", {"x-amz-object-attributes": "garbage"}, *_BAD_ATTRIBUTE),
-    ("tampered", "attributes", {"x-amz-object-attributes": "garbage"}, *_BAD_ATTRIBUTE),
+    ("absent", "attributes", _attributes("garbage"), *_BAD_ATTRIBUTE),
+    ("tampered", "attributes", _attributes("garbage"), *_BAD_ATTRIBUTE),
     ("absent", "attributes", {}, *_BUCKET_ABSENT),
     ("absent", "acl", {}, *_BUCKET_ABSENT),
     ("absent", "tagging", {}, *_BUCKET_ABSENT),
@@ -2041,61 +1889,26 @@ _OBJECT_ORDER_ROWS = [
     ("absent", "annotation", {}, *_BUCKET_ABSENT),
     ("present", "legal-hold&versionId=garbage", {}, *_VERSION_ID_INVALID),
     ("present", "attributes&versionId=garbage", {}, *_VERSION_ID_INVALID),
-    (
-        "present",
-        "annotation&annotationName=x&max-annotation-results=abc",
-        {},
-        404,
-        "NoSuchAnnotation",
-        ">x<",
-    ),
-    (
-        "present",
-        "annotation&max-annotation-results=abc&continuation-token=garbage",
-        {},
-        *_ANNOTATION_COUNT_PARSE,
-    ),
-    (
-        "present",
-        "annotation&max-annotation-results=0&continuation-token=garbage",
-        {},
-        *_ANNOTATION_COUNT_RANGE,
-    ),
-    (
-        "present",
-        "annotation&max-annotation-results=1001",
-        {},
-        400,
-        "InvalidArgument",
-        "<ArgumentValue>1001<",
-    ),
-    (
-        "present",
-        "annotation&max-annotation-results=-01",
-        {},
-        400,
-        "InvalidArgument",
-        "<ArgumentValue>-01<",
-    ),
+    ("present", "annotation&annotationName=x&max-annotation-results=abc", {},
+     404, "NoSuchAnnotation", ">x<"),
+    ("present", "annotation&max-annotation-results=abc&continuation-token=garbage", {},
+     *_ANNOTATION_COUNT_PARSE),
+    ("present", "annotation&max-annotation-results=0&continuation-token=garbage", {},
+     *_ANNOTATION_COUNT_RANGE),
+    ("present", "annotation&max-annotation-results=1001", {}, *_argument_value("1001")),
+    ("present", "annotation&max-annotation-results=-01", {}, *_argument_value("-01")),
     ("present", "annotation&max-annotation-results=00", {}, *_ARGUMENT_00),
-    ("present", "attributes", {"x-amz-object-attributes": "etag"}, *_ARGUMENT_ETAG),
-    ("present", "attributes", {"x-amz-object-attributes": ""}, *_ARGUMENT_EMPTY),
+    ("present", "attributes", _attributes("etag"), *_ARGUMENT_ETAG),
+    ("present", "attributes", _attributes(""), *_ARGUMENT_EMPTY),
     # GetObject's `partNumber`: after the bucket and before the key, a `Range` beside it first and
     # a `versionId` before that, and a part the object does not have after the key.
-    (
-        "present",
-        "partNumber",
-        {},
-        400,
-        "InvalidArgument",
-        _PART_RANGE
-        + "</Message><ArgumentName>partNumber</ArgumentName><ArgumentValue></ArgumentValue>",
-    ),
+    ("present", "partNumber", {},
+     400, "InvalidArgument", _PART_RANGE + "</Message>" + _argued("partNumber", "")),
     ("present", "partNumber=00", {}, *_ARGUMENT_00),
-    ("present", "partNumber=%201", {}, 400, "InvalidArgument", "<ArgumentValue> 1<"),
-    ("present", "partNumber=1.0", {}, 400, "InvalidArgument", "<ArgumentValue>1.0<"),
-    ("present", "partNumber=-1", {}, 400, "InvalidArgument", "<ArgumentValue>-1<"),
-    ("present", "partNumber=10001", {}, 400, "InvalidArgument", "<ArgumentValue>10001<"),
+    ("present", "partNumber=%201", {}, *_argument_value(" 1")),
+    ("present", "partNumber=1.0", {}, *_argument_value("1.0")),
+    ("present", "partNumber=-1", {}, *_argument_value("-1")),
+    ("present", "partNumber=10001", {}, *_argument_value("10001")),
     ("missing", "partNumber=abc", {}, *_PART_OUT_OF_RANGE),
     ("absent", "partNumber=abc", {}, *_BUCKET_ABSENT),
     ("tampered", "partNumber=abc", {}, *_SIGNATURE_MISMATCH),
@@ -2122,59 +1935,35 @@ _OBJECT_ORDER_ROWS = [
     ("present", "versioning&versionId=null", {}, *_VERSION_ID_REFUSED),
     ("absent", "acl&versionId=x", {}, *_BUCKET_ABSENT),
     # `x-amz-object-attributes` read as `_attribute_names` reads it.
-    ("present", "attributes", {"x-amz-object-attributes": ",ETag"}, *_ARGUMENT_EMPTY),
-    ("present", "attributes", {"x-amz-object-attributes": "ETag,,ObjectSize"}, *_ARGUMENT_EMPTY),
-    ("absent", "attributes", {"x-amz-object-attributes": "ETag, ,ObjectSize"}, *_ARGUMENT_EMPTY),
-    ("tampered", "attributes", {"x-amz-object-attributes": "etag,garbage"}, *_ARGUMENT_ETAG),
-    (
-        "present",
-        "attributes",
-        {"x-amz-object-attributes": "garbage,etag"},
-        400,
-        "InvalidArgument",
-        "<ArgumentValue>garbage<",
-    ),
-    ("present", "attributes", {"x-amz-object-attributes": "ETag, etag"}, *_ARGUMENT_ETAG),
-    (
-        "present",
-        "attributes",
-        {"x-amz-object-attributes": ","},
-        400,
-        "InvalidRequest",
-        "either missing or empty",
-    ),
-    ("absent", "attributes", {"x-amz-object-attributes": ","}, *_BUCKET_ABSENT),
-    ("tampered", "attributes", {"x-amz-object-attributes": ",,"}, *_SIGNATURE_MISMATCH),
+    ("present", "attributes", _attributes(",ETag"), *_ARGUMENT_EMPTY),
+    ("present", "attributes", _attributes("ETag,,ObjectSize"), *_ARGUMENT_EMPTY),
+    ("absent", "attributes", _attributes("ETag, ,ObjectSize"), *_ARGUMENT_EMPTY),
+    ("tampered", "attributes", _attributes("etag,garbage"), *_ARGUMENT_ETAG),
+    ("present", "attributes", _attributes("garbage,etag"), *_argument_value("garbage")),
+    ("present", "attributes", _attributes("ETag, etag"), *_ARGUMENT_ETAG),
+    ("present", "attributes", _attributes(","), 400, "InvalidRequest", "either missing or empty"),
+    ("absent", "attributes", _attributes(","), *_BUCKET_ABSENT),
+    ("tampered", "attributes", _attributes(",,"), *_SIGNATURE_MISMATCH),
     # A key the bucket does not hold, asked for by version or by part.
     ("missing", "versionId=null", {}, *_NULL_VERSION_MISSING),
     ("missing", "partNumber=1", {}, *_KEY_MISSING),
     ("missing", "partNumber=1&versionId=null", {}, *_NULL_VERSION_MISSING),
     # A checksum mode other than `ENABLED`: after the bucket, the credential, the version, the
     # part's refusals and a range or a part the object lacks, and ahead of a missing key.
-    ("present", "", {"x-amz-checksum-mode": "garbage"}, *_CHECKSUM_MODE_REFUSED),
+    ("present", "", _GARBAGE_MODE, *_CHECKSUM_MODE_REFUSED),
     ("present", "", {"x-amz-checksum-mode": ""}, *_CHECKSUM_MODE_REFUSED),
-    ("missing", "", {"x-amz-checksum-mode": "garbage"}, *_CHECKSUM_MODE_REFUSED),
-    ("missing", "versionId=null", {"x-amz-checksum-mode": "garbage"}, *_CHECKSUM_MODE_REFUSED),
-    ("absent", "", {"x-amz-checksum-mode": "garbage"}, *_BUCKET_ABSENT),
-    ("tampered", "", {"x-amz-checksum-mode": "garbage"}, *_SIGNATURE_MISMATCH),
-    ("present", "versionId=garbage", {"x-amz-checksum-mode": "garbage"}, *_VERSION_ID_INVALID),
-    ("present", "partNumber=abc", {"x-amz-checksum-mode": "garbage"}, *_PART_OUT_OF_RANGE),
-    ("present", "partNumber=2", {"x-amz-checksum-mode": "garbage"}, *_PART_2_MISSING),
-    (
-        "present",
-        "",
-        {"x-amz-checksum-mode": "garbage", "Range": "bytes=999-"},
-        416,
-        "InvalidRange",
-        "not satisfiable",
-    ),
-    (
-        "present",
-        "partNumber=1",
-        {"x-amz-checksum-mode": "garbage", "Range": "bytes=0-1"},
-        *_PART_BESIDE_RANGE,
-    ),
+    ("missing", "", _GARBAGE_MODE, *_CHECKSUM_MODE_REFUSED),
+    ("missing", "versionId=null", _GARBAGE_MODE, *_CHECKSUM_MODE_REFUSED),
+    ("absent", "", _GARBAGE_MODE, *_BUCKET_ABSENT),
+    ("tampered", "", _GARBAGE_MODE, *_SIGNATURE_MISMATCH),
+    ("present", "versionId=garbage", _GARBAGE_MODE, *_VERSION_ID_INVALID),
+    ("present", "partNumber=abc", _GARBAGE_MODE, *_PART_OUT_OF_RANGE),
+    ("present", "partNumber=2", _GARBAGE_MODE, *_PART_2_MISSING),
+    ("present", "", {**_GARBAGE_MODE, "Range": "bytes=999-"},
+     416, "InvalidRange", "not satisfiable"),
+    ("present", "partNumber=1", {**_GARBAGE_MODE, "Range": "bytes=0-1"}, *_PART_BESIDE_RANGE),
 ]
+# fmt: on
 
 
 @pytest.mark.parametrize(
@@ -2460,95 +2249,56 @@ def test_head_with_a_subresource_names_what_a_get_serves_and_a_bare_head_still_a
 _NO_BUCKET_NAMED = (404, "NoSuchBucket", "<BucketName>no-such-bucket</BucketName>")
 _INVALID_REQUEST = (400, "InvalidRequest", "")
 
+
+def _bad_argument(name, value=None):
+    """An `InvalidArgument` naming the parameter, and its value where real names one."""
+    return (400, "InvalidArgument", _argued(name, value))
+
+
+def _not_allowed(method, resource):
+    """A `MethodNotAllowed` naming the method and real's name for the resource."""
+    return (
+        405,
+        "MethodNotAllowed",
+        f"<Method>{method}</Method><ResourceType>{resource}</ResourceType>",
+    )
+
+
 # What each refusal names between its message and the request id pair: the member real names that
 # code with, and never a `Resource` (`backlot.routers.s3._error`). InvalidRange's pair is asserted
 # beside its 416 above.
+# fmt: off
 _MEMBER_ROWS = [
     ("GET", "/s3/no-such-bucket?list-type=2", *_NO_BUCKET_NAMED),
     ("GET", "/s3/no-such-bucket/a/b.txt", *_NO_BUCKET_NAMED),
     ("DELETE", "/s3/no-such-bucket", *_NO_BUCKET_NAMED),
-    (
-        "GET",
-        "/s3/eng-artifacts/does/not/exist.md",
-        404,
-        "NoSuchKey",
-        "<Key>does/not/exist.md</Key>",
-    ),
-    (
-        "GET",
-        "/s3/eng-artifacts?list-type=2&max-keys=-1",
-        400,
-        "InvalidArgument",
-        "<ArgumentName>maxKeys</ArgumentName><ArgumentValue>-1</ArgumentValue>",
-    ),
-    (
-        "GET",
-        "/s3/eng-artifacts?list-type=2&marker=x",
-        400,
-        "InvalidArgument",
-        "<ArgumentName>marker</ArgumentName>",
-    ),
-    (
-        "GET",
-        "/s3/eng-artifacts?acl&versioning",
-        400,
-        "InvalidArgument",
-        "<ArgumentName>ResourceType</ArgumentName><ArgumentValue>acl</ArgumentValue>",
-    ),
-    (
-        "GET",
-        "/s3/eng-artifacts?delete",
-        405,
-        "MethodNotAllowed",
-        "<Method>GET</Method><ResourceType>MULTI_OBJECT_DELETE</ResourceType>",
-    ),
+    ("GET", "/s3/eng-artifacts/does/not/exist.md",
+     404, "NoSuchKey", "<Key>does/not/exist.md</Key>"),
+    ("GET", "/s3/eng-artifacts?list-type=2&max-keys=-1", *_bad_argument("maxKeys", "-1")),
+    ("GET", "/s3/eng-artifacts?list-type=2&marker=x", *_bad_argument("marker")),
+    ("GET", "/s3/eng-artifacts?acl&versioning", *_bad_argument("ResourceType", "acl")),
+    ("GET", "/s3/eng-artifacts?delete", *_not_allowed("GET", "MULTI_OBJECT_DELETE")),
     ("GET", f"{OBJECT_PATH}?uploads", *_INVALID_REQUEST),
     ("GET", f"{OBJECT_PATH}?uploadId=abc123", 404, "NoSuchUpload", "<UploadId>abc123</UploadId>"),
     ("GET", "/s3/eng-artifacts/no/such.md?uploadId=", 404, "NoSuchUpload", "<UploadId></UploadId>"),
-    (
-        "GET",
-        "/s3/no-such-bucket/a.txt?uploadId=x&max-parts=abc",
-        400,
-        "InvalidArgument",
-        "<ArgumentName>max-parts</ArgumentName><ArgumentValue>abc</ArgumentValue>",
-    ),
+    ("GET", "/s3/no-such-bucket/a.txt?uploadId=x&max-parts=abc",
+     *_bad_argument("max-parts", "abc")),
     ("GET", "/s3/eng-artifacts?partNumber=1", *_INVALID_REQUEST),
-    (
-        "GET",
-        "/s3/eng-artifacts/runbooks/oncall.md?uploadId=x&part-number-marker=abc",
-        400,
-        "InvalidArgument",
-        "<ArgumentName>part-number-marker</ArgumentName><ArgumentValue>abc</ArgumentValue>",
-    ),
+    ("GET", "/s3/eng-artifacts/runbooks/oncall.md?uploadId=x&part-number-marker=abc",
+     *_bad_argument("part-number-marker", "abc")),
     # Two object selectors at a bucket's path, after the bucket
     # (``backlot.routers.s3._BUCKET_OBJECT_SELECTORS``).
-    (
-        "GET",
-        "/s3/eng-artifacts?torrent",
-        405,
-        "MethodNotAllowed",
-        "<Method>GET</Method><ResourceType>TORRENT</ResourceType>",
-    ),
+    ("GET", "/s3/eng-artifacts?torrent", *_not_allowed("GET", "TORRENT")),
     ("GET", "/s3/eng-artifacts?uploadId=x", *_INVALID_REQUEST),
     ("POST", "/s3/eng-artifacts?uploadId=x", *_INVALID_REQUEST),
     ("GET", "/s3/no-such-bucket?torrent", *_NO_BUCKET_NAMED),
     ("DELETE", "/s3/no-such-bucket?uploadId=x", *_NO_BUCKET_NAMED),
     # The bucket selectors real answers at a key's path are the bucket's own operations, whatever
     # the key, and name the bucket; `?logging` and `?versions` are 400s of their own there.
-    (
-        "GET",
-        "/s3/eng-artifacts/runbooks/oncall.md?cors",
-        404,
-        "NoSuchCORSConfiguration",
-        "<BucketName>eng-artifacts</BucketName>",
-    ),
-    (
-        "GET",
-        "/s3/eng-artifacts/no/such.md?policy",
-        404,
-        "NoSuchBucketPolicy",
-        "<BucketName>eng-artifacts</BucketName>",
-    ),
+    ("GET", "/s3/eng-artifacts/runbooks/oncall.md?cors",
+     404, "NoSuchCORSConfiguration", "<BucketName>eng-artifacts</BucketName>"),
+    ("GET", "/s3/eng-artifacts/no/such.md?policy",
+     404, "NoSuchBucketPolicy", "<BucketName>eng-artifacts</BucketName>"),
     ("GET", "/s3/eng-artifacts/runbooks/oncall.md?logging", 400, "NoLoggingStatusForKey", ""),
     ("GET", "/s3/eng-artifacts/runbooks/oncall.md?versions", *_INVALID_REQUEST),
     ("GET", "/s3/no-such-bucket/a.txt?versioning", *_NO_BUCKET_NAMED),
@@ -2557,16 +2307,13 @@ _MEMBER_ROWS = [
     # A payload hash naming a trailer, on an operation that takes no upload: after the bucket and
     # what is refused before the credential, ahead of what is refused after the bucket.
     *[
-        ("GET", path, 400, "InvalidRequest", "", {"x-amz-content-sha256": trailer})
-        for trailer in (
-            "STREAMING-UNSIGNED-PAYLOAD-TRAILER",
-            "STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER",
-            "STREAMING-AWS4-ECDSA-P256-SHA256-PAYLOAD-TRAILER",
-        )
+        ("GET", path, *_INVALID_REQUEST, {"x-amz-content-sha256": trailer})
+        for trailer in (_TRAILER, "STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER",
+                        "STREAMING-AWS4-ECDSA-P256-SHA256-PAYLOAD-TRAILER")
         for path in ("/s3/eng-artifacts?list-type=2", "/s3/eng-artifacts/runbooks/oncall.md")
     ],
     *[
-        ("GET", path, 400, "InvalidRequest", "", {"x-amz-content-sha256": _TRAILER})
+        ("GET", path, *_INVALID_REQUEST, _TRAILER_SENT)
         for path in (
             "/s3/eng-artifacts?versioning",
             "/s3/eng-artifacts?acl",
@@ -2577,31 +2324,12 @@ _MEMBER_ROWS = [
             "/s3/",
         )
     ],
-    (
-        "GET",
-        "/s3/no-such-bucket?list-type=2",
-        404,
-        "NoSuchBucket",
-        "<BucketName>no-such-bucket</BucketName>",
-        {"x-amz-content-sha256": _TRAILER},
-    ),
-    (
-        "GET",
-        "/s3/eng-artifacts?max-keys=abc",
-        400,
-        "InvalidArgument",
-        "<ArgumentName>max-keys</ArgumentName><ArgumentValue>abc</ArgumentValue>",
-        {"x-amz-content-sha256": _TRAILER},
-    ),
-    (
-        "GET",
-        "/s3/eng-artifacts?acl&versioning",
-        400,
-        "InvalidArgument",
-        "<ArgumentName>ResourceType</ArgumentName><ArgumentValue>acl</ArgumentValue>",
-        {"x-amz-content-sha256": _TRAILER},
-    ),
+    ("GET", "/s3/no-such-bucket?list-type=2", *_NO_BUCKET_NAMED, _TRAILER_SENT),
+    ("GET", "/s3/eng-artifacts?max-keys=abc", *_bad_argument("max-keys", "abc"), _TRAILER_SENT),
+    ("GET", "/s3/eng-artifacts?acl&versioning", *_bad_argument("ResourceType", "acl"),
+     _TRAILER_SENT),
 ]
+# fmt: on
 
 
 @pytest.mark.parametrize(
@@ -2623,108 +2351,50 @@ def test_s3_a_refusal_names_what_it_refused_with_the_member_real_uses_for_its_co
 
 
 # The four configuration lists' own parameters, as real answered them (2026-09-29).
+# fmt: off
 _CONFIGURATION_LIST_ROWS = [
-    (
-        "analytics&id=x",
-        404,
-        '<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>NoSuchConfiguration</Code><Message>The specified configuration does not exist.</Message><RequestId/><HostId/></Error>',
-    ),
-    (
-        "analytics&id=",
-        200,
-        '<ListBucketAnalyticsConfigurationsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>false</IsTruncated></ListBucketAnalyticsConfigurationsResult>',
-    ),
-    (
-        "analytics&continuation-token=garbage",
-        400,
-        '<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>MalformedContinuationToken</Code><Message>The continuation-token you provided invalid.</Message><RequestId/><HostId/></Error>',
-    ),
-    (
-        "analytics&continuation-token=",
-        200,
-        '<ListBucketAnalyticsConfigurationsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>false</IsTruncated><ContinuationToken></ContinuationToken></ListBucketAnalyticsConfigurationsResult>',
-    ),
-    (
-        "analytics&id=x&continuation-token=garbage",
-        404,
-        '<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>NoSuchConfiguration</Code><Message>The specified configuration does not exist.</Message><RequestId/><HostId/></Error>',
-    ),
-    (
-        "intelligent-tiering&id=x",
-        404,
-        "<Error><Code>NoSuchConfiguration</Code><Message>The specified configuration does not exist.</Message><RequestId/><HostId/></Error>",
-    ),
-    (
-        "intelligent-tiering&id=",
-        200,
-        '<ListIntelligentTieringConfigurationsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>false</IsTruncated></ListIntelligentTieringConfigurationsResult>',
-    ),
-    (
-        "intelligent-tiering&continuation-token=garbage",
-        400,
-        "<Error><Code>MalformedContinuationToken</Code><Message>The continuation-token you provided invalid.</Message><RequestId/><HostId/></Error>",
-    ),
-    (
-        "intelligent-tiering&continuation-token=",
-        200,
-        '<ListIntelligentTieringConfigurationsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>false</IsTruncated><ContinuationToken></ContinuationToken></ListIntelligentTieringConfigurationsResult>',
-    ),
-    (
-        "intelligent-tiering&id=x&continuation-token=garbage",
-        404,
-        "<Error><Code>NoSuchConfiguration</Code><Message>The specified configuration does not exist.</Message><RequestId/><HostId/></Error>",
-    ),
-    (
-        "inventory&id=x",
-        404,
-        "<Error><Code>NoSuchConfiguration</Code><Message>The specified configuration does not exist.</Message><RequestId/><HostId/></Error>",
-    ),
-    (
-        "inventory&id=",
-        200,
-        '<?xml version="1.0" encoding="UTF-8"?><ListInventoryConfigurationsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>false</IsTruncated></ListInventoryConfigurationsResult>',
-    ),
-    (
-        "inventory&continuation-token=garbage",
-        400,
-        "<Error><Code>MalformedContinuationToken</Code><Message>The continuation-token you provided invalid.</Message><RequestId/><HostId/></Error>",
-    ),
-    (
-        "inventory&continuation-token=",
-        200,
-        '<?xml version="1.0" encoding="UTF-8"?><ListInventoryConfigurationsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>false</IsTruncated><ContinuationToken></ContinuationToken></ListInventoryConfigurationsResult>',
-    ),
-    (
-        "inventory&id=x&continuation-token=garbage",
-        404,
-        "<Error><Code>NoSuchConfiguration</Code><Message>The specified configuration does not exist.</Message><RequestId/><HostId/></Error>",
-    ),
-    (
-        "metrics&id=x",
-        404,
-        '<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>NoSuchConfiguration</Code><Message>The specified configuration does not exist.</Message><RequestId/><HostId/></Error>',
-    ),
-    (
-        "metrics&id=",
-        200,
-        '<?xml version="1.0" encoding="UTF-8"?><ListMetricsConfigurationsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>false</IsTruncated></ListMetricsConfigurationsResult>',
-    ),
-    (
-        "metrics&continuation-token=garbage",
-        400,
-        '<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>MalformedContinuationToken</Code><Message>The continuation-token you provided invalid.</Message><RequestId/><HostId/></Error>',
-    ),
-    (
-        "metrics&continuation-token=",
-        200,
-        '<?xml version="1.0" encoding="UTF-8"?><ListMetricsConfigurationsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>false</IsTruncated><ContinuationToken></ContinuationToken></ListMetricsConfigurationsResult>',
-    ),
-    (
-        "metrics&id=x&continuation-token=garbage",
-        404,
-        '<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>NoSuchConfiguration</Code><Message>The specified configuration does not exist.</Message><RequestId/><HostId/></Error>',
-    ),
+    ("analytics&id=x", 404,
+     '<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>NoSuchConfiguration</Code><Message>The specified configuration does not exist.</Message><RequestId/><HostId/></Error>'),
+    ("analytics&id=", 200,
+     '<ListBucketAnalyticsConfigurationsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>false</IsTruncated></ListBucketAnalyticsConfigurationsResult>'),
+    ("analytics&continuation-token=garbage", 400,
+     '<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>MalformedContinuationToken</Code><Message>The continuation-token you provided invalid.</Message><RequestId/><HostId/></Error>'),
+    ("analytics&continuation-token=", 200,
+     '<ListBucketAnalyticsConfigurationsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>false</IsTruncated><ContinuationToken></ContinuationToken></ListBucketAnalyticsConfigurationsResult>'),
+    ("analytics&id=x&continuation-token=garbage", 404,
+     '<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>NoSuchConfiguration</Code><Message>The specified configuration does not exist.</Message><RequestId/><HostId/></Error>'),
+    ("intelligent-tiering&id=x", 404,
+     "<Error><Code>NoSuchConfiguration</Code><Message>The specified configuration does not exist.</Message><RequestId/><HostId/></Error>"),
+    ("intelligent-tiering&id=", 200,
+     '<ListIntelligentTieringConfigurationsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>false</IsTruncated></ListIntelligentTieringConfigurationsResult>'),
+    ("intelligent-tiering&continuation-token=garbage", 400,
+     "<Error><Code>MalformedContinuationToken</Code><Message>The continuation-token you provided invalid.</Message><RequestId/><HostId/></Error>"),
+    ("intelligent-tiering&continuation-token=", 200,
+     '<ListIntelligentTieringConfigurationsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>false</IsTruncated><ContinuationToken></ContinuationToken></ListIntelligentTieringConfigurationsResult>'),
+    ("intelligent-tiering&id=x&continuation-token=garbage", 404,
+     "<Error><Code>NoSuchConfiguration</Code><Message>The specified configuration does not exist.</Message><RequestId/><HostId/></Error>"),
+    ("inventory&id=x", 404,
+     "<Error><Code>NoSuchConfiguration</Code><Message>The specified configuration does not exist.</Message><RequestId/><HostId/></Error>"),
+    ("inventory&id=", 200,
+     '<?xml version="1.0" encoding="UTF-8"?><ListInventoryConfigurationsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>false</IsTruncated></ListInventoryConfigurationsResult>'),
+    ("inventory&continuation-token=garbage", 400,
+     "<Error><Code>MalformedContinuationToken</Code><Message>The continuation-token you provided invalid.</Message><RequestId/><HostId/></Error>"),
+    ("inventory&continuation-token=", 200,
+     '<?xml version="1.0" encoding="UTF-8"?><ListInventoryConfigurationsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>false</IsTruncated><ContinuationToken></ContinuationToken></ListInventoryConfigurationsResult>'),
+    ("inventory&id=x&continuation-token=garbage", 404,
+     "<Error><Code>NoSuchConfiguration</Code><Message>The specified configuration does not exist.</Message><RequestId/><HostId/></Error>"),
+    ("metrics&id=x", 404,
+     '<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>NoSuchConfiguration</Code><Message>The specified configuration does not exist.</Message><RequestId/><HostId/></Error>'),
+    ("metrics&id=", 200,
+     '<?xml version="1.0" encoding="UTF-8"?><ListMetricsConfigurationsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>false</IsTruncated></ListMetricsConfigurationsResult>'),
+    ("metrics&continuation-token=garbage", 400,
+     '<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>MalformedContinuationToken</Code><Message>The continuation-token you provided invalid.</Message><RequestId/><HostId/></Error>'),
+    ("metrics&continuation-token=", 200,
+     '<?xml version="1.0" encoding="UTF-8"?><ListMetricsConfigurationsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>false</IsTruncated><ContinuationToken></ContinuationToken></ListMetricsConfigurationsResult>'),
+    ("metrics&id=x&continuation-token=garbage", 404,
+     '<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>NoSuchConfiguration</Code><Message>The specified configuration does not exist.</Message><RequestId/><HostId/></Error>'),
 ]
+# fmt: on
 
 
 @pytest.mark.parametrize(
@@ -2737,11 +2407,6 @@ def test_a_configuration_list_reads_its_id_and_token_as_real_does(live_server, q
     r = _signed(base_url, f"/s3/eng-artifacts?{query}", settings.admin_token)
     assert r.status_code == status
     assert _without_request_ids(r.text) == body
-
-
-def _argued(name, value=None):
-    value = "" if value is None else f"<ArgumentValue>{value}</ArgumentValue>"
-    return f"<ArgumentName>{name}</ArgumentName>{value}"
 
 
 # The answers the rows below repeat.
@@ -2772,6 +2437,7 @@ _BOGUS_ENCODING = (
 
 # A query parameter real refuses, and which of two it refuses when both are sent: the request, and
 # the status, code, message and members of real's answer (measured 2026-09-29 against us-east-1).
+# fmt: off
 _PARAMETER_ROWS = [
     # `versionId` at a bucket's path, on each operation there.
     ("GET", "/s3/eng-artifacts?versionId=x", *_VERSION_ID_X),
@@ -2779,20 +2445,10 @@ _PARAMETER_ROWS = [
     ("GET", "/s3/eng-artifacts?session&versionId=x", *_VERSION_ID_X),
     ("GET", "/s3/eng-artifacts?versions&versionId=x", *_VERSION_ID_X),
     ("GET", "/s3/eng-artifacts?uploads&versionId=x", *_VERSION_ID_X),
-    (
-        "GET",
-        "/s3/eng-artifacts?versioning&versionId=",
-        400,
-        _NO_VERSION_ID,
-        _argued("versionId", ""),
-    ),
-    (
-        "GET",
-        "/s3/eng-artifacts?versioning&versionId=null",
-        400,
-        _NO_VERSION_ID,
-        _argued("versionId", "null"),
-    ),
+    ("GET", "/s3/eng-artifacts?versioning&versionId=", 400, _NO_VERSION_ID,
+     _argued("versionId", "")),
+    ("GET", "/s3/eng-artifacts?versioning&versionId=null", 400, _NO_VERSION_ID,
+     _argued("versionId", "null")),
     ("GET", "/s3/eng-artifacts?acl&versionId=x", *_BAD_VERSION_ID_X),
     ("GET", "/s3/no-such-bucket?versioning&versionId=x", *_VERSION_ID_X),
     ("PUT", "/s3/no-such-bucket?versioning&versionId=x", *_VERSION_ID_X),
@@ -2800,34 +2456,14 @@ _PARAMETER_ROWS = [
     # What comes before it, and what after.
     ("GET", "/s3/eng-artifacts?max-keys=abc&versionId=x", *_MAX_KEYS_ABC),
     ("GET", "/s3/eng-artifacts?versions&versionId=x&max-keys=abc", *_MAX_KEYS_ABC),
-    (
-        "GET",
-        "/s3/eng-artifacts?uploads&max-uploads=abc&versionId=x",
-        400,
-        "Provided max-uploads not an integer or within integer range",
-        _argued("max-uploads", "abc"),
-    ),
-    (
-        "GET",
-        "/s3/no-such-bucket?versionId=x&start-after=a",
-        400,
-        "startAfter only supported in REST.GET.BUCKET with list-type=2",
-        _argued("start-after"),
-    ),
-    (
-        "GET",
-        "/s3/eng-artifacts?versionId=x&acl&versioning",
-        400,
-        "Conflicting query string parameters: acl, versioning",
-        _argued("ResourceType", "acl"),
-    ),
-    (
-        "GET",
-        "/s3/eng-artifacts?versionId=x&partNumber=1",
-        400,
-        "Object must have a valid key name.",
-        "",
-    ),
+    ("GET", "/s3/eng-artifacts?uploads&max-uploads=abc&versionId=x", 400,
+     "Provided max-uploads not an integer or within integer range", _argued("max-uploads", "abc")),
+    ("GET", "/s3/no-such-bucket?versionId=x&start-after=a", 400,
+     "startAfter only supported in REST.GET.BUCKET with list-type=2", _argued("start-after")),
+    ("GET", "/s3/eng-artifacts?versionId=x&acl&versioning", 400,
+     "Conflicting query string parameters: acl, versioning", _argued("ResourceType", "acl")),
+    ("GET", "/s3/eng-artifacts?versionId=x&partNumber=1", 400, "Object must have a valid key name.",
+     ""),
     ("GET", "/s3/eng-artifacts?versionId=x&delete", *_VERSION_ID_X),
     ("GET", "/s3/eng-artifacts?versionId=x&website=v", *_VERSION_ID_X),
     ("GET", "/s3/eng-artifacts?versionId=x&max-keys=-1", *_VERSION_ID_X),
@@ -2846,13 +2482,9 @@ _PARAMETER_ROWS = [
         for method in ("PUT", "DELETE")
     ],
     # A bucket's writes and a `versionId` (``backlot.routers.s3._VERSION_AFTER_THE_BUCKET``).
-    (
-        "POST",
-        "/s3/eng-artifacts?versionId=x",
-        412,
-        "At least one of the pre-conditions you specified did not hold",
-        "<Condition>Bucket POST must be of the enclosure-type multipart/form-data</Condition>",
-    ),
+    ("POST", "/s3/eng-artifacts?versionId=x", 412,
+     "At least one of the pre-conditions you specified did not hold",
+     "<Condition>Bucket POST must be of the enclosure-type multipart/form-data</Condition>"),
     *[
         (method, f"/s3/no-such-bucket?{selector}&versionId=x", *_PARAMETER_NO_BUCKET)
         for method, selector in (("PUT", "acl"), ("POST", "restore"))
@@ -2865,106 +2497,51 @@ _PARAMETER_ROWS = [
     ("GET", "/s3/eng-artifacts/no/such.md?website=v", *_WEBSITE_V),
     ("GET", "/s3/no-such-bucket?website=v&website", *_WEBSITE_V),
     ("GET", "/s3/no-such-bucket?website=v&max-keys=abc", *_WEBSITE_V),
-    (
-        "GET",
-        "/s3/no-such-bucket?website=v&versioning",
-        400,
-        "Conflicting query string parameters: versioning, website",
-        _argued("ResourceType", "versioning"),
-    ),
+    ("GET", "/s3/no-such-bucket?website=v&versioning", 400,
+     "Conflicting query string parameters: versioning, website",
+     _argued("ResourceType", "versioning")),
     # `annotationName` at a key without `annotation`.
     ("GET", "/s3/eng-artifacts/runbooks/oncall.md?annotationName=v", *_ANNOTATION_NAME_UNEXPECTED),
     ("GET", "/s3/no-such-bucket/k.txt?annotationName=v", *_ANNOTATION_NAME_UNEXPECTED),
-    (
-        "GET",
-        "/s3/eng-artifacts/runbooks/oncall.md?annotationName=v&acl",
-        400,
-        "Conflicting query string parameters: acl, annotationName",
-        _argued("ResourceType", "acl"),
-    ),
-    (
-        "GET",
-        "/s3/eng-artifacts/runbooks/oncall.md?annotationName=v&website=v",
-        400,
-        "Conflicting query string parameters: annotationName, website",
-        _argued("ResourceType", "annotationName"),
-    ),
+    ("GET", "/s3/eng-artifacts/runbooks/oncall.md?annotationName=v&acl", 400,
+     "Conflicting query string parameters: acl, annotationName", _argued("ResourceType", "acl")),
+    ("GET", "/s3/eng-artifacts/runbooks/oncall.md?annotationName=v&website=v", 400,
+     "Conflicting query string parameters: annotationName, website",
+     _argued("ResourceType", "annotationName")),
     # ListObjectVersions' own, before the bucket and after it.
     ("GET", "/s3/no-such-bucket?versions&max-keys=abc", *_MAX_KEYS_ABC),
     ("GET", "/s3/no-such-bucket?versions&version-id-marker=x", *_MARKER_WITHOUT_KEY),
-    (
-        "GET",
-        "/s3/no-such-bucket?versions&key-marker=a&version-id-marker=",
-        400,
-        "A version-id marker cannot be empty.",
-        _argued("version-id-marker", ""),
-    ),
+    ("GET", "/s3/no-such-bucket?versions&key-marker=a&version-id-marker=", 400,
+     "A version-id marker cannot be empty.", _argued("version-id-marker", "")),
     ("GET", "/s3/no-such-bucket?versions&key-marker=a&version-id-marker=x", *_PARAMETER_NO_BUCKET),
-    (
-        "GET",
-        "/s3/eng-artifacts?versions&key-marker=a&version-id-marker=x",
-        400,
-        _BAD_VERSION,
-        _argued("version-id-marker", "x"),
-    ),
-    (
-        "GET",
-        "/s3/eng-artifacts?versions&key-marker=a.txt&version-id-marker=NULL",
-        400,
-        _BAD_VERSION,
-        _argued("version-id-marker", "NULL"),
-    ),
+    ("GET", "/s3/eng-artifacts?versions&key-marker=a&version-id-marker=x", 400, _BAD_VERSION,
+     _argued("version-id-marker", "x")),
+    ("GET", "/s3/eng-artifacts?versions&key-marker=a.txt&version-id-marker=NULL", 400, _BAD_VERSION,
+     _argued("version-id-marker", "NULL")),
     ("GET", "/s3/no-such-bucket?versions&encoding-type=bogus", *_PARAMETER_NO_BUCKET),
     ("GET", "/s3/eng-artifacts?versions&encoding-type=bogus", *_BOGUS_ENCODING),
-    (
-        "GET",
-        "/s3/eng-artifacts?versions&encoding-type=",
-        400,
-        "Invalid Encoding Method specified in Request",
-        _argued("encoding-type", ""),
-    ),
+    ("GET", "/s3/eng-artifacts?versions&encoding-type=", 400,
+     "Invalid Encoding Method specified in Request", _argued("encoding-type", "")),
     ("GET", "/s3/no-such-bucket?versions&max-keys=-1", *_PARAMETER_NO_BUCKET),
-    (
-        "GET",
-        "/s3/eng-artifacts?versions&max-keys=-1",
-        400,
-        "max-keys cannot be negative",
-        _argued("max-keys"),
-    ),
+    ("GET", "/s3/eng-artifacts?versions&max-keys=-1", 400, "max-keys cannot be negative",
+     _argued("max-keys")),
     ("GET", "/s3/eng-artifacts?versions&max-keys=abc&encoding-type=bogus", *_MAX_KEYS_ABC),
-    (
-        "GET",
-        "/s3/eng-artifacts?versions&encoding-type=bogus&version-id-marker=x",
-        *_MARKER_WITHOUT_KEY,
-    ),
+    ("GET", "/s3/eng-artifacts?versions&encoding-type=bogus&version-id-marker=x",
+     *_MARKER_WITHOUT_KEY),
     ("GET", "/s3/eng-artifacts?versions&max-keys=abc&version-id-marker=x", *_MAX_KEYS_ABC),
     ("GET", "/s3/eng-artifacts?versions&max-keys=-1&encoding-type=bogus", *_BOGUS_ENCODING),
     ("GET", "/s3/eng-artifacts?versions&max-keys=-1&version-id-marker=x", *_MARKER_WITHOUT_KEY),
-    (
-        "GET",
-        "/s3/eng-artifacts?versions&key-marker=a.txt&version-id-marker=garbage&max-keys=abc",
-        *_MAX_KEYS_ABC,
-    ),
-    (
-        "GET",
-        "/s3/eng-artifacts?versions&key-marker=a.txt&version-id-marker=garbage&encoding-type=bogus",
-        400,
-        _BAD_VERSION,
-        _argued("version-id-marker", "garbage"),
-    ),
-    (
-        "GET",
-        "/s3/eng-artifacts?versions&key-marker=a.txt&version-id-marker=&max-keys=abc",
-        *_MAX_KEYS_ABC,
-    ),
-    (
-        "GET",
-        "/s3/eng-artifacts?versions&max-keys=abc&acl",
-        400,
-        "Conflicting query string parameters: acl, versions",
-        _argued("ResourceType", "acl"),
-    ),
+    ("GET", "/s3/eng-artifacts?versions&key-marker=a.txt&version-id-marker=garbage&max-keys=abc",
+     *_MAX_KEYS_ABC),
+    ("GET",
+     "/s3/eng-artifacts?versions&key-marker=a.txt&version-id-marker=garbage&encoding-type=bogus",
+     400, _BAD_VERSION, _argued("version-id-marker", "garbage")),
+    ("GET", "/s3/eng-artifacts?versions&key-marker=a.txt&version-id-marker=&max-keys=abc",
+     *_MAX_KEYS_ABC),
+    ("GET", "/s3/eng-artifacts?versions&max-keys=abc&acl", 400,
+     "Conflicting query string parameters: acl, versions", _argued("ResourceType", "acl")),
 ]
+# fmt: on
 
 
 @pytest.mark.parametrize(
@@ -3036,6 +2613,7 @@ def test_s3_what_list_object_versions_refuses_after_the_bucket_comes_after_the_c
 # Every kind of answer a HEAD gets, the token it is sent with ("tampered": signed, then the
 # signature spoiled; None: unsigned), and the length it declares, which only an object's own
 # answers do.
+# fmt: off
 _HEAD_ROWS = [
     ("/s3/eng-artifacts", "admin", {}, 200, None),
     ("/s3/no-such-bucket", "admin", {}, 404, None),
@@ -3076,13 +2654,8 @@ _HEAD_ROWS = [
     ("/s3/no-such-bucket/a.txt?versionId", "admin", {}, 400, None),
     ("/s3/no-such-bucket/a.txt?versionId=garbage", "admin", {}, 404, None),
     ("/s3/no-such-bucket/a.txt?torrent&versionId=x", "admin", {}, 400, None),
-    (
-        "/s3/no-such-bucket/a.txt?attributes",
-        "admin",
-        {"x-amz-object-attributes": "garbage"},
-        400,
-        None,
-    ),
+    ("/s3/no-such-bucket/a.txt?attributes", "admin", {"x-amz-object-attributes": "garbage"}, 400,
+     None),
     ("/s3/no-such-bucket/a.txt?attributes", "admin", {}, 405, None),
     ("/s3/no-such-bucket/a.txt?annotation&max-annotation-results=abc", "admin", {}, 405, None),
     # A checksum mode, and two parses a HEAD at a key makes before the bucket (2026-09-30).
@@ -3093,6 +2666,7 @@ _HEAD_ROWS = [
     ("/s3/no-such-bucket/a.txt?versioning&versionId=x", "admin", {}, 400, None),
     ("/s3/no-such-bucket/a.txt?attributes", "admin", {"x-amz-object-attributes": ","}, 405, None),
 ]
+# fmt: on
 
 
 @pytest.mark.parametrize(
@@ -3578,7 +3152,12 @@ def _b64(raw: bytes) -> str:
 
 
 _GOOD_DELETE = b"<Delete><Object><Key>backlot-no-such-key</Key></Object></Delete>"
-_MALFORMED = (
+_EMPTY_KEY = b"<Delete><Object><Key></Key></Object></Delete>"
+_EMPTY_SECOND_KEY = b"<Delete><Object><Key>x</Key></Object><Object><Key></Key></Object></Delete>"
+_SSE_S3 = b"<ObjectEncryption><SSE-S3/></ObjectEncryption>"
+_NO_TAGS = b"<Tagging><TagSet/></Tagging>"
+_KMS_KEY_X = "arn:aws:kms:us-east-1:111111111111:key/x"
+_MALFORMED_XML = (
     "The XML you provided was not well-formed or did not validate against our published schema"
 )
 _MISSING_CHECKSUM = "Missing required header for this request: Content-MD5 OR x-amz-checksum-*"
@@ -3620,24 +3199,71 @@ def _right_checksum(name: str, body: bytes) -> bytes:
 
 
 _ZEROS = "0" * 64
+_ZEROS_SENT = {"x-amz-content-sha256": _ZEROS}
 _NEW = "/s3/eng-artifacts/backlot-new.txt"
 _WRITTEN = "A method you provided writes to the corpus, which this server does not implement: "
 _TRAILER_REFUSED = "The value of x-amz-content-sha256 header is invalid."
 _NO_LENGTH = "You must provide the Content-Length HTTP header."
 _BAD_MD5 = "The Content-MD5 you specified was invalid."
+_MD5_MISMATCH = "The Content-MD5 you specified did not match what we received."
 _SDK_ALONE = (
     "x-amz-sdk-checksum-algorithm specified, but no corresponding x-amz-checksum-* or "
     "x-amz-trailer headers were found."
 )
 
 
-def _sha_mismatch(body: bytes, sent: str = _ZEROS) -> tuple[str, str]:
-    """`XAmzContentSHA256Mismatch`'s message and members: the hash sent, and the body's."""
+# Each builder fills the template real answered with, and nothing else: the part of the request the
+# answer names comes from the row, never a choice of code or message from it.
+def _invalid_request(message: str) -> tuple[int, str, str, str]:
+    return (400, "InvalidRequest", message, "")
+
+
+def _unread_checksum(name: str) -> tuple[int, str, str, str]:
+    """A checksum header real could not read."""
+    return _invalid_request(f"Value for x-amz-checksum-{name} header is invalid.")
+
+
+def _wrong_checksum(name: str) -> tuple[int, str, str, str]:
+    """A checksum the body does not match, named in capitals and without members."""
     return (
+        400,
+        "BadDigest",
+        f"The {name.upper()} you specified did not match the calculated checksum.",
+        "",
+    )
+
+
+def _invalid_digest(sent: str) -> tuple[int, str, str, str]:
+    """A `Content-MD5` real could not read, named as sent."""
+    return (400, "InvalidDigest", _BAD_MD5, f"<Content-MD5>{sent}</Content-MD5>")
+
+
+def _bad_digest(expected: str, body: bytes = _GOOD_DELETE) -> tuple[int, str, str, str]:
+    """A `Content-MD5` the body does not match: the body's digest, and the one real names as
+    expected, which is the header as sent, or its hex for PutObject (2026-09-29)."""
+    return (
+        400,
+        "BadDigest",
+        _MD5_MISMATCH,
+        f"<CalculatedDigest>{_md5(body)}</CalculatedDigest>"
+        f"<ExpectedDigest>{expected}</ExpectedDigest>",
+    )
+
+
+def _sha_mismatch(body: bytes, sent: str = _ZEROS) -> tuple[int, str, str, str]:
+    """`XAmzContentSHA256Mismatch`: the hash sent, and the body's."""
+    return (
+        400,
+        "XAmzContentSHA256Mismatch",
         "The provided 'x-amz-content-sha256' header does not match what was computed.",
         f"<ClientComputedContentSHA256>{sent}</ClientComputedContentSHA256>"
         f"<S3ComputedContentSHA256>{hashlib.sha256(body).hexdigest()}</S3ComputedContentSHA256>",
     )
+
+
+def _wrote(method: str) -> tuple[int, str, str, str]:
+    """This server's 501 where real performed the write."""
+    return (501, "NotImplemented", _WRITTEN + method, "")
 
 
 def _crc32(body: bytes) -> str:
@@ -3659,8 +3285,23 @@ def _encryption(arn=None, bucket_key=None, kind="SSE-KMS") -> bytes:
     return f"<ObjectEncryption><{kind}>{inner}</{kind}></ObjectEncryption>".encode()
 
 
-# The requests and answers the rows below repeat.
+# The requests, headers and answers the rows below repeat.
 _RESTORE = ("POST", "/s3/eng-artifacts?restore")
+_DELETE = ("POST", "/s3/eng-artifacts?delete")
+_DELETE_AT_KEY = ("POST", "/s3/eng-artifacts/runbooks/oncall.md?delete")
+_ENCRYPT = ("PUT", "/s3/eng-artifacts/runbooks/oncall.md?encryption")
+_ENCRYPT_MISSING = ("PUT", "/s3/eng-artifacts/no/such.md?encryption")
+_PUT_NEW = ("PUT", _NEW)
+_PUT_TAGGING = ("PUT", "/s3/eng-artifacts/runbooks/oncall.md?tagging")
+_DELETE_OBJECT = ("DELETE", "/s3/eng-artifacts/runbooks/oncall.md")
+_WITH_MD5 = {"Content-MD5": _md5(_GOOD_DELETE)}
+_TWO_CHECKSUMS = {"x-amz-checksum-crc32": "AAAAAA==", "x-amz-checksum-crc32c": "AAAAAA=="}
+# The headers of an aws-chunked body of eleven bytes.
+_CHUNKED = {
+    "x-amz-content-sha256": _TRAILER,
+    "content-encoding": "aws-chunked",
+    "x-amz-decoded-content-length": "11",
+}
 _NO_USER_KEY = (400, "UserKeyMustBeSpecified", _USER_KEY, "")
 _NO_SUCH_BUCKET = (
     404,
@@ -3668,47 +3309,37 @@ _NO_SUCH_BUCKET = (
     "The specified bucket does not exist",
     "<BucketName>no-such-bucket</BucketName>",
 )
-_DELETE = ("POST", "/s3/eng-artifacts?delete")
-_NO_CHECKSUM = (400, "InvalidRequest", _MISSING_CHECKSUM, "")
-_EMPTY_BODY = (400, "MissingRequestBodyError", "Request Body is empty", "")
-_GARBAGE_MD5 = (400, "InvalidDigest", _BAD_MD5, "<Content-MD5>garbage</Content-MD5>")
-_BAD_CRC32 = (400, "InvalidRequest", "Value for x-amz-checksum-crc32 header is invalid.", "")
-_BAD_ALGORITHM = (
-    400,
-    "InvalidRequest",
-    "The algorithm type you specified in x-amz-checksum- header is invalid.",
-    "",
-)
-_SDK_WITHOUT_CHECKSUM = (400, "InvalidRequest", _SDK_ALONE, "")
-_NOT_WELL_FORMED = (400, "MalformedXML", _MALFORMED, "")
-_WROTE_POST = (501, "NotImplemented", _WRITTEN + "POST", "")
-_DELETE_AT_KEY = ("POST", "/s3/eng-artifacts/runbooks/oncall.md?delete")
-_ENCRYPT = ("PUT", "/s3/eng-artifacts/runbooks/oncall.md?encryption")
-_ENCRYPT_MISSING = ("PUT", "/s3/eng-artifacts/no/such.md?encryption")
-_ENCRYPTION_MD5_MISMATCH = (
-    400,
-    "BadDigest",
-    "The Content-MD5 you specified did not match what we received.",
-    f"<CalculatedDigest>{_md5(b'<ObjectEncryption><SSE-S3/></ObjectEncryption>')}</CalculatedDigest><ExpectedDigest>{_md5(b'o')}</ExpectedDigest>",
-)
 _NO_SUCH_KEY = (
     404,
     "NoSuchKey",
     "The specified key does not exist.",
     "<Key>eng-artifacts/no/such.md</Key>",
 )
-_NO_KMS_ARN = (400, "InvalidRequest", f"{_KMS} target kms key arn.", "")
-_BAD_KMS = (400, "InvalidRequest", _BAD_KMS_FORMAT, "")
-_WROTE_PUT = (501, "NotImplemented", _WRITTEN + "PUT", "")
-_PUT_NEW = ("PUT", _NEW)
+_NO_CHECKSUM = _invalid_request(_MISSING_CHECKSUM)
+_EMPTY_BODY = (400, "MissingRequestBodyError", "Request Body is empty", "")
+_GARBAGE_MD5 = _invalid_digest("garbage")
+_BAD_CRC32 = _unread_checksum("crc32")
+_BAD_ALGORITHM = _invalid_request(
+    "The algorithm type you specified in x-amz-checksum- header is invalid."
+)
+_MANY_CHECKSUMS = _invalid_request(
+    "Expecting a single x-amz-checksum- header. Multiple checksum Types are not allowed."
+)
+_SDK_WITHOUT_CHECKSUM = _invalid_request(_SDK_ALONE)
+_SDK_ALGORITHM_WRONG = _invalid_request("Value for x-amz-sdk-checksum-algorithm header is invalid.")
+_NOT_WELL_FORMED = (400, "MalformedXML", _MALFORMED_XML, "")
+_WROTE_POST = _wrote("POST")
+_WROTE_PUT = _wrote("PUT")
+_ENCRYPTION_MD5_MISMATCH = _bad_digest(_md5(b"o"), _SSE_S3)
+_NO_KMS_ARN = _invalid_request(f"{_KMS} target kms key arn.")
+_BAD_KMS = _invalid_request(_BAD_KMS_FORMAT)
 _LENGTH_REQUIRED = (411, "MissingContentLength", _NO_LENGTH, "")
-_TRAILER_REFUSAL = (400, "InvalidRequest", _TRAILER_REFUSED, "")
-_PUT_TAGGING = ("PUT", "/s3/eng-artifacts/runbooks/oncall.md?tagging")
-_DELETE_OBJECT = ("DELETE", "/s3/eng-artifacts/runbooks/oncall.md")
+_TRAILER_REFUSAL = _invalid_request(_TRAILER_REFUSED)
 
 # The request, and real's answer: status, code, message and members (measured 2026-09-29 on a
 # bucket this account created, the public bucket, and a name nobody owns). A row whose answer is
 # 501 is one real performed, which is the write this server does not do.
+# fmt: off
 _WRITE_CHECK_ROWS = [
     # A bucket's `POST ?restore`.
     (*_RESTORE, None, {}, *_NO_USER_KEY),
@@ -3720,91 +3351,34 @@ _WRITE_CHECK_ROWS = [
     (*_DELETE, None, {"Content-MD5": _md5(b"")}, *_EMPTY_BODY),
     (*_DELETE, None, {"x-amz-checksum-crc32": "AAAAAA=="}, *_EMPTY_BODY),
     (*_DELETE, None, {"Content-MD5": "garbage"}, *_GARBAGE_MD5),
-    (
-        *_DELETE,
-        _GOOD_DELETE,
-        {"Content-MD5": _b64(b"x" * 15)},
-        400,
-        "InvalidDigest",
-        "The Content-MD5 you specified was invalid.",
-        f"<Content-MD5>{_b64(b'x' * 15)}</Content-MD5>",
-    ),
-    (
-        *_DELETE,
-        _GOOD_DELETE,
-        {"Content-MD5": ""},
-        400,
-        "InvalidDigest",
-        "The Content-MD5 you specified was invalid.",
-        "<Content-MD5></Content-MD5>",
-    ),
+    (*_DELETE, _GOOD_DELETE, {"Content-MD5": _b64(b"x" * 15)}, *_invalid_digest(_b64(b"x" * 15))),
+    (*_DELETE, _GOOD_DELETE, {"Content-MD5": ""}, *_invalid_digest("")),
     (*_DELETE, _GOOD_DELETE, {"x-amz-checksum-crc32": "garbage"}, *_BAD_CRC32),
     (*_DELETE, _GOOD_DELETE, {"x-amz-checksum-crc32": _b64(b"xxx")}, *_BAD_CRC32),
     (*_DELETE, _GOOD_DELETE, {"x-amz-checksum-crc32": ""}, *_BAD_CRC32),
     *[
-        (
-            *_DELETE,
-            _GOOD_DELETE,
-            {f"x-amz-checksum-{name}": "garbage"},
-            400,
-            "InvalidRequest",
-            f"Value for x-amz-checksum-{name} header is invalid.",
-            "",
-        )
-        for name in (
-            "crc32c",
-            "crc64nvme",
-            "sha1",
-            "sha256",
-            "sha512",
-            "md5",
-            "xxhash64",
-            "xxhash3",
-        )
+        (*_DELETE, _GOOD_DELETE, {f"x-amz-checksum-{name}": "garbage"}, *_unread_checksum(name))
+        for name in ("crc32c", "crc64nvme", "sha1", "sha256", "sha512", "md5", "xxhash64",
+                     "xxhash3")
     ],
     (*_DELETE, _GOOD_DELETE, {"x-amz-checksum-foo": "abc"}, *_BAD_ALGORITHM),
     (*_DELETE, None, {"x-amz-checksum-foo": "x"}, *_BAD_ALGORITHM),
     (*_DELETE, _GOOD_DELETE, {"x-amz-checksum-type": "FULL_OBJECT"}, *_NO_CHECKSUM),
     (*_DELETE, _GOOD_DELETE, {"x-amz-checksum-algorithm": "CRC32"}, *_NO_CHECKSUM),
     (*_DELETE, _GOOD_DELETE, {"x-amz-sdk-checksum-algorithm": "CRC32"}, *_SDK_WITHOUT_CHECKSUM),
-    (
-        *_DELETE,
-        _GOOD_DELETE,
-        {
-            "x-amz-checksum-crc32": _b64(zlib.crc32(_GOOD_DELETE).to_bytes(4, "big")),
-            "x-amz-checksum-sha256": _b64(b"x" * 32),
-        },
-        400,
-        "InvalidRequest",
-        "Expecting a single x-amz-checksum- header. Multiple checksum Types are not allowed.",
-        "",
-    ),
+    (*_DELETE, _GOOD_DELETE,
+     {"x-amz-checksum-crc32": _crc32(_GOOD_DELETE), "x-amz-checksum-sha256": _b64(b"x" * 32)},
+     *_MANY_CHECKSUMS),
     # ... and the pairs among them.
     (*_DELETE, None, {"x-amz-checksum-crc32": "garbage"}, *_BAD_CRC32),
     (*_DELETE, b"garbage", {"x-amz-checksum-crc32": "garbage"}, *_BAD_CRC32),
-    (
-        *_DELETE,
-        _GOOD_DELETE,
-        {"x-amz-checksum-crc32": "garbage", "Content-MD5": "garbage"},
-        *_BAD_CRC32,
-    ),
-    (
-        "POST",
-        "/s3/eng-artifacts?delete&acl",
-        _GOOD_DELETE,
-        {"Content-MD5": "garbage"},
-        400,
-        "InvalidArgument",
-        "Conflicting query string parameters: acl, delete",
-        "<ArgumentName>ResourceType</ArgumentName><ArgumentValue>acl</ArgumentValue>",
-    ),
-    (
-        "POST",
-        "/s3/no-such-bucket?delete",
-        _GOOD_DELETE,
-        {"Content-MD5": "garbage"},
-        *_NO_SUCH_BUCKET,
-    ),
+    (*_DELETE, _GOOD_DELETE, {"x-amz-checksum-crc32": "garbage", "Content-MD5": "garbage"},
+     *_BAD_CRC32),
+    ("POST", "/s3/eng-artifacts?delete&acl", _GOOD_DELETE, {"Content-MD5": "garbage"},
+     400, "InvalidArgument", "Conflicting query string parameters: acl, delete",
+     _argued("ResourceType", "acl")),
+    ("POST", "/s3/no-such-bucket?delete", _GOOD_DELETE, {"Content-MD5": "garbage"},
+     *_NO_SUCH_BUCKET),
     # The body.
     *[
         (*_DELETE, body, {"Content-MD5": _md5(body)}, *_NOT_WELL_FORMED)
@@ -3825,64 +3399,18 @@ _WRITE_CHECK_ROWS = [
         )
     ],
     (*_DELETE, b"garbage", {"Content-MD5": _md5(b"other")}, *_NOT_WELL_FORMED),
-    (
-        *_DELETE,
-        b"<Delete><Object><Key></Key></Object></Delete>",
-        {"Content-MD5": _md5(b"other")},
-        *_NO_USER_KEY,
-    ),
-    (
-        *_DELETE,
-        b"<Delete><Object><Key>x</Key></Object><Object><Key></Key></Object></Delete>",
-        {
-            "Content-MD5": _md5(
-                b"<Delete><Object><Key>x</Key></Object><Object><Key></Key></Object></Delete>"
-            )
-        },
-        *_NO_USER_KEY,
-    ),
-    (
-        *_DELETE,
-        _GOOD_DELETE,
-        {"Content-MD5": _md5(b"other")},
-        400,
-        "BadDigest",
-        "The Content-MD5 you specified did not match what we received.",
-        f"<CalculatedDigest>{_md5(_GOOD_DELETE)}</CalculatedDigest><ExpectedDigest>{_md5(b'other')}</ExpectedDigest>",
-    ),
-    (
-        *_DELETE,
-        _GOOD_DELETE,
-        {
-            "x-amz-checksum-crc32": _b64(zlib.crc32(_GOOD_DELETE).to_bytes(4, "big")),
-            "Content-MD5": _md5(b"o"),
-        },
-        400,
-        "BadDigest",
-        "The Content-MD5 you specified did not match what we received.",
-        f"<CalculatedDigest>{_md5(_GOOD_DELETE)}</CalculatedDigest><ExpectedDigest>{_md5(b'o')}</ExpectedDigest>",
-    ),
+    (*_DELETE, _EMPTY_KEY, {"Content-MD5": _md5(b"other")}, *_NO_USER_KEY),
+    (*_DELETE, _EMPTY_SECOND_KEY, {"Content-MD5": _md5(_EMPTY_SECOND_KEY)}, *_NO_USER_KEY),
+    (*_DELETE, _GOOD_DELETE, {"Content-MD5": _md5(b"other")}, *_bad_digest(_md5(b"other"))),
+    (*_DELETE, _GOOD_DELETE,
+     {"x-amz-checksum-crc32": _crc32(_GOOD_DELETE), "Content-MD5": _md5(b"o")},
+     *_bad_digest(_md5(b"o"))),
     *[
-        (
-            *_DELETE,
-            _GOOD_DELETE,
-            {f"x-amz-checksum-{name}": _b64(b"x" * width)},
-            400,
-            "BadDigest",
-            f"The {name.upper()} you specified did not match the calculated checksum.",
-            "",
-        )
+        (*_DELETE, _GOOD_DELETE, {f"x-amz-checksum-{name}": _b64(b"x" * width)},
+         *_wrong_checksum(name))
         for name, width in (
-            ("crc32", 4),
-            ("crc32c", 4),
-            ("crc64nvme", 8),
-            ("sha1", 20),
-            ("sha256", 32),
-            ("sha512", 64),
-            ("md5", 16),
-            ("xxhash64", 8),
-            ("xxhash3", 8),
-            ("xxhash128", 16),
+            ("crc32", 4), ("crc32c", 4), ("crc64nvme", 8), ("sha1", 20), ("sha256", 32),
+            ("sha512", 64), ("md5", 16), ("xxhash64", 8), ("xxhash3", 8), ("xxhash128", 16),
         )
     ],
     # What real performed.
@@ -3899,65 +3427,33 @@ _WRITE_CHECK_ROWS = [
             b"<Delete>" + b"<Object><Key>k</Key></Object>" * 1000 + b"</Delete>",
         )
     ],
-    (
-        *_DELETE,
-        _GOOD_DELETE,
-        {
-            "x-amz-checksum-crc32": _b64(zlib.crc32(_GOOD_DELETE).to_bytes(4, "big")),
-            "x-amz-checksum-type": "FULL_OBJECT",
-        },
-        *_WROTE_POST,
-    ),
+    (*_DELETE, _GOOD_DELETE,
+     {"x-amz-checksum-crc32": _crc32(_GOOD_DELETE), "x-amz-checksum-type": "FULL_OBJECT"},
+     *_WROTE_POST),
     # Each algorithm's right value for the body, and the SDK's algorithm beside it, which has to
     # name that algorithm, compared without case, or be empty, which is none
     # (``backlot.routers.s3._checksum_headers``).
     *[
-        (
-            *_DELETE,
-            _GOOD_DELETE,
-            {f"x-amz-checksum-{name}": _b64(_right_checksum(name, _GOOD_DELETE)), **sdk},
-            *_WROTE_POST,
-        )
+        (*_DELETE, _GOOD_DELETE,
+         {f"x-amz-checksum-{name}": _b64(_right_checksum(name, _GOOD_DELETE)), **sdk},
+         *_WROTE_POST)
         for name, sdk in [
             *((name, {}) for name in _CHECKSUM_NAMES),
-            *(
-                ("crc32", {"x-amz-sdk-checksum-algorithm": alg})
-                for alg in ("crc32", "Crc32", "CRC32", "")
-            ),
+            *(("crc32", {"x-amz-sdk-checksum-algorithm": alg})
+              for alg in ("crc32", "Crc32", "CRC32", "")),
             ("sha256", {"x-amz-sdk-checksum-algorithm": ""}),
         ]
     ],
-    (
-        *_DELETE,
-        _GOOD_DELETE,
-        {
-            "x-amz-checksum-crc32": _b64(zlib.crc32(_GOOD_DELETE).to_bytes(4, "big")),
-            "x-amz-sdk-checksum-algorithm": "SHA256",
-        },
-        400,
-        "InvalidRequest",
-        "Value for x-amz-sdk-checksum-algorithm header is invalid.",
-        "",
-    ),
+    (*_DELETE, _GOOD_DELETE,
+     {"x-amz-checksum-crc32": _crc32(_GOOD_DELETE), "x-amz-sdk-checksum-algorithm": "SHA256"},
+     *_SDK_ALGORITHM_WRONG),
     # An empty SDK algorithm beside a `Content-MD5` alone is none, and so the write; an empty
     # `x-amz-trailer` is none too, so a named algorithm beside it is refused
     # (``_checksum_headers``).
-    (
-        *_DELETE,
-        _GOOD_DELETE,
-        {"Content-MD5": _md5(_GOOD_DELETE), "x-amz-sdk-checksum-algorithm": ""},
-        *_WROTE_POST,
-    ),
-    (
-        *_DELETE,
-        _GOOD_DELETE,
-        {
-            "Content-MD5": _md5(_GOOD_DELETE),
-            "x-amz-sdk-checksum-algorithm": "CRC32",
-            "x-amz-trailer": "",
-        },
-        *_SDK_WITHOUT_CHECKSUM,
-    ),
+    (*_DELETE, _GOOD_DELETE, {**_WITH_MD5, "x-amz-sdk-checksum-algorithm": ""}, *_WROTE_POST),
+    (*_DELETE, _GOOD_DELETE,
+     {**_WITH_MD5, "x-amz-sdk-checksum-algorithm": "CRC32", "x-amz-trailer": ""},
+     *_SDK_WITHOUT_CHECKSUM),
     # A key's `POST ?delete` is the bucket's DeleteObjects, whatever the key.
     (*_DELETE_AT_KEY, None, {}, *_NO_CHECKSUM),
     ("POST", "/s3/eng-artifacts/no/such.md?delete", None, {}, *_NO_CHECKSUM),
@@ -3983,49 +3479,21 @@ _WRITE_CHECK_ROWS = [
     ],
     (*_ENCRYPT_MISSING, b"<ObjectEncryption/>", {}, *_NOT_WELL_FORMED),
     (*_ENCRYPT, b"<x/>", {"Content-MD5": _md5(b"o")}, *_NOT_WELL_FORMED),
-    (
-        *_ENCRYPT,
-        b"<ObjectEncryption><SSE-S3/></ObjectEncryption>",
-        {"Content-MD5": _md5(b"o")},
-        *_ENCRYPTION_MD5_MISMATCH,
-    ),
-    (
-        *_ENCRYPT_MISSING,
-        b"<ObjectEncryption><SSE-S3/></ObjectEncryption>",
-        {"Content-MD5": _md5(b"o")},
-        *_ENCRYPTION_MD5_MISMATCH,
-    ),
-    (*_ENCRYPT_MISSING, b"<ObjectEncryption><SSE-S3/></ObjectEncryption>", {}, *_NO_SUCH_KEY),
-    (*_ENCRYPT_MISSING, _encryption("arn:aws:kms:us-east-1:111111111111:key/x"), {}, *_NO_SUCH_KEY),
-    (
-        *_ENCRYPT,
-        b"<ObjectEncryption><SSE-S3/></ObjectEncryption>",
-        {},
-        400,
-        "InvalidRequest",
-        "Target encryption type 'SSE-S3' is not supported.",
-        "",
-    ),
+    (*_ENCRYPT, _SSE_S3, {"Content-MD5": _md5(b"o")}, *_ENCRYPTION_MD5_MISMATCH),
+    (*_ENCRYPT_MISSING, _SSE_S3, {"Content-MD5": _md5(b"o")}, *_ENCRYPTION_MD5_MISMATCH),
+    (*_ENCRYPT_MISSING, _SSE_S3, {}, *_NO_SUCH_KEY),
+    (*_ENCRYPT_MISSING, _encryption(_KMS_KEY_X), {}, *_NO_SUCH_KEY),
+    (*_ENCRYPT, _SSE_S3, {},
+     *_invalid_request("Target encryption type 'SSE-S3' is not supported.")),
     (*_ENCRYPT, _encryption(""), {}, *_NO_KMS_ARN),
     (*_ENCRYPT, _encryption("", "maybe"), {}, *_NO_KMS_ARN),
     *[
-        (
-            *_ENCRYPT,
-            _encryption(arn, bucket_key),
-            {},
-            400,
-            "InvalidRequest",
-            f"{_KMS} valid target kms key arn: {fault}",
-            "",
-        )
+        (*_ENCRYPT, _encryption(arn, bucket_key), {},
+         *_invalid_request(f"{_KMS} valid target kms key arn: {fault}"))
         for arn, bucket_key, fault in (
             ("garbage", None, "Malformed ARN - doesn't start with 'arn:'"),
             ("garbage", "maybe", "Malformed ARN - doesn't start with 'arn:'"),
-            (
-                " arn:aws:kms:us-east-1:111111111111:key/x ",
-                None,
-                "Malformed ARN - doesn't start with 'arn:'",
-            ),
+            (f" {_KMS_KEY_X} ", None, "Malformed ARN - doesn't start with 'arn:'"),
             ("arn:", None, "Malformed ARN - no AWS partition specified"),
             ("arn:aws:kms", None, "Malformed ARN - no service specified"),
             ("arn:aws:kms:", None, "Malformed ARN - no AWS region partition specified"),
@@ -4041,21 +3509,14 @@ _WRITE_CHECK_ROWS = [
         (*_ENCRYPT, _encryption(f"arn:aws:kms:us-east-1:111111111111:{resource}"), {}, *_BAD_KMS)
         for resource in ("key:abc", "key/abc/def", "key/abc:def", "keys/abc", "key/a b")
     ],
-    (
-        *_ENCRYPT,
-        _encryption("arn:aws:kms:us-east-1:111111111111:key/x", "maybe"),
-        {},
-        400,
-        "InvalidRequest",
-        "BucketKeyEnabled must be 'true' or 'false'. Invalid value: maybe",
-        "",
-    ),
+    (*_ENCRYPT, _encryption(_KMS_KEY_X, "maybe"), {},
+     *_invalid_request("BucketKeyEnabled must be 'true' or 'false'. Invalid value: maybe")),
     # Past everything ``backlot.routers.s3._object_encryption_refusal`` checks, the write: `TRUE`
     # and a key id.
     *[
         (*_ENCRYPT, _encryption(arn, bucket_key), {}, *_WROTE_PUT)
         for arn, bucket_key in (
-            ("arn:aws:kms:us-east-1:111111111111:key/x", "TRUE"),
+            (_KMS_KEY_X, "TRUE"),
             ("arn:aws:kms:us-east-1:111111111111:key/abc", None),
             ("arn:aws:kms:us-east-1:111111111111:key/1234abcd-12ab-34cd-56ef-1234567890ab", None),
         )
@@ -4068,35 +3529,24 @@ _WRITE_CHECK_ROWS = [
             {"x-amz-checksum-crc32": "garbage"},
             {"x-amz-checksum-foo": "AAAAAA=="},
             {"x-amz-sdk-checksum-algorithm": "CRC32"},
-            {"x-amz-checksum-crc32": "AAAAAA==", "x-amz-checksum-crc32c": "AAAAAA=="},
+            _TWO_CHECKSUMS,
             {"x-amz-content-sha256": _TRAILER},
-            {"x-amz-content-sha256": _ZEROS},
+            _ZEROS_SENT,
         )
     ],
     # Its checksum headers, ahead of an aws-chunked payload hash and of a payload hash that the body
     # does not match.
     *[
-        (*_PUT_NEW, b"hello", {**extra, **sha}, 400, "InvalidRequest", message, "")
-        for extra, message in (
-            (
-                {"x-amz-checksum-foo": "AAAAAA=="},
-                "The algorithm type you specified in x-amz-checksum- header is invalid.",
-            ),
-            (
-                {"x-amz-checksum-crc32": "AAAAAA==", "x-amz-checksum-crc32c": "AAAAAA=="},
-                "Expecting a single x-amz-checksum- header. Multiple checksum Types are not allowed.",
-            ),
-            (
-                {"x-amz-checksum-crc32": "garbage"},
-                "Value for x-amz-checksum-crc32 header is invalid.",
-            ),
-            ({"x-amz-sdk-checksum-algorithm": "CRC32"}, _SDK_ALONE),
-            (
-                {"x-amz-sdk-checksum-algorithm": "CRC32", "x-amz-checksum-crc32c": "AAAAAA=="},
-                "Value for x-amz-sdk-checksum-algorithm header is invalid.",
-            ),
+        (*_PUT_NEW, b"hello", {**extra, **sha}, *answer)
+        for extra, answer in (
+            ({"x-amz-checksum-foo": "AAAAAA=="}, _BAD_ALGORITHM),
+            (_TWO_CHECKSUMS, _MANY_CHECKSUMS),
+            ({"x-amz-checksum-crc32": "garbage"}, _BAD_CRC32),
+            ({"x-amz-sdk-checksum-algorithm": "CRC32"}, _SDK_WITHOUT_CHECKSUM),
+            ({"x-amz-sdk-checksum-algorithm": "CRC32", "x-amz-checksum-crc32c": "AAAAAA=="},
+             _SDK_ALGORITHM_WRONG),
         )
-        for sha in ({}, {"x-amz-content-sha256": _ZEROS}, {"x-amz-content-sha256": _TRAILER})
+        for sha in ({}, _ZEROS_SENT, {"x-amz-content-sha256": _TRAILER})
     ],
     # An aws-chunked payload hash with no decoded length, trailer's and signed alike.
     *[
@@ -4106,40 +3556,15 @@ _WRITE_CHECK_ROWS = [
     (*_PUT_NEW, b"", {"x-amz-content-sha256": _TRAILER}, *_LENGTH_REQUIRED),
     # An aws-chunked body naming its checksum in `x-amz-trailer`, which real wrote, and the same
     # without the `x-amz-trailer` the algorithm needs.
-    (
-        *_PUT_NEW,
-        _chunked(b"hello world"),
-        {
-            "x-amz-content-sha256": _TRAILER,
-            "content-encoding": "aws-chunked",
-            "x-amz-decoded-content-length": "11",
-            "x-amz-trailer": "x-amz-checksum-crc32",
-            "x-amz-sdk-checksum-algorithm": "CRC32",
-        },
-        *_WROTE_PUT,
-    ),
-    (
-        *_PUT_NEW,
-        _chunked(b"hello world"),
-        {
-            "x-amz-content-sha256": _TRAILER,
-            "content-encoding": "aws-chunked",
-            "x-amz-decoded-content-length": "11",
-            "x-amz-sdk-checksum-algorithm": "CRC32",
-        },
-        *_SDK_WITHOUT_CHECKSUM,
-    ),
+    (*_PUT_NEW, _chunked(b"hello world"),
+     {**_CHUNKED, "x-amz-trailer": "x-amz-checksum-crc32", "x-amz-sdk-checksum-algorithm": "CRC32"},
+     *_WROTE_PUT),
+    (*_PUT_NEW, _chunked(b"hello world"), {**_CHUNKED, "x-amz-sdk-checksum-algorithm": "CRC32"},
+     *_SDK_WITHOUT_CHECKSUM),
     # A payload hash the body does not match, ahead of a `Content-MD5` or a checksum it does not
     # match, an empty body too; a right one, in either case, is the write.
     *[
-        (
-            *_PUT_NEW,
-            body,
-            {"x-amz-content-sha256": _ZEROS, **extra},
-            400,
-            "XAmzContentSHA256Mismatch",
-            *_sha_mismatch(body),
-        )
+        (*_PUT_NEW, body, {**_ZEROS_SENT, **extra}, *_sha_mismatch(body))
         for body, extra in (
             (b"hello", {}),
             (b"", {}),
@@ -4157,27 +3582,11 @@ _WRITE_CHECK_ROWS = [
     ],
     # A `Content-MD5` the body does not match, named in hex, ahead of a checksum it does not match.
     *[
-        (
-            *_PUT_NEW,
-            b"hello",
-            {"Content-MD5": _md5(b"other"), **extra},
-            400,
-            "BadDigest",
-            "The Content-MD5 you specified did not match what we received.",
-            f"<CalculatedDigest>{_md5(b'hello')}</CalculatedDigest>"
-            f"<ExpectedDigest>{hashlib.md5(b'other').hexdigest()}</ExpectedDigest>",
-        )
+        (*_PUT_NEW, b"hello", {"Content-MD5": _md5(b"other"), **extra},
+         *_bad_digest(hashlib.md5(b"other").hexdigest(), b"hello"))
         for extra in ({}, {"x-amz-checksum-crc32": _crc32(b"other")})
     ],
-    (
-        *_PUT_NEW,
-        b"hello",
-        {"x-amz-checksum-crc32": _crc32(b"other")},
-        400,
-        "BadDigest",
-        "The CRC32 you specified did not match the calculated checksum.",
-        "",
-    ),
+    (*_PUT_NEW, b"hello", {"x-amz-checksum-crc32": _crc32(b"other")}, *_wrong_checksum("crc32")),
     *[
         (*_PUT_NEW, b"hello", extra, *_WROTE_PUT)
         for extra in (
@@ -4192,77 +3601,24 @@ _WRITE_CHECK_ROWS = [
         for sha in (_ZEROS, _TRAILER)
     ],
     # DeleteObjects checks the payload hash after its body, its keys and its digests.
-    (
-        *_DELETE,
-        _GOOD_DELETE,
-        {"x-amz-content-sha256": _ZEROS, "Content-MD5": _md5(_GOOD_DELETE)},
-        400,
-        "XAmzContentSHA256Mismatch",
-        *_sha_mismatch(_GOOD_DELETE),
-    ),
-    (
-        *_DELETE,
-        b"<x/>",
-        {"x-amz-content-sha256": _ZEROS, "Content-MD5": _md5(b"<x/>")},
-        *_NOT_WELL_FORMED,
-    ),
-    (*_DELETE, b"", {"x-amz-content-sha256": _ZEROS, "Content-MD5": _md5(b"")}, *_EMPTY_BODY),
-    (*_DELETE, _GOOD_DELETE, {"x-amz-content-sha256": _ZEROS}, *_NO_CHECKSUM),
-    (
-        *_DELETE,
-        _GOOD_DELETE,
-        {"x-amz-content-sha256": _ZEROS, "Content-MD5": _md5(b"other")},
-        400,
-        "BadDigest",
-        "The Content-MD5 you specified did not match what we received.",
-        f"<CalculatedDigest>{_md5(_GOOD_DELETE)}</CalculatedDigest>"
-        f"<ExpectedDigest>{_md5(b'other')}</ExpectedDigest>",
-    ),
-    (
-        *_DELETE,
-        _GOOD_DELETE,
-        {"x-amz-content-sha256": _ZEROS, "Content-MD5": "garbage"},
-        *_GARBAGE_MD5,
-    ),
-    (
-        *_DELETE,
-        b"<Delete><Object><Key></Key></Object></Delete>",
-        {
-            "x-amz-content-sha256": _ZEROS,
-            "Content-MD5": _md5(b"<Delete><Object><Key></Key></Object></Delete>"),
-        },
-        *_NO_USER_KEY,
-    ),
-    (
-        *_DELETE,
-        _GOOD_DELETE,
-        {"x-amz-content-sha256": _TRAILER, "Content-MD5": _md5(_GOOD_DELETE)},
-        *_TRAILER_REFUSAL,
-    ),
+    (*_DELETE, _GOOD_DELETE, {**_ZEROS_SENT, **_WITH_MD5}, *_sha_mismatch(_GOOD_DELETE)),
+    (*_DELETE, b"<x/>", {**_ZEROS_SENT, "Content-MD5": _md5(b"<x/>")}, *_NOT_WELL_FORMED),
+    (*_DELETE, b"", {**_ZEROS_SENT, "Content-MD5": _md5(b"")}, *_EMPTY_BODY),
+    (*_DELETE, _GOOD_DELETE, _ZEROS_SENT, *_NO_CHECKSUM),
+    (*_DELETE, _GOOD_DELETE, {**_ZEROS_SENT, "Content-MD5": _md5(b"other")},
+     *_bad_digest(_md5(b"other"))),
+    (*_DELETE, _GOOD_DELETE, {**_ZEROS_SENT, "Content-MD5": "garbage"}, *_GARBAGE_MD5),
+    (*_DELETE, _EMPTY_KEY, {**_ZEROS_SENT, "Content-MD5": _md5(_EMPTY_KEY)}, *_NO_USER_KEY),
+    (*_DELETE, _GOOD_DELETE, {**_TRAILER_SENT, **_WITH_MD5}, *_TRAILER_REFUSAL),
     # UpdateObjectEncryption: after the schema and a `Content-MD5` the body does not match, ahead of
     # the key.
-    (*_ENCRYPT, b"<x/>", {"x-amz-content-sha256": _ZEROS}, *_NOT_WELL_FORMED),
-    (*_ENCRYPT, b"", {"x-amz-content-sha256": _ZEROS}, *_EMPTY_BODY),
-    (
-        *_ENCRYPT,
-        _encryption(kind="SSE-S3"),
-        {"x-amz-content-sha256": _ZEROS, "Content-MD5": _md5(b"other")},
-        400,
-        "BadDigest",
-        "The Content-MD5 you specified did not match what we received.",
-        f"<CalculatedDigest>{_md5(_encryption(kind='SSE-S3'))}</CalculatedDigest>"
-        f"<ExpectedDigest>{_md5(b'other')}</ExpectedDigest>",
-    ),
+    (*_ENCRYPT, b"<x/>", _ZEROS_SENT, *_NOT_WELL_FORMED),
+    (*_ENCRYPT, b"", _ZEROS_SENT, *_EMPTY_BODY),
+    (*_ENCRYPT, _encryption(kind="SSE-S3"), {**_ZEROS_SENT, "Content-MD5": _md5(b"other")},
+     *_bad_digest(_md5(b"other"), _encryption(kind="SSE-S3"))),
     *[
-        (
-            "PUT",
-            f"/s3/eng-artifacts/{key}?encryption",
-            _encryption(kind="SSE-S3"),
-            {"x-amz-content-sha256": _ZEROS, **extra},
-            400,
-            "XAmzContentSHA256Mismatch",
-            *_sha_mismatch(_encryption(kind="SSE-S3")),
-        )
+        ("PUT", f"/s3/eng-artifacts/{key}?encryption", _encryption(kind="SSE-S3"),
+         {**_ZEROS_SENT, **extra}, *_sha_mismatch(_encryption(kind="SSE-S3")))
         for key, extra in (
             ("runbooks/oncall.md", {"Content-MD5": _md5(_encryption(kind="SSE-S3"))}),
             ("backlot-no-such-key", {}),
@@ -4271,44 +3627,18 @@ _WRITE_CHECK_ROWS = [
     # The other writes measured: a key's `PUT ?tagging` and a bucket's `PUT ?versioning` check the
     # payload hash once the bucket is found, a `DELETE` does not, and the tagging and the `DELETE`
     # refuse a trailer's.
-    (
-        *_PUT_TAGGING,
-        b"<Tagging><TagSet/></Tagging>",
-        {"x-amz-content-sha256": _ZEROS},
-        400,
-        "XAmzContentSHA256Mismatch",
-        *_sha_mismatch(b"<Tagging><TagSet/></Tagging>"),
-    ),
-    (
-        "PUT",
-        "/s3/eng-artifacts?versioning",
-        b"<VersioningConfiguration/>",
-        {"x-amz-content-sha256": _ZEROS},
-        400,
-        "XAmzContentSHA256Mismatch",
-        *_sha_mismatch(b"<VersioningConfiguration/>"),
-    ),
-    (
-        *_PUT_TAGGING,
-        b"<Tagging><TagSet/></Tagging>",
-        {"x-amz-content-sha256": _TRAILER},
-        *_TRAILER_REFUSAL,
-    ),
-    (*_DELETE_OBJECT, None, {"x-amz-content-sha256": _TRAILER}, *_TRAILER_REFUSAL),
+    (*_PUT_TAGGING, _NO_TAGS, _ZEROS_SENT, *_sha_mismatch(_NO_TAGS)),
+    ("PUT", "/s3/eng-artifacts?versioning", b"<VersioningConfiguration/>", _ZEROS_SENT,
+     *_sha_mismatch(b"<VersioningConfiguration/>")),
+    (*_PUT_TAGGING, _NO_TAGS, _TRAILER_SENT, *_TRAILER_REFUSAL),
+    (*_DELETE_OBJECT, None, _TRAILER_SENT, *_TRAILER_REFUSAL),
     *[
-        (
-            *_DELETE_OBJECT,
-            body,
-            {"x-amz-content-sha256": sha},
-            501,
-            "NotImplemented",
-            _WRITTEN + "DELETE",
-            "",
-        )
+        (*_DELETE_OBJECT, body, {"x-amz-content-sha256": sha}, *_wrote("DELETE"))
         for body, sha in ((b"hello", _ZEROS), (None, "STREAMING-AWS4-HMAC-SHA256-PAYLOAD"))
     ],
-    (*_RESTORE, b"<RestoreRequest/>", {"x-amz-content-sha256": _ZEROS}, *_NO_USER_KEY),
+    (*_RESTORE, b"<RestoreRequest/>", _ZEROS_SENT, *_NO_USER_KEY),
 ]
+# fmt: on
 
 
 @pytest.mark.parametrize(
@@ -4787,26 +4117,29 @@ _INTERNAL = "We encountered an internal error. Please try again."
 _A_NUMBER = "X-Amz-Expires should be a number"
 
 
-def _hashed(value: str) -> tuple[tuple[str, str], ...]:
-    return (("ArgumentName", "x-amz-content-sha256"), ("ArgumentValue", value))
-
-
-def _not_signed(names: str) -> tuple[tuple[str, str], ...]:
-    return (("HeadersNotSigned", names),)
-
-
-def _expired_at(expires: str) -> tuple[tuple[str, str], ...]:
-    """A V2 query's expiry as real named it; the server time is the clock's (2026-09-29)."""
-    return (("Expires", expires),)
-
-
-def _presign(date: str, expires="3600", credential=None, algorithm=V4, **extra) -> str:
-    """A presign's query with every parameter present, the scope dated `date` unless given. The
-    rows below are built when the module is imported, so the default lifetime is an hour, long
-    enough for a serial run to reach them unexpired; a row that is to expire says so."""
+def _presign(
+    date: str,
+    expires="3600",
+    credential=None,
+    algorithm=V4,
+    akid=AK,
+    region="us-east-1",
+    service="s3",
+    scope_date=None,
+    **extra,
+) -> str:
+    """A presign's query with every parameter present: ``credential`` unless given, which is
+    ``akid`` over a scope dated `date`'s day or ``scope_date``, with no region when the
+    ``algorithm`` is SigV4a's. The rows below are built when the module is imported, so the
+    default lifetime is an hour, long enough for a serial run to reach them unexpired; a row that
+    is to expire says so."""
+    stamp = date[:8] if scope_date is None else scope_date
+    if credential is None:
+        regions = "" if algorithm == V4A else f"{region}/"
+        credential = f"{akid}/{stamp}/{regions}{service}/aws4_request"
     return _query(
         X_Amz_Algorithm=algorithm,
-        X_Amz_Credential=credential or f"{AK}/{date[:8]}/us-east-1/s3/aws4_request",
+        X_Amz_Credential=credential,
         X_Amz_Date=date,
         X_Amz_Expires=expires,
         X_Amz_SignedHeaders="host",
@@ -4815,77 +4148,145 @@ def _presign(date: str, expires="3600", credential=None, algorithm=V4, **extra) 
     )
 
 
-# The answers the rows below repeat.
+def _v2_query(expires: str, akid: str = _UNKNOWN, **extra) -> str:
+    """A V2 query's three parameters, `Expires` as given."""
+    return _query(Signature="abc", AWSAccessKeyId=akid, Expires=expires, **extra)
+
+
+def _http_dated(authorization: str, minutes: int = 0) -> dict[str, str]:
+    """The `_http_date` header and the `Authorization` beside it."""
+    return {"date": _http_date(minutes), "authorization": authorization}
+
+
+def _meta_dated(authorization: str) -> dict[str, str]:
+    """A V4 header's two headers with an `x-amz-meta-foo` it did not sign between them."""
+    return {"x-amz-date": _now(), "x-amz-meta-foo": "bar", "authorization": authorization}
+
+
+def _region_dated(region_set: str, authorization: str) -> dict[str, str]:
+    """A SigV4a header's three headers: its `x-amz-date`, the region set, and the header."""
+    return {"x-amz-date": _now(), "x-amz-region-set": region_set, "authorization": authorization}
+
+
+# The answer builders, under the rule stated at `_invalid_request`: the code, the message as real
+# spelt it and the members where the row names them.
+def _header_malformed(reason: str, members=None):
+    """`AuthorizationHeaderMalformed`: the fixed prefix, then ``reason``."""
+    return ("AuthorizationHeaderMalformed", _MALFORMED + reason, members)
+
+
+def _query_credential(reason: str, members=None):
+    """`AuthorizationQueryParametersError` for an `X-Amz-Credential` real could not read."""
+    return ("AuthorizationQueryParametersError", _QUERY_CREDENTIAL + reason, members)
+
+
+def _query_refused(message: str, members=None):
+    """`AuthorizationQueryParametersError` for any other query parameter."""
+    return ("AuthorizationQueryParametersError", message, members)
+
+
+def _date_format(value: str):
+    """A header's scope date real could not read, with no members."""
+    return _header_malformed(f'incorrect date format "{value}". ' + _DATE_FORMAT, ())
+
+
+def _query_date_format(value: str):
+    """The query's spelling of `_date_format`."""
+    return _query_credential(f'incorrect date format "{value}". ' + _DATE_FORMAT, ())
+
+
+def _date_differs(value: str):
+    """A query's scope date real read and compared with its `X-Amz-Date`'s day."""
+    return _query_refused(
+        f'Invalid credential date "{value}". This date is not the same as X-Amz-Date: '
+        f'"{_now()[:8]}".'
+    )
+
+
+def _not_a_date(value: str):
+    """A V2 query's `Expires` real could not read as seconds."""
+    return ("AccessDenied", _NOT_A_DATE + value, None)
+
+
+def _expired_at(expires: str):
+    """A V2 query's expiry as real named it; the server time is the clock's (2026-09-29)."""
+    return ("AccessDenied", "Request has expired", (("Expires", expires),))
+
+
+def _unsigned(names: str):
+    """`AccessDenied` naming the sent headers left out of `SignedHeaders`, as real lists them."""
+    return ("AccessDenied", _NOT_SIGNED, (("HeadersNotSigned", names),))
+
+
+def _bad_hash(value: str):
+    """An `x-amz-content-sha256` real could not read, named as sent."""
+    return (
+        "InvalidArgument",
+        _BAD_PAYLOAD_HASH,
+        (("ArgumentName", "x-amz-content-sha256"), ("ArgumentValue", value)),
+    )
+
+
+def _region_set(value: str):
+    """A SigV4a region set the region this server presents is not in."""
+    return (
+        "RegionSetMismatch",
+        _REGION_SET,
+        (("RequestedRegion", "us-east-1"), ("RegionSet", value)),
+    )
+
+
+# The headers and answers the rows below repeat.
+_GARBAGE_SCOPE = f"AWS4-HMAC-SHA256 Credential={AK}/garbage, SignedHeaders=host, Signature=00"
+_HASHLESS = {"x-amz-content-sha256": None}
+_GARBAGE_HASH = {"x-amz-content-sha256": "garbage"}
+_Y10K = "Tue, 29 Sep 10000 16:00:00 GMT"
 _TWO_MECHANISMS = ("InvalidArgument", _ONE_MECHANISM)
 _UNSUPPORTED_SCHEME = ("InvalidArgument", "Unsupported Authorization Type")
 _NOT_ONE_SPACE = ("InvalidArgument", _NO_SPACE)
 _DATELESS = ("AccessDenied", _NO_DATE)
 _TOO_SKEWED = ("RequestTimeTooSkewed", _SKEWED)
-_WRONG_SERVICE = (
-    "AuthorizationHeaderMalformed",
-    _MALFORMED + 'incorrect service "ec2". This endpoint belongs to "s3".',
+_WRONG_SERVICE = _header_malformed('incorrect service "ec2". This endpoint belongs to "s3".')
+_WRONG_TERMINAL = _header_malformed(
+    'incorrect terminal "aws5_request". This endpoint uses "aws4_request".'
 )
-_WRONG_TERMINAL = (
-    "AuthorizationHeaderMalformed",
-    _MALFORMED + 'incorrect terminal "aws5_request". This endpoint uses "aws4_request".',
-)
-_SCOPE_DATE_DIFFERS = (
-    "AuthorizationHeaderMalformed",
-    _MALFORMED + "Invalid credential date. Date is not the same as X-Amz-Date.",
+_SCOPE_DATE_DIFFERS = _header_malformed(
+    "Invalid credential date. Date is not the same as X-Amz-Date."
 )
 _UNKNOWN_KEY = ("InvalidAccessKeyId", _NO_KEY)
-_BAD_QUERY_ALGORITHM = (
-    "AuthorizationQueryParametersError",
-    'X-Amz-Algorithm only supports "AWS4-HMAC-SHA256 and AWS4-ECDSA-P256-SHA256"',
+_BAD_QUERY_ALGORITHM = _query_refused(
+    'X-Amz-Algorithm only supports "AWS4-HMAC-SHA256 and AWS4-ECDSA-P256-SHA256"'
 )
-_NEGATIVE_EXPIRES = ("AuthorizationQueryParametersError", "X-Amz-Expires must be non-negative")
-_OVER_A_WEEK = ("AuthorizationQueryParametersError", _WEEK)
+_NEGATIVE_EXPIRES = _query_refused("X-Amz-Expires must be non-negative")
+_OVER_A_WEEK = _query_refused(_WEEK)
+_NOT_A_NUMBER = _query_refused(_A_NUMBER)
 _EXPIRED = ("AccessDenied", "Request has expired")
-_HEADER_WRONG_REGION = ("AuthorizationHeaderMalformed", _MALFORMED + _WRONG_REGION)
-_QUERY_WRONG_REGION = ("AuthorizationQueryParametersError", _QUERY_CREDENTIAL + _WRONG_REGION)
+_HEADER_WRONG_REGION = _header_malformed(_WRONG_REGION)
+_QUERY_WRONG_REGION = _query_credential(_WRONG_REGION)
 _V2_MALFORMED = ("InvalidArgument", _V2_FORMAT)
 _V2_QUERY_INCOMPLETE = ("AccessDenied", _V2_QUERY_PARAMETERS)
 _PAYLOAD_HASH_MISSING = ("InvalidRequest", _NO_PAYLOAD_HASH, ())
-_GARBAGE_PAYLOAD_HASH = ("InvalidArgument", _BAD_PAYLOAD_HASH, _hashed("garbage"))
+_GARBAGE_PAYLOAD_HASH = _bad_hash("garbage")
 _INTERNAL_500 = ("InternalError", _INTERNAL, ())
-_EMPTY_SCOPE_DATE = (
-    "AuthorizationHeaderMalformed",
-    _MALFORMED + 'incorrect date format "". ' + _DATE_FORMAT,
-    (),
-)
-_META_NOT_SIGNED = ("AccessDenied", _NOT_SIGNED, _not_signed("x-amz-meta-foo"))
-_DATE_NOT_SIGNED = ("AccessDenied", _NOT_SIGNED, _not_signed("x-amz-date"))
-_NO_REGION_SET_QUERY = (
-    "AuthorizationQueryParametersError",
-    "SigV4a query auth requires a non empty x-amz-region-set parameter.",
-    (),
+_EMPTY_SCOPE_DATE = _date_format("")
+_META_NOT_SIGNED = _unsigned("x-amz-meta-foo")
+_DATE_NOT_SIGNED = _unsigned("x-amz-date")
+_NO_REGION_SET_QUERY = _query_refused(
+    "SigV4a query auth requires a non empty x-amz-region-set parameter.", ()
 )
 
-# One fault each, and each pair whose order was measured (2026-09-29, us-east-1).
+# One fault each, and each pair whose order was measured, 2026-09-29 against us-east-1.
+# fmt: off
 _REFUSAL_ROWS_UNIT = [
-    (
-        "header and query",
-        {"authorization": "Bearer abc"},
-        _query(X_Amz_Algorithm="bogus"),
-        "InvalidArgument",
-        "Only one auth mechanism allowed; only the X-Amz-Algorithm query parameter, Signature "
-        "query string parameter or the Authorization header should be specified",
-    ),
+    ("header and query", {"authorization": "Bearer abc"}, _query(X_Amz_Algorithm="bogus"),
+     *_TWO_MECHANISMS),
     # An empty header beside either query form, a valid presign and a bad algorithm alike
     # (``backlot.auth.resolve_sigv4`` has the measurement).
     ("empty header and a presign", {"authorization": ""}, _presign(_now()), *_TWO_MECHANISMS),
-    (
-        "empty header and X-Amz-Algorithm",
-        {"authorization": ""},
-        _query(X_Amz_Algorithm="zz"),
-        *_TWO_MECHANISMS,
-    ),
-    (
-        "empty header and Signature",
-        {"authorization": ""},
-        _query(Signature="abc", AWSAccessKeyId=AK, Expires="9999999999"),
-        *_TWO_MECHANISMS,
-    ),
+    ("empty header and X-Amz-Algorithm", {"authorization": ""}, _query(X_Amz_Algorithm="zz"),
+     *_TWO_MECHANISMS),
+    ("empty header and Signature", {"authorization": ""}, _v2_query("9999999999", akid=AK),
+     *_TWO_MECHANISMS),
     ("bearer", {"authorization": "Bearer abc"}, "", *_UNSUPPORTED_SCHEME),
     ("sha512", {"authorization": "AWS4-HMAC-SHA512 Credential=x"}, "", *_UNSUPPORTED_SCHEME),
     ("no space", {"authorization": "AWS4-HMAC-SHA256"}, "", *_NOT_ONE_SPACE),
@@ -4893,756 +4294,216 @@ _REFUSAL_ROWS_UNIT = [
     ("no date", {"authorization": _v4(_UNKNOWN, _now())}, "", *_DATELESS),
     ("bad date", {"x-amz-date": "garbage", "authorization": _v4(_UNKNOWN, _now())}, "", *_DATELESS),
     ("date before parts", {"authorization": "AWS4-HMAC-SHA256 nonsense"}, "", *_DATELESS),
-    (
-        "skew first",
-        _dated(_v4(_UNKNOWN, _now(-30)), -30),
-        "",
-        *_TOO_SKEWED,
-    ),
-    (
-        "skew before parts",
-        _dated("AWS4-HMAC-SHA256 nonsense", -30),
-        "",
-        *_TOO_SKEWED,
-    ),
-    (
-        "skew before scope",
-        _dated(f"AWS4-HMAC-SHA256 Credential={AK}/garbage, SignedHeaders=host, Signature=00", -30),
-        "",
-        *_TOO_SKEWED,
-    ),
-    (
-        "no parts",
-        _dated("AWS4-HMAC-SHA256 nonsense"),
-        "",
-        "AuthorizationHeaderMalformed",
-        _MALFORMED + "the authorization header requires three components: Credential, "
-        "SignedHeaders, and Signature.",
-    ),
-    (
-        "scope",
-        _dated(f"AWS4-HMAC-SHA256 Credential={AK}/garbage, SignedHeaders=host, Signature=00"),
-        "",
-        "AuthorizationHeaderMalformed",
-        _MALFORMED + _SHAPE,
-    ),
-    (
-        "service",
-        _dated(_v4(_UNKNOWN, _now(), service="ec2")),
-        "",
-        *_WRONG_SERVICE,
-    ),
-    (
-        "terminal",
-        _dated(_v4(AK, _now(), terminal="aws5_request")),
-        "",
-        *_WRONG_TERMINAL,
-    ),
-    (
-        "scope date",
-        _dated(_v4(_UNKNOWN, "20200101")),
-        "",
-        *_SCOPE_DATE_DIFFERS,
-    ),
-    (
-        "unknown key",
-        _dated(_v4(_UNKNOWN, _now())),
-        "",
-        *_UNKNOWN_KEY,
-    ),
-    (
-        "query algorithm",
-        {},
-        _query(X_Amz_Algorithm="AWS4-HMAC-SHA512", X_Amz_Signature="00"),
-        *_BAD_QUERY_ALGORITHM,
-    ),
-    (
-        "query parameters",
-        {},
-        _query(X_Amz_Algorithm="AWS4-HMAC-SHA256", X_Amz_Signature="00"),
-        "AuthorizationQueryParametersError",
-        "Query-string authentication version 4 requires the X-Amz-Algorithm, X-Amz-Credential, "
-        "X-Amz-Signature, X-Amz-Date, X-Amz-SignedHeaders, and X-Amz-Expires parameters.",
-    ),
-    (
-        "query date",
-        {},
-        _presign("garbage", expires="abc", credential=f"{AK}/20260929/us-east-1/s3/aws4_request"),
-        "AuthorizationQueryParametersError",
-        "X-Amz-Date must be in the ISO8601 Long Format \"yyyyMMdd'T'HHmmss'Z'\"",
-    ),
-    (
-        "query expires",
-        {},
-        _presign(_now(), expires="abc"),
-        "AuthorizationQueryParametersError",
-        "X-Amz-Expires should be a number",
-    ),
+    ("skew first", _dated(_v4(_UNKNOWN, _now(-30)), -30), "", *_TOO_SKEWED),
+    ("skew before parts", _dated("AWS4-HMAC-SHA256 nonsense", -30), "", *_TOO_SKEWED),
+    ("skew before scope", _dated(_GARBAGE_SCOPE, -30), "", *_TOO_SKEWED),
+    ("no parts", _dated("AWS4-HMAC-SHA256 nonsense"), "",
+     *_header_malformed("the authorization header requires three components: Credential, "
+                        "SignedHeaders, and Signature.")),
+    ("scope", _dated(_GARBAGE_SCOPE), "", *_header_malformed(_SHAPE)),
+    ("service", _dated(_v4(_UNKNOWN, _now(), service="ec2")), "", *_WRONG_SERVICE),
+    ("terminal", _dated(_v4(AK, _now(), terminal="aws5_request")), "", *_WRONG_TERMINAL),
+    ("scope date", _dated(_v4(_UNKNOWN, "20200101")), "", *_SCOPE_DATE_DIFFERS),
+    ("unknown key", _dated(_v4(_UNKNOWN, _now())), "", *_UNKNOWN_KEY),
+    ("query algorithm", {}, _query(X_Amz_Algorithm="AWS4-HMAC-SHA512", X_Amz_Signature="00"),
+     *_BAD_QUERY_ALGORITHM),
+    ("query parameters", {}, _query(X_Amz_Algorithm="AWS4-HMAC-SHA256", X_Amz_Signature="00"),
+     *_query_refused("Query-string authentication version 4 requires the X-Amz-Algorithm, "
+                     "X-Amz-Credential, X-Amz-Signature, X-Amz-Date, X-Amz-SignedHeaders, and "
+                     "X-Amz-Expires parameters.")),
+    ("query date", {}, _presign("garbage", expires="abc", scope_date="20260929"),
+     *_query_refused("X-Amz-Date must be in the ISO8601 Long Format \"yyyyMMdd'T'HHmmss'Z'\"")),
+    ("query expires", {}, _presign(_now(), expires="abc"), *_NOT_A_NUMBER),
     ("query negative", {}, _presign(_now(60), expires="-1"), *_NEGATIVE_EXPIRES),
     ("query a week", {}, _presign(_now(-60 * 24 * 9), expires="604801"), *_OVER_A_WEEK),
-    (
-        "not yet valid",
-        {},
-        _presign(_now(60), credential="garbage"),
-        "AccessDenied",
-        "Request is not yet valid",
-    ),
+    ("not yet valid", {}, _presign(_now(60), credential="garbage"),
+     "AccessDenied", "Request is not yet valid"),
     ("expiry first", {}, _presign(_now(-600), expires="60", credential="garbage"), *_EXPIRED),
-    (
-        "query credential",
-        {},
-        _presign(_now(), credential="garbage"),
-        "AuthorizationQueryParametersError",
-        "Error parsing the X-Amz-Credential parameter; " + _SHAPE,
-    ),
-    (
-        "query service first",
-        {},
-        _presign(_now(), credential=f"{AK}/20200101/us-east-1/ec2/aws4_request"),
-        "AuthorizationQueryParametersError",
-        "Error parsing the X-Amz-Credential parameter; "
-        'incorrect service "ec2". This endpoint belongs to "s3".',
-    ),
-    (
-        "query scope date",
-        {},
-        _presign(_now(), credential=f"{_UNKNOWN}/20200101/us-east-1/s3/aws4_request"),
-        "AuthorizationQueryParametersError",
-        f'Invalid credential date "20200101". This date is not the same as X-Amz-Date: '
-        f'"{_now()[:8]}".',
-    ),
-    (
-        "query key",
-        {},
-        _presign(_now(), credential=f"{_UNKNOWN}/{_now()[:8]}/us-east-1/s3/aws4_request"),
-        *_UNKNOWN_KEY,
-    ),
+    ("query credential", {}, _presign(_now(), credential="garbage"), *_query_credential(_SHAPE)),
+    ("query service first", {}, _presign(_now(), service="ec2", scope_date="20200101"),
+     *_query_credential('incorrect service "ec2". This endpoint belongs to "s3".')),
+    ("query scope date", {}, _presign(_now(), akid=_UNKNOWN, scope_date="20200101"),
+     *_date_differs("20200101")),
+    ("query key", {}, _presign(_now(), akid=_UNKNOWN), *_UNKNOWN_KEY),
     # The region, which is the one this server presents, header and query alike.
-    (
-        "region",
-        _dated(_v4(AK, _now(), region="us-west-2")),
-        "",
-        *_HEADER_WRONG_REGION,
-    ),
-    (
-        "region in capitals",
-        _dated(_v4(AK, _now(), region="US-EAST-1")),
-        "",
-        "AuthorizationHeaderMalformed",
-        _MALFORMED + "the region 'US-EAST-1' is wrong; expecting 'us-east-1'",
-    ),
-    (
-        "region empty",
-        _dated(_v4(AK, _now(), region="")),
-        "",
-        "AuthorizationHeaderMalformed",
-        _MALFORMED + _NO_REGION,
-    ),
-    (
-        "region before the key",
-        _dated(_v4(_UNKNOWN, _now(), region="us-west-2")),
-        "",
-        *_HEADER_WRONG_REGION,
-    ),
-    (
-        "region before the service",
-        _dated(_v4(AK, _now(), service="ec2", region="us-west-2")),
-        "",
-        *_HEADER_WRONG_REGION,
-    ),
-    (
-        "region before the scope date",
-        _dated(_v4(AK, "20200101", region="us-west-2")),
-        "",
-        *_HEADER_WRONG_REGION,
-    ),
-    (
-        "skew before the region",
-        _dated(_v4(AK, _now(-30), region="us-west-2"), -30),
-        "",
-        *_TOO_SKEWED,
-    ),
-    (
-        "date before the region",
-        {"authorization": _v4(AK, _now(), region="us-west-2")},
-        "",
-        *_DATELESS,
-    ),
-    (
-        "query region",
-        {},
-        _presign(_now(), credential=f"{AK}/{_now()[:8]}/us-west-2/s3/aws4_request"),
-        *_QUERY_WRONG_REGION,
-    ),
-    (
-        "query region before the key",
-        {},
-        _presign(_now(), credential=f"{_UNKNOWN}/{_now()[:8]}/us-west-2/s3/aws4_request"),
-        *_QUERY_WRONG_REGION,
-    ),
-    (
-        "query region before the service",
-        {},
-        _presign(_now(), credential=f"{AK}/{_now()[:8]}/us-west-2/ec2/aws4_request"),
-        *_QUERY_WRONG_REGION,
-    ),
-    (
-        "query region before the scope date",
-        {},
-        _presign(_now(), credential=f"{AK}/20200101/us-west-2/s3/aws4_request"),
-        *_QUERY_WRONG_REGION,
-    ),
-    (
-        "query expiry before the region",
-        {},
-        _presign(
-            _now(-120), expires="60", credential=f"{AK}/{_now(-120)[:8]}/us-west-2/s3/aws4_request"
-        ),
-        *_EXPIRED,
-    ),
-    (
-        "query a week before the region",
-        {},
-        _presign(
-            _now(), expires="604801", credential=f"{AK}/{_now()[:8]}/us-west-2/s3/aws4_request"
-        ),
-        *_OVER_A_WEEK,
-    ),
-    (
-        "query region empty",
-        {},
-        _presign(_now(), credential=f"{AK}/{_now()[:8]}//s3/aws4_request"),
-        "AuthorizationQueryParametersError",
-        _QUERY_CREDENTIAL + _NO_REGION,
-    ),
+    ("region", _dated(_v4(AK, _now(), region="us-west-2")), "", *_HEADER_WRONG_REGION),
+    ("region in capitals", _dated(_v4(AK, _now(), region="US-EAST-1")), "",
+     *_header_malformed("the region 'US-EAST-1' is wrong; expecting 'us-east-1'")),
+    ("region empty", _dated(_v4(AK, _now(), region="")), "", *_header_malformed(_NO_REGION)),
+    ("region before the key", _dated(_v4(_UNKNOWN, _now(), region="us-west-2")), "",
+     *_HEADER_WRONG_REGION),
+    ("region before the service", _dated(_v4(AK, _now(), service="ec2", region="us-west-2")), "",
+     *_HEADER_WRONG_REGION),
+    ("region before the scope date", _dated(_v4(AK, "20200101", region="us-west-2")), "",
+     *_HEADER_WRONG_REGION),
+    ("skew before the region", _dated(_v4(AK, _now(-30), region="us-west-2"), -30), "",
+     *_TOO_SKEWED),
+    ("date before the region", {"authorization": _v4(AK, _now(), region="us-west-2")}, "",
+     *_DATELESS),
+    ("query region", {}, _presign(_now(), region="us-west-2"), *_QUERY_WRONG_REGION),
+    ("query region before the key", {}, _presign(_now(), akid=_UNKNOWN, region="us-west-2"),
+     *_QUERY_WRONG_REGION),
+    ("query region before the service", {}, _presign(_now(), region="us-west-2", service="ec2"),
+     *_QUERY_WRONG_REGION),
+    ("query region before the scope date", {},
+     _presign(_now(), region="us-west-2", scope_date="20200101"), *_QUERY_WRONG_REGION),
+    ("query expiry before the region", {}, _presign(_now(-120), expires="60", region="us-west-2"),
+     *_EXPIRED),
+    ("query a week before the region", {}, _presign(_now(), expires="604801", region="us-west-2"),
+     *_OVER_A_WEEK),
+    ("query region empty", {}, _presign(_now(), region=""), *_query_credential(_NO_REGION)),
     # Signature Version 2 in the header, one fault at a time and the pairs measured.
-    ("v2 no colon", {"date": _http_date(), "authorization": "AWS garbage"}, "", *_V2_MALFORMED),
-    (
-        "v2 empty signature",
-        {"date": _http_date(), "authorization": f"AWS {AK}:"},
-        "",
-        *_V2_MALFORMED,
-    ),
-    ("v2 two colons", {"date": _http_date(), "authorization": f"AWS {AK}:a:b"}, "", *_V2_MALFORMED),
+    ("v2 no colon", _http_dated("AWS garbage"), "", *_V2_MALFORMED),
+    ("v2 empty signature", _http_dated(f"AWS {AK}:"), "", *_V2_MALFORMED),
+    ("v2 two colons", _http_dated(f"AWS {AK}:a:b"), "", *_V2_MALFORMED),
     ("v2 format before the date", {"authorization": "AWS garbage"}, "", *_V2_MALFORMED),
-    (
-        "v2 two spaces",
-        {"date": _http_date(), "authorization": f"AWS  {AK}:abc"},
-        "",
-        *_NOT_ONE_SPACE,
-    ),
+    ("v2 two spaces", _http_dated(f"AWS  {AK}:abc"), "", *_NOT_ONE_SPACE),
     ("v2 no date", {"authorization": f"AWS {_UNKNOWN}:abc"}, "", *_DATELESS),
     ("v2 empty key after the date", {"authorization": "AWS :abc"}, "", *_DATELESS),
     ("v2 bad date", {"date": "garbage", "authorization": f"AWS {_UNKNOWN}:abc"}, "", *_DATELESS),
-    (
-        "v2 x-amz-date read over Date",
-        {"x-amz-date": "garbage", "date": _http_date(), "authorization": f"AWS {_UNKNOWN}:abc"},
-        "",
-        *_DATELESS,
-    ),
-    (
-        "v2 skew before the key",
-        {"date": _http_date(-30), "authorization": f"AWS {_UNKNOWN}:abc"},
-        "",
-        *_TOO_SKEWED,
-    ),
-    (
-        "v2 x-amz-date skewed over Date",
-        {
-            "x-amz-date": _http_date(-30),
-            "date": _http_date(),
-            "authorization": f"AWS {_UNKNOWN}:abc",
-        },
-        "",
-        *_TOO_SKEWED,
-    ),
-    (
-        "v2 unknown key",
-        {"date": _http_date(), "authorization": f"AWS {_UNKNOWN}:abc"},
-        "",
-        *_UNKNOWN_KEY,
-    ),
-    (
-        "v2 beside X-Amz-Algorithm",
-        {"authorization": "AWS garbage"},
-        "X-Amz-Algorithm=x",
-        *_TWO_MECHANISMS,
-    ),
-    (
-        "v2 beside Signature",
-        {"date": _http_date(), "authorization": f"AWS {AK}:abc"},
-        "Signature=abc",
-        *_TWO_MECHANISMS,
-    ),
-    (
-        "v4 beside Signature",
-        {"authorization": "AWS4-HMAC-SHA256 x"},
-        "Signature=abc",
-        *_TWO_MECHANISMS,
-    ),
+    ("v2 x-amz-date read over Date",
+     {"x-amz-date": "garbage", **_http_dated(f"AWS {_UNKNOWN}:abc")}, "", *_DATELESS),
+    ("v2 skew before the key", _http_dated(f"AWS {_UNKNOWN}:abc", -30), "", *_TOO_SKEWED),
+    ("v2 x-amz-date skewed over Date",
+     {"x-amz-date": _http_date(-30), **_http_dated(f"AWS {_UNKNOWN}:abc")}, "", *_TOO_SKEWED),
+    ("v2 unknown key", _http_dated(f"AWS {_UNKNOWN}:abc"), "", *_UNKNOWN_KEY),
+    ("v2 beside X-Amz-Algorithm", {"authorization": "AWS garbage"}, "X-Amz-Algorithm=x",
+     *_TWO_MECHANISMS),
+    ("v2 beside Signature", _http_dated(f"AWS {AK}:abc"), "Signature=abc", *_TWO_MECHANISMS),
+    ("v4 beside Signature", {"authorization": "AWS4-HMAC-SHA256 x"}, "Signature=abc",
+     *_TWO_MECHANISMS),
     # And in the query.
-    (
-        "v2 query beside X-Amz-Algorithm",
-        {},
-        _query(
-            Signature="abc",
-            AWSAccessKeyId=AK,
-            Expires="9999999999",
-            X_Amz_Algorithm="AWS4-HMAC-SHA256",
-        ),
-        *_TWO_MECHANISMS,
-    ),
-    (
-        "v2 query without Expires",
-        {},
-        _query(Signature="abc", AWSAccessKeyId=_UNKNOWN),
-        *_V2_QUERY_INCOMPLETE,
-    ),
-    (
-        "v2 query without a key",
-        {},
-        _query(Signature="abc", Expires=_epoch(60)),
-        *_V2_QUERY_INCOMPLETE,
-    ),
-    (
-        "v2 query Expires a word",
-        {},
-        _query(Signature="abc", AWSAccessKeyId=_UNKNOWN, Expires="garbage"),
-        "AccessDenied",
-        _NOT_A_DATE + "garbage",
-    ),
-    (
-        "v2 query Expires past an int32",
-        {},
-        _query(Signature="abc", AWSAccessKeyId=_UNKNOWN, Expires="2147483648"),
-        "AccessDenied",
-        _NOT_A_DATE + "2147483648",
-    ),
-    (
-        "v2 query Expires 1e9",
-        {},
-        _query(Signature="abc", AWSAccessKeyId=_UNKNOWN, Expires="1e9"),
-        "AccessDenied",
-        _NOT_A_DATE + "1e9",
-    ),
-    (
-        "v2 query Expires with a space",
-        {},
-        _query(Signature="abc", AWSAccessKeyId=_UNKNOWN, Expires=" 1"),
-        "AccessDenied",
-        _NOT_A_DATE + " 1",
-    ),
-    (
-        "v2 query expiry before the key",
-        {},
-        _query(Signature="abc", AWSAccessKeyId=_UNKNOWN, Expires=_epoch(-2)),
-        *_EXPIRED,
-    ),
-    (
-        "v2 query Expires -1",
-        {},
-        _query(Signature="abc", AWSAccessKeyId=_UNKNOWN, Expires="-1"),
-        *_EXPIRED,
-    ),
-    (
-        "v2 query Expires with a leading zero",
-        {},
-        _query(Signature="abc", AWSAccessKeyId=_UNKNOWN, Expires="0" + _epoch(60)),
-        *_UNKNOWN_KEY,
-    ),
-    (
-        "v2 query unknown key",
-        {},
-        _query(Signature="abc", AWSAccessKeyId=_UNKNOWN, Expires=_epoch(60)),
-        *_UNKNOWN_KEY,
-    ),
+    ("v2 query beside X-Amz-Algorithm", {},
+     _v2_query("9999999999", akid=AK, X_Amz_Algorithm="AWS4-HMAC-SHA256"), *_TWO_MECHANISMS),
+    ("v2 query without Expires", {}, _query(Signature="abc", AWSAccessKeyId=_UNKNOWN),
+     *_V2_QUERY_INCOMPLETE),
+    ("v2 query without a key", {}, _query(Signature="abc", Expires=_epoch(60)),
+     *_V2_QUERY_INCOMPLETE),
+    ("v2 query Expires a word", {}, _v2_query("garbage"), *_not_a_date("garbage")),
+    ("v2 query Expires past an int32", {}, _v2_query("2147483648"), *_not_a_date("2147483648")),
+    ("v2 query Expires 1e9", {}, _v2_query("1e9"), *_not_a_date("1e9")),
+    ("v2 query Expires with a space", {}, _v2_query(" 1"), *_not_a_date(" 1")),
+    ("v2 query expiry before the key", {}, _v2_query(_epoch(-2)), *_EXPIRED),
+    ("v2 query Expires -1", {}, _v2_query("-1"), *_EXPIRED),
+    ("v2 query Expires with a leading zero", {}, _v2_query("0" + _epoch(60)), *_UNKNOWN_KEY),
+    ("v2 query unknown key", {}, _v2_query(_epoch(60)), *_UNKNOWN_KEY),
     # The header's `x-amz-content-sha256`, after its one space and its scheme and ahead of its date.
-    (
-        "no payload hash",
-        {
-            "x-amz-content-sha256": None,
-            "x-amz-date": _now(),
-            "authorization": _v4(_UNKNOWN, _now()),
-        },
-        "",
-        *_PAYLOAD_HASH_MISSING,
-    ),
-    (
-        "payload hash before the date",
-        {"x-amz-content-sha256": None, "authorization": _v4(_UNKNOWN, _now())},
-        "",
-        *_PAYLOAD_HASH_MISSING,
-    ),
-    (
-        "payload hash before the parts",
-        {"x-amz-content-sha256": None, "authorization": "AWS4-HMAC-SHA256 nonsense"},
-        "",
-        *_PAYLOAD_HASH_MISSING,
-    ),
-    (
-        "scheme before the payload hash",
-        {"x-amz-content-sha256": None, "authorization": "Bearer abc"},
-        "",
-        *_UNSUPPORTED_SCHEME,
-    ),
-    (
-        "one space before the payload hash",
-        {"x-amz-content-sha256": None, "authorization": "AWS4-HMAC-SHA256"},
-        "",
-        *_NOT_ONE_SPACE,
-    ),
-    (
-        "v2 reads no payload hash",
-        {"x-amz-content-sha256": None, "date": _http_date(), "authorization": f"AWS {_UNKNOWN}:a"},
-        "",
-        *_UNKNOWN_KEY,
-    ),
+    ("no payload hash", {**_HASHLESS, **_dated(_v4(_UNKNOWN, _now()))}, "", *_PAYLOAD_HASH_MISSING),
+    ("payload hash before the date", {**_HASHLESS, "authorization": _v4(_UNKNOWN, _now())}, "",
+     *_PAYLOAD_HASH_MISSING),
+    ("payload hash before the parts", {**_HASHLESS, "authorization": "AWS4-HMAC-SHA256 nonsense"},
+     "", *_PAYLOAD_HASH_MISSING),
+    ("scheme before the payload hash", {**_HASHLESS, "authorization": "Bearer abc"}, "",
+     *_UNSUPPORTED_SCHEME),
+    ("one space before the payload hash", {**_HASHLESS, "authorization": "AWS4-HMAC-SHA256"}, "",
+     *_NOT_ONE_SPACE),
+    ("v2 reads no payload hash", {**_HASHLESS, **_http_dated(f"AWS {_UNKNOWN}:a")}, "",
+     *_UNKNOWN_KEY),
     *[
-        (
-            f"payload hash {value!r}",
-            {"x-amz-content-sha256": value, "x-amz-date": _now(), "authorization": _v4(AK, _now())},
-            "",
-            "InvalidArgument",
-            _BAD_PAYLOAD_HASH,
-            _hashed(value),
-        )
+        (f"payload hash {value!r}", {"x-amz-content-sha256": value, **_dated(_v4(AK, _now()))}, "",
+         *_bad_hash(value))
         for value in ("garbage", "unsigned-payload", "a" * 63, "a" * 65, "g" * 64, "")
     ],
-    (
-        "payload hash before the skew",
-        {
-            "x-amz-content-sha256": "garbage",
-            "x-amz-date": _now(-30),
-            "authorization": _v4(AK, _now(-30)),
-        },
-        "",
-        *_GARBAGE_PAYLOAD_HASH,
-    ),
-    (
-        "payload hash before the region",
-        {
-            "x-amz-content-sha256": "garbage",
-            "x-amz-date": _now(),
-            "authorization": _v4(AK, _now(), region="us-west-2"),
-        },
-        "",
-        *_GARBAGE_PAYLOAD_HASH,
-    ),
+    ("payload hash before the skew", {**_GARBAGE_HASH, **_dated(_v4(AK, _now(-30)), -30)}, "",
+     *_GARBAGE_PAYLOAD_HASH),
+    ("payload hash before the region",
+     {**_GARBAGE_HASH, **_dated(_v4(AK, _now(), region="us-west-2"))}, "", *_GARBAGE_PAYLOAD_HASH),
     *[
-        (
-            f"payload hash {value[:24]!r} is read",
-            {
-                "x-amz-content-sha256": value,
-                "x-amz-date": _now(),
-                "authorization": _v4(_UNKNOWN, _now()),
-            },
-            "",
-            *_UNKNOWN_KEY,
-        )
-        for value in (
-            "A" * 64,
-            "STREAMING-UNSIGNED-PAYLOAD-TRAILER",
-            "STREAMING-AWS4-HMAC-SHA256-PAYLOAD",
-        )
+        (f"payload hash {value[:24]!r} is read",
+         {"x-amz-content-sha256": value, **_dated(_v4(_UNKNOWN, _now()))}, "", *_UNKNOWN_KEY)
+        for value in ("A" * 64, _TRAILER, "STREAMING-AWS4-HMAC-SHA256-PAYLOAD")
     ],
     # The header's date, as ``backlot.auth._resolve_v4_header`` reads it.
-    (
-        "Date alone",
-        {"date": _http_date(), "authorization": _v4(_UNKNOWN, _now())},
-        "",
-        *_UNKNOWN_KEY,
-    ),
-    (
-        "x-amz-date over Date",
-        {"x-amz-date": "garbage", "date": _http_date(), "authorization": _v4(_UNKNOWN, _now())},
-        "",
-        *_DATELESS,
-    ),
-    (
-        "an empty x-amz-date over Date",
-        {"x-amz-date": "", "date": _http_date(), "authorization": _v4(_UNKNOWN, _now())},
-        "",
-        *_DATELESS,
-    ),
-    (
-        "Date skewed",
-        {"date": _http_date(-30), "authorization": _v4(_UNKNOWN, _now(-30))},
-        "",
-        *_TOO_SKEWED,
-    ),
-    (
-        "Date before 1970",
-        {"date": "Tue, 29 Sep 1969 16:00:00 GMT", "authorization": _v4(_UNKNOWN, _now())},
-        "",
-        *_DATELESS,
-    ),
-    (
-        "Date past 9999",
-        {"date": "Tue, 29 Sep 10000 16:00:00 GMT", "authorization": _v4(_UNKNOWN, _now())},
-        "",
-        *_INTERNAL_500,
-    ),
-    (
-        "x-amz-date past 9999",
-        {"x-amz-date": "Tue, 29 Sep 10000 16:00:00 GMT", "authorization": _v4(_UNKNOWN, _now())},
-        "",
-        *_INTERNAL_500,
-    ),
-    (
-        "x-amz-date in RFC 1123",
-        {"x-amz-date": _http_date(), "authorization": _v4(_UNKNOWN, _now())},
-        "",
-        *_UNKNOWN_KEY,
-    ),
-    (
-        "scope date in the zone sent",
-        {"date": _another_day()[0], "authorization": _v4(_UNKNOWN, _another_day()[1])},
-        "",
-        *_SCOPE_DATE_DIFFERS,
-    ),
-    (
-        "scope date in UTC",
-        {"date": _another_day()[0], "authorization": _v4(_UNKNOWN, _now())},
-        "",
-        *_UNKNOWN_KEY,
-    ),
+    ("Date alone", _http_dated(_v4(_UNKNOWN, _now())), "", *_UNKNOWN_KEY),
+    ("x-amz-date over Date", {"x-amz-date": "garbage", **_http_dated(_v4(_UNKNOWN, _now()))}, "",
+     *_DATELESS),
+    ("an empty x-amz-date over Date", {"x-amz-date": "", **_http_dated(_v4(_UNKNOWN, _now()))}, "",
+     *_DATELESS),
+    ("Date skewed", _http_dated(_v4(_UNKNOWN, _now(-30)), -30), "", *_TOO_SKEWED),
+    ("Date before 1970",
+     {"date": "Tue, 29 Sep 1969 16:00:00 GMT", "authorization": _v4(_UNKNOWN, _now())}, "",
+     *_DATELESS),
+    ("Date past 9999", {"date": _Y10K, "authorization": _v4(_UNKNOWN, _now())}, "", *_INTERNAL_500),
+    ("x-amz-date past 9999", {"x-amz-date": _Y10K, "authorization": _v4(_UNKNOWN, _now())}, "",
+     *_INTERNAL_500),
+    ("x-amz-date in RFC 1123", {"x-amz-date": _http_date(), "authorization": _v4(_UNKNOWN, _now())},
+     "", *_UNKNOWN_KEY),
+    ("scope date in the zone sent",
+     {"date": _another_day()[0], "authorization": _v4(_UNKNOWN, _another_day()[1])}, "",
+     *_SCOPE_DATE_DIFFERS),
+    ("scope date in UTC", {"date": _another_day()[0], "authorization": _v4(_UNKNOWN, _now())}, "",
+     *_UNKNOWN_KEY),
     # The scope date's format, ahead of the region and read before it is compared with the date.
     *[
-        (
-            f"credential date {value!r}",
-            _dated(_v4(AK, _now(), scope_date=value)),
-            "",
-            "AuthorizationHeaderMalformed",
-            _MALFORMED + f'incorrect date format "{value}". ' + _DATE_FORMAT,
-            (),
-        )
-        for value in (
-            "",
-            "2026",
-            "20261329",
-            "20260230",
-            "2026090",
-            "20260900",
-            "2026929",
-            "202609291",
-            "2026-09-29",
-            "+2026092",
-            "2026O929",
-        )
+        (f"credential date {value!r}", _dated(_v4(AK, _now(), scope_date=value)), "",
+         *_date_format(value))
+        for value in ("", "2026", "20261329", "20260230", "2026090", "20260900", "2026929",
+                      "202609291", "2026-09-29", "+2026092", "2026O929")
     ],
     *[
-        (
-            f"credential date {value!r} is a date",
-            _dated(_v4(AK, _now(), scope_date=value)),
-            "",
-            *_SCOPE_DATE_DIFFERS,
-        )
+        (f"credential date {value!r} is a date", _dated(_v4(AK, _now(), scope_date=value)), "",
+         *_SCOPE_DATE_DIFFERS)
         for value in ("2026092", _now()[:8] + "x")
     ],
-    (
-        "credential date before the region",
-        _dated(_v4(AK, _now(), scope_date="", region="us-west-2")),
-        "",
-        *_EMPTY_SCOPE_DATE,
-    ),
-    (
-        "credential date before an empty region",
-        _dated(_v4(AK, _now(), scope_date="", region="")),
-        "",
-        *_EMPTY_SCOPE_DATE,
-    ),
-    (
-        "query credential date",
-        {},
-        _presign(_now(), credential=f"{AK}/2026/us-east-1/s3/aws4_request"),
-        "AuthorizationQueryParametersError",
-        _QUERY_CREDENTIAL + 'incorrect date format "2026". ' + _DATE_FORMAT,
-        (),
-    ),
-    (
-        "query credential date before the region",
-        {},
-        _presign(_now(), credential=f"{AK}//us-west-2/s3/aws4_request"),
-        "AuthorizationQueryParametersError",
-        _QUERY_CREDENTIAL + 'incorrect date format "". ' + _DATE_FORMAT,
-        (),
-    ),
-    (
-        "query credential date read and compared",
-        {},
-        _presign(_now(), credential=f"{AK}/{_now()[:8]}x/us-east-1/s3/aws4_request"),
-        "AuthorizationQueryParametersError",
-        f'Invalid credential date "{_now()[:8]}x". This date is not the same as X-Amz-Date: '
-        f'"{_now()[:8]}".',
-    ),
+    ("credential date before the region",
+     _dated(_v4(AK, _now(), scope_date="", region="us-west-2")), "", *_EMPTY_SCOPE_DATE),
+    ("credential date before an empty region", _dated(_v4(AK, _now(), scope_date="", region="")),
+     "", *_EMPTY_SCOPE_DATE),
+    ("query credential date", {}, _presign(_now(), scope_date="2026"), *_query_date_format("2026")),
+    ("query credential date before the region", {},
+     _presign(_now(), scope_date="", region="us-west-2"), *_query_date_format("")),
+    ("query credential date read and compared", {}, _presign(_now(), scope_date=_now()[:8] + "x"),
+     *_date_differs(_now()[:8] + "x")),
     # A header that had to be signed and was not (``backlot.auth._unsigned``), where
     # ``backlot.auth._resolve_v4_header`` puts it.
-    (
-        "x-amz-meta-foo unsigned",
-        {"x-amz-date": _now(), "x-amz-meta-foo": "bar", "authorization": _v4(_UNKNOWN, _now())},
-        "",
-        *_META_NOT_SIGNED,
-    ),
-    (
-        "content-md5 unsigned",
-        {"x-amz-date": _now(), "content-md5": _md5(b""), "authorization": _v4(_UNKNOWN, _now())},
-        "",
-        "AccessDenied",
-        _NOT_SIGNED,
-        _not_signed("content-md5"),
-    ),
-    (
-        "host unsigned",
-        _dated(_v4(_UNKNOWN, _now(), signed="x-amz-date")),
-        "",
-        "AccessDenied",
-        _NOT_SIGNED,
-        _not_signed("host"),
-    ),
-    (
-        "x-amz-date unsigned",
-        _dated(_v4(_UNKNOWN, _now(), signed="host")),
-        "",
-        *_DATE_NOT_SIGNED,
-    ),
-    (
-        "unsigned in real's order",
-        {
-            "x-amz-date": _now(),
-            "x-amz-meta-b": "1",
-            "content-md5": _md5(b""),
-            "x-amz-meta-a": "2",
-            "authorization": _v4(_UNKNOWN, _now()),
-        },
-        "",
-        "AccessDenied",
-        _NOT_SIGNED,
-        _not_signed("x-amz-meta-a, x-amz-meta-b, content-md5"),
-    ),
-    (
-        "headers real takes unsigned",
-        {
-            "x-amz-date": _now(),
-            "content-type": "text/plain",
-            "range": "bytes=0-1",
-            "date": _http_date(),
-            "if-none-match": '"x"',
-            "x-amzn-trace-id": "Root=1-x",
-            "authorization": _v4(_UNKNOWN, _now()),
-        },
-        "",
-        *_UNKNOWN_KEY,
-    ),
-    (
-        "scope date before unsigned",
-        {"x-amz-date": _now(), "x-amz-meta-foo": "bar", "authorization": _v4(AK, "20200101")},
-        "",
-        *_SCOPE_DATE_DIFFERS,
-    ),
-    (
-        "region before unsigned",
-        {
-            "x-amz-date": _now(),
-            "x-amz-meta-foo": "bar",
-            "authorization": _v4(AK, _now(), region="us-west-2"),
-        },
-        "",
-        *_HEADER_WRONG_REGION,
-    ),
-    (
-        "payload hash before unsigned",
-        {
-            "x-amz-date": _now(),
-            "x-amz-meta-foo": "bar",
-            "x-amz-content-sha256": "garbage",
-            "authorization": _v4(AK, _now()),
-        },
-        "",
-        *_GARBAGE_PAYLOAD_HASH,
-    ),
-    (
-        "query unsigned",
-        {"x-amz-meta-foo": "bar"},
-        _presign(_now(), credential=f"{_UNKNOWN}/{_now()[:8]}/us-east-1/s3/aws4_request"),
-        *_META_NOT_SIGNED,
-    ),
-    (
-        "query x-amz-date header unsigned",
-        {"x-amz-date": _now()},
-        _presign(_now(), credential=f"{_UNKNOWN}/{_now()[:8]}/us-east-1/s3/aws4_request"),
-        *_DATE_NOT_SIGNED,
-    ),
-    (
-        "query expiry before unsigned",
-        {"x-amz-meta-foo": "bar"},
-        _presign(_now(-600), expires="60"),
-        *_EXPIRED,
-    ),
+    ("x-amz-meta-foo unsigned", _meta_dated(_v4(_UNKNOWN, _now())), "", *_META_NOT_SIGNED),
+    ("content-md5 unsigned",
+     {"x-amz-date": _now(), "content-md5": _md5(b""), "authorization": _v4(_UNKNOWN, _now())}, "",
+     *_unsigned("content-md5")),
+    ("host unsigned", _dated(_v4(_UNKNOWN, _now(), signed="x-amz-date")), "", *_unsigned("host")),
+    ("x-amz-date unsigned", _dated(_v4(_UNKNOWN, _now(), signed="host")), "", *_DATE_NOT_SIGNED),
+    ("unsigned in real's order",
+     {"x-amz-date": _now(), "x-amz-meta-b": "1", "content-md5": _md5(b""), "x-amz-meta-a": "2",
+      "authorization": _v4(_UNKNOWN, _now())},
+     "", *_unsigned("x-amz-meta-a, x-amz-meta-b, content-md5")),
+    ("headers real takes unsigned",
+     {"x-amz-date": _now(), "content-type": "text/plain", "range": "bytes=0-1",
+      "date": _http_date(), "if-none-match": '"x"', "x-amzn-trace-id": "Root=1-x",
+      "authorization": _v4(_UNKNOWN, _now())},
+     "", *_UNKNOWN_KEY),
+    ("scope date before unsigned", _meta_dated(_v4(AK, "20200101")), "", *_SCOPE_DATE_DIFFERS),
+    ("region before unsigned", _meta_dated(_v4(AK, _now(), region="us-west-2")), "",
+     *_HEADER_WRONG_REGION),
+    ("payload hash before unsigned",
+     {"x-amz-date": _now(), "x-amz-meta-foo": "bar", **_GARBAGE_HASH,
+      "authorization": _v4(AK, _now())},
+     "", *_GARBAGE_PAYLOAD_HASH),
+    ("query unsigned", {"x-amz-meta-foo": "bar"}, _presign(_now(), akid=_UNKNOWN),
+     *_META_NOT_SIGNED),
+    ("query x-amz-date header unsigned", {"x-amz-date": _now()}, _presign(_now(), akid=_UNKNOWN),
+     *_DATE_NOT_SIGNED),
+    ("query expiry before unsigned", {"x-amz-meta-foo": "bar"}, _presign(_now(-600), expires="60"),
+     *_EXPIRED),
     # `X-Amz-Expires` as a Java long.
     *[
-        (
-            f"query X-Amz-Expires {value!r}",
-            {},
-            _presign(_now(), expires=value),
-            "AuthorizationQueryParametersError",
-            _A_NUMBER,
-        )
-        for value in (
-            " 300",
-            "300 ",
-            "3_00",
-            "3e2",
-            "0x12c",
-            "300.0",
-            "",
-            "-",
-            "+",
-            "9223372036854775808",
-            "-9223372036854775809",
-        )
+        (f"query X-Amz-Expires {value!r}", {}, _presign(_now(), expires=value), *_NOT_A_NUMBER)
+        for value in (" 300", "300 ", "3_00", "3e2", "0x12c", "300.0", "", "-", "+",
+                      "9223372036854775808", "-9223372036854775809")
     ],
-    (
-        "query X-Amz-Expires the least long",
-        {},
-        _presign(_now(), expires="-9223372036854775808"),
-        *_NEGATIVE_EXPIRES,
-    ),
-    (
-        "query X-Amz-Expires the greatest long",
-        {},
-        _presign(_now(), expires="9223372036854775807"),
-        *_OVER_A_WEEK,
-    ),
+    ("query X-Amz-Expires the least long", {}, _presign(_now(), expires="-9223372036854775808"),
+     *_NEGATIVE_EXPIRES),
+    ("query X-Amz-Expires the greatest long", {}, _presign(_now(), expires="9223372036854775807"),
+     *_OVER_A_WEEK),
     *[
-        (
-            f"query X-Amz-Expires {value!r} is 300",
-            {},
-            _presign(
-                _now(),
-                expires=value,
-                credential=f"{_UNKNOWN}/{_now()[:8]}/us-east-1/s3/aws4_request",
-            ),
-            *_UNKNOWN_KEY,
-        )
-        for value in ("+300", "0300", "\u0663\u0660\u0660", "\uff13\uff10\uff10", "0" * 40 + "300")
+        (f"query X-Amz-Expires {value!r} is 300", {},
+         _presign(_now(), expires=value, akid=_UNKNOWN), *_UNKNOWN_KEY)
+        for value in ("+300", "0300", "٣٠٠", "３００", "0" * 40 + "300")
     ],
     # A V2 query's `Expires`: every negative long is a date, a positive one to an int32's largest,
     # and the milliseconds it makes wrap as a long's.
-    (
-        "v2 query Expires with a plus",
-        {},
-        _query(Signature="abc", AWSAccessKeyId=_UNKNOWN, Expires="+2147483647"),
-        *_UNKNOWN_KEY,
-    ),
+    ("v2 query Expires with a plus", {}, _v2_query("+2147483647"), *_UNKNOWN_KEY),
     *[
-        (
-            f"v2 query Expires {value}",
-            {},
-            _query(Signature="abc", AWSAccessKeyId=_UNKNOWN, Expires=value),
-            "AccessDenied",
-            "Request has expired",
-            _expired_at(expires),
-        )
+        (f"v2 query Expires {value}", {}, _v2_query(value), *_expired_at(expires))
         for value, expires in (
             ("-2147483649", "1901-12-13T20:45:51Z"),
             ("-9999999999", "1653-02-10T06:13:21Z"),
@@ -5656,190 +4517,63 @@ _REFUSAL_ROWS_UNIT = [
         )
     ],
     *[
-        (
-            f"v2 query Expires {value} is real's 500",
-            {},
-            _query(Signature="abc", AWSAccessKeyId=_UNKNOWN, Expires=value),
-            *_INTERNAL_500,
-        )
+        (f"v2 query Expires {value} is real's 500", {}, _v2_query(value), *_INTERNAL_500)
         for value in ("-62167219201", "-70000000000", "-9223372036854775")
     ],
-    (
-        "v2 query Expires that wraps into the future",
-        {},
-        _query(Signature="abc", AWSAccessKeyId=_UNKNOWN, Expires="-9223372036854776"),
-        *_UNKNOWN_KEY,
-    ),
-    (
-        "v2 query Expires below a long",
-        {},
-        _query(Signature="abc", AWSAccessKeyId=_UNKNOWN, Expires="-9223372036854775809"),
-        "AccessDenied",
-        _NOT_A_DATE + "-9223372036854775809",
-    ),
-    (
-        "v2 Date past 9999",
-        {"date": "Tue, 29 Sep 10000 16:00:00 GMT", "authorization": f"AWS {_UNKNOWN}:abc"},
-        "",
-        *_INTERNAL_500,
-    ),
+    ("v2 query Expires that wraps into the future", {}, _v2_query("-9223372036854776"),
+     *_UNKNOWN_KEY),
+    ("v2 query Expires below a long", {}, _v2_query("-9223372036854775809"),
+     *_not_a_date("-9223372036854775809")),
+    ("v2 Date past 9999", {"date": _Y10K, "authorization": f"AWS {_UNKNOWN}:abc"}, "",
+     *_INTERNAL_500),
     # SigV4a in the header: its scope has no region, and it signs a region set.
-    (
-        "v4a scope with a region",
-        _dated(_v4a(AK, _now(), scope=f"{_now()[:8]}/us-east-1/s3/aws4_request")),
-        "",
-        "AuthorizationHeaderMalformed",
-        _MALFORMED + _SHAPE_4A,
-        (),
-    ),
-    (
-        "v4a no payload hash",
-        {"x-amz-content-sha256": None, "authorization": _v4a(AK, _now())},
-        "",
-        *_PAYLOAD_HASH_MISSING,
-    ),
-    (
-        "v4a service",
-        {
-            "x-amz-date": _now(),
-            "x-amz-region-set": "us-west-2",
-            "authorization": _v4a(AK, _now(), scope=f"{_now()[:8]}/ec2/aws4_request"),
-        },
-        "",
-        *_WRONG_SERVICE,
-    ),
-    (
-        "v4a terminal",
-        _dated(_v4a(AK, _now(), scope=f"{_now()[:8]}/s3/aws5_request")),
-        "",
-        *_WRONG_TERMINAL,
-    ),
-    (
-        "v4a credential date",
-        _dated(_v4a(AK, _now(), scope="/ec2/aws4_request")),
-        "",
-        *_EMPTY_SCOPE_DATE,
-    ),
-    (
-        "v4a scope date before the region set",
-        _dated(_v4a(AK, _now(), scope="20200101/s3/aws4_request")),
-        "",
-        *_SCOPE_DATE_DIFFERS,
-    ),
-    (
-        "v4a no region set",
-        _dated(_v4a(_UNKNOWN, _now(), signed="host;x-amz-date")),
-        "",
-        "InvalidRequest",
-        "Missing required header for this request: x-amz-region-set",
-        (),
-    ),
-    (
-        "v4a region set unsigned",
-        {
-            "x-amz-date": _now(),
-            "x-amz-region-set": "us-west-2",
-            "authorization": _v4a(AK, _now(), signed="host;x-amz-date"),
-        },
-        "",
-        "AccessDenied",
-        _NOT_SIGNED,
-        _not_signed("x-amz-region-set"),
-    ),
-    (
-        "v4a unsigned before the region set",
-        {
-            "x-amz-date": _now(),
-            "x-amz-meta-foo": "bar",
-            "authorization": _v4a(AK, _now(), signed="host;x-amz-date"),
-        },
-        "",
-        *_META_NOT_SIGNED,
-    ),
+    ("v4a scope with a region",
+     _dated(_v4a(AK, _now(), scope=f"{_now()[:8]}/us-east-1/s3/aws4_request")), "",
+     *_header_malformed(_SHAPE_4A, ())),
+    ("v4a no payload hash", {**_HASHLESS, "authorization": _v4a(AK, _now())}, "",
+     *_PAYLOAD_HASH_MISSING),
+    ("v4a service",
+     _region_dated("us-west-2", _v4a(AK, _now(), scope=f"{_now()[:8]}/ec2/aws4_request")), "",
+     *_WRONG_SERVICE),
+    ("v4a terminal", _dated(_v4a(AK, _now(), scope=f"{_now()[:8]}/s3/aws5_request")), "",
+     *_WRONG_TERMINAL),
+    ("v4a credential date", _dated(_v4a(AK, _now(), scope="/ec2/aws4_request")), "",
+     *_EMPTY_SCOPE_DATE),
+    ("v4a scope date before the region set",
+     _dated(_v4a(AK, _now(), scope="20200101/s3/aws4_request")), "", *_SCOPE_DATE_DIFFERS),
+    ("v4a no region set", _dated(_v4a(_UNKNOWN, _now(), signed="host;x-amz-date")), "",
+     "InvalidRequest", "Missing required header for this request: x-amz-region-set", ()),
+    ("v4a region set unsigned",
+     _region_dated("us-west-2", _v4a(AK, _now(), signed="host;x-amz-date")), "",
+     *_unsigned("x-amz-region-set")),
+    ("v4a unsigned before the region set", _meta_dated(_v4a(AK, _now(), signed="host;x-amz-date")),
+     "", *_META_NOT_SIGNED),
     *[
-        (
-            f"v4a region set {value!r}",
-            {
-                "x-amz-date": _now(),
-                "x-amz-region-set": value,
-                "authorization": _v4a(_UNKNOWN, _now()),
-            },
-            "",
-            "RegionSetMismatch",
-            _REGION_SET,
-            (("RequestedRegion", "us-east-1"), ("RegionSet", value)),
-        )
+        (f"v4a region set {value!r}", _region_dated(value, _v4a(_UNKNOWN, _now())), "",
+         *_region_set(value))
         for value in ("us-west-2", "")
     ],
-    (
-        "v4a region set before the key",
-        {"x-amz-date": _now(), "x-amz-region-set": "us-*", "authorization": _v4a(_UNKNOWN, _now())},
-        "",
-        *_UNKNOWN_KEY,
-    ),
+    ("v4a region set before the key", _region_dated("us-*", _v4a(_UNKNOWN, _now())), "",
+     *_UNKNOWN_KEY),
     # And in the query.
-    (
-        "v4a query scope with a region",
-        {},
-        _presign(_now(), credential=f"{AK}/{_now()[:8]}/us-east-1/s3/aws4_request", algorithm=V4A),
-        "AuthorizationQueryParametersError",
-        _QUERY_CREDENTIAL + _SHAPE_4A,
-        (),
-    ),
-    (
-        "v4a query no region set",
-        {},
-        _presign(_now(), credential=f"{_UNKNOWN}/{_now()[:8]}/s3/aws4_request", algorithm=V4A),
-        *_NO_REGION_SET_QUERY,
-    ),
-    (
-        "v4a query region set in lower case is none",
-        {},
-        _presign(
-            _now(),
-            credential=f"{_UNKNOWN}/{_now()[:8]}/s3/aws4_request",
-            algorithm=V4A,
-            x_amz_region_set="*",
-        ),
-        *_NO_REGION_SET_QUERY,
-    ),
-    (
-        "v4a query empty region set",
-        {},
-        _presign(
-            _now(),
-            credential=f"{_UNKNOWN}/{_now()[:8]}/s3/aws4_request",
-            algorithm=V4A,
-            X_Amz_Region_Set="",
-        ),
-        *_NO_REGION_SET_QUERY,
-    ),
-    (
-        "v4a query region set",
-        {},
-        _presign(
-            _now(),
-            credential=f"{_UNKNOWN}/{_now()[:8]}/s3/aws4_request",
-            algorithm=V4A,
-            X_Amz_Region_Set="us-west-2",
-        ),
-        "RegionSetMismatch",
-        _REGION_SET,
-        (("RequestedRegion", "us-east-1"), ("RegionSet", "us-west-2")),
-    ),
-    (
-        "v4a query unsigned before the region set",
-        {"x-amz-meta-foo": "bar"},
-        _presign(_now(), credential=f"{_UNKNOWN}/{_now()[:8]}/s3/aws4_request", algorithm=V4A),
-        *_META_NOT_SIGNED,
-    ),
-    (
-        "v4a query algorithm in lower case",
-        {},
-        _presign(_now(), algorithm="aws4-ecdsa-p256-sha256"),
-        *_BAD_QUERY_ALGORITHM,
-    ),
+    ("v4a query scope with a region", {},
+     _presign(_now(), credential=f"{AK}/{_now()[:8]}/us-east-1/s3/aws4_request", algorithm=V4A),
+     *_query_credential(_SHAPE_4A, ())),
+    ("v4a query no region set", {}, _presign(_now(), akid=_UNKNOWN, algorithm=V4A),
+     *_NO_REGION_SET_QUERY),
+    ("v4a query region set in lower case is none", {},
+     _presign(_now(), akid=_UNKNOWN, algorithm=V4A, x_amz_region_set="*"), *_NO_REGION_SET_QUERY),
+    ("v4a query empty region set", {},
+     _presign(_now(), akid=_UNKNOWN, algorithm=V4A, X_Amz_Region_Set=""), *_NO_REGION_SET_QUERY),
+    ("v4a query region set", {},
+     _presign(_now(), akid=_UNKNOWN, algorithm=V4A, X_Amz_Region_Set="us-west-2"),
+     *_region_set("us-west-2")),
+    ("v4a query unsigned before the region set", {"x-amz-meta-foo": "bar"},
+     _presign(_now(), akid=_UNKNOWN, algorithm=V4A), *_META_NOT_SIGNED),
+    ("v4a query algorithm in lower case", {}, _presign(_now(), algorithm="aws4-ecdsa-p256-sha256"),
+     *_BAD_QUERY_ALGORITHM),
 ]
+# fmt: on
 
 
 @pytest.mark.parametrize(
@@ -6441,20 +5175,17 @@ def test_a_region_set_names_the_region_as_real_matches_it(region_set, matches):
 
 
 # The unsigned headers real named, in the order it named them (2026-09-29).
+# fmt: off
 _NOT_SIGNED_ROWS = [
     ("x-amz-meta-a, content-md5, host", ["x-amz-meta-a", "host", "content-md5"]),
     ("x-amz-meta-a, content-md5, x-amz-meta-z", ["content-md5", "x-amz-meta-z", "x-amz-meta-a"]),
     ("x-amz-z, x-amz-a", ["x-amz-z", "x-amz-a"]),
     ("x-amz-meta-a, x-amz-meta-b", ["x-amz-meta-b", "x-amz-meta-a"]),
     ("x-amz-meta-a, x-amz-meta-b, content-md5", ["x-amz-meta-b", "x-amz-meta-a", "content-md5"]),
-    (
-        "x-amz-meta-a, x-amz-checksum-mode, x-amz-acl",
-        ["x-amz-checksum-mode", "x-amz-meta-a", "x-amz-acl"],
-    ),
-    (
-        "x-amz-meta-a, x-amz-meta-a2, x-amz-meta-a-b",
-        ["x-amz-meta-a", "x-amz-meta-a2", "x-amz-meta-a-b"],
-    ),
+    ("x-amz-meta-a, x-amz-checksum-mode, x-amz-acl",
+     ["x-amz-checksum-mode", "x-amz-meta-a", "x-amz-acl"]),
+    ("x-amz-meta-a, x-amz-meta-a2, x-amz-meta-a-b",
+     ["x-amz-meta-a", "x-amz-meta-a2", "x-amz-meta-a-b"]),
     ("host, x-amz-meta-foo", ["host", "x-amz-meta-foo"]),
     ("x-amz-meta-a2, x-amz-z", ["x-amz-z", "x-amz-meta-a2"]),
     ("host, x-amz-meta-a-b", ["x-amz-meta-a-b", "host"]),
@@ -6476,6 +5207,7 @@ _NOT_SIGNED_ROWS = [
         + ["content-md5"],
     ),
 ]
+# fmt: on
 
 
 @pytest.mark.parametrize("named, sent", _NOT_SIGNED_ROWS, ids=[r[0][:40] for r in _NOT_SIGNED_ROWS])
@@ -6960,9 +5692,9 @@ def test_list_objects_names_a_next_marker_only_under_a_delimiter_and_pages_to_th
     it saw, which is the fallback this has to leave intact. With one, `NextMarker` names the page's
     last entry BY KEY — a key or a rolled-up prefix, and not always the element the body ends on,
     since every CommonPrefixes is written after every Contents — and sending it back as `marker`
-    resumes past that whole entry: real answers `?delimiter=/&marker=docs/` and `?delimiter=/&marker=docs/a.txt`
-    alike with what follows `docs/`, never `docs/` again, so the walk terminates (measured
-    2026-09-14).
+    resumes past that whole entry: real answers `?delimiter=/&marker=docs/` and
+    `?delimiter=/&marker=docs/a.txt` alike with what follows `docs/`, never `docs/` again, so the
+    walk terminates (measured 2026-09-14).
     """
     token = big_bucket_settings.admin_token
     flat = _listing(big_bucket_client, "max-keys=1", token)

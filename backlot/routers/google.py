@@ -676,7 +676,10 @@ async def gmail_thread_get(user_id: str, thread_id: str, request: Request):
     msgs = store.gmail_thread(conn, thread_key, visible_ids=ids) if thread_key else []
     if not msgs:
         row = _gmail_doc(conn, ids, thread_id)
-        if row is None:
+        # Real Gmail's threads.get resolves only a thread's own id — a reply's message id is
+        # not-found there, so the fallback may serve a lone message only when that message
+        # IS the thread root it names. A reply must not come back as a one-message thread.
+        if row is None or _gmail_ids(row)[0] != _gmail_ids(row)[1]:
             raise gerr.not_found_entity()
         msgs = [row]
     fmt = request.query_params.get("format", "full")

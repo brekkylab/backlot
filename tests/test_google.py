@@ -345,11 +345,20 @@ def test_gmail_attachment_errors(client, admin_h, ro_conn, msg_key, att_key, exp
 
     assert r.status_code == expect_status
     if expect_status == 400:
-        err = r.json()["error"]
-        assert err["code"] == 400
-        assert err["message"] == "Invalid attachment token"
-        assert err["status"] == "INVALID_ARGUMENT"
-        assert err["errors"][0]["reason"] == "invalidArgument"
+        assert r.json() == {
+            "error": {
+                "code": 400,
+                "message": "Invalid attachment token",
+                "errors": [
+                    {
+                        "message": "Invalid attachment token",
+                        "domain": "global",
+                        "reason": "invalidArgument",
+                    }
+                ],
+                "status": "INVALID_ARGUMENT",
+            }
+        }
 
 
 @pytest.mark.parametrize(

@@ -492,7 +492,7 @@ _GMAIL_HEX = re.compile(r"[0-9a-fA-F]+\Z")
 
 def _gmail_check_shape(served_id: str) -> None:
     """Raises if ``served_id`` isn't a parsable, in-range hex id — the check every gmail
-    id-resolving path must run BEFORE any lookup, so an unparsable id is 400 INVALID_ARGUMENT
+    id-resolving path (except attachment download) must run BEFORE any lookup, so an unparsable id is 400 INVALID_ARGUMENT
     regardless of whether it would otherwise resolve.
 
     Measured against the real API: 400 INVALID_ARGUMENT "Invalid id value" for a non-hex id or one
@@ -605,7 +605,9 @@ async def gmail_attachment(user_id: str, msg_id: str, att_id: str, request: Requ
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    row = _gmail_doc(conn, ids, msg_id)
+    # No shape check on the message id: real Gmail's answer here does not depend on it (see
+    # `gerr.invalid_attachment_token`), so a non-hex one is not "Invalid id value" on this route.
+    row = store.gmail_by_id(conn, msg_id, visible_ids=ids)
     if row is None:
         raise gerr.invalid_attachment_token()
     message_id = row["id"]

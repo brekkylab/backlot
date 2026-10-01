@@ -273,7 +273,10 @@ def bad_field_mask(path: str) -> GoogleError:
 
 
 def invalid_attachment_token() -> GoogleError:
-    return GoogleError(400, "Invalid attachment token", reason="invalidArgument", status="INVALID_ARGUMENT")
+    return GoogleError(
+        400, "Invalid attachment token", reason="invalidArgument", status="INVALID_ARGUMENT"
+    )
+
 
 def invalid_id_value() -> GoogleError:
     """Gmail's answer to an id it cannot parse — measured: 400 INVALID_ARGUMENT "Invalid id value"

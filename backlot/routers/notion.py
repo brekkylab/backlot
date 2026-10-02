@@ -330,11 +330,14 @@ def _unmounted_here(request: Request, *, data_sources: bool) -> JSONResponse | N
 
 
 def _norm(nid: str) -> str:
-    """Notion accepts an id dashed or dashless, any case. Canonicalize to the dashed lowercase
-    form the stored ``id`` / ``data_source_id`` columns actually hold (see
-    ``synth._uuid_from``) rather than to a dashless key: a UUID's dashes sit at fixed offsets
-    (8-4-4-4-12), so reconstructing them is deterministic, and the column's job is to hold the
-    value the API reports, not a lookup key a reader has to rebuild dashes from.
+    """Notion accepts an id dashed or dashless, and does not fold its case: a dashed id in upper
+    case was a 404 on ``pages/{id}`` (measured 2026-09-30) and on ``comments`` (2026-10-02), where
+    a dashless one in upper case was not read as a uuid at all. Folding case here serves an id
+    real does not. Canonicalize to the dashed lowercase form the stored ``id`` /
+    ``data_source_id`` columns actually hold (see ``synth._uuid_from``) rather than to a dashless
+    key: a UUID's dashes sit at fixed offsets (8-4-4-4-12), so reconstructing them is
+    deterministic, and the column's job is to hold the value the API reports, not a lookup key a
+    reader has to rebuild dashes from.
 
     Malformed input (the wrong length once dashes are stripped) comes back unchanged, which
     matches no stored id. Real refuses a malformed id with a 400 before it looks anything up;

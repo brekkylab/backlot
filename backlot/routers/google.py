@@ -676,9 +676,10 @@ async def gmail_thread_get(user_id: str, thread_id: str, request: Request):
     msgs = store.gmail_thread(conn, thread_key, visible_ids=ids) if thread_key else []
     if not msgs:
         row = _gmail_doc(conn, ids, thread_id)
-        # Real Gmail's threads.get resolves only a thread's own id — a reply's message id is
-        # not-found there, so the fallback may serve a lone message only when that message
-        # IS the thread root it names. A reply must not come back as a one-message thread.
+        # Measured by the maintainer against gmail.googleapis.com on 2026-09-30 and 2026-10-01:
+        # threads.get on a reply's message id returns the same 404 body as a well-formed
+        # unknown id, while the thread's own id serves the thread. So the fallback serves
+        # a message only when it is its own thread root.
         if row is None or _gmail_ids(row)[0] != _gmail_ids(row)[1]:
             raise gerr.not_found_entity()
         msgs = [row]

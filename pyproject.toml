@@ -40,6 +40,13 @@ dependencies = [
     # The GraphQL.js port: its parse/validate/error envelopes land close to what the real
     # servers return, and introspection comes free. Pure Python, no transitive deps.
     "graphql-core>=3.2",
+    # The three xxhash checksums an S3 PutObject or DeleteObjects carries
+    # (`x-amz-checksum-xxhash64`, `-xxhash3`, `-xxhash128`), which real compares with the body; the
+    # standard library has none of them.
+    "xxhash>=3.0",
+    # SigV4a's ECDSA over P-256 (`backlot.sigv4a`), which the standard library has none of either;
+    # `pyjwt[crypto]` above installs it already, and this names the import the S3 router makes.
+    "cryptography>=3.4",
 ]
 
 [project.optional-dependencies]

@@ -123,7 +123,13 @@ clean match every time — a green check that means nothing.
 So S3 is compared by asking a running server instead. Backlot starts on a free port, every read
 operation botocore declares is sent to it signed, and the answer is classified:
 
-- **refused** — the honest answer for an operation Backlot does not serve. A `gap`.
+- **refused with `NotImplemented`** — the honest answer for an operation Backlot does not serve. A
+  `gap`.
+- **answered with the error real gives that operation** — the 404 `NoSuchCORSConfiguration` for a
+  bucket nobody configured, for one; `REAL_ERRORS` in `backlot.fidelity.s3_probe` holds each, as
+  measured. No finding.
+- **answered with any other error** — one real does not give that operation, whether real answers
+  it with a 200 or with another error. `unexpected_error`, and breaking.
 - **answered distinctly** — implemented. No finding.
 - **answered with the body the same path returns when nothing selects an operation** — Backlot
   neither implements the operation nor refuses it, so the caller parses another operation's body
@@ -316,12 +322,17 @@ parameters and operations off the two documents and never a response header; rea
 declares three of the five, on `GET /rate_limit`'s 200 alone, and Backlot's document declares none.
 The tests are the record here (`tests/test_github.py`, the rate-limit test), not the baseline.
 
-The `Allow` on S3's HEAD refusals is a third. A `HEAD` carrying a sub-resource selector is 405 on
-both sides, and real names the methods that sub-resource takes where Backlot names only `GET`, for
-the two selectors its own `GET` serves (`backlot.routers.s3._head_refusal`). The `s3` probe reads no
-response header, so the difference is invisible to the diff and a hand-written acknowledgement would
-come back as "acknowledged but no longer diverging" on the next run. `tests/test_s3.py` is the
-record, in the two parametrized sub-resource tests and the HEAD one beside them.
+The `Allow` on S3's sub-resource 405s is another. A `HEAD` carrying a sub-resource selector is 405
+on both sides, and real names the methods that sub-resource takes where Backlot names only `GET`,
+for the selectors its own `GET` at that path answers (`backlot.routers.s3._head_refusal`). A `GET`
+or a `HEAD` naming a selector no `GET` takes, `?delete` and a key's `?select` among them, is 405 on
+both sides too, and real names the write methods where Backlot sends no `Allow` at all
+(`backlot.routers.s3._BUCKET_READ_REFUSED`, `_OBJECT_READ_REFUSED`). The `s3` probe reads no
+response header, so neither difference is visible to the diff and a hand-written acknowledgement
+would come back as "acknowledged but no longer diverging" on the next run. `tests/test_s3.py` is the
+record: the `allow` column of
+`test_s3_a_method_this_router_does_not_serve_answers_reals_own_refusal` for the `GET`s, and the
+bucket configuration and object sub-resource tests for the `HEAD`s.
 
 Confluence is not yet fully covered: its reads now live in a v2 document whose paths are shaped
 differently from the v1 ones Backlot serves, so the eight reads Atlassian has removed from the v1

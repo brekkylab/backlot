@@ -154,8 +154,8 @@ endpoint override, so the example just sets:
 - `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` — the required `--access-key` / `--secret-key` (the
   keys Backlot's SigV4 verifier accepts; grab a pair from `GET /_meta/users`), so botocore's
   signature resolves back to that identity and Backlot enforces its ACL.
-- `AWS_REGION=us-east-1` — any region works (Backlot's verifier reads the region back out of the
-  client's own credential scope); this just has to be *some* valid region.
+- `AWS_REGION=us-east-1` — the region Backlot presents; a credential scoped to another region is
+  refused, as real S3 refuses it.
 
 We intentionally do **not** set `READ_OPERATIONS_ONLY`. It sounds like the safe default, but it
 blocks `aws s3 cp s3://<bucket>/<key> -` — the one command that streams an object's **body** back to

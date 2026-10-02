@@ -1,13 +1,15 @@
 """AWS Signature Version 4 verification for the S3 router — standard library only.
 
-Real S3 clients (boto3, aioboto3/mirage, the AWS CLI the awslabs MCP server drives) always
-SigV4-sign their requests. This module rebuilds the canonical request → string-to-sign →
-signature so the server can authenticate them without adding botocore as a runtime dependency.
+The S3 clients this project is exercised with (boto3, aioboto3/mirage, the AWS CLI the awslabs MCP
+server drives) SigV4-sign their requests by default. This module rebuilds the canonical request →
+string-to-sign → signature so the server can authenticate them without adding botocore as a runtime
+dependency; ``backlot.sigv2`` does the same for Signature Version 2.
 
-Only read-only GET/HEAD is served, so the payload hash is taken verbatim from the client's
-``x-amz-content-sha256`` header (empty body / UNSIGNED-PAYLOAD) — no body hashing here. S3's
-signer uses the request path *verbatim* as the canonical URI (no normalization, no re-encoding),
-which is why the router passes the raw wire path through unchanged.
+The payload hash is taken verbatim from the client's ``x-amz-content-sha256`` header, which the
+router checks against a write's body (``backlot.routers.s3._payload_mismatch``); no body is hashed
+here. S3's signer uses the request path *verbatim* as the canonical URI (no normalization, no
+re-encoding), which is why the router passes the raw wire path through unchanged. SigV4a
+(``backlot.sigv4a``) signs this same canonical request.
 """
 
 from __future__ import annotations
@@ -19,6 +21,9 @@ from urllib.parse import parse_qsl, quote
 
 ALGORITHM = "AWS4-HMAC-SHA256"
 AMZ_DATE_FORMAT = "%Y%m%dT%H%M%SZ"
+# The one region this server presents, in `x-amz-bucket-region` and the empty `LocationConstraint`,
+# and the one a credential scope has to name.
+REGION = "us-east-1"
 
 
 def _sha256_hex(data: bytes) -> str:
@@ -37,11 +42,16 @@ def _signing_key(secret: str, date_stamp: str, region: str, service: str = "s3")
 
 
 def parse_authorization(header: str | None) -> dict | None:
-    """Parse a SigV4 ``Authorization`` header into its three fields, or None if malformed."""
-    if not header or not header.startswith(ALGORITHM):
+    """Parse a SigV4 or SigV4a ``Authorization`` header into its three fields, or None if malformed.
+
+    The scheme is what comes before the first space, which ``backlot.auth.resolve_sigv4`` reads
+    without case, as real reads it: `aws4-hmac-sha256` and `Aws4-Hmac-Sha256` are both this scheme
+    and signed as sent (see ``string_to_sign``)."""
+    scheme, _, fields = (header or "").partition(" ")
+    if not scheme:
         return None
     parts: dict[str, str] = {}
-    for kv in header[len(ALGORITHM) :].strip().split(","):
+    for kv in fields.strip().split(","):
         k, _, v = kv.strip().partition("=")
         if k:
             parts[k.strip()] = v.strip()
@@ -110,12 +120,24 @@ def is_skewed(request_time: datetime, now: datetime, max_skew: int = 900) -> boo
     return abs((now - request_time).total_seconds()) > max_skew
 
 
+def string_to_sign(
+    amz_date: str, date_stamp: str, region: str, canonical: str, algorithm: str = ALGORITHM
+) -> str:
+    """``algorithm`` is the scheme as the header spells it: real signs `aws4-hmac-sha256` as it
+    came, so that header verifies against a signature computed over that line and no other (the
+    first line of the `StringToSign` it returned for the two spellings above, 2026-09-29)."""
+    scope = f"{date_stamp}/{region}/s3/aws4_request"
+    return "\n".join([algorithm, amz_date, scope, _sha256_hex(canonical.encode("utf-8"))])
+
+
+def sign(secret: str, date_stamp: str, region: str, to_sign: str) -> str:
+    return hmac.new(
+        _signing_key(secret, date_stamp, region), to_sign.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+
+
 def expected_signature(
     secret, method, path, query, headers, signed_headers, payload_hash, amz_date, date_stamp, region
 ) -> str:
     cr = canonical_request(method, path, query, headers, signed_headers, payload_hash)
-    scope = f"{date_stamp}/{region}/s3/aws4_request"
-    sts = "\n".join([ALGORITHM, amz_date, scope, _sha256_hex(cr.encode("utf-8"))])
-    return hmac.new(
-        _signing_key(secret, date_stamp, region), sts.encode("utf-8"), hashlib.sha256
-    ).hexdigest()
+    return sign(secret, date_stamp, region, string_to_sign(amz_date, date_stamp, region, cr))

@@ -499,6 +499,22 @@ SAMPLE = [
         "visibility": "group",
         "created": "2026-01-05T10:00:00Z",
     },
+    # A third bucket, public and after `people-vault` in name order, so a caller who cannot see
+    # `people-vault` pages through ListBuckets with a bucket it cannot see between two it can.
+    {
+        "source_type": "s3",
+        "doc_id": "s3-robots",
+        "bucket": "web-assets",
+        "group": "engineering",
+        "key": "site/robots.txt",
+        "title": "robots.txt",
+        "content": "User-agent: *\nDisallow:",
+        "content_type": "text/plain",
+        "author_email": "bob@acme.com",
+        "author_groups": ["engineering"],
+        "visibility": "public",
+        "created": "2026-03-02T09:00:00Z",
+    },
     # HubSpot: the object type is the container, so these span three of them. The contact and the
     # note are associated with the company (declared once; the loader writes both directions).
     {

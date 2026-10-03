@@ -8,7 +8,6 @@ import pytest
 
 from tests._helpers import client_for, served_id, tiny_corpus
 
-
 _RECORDS = [
     {
         "source_type": "gmail",

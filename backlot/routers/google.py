@@ -609,7 +609,12 @@ async def gmail_messages_get(user_id: str, msg_id: str, request: Request):
     "/gmail/v1/users/{user_id}/messages/{msg_id}/attachments/{att_id}",
     response_model=GmailAttachment,
 )
-# Measured against Gmail on 2026-10-02: MessagePartBody.size is the UTF-8 byte length.\ndef _byte_len(text: str) -> int:\n    return len(text.encode("utf-8"))\n\n\nasync def gmail_attachment(user_id: str, msg_id: str, att_id: str, request: Request):
+# Measured against Gmail on 2026-10-02: MessagePartBody.size is the UTF-8 byte length.
+def _byte_len(text: str) -> int:
+    return len(text.encode("utf-8"))
+
+
+async def gmail_attachment(user_id: str, msg_id: str, att_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)

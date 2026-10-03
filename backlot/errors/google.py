@@ -272,6 +272,15 @@ def bad_field_mask(path: str) -> GoogleError:
     )
 
 
+def invalid_attachment_token() -> GoogleError:
+    """Gmail's answer to an attachment id it does not hold. Measured 2026-09-30 and 2026-10-01:
+    400 INVALID_ARGUMENT for a made-up id and for a real one with characters changed, whatever
+    message id the path names: one that exists, one that does not, and a non-hex one alike."""
+    return GoogleError(
+        400, "Invalid attachment token", reason="invalidArgument", status="INVALID_ARGUMENT"
+    )
+
+
 def invalid_id_value() -> GoogleError:
     """Gmail's answer to an id it cannot parse — measured: 400 INVALID_ARGUMENT "Invalid id value"
     for a non-hex id or one at/above 2**63, where a well-formed but unknown id is 404 instead."""

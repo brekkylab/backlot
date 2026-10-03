@@ -101,7 +101,7 @@ class NotionList(_NLoose):
 
 
 _P_PAGINATE = [qp("start_cursor"), qp("page_size", "integer")]
-_P_COMMENTS = [qp("block_id"), *_P_PAGINATE]
+_P_COMMENTS = [qp("block_id", required=True), *_P_PAGINATE]
 
 
 def _body(props: dict) -> dict:
@@ -330,16 +330,19 @@ def _unmounted_here(request: Request, *, data_sources: bool) -> JSONResponse | N
 
 
 def _norm(nid: str) -> str:
-    """Notion accepts an id dashed or dashless, any case. Canonicalize to the dashed lowercase
-    form the stored ``id`` / ``data_source_id`` columns actually hold (see
-    ``synth._uuid_from``) rather than to a dashless key: a UUID's dashes sit at fixed offsets
-    (8-4-4-4-12), so reconstructing them is deterministic, and the column's job is to hold the
-    value the API reports, not a lookup key a reader has to rebuild dashes from.
+    """Notion accepts an id dashed or dashless, and does not fold its case: a dashed id in upper
+    case was a 404 on ``pages/{id}`` (measured 2026-09-30) and on ``comments`` (2026-10-02), where
+    a dashless one in upper case was not read as a uuid at all. Folding case here serves an id
+    real does not. Canonicalize to the dashed lowercase form the stored ``id`` /
+    ``data_source_id`` columns actually hold (see ``synth._uuid_from``) rather than to a dashless
+    key: a UUID's dashes sit at fixed offsets (8-4-4-4-12), so reconstructing them is
+    deterministic, and the column's job is to hold the value the API reports, not a lookup key a
+    reader has to rebuild dashes from.
 
-    Malformed input (the wrong length once dashes are stripped) comes back unchanged, which just
-    won't match any stored id -- the same 404 every unknown-but-well-formed id already gets.
-    Notion draws no 400-vs-404 shape distinction the way gmail does (see
-    routers.google._gmail_check_shape); there is nothing to preserve here."""
+    Malformed input (the wrong length once dashes are stripped) comes back unchanged, which
+    matches no stored id. Real refuses a malformed id with a 400 before it looks anything up;
+    ``list_comments`` checks its ``block_id`` that way first, and the path routes answer it the
+    404 an unknown id gets."""
     h = (nid or "").replace("-", "").lower()
     if len(h) != 32:
         return h
@@ -768,15 +771,61 @@ async def list_comments(request: Request):
         return refusal
     conn = auth.conn(request)
     block_id = request.query_params.get("block_id")
+    # Once the credential and the version clear, real refuses a comments query whose `block_id`
+    # is absent, empty or not a uuid before it looks the id up (measured 2026-10-01 and
+    # 2026-10-02), and answers a database's id as restricted -- where a page's or a block's id is
+    # the 200 list both sides agree on.
+    if block_id is None:
+        return _error(
+            request,
+            400,
+            "validation_error",
+            "query failed validation: query.block_id should be defined, instead was `undefined`.",
+        )
+    if not block_id.strip():
+        return _error(
+            request,
+            400,
+            "validation_error",
+            "query failed validation: query.block_id should be a string, instead was `0`.",
+        )
+    # What real reads as a uuid here (measured 2026-10-02): the dashed 8-4-4-4-12 form in either
+    # case, or 32 lower-case hex digits. It echoes anything else as JSON.
+    if not re.fullmatch(
+        r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9a-f]{32}",
+        block_id,
+    ):
+        return _error(
+            request,
+            400,
+            "validation_error",
+            "query failed validation: query.block_id should be a valid uuid, instead was "
+            f"`{json.dumps(block_id, ensure_ascii=False)}`.",
+        )
     # One ACL-scoped query (the parent must itself be visible to the caller), not
     # a resolve followed by a get_document refetch of the same row -- see get_page and friends.
-    row = (
-        store.notion_by_id(conn, _norm(block_id), auth.visible_ids(request, caller))
-        if block_id
-        else None
-    )
+    row = store.notion_by_id(conn, _norm(block_id), auth.visible_ids(request, caller))
     if row is None:
-        return _list_obj([], 0, 0, 0, "comment")
+        # A block is not a row: it is one of the blocks `blocks/{id}/children` derives for a page,
+        # and Backlot keeps no comment on one, so a block of a page the caller can see is the empty
+        # list real answered on 2026-10-02.
+        visible = auth.visible_ids(request, caller)
+        wanted = _norm(block_id)
+        for page in store.list_documents(conn, "notion", visible_ids=visible, limit=-1):
+            if page["subtype"] != "database" and any(
+                b["id"] == wanted for b in synth.notion_blocks(page["id"], page["content"])
+            ):
+                return _list_obj([], 0, 0, 0, "comment")
+        return _error(
+            request, 404, "object_not_found", f"Could not find block with ID: {block_id}."
+        )
+    if row["subtype"] == "database":
+        return _error(
+            request,
+            403,
+            "restricted_resource",
+            "This object is managed by Notion and isn’t accessible via MCP",
+        )
     parent_id = row["id"]
     comments = store.doc_comments(conn, "notion", parent_id)
     offset = pagination.decode_cursor(request.query_params.get("start_cursor"))

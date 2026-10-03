@@ -90,8 +90,8 @@ _HANDLER_PREFIX: dict[str, str] = {"gmail": "gmail", "gdrive": "drive"}
 DEPTH: dict[str, int] = {"linear": 1}
 
 
-# Backlot's verifier reads the region out of the client's own credential scope, so any value
-# validates; this is boto3's default.
+# The one region Backlot's verifier takes in a credential scope (``backlot.sigv4.REGION``); a client
+# signing for another is refused.
 S3_REGION = "us-east-1"
 
 

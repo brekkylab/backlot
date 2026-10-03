@@ -327,6 +327,102 @@ def test_notion_search_and_comments(client, notion_h):
     assert c["results"][0]["object"] == "comment"
 
 
+_RUNBOOK = synth.notion_id("nt-runbook")
+_SECRET = synth.notion_id("nt-secret")
+_ZERO = "00000000-0000-0000-0000-000000000000"
+_NOT_A_UUID = "query failed validation: query.block_id should be a valid uuid, instead was "
+
+# label, who asks, the query string, and what comes back: the status, then a refusal's code and
+# message, or the text of each comment in a list
+_COMMENTS_BLOCK_ID_ROWS = [
+    (
+        "absent",
+        "admin",
+        "",
+        400,
+        "validation_error",
+        "query failed validation: query.block_id should be defined, instead was `undefined`.",
+    ),
+    (
+        "empty",
+        "admin",
+        "?block_id=",
+        400,
+        "validation_error",
+        "query failed validation: query.block_id should be a string, instead was `0`.",
+    ),
+    ("not a uuid", "admin", "?block_id=nope", 400, "validation_error", _NOT_A_UUID + '`"nope"`.'),
+    (
+        "braced",
+        "admin",
+        f"?block_id=%7B{_ZERO}%7D",
+        400,
+        "validation_error",
+        _NOT_A_UUID + f'`"{{{_ZERO}}}"`.',
+    ),
+    ("a quote", "admin", "?block_id=a%22b", 400, "validation_error", _NOT_A_UUID + '`"a\\"b"`.'),
+    (
+        "no such block",
+        "admin",
+        f"?block_id={_ZERO}",
+        404,
+        "object_not_found",
+        f"Could not find block with ID: {_ZERO}.",
+    ),
+    (
+        "a database",
+        "admin",
+        f"?block_id={synth.notion_id('nt-tasks-db')}",
+        403,
+        "restricted_resource",
+        "This object is managed by Notion and isn’t accessible via MCP",
+    ),
+    ("a page", "admin", f"?block_id={_RUNBOOK}", 200, None, ["add rate-limiter step"]),
+    ("a block", "admin", f"?block_id={synth.notion_block_id(_RUNBOOK, 0)}", 200, None, []),
+    (
+        "a hidden page's block",
+        "ava@acme.com",
+        f"?block_id={synth.notion_block_id(_SECRET, 0)}",
+        404,
+        "object_not_found",
+        f"Could not find block with ID: {synth.notion_block_id(_SECRET, 0)}.",
+    ),
+    (
+        "the same block, seen",
+        "hana@acme.com",
+        f"?block_id={synth.notion_block_id(_SECRET, 0)}",
+        200,
+        None,
+        [],
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "label, who, query, status, code, expected",
+    _COMMENTS_BLOCK_ID_ROWS,
+    ids=[r[0] for r in _COMMENTS_BLOCK_ID_ROWS],
+)
+def test_notion_comments_answers_a_block_id_the_way_real_does(
+    client, notion_h, tokens, label, who, query, status, code, expected
+):
+    """Measured against api.notion.com on 2026-10-01 and 2026-10-02 with `Notion-Version:
+    2025-09-03`: a `block_id` that is absent, empty or not a uuid is 400 `validation_error`, with
+    the value quoted as JSON; a uuid that names nothing is 404 `object_not_found`; a database's id
+    is 403 `restricted_resource`; and a page's or a block's id is the comment list, empty for a
+    block. A block is found only on a page the token can see, so `nt-secret`'s splits the way
+    that page does."""
+    headers = notion_h if who == "admin" else {**notion_h, "Authorization": f"Bearer {tokens[who]}"}
+    r = client.get(f"/notion/v1/comments{query}", headers=headers)
+    assert r.status_code == status, r.text
+    body = r.json()
+    if code is None:
+        assert [c["rich_text"][0]["plain_text"] for c in body["results"]] == expected
+    else:
+        assert (body["object"], body["status"], body["code"]) == ("error", status, code)
+        assert body["message"] == expected
+
+
 def test_notion_search_filter_database_only(client, notion_h):
     s = client.post(
         "/notion/v1/search",

@@ -112,7 +112,8 @@ the marketplace when you are done — uninstalling leaves the cache directory be
 1. Fork and create a topic branch off `main`.
 2. Keep changes focused; one logical change per PR.
 3. Add or update tests — a bug fix should come with a test that fails without it.
-4. Make sure `pytest` passes locally before opening the PR.
+4. Make sure `pytest` and `ruff check . && ruff format --check .` pass locally before opening the
+   PR, since CI's first run on your first pull request waits for a maintainer to approve it.
 5. Fill in the pull request template: what changed, the measurement that says it is right, and
    the test output — describing the finished state rather than the rounds of work behind it.
 

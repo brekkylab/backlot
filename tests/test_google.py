@@ -319,6 +319,59 @@ def test_gmail_attachment_resolves_under_a_hex_message_id(client, admin_h, ro_co
 
 
 @pytest.mark.parametrize(
+    "msg_key, att_key, expect_status",
+    [
+        ("valid", "valid", 200),
+        ("valid", "bogus", 400),
+        ("valid", "altered", 400),
+        ("missing", "bogus", 400),
+        ("non_hex", "bogus", 400),
+    ],
+)
+def test_gmail_attachment_errors(client, admin_h, ro_conn, msg_key, att_key, expect_status):
+    row = ro_conn.execute(
+        "SELECT * FROM gmail_messages WHERE COALESCE(attachments,'') NOT IN ('', '[]') LIMIT 1"
+    ).fetchone()
+    assert row is not None, "SAMPLE should hold a message with an attachment"
+    hexid = row["id"]
+    m = client.get(
+        f"/gmail/v1/users/me/messages/{hexid}", headers=admin_h, params={"format": "full"}
+    ).json()
+    valid_att = next(p for p in m["payload"]["parts"] if p.get("filename"))["body"]["attachmentId"]
+
+    msg_id = hexid if msg_key == "valid" else "0000000000000001" if msg_key == "missing" else "zzz"
+    att_id = (
+        valid_att
+        if att_key == "valid"
+        else "bogus"
+        if att_key == "bogus"
+        else valid_att[:-4] + "abcd"
+    )
+
+    r = client.get(
+        f"/gmail/v1/users/me/messages/{msg_id}/attachments/{att_id}",
+        headers=admin_h,
+    )
+
+    assert r.status_code == expect_status
+    if expect_status == 400:
+        assert r.json() == {
+            "error": {
+                "code": 400,
+                "message": "Invalid attachment token",
+                "errors": [
+                    {
+                        "message": "Invalid attachment token",
+                        "domain": "global",
+                        "reason": "invalidArgument",
+                    }
+                ],
+                "status": "INVALID_ARGUMENT",
+            }
+        }
+
+
+@pytest.mark.parametrize(
     "mid",
     ["0", "1", "abc123", "DEADBEEF", "7fffffffffffffff", "0000000000000001", "18c9a1b2c3d4e5f6"],
 )

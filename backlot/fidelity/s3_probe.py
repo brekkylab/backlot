@@ -10,11 +10,14 @@ and reports a clean match every time — a green check that means nothing, which
 checking at all.
 
 What can be asked instead is what the server actually answers. An operation Backlot does not
-implement should be REFUSED. The failure this looks for is the third possibility: answering it with
-some other operation's body. A caller asking for a bucket's versioning configuration and receiving
-an object listing under a 200 gets no error, no log line, and a parse that quietly produces
-nonsense — which is the exact failure this project exists to prevent, and it cannot be seen in a
-document.
+implement should be REFUSED, which it does with ``NotImplemented``; one it does implement may answer
+with an error, the 404 real gives a bucket with no CORS configuration for one, and that is its
+answer only when it is the error real gives that operation (``REAL_ERRORS``); any other error is one
+real does not give, and is reported. The failure this looks for above all is answering an operation
+with some other operation's body. A caller asking for a bucket's versioning configuration and
+receiving an object listing under a 200 gets no error, no log line, and a parse that quietly
+produces nonsense — which is the exact failure this project exists to prevent, and it cannot be seen
+in a document.
 
 An operation is judged indistinguishable when its response has the same status, the same XML root
 element AND the same set of child elements as the same path carrying no query at all. The child
@@ -48,6 +51,30 @@ _ROOT = re.compile(r"<\??[a-zA-Z]*[^>]*>\s*<([A-Za-z][\w.-]*)")
 # change the depth the walk above is counting.
 _TAG = re.compile(r"<(/?)([A-Za-z][\w.-]*)(?:\s[^>]*?)?(?<!/)>")
 _EMPTY_SHA = hashlib.sha256(b"").hexdigest()
+# What real answers with an error for each operation this probe asks, sent as ``probe`` sends it:
+# signed, the query string the selector alone, no other header, at a bucket nobody configured and
+# at an object in it. Measured 2026-09-30 against `s3.us-east-1.amazonaws.com` on a bucket this
+# account created for it: real answered the other 28 of the model's 44 operations that carry a
+# selector with a 200.
+REAL_ERRORS = {
+    "GetBucketCors": (404, "NoSuchCORSConfiguration"),
+    "GetBucketLifecycle": (404, "NoSuchLifecycleConfiguration"),
+    "GetBucketLifecycleConfiguration": (404, "NoSuchLifecycleConfiguration"),
+    "GetBucketMetadataConfiguration": (404, "MetadataConfigurationNotFound"),
+    "GetBucketMetadataTableConfiguration": (405, "V1APIsNotAllowed"),
+    "GetObjectLockConfiguration": (404, "ObjectLockConfigurationNotFoundError"),
+    "GetBucketPolicy": (404, "NoSuchBucketPolicy"),
+    "GetBucketPolicyStatus": (404, "NoSuchBucketPolicy"),
+    "GetBucketReplication": (404, "ReplicationConfigurationNotFoundError"),
+    "GetBucketTagging": (404, "NoSuchTagSet"),
+    "GetBucketWebsite": (404, "NoSuchWebsiteConfiguration"),
+    "GetObjectAttributes": (400, "InvalidRequest"),
+    "GetObjectLegalHold": (400, "InvalidRequest"),
+    "GetObjectRetention": (400, "InvalidRequest"),
+    "GetObjectTorrent": (405, "MethodNotAllowed"),
+    "ListParts": (404, "NoSuchUpload"),
+}
+_CODE = re.compile(r"<Code>([^<]*)</Code>")
 
 
 class ProbeTarget(Protocol):
@@ -215,15 +242,29 @@ def probe(
     for op in ops:
         if not op.query:  # the bare form IS the fallthrough; nothing to tell apart
             continue
-        answer = _shape(call(op.method, targets[op.target], op.query))
-        if answer[0] >= 400:
+        response = call(op.method, targets[op.target], op.query)
+        answer = _shape(response)
+        code = _CODE.search(response.text)
+        refused = (answer[0], code.group(1) if code else "")
+        if answer[0] >= 400 and refused[1] == "NotImplemented":
             out.append(
                 Finding(
                     "missing_operation",
                     GAP,
                     str(op),
-                    f"{op.name} is refused ({answer[0]}), which is an honest answer for an "
-                    "operation Backlot does not serve",
+                    f"{op.name} is refused ({answer[0]} NotImplemented), which is an honest "
+                    "answer for an operation Backlot does not serve",
+                )
+            )
+        elif answer[0] >= 400 and refused != REAL_ERRORS.get(op.name):
+            real = REAL_ERRORS.get(op.name)
+            out.append(
+                Finding(
+                    "unexpected_error",
+                    BREAKING,
+                    str(op),
+                    f"{op.name} is answered {refused[0]} {refused[1] or '(no code)'}, where real "
+                    + (f"answers {real[0]} {real[1]}" if real else "answers it without an error"),
                 )
             )
         elif answer == fallthrough[op.target]:

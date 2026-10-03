@@ -416,20 +416,26 @@ def test_linear_issue_without_a_parent_is_null(client, admin_h):
     )
 
 
-def test_linear_default_ordering_is_by_creation_not_insertion(client, admin_h):
-    """Linear's docs: "By default results are ordered by createdAt field." An absent `orderBy`
-    previously fell through to raw insertion order, so `issues(first: n)` returned an arbitrary n
-    rather than the first n by creation."""
-    q = "{ issues(first: 50%s) { nodes { identifier createdAt } } }"
-    default = [
-        n["createdAt"] for n in gql(client, q % "", admin_h).json()["data"]["issues"]["nodes"]
-    ]
-    explicit = [
-        n["createdAt"]
-        for n in gql(client, q % ", orderBy: createdAt", admin_h).json()["data"]["issues"]["nodes"]
-    ]
-    assert default == explicit
-    assert default == sorted(default), "default ordering must be by creation, ascending"
+@pytest.mark.parametrize(
+    ("query", "field"),
+    [
+        ("{ issues(first: 50) { nodes { createdAt updatedAt } } }", "createdAt"),
+        (
+            "{ issues(first: 50, orderBy: createdAt) { nodes { createdAt updatedAt } } }",
+            "createdAt",
+        ),
+        (
+            "{ issues(first: 50, orderBy: updatedAt) { nodes { createdAt updatedAt } } }",
+            "updatedAt",
+        ),
+    ],
+)
+def test_linear_default_and_order_by_are_newest_first(client, admin_h, query, field):
+    """Linear serves issue lists newest-first by default and for both PaginationOrderBy fields."""
+    nodes = gql(client, query, admin_h).json()["data"]["issues"]["nodes"]
+    stamps = [n[field] for n in nodes]
+
+    assert stamps == sorted(stamps, reverse=True)
 
 
 def test_linear_sort_input_overrides_the_default_ordering(client, admin_h):

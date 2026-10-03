@@ -965,6 +965,7 @@ def _issue_page(
         limit=limit + 1,
         offset=offset,
         order_by=orderBy,
+        descending=True,
         prefilter=prefilter,
         sort=sort,
         archived=includeArchived,

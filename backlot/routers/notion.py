@@ -683,8 +683,30 @@ async def search(request: Request):
     conn = auth.conn(request)
     visible = auth.visible_ids(request, caller)
     body = await json_body(request)
-    query = body.get("query") or ""
-    want = (body.get("filter") or {}).get("value")  # 'page' | 'database' | None
+    # Measured against api.notion.com on 2026-10-01: a present `query` must be a string and a
+    # present `filter` must be an object. Explicit null is invalid too; treating it like an
+    # omitted member would silently serve the unfiltered list, while other wrong types crash
+    # below with AttributeError and become a 500.
+    if "query" in body and not isinstance(body["query"], str):
+        value = json.dumps(body["query"], ensure_ascii=False, separators=(",", ":"))
+        return _error(
+            request,
+            400,
+            "validation_error",
+            "body failed validation: body.query should be a string or `undefined`, "
+            f"instead was `{value}`.",
+        )
+    if "filter" in body and not isinstance(body["filter"], dict):
+        value = json.dumps(body["filter"], ensure_ascii=False, separators=(",", ":"))
+        return _error(
+            request,
+            400,
+            "validation_error",
+            "body failed validation: body.filter should be an object or `undefined`, "
+            f"instead was `{value}`.",
+        )
+    query = body.get("query", "")
+    want = body.get("filter", {}).get("value")  # 'page' | 'database' | None
     offset = pagination.decode_cursor(body.get("start_cursor"))
     limit = _page_size(body.get("page_size"))
     # Over-fetch so object-type filtering still fills a page; cap keeps it bounded. An empty query

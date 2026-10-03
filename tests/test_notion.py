@@ -423,6 +423,63 @@ def test_notion_comments_answers_a_block_id_the_way_real_does(
         assert body["message"] == expected
 
 
+_SEARCH_INVALID_TYPE_ROWS = [
+    (
+        "numeric query",
+        {"query": 5},
+        "body failed validation: body.query should be a string or `undefined`, instead was `5`.",
+    ),
+    (
+        "list query",
+        {"query": ["x"]},
+        'body failed validation: body.query should be a string or `undefined`, instead was `["x"]`.',
+    ),
+    (
+        "null query",
+        {"query": None},
+        "body failed validation: body.query should be a string or `undefined`, instead was `null`.",
+    ),
+    (
+        "string filter",
+        {"filter": "page"},
+        'body failed validation: body.filter should be an object or `undefined`, instead was `"page"`.',
+    ),
+    (
+        "list filter",
+        {"filter": ["page"]},
+        'body failed validation: body.filter should be an object or `undefined`, instead was `["page"]`.',
+    ),
+    (
+        "null filter",
+        {"filter": None},
+        "body failed validation: body.filter should be an object or `undefined`, instead was `null`.",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "label, body, message",
+    _SEARCH_INVALID_TYPE_ROWS,
+    ids=[row[0] for row in _SEARCH_INVALID_TYPE_ROWS],
+)
+def test_notion_search_refuses_invalid_query_and_filter_types_like_real(
+    client, notion_h, label, body, message
+):
+    """Measured against api.notion.com on 2026-10-01 with `Notion-Version: 2025-09-03`:
+    a present `query` must be a string and a present `filter` must be an object. Wrong types,
+    including explicit null, are 400 validation errors -- never a 500 or an unfiltered 200 list."""
+    response = client.post("/notion/v1/search", json=body, headers=notion_h)
+    assert response.status_code == 400, (label, response.text)
+    payload = response.json()
+    assert (payload["object"], payload["status"], payload["code"]) == (
+        "error",
+        400,
+        "validation_error",
+    )
+    assert payload["message"] == message
+    assert payload["request_id"] == response.headers["x-notion-request-id"]
+
+
 def test_notion_search_filter_database_only(client, notion_h):
     s = client.post(
         "/notion/v1/search",

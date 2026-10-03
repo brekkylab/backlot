@@ -609,7 +609,7 @@ async def gmail_messages_get(user_id: str, msg_id: str, request: Request):
     "/gmail/v1/users/{user_id}/messages/{msg_id}/attachments/{att_id}",
     response_model=GmailAttachment,
 )
-async def gmail_attachment(user_id: str, msg_id: str, att_id: str, request: Request):
+# Measured against Gmail on 2026-10-02: MessagePartBody.size is the UTF-8 byte length.\ndef _byte_len(text: str) -> int:\n    return len(text.encode("utf-8"))\n\n\nasync def gmail_attachment(user_id: str, msg_id: str, att_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
@@ -631,7 +631,7 @@ async def gmail_attachment(user_id: str, msg_id: str, att_id: str, request: Requ
         raise gerr.invalid_attachment_token()
     body = _att_content(message_id, found[0], found[1])
     # `{size, data}` alone: real names no `attachmentId` here, measured on 2026-09-30
-    return {"size": len(body), "data": _b64url(body)}
+    return {"size": _byte_len(body), "data": _b64url(body)}
 
 
 @router.get(
@@ -819,10 +819,10 @@ def _json_part(node: dict, part_id: str, message_id: str) -> dict:
         # stat the attachment from this metadata without a second call — real Gmail's contract.
         part["body"] = {
             "attachmentId": _att_id(message_id, i),
-            "size": len(_att_content(message_id, i, att)),
+            "size": _byte_len(_att_content(message_id, i, att)),
         }
     else:
-        part["body"] = {"size": len(node["data"]), "data": _b64url(node["data"])}
+        part["body"] = {"size": _byte_len(node["data"]), "data": _b64url(node["data"])}
     return part
 
 

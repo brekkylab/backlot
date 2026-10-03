@@ -605,15 +605,15 @@ async def gmail_messages_get(user_id: str, msg_id: str, request: Request):
     return _gmail_message(row, request.query_params.get("format", "full"), caller.email)
 
 
-@router.get(
-    "/gmail/v1/users/{user_id}/messages/{msg_id}/attachments/{att_id}",
-    response_model=GmailAttachment,
-)
 # Measured against Gmail on 2026-10-02: MessagePartBody.size is the UTF-8 byte length.
 def _byte_len(text: str) -> int:
     return len(text.encode("utf-8"))
 
 
+@router.get(
+    "/gmail/v1/users/{user_id}/messages/{msg_id}/attachments/{att_id}",
+    response_model=GmailAttachment,
+)
 async def gmail_attachment(user_id: str, msg_id: str, att_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)

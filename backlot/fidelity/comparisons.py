@@ -1,18 +1,20 @@
 """Which comparison each source gets, and what it needs to run.
 
-Four kinds, and they differ in what each side of the comparison is. For the two GraphQL sources,
+Five kinds, and they differ in what each side of the comparison is. For the two GraphQL sources,
 Backlot's side is the SDL the server builds its engine from and the vendor's is a live introspection
-response, which needs a credential. For the eight document sources, Backlot's side is the app's own
+response, which needs a credential. For the seven document sources, Backlot's side is the app's own
 ``app.openapi()`` and the vendor's is one or more documents it publishes, which needs none. For
 S3, whose operations are selected by query string rather than by path, both sides are answers from
-a running server that ``backlot.serve()`` starts.
+a running server that ``backlot.serve()`` starts. Slack gets a kind of its own because its vendor
+publishes no machine-readable description at all: its request surface is compared against the
+reference documentation and its responses against the running service.
 
 A document does not always carry one contract. Google names its batch endpoint in a top-level
 ``batchPath`` rather than declaring it under ``resources``, so each Google document is read for two:
 the operations a path diff pairs, and that field, compared against the batch routes ``batch_mount``
 says the source speaks for. Both read the same fetched document.
 
-Nine of the eleven need no credential. All eleven run on a schedule and never on a pull request:
+Eight of the eleven need no credential. All eleven run on a schedule and never on a pull request:
 drift is this project's bug, but it is never the bug of whichever pull request happens to be open
 when a vendor ships a change.
 """
@@ -30,6 +32,8 @@ from backlot.fidelity import (
     hubspot_catalog,
     openapi_diff,
     s3_probe,
+    slack_docs,
+    slack_probe,
 )
 from backlot.fidelity.errors import CredentialsMissing, FidelityError
 from backlot.fidelity.findings import BREAKING, Finding
@@ -268,17 +272,53 @@ class ProbeComparison:
         return s3_probe.divergences(self, timeout=timeout)
 
 
+@dataclass(frozen=True)
+class SlackComparison:
+    """Slack, whose vendor side is two contracts because it publishes no machine-readable one.
+
+    The one kind named after a source rather than after a format, because the reason it exists is
+    that one vendor is the exception — ``docs/fidelity.md``, "Slack is documented and asked, never
+    read off a spec", is the measurement. The two layers are read from the two places that can
+    state them:
+
+    * the request surface from the reference documentation (:mod:`backlot.fidelity.slack_docs`);
+    * what a response carries from slack.com itself (:mod:`backlot.fidelity.slack_probe`).
+
+    The second is why this is the one document-shaped source that needs a credential. Split the
+    other way round and neither half works: the documentation's own ``users.list`` examples
+    disagree with each other about which fields a member carries, and a live call cannot enumerate
+    the 312 methods Backlot does not serve.
+    """
+
+    name: str
+    # The reference's method index, served as markdown (`docs.slack.dev/llms.txt`).
+    docs_url: str
+    # slack.com's own Web API, asked beside a running Backlot. Not a document, so it is not a
+    # `Spec`: there is nothing here to fetch and diff.
+    live_url: str
+    mount: tuple[str, ...]
+    credentials: tuple[Credential, ...] = ()
+
+    @property
+    def endpoints(self) -> tuple[str, ...]:
+        """Both contracts, in the order they are compared. The baseline records them together, so
+        a reader of the file can see that a finding on this source came from one of two places."""
+        return (self.docs_url, self.live_url)
+
+    def divergences(
+        self, credentials: Mapping[str, str] | None = None, *, timeout: float = 120.0
+    ) -> list[Finding]:
+        return _one_report(
+            [
+                slack_docs.divergences(self, timeout=timeout),
+                slack_probe.divergences(self, credentials or {}, timeout=timeout),
+            ]
+        )
+
+
 OPENAPI = {
-    "slack": OpenAPIComparison(
-        name="slack",
-        specs=(
-            Spec(
-                spec_url="https://raw.githubusercontent.com/slackapi/slack-api-specs/master/web-api/slack_web_openapi_v2.json",
-                mount=("/slack/api",),
-                strip="/slack/api",
-            ),
-        ),
-    ),
+    # Slack is not an entry here: its vendor publishes no document to hold the vendor side, so it
+    # is compared through `SLACK` below.
     "github": OpenAPIComparison(
         name="github",
         specs=(
@@ -431,6 +471,33 @@ PROBE = {
     ),
 }
 
+SLACK = {
+    "slack": SlackComparison(
+        name="slack",
+        docs_url="https://docs.slack.dev/reference/methods.md",
+        live_url="https://slack.com/api",
+        mount=("/slack/api",),
+        # A USER token, not a bot one. Measured 2026-09-22, `search.messages`, `search.files` and
+        # `search.all` are answered `not_allowed_token_type` for a bot token, and those three are a
+        # quarter of the methods Backlot serves here.
+        #
+        # Held by a workspace admin: `users.info`'s `has_2fa` is served on every person only to an
+        # admin caller (docs/fidelity.md, "What a response carries is asked of slack.com"), and
+        # Backlot's own side of the probe is always its admin/service token. `discover` refuses a
+        # non-admin token before comparing, as `CredentialsMissing` — this repository's own
+        # misconfiguration, not the vendor's — so a wrong token exits 3 rather than reporting that
+        # bound as a false `extra_field` divergence.
+        credentials=(
+            Credential(
+                "user_token",
+                "SLACK_USER_TOKEN",
+                "a Slack user token with users:read, channels:read, channels:history and "
+                "search:read, held by a workspace admin",
+            ),
+        ),
+    ),
+}
+
 
 # Served paths no published document covers, and why. Matched by prefix, so `/_meta` covers
 # `/_meta/users`.
@@ -451,10 +518,16 @@ UNCOMPARED = {
     ),
 }
 
-# The four kinds differ in what a vendor gives us to compare against, not in what they are for.
-Comparison = OpenAPIComparison | GoogleDiscoveryComparison | GraphQLComparison | ProbeComparison
+# The five kinds differ in what a vendor gives us to compare against, not in what they are for.
+Comparison = (
+    OpenAPIComparison
+    | GoogleDiscoveryComparison
+    | GraphQLComparison
+    | ProbeComparison
+    | SlackComparison
+)
 
-COMPARISONS: dict[str, Comparison] = {**OPENAPI, **GOOGLE_DISCOVERY, **GRAPHQL, **PROBE}
+COMPARISONS: dict[str, Comparison] = {**OPENAPI, **GOOGLE_DISCOVERY, **GRAPHQL, **PROBE, **SLACK}
 
 
 def _resolve_credentials(
@@ -500,7 +573,13 @@ def divergences(
     """
     if not isinstance(
         comparison,
-        (OpenAPIComparison, GoogleDiscoveryComparison, GraphQLComparison, ProbeComparison),
+        (
+            OpenAPIComparison,
+            GoogleDiscoveryComparison,
+            GraphQLComparison,
+            ProbeComparison,
+            SlackComparison,
+        ),
     ):
         raise FidelityError(
             f"{type(comparison).__name__} is not a kind of comparison this knows how to run"

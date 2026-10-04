@@ -114,8 +114,20 @@ the marketplace when you are done — uninstalling leaves the cache directory be
 3. Add or update tests — a bug fix should come with a test that fails without it.
 4. Make sure `pytest` and `ruff check . && ruff format --check .` pass locally before opening the
    PR, since CI's first run on your first pull request waits for a maintainer to approve it.
-5. Fill in the pull request template: what changed, the measurement that says it is right, and
-   the test output — describing the finished state rather than the rounds of work behind it.
+5. Title the PR with one sentence saying what Backlot does once it is merged. A PR that closes a
+   `fidelity` issue starts with that issue's `<source>:` prefix, as in
+   `gmail: threads.get rejects a reply's message id instead of serving a one-message thread`. The
+   issue number goes in the description as `Closes #N`, and the title takes no `fix:`-style prefix.
+6. Fill in the pull request template: its three headings and three checkboxes, with what changed,
+   the measurement that says it is right, and the test output — describing the finished state rather
+   than the rounds of work behind it. `gh pr create --body` does not load the template, so start the
+   description from [`.github/pull_request_template.md`](.github/pull_request_template.md).
+7. Until one of your PRs here is merged, have one open at a time, a draft included; after that, up
+   to three. Each open PR takes the issue it closes and waits on the same reviewers as the others.
+   Open it ready for review: drafts are not reviewed, and a draft left for seven days is closed.
+
+A PR whose title or description does not follow 5 and 6 is not reviewed until it does, and one
+opened past the limit in 7 is closed.
 
 A Claude Code routine also opens pull requests here, for issues a maintainer labels `agent`. How to
 drive it, stop it and recreate it is in [`docs/loop.md`](docs/loop.md).

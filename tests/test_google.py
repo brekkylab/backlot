@@ -2513,17 +2513,25 @@ def test_drive_order_by_rejects_keys_it_cannot_honor(client, admin_h):
     ],
 )
 def test_drive_order_by_refuses_a_repeated_sort_key(client, admin_h, order_by, status):
-    """Real Drive (measured 2026-10-03 and 2026-10-04) 403s an `orderBy` naming one key twice, in
-    either direction and with `name_natural` read as `name`, and answers the first problem left to
-    right: an unusable token at or before the repeat is the 400."""
+    """A key named twice is the 403 `_drive_order_specs` describes, and its `error` object is the
+    one real sends; an unusable token at or before the repeat is the 400."""
     r = client.get("/drive/v3/files", headers=admin_h, params={"pageSize": 1, "orderBy": order_by})
     assert r.status_code == status, r.text
     if status == 403:
-        err = r.json()["error"]
-        assert err["message"] == "The orderBy parameter cannot contain duplicate sort keys."
-        assert err["errors"][0]["reason"] == "orderByContainsDuplicateSortKeys"
-        assert err["errors"][0]["location"] == "orderBy"
-        assert err["errors"][0]["locationType"] == "parameter"
+        message = "The orderBy parameter cannot contain duplicate sort keys."
+        assert _gerr(r) == {
+            "code": 403,
+            "message": message,
+            "errors": [
+                {
+                    "message": message,
+                    "domain": "global",
+                    "reason": "orderByContainsDuplicateSortKeys",
+                    "location": "orderBy",
+                    "locationType": "parameter",
+                }
+            ],
+        }
 
 
 def test_drive_invalid_fields_mask_is_rejected(client, admin_h):

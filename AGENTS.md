@@ -58,14 +58,11 @@ through the vendor APIs.
 ## Commits and PRs
 
 - Commit titles are single declarative sentences describing the new state. No trailers.
-- A PR title is the same kind of sentence. One that closes a `fidelity` issue starts with that
-  issue's `<source>:` prefix; the title carries no issue number and no `fix:`-style prefix.
-- A PR body is `.github/pull_request_template.md` filled in: its three headings, its three
-  checkboxes, and `Closes #N` for the issue it closes. `gh pr create --body` does not load the
-  template; start from the file.
+- A PR's title and description follow items 5 and 6 of Pull requests in CONTRIBUTING.md: for a
+  `fidelity` issue the title opens with that issue's `<source>:` prefix, and the description starts
+  from `.github/pull_request_template.md`, which `gh pr create --body` bypasses.
 - From a fork, run `gh pr list -R brekkylab/backlot --author @me --state open` before opening a PR.
-  Until one of yours here is merged, open none while that lists one, a draft included; after that,
-  up to three. At the limit, stop and tell the person you work for. Open the PR ready for review,
-  not as a draft.
+  If that already reaches the limit in item 7 there (one until a PR of yours is merged here, three
+  after, drafts counted), stop and tell the person you work for. Open the PR ready for review.
 - PR and issue bodies reflow paragraphs to one line; no hard wrapping.
 - Vendor names appear as plain text; brand assets are covered by `NOTICE.md`.

@@ -1,11 +1,9 @@
 <!-- Describe the finished state: what Backlot does now, and why that is the right answer.
      Not the rounds of work that got here. Closes #<issue>.
 
-     Title: one sentence saying what Backlot does now. For a `fidelity` issue it starts with the
-     issue's `<source>:` prefix, as in
-     `gmail: threads.get rejects a reply's message id instead of serving a one-message thread`. No
-     issue number and no `fix:` in the title. Keep the three headings and the three checkboxes
-     below. How many may be open at once: Pull requests in CONTRIBUTING.md. -->
+     Title: item 5 of Pull requests in CONTRIBUTING.md, the closed issue's `<source>:` prefix and
+     one sentence saying what Backlot does now, with no issue number or `fix:`. Keep the three
+     headings and the three checkboxes below; item 7 there says how many may be open at once. -->
 
 ## What changed
 

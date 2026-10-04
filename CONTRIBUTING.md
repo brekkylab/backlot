@@ -126,8 +126,8 @@ the marketplace when you are done — uninstalling leaves the cache directory be
    to three. Each open PR takes the issue it closes and waits on the same reviewers as the others.
    Open it ready for review: drafts are not reviewed, and a draft left for seven days is closed.
 
-A PR whose title or description does not follow 5 and 6 is not reviewed until it does, and one
-opened past the limit in 7 is closed.
+A PR opened past the limit in 7 is closed. A title or description that does not follow 5 and 6 does
+not hold up the review: a maintainer points it out and may correct the title when merging.
 
 A Claude Code routine also opens pull requests here, for issues a maintainer labels `agent`. How to
 drive it, stop it and recreate it is in [`docs/loop.md`](docs/loop.md).

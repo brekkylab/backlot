@@ -179,10 +179,10 @@ default branch only; an older snapshot stays reachable at `contents/{path}?ref=`
 | Endpoint | Notes |
 |---|---|
 | `users/{u}/messages` | `q`: free text / `from:` `to:` `subject:` `after:` `before:` `newer_than:` `older_than:` `label:` `has:attachment` |
-| `users/{u}/messages/{id}` | `format=full\|metadata\|minimal` |
+| `users/{u}/messages/{id}` | `format=full\|metadata\|minimal`, `metadataHeaders` |
 | `users/{u}/messages/{id}/attachments/{id}` | |
 | `users/{u}/threads` | `q`, as above |
-| `users/{u}/threads/{id}` | |
+| `users/{u}/threads/{id}` | `format`, `metadataHeaders`, as above |
 | `users/{u}/labels[/{id}]` | |
 | `users/{u}/profile` | |
 

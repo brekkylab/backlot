@@ -77,7 +77,7 @@ class GmailAttachment(_GLoose):
 
 
 _P_GMAIL_LIST = [qp("maxResults", "integer"), qp("pageToken"), qp("q")]
-_P_GMAIL_FORMAT = [qp("format")]
+_P_GMAIL_FORMAT = [qp("format"), qp("metadataHeaders")]
 
 
 class DriveFileList(_GLoose):
@@ -602,7 +602,12 @@ async def gmail_messages_get(user_id: str, msg_id: str, request: Request):
     row = _gmail_doc(conn, ids, msg_id)
     if row is None:
         raise gerr.not_found_entity()
-    return _gmail_message(row, request.query_params.get("format", "full"), caller.email)
+    return _gmail_message(
+        row,
+        request.query_params.get("format", "full"),
+        caller.email,
+        request.query_params.getlist("metadataHeaders"),
+    )
 
 
 def _byte_len(text: str) -> int:
@@ -705,12 +710,13 @@ async def gmail_thread_get(user_id: str, thread_id: str, request: Request):
             raise gerr.not_found_entity()
         msgs = [row]
     fmt = request.query_params.get("format", "full")
+    named = request.query_params.getlist("metadataHeaders")
     # No `snippet`: real serves one on a `threads.list` entry and not on `threads.get`, with or
     # without `format=minimal` — measured on 2026-09-30.
     return {
         "id": thread_id.lower(),
         "historyId": "1",
-        "messages": [_gmail_message(m, fmt, caller.email) for m in msgs],
+        "messages": [_gmail_message(m, fmt, caller.email, named) for m in msgs],
     }
 
 
@@ -875,12 +881,17 @@ def _gmail_ts(row) -> int:
     return synth.epoch(row["thread_id"] or row["id"]) + (row["thread_seq"] or 0) * 3600
 
 
-def _gmail_message(row, fmt: str, caller_email: str | None = None) -> dict:
+def _gmail_message(
+    row, fmt: str, caller_email: str | None = None, metadata_headers: list[str] | None = None
+) -> dict:
     """One message in the API's shape.
 
     `caller_email` decides Bcc. Real Gmail keeps the Bcc header only on the sender's own copy — a
     recipient's is stripped in transit — so a reader who is not the author must not learn who was
     blind-copied. An admin/service caller has no email and is not the sender either.
+
+    `metadata_headers` is every `metadataHeaders` value sent, and narrows a `metadata` payload to
+    the headers it names.
     """
     ts = _gmail_ts(row)
     author = row["author_email"]
@@ -939,7 +950,16 @@ def _gmail_message(row, fmt: str, caller_email: str | None = None) -> dict:
     if fmt == "metadata":
         # `mimeType` and `headers` alone: real sends no `partId`, `filename` or `body` on a
         # metadata payload, measured on 2026-09-30.
-        msg["payload"] = {"mimeType": top_mime, "headers": headers}
+        msg["payload"] = {"mimeType": top_mime}
+        if metadata_headers:
+            # Measured on 2026-10-03: each value names one header, matched without regard to case
+            # and served under the message's own spelling and order. A comma is part of the name,
+            # not a separator, and a value no header has (or an empty one) matches nothing, which
+            # leaves `headers` out of the payload.
+            named = {n.lower() for n in metadata_headers}
+            headers = [h for h in headers if h["name"].lower() in named]
+        if headers:
+            msg["payload"]["headers"] = headers
         return msg
     nodes = _mime_tree(row, html, attachments)
     if fmt == "raw":

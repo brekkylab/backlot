@@ -3534,3 +3534,27 @@ def test_atlassian_answers_by_which_mount_the_path_is_under(
     assert r.headers["content-type"] == media_type
     if status == 404 and media_type in (_PAGE, _JIRA_PAGE):
         assert r.text == errors_atlassian.HTML_NOT_FOUND
+
+
+@pytest.mark.parametrize("version", [2, 3])
+def test_jira_numeric_ids_resolve_exactly_and_preserve_acl(client, admin_h, tokens, version):
+    """#411: Jira Cloud measurement on 2026-10-03, including leading-zero refusal."""
+    issues = client.get(
+        "/atlassian/rest/api/3/search/jql?jql=project+%3D+payments&maxResults=50", headers=admin_h
+    ).json()["issues"]
+    assert issues
+    for issue in issues:
+        path = f"/atlassian/rest/api/{version}/issue/"
+        key, numeric = issue["key"], issue["id"]
+        for suffix in ["", "/comment"]:
+            by_key = client.get(path + key + suffix, headers=admin_h)
+            by_id = client.get(path + numeric + suffix, headers=admin_h)
+            assert by_id.status_code == by_key.status_code == 200
+            assert by_id.json() == by_key.json()
+            assert client.get(path + "0" + numeric + suffix, headers=admin_h).status_code == 404
+            for token in tokens.values():
+                h = {"Authorization": "Bearer " + token}
+                keyed = client.get(path + key + suffix, headers=h)
+                numbered = client.get(path + numeric + suffix, headers=h)
+                assert numbered.status_code == keyed.status_code
+                assert numbered.json() == keyed.json()

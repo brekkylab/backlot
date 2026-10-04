@@ -266,13 +266,16 @@ def _resolve_jira_key(request: Request, conn, key: str, ids):
     """One issue by its served key, ACL-scoped — a unique-indexed column lookup (see
     store.jira_by_key).
 
-    One line, because the whole key is stored. Resolving it in parts instead — split the key, map
+    Keys match directly because the whole key is stored; numeric ids use the same ACL scope. Resolving it in parts instead — split the key, map
     the prefix to a project through `_jira_container_for_key`, look the suffix up scoped to it —
     lets that function's three-way tolerance into the ISSUE-KEY namespace. The tolerance is a
     deliberate and correct affordance for the JQL project TOKEN, where real Jira pickers accept a
     key OR a name, but here it makes `payments-7` resolve to `PAY-7`'s issue and issue-key lookup
     case-insensitive. Matching the stored key directly has no seam for either to enter."""
-    return store.jira_by_key(conn, key, visible_ids=ids)
+    row = store.jira_by_key(conn, key, visible_ids=ids)
+    if row is None and key.isascii() and key.isdigit():
+        return store.jira_by_numeric_id(conn, key, visible_ids=ids)
+    return row
 
 
 @router.get(

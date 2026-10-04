@@ -2806,6 +2806,15 @@ def jira_by_key(conn, key, visible_ids=None) -> sqlite3.Row | None:
     return conn.execute(f"SELECT * FROM jira_issues WHERE key = ?{clause}", [key, *cp]).fetchone()
 
 
+def jira_by_numeric_id(conn, issue_id: str, visible_ids=None) -> sqlite3.Row | None:
+    """#411: Jira Cloud (2026-10-03) resolves the reported id exactly, without zero padding."""
+    clause, cp = _acl_clause("jira", visible_ids=visible_ids)
+    for row in conn.execute(f"SELECT * FROM jira_issues WHERE 1=1{clause}", cp):
+        if str(synth.jira_numeric_id(row["key"])) == issue_id:
+            return row
+    return None
+
+
 def _file_head_clause(visible_ids=None, tbl: str = "t") -> tuple[str, list]:
     """SQL restricting `tbl` to the HEAD of its `(repo, path)` — no snapshot the caller can also
     see is newer.

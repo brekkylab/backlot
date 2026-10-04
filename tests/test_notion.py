@@ -834,7 +834,8 @@ def test_notion_user_and_block_shape(tmp_path):
 
 @pytest.mark.parametrize("version", ["2022-06-28", "2025-09-03"])
 def test_database_blocks_have_no_children(client, admin_h, version):
-    """#415: measured on Notion 2026-10-03; rows belong to the database query route."""
+    """A database's block has no children and lists none, beside a page that has both (see
+    `get_block_children`)."""
     h = {**admin_h, "Notion-Version": version}
     bid = synth.notion_id("nt-tasks-db")
     block = client.get(f"/notion/v1/blocks/{bid}", headers=h)

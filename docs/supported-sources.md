@@ -299,13 +299,16 @@ the two deprecated team-drive ones) alike, and a JSON body's enums and `includeG
 same `details`. A typed refusal comes after the credential check and before the file or spreadsheet
 is looked up. On Drive's `files.list`, one `pageSize` outside 1-1000 is refused with the range
 sentence (1-100 on `permissions.list` and `drives.list`), while a repeated one is read from the
-first and never range-checked; a `pageToken` it did not issue is 400 `Invalid Value`; and the
-refusals come in the order `pageSize`, `orderBy`, `q`, `pageToken`, `fields`. A blank `fields` on
+first and never range-checked; a `pageToken` it did not issue is 400 `Invalid Value` on all three
+listings, where on `permissions.list` and `drives.list` the token comes ahead of the
+`useDomainAdminAccess` refusal; and the refusals come in the order `pageSize`, `orderBy`, `q`,
+`pageToken`, `fields`. A blank `fields` on
 `files.list` or `files.get` answers `{}`. `files.export` refuses a format the file's type does not
 export to, the empty `mimeType=` among them, with `The requested conversion is not supported.`,
 matching the format without regard to case, refuses an absent `mimeType` ahead of looking the file
 up, and serves an export under the `mimeType` exactly as sent, with no `charset`. Measured against
-the live Drive and Sheets APIs on 2026-09-23, and the export's `Content-Type` on 2026-09-30.
+the live Drive and Sheets APIs on 2026-09-23 and the Drive `pageToken` again on 2026-10-04, and
+the export's `Content-Type` on 2026-09-30.
 
 ### HubSpot — `/hubspot/crm/v3` `/hubspot/crm/v4`
 

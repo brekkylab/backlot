@@ -1910,6 +1910,11 @@ async def drive_shared_drives(request: Request):
     _drive_page_size_in_range(
         _drive_typed(request, "useDomainAdminAccess", page_size=True)["pageSize"], 100
     )
+    # The corpus has no shared drive, so the one page is the whole answer and this route issues no
+    # `nextPageToken` of its own; measured 2026-10-04, a `pageToken` it did not issue is still 400
+    # `Invalid Value` at `location: pageToken`, ahead of the `useDomainAdminAccess` refusal real
+    # makes here. There is no offset to apply to the empty list it serves.
+    _drive_page_token_offset(request)
     return {"kind": "drive#driveList", "drives": []}
 
 
@@ -1942,9 +1947,7 @@ async def drive_files_list(request: Request):
     query = _drive_q_parse(q)  # 400 on a clause Backlot cannot evaluate; None when there is no q
     # Measured 2026-09-23: a token the API did not issue is 400 `Invalid Value`, where an empty one
     # is the first page.
-    offset = decode_cursor_or_none(gerr.first_repeat(params, "pageToken"))
-    if offset is None:
-        raise gerr.invalid_value("pageToken")
+    offset = _drive_page_token_offset(request)
     mask = gerr.first_repeat(params, "fields")
     if mask is not None and not mask.strip():
         # The blank mask `_drive_get_field_keys` describes; on a listing it drops `kind` and
@@ -2118,6 +2121,11 @@ async def drive_files_permissions(file_id: str, request: Request):
         request, "supportsAllDrives", "supportsTeamDrives", "useDomainAdminAccess", page_size=True
     )["pageSize"]
     _drive_page_size_in_range(sizes, 100)
+    # Measured 2026-10-04, as on `files.list`: a `pageToken` this route did not issue is 400
+    # `Invalid Value` at `location: pageToken`, and an empty one is the first page. A file's
+    # permissions all come back on it -- Backlot issues no `nextPageToken` here -- so there is no
+    # page a token it did issue could name and no offset to apply to the whole sharing.
+    _drive_page_token_offset(request)
     ids = auth.visible_ids(request, caller)
     row = store.gdrive_by_id(conn, file_id, visible_ids=ids)
     if row is None:
@@ -3843,6 +3851,24 @@ def _drive_page_size_in_range(sizes: list[int], top: int) -> None:
             f"Invalid value '{sizes[0]}'. Values must be within the range: [value: 1\n, value: "
             f"{top}\n]",
         )
+
+
+def _drive_page_token_offset(request: Request) -> int:
+    """The offset a `pageToken` names, or real's refusal of one it never issued: 400 `Invalid
+    Value` at `location: pageToken`, which is what `drive_files_list` has answered since it was
+    measured on 2026-09-23, and what `permissions.list` and `drives.list` were measured answering on
+    2026-10-04 — there ahead of the `useDomainAdminAccess` refusal of #339. An absent or empty
+    token is the first page.
+
+    A caller with no offset to apply still reads the token through here, which is the case the two
+    listings that issue no `nextPageToken` of their own are in: `permissions.list` returns a file's
+    whole sharing and `drives.list` an empty list, so a token this never handed out is the only
+    case the refusal takes away.
+    """
+    offset = decode_cursor_or_none(gerr.first_repeat(request.query_params, "pageToken"))
+    if offset is None:
+        raise gerr.invalid_value("pageToken")
+    return offset
 
 
 def _drive_page_size(sizes: list[int]) -> int:

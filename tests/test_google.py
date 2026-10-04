@@ -994,6 +994,53 @@ def test_drive_a_page_token_it_did_not_issue_is_refused(client, admin_h):
     assert token.status_code == 200 and token.json()["files"] != first["files"]
 
 
+@pytest.mark.parametrize("path", ["/drive/v3/files/{doc}/permissions", "/drive/v3/drives"])
+def test_drive_a_listing_that_never_issued_a_token_refuses_one_it_did_not_issue(
+    client, admin_h, path
+):
+    """The `pageToken` rule `drive_files_list` applies, on the two Drive listings that read none:
+    a token that does not decode is the same 400 `files.list` answers. Neither pages here, so the
+    first page is the whole answer and an empty token is it -- a listing that issued no token of
+    its own is the only case this refuses."""
+    doc = _drive_find(client, admin_h, "Brand")["id"]
+    url = path.format(doc=doc)
+    refused = client.get(url, headers=admin_h, params={"pageToken": "bad"})
+    assert refused.status_code == 400, refused.text
+    e = _gerr(refused)
+    assert e["code"] == 400
+    assert e["errors"] == [
+        {
+            "message": "Invalid Value",
+            "domain": "global",
+            "reason": "invalid",
+            "location": "pageToken",
+            "locationType": "parameter",
+        }
+    ]
+    assert "status" not in e
+    first = client.get(url, headers=admin_h)
+    assert first.status_code == 200 and "nextPageToken" not in first.json()
+    empty = client.get(url, headers=admin_h, params={"pageToken": ""})
+    assert empty.status_code == 200 and empty.json() == first.json()
+
+
+@pytest.mark.parametrize("path", ["/drive/v3/files/{doc}/permissions", "/drive/v3/drives"])
+def test_drive_a_page_token_is_refused_ahead_of_the_domain_admin_flag(client, admin_h, path):
+    """The order #465 records for the two routes: sent together, `pageToken` is the refusal, where
+    real makes one of `useDomainAdminAccess=true` on both. The flag itself is #339's answer and
+    changes nothing here -- only which of the two a request naming both gets."""
+    doc = _drive_find(client, admin_h, "Brand")["id"]
+    url = path.format(doc=doc)
+    both = client.get(
+        url, headers=admin_h, params=[("useDomainAdminAccess", "true"), ("pageToken", "bad")]
+    )
+    assert both.status_code == 400, both.text
+    assert _gerr(both)["errors"][0]["location"] == "pageToken"
+    assert (
+        client.get(url, headers=admin_h, params={"useDomainAdminAccess": "true"}).status_code == 200
+    )
+
+
 @pytest.mark.parametrize(
     "query, location",
     [

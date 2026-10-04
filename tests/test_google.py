@@ -2493,6 +2493,39 @@ def test_drive_order_by_rejects_keys_it_cannot_honor(client, admin_h):
     assert ok.status_code == 200
 
 
+@pytest.mark.parametrize(
+    "order_by, status",
+    [
+        ("name", 200),
+        ("name,modifiedTime", 200),
+        ("name desc,modifiedTime", 200),
+        ("recency,modifiedTime", 200),
+        ("name,name", 403),
+        ("name desc,name", 403),
+        ("name,name desc", 403),
+        ("name desc,name desc", 403),
+        ("modifiedTime,name,modifiedTime", 403),
+        ("name_natural,name", 403),
+        ("name,name_natural", 403),
+        ("name,name,bogus", 403),
+        ("name,bogus,name", 400),
+        ("name,name sideways", 400),
+    ],
+)
+def test_drive_order_by_refuses_a_repeated_sort_key(client, admin_h, order_by, status):
+    """Real Drive (measured 2026-10-03 and 2026-10-04) 403s an `orderBy` naming one key twice, in
+    either direction and with `name_natural` read as `name`, and answers the first problem left to
+    right: an unusable token at or before the repeat is the 400."""
+    r = client.get("/drive/v3/files", headers=admin_h, params={"pageSize": 1, "orderBy": order_by})
+    assert r.status_code == status, r.text
+    if status == 403:
+        err = r.json()["error"]
+        assert err["message"] == "The orderBy parameter cannot contain duplicate sort keys."
+        assert err["errors"][0]["reason"] == "orderByContainsDuplicateSortKeys"
+        assert err["errors"][0]["location"] == "orderBy"
+        assert err["errors"][0]["locationType"] == "parameter"
+
+
 def test_drive_invalid_fields_mask_is_rejected(client, admin_h):
     """Accepting an unknown field name and yielding empty file objects (200 {}) lets a typo or a
     stale field name in a consumer's mask pass every Backlot-backed test and 400 in production."""

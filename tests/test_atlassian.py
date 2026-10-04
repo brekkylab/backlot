@@ -452,6 +452,28 @@ def test_confluence_content_filtered_by_space_key(client, admin_h):
     assert "Compensation Bands 2026" in {r["title"] for r in unfiltered["results"]}
 
 
+def test_confluence_content_filtered_by_title(client, admin_h, tokens):
+    """Measured on a Confluence Cloud tenant on 2026-10-03: `title` answered the one page with that
+    title, spelled as stored or in lower case, with or without `spaceKey`, and `size: 0` for a
+    title no page has."""
+    url = "/atlassian/wiki/rest/api/content"
+
+    def titles(headers, **params):
+        body = client.get(url, headers=headers, params=params).json()
+        assert body["size"] == len(body["results"])
+        return [r["title"] for r in body["results"]]
+
+    for sent in ("On-call Runbook", "on-call runbook"):
+        assert titles(admin_h, title=sent, spaceKey="handbook") == ["On-call Runbook"], sent
+        assert titles(admin_h, title=sent) == ["On-call Runbook"], sent
+    assert titles(admin_h, title="zzqq-no-such-page", spaceKey="handbook") == []
+    assert titles(admin_h, title="zzqq-no-such-page") == []
+    # the title of a page the caller cannot see matches nothing for that caller
+    comp = "Compensation Bands 2026"
+    assert titles({"Authorization": f"Bearer {tokens['hana@acme.com']}"}, title=comp) == [comp]
+    assert titles({"Authorization": f"Bearer {tokens['ava@acme.com']}"}, title=comp) == []
+
+
 def test_atlassian_comment_ids_are_numeric_on_the_wire(tmp_path):
     """The stored id composes the parent's key with the comment's position (`PAY-7::c1`) — this is
     Backlot's own bookkeeping. Real Jira and Confluence report numeric strings, and both the `self`

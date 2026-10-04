@@ -36,7 +36,7 @@ Ordered as the table above, by `source_type`.
 
 | Endpoint | Notes |
 |---|---|
-| `content` | |
+| `content` | `spaceKey`, `title` (the whole title, ignoring case) |
 | `content/{id}` | |
 | `content/{id}/child/comment` | |
 | `content/{id}/child/page` | |

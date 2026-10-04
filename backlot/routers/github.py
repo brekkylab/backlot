@@ -2609,6 +2609,15 @@ async def get_blob(owner: str, repo: str, sha: str, request: Request):
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     _require_repo(conn, repo, ids)
+    # Measured on psf/requests on 2026-10-03: a seven-character prefix, an upper-case sha and
+    # `zzzz` each answered this 422 with the route's own documentation_url, where a well-formed
+    # sha naming no blob is the 404 below. Upper case is refused here though `commits/{ref}`
+    # resolves it.
+    if not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise HTTPException(
+            status_code=422,
+            detail="The sha parameter must be exactly 40 characters and contain only [0-9a-f].",
+        )
     # every snapshot, not just HEAD: a blob sha is content-addressed, so a superseded snapshot
     # keeps its own and stays fetchable at it (see store.iter_repo_file_snapshots). Streamed, so a
     # match stops the scan rather than reading the repo's every file first.

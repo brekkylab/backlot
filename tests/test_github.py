@@ -1140,6 +1140,21 @@ def test_github_blob_unknown_sha_404(gh_client, gh_admin_h, gh_org):
     }
 
 
+def test_github_blob_malformed_sha_422(gh_client, gh_admin_h, gh_org):
+    """Measured on psf/requests on 2026-10-03: a blob sha that is not 40 lower-case hex characters
+    is refused with this 422, where a well-formed one naming no blob is the 404 above."""
+    c, _ = gh_client
+    sha = hashlib.sha1(b"def main():\n    return 1\n").hexdigest()
+    for bad in (sha[:7], sha.upper(), "zzzz"):
+        r = c.get(f"/github/repos/{gh_org}/codebase/git/blobs/{bad}", headers=gh_admin_h)
+        assert r.status_code == 422, bad
+        assert r.json() == {
+            "message": "The sha parameter must be exactly 40 characters and contain only [0-9a-f].",
+            "documentation_url": "https://docs.github.com/rest/git/blobs#get-a-blob",
+            "status": "422",
+        }, bad
+
+
 def test_github_lists_the_refs_a_client_enumerates_before_it_reads(gh_client, gh_admin_h, gh_org):
     """The two ref LISTINGS, which a client that is handed a repo rather than a sha starts from —
     fsspec's `GithubFileSystem.branches`/`.tags`/`.refs` are these two routes and nothing else.

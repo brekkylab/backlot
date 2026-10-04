@@ -472,13 +472,15 @@ DROP INDEX IF EXISTS idx_github_served;
 -- `parent_id` holds the PARENT'S KEY, the same value this table is keyed on -- a subtask points at
 -- a served id, never at a dataset identifier. It keeps the generic name because
 -- :func:`children` reads it uniformly across jira, confluence and notion.
+-- numeric_id is assigned after keys settle at import: NULL only in that transaction.
+-- TEXT keeps leading zeroes distinct at lookup; UNIQUE prevents two issues sharing an id.
 CREATE TABLE IF NOT EXISTS jira_issues (
     key TEXT PRIMARY KEY, project TEXT NOT NULL, author_email TEXT NOT NULL,
     title TEXT NOT NULL, content TEXT NOT NULL,
     status TEXT, issuetype TEXT, priority TEXT, labels TEXT, components TEXT,
     issuelinks TEXT, parent_id TEXT, changelog TEXT, created_ts INTEGER NOT NULL, updated_ts INTEGER,
     assignee_email TEXT, reporter_email TEXT, resolution TEXT, resolution_ts INTEGER,
-    duedate TEXT, fix_versions TEXT, owner_display TEXT
+    duedate TEXT, fix_versions TEXT, owner_display TEXT, numeric_id TEXT UNIQUE
 );
 CREATE INDEX IF NOT EXISTS idx_jira_project ON jira_issues(project);
 CREATE INDEX IF NOT EXISTS idx_jira_parent ON jira_issues(parent_id);
@@ -2807,12 +2809,14 @@ def jira_by_key(conn, key, visible_ids=None) -> sqlite3.Row | None:
 
 
 def jira_by_numeric_id(conn, issue_id: str, visible_ids=None) -> sqlite3.Row | None:
-    """#411: Jira Cloud (2026-10-03) resolves the reported id exactly, without zero padding."""
+    """One issue by its reported numeric id, matched as spelled. Measured on Jira Cloud
+    (2026-10-04): issue and comment reads on v2 and v3 match the key; leading zeroes are a 404.
+    The importer assigns unique ids, and TEXT comparison preserves exact spelling.
+    """
     clause, cp = _acl_clause("jira", visible_ids=visible_ids)
-    for row in conn.execute(f"SELECT * FROM jira_issues WHERE 1=1{clause}", cp):
-        if str(synth.jira_numeric_id(row["key"])) == issue_id:
-            return row
-    return None
+    return conn.execute(
+        f"SELECT * FROM jira_issues WHERE numeric_id = ?{clause}", [issue_id, *cp]
+    ).fetchone()
 
 
 def _file_head_clause(visible_ids=None, tbl: str = "t") -> tuple[str, list]:

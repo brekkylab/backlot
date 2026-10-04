@@ -2483,3 +2483,40 @@ def test_schema_columns_reads_every_table_off_the_ddl():
     for table, columns in declared.items():
         created = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
         assert columns == created, table
+
+
+def test_jira_numeric_ids_are_order_independent_and_preserved_across_append(tmp_path):
+    """A numeric seed collision is settled once; append and re-import retain issued ids."""
+    from backlot.importer import byo
+    from tests._helpers import build_corpus
+
+    def record(key):
+        return complete(
+            source_type="jira",
+            doc_id=key,
+            key=key,
+            project="payments",
+            title=key,
+            content="Body.",
+            author_email="ava@acme.com",
+        )
+
+    records = [record(key) for key in ("PAY-1425", "PAY-2172")]
+    a = build_corpus(tmp_path / "a", records)
+    b = build_corpus(tmp_path / "b", list(reversed(records)))
+
+    def ids(settings):
+        with store.connect_ro(settings.db_path) as conn:
+            return dict(conn.execute("SELECT key, numeric_id FROM jira_issues"))
+
+    assert ids(a) == ids(b)
+    assert len(set(ids(a).values())) == 2 and None not in ids(a).values()
+    shard = build_corpus(tmp_path / "shard", records[:1])
+    before = ids(shard)
+    byo.load_records(lambda: enumerate(records[1:], 1), shard, reset=False)
+    after = ids(shard)
+    assert after["PAY-1425"] == before["PAY-1425"]
+    assert len(set(after.values())) == 2
+    with pytest.raises(SystemExit, match="already claimed"):
+        byo.load_records(lambda: enumerate(records, 1), shard, reset=False)
+    assert ids(shard) == after

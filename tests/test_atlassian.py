@@ -3538,7 +3538,9 @@ def test_atlassian_answers_by_which_mount_the_path_is_under(
 
 @pytest.mark.parametrize("version", [2, 3])
 def test_jira_numeric_ids_resolve_exactly_and_preserve_acl(client, admin_h, tokens, version):
-    """#411: Jira Cloud measurement on 2026-10-03, including leading-zero refusal."""
+    """An issue's numeric id reads as its key does, for the admin and each scoped token, and with a
+    leading zero is a 404 (see store.jira_by_numeric_id).
+    """
     issues = client.get(
         "/atlassian/rest/api/3/search/jql?jql=project+%3D+payments&maxResults=50", headers=admin_h
     ).json()["issues"]
@@ -3558,3 +3560,42 @@ def test_jira_numeric_ids_resolve_exactly_and_preserve_acl(client, admin_h, toke
                 numbered = client.get(path + numeric + suffix, headers=h)
                 assert numbered.status_code == keyed.status_code
                 assert numbered.json() == keyed.json()
+
+
+@pytest.mark.parametrize("version", [2, 3])
+def test_jira_issue_ids_that_hash_alike_each_read_back_their_own_issue(tmp_path, version):
+    """PAY-1425 and PAY-2172 share a numeric seed; each served id must read its own issue."""
+    keys = ("PAY-1425", "PAY-2172")
+    corpus = [
+        {
+            "source_type": "jira",
+            "doc_id": key,
+            "key": key,
+            "project": "payments",
+            "title": key,
+            "content": "Body.",
+            "author_email": "ava@acme.com",
+            "created": "2026-01-01T00:00:00Z",
+            "issuetype": "Task",
+            "status": "To Do",
+        }
+        for key in keys
+    ]
+    settings = tiny_corpus(tmp_path, corpus)
+    admin = yaml.safe_load(settings.tokens_path.read_text())["admin_token"]
+    with client_for(settings, reload=True) as c:
+        h = {"Authorization": f"Bearer {admin}"}
+        ids = {}
+        for key in keys:
+            path = f"/atlassian/rest/api/{version}/issue/"
+            by_key = c.get(path + key, headers=h)
+            assert by_key.status_code == 200
+            ids[key] = by_key.json()["id"]
+            by_id = c.get(path + ids[key], headers=h)
+            assert by_id.status_code == 200 and by_id.json()["key"] == key
+            assert by_id.json() == by_key.json()
+            assert (
+                c.get(path + ids[key] + "/comment", headers=h).json()
+                == c.get(path + key + "/comment", headers=h).json()
+            )
+        assert len(set(ids.values())) == len(keys)

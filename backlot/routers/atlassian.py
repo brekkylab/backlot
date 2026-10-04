@@ -263,10 +263,10 @@ def _jira_container_for_key(conn, token: str, request: Request | None = None) ->
 
 
 def _resolve_jira_key(request: Request, conn, key: str, ids):
-    """One issue by its served key, ACL-scoped — a unique-indexed column lookup (see
-    store.jira_by_key).
+    """One issue by its served key or its numeric id, ACL-scoped (see store.jira_by_key and
+    store.jira_by_numeric_id).
 
-    Keys match directly because the whole key is stored; numeric ids use the same ACL scope. Resolving it in parts instead — split the key, map
+    The key is matched whole, as it is stored. Resolving it in parts instead — split the key, map
     the prefix to a project through `_jira_container_for_key`, look the suffix up scoped to it —
     lets that function's three-way tolerance into the ISSUE-KEY namespace. The tolerance is a
     deliberate and correct affordance for the JQL project TOKEN, where real Jira pickers accept a
@@ -895,9 +895,9 @@ def _issue_key(request: Request, row) -> str:
 def _jira_ref(request: Request, row, site: str = "") -> dict:
     status = row["status"]
     return {
-        "id": str(synth.jira_numeric_id(row["key"])),
+        "id": row["numeric_id"],
         "key": _issue_key(request, row),
-        "self": f"{site}/rest/api/3/issue/{synth.jira_numeric_id(row['key'])}" if site else None,
+        "self": f"{site}/rest/api/3/issue/{row['numeric_id']}" if site else None,
         "fields": {
             "summary": row["title"],
             "status": {"name": status, "statusCategory": _status_category(status)},
@@ -1021,7 +1021,7 @@ def _jira_issue(conn, request: Request, row, expand: str = "", fields_only: bool
             prow = store.get_document(conn, "jira", row["parent_id"])
             if prow:
                 fields["parent"] = _jira_ref(request, prow, site)
-    nid = synth.jira_numeric_id(row["key"])
+    nid = row["numeric_id"]
     issue = {
         "id": str(nid),
         "key": _issue_key(request, row),

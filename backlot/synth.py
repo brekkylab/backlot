@@ -334,8 +334,13 @@ def github_comment_id(comment_id: str) -> int:
     return GITHUB_COMMENT_ID_MIN + hnum(comment_id, 0, 12) % GITHUB_COMMENT_ID_RANGE
 
 
+JIRA_NUMERIC_ID_MIN = 10_000
+JIRA_NUMERIC_ID_RANGE = 900_000
+
+
 def jira_numeric_id(seed: str) -> int:
-    return 10_000 + hnum(seed, 8, 8) % 900_000
+    """A numeric hash seed; the Jira importer probes it before publishing an issue id."""
+    return JIRA_NUMERIC_ID_MIN + hnum(seed, 8, 8) % JIRA_NUMERIC_ID_RANGE
 
 
 # The size of the per-project space `jira_key_number` draws from (1..JIRA_KEY_NUMBER_RANGE). A

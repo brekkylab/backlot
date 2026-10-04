@@ -322,6 +322,8 @@ than there being a set per type.
 
 ### Jira — `/atlassian/rest/api/3` (and `/2`)
 
+Issue and comment reads accept the key or the exact numeric `id` reported by search and issue responses. Numeric ids are assigned uniquely at import, including when keys hash alike, and remain stable across appended shards. Databases built before `jira_issues.numeric_id` was added must be re-imported; the startup schema check names the missing column.
+
 | Endpoint | Notes |
 |---|---|
 | `search/jql` | `GET` or `POST`. JQL `project =`, `text`\|`summary`\|`description` `~` |

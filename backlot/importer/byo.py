@@ -3134,6 +3134,38 @@ class _Loader:
             self.jira_prefixes.setdefault(project, prefix)
             final.append((key, f"{prefix}-{candidate}"))
         self._settle("jira", final)
+        self.resolve_jira_numeric_ids()
+
+    def resolve_jira_numeric_ids(self) -> None:
+        """Assign each settled issue key a unique numeric id, retaining earlier imports' ids.
+
+        PAY-1425 and PAY-2172 hash alike; a shared id would read back the wrong issue. New rows
+        have NULL ids only during this transaction. Key order makes a fresh import independent
+        of record order, while stored claims keep earlier ids stable across appends.
+        """
+        taken = {
+            int(value)
+            for (value,) in self.conn.execute(
+                "SELECT numeric_id FROM jira_issues WHERE numeric_id IS NOT NULL"
+            )
+        }
+        for (key,) in self.conn.execute(
+            "SELECT key FROM jira_issues WHERE numeric_id IS NULL ORDER BY key"
+        ).fetchall():
+            candidate = synth.jira_numeric_id(key)
+            for _ in range(synth.JIRA_NUMERIC_ID_RANGE):
+                if candidate not in taken:
+                    break
+                candidate = (
+                    synth.JIRA_NUMERIC_ID_MIN
+                    + (candidate - synth.JIRA_NUMERIC_ID_MIN + 1) % synth.JIRA_NUMERIC_ID_RANGE
+                )
+            else:
+                raise SystemExit("jira: numeric issue ids have exhausted their available range")
+            self.conn.execute(
+                "UPDATE jira_issues SET numeric_id = ? WHERE key = ?", (str(candidate), key)
+            )
+            taken.add(candidate)
 
     def write_linear_entities(self) -> None:
         """Store the ids Linear's by-id roots reverse: project, workflow state, label, cycle, user

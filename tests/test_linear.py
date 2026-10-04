@@ -440,6 +440,43 @@ def test_linear_sort_input_overrides_the_default_ordering(client, admin_h):
     assert got == sorted(got, reverse=True)
 
 
+def test_linear_root_connections_reject_sort_with_order_by(client, admin_h):
+    """Measured on api.linear.app 2026-10-04: root `issues` and `users` reject a
+    non-null `sort` argument beside a non-null `orderBy`, even when `sort` is empty. An explicit
+    null still counts as absent."""
+    rejected = {
+        "issues": "{ issues(first: 2, sort: [], orderBy: createdAt) { nodes { identifier } } }",
+        "users": "{ users(first: 2, sort: [{name: {order: Ascending}}], orderBy: createdAt) { nodes { name } } }",
+    }
+    for field, query in rejected.items():
+        body = gql(client, query, admin_h).json()
+        assert body["data"] is None
+        assert body["errors"][0]["message"] == "Cannot use both sort and orderBy options"
+        assert body["errors"][0]["path"] == [field]
+        assert body["errors"][0]["extensions"] == {
+            "type": "invalid input",
+            "code": "INPUT_ERROR",
+            "statusCode": 400,
+            "userError": True,
+        }
+
+    sort_null = gql(
+        client,
+        "{ issues(first: 2, sort: null, orderBy: createdAt) { nodes { identifier } } }",
+        admin_h,
+    ).json()
+    assert "errors" not in sort_null
+    assert len(sort_null["data"]["issues"]["nodes"]) == 2
+
+    order_by_null = gql(
+        client,
+        "{ users(first: 2, sort: [{name: {order: Ascending}}], orderBy: null) { nodes { name } } }",
+        admin_h,
+    ).json()
+    assert "errors" not in order_by_null
+    assert len(order_by_null["data"]["users"]["nodes"]) == 2
+
+
 # --- Linear relations / children / attachments / releases -----------------------
 
 

@@ -70,6 +70,19 @@ def _org_domain(info) -> str:
 # --- pagination -------------------------------------------------------------------
 
 
+def _reject_sort_with_order_by(sort, order_by) -> None:
+    if sort is not None and order_by is not None:
+        raise GraphQLError(
+            "Cannot use both sort and orderBy options",
+            extensions={
+                "type": "invalid input",
+                "code": "INPUT_ERROR",
+                "statusCode": 400,
+                "userError": True,
+            },
+        )
+
+
 def _slice(first, after, last, before) -> tuple[int | None, int, int]:
     """Relay ``first``/``after`` (forward) or ``last``/``before`` (backward) ->
     ``(offset, limit, floor)``.
@@ -943,6 +956,7 @@ def _issue_page(
     includeArchived=False,
     **_ignored,
 ) -> dict:
+    _reject_sort_with_order_by(sort, orderBy)
     ctx = _ctx(info)
     conn, visible = ctx["conn"], ctx["visible_ids"]
     offset, limit, floor = _slice(first, after, last, before)
@@ -1091,8 +1105,18 @@ def _sorted_users(users: list[dict], sort) -> list[dict]:
 
 
 def resolve_users(
-    _root, info, first=None, after=None, last=None, before=None, filter=None, sort=None, **_ignored
+    _root,
+    info,
+    first=None,
+    after=None,
+    last=None,
+    before=None,
+    filter=None,
+    orderBy=None,
+    sort=None,
+    **_ignored,
 ) -> dict:
+    _reject_sort_with_order_by(sort, orderBy)
     ctx = _ctx(info)
     offset, limit, floor = _slice(first, after, last, before)
     users = _sorted_users(

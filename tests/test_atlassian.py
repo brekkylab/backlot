@@ -365,6 +365,42 @@ def test_jira_serverinfo_v2_alias_matches_v3(client, admin_h):
     assert v2["deploymentType"] == "Cloud"
 
 
+def test_jira_serverinfo_answers_the_fifteen_members_real_does(client, admin_h):
+    # measured on a Jira Cloud site on 2026-10-03, the same fifteen on v2 and v3
+    for ver in ("2", "3"):
+        body = client.get(f"/atlassian/rest/api/{ver}/serverInfo", headers=admin_h).json()
+        assert sorted(body) == [
+            "baseUrl",
+            "buildDate",
+            "buildNumber",
+            "defaultLocale",
+            "deploymentType",
+            "displayUrl",
+            "displayUrlCSMHelpSeeker",
+            "displayUrlConfluence",
+            "displayUrlServicedeskHelpCenter",
+            "scmInfo",
+            "serverTime",
+            "serverTimeZone",
+            "serverTitle",
+            "version",
+            "versionNumbers",
+        ]
+        assert body["defaultLocale"] == {"locale": "en_US"}
+        assert body["serverTimeZone"] == "Etc/UTC"
+        assert re.fullmatch(r"[0-9a-f]{40}", body["scmInfo"])
+        assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}[+-]\d{4}", body["buildDate"])
+        for key in (
+            "displayUrl",
+            "displayUrlConfluence",
+            "displayUrlServicedeskHelpCenter",
+            "displayUrlCSMHelpSeeker",
+        ):
+            assert body[key] == body["baseUrl"]
+        assert body["version"] == "1001.0.0-SNAPSHOT"
+        assert body["versionNumbers"] == [1001, 0, 0]
+
+
 def test_jira_search_filtered_by_project(client, admin_h):
     from backlot import synth
 

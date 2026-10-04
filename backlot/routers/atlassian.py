@@ -12,6 +12,7 @@ answer carries (:func:`vendor_headers`, put on by ``backlot.main.report_atlassia
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import re
 import time
@@ -280,14 +281,28 @@ def _resolve_jira_key(request: Request, conn, key: str, ids):
 )  # jira PyPI client probes this on connect
 @router.get("/rest/api/3/serverInfo", response_model=JiraServerInfo)
 async def jira_server_info(request: Request):
+    """The fifteen members a Jira Cloud site answers, measured on 2026-10-03, the same on v2 and v3.
+
+    The four display URLs are the site's own URL there. The version, build number and build date are
+    the ones that site served; `scmInfo` is a 40 hex commit id, and the site name is the org's.
+    """
     site = _site(request)
     return {
         "baseUrl": site,
-        "version": "1000.0.0",
+        "displayUrl": site,
+        "displayUrlServicedeskHelpCenter": site,
+        "displayUrlConfluence": site,
+        "displayUrlCSMHelpSeeker": site,
+        "version": "1001.0.0-SNAPSHOT",
+        "versionNumbers": [1001, 0, 0],
         "deploymentType": "Cloud",
-        "versionNumbers": [1000, 0, 0],
-        "buildNumber": 100000,
+        "buildNumber": 100294,
+        "buildDate": synth.jira_datetime(synth.epoch("serverInfo.buildDate")),
         "serverTime": synth.rfc3339_millis(synth.epoch("serverInfo")),
+        "scmInfo": hashlib.sha1(b"serverInfo").hexdigest(),
+        "serverTitle": get_settings().org_name,
+        "defaultLocale": {"locale": "en_US"},
+        "serverTimeZone": "Etc/UTC",
     }
 
 

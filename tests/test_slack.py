@@ -653,6 +653,32 @@ def test_slack_an_absent_argument_is_not_a_thing_that_was_not_found(
     assert j == {"ok": False, "error": error}
 
 
+@pytest.mark.parametrize("method", ["search.messages", "search.all", "search.files"])
+def test_slack_search_sort_dir_outside_the_enum_is_invalid_arguments(client, admin_h, method):
+    # measured on 2026-10-03: the enum is case-sensitive, so `ASC` is refused like `bogus`, and
+    # `asc`, `desc` and an empty value are served
+    for value in ("ASC", "bogus", "Desc"):
+        j = client.get(
+            f"/slack/api/{method}",
+            headers=admin_h,
+            params={"query": "the", "count": 1, "sort_dir": value},
+        ).json()
+        assert j == {
+            "ok": False,
+            "error": "invalid_arguments",
+            "response_metadata": {
+                "messages": ["[ERROR] must be a valid enum value [json-pointer:/sort_dir]"]
+            },
+        }
+    for value in ("asc", "desc", ""):
+        j = client.get(
+            f"/slack/api/{method}",
+            headers=admin_h,
+            params={"query": "the", "count": 1, "sort_dir": value},
+        ).json()
+        assert j["ok"] is True
+
+
 def test_slack_search_all(client, admin_h):
     # slack-go's Search()/SearchContext() hits search.all; it must return both messages + files.
     j = client.post("/slack/api/search.all", headers=admin_h, data={"query": "the"}).json()

@@ -206,6 +206,25 @@ def _missing_argument(request: Request, *names: str) -> JSONResponse | None:
     return None
 
 
+# `sort_dir` is an enum on search.messages, search.all and search.files, matched case-sensitively:
+# measured on 2026-10-03, `ASC` and `bogus` answer this on all three, while `asc`, `desc` and an
+# empty value are served. `sort` has no such check, `sort=bogus` is served.
+_SORT_DIRS = {"", "asc", "desc"}
+_SORT_DIR_ERROR = {
+    "ok": False,
+    "error": "invalid_arguments",
+    "response_metadata": {
+        "messages": ["[ERROR] must be a valid enum value [json-pointer:/sort_dir]"]
+    },
+}
+
+
+def _bad_sort_dir(request: Request) -> JSONResponse | None:
+    if (_param(request, "sort_dir") or "") in _SORT_DIRS:
+        return None
+    return JSONResponse(_SORT_DIR_ERROR)
+
+
 def _channel_core(request: Request, conn, name: str, caller: Caller) -> dict:
     """The conversation object as BOTH conversations.list and .info answer it.
 
@@ -816,6 +835,8 @@ def _messages_block(request: Request):
         return err, None
     if err := _missing_argument(request, "query"):
         return err, None
+    if err := _bad_sort_dir(request):
+        return err, None
     query = _param(request, "query") or ""
     # A query that arrived with nothing in it has its own error, measured live on all three search
     # methods: blank or whitespace-only is `no_query`, where absent is `invalid_arguments` above.
@@ -829,7 +850,7 @@ def _messages_block(request: Request):
     # Honor Slack's sort: "score" (default) = relevance; "timestamp" = by message time. sort_dir
     # defaults to desc (newest first). Previously Backlot always ranked by relevance regardless.
     sort = (_param(request, "sort") or "score").lower()
-    sort_dir = (_param(request, "sort_dir") or "desc").lower()
+    sort_dir = _param(request, "sort_dir") or "desc"
     order_by = None
     if sort == "timestamp":
         order_by = "recency_asc" if sort_dir == "asc" else "recency"
@@ -891,6 +912,8 @@ async def search_files(request: Request):
     if err is not None:
         return err
     if err := _missing_argument(request, "query"):
+        return err
+    if err := _bad_sort_dir(request):
         return err
     query = _param(request, "query") or ""
     if not query.strip():

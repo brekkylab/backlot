@@ -605,8 +605,10 @@ async def gmail_messages_get(user_id: str, msg_id: str, request: Request):
     return _gmail_message(row, request.query_params.get("format", "full"), caller.email)
 
 
-# Measured against Gmail on 2026-10-02: MessagePartBody.size is the UTF-8 byte length.
 def _byte_len(text: str) -> int:
+    """The `size` Gmail reports for `text`: its length in the UTF-8 bytes `_b64url` serves. Real
+    counts the bytes of a part's decoded `data`, not its characters, on a text part, an attachment
+    part and `attachments.get` alike (measured on 2026-10-02)."""
     return len(text.encode("utf-8"))
 
 

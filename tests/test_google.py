@@ -5010,6 +5010,24 @@ def test_gmail_attachments_get_is_size_and_data(gmail_shapes):
     assert sorted(body) == ["data", "size"]
 
 
+@pytest.mark.parametrize("doc", ["att", "ko", "att-ko"])
+def test_gmail_a_parts_size_is_the_byte_length_of_its_data(gmail_shapes, doc):
+    """The rule `_byte_len` states, over every part of the message: `att` is ASCII, where bytes and
+    characters are one count, and `ko` and `att-ko` are where they differ."""
+    client, h = gmail_shapes
+    url = f"/gmail/v1/users/me/messages/{served_id('gmail', doc)}"
+    parts = [client.get(url, headers=h).json()["payload"]]
+    while parts:
+        part = parts.pop()
+        parts += part.get("parts", [])
+        body = part["body"]
+        if "data" in body:
+            assert body["size"] == len(base64.urlsafe_b64decode(body["data"])), part["mimeType"]
+        elif "attachmentId" in body:
+            got = client.get(f"{url}/attachments/{body['attachmentId']}", headers=h).json()
+            assert got["size"] == body["size"] == len(base64.urlsafe_b64decode(got["data"]))
+
+
 def test_gmail_labels_list_and_get_serve_real_members(client, admin_h):
     labels = client.get("/gmail/v1/users/me/labels", headers=admin_h).json()["labels"]
     by_id = {label["id"]: label for label in labels}

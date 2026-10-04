@@ -498,7 +498,7 @@ def test_gmail_messages_list_pagination_stable_and_ordered(client, admin_h, ro_c
 def test_gmail_attachment_size_matches_part_metadata(client, admin_h, ro_conn):
     # Real Gmail's contract: a part's body.size equals the byte length attachments.get serves, so a
     # client can stat an attachment from message metadata alone. Reporting the corpus-declared
-    # `size` (e.g. 2048) while attachments.get returns len(content) breaks that.
+    # `size` (e.g. 2048) while attachments.get reports `_byte_len(content)` breaks that.
     row = ro_conn.execute(
         "SELECT id FROM gmail_messages WHERE attachments IS NOT NULL "
         "AND attachments != '[]' LIMIT 1"
@@ -5032,15 +5032,23 @@ def test_gmail_metadata_payload_is_mime_type_and_headers(gmail_shapes):
             assert sorted(m["payload"]) == ["headers", "mimeType"], (doc, params)
 
 
-def test_gmail_attachments_get_is_size_and_data(gmail_shapes):
+@pytest.mark.parametrize("doc", ["att", "ko", "att-ko"])
+def test_gmail_a_parts_size_is_the_byte_length_of_its_data(gmail_shapes, doc):
+    """The rule `_byte_len` states, over every part of the message: `att` is ASCII, where bytes and
+    characters are one count, and `ko` and `att-ko` are where they differ."""
     client, h = gmail_shapes
-    mid = served_id("gmail", "att")
-    payload = client.get(f"/gmail/v1/users/me/messages/{mid}", headers=h).json()["payload"]
-    att = next(p for p in payload["parts"] if p["filename"])
-    body = client.get(
-        f"/gmail/v1/users/me/messages/{mid}/attachments/{att['body']['attachmentId']}", headers=h
-    ).json()
-    assert sorted(body) == ["data", "size"]
+    url = f"/gmail/v1/users/me/messages/{served_id('gmail', doc)}"
+    parts = [client.get(url, headers=h).json()["payload"]]
+    while parts:
+        part = parts.pop()
+        parts += part.get("parts", [])
+        body = part["body"]
+        if "data" in body:
+            assert body["size"] == len(base64.urlsafe_b64decode(body["data"])), part["mimeType"]
+        elif "attachmentId" in body:
+            got = client.get(f"{url}/attachments/{body['attachmentId']}", headers=h).json()
+            assert sorted(got) == ["data", "size"]
+            assert got["size"] == body["size"] == len(base64.urlsafe_b64decode(got["data"]))
 
 
 def test_gmail_labels_list_and_get_serve_real_members(client, admin_h):

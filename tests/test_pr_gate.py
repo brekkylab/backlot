@@ -1,6 +1,6 @@
 """`scripts/pr_gate.py`'s two rules, without the network.
 
-The titles are ones pull requests from forks were opened with on 2026-10-03 and 2026-10-04.
+The titles are taken, or edited, from ones pull requests here were opened with.
 """
 
 from __future__ import annotations
@@ -41,6 +41,7 @@ FIX_PROBLEM = "Drop the `fix:`-style prefix from the title."
         ("Closes #412", [412]),
         ("closes #412 and fixes #413", [412, 413]),
         ("Resolves: #7, then resolved #7", [7]),
+        ("Fixes: #9", [9]),
         ("Found while measuring for #387.", []),
         ("Measured in #417 on 2026-10-03", []),
     ],
@@ -88,11 +89,17 @@ def test_closed_issues(body, numbers):
                 FIX_PROBLEM,
             ],
         ),
+        (
+            "s3 ListObjectsV2 honours fetch-owner",
+            FILLED,
+            {"s3"},
+            ["Open the title with the closed issue's prefix, `s3: `."],
+        ),
         # A pull request that closes no fidelity issue has no prefix to open with.
         ("Fix loop-doorbell workflow to use the gh token correctly", FILLED, set(), []),
         # Closing two issues from two sources, either prefix opens the title.
         ("slack: limit=0 serves the default page", FILLED, {"gmail", "slack"}, []),
-        # A body saved from the web editor ends its lines in CRLF.
+        # Some pull request bodies here end their lines in CRLF.
         ("slack: limit=0 serves the default page", FILLED.replace("\n", "\r\n"), {"slack"}, []),
         (
             "slack: limit=0 serves the default page",

@@ -410,6 +410,34 @@ def test_hubspot_search_every_operator(client, admin_h):
     )
 
 
+def test_hubspot_contains_token_reads_star_as_a_wildcard(client, admin_h):
+    # measured on 2026-10-03: `*` completes a token as a prefix, infix or suffix, a bare prefix
+    # finds nothing, and `?` is not a wildcard
+    def f(value):
+        return _hs_filter(
+            client, admin_h, propertyName="name", operator="CONTAINS_TOKEN", value=value
+        )
+
+    assert f("Clin*") == {"Borealis Clinics"}
+    assert f("*lini*") == {"Borealis Clinics"}
+    assert f("*nics") == {"Borealis Clinics"}
+    assert f("Heal*") == {"Acme Health", "Stealth Health Co"}
+    assert f("Clin") == set()
+    assert f("?linics") == set()
+    assert "Borealis Clinics" not in _hs_filter(
+        client, admin_h, propertyName="name", operator="NOT_CONTAINS_TOKEN", value="Clin*"
+    )
+
+
+def test_hubspot_wildcard_needle_with_many_stars_stays_fast():
+    # the needle comes from the request, so many `*` against one long token must not backtrack
+    from backlot.routers import hubspot as hs
+
+    f = {"operator": "CONTAINS_TOKEN", "value": "a*a*a*a*a*a*a*a*b"}
+    assert hs._match_one("a" * 20000, f) is False
+    assert hs._match_one("a" * 20000 + "b", f) is True
+
+
 def test_hubspot_search_prefilter_cannot_change_results(client, admin_h, monkeypatch):
     """The SQL pre-filter is a pure optimisation: it may only skip rows Python would have rejected
     anyway. Every query is run twice — once with the pushdown, once with it disabled — and the
@@ -470,6 +498,16 @@ def test_hubspot_search_prefilter_cannot_change_results(client, admin_h, monkeyp
                         {"propertyName": "lifecyclestage", "operator": "EQ", "value": "qualified"}
                     ]
                 },
+            ]
+        },
+        # a wildcard needle: the pieces around `*` are still substrings of what it matches
+        {
+            "filterGroups": [
+                {
+                    "filters": [
+                        {"propertyName": "name", "operator": "CONTAINS_TOKEN", "value": "*lin*"}
+                    ]
+                }
             ]
         },
         {"query": "acme"},

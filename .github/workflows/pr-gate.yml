@@ -2,9 +2,8 @@
 # have open, and what its title and description carry. `scripts/pr_gate.py` has both rules.
 #
 # `pull_request_target` runs this file and the script as they are on `main`, with a token that can
-# comment and close, and it runs on a first-time contributor's pull request without waiting for a
-# maintainer's approval the way CI does. That is safe only because nothing from the pull request's
-# branch is checked out or run: its title and body are read from the event file as data.
+# comment and close. That is safe only because nothing from the pull request's branch is checked
+# out or run: its title and body are read from the event file as data.
 name: PR gate
 
 on:

@@ -3,7 +3,7 @@
   "endpoints": [
     "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json"
   ],
-  "measured": "2026-09-29",
+  "measured": "2026-10-04",
   "acknowledged": [
     {
       "kind": "extra_operation",
@@ -6333,6 +6333,13 @@
       "severity": "gap",
       "path": "POST /repos/{}/{}/pulls/{}/requested_reviewers",
       "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /repos/{}/{}/pulls/{}/requested_reviewers/rerequest",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Published in GitHub's description (`pulls/review-requests`, \"Rerequest reviewers for a pull request\", read 2026-10-04) but not answered. Measured against api.github.com on 2026-10-04 with a body of `{}`, on an open pull request in pallets/flask and in a repository the token can write to, under no `X-GitHub-Api-Version`, `2022-11-28` and `2026-03-10`: this `POST` answers 404 `Not Found` with the token and without a credential, while the `POST` on `requested_reviewers` on the same pull requests answers 401 `Requires authentication` without a credential and 422 to the token on the repository it can write to."
     },
     {
       "kind": "missing_operation",

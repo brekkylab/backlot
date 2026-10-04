@@ -2379,8 +2379,8 @@ def _ref_exists(conn, owner: str, repo: str, ref: str, ids) -> bool:
 async def get_tree(
     owner: str, repo: str, ref: str, request: Request, recursive: str | None = Query(None)
 ):
-    """The repo's file set as a git tree (real API shape). `recursive` (any truthy value,
-    GitHub-style) returns every blob/tree entry; otherwise only the entries directly under root.
+    """The repo's file set as a git tree (real API shape). `recursive` (any supplied value,
+    including an empty string) returns every blob/tree entry; otherwise only the entries directly under root.
 
     `ref` selects WHICH tree, exactly as on real GitHub: a SUBTREE's own sha — the one a client
     reads out of a parent listing's `tree` entry — answers that directory's entries, with paths
@@ -2438,7 +2438,8 @@ async def get_tree(
         entries = [
             {**e, "path": e["path"][len(prefix) :]} for e in entries if e["path"].startswith(prefix)
         ]
-    if not _truthy(recursive):
+    # #409: measured on api.github.com (2026-10-03), even 0, false and empty recurse.
+    if recursive is None:
         entries = [e for e in entries if "/" not in e["path"]]
     entries, truncated = _cap_tree(entries)
     tree_sha = _repo_tree_sha(repo) if subtree is None else _dir_sha(repo, subtree)

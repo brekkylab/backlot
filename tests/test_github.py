@@ -5652,3 +5652,35 @@ def test_github_a_trailing_slash_is_404_not_a_redirect(gh_client, gh_admin_h, gh
             headers={"Authorization": "Basic Zm9vOmJhcg=="},
         ).headers
     )
+
+
+@pytest.mark.parametrize("value", ["0", "false", "", "1", "true", "abc"])
+def test_tree_recurses_for_any_supplied_parameter(tmp_path, value):
+    """#409: api.github.com measurement on 2026-10-03, not boolean coercion."""
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "github",
+                "doc_id": "file",
+                "repo": "tree",
+                "subtype": "file",
+                "path": "src/deep/code.py",
+                "content": "pass",
+                "author_email": "owner@x.com",
+            }
+        ],
+    )
+    with client_for(s) as c:
+        h = {"Authorization": "Bearer " + yaml.safe_load(s.tokens_path.read_text())["admin_token"]}
+        org = c.get("/_meta/users", headers=h).json()["org"]
+        path = f"/github/repos/{org}/tree/git/trees/main"
+        flat = c.get(path, headers=h)
+        expanded = c.get(path + "?recursive=" + value, headers=h)
+        assert flat.status_code == expanded.status_code == 200
+        assert [e["path"] for e in flat.json()["tree"]] == ["src"]
+        assert {e["path"] for e in expanded.json()["tree"]} == {
+            "src",
+            "src/deep",
+            "src/deep/code.py",
+        }

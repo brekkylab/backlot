@@ -929,7 +929,8 @@ def _gmail_message(row, fmt: str, caller_email: str | None = None) -> dict:
     nodes = _mime_tree(row, html, attachments)
     mime_body = _mime_multipart(nodes, boundary, row["id"])
     raw = "\r\n".join(f"{h['name']}: {h['value']}" for h in headers) + "\r\n\r\n" + mime_body
-    # #422: Gmail measurement on 2026-10-04 found the decoded raw byte length in every format.
+    # Real's `sizeEstimate` is the byte length of the decoded `raw`, under `minimal`, `metadata`
+    # and `raw` and in `threads.get` alike (12 messages, measured on 2026-10-04).
     msg["sizeEstimate"] = len(raw.encode("utf-8"))
     if fmt == "minimal":
         return msg

@@ -6256,9 +6256,15 @@ def test_a_grid_range_member_is_checked_before_it_reaches_the_parser(
     assert r.status_code == status, r.text
 
 
-@pytest.mark.parametrize("content", ["hello there", "안녕하세요", "😀 café"])
-def test_gmail_size_estimate_matches_raw_bytes_in_every_format(tmp_path, content):
-    """#422: Gmail measurement on 2026-10-04, including non-ASCII content."""
+@pytest.mark.parametrize(
+    "title,content",
+    [("ASCII", "hello there"), ("ASCII", "안녕하세요"), ("회의 일정", "😀 café")],
+)
+def test_gmail_size_estimate_matches_raw_bytes_in_every_format(tmp_path, title, content):
+    """The rule in `_gmail_message`, under every `format` and in the thread. A non-ASCII body
+    reaches `raw` transfer-encoded into ASCII, so the subject is what puts bytes there that a
+    character count would miss.
+    """
     s = tiny_corpus(
         tmp_path,
         [
@@ -6266,7 +6272,7 @@ def test_gmail_size_estimate_matches_raw_bytes_in_every_format(tmp_path, content
                 "source_type": "gmail",
                 "doc_id": "size",
                 "mailbox": "owner",
-                "title": "Non-ASCII",
+                "title": title,
                 "author_email": "owner@example.com",
                 "created": "2026-10-01T00:00:00Z",
                 "content": content,

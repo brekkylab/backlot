@@ -924,9 +924,13 @@ def _gmail_message(row, fmt: str, caller_email: str | None = None) -> dict:
         "snippet": _snippet(row),
         "historyId": "1",
         "internalDate": str(ts * 1000),
-        "sizeEstimate": len(row["content"]) + 400,
     }
     html = row["body_html"] or f"<html><body><p>{row['content']}</p></body></html>"
+    nodes = _mime_tree(row, html, attachments)
+    mime_body = _mime_multipart(nodes, boundary, row["id"])
+    raw = "\r\n".join(f"{h['name']}: {h['value']}" for h in headers) + "\r\n\r\n" + mime_body
+    # #422: Gmail measurement on 2026-10-04 found the decoded raw byte length in every format.
+    msg["sizeEstimate"] = len(raw.encode("utf-8"))
     if fmt == "minimal":
         return msg
     if fmt == "metadata":
@@ -934,7 +938,6 @@ def _gmail_message(row, fmt: str, caller_email: str | None = None) -> dict:
         # metadata payload, measured on 2026-09-30.
         msg["payload"] = {"mimeType": top_mime, "headers": headers}
         return msg
-    nodes = _mime_tree(row, html, attachments)
     if fmt == "raw":
         # RFC 2822 message, base64url — a genuine boundary-delimited MIME body matching the
         # declared multipart Content-Type above. It has to be real MIME: a plain-text body under a
@@ -942,8 +945,6 @@ def _gmail_message(row, fmt: str, caller_email: str | None = None) -> dict:
         # StartBoundaryNotFoundDefect/MultipartInvariantViolationDefect, and readers built on it
         # (llama-index's GmailReader) choke because `get_payload()` degrades to a bare
         # string instead of a list of sub-messages). Built from the same parts `full` serves.
-        mime_body = _mime_multipart(nodes, boundary, row["id"])
-        raw = "\r\n".join(f"{h['name']}: {h['value']}" for h in headers) + "\r\n\r\n" + mime_body
         msg["raw"] = _b64url(raw)
         return msg
 

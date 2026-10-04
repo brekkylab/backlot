@@ -6254,3 +6254,37 @@ def test_a_grid_range_member_is_checked_before_it_reaches_the_parser(
 ):
     r = _by_filter(gc, gh, book, {"dataFilters": [{"gridRange": grid_range}]})
     assert r.status_code == status, r.text
+
+
+@pytest.mark.parametrize("content", ["hello there", "안녕하세요", "😀 café"])
+def test_gmail_size_estimate_matches_raw_bytes_in_every_format(tmp_path, content):
+    """#422: Gmail measurement on 2026-10-04, including non-ASCII content."""
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "gmail",
+                "doc_id": "size",
+                "mailbox": "owner",
+                "title": "Non-ASCII",
+                "author_email": "owner@example.com",
+                "created": "2026-10-01T00:00:00Z",
+                "content": content,
+            }
+        ],
+    )
+    with client_for(s) as c:
+        h = {"Authorization": "Bearer " + yaml.safe_load(s.tokens_path.read_text())["admin_token"]}
+        mid = c.get("/gmail/v1/users/me/messages", headers=h).json()["messages"][0]["id"]
+        path = "/gmail/v1/users/me/messages/" + mid
+        raw = c.get(path + "?format=raw", headers=h).json()
+        encoded = raw["raw"]
+        size = len(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
+        assert raw["sizeEstimate"] == size
+        for fmt in ["minimal", "metadata", "full"]:
+            message = c.get(path + "?format=" + fmt, headers=h).json()
+            assert message["sizeEstimate"] == size
+            tid = message["threadId"]
+            thread = c.get(f"/gmail/v1/users/me/threads/{tid}?format={fmt}", headers=h)
+            assert thread.status_code == 200
+            assert thread.json()["messages"][0]["sizeEstimate"] == size

@@ -1061,11 +1061,31 @@ def test_github_tree_recursive(gh_client, gh_admin_h, gh_org):
     assert "size" not in tree_dir
 
 
-def test_github_tree_non_recursive(gh_client, gh_admin_h, gh_org):
+@pytest.mark.parametrize(
+    "query,recursive",
+    [
+        ("", False),
+        ("?recursive", False),
+        ("?recursive=0&recursive", False),
+        ("?recursive=", True),
+        ("?recursive=0", True),
+        ("?recursive=false", True),
+        ("?recursive=1", True),
+        ("?recursive=true", True),
+        ("?recursive=abc", True),
+        ("?recursive&recursive=0", True),
+    ],
+)
+def test_github_tree_recurses_for_any_recursive_value(
+    gh_client, gh_admin_h, gh_org, query, recursive
+):
+    """The rows are :func:`backlot.routers.github.get_tree`'s measurement, one request each."""
     c, _ = gh_client
-    body = c.get(f"/github/repos/{gh_org}/codebase/git/trees/main", headers=gh_admin_h).json()
-    paths = {e["path"] for e in body["tree"]}
-    assert paths == {"README.md", "src", "config"}  # top level only: root file + top dirs
+    r = c.get(f"/github/repos/{gh_org}/codebase/git/trees/main{query}", headers=gh_admin_h)
+    top = {"README.md", "src", "config"}
+    deep = {"src/main.py", "src/pkg", "src/pkg/utils.py", "config/secret.yaml"}
+    assert r.status_code == 200
+    assert {e["path"] for e in r.json()["tree"]} == (top | deep if recursive else top)
 
 
 @pytest.mark.parametrize(
@@ -1173,7 +1193,7 @@ def test_github_lists_the_refs_a_client_enumerates_before_it_reads(gh_client, gh
     # unprotected ones for `false`/`0`, and all of them for an empty or omitted parameter —
     # measured on fastapi/fastapi, 22 branches with one protected, answering 1 / 21 / 22. The one
     # branch here is unprotected, so those last two coincide and `_truthy`'s split is the whole
-    # rule, as it is for `?recursive=` on git/trees.
+    # rule.
     for value, kept in (("true", 0), ("1", 0), ("yes", 0), ("false", 1), ("0", 1), ("", 1)):
         r = c.get(
             f"/github/repos/{gh_org}/codebase/branches",
@@ -5652,35 +5672,3 @@ def test_github_a_trailing_slash_is_404_not_a_redirect(gh_client, gh_admin_h, gh
             headers={"Authorization": "Basic Zm9vOmJhcg=="},
         ).headers
     )
-
-
-@pytest.mark.parametrize("value", ["0", "false", "", "1", "true", "abc"])
-def test_tree_recurses_for_any_supplied_parameter(tmp_path, value):
-    """#409: api.github.com measurement on 2026-10-03, not boolean coercion."""
-    s = tiny_corpus(
-        tmp_path,
-        [
-            {
-                "source_type": "github",
-                "doc_id": "file",
-                "repo": "tree",
-                "subtype": "file",
-                "path": "src/deep/code.py",
-                "content": "pass",
-                "author_email": "owner@x.com",
-            }
-        ],
-    )
-    with client_for(s) as c:
-        h = {"Authorization": "Bearer " + yaml.safe_load(s.tokens_path.read_text())["admin_token"]}
-        org = c.get("/_meta/users", headers=h).json()["org"]
-        path = f"/github/repos/{org}/tree/git/trees/main"
-        flat = c.get(path, headers=h)
-        expanded = c.get(path + "?recursive=" + value, headers=h)
-        assert flat.status_code == expanded.status_code == 200
-        assert [e["path"] for e in flat.json()["tree"]] == ["src"]
-        assert {e["path"] for e in expanded.json()["tree"]} == {
-            "src",
-            "src/deep",
-            "src/deep/code.py",
-        }

@@ -2902,9 +2902,8 @@ def test_sheets_get_returns_grid_when_asked(base, admin_h):
     assert data["rowMetadata"] == [{"pixelSize": 21}] * 1000
     assert data["columnMetadata"] == [{"pixelSize": 100}] * 26
     rows = data["rowData"]
-    # a cell object per column of the range (26), the empty ones carrying no value — measured shape
-    assert {len(r["values"]) for r in rows} == {26}
-    assert all(c == {} for r in rows for c in r["values"][1:])
+    # the values end at the row's last cell holding a value — real shape
+    assert {len(r["values"]) for r in rows} == {1}
     assert [r["values"][0]["formattedValue"] for r in rows] == [
         "month,revenue",
         "Jan,120000",

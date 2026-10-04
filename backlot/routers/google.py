@@ -3148,27 +3148,28 @@ def _sheets_grid_data(sheet: _Sheet, body: str, spec: str) -> dict:
         out["startRow"] = r0
     if c0:
         out["startColumn"] = c0
+    if block:
+        row_data = []
+        for row in block:
+            vals = [
+                (
+                    {
+                        "userEnteredValue": v,
+                        "effectiveValue": v,
+                        "formattedValue": sheets_grid.formatted(row[i]),
+                        "effectiveFormat": _sheets_format(row[i]),
+                    }
+                    if i < len(row) and (v := _sheets_value(row[i]))
+                    else {}
+                )
+                for i in range(width)
+            ]
+            while vals and not vals[-1]:
+                vals.pop()
+            row_data.append({"values": vals})
+        out["rowData"] = row_data
     out["rowMetadata"] = [{"pixelSize": SHEETS_ROW_PIXELS} for _ in range(r1x - r0)]
     out["columnMetadata"] = [{"pixelSize": SHEETS_COL_PIXELS} for _ in range(width)]
-    if block:
-        out["rowData"] = [
-            {
-                "values": [
-                    (
-                        {
-                            "userEnteredValue": v,
-                            "effectiveValue": v,
-                            "formattedValue": sheets_grid.formatted(row[i]),
-                            "effectiveFormat": _sheets_format(row[i]),
-                        }
-                        if i < len(row) and (v := _sheets_value(row[i]))
-                        else {}
-                    )
-                    for i in range(width)
-                ]
-            }
-            for row in block
-        ]
     return out
 
 

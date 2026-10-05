@@ -71,6 +71,13 @@ def _org_domain(info) -> str:
 
 
 def _reject_sort_with_order_by(sort, order_by) -> None:
+    """Linear refuses ``sort`` beside ``orderBy`` on ``issues`` and ``users``: a 200 with
+    ``data: null`` and ``Cannot use both sort and orderBy options`` (code ``INPUT_ERROR``),
+    measured on api.linear.app 2026-10-04. Sending the argument is what counts, so ``sort: []``
+    is refused and an explicit ``null`` is absent. The arguments are validated before the pair:
+    ``first`` with ``last`` and a malformed filter id each answered ``Argument Validation Error``
+    beside it, so ``_issue_page`` and ``resolve_users`` call this after ``_slice``, and
+    ``_issue_page`` after compiling the filter too."""
     if sort is not None and order_by is not None:
         raise GraphQLError(
             "Cannot use both sort and orderBy options",

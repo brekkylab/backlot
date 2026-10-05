@@ -441,9 +441,8 @@ def test_linear_sort_input_overrides_the_default_ordering(client, admin_h):
 
 
 def test_linear_root_connections_reject_sort_with_order_by(client, admin_h):
-    """Measured on api.linear.app 2026-10-04: root `issues` and `users` reject a
-    non-null `sort` argument beside a non-null `orderBy`, even when `sort` is empty. An explicit
-    null still counts as absent."""
+    """The refusal and where it falls among the other refusals, as `_reject_sort_with_order_by`
+    records them."""
     rejected = {
         "issues": "{ issues(first: 2, sort: [], orderBy: createdAt) { nodes { identifier } } }",
         "users": "{ users(first: 2, sort: [{name: {order: Ascending}}], orderBy: createdAt) { nodes { name } } }",

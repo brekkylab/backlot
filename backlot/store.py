@@ -1358,8 +1358,10 @@ LINEAR_SORT_COLUMNS = {
 
 def _linear_order(order_by: str | None, descending: bool, sort=None) -> str:
     """The ORDER BY, always TOTAL (sort keys + ``id``) — an offset page over a non-total order
-    can silently repeat or skip a row between pages. ``sort`` (Linear's ``IssueSortInput``) wins over
-    ``orderBy`` when both are given, matching the real API, where it is the richer multi-key form."""
+    can silently repeat or skip a row between pages. ``sort`` (Linear's ``IssueSortInput``) decides
+    the order when it names a key in ``LINEAR_SORT_COLUMNS``; the resolver refuses it beside
+    ``orderBy``, as the real API does (``_reject_sort_with_order_by`` in
+    ``backlot.graphql.linear_resolvers``)."""
     terms = []
     for entry in sort or []:
         for key, opts in (entry or {}).items():

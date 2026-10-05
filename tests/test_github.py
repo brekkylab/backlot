@@ -1061,11 +1061,35 @@ def test_github_tree_recursive(gh_client, gh_admin_h, gh_org):
     assert "size" not in tree_dir
 
 
-def test_github_tree_non_recursive(gh_client, gh_admin_h, gh_org):
+@pytest.mark.parametrize(
+    "query,recursive",
+    [
+        ("", False),
+        ("?recursive", False),
+        ("?recursive=0&recursive", False),
+        ("?%72ecursive", False),
+        ("?recursive=", True),
+        ("?recursive=0", True),
+        ("?recursive=false", True),
+        ("?recursive=1", True),
+        ("?recursive=true", True),
+        ("?recursive=abc", True),
+        ("?recursive&recursive=0", True),
+        ("?%72ecursive=0", True),
+    ],
+)
+def test_github_tree_recurses_for_any_recursive_value(
+    gh_client, gh_admin_h, gh_org, query, recursive
+):
+    """Each row was measured on api.github.com. The rule is
+    :func:`backlot.routers.github.get_tree`'s and the percent-encoded name
+    :func:`backlot.routers.github._written_bare`'s."""
     c, _ = gh_client
-    body = c.get(f"/github/repos/{gh_org}/codebase/git/trees/main", headers=gh_admin_h).json()
-    paths = {e["path"] for e in body["tree"]}
-    assert paths == {"README.md", "src", "config"}  # top level only: root file + top dirs
+    r = c.get(f"/github/repos/{gh_org}/codebase/git/trees/main{query}", headers=gh_admin_h)
+    top = {"README.md", "src", "config"}
+    deep = {"src/main.py", "src/pkg", "src/pkg/utils.py", "config/secret.yaml"}
+    assert r.status_code == 200
+    assert {e["path"] for e in r.json()["tree"]} == (top | deep if recursive else top)
 
 
 @pytest.mark.parametrize(
@@ -1173,7 +1197,7 @@ def test_github_lists_the_refs_a_client_enumerates_before_it_reads(gh_client, gh
     # unprotected ones for `false`/`0`, and all of them for an empty or omitted parameter —
     # measured on fastapi/fastapi, 22 branches with one protected, answering 1 / 21 / 22. The one
     # branch here is unprotected, so those last two coincide and `_truthy`'s split is the whole
-    # rule, as it is for `?recursive=` on git/trees.
+    # rule.
     for value, kept in (("true", 0), ("1", 0), ("yes", 0), ("false", 1), ("0", 1), ("", 1)):
         r = c.get(
             f"/github/repos/{gh_org}/codebase/branches",

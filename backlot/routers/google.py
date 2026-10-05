@@ -77,7 +77,7 @@ class GmailAttachment(_GLoose):
 
 
 _P_GMAIL_LIST = [qp("maxResults", "integer"), qp("pageToken"), qp("q")]
-_P_GMAIL_FORMAT = [qp("format")]
+_P_GMAIL_FORMAT = [qp("format"), qp("metadataHeaders")]
 
 
 class DriveFileList(_GLoose):
@@ -488,8 +488,9 @@ def _gmail_query(conn, mailbox, ids, q: str) -> list:
 # --- Gmail ids ------------------------------------------------------------------------------
 # A gmail id is a 16-hex integer (`synth.gmail_message_id`) and it IS the row's primary key
 # (`gmail_messages.id`, assigned at import — see `backlot.importer.byo`), so resolution is a point
-# lookup rather than a map rebuilt on every boot. `thread_id` holds the ROOT MESSAGE'S id,
-# already resolved at import, so a thread resolves through the same key with no re-derivation.
+# lookup rather than a map rebuilt on every boot. `thread_id` holds the thread's id, computed at
+# import the same way (see `gmail_messages` in `store.SCHEMA`), so a thread resolves through a
+# stored column too, with no re-derivation.
 
 _GMAIL_HEX = re.compile(r"[0-9a-fA-F]+\Z")
 
@@ -506,20 +507,16 @@ def _gmail_check_shape(served_id: str) -> None:
         raise gerr.invalid_id_value()
 
 
-def _gmail_resolve(served_id: str) -> str | None:
-    """Validate a served Gmail id's SHAPE and hand it back — a thread is keyed on the root
-    message's own id, so there is nothing left to translate, only to reject.
+def _gmail_resolve(served_id: str) -> str:
+    """Validate a served Gmail id's SHAPE and return its stored spelling
+    (`store.gmail_id_spelling`), the key `store.gmail_thread` matches against `thread_id`.
 
     Kept as a named step rather than inlined because the shape check must run BEFORE any lookup:
     an unparsable id is 400 INVALID_ARGUMENT whether or not it would have resolved. No
     ``visible_ids``: the ACL read stays in the caller (`store.gmail_thread`), so an id naming a
-    thread the caller cannot see is not-found, never a different answer.
-
-    Lowercased, because the id is hex and real Gmail resolves either spelling: `store.gmail_by_id`
-    folds case, so returning the spelling as given made `threads.get` the one route that did not —
-    an uppercase id missed the exact `thread_id = ?` lookup and fell through to a single message."""
+    thread the caller cannot see is not-found, never a different answer."""
     _gmail_check_shape(served_id)
-    return served_id.lower()
+    return store.gmail_id_spelling(served_id)
 
 
 def _gmail_doc(conn, ids, served_id: str):
@@ -545,13 +542,21 @@ def _by_thread(rows) -> list:
     return out
 
 
+def _gmail_max_results(request: Request) -> int:
+    """The page size `messages.list` and `threads.list` serve. A `maxResults` above 500 is capped
+    at 500, not refused: measured on 2026-10-03, `501` and `1000` each answered 500 messages with a
+    `nextPageToken`, and the reference gives both methods "The maximum allowed value for this field
+    is 500"."""
+    return min(_int(request.query_params.get("maxResults"), get_settings().default_page_size), 500)
+
+
 def _gmail_ids(row) -> tuple[str, str]:
     """``(id, threadId)`` for a row. A message that is its own thread root reports the same value
     twice, as real Gmail does.
 
-    Both halves are read straight off the row. `thread_id` holds the ROOT'S OWN id,
-    resolved once at import, so `threadId` reads one stored value rather than re-hashing the
-    root's key and hoping the two agree."""
+    Both halves are read straight off the row: `thread_id` is computed once at import (see
+    `gmail_messages` in `store.SCHEMA`), so `threadId` reads one stored value rather than
+    re-hashing the thread's key and hoping the two agree."""
     return (row["id"], row["thread_id"] or row["id"])
 
 
@@ -566,7 +571,7 @@ async def gmail_messages_list(user_id: str, request: Request):
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     mailbox = _mailbox_container(conn, caller, user_id)  # None = all mailboxes
-    limit = _int(request.query_params.get("maxResults"), get_settings().default_page_size)
+    limit = _gmail_max_results(request)
     offset = decode_cursor(request.query_params.get("pageToken"))
     q = request.query_params.get("q", "") or ""
     if q.strip():  # search: filter the ACL-visible set by the query, then paginate
@@ -602,7 +607,21 @@ async def gmail_messages_get(user_id: str, msg_id: str, request: Request):
     row = _gmail_doc(conn, ids, msg_id)
     if row is None:
         raise gerr.not_found_entity()
-    return _gmail_message(row, request.query_params.get("format", "full"), caller.email)
+    return _gmail_message(
+        row,
+        request.query_params.get("format", "full"),
+        caller.email,
+        request.query_params.getlist("metadataHeaders"),
+    )
+
+
+def _byte_len(text: str) -> int:
+    """The length Gmail reports for `text`, in the UTF-8 bytes `_b64url` serves. Real counts bytes,
+    not characters: a part's `size` is its decoded `data`'s, on a text part, an attachment part and
+    `attachments.get` alike (measured on 2026-10-02), and a message's `sizeEstimate` is its decoded
+    `raw`'s, under `minimal`, `metadata` and `raw` and in `threads.get` (12 messages, measured on
+    2026-10-04)."""
+    return len(text.encode("utf-8"))
 
 
 @router.get(
@@ -631,7 +650,7 @@ async def gmail_attachment(user_id: str, msg_id: str, att_id: str, request: Requ
         raise gerr.invalid_attachment_token()
     body = _att_content(message_id, found[0], found[1])
     # `{size, data}` alone: real names no `attachmentId` here, measured on 2026-09-30
-    return {"size": len(body), "data": _b64url(body)}
+    return {"size": _byte_len(body), "data": _b64url(body)}
 
 
 @router.get(
@@ -649,7 +668,7 @@ async def gmail_threads_list(user_id: str, request: Request):
     # received, and `q` was already scoping by container, so the two halves of this one listing
     # disagreed about what a thread list is.
     mailbox = _mailbox_container(conn, caller, user_id)
-    limit = _int(request.query_params.get("maxResults"), get_settings().default_page_size)
+    limit = _gmail_max_results(request)
     offset = decode_cursor(request.query_params.get("pageToken"))
     q = request.query_params.get("q", "") or ""
     if q.strip():
@@ -687,7 +706,7 @@ async def gmail_thread_get(user_id: str, thread_id: str, request: Request):
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     thread_key = _gmail_resolve(thread_id)
-    msgs = store.gmail_thread(conn, thread_key, visible_ids=ids) if thread_key else []
+    msgs = store.gmail_thread(conn, thread_key, visible_ids=ids)
     if not msgs:
         row = _gmail_doc(conn, ids, thread_id)
         # Measured against gmail.googleapis.com on 2026-09-30 and 2026-10-01: `threads.get` on a
@@ -698,12 +717,15 @@ async def gmail_thread_get(user_id: str, thread_id: str, request: Request):
             raise gerr.not_found_entity()
         msgs = [row]
     fmt = request.query_params.get("format", "full")
+    named = request.query_params.getlist("metadataHeaders")
     # No `snippet`: real serves one on a `threads.list` entry and not on `threads.get`, with or
-    # without `format=minimal` — measured on 2026-09-30.
+    # without `format=minimal` — measured on 2026-09-30. An id in uppercase, with zeros in front, or
+    # both gets the answer the lowercase id without them gets, `id` included — measured on
+    # 2026-10-03 and 2026-10-05.
     return {
-        "id": thread_id.lower(),
+        "id": _gmail_ids(msgs[0])[1],
         "historyId": "1",
-        "messages": [_gmail_message(m, fmt, caller.email) for m in msgs],
+        "messages": [_gmail_message(m, fmt, caller.email, named) for m in msgs],
     }
 
 
@@ -819,10 +841,10 @@ def _json_part(node: dict, part_id: str, message_id: str) -> dict:
         # stat the attachment from this metadata without a second call — real Gmail's contract.
         part["body"] = {
             "attachmentId": _att_id(message_id, i),
-            "size": len(_att_content(message_id, i, att)),
+            "size": _byte_len(_att_content(message_id, i, att)),
         }
     else:
-        part["body"] = {"size": len(node["data"]), "data": _b64url(node["data"])}
+        part["body"] = {"size": _byte_len(node["data"]), "data": _b64url(node["data"])}
     return part
 
 
@@ -868,12 +890,17 @@ def _gmail_ts(row) -> int:
     return synth.epoch(row["thread_id"] or row["id"]) + (row["thread_seq"] or 0) * 3600
 
 
-def _gmail_message(row, fmt: str, caller_email: str | None = None) -> dict:
+def _gmail_message(
+    row, fmt: str, caller_email: str | None = None, metadata_headers: list[str] | None = None
+) -> dict:
     """One message in the API's shape.
 
     `caller_email` decides Bcc. Real Gmail keeps the Bcc header only on the sender's own copy — a
     recipient's is stripped in transit — so a reader who is not the author must not learn who was
     blind-copied. An admin/service caller has no email and is not the sender either.
+
+    `metadata_headers` is every `metadataHeaders` value sent, and narrows a `metadata` payload to
+    the headers it names.
     """
     ts = _gmail_ts(row)
     author = row["author_email"]
@@ -924,17 +951,29 @@ def _gmail_message(row, fmt: str, caller_email: str | None = None) -> dict:
         "snippet": _snippet(row),
         "historyId": "1",
         "internalDate": str(ts * 1000),
-        "sizeEstimate": len(row["content"]) + 400,
     }
     html = row["body_html"] or f"<html><body><p>{row['content']}</p></body></html>"
+    nodes = _mime_tree(row, html, attachments)
+    mime_body = _mime_multipart(nodes, boundary, row["id"])
+    raw = "\r\n".join(f"{h['name']}: {h['value']}" for h in headers) + "\r\n\r\n" + mime_body
+    msg["sizeEstimate"] = _byte_len(raw)
     if fmt == "minimal":
         return msg
     if fmt == "metadata":
         # `mimeType` and `headers` alone: real sends no `partId`, `filename` or `body` on a
         # metadata payload, measured on 2026-09-30.
-        msg["payload"] = {"mimeType": top_mime, "headers": headers}
+        msg["payload"] = {"mimeType": top_mime}
+        if metadata_headers:
+            # Measured on 2026-10-03 and 2026-10-05, on `messages.get` and on each message of a
+            # `threads.get`: each value names one header, matched without regard to case and
+            # served under the message's own spelling and order. A comma or a space is part of the
+            # name, and a value no header has (or an empty one) matches nothing; when nothing is
+            # matched, `headers` is left out of the payload.
+            named = {n.lower() for n in metadata_headers}
+            headers = [h for h in headers if h["name"].lower() in named]
+        if headers:
+            msg["payload"]["headers"] = headers
         return msg
-    nodes = _mime_tree(row, html, attachments)
     if fmt == "raw":
         # RFC 2822 message, base64url — a genuine boundary-delimited MIME body matching the
         # declared multipart Content-Type above. It has to be real MIME: a plain-text body under a
@@ -942,8 +981,6 @@ def _gmail_message(row, fmt: str, caller_email: str | None = None) -> dict:
         # StartBoundaryNotFoundDefect/MultipartInvariantViolationDefect, and readers built on it
         # (llama-index's GmailReader) choke because `get_payload()` degrades to a bare
         # string instead of a list of sub-messages). Built from the same parts `full` serves.
-        mime_body = _mime_multipart(nodes, boundary, row["id"])
-        raw = "\r\n".join(f"{h['name']}: {h['value']}" for h in headers) + "\r\n\r\n" + mime_body
         msg["raw"] = _b64url(raw)
         return msg
 
@@ -1590,8 +1627,9 @@ def _drive_order_specs(order_by: str | None) -> list[tuple]:
     """Parse ``orderBy`` — comma-separated keys, each optionally suffixed ``desc`` — into
     ``(key function, reverse)`` pairs. An unusable key is a 400, as on the real API — accepting one
     and not applying it would let a client relying on server-side ordering pass here and misbehave
-    against the real thing."""
+    against the real thing. A key named twice is a 403."""
     specs = []
+    seen: set[str] = set()
     for tok in (order_by or "").split(","):
         parts = tok.split()
         if not parts:
@@ -1607,6 +1645,14 @@ def _drive_order_specs(order_by: str | None) -> list[tuple]:
             )
         if key not in _DRIVE_ORDER_KEYS:
             raise gerr.invalid_value("orderBy", f"Invalid sort key: {tok.strip()}")
+        # Real Drive (measured 2026-10-04) 403s a key named twice whatever either direction is, and
+        # reads `name_natural` as `name` but `recency` and `modifiedTime` as two keys — so this
+        # compares names, not the key functions. It reads left to right and answers the first
+        # problem it meets, so the repeat is checked only once the token passes the checks above.
+        name = "name" if key == "name_natural" else key
+        if name in seen:
+            raise gerr.duplicate_sort_keys()
+        seen.add(name)
         specs.append((_DRIVE_ORDER_KEYS[key], len(parts) == 2))
     return specs
 
@@ -1919,7 +1965,8 @@ async def drive_files_list(request: Request):
     me = caller.email
     # Each read off the first repeat, as real reads them -- see `gerr.first_repeat`. Refused in
     # real's order, measured 2026-09-23 by sending two bad values at once: `pageSize` first, then
-    # `orderBy`, `q`, `pageToken` and `fields`, whichever order the query names them in.
+    # `orderBy`, `q`, `pageToken` and `fields`, whichever order the query names them in. The 403 for
+    # an `orderBy` naming a key twice comes at the same point, measured 2026-10-05.
     params = request.query_params
     typed = _drive_typed(
         request,
@@ -1930,7 +1977,8 @@ async def drive_files_list(request: Request):
         page_size=True,
     )
     limit = _drive_page_size(typed["pageSize"])
-    order = _drive_order_specs(gerr.first_repeat(params, "orderBy"))  # 400 on an unusable key
+    # 400 on an unusable key, 403 on a key named twice
+    order = _drive_order_specs(gerr.first_repeat(params, "orderBy"))
     q = gerr.first_repeat(params, "q") or ""
     query = _drive_q_parse(q)  # 400 on a clause Backlot cannot evaluate; None when there is no q
     # Measured 2026-09-23: a token the API did not issue is 400 `Invalid Value`, where an empty one

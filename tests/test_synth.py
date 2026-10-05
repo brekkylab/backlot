@@ -275,9 +275,7 @@ def test_served_uuids_are_rfc_4122_version_4():
 
 
 def test_gmail_message_ids_are_never_zero_padded():
-    """Real Gmail renders the id as an integer, so an id whose top nibble is zero is 15 digits
-    there — and the real API resolves that spelling while refusing the padded one. `:016x` padded
-    roughly one id in 16, and Backlot served the spelling real 404s."""
+    """No zeros in front, for the reason `synth.gmail_message_id` gives."""
     ids = [synth.gmail_message_id(f"seed-{i}") for i in range(3000)]
     assert not [i for i in ids if i.startswith("0")]
     assert all(int(i, 16) < synth.GMAIL_ID_MAX for i in ids)

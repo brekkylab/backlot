@@ -603,9 +603,11 @@ async def gmail_messages_get(user_id: str, msg_id: str, request: Request):
 
 
 def _byte_len(text: str) -> int:
-    """The `size` Gmail reports for `text`: its length in the UTF-8 bytes `_b64url` serves. Real
-    counts the bytes of a part's decoded `data`, not its characters, on a text part, an attachment
-    part and `attachments.get` alike (measured on 2026-10-02)."""
+    """The length Gmail reports for `text`, in the UTF-8 bytes `_b64url` serves. Real counts bytes,
+    not characters: a part's `size` is its decoded `data`'s, on a text part, an attachment part and
+    `attachments.get` alike (measured on 2026-10-02), and a message's `sizeEstimate` is its decoded
+    `raw`'s, under `minimal`, `metadata` and `raw` and in `threads.get` (12 messages, measured on
+    2026-10-04)."""
     return len(text.encode("utf-8"))
 
 
@@ -935,9 +937,7 @@ def _gmail_message(row, fmt: str, caller_email: str | None = None) -> dict:
     nodes = _mime_tree(row, html, attachments)
     mime_body = _mime_multipart(nodes, boundary, row["id"])
     raw = "\r\n".join(f"{h['name']}: {h['value']}" for h in headers) + "\r\n\r\n" + mime_body
-    # Real's `sizeEstimate` is the byte length of the decoded `raw`, under `minimal`, `metadata`
-    # and `raw` and in `threads.get` alike (12 messages, measured on 2026-10-04).
-    msg["sizeEstimate"] = len(raw.encode("utf-8"))
+    msg["sizeEstimate"] = _byte_len(raw)
     if fmt == "minimal":
         return msg
     if fmt == "metadata":

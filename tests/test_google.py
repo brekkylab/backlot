@@ -6349,8 +6349,8 @@ def test_a_grid_range_member_is_checked_before_it_reaches_the_parser(
     [("ASCII", "hello there"), ("ASCII", "안녕하세요"), ("회의 일정", "😀 café")],
 )
 def test_gmail_size_estimate_matches_raw_bytes_in_every_format(tmp_path, title, content):
-    """The rule in `_gmail_message`, under every `format` and in the thread. A non-ASCII body
-    reaches `raw` transfer-encoded into ASCII, so the subject is what puts bytes there that a
+    """The `sizeEstimate` rule in `_byte_len`, under every `format` and in the thread. A non-ASCII
+    body reaches `raw` transfer-encoded into ASCII, so the subject is what puts bytes there that a
     character count would miss.
     """
     s = tiny_corpus(

@@ -119,8 +119,8 @@ _P_BUCKET_GET = [
     ),
     qp(
         "fetch-owner",
-        description="ListObjectsV2: true, read without case, adds each object's Owner, which "
-        "ListObjects always carries; any other value leaves it out",
+        description="ListObjectsV2: true, exactly, adds each object's Owner, which ListObjects "
+        "always carries; any other value leaves it out",
     ),
     qp(
         "start-after",
@@ -1312,10 +1312,11 @@ def _list_objects(
 
     V2 carries ``KeyCount``, ``NextContinuationToken`` when truncated, ``ContinuationToken``
     echoed when one was sent, and ``StartAfter`` echoed when one was and no continuation token
-    displaced it. Its ``Contents`` carry the V1 ``Owner`` only under ``fetch-owner=true``, read
-    without case: measured 2026-10-03, ``true`` and ``TRUE`` added it between ``Size`` and
-    ``StorageClass``, and ``false``, ``bogus``, ``1`` and an empty value left it out without a
-    refusal. On V1 the parameter changes nothing.
+    displaced it. Its ``Contents`` carry the V1 ``Owner`` only under ``fetch-owner=true``, spelled
+    exactly so and read off the first ``fetch-owner`` sent: measured 2026-10-03 and 2026-10-05,
+    ``true`` added it between ``Size`` and ``StorageClass``, and ``TRUE``, ``True``, ``false``,
+    ``bogus``, ``1``, `` true`` and an empty value left it out without a refusal. On V1 the
+    parameter changes nothing.
 
     A ``marker`` whose own group has already been listed skips that whole group rather than
     walking back into it: real answers ``?delimiter=/&marker=docs/`` and
@@ -1431,7 +1432,7 @@ def _list_objects(
     body.append(f"<IsTruncated>{'true' if is_truncated else 'false'}</IsTruncated>")
     # Every `Contents`, then every `CommonPrefixes` — real's document order, not the key order
     # `entries` holds (see this function's docstring).
-    fetch_owner = not v2 or (_first(q, "fetch-owner") or "").lower() == "true"
+    fetch_owner = not v2 or _first(q, "fetch-owner") == "true"
     owner = f"<Owner><ID>{_owner_id(request)}</ID></Owner>" if fetch_owner else ""
     for val in [v for kind, v in entries if kind == "obj"]:
         r = by_key[val]

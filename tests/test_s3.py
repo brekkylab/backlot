@@ -1206,13 +1206,16 @@ def _get_xml(base_url, path, token):
 
 
 def test_list_objects_v2_carries_the_owner_under_fetch_owner_true(live_server):
-    """Measured 2026-10-03: `fetch-owner=true` and `TRUE` put the V1 listing's `Owner` in each V2
-    `Contents`, between `Size` and `StorageClass`; `false`, `bogus`, `1` and an empty value leave
-    it out and are not refused; and the V1 listing carries it whatever the parameter says."""
+    """The rule `_list_objects` records for `fetch-owner`, and the V1 listing carrying `Owner`
+    whatever the parameter says."""
     base_url, settings = live_server
     for query, owned in (
         ("list-type=2&fetch-owner=true", True),
-        ("list-type=2&fetch-owner=TRUE", True),
+        ("list-type=2&fetch-owner=TRUE", False),
+        ("list-type=2&fetch-owner=True", False),
+        ("list-type=2&fetch-owner=%20true", False),
+        ("list-type=2&fetch-owner=true&fetch-owner=false", True),
+        ("list-type=2&fetch-owner=false&fetch-owner=true", False),
         ("list-type=2&fetch-owner=false", False),
         ("list-type=2&fetch-owner=bogus", False),
         ("list-type=2&fetch-owner=1", False),

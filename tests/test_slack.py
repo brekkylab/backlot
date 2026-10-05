@@ -654,29 +654,40 @@ def test_slack_an_absent_argument_is_not_a_thing_that_was_not_found(
 
 
 @pytest.mark.parametrize("method", ["search.messages", "search.all", "search.files"])
-def test_slack_search_sort_dir_outside_the_enum_is_invalid_arguments(client, admin_h, method):
-    # measured on 2026-10-03: the enum is case-sensitive, so `ASC` is refused like `bogus`, and
-    # `asc`, `desc` and an empty value are served
-    for value in ("ASC", "bogus", "Desc"):
-        j = client.get(
-            f"/slack/api/{method}",
-            headers=admin_h,
-            params={"query": "the", "count": 1, "sort_dir": value},
-        ).json()
-        assert j == {
-            "ok": False,
-            "error": "invalid_arguments",
-            "response_metadata": {
-                "messages": ["[ERROR] must be a valid enum value [json-pointer:/sort_dir]"]
-            },
-        }
-    for value in ("asc", "desc", ""):
-        j = client.get(
-            f"/slack/api/{method}",
-            headers=admin_h,
-            params={"query": "the", "count": 1, "sort_dir": value},
-        ).json()
+@pytest.mark.parametrize(
+    "params, want",
+    [
+        ([("query", "the"), ("sort_dir", "ASC")], "enum"),
+        ([("query", "the"), ("sort_dir", "bogus")], "enum"),
+        ([("query", "the"), ("sort_dir", "Desc")], "enum"),
+        ([("query", "the"), ("sort_dir", " asc")], "enum"),
+        ([("query", "the"), ("sort_dir", "asc")], "ok"),
+        ([("query", "the"), ("sort_dir", "desc")], "ok"),
+        ([("query", "the"), ("sort_dir", "")], "ok"),
+        ([("query", "the"), ("sort_dir", "asc"), ("sort_dir", "bogus")], "enum"),
+        ([("query", "the"), ("sort_dir", "bogus"), ("sort_dir", "asc")], "ok"),
+        ([("query", ""), ("sort_dir", "bogus")], "enum"),
+        ([("sort_dir", "bogus")], "no query"),
+    ],
+)
+def test_slack_search_sort_dir_outside_the_enum_is_invalid_arguments(
+    client, admin_h, method, params, want
+):
+    """The rule the comment on `_SORT_DIRS` records, its order against `query` included."""
+    j = client.get(f"/slack/api/{method}", headers=admin_h, params=[("count", 1), *params]).json()
+    enum = {
+        "ok": False,
+        "error": "invalid_arguments",
+        "response_metadata": {
+            "messages": ["[ERROR] must be a valid enum value [json-pointer:/sort_dir]"]
+        },
+    }
+    if want == "enum":
+        assert j == enum
+    elif want == "ok":
         assert j["ok"] is True
+    else:
+        assert j["error"] == "invalid_arguments" and j != enum
 
 
 def test_slack_search_all(client, admin_h):

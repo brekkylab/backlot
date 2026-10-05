@@ -206,9 +206,11 @@ def _missing_argument(request: Request, *names: str) -> JSONResponse | None:
     return None
 
 
-# `sort_dir` is an enum on search.messages, search.all and search.files, matched case-sensitively:
-# measured on 2026-10-03, `ASC` and `bogus` answer this on all three, while `asc`, `desc` and an
-# empty value are served. `sort` has no such check, `sort=bogus` is served.
+# `sort_dir` is an enum on search.messages, search.all and search.files, matched as sent: measured
+# on 2026-10-03 and 2026-10-05, `ASC` and `bogus` answer this on all three and `Desc`, ` asc` and
+# `asc ` on search.messages, while `asc`, `desc` and an empty value are served. A repeated
+# `sort_dir` is read by its last value. A missing `query` is answered before this and an empty one
+# after it. `sort` has no such check, `sort=bogus` is served.
 _SORT_DIRS = {"", "asc", "desc"}
 _SORT_DIR_ERROR = {
     "ok": False,

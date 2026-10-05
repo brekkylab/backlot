@@ -431,8 +431,9 @@ _TOKEN_RE = re.compile(r"[^\W_]+", re.UNICODE)
 # Same class as a lookaround pair, so a needle matches only on token boundaries — equivalent to
 # testing membership in the haystack's token set, without having to build that set.
 _TOK = r"[^\W_]"
-# A needle token may carry `*`, which real reads as any run of token characters (measured on
-# 2026-10-03: `Iri*`, `*ri*` and `*ris` each find the contact `Iris`, `Iri` and `?ris` find none).
+# A needle token may carry `*`, which real reads as any run of token characters, the empty run
+# included (measured 2026-10-03 and 2026-10-05 on a contact named `Maria`: `Mar*`, `*ari*`,
+# `*ria`, `Maria*`, `M*a` and `M**a` find it, `Mar` and `?aria` do not).
 _NEEDLE_RE = re.compile(r"(?:[^\W_]|\*)+", re.UNICODE)
 
 
@@ -477,8 +478,10 @@ def _token_patterns(target: str) -> tuple:
     whole haystack to test a couple of needle tokens: both are wasted. Compiling per needle (cached)
     and searching the haystack lets a miss bail on the first absent token instead of building a full
     token set for every row. A needle token with `*` does tokenize the haystack, to match token by
-    token. A token that is only `*` matches anything, so it adds no matcher."""
-    needles = {t for t in _NEEDLE_RE.findall(target.lower()) if t.strip("*")}
+    token. A token that is only `*` matches any token, so it asks only that the value has one:
+    `*` alone found the two contacts with a `jobtitle` and none of the three without (measured
+    2026-10-05)."""
+    needles = set(_NEEDLE_RE.findall(target.lower()))
     return tuple(_needle_matcher(t) for t in needles)
 
 

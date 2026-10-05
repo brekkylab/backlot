@@ -410,23 +410,32 @@ def test_hubspot_search_every_operator(client, admin_h):
     )
 
 
-def test_hubspot_contains_token_reads_star_as_a_wildcard(client, admin_h):
-    # measured on 2026-10-03: `*` completes a token as a prefix, infix or suffix, a bare prefix
-    # finds nothing, and `?` is not a wildcard
-    def f(value):
-        return _hs_filter(
-            client, admin_h, propertyName="name", operator="CONTAINS_TOKEN", value=value
-        )
+@pytest.mark.parametrize(
+    "prop, value, want",
+    [
+        ("name", "Clin*", {"Borealis Clinics"}),
+        ("name", "*lini*", {"Borealis Clinics"}),
+        ("name", "*nics", {"Borealis Clinics"}),
+        ("name", "Clinics*", {"Borealis Clinics"}),
+        ("name", "Cl*cs", {"Borealis Clinics"}),
+        ("name", "Heal*", {"Acme Health", "Stealth Health Co"}),
+        ("name", "* Clinics", {"Borealis Clinics"}),
+        ("name", "Clin", set()),
+        ("name", "Clin*x", set()),
+        ("name", "?linics", set()),
+        # `*` alone asks only for a token, and Stealth Health Co has no `domain`
+        ("domain", "*", {"Acme Health", "Borealis Clinics"}),
+    ],
+)
+def test_hubspot_contains_token_reads_star_as_a_wildcard(client, admin_h, prop, value, want):
+    """The wildcard rule `_NEEDLE_RE`'s comment records; `NOT_CONTAINS_TOKEN` finds none of what
+    `CONTAINS_TOKEN` finds."""
 
-    assert f("Clin*") == {"Borealis Clinics"}
-    assert f("*lini*") == {"Borealis Clinics"}
-    assert f("*nics") == {"Borealis Clinics"}
-    assert f("Heal*") == {"Acme Health", "Stealth Health Co"}
-    assert f("Clin") == set()
-    assert f("?linics") == set()
-    assert "Borealis Clinics" not in _hs_filter(
-        client, admin_h, propertyName="name", operator="NOT_CONTAINS_TOKEN", value="Clin*"
-    )
+    def f(op):
+        return _hs_filter(client, admin_h, propertyName=prop, operator=op, value=value)
+
+    assert f("CONTAINS_TOKEN") == want
+    assert not want & f("NOT_CONTAINS_TOKEN")
 
 
 def test_hubspot_wildcard_needle_with_many_stars_stays_fast():

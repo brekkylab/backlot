@@ -4943,6 +4943,44 @@ def test_gmail_raw_and_headers(tmp_path):
     assert plain_parts and plain_parts[0].get_payload(decode=True).decode() == "body text"
 
 
+@pytest.mark.parametrize(
+    "name,value,written",
+    [
+        # the line real's `raw` wrote for this subject (see `_raw_header_value`)
+        ("Subject", "backlot probe 회의 일정", "=?UTF-8?B?YmFja2xvdCBwcm9iZSDtmozsnZgg7J287KCV?="),
+        # 58 bytes: "청" takes the 44th to 46th, so the first word ends before it
+        (
+            "Subject",
+            "Fwd: 2026년 하반기 예산안 검토 요청드립니다",
+            "=?UTF-8?B?RndkOiAyMDI264WEIO2VmOuwmOq4sCDsmIjsgrDslYgg6rKA7YagIOyalA==?= "
+            "=?UTF-8?B?7LKt65Oc66a964uI64uk?=",
+        ),
+        ("To", "회의 <peer@x.com>", "=?UTF-8?B?7ZqM7J2Y?= <peer@x.com>"),
+        (
+            "To",
+            '"김, 철수" <kim@x.com>, 박영희 <park@x.com>',
+            "=?UTF-8?B?6rmALCDssqDsiJg=?= <kim@x.com>, =?UTF-8?B?67CV7JiB7Z2s?= <park@x.com>",
+        ),
+        ("To", "회의@x.com", "회의@x.com"),
+        (
+            "Content-Type",
+            'text/plain; charset="UTF-8"; name="회의록.txt"',
+            'text/plain; charset="UTF-8"; name="=?UTF-8?B?7ZqM7J2Y66GdLnR4dA==?="',
+        ),
+        (
+            "Content-Disposition",
+            'attachment; filename="회의록.txt"',
+            'attachment; filename="=?UTF-8?B?7ZqM7J2Y66GdLnR4dA==?="',
+        ),
+    ],
+)
+def test_gmail_raw_writes_non_ascii_header_text_as_encoded_words(name, value, written):
+    """The forms `_raw_header_value` describes, one header value each."""
+    from backlot.routers.google import _raw_header_value
+
+    assert _raw_header_value(name, value) == written
+
+
 def test_gmail_raw_with_attachment_is_valid_mime(tmp_path):
     from backlot.routers.google import _gmail_message
 
@@ -5038,6 +5076,17 @@ _GMAIL_SHAPES = [
         "content": "see attached",
         "author_email": "ceo@x.com",
         "attachments": [{"filename": "notes.txt", "mime": "text/plain", "content": "안녕"}],
+    },
+    # a non-ASCII subject, display name and attachment name, which `raw` writes as encoded-words
+    {
+        "source_type": "gmail",
+        "doc_id": "hdr-ko",
+        "mailbox": "ceo",
+        "title": "회의 일정",
+        "content": "see attached",
+        "author_email": "ceo@x.com",
+        "to": "회의 <peer@x.com>",
+        "attachments": [{"filename": "회의록.txt", "mime": "text/plain", "content": "안녕"}],
     },
 ]
 
@@ -5140,22 +5189,27 @@ def test_gmail_a_text_attachment_names_us_ascii_or_utf8_by_its_content(gmail_sha
     }
 
 
-@pytest.mark.parametrize("doc", ["att", "lt", "ko", "html175", "html325", "att-ko"])
+@pytest.mark.parametrize("doc", ["att", "lt", "ko", "html175", "html325", "att-ko", "hdr-ko"])
 def test_gmail_raw_and_full_describe_one_message(gmail_shapes, doc):
-    """`format=raw` and the `full` payload are the same tree, with the same headers on each part,
-    and each raw part decodes, by its own Content-Transfer-Encoding, to the bytes `full` serves."""
+    """`format=raw` is ASCII, and it and the `full` payload are the same tree, with the same
+    headers on the message and on each part once `raw`'s encoded-words are decoded, and each raw
+    part decodes, by its own Content-Transfer-Encoding, to the bytes `full` serves."""
     import email
+    import email.policy
 
     client, h = gmail_shapes
     url = f"/gmail/v1/users/me/messages/{served_id('gmail', doc)}"
     full = client.get(url, headers=h).json()["payload"]
-    raw = client.get(url, headers=h, params={"format": "raw"}).json()["raw"]
-    mime = email.message_from_bytes(base64.urlsafe_b64decode(raw))
+    raw = base64.urlsafe_b64decode(
+        client.get(url, headers=h, params={"format": "raw"}).json()["raw"]
+    )
+    assert raw.isascii()
+    mime = email.message_from_bytes(raw, policy=email.policy.default)
     assert not mime.defects
 
     def check(part, entity):
         assert entity.get_content_type() == part["mimeType"]
-        assert {k: v for k, v in entity.items()} == _hdrs(part)
+        assert {k: str(v) for k, v in entity.items()} == _hdrs(part)
         if "parts" in part:
             children = entity.get_payload()
             assert len(children) == len(part["parts"])
@@ -5169,6 +5223,7 @@ def test_gmail_raw_and_full_describe_one_message(gmail_shapes, doc):
                 assert body.isascii() and max(map(len, body.splitlines())) <= 76
 
     assert mime.get_content_type() == full["mimeType"]
+    assert {k: str(v) for k, v in mime.items()} == _hdrs(full)
     for part, entity in zip(full["parts"], mime.get_payload(), strict=True):
         check(part, entity)
 
@@ -7203,9 +7258,10 @@ def test_include_grid_data_in_the_body_is_read_as_a_proto_bool(gc, gh, book, val
     [("ASCII", "hello there"), ("ASCII", "안녕하세요"), ("회의 일정", "😀 café")],
 )
 def test_gmail_size_estimate_matches_raw_bytes_in_every_format(tmp_path, title, content):
-    """The `sizeEstimate` rule in `_byte_len`, under every `format` and in the thread. A non-ASCII
-    body reaches `raw` transfer-encoded into ASCII, so the subject is what puts bytes there that a
-    character count would miss.
+    """The `sizeEstimate` rule in `_byte_len`, under every `format` and in the thread. `raw`
+    carries a non-ASCII body transfer-encoded and a non-ASCII subject as an encoded-word, longer
+    than the subject's text, so the third row tells a size counted from the served `raw` apart
+    from one counted before its headers are encoded.
     """
     s = tiny_corpus(
         tmp_path,

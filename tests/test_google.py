@@ -496,8 +496,7 @@ def test_gmail_messages_list_pagination_stable_and_ordered(client, admin_h, ro_c
 
 
 def test_gmail_max_results_is_capped_at_500(tmp_path):
-    """Measured on 2026-10-03: `maxResults` of 501 and 1000 each answered 500 messages with a
-    `nextPageToken`, the cap the reference states for `messages.list` and `threads.list` alike."""
+    """The cap `_gmail_max_results` records, on both listings."""
     from tests._helpers import corpus_client
 
     records = [
@@ -516,7 +515,7 @@ def test_gmail_max_results_is_capped_at_500(tmp_path):
     with corpus_client(tmp_path, records) as (client, settings):
         h = {"Authorization": f"Bearer {settings.admin_token}"}
         for kind in ("messages", "threads"):
-            for asked, served in ((499, 499), (500, 500), (501, 500), (1000, 500)):
+            for asked, served in ((499, 499), (500, 500), (501, 500), (1000, 500), (100000, 500)):
                 page = client.get(
                     f"/gmail/v1/users/me/{kind}", headers=h, params={"maxResults": asked}
                 ).json()

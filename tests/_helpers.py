@@ -201,13 +201,12 @@ def build_corpus(
 
 
 @contextlib.contextmanager
-def client_for(settings: Settings, *, reload: bool = False):
+def client_for(settings: Settings, *, reload: bool = True):
     """A TestClient whose app is pointed at ``settings``, with the env restored on exit.
 
-    ``reload=True`` re-imports ``backlot.main`` first. Needed only when a test opens a SECOND client
-    over a different DB in the same session: the lifespan writes the connection and the reverse
-    indexes onto the module-level ``app.state``, so a second lifespan start on the same object
-    would overwrite the first client's state.
+    ``reload=True`` re-imports ``backlot.main`` first. Needed because the lifespan writes the
+    connection and the reverse indexes onto the module-level ``app.state``, so a second lifespan
+    start on the same object would overwrite the first client's state and close its database.
     """
     prev = os.environ.get("BACKLOT_DATA_DIR")
     os.environ["BACKLOT_DATA_DIR"] = str(settings.data_dir)

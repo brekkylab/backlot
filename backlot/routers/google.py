@@ -952,10 +952,11 @@ def _gmail_message(
         # metadata payload, measured on 2026-09-30.
         msg["payload"] = {"mimeType": top_mime}
         if metadata_headers:
-            # Measured on 2026-10-03: each value names one header, matched without regard to case
-            # and served under the message's own spelling and order. A comma is part of the name,
-            # not a separator, and a value no header has (or an empty one) matches nothing, which
-            # leaves `headers` out of the payload.
+            # Measured on 2026-10-03 and 2026-10-05, on `messages.get` and on each message of a
+            # `threads.get`: each value names one header, matched without regard to case and
+            # served under the message's own spelling and order. A comma or a space is part of the
+            # name, and a value no header has (or an empty one) matches nothing; when nothing is
+            # matched, `headers` is left out of the payload.
             named = {n.lower() for n in metadata_headers}
             headers = [h for h in headers if h["name"].lower() in named]
         if headers:

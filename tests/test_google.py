@@ -5000,10 +5000,8 @@ def test_gmail_metadata_payload_is_mime_type_and_headers(gmail_shapes):
 
 
 def test_gmail_metadata_headers_keeps_the_named_headers(gmail_shapes):
-    """`metadataHeaders` under `format=metadata`, as measured on 2026-10-03: names match without
-    regard to case and come back in the message's own order and spelling, a name sent twice comes
-    back once, and a value no header has, an empty one, one with a leading space or a
-    comma-separated pair leaves `headers` out of the payload."""
+    """The rule the comment in `_gmail_message`'s `metadata` branch records, on `messages.get` and
+    on `threads.get`, and nothing changed by the parameter without `format=metadata`."""
     client, h = gmail_shapes
     mid = served_id("gmail", "lt")
     url = f"/gmail/v1/users/me/messages/{mid}"
@@ -5023,14 +5021,14 @@ def test_gmail_metadata_headers_keeps_the_named_headers(gmail_shapes):
         (["Subject", "Subject"], ["Subject"]),
         (["X-Nope"], None),
         ([""], None),
+        (["", "Subject"], ["Subject"]),
         ([" Subject"], None),
+        (["Subject "], None),
         (["Subject,From"], None),
     ):
         assert names({"format": "metadata", "metadataHeaders": sent}) == want, sent
-    # the thread's message is narrowed the same way
     thread = f"/gmail/v1/users/me/threads/{mid}"
     assert names({"format": "metadata", "metadataHeaders": "Subject"}, thread) == ["Subject"]
-    # outside `format=metadata` the parameter changes nothing
     full = names({})
     assert names({"metadataHeaders": "Subject"}) == full
     assert len(full) > 1

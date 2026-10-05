@@ -417,34 +417,28 @@ def test_linear_issue_without_a_parent_is_null(client, admin_h):
 
 
 @pytest.mark.parametrize(
-    ("query", "field"),
+    ("order_by", "field"),
     [
-        ("{ issues(first: 50) { nodes { createdAt updatedAt } } }", "createdAt"),
-        (
-            "{ issues(first: 50, orderBy: createdAt) { nodes { createdAt updatedAt } } }",
-            "createdAt",
-        ),
-        (
-            "{ issues(first: 50, orderBy: updatedAt) { nodes { createdAt updatedAt } } }",
-            "updatedAt",
-        ),
+        ("", "createdAt"),
+        (", orderBy: createdAt", "createdAt"),
+        (", orderBy: updatedAt", "updatedAt"),
     ],
+    ids=["default", "createdAt", "updatedAt"],
 )
-def test_linear_default_and_order_by_are_newest_first(client, admin_h, query, field):
-    """`issues` is newest-first by the field `orderBy` names, and by `createdAt` with no
-    direction, as the comment on `LINEAR_DEFAULT_ORDER_BY` records."""
-    nodes = gql(client, query, admin_h).json()["data"]["issues"]["nodes"]
-    stamps = [n[field] for n in nodes]
-
+def test_linear_default_and_order_by_are_newest_first(client, admin_h, order_by, field):
+    """`issues` is newest first by the field `orderBy` names, and by `createdAt` with no `orderBy`,
+    as the comment on `LINEAR_DEFAULT_ORDER_BY` records."""
+    q = "{ issues(first: 50%s) { nodes { createdAt updatedAt } } }" % order_by
+    stamps = [n[field] for n in gql(client, q, admin_h).json()["data"]["issues"]["nodes"]]
     assert stamps == sorted(stamps, reverse=True)
 
 
 def test_linear_sort_input_overrides_the_default_ordering(client, admin_h):
     """`orderBy` carries no direction in Linear, so `sort:` is how a client asks for the other
     one — which means it has to actually win over the default."""
-    q = "{ issues(first: 50, sort: [{createdAt: {order: Descending}}]) { nodes { createdAt } } }"
+    q = "{ issues(first: 50, sort: [{createdAt: {order: Ascending}}]) { nodes { createdAt } } }"
     got = [n["createdAt"] for n in gql(client, q, admin_h).json()["data"]["issues"]["nodes"]]
-    assert got == sorted(got, reverse=True)
+    assert got == sorted(got)
 
 
 # --- Linear relations / children / attachments / releases -----------------------

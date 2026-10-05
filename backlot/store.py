@@ -1322,9 +1322,12 @@ def list_hubspot_objects(
 # GraphQL `orderBy` value -> the column it sorts on.
 #
 # Linear's pagination docs state "By default results are ordered by createdAt field", and its
-# `PaginationOrderBy` enum carries a FIELD ONLY — no direction. The real API serves `issues`
-# newest-first: `createdAt` by default and with `orderBy: createdAt`, and `updatedAt` with
-# `orderBy: updatedAt`. `id` breaks ties into a total order, which offset paging requires.
+# `PaginationOrderBy` enum carries a FIELD ONLY — no direction — so the server fixes the direction
+# and a client that wants the other one uses the richer `sort:` input instead. The direction is
+# newest first, measured against api.linear.app on 2026-10-05 over eight issues whose `updatedAt`
+# order differs from their `createdAt` order: `issues` and `Team.issues` with no `orderBy` and with
+# `orderBy: createdAt` came in descending `createdAt`, and with `orderBy: updatedAt` in descending
+# `updatedAt`. `id` breaks ties into a total order, which offset paging requires.
 LINEAR_DEFAULT_ORDER_BY = "createdAt"
 
 # `Issue.updatedAt` is non-null in Linear; an issue with no recorded edit reports its creation
@@ -1370,10 +1373,9 @@ def _linear_order(order_by: str | None, sort=None) -> str:
     if terms:
         return ", ".join(terms) + ", id"
     # An ABSENT orderBy is not "unordered": Linear documents createdAt as the default, so falling
-    # through to raw insertion order (`id`) was a real divergence — `issues(first: 10)`
-    # returned an arbitrary ten rather than the first ten by creation.
+    # through to raw insertion order (`id`) would answer `issues(first: 10)` with an arbitrary ten
+    # rather than the ten created last, newest first (see `LINEAR_DEFAULT_ORDER_BY`).
     col = LINEAR_ORDER_COLUMNS[order_by or LINEAR_DEFAULT_ORDER_BY]
-    # Linear serves these PaginationOrderBy fields newest-first.
     return f"{col} DESC, id"
 
 

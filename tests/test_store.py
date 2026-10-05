@@ -1924,12 +1924,6 @@ def test_linear_default_order_is_createdAt_descending(db):
     assert stamps == sorted(stamps, reverse=True)
 
 
-def test_linear_list_can_be_ordered_newest_first(db):
-    rows = store.list_linear_issues(db, "engineering", limit=100, order_by="createdAt")
-    stamps = [r["created_ts"] for r in rows]
-    assert stamps == sorted(stamps, reverse=True)
-
-
 def test_linear_default_order_is_stable_across_pages(db):
     """An offset page over a non-total order can repeat or skip a row; walking one row at a time
     must therefore visit each issue exactly once."""

@@ -1618,7 +1618,7 @@ def _drive_order_specs(order_by: str | None) -> list[tuple]:
         # Real Drive (measured 2026-10-04) 403s a key named twice whatever either direction is, and
         # reads `name_natural` as `name` but `recency` and `modifiedTime` as two keys — so this
         # compares names, not the key functions. It reads left to right and answers the first
-        # problem it meets, so the repeat is checked only once the token has passed the checks above.
+        # problem it meets, so the repeat is checked only once the token passes the checks above.
         name = "name" if key == "name_natural" else key
         if name in seen:
             raise gerr.duplicate_sort_keys()
@@ -1947,7 +1947,8 @@ async def drive_files_list(request: Request):
         page_size=True,
     )
     limit = _drive_page_size(typed["pageSize"])
-    order = _drive_order_specs(gerr.first_repeat(params, "orderBy"))  # 400 on an unusable key
+    # 400 on an unusable key, 403 on a key named twice
+    order = _drive_order_specs(gerr.first_repeat(params, "orderBy"))
     q = gerr.first_repeat(params, "q") or ""
     query = _drive_q_parse(q)  # 400 on a clause Backlot cannot evaluate; None when there is no q
     # Measured 2026-09-23: a token the API did not issue is 400 `Invalid Value`, where an empty one

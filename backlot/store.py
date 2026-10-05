@@ -330,8 +330,10 @@ CREATE INDEX IF NOT EXISTS idx_slack_channel_author ON slack_messages(channel, a
 -- 2**63, so a collision is vanishingly unlikely, and as the PRIMARY KEY one fails the import
 -- loudly rather than silently replacing the earlier message.
 --
--- `thread_id` is another message's `id` (the thread root's), not a dataset identifier: it is
--- resolved at import along with every other cross-row reference.
+-- `thread_id` is the thread's served id, not a dataset identifier: `synth.gmail_message_id` over
+-- the record's `thread`, else its doc_id, computed at import. It is the `id` of the message whose
+-- dataset id is that key (by default, the root); with no such message, it is an id no message
+-- holds.
 CREATE TABLE IF NOT EXISTS gmail_messages (
     id TEXT PRIMARY KEY, mailbox TEXT NOT NULL, author_email TEXT NOT NULL,
     title TEXT NOT NULL, content TEXT NOT NULL,

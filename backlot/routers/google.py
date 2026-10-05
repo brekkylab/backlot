@@ -488,8 +488,9 @@ def _gmail_query(conn, mailbox, ids, q: str) -> list:
 # --- Gmail ids ------------------------------------------------------------------------------
 # A gmail id is a 16-hex integer (`synth.gmail_message_id`) and it IS the row's primary key
 # (`gmail_messages.id`, assigned at import — see `backlot.importer.byo`), so resolution is a point
-# lookup rather than a map rebuilt on every boot. `thread_id` holds the ROOT MESSAGE'S id,
-# already resolved at import, so a thread resolves through the same key with no re-derivation.
+# lookup rather than a map rebuilt on every boot. `thread_id` holds the thread's id, computed at
+# import the same way (see `gmail_messages` in `store.SCHEMA`), so a thread resolves through a
+# stored column too, with no re-derivation.
 
 _GMAIL_HEX = re.compile(r"[0-9a-fA-F]+\Z")
 
@@ -508,8 +509,7 @@ def _gmail_check_shape(served_id: str) -> None:
 
 def _gmail_resolve(served_id: str) -> str:
     """Validate a served Gmail id's SHAPE and return its stored spelling
-    (`store.gmail_id_spelling`), the key `store.gmail_thread` looks a thread up by: a thread is
-    keyed on its root message's own id.
+    (`store.gmail_id_spelling`), the key `store.gmail_thread` matches against `thread_id`.
 
     Kept as a named step rather than inlined because the shape check must run BEFORE any lookup:
     an unparsable id is 400 INVALID_ARGUMENT whether or not it would have resolved. No
@@ -546,9 +546,9 @@ def _gmail_ids(row) -> tuple[str, str]:
     """``(id, threadId)`` for a row. A message that is its own thread root reports the same value
     twice, as real Gmail does.
 
-    Both halves are read straight off the row. `thread_id` holds the ROOT'S OWN id,
-    resolved once at import, so `threadId` reads one stored value rather than re-hashing the
-    root's key and hoping the two agree."""
+    Both halves are read straight off the row: `thread_id` is computed once at import (see
+    `gmail_messages` in `store.SCHEMA`), so `threadId` reads one stored value rather than
+    re-hashing the thread's key and hoping the two agree."""
     return (row["id"], row["thread_id"] or row["id"])
 
 

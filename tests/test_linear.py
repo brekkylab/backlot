@@ -476,6 +476,22 @@ def test_linear_root_connections_reject_sort_with_order_by(client, admin_h):
     assert "errors" not in order_by_null
     assert len(order_by_null["data"]["users"]["nodes"]) == 2
 
+    # Each of these is a `rejected` query plus an argument that is refused without the pair as
+    # well, and that refusal is the answer.
+    for query, message in (
+        (
+            '{ issues(first: 2, sort: [], orderBy: createdAt, filter: {id: {eq: "not-a-uuid"}}) '
+            "{ nodes { identifier } } }",
+            "Argument Validation Error",
+        ),
+        (
+            "{ users(first: 2, last: 2, sort: [{name: {order: Ascending}}], orderBy: createdAt) "
+            "{ nodes { name } } }",
+            "passing both `first` and `last` is not supported",
+        ),
+    ):
+        assert gql(client, query, admin_h).json()["errors"][0]["message"] == message
+
 
 # --- Linear relations / children / attachments / releases -----------------------
 

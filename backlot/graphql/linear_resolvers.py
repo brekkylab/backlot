@@ -956,11 +956,11 @@ def _issue_page(
     includeArchived=False,
     **_ignored,
 ) -> dict:
-    _reject_sort_with_order_by(sort, orderBy)
     ctx = _ctx(info)
     conn, visible = ctx["conn"], ctx["visible_ids"]
     offset, limit, floor = _slice(first, after, last, before)
     prefilter = compile_issue_filter(conn, _resolve_issue_ids(info, filter), _team_keys(info))
+    _reject_sort_with_order_by(sort, orderBy)
     if offset is None:
         # `last:` with no `before:` is the only shape that needs a total, so the COUNT is paid
         # here and not on every page.
@@ -1116,9 +1116,9 @@ def resolve_users(
     sort=None,
     **_ignored,
 ) -> dict:
-    _reject_sort_with_order_by(sort, orderBy)
     ctx = _ctx(info)
     offset, limit, floor = _slice(first, after, last, before)
+    _reject_sort_with_order_by(sort, orderBy)
     users = _sorted_users(
         [
             _user(r["email"], r["display_name"], info)

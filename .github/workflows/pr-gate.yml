@@ -1,0 +1,32 @@
+# Holds a pull request from a fork to Pull requests in CONTRIBUTING.md: how many the author may
+# have open, and what its title and description carry. `scripts/pr_gate.py` has both rules.
+#
+# `pull_request_target` runs this file and the script as they are on `main`, with a token that can
+# comment and close. That is safe only because nothing from the pull request's branch is checked
+# out or run: its title and body are read from the event file as data.
+name: PR gate
+
+on:
+  pull_request_target:
+    types: [opened, reopened, edited]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  gate:
+    # A maintainer's or the loop's pull request comes from a branch of this repository.
+    if: github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/pr_gate.py
+          sparse-checkout-cone-mode: false
+      - name: Check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/pr_gate.py

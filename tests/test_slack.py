@@ -663,7 +663,7 @@ def test_slack_an_absent_argument_is_not_a_thing_that_was_not_found(
         ([("query", "the"), ("sort_dir", " asc")], "enum"),
         ([("query", "the"), ("sort_dir", "asc")], "ok"),
         ([("query", "the"), ("sort_dir", "desc")], "ok"),
-        ([("query", "the"), ("sort_dir", "")], "ok"),
+        ([("query", "the"), ("sort_dir", "")], {"search.messages": "ok"}),
         ([("query", "the"), ("sort_dir", "asc"), ("sort_dir", "bogus")], "enum"),
         ([("query", "the"), ("sort_dir", "bogus"), ("sort_dir", "asc")], "ok"),
         ([("query", ""), ("sort_dir", "bogus")], "enum"),
@@ -674,6 +674,8 @@ def test_slack_search_sort_dir_outside_the_enum_is_invalid_arguments(
     client, admin_h, method, params, want
 ):
     """The rule the comment on `_SORT_DIRS` records, its order against `query` included."""
+    if isinstance(want, dict):  # a row whose answer depends on the method
+        want = want.get(method, "enum")
     j = client.get(f"/slack/api/{method}", headers=admin_h, params=[("count", 1), *params]).json()
     enum = {
         "ok": False,

@@ -1235,10 +1235,10 @@ def _param(request: Request, key: str) -> str | None:
 
 
 def _limit(request: Request) -> int:
-    """The page size a paged method serves. `limit=0` is read as no `limit` at all: measured on
-    2026-10-03, `limit=0` on `conversations.list`, `users.list`, `conversations.members` and
-    `conversations.history` answered every item with an empty `next_cursor`, on collections smaller
-    than the reference's default of 100."""
+    """The page size a paged method serves. A `limit` of zero is read as no `limit` at all: on
+    `conversations.list`, `users.list`, `conversations.members` and `conversations.history`, `0`
+    (measured 2026-10-03 and 2026-10-05) and `00` (2026-10-05) answered what the same request
+    without `limit` answers, every item and an empty `next_cursor`, on collections of 8 to 21."""
     default = get_settings().default_page_size
     return _int(request, "limit", default) or default
 

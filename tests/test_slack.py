@@ -495,15 +495,15 @@ def test_slack_rejects_an_invalid_cursor(client, admin_h, path):
     ],
 )
 def test_slack_limit_zero_is_the_default_page(client, admin_h, path, key):
-    """Measured on 2026-10-03: `limit=0` answered every item with an empty `next_cursor` on all
-    four methods, on collections smaller than the default page. An empty page whose cursor names
-    itself keeps a cursor-following client on that page forever."""
+    """The rule `_limit` records. An empty page whose cursor names itself would keep a
+    cursor-following client on that page forever."""
     channel = path in ("conversations.members", "conversations.history")
     params = {"channel": _a_channel_id(client, admin_h)} if channel else {}
     unset = client.get(f"/slack/api/{path}", headers=admin_h, params=params).json()
-    zero = client.get(f"/slack/api/{path}", headers=admin_h, params={**params, "limit": 0}).json()
     assert unset[key], path
-    assert zero == unset, path
+    for zero in ("0", "00"):
+        got = client.get(f"/slack/api/{path}", headers=admin_h, params={**params, "limit": zero})
+        assert got.json() == unset, (path, zero)
 
 
 def test_slack_history_rejects_an_invalid_cursor(client, admin_h):

@@ -447,7 +447,7 @@ requires-dist = [
     { name = "google-auth", marker = "extra == 'fsspec'", specifier = ">=2.55" },
     { name = "google-auth", marker = "extra == 'llamaindex'", specifier = ">=2.55" },
     { name = "google-auth", marker = "extra == 'official-sdk'", specifier = ">=2.55" },
-    { name = "graphql-core", specifier = ">=3.2" },
+    { name = "graphql-core", specifier = ">=3.2,<3.3" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "httpx2", marker = "extra == 'dev'" },
     { name = "httpx2", marker = "extra == 'mcp'" },

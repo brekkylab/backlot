@@ -3446,6 +3446,10 @@ def test_sheets_values_get_rejects_an_unusable_range(base, admin_h, sheet_id, rn
         ({"majorDimension": "dimensionUnspecified"}, "major_dimension", "Dimension"),
         ({"valueRenderOption": "3"}, "value_render_option", "ValueRenderOption"),
         ({"dateTimeRenderOption": "2"}, "date_time_render_option", "DateTimeRenderOption"),
+        # A name matches without regard to case in ASCII only: `ſ` (U+017F) upper-cases to `S`
+        # under Unicode rules, and real refuses it, measured 2026-10-05.
+        ({"majorDimension": "rowſ"}, "major_dimension", "Dimension"),
+        ({"majorDimension": "ROWſ"}, "major_dimension", "Dimension"),
     ],
 )
 def test_sheets_values_get_rejects_a_bad_enum(base, admin_h, sheet_id, params, field, enum):
@@ -3494,7 +3498,12 @@ def test_include_grid_data_takes_every_boolean_spelling_the_real_api_takes(
 
 
 @pytest.mark.parametrize("param", ["includeGridData", "excludeTablesInBandedRanges"])
-@pytest.mark.parametrize("value", ["NOPE", "", "2", "01", "1.0", "on", "off", " true", "true "])
+@pytest.mark.parametrize(
+    "value",
+    # `yeſ` is `yes` under Unicode case folding, not under ASCII's: real refuses it, measured
+    # 2026-10-05.
+    ["NOPE", "", "2", "01", "1.0", "on", "off", " true", "true ", "yeſ"],
+)
 def test_a_boolean_query_param_refuses_what_is_not_a_boolean(base, admin_h, sheet_id, param, value):
     """Measured message shape, which names the proto type rather than a message name: `Invalid
     value at 'include_grid_data' (TYPE_BOOL), "NOPE"`. Surrounding whitespace is not trimmed, and
@@ -5680,12 +5689,34 @@ _RAGGED_ROWS = [["a", {}, "c"], {}, ["z"], [{}, {}, "w"]]
         ("get", "Ragged!B1:B4", ["startColumn", "rowMetadata", "columnMetadata"], []),
         ("get", "Blank", ["rowMetadata", "columnMetadata"], []),
         ("filter", "Blank", ["rowMetadata", "columnMetadata"], []),
+        # A `gridRange` holding no cell, on the first sheet; measured 2026-10-05 on a 1000×26 sheet.
+        ("filter", {"startRowIndex": 1, "endRowIndex": 1}, ["startRow", "columnMetadata"], []),
+        (
+            "filter",
+            {"startColumnIndex": 1, "endColumnIndex": 1},
+            ["startColumn", "rowMetadata"],
+            [],
+        ),
+        (
+            "filter",
+            {"startRowIndex": 2, "endRowIndex": 2, "startColumnIndex": 1, "endColumnIndex": 4},
+            ["startRow", "startColumn", "columnMetadata"],
+            [],
+        ),
+        (
+            "filter",
+            {"startRowIndex": 1, "endRowIndex": 4, "startColumnIndex": 2, "endColumnIndex": 2},
+            ["startRow", "startColumn", "rowMetadata"],
+            [],
+        ),
+        ("filter", {"endRowIndex": 0}, ["columnMetadata"], []),
     ],
 )
 def test_a_grid_data_block_serves_reals_keys_and_rows(gc, gh, book, read, rng, keys, rows):
     """Each block as real Sheets served it from a sheet laid out like `Ragged` or `Blank`,
-    measured as `_sheets_grid_data` records. A cell is written here as its `formattedValue`, and an
-    empty cell or a row holding no value as the `{}` served for it."""
+    measured as `_sheets_grid_data` records, and for a `gridRange` holding no cell as
+    `_sheets_empty_grid_data` records. A cell is written here as its `formattedValue`, and an empty
+    cell or a row holding no value as the `{}` served for it."""
     if read == "get":
         r = gc.get(
             f"/sheets/v4/spreadsheets/{book}",
@@ -5696,7 +5727,10 @@ def test_a_grid_data_block_serves_reals_keys_and_rows(gc, gh, book, read, rng, k
         r = gc.post(
             f"/sheets/v4/spreadsheets/{book}:getByDataFilter",
             headers=gh,
-            json={"dataFilters": [{"a1Range": rng}], "includeGridData": True},
+            json={
+                "dataFilters": [{"gridRange": rng} if isinstance(rng, dict) else {"a1Range": rng}],
+                "includeGridData": True,
+            },
         )
     assert r.status_code == 200, r.text
     block = r.json()["sheets"][0]["data"][0]
@@ -6157,7 +6191,8 @@ def test_the_answers_come_back_sorted_by_where_each_range_starts(gc, gh, book):
     ]
 
 
-# Data-filter requests measured against real Sheets on 2026-10-04, as
+# Data-filter requests measured against real Sheets on 2026-10-04, and those below the line
+# `# measured 2026-10-05` on that day, as
 # ``(route, target, body, status, shown)``: `values` is `values:batchGetByDataFilter` and `sheet` is
 # `:getByDataFilter`; the target is the probe-shaped spreadsheet
 # `test_the_data_filter_reads_answer_every_measured_request` builds, one no spreadsheet has
@@ -6730,6 +6765,21 @@ MEASURED_BY_FILTER = [
     ('values', 'probe', b'{"dataFilters": [{"": {"a1Range": 5}}]}', 400, "Invalid value at 'data_filters[0].a1_range' (TYPE_STRING), 5"),
     ('values', 'probe', b'{"dataFilters": [{"a1Range": "Data!A1"}], "": 1}', 400, ('Invalid JSON payload received. Unknown name "": Proto fields must have a name.', 'invalid', None)),
     ('values', 'probe', b'{"dataFilters": [{"": 1}]}', 400, ("Invalid value at 'data_filters[0]' (type.googleapis.com/google.apps.sheets.v4.DataFilter), 1", 'invalid', None)),
+    # measured 2026-10-05
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Data!A1:B2"}], "valueRenderOption": -1}', 400, 'Invalid valueRenderOption: UNRECOGNIZED'),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Data!A1:B2"}], "majorDimension": -1}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Data!A1:B2"}], "dateTimeRenderOption": -1}', 200, [('Data!A1:B2', 'ROWS', {'a1Range': 'Data!A1:B2'})]),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Data!A1:B2"}], "majorDimension": "row\xc5\xbf"}', 400, 'Invalid value at \'major_dimension\' (type.googleapis.com/google.apps.sheets.v4.Dimension), "rowſ"'),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Data!A1:B2"}], "valueRenderOption": "formula\xc5\xbf"}', 400, 'Invalid value at \'value_render_option\' (type.googleapis.com/google.apps.sheets.v4.ValueRenderOption), "formulaſ"'),
+    ('sheet', 'probe', b'{"dataFilters": [{"a1Range": "Data!A1"}], "includeGridData": "ye\xc5\xbf"}', 400, 'Invalid value at \'include_grid_data\' (TYPE_BOOL), "yeſ"'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": -1}}]}', 500, 'Internal error encountered.'),
+    ('sheet', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": -1}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"sheetId": ID_DATA}, "locationMatchingStrategy": -1}}]}', 500, 'Internal error encountered.'),
+    ('sheet', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"sheetId": ID_DATA}, "locationMatchingStrategy": -1}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"visibility": -1}}]}', 500, 'Internal error encountered.'),
+    ('sheet', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"visibility": -1}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": -1, "startIndex": 0, "endIndex": 1}}}}]}', 500, 'Internal error encountered.'),
+    ('sheet', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": -1, "startIndex": 0, "endIndex": 1}}}}]}', 500, 'Internal error encountered.'),
 ]
 # fmt: on
 

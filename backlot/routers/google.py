@@ -3174,7 +3174,7 @@ def _sheets_empty_grid_data(empty: _Empty) -> dict:
     that is not empty, with no `rowData`. Measured 2026-10-04: an empty row range at row 1 is
     ``{"startRow": 1, "columnMetadata": [26 entries]}``, an empty column range at column 1
     ``{"startColumn": 1, "rowMetadata": [1000 entries]}``, and one empty on both axes the two
-    starts alone."""
+    starts alone. The keys come in that order, the starts first, measured 2026-10-05."""
     out: dict = {}
     if empty.r0:
         out["startRow"] = empty.r0

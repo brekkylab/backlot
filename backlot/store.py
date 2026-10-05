@@ -2810,8 +2810,9 @@ def jira_by_key(conn, key, visible_ids=None) -> sqlite3.Row | None:
 
 def jira_by_numeric_id(conn, issue_id: str, visible_ids=None) -> sqlite3.Row | None:
     """One issue by its reported numeric id, matched as spelled. Measured on Jira Cloud
-    (2026-10-04): issue and comment reads on v2 and v3 match the key; leading zeroes are a 404.
-    The importer assigns unique ids, and TEXT comparison preserves exact spelling.
+    (2026-10-04): `issue/{id}` and `issue/{id}/comment` answer on v2 and v3 what the key answers,
+    and the id with `0` or `00` in front is a 404. The importer assigns unique ids, and TEXT
+    comparison preserves exact spelling.
     """
     clause, cp = _acl_clause("jira", visible_ids=visible_ids)
     return conn.execute(

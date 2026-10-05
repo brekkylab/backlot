@@ -3564,7 +3564,8 @@ def test_jira_numeric_ids_resolve_exactly_and_preserve_acl(client, admin_h, toke
 
 @pytest.mark.parametrize("version", [2, 3])
 def test_jira_issue_ids_that_hash_alike_each_read_back_their_own_issue(tmp_path, version):
-    """PAY-1425 and PAY-2172 share a numeric seed; each served id must read its own issue."""
+    """PAY-1425 and PAY-2172 share a numeric seed; each served id must read its own issue, and the
+    subtask and parent entries that point at them carry those ids."""
     keys = ("PAY-1425", "PAY-2172")
     corpus = [
         {
@@ -3578,6 +3579,7 @@ def test_jira_issue_ids_that_hash_alike_each_read_back_their_own_issue(tmp_path,
             "created": "2026-01-01T00:00:00Z",
             "issuetype": "Task",
             "status": "To Do",
+            **({"parent": "PAY-1425"} if key == "PAY-2172" else {}),
         }
         for key in keys
     ]
@@ -3585,9 +3587,9 @@ def test_jira_issue_ids_that_hash_alike_each_read_back_their_own_issue(tmp_path,
     admin = yaml.safe_load(settings.tokens_path.read_text())["admin_token"]
     with client_for(settings, reload=True) as c:
         h = {"Authorization": f"Bearer {admin}"}
+        path = f"/atlassian/rest/api/{version}/issue/"
         ids = {}
         for key in keys:
-            path = f"/atlassian/rest/api/{version}/issue/"
             by_key = c.get(path + key, headers=h)
             assert by_key.status_code == 200
             ids[key] = by_key.json()["id"]
@@ -3599,3 +3601,8 @@ def test_jira_issue_ids_that_hash_alike_each_read_back_their_own_issue(tmp_path,
                 == c.get(path + key + "/comment", headers=h).json()
             )
         assert len(set(ids.values())) == len(keys)
+        parent = c.get(path + ids["PAY-1425"], headers=h).json()["fields"]
+        assert [s["id"] for s in parent["subtasks"]] == [ids["PAY-2172"]]
+        assert parent["subtasks"][0]["self"].endswith("/issue/" + ids["PAY-2172"])
+        child = c.get(path + ids["PAY-2172"], headers=h).json()["fields"]
+        assert child["parent"]["id"] == ids["PAY-1425"]

@@ -322,8 +322,6 @@ than there being a set per type.
 
 ### Jira — `/atlassian/rest/api/3` (and `/2`)
 
-Issue and comment reads accept the key or the exact numeric `id` reported by search and issue responses. Numeric ids are assigned uniquely at import, including when keys hash alike, and remain stable across appended shards. Databases built before `jira_issues.numeric_id` was added must be re-imported; the startup schema check names the missing column.
-
 | Endpoint | Notes |
 |---|---|
 | `search/jql` | `GET` or `POST`. JQL `project =`, `text`\|`summary`\|`description` `~` |
@@ -337,6 +335,11 @@ Issue and comment reads accept the key or the exact numeric `id` reported by sea
 
 `search/jql`, `issue/{key}`, `issue/{key}/comment`, `field` and `serverInfo` are served under
 `rest/api/2` as well as `/3`.
+
+Issue and comment reads accept the key or the exact numeric `id` reported by search and issue
+responses. Numeric ids are assigned uniquely at import, including when keys hash alike, and remain
+stable across appended shards. Databases built before `jira_issues.numeric_id` was added must be
+re-imported; the startup schema check names the missing column.
 
 A JSON body is `application/json;charset=UTF-8` — no space after the semicolon, `UTF-8`
 upper-case — as real's is on every route and status measured, except where real answers a

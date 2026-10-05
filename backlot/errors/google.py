@@ -160,6 +160,17 @@ def invalid_value(param: str, message: str | None = None) -> GoogleError:
     return GoogleError(400, message or "Invalid Value", reason="invalid", location=param)
 
 
+def duplicate_sort_keys() -> GoogleError:
+    """Drive's refusal of an ``orderBy`` that names one sort key twice — a 403, not a 400, measured
+    against Drive v3 on 2026-10-03 and 2026-10-04."""
+    return GoogleError(
+        403,
+        "The orderBy parameter cannot contain duplicate sort keys.",
+        reason="orderByContainsDuplicateSortKeys",
+        location="orderBy",
+    )
+
+
 def not_found_file(file_id: str) -> GoogleError:
     """Drive's not-found, which names the id so a batch caller can tell which request failed."""
     return GoogleError(404, f"File not found: {file_id}.", reason="notFound", location="fileId")

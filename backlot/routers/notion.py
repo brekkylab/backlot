@@ -551,7 +551,7 @@ async def get_block(block_id: str, request: Request):
         "object": "block",
         "id": bid,
         "type": kind,
-        "has_children": True,
+        "has_children": row["subtype"] != "database",
         "archived": False,
         "in_trash": False,
         "created_time": synth.rfc3339(row["created_ts"]),
@@ -576,7 +576,10 @@ async def get_block_children(block_id: str, request: Request):
         return _error(
             request, 404, "object_not_found", f"Could not find block with ID: {block_id}."
         )
-    blocks = synth.notion_blocks(row["id"], row["content"])
+    # A database's rows are pages reached through the query route, not blocks: on api.notion.com
+    # (2026-10-04, three databases, Notion-Version 2022-06-28 and 2025-09-03) its children are the
+    # empty list, and its block reports `has_children` false.
+    blocks = [] if row["subtype"] == "database" else synth.notion_blocks(row["id"], row["content"])
     offset = pagination.decode_cursor(request.query_params.get("start_cursor"))
     limit = _page_size(request.query_params.get("page_size"))
     page = blocks[offset : offset + limit]

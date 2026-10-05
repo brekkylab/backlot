@@ -830,3 +830,23 @@ def test_notion_user_and_block_shape(tmp_path):
     b = blocks[0]
     assert b["object"] == "block" and b["type"] == "heading_1"
     assert b["heading_1"]["rich_text"][0]["plain_text"] == "On-call"
+
+
+@pytest.mark.parametrize("version", ["2022-06-28", "2025-09-03"])
+def test_database_blocks_have_no_children(client, admin_h, version):
+    """A database's block has no children and lists none, beside a page that has both (see
+    `get_block_children`)."""
+    h = {**admin_h, "Notion-Version": version}
+    bid = synth.notion_id("nt-tasks-db")
+    block = client.get(f"/notion/v1/blocks/{bid}", headers=h)
+    assert block.status_code == 200
+    assert block.json()["type"] == "child_database"
+    assert block.json()["has_children"] is False
+    children = client.get(f"/notion/v1/blocks/{bid}/children", headers=h)
+    assert children.status_code == 200
+    assert children.json()["results"] == []
+    assert children.json()["next_cursor"] is None
+    assert children.json()["has_more"] is False
+    pid = synth.notion_id("nt-runbook")
+    assert client.get(f"/notion/v1/blocks/{pid}", headers=h).json()["has_children"] is True
+    assert client.get(f"/notion/v1/blocks/{pid}/children", headers=h).json()["results"]

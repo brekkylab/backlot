@@ -6,10 +6,10 @@ request as JSON, and real reads that JSON with protobuf's own streaming parser
 `datapiece.cc`). Measured 2026-10-04 on `sheets.googleapis.com`, every message below and every
 leniency is that code's: single-quoted strings, bare keys and trailing commas are read, `1.` is a
 number, a syntax error names the 20 bytes either side of where it stopped, and a value of the wrong
-kind is named by its proto path (`data_filters[0].grid_range.start_row_index.value`). This module
-is a port of the parts those two requests reach, with the options real runs it under, each
-measured: invalid UTF-8 is replaced rather than refused, and enum names match case-insensitively
-with `-` read as `_`.
+kind is named by its proto path (`data_filters[0].grid_range.start_row_index.value`). This module is
+a port of the parts those two requests reach, with the options real runs it under, each measured:
+invalid UTF-8 is replaced rather than refused, and enum names match whatever the case of their ASCII
+letters, with `-` read as `_`.
 
 What real reports, and in which order, follows from feeding the whole body as one chunk and then
 finishing (:func:`read`)."""
@@ -131,9 +131,10 @@ _FALSE = frozenset({"false", "f", "no", "n", "0"})
 
 
 def to_bool(piece: tuple[str, object]) -> bool:
-    """A string by ``safe_strtob``'s words, matched case-insensitively. A number is read too,
-    which v3.21's ``DataPiece::ToBool`` does not do but real does: measured 2026-10-04 on
-    `includeGridData`, the JSON numbers `1`, `0` and `1.0` answer and `2` is refused."""
+    """A string by ``safe_strtob``'s words, whatever the case of its ASCII letters: `yeſ`, which is
+    `yes` once `ſ` (U+017F) is case-folded outside ASCII, is refused, measured 2026-10-05. A number
+    is read too, which v3.21's ``DataPiece::ToBool`` does not do but real does: measured 2026-10-04
+    on `includeGridData`, the JSON numbers `1`, `0` and `1.0` answer and `2` is refused."""
     kind, value = piece
     if kind == "bool":
         return value  # type: ignore[return-value]
@@ -148,9 +149,10 @@ def to_bool(piece: tuple[str, object]) -> bool:
 
 def enum_from_string(text: str, enum: Enum) -> int:
     """``DataPiece::ToEnum`` for a string: the name, then a decimal number the enum declares, then
-    the name upper-cased with `-` read as `_` (real runs with case-insensitive enum parsing and
-    without lower-camel names: `rows` and `dimension-unspecified` answer, `dimensionUnspecified`
-    is refused). The query string's enums are read the same way."""
+    the name with its ASCII letters upper-cased and `-` read as `_` (real runs with case-insensitive
+    enum parsing and without lower-camel names: `rows` and `dimension-unspecified` answer,
+    `dimensionUnspecified` is refused, and so is `rowſ`, whose `ſ` upper-cases to `S` outside ASCII,
+    measured 2026-10-05). The query string's enums are read the same way."""
     if text in enum.names:
         return enum.names.index(text)
     try:

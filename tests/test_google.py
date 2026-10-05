@@ -3446,8 +3446,7 @@ def test_sheets_values_get_rejects_an_unusable_range(base, admin_h, sheet_id, rn
         ({"majorDimension": "dimensionUnspecified"}, "major_dimension", "Dimension"),
         ({"valueRenderOption": "3"}, "value_render_option", "ValueRenderOption"),
         ({"dateTimeRenderOption": "2"}, "date_time_render_option", "DateTimeRenderOption"),
-        # A name matches without regard to case in ASCII only: `ſ` (U+017F) upper-cases to `S`
-        # under Unicode rules, and real refuses it, measured 2026-10-05.
+        # A letter outside ASCII keeps its case (`protojson.enum_from_string`).
         ({"majorDimension": "rowſ"}, "major_dimension", "Dimension"),
         ({"majorDimension": "ROWſ"}, "major_dimension", "Dimension"),
     ],
@@ -3500,8 +3499,7 @@ def test_include_grid_data_takes_every_boolean_spelling_the_real_api_takes(
 @pytest.mark.parametrize("param", ["includeGridData", "excludeTablesInBandedRanges"])
 @pytest.mark.parametrize(
     "value",
-    # `yeſ` is `yes` under Unicode case folding, not under ASCII's: real refuses it, measured
-    # 2026-10-05.
+    # `yeſ`: `protojson.to_bool` folds the case of ASCII letters only.
     ["NOPE", "", "2", "01", "1.0", "on", "off", " true", "true ", "yeſ"],
 )
 def test_a_boolean_query_param_refuses_what_is_not_a_boolean(base, admin_h, sheet_id, param, value):
@@ -5689,7 +5687,7 @@ _RAGGED_ROWS = [["a", {}, "c"], {}, ["z"], [{}, {}, "w"]]
         ("get", "Ragged!B1:B4", ["startColumn", "rowMetadata", "columnMetadata"], []),
         ("get", "Blank", ["rowMetadata", "columnMetadata"], []),
         ("filter", "Blank", ["rowMetadata", "columnMetadata"], []),
-        # A `gridRange` holding no cell, on the first sheet; measured 2026-10-05 on a 1000×26 sheet.
+        # A `gridRange` holding no cell, on the first sheet.
         ("filter", {"startRowIndex": 1, "endRowIndex": 1}, ["startRow", "columnMetadata"], []),
         (
             "filter",
@@ -6192,12 +6190,11 @@ def test_the_answers_come_back_sorted_by_where_each_range_starts(gc, gh, book):
 
 
 # Data-filter requests measured against real Sheets on 2026-10-04, and those below the line
-# `# measured 2026-10-05` on that day, as
-# ``(route, target, body, status, shown)``: `values` is `values:batchGetByDataFilter` and `sheet` is
-# `:getByDataFilter`; the target is the probe-shaped spreadsheet
-# `test_the_data_filter_reads_answer_every_measured_request` builds, one no spreadsheet has
-# (`nosuch`), or the probe with no credential (`anon`); the body is the bytes sent, with the probe's
-# sheet ids as `ID_SHEET1`, `ID_DATA` and `ID_R1C1`. ``shown`` is the message of a refusal,
+# `# measured 2026-10-05` on that day, as ``(route, target, body, status, shown)``: `values` is
+# `values:batchGetByDataFilter` and `sheet` is `:getByDataFilter`; the target is the probe-shaped
+# spreadsheet `test_the_data_filter_reads_answer_every_measured_request` builds, one no spreadsheet
+# has (`nosuch`), or the probe with no credential (`anon`); the body is the bytes sent, with the
+# probe's sheet ids as `ID_SHEET1`, `ID_DATA` and `ID_R1C1`. ``shown`` is the message of a refusal,
 # `(message, reason, domain)` for one sent with `$.xgafv=1`, and of a success each answer's
 # `(range, majorDimension, echoed filters…)` on `values` (``None`` for no `valueRanges` at all) and
 # each sheet's `(title, data blocks)` on `sheet`, a block's `rowData` left out and its other lists
@@ -6930,7 +6927,7 @@ def test_a_read_enum_carried_in_the_body_follows_the_query_strings_rule(
     gc, gh, book, key, field, enum, value
 ):
     """The by-data-filter read takes its enums in the request body, and for a string value the rule
-    must not fork: case-insensitive, an empty value refused rather than defaulted, and
+    must not fork: ASCII case ignored, an empty value refused rather than defaulted, and
     `dateTimeRenderOption` validated even though a corpus states no date cell for it to render."""
     r = _by_filter(gc, gh, book, {"dataFilters": [{"a1Range": "Summary!A1"}], key: value})
     assert r.status_code == 400, r.text

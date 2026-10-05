@@ -2945,10 +2945,10 @@ _PRETTY_PRINT_FALSE = frozenset({"false", "0"})
 
 def _sheets_bool_value(raw: str | None, field: str) -> bool:
     """One of the boolean query parameters, read as a JSON body's string is (``protojson.to_bool``).
-    Measured: `1`, `t`, `y` and `yes` mean true and `0`, `f`, `n` and `no` mean false, matched
-    case-insensitively, while `on`/`off`, a padded `" true"`, `2`, `01` and `1.0` are refused, as
-    ``Invalid value at '<field>' (TYPE_BOOL), "<value>"``, naming the proto TYPE rather than a
-    message. An absent flag is false; an EMPTY one is not absent and 400s."""
+    Measured: `1`, `t`, `y` and `yes` mean true and `0`, `f`, `n` and `no` mean false, whatever the
+    case of their ASCII letters, while `on`/`off`, a padded `" true"`, `2`, `01` and `1.0` are
+    refused, as ``Invalid value at '<field>' (TYPE_BOOL), "<value>"``, naming the proto TYPE rather
+    than a message. An absent flag is false; an EMPTY one is not absent and 400s."""
     if raw is None:
         return False
     try:

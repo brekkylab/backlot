@@ -431,21 +431,58 @@ _TOKEN_RE = re.compile(r"[^\W_]+", re.UNICODE)
 # Same class as a lookaround pair, so a needle matches only on token boundaries — equivalent to
 # testing membership in the haystack's token set, without having to build that set.
 _TOK = r"[^\W_]"
+# A needle token may carry `*`, which real reads as any run of token characters, the empty run
+# included (measured 2026-10-03 and 2026-10-05 on a contact named `Maria`: `Mar*`, `*ari*`,
+# `*ria`, `Maria*`, `M*a` and `M**a` find it, `Mar` and `?aria` do not).
+_NEEDLE_RE = re.compile(r"(?:[^\W_]|\*)+", re.UNICODE)
 
 
 def _tokens(s: str) -> set[str]:
     return set(_TOKEN_RE.findall(s.lower()))
 
 
+def _wildcard_match(needle: str, token: str) -> bool:
+    """Whether `token` matches `needle`, where `*` stands for any run of characters.
+
+    Greedy with a single backtrack point, so it is linear in practice and O(len(needle) *
+    len(token)) at worst. A regex built from the needle backtracks polynomially on a needle with
+    many `*`, and the needle comes from the request."""
+    n = t = 0
+    star = mark = -1
+    while t < len(token):
+        if n < len(needle) and needle[n] == "*":
+            star, mark = n, t
+            n += 1
+        elif n < len(needle) and needle[n] == token[t]:
+            n += 1
+            t += 1
+        elif star != -1:
+            mark += 1
+            n, t = star + 1, mark
+        else:
+            return False
+    return needle[n:].strip("*") == ""
+
+
+def _needle_matcher(needle: str):
+    if "*" not in needle:
+        return re.compile(f"(?<!{_TOK}){re.escape(needle)}(?!{_TOK})").search
+    return lambda hay: any(_wildcard_match(needle, t) for t in _TOKEN_RE.findall(hay))
+
+
 @lru_cache(maxsize=512)
 def _token_patterns(target: str) -> tuple:
-    """One compiled boundary-anchored pattern per token in the needle.
+    """One matcher per token in the needle, each called with the lowercased haystack.
 
     Scanning a large object type called this once per row with the same needle, and tokenizing the
     whole haystack to test a couple of needle tokens: both are wasted. Compiling per needle (cached)
     and searching the haystack lets a miss bail on the first absent token instead of building a full
-    token set for every row."""
-    return tuple(re.compile(f"(?<!{_TOK}){re.escape(t)}(?!{_TOK})") for t in _tokens(target))
+    token set for every row. A needle token with `*` does tokenize the haystack, to match token by
+    token. A token that is only `*` matches any token, so it asks only that the value has one:
+    `*` alone found the two contacts with a `jobtitle` and none of the three without (measured
+    2026-10-05)."""
+    needles = set(_NEEDLE_RE.findall(target.lower()))
+    return tuple(_needle_matcher(t) for t in needles)
 
 
 def _match_one(prop, f: dict) -> bool:
@@ -469,7 +506,7 @@ def _match_one(prop, f: dict) -> bool:
         return hit if op == "IN" else not hit
     if op in ("CONTAINS_TOKEN", "NOT_CONTAINS_TOKEN"):
         pats = _token_patterns(str(target or ""))
-        hit = bool(pats) and any(all(p.search(c.lower()) for p in pats) for c in cands)
+        hit = bool(pats) and any(all(match(c.lower()) for match in pats) for c in cands)
         return hit if op == "CONTAINS_TOKEN" else not hit
     if op == "BETWEEN":
         # Numeric when all three parse as numbers, else lexicographic — the same fallback LT/GT

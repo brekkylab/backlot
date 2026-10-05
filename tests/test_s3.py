@@ -58,7 +58,9 @@ def _s3_signer(ak, sk):
 
 def _sign_get(base_url, path, token, *, tamper=False, extra_headers=None, method="GET", body=None):
     """Return (url, headers) for a SigV4-signed GET (or ``method``), using botocore (the real
-    signer) over ``body``."""
+    signer) over ``body``. The signature covers ``x-amz-date``, so it changes from one run to the
+    next, and ``tamper`` swaps the signature's last hex digit for a different one: the header never
+    verifies, whatever the signature ends in."""
     pytest.importorskip("botocore")
     from urllib.parse import parse_qsl, quote, urlencode
 
@@ -82,7 +84,8 @@ def _sign_get(base_url, path, token, *, tamper=False, extra_headers=None, method
     _s3_signer(ak, sk).add_auth(req)
     headers = dict(req.headers)
     if tamper:
-        headers["Authorization"] = headers["Authorization"][:-4] + "dead"
+        signed = headers["Authorization"]
+        headers["Authorization"] = signed[:-1] + ("1" if signed.endswith("0") else "0")
     return url, headers
 
 
@@ -683,6 +686,19 @@ def test_s3_tampered_signature_rejected(live_server, method, path, status):
         if method != "HEAD":
             assert "<Code>SignatureDoesNotMatch</Code>" in r.text
         assert _signed(base_url, path, settings.admin_token, method=method).status_code != 403
+
+
+@pytest.mark.parametrize("last", "0123456789abcdef")
+def test_s3_a_tampered_signature_is_never_the_one_botocore_signed(monkeypatch, last):
+    """Against a signature ending in each hex digit in turn, ``dead`` among them, the tamper in
+    `_sign_get` sends 64 hex digits that are not that signature."""
+    from botocore.auth import SigV4Auth
+
+    signature = "0" * 60 + "dea" + last
+    monkeypatch.setattr(SigV4Auth, "signature", lambda self, string_to_sign, request: signature)
+    _, headers = _sign_get("http://127.0.0.1:8000", _KEY, TOKEN, tamper=True)
+    sent = headers["Authorization"].rsplit("Signature=", 1)[1]
+    assert sent != signature and re.fullmatch(r"[0-9a-f]{64}", sent)
 
 
 # Each row is real's answer for a name nobody owns (2026-09-29), which every corpus bucket gets here

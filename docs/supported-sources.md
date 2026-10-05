@@ -179,10 +179,10 @@ default branch only; an older snapshot stays reachable at `contents/{path}?ref=`
 | Endpoint | Notes |
 |---|---|
 | `users/{u}/messages` | `q`: free text / `from:` `to:` `subject:` `after:` `before:` `newer_than:` `older_than:` `label:` `has:attachment` |
-| `users/{u}/messages/{id}` | `format=full\|metadata\|minimal` |
+| `users/{u}/messages/{id}` | `format=full\|metadata\|minimal`, `metadataHeaders` |
 | `users/{u}/messages/{id}/attachments/{id}` | |
 | `users/{u}/threads` | `q`, as above |
-| `users/{u}/threads/{id}` | |
+| `users/{u}/threads/{id}` | `format`, `metadataHeaders`, as above |
 | `users/{u}/labels[/{id}]` | |
 | `users/{u}/profile` | |
 
@@ -335,6 +335,11 @@ than there being a set per type.
 
 `search/jql`, `issue/{key}`, `issue/{key}/comment`, `field` and `serverInfo` are served under
 `rest/api/2` as well as `/3`.
+
+Issue and comment reads accept the key or the exact numeric `id` reported by search and issue
+responses. Numeric ids are assigned uniquely at import, including when keys hash alike, and remain
+stable across appended shards. Databases built before `jira_issues.numeric_id` was added must be
+re-imported; the startup schema check names the missing column.
 
 A JSON body is `application/json;charset=UTF-8` — no space after the semicolon, `UTF-8`
 upper-case — as real's is on every route and status measured, except where real answers a

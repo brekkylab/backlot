@@ -1912,9 +1912,8 @@ def test_linear_list_scopes_to_a_team(db, keys):
     assert store.count_linear_issues(db, "design") == 1
 
 
-def test_linear_default_order_is_createdAt_ascending(db):
-    """Linear documents createdAt as the default ordering, and its `PaginationOrderBy` carries no
-    direction — so an absent `orderBy` must still order by creation, not by insertion order."""
+def test_linear_default_order_is_createdAt_descending(db):
+    """Linear serves the default `createdAt` ordering newest-first."""
     default = [r["id"] for r in store.list_linear_issues(db, "engineering", limit=100)]
     explicit = [
         r["id"]
@@ -1922,14 +1921,6 @@ def test_linear_default_order_is_createdAt_ascending(db):
     ]
     assert default == explicit
     stamps = [r["created_ts"] for r in store.list_linear_issues(db, "engineering", limit=100)]
-    assert stamps == sorted(stamps)
-
-
-def test_linear_list_can_be_ordered_newest_first(db):
-    rows = store.list_linear_issues(
-        db, "engineering", limit=100, order_by="createdAt", descending=True
-    )
-    stamps = [r["created_ts"] for r in rows]
     assert stamps == sorted(stamps, reverse=True)
 
 
@@ -2483,3 +2474,40 @@ def test_schema_columns_reads_every_table_off_the_ddl():
     for table, columns in declared.items():
         created = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
         assert columns == created, table
+
+
+def test_jira_numeric_ids_are_order_independent_and_preserved_across_append(tmp_path):
+    """A numeric seed collision is settled once; append and re-import retain issued ids."""
+    from backlot.importer import byo
+    from tests._helpers import build_corpus
+
+    def record(key):
+        return complete(
+            source_type="jira",
+            doc_id=key,
+            key=key,
+            project="payments",
+            title=key,
+            content="Body.",
+            author_email="ava@acme.com",
+        )
+
+    records = [record(key) for key in ("PAY-1425", "PAY-2172")]
+    a = build_corpus(tmp_path / "a", records)
+    b = build_corpus(tmp_path / "b", list(reversed(records)))
+
+    def ids(settings):
+        with store.connect_ro(settings.db_path) as conn:
+            return dict(conn.execute("SELECT key, numeric_id FROM jira_issues"))
+
+    assert ids(a) == ids(b)
+    assert len(set(ids(a).values())) == 2 and None not in ids(a).values()
+    shard = build_corpus(tmp_path / "shard", records[:1])
+    before = ids(shard)
+    byo.load_records(lambda: enumerate(records[1:], 1), shard, reset=False)
+    after = ids(shard)
+    assert after["PAY-1425"] == before["PAY-1425"]
+    assert len(set(after.values())) == 2
+    with pytest.raises(SystemExit, match="already claimed"):
+        byo.load_records(lambda: enumerate(records, 1), shard, reset=False)
+    assert ids(shard) == after

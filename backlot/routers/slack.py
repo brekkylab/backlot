@@ -206,6 +206,29 @@ def _missing_argument(request: Request, *names: str) -> JSONResponse | None:
     return None
 
 
+# `sort_dir` is an enum on search.messages, search.all and search.files, matched as sent: measured
+# on 2026-10-03 and 2026-10-05, `ASC` and `bogus` answer this on all three and `Desc`, ` asc` and
+# `asc ` on search.messages, while `asc` and `desc` are served. An empty `sort_dir` is served on
+# search.messages and answers this on search.all and search.files. A repeated `sort_dir` is read
+# by its last value. A missing `query` is answered before this and an empty one after it. `sort`
+# has no such check, `sort=bogus` is served.
+_SORT_DIRS = {"asc", "desc"}
+_SORT_DIR_ERROR = {
+    "ok": False,
+    "error": "invalid_arguments",
+    "response_metadata": {
+        "messages": ["[ERROR] must be a valid enum value [json-pointer:/sort_dir]"]
+    },
+}
+
+
+def _bad_sort_dir(request: Request, *, empty_ok: bool) -> JSONResponse | None:
+    value = _param(request, "sort_dir")
+    if value is None or value in _SORT_DIRS or (empty_ok and value == ""):
+        return None
+    return JSONResponse(_SORT_DIR_ERROR)
+
+
 def _channel_core(request: Request, conn, name: str, caller: Caller) -> dict:
     """The conversation object as BOTH conversations.list and .info answer it.
 
@@ -807,14 +830,16 @@ def _parse_slack_query(raw: str) -> tuple[str, str | None, bool]:
     return text.strip(), container, phrase
 
 
-def _messages_block(request: Request):
+def _messages_block(request: Request, *, empty_sort_dir_ok: bool):
     """Shared message-search core for search.messages and search.all. Returns (query, block) or
-    (error_dict, None)."""
+    (error_dict, None). `empty_sort_dir_ok` is search.messages' half of the rule on `_SORT_DIRS`."""
     conn = auth.conn(request)
     caller, err = _caller_or_error(request)
     if err is not None:
         return err, None
     if err := _missing_argument(request, "query"):
+        return err, None
+    if err := _bad_sort_dir(request, empty_ok=empty_sort_dir_ok):
         return err, None
     query = _param(request, "query") or ""
     # A query that arrived with nothing in it has its own error, measured live on all three search
@@ -829,7 +854,7 @@ def _messages_block(request: Request):
     # Honor Slack's sort: "score" (default) = relevance; "timestamp" = by message time. sort_dir
     # defaults to desc (newest first). Previously Backlot always ranked by relevance regardless.
     sort = (_param(request, "sort") or "score").lower()
-    sort_dir = (_param(request, "sort_dir") or "desc").lower()
+    sort_dir = _param(request, "sort_dir") or "desc"
     order_by = None
     if sort == "timestamp":
         order_by = "recency_asc" if sort_dir == "asc" else "recency"
@@ -870,7 +895,7 @@ def _messages_block(request: Request):
     openapi_extra={"parameters": _P_SEARCH},
 )
 async def search_messages(request: Request):
-    query, block = _messages_block(request)
+    query, block = _messages_block(request, empty_sort_dir_ok=True)
     if block is None:
         return query  # error dict
     return {"ok": True, "query": query, "messages": block}
@@ -891,6 +916,8 @@ async def search_files(request: Request):
     if err is not None:
         return err
     if err := _missing_argument(request, "query"):
+        return err
+    if err := _bad_sort_dir(request, empty_ok=False):
         return err
     query = _param(request, "query") or ""
     if not query.strip():
@@ -921,7 +948,7 @@ async def search_files(request: Request):
 async def search_all(request: Request):
     """Slack's combined search (the slack-go SDK's Search()/SearchContext() hits this). Backlot
     has no file corpus, so ``files`` is always empty; ``messages`` matches search.messages."""
-    query, block = _messages_block(request)
+    query, block = _messages_block(request, empty_sort_dir_ok=False)
     if block is None:
         return query  # error dict
     empty = {

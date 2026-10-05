@@ -3327,9 +3327,10 @@ def _sheets_enum_value(raw: str, field: str, enum: protojson.Enum) -> str:
     Read the way a JSON body's string is (``protojson.enum_from_string``), measured on the query
     string too: a number names the value it is the number of and nothing past the enum's last, so on
     `majorDimension` ``+2`` and ``02`` are `COLUMNS` while ``3``, ``-1``, ``2.0`` and a space-padded
-    `` 2`` are refused. The response echoes the canonical name whatever the request used. Anything
-    else 400s naming the proto field and type and quoting the value as sent, and an EMPTY value is
-    not an absent one — it 400s rather than falling back to the default."""
+    `` 2`` are refused. The response echoes the canonical name whatever the request used,
+    `DIMENSION_UNSPECIFIED` as `ROWS` (:func:`_sheets_major`). Anything else 400s naming the proto
+    field and type and quoting the value as sent, and an EMPTY value is not an absent one — it 400s
+    rather than falling back to the default."""
     try:
         return enum.names[protojson.enum_from_string(raw, enum)]
     except protojson.ConversionError:

@@ -24,8 +24,7 @@ from backlot.errors import google as gerr
 
 
 class Enum(NamedTuple):
-    """A proto enum: its type URL and its value names in number order (the discovery document's
-    order, which is the number each name has)."""
+    """A proto enum: its type URL and its value names in number order."""
 
     type_url: str
     names: tuple[str, ...]

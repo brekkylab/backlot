@@ -6095,8 +6095,7 @@ def _by_filter(gc, gh, book, body):
 
 
 def test_batch_get_by_data_filter_answers_each_filter_with_the_filter_beside_it(gc, gh, book):
-    """Measured: each entry carries the `valueRange` AND the filter that selected it, so a caller
-    that sent several pairs by the filter rather than by position."""
+    """The entry `sheets_values_batch_get_by_data_filter` describes, for one filter."""
     r = _by_filter(gc, gh, book, {"dataFilters": [{"a1Range": "Summary!A1:B2"}]})
     assert r.status_code == 200, r.text
     assert r.json() == {
@@ -6166,9 +6165,9 @@ def test_the_answers_come_back_sorted_by_where_each_range_starts(gc, gh, book):
 # sheet ids as `ID_SHEET1`, `ID_DATA` and `ID_R1C1`. ``shown`` is the message of a refusal,
 # `(message, reason, domain)` for one sent with `$.xgafv=1`, and of a success each answer's
 # `(range, majorDimension, echoed filters…)` on `values` (``None`` for no `valueRanges` at all) and
-# each sheet's `(title, data blocks)` on `sheet`, a block's lists by their length. The two
-# `sheetId: 0` rows were sent to a spreadsheet whose one sheet has that id, as the probe's first
-# sheet has here.
+# each sheet's `(title, data blocks)` on `sheet`, a block's `rowData` left out and its other lists
+# by their length. The two `sheetId: 0` rows were sent to a spreadsheet whose one sheet has that id,
+# as the probe's first sheet has here.
 # fmt: off
 MEASURED_BY_FILTER = [
     ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": "abc"}}]}', 400, 'Invalid value at \'data_filters[0].grid_range.start_row_index.value\' (TYPE_INT32), "abc"'),
@@ -6768,7 +6767,7 @@ def test_the_data_filter_reads_answer_every_measured_request(tmp_path):
     """All `MEASURED_BY_FILTER` rows over a corpus with the probe's five sheets, one test for the
     reason `test_sheets_values_answer_every_measured_r1c1_request_as_real_does` is one.
 
-    A refusal the transcoder raises also carries a field violation per line of its message, naming
+    A refusal of a value or a name also carries a field violation per line of its message, naming
     the location the line quotes, or none at the root of the body (`gerr.invalid_field_values`)."""
     from tests._helpers import build_corpus, client_for
 
@@ -6880,9 +6879,9 @@ def test_get_by_data_filter_takes_no_filters_to_mean_every_sheet(gc, gh, book):
 def test_a_read_enum_carried_in_the_body_follows_the_query_strings_rule(
     gc, gh, book, key, field, enum, value
 ):
-    """The by-data-filter read takes its enums in the request body, and the rule must not fork:
-    case-insensitive, an empty value refused rather than defaulted, and `dateTimeRenderOption`
-    validated even though a corpus states no date cell for it to render."""
+    """The by-data-filter read takes its enums in the request body, and for a string value the rule
+    must not fork: case-insensitive, an empty value refused rather than defaulted, and
+    `dateTimeRenderOption` validated even though a corpus states no date cell for it to render."""
     r = _by_filter(gc, gh, book, {"dataFilters": [{"a1Range": "Summary!A1"}], key: value})
     assert r.status_code == 400, r.text
     assert r.json()["error"]["message"] == (

@@ -1935,7 +1935,8 @@ async def drive_files_list(request: Request):
     me = caller.email
     # Each read off the first repeat, as real reads them -- see `gerr.first_repeat`. Refused in
     # real's order, measured 2026-09-23 by sending two bad values at once: `pageSize` first, then
-    # `orderBy`, `q`, `pageToken` and `fields`, whichever order the query names them in.
+    # `orderBy`, `q`, `pageToken` and `fields`, whichever order the query names them in. The 403 for
+    # an `orderBy` naming a key twice comes at the same point, measured 2026-10-05.
     params = request.query_params
     typed = _drive_typed(
         request,

@@ -995,24 +995,30 @@ def test_drive_a_page_token_it_did_not_issue_is_refused(client, admin_h):
 
 
 @pytest.mark.parametrize(
-    "query, location",
+    "query, code, location",
     [
-        ([("pageToken", "BOGUS"), ("pageSize", "NOPE")], None),
-        ([("fields", "bogus"), ("pageSize", "0")], "page_size"),
-        ([("fields", "bogus"), ("pageToken", "BOGUS")], "pageToken"),
-        ([("pageToken", "BOGUS"), ("fields", "bogus")], "pageToken"),
-        ([("pageToken", "BOGUS"), ("q", "nosuchfield = 1")], "q"),
-        ([("fields", "bogus"), ("q", "nosuchfield = 1")], "q"),
-        ([("q", "nosuchfield = 1"), ("orderBy", "bogus")], "orderBy"),
-        ([("orderBy", "bogus"), ("q", "nosuchfield = 1")], "orderBy"),
-        ([("fields", "bogus"), ("orderBy", "bogus")], "orderBy"),
+        ([("pageToken", "BOGUS"), ("pageSize", "NOPE")], 400, None),
+        ([("fields", "bogus"), ("pageSize", "0")], 400, "page_size"),
+        ([("fields", "bogus"), ("pageToken", "BOGUS")], 400, "pageToken"),
+        ([("pageToken", "BOGUS"), ("fields", "bogus")], 400, "pageToken"),
+        ([("pageToken", "BOGUS"), ("q", "nosuchfield = 1")], 400, "q"),
+        ([("fields", "bogus"), ("q", "nosuchfield = 1")], 400, "q"),
+        ([("q", "nosuchfield = 1"), ("orderBy", "bogus")], 400, "orderBy"),
+        ([("orderBy", "bogus"), ("q", "nosuchfield = 1")], 400, "orderBy"),
+        ([("fields", "bogus"), ("orderBy", "bogus")], 400, "orderBy"),
+        ([("orderBy", "name,name"), ("pageSize", "0")], 400, "page_size"),
+        ([("orderBy", "name,name"), ("pageSize", "NOPE")], 400, None),
+        ([("q", "nosuchfield = 1"), ("orderBy", "name,name")], 403, "orderBy"),
+        ([("orderBy", "name,name"), ("q", "nosuchfield = 1")], 403, "orderBy"),
+        ([("pageToken", "BOGUS"), ("orderBy", "name,name")], 403, "orderBy"),
+        ([("fields", "bogus"), ("orderBy", "name,name")], 403, "orderBy"),
     ],
 )
-def test_drive_files_list_refuses_in_reals_order(client, admin_h, query, location):
+def test_drive_files_list_refuses_in_reals_order(client, admin_h, query, code, location):
     """Two bad values at once, each pair in the order `drive_files_list`'s comment records. A
     `pageSize` the proto layer cannot read has no `location`."""
     e = _gerr(client.get("/drive/v3/files", headers=admin_h, params=query))
-    assert e["code"] == 400
+    assert e["code"] == code
     assert e["errors"][0].get("location") == location
 
 

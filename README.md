@@ -138,6 +138,7 @@ Every imported identity gets deterministic credentials, listed at `GET /_meta/us
 | Building a corpus, and public datasets | [docs/corpus.md](docs/corpus.md) |
 | Auth schemes and tokens | [docs/auth.md](docs/auth.md) |
 | Measuring Backlot against the real APIs | [docs/fidelity.md](docs/fidelity.md) |
+| Writes, and where they go | [docs/overlay.md](docs/overlay.md) |
 | Every `BACKLOT_*` setting, and Docker | [docs/configuration.md](docs/configuration.md) |
 | Vendor names and trademarks | [NOTICE.md](NOTICE.md) |
 

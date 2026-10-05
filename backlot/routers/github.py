@@ -15,7 +15,7 @@ import time
 from collections.abc import Callable
 from email.utils import formatdate
 from typing import NamedTuple
-from urllib.parse import quote
+from urllib.parse import quote, unquote_plus
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
@@ -2379,8 +2379,10 @@ def _ref_exists(conn, owner: str, repo: str, ref: str, ids) -> bool:
 async def get_tree(
     owner: str, repo: str, ref: str, request: Request, recursive: str | None = Query(None)
 ):
-    """The repo's file set as a git tree (real API shape). `recursive` (any truthy value,
-    GitHub-style) returns every blob/tree entry; otherwise only the entries directly under root.
+    """The repo's file set as a git tree (real API shape). `recursive=` with any value, the empty
+    one, `0` and `false` included, returns every blob/tree entry; without it, or written bare as
+    `?recursive`, only the entries directly under root. Repeated, the last one decides. Measured on
+    api.github.com (2026-10-04): psf/requests answers 21 entries flat and 153 recursive.
 
     `ref` selects WHICH tree, exactly as on real GitHub: a SUBTREE's own sha — the one a client
     reads out of a parent listing's `tree` entry — answers that directory's entries, with paths
@@ -2438,7 +2440,7 @@ async def get_tree(
         entries = [
             {**e, "path": e["path"][len(prefix) :]} for e in entries if e["path"].startswith(prefix)
         ]
-    if not _truthy(recursive):
+    if recursive is None or _written_bare(request, "recursive"):
         entries = [e for e in entries if "/" not in e["path"]]
     entries, truncated = _cap_tree(entries)
     tree_sha = _repo_tree_sha(repo) if subtree is None else _dir_sha(repo, subtree)
@@ -2659,10 +2661,9 @@ async def list_branches(
     `?protected=` selects, so it is honoured rather than ignored: a client that asked for the
     protected branches and got an unprotected one back would read that branch as push-guarded.
     Real has three answers — only protected branches for a true value, only unprotected ones for
-    `false`, and all of them when the parameter is omitted — and parses the value the way
-    `?recursive=` is parsed, every non-empty value but `false`/`0` reading true. Measured on
-    fastapi/fastapi (22 branches, one of them protected): `true`/`1`/`TRUE`/`yes`/`banana` answer
-    1, `false`/`0` answer 21, an empty value and an omitted one answer 22.
+    `false`, and all of them when the parameter is omitted. Measured on fastapi/fastapi (22
+    branches, one of them protected): `true`/`1`/`TRUE`/`yes`/`banana` answer 1, `false`/`0` answer
+    21, an empty value and an omitted one answer 22.
 
     All three answers are distinct for a repo whose `subtype: "repo"` record states which branches
     are protected. For one that does not, every branch is unprotected and real's last two coincide
@@ -3048,8 +3049,22 @@ _DEFAULT_BRANCH = store.GITHUB_DEFAULT_BRANCH
 _UNSTATED_HEAD_REF = "feature"
 
 
+def _written_bare(request: Request, name: str) -> bool:
+    """Whether the last `name` in the query string has no `=`. Starlette reads `?name` and `?name=`
+    alike as the empty string, and :func:`get_tree` answers them differently. Keys are matched
+    percent-decoded, as Starlette and api.github.com both read them: on psf/requests (2026-10-05)
+    `?%72ecursive` answers the flat tree and `?%72ecursive=0` the recursive one."""
+    last = None
+    for pair in request.scope.get("query_string", b"").decode("latin-1").split("&"):
+        key, eq, _ = pair.partition("=")
+        if unquote_plus(key) == name:
+            last = eq
+    return last == ""
+
+
 def _truthy(v: str | None) -> bool:
-    """GitHub's `?recursive=` accepts any non-empty, non-'0'/'false' value as true."""
+    """How :func:`list_branches` reads a non-empty `?protected=`: anything but `false` and `0`, in
+    any case, is true."""
     return v is not None and v.lower() not in ("", "0", "false")
 
 

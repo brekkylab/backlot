@@ -70,6 +70,26 @@ def _org_domain(info) -> str:
 # --- pagination -------------------------------------------------------------------
 
 
+def _reject_sort_with_order_by(sort, order_by) -> None:
+    """Linear refuses ``sort`` beside ``orderBy`` on ``issues`` and ``users``: a 200 with
+    ``data: null`` and ``Cannot use both sort and orderBy options`` (code ``INPUT_ERROR``),
+    measured on api.linear.app 2026-10-04. Sending the argument is what counts, so ``sort: []``
+    is refused and an explicit ``null`` is absent. The arguments are validated before the pair:
+    ``first`` with ``last`` and a malformed filter id each answered ``Argument Validation Error``
+    beside it, so ``_issue_page`` and ``resolve_users`` call this after ``_slice``, and
+    ``_issue_page`` after compiling the filter too."""
+    if sort is not None and order_by is not None:
+        raise GraphQLError(
+            "Cannot use both sort and orderBy options",
+            extensions={
+                "type": "invalid input",
+                "code": "INPUT_ERROR",
+                "statusCode": 400,
+                "userError": True,
+            },
+        )
+
+
 def _slice(first, after, last, before) -> tuple[int | None, int, int]:
     """Relay ``first``/``after`` (forward) or ``last``/``before`` (backward) ->
     ``(offset, limit, floor)``.
@@ -947,6 +967,7 @@ def _issue_page(
     conn, visible = ctx["conn"], ctx["visible_ids"]
     offset, limit, floor = _slice(first, after, last, before)
     prefilter = compile_issue_filter(conn, _resolve_issue_ids(info, filter), _team_keys(info))
+    _reject_sort_with_order_by(sort, orderBy)
     if offset is None:
         # `last:` with no `before:` is the only shape that needs a total, so the COUNT is paid
         # here and not on every page.
@@ -1091,10 +1112,20 @@ def _sorted_users(users: list[dict], sort) -> list[dict]:
 
 
 def resolve_users(
-    _root, info, first=None, after=None, last=None, before=None, filter=None, sort=None, **_ignored
+    _root,
+    info,
+    first=None,
+    after=None,
+    last=None,
+    before=None,
+    filter=None,
+    orderBy=None,
+    sort=None,
+    **_ignored,
 ) -> dict:
     ctx = _ctx(info)
     offset, limit, floor = _slice(first, after, last, before)
+    _reject_sort_with_order_by(sort, orderBy)
     users = _sorted_users(
         [
             _user(r["email"], r["display_name"], info)

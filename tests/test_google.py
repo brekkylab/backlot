@@ -200,7 +200,7 @@ def test_gmail_messages_list_serves_hex_ids(client, admin_h):
     not hex, so real Gmail would call it an invalid id value.
 
     Up to 16 digits, not exactly 16: real Gmail renders the integer, so an id whose top nibble is
-    zero is shorter there — and the real API resolves that spelling while 404ing the padded one."""
+    zero is shorter there."""
     msgs = client.get(
         "/gmail/v1/users/me/messages", headers=admin_h, params={"maxResults": 10}
     ).json()["messages"]
@@ -226,11 +226,47 @@ def test_gmail_hex_id_resolves_to_the_same_document(client, admin_h, ro_conn):
     assert base64.urlsafe_b64decode(_gmail_plain(m["payload"])).decode() == row["content"]
     # The stored column is lowercase hex, but a client may spell the id in either case (Gmail's ids
     # are case-insensitive hex) -- resolution must fold case rather than requiring the exact stored
-    # spelling. `store.gmail_by_id` is the one place that has to do this.
+    # spelling. `store.gmail_id_spelling` is the one place that has to do this.
     upper = client.get(
         f"/gmail/v1/users/me/messages/{hexid.upper()}", headers=admin_h, params={"format": "full"}
     ).json()
     assert upper["id"] == m["id"]
+
+
+@pytest.mark.parametrize(
+    "spelling, same_as",
+    [
+        ("{ROOT}", "{root}"),
+        ("0{root}", "{root}"),
+        ("00{root}", "{root}"),
+        ("0000000000{root}", "{root}"),
+        ("0{ROOT}", "{root}"),
+        ("0{reply}", "1"),
+    ],
+)
+def test_gmail_threads_get_reads_an_id_as_a_hex_integer(
+    client, admin_h, ro_conn, spelling, same_as
+):
+    """`threads.get` on a thread's id in uppercase, or with one, two or ten zeros in front and its
+    hex in either case, serves the thread as the lowercase id without them does; on a reply's id
+    with a zero in front it serves the 404 of an id the mailbox does not hold (`1`). The measurement
+    is beside the return in `gmail_thread_get`."""
+    row = ro_conn.execute(
+        "SELECT * FROM gmail_messages WHERE COALESCE(thread_id,'') != '' "
+        "AND thread_id != id LIMIT 1"
+    ).fetchone()
+    assert row is not None, "SAMPLE should hold a threaded reply"
+    ids = {"root": row["thread_id"], "ROOT": row["thread_id"].upper(), "reply": row["id"]}
+
+    def threads_get(thread_id):
+        return client.get(
+            f"/gmail/v1/users/me/threads/{thread_id.format(**ids)}",
+            headers=admin_h,
+            params={"format": "minimal"},
+        )
+
+    got, want = threads_get(spelling), threads_get(same_as)
+    assert (got.status_code, got.json()) == (want.status_code, want.json())
 
 
 def test_gmail_thread_id_matches_the_message_id_for_a_lone_message(client, admin_h, ro_conn):
@@ -250,9 +286,6 @@ def test_gmail_thread_id_matches_the_message_id_for_a_lone_message(client, admin
     assert m["id"] == m["threadId"] == hexid
     t = client.get(f"/gmail/v1/users/me/threads/{hexid}", headers=admin_h)
     assert t.status_code == 200 and t.json()["id"] == hexid
-    # A gmail id is hex and real resolves either spelling, so `threads.get` must fold case the way
-    # `messages.get` does — an exact `thread_id = ?` lookup on the caller's spelling missed and
-    # served a one-message thread for a thread that has more.
     upper = client.get(f"/gmail/v1/users/me/threads/{hexid.upper()}", headers=admin_h)
     assert upper.status_code == 200 and upper.json() == t.json()
 
@@ -995,24 +1028,30 @@ def test_drive_a_page_token_it_did_not_issue_is_refused(client, admin_h):
 
 
 @pytest.mark.parametrize(
-    "query, location",
+    "query, code, location",
     [
-        ([("pageToken", "BOGUS"), ("pageSize", "NOPE")], None),
-        ([("fields", "bogus"), ("pageSize", "0")], "page_size"),
-        ([("fields", "bogus"), ("pageToken", "BOGUS")], "pageToken"),
-        ([("pageToken", "BOGUS"), ("fields", "bogus")], "pageToken"),
-        ([("pageToken", "BOGUS"), ("q", "nosuchfield = 1")], "q"),
-        ([("fields", "bogus"), ("q", "nosuchfield = 1")], "q"),
-        ([("q", "nosuchfield = 1"), ("orderBy", "bogus")], "orderBy"),
-        ([("orderBy", "bogus"), ("q", "nosuchfield = 1")], "orderBy"),
-        ([("fields", "bogus"), ("orderBy", "bogus")], "orderBy"),
+        ([("pageToken", "BOGUS"), ("pageSize", "NOPE")], 400, None),
+        ([("fields", "bogus"), ("pageSize", "0")], 400, "page_size"),
+        ([("fields", "bogus"), ("pageToken", "BOGUS")], 400, "pageToken"),
+        ([("pageToken", "BOGUS"), ("fields", "bogus")], 400, "pageToken"),
+        ([("pageToken", "BOGUS"), ("q", "nosuchfield = 1")], 400, "q"),
+        ([("fields", "bogus"), ("q", "nosuchfield = 1")], 400, "q"),
+        ([("q", "nosuchfield = 1"), ("orderBy", "bogus")], 400, "orderBy"),
+        ([("orderBy", "bogus"), ("q", "nosuchfield = 1")], 400, "orderBy"),
+        ([("fields", "bogus"), ("orderBy", "bogus")], 400, "orderBy"),
+        ([("orderBy", "name,name"), ("pageSize", "0")], 400, "page_size"),
+        ([("orderBy", "name,name"), ("pageSize", "NOPE")], 400, None),
+        ([("q", "nosuchfield = 1"), ("orderBy", "name,name")], 403, "orderBy"),
+        ([("orderBy", "name,name"), ("q", "nosuchfield = 1")], 403, "orderBy"),
+        ([("pageToken", "BOGUS"), ("orderBy", "name,name")], 403, "orderBy"),
+        ([("fields", "bogus"), ("orderBy", "name,name")], 403, "orderBy"),
     ],
 )
-def test_drive_files_list_refuses_in_reals_order(client, admin_h, query, location):
+def test_drive_files_list_refuses_in_reals_order(client, admin_h, query, code, location):
     """Two bad values at once, each pair in the order `drive_files_list`'s comment records. A
     `pageSize` the proto layer cannot read has no `location`."""
     e = _gerr(client.get("/drive/v3/files", headers=admin_h, params=query))
-    assert e["code"] == 400
+    assert e["code"] == code
     assert e["errors"][0].get("location") == location
 
 
@@ -2491,6 +2530,47 @@ def test_drive_order_by_rejects_keys_it_cannot_honor(client, admin_h):
         "/drive/v3/files", headers=admin_h, params={"orderBy": "folder,name desc", "pageSize": 5}
     )
     assert ok.status_code == 200
+
+
+@pytest.mark.parametrize(
+    "order_by, status",
+    [
+        ("name", 200),
+        ("name,modifiedTime", 200),
+        ("name desc,modifiedTime", 200),
+        ("recency,modifiedTime", 200),
+        ("name,name", 403),
+        ("name desc,name", 403),
+        ("name,name desc", 403),
+        ("name desc,name desc", 403),
+        ("modifiedTime,name,modifiedTime", 403),
+        ("name_natural,name", 403),
+        ("name,name_natural", 403),
+        ("name,name,bogus", 403),
+        ("name,bogus,name", 400),
+        ("name,name sideways", 400),
+    ],
+)
+def test_drive_order_by_refuses_a_repeated_sort_key(client, admin_h, order_by, status):
+    """A key named twice is the 403 `_drive_order_specs` describes, and its `error` object is the
+    one real sends; an unusable token at or before the repeat is the 400."""
+    r = client.get("/drive/v3/files", headers=admin_h, params={"pageSize": 1, "orderBy": order_by})
+    assert r.status_code == status, r.text
+    if status == 403:
+        message = "The orderBy parameter cannot contain duplicate sort keys."
+        assert _gerr(r) == {
+            "code": 403,
+            "message": message,
+            "errors": [
+                {
+                    "message": message,
+                    "domain": "global",
+                    "reason": "orderByContainsDuplicateSortKeys",
+                    "location": "orderBy",
+                    "locationType": "parameter",
+                }
+            ],
+        }
 
 
 def test_drive_invalid_fields_mask_is_rejected(client, admin_h):
@@ -6289,3 +6369,43 @@ def test_a_grid_range_member_is_checked_before_it_reaches_the_parser(
 ):
     r = _by_filter(gc, gh, book, {"dataFilters": [{"gridRange": grid_range}]})
     assert r.status_code == status, r.text
+
+
+@pytest.mark.parametrize(
+    "title,content",
+    [("ASCII", "hello there"), ("ASCII", "안녕하세요"), ("회의 일정", "😀 café")],
+)
+def test_gmail_size_estimate_matches_raw_bytes_in_every_format(tmp_path, title, content):
+    """The `sizeEstimate` rule in `_byte_len`, under every `format` and in the thread. A non-ASCII
+    body reaches `raw` transfer-encoded into ASCII, so the subject is what puts bytes there that a
+    character count would miss.
+    """
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "gmail",
+                "doc_id": "size",
+                "mailbox": "owner",
+                "title": title,
+                "author_email": "owner@example.com",
+                "created": "2026-10-01T00:00:00Z",
+                "content": content,
+            }
+        ],
+    )
+    with client_for(s) as c:
+        h = {"Authorization": "Bearer " + yaml.safe_load(s.tokens_path.read_text())["admin_token"]}
+        mid = c.get("/gmail/v1/users/me/messages", headers=h).json()["messages"][0]["id"]
+        path = "/gmail/v1/users/me/messages/" + mid
+        raw = c.get(path + "?format=raw", headers=h).json()
+        encoded = raw["raw"]
+        size = len(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
+        assert raw["sizeEstimate"] == size
+        for fmt in ["minimal", "metadata", "full"]:
+            message = c.get(path + "?format=" + fmt, headers=h).json()
+            assert message["sizeEstimate"] == size
+            tid = message["threadId"]
+            thread = c.get(f"/gmail/v1/users/me/threads/{tid}?format={fmt}", headers=h)
+            assert thread.status_code == 200
+            assert thread.json()["messages"][0]["sizeEstimate"] == size

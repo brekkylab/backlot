@@ -1,5 +1,9 @@
 <!-- Describe the finished state: what Backlot does now, and why that is the right answer.
-     Not the rounds of work that got here. Closes #<issue>. -->
+     Not the rounds of work that got here. Closes #<issue>.
+
+     Title: item 5 of Pull requests in CONTRIBUTING.md, the closed issue's `<source>:` prefix and
+     one sentence saying what Backlot does now, with no issue number or `fix:`. Keep the three
+     headings and the three checkboxes below; item 7 there says how many may be open at once. -->
 
 ## What changed
 

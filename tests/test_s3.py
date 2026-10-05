@@ -58,7 +58,9 @@ def _s3_signer(ak, sk):
 
 def _sign_get(base_url, path, token, *, tamper=False, extra_headers=None, method="GET", body=None):
     """Return (url, headers) for a SigV4-signed GET (or ``method``), using botocore (the real
-    signer) over ``body``."""
+    signer) over ``body``. The signature covers ``x-amz-date``, so it changes from one run to the
+    next, and ``tamper`` swaps the signature's last hex digit for a different one: the header never
+    verifies, whatever the signature ends in."""
     pytest.importorskip("botocore")
     from urllib.parse import parse_qsl, quote, urlencode
 
@@ -82,7 +84,8 @@ def _sign_get(base_url, path, token, *, tamper=False, extra_headers=None, method
     _s3_signer(ak, sk).add_auth(req)
     headers = dict(req.headers)
     if tamper:
-        headers["Authorization"] = headers["Authorization"][:-4] + "dead"
+        signed = headers["Authorization"]
+        headers["Authorization"] = signed[:-1] + ("1" if signed.endswith("0") else "0")
     return url, headers
 
 
@@ -685,6 +688,19 @@ def test_s3_tampered_signature_rejected(live_server, method, path, status):
         assert _signed(base_url, path, settings.admin_token, method=method).status_code != 403
 
 
+@pytest.mark.parametrize("last", "0123456789abcdef")
+def test_s3_a_tampered_signature_is_never_the_one_botocore_signed(monkeypatch, last):
+    """Against a signature ending in each hex digit in turn, ``dead`` among them, the tamper in
+    `_sign_get` sends 64 hex digits that are not that signature."""
+    from botocore.auth import SigV4Auth
+
+    signature = "0" * 60 + "dea" + last
+    monkeypatch.setattr(SigV4Auth, "signature", lambda self, string_to_sign, request: signature)
+    _, headers = _sign_get("http://127.0.0.1:8000", _KEY, TOKEN, tamper=True)
+    sent = headers["Authorization"].rsplit("Signature=", 1)[1]
+    assert sent != signature and re.fullmatch(r"[0-9a-f]{64}", sent)
+
+
 # Each row is real's answer for a name nobody owns (2026-09-29), which every corpus bucket gets here
 # too, an unsigned request seeing no bucket (``backlot.routers.s3._auth``).
 # fmt: off
@@ -1203,6 +1219,39 @@ def _get_xml(base_url, path, token):
     url, headers = _sign_get(base_url, path, token)
     with urllib.request.urlopen(urllib.request.Request(url, headers=headers)) as r:
         return ET.fromstring(r.read())
+
+
+def test_list_objects_v2_carries_the_owner_under_fetch_owner_true(live_server):
+    """The rule `_list_objects` records for `fetch-owner`, and the V1 listing carrying `Owner`
+    whatever the parameter says."""
+    base_url, settings = live_server
+    for query, owned in (
+        ("list-type=2&fetch-owner=true", True),
+        ("list-type=2&fetch-owner=TRUE", False),
+        ("list-type=2&fetch-owner=True", False),
+        ("list-type=2&fetch-owner=%20true", False),
+        ("list-type=2&fetch-owner=true&fetch-owner=false", True),
+        ("list-type=2&fetch-owner=false&fetch-owner=true", False),
+        ("list-type=2&fetch-owner=false", False),
+        ("list-type=2&fetch-owner=bogus", False),
+        ("list-type=2&fetch-owner=1", False),
+        ("list-type=2&fetch-owner=", False),
+        ("list-type=2", False),
+        ("fetch-owner=true", True),
+        ("fetch-owner=bogus", True),
+    ):
+        root = _get_xml(base_url, f"/s3/eng-artifacts?{query}", settings.admin_token)
+        contents = root.findall(f"{NS}Contents")
+        assert contents, query
+        for c in contents:
+            tags = [e.tag.removeprefix(NS) for e in c]
+            if owned:
+                assert tags == ["Key", "LastModified", "ETag", "Size", "Owner", "StorageClass"], (
+                    query
+                )
+                assert re.fullmatch("[0-9a-f]{64}", c.findtext(f"{NS}Owner/{NS}ID")), query
+            else:
+                assert tags == ["Key", "LastModified", "ETag", "Size", "StorageClass"], query
 
 
 def test_list_buckets_xml_shape(live_server):
@@ -3065,6 +3114,8 @@ def test_boto3_list_objects_paginator_walks_the_bucket_and_keeps_marker_and_owne
     page = s3.list_objects(Bucket="eng-artifacts", MaxKeys=1)
     assert page["Marker"] == "" and page["Contents"][0]["Owner"]["ID"]
     assert "Owner" not in s3.list_objects_v2(Bucket="eng-artifacts", MaxKeys=1)["Contents"][0]
+    owned = s3.list_objects_v2(Bucket="eng-artifacts", MaxKeys=1, FetchOwner=True)
+    assert owned["Contents"][0]["Owner"] == page["Contents"][0]["Owner"]
 
 
 def test_boto3_reads_a_buckets_configuration_and_an_objects_and_gets_one_client_error_for_a_write(

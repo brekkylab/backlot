@@ -12,6 +12,7 @@ answer carries (:func:`vendor_headers`, put on by ``backlot.main.report_atlassia
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import re
 import time
@@ -269,16 +270,19 @@ def _jira_container_for_key(conn, token: str, request: Request | None = None) ->
 
 
 def _resolve_jira_key(request: Request, conn, key: str, ids):
-    """One issue by its served key, ACL-scoped — a unique-indexed column lookup (see
-    store.jira_by_key).
+    """One issue by its served key or its numeric id, ACL-scoped (see store.jira_by_key and
+    store.jira_by_numeric_id).
 
-    One line, because the whole key is stored. Resolving it in parts instead — split the key, map
+    The key is matched whole, as it is stored. Resolving it in parts instead — split the key, map
     the prefix to a project through `_jira_container_for_key`, look the suffix up scoped to it —
     lets that function's three-way tolerance into the ISSUE-KEY namespace. The tolerance is a
     deliberate and correct affordance for the JQL project TOKEN, where real Jira pickers accept a
     key OR a name, but here it makes `payments-7` resolve to `PAY-7`'s issue and issue-key lookup
     case-insensitive. Matching the stored key directly has no seam for either to enter."""
-    return store.jira_by_key(conn, key, visible_ids=ids)
+    row = store.jira_by_key(conn, key, visible_ids=ids)
+    if row is None and key.isascii() and key.isdigit():
+        return store.jira_by_numeric_id(conn, key, visible_ids=ids)
+    return row
 
 
 @router.get(
@@ -286,14 +290,29 @@ def _resolve_jira_key(request: Request, conn, key: str, ids):
 )  # jira PyPI client probes this on connect
 @router.get("/rest/api/3/serverInfo", response_model=JiraServerInfo)
 async def jira_server_info(request: Request):
+    """The fifteen members Jira Cloud answers a signed-in caller, the same on v2 and v3 (measured
+    2026-10-03 and 2026-10-05). The four display URLs are the site's URL, `serverTitle` is `Jira`,
+    and the version and build number are the ones that site served. `scmInfo` is a synthesized
+    40-hex commit id, and `buildDate` a day before `serverTime`, since a build precedes the server
+    running it."""
     site = _site(request)
+    ts = synth.epoch("serverInfo")
     return {
         "baseUrl": site,
-        "version": "1000.0.0",
+        "displayUrl": site,
+        "displayUrlServicedeskHelpCenter": site,
+        "displayUrlConfluence": site,
+        "displayUrlCSMHelpSeeker": site,
+        "version": "1001.0.0-SNAPSHOT",
+        "versionNumbers": [1001, 0, 0],
         "deploymentType": "Cloud",
-        "versionNumbers": [1000, 0, 0],
-        "buildNumber": 100000,
-        "serverTime": synth.rfc3339_millis(synth.epoch("serverInfo")),
+        "buildNumber": 100294,
+        "buildDate": synth.jira_datetime(ts - 86400),
+        "serverTime": synth.rfc3339_millis(ts),
+        "scmInfo": hashlib.sha1(b"serverInfo").hexdigest(),
+        "serverTitle": "Jira",
+        "defaultLocale": {"locale": "en_US"},
+        "serverTimeZone": "Etc/UTC",
     }
 
 
@@ -898,9 +917,9 @@ def _issue_key(request: Request, row) -> str:
 def _jira_ref(request: Request, row, site: str = "") -> dict:
     status = row["status"]
     return {
-        "id": str(synth.jira_numeric_id(row["key"])),
+        "id": row["numeric_id"],
         "key": _issue_key(request, row),
-        "self": f"{site}/rest/api/3/issue/{synth.jira_numeric_id(row['key'])}" if site else None,
+        "self": f"{site}/rest/api/3/issue/{row['numeric_id']}" if site else None,
         "fields": {
             "summary": row["title"],
             "status": {"name": status, "statusCategory": _status_category(status)},
@@ -1024,7 +1043,7 @@ def _jira_issue(conn, request: Request, row, expand: str = "", fields_only: bool
             prow = store.get_document(conn, "jira", row["parent_id"])
             if prow:
                 fields["parent"] = _jira_ref(request, prow, site)
-    nid = synth.jira_numeric_id(row["key"])
+    nid = row["numeric_id"]
     issue = {
         "id": str(nid),
         "key": _issue_key(request, row),

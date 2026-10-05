@@ -1601,12 +1601,18 @@ def _named_row(token: str) -> str:
     return json.loads(base64.b64decode(payload))[0].strip()
 
 
-def _token(row_id: str, *, real: bool = False, tab: bool = True) -> str:
+def _token(
+    row_id: str, *, real: bool = False, tab: bool = True, first: str = "{}", then: str = "[]"
+) -> str:
     """A cursor naming ``row_id``, as this server spells one, or as real does, whose sort value goes
-    on past the id; with ``tab=False``, the id alone, which names no row."""
+    on past the id; with ``tab=False``, the id alone, which names no row. ``first`` is the `_t_`
+    part's text, `{}` standing for the list holding that value, and ``then`` the `_h_` part's."""
     value = ("\t" if tab else "") + row_id + (" mG3e:Saf>3LVt*JA@Ok1 cp" if real else "")
-    payload = base64.b64encode(json.dumps([value]).encode()).decode()
-    return quote(f"_t_{payload}_h_W10=", safe="")
+    t, h = (
+        base64.b64encode(part.encode()).decode()
+        for part in (first.format(json.dumps([value])), then)
+    )
+    return quote(f"_t_{t}_h_{h}", safe="")
 
 
 _SCALE = "com.atlassian.confluence.api.service.exceptions.scale.SSStatusCodeException"
@@ -1623,9 +1629,10 @@ _REFUSED, _FAILED = (
 _NEXT_PAST_INT = errors_atlassian.search_next_out_of_range().body
 
 # The CQL search's page over `searchable`'s four matches, by the rules `_cql_position`,
-# `_cql_cursor`, `_cql_sort_value` and `errors_atlassian.search_next_out_of_range` record: the query
-# after `_CQL`, where `{cN}` is a cursor this server spells naming match N, `{real1}` real's
-# spelling of the one naming match 1 and `{bare1}` match 1's id with no tab in front; then the
+# `_cql_cursor`, `_cql_search_after` and `errors_atlassian.search_next_out_of_range` record: the
+# query after `_CQL`, where `{cN}` is a cursor this server spells naming match N, `{real1}` real's
+# spelling of the one naming match 1 and `{bare1}` match 1's id with no tab in front, and the other
+# `{…1}` are the cursor naming match 1 with the change the test's `tokens` spells out; then the
 # matches served, or `(status, message)` for a refusal (the whole body where it carries more, `None`
 # for none); then the match `next`'s cursor names, or `None` for no `next`.
 # fmt: off
@@ -1661,6 +1668,21 @@ _CQL_PAGE_ROWS = [
     ("&limit=3&cursor=_t_W3RydWVd_h_W10%3D", [0, 1, 2], 2),
     ("&limit=3&cursor=_t_W251bGxd_h_W10%3D", [], None),
     ("&limit=2&cursor=_t_WyJcdH5-fiJd_h_W10%3D", [0, 1], 1),
+    ("&limit=2&cursor={lead1}", [2, 3], None),
+    ("&limit=2&cursor={trail1}", [2, 3], None),
+    ("&limit=2&cursor={pair1}", [2, 3], None),
+    ("&limit=2&cursor={null1}", (400, _REFUSED), None),
+    ("&limit=2&cursor={list1}", (400, _REFUSED), None),
+    ("&limit=2&cursor={bare_null1}", (400, _REFUSED), None),
+    ("&limit=2&cursor={inf1}", (400, _REFUSED), None),
+    ("&limit=2&cursor={dot1}", (400, _REFUSED), None),
+    ("&limit=2&cursor=_t_W05hTl0%3D_h_W10%3D", (400, _REFUSED), None),
+    ("&limit=2&cursor=_t_Wy1JbmZpbml0eV0%3D_h_W10%3D", (400, _REFUSED), None),
+    ("&limit=2&cursor=_t_bnVsbA%3D%3D_h_W10%3D", [0, 1], 1),
+    ("&limit=0&cursor=_t_bnVsbA%3D%3D_h_W10%3D", [], 0),
+    ("&limit=2&cursor=_t_bnVsbA%3D%3D_h_W251bGxd", (400, _REFUSED), None),
+    ("&limit=2&cursor=_t_W10%3D_h_W251bGxd", (400, _REFUSED), None),
+    ("&limit=2&cursor=_t_W10geA%3D%3D_h_W10%3D", (500, _FAILED), None),
     ("&limit=1&start=2147483646", [0], 0),
     ("&limit=2&start=2147483646", (400, _NEXT_PAST_INT), None),
     ("&limit=0&start=2147483646", [], 0),
@@ -1682,14 +1704,25 @@ def test_confluence_cql_pages_by_the_cursor_it_is_sent(searchable, query, answer
     tokens = {f"c{n}": _token(row) for n, row in enumerate(ids)} | {
         "real1": _token(ids[1], real=True),
         "bare1": _token(ids[1], tab=False),
+        "lead1": _token(ids[1], first=" {}"),
+        "trail1": _token(ids[1], first="{} x"),
+        "pair1": _token(ids[1], then="[1,2]"),
+        "null1": _token(ids[1], then="[null]"),
+        "list1": _token(ids[1], then="[[]]"),
+        "bare_null1": _token(ids[1], then="null"),
+        "inf1": _token(ids[1], then="[Infinity]"),
     }
+    # a `.` among the first part's base64 characters
+    tokens["dot1"] = tokens["c1"][:7] + "." + tokens["c1"][7:]
     r = client.get(_CQL + query.format(**tokens), headers=h)
     if isinstance(answer, tuple):
         status, message = answer
         assert r.status_code == status, r.text
         if message is None:
             assert (r.content, r.headers.get("content-type")) == (b"", None)
-        elif isinstance(message, dict):
+            return
+        assert r.headers["content-type"] == "application/json"
+        if isinstance(message, dict):
             assert r.json() == message
         else:
             assert r.json() == {"statusCode": status, "message": message}
@@ -1936,6 +1969,8 @@ _CQL_INT_ROWS = [
     ("cql=type%3Dpage&limit=%09", 200, (25, 0)),
     ("cql=type%3Dpage&limit=%0A", 200, (25, 0)),
     ("cql=type%3Dpage&limit=%0D%0A", 200, (25, 0)),
+    ("cql=type%3Dpage&limit=%01", 200, (25, 0)),
+    ("cql=type%3Dpage&limit=%1F", 200, (25, 0)),
     ("cql=type%3Dpage&limit=%EF%BC%95", 200, (5, 0)),
     ("cql=type%3Dpage&limit=%D9%A5", 200, (5, 0)),
     ("cql=type%3Dpage&limit=%D9%A1%D9%A2", 200, (12, 0)),

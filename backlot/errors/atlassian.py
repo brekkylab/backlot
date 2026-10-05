@@ -262,7 +262,7 @@ def start_too_large() -> AtlassianError:
 
 def search_cursor_refused(*, failed: bool = False) -> AtlassianError:
     """The CQL search's refusal of a `cursor` it cannot page by
-    (``backlot.routers.atlassian._cql_sort_value`` says which): a 400, or with ``failed`` a 500.
+    (``backlot.routers.atlassian._cql_search_after`` says which): a 400, or with ``failed`` a 500.
     Both bodies name the search service behind the route, which is where the token is read."""
     status = 500 if failed else 400
     failure = (

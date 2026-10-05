@@ -128,8 +128,8 @@ def json_media_type(path: str, status_code: int) -> str | None:
     measured 2026-09-16 and 2026-09-18 on `serverInfo`, `field` and `project/search`. That 403 is
     the only one this server answers on a Jira path, so the status alone selects it. Confluence
     answers the bare type on every JSON body measured — the 200s, the 404s, the 400, 403 and 405
-    (2026-09-15 and 2026-09-18) — so `/wiki` is ``None`` throughout; its 401 is Tomcat's HTML page,
-    which the envelope here does not reproduce.
+    (2026-09-15 and 2026-09-18), and the CQL search's 400s and 500 (2026-10-05) — so `/wiki` is
+    ``None`` throughout; its 401 is Tomcat's HTML page, which the envelope here does not reproduce.
 
     The RFC 7807 refusals are not this function's: they ride on :class:`AtlassianError` under
     :data:`PROBLEM_JSON`, and ``main.vendor_json_media_type`` rewrites only a response that is
@@ -260,15 +260,15 @@ def start_too_large() -> AtlassianError:
     )
 
 
-def search_cursor_refused(*, empty: bool = False) -> AtlassianError:
+def search_cursor_refused(*, failed: bool = False) -> AtlassianError:
     """The CQL search's refusal of a `cursor` it cannot page by
-    (``backlot.routers.atlassian._cql_sort_value`` says which): a 400, or with ``empty`` a 500.
+    (``backlot.routers.atlassian._cql_sort_value`` says which): a 400, or with ``failed`` a 500.
     Both bodies name the search service behind the route, which is where the token is read."""
-    status = 500 if empty else 400
+    status = 500 if failed else 400
     failure = (
         "There was an error returned from XP-Search Aggregator API: HTTP/1.1 500 Internal Server "
         "Error"
-        if empty
+        if failed
         else "There was an illegal request passed to XP-Search Aggregator API : HTTP/1.1 400 Bad "
         "Request"
     )
@@ -286,13 +286,13 @@ def search_cursor_refused(*, empty: bool = False) -> AtlassianError:
 
 
 def search_next_out_of_range() -> AtlassianError:
-    """The CQL search's refusal of a page whose `next` would carry a `start` past Java's `int`.
+    """The CQL search's refusal of a page that answers `next` where `start` plus the rows served,
+    or plus one on a page that served none, passes Java's `int`.
 
-    Measured 2026-10-04 on nine matches: where `next` is answered, a `start` plus the rows served,
-    or plus one on a page that served none, above 2147483647 is this 400 —
-    `?limit=2&start=2147483646` and `?limit=0&start=2147483647` are, `?limit=1&start=2147483646`
-    and `?limit=0&start=2147483646` are served, and so is `?start=2147483647`, which serves all
-    nine and answers no `next`. The body carries the `data` member :func:`start_too_large`'s does.
+    Measured 2026-10-04 on nine matches: `?limit=2&start=2147483646` and `?limit=0&start=2147483647`
+    are this 400, `?limit=1&start=2147483646` and `?limit=0&start=2147483646` are served, and so is
+    `?start=2147483647`, which serves all nine and answers no `next`. The body carries the `data`
+    member :func:`start_too_large`'s does.
     """
     return AtlassianError(
         400,

@@ -51,7 +51,7 @@ Ordered as the table above, by `source_type`.
 operation an ACL states.
 
 A JSON body is the bare `application/json` on every Confluence route served — the 200s, the 404s,
-the 400, 403 and 405 measured. The charset Jira names is Jira's alone.
+the 400s, 403, 405 and the CQL search's 500 measured. The charset Jira names is Jira's alone.
 
 A `HEAD` is the `GET` with the body left off, and declares the length that body would have had on
 every 200 but `search`'s. An `OPTIONS` is a 404 in the `errors` list the 405 uses, except on

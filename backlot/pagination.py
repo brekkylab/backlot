@@ -444,8 +444,9 @@ def confluence_page_links(
       nothing, so `?limit=0` answers a `next` linking to the page it is on, and a `start` past
       `total` answers none. The CQL search's page is not positioned by `start`
       (:func:`backlot.routers.atlassian._cql_position`); it passes ``reached``, the number of
-      matches up to the end of its page, a page that served none counting as reaching one match on,
-      and its `next` carries the cursor :func:`backlot.routers.atlassian._cql_cursor` picks;
+      matches up to the end of its page, a page that served none counting as reaching one match on
+      (measured 2026-10-04), and its `next` carries the cursor
+      :func:`backlot.routers.atlassian._cql_cursor` picks;
     - `prev` walks back by `limit` clamped at zero, and its own `limit` is the number of rows
       actually skipped, so `?start=1` at the default 25 answers `limit=1&start=0`, and
       `?limit=5&start=2` answers `limit=2&start=0` on all six (measured 2026-09-23);

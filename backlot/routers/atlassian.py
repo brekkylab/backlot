@@ -2047,7 +2047,7 @@ def _cql_sort_value(token: str):
     if len(lists) != 2 or not all(isinstance(each, list) for each in lists) or len(lists[0]) > 1:
         raise errors_atlassian.search_cursor_refused()
     if not lists[0] or isinstance(lists[0][0], (list, dict)):
-        raise errors_atlassian.search_cursor_refused(empty=True)
+        raise errors_atlassian.search_cursor_refused(failed=True)
     return lists[0][0]
 
 
@@ -2088,10 +2088,10 @@ def _cql_cursor(served: list, matched: list, position: int) -> str | None:
     Measured 2026-09-23 on a nine-page site: the token names the second match at `limit=2` and the
     fifth at `limit=5`, and moves with each `next` followed. Measured 2026-10-04, an empty page
     names the first match when no cursor was sent, whatever `start` says, and the row after the sent
-    one's when one was: `?limit=0` with a cursor naming the second match names the third, where
-    `next` is answered only while a match follows that one. Real's token carries the row's sort
-    value (:func:`_cql_sort_value`); this builds one of its own from the row's id, so a client sees
-    a token shaped like real's, and real reads this one back as it reads its own.
+    one's when one was: `?limit=0` with a cursor naming the second match names the third. Real's
+    token carries the row's sort value (:func:`_cql_sort_value`); this builds one of its own from
+    the row's id, so a client sees a token shaped like real's, and real reads this one back as it
+    reads its own.
     """
     row = served[-1] if served else (matched[position] if position < len(matched) else None)
     if row is None:

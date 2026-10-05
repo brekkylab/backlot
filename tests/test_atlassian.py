@@ -1623,11 +1623,11 @@ _REFUSED, _FAILED = (
 _NEXT_PAST_INT = errors_atlassian.search_next_out_of_range().body
 
 # The CQL search's page over `searchable`'s four matches, by the rules `_cql_position`,
-# `_cql_cursor` and `_cql_sort_value` record: the query after `_CQL`, where `{cN}` is a cursor this
-# server spells naming match N, `{real1}` real's spelling of the one naming match 1 and `{bare1}`
-# match 1's id with no tab in front; then the matches served, or `(status, message)` for a refusal
-# (the whole body where it carries more, `None` for none); then the match `next`'s cursor names, or
-# `None` for no `next`.
+# `_cql_cursor`, `_cql_sort_value` and `errors_atlassian.search_next_out_of_range` record: the query
+# after `_CQL`, where `{cN}` is a cursor this server spells naming match N, `{real1}` real's
+# spelling of the one naming match 1 and `{bare1}` match 1's id with no tab in front; then the
+# matches served, or `(status, message)` for a refusal (the whole body where it carries more, `None`
+# for none); then the match `next`'s cursor names, or `None` for no `next`.
 # fmt: off
 _CQL_PAGE_ROWS = [
     ("&limit=2", [0, 1], 1),
@@ -1700,7 +1700,6 @@ def test_confluence_cql_pages_by_the_cursor_it_is_sent(searchable, query, answer
     assert (page["totalSize"], page["start"]) == (4, int(sent[1]) if sent else 0)
     nxt = page["_links"].get("next")
     assert (ids.index(_named_row(_cursors(nxt)[0])) if nxt else None) == next_names
-    # whatever the request sent as `cursor`, `self` carries none and `next` its own alone
     assert "cursor=" not in page["_links"]["self"] and len(_cursors(nxt or "")) == bool(nxt)
 
 

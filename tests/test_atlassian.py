@@ -3556,3 +3556,75 @@ def test_atlassian_answers_by_which_mount_the_path_is_under(
     assert r.headers["content-type"] == media_type
     if status == 404 and media_type in (_PAGE, _JIRA_PAGE):
         assert r.text == errors_atlassian.HTML_NOT_FOUND
+
+
+@pytest.mark.parametrize("version", [2, 3])
+def test_jira_numeric_ids_resolve_exactly_and_preserve_acl(client, admin_h, tokens, version):
+    """An issue's numeric id reads as its key does, for the admin and each scoped token, and with a
+    leading zero is a 404 (see store.jira_by_numeric_id).
+    """
+    issues = client.get(
+        "/atlassian/rest/api/3/search/jql?jql=project+%3D+payments&maxResults=50", headers=admin_h
+    ).json()["issues"]
+    assert issues
+    for issue in issues:
+        path = f"/atlassian/rest/api/{version}/issue/"
+        key, numeric = issue["key"], issue["id"]
+        for suffix in ["", "/comment"]:
+            by_key = client.get(path + key + suffix, headers=admin_h)
+            by_id = client.get(path + numeric + suffix, headers=admin_h)
+            assert by_id.status_code == by_key.status_code == 200
+            assert by_id.json() == by_key.json()
+            assert client.get(path + "0" + numeric + suffix, headers=admin_h).status_code == 404
+            for token in tokens.values():
+                h = {"Authorization": "Bearer " + token}
+                keyed = client.get(path + key + suffix, headers=h)
+                numbered = client.get(path + numeric + suffix, headers=h)
+                assert numbered.status_code == keyed.status_code
+                assert numbered.json() == keyed.json()
+
+
+@pytest.mark.parametrize("version", [2, 3])
+def test_jira_issue_ids_that_hash_alike_each_read_back_their_own_issue(tmp_path, version):
+    """PAY-1425 and PAY-2172 share a numeric seed; each served id must read its own issue, and the
+    subtask and parent entries that point at them carry those ids."""
+    keys = ("PAY-1425", "PAY-2172")
+    corpus = [
+        {
+            "source_type": "jira",
+            "doc_id": key,
+            "key": key,
+            "project": "payments",
+            "title": key,
+            "content": "Body.",
+            "author_email": "ava@acme.com",
+            "created": "2026-01-01T00:00:00Z",
+            "issuetype": "Task",
+            "status": "To Do",
+            **({"parent": "PAY-1425"} if key == "PAY-2172" else {}),
+        }
+        for key in keys
+    ]
+    settings = tiny_corpus(tmp_path, corpus)
+    admin = yaml.safe_load(settings.tokens_path.read_text())["admin_token"]
+    with client_for(settings, reload=True) as c:
+        h = {"Authorization": f"Bearer {admin}"}
+        path = f"/atlassian/rest/api/{version}/issue/"
+        ids = {}
+        for key in keys:
+            by_key = c.get(path + key, headers=h)
+            assert by_key.status_code == 200
+            ids[key] = by_key.json()["id"]
+            by_id = c.get(path + ids[key], headers=h)
+            assert by_id.status_code == 200 and by_id.json()["key"] == key
+            assert by_id.json() == by_key.json()
+            assert (
+                c.get(path + ids[key] + "/comment", headers=h).json()
+                == c.get(path + key + "/comment", headers=h).json()
+            )
+        assert len(set(ids.values())) == len(keys)
+        parent = c.get(path + ids["PAY-1425"], headers=h).json()["fields"]
+        assert [s["id"] for s in parent["subtasks"]] == [ids["PAY-2172"]]
+        assert parent["subtasks"][0]["self"].endswith("/issue/" + ids["PAY-2172"])
+        child = c.get(path + ids["PAY-2172"], headers=h).json()["fields"]
+        assert child["parent"]["id"] == ids["PAY-1425"]

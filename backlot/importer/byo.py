@@ -386,8 +386,9 @@ def _service_columns(
     if src == "gmail":
         # `thread` names the thread this message belongs to (default: the message's own id), so
         # every message of a multi-message thread shares one thread_id while carrying its own
-        # position in `thread_seq`. It holds the ROOT'S SERVED id, resolved by the caller — a
-        # gmail id is a pure hash of the seed, so that resolution needs no lookup.
+        # position in `thread_seq`. It holds the thread's served id (see `gmail_messages` in
+        # `store.SCHEMA`), computed by the caller — a gmail id is a pure hash, so that needs no
+        # lookup.
         return {
             "thread_id": thread_id or synth.gmail_message_id(seed),
             "thread_seq": seq,
@@ -3134,6 +3135,38 @@ class _Loader:
             self.jira_prefixes.setdefault(project, prefix)
             final.append((key, f"{prefix}-{candidate}"))
         self._settle("jira", final)
+        self.resolve_jira_numeric_ids()
+
+    def resolve_jira_numeric_ids(self) -> None:
+        """Assign each settled issue key a unique numeric id, retaining earlier imports' ids.
+
+        PAY-1425 and PAY-2172 hash alike; a shared id would read back the wrong issue. New rows
+        have NULL ids only during this transaction. Key order makes a fresh import independent
+        of record order, while stored claims keep earlier ids stable across appends.
+        """
+        taken = {
+            int(value)
+            for (value,) in self.conn.execute(
+                "SELECT numeric_id FROM jira_issues WHERE numeric_id IS NOT NULL"
+            )
+        }
+        for (key,) in self.conn.execute(
+            "SELECT key FROM jira_issues WHERE numeric_id IS NULL ORDER BY key"
+        ).fetchall():
+            candidate = synth.jira_numeric_id(key)
+            for _ in range(synth.JIRA_NUMERIC_ID_RANGE):
+                if candidate not in taken:
+                    break
+                candidate = (
+                    synth.JIRA_NUMERIC_ID_MIN
+                    + (candidate - synth.JIRA_NUMERIC_ID_MIN + 1) % synth.JIRA_NUMERIC_ID_RANGE
+                )
+            else:
+                raise SystemExit("jira: numeric issue ids have exhausted their available range")
+            self.conn.execute(
+                "UPDATE jira_issues SET numeric_id = ? WHERE key = ?", (str(candidate), key)
+            )
+            taken.add(candidate)
 
     def write_linear_entities(self) -> None:
         """Store the ids Linear's by-id roots reverse: project, workflow state, label, cycle, user

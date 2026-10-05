@@ -1322,12 +1322,9 @@ def list_hubspot_objects(
 # GraphQL `orderBy` value -> the column it sorts on.
 #
 # Linear's pagination docs state "By default results are ordered by createdAt field", and its
-# `PaginationOrderBy` enum carries a FIELD ONLY — no direction — so the server fixes the
-# direction and a client that wants the other one uses the richer `sort:` input instead.
-# The direction is not documented; ASCENDING is the choice here because it is the only one that
-# makes an `after` cursor stable: with newest-first, creating an issue shifts every existing
-# offset by one and a mid-crawl cursor silently re-reads a row. `id` breaks ties into a
-# total order either way, which offset paging requires.
+# `PaginationOrderBy` enum carries a FIELD ONLY — no direction. The real API serves `issues`
+# newest-first: `createdAt` by default and with `orderBy: createdAt`, and `updatedAt` with
+# `orderBy: updatedAt`. `id` breaks ties into a total order, which offset paging requires.
 LINEAR_DEFAULT_ORDER_BY = "createdAt"
 
 # `Issue.updatedAt` is non-null in Linear; an issue with no recorded edit reports its creation
@@ -1356,7 +1353,7 @@ LINEAR_SORT_COLUMNS = {
 }
 
 
-def _linear_order(order_by: str | None, descending: bool, sort=None) -> str:
+def _linear_order(order_by: str | None, sort=None) -> str:
     """The ORDER BY, always TOTAL (sort keys + ``id``) — an offset page over a non-total order
     can silently repeat or skip a row between pages. ``sort`` (Linear's ``IssueSortInput``) wins over
     ``orderBy`` when both are given, matching the real API, where it is the richer multi-key form."""
@@ -1376,9 +1373,8 @@ def _linear_order(order_by: str | None, descending: bool, sort=None) -> str:
     # through to raw insertion order (`id`) was a real divergence — `issues(first: 10)`
     # returned an arbitrary ten rather than the first ten by creation.
     col = LINEAR_ORDER_COLUMNS[order_by or LINEAR_DEFAULT_ORDER_BY]
-    direction = "DESC" if descending else "ASC"
-    # NULL updated_ts sorts last on DESC, which is where an issue with no recorded edit belongs.
-    return f"{col} {direction}, id"
+    # Linear serves these PaginationOrderBy fields newest-first.
+    return f"{col} DESC, id"
 
 
 def _linear_archived(archived: bool) -> str:
@@ -1396,7 +1392,6 @@ def list_linear_issues(
     limit=50,
     offset=0,
     order_by=None,
-    descending=False,
     prefilter=None,
     sort=None,
     archived=False,
@@ -1415,7 +1410,7 @@ def list_linear_issues(
         params += fparams
     sql += _linear_archived(archived)
     clause, cparams = _acl_clause("linear", visible_ids=visible_ids)
-    sql += clause + f" ORDER BY {_linear_order(order_by, descending, sort)} LIMIT ? OFFSET ?"
+    sql += clause + f" ORDER BY {_linear_order(order_by, sort)} LIMIT ? OFFSET ?"
     params += cparams + [limit, offset]
     return conn.execute(sql, params).fetchall()
 

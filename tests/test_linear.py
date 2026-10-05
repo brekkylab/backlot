@@ -431,7 +431,8 @@ def test_linear_issue_without_a_parent_is_null(client, admin_h):
     ],
 )
 def test_linear_default_and_order_by_are_newest_first(client, admin_h, query, field):
-    """Linear serves issue lists newest-first by default and for both PaginationOrderBy fields."""
+    """`issues` is newest-first by the field `orderBy` names, and by `createdAt` with no
+    direction, as the comment on `LINEAR_DEFAULT_ORDER_BY` records."""
     nodes = gql(client, query, admin_h).json()["data"]["issues"]["nodes"]
     stamps = [n[field] for n in nodes]
 

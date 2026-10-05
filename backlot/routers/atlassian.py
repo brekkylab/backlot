@@ -1428,9 +1428,12 @@ async def confluence_content_list(request: Request):
             return {"results": [], "start": start, "limit": limit, "size": 0, "_links": links}
     else:
         container = None
-    # Measured on a Confluence Cloud tenant on 2026-10-03: `title` answered the page with that title
-    # whether spelled as stored or in lower case, with or without `spaceKey`, and a title no page
-    # has answered `size: 0`.
+    # Measured on a Confluence Cloud tenant on 2026-10-03 and 2026-10-05: `title` answered the page
+    # with that title whether spelled as stored, in lower case or in upper case, with or without
+    # `spaceKey`, with no `next` when asked for one page at a time. A title no page has answered
+    # `size: 0`, and so did the title's first word, the title with a space before or after it, a
+    # space alone, and a repeated `title` in either order (`_str_param` joins it with a comma); an
+    # empty `title` filters nothing.
     title = _str_param(request, "title") or None
     total = store.count_documents(conn, "confluence", container, ids, title=title)
     rows = store.list_documents(

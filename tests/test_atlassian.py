@@ -453,9 +453,7 @@ def test_confluence_content_filtered_by_space_key(client, admin_h):
 
 
 def test_confluence_content_filtered_by_title(client, admin_h, tokens):
-    """Measured on a Confluence Cloud tenant on 2026-10-03: `title` answered the one page with that
-    title, spelled as stored or in lower case, with or without `spaceKey`, and `size: 0` for a
-    title no page has."""
+    """The rule the comment in `confluence_content_list` records, over the caller's own pages."""
     url = "/atlassian/wiki/rest/api/content"
 
     def titles(headers, **params):
@@ -463,11 +461,19 @@ def test_confluence_content_filtered_by_title(client, admin_h, tokens):
         assert body["size"] == len(body["results"])
         return [r["title"] for r in body["results"]]
 
-    for sent in ("On-call Runbook", "on-call runbook"):
+    for sent in ("On-call Runbook", "on-call runbook", "ON-CALL RUNBOOK"):
         assert titles(admin_h, title=sent, spaceKey="handbook") == ["On-call Runbook"], sent
         assert titles(admin_h, title=sent) == ["On-call Runbook"], sent
-    assert titles(admin_h, title="zzqq-no-such-page", spaceKey="handbook") == []
-    assert titles(admin_h, title="zzqq-no-such-page") == []
+    for sent in ("zzqq-no-such-page", "On-call", " On-call Runbook", "On-call Runbook ", " "):
+        assert titles(admin_h, title=sent, spaceKey="handbook") == [], sent
+        assert titles(admin_h, title=sent) == [], sent
+    assert titles(admin_h, title=["On-call Runbook", "zzqq-nope"]) == []
+    assert titles(admin_h, title=["zzqq-nope", "On-call Runbook"]) == []
+    assert len(titles(admin_h, title="")) > 1
+    # the total behind `_links.next` counts the matching pages, not the space's
+    one = client.get(url, headers=admin_h, params={"title": "On-call Runbook", "limit": 1}).json()
+    assert one["size"] == 1 and "next" not in one["_links"]
+    assert "next" in client.get(url, headers=admin_h, params={"limit": 1}).json()["_links"]
     # the title of a page the caller cannot see matches nothing for that caller
     comp = "Compensation Bands 2026"
     assert titles({"Authorization": f"Bearer {tokens['hana@acme.com']}"}, title=comp) == [comp]

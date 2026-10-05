@@ -3124,9 +3124,14 @@ def _sheets_value(cell) -> dict:
 def _sheets_grid_data(sheet: _Sheet, body: str, spec: str) -> dict:
     """One ``GridData`` block for ``spreadsheets.get?includeGridData=true``.
 
-    Measured: a cell object per column of the range, an empty one carrying no value;
-    ``startRow``/``startColumn`` omitted when zero, proto3 dropping its defaults; and no
+    Measured: ``startRow``/``startColumn`` omitted when zero, proto3 dropping its defaults; and no
     ``rowData`` key at all on an empty sheet, whose block is metadata alone.
+
+    Measured on 2026-10-05, through ``ranges`` and through an ``a1Range`` filter: a row's
+    ``values`` end at its last cell holding a value, an empty cell before that being ``{}``; a row
+    holding no value is ``{}`` itself; ``rowData`` ends at the last row holding a value; and the
+    keys come in the order ``startRow``, ``startColumn``, ``rowData``, ``rowMetadata``,
+    ``columnMetadata``.
 
     ``userEnteredValue`` and ``effectiveValue`` are equal here and both absent from an empty cell.
     Measured, they differ on real Sheets only for a FORMULA cell — the formula in the first, its
@@ -3135,10 +3140,7 @@ def _sheets_grid_data(sheet: _Sheet, body: str, spec: str) -> dict:
     ``rowMetadata``/``columnMetadata`` cover the RANGE, one entry per row and column of it —
     measured, 2 and 2 for ``Data!A1:B2`` against the same sheet whose unscoped block carries 1000
     and 26. Every entry is identical (``pixelSize`` 21 for a row, 100 for a column), those being
-    the default track sizes; a corpus states no track size, so there is nothing to vary.
-
-    One divergence, stated rather than hidden: real Sheets pads ``rowData`` out to the WHOLE
-    1000-row grid where this stops at the last row holding data."""
+    the default track sizes; a corpus states no track size, so there is nothing to vary."""
     r0, c0, r1x, c1, block = _sheets_block(sheet, body, spec)
     width = c1 - c0
     while block and all(sheets_grid.formatted(c) == "" for c in block[-1]):
@@ -3166,7 +3168,7 @@ def _sheets_grid_data(sheet: _Sheet, body: str, spec: str) -> dict:
             ]
             while vals and not vals[-1]:
                 vals.pop()
-            row_data.append({"values": vals})
+            row_data.append({"values": vals} if vals else {})
         out["rowData"] = row_data
     out["rowMetadata"] = [{"pixelSize": SHEETS_ROW_PIXELS} for _ in range(r1x - r0)]
     out["columnMetadata"] = [{"pixelSize": SHEETS_COL_PIXELS} for _ in range(width)]

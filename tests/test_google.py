@@ -5238,7 +5238,7 @@ GRID_RECORDS = [
             # default grid while `AB` is column 28 of a 26-column sheet, so the two fail
             # differently -- one serves the wrong cells, the other 400s.
             {"title": "AB", "grid": [["I_AM_SHEET_AB"]]},
-            {"title": "Ragged", "grid": [["a", None, "c"]]},
+            {"title": "Ragged", "grid": [["a", None, "c"], [None], ["z"], [None, None, "w"]]},
             {"title": "Blank", "grid": []},
         ],
     },
@@ -5443,13 +5443,53 @@ def test_a_typed_cell_carries_all_three_value_fields(gc, gh, book):
     }
 
 
-def test_an_empty_cell_carries_no_value_object(gc, gh, book):
-    r = gc.get(
-        f"/sheets/v4/spreadsheets/{book}",
-        headers=gh,
-        params={"includeGridData": "true", "ranges": "Ragged!A1:C1"},
-    )
-    assert r.json()["sheets"][0]["data"][0]["rowData"][0]["values"][1] == {}
+_GRID_KEYS = ["rowData", "rowMetadata", "columnMetadata"]
+_RAGGED_ROWS = [["a", {}, "c"], {}, ["z"], [{}, {}, "w"]]
+
+
+@pytest.mark.parametrize(
+    "read, rng, keys, rows",
+    [
+        ("get", "Ragged!A1:D5", _GRID_KEYS, _RAGGED_ROWS),
+        ("filter", "Ragged!A1:D5", _GRID_KEYS, _RAGGED_ROWS),
+        ("get", "Ragged", _GRID_KEYS, _RAGGED_ROWS),
+        ("get", "Ragged!B1:D1", ["startColumn", *_GRID_KEYS], [[{}, "c"]]),
+        ("get", "Ragged!B1:D4", ["startColumn", *_GRID_KEYS], [[{}, "c"], {}, {}, [{}, "w"]]),
+        ("get", "Ragged!A2:B3", ["startRow", *_GRID_KEYS], [{}, ["z"]]),
+        ("get", "Ragged!B2:D4", ["startRow", "startColumn", *_GRID_KEYS], [{}, {}, [{}, "w"]]),
+        ("filter", "Ragged!B2:D4", ["startRow", "startColumn", *_GRID_KEYS], [{}, {}, [{}, "w"]]),
+        ("get", "Ragged!A1:B2", _GRID_KEYS, [["a"]]),
+        ("filter", "Ragged!A1:B2", _GRID_KEYS, [["a"]]),
+        ("get", "Ragged!C1:C3", ["startColumn", *_GRID_KEYS], [["c"]]),
+        ("get", "Ragged!B1:B4", ["startColumn", "rowMetadata", "columnMetadata"], []),
+        ("get", "Blank", ["rowMetadata", "columnMetadata"], []),
+        ("filter", "Blank", ["rowMetadata", "columnMetadata"], []),
+    ],
+)
+def test_a_grid_data_block_serves_reals_keys_and_rows(gc, gh, book, read, rng, keys, rows):
+    """Each block as real Sheets served it from a sheet laid out like `Ragged` or `Blank`,
+    measured as `_sheets_grid_data` records. A cell is written here as its `formattedValue`, and an
+    empty cell or a row holding no value as the `{}` served for it."""
+    if read == "get":
+        r = gc.get(
+            f"/sheets/v4/spreadsheets/{book}",
+            headers=gh,
+            params={"includeGridData": "true", "ranges": rng},
+        )
+    else:
+        r = gc.post(
+            f"/sheets/v4/spreadsheets/{book}:getByDataFilter",
+            headers=gh,
+            json={"dataFilters": [{"a1Range": rng}], "includeGridData": True},
+        )
+    assert r.status_code == 200, r.text
+    block = r.json()["sheets"][0]["data"][0]
+    assert list(block) == keys
+    got = [
+        [c["formattedValue"] if c else {} for c in row["values"]] if "values" in row else row
+        for row in block.get("rowData", [])
+    ]
+    assert got == rows
 
 
 @pytest.mark.parametrize(
@@ -5546,10 +5586,9 @@ def test_include_grid_data_without_ranges_gives_every_sheet_its_own_cells(gc, gh
     got = {}
     for s in r.json()["sheets"]:
         rows = s["data"][0].get("rowData", [])
-        # Each row is padded to the grid's width with empty cell objects, which real Sheets does
-        # too; the occupied prefix is what says which sheet answered.
+        # The cells holding a value are what say which sheet answered; an empty one is `{}`.
         got[s["properties"]["title"]] = [
-            [v["formattedValue"] for v in row["values"] if v] for row in rows
+            [v["formattedValue"] for v in row.get("values", []) if v] for row in rows
         ]
     assert got["A1"] == [["I_AM_SHEET_A1"]]
     assert got["AB"] == [["I_AM_SHEET_AB"]]
@@ -5604,17 +5643,6 @@ def test_ranges_without_include_grid_data_still_filters_and_serves_no_cells(gc, 
     sheets = r.json()["sheets"]
     assert [s["properties"]["title"] for s in sheets] == ["Summary"]
     assert "data" not in sheets[0]
-
-
-def test_an_empty_sheet_omits_row_data_entirely(gc, gh, book):
-    """Measured: an empty sheet's GridData block carries its metadata and no `rowData` key at all,
-    not an empty list."""
-    r = gc.get(
-        f"/sheets/v4/spreadsheets/{book}",
-        headers=gh,
-        params={"includeGridData": "true", "ranges": "Blank"},
-    )
-    assert "rowData" not in r.json()["sheets"][0]["data"][0]
 
 
 # --- Drive export must keep agreeing with the Sheets API --------------------------------------

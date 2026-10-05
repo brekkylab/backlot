@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import json
 import re
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote, unquote
 
@@ -356,49 +357,34 @@ def test_atlassian_error_keeps_the_atlassian_error_envelope(client):
     assert body["statusCode"] == 403
 
 
-def test_jira_serverinfo_v2_alias_matches_v3(client, admin_h):
+def test_jira_serverinfo_answers_reals_fifteen_members_on_v2_and_v3(client, admin_h):
     # the `jira` PyPI client (used by llama-index's JiraReader) probes serverInfo under
-    # /rest/api/2 on connect; Backlot must serve the same shape as the v3 handler.
+    # /rest/api/2 on connect, so v2 serves the v3 handler's answer; the members are the ones
+    # `jira_server_info` records.
     v2 = client.get("/atlassian/rest/api/2/serverInfo", headers=admin_h).json()
     v3 = client.get("/atlassian/rest/api/3/serverInfo", headers=admin_h).json()
     assert v2 == v3
-    assert v2["deploymentType"] == "Cloud"
-
-
-def test_jira_serverinfo_answers_the_fifteen_members_real_does(client, admin_h):
-    # measured on a Jira Cloud site on 2026-10-03, the same fifteen on v2 and v3
-    for ver in ("2", "3"):
-        body = client.get(f"/atlassian/rest/api/{ver}/serverInfo", headers=admin_h).json()
-        assert sorted(body) == [
-            "baseUrl",
-            "buildDate",
-            "buildNumber",
-            "defaultLocale",
-            "deploymentType",
-            "displayUrl",
-            "displayUrlCSMHelpSeeker",
-            "displayUrlConfluence",
-            "displayUrlServicedeskHelpCenter",
-            "scmInfo",
-            "serverTime",
-            "serverTimeZone",
-            "serverTitle",
-            "version",
-            "versionNumbers",
-        ]
-        assert body["defaultLocale"] == {"locale": "en_US"}
-        assert body["serverTimeZone"] == "Etc/UTC"
-        assert re.fullmatch(r"[0-9a-f]{40}", body["scmInfo"])
-        assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}[+-]\d{4}", body["buildDate"])
-        for key in (
-            "displayUrl",
-            "displayUrlConfluence",
-            "displayUrlServicedeskHelpCenter",
-            "displayUrlCSMHelpSeeker",
-        ):
-            assert body[key] == body["baseUrl"]
-        assert body["version"] == "1001.0.0-SNAPSHOT"
-        assert body["versionNumbers"] == [1001, 0, 0]
+    site = v3["baseUrl"]
+    synthesized = {k: v3.pop(k) for k in ("buildDate", "serverTime", "scmInfo")}
+    assert v3 == {
+        "baseUrl": site,
+        "displayUrl": site,
+        "displayUrlServicedeskHelpCenter": site,
+        "displayUrlCSMHelpSeeker": site,
+        "displayUrlConfluence": site,
+        "version": "1001.0.0-SNAPSHOT",
+        "versionNumbers": [1001, 0, 0],
+        "deploymentType": "Cloud",
+        "buildNumber": 100294,
+        "serverTitle": "Jira",
+        "defaultLocale": {"locale": "en_US"},
+        "serverTimeZone": "Etc/UTC",
+    }
+    assert re.fullmatch(r"[0-9a-f]{40}", synthesized["scmInfo"])
+    built = synthesized["buildDate"]
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}[+-]\d{4}", built)
+    served = datetime.fromisoformat(synthesized["serverTime"])
+    assert datetime.strptime(built, "%Y-%m-%dT%H:%M:%S.%f%z") < served
 
 
 def test_jira_search_filtered_by_project(client, admin_h):

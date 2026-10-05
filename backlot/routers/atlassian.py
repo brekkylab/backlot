@@ -281,12 +281,13 @@ def _resolve_jira_key(request: Request, conn, key: str, ids):
 )  # jira PyPI client probes this on connect
 @router.get("/rest/api/3/serverInfo", response_model=JiraServerInfo)
 async def jira_server_info(request: Request):
-    """The fifteen members a Jira Cloud site answers, measured on 2026-10-03, the same on v2 and v3.
-
-    The four display URLs are the site's own URL there. The version, build number and build date are
-    the ones that site served; `scmInfo` is a 40 hex commit id, and the site name is the org's.
-    """
+    """The fifteen members Jira Cloud answers a signed-in caller, the same on v2 and v3 (measured
+    2026-10-03 and 2026-10-05). The four display URLs are the site's URL, `serverTitle` is `Jira`,
+    and the version and build number are the ones that site served. `scmInfo` is a synthesized
+    40-hex commit id, and `buildDate` a day before `serverTime`, since a build precedes the server
+    running it."""
     site = _site(request)
+    ts = synth.epoch("serverInfo")
     return {
         "baseUrl": site,
         "displayUrl": site,
@@ -297,10 +298,10 @@ async def jira_server_info(request: Request):
         "versionNumbers": [1001, 0, 0],
         "deploymentType": "Cloud",
         "buildNumber": 100294,
-        "buildDate": synth.jira_datetime(synth.epoch("serverInfo.buildDate")),
-        "serverTime": synth.rfc3339_millis(synth.epoch("serverInfo")),
+        "buildDate": synth.jira_datetime(ts - 86400),
+        "serverTime": synth.rfc3339_millis(ts),
         "scmInfo": hashlib.sha1(b"serverInfo").hexdigest(),
-        "serverTitle": get_settings().org_name,
+        "serverTitle": "Jira",
         "defaultLocale": {"locale": "en_US"},
         "serverTimeZone": "Etc/UTC",
     }

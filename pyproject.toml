@@ -44,7 +44,7 @@ dependencies = [
     # 2026-10-04, Backlot on 3.3 answers a non-string `DateTimeOrDuration` variable with a 200
     # where Linear answers 400, and words the date scalar's and an unknown input field's refusals
     # in 3.3's own sentences, where on 3.2 they are Linear's, quote marks aside.
-    "graphql-core>=3.2,<3.3",
+    "graphql-core>=3.2,<3.4",
     # The three xxhash checksums an S3 PutObject or DeleteObjects carries
     # (`x-amz-checksum-xxhash64`, `-xxhash3`, `-xxhash128`), which real compares with the body; the
     # standard library has none of them.
@@ -74,10 +74,10 @@ dev = [
 ]
 # Official SDKs used by examples/using-official-sdk/, tests/test_sdk.py (one per service) + the ACL demo.
 official-sdk = [
-    "slack_sdk>=3.27",
+    "slack_sdk>=3.43",
     "PyGithub>=2.3",
     "atlassian-python-api>=3.41",
-    "google-api-python-client>=2.120",
+    "google-api-python-client>=2.198",
     "google-auth>=2.55",
     "notion-client>=3.1",
     "boto3>=1.34",

@@ -423,61 +423,92 @@ def test_notion_comments_answers_a_block_id_the_way_real_does(
         assert body["message"] == expected
 
 
-_SEARCH_INVALID_TYPE_ROWS = [
+_NOT_A_STRING = "body failed validation: body.query should be a string or `undefined`, instead was "
+_NOT_AN_OBJECT = (
+    "body failed validation: body.filter should be an object or `undefined`, instead was "
+)
+_NO_VERSION = (
+    "Notion-Version header failed validation: Notion-Version header should be defined, "
+    "instead was `undefined`."
+)
+
+# label, body, whether to send Notion-Version, status, error code, message
+_SEARCH_BODY_TYPE_ROWS = [
+    ("neither member", {}, True, 200, None, None),
+    ("string query", {"query": "on-call"}, True, 200, None, None),
+    ("object filter", {"filter": {"property": "object", "value": "page"}}, True, 200, None, None),
+    ("numeric query", {"query": 5}, True, 400, "validation_error", _NOT_A_STRING + "`5`."),
+    ("list query", {"query": ["x"]}, True, 400, "validation_error", _NOT_A_STRING + '`["x"]`.'),
+    ("null query", {"query": None}, True, 400, "validation_error", _NOT_A_STRING + "`null`."),
     (
-        "numeric query",
-        {"query": 5},
-        "body failed validation: body.query should be a string or `undefined`, instead was `5`.",
-    ),
-    (
-        "list query",
-        {"query": ["x"]},
-        'body failed validation: body.query should be a string or `undefined`, instead was `["x"]`.',
-    ),
-    (
-        "null query",
-        {"query": None},
-        "body failed validation: body.query should be a string or `undefined`, instead was `null`.",
+        "object query",
+        {"query": {"a": 1, "b": [1, 2]}},
+        True,
+        400,
+        "validation_error",
+        _NOT_A_STRING + '`{"a":1,"b":[1,2]}`.',
     ),
     (
         "string filter",
         {"filter": "page"},
-        'body failed validation: body.filter should be an object or `undefined`, instead was `"page"`.',
+        True,
+        400,
+        "validation_error",
+        _NOT_AN_OBJECT + '`"page"`.',
     ),
+    ("non-ascii filter", {"filter": "é"}, True, 400, "validation_error", _NOT_AN_OBJECT + '`"é"`.'),
     (
         "list filter",
         {"filter": ["page"]},
-        'body failed validation: body.filter should be an object or `undefined`, instead was `["page"]`.',
+        True,
+        400,
+        "validation_error",
+        _NOT_AN_OBJECT + '`["page"]`.',
     ),
+    ("null filter", {"filter": None}, True, 400, "validation_error", _NOT_AN_OBJECT + "`null`."),
     (
-        "null filter",
-        {"filter": None},
-        "body failed validation: body.filter should be an object or `undefined`, instead was `null`.",
+        "both, filter first",
+        {"filter": "page", "query": 5},
+        True,
+        400,
+        "validation_error",
+        _NOT_A_STRING + "`5`.",
     ),
+    ("no version", {"query": 5}, False, 400, "missing_version", _NO_VERSION),
 ]
 
 
 @pytest.mark.parametrize(
-    "label, body, message",
-    _SEARCH_INVALID_TYPE_ROWS,
-    ids=[row[0] for row in _SEARCH_INVALID_TYPE_ROWS],
+    "label, body, versioned, status, code, message",
+    _SEARCH_BODY_TYPE_ROWS,
+    ids=[row[0] for row in _SEARCH_BODY_TYPE_ROWS],
 )
-def test_notion_search_refuses_invalid_query_and_filter_types_like_real(
-    client, notion_h, label, body, message
+def test_notion_search_reads_query_and_filter_by_their_types_like_real(
+    client, admin_h, notion_h, label, body, versioned, status, code, message
 ):
-    """Measured against api.notion.com on 2026-10-01 with `Notion-Version: 2025-09-03`:
-    a present `query` must be a string and a present `filter` must be an object. Wrong types,
-    including explicit null, are 400 validation errors -- never a 500 or an unfiltered 200 list."""
-    response = client.post("/notion/v1/search", json=body, headers=notion_h)
-    assert response.status_code == 400, (label, response.text)
-    payload = response.json()
-    assert (payload["object"], payload["status"], payload["code"]) == (
-        "error",
-        400,
-        "validation_error",
-    )
-    assert payload["message"] == message
-    assert payload["request_id"] == response.headers["x-notion-request-id"]
+    """The rule the comment in ``search`` states: a string query, a filter object and an
+    omitted member are accepted; query errors precede filter errors, and version comes first."""
+    r = client.post("/notion/v1/search", json=body, headers=notion_h if versioned else admin_h)
+    assert r.status_code == status, (label, r.text)
+    payload = r.json()
+    if code is None:
+        assert payload["object"] == "list"
+    else:
+        assert (payload["object"], payload["status"], payload["code"]) == ("error", status, code)
+        assert payload["message"] == message
+        assert payload["request_id"] == r.headers["x-notion-request-id"]
+
+
+def test_notion_search_refuses_wrong_types_before_acl_lookup(client, notion_h, monkeypatch):
+    from backlot.routers import notion
+
+    def unexpected_acl_lookup(*args, **kwargs):
+        raise AssertionError("A refused search must not look up visible documents")
+
+    monkeypatch.setattr(notion.auth, "visible_ids", unexpected_acl_lookup)
+    response = client.post("/notion/v1/search", json={"query": 5}, headers=notion_h)
+    assert response.status_code == 400
+    assert response.json()["code"] == "validation_error"
 
 
 def test_notion_search_filter_database_only(client, notion_h):

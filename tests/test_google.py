@@ -528,6 +528,34 @@ def test_gmail_messages_list_pagination_stable_and_ordered(client, admin_h, ro_c
     assert [m["id"] for m in both] == [a, b]  # pages concatenate in order
 
 
+def test_gmail_max_results_is_capped_at_500(tmp_path):
+    """The cap `_gmail_max_results` records, on both listings."""
+    from tests._helpers import corpus_client
+
+    records = [
+        {
+            "source_type": "gmail",
+            "doc_id": f"m{i}",
+            "mailbox": "ava",
+            "title": f"Message {i}",
+            "content": f"Body {i}.",
+            "author_email": "bob@acme.com",
+            "readers": ["ava@acme.com"],
+            "created": f"2026-01-{i % 28 + 1:02d}T{i // 28 % 24:02d}:00:00Z",
+        }
+        for i in range(502)
+    ]
+    with corpus_client(tmp_path, records) as (client, settings):
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        for kind in ("messages", "threads"):
+            for asked, served in ((499, 499), (500, 500), (501, 500), (1000, 500), (100000, 500)):
+                page = client.get(
+                    f"/gmail/v1/users/me/{kind}", headers=h, params={"maxResults": asked}
+                ).json()
+                assert len(page[kind]) == served, (kind, asked)
+                assert "nextPageToken" in page, (kind, asked)
+
+
 def test_gmail_attachment_size_matches_part_metadata(client, admin_h, ro_conn):
     # Real Gmail's contract: a part's body.size equals the byte length attachments.get serves, so a
     # client can stat an attachment from message metadata alone. Reporting the corpus-declared
@@ -5076,6 +5104,41 @@ def test_gmail_metadata_payload_is_mime_type_and_headers(gmail_shapes):
                 f"/gmail/v1/users/me/messages/{served_id('gmail', doc)}", headers=h, params=params
             ).json()
             assert sorted(m["payload"]) == ["headers", "mimeType"], (doc, params)
+
+
+def test_gmail_metadata_headers_keeps_the_named_headers(gmail_shapes):
+    """The rule the comment in `_gmail_message`'s `metadata` branch records, on `messages.get` and
+    on `threads.get`, and nothing changed by the parameter without `format=metadata`."""
+    client, h = gmail_shapes
+    mid = served_id("gmail", "lt")
+    url = f"/gmail/v1/users/me/messages/{mid}"
+
+    def names(params, path=url):
+        body = client.get(path, headers=h, params=params).json()
+        payload = body["messages"][0]["payload"] if "messages" in body else body["payload"]
+        return [x["name"] for x in payload["headers"]] if "headers" in payload else None
+
+    every = names({"format": "metadata"})
+    assert {"Subject", "From", "Message-ID"} <= set(every)
+    for sent, want in (
+        (["Subject"], ["Subject"]),
+        (["subject"], ["Subject"]),
+        (["MESSAGE-ID"], ["Message-ID"]),
+        (["From", "subject"], [n for n in every if n in ("Subject", "From")]),
+        (["Subject", "Subject"], ["Subject"]),
+        (["X-Nope"], None),
+        ([""], None),
+        (["", "Subject"], ["Subject"]),
+        ([" Subject"], None),
+        (["Subject "], None),
+        (["Subject,From"], None),
+    ):
+        assert names({"format": "metadata", "metadataHeaders": sent}) == want, sent
+    thread = f"/gmail/v1/users/me/threads/{mid}"
+    assert names({"format": "metadata", "metadataHeaders": "Subject"}, thread) == ["Subject"]
+    full = names({})
+    assert names({"metadataHeaders": "Subject"}) == full
+    assert len(full) > 1
 
 
 @pytest.mark.parametrize("doc", ["att", "ko", "att-ko"])

@@ -1152,15 +1152,32 @@ def test_github_blob_by_sha(gh_client, gh_admin_h, gh_org):
     assert base64.b64decode(body["content"]).decode() == content
 
 
-def test_github_blob_unknown_sha_404(gh_client, gh_admin_h, gh_org):
+_MAIN_PY_SHA = hashlib.sha1(b"def main():\n    return 1\n").hexdigest()
+_BAD_BLOB_SHA = "The sha parameter must be exactly 40 characters and contain only [0-9a-f]."
+
+
+@pytest.mark.parametrize(
+    "repo, sha, status, message",
+    [
+        ("codebase", "0" * 40, 404, "Not Found"),
+        ("codebase", _MAIN_PY_SHA[:7], 422, _BAD_BLOB_SHA),
+        ("codebase", _MAIN_PY_SHA[:39], 422, _BAD_BLOB_SHA),
+        ("codebase", _MAIN_PY_SHA + "0", 422, _BAD_BLOB_SHA),
+        ("codebase", _MAIN_PY_SHA.upper(), 422, _BAD_BLOB_SHA),
+        ("codebase", "zzzz", 422, _BAD_BLOB_SHA),
+        ("no-such-repo", "zzzz", 404, "Not Found"),
+    ],
+)
+def test_github_blob_refusals(gh_client, gh_admin_h, gh_org, repo, sha, status, message):
+    """The 422 and the two 404s `get_blob` records, in real's envelope with this route's own
+    documentation_url (see backlot.errors.github); `test_github_blob_by_sha` is the 200."""
     c, _ = gh_client
-    r = c.get(f"/github/repos/{gh_org}/codebase/git/blobs/{'0' * 40}", headers=gh_admin_h)
-    assert r.status_code == 404
-    # real's envelope, with this route's own documentation_url (see backlot.errors.github)
+    r = c.get(f"/github/repos/{gh_org}/{repo}/git/blobs/{sha}", headers=gh_admin_h)
+    assert r.status_code == status
     assert r.json() == {
-        "message": "Not Found",
+        "message": message,
         "documentation_url": "https://docs.github.com/rest/git/blobs#get-a-blob",
-        "status": "404",
+        "status": str(status),
     }
 
 

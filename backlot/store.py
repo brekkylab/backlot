@@ -1150,10 +1150,12 @@ def list_documents(
     state=None,
     not_author_email=None,
     exclude_trashed=False,
+    title=None,
 ) -> list[sqlite3.Row]:
     # state: only valid for source_type="github" — it's the only items table with a `state`
     # column; passing it for any other source_type raises sqlite3.OperationalError. Likewise
-    # exclude_trashed, which only gdrive_files has a column for.
+    # exclude_trashed, which only gdrive_files has a column for. title matches the whole title,
+    # ignoring ASCII case.
     tbl = table(source_type)
     sql = f"SELECT * FROM {tbl} WHERE 1=1"
     params: list = []
@@ -1163,6 +1165,9 @@ def list_documents(
         params.append(state)
     if exclude_trashed:
         sql += " AND COALESCE(trashed, 0) = 0"
+    if title is not None:
+        sql += " AND title = ? COLLATE NOCASE"
+        params.append(title)
     clause, cparams = _acl_clause(source_type, visible_ids=visible_ids)
     sql += clause + f" ORDER BY {_order_by(source_type)} LIMIT ? OFFSET ?"
     params += cparams + [limit, offset]
@@ -1973,6 +1978,7 @@ def count_documents(
     state=None,
     exclude_trashed=False,
     roots_only=False,
+    title=None,
 ) -> int:
     # state: only valid for source_type="github" — it's the only items table with a `state`
     # column; passing it for any other source_type raises sqlite3.OperationalError. Likewise
@@ -1990,6 +1996,9 @@ def count_documents(
         sql += " AND COALESCE(trashed, 0) = 0"
     if roots_only:
         sql += _GMAIL_ROOT
+    if title is not None:
+        sql += " AND title = ? COLLATE NOCASE"
+        params.append(title)
     clause, cparams = _acl_clause(source_type, visible_ids=visible_ids)
     sql += clause
     params += cparams

@@ -805,3 +805,35 @@ def test_hubspot_page_omits_paging_next_on_last_page(tmp_path):
     rows = store.list_hubspot_objects(conn, "companies", limit=3)  # 1 non-archived company
     assert "paging" not in _page(rows, 10, None)
     assert _page(rows, 1, None)["results"]  # a full page still yields rows
+
+
+def test_hubspot_search_negative_operators_include_missing_property(client, admin_h):
+    """NEQ, NOT_IN, and NOT_CONTAINS_TOKEN include records lacking the property entirely.
+
+    Verified against api.hubapi.com on 2026-10-05: a negative operator on a property that a record
+    does not have still matches that record. Backlot previously returned False for all operators
+    when the property was absent, which excluded such records incorrectly.
+
+    Fixture: Stealth Health Co has no `domain` property; Acme Health and Borealis Clinics have one.
+    """
+    f = lambda **kw: _hs_filter(client, admin_h, **kw)  # noqa: E731
+
+    # NEQ: "domain != acme-health.com" includes records with no domain at all
+    neq_result = f(propertyName="domain", operator="NEQ", value="acme-health.com")
+    assert "Stealth Health Co" in neq_result  # no domain -> matches NEQ
+    assert "Borealis Clinics" in neq_result  # domain != target
+    assert "Acme Health" not in neq_result  # domain == target
+
+    # NOT_IN: "domain not in [acme-health.com, borealis.example]" includes no-domain records
+    not_in_result = f(
+        propertyName="domain", operator="NOT_IN", values=["acme-health.com", "borealis.example"]
+    )
+    assert "Stealth Health Co" in not_in_result  # no domain -> matches NOT_IN
+    assert "Acme Health" not in not_in_result
+    assert "Borealis Clinics" not in not_in_result
+
+    # NOT_CONTAINS_TOKEN: "domain doesn't contain 'acme'" includes no-domain records
+    nct_result = f(propertyName="domain", operator="NOT_CONTAINS_TOKEN", value="acme")
+    assert "Stealth Health Co" in nct_result  # no domain -> matches NOT_CONTAINS_TOKEN
+    assert "Borealis Clinics" in nct_result  # domain doesn't contain "acme"
+    assert "Acme Health" not in nct_result  # domain contains "acme"

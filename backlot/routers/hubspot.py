@@ -493,7 +493,8 @@ def _match_one(prop, f: dict) -> bool:
     if op == "NOT_HAS_PROPERTY":
         return not present
     if not present:
-        return False
+        # Negative operators match when property is absent (verified against api.hubapi.com 2026-10-05)
+        return op in ("NEQ", "NOT_IN", "NOT_CONTAINS_TOKEN")
     target = f.get("value")
     cands = _values_of(prop)
 

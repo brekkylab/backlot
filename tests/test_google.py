@@ -200,7 +200,7 @@ def test_gmail_messages_list_serves_hex_ids(client, admin_h):
     not hex, so real Gmail would call it an invalid id value.
 
     Up to 16 digits, not exactly 16: real Gmail renders the integer, so an id whose top nibble is
-    zero is shorter there — and the real API resolves that spelling while 404ing the padded one."""
+    zero is shorter there."""
     msgs = client.get(
         "/gmail/v1/users/me/messages", headers=admin_h, params={"maxResults": 10}
     ).json()["messages"]
@@ -226,11 +226,47 @@ def test_gmail_hex_id_resolves_to_the_same_document(client, admin_h, ro_conn):
     assert base64.urlsafe_b64decode(_gmail_plain(m["payload"])).decode() == row["content"]
     # The stored column is lowercase hex, but a client may spell the id in either case (Gmail's ids
     # are case-insensitive hex) -- resolution must fold case rather than requiring the exact stored
-    # spelling. `store.gmail_by_id` is the one place that has to do this.
+    # spelling. `store.gmail_id_spelling` is the one place that has to do this.
     upper = client.get(
         f"/gmail/v1/users/me/messages/{hexid.upper()}", headers=admin_h, params={"format": "full"}
     ).json()
     assert upper["id"] == m["id"]
+
+
+@pytest.mark.parametrize(
+    "spelling, same_as",
+    [
+        ("{ROOT}", "{root}"),
+        ("0{root}", "{root}"),
+        ("00{root}", "{root}"),
+        ("0000000000{root}", "{root}"),
+        ("0{ROOT}", "{root}"),
+        ("0{reply}", "1"),
+    ],
+)
+def test_gmail_threads_get_reads_an_id_as_a_hex_integer(
+    client, admin_h, ro_conn, spelling, same_as
+):
+    """`threads.get` on a thread's id in uppercase, or with one, two or ten zeros in front and its
+    hex in either case, serves the thread as the lowercase id without them does; on a reply's id
+    with a zero in front it serves the 404 of an id the mailbox does not hold (`1`). The measurement
+    is beside the return in `gmail_thread_get`."""
+    row = ro_conn.execute(
+        "SELECT * FROM gmail_messages WHERE COALESCE(thread_id,'') != '' "
+        "AND thread_id != id LIMIT 1"
+    ).fetchone()
+    assert row is not None, "SAMPLE should hold a threaded reply"
+    ids = {"root": row["thread_id"], "ROOT": row["thread_id"].upper(), "reply": row["id"]}
+
+    def threads_get(thread_id):
+        return client.get(
+            f"/gmail/v1/users/me/threads/{thread_id.format(**ids)}",
+            headers=admin_h,
+            params={"format": "minimal"},
+        )
+
+    got, want = threads_get(spelling), threads_get(same_as)
+    assert (got.status_code, got.json()) == (want.status_code, want.json())
 
 
 def test_gmail_thread_id_matches_the_message_id_for_a_lone_message(client, admin_h, ro_conn):
@@ -250,9 +286,6 @@ def test_gmail_thread_id_matches_the_message_id_for_a_lone_message(client, admin
     assert m["id"] == m["threadId"] == hexid
     t = client.get(f"/gmail/v1/users/me/threads/{hexid}", headers=admin_h)
     assert t.status_code == 200 and t.json()["id"] == hexid
-    # A gmail id is hex and real resolves either spelling, so `threads.get` must fold case the way
-    # `messages.get` does — an exact `thread_id = ?` lookup on the caller's spelling missed and
-    # served a one-message thread for a thread that has more.
     upper = client.get(f"/gmail/v1/users/me/threads/{hexid.upper()}", headers=admin_h)
     assert upper.status_code == 200 and upper.json() == t.json()
 
@@ -493,6 +526,34 @@ def test_gmail_messages_list_pagination_stable_and_ordered(client, admin_h, ro_c
         "/gmail/v1/users/me/messages", headers=admin_h, params={"maxResults": 2}
     ).json()["messages"]
     assert [m["id"] for m in both] == [a, b]  # pages concatenate in order
+
+
+def test_gmail_max_results_is_capped_at_500(tmp_path):
+    """The cap `_gmail_max_results` records, on both listings."""
+    from tests._helpers import corpus_client
+
+    records = [
+        {
+            "source_type": "gmail",
+            "doc_id": f"m{i}",
+            "mailbox": "ava",
+            "title": f"Message {i}",
+            "content": f"Body {i}.",
+            "author_email": "bob@acme.com",
+            "readers": ["ava@acme.com"],
+            "created": f"2026-01-{i % 28 + 1:02d}T{i // 28 % 24:02d}:00:00Z",
+        }
+        for i in range(502)
+    ]
+    with corpus_client(tmp_path, records) as (client, settings):
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        for kind in ("messages", "threads"):
+            for asked, served in ((499, 499), (500, 500), (501, 500), (1000, 500), (100000, 500)):
+                page = client.get(
+                    f"/gmail/v1/users/me/{kind}", headers=h, params={"maxResults": asked}
+                ).json()
+                assert len(page[kind]) == served, (kind, asked)
+                assert "nextPageToken" in page, (kind, asked)
 
 
 def test_gmail_attachment_size_matches_part_metadata(client, admin_h, ro_conn):
@@ -995,24 +1056,30 @@ def test_drive_a_page_token_it_did_not_issue_is_refused(client, admin_h):
 
 
 @pytest.mark.parametrize(
-    "query, location",
+    "query, code, location",
     [
-        ([("pageToken", "BOGUS"), ("pageSize", "NOPE")], None),
-        ([("fields", "bogus"), ("pageSize", "0")], "page_size"),
-        ([("fields", "bogus"), ("pageToken", "BOGUS")], "pageToken"),
-        ([("pageToken", "BOGUS"), ("fields", "bogus")], "pageToken"),
-        ([("pageToken", "BOGUS"), ("q", "nosuchfield = 1")], "q"),
-        ([("fields", "bogus"), ("q", "nosuchfield = 1")], "q"),
-        ([("q", "nosuchfield = 1"), ("orderBy", "bogus")], "orderBy"),
-        ([("orderBy", "bogus"), ("q", "nosuchfield = 1")], "orderBy"),
-        ([("fields", "bogus"), ("orderBy", "bogus")], "orderBy"),
+        ([("pageToken", "BOGUS"), ("pageSize", "NOPE")], 400, None),
+        ([("fields", "bogus"), ("pageSize", "0")], 400, "page_size"),
+        ([("fields", "bogus"), ("pageToken", "BOGUS")], 400, "pageToken"),
+        ([("pageToken", "BOGUS"), ("fields", "bogus")], 400, "pageToken"),
+        ([("pageToken", "BOGUS"), ("q", "nosuchfield = 1")], 400, "q"),
+        ([("fields", "bogus"), ("q", "nosuchfield = 1")], 400, "q"),
+        ([("q", "nosuchfield = 1"), ("orderBy", "bogus")], 400, "orderBy"),
+        ([("orderBy", "bogus"), ("q", "nosuchfield = 1")], 400, "orderBy"),
+        ([("fields", "bogus"), ("orderBy", "bogus")], 400, "orderBy"),
+        ([("orderBy", "name,name"), ("pageSize", "0")], 400, "page_size"),
+        ([("orderBy", "name,name"), ("pageSize", "NOPE")], 400, None),
+        ([("q", "nosuchfield = 1"), ("orderBy", "name,name")], 403, "orderBy"),
+        ([("orderBy", "name,name"), ("q", "nosuchfield = 1")], 403, "orderBy"),
+        ([("pageToken", "BOGUS"), ("orderBy", "name,name")], 403, "orderBy"),
+        ([("fields", "bogus"), ("orderBy", "name,name")], 403, "orderBy"),
     ],
 )
-def test_drive_files_list_refuses_in_reals_order(client, admin_h, query, location):
+def test_drive_files_list_refuses_in_reals_order(client, admin_h, query, code, location):
     """Two bad values at once, each pair in the order `drive_files_list`'s comment records. A
     `pageSize` the proto layer cannot read has no `location`."""
     e = _gerr(client.get("/drive/v3/files", headers=admin_h, params=query))
-    assert e["code"] == 400
+    assert e["code"] == code
     assert e["errors"][0].get("location") == location
 
 
@@ -2493,6 +2560,47 @@ def test_drive_order_by_rejects_keys_it_cannot_honor(client, admin_h):
     assert ok.status_code == 200
 
 
+@pytest.mark.parametrize(
+    "order_by, status",
+    [
+        ("name", 200),
+        ("name,modifiedTime", 200),
+        ("name desc,modifiedTime", 200),
+        ("recency,modifiedTime", 200),
+        ("name,name", 403),
+        ("name desc,name", 403),
+        ("name,name desc", 403),
+        ("name desc,name desc", 403),
+        ("modifiedTime,name,modifiedTime", 403),
+        ("name_natural,name", 403),
+        ("name,name_natural", 403),
+        ("name,name,bogus", 403),
+        ("name,bogus,name", 400),
+        ("name,name sideways", 400),
+    ],
+)
+def test_drive_order_by_refuses_a_repeated_sort_key(client, admin_h, order_by, status):
+    """A key named twice is the 403 `_drive_order_specs` describes, and its `error` object is the
+    one real sends; an unusable token at or before the repeat is the 400."""
+    r = client.get("/drive/v3/files", headers=admin_h, params={"pageSize": 1, "orderBy": order_by})
+    assert r.status_code == status, r.text
+    if status == 403:
+        message = "The orderBy parameter cannot contain duplicate sort keys."
+        assert _gerr(r) == {
+            "code": 403,
+            "message": message,
+            "errors": [
+                {
+                    "message": message,
+                    "domain": "global",
+                    "reason": "orderByContainsDuplicateSortKeys",
+                    "location": "orderBy",
+                    "locationType": "parameter",
+                }
+            ],
+        }
+
+
 def test_drive_invalid_fields_mask_is_rejected(client, admin_h):
     """Accepting an unknown field name and yielding empty file objects (200 {}) lets a typo or a
     stale field name in a consumer's mask pass every Backlot-backed test and 400 in production."""
@@ -2902,9 +3010,8 @@ def test_sheets_get_returns_grid_when_asked(base, admin_h):
     assert data["rowMetadata"] == [{"pixelSize": 21}] * 1000
     assert data["columnMetadata"] == [{"pixelSize": 100}] * 26
     rows = data["rowData"]
-    # a cell object per column of the range (26), the empty ones carrying no value — measured shape
-    assert {len(r["values"]) for r in rows} == {26}
-    assert all(c == {} for r in rows for c in r["values"][1:])
+    # the values end at the row's last cell holding a value — real shape
+    assert {len(r["values"]) for r in rows} == {1}
     assert [r["values"][0]["formattedValue"] for r in rows] == [
         "month,revenue",
         "Jan,120000",
@@ -4756,6 +4863,44 @@ def test_gmail_raw_and_headers(tmp_path):
     assert plain_parts and plain_parts[0].get_payload(decode=True).decode() == "body text"
 
 
+@pytest.mark.parametrize(
+    "name,value,written",
+    [
+        # the line real's `raw` wrote for this subject (see `_raw_header_value`)
+        ("Subject", "backlot probe 회의 일정", "=?UTF-8?B?YmFja2xvdCBwcm9iZSDtmozsnZgg7J287KCV?="),
+        # 58 bytes: "청" takes the 44th to 46th, so the first word ends before it
+        (
+            "Subject",
+            "Fwd: 2026년 하반기 예산안 검토 요청드립니다",
+            "=?UTF-8?B?RndkOiAyMDI264WEIO2VmOuwmOq4sCDsmIjsgrDslYgg6rKA7YagIOyalA==?= "
+            "=?UTF-8?B?7LKt65Oc66a964uI64uk?=",
+        ),
+        ("To", "회의 <peer@x.com>", "=?UTF-8?B?7ZqM7J2Y?= <peer@x.com>"),
+        (
+            "To",
+            '"김, 철수" <kim@x.com>, 박영희 <park@x.com>',
+            "=?UTF-8?B?6rmALCDssqDsiJg=?= <kim@x.com>, =?UTF-8?B?67CV7JiB7Z2s?= <park@x.com>",
+        ),
+        ("To", "회의@x.com", "회의@x.com"),
+        (
+            "Content-Type",
+            'text/plain; charset="UTF-8"; name="회의록.txt"',
+            'text/plain; charset="UTF-8"; name="=?UTF-8?B?7ZqM7J2Y66GdLnR4dA==?="',
+        ),
+        (
+            "Content-Disposition",
+            'attachment; filename="회의록.txt"',
+            'attachment; filename="=?UTF-8?B?7ZqM7J2Y66GdLnR4dA==?="',
+        ),
+    ],
+)
+def test_gmail_raw_writes_non_ascii_header_text_as_encoded_words(name, value, written):
+    """The forms `_raw_header_value` describes, one header value each."""
+    from backlot.routers.google import _raw_header_value
+
+    assert _raw_header_value(name, value) == written
+
+
 def test_gmail_raw_with_attachment_is_valid_mime(tmp_path):
     from backlot.routers.google import _gmail_message
 
@@ -4851,6 +4996,17 @@ _GMAIL_SHAPES = [
         "content": "see attached",
         "author_email": "ceo@x.com",
         "attachments": [{"filename": "notes.txt", "mime": "text/plain", "content": "안녕"}],
+    },
+    # a non-ASCII subject, display name and attachment name, which `raw` writes as encoded-words
+    {
+        "source_type": "gmail",
+        "doc_id": "hdr-ko",
+        "mailbox": "ceo",
+        "title": "회의 일정",
+        "content": "see attached",
+        "author_email": "ceo@x.com",
+        "to": "회의 <peer@x.com>",
+        "attachments": [{"filename": "회의록.txt", "mime": "text/plain", "content": "안녕"}],
     },
 ]
 
@@ -4953,22 +5109,27 @@ def test_gmail_a_text_attachment_names_us_ascii_or_utf8_by_its_content(gmail_sha
     }
 
 
-@pytest.mark.parametrize("doc", ["att", "lt", "ko", "html175", "html325", "att-ko"])
+@pytest.mark.parametrize("doc", ["att", "lt", "ko", "html175", "html325", "att-ko", "hdr-ko"])
 def test_gmail_raw_and_full_describe_one_message(gmail_shapes, doc):
-    """`format=raw` and the `full` payload are the same tree, with the same headers on each part,
-    and each raw part decodes, by its own Content-Transfer-Encoding, to the bytes `full` serves."""
+    """`format=raw` is ASCII, and it and the `full` payload are the same tree, with the same
+    headers on the message and on each part once `raw`'s encoded-words are decoded, and each raw
+    part decodes, by its own Content-Transfer-Encoding, to the bytes `full` serves."""
     import email
+    import email.policy
 
     client, h = gmail_shapes
     url = f"/gmail/v1/users/me/messages/{served_id('gmail', doc)}"
     full = client.get(url, headers=h).json()["payload"]
-    raw = client.get(url, headers=h, params={"format": "raw"}).json()["raw"]
-    mime = email.message_from_bytes(base64.urlsafe_b64decode(raw))
+    raw = base64.urlsafe_b64decode(
+        client.get(url, headers=h, params={"format": "raw"}).json()["raw"]
+    )
+    assert raw.isascii()
+    mime = email.message_from_bytes(raw, policy=email.policy.default)
     assert not mime.defects
 
     def check(part, entity):
         assert entity.get_content_type() == part["mimeType"]
-        assert {k: v for k, v in entity.items()} == _hdrs(part)
+        assert {k: str(v) for k, v in entity.items()} == _hdrs(part)
         if "parts" in part:
             children = entity.get_payload()
             assert len(children) == len(part["parts"])
@@ -4982,6 +5143,7 @@ def test_gmail_raw_and_full_describe_one_message(gmail_shapes, doc):
                 assert body.isascii() and max(map(len, body.splitlines())) <= 76
 
     assert mime.get_content_type() == full["mimeType"]
+    assert {k: str(v) for k, v in mime.items()} == _hdrs(full)
     for part, entity in zip(full["parts"], mime.get_payload(), strict=True):
         check(part, entity)
 
@@ -4997,6 +5159,41 @@ def test_gmail_metadata_payload_is_mime_type_and_headers(gmail_shapes):
                 f"/gmail/v1/users/me/messages/{served_id('gmail', doc)}", headers=h, params=params
             ).json()
             assert sorted(m["payload"]) == ["headers", "mimeType"], (doc, params)
+
+
+def test_gmail_metadata_headers_keeps_the_named_headers(gmail_shapes):
+    """The rule the comment in `_gmail_message`'s `metadata` branch records, on `messages.get` and
+    on `threads.get`, and nothing changed by the parameter without `format=metadata`."""
+    client, h = gmail_shapes
+    mid = served_id("gmail", "lt")
+    url = f"/gmail/v1/users/me/messages/{mid}"
+
+    def names(params, path=url):
+        body = client.get(path, headers=h, params=params).json()
+        payload = body["messages"][0]["payload"] if "messages" in body else body["payload"]
+        return [x["name"] for x in payload["headers"]] if "headers" in payload else None
+
+    every = names({"format": "metadata"})
+    assert {"Subject", "From", "Message-ID"} <= set(every)
+    for sent, want in (
+        (["Subject"], ["Subject"]),
+        (["subject"], ["Subject"]),
+        (["MESSAGE-ID"], ["Message-ID"]),
+        (["From", "subject"], [n for n in every if n in ("Subject", "From")]),
+        (["Subject", "Subject"], ["Subject"]),
+        (["X-Nope"], None),
+        ([""], None),
+        (["", "Subject"], ["Subject"]),
+        ([" Subject"], None),
+        (["Subject "], None),
+        (["Subject,From"], None),
+    ):
+        assert names({"format": "metadata", "metadataHeaders": sent}) == want, sent
+    thread = f"/gmail/v1/users/me/threads/{mid}"
+    assert names({"format": "metadata", "metadataHeaders": "Subject"}, thread) == ["Subject"]
+    full = names({})
+    assert names({"metadataHeaders": "Subject"}) == full
+    assert len(full) > 1
 
 
 @pytest.mark.parametrize("doc", ["att", "ko", "att-ko"])
@@ -5239,7 +5436,7 @@ GRID_RECORDS = [
             # default grid while `AB` is column 28 of a 26-column sheet, so the two fail
             # differently -- one serves the wrong cells, the other 400s.
             {"title": "AB", "grid": [["I_AM_SHEET_AB"]]},
-            {"title": "Ragged", "grid": [["a", None, "c"]]},
+            {"title": "Ragged", "grid": [["a", None, "c"], [None], ["z"], [None, None, "w"]]},
             {"title": "Blank", "grid": []},
         ],
     },
@@ -5444,13 +5641,53 @@ def test_a_typed_cell_carries_all_three_value_fields(gc, gh, book):
     }
 
 
-def test_an_empty_cell_carries_no_value_object(gc, gh, book):
-    r = gc.get(
-        f"/sheets/v4/spreadsheets/{book}",
-        headers=gh,
-        params={"includeGridData": "true", "ranges": "Ragged!A1:C1"},
-    )
-    assert r.json()["sheets"][0]["data"][0]["rowData"][0]["values"][1] == {}
+_GRID_KEYS = ["rowData", "rowMetadata", "columnMetadata"]
+_RAGGED_ROWS = [["a", {}, "c"], {}, ["z"], [{}, {}, "w"]]
+
+
+@pytest.mark.parametrize(
+    "read, rng, keys, rows",
+    [
+        ("get", "Ragged!A1:D5", _GRID_KEYS, _RAGGED_ROWS),
+        ("filter", "Ragged!A1:D5", _GRID_KEYS, _RAGGED_ROWS),
+        ("get", "Ragged", _GRID_KEYS, _RAGGED_ROWS),
+        ("get", "Ragged!B1:D1", ["startColumn", *_GRID_KEYS], [[{}, "c"]]),
+        ("get", "Ragged!B1:D4", ["startColumn", *_GRID_KEYS], [[{}, "c"], {}, {}, [{}, "w"]]),
+        ("get", "Ragged!A2:B3", ["startRow", *_GRID_KEYS], [{}, ["z"]]),
+        ("get", "Ragged!B2:D4", ["startRow", "startColumn", *_GRID_KEYS], [{}, {}, [{}, "w"]]),
+        ("filter", "Ragged!B2:D4", ["startRow", "startColumn", *_GRID_KEYS], [{}, {}, [{}, "w"]]),
+        ("get", "Ragged!A1:B2", _GRID_KEYS, [["a"]]),
+        ("filter", "Ragged!A1:B2", _GRID_KEYS, [["a"]]),
+        ("get", "Ragged!C1:C3", ["startColumn", *_GRID_KEYS], [["c"]]),
+        ("get", "Ragged!B1:B4", ["startColumn", "rowMetadata", "columnMetadata"], []),
+        ("get", "Blank", ["rowMetadata", "columnMetadata"], []),
+        ("filter", "Blank", ["rowMetadata", "columnMetadata"], []),
+    ],
+)
+def test_a_grid_data_block_serves_reals_keys_and_rows(gc, gh, book, read, rng, keys, rows):
+    """Each block as real Sheets served it from a sheet laid out like `Ragged` or `Blank`,
+    measured as `_sheets_grid_data` records. A cell is written here as its `formattedValue`, and an
+    empty cell or a row holding no value as the `{}` served for it."""
+    if read == "get":
+        r = gc.get(
+            f"/sheets/v4/spreadsheets/{book}",
+            headers=gh,
+            params={"includeGridData": "true", "ranges": rng},
+        )
+    else:
+        r = gc.post(
+            f"/sheets/v4/spreadsheets/{book}:getByDataFilter",
+            headers=gh,
+            json={"dataFilters": [{"a1Range": rng}], "includeGridData": True},
+        )
+    assert r.status_code == 200, r.text
+    block = r.json()["sheets"][0]["data"][0]
+    assert list(block) == keys
+    got = [
+        [c["formattedValue"] if c else {} for c in row["values"]] if "values" in row else row
+        for row in block.get("rowData", [])
+    ]
+    assert got == rows
 
 
 @pytest.mark.parametrize(
@@ -5547,10 +5784,9 @@ def test_include_grid_data_without_ranges_gives_every_sheet_its_own_cells(gc, gh
     got = {}
     for s in r.json()["sheets"]:
         rows = s["data"][0].get("rowData", [])
-        # Each row is padded to the grid's width with empty cell objects, which real Sheets does
-        # too; the occupied prefix is what says which sheet answered.
+        # The cells holding a value are what say which sheet answered; an empty one is `{}`.
         got[s["properties"]["title"]] = [
-            [v["formattedValue"] for v in row["values"] if v] for row in rows
+            [v["formattedValue"] for v in row.get("values", []) if v] for row in rows
         ]
     assert got["A1"] == [["I_AM_SHEET_A1"]]
     assert got["AB"] == [["I_AM_SHEET_AB"]]
@@ -5605,17 +5841,6 @@ def test_ranges_without_include_grid_data_still_filters_and_serves_no_cells(gc, 
     sheets = r.json()["sheets"]
     assert [s["properties"]["title"] for s in sheets] == ["Summary"]
     assert "data" not in sheets[0]
-
-
-def test_an_empty_sheet_omits_row_data_entirely(gc, gh, book):
-    """Measured: an empty sheet's GridData block carries its metadata and no `rowData` key at all,
-    not an empty list."""
-    r = gc.get(
-        f"/sheets/v4/spreadsheets/{book}",
-        headers=gh,
-        params={"includeGridData": "true", "ranges": "Blank"},
-    )
-    assert "rowData" not in r.json()["sheets"][0]["data"][0]
 
 
 # --- Drive export must keep agreeing with the Sheets API --------------------------------------
@@ -6262,3 +6487,44 @@ def test_a_grid_range_member_is_checked_before_it_reaches_the_parser(
 ):
     r = _by_filter(gc, gh, book, {"dataFilters": [{"gridRange": grid_range}]})
     assert r.status_code == status, r.text
+
+
+@pytest.mark.parametrize(
+    "title,content",
+    [("ASCII", "hello there"), ("ASCII", "안녕하세요"), ("회의 일정", "😀 café")],
+)
+def test_gmail_size_estimate_matches_raw_bytes_in_every_format(tmp_path, title, content):
+    """The `sizeEstimate` rule in `_byte_len`, under every `format` and in the thread. `raw`
+    carries a non-ASCII body transfer-encoded and a non-ASCII subject as an encoded-word, longer
+    than the subject's text, so the third row tells a size counted from the served `raw` apart
+    from one counted before its headers are encoded.
+    """
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "gmail",
+                "doc_id": "size",
+                "mailbox": "owner",
+                "title": title,
+                "author_email": "owner@example.com",
+                "created": "2026-10-01T00:00:00Z",
+                "content": content,
+            }
+        ],
+    )
+    with client_for(s) as c:
+        h = {"Authorization": "Bearer " + yaml.safe_load(s.tokens_path.read_text())["admin_token"]}
+        mid = c.get("/gmail/v1/users/me/messages", headers=h).json()["messages"][0]["id"]
+        path = "/gmail/v1/users/me/messages/" + mid
+        raw = c.get(path + "?format=raw", headers=h).json()
+        encoded = raw["raw"]
+        size = len(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
+        assert raw["sizeEstimate"] == size
+        for fmt in ["minimal", "metadata", "full"]:
+            message = c.get(path + "?format=" + fmt, headers=h).json()
+            assert message["sizeEstimate"] == size
+            tid = message["threadId"]
+            thread = c.get(f"/gmail/v1/users/me/threads/{tid}?format={fmt}", headers=h)
+            assert thread.status_code == 200
+            assert thread.json()["messages"][0]["sizeEstimate"] == size

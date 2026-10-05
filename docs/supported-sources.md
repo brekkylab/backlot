@@ -36,7 +36,7 @@ Ordered as the table above, by `source_type`.
 
 | Endpoint | Notes |
 |---|---|
-| `content` | |
+| `content` | `spaceKey`, `title` (the whole title, ignoring ASCII case) |
 | `content/{id}` | |
 | `content/{id}/child/comment` | |
 | `content/{id}/child/page` | |
@@ -179,10 +179,10 @@ default branch only; an older snapshot stays reachable at `contents/{path}?ref=`
 | Endpoint | Notes |
 |---|---|
 | `users/{u}/messages` | `q`: free text / `from:` `to:` `subject:` `after:` `before:` `newer_than:` `older_than:` `label:` `has:attachment` |
-| `users/{u}/messages/{id}` | `format=full\|metadata\|minimal` |
+| `users/{u}/messages/{id}` | `format=full\|metadata\|minimal`, `metadataHeaders` |
 | `users/{u}/messages/{id}/attachments/{id}` | |
 | `users/{u}/threads` | `q`, as above |
-| `users/{u}/threads/{id}` | |
+| `users/{u}/threads/{id}` | `format`, `metadataHeaders`, as above |
 | `users/{u}/labels[/{id}]` | |
 | `users/{u}/profile` | |
 
@@ -336,6 +336,11 @@ than there being a set per type.
 `search/jql`, `issue/{key}`, `issue/{key}/comment`, `field` and `serverInfo` are served under
 `rest/api/2` as well as `/3`.
 
+Issue and comment reads accept the key or the exact numeric `id` reported by search and issue
+responses. Numeric ids are assigned uniquely at import, including when keys hash alike, and remain
+stable across appended shards. Databases built before `jira_issues.numeric_id` was added must be
+re-imported; the startup schema check names the missing column.
+
 A JSON body is `application/json;charset=UTF-8` — no space after the semicolon, `UTF-8`
 upper-case — as real's is on every route and status measured, except where real answers a
 different type altogether: the RFC 7807 refusals (a type-conversion 400, the 405, the 415) are
@@ -444,7 +449,7 @@ virtual-hosted client looks for `acme-artifacts.localhost:8000` and finds nothin
 | `ListObjectVersions` | Every key as its one version, `null` and the latest, since no bucket here is versioned. `prefix`, `delimiter`, `key-marker`, `version-id-marker`, `max-keys`, `encoding-type`, paged and refused as real pages and refuses them |
 | `ListMultipartUploads` | Always the empty page, since data enters through `backlot import` and no upload is ever in progress. `prefix`, `delimiter` and `key-marker` are echoed, `max-uploads` and `encoding-type` validated and echoed, as real does |
 | `ListObjects` | The bare bucket GET, and what any `list-type` other than `2` selects. `prefix`, `delimiter`, `marker`, `max-keys`, `encoding-type`; `Marker` echoed, `NextMarker` under a delimiter, an `Owner` on every object |
-| `ListObjectsV2` | Selected by `list-type=2`. `prefix`, `delimiter`, `start-after`, `continuation-token`, `max-keys`, `encoding-type`; `KeyCount` and the continuation tokens, no `Owner` |
+| `ListObjectsV2` | Selected by `list-type=2`. `prefix`, `delimiter`, `start-after`, `continuation-token`, `max-keys`, `encoding-type`, `fetch-owner`; `KeyCount` and the continuation tokens, an `Owner` on every object only under `fetch-owner=true` |
 | `GetObject` | `Range`; `partNumber`, where part `1` is the whole object as the 206 of its range, a higher part real's 416 and a number outside 1 to 10000 or one beside a `Range` real's 400; `versionId=null`, the one version each key has, where any other `versionId` is real's 400; and checksum mode, where an answer holding the whole object carries its CRC-64/NVME and another mode is real's 400. A key in a bucket that does not exist, or that the caller cannot see, is `NoSuchBucket`, as on real |
 | `HeadObject` | |
 | `GetObjectAcl`, `GetObjectTagging`, `GetObjectAttributes` and the rest of an object's sub-resources | Each as real answers an object with no tags or annotations, written with no checksum header, in a bucket without Object Lock, byte for byte: `?acl` the owner's `FULL_CONTROL`, `?tagging` an empty `TagSet`, `?attributes` the ETag, checksum, storage class and size asked for, `?annotation` no annotations and `NoSuchAnnotation` for one named, `?legal-hold` and `?retention` real's 400 for a bucket without Object Lock, and `?torrent` real's 405 |

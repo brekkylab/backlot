@@ -2612,7 +2612,8 @@ async def get_blob(owner: str, repo: str, sha: str, request: Request):
     # Measured on psf/requests on 2026-10-03: a seven-character prefix, an upper-case sha and
     # `zzzz` each answered this 422 with the route's own documentation_url, where a well-formed
     # sha naming no blob is the 404 below. Upper case is refused here though `commits/{ref}`
-    # resolves it.
+    # resolves it. A repository that does not exist is the 404 above, whatever the sha (measured
+    # 2026-10-05 with `zzzz` on a missing repository and on a missing owner).
     if not re.fullmatch(r"[0-9a-f]{40}", sha):
         raise HTTPException(
             status_code=422,

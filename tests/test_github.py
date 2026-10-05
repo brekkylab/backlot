@@ -1067,6 +1067,7 @@ def test_github_tree_recursive(gh_client, gh_admin_h, gh_org):
         ("", False),
         ("?recursive", False),
         ("?recursive=0&recursive", False),
+        ("?%72ecursive", False),
         ("?recursive=", True),
         ("?recursive=0", True),
         ("?recursive=false", True),
@@ -1074,12 +1075,15 @@ def test_github_tree_recursive(gh_client, gh_admin_h, gh_org):
         ("?recursive=true", True),
         ("?recursive=abc", True),
         ("?recursive&recursive=0", True),
+        ("?%72ecursive=0", True),
     ],
 )
 def test_github_tree_recurses_for_any_recursive_value(
     gh_client, gh_admin_h, gh_org, query, recursive
 ):
-    """The rows are :func:`backlot.routers.github.get_tree`'s measurement, one request each."""
+    """Each row was measured on api.github.com. The rule is
+    :func:`backlot.routers.github.get_tree`'s and the percent-encoded name
+    :func:`backlot.routers.github._written_bare`'s."""
     c, _ = gh_client
     r = c.get(f"/github/repos/{gh_org}/codebase/git/trees/main{query}", headers=gh_admin_h)
     top = {"README.md", "src", "config"}

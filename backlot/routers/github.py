@@ -2661,10 +2661,9 @@ async def list_branches(
     `?protected=` selects, so it is honoured rather than ignored: a client that asked for the
     protected branches and got an unprotected one back would read that branch as push-guarded.
     Real has three answers — only protected branches for a true value, only unprotected ones for
-    `false`, and all of them when the parameter is omitted — and reads every non-empty value but
-    `false`/`0` as true. Measured on fastapi/fastapi (22 branches, one of them protected):
-    `true`/`1`/`TRUE`/`yes`/`banana` answer 1, `false`/`0` answer 21, an empty value and an omitted
-    one answer 22.
+    `false`, and all of them when the parameter is omitted. Measured on fastapi/fastapi (22
+    branches, one of them protected): `true`/`1`/`TRUE`/`yes`/`banana` answer 1, `false`/`0` answer
+    21, an empty value and an omitted one answer 22.
 
     All three answers are distinct for a repo whose `subtype: "repo"` record states which branches
     are protected. For one that does not, every branch is unprotected and real's last two coincide
@@ -3052,7 +3051,9 @@ _UNSTATED_HEAD_REF = "feature"
 
 def _written_bare(request: Request, name: str) -> bool:
     """Whether the last `name` in the query string has no `=`. Starlette reads `?name` and `?name=`
-    alike as the empty string, and :func:`get_tree` answers them differently."""
+    alike as the empty string, and :func:`get_tree` answers them differently. Keys are matched
+    percent-decoded, as Starlette and api.github.com both read them: on psf/requests (2026-10-05)
+    `?%72ecursive` answers the flat tree and `?%72ecursive=0` the recursive one."""
     last = None
     for pair in request.scope.get("query_string", b"").decode("latin-1").split("&"):
         key, eq, _ = pair.partition("=")

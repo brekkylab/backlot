@@ -386,8 +386,9 @@ def _service_columns(
     if src == "gmail":
         # `thread` names the thread this message belongs to (default: the message's own id), so
         # every message of a multi-message thread shares one thread_id while carrying its own
-        # position in `thread_seq`. It holds the ROOT'S SERVED id, resolved by the caller — a
-        # gmail id is a pure hash of the seed, so that resolution needs no lookup.
+        # position in `thread_seq`. It holds the thread's served id (see `gmail_messages` in
+        # `store.SCHEMA`), computed by the caller — a gmail id is a pure hash, so that needs no
+        # lookup.
         return {
             "thread_id": thread_id or synth.gmail_message_id(seed),
             "thread_seq": seq,

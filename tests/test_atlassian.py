@@ -1629,12 +1629,13 @@ _REFUSED, _FAILED = (
 _NEXT_PAST_INT = errors_atlassian.search_next_out_of_range().body
 
 # The CQL search's page over `searchable`'s four matches, by the rules `_cql_position`,
-# `_cql_cursor`, `_cql_search_after` and `errors_atlassian.search_next_out_of_range` record: the
-# query after `_CQL`, where `{cN}` is a cursor this server spells naming match N, `{real1}` real's
-# spelling of the one naming match 1 and `{bare1}` match 1's id with no tab in front, and the other
-# `{…1}` are the cursor naming match 1 with the change the test's `tokens` spells out; then the
-# matches served, or `(status, message)` for a refusal (the whole body where it carries more, `None`
-# for none); then the match `next`'s cursor names, or `None` for no `next`.
+# `_cql_cursor`, `_cql_search_after`, `errors_atlassian.search_next_out_of_range` and the comment on
+# `cursor` in `confluence_cql_search` record: the query after `_CQL`, where `{cN}` is a cursor this
+# server spells naming match N, `{real1}` real's spelling of the one naming match 1 and `{bare1}`
+# match 1's id with no tab in front, and the other `{…1}` are the cursor naming match 1 with the
+# change the test's `tokens` spells out; then the matches served, or `(status, message)` for a
+# refusal (the whole body where it carries more, `None` for none); then the match `next`'s cursor
+# names, or `None` for no `next`.
 # fmt: off
 _CQL_PAGE_ROWS = [
     ("&limit=2", [0, 1], 1),

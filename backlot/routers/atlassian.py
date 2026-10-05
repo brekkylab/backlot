@@ -2013,13 +2013,13 @@ def _cql_page_param(request: Request, name: str, default: int) -> int | None:
 
     Measured 2026-10-04 on a live site, with an `Accept` that takes JSON: the first of a repeated
     parameter is the one read (`limit=5&limit=abc` is five, `limit=abc&limit=5` the 404); an empty
-    value or one `trim()` empties (a space, a tab, a newline) is the default; anything else is
-    `Integer.valueOf` of the value as sent, so a sign and leading zeros pass and a Unicode decimal
-    digit counts (`٥` and `５` are five) unless it lies past U+FFFF, which Java reads as two halves
-    of a surrogate pair (`𝟓` is the 404), where a space beside the digits, `1.5`, `1_0`, `0x10`,
-    `1e3` and a value outside `int` are the 404 too. The 404 comes after the credential's refusal
-    and before every other one the route makes. A NUL never gets this far: Tomcat answers it with an
-    HTML 400 page.
+    value or one `trim()` empties (a space, a tab, a newline, and on 2026-10-05 `%01` and `%1F`
+    alone) is the default; anything else is `Integer.valueOf` of the value as sent, so a sign and
+    leading zeros pass and a Unicode decimal digit counts (`٥` and `５` are five) unless it lies
+    past U+FFFF, which Java reads as two halves of a surrogate pair (`𝟓` is the 404), where a space
+    beside the digits, `1.5`, `1_0`, `0x10`, `1e3` and a value outside `int` are the 404 too. The
+    404 comes after the credential's refusal and before every other one the route makes. A NUL
+    never gets this far: Tomcat answers it with an HTML 400 page.
     """
     values = request.query_params.getlist(name)
     if not values or not values[0].strip(_JAVA_TRIMMED):
@@ -2036,15 +2036,16 @@ def _cql_search_after(token: str) -> list | None:
     page by (:func:`backlot.errors.atlassian.search_cursor_refused`).
 
     Measured 2026-10-04 and 2026-10-05: a token is `_t_` and `_h_` around two base64 parts, either
-    alphabet, each read as the first JSON value in it whatever follows, and real's own hold the sort
-    value in a list and then `[]`. The 400 answers a token without `_t_` or `_h_`, a part that is
-    not base64 or holds no JSON value, `NaN`, `Infinity` or `-Infinity` in either part, an `_h_`
-    that is not a list or holds `null`, a list or an object, and a `_t_` that is neither a list nor
-    `null` or holds two values. Past those, a `_t_` of `null` is no cursor, and the 500 answers an
-    empty list or a list or an object as the value: `_t_` `[]` with `_h_` `[null]` is the 400 and
-    with `_h_` `[1]` the 500. A string, a number, `true`, `false` and `null` as the value are served
-    (:func:`_cql_position`). Both refusals come after the route's of `limit` and `start`:
-    `?limit=abc&cursor=abc` is the 404 and `?limit=-1&cursor=abc` the negative 400.
+    alphabet, each read as the first JSON value in it, leading whitespace skipped and whatever
+    follows ignored, and real's own hold the sort value in a list and then `[]`. The 400 answers a
+    token without `_t_` or `_h_`, a part that is not base64 or holds no JSON value, `NaN`,
+    `Infinity` or `-Infinity` in either part, an `_h_` that is not a list or holds `null`, a list or
+    an object, and a `_t_` that is neither a list nor `null` or holds two values. Past those, a
+    `_t_` of `null` is no cursor, and the 500 answers an empty list or a list or an object as the
+    value: `_t_` `[]` with `_h_` `[null]` is the 400 and with `_h_` `[1]` the 500. A string, a
+    number, `true`, `false` and `null` as the value are served (:func:`_cql_position`). Both
+    refusals come after the route's of `limit` and `start`: `?limit=abc&cursor=abc` is the 404 and
+    `?limit=-1&cursor=abc` the negative 400.
     """
     parts = re.fullmatch(r"_t_(.*)_h_(.*)", token, re.S)
     first, then = (_cql_token_part(part) for part in parts.groups()) if parts else (_NO_JSON,) * 2
@@ -2070,8 +2071,8 @@ def _refuse_a_json_constant(name: str):
 
 
 def _cql_token_part(part: str):
-    """One part of a CQL search cursor read as :func:`_cql_search_after` says real reads it: the
-    first JSON value in its base64, leading whitespace skipped, or ``_NO_JSON``."""
+    """One part of a CQL search cursor read as :func:`_cql_search_after` says real reads it, or
+    ``_NO_JSON``."""
     standard = part.replace("-", "+").replace("_", "/") + "=" * (-len(part) % 4)
     decoder = json.JSONDecoder(parse_constant=_refuse_a_json_constant)
     try:

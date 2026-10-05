@@ -245,18 +245,15 @@ GMAIL_ID_MAX = 2**63
 
 
 def gmail_message_id(key: str) -> str:
-    """The served id for a Gmail message or thread: 16 lowercase hex digits below ``GMAIL_ID_MAX``.
+    """The served id for a Gmail message or thread: lowercase hex below ``GMAIL_ID_MAX``, up to 16
+    digits with no zeros in front.
 
-    Threads share this space, as they do in real Gmail — a thread key is the root message's
-    ``seed``, so a single-message thread reports the same value for ``id`` and ``threadId``, which
-    is exactly what the real API does. That is also why the stored ``id`` column and a
-    re-hash of the thread key resolve both: a message's own id is a column read
-    (``store.gmail_by_id``), while its ``threadId`` re-derives this same function over
-    ``thread_id or seed`` rather than reading the root row (see ``routers.google._gmail_ids``).
+    Threads share this space, as they do in real Gmail: a message's id is this function over its
+    dataset id, and its thread's is this function over the thread's key (see ``gmail_messages`` in
+    ``store.SCHEMA``).
 
-    UNPADDED, unlike the opaque ``gmail_id`` above: real Gmail renders the integer, so an id whose
-    top nibble is zero is 15 digits there and 16 here — and the real API resolves its own
-    unpadded spelling, which Backlot answered 404 for. Roughly one id in 16 was affected."""
+    Unpadded, unlike the opaque ``gmail_id`` above: real Gmail renders the id as an integer, so an
+    id whose top nibble is zero is 15 digits there."""
     return f"{hnum(key, salt='msg', length=16) % GMAIL_ID_MAX:x}"
 
 
@@ -334,8 +331,13 @@ def github_comment_id(comment_id: str) -> int:
     return GITHUB_COMMENT_ID_MIN + hnum(comment_id, 0, 12) % GITHUB_COMMENT_ID_RANGE
 
 
+JIRA_NUMERIC_ID_MIN = 10_000
+JIRA_NUMERIC_ID_RANGE = 900_000
+
+
 def jira_numeric_id(seed: str) -> int:
-    return 10_000 + hnum(seed, 8, 8) % 900_000
+    """A numeric hash seed; the Jira importer probes it before publishing an issue id."""
+    return JIRA_NUMERIC_ID_MIN + hnum(seed, 8, 8) % JIRA_NUMERIC_ID_RANGE
 
 
 # The size of the per-project space `jira_key_number` draws from (1..JIRA_KEY_NUMBER_RANGE). A

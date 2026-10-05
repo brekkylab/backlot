@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import json
 import re
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote, unquote
 
@@ -356,13 +357,34 @@ def test_atlassian_error_keeps_the_atlassian_error_envelope(client):
     assert body["statusCode"] == 403
 
 
-def test_jira_serverinfo_v2_alias_matches_v3(client, admin_h):
+def test_jira_serverinfo_answers_reals_fifteen_members_on_v2_and_v3(client, admin_h):
     # the `jira` PyPI client (used by llama-index's JiraReader) probes serverInfo under
-    # /rest/api/2 on connect; Backlot must serve the same shape as the v3 handler.
+    # /rest/api/2 on connect, so v2 serves the v3 handler's answer; the members are the ones
+    # `jira_server_info` records.
     v2 = client.get("/atlassian/rest/api/2/serverInfo", headers=admin_h).json()
     v3 = client.get("/atlassian/rest/api/3/serverInfo", headers=admin_h).json()
     assert v2 == v3
-    assert v2["deploymentType"] == "Cloud"
+    site = v3["baseUrl"]
+    synthesized = {k: v3.pop(k) for k in ("buildDate", "serverTime", "scmInfo")}
+    assert v3 == {
+        "baseUrl": site,
+        "displayUrl": site,
+        "displayUrlServicedeskHelpCenter": site,
+        "displayUrlCSMHelpSeeker": site,
+        "displayUrlConfluence": site,
+        "version": "1001.0.0-SNAPSHOT",
+        "versionNumbers": [1001, 0, 0],
+        "deploymentType": "Cloud",
+        "buildNumber": 100294,
+        "serverTitle": "Jira",
+        "defaultLocale": {"locale": "en_US"},
+        "serverTimeZone": "Etc/UTC",
+    }
+    assert re.fullmatch(r"[0-9a-f]{40}", synthesized["scmInfo"])
+    built = synthesized["buildDate"]
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}[+-]\d{4}", built)
+    served = datetime.fromisoformat(synthesized["serverTime"])
+    assert datetime.strptime(built, "%Y-%m-%dT%H:%M:%S.%f%z") < served
 
 
 def test_jira_search_filtered_by_project(client, admin_h):
@@ -450,6 +472,34 @@ def test_confluence_content_filtered_by_space_key(client, admin_h):
     # no spaceKey at all -> unfiltered (still includes the other space)
     unfiltered = client.get("/atlassian/wiki/rest/api/content", headers=admin_h).json()
     assert "Compensation Bands 2026" in {r["title"] for r in unfiltered["results"]}
+
+
+def test_confluence_content_filtered_by_title(client, admin_h, tokens):
+    """The rule the comment in `confluence_content_list` records, over the caller's own pages."""
+    url = "/atlassian/wiki/rest/api/content"
+
+    def titles(headers, **params):
+        body = client.get(url, headers=headers, params=params).json()
+        assert body["size"] == len(body["results"])
+        return [r["title"] for r in body["results"]]
+
+    for sent in ("On-call Runbook", "on-call runbook", "ON-CALL RUNBOOK"):
+        assert titles(admin_h, title=sent, spaceKey="handbook") == ["On-call Runbook"], sent
+        assert titles(admin_h, title=sent) == ["On-call Runbook"], sent
+    for sent in ("zzqq-no-such-page", "On-call", " On-call Runbook", "On-call Runbook ", " "):
+        assert titles(admin_h, title=sent, spaceKey="handbook") == [], sent
+        assert titles(admin_h, title=sent) == [], sent
+    assert titles(admin_h, title=["On-call Runbook", "zzqq-nope"]) == []
+    assert titles(admin_h, title=["zzqq-nope", "On-call Runbook"]) == []
+    assert len(titles(admin_h, title="")) > 1
+    # the total behind `_links.next` counts the matching pages, not the space's
+    one = client.get(url, headers=admin_h, params={"title": "On-call Runbook", "limit": 1}).json()
+    assert one["size"] == 1 and "next" not in one["_links"]
+    assert "next" in client.get(url, headers=admin_h, params={"limit": 1}).json()["_links"]
+    # the title of a page the caller cannot see matches nothing for that caller
+    comp = "Compensation Bands 2026"
+    assert titles({"Authorization": f"Bearer {tokens['hana@acme.com']}"}, title=comp) == [comp]
+    assert titles({"Authorization": f"Bearer {tokens['ava@acme.com']}"}, title=comp) == []
 
 
 def test_atlassian_comment_ids_are_numeric_on_the_wire(tmp_path):
@@ -3534,3 +3584,75 @@ def test_atlassian_answers_by_which_mount_the_path_is_under(
     assert r.headers["content-type"] == media_type
     if status == 404 and media_type in (_PAGE, _JIRA_PAGE):
         assert r.text == errors_atlassian.HTML_NOT_FOUND
+
+
+@pytest.mark.parametrize("version", [2, 3])
+def test_jira_numeric_ids_resolve_exactly_and_preserve_acl(client, admin_h, tokens, version):
+    """An issue's numeric id reads as its key does, for the admin and each scoped token, and with a
+    leading zero is a 404 (see store.jira_by_numeric_id).
+    """
+    issues = client.get(
+        "/atlassian/rest/api/3/search/jql?jql=project+%3D+payments&maxResults=50", headers=admin_h
+    ).json()["issues"]
+    assert issues
+    for issue in issues:
+        path = f"/atlassian/rest/api/{version}/issue/"
+        key, numeric = issue["key"], issue["id"]
+        for suffix in ["", "/comment"]:
+            by_key = client.get(path + key + suffix, headers=admin_h)
+            by_id = client.get(path + numeric + suffix, headers=admin_h)
+            assert by_id.status_code == by_key.status_code == 200
+            assert by_id.json() == by_key.json()
+            assert client.get(path + "0" + numeric + suffix, headers=admin_h).status_code == 404
+            for token in tokens.values():
+                h = {"Authorization": "Bearer " + token}
+                keyed = client.get(path + key + suffix, headers=h)
+                numbered = client.get(path + numeric + suffix, headers=h)
+                assert numbered.status_code == keyed.status_code
+                assert numbered.json() == keyed.json()
+
+
+@pytest.mark.parametrize("version", [2, 3])
+def test_jira_issue_ids_that_hash_alike_each_read_back_their_own_issue(tmp_path, version):
+    """PAY-1425 and PAY-2172 share a numeric seed; each served id must read its own issue, and the
+    subtask and parent entries that point at them carry those ids."""
+    keys = ("PAY-1425", "PAY-2172")
+    corpus = [
+        {
+            "source_type": "jira",
+            "doc_id": key,
+            "key": key,
+            "project": "payments",
+            "title": key,
+            "content": "Body.",
+            "author_email": "ava@acme.com",
+            "created": "2026-01-01T00:00:00Z",
+            "issuetype": "Task",
+            "status": "To Do",
+            **({"parent": "PAY-1425"} if key == "PAY-2172" else {}),
+        }
+        for key in keys
+    ]
+    settings = tiny_corpus(tmp_path, corpus)
+    admin = yaml.safe_load(settings.tokens_path.read_text())["admin_token"]
+    with client_for(settings, reload=True) as c:
+        h = {"Authorization": f"Bearer {admin}"}
+        path = f"/atlassian/rest/api/{version}/issue/"
+        ids = {}
+        for key in keys:
+            by_key = c.get(path + key, headers=h)
+            assert by_key.status_code == 200
+            ids[key] = by_key.json()["id"]
+            by_id = c.get(path + ids[key], headers=h)
+            assert by_id.status_code == 200 and by_id.json()["key"] == key
+            assert by_id.json() == by_key.json()
+            assert (
+                c.get(path + ids[key] + "/comment", headers=h).json()
+                == c.get(path + key + "/comment", headers=h).json()
+            )
+        assert len(set(ids.values())) == len(keys)
+        parent = c.get(path + ids["PAY-1425"], headers=h).json()["fields"]
+        assert [s["id"] for s in parent["subtasks"]] == [ids["PAY-2172"]]
+        assert parent["subtasks"][0]["self"].endswith("/issue/" + ids["PAY-2172"])
+        child = c.get(path + ids["PAY-2172"], headers=h).json()["fields"]
+        assert child["parent"]["id"] == ids["PAY-1425"]

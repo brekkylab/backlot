@@ -12,6 +12,7 @@ answer carries (:func:`vendor_headers`, put on by ``backlot.main.report_atlassia
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import re
 import time
@@ -121,7 +122,13 @@ _P_JIRA_COMMENTS = {
 }
 _P_CQL = {"parameters": [qp("cql", required=True), qp("limit", "integer"), qp("start", "integer")]}
 _P_CONTENT = {
-    "parameters": [qp("expand"), qp("spaceKey"), qp("limit", "integer"), qp("start", "integer")]
+    "parameters": [
+        qp("expand"),
+        qp("spaceKey"),
+        qp("title"),
+        qp("limit", "integer"),
+        qp("start", "integer"),
+    ]
 }
 _P_SPACE = {"parameters": [qp("expand"), qp("limit", "integer"), qp("start", "integer")]}
 # The three listings under `content/{id}`, which read the same pair with their own defaults and
@@ -263,16 +270,19 @@ def _jira_container_for_key(conn, token: str, request: Request | None = None) ->
 
 
 def _resolve_jira_key(request: Request, conn, key: str, ids):
-    """One issue by its served key, ACL-scoped — a unique-indexed column lookup (see
-    store.jira_by_key).
+    """One issue by its served key or its numeric id, ACL-scoped (see store.jira_by_key and
+    store.jira_by_numeric_id).
 
-    One line, because the whole key is stored. Resolving it in parts instead — split the key, map
+    The key is matched whole, as it is stored. Resolving it in parts instead — split the key, map
     the prefix to a project through `_jira_container_for_key`, look the suffix up scoped to it —
     lets that function's three-way tolerance into the ISSUE-KEY namespace. The tolerance is a
     deliberate and correct affordance for the JQL project TOKEN, where real Jira pickers accept a
     key OR a name, but here it makes `payments-7` resolve to `PAY-7`'s issue and issue-key lookup
     case-insensitive. Matching the stored key directly has no seam for either to enter."""
-    return store.jira_by_key(conn, key, visible_ids=ids)
+    row = store.jira_by_key(conn, key, visible_ids=ids)
+    if row is None and key.isascii() and key.isdigit():
+        return store.jira_by_numeric_id(conn, key, visible_ids=ids)
+    return row
 
 
 @router.get(
@@ -280,14 +290,29 @@ def _resolve_jira_key(request: Request, conn, key: str, ids):
 )  # jira PyPI client probes this on connect
 @router.get("/rest/api/3/serverInfo", response_model=JiraServerInfo)
 async def jira_server_info(request: Request):
+    """The fifteen members Jira Cloud answers a signed-in caller, the same on v2 and v3 (measured
+    2026-10-03 and 2026-10-05). The four display URLs are the site's URL, `serverTitle` is `Jira`,
+    and the version and build number are the ones that site served. `scmInfo` is a synthesized
+    40-hex commit id, and `buildDate` a day before `serverTime`, since a build precedes the server
+    running it."""
     site = _site(request)
+    ts = synth.epoch("serverInfo")
     return {
         "baseUrl": site,
-        "version": "1000.0.0",
+        "displayUrl": site,
+        "displayUrlServicedeskHelpCenter": site,
+        "displayUrlConfluence": site,
+        "displayUrlCSMHelpSeeker": site,
+        "version": "1001.0.0-SNAPSHOT",
+        "versionNumbers": [1001, 0, 0],
         "deploymentType": "Cloud",
-        "versionNumbers": [1000, 0, 0],
-        "buildNumber": 100000,
-        "serverTime": synth.rfc3339_millis(synth.epoch("serverInfo")),
+        "buildNumber": 100294,
+        "buildDate": synth.jira_datetime(ts - 86400),
+        "serverTime": synth.rfc3339_millis(ts),
+        "scmInfo": hashlib.sha1(b"serverInfo").hexdigest(),
+        "serverTitle": "Jira",
+        "defaultLocale": {"locale": "en_US"},
+        "serverTimeZone": "Etc/UTC",
     }
 
 
@@ -892,9 +917,9 @@ def _issue_key(request: Request, row) -> str:
 def _jira_ref(request: Request, row, site: str = "") -> dict:
     status = row["status"]
     return {
-        "id": str(synth.jira_numeric_id(row["key"])),
+        "id": row["numeric_id"],
         "key": _issue_key(request, row),
-        "self": f"{site}/rest/api/3/issue/{synth.jira_numeric_id(row['key'])}" if site else None,
+        "self": f"{site}/rest/api/3/issue/{row['numeric_id']}" if site else None,
         "fields": {
             "summary": row["title"],
             "status": {"name": status, "statusCategory": _status_category(status)},
@@ -1018,7 +1043,7 @@ def _jira_issue(conn, request: Request, row, expand: str = "", fields_only: bool
             prow = store.get_document(conn, "jira", row["parent_id"])
             if prow:
                 fields["parent"] = _jira_ref(request, prow, site)
-    nid = synth.jira_numeric_id(row["key"])
+    nid = row["numeric_id"]
     issue = {
         "id": str(nid),
         "key": _issue_key(request, row),
@@ -1422,8 +1447,17 @@ async def confluence_content_list(request: Request):
             return {"results": [], "start": start, "limit": limit, "size": 0, "_links": links}
     else:
         container = None
-    total = store.count_documents(conn, "confluence", container, ids)
-    rows = store.list_documents(conn, "confluence", container, ids, limit=limit, offset=start)
+    # Measured on a Confluence Cloud tenant on 2026-10-03 and 2026-10-05: `title` answered the page
+    # with that title whether spelled as stored, in lower case or in upper case, with or without
+    # `spaceKey`, with no `next` when asked for one page at a time. A title no page has answered
+    # `size: 0`, and so did the title's first word, the title with a space before or after it, a
+    # space alone, and a repeated `title` in either order (`_str_param` joins it with a comma); an
+    # empty `title` filters nothing.
+    title = _str_param(request, "title") or None
+    total = store.count_documents(conn, "confluence", container, ids, title=title)
+    rows = store.list_documents(
+        conn, "confluence", container, ids, limit=limit, offset=start, title=title
+    )
     results = [_confluence_page(conn, request, r, expand) for r in rows]
     links = _confluence_envelope(
         request, "/rest/api/content", start=start, limit=limit, size=len(rows), total=total

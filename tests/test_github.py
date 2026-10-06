@@ -4120,11 +4120,7 @@ def test_github_pull_diff_reverse_applies_with_real_git(
 
 def test_github_pull_files_empty_when_the_repo_has_no_file_docs(tmp_path):
     """No file docs means no snapshot to diff against, so the changeset is empty rather than
-    invented — and the pull object's counts follow it down to zero.
-
-    Driven through the builders rather than a client: this file's two module-scoped clients share
-    ``backlot.main.app``'s state (see ``client_for``), so "a corpus with no file docs" is not
-    something an HTTP test here can rely on."""
+    invented — and the pull object's counts follow it down to zero."""
     from backlot.routers.github import _pr_files, _pr_obj
 
     s = tiny_corpus(

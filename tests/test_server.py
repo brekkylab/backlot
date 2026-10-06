@@ -327,7 +327,7 @@ def test_serve_or_connect_reports_on_stderr_not_stdout(capsys):
 def test_backlots_own_routes_read_the_app_that_serves_them(tmp_path):
     """`/health`, `/_meta/users`, `/_meta/credentials` and `/_meta/openapi/{source}` read the app
     off the request, not the module-level ``app``. The difference shows when ``backlot.main`` is
-    re-imported while a first server is still up, which ``client_for(reload=True)`` does: a reload
+    re-imported while a first server is still up, which ``client_for`` does: a reload
     re-executes the module in the same namespace, so the first app's handlers found ``app`` rebound
     to the second one and read its state, and once the second lifespan had ended and closed its
     connection, the first server's `/_meta/users` was `sqlite3.ProgrammingError: Cannot operate on
@@ -350,7 +350,8 @@ def test_backlots_own_routes_read_the_app_that_serves_them(tmp_path):
     second_settings = build_corpus(tmp_path / "second", [record("other.com")])
     with client_for(first_settings) as first:
         assert first.get("/_meta/users").json()["org"] == "acme"
-        with client_for(second_settings, reload=True) as second:
+        with client_for(second_settings) as second:
+            assert second.app is not first.app
             assert second.get("/_meta/users").json()["org"] == "other"
         # the second lifespan has ended and closed its connection; the first server is still up
         assert first.get("/health").json()["status"] == "ok"

@@ -620,23 +620,24 @@ async def gmail_attachment(user_id: str, msg_id: str, att_id: str, request: Requ
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    # No shape check on the message id: real Gmail's answer here does not depend on it (see
-    # `gerr.invalid_attachment_token`), so a non-hex one is not "Invalid id value" on this route.
-    row = store.gmail_by_id(conn, msg_id, visible_ids=ids)
-    if row is None:
-        raise gerr.invalid_attachment_token()
-    message_id = row["id"]
+    # The path's message id plays no part in the answer, in real Gmail or here: an attachment id
+    # is served under the message it belongs to, under any other message id, under a well-formed
+    # id no message has, and under a non-hex id alike — all four landed the same bytes, measured
+    # against gmail.googleapis.com on 2026-10-01. So the lookup is by attachment id alone, over
+    # every attachment-bearing message the caller can see, not the one msg_id names.
     found = next(
         (
-            (i, a)
+            (row["id"], i, a)
+            for row in store.gmail_rows_with_attachments(conn, visible_ids=ids)
             for i, a in enumerate(store.jcol(row, "attachments"))
-            if _att_id(message_id, i) == att_id
+            if _att_id(row["id"], i) == att_id
         ),
         None,
     )
-    if not found:
+    if found is None:
         raise gerr.invalid_attachment_token()
-    body = _att_content(message_id, found[0], found[1])
+    message_id, i, att = found
+    body = _att_content(message_id, i, att)
     # `{size, data}` alone: real names no `attachmentId` here, measured on 2026-09-30
     return {"size": _byte_len(body), "data": _b64url(body)}
 

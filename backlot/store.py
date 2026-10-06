@@ -2703,6 +2703,17 @@ def gmail_thread(conn, thread_id, visible_ids=None) -> list[sqlite3.Row]:
     return conn.execute(sql, params).fetchall()
 
 
+def gmail_rows_with_attachments(conn, visible_ids=None) -> list[sqlite3.Row]:
+    """Every visible Gmail message that declares at least one attachment. An attachment id is
+    self-contained (see the router's ``_att_id``) and carries no message id a lookup could key
+    on, so resolving one means scanning the attachment-bearing messages a caller can see — real
+    Gmail's ``attachments.get`` answers the same under any message id, well-formed or not
+    (measured against gmail.googleapis.com on 2026-10-01)."""
+    sql = "SELECT * FROM gmail_messages WHERE COALESCE(attachments, '') NOT IN ('', '[]')"
+    clause, cp = _acl_clause("gmail", visible_ids=visible_ids)
+    return conn.execute(sql + clause, cp).fetchall()
+
+
 def gmail_by_id(conn, message_id, visible_ids=None) -> sqlite3.Row | None:
     """One message by the id the API reports. The stored key is unpadded lowercase hex; callers
     pass the id as the client spelled it, so both the case and any leading zeros are normalized

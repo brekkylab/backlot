@@ -322,27 +322,38 @@ def test_gmail_attachment_resolves_under_a_hex_message_id(client, admin_h, ro_co
 
 
 @pytest.mark.parametrize(
-    "msg_key, att_key, expect_status",
-    [
-        ("valid", "valid", 200),
-        ("valid", "bogus", 400),
-        ("valid", "altered", 400),
-        ("missing", "bogus", 400),
-        ("non_hex", "bogus", 400),
-    ],
+    "msg_key",
+    ["owner", "other", "missing", "non_hex"],
+)
+@pytest.mark.parametrize(
+    "att_key, expect_status",
+    [("valid", 200), ("bogus", 400), ("altered", 400)],
 )
 def test_gmail_attachment_errors(client, admin_h, ro_conn, msg_key, att_key, expect_status):
+    """An attachment id is served under ANY message id — the one it belongs to, another real
+    message, a well-formed id no message has, or a non-hex string alike — real Gmail's answer
+    turns on the attachment id alone, not the path's message id (measured against
+    gmail.googleapis.com on 2026-10-01). Only an attachment id nothing has gets 400."""
     row = ro_conn.execute(
         "SELECT * FROM gmail_messages WHERE COALESCE(attachments,'') NOT IN ('', '[]') LIMIT 1"
     ).fetchone()
     assert row is not None, "SAMPLE should hold a message with an attachment"
     hexid = row["id"]
+    other_row = ro_conn.execute(
+        "SELECT id FROM gmail_messages WHERE id != ? LIMIT 1", (hexid,)
+    ).fetchone()
+    assert other_row is not None, "SAMPLE should hold a second gmail message"
     m = client.get(
         f"/gmail/v1/users/me/messages/{hexid}", headers=admin_h, params={"format": "full"}
     ).json()
     valid_att = next(p for p in m["payload"]["parts"] if p.get("filename"))["body"]["attachmentId"]
 
-    msg_id = hexid if msg_key == "valid" else "0000000000000001" if msg_key == "missing" else "zzz"
+    msg_id = {
+        "owner": hexid,
+        "other": other_row["id"],
+        "missing": "0000000000000001",
+        "non_hex": "zzz",
+    }[msg_key]
     att_id = (
         valid_att
         if att_key == "valid"
@@ -372,6 +383,8 @@ def test_gmail_attachment_errors(client, admin_h, ro_conn, msg_key, att_key, exp
                 "status": "INVALID_ARGUMENT",
             }
         }
+    else:
+        assert r.json()["size"] > 0
 
 
 @pytest.mark.parametrize(

@@ -1,21 +1,18 @@
 """A JSON request body read the way Google's API front end reads one into its proto message.
 
 The Sheets POST reads (`values:batchGetByDataFilter`, `spreadsheets:getByDataFilter`) take their
-request as JSON, and real reads that JSON with protobuf's own streaming parser
-(`util/internal/json_stream_parser.cc`) feeding its proto writer (`proto_writer.cc`,
-`datapiece.cc`). Measured 2026-10-04 on `sheets.googleapis.com`, every message below and every
-leniency is that code's: single-quoted strings, bare keys and trailing commas are read, `1.` is a
-number, a syntax error names the 20 bytes either side of where it stopped, and a value of the wrong
-kind is named by its proto path (`data_filters[0].grid_range.start_row_index.value`). This module is
-a port of the parts those two requests reach, with the options real runs it under, each measured:
-invalid UTF-8 is replaced rather than refused, and enum names match whatever the case of their ASCII
-letters, with `-` read as `_`.
-
-What real reports, and in which order, follows from feeding the whole body as one chunk and then
-finishing (:func:`read`)."""
+request as JSON, and real writes that JSON into the request message with protobuf's proto writer
+(`proto_writer.cc`, `datapiece.cc`). Measured 2026-10-04 on `sheets.googleapis.com`, every refusal
+below is that code's: a value of the wrong kind and a name the message lacks are named by their
+proto path (`data_filters[0].grid_range.start_row_index.value`). This module is a port of the parts
+those two requests reach, with the option real runs it under, measured: enum names match whatever
+the case of their ASCII letters, with `-` read as `_`. The JSON itself is parsed by
+:func:`json.loads` (:func:`read`)."""
 
 from __future__ import annotations
 
+import codecs
+import json
 import math
 import re
 from typing import NamedTuple
@@ -65,8 +62,8 @@ class ConversionError(Exception):
 
 # --- values ------------------------------------------------------------------------------------
 #
-# A rendered value is ``(kind, value)``: ``string`` (str), ``int`` (a JSON integer that fits int64),
-# ``uint`` (one that fits uint64 only), ``double``, ``bool`` or ``null``.
+# A rendered value is ``(kind, value)``: ``string`` (str), ``bool``, ``null``, or a number as
+# :func:`_number` reads one, ``int``, ``uint`` or ``double``.
 
 
 def _dtoa(value: float) -> str:
@@ -224,8 +221,9 @@ class _Frame:
 
 
 class _Writer:
-    """The parts of ``ProtoWriter`` and ``ProtoStreamObjectWriter`` the parser drives. Errors go to
-    ``errors`` as ``(location or None, message)`` in the order they happen, which is the body's."""
+    """The parts of ``ProtoWriter`` and ``ProtoStreamObjectWriter`` that :func:`_walk` drives.
+    Errors go to ``errors`` as ``(location or None, message)`` in the order they happen, which is
+    the body's."""
 
     def __init__(self, root: Message):
         self.root = root
@@ -413,448 +411,117 @@ def _convert(field: Field, piece: tuple[str, object]):
     return to_enum(piece, field.enum)
 
 
-# --- the parser --------------------------------------------------------------------------------
+# --- reading the body ----------------------------------------------------------------------------
 
 
-class _Cancel(Exception):
-    """Parsing stopped for want of more input; the chunk pass leaves it for the finishing pass."""
+class _Members(list):
+    """An object's members as ``(name, value)`` pairs in body order, a repeated name kept."""
 
 
-class _Failure(Exception):
-    """A syntax error, with the parser's sentence; ``None`` where real gives none (`_fail`)."""
-
-    def __init__(self, message: str | None):
-        super().__init__(message)
-        self.message = message
-
-
-_VALUE, _OBJ_MID, _ENTRY, _ENTRY_MID, _ARRAY_VALUE, _ARRAY_MID = range(6)
-(
-    _BEGIN_STRING,
-    _BEGIN_NUMBER,
-    _BEGIN_TRUE,
-    _BEGIN_FALSE,
-    _BEGIN_NULL,
-    _BEGIN_OBJECT,
-    _END_OBJECT,
-    _BEGIN_ARRAY,
-    _END_ARRAY,
-    _ENTRY_SEPARATOR,
-    _VALUE_SEPARATOR,
-    _BEGIN_KEY,
-    _UNKNOWN,
-) = range(13)
-_SPACE = b" \t\n\v\f\r"
-_ESCAPES = {ord("b"): b"\b", ord("f"): b"\f", ord("n"): b"\n", ord("r"): b"\r", ord("t"): b"\t"}
-_ESCAPES[ord("v")] = b"\v"
+def _number(text: str, *, integer: bool) -> tuple[str, object]:
+    """A JSON number as ``JsonStreamParser`` reads it: an integer without a sign is a ``uint`` while
+    it fits uint64 and one with a sign an ``int`` while it fits int64, and anything else a
+    ``double``, which past a double's range is refused."""
+    if integer:
+        value = int(text)
+        if text[0] == "-" and value >= -(2**63):
+            return ("int", value)
+        if text[0] != "-" and value < 2**64:
+            return ("uint", value)
+    number = float(text)
+    if not math.isfinite(number):
+        raise ValueError(text)
+    return ("double", number)
 
 
-def _is_letter(byte: int) -> bool:
-    return chr(byte).isascii() and (chr(byte).isalpha() or byte in b"_$")
+def _refuse_constant(name: str):
+    raise ValueError(name)
 
 
-def _valid_utf8_prefix(data: bytes) -> int:
-    try:
-        data.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        return exc.start
-    return len(data)
+# Python keeps a `\ud800` escape that no low surrogate follows as that code point.
+_LONE_SURROGATE = re.compile("[\ud800-\udfff]")
 
 
-def _replace_invalid(data: bytes) -> bytes:
-    """``ReplaceInvalidCodePoints`` with real's replacement, a space per invalid byte."""
-    out = bytearray()
-    while data:
-        n = _valid_utf8_prefix(data)
-        out += data[:n]
-        if n == len(data):
-            break
-        out += b" "
-        data = data[n + 1 :]
-    return bytes(out)
+def _text(value: str) -> str:
+    """A string with each unpaired surrogate as U+FFFD, measured 2026-10-04: `"\\ud800A"` is
+    U+FFFD and `A`."""
+    return _LONE_SURROGATE.sub("\ufffd", value)
 
 
-def _char_len(data: bytes, at: int) -> int:
-    """``UTF8FirstLetterNumBytes``."""
-    lead = data[at]
-    size = 1 if lead < 0xC0 else 2 if lead < 0xE0 else 3 if lead < 0xF0 else 4
-    return min(size, len(data) - at)
+def _piece(value) -> tuple[str, object]:
+    if isinstance(value, str):
+        return ("string", _text(value))
+    if isinstance(value, bool):
+        return ("bool", value)
+    if value is None:
+        return ("null", None)
+    return value  # a number, already read by `_number`
 
 
-class _Parser:
-    """``JsonStreamParser``, line for line where it matters: the parse stack, cancelling when a
-    token may continue past the end of the chunk, and ``ReportFailure``'s context window."""
-
-    def __init__(self, writer: _Writer):
-        self.w = writer
-        self.stack = [_VALUE]
-        self.leftover = b""
-        self.json = b""
-        self.p = 0
-        self.key: bytes | None = None
-        self.string_open = 0
-        self.parsed = bytearray()
-        self.finishing = False
-
-    # -- driving
-
-    def parse(self, chunk: bytes) -> None:
-        n = _valid_utf8_prefix(chunk)
-        if n > 0:
-            try:
-                self._parse_chunk(chunk[:n])
-            finally:
-                self.leftover += chunk[n:]
+def _walk(writer: _Writer, tree) -> None:
+    """``tree`` fed to ``writer`` element by element in body order, the calls real's parser makes
+    on its writer."""
+    pending = [(iter([("", tree)]), None)]
+    while pending:
+        entry = next(pending[-1][0], None)
+        if entry is None:
+            _, end = pending.pop()
+            if end is not None:
+                end()
+            continue
+        name, value = entry
+        if isinstance(value, _Members):
+            writer.start_object(name)
+            pending.append((((_text(k), v) for k, v in value), writer.end_object))
+        elif isinstance(value, list):
+            writer.start_list(name)
+            pending.append(((("", v) for v in value), writer.end_list))
         else:
-            self.leftover = chunk
+            writer.render(name, _piece(value))
 
-    def _parse_chunk(self, chunk: bytes) -> None:
-        self.json, self.p, self.finishing = chunk, 0, False
-        self._run()
-        self._skip_space()
-        if self.p == len(self.json):
-            self.leftover = b""
-        elif not self.stack:
-            self._fail("Parsing terminated before end of input.")
-        else:
-            self.leftover = self.json[self.p :]
 
-    def finish(self) -> None:
-        if not self.stack and not self.leftover:
-            return
-        self.json, self.p, self.finishing = _replace_invalid(self.leftover), 0, True
-        self._run()
-        self._skip_space()
-        if self.p < len(self.json):
-            self._fail("Parsing terminated before end of input.")
+def _space_per_byte(exc: UnicodeDecodeError) -> tuple[str, int]:
+    """``ReplaceInvalidCodePoints`` with real's replacement, a space per invalid byte, measured
+    2026-10-06."""
+    return " ", exc.start + 1
 
-    def _run(self) -> None:
-        handlers = {
-            _VALUE: self._value,
-            _OBJ_MID: self._object_mid,
-            _ENTRY: self._entry,
-            _ENTRY_MID: self._entry_mid,
-            _ARRAY_VALUE: self._array_value,
-            _ARRAY_MID: self._array_mid,
-        }
-        while self.stack:
-            kind = self.stack.pop()
-            token = self._next_token() if self.string_open == 0 else _BEGIN_STRING
-            try:
-                handlers[kind](token)
-            except _Cancel:
-                if self.finishing:
-                    raise
-                self.stack.append(kind)
-                return
 
-    # -- reporting
-
-    def _fail(self, message: str):
-        """``ReportFailure``: the sentence, the 20 bytes either side of where parsing stopped, and a
-        caret under it. Where that window cuts a character in two, real answers the generic
-        ``Request contains an invalid argument.`` instead, measured 2026-10-04 at both ends of the
-        window (the parser's message is then not valid UTF-8)."""
-        begin = max(self.p - 20, 0)
-        end = min(self.p + 20, len(self.json))
-        try:
-            segment = self.json[begin:end].decode("utf-8")
-        except UnicodeDecodeError:
-            raise _Failure(None) from None
-        raise _Failure(f"{message}\n{segment}\n{' ' * (self.p - begin)}^")
-
-    def _unknown(self, message: str):
-        if not self.finishing:
-            raise _Cancel
-        if self.p == len(self.json):
-            self._fail(f"Unexpected end of string. {message}")
-        self._fail(message)
-
-    # -- tokens
-
-    def _skip_space(self) -> None:
-        while self.p < len(self.json) and self.json[self.p] in _SPACE:
-            self.p += 1
-
-    def _advance(self) -> None:
-        self.p += _char_len(self.json, self.p)
-
-    def _next_token(self) -> int:
-        self._skip_space()
-        rest = self.json[self.p :]
-        if not rest:
-            return _UNKNOWN
-        c = rest[0]
-        if c in b"\"'":
-            return _BEGIN_STRING
-        if c == ord("-") or 0x30 <= c <= 0x39:
-            return _BEGIN_NUMBER
-        for word, token in (
-            (b"true", _BEGIN_TRUE),
-            (b"false", _BEGIN_FALSE),
-            (b"null", _BEGIN_NULL),
-        ):
-            if rest.startswith(word):
-                return token
-        single = {
-            ord("{"): _BEGIN_OBJECT,
-            ord("}"): _END_OBJECT,
-            ord("["): _BEGIN_ARRAY,
-            ord("]"): _END_ARRAY,
-            ord(":"): _ENTRY_SEPARATOR,
-            ord(","): _VALUE_SEPARATOR,
-        }
-        if c in single:
-            return single[c]
-        return _BEGIN_KEY if _is_letter(c) else _UNKNOWN
-
-    def _take_key(self) -> str:
-        key = (self.key or b"").decode("utf-8", "replace")
-        self.key = None
-        return key
-
-    # -- values
-
-    def _value(self, token: int) -> None:
-        if token == _BEGIN_OBJECT:
-            self._advance()
-            self.w.start_object(self._take_key())
-            self.stack.append(_ENTRY)
-        elif token == _BEGIN_ARRAY:
-            self._advance()
-            self.w.start_list(self._take_key())
-            self.stack.append(_ARRAY_VALUE)
-        elif token == _BEGIN_STRING:
-            self._string()
-            self.w.render(self._take_key(), ("string", self._decoded()))
-        elif token == _BEGIN_NUMBER:
-            self._number()
-        elif token in (_BEGIN_TRUE, _BEGIN_FALSE, _BEGIN_NULL):
-            word = {_BEGIN_TRUE: b"true", _BEGIN_FALSE: b"false", _BEGIN_NULL: b"null"}[token]
-            piece = ("null", None) if token == _BEGIN_NULL else ("bool", token == _BEGIN_TRUE)
-            self.w.render(self._take_key(), piece)
-            self.p += len(word)
-        elif token == _UNKNOWN:
-            self._unknown("Expected a value.")
-        else:
-            # `fals` at the end of a chunk may yet be `false`, so a short leftover waits.
-            if not self.finishing and len(self.json) - self.p < len(b"false"):
-                raise _Cancel
-            self._fail("Unexpected token.")
-
-    def _decoded(self) -> str:
-        raw, self.parsed = bytes(self.parsed), bytearray()
-        return raw.decode("utf-8", "replace")
-
-    def _string(self) -> None:
-        if self.string_open == 0:
-            self.string_open = self.json[self.p]
-            self.p += 1
-        while self.p < len(self.json):
-            c = self.json[self.p]
-            if c == ord("\\"):
-                if len(self.json) - self.p == 1:
-                    if not self.finishing:
-                        raise _Cancel
-                    self._fail("Closing quote expected in string.")
-                if self.json[self.p + 1] == ord("u"):
-                    self._unicode_escape()
-                    continue
-                nxt = self.json[self.p + 1]
-                self.parsed += _ESCAPES.get(nxt, bytes([nxt]))
-                self.p += 2
-                continue
-            if c == self.string_open:
-                self.string_open = 0
-                self.p += 1
-                return
-            step = _char_len(self.json, self.p)
-            self.parsed += self.json[self.p : self.p + step]
-            self.p += step
-        if not self.finishing:
-            raise _Cancel
-        self.string_open = 0
-        self._fail("Closing quote expected in string.")
-
-    def _unicode_escape(self) -> None:
-        rest = self.json[self.p :]
-        if len(rest) < 6:
-            if not self.finishing:
-                raise _Cancel
-            self._fail("Illegal hex string.")
-        digits = rest[2:6]
-        if not all(chr(d) in "0123456789abcdefABCDEF" for d in digits):
-            self._fail("Invalid escape sequence.")
-        code = int(digits, 16)
-        if 0xD800 <= code <= 0xDBFF:
-            if len(rest) < 12:
-                if not self.finishing:
-                    raise _Cancel
-            elif rest[6:8] == b"\\u":
-                low_digits = rest[8:12]
-                if not all(chr(d) in "0123456789abcdefABCDEF" for d in low_digits):
-                    self._fail("Invalid escape sequence.")
-                low = int(low_digits, 16)
-                if 0xDC00 <= low <= 0xDFFF:
-                    code = (((code & 0x3FF) << 10) | (low & 0x3FF)) + 0x10000
-                    self.p += 6
-        # A surrogate left unpaired reads as U+FFFD, one each, measured 2026-10-04: `"\ud800A"` is
-        # the string `\ufffdA`.
-        self.parsed += "\ufffd".encode() if 0xD800 <= code <= 0xDFFF else chr(code).encode()
-        self.p += 6
-
-    def _number(self) -> None:
-        rest = self.json[self.p :]
-        index, floating = 0, False
-        while index < len(rest):
-            c = chr(rest[index])
-            if "0" <= c <= "9":
-                pass
-            elif c in ".eE":
-                floating = True
-            elif c not in "+-x":
-                break
-            index += 1
-        if index == len(rest) and not self.finishing:
-            raise _Cancel
-        text = rest[:index].decode("ascii")
-        if floating:
-            piece = self._double(text)
-        elif not text.startswith("-"):
-            if len(text) >= 2 and text[0] == "0":
-                self._fail("Octal/hex numbers are not valid JSON values.")
-            piece = (
-                ("uint", int(text))
-                if re.fullmatch(r"[0-9]+", text) and int(text) < 2**64
-                else self._double(text)
-            )
-        else:
-            if len(text) >= 3 and text[1] == "0":
-                self._fail("Octal/hex numbers are not valid JSON values.")
-            piece = (
-                ("int", int(text))
-                if re.fullmatch(r"-[0-9]+", text) and int(text) >= -(2**63)
-                else self._double(text)
-            )
-        self.p += index
-        self.w.render(self._take_key(), piece)
-
-    def _double(self, text: str) -> tuple[str, float]:
-        try:
-            value = float.fromhex(text) if "x" in text.lower() else float(text)
-        except ValueError:
-            self._fail("Unable to parse number.")
-        if not math.isfinite(value):
-            self._fail("Number exceeds the range of double.")
-        return ("double", value)
-
-    # -- objects and arrays
-
-    def _object_mid(self, token: int) -> None:
-        if token == _UNKNOWN:
-            self._unknown("Expected , or } after key:value pair.")
-        if token == _END_OBJECT:
-            self._advance()
-            self.w.end_object()
-        elif token == _VALUE_SEPARATOR:
-            self._advance()
-            self.stack.append(_ENTRY)
-        else:
-            self._fail("Expected , or } after key:value pair.")
-
-    def _entry(self, token: int) -> None:
-        if token == _UNKNOWN:
-            self._unknown("Expected an object key or }.")
-        if token == _END_OBJECT:  # a trailing comma is allowed
-            self.w.end_object()
-            self._advance()
-            return
-        if token == _BEGIN_STRING:
-            self._string()
-            self.key = bytes(self.parsed)
-            self.parsed = bytearray()
-        elif token in (_BEGIN_KEY, _BEGIN_NULL, _BEGIN_TRUE, _BEGIN_FALSE):
-            self._bare_key()
-            if token != _BEGIN_KEY and self.key in (b"null", b"true", b"false"):
-                self._fail("Expected an object key or }.")
-        else:
-            self._fail("Expected an object key or }.")
-        self.stack += [_OBJ_MID, _ENTRY_MID]
-
-    def _bare_key(self) -> None:
-        start = self.p
-        end = start
-        while end < len(self.json) and (
-            _is_letter(self.json[end]) or 0x30 <= self.json[end] <= 0x39
-        ):
-            end += 1
-        if not self.finishing and end == len(self.json):
-            raise _Cancel
-        self.key, self.p = self.json[start:end], end
-
-    def _entry_mid(self, token: int) -> None:
-        if token == _UNKNOWN:
-            self._unknown("Expected : between key:value pair.")
-        if token != _ENTRY_SEPARATOR:
-            self._fail("Expected : between key:value pair.")
-        self._advance()
-        self.stack.append(_VALUE)
-
-    def _array_value(self, token: int) -> None:
-        if token == _UNKNOWN:
-            self._unknown("Expected a value or ] within an array.")
-        if token == _END_ARRAY:
-            self.w.end_list()
-            self._advance()
-            return
-        self.stack.append(_ARRAY_MID)
-        try:
-            self._value(token)
-        except _Cancel:
-            self.stack.pop()
-            raise
-
-    def _array_mid(self, token: int) -> None:
-        if token == _UNKNOWN:
-            self._unknown("Expected , or ] after array value.")
-        if token == _END_ARRAY:
-            self.w.end_list()
-            self._advance()
-        elif token == _VALUE_SEPARATOR:
-            self._advance()
-            self.stack.append(_ARRAY_VALUE)
-        else:
-            self._fail("Expected , or ] after array value.")
-
+codecs.register_error("backlot.protojson.space", _space_per_byte)
 
 _BOM = b"\xef\xbb\xbf"
 
 
 def read(body: bytes, message: Message) -> dict:
-    """``body`` read into ``message``, as a dict keyed by proto field name, or the 400 real gives.
+    """``body`` read into ``message``, as a dict keyed by proto field name, or a 400.
 
-    Real feeds the body to the parser as one chunk and then finishes it, and reports in this order,
-    measured 2026-10-04 with a body that fails at two stages at once: a syntax error the chunk pass
-    hits (`{"dataFilters": "abc" "x"}` is the syntax error), then whatever the writer has refused by
-    then (`{"dataFilters": "abc"` with no closing brace is the `DataFilter` refusal), then a syntax
-    error the finishing pass hits (`{"bogus": 1` is `Unexpected end of string`: the `1` might have
-    gone on, so it was left for that pass, and its field refused only there), then the writer's
-    refusals from that pass. The writer's refusals are one 400 naming each, in body order.
+    The body is parsed whole and then fed to the writer, whose refusals are one 400 naming each, in
+    body order. Invalid UTF-8 is replaced rather than refused (:func:`_space_per_byte`), an empty
+    body is an empty message, and a byte-order mark in front is skipped, all measured 2026-10-04.
 
-    An empty body is an empty message, and a byte-order mark in front is skipped, both measured."""
+    A body that is not JSON is refused with ``Unexpected token.``, and so are `NaN`, `Infinity` and
+    a number past a double's range. Where real refuses one of these, it gives its parser's own
+    sentence and the 20 bytes either side of where it stopped,
+    ``Request contains an invalid argument.`` where those bytes would split a character, or, for a
+    body cut short, the refusal of a value read before the cut. Its parser also reads single quotes,
+    bare keys, a trailing comma, `1.` and an escape JSON lacks, and refuses a body nested past 100
+    levels (``Message too deep.``, measured 2026-10-06), which is read here."""
     if body.startswith(_BOM):
         body = body[len(_BOM) :]
     if not body:
         return {}
+    try:
+        tree = json.loads(
+            body.decode("utf-8", "backlot.protojson.space"),
+            object_pairs_hook=_Members,
+            parse_int=lambda text: _number(text, integer=True),
+            parse_float=lambda text: _number(text, integer=False),
+            parse_constant=_refuse_constant,
+            strict=False,
+        )
+    except (ValueError, RecursionError):  # the latter for a body nested past Python's stack
+        raise gerr.invalid_json("Unexpected token.") from None
     writer = _Writer(message)
-    parser = _Parser(writer)
-    for step in (lambda: parser.parse(body), parser.finish):
-        try:
-            step()
-        except _Failure as failure:
-            if failure.message is None:
-                raise gerr.invalid_argument("Request contains an invalid argument.") from None
-            raise gerr.invalid_json(failure.message) from None
-        if writer.errors:
-            raise gerr.invalid_field_values(writer.errors)
+    _walk(writer, tree)
+    if writer.errors:
+        raise gerr.invalid_field_values(writer.errors)
     return writer.result

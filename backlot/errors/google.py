@@ -43,7 +43,7 @@ Inside `errors[]` the entry follows the constructor that raised it, and each one
 measurement. Measured on Sheets and Docs at `$.xgafv=1`: a typed value the proto layer refuses is
 ``reason: invalid`` with NO ``domain`` (:func:`invalid_field_value`), and so are a JSON body member
 the request message does not have and a JSON body that is not an object
-(:func:`invalid_field_values`); a body the JSON parser refuses in its own words is ``parseError``
+(:func:`invalid_field_values`); a request body that is not JSON is ``parseError``
 (:func:`invalid_json`); every other measured 400 is ``badRequest`` under ``global``
 (:func:`invalid_argument`, :func:`bad_field_mask`); a 404 is ``notFound``; a bad token ``authError``
 at ``location: Authorization``; an anonymous Sheets GET ``forbidden``; the missing credential — any
@@ -203,9 +203,8 @@ def invalid_argument(message: str) -> GoogleError:
     """The editor APIs' generic 400. Its `errors[]` entry, shown at `$.xgafv=1`, is ``badRequest``
     under ``global`` — measured on an unparseable range, a range past the grid, an unsupported
     ``alt``, ``dataFilter.filter must be specified.``, ``No sheet with id``,
-    ``Must specify at least one dataFilter.``, and on 2026-10-04 ``No grid with id``,
-    ``GridRange indexes must be >= 0`` and a JSON body whose parse error would quote part of a
-    character. A typed value the proto layer refuses is a different entry
+    ``Must specify at least one dataFilter.``, and on 2026-10-04 ``No grid with id`` and
+    ``GridRange indexes must be >= 0``. A typed value the proto layer refuses is a different entry
     (:func:`invalid_field_value`), and so is :func:`invalid_json`'s."""
     return GoogleError(400, message, reason="badRequest", status="INVALID_ARGUMENT")
 
@@ -257,10 +256,9 @@ def field_violations(exc: GoogleError) -> list[tuple[str | None, str]]:
 
 
 def invalid_json(message: str) -> GoogleError:
-    """A request body the JSON parser refused in its own words (``backlot.protojson``). Measured
-    2026-10-04 on the two Sheets data-filter POSTs: ``Invalid JSON payload received.`` and the
-    parser's own sentence, no `details`, and at `$.xgafv=1` an `errors[]` entry of ``parseError``
-    under ``global``."""
+    """A request body that is not JSON (``backlot.protojson.read``). Measured 2026-10-04 on the two
+    Sheets data-filter POSTs: ``Invalid JSON payload received.`` and a sentence, no `details`, and
+    at `$.xgafv=1` an `errors[]` entry of ``parseError`` under ``global``."""
     return GoogleError(
         400,
         f"Invalid JSON payload received. {message}",

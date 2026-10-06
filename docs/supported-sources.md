@@ -311,11 +311,10 @@ the live Drive and Sheets APIs on 2026-09-23, and the export's `Content-Type` on
 
 **A Sheets read enum is taken by its name in any ASCII case, with `-` for `_`, or by the number the
 name has**, in the query string and in a data-filter body alike, and `DIMENSION_UNSPECIFIED` reads
-as `ROWS`. A data-filter body is read the way real's proto transcoder reads it, leniencies included
-(single quotes, bare keys, trailing commas): every value it cannot convert and every name the
-request message lacks is refused in one 400, each named by its proto path where it has one, and a
-body that is not JSON gets the parser's own message, which quotes the body around where it stopped.
-Measured against the live Sheets API on 2026-10-04, and a non-ASCII letter's case on 2026-10-05.
+as `ROWS`. A data-filter body is written into the request message the way real's proto writer
+writes it: every value it cannot convert and every name the request message lacks is refused in one
+400, each named by its proto path where it has one. Measured against the live Sheets API on
+2026-10-04, and a non-ASCII letter's case on 2026-10-05.
 
 ### HubSpot — `/hubspot/crm/v3` `/hubspot/crm/v4`
 

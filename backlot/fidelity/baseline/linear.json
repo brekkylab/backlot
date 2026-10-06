@@ -3,7 +3,7 @@
   "endpoints": [
     "https://api.linear.app/graphql"
   ],
-  "measured": "2026-09-29",
+  "measured": "2026-10-05",
   "acknowledged": [
     {
       "kind": "missing_field",
@@ -3459,6 +3459,20 @@
       "severity": "gap",
       "path": "Query.organizationMeta",
       "detail": "vendor serves organizationMeta: OrganizationMeta; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.originInstallUrl",
+      "detail": "vendor serves originInstallUrl: OriginInstallUrlPayload!; Backlot does not",
+      "note": "Linear's own description marks it internal: \"[Internal] Builds the URL that starts installing Linear's Origin app into a codebase.\" It joins the family whose gap is recorded on `Query.originInstallation`. Measured against api.linear.app on 2026-10-05: it takes no argument and answers `OriginInstallUrlPayload!`, an object of one field, `installUrl: String!` (\"The Origin URL to send the user to in order to install Linear's app.\"). Asked once, it answered a `https://cursor.com/codebase/apps/install` URL whose query carries `client_id`, `scope`, `redirect_uri`, `state`, `summary` and `include_granted_scopes`. This schema does not declare `OriginInstallUrlPayload`."
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.originInstallation",
+      "detail": "vendor serves originInstallation: OriginInstallationDetails!; Backlot does not",
+      "note": "No corpus states an Origin installation. Linear's own description marks the root internal: \"[Internal] Describes an Origin installation that started on Origin, for its installer to confirm before connecting.\" What it describes is the Origin side of an install: the Origin owner Linear's app was installed on, which of that owner's repositories it covers, and who installed it. A Linear record here is an issue with its team, its comments and the people on it, and nothing in it says the app was installed anywhere, so both `origin*` roots on `Query` are a gap, this one and `originInstallUrl`. Measured against api.linear.app on 2026-10-05: it takes one argument, `installationId: String!` (\"The Origin installation id from the install redirect.\"), and answers `OriginInstallationDetails!`, whose six fields are `ownerSlug`, `ownerType` (\"Whether the Origin owner is a `team` or a `user`.\"), `repositorySelection` (\"Whether the installation covers `all` repositories of the owner or only `selected` ones.\"), `installedByEmail`, `installedByName` and `installedByMatchesUser`. Asked for three ids no installation carries (`not-a-real-installation`, `12345678` and the nil UUID), it answered each with a 200 whose body is `data: null` and an `errors` member, `Internal server error` with `INTERNAL_SERVER_ERROR` and `userError: false`. This schema does not declare `OriginInstallationDetails`. The same introspection lists three Origin mutations, `integrationOriginConnect`, `integrationOriginConnectInstallation` and `originInstallationCancel`, which this comparison does not read because Backlot declares no `Mutation` type."
     },
     {
       "kind": "missing_field",

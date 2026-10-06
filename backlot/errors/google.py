@@ -328,6 +328,16 @@ def invalid_id_value() -> GoogleError:
     return GoogleError(400, "Invalid id value", reason="invalidArgument", status="INVALID_ARGUMENT")
 
 
+def invalid_max_results() -> GoogleError:
+    """Gmail's answer to a `maxResults` of zero — measured on gmail.googleapis.com 2026-09-30: 400
+    INVALID_ARGUMENT, ``Invalid maxResults``, whose `errors[]` entry is `global` /
+    `invalidArgument` and which carries no `details`. A value the proto layer cannot read at all is
+    :func:`invalid_field_value`'s shape instead, which names the field it refused."""
+    return GoogleError(
+        400, "Invalid maxResults", reason="invalidArgument", status="INVALID_ARGUMENT"
+    )
+
+
 def failed_precondition(message: str) -> GoogleError:
     """The editor APIs' "right shape, wrong state" 400 — an Office file read as a native doc."""
     return GoogleError(400, message, reason="failedPrecondition", status="FAILED_PRECONDITION")

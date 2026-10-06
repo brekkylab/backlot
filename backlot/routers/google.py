@@ -547,8 +547,29 @@ def _gmail_max_results(request: Request) -> int:
     """The page size `messages.list` and `threads.list` serve. A `maxResults` above 500 is capped
     at 500, not refused: measured on 2026-10-03, `501` and `1000` each answered 500 messages with a
     `nextPageToken`, and the reference gives both methods "The maximum allowed value for this field
-    is 500"."""
-    return min(_int(request.query_params.get("maxResults"), get_settings().default_page_size), 500)
+    is 500".
+
+    A value that is not one is refused, measured on gmail.googleapis.com 2026-09-30: `0` is 400
+    `Invalid maxResults` — an empty page whose `nextPageToken` encodes that same offset again,
+    so a client paging until the token is absent never stops — and a negative,
+    non-numeric or empty value is the proto layer's `Invalid value at 'max_results'
+    (TYPE_UINT32), "<value>"`, the value quoted as sent. A `-1` reached SQLite as `LIMIT -1`, which
+    is every row in the mailbox.
+    """
+    raw = request.query_params.get("maxResults")
+    if raw is None:
+        return min(get_settings().default_page_size, 500)
+    # The spellings the parser takes are `_INT32`'s, the one the proto layer applies to the numeric
+    # query parameters of this API too: `+2` and `02` are numbers, and `1_0`, a padded value, an
+    # empty one and `1.5` are not (measured on Drive's `pageSize`, 2026-09-23).
+    value = int(raw) if _INT32.fullmatch(raw) else None
+    if value is None or value < 0:
+        raise gerr.invalid_field_value(
+            "max_results", f"Invalid value at 'max_results' (TYPE_UINT32), \"{raw}\""
+        )
+    if value == 0:
+        raise gerr.invalid_max_results()
+    return min(value, 500)
 
 
 def _gmail_ids(row) -> tuple[str, str]:
@@ -4284,10 +4305,3 @@ def _drive_page_size(sizes: list[int]) -> int:
     first = sizes[0]
     size = 1000 if first > 1000 else 500 if first < 1 else first
     return min(size, get_settings().max_page_size)
-
-
-def _int(v: str | None, default: int) -> int:
-    try:
-        return min(int(v), get_settings().max_page_size) if v else default
-    except ValueError:
-        return default

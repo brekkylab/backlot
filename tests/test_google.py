@@ -556,6 +556,59 @@ def test_gmail_max_results_is_capped_at_500(tmp_path):
                 assert "nextPageToken" in page, (kind, asked)
 
 
+# Measured on gmail.googleapis.com 2026-09-30, one request per row: a zero is its own message and
+# every other value the proto layer cannot read is the `TYPE_UINT32` refusal, quoted as sent.
+_GMAIL_REFUSED_MAX_RESULTS = [
+    ("maxResults=0", "maxResults"),
+    ("maxResults=-1", "uint32"),
+    ("maxResults=abc", "uint32"),
+    ("maxResults=", "uint32"),
+    ("maxResults=1.5", "uint32"),
+]
+
+
+@pytest.mark.parametrize("query,shape", _GMAIL_REFUSED_MAX_RESULTS)
+def test_gmail_refuses_a_max_results_it_cannot_read(client, admin_h, query, shape):
+    """A `maxResults` of zero paged forever: a zero-length page left the offset where it was and
+    `next_page_token` encoded that offset again, so the token it answered with was the token it had
+    been given, and a client paging until `nextPageToken` is absent never stopped. A `-1` reached
+    SQLite as `LIMIT -1`, every row in the mailbox. Both listings read the one value through
+    `_gmail_max_results`, so both are asserted.
+    """
+    for kind in ("messages", "threads"):
+        r = client.get(f"/gmail/v1/users/me/{kind}?{query}", headers=admin_h)
+        assert r.status_code == 400, (kind, query, r.text)
+        err = r.json()["error"]
+        if shape == "maxResults":
+            assert err == {
+                "code": 400,
+                "message": "Invalid maxResults",
+                "errors": [
+                    {
+                        "message": "Invalid maxResults",
+                        "domain": "global",
+                        "reason": "invalidArgument",
+                    }
+                ],
+                "status": "INVALID_ARGUMENT",
+            }, (kind, query)
+            continue
+        sent = query.split("=", 1)[1]
+        message = f"Invalid value at 'max_results' (TYPE_UINT32), \"{sent}\""
+        assert err == {
+            "code": 400,
+            "message": message,
+            "errors": [{"message": message, "reason": "invalid"}],
+            "status": "INVALID_ARGUMENT",
+            "details": [
+                {
+                    "@type": "type.googleapis.com/google.rpc.BadRequest",
+                    "fieldViolations": [{"field": "max_results", "description": message}],
+                }
+            ],
+        }, (kind, query)
+
+
 def test_gmail_attachment_size_matches_part_metadata(client, admin_h, ro_conn):
     # Real Gmail's contract: a part's body.size equals the byte length attachments.get serves, so a
     # client can stat an attachment from message metadata alone. Reporting the corpus-declared

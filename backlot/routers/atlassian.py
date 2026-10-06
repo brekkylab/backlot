@@ -2072,13 +2072,13 @@ def _refuse_a_json_constant(name: str):
 
 def _cql_token_part(part: str):
     """One part of a CQL search cursor read as :func:`_cql_search_after` says real reads it, or
-    ``_NO_JSON``."""
+    ``_NO_JSON``, which a part nesting deeper than Python's JSON reader recurses gets as well."""
     standard = part.replace("-", "+").replace("_", "/") + "=" * (-len(part) % 4)
     decoder = json.JSONDecoder(parse_constant=_refuse_a_json_constant)
     try:
         raw = base64.b64decode(standard, validate=True)
         return decoder.raw_decode(raw.decode("utf-8").lstrip(" \t\n\r"))[0]
-    except (ValueError, binascii.Error):
+    except (ValueError, binascii.Error, RecursionError):
         return _NO_JSON
 
 

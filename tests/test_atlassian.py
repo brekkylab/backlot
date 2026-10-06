@@ -1737,6 +1737,19 @@ def test_confluence_cql_pages_by_the_cursor_it_is_sent(searchable, query, answer
     assert "cursor=" not in page["_links"]["self"] and len(_cursors(nxt or "")) == bool(nxt)
 
 
+def test_confluence_cql_cursor_nested_deeper_than_the_json_reader_recurses_is_the_400():
+    """A cursor part of lists nested over a million deep is refused with the 400 a part holding no
+    JSON value gets (:func:`backlot.routers.atlassian._cql_token_part`). Called directly: a token
+    that deep runs past the longest URL httpx sends."""
+    from backlot.routers.atlassian import _cql_search_after
+
+    # `[3]`, then `[` and `]` three at a time in base64
+    token = "_t_WzNd_h_" + "W1tb" * 333_334 + "XV1d" * 333_334
+    with pytest.raises(errors_atlassian.AtlassianError) as refused:
+        _cql_search_after(token)
+    assert refused.value.body == errors_atlassian.search_cursor_refused().body
+
+
 def test_confluence_cql_cursor_finds_out_no_page_the_caller_cannot_see(tmp_path):
     """A cursor is positioned among the caller's own matches, so one naming a page a scoped token
     cannot see answers as no cursor does, where the admin is served the rows after it. The pages

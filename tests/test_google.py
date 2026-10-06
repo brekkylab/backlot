@@ -384,7 +384,97 @@ def test_gmail_attachment_errors(client, admin_h, ro_conn, msg_key, att_key, exp
             }
         }
     else:
-        assert r.json()["size"] > 0
+        owned = client.get(
+            f"/gmail/v1/users/me/messages/{hexid}/attachments/{valid_att}", headers=admin_h
+        ).json()
+        assert owned["size"] > 0
+        assert r.json() == owned
+
+
+_ATTACHMENT_ACL = [
+    {
+        "source_type": "gmail",
+        "doc_id": "ava-deck",
+        "mailbox": "ava",
+        "title": "Deck",
+        "content": "Deck attached.",
+        "author_email": "ava@acme.com",
+        "readers": ["ava@acme.com"],
+        "created": "2026-02-01T09:00:00Z",
+        "attachments": [{"filename": "deck.pdf", "mime": "application/pdf", "content": "deck"}],
+    },
+    {
+        "source_type": "gmail",
+        "doc_id": "ava-memo",
+        "mailbox": "ava",
+        "title": "Memo",
+        "content": "Memo attached.",
+        "author_email": "ava@acme.com",
+        "readers": ["ava@acme.com"],
+        "created": "2026-02-02T09:00:00Z",
+        "attachments": [{"filename": "memo.txt", "mime": "text/plain", "content": "memo text"}],
+    },
+    {
+        "source_type": "gmail",
+        "doc_id": "mia-note",
+        "mailbox": "mia",
+        "title": "Note",
+        "content": "No attachment.",
+        "author_email": "mia@acme.com",
+        "readers": ["mia@acme.com"],
+        "created": "2026-02-03T09:00:00Z",
+    },
+]
+
+
+@pytest.fixture
+def attachment_acl(tmp_path):
+    """Two of ava's messages with one attachment each, and a message of mia's with none. Yields the
+    client, a header per caller, and each attachment id by the doc it belongs to."""
+    settings = tiny_corpus(tmp_path, _ATTACHMENT_ACL)
+    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    h = {"admin": {"Authorization": f"Bearer {settings.admin_token}"}}
+    for name in ("ava", "mia"):
+        h[name] = {"Authorization": f"Bearer {tok(tokens, f'{name}@acme.com')}"}
+    with client_for(settings, reload=True) as client:
+        att = {}
+        for doc in ("ava-deck", "ava-memo"):
+            m = client.get(
+                f"/gmail/v1/users/me/messages/{served_id('gmail', doc)}", headers=h["admin"]
+            ).json()
+            att[doc] = next(p for p in m["payload"]["parts"] if p.get("filename"))["body"][
+                "attachmentId"
+            ]
+        yield client, h, att
+
+
+def test_gmail_attachment_resolves_to_its_own_message_under_another_id(attachment_acl):
+    """With two attachment-bearing messages, each attachment id lands its own bytes, asked under a
+    third message's id that holds no attachment."""
+    client, h, att = attachment_acl
+    under = served_id("gmail", "mia-note")
+    for doc, content in (("ava-deck", b"deck"), ("ava-memo", b"memo text")):
+        r = client.get(
+            f"/gmail/v1/users/me/messages/{under}/attachments/{att[doc]}", headers=h["admin"]
+        )
+        assert r.status_code == 200, doc
+        assert base64.urlsafe_b64decode(r.json()["data"]) == content, doc
+
+
+@pytest.mark.parametrize("under", ["ava-deck", "mia-note"])
+def test_gmail_attachment_any_message_id_still_enforces_the_acl(attachment_acl, under):
+    """Serving an attachment under any message id must not serve it to a caller who cannot see the
+    message it belongs to: mia gets the unknown-attachment 400 for ava's deck whether she names
+    ava's message or her own, where ava and the admin get the deck."""
+    client, h, att = attachment_acl
+    url = f"/gmail/v1/users/me/messages/{served_id('gmail', under)}/attachments/{att['ava-deck']}"
+    for caller in ("admin", "ava"):
+        r = client.get(url, headers=h[caller])
+        assert r.status_code == 200, caller
+        assert base64.urlsafe_b64decode(r.json()["data"]) == b"deck", caller
+    r = client.get(url, headers=h["mia"])
+    assert r.status_code == 400
+    assert r.json()["error"]["message"] == "Invalid attachment token"
 
 
 @pytest.mark.parametrize(

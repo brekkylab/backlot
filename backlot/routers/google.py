@@ -25,7 +25,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict
 
-from backlot import auth, sheets_grid, store, synth
+from backlot import auth, protojson, sheets_grid, store, synth
 from backlot.acl import Caller
 from backlot.config import get_settings
 from backlot.errors import google as gerr
@@ -2648,11 +2648,12 @@ async def sheets_get(spreadsheet_id: str, request: Request):
     )
 
 
-def _sheets_book(spreadsheet_id: str, row, sheets: list[_Sheet], specs: list[str], grid: bool):
+def _sheets_book(spreadsheet_id: str, row, sheets: list[_Sheet], specs: list, grid: bool):
     """The `Spreadsheet` body both `spreadsheets.get` and `:getByDataFilter` answer with.
 
-    ``specs`` is the A1 ranges selecting what to serve — from `ranges` for one and from the data
-    filters for the other; empty means every sheet, whole."""
+    ``specs`` is what to serve — A1 ranges from `ranges` for one, and from the data filters for the
+    other A1 ranges and the empty grid ranges they may select (`_Empty`); empty means every sheet,
+    whole."""
     # Each sheet paired with the cell parts to serve for it: `("", title)` is the whole grid, which
     # is what a sheet nobody named gets. Resolved ONCE, here — a sheet is never re-derived from its
     # own title further down, or one titled like a cell reference (`A1`, `AB`) would come back
@@ -2663,8 +2664,11 @@ def _sheets_book(spreadsheet_id: str, row, sheets: list[_Sheet], specs: list[str
         # absent from the response entirely, and a sheet several touch gets one `data` block each.
         # That holds with or without `includeGridData` — without it the sheet list is still
         # filtered and no block is served.
-        per_sheet: dict[int, list[tuple[str, str]]] = {}
+        per_sheet: dict[int, list] = {}
         for spec in specs:
+            if isinstance(spec, _Empty):
+                per_sheet.setdefault(spec.sheet.index, []).append(spec)
+                continue
             sheet, body = _a1_sheet(spec, sheets)
             per_sheet.setdefault(sheet.index, []).append((body, spec))
         wanted = [(sh, per_sheet[sh.index]) for sh in sheets if sh.index in per_sheet]
@@ -2681,7 +2685,12 @@ def _sheets_book(spreadsheet_id: str, row, sheets: list[_Sheet], specs: list[str
             }
         }
         if grid:
-            entry["data"] = [_sheets_grid_data(sh, body, spec) for body, spec in parts]
+            entry["data"] = [
+                _sheets_empty_grid_data(part)
+                if isinstance(part, _Empty)
+                else _sheets_grid_data(sh, *part)
+                for part in parts
+            ]
         out.append(entry)
     return {
         "spreadsheetId": spreadsheet_id,
@@ -2837,10 +2846,19 @@ SHEETS_THEME = {
 SHEETS_AUTO_RECALC = "ON_CHANGE"
 SHEETS_TIME_ZONE = "Etc/GMT"
 
-_A1_MAJOR = ("ROWS", "COLUMNS")
-_A1_RENDER = ("FORMATTED_VALUE", "UNFORMATTED_VALUE", "FORMULA")
-_A1_DATETIME = ("SERIAL_NUMBER", "FORMATTED_STRING")
 _SHEETS_ENUM = "type.googleapis.com/google.apps.sheets.v4"
+
+
+def _pj_enum(name: str, *values: str) -> protojson.Enum:
+    return protojson.Enum(f"{_SHEETS_ENUM}.{name}", values)
+
+
+# The three read enums, their names in the discovery document's order, which is each name's number:
+# measured 2026-10-04 over a formula cell and a date cell, `valueRenderOption=2` answers the formula
+# and `dateTimeRenderOption=1` the formatted date, and `majorDimension=2` answers by columns.
+_PJ_DIMENSION = _pj_enum("Dimension", "DIMENSION_UNSPECIFIED", "ROWS", "COLUMNS")
+_PJ_RENDER = _pj_enum("ValueRenderOption", "FORMATTED_VALUE", "UNFORMATTED_VALUE", "FORMULA")
+_PJ_DATETIME = _pj_enum("DateTimeRenderOption", "SERIAL_NUMBER", "FORMATTED_STRING")
 # One endpoint of an A1 range: a full cell (`B2`), a bare column (`B`) or a bare row (`2`). A bare
 # column or row is an endpoint only INSIDE a range — measured 2026-09-12, `Sheet1!B`, `Sheet1!2` and
 # a bang-less `Z` are all "Unable to parse range" while `A:A` and `1:1` answer — and row 0 is not
@@ -2977,42 +2995,31 @@ def _a1_col(letters: str) -> int:
     return n - 1
 
 
-def _a1_enum_error(field: str, enum: str, value: str) -> str:
+def _a1_enum_error(field: str, enum: protojson.Enum, value: str) -> str:
     """Google's own wording for a bad read enum — it names the proto field and message type, e.g.
     ``Invalid value at 'major_dimension' (…sheets.v4.Dimension), "DIAGONAL"``. Measured, because a
     client that matches on the message needs the real one."""
-    return f"Invalid value at '{field}' ({_SHEETS_ENUM}.{enum}), \"{value}\""
+    return f"Invalid value at '{field}' ({enum.type_url}), \"{value}\""
 
 
-# A protobuf JSON boolean, as the Sheets query parser takes one. Measured: case-insensitive, and
-# `on`/`off`, a padded `" true"`, `2`, `01` and `1.0` are all refused.
-_SHEETS_TRUE = frozenset({"1", "t", "true", "y", "yes"})
-_SHEETS_FALSE = frozenset({"0", "f", "false", "n", "no"})
 # The two values that turn `prettyPrint` off, matched exactly -- see `_sheets_respond`.
 _PRETTY_PRINT_FALSE = frozenset({"false", "0"})
 
 
-def _sheets_bool_value(raw, field: str) -> bool:
-    """One of the boolean params, parsed the way the real one is, from the query or a JSON BODY
-    alike.
-
-    Measured: `1`, `t`, `y` and `yes` mean true and `0`, `f`, `n` and `no` mean false, matched
-    case-insensitively; anything else 400s as ``Invalid value at '<field>' (TYPE_BOOL), "<value>"``,
-    naming the proto TYPE rather than a message. An absent flag is false; an EMPTY one is not
-    absent and 400s.
-
-    A JSON body may carry a real boolean, which is taken as itself -- `bool()` on the raw value
-    would otherwise make the STRING "false" true, which under no reading it is."""
+def _sheets_bool_value(raw: str | None, field: str) -> bool:
+    """One of the boolean query parameters, read as a JSON body's string is (``protojson.to_bool``).
+    Measured: `1`, `t`, `y` and `yes` mean true and `0`, `f`, `n` and `no` mean false, whatever the
+    case of their ASCII letters, while `on`/`off`, a padded `" true"`, `2`, `01` and `1.0` are
+    refused, as ``Invalid value at '<field>' (TYPE_BOOL), "<value>"``, naming the proto TYPE rather
+    than a message. An absent flag is false; an EMPTY one is not absent and 400s."""
     if raw is None:
         return False
-    if isinstance(raw, bool):
-        return raw
-    folded = str(raw).casefold()
-    if folded in _SHEETS_TRUE:
-        return True
-    if folded in _SHEETS_FALSE:
-        return False
-    raise gerr.invalid_field_value(field, f"Invalid value at '{field}' (TYPE_BOOL), \"{raw}\"")
+    try:
+        return protojson.to_bool(("string", raw))
+    except protojson.ConversionError:
+        raise gerr.invalid_field_value(
+            field, f"Invalid value at '{field}' (TYPE_BOOL), \"{raw}\""
+        ) from None
 
 
 def _a1_find(title: str, sheets: list[_Sheet]) -> _Sheet | None:
@@ -3225,6 +3232,26 @@ def _sheets_value(cell) -> dict:
     return {"stringValue": cell}
 
 
+def _sheets_empty_grid_data(empty: _Empty) -> dict:
+    """The `GridData` block for an empty grid range: where it starts and the metadata of the axis
+    that is not empty, with no `rowData`. Measured 2026-10-04: an empty row range at row 1 is
+    ``{"startRow": 1, "columnMetadata": [26 entries]}``, an empty column range at column 1
+    ``{"startColumn": 1, "rowMetadata": [1000 entries]}``, and one empty on both axes the two
+    starts alone. The keys come in that order, the starts first, measured 2026-10-05."""
+    out: dict = {}
+    if empty.r0:
+        out["startRow"] = empty.r0
+    if empty.c0:
+        out["startColumn"] = empty.c0
+    rows = min(empty.r1, empty.sheet.rows) - empty.r0
+    cols = min(empty.c1, empty.sheet.cols) - empty.c0
+    if rows > 0:
+        out["rowMetadata"] = [{"pixelSize": SHEETS_ROW_PIXELS} for _ in range(rows)]
+    if cols > 0:
+        out["columnMetadata"] = [{"pixelSize": SHEETS_COL_PIXELS} for _ in range(cols)]
+    return out
+
+
 def _sheets_grid_data(sheet: _Sheet, body: str, spec: str) -> dict:
     """One ``GridData`` block for ``spreadsheets.get?includeGridData=true``.
 
@@ -3357,20 +3384,20 @@ def _workbook(request: Request, spreadsheet_id: str) -> tuple:
     ]
 
 
-def _sheets_enum_value(raw, field: str, enum: str, allowed, default: str) -> str:
-    """One of the read enums, validated and canonicalised, from the query or a JSON BODY alike.
+def _sheets_enum_value(raw: str, field: str, enum: protojson.Enum) -> str:
+    """One of the read enums from the query string, as its canonical name.
 
-    Measured, and identical for all three: the match is CASE-INSENSITIVE (``majorDimension=rows``
-    answers 200) and the response echoes the canonical upper-case spelling whatever the request
-    used; an unknown value 400s, naming the proto field and type and quoting the value as the
-    client sent it; and an EMPTY value is not an absent one — it 400s rather than falling back to
-    the default. Absent means the default."""
-    if raw is None:
-        return default
-    value = str(raw).upper()
-    if value not in allowed:
-        raise gerr.invalid_field_value(field, _a1_enum_error(field, enum, raw))
-    return value
+    Read the way a JSON body's string is (``protojson.enum_from_string``), measured on the query
+    string too: a number names the value it is the number of and nothing past the enum's last, so on
+    `majorDimension` ``+2`` and ``02`` are `COLUMNS` while ``3``, ``-1``, ``2.0`` and a space-padded
+    `` 2`` are refused. The response echoes the canonical name whatever the request used,
+    `DIMENSION_UNSPECIFIED` as `ROWS` (:func:`_sheets_major`). Anything else 400s naming the proto
+    field and type and quoting the value as sent, and an EMPTY value is not an absent one — it 400s
+    rather than falling back to the default."""
+    try:
+        return enum.names[protojson.enum_from_string(raw, enum)]
+    except protojson.ConversionError:
+        raise gerr.invalid_field_value(field, _a1_enum_error(field, enum, raw)) from None
 
 
 def _sheets_options(request: Request) -> tuple[str, str]:
@@ -3381,33 +3408,33 @@ def _sheets_options(request: Request) -> tuple[str, str]:
     enums = _typed_query(
         request,
         {
-            "majorDimension": lambda raw: _sheets_enum_value(
-                raw, "major_dimension", "Dimension", _A1_MAJOR, "ROWS"
-            ),
+            "majorDimension": lambda raw: _sheets_enum_value(raw, "major_dimension", _PJ_DIMENSION),
             # Measured over typed cells: FORMATTED_VALUE gives the display string "12",
             # UNFORMATTED_VALUE the JSON number 12, and FORMULA the same raw value as
             # UNFORMATTED_VALUE for every cell that is not a formula. A spreadsheet whose cells are
             # lines of stored text has only strings, so all three agree on one; a spreadsheet that
             # STATES its grid does not.
             "valueRenderOption": lambda raw: _sheets_enum_value(
-                raw, "value_render_option", "ValueRenderOption", _A1_RENDER, "FORMATTED_VALUE"
+                raw, "value_render_option", _PJ_RENDER
             ),
             # Validated and then unused, deliberately. It selects between a date cell's serial
             # number and its formatted string, and a corpus states no date cells — every cell is a
             # string, a number, a boolean or empty — so the two renderings coincide here. Leaving
             # it unvalidated instead would accept the one thing a client can get wrong about it.
             "dateTimeRenderOption": lambda raw: _sheets_enum_value(
-                raw,
-                "date_time_render_option",
-                "DateTimeRenderOption",
-                _A1_DATETIME,
-                "SERIAL_NUMBER",
+                raw, "date_time_render_option", _PJ_DATETIME
             ),
         },
     )
     major = (enums["majorDimension"] or ["ROWS"])[-1]
     render = (enums["valueRenderOption"] or ["FORMATTED_VALUE"])[-1]
-    return major, render
+    return _sheets_major(major), render
+
+
+def _sheets_major(name: str) -> str:
+    """The dimension a read is answered by: `DIMENSION_UNSPECIFIED` answers by rows, and echoes
+    `ROWS`, measured 2026-10-04 in the query string and in a JSON body."""
+    return "COLUMNS" if name == "COLUMNS" else "ROWS"
 
 
 _P_SHEETS_VALUES = [
@@ -3459,112 +3486,380 @@ async def sheets_values_get(spreadsheet_id: str, a1_range: str, request: Request
 
 # --- the two reads issued over POST ------------------------------------------------------------
 #
-# A DataFilter selects the same cells an A1 range does, by range or by grid indices. Measured, the
-# two endpoints disagree about an ABSENT filter list: `values:batchGetByDataFilter` refuses it
-# ("Must specify at least one dataFilter.") while `spreadsheets:getByDataFilter` treats it as
-# "every sheet". They also word a bad range differently — only the values one prefixes
-# `Invalid dataFilter[N]: `.
+# A DataFilter selects the same cells an A1 range does, by range or by grid indices, or selects them
+# by developer metadata (`developerMetadataLookup`), which a corpus never carries, so a lookup
+# selects nothing (`_sheets_check_lookup`). Measured, the two endpoints disagree about an ABSENT
+# filter list: `values:batchGetByDataFilter` refuses it ("Must specify at least one dataFilter.")
+# while `spreadsheets:getByDataFilter` treats it as "every sheet".
+#
+# The request messages as `backlot.protojson` reads them: the Sheets v4 discovery document's fields,
+# in proto field order (the order real echoes a filter back in) rather than the order the document
+# lists them, with the wrapper fields measured 2026-10-04 by the `.value` real's refusal names.
 
 
-def _sheets_filter_spec(f: dict, sheets: list[_Sheet]) -> str:
-    """One DataFilter as an A1 spec.
+_PJ_LOCATION_TYPE = _pj_enum(
+    "DeveloperMetadataLocationType",
+    "DEVELOPER_METADATA_LOCATION_TYPE_UNSPECIFIED",
+    "ROW",
+    "COLUMN",
+    "SHEET",
+    "SPREADSHEET",
+)
+_PJ_MATCHING = _pj_enum(
+    "DeveloperMetadataLocationMatchingStrategy",
+    "DEVELOPER_METADATA_LOCATION_MATCHING_STRATEGY_UNSPECIFIED",
+    "EXACT_LOCATION",
+    "INTERSECTING_LOCATION",
+)
+_PJ_VISIBILITY = _pj_enum(
+    "DeveloperMetadataVisibility",
+    "DEVELOPER_METADATA_VISIBILITY_UNSPECIFIED",
+    "DOCUMENT",
+    "PROJECT",
+)
+_PJ_GRID_RANGE = protojson.Message(
+    f"{_SHEETS_ENUM}.GridRange",
+    (
+        protojson.Field("sheetId", "sheet_id", "int32"),
+        protojson.Field("startRowIndex", "start_row_index", "int32", wrapper=True),
+        protojson.Field("endRowIndex", "end_row_index", "int32", wrapper=True),
+        protojson.Field("startColumnIndex", "start_column_index", "int32", wrapper=True),
+        protojson.Field("endColumnIndex", "end_column_index", "int32", wrapper=True),
+    ),
+)
+_PJ_DIMENSION_RANGE = protojson.Message(
+    f"{_SHEETS_ENUM}.DimensionRange",
+    (
+        protojson.Field("sheetId", "sheet_id", "int32"),
+        protojson.Field("dimension", "dimension", "enum", enum=_PJ_DIMENSION),
+        protojson.Field("startIndex", "start_index", "int32", wrapper=True),
+        protojson.Field("endIndex", "end_index", "int32", wrapper=True),
+    ),
+)
+_PJ_METADATA_LOCATION = protojson.Message(
+    f"{_SHEETS_ENUM}.DeveloperMetadataLocation",
+    (
+        protojson.Field("locationType", "location_type", "enum", enum=_PJ_LOCATION_TYPE),
+        protojson.Field("spreadsheet", "spreadsheet", "bool", oneof="location"),
+        protojson.Field("sheetId", "sheet_id", "int32", oneof="location"),
+        protojson.Field(
+            "dimensionRange",
+            "dimension_range",
+            "message",
+            message=_PJ_DIMENSION_RANGE,
+            oneof="location",
+        ),
+    ),
+)
+_PJ_METADATA_LOOKUP = protojson.Message(
+    f"{_SHEETS_ENUM}.DeveloperMetadataLookup",
+    (
+        protojson.Field("locationType", "location_type", "enum", enum=_PJ_LOCATION_TYPE),
+        protojson.Field(
+            "metadataLocation", "metadata_location", "message", message=_PJ_METADATA_LOCATION
+        ),
+        protojson.Field(
+            "locationMatchingStrategy", "location_matching_strategy", "enum", enum=_PJ_MATCHING
+        ),
+        protojson.Field("metadataId", "metadata_id", "int32", wrapper=True),
+        protojson.Field("metadataKey", "metadata_key", "string", wrapper=True),
+        protojson.Field("metadataValue", "metadata_value", "string", wrapper=True),
+        protojson.Field("visibility", "visibility", "enum", enum=_PJ_VISIBILITY),
+    ),
+)
+_PJ_DATA_FILTER = protojson.Message(
+    f"{_SHEETS_ENUM}.DataFilter",
+    (
+        protojson.Field(
+            "developerMetadataLookup",
+            "developer_metadata_lookup",
+            "message",
+            message=_PJ_METADATA_LOOKUP,
+            oneof="filter",
+        ),
+        protojson.Field("a1Range", "a1_range", "string", oneof="filter"),
+        protojson.Field(
+            "gridRange", "grid_range", "message", message=_PJ_GRID_RANGE, oneof="filter"
+        ),
+    ),
+)
+_PJ_FILTERS = protojson.Field(
+    "dataFilters", "data_filters", "message", message=_PJ_DATA_FILTER, repeated=True
+)
+_PJ_BATCH_GET_BY_FILTER = protojson.Message(
+    f"{_SHEETS_ENUM}.BatchGetValuesByDataFilterRequest",
+    (
+        _PJ_FILTERS,
+        protojson.Field("majorDimension", "major_dimension", "enum", enum=_PJ_DIMENSION),
+        protojson.Field("valueRenderOption", "value_render_option", "enum", enum=_PJ_RENDER),
+        protojson.Field(
+            "dateTimeRenderOption", "date_time_render_option", "enum", enum=_PJ_DATETIME
+        ),
+    ),
+)
+_PJ_GET_BY_FILTER = protojson.Message(
+    f"{_SHEETS_ENUM}.GetSpreadsheetByDataFilterRequest",
+    (
+        _PJ_FILTERS,
+        protojson.Field("includeGridData", "include_grid_data", "bool"),
+        protojson.Field("excludeTablesInBandedRanges", "exclude_tables_in_banded_ranges", "bool"),
+        protojson.Field(
+            "commentsViewMode",
+            "comments_view_mode",
+            "enum",
+            enum=_pj_enum(
+                "CommentsViewMode",
+                "COMMENTS_VIEW_MODE_UNSPECIFIED",
+                "COMMENTS_VIEW_MODE_DEFAULT_FOR_CURRENT_ACCESS",
+                "COMMENTS_VIEW_MODE_OMITTED",
+                "COMMENTS_VIEW_MODE_INCLUDED",
+            ),
+        ),
+    ),
+)
 
-    A `gridRange` is turned into A1 through :func:`_a1_name`, whose output is quoted where the
-    title needs it — which is what makes handing it back to the parser safe, unlike a bare title.
-    Half-open indices, and an omitted bound means that edge of the grid."""
-    if isinstance(f.get("a1Range"), str):
-        return f["a1Range"]
-    grid = f.get("gridRange")
-    if not isinstance(grid, dict):
-        raise gerr.invalid_argument("dataFilter.filter must be specified.")
-    sheet_id = _sheets_int32(grid.get("sheetId"), "sheetId", 0)
+
+class _Empty(NamedTuple):
+    """A grid range that holds no cell, an end equal to its start on either axis. Real answers one
+    at 200, measured 2026-10-04: `#REF!` as the range on the values-level read, and on the
+    spreadsheet-level one a block with no rows or no columns."""
+
+    sheet: _Sheet
+    r0: int
+    c0: int
+    r1: int
+    c1: int
+
+
+def _int32(n: int) -> int:
+    """``n`` as a Java int would hold it. Real names the row after `startRowIndex` 2147483647 as
+    `-2147483648`, measured 2026-10-04."""
+    return (n + 2**31) % 2**32 - 2**31
+
+
+def _grid_range_name(sheet: _Sheet, grid: dict) -> str:
+    """A grid range as real names it when refusing one past the grid: only the edges the request
+    set, start and end each as column letters (none past `ZZZ`, column 18277) then a row number, one
+    of them alone when the two read the same, and an `(empty) ` in front when an axis was sent with
+    its end at its start (an end of 0 with no start does not count). Measured 2026-10-04 on every
+    combination of the indexes sent, with the start row or the start column past the grid, among
+    them (start row, end row, start column, end column, `-` for one not sent)::
+
+        1000, -, -, -       Sheet1!1001:
+        1000, -, 1, 3       Sheet1!B1001:C
+        -, -, 26, 27        Sheet1!AA
+        5, 5, 26, -         (empty) Sheet1!AA6:5
+        -, 0, 26, -         Sheet1!AA:0
+        -, -, 18278, -      Sheet1!
+        -, -, 26, 18279     Sheet1!AA:
+    """
+    sr, er = grid.get("start_row_index"), grid.get("end_row_index")
+    sc, ec = grid.get("start_column_index"), grid.get("end_column_index")
+
+    def letters(column: int | None) -> str:
+        return _a1_col_letters(column) if column is not None and column <= 18277 else ""
+
+    start = letters(sc) + (str(_int32(sr + 1)) if sr is not None else "")
+    end = letters(None if ec is None else ec - 1) + (str(er) if er is not None else "")
+    name = start if start == end else f"{start}:{end}"
+    empty = (sr is not None and er == sr) or (sc is not None and ec == sc)
+    return ("(empty) " if empty else "") + f"{_a1_title(sheet.title)}!{name}"
+
+
+def _sheets_grid_selection(grid: dict, sheets: list[_Sheet], sheet_word: str):
+    """A `gridRange`, checked as real checks it once the spreadsheet is found, as the A1 spec it
+    selects or an :class:`_Empty`.
+
+    In real's order, measured 2026-10-04 by sending two of them wrong together: the sheet
+    (`No grid with id` on the values-level read, `No sheet with id` on the other: ``sheet_word``),
+    then a negative index, then an end before its start (rows before columns), then a start past
+    the grid (:func:`_grid_range_name`), and only then an empty range. An end past the grid is
+    clamped, as an A1 range's is."""
+    sheet_id = grid.get("sheet_id", 0)
     sheet = next((s for s in sheets if s.sheet_id == sheet_id), None)
     if sheet is None:
-        raise gerr.invalid_argument(f"No sheet with id: {sheet_id}")
-    r0 = _sheets_int32(grid.get("startRowIndex"), "startRowIndex", 0)
-    c0 = _sheets_int32(grid.get("startColumnIndex"), "startColumnIndex", 0)
-    r1 = _sheets_int32(grid.get("endRowIndex"), "endRowIndex", sheet.rows)
-    c1 = _sheets_int32(grid.get("endColumnIndex"), "endColumnIndex", sheet.cols)
-    # Half-open and ascending. An end at or before its start selects nothing, and letting it
-    # through builds an A1 name with a row 0 in it -- `Data!A1:Z0` -- which the parser then reads
-    # back as a start row of -1 and answers a range nobody asked for.
-    if r1 <= r0 or c1 <= c0:
-        raise gerr.invalid_argument(
-            f"Invalid gridRange: end must be greater than start, got rows [{r0}, {r1}) "
-            f"and columns [{c0}, {c1})"
-        )
-    return _a1_name(sheet, r0, c0, r1, c1)
-
-
-def _sheets_int32(raw, field: str, default: int) -> int:
-    """One int32 member of a `gridRange`.
-
-    The discovery document declares these `int32`, and proto3's JSON mapping takes a number or a
-    decimal string for one, so `"0"` resolves like `0`. What it does not take is a float with a
-    fraction, a non-numeric string or a negative index -- each of which reached `_a1_name`
-    unchecked before, turning a client's typo into a 500 or into a silently truncated index.
-
-    Backlot's own wording: the real API's message for these was not measured. A JSON boolean is
-    refused as well, as real refuses one: `"startRowIndex": true` answered a 400, measured
-    2026-09-30."""
-    if raw is None:
-        return default
-    if isinstance(raw, bool):
-        raise gerr.invalid_field_value(field, f"Invalid value at '{field}' (TYPE_INT32), \"{raw}\"")
-    value = raw
-    if isinstance(value, str):
-        try:
-            value = int(value, 10)
-        except ValueError:
-            raise gerr.invalid_field_value(
-                field, f"Invalid value at '{field}' (TYPE_INT32), \"{raw}\""
-            ) from None
-    if isinstance(value, float):
-        if not value.is_integer():
-            raise gerr.invalid_field_value(
-                field, f"Invalid value at '{field}' (TYPE_INT32), \"{raw}\""
+        raise gerr.invalid_argument(f"No {sheet_word} with id: {sheet_id}")
+    sr, er = grid.get("start_row_index"), grid.get("end_row_index")
+    sc, ec = grid.get("start_column_index"), grid.get("end_column_index")
+    if any(i is not None and i < 0 for i in (sr, er, sc, ec)):
+        raise gerr.invalid_argument("GridRange indexes must be >= 0")
+    for start, end, axis in ((sr, er, "Row"), (sc, ec, "Column")):
+        if start is not None and end is not None and end < start:
+            raise gerr.invalid_argument(
+                f"end{axis}Index[{end}] cannot be before start{axis}Index[{start}]"
             )
-        value = int(value)
-    if not isinstance(value, int) or value < 0:
-        raise gerr.invalid_field_value(field, f"Invalid value at '{field}' (TYPE_INT32), \"{raw}\"")
-    return value
+    r0, c0 = sr or 0, sc or 0
+    r1 = sheet.rows if er is None else er
+    c1 = sheet.cols if ec is None else ec
+    if r0 >= sheet.rows or c0 >= sheet.cols:
+        raise gerr.invalid_argument(
+            f"Range ({_grid_range_name(sheet, grid)}) exceeds grid limits. "
+            f"Max rows: {sheet.rows}, max columns: {sheet.cols}"
+        )
+    if r1 == r0 or c1 == c0:
+        return _Empty(sheet, r0, c0, r1, c1)
+    # An end past the grid is cut to it here rather than left to the A1 parser, which reads three
+    # column letters at most: `endColumnIndex: 20000` answers `A1:Z1000`, measured 2026-10-04.
+    return _a1_name(sheet, r0, c0, min(r1, sheet.rows), min(c1, sheet.cols))
 
 
-async def _sheets_filters(request: Request, sheets: list[_Sheet], *, required: bool, indexed: bool):
-    """``(body, specs)`` for a by-data-filter read: the parsed request body and one A1 spec per
-    filter, in the order they were sent.
+def _sheets_bounds(selection, sheets: list[_Sheet]) -> tuple[_Sheet, int, int, int, int]:
+    """The sheet and half-open ``(r0, c0, r1, c1)`` a filter's A1 spec or :class:`_Empty` covers,
+    an end past the grid cut to it."""
+    if isinstance(selection, _Empty):
+        e = selection
+        return e.sheet, e.r0, e.c0, min(e.r1, e.sheet.rows), min(e.c1, e.sheet.cols)
+    sheet, part = _a1_sheet(selection, sheets)
+    return (sheet, *_a1_range(selection, part, sheet))
 
-    ``indexed`` says whether a bad filter is reported behind an ``Invalid dataFilter[N]: `` prefix.
-    Measured, the two endpoints differ: the values-level one names the index, the spreadsheet-level
-    one gives the bare parse error."""
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    if not isinstance(body, dict):
-        body = {}
-    filters = body.get("dataFilters") or []
-    if not filters:
-        if required:
-            raise gerr.invalid_argument("Must specify at least one dataFilter.")
-        return body, []
-    specs = []
+
+def _sheets_check_lookup(lookup: dict, sheets: list[_Sheet]) -> None:
+    """A `developerMetadataLookup`'s refusals. A corpus states no developer metadata, so a lookup
+    that passes them matches nothing — real's answer for one on a spreadsheet carrying none,
+    measured 2026-10-04 — and the caller serves it as such.
+
+    Real's checks, in the order it makes them, measured the same day over every combination of
+    six `locationType`s, eight locations and four `locationMatchingStrategy`s (a location with no
+    member, `{}`, counts as none)::
+
+        locationType SPREADSHEET, a location other than spreadsheet: true
+                                            Cannot limit by location type of SPREADSHEET for the
+                                            location <the location's member>
+        EXACT_LOCATION beside a locationType     The locationMatchingStrategy was specified as …
+        a strategy and no location               A locationMatchingStrategy was specified, but …
+        INTERSECTING_LOCATION, spreadsheet: true DeveloperMetadataLookup.spreadsheet is true, …
+        a locationType number not in the enum    500
+        the location (:func:`_sheets_check_dimension_range`, or a sheetId no sheet has)
+        ROW, COLUMN or SHEET with a spreadsheet location, a strategy or a visibility number not
+        in the enum                              500
+
+    The location's own `locationType` is read and ignored."""
+    location_type = lookup.get("location_type", 0)
+    strategy = lookup.get("location_matching_strategy", 0)
+    location = lookup.get("metadata_location") or {}
+    member = next(
+        (field for field in _PJ_METADATA_LOCATION.fields if field.name in location and field.oneof),
+        None,
+    )
+    whole_spreadsheet = (
+        member is not None and member.name == "spreadsheet" and location["spreadsheet"]
+    )
+    if location_type == 4 and member is not None and not whole_spreadsheet:
+        raise gerr.invalid_argument(
+            f"Cannot limit by location type of SPREADSHEET for the location {member.json_name}"
+        )
+    if strategy == 1 and location_type != 0:
+        raise gerr.invalid_argument(
+            "The locationMatchingStrategy was specified as EXACT_LOCATION, but a locationType was "
+            "also specified: lookups cannot limit by a location type when matching an exact "
+            "location."
+        )
+    if strategy != 0 and member is None:
+        raise gerr.invalid_argument(
+            "A locationMatchingStrategy was specified, but no metadataLocation was specified: "
+            "lookups must always specify a metadataLocation when specifying a "
+            "locationMatchingStrategy."
+        )
+    if strategy == 2 and whole_spreadsheet:
+        raise gerr.invalid_argument(
+            "DeveloperMetadataLookup.spreadsheet is true, but locationMatchingStrategy was "
+            "specified as INTERSECTING."
+        )
+    if not 0 <= location_type < len(_PJ_LOCATION_TYPE.names):
+        raise gerr.internal_error()
+    if member is not None and member.name == "sheet_id":
+        if all(s.sheet_id != location["sheet_id"] for s in sheets):
+            raise gerr.invalid_argument(f"No grid with id: {location['sheet_id']}")
+    if member is not None and member.name == "dimension_range":
+        _sheets_check_dimension_range(location["dimension_range"], sheets)
+    if location_type in (1, 2, 3) and member is not None and member.name == "spreadsheet":
+        raise gerr.internal_error()
+    if not 0 <= strategy < len(_PJ_MATCHING.names):
+        raise gerr.internal_error()
+    if not 0 <= lookup.get("visibility", 0) < len(_PJ_VISIBILITY.names):
+        raise gerr.internal_error()
+
+
+def _sheets_check_dimension_range(dimension_range: dict, sheets: list[_Sheet]) -> None:
+    """A lookup's `dimensionRange`, checked in the order real checks it (measured 2026-10-04 with
+    two members wrong at once): both indexes, exactly one row or column (`endIndex` one past
+    `startIndex`), both indexes non-negative, the sheet, a dimension, a dimension number the enum
+    does not declare (real's 500), and a start inside the grid."""
+    if "start_index" not in dimension_range or "end_index" not in dimension_range:
+        raise gerr.invalid_argument(
+            "DimensionRange must specify both a startIndex and an endIndex."
+        )
+    start, end = dimension_range["start_index"], dimension_range["end_index"]
+    # In Java int arithmetic: `startIndex: 2147483647, endIndex: -2147483648` passes this and is
+    # refused as negative, measured 2026-10-04.
+    if _int32(end - start) != 1:
+        raise gerr.invalid_argument("DimensionRange must represent a single row or column.")
+    if start < 0 or end < 0:
+        raise gerr.invalid_argument("DimensionRange indexes must be >= 0")
+    sheet_id = dimension_range.get("sheet_id", 0)
+    sheet = next((s for s in sheets if s.sheet_id == sheet_id), None)
+    if sheet is None:
+        raise gerr.invalid_argument(f"No grid with id: {sheet_id}")
+    dimension = dimension_range.get("dimension", 0)
+    if dimension == 0:
+        raise gerr.invalid_argument("No dimension specified")
+    if dimension not in (1, 2):
+        raise gerr.internal_error()
+    size, axis = (sheet.rows, "ROWS") if dimension == 1 else (sheet.cols, "COLUMNS")
+    if start >= size:
+        raise gerr.invalid_argument(
+            f"DimensionRange startIndex [{start}] is after the last {axis} index "
+            f"[{size - 1}] of the sheet [{sheet_id}]."
+        )
+
+
+def _sheets_selections(filters: list[dict], sheets: list[_Sheet], *, values_level: bool) -> list:
+    """What each filter selects, in the order sent: an A1 spec, an :class:`_Empty`, or ``None`` for
+    a developer metadata lookup (:func:`_sheets_check_lookup`).
+
+    Real checks the filters one at a time and answers the first that fails, measured 2026-10-04
+    with a failing filter on either side of another, a lookup's refusal and a range's alike. The
+    values-level read puts `Invalid dataFilter[N]: ` in front of the refusal and the
+    spreadsheet-level one does not. An `a1Range` is resolved here, past-grid check and all, so its
+    refusal is reported against the filter that carried it."""
+    selections = []
     for i, f in enumerate(filters):
         try:
-            spec = _sheets_filter_spec(f if isinstance(f, dict) else {}, sheets)
-            # Resolved HERE, not left to the read below, so a range that names no sheet is
-            # reported against the filter that carried it — measured, the message is the usual
-            # `Unable to parse range` behind an `Invalid dataFilter[N]: ` prefix.
-            _a1_sheet(spec, sheets)
-        except Exception as exc:  # noqa: BLE001 — re-raised with the index the API names
-            message = getattr(exc, "message", None)
-            if message is None:
+            if "a1_range" in f:
+                spec = f["a1_range"]
+                sheet, part = _a1_sheet(spec, sheets)
+                _a1_range(spec, part, sheet)
+                selections.append(spec)
+            elif "grid_range" in f:
+                word = "grid" if values_level else "sheet"
+                selections.append(_sheets_grid_selection(f["grid_range"], sheets, word))
+            elif "developer_metadata_lookup" in f:
+                _sheets_check_lookup(f["developer_metadata_lookup"], sheets)
+                selections.append(None)
+            else:
+                raise gerr.invalid_argument("dataFilter.filter must be specified.")
+        except gerr.GoogleError as exc:
+            if exc.status_code != 400 or not values_level:
                 raise
-            raise gerr.invalid_argument(
-                f"Invalid dataFilter[{i}]: {message}" if indexed else message
-            ) from None
-        specs.append(spec)
-    return body, specs
+            raise gerr.invalid_argument(f"Invalid dataFilter[{i}]: {exc.message}") from None
+    return selections
+
+
+def _sheets_filter_echo(f: dict) -> dict:
+    """A filter as the values-level read echoes it beside its answer: the proto real read, back in
+    JSON, so an accepted spelling comes back canonical — `"startRowIndex": "+1"` as `1` —
+    with a plain field at its default left out and a wrapper field kept: `sheetId: 0` is absent
+    and `startRowIndex: 0` present. Measured 2026-10-04."""
+    if "a1_range" in f:
+        return {"a1Range": f["a1_range"]}
+    grid = f["grid_range"]
+    return {
+        "gridRange": {
+            field.json_name: grid[field.name]
+            for field in _PJ_GRID_RANGE.fields
+            if field.name in grid and (field.wrapper or grid[field.name])
+        }
+    }
 
 
 @router.post(
@@ -3575,56 +3870,63 @@ async def sheets_values_batch_get_by_data_filter(spreadsheet_id: str, request: R
     """``values:batchGet`` addressed by DataFilter rather than by A1 string.
 
     A read, issued over POST because the filters do not fit in a query string. Each entry carries
-    the ``valueRange`` AND the filter that selected it — measured — so a caller that sent several
-    can tell which answer belongs to which."""
+    the ``valueRange`` AND the filters that selected it — measured — so a caller that sent several
+    can tell which answer belongs to which.
+
+    In the order real answers, measured 2026-10-04 with two wrong at once: the credential, then the
+    body (``protojson.read``), then the spreadsheet's lookup, then a `valueRenderOption` number the
+    enum does not declare (a 400 of the service's own), then an empty filter list, then the filters
+    (:func:`_sheets_selections`), then a `majorDimension` number it does not declare (a 500). A
+    `dateTimeRenderOption` number it does not declare is ignored, as the option is."""
+    _require(request)
+    body = protojson.read(await request.body(), _PJ_BATCH_GET_BY_FILTER)
     _row, sheets = _workbook(request, spreadsheet_id)
-    body, specs = await _sheets_filters(request, sheets, required=True, indexed=True)
-    # The same three enums the query-string reads take, and the same rule for them — including
-    # that an empty value is not an absent one, and that `dateTimeRenderOption` is validated even
-    # though a corpus states no date cell for it to render. Measured 2026-09-30, four requests in
-    # each of five key orders, one of them with `dataFilters` between the enums: a body with all
-    # three bad is one 400 naming all three, in the order the body names them.
-    readers = {
-        "majorDimension": lambda raw: _sheets_enum_value(
-            raw, "major_dimension", "Dimension", _A1_MAJOR, "ROWS"
-        ),
-        "valueRenderOption": lambda raw: _sheets_enum_value(
-            raw, "value_render_option", "ValueRenderOption", _A1_RENDER, "FORMATTED_VALUE"
-        ),
-        "dateTimeRenderOption": lambda raw: _sheets_enum_value(
-            raw, "date_time_render_option", "DateTimeRenderOption", _A1_DATETIME, "SERIAL_NUMBER"
-        ),
-    }
-    enums, refused = {}, []
-    for name in [k for k in body if k in readers] + [k for k in readers if k not in body]:
-        try:
-            enums[name] = readers[name](body.get(name))
-        except gerr.GoogleError as exc:
-            refused += gerr.field_violations(exc)
-    if refused:
-        raise gerr.invalid_field_values(refused)
-    major, render = enums["majorDimension"], enums["valueRenderOption"]
+    render = body.get("value_render_option", 0)
+    if not 0 <= render < len(_PJ_RENDER.names):
+        raise gerr.invalid_argument("Invalid valueRenderOption: UNRECOGNIZED")
+    filters = body.get("data_filters", [])
+    if not filters:
+        raise gerr.invalid_argument("Must specify at least one dataFilter.")
+    selections = _sheets_selections(filters, sheets, values_level=True)
+    major = body.get("major_dimension", 0)
+    if not 0 <= major < len(_PJ_DIMENSION.names):
+        raise gerr.internal_error()
+    major, render = _sheets_major(_PJ_DIMENSION.names[major]), _PJ_RENDER.names[render]
 
     # NOT the order the filters arrived in. Measured: the answers come back sorted by where each
     # range starts, column before row — `Data!A2` precedes `Data!B1`, `Data!B9` precedes
     # `Data!B10`, a shorter range precedes the one that extends it, and a sheet earlier in the
-    # workbook comes first. Each entry still carries the filter that selected it, so a caller pairs
-    # by that rather than by position.
+    # workbook comes first. Each entry still carries the filters that selected it, so a caller
+    # pairs by those rather than by position.
     def where(i: int):
-        sheet, part = _a1_sheet(specs[i], sheets)
-        r0, c0, r1, c1 = _a1_range(specs[i], part, sheet)
+        sheet, r0, c0, r1, c1 = _sheets_bounds(selections[i], sheets)
         return (sheet.index, c0, r0, c1, r1)
 
-    out = {
-        "spreadsheetId": spreadsheet_id,
-        "valueRanges": [
-            {
-                "valueRange": _sheets_value_range(specs[i], sheets, major, render),
-                "dataFilters": [body["dataFilters"][i]],
-            }
-            for i in sorted(range(len(specs)), key=where)
-        ],
-    }
+    def answer(selection) -> dict:
+        if isinstance(selection, _Empty):
+            return {"range": "#REF!", "majorDimension": major}
+        return _sheets_value_range(selection, sheets, major, render)
+
+    out: dict = {"spreadsheetId": spreadsheet_id}
+    # Filters whose answers name the same range share one entry, which lists them in the order
+    # sent, measured 2026-10-04: `Data!A1:A1` beside `Data!A1`, an `a1Range` beside the `gridRange`
+    # for its cells, two ranges equal once an end past the grid is cut, and two ranges with no
+    # cells in different places, rows or columns, both `#REF!`.
+    first: dict[str, int] = {}
+    entries: dict[str, dict] = {}
+    for i, selection in enumerate(selections):
+        if selection is None:
+            continue
+        value_range = answer(selection)
+        key = value_range["range"]
+        if key not in entries:
+            first[key] = i
+            entries[key] = {"valueRange": value_range, "dataFilters": []}
+        entries[key]["dataFilters"].append(_sheets_filter_echo(filters[i]))
+    if entries:
+        # A lookup selects nothing and leaves no entry; with nothing else, there is no
+        # `valueRanges` at all, measured 2026-10-04.
+        out["valueRanges"] = [entries[k] for k in sorted(entries, key=lambda k: where(first[k]))]
     return _sheets_respond(request, out, _F_BATCH_BY_FILTER)
 
 
@@ -3634,11 +3936,28 @@ async def sheets_values_batch_get_by_data_filter(spreadsheet_id: str, request: R
 )
 async def sheets_get_by_data_filter(spreadsheet_id: str, request: Request):
     """``spreadsheets.get`` addressed by DataFilter. Same response, and the filters scope the
-    ``sheets`` array exactly as ``ranges`` does — measured, including that NO filter means every
-    sheet rather than the refusal its values-level sibling gives."""
+    ``sheets`` array as ``ranges`` does but for cells two filters cover (below) — measured,
+    including that NO filter means every sheet rather than the refusal its values-level sibling
+    gives, and so does a list of developer metadata lookups alone, which select nothing (measured
+    2026-10-04). The credential, the body, the spreadsheet's lookup and the filters come in the
+    order its sibling's docstring gives."""
+    _require(request)
+    body = protojson.read(await request.body(), _PJ_GET_BY_FILTER)
     row, sheets = _workbook(request, spreadsheet_id)
-    body, specs = await _sheets_filters(request, sheets, required=False, indexed=False)
-    grid = _sheets_bool_value(body.get("includeGridData"), "include_grid_data")
+    selections = _sheets_selections(body.get("data_filters", []), sheets, values_level=False)
+    # Filters that cover the same cells share one `data` block, placed where the first of them was
+    # sent, measured 2026-10-04 on the pairs with cells `sheets_values_batch_get_by_data_filter`
+    # lists and on one empty range sent twice. Two empty ranges in different places stay two
+    # blocks, and `spreadsheets.get` answers a `ranges` value sent twice with a block for each.
+    specs, seen = [], set()
+    for selection in selections:
+        if selection is None:
+            continue
+        sheet, *cells = _sheets_bounds(selection, sheets)
+        if (sheet.index, *cells) not in seen:
+            seen.add((sheet.index, *cells))
+            specs.append(selection)
+    grid = body.get("include_grid_data", False)
     if mask := gerr.first_repeat(request.query_params, "fields"):
         grid = _gmask_wants_grid(mask)
     return _sheets_respond(
@@ -3899,8 +4218,9 @@ def _typed_query(request: Request, readers: dict) -> dict[str, list]:
 # The typed booleans each Drive method Backlot serves declares, as the proto field its refusal
 # names. Parsed only, never read: none of them changes what a My Drive corpus answers. Measured
 # 2026-09-23 on each of them: the Sheets boolean spellings (`_sheets_bool_value`), 30 of them swept
-# on `supportsAllDrives`. `files.export` and `about.get` declare none, and real ignores
-# `supportsAllDrives=NOPE` on both.
+# on `supportsAllDrives`; and on 2026-10-06 `yeſ`, `YEſ`, `falſe` and `FALſE`, each refused, since
+# only ASCII letters are folded (`protojson.to_bool`). `files.export` and `about.get` declare none,
+# and real ignores `supportsAllDrives=NOPE` on both.
 _DRIVE_BOOLS = {
     "supportsAllDrives": "supports_all_drives",
     "supportsTeamDrives": "supports_team_drives",

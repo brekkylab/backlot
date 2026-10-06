@@ -41,14 +41,16 @@ also where the indentation and the charset every Google error carries are decide
 
 Inside `errors[]` the entry follows the constructor that raised it, and each one carries its own
 measurement. Measured on Sheets and Docs at `$.xgafv=1`: a typed value the proto layer refuses is
-``reason: invalid`` with NO ``domain`` (:func:`invalid_field_value`); every other measured 400 is
-``badRequest`` under ``global`` (:func:`invalid_argument`, :func:`bad_field_mask`); a 404 is
-``notFound``; a bad token ``authError`` at ``location: Authorization``; an anonymous Sheets GET
-``forbidden``; the missing credential — any anonymous POST, and a GET on the three OAuth-only APIs
-— ``required`` with the short ``Login Required.``. The two editor 400s NOT measured keep whatever
-their constructor already renders — ``Invalid gridRange`` is :func:`invalid_argument`, so
-``badRequest``, but an Office file read as a native document is :func:`failed_precondition`, so
-``failedPrecondition``.
+``reason: invalid`` with NO ``domain`` (:func:`invalid_field_value`), and so are a JSON body member
+the request message does not have and a JSON body that is not an object
+(:func:`invalid_field_values`); a request body that is not JSON is ``parseError``
+(:func:`invalid_json`); every other measured 400 is ``badRequest`` under ``global``
+(:func:`invalid_argument`, :func:`bad_field_mask`); a 404 is ``notFound``; a bad token ``authError``
+at ``location: Authorization``; an anonymous Sheets GET ``forbidden``; the missing credential — any
+anonymous POST, and a GET on the three OAuth-only APIs — ``required`` with the short
+``Login Required.``; and the 500 the data-filter reads answer ``backendError``
+(:func:`internal_error`). The editor 400 NOT measured keeps whatever its constructor renders: an
+Office file read as a native document is :func:`failed_precondition`, so ``failedPrecondition``.
 """
 
 from __future__ import annotations
@@ -133,8 +135,9 @@ class GoogleError(HTTPException):
         self.status = status
         self.short = short
         self.details = details
-        # `errors[0].domain`. Every measured entry says `global` except the proto layer's typed-value
-        # refusal, which carries none — so a constructor that renders that one passes ``None``.
+        # `errors[0].domain`. Every measured entry says `global` except the proto layer's refusals
+        # (a typed value, a body member or root the request message cannot take), which carry none —
+        # so a constructor that renders one of those passes ``None``.
         self.domain = domain
 
 
@@ -199,29 +202,33 @@ def not_downloadable() -> GoogleError:
 def invalid_argument(message: str) -> GoogleError:
     """The editor APIs' generic 400. Its `errors[]` entry, shown at `$.xgafv=1`, is ``badRequest``
     under ``global`` — measured on an unparseable range, a range past the grid, an unsupported
-    ``alt``, ``dataFilter.filter must be specified.``, ``No sheet with id``, ``Must specify at least
-    one dataFilter.`` and a non-JSON body. A typed value the proto layer refuses is a different
-    entry: :func:`invalid_field_value`."""
+    ``alt``, ``dataFilter.filter must be specified.``, ``No sheet with id``,
+    ``Must specify at least one dataFilter.``, and on 2026-10-04 ``No grid with id`` and
+    ``GridRange indexes must be >= 0``. A typed value the proto layer refuses is a different entry
+    (:func:`invalid_field_value`), and so is :func:`invalid_json`'s."""
     return GoogleError(400, message, reason="badRequest", status="INVALID_ARGUMENT")
 
 
 def invalid_field_value(field: str, message: str) -> GoogleError:
     """The proto layer's refusal of a typed value — ``Invalid value at '<field>' (<type>),
     "<value>"`` for an enum, a bool or an int32. Measured at `$.xgafv=1`, its `errors[]` entry is
-    ``reason: invalid`` and carries no ``domain``, which no other Google error measured does."""
+    ``reason: invalid`` and carries no ``domain``."""
     return invalid_field_values([(field, message)])
 
 
-def invalid_field_values(violations: list[tuple[str, str]]) -> GoogleError:
+def invalid_field_values(violations: list[tuple[str | None, str]]) -> GoogleError:
     """One refusal for every typed value the proto layer could not read, as ``(field, message)``
-    pairs in the order to report them.
+    pairs in the order to report them. A refusal at the root of a JSON body (an unknown top-level
+    name, a body that is not an object) has no field, and its violation carries none, measured
+    2026-10-04.
 
     Measured 2026-09-23 on Sheets `values.get`, `spreadsheets.get` and `:getByDataFilter` and on
     Drive `files.list`, over query parameters and a JSON body alike: each refused value is a
     ``google.rpc.BadRequest`` field violation in `details`, naming the field the way its message
     does and repeating the message as its description, and a request with several is one 400 whose
     message joins theirs with newlines, in the order `details` lists them. Which order that is,
-    is ``routers.google._typed_query``'s."""
+    is the caller's: ``routers.google._typed_query``'s for a query string,
+    :func:`backlot.protojson.read`'s for a body."""
     return GoogleError(
         400,
         "\n".join(message for _, message in violations),
@@ -232,17 +239,40 @@ def invalid_field_values(violations: list[tuple[str, str]]) -> GoogleError:
             {
                 "@type": "type.googleapis.com/google.rpc.BadRequest",
                 "fieldViolations": [
-                    {"field": field, "description": message} for field, message in violations
+                    {"field": field, "description": message} if field else {"description": message}
+                    for field, message in violations
                 ],
             }
         ],
     )
 
 
-def field_violations(exc: GoogleError) -> list[tuple[str, str]]:
+def field_violations(exc: GoogleError) -> list[tuple[str | None, str]]:
     """The ``(field, message)`` pairs an :func:`invalid_field_values` refusal carries, so a caller
     reading several values can gather every refusal into one."""
-    return [(v["field"], v["description"]) for d in exc.details or () for v in d["fieldViolations"]]
+    return [
+        (v.get("field"), v["description"]) for d in exc.details or () for v in d["fieldViolations"]
+    ]
+
+
+def invalid_json(message: str) -> GoogleError:
+    """A request body that is not JSON (``backlot.protojson.read``). Measured 2026-10-04 on the two
+    Sheets data-filter POSTs: ``Invalid JSON payload received.`` and a sentence, no `details`, and
+    at `$.xgafv=1` an `errors[]` entry of ``parseError`` under ``global``."""
+    return GoogleError(
+        400,
+        f"Invalid JSON payload received. {message}",
+        reason="parseError",
+        status="INVALID_ARGUMENT",
+    )
+
+
+def internal_error() -> GoogleError:
+    """Real's 500 on the Sheets data-filter reads, measured 2026-10-04: an enum number the proto
+    does not declare in some fields, and a `ROW`, `COLUMN` or `SHEET` lookup beside a `spreadsheet`
+    location. ``routers.google._sheets_check_lookup`` and ``sheets_values_batch_get_by_data_filter``
+    list which."""
+    return GoogleError(500, "Internal error encountered.", reason="backendError", status="INTERNAL")
 
 
 def unsupported_conversion() -> GoogleError:

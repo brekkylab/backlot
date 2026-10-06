@@ -1355,11 +1355,6 @@ def test_slack_chronology_is_numeric_not_lexicographic(tmp_path):
     assert _message(root, reply_count=2, latest_reply=latest)["latest_reply"] == latest
 
 
-# Placed after every `client`-fixture test in this module: it opens a SECOND app over a different DB
-# via `corpus_client`, which overwrites the module-scoped fixture's shared `app.state` (see
-# `tests._helpers.client_for`'s docstring).
-
-
 def test_slack_a_private_channels_members_are_its_readers(tmp_path):
     """Slack lists a private channel ONLY to the people in it, so there "may read it" and "is in
     it" are one fact: `is_private: true` beside `is_member: false`, with a full history behind it,

@@ -938,8 +938,7 @@ def client(sample_settings):
     """A TestClient over the SAMPLE DB, not the ambient ``data/`` import.
 
     Module-scoped, so each vendor's test file gets its own — a lifespan over SAMPLE costs ~5ms once
-    the corpus is built, and sharing one session-wide would collide with the tests that reload
-    ``backlot.main`` to serve a different DB."""
+    the corpus is built."""
     from tests._helpers import client_for
 
     with client_for(sample_settings) as c:

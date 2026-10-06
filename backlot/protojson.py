@@ -3,10 +3,10 @@
 The Sheets POST reads (`values:batchGetByDataFilter`, `spreadsheets:getByDataFilter`) take their
 request as JSON, and real writes that JSON into the request message with protobuf's proto writer
 (`proto_writer.cc`, `datapiece.cc`). Measured 2026-10-04 on `sheets.googleapis.com`, every refusal
-below is that code's: a value of the wrong kind and a name the message lacks are named by their
-proto path (`data_filters[0].grid_range.start_row_index.value`). This module is a port of the parts
-those two requests reach, with the option real runs it under, measured: enum names match whatever
-the case of their ASCII letters, with `-` read as `_`. The JSON itself is parsed by
+the writer below gives is that code's: a value of the wrong kind and a name the message lacks are
+named by their proto path (`data_filters[0].grid_range.start_row_index.value`). This module is a
+port of the parts those two requests reach, with the option real runs it under, measured: enum names
+match whatever the case of their ASCII letters, with `-` read as `_`. The JSON itself is parsed by
 :func:`json.loads` (:func:`read`)."""
 
 from __future__ import annotations
@@ -497,11 +497,12 @@ def read(body: bytes, message: Message) -> dict:
 
     A body that is not JSON is refused with ``Unexpected token.``, and so are `NaN`, `Infinity` and
     a number past a double's range. Where real refuses one of these, it gives its parser's own
-    sentence and the 20 bytes either side of where it stopped,
+    sentence and up to 20 bytes either side of where it stopped,
     ``Request contains an invalid argument.`` where those bytes would split a character, or, for a
-    body cut short, the refusal of a value read before the cut. Its parser also reads single quotes,
-    bare keys, a trailing comma, `1.` and an escape JSON lacks, and refuses a body nested past 100
-    levels (``Message too deep.``, measured 2026-10-06), which is read here."""
+    body cut short, the refusal of a value read before the cut. Measured 2026-10-04, real's parser
+    also reads single quotes, bare keys, a trailing comma, `1.` and an escape JSON lacks, all
+    refused here; and measured 2026-10-06, it refuses a root object holding lists nested 100 deep
+    (``Message too deep. Max recursion depth reached in array``), which is read here."""
     if body.startswith(_BOM):
         body = body[len(_BOM) :]
     if not body:

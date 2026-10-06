@@ -63,7 +63,7 @@ class ConversionError(Exception):
 # --- values ------------------------------------------------------------------------------------
 #
 # A rendered value is ``(kind, value)``: ``string`` (str), ``bool``, ``null``, or a number as
-# :func:`_number` reads one, ``int``, ``uint`` or ``double``.
+# :func:`_number` reads one, ``int`` or ``double``.
 
 
 def _dtoa(value: float) -> str:
@@ -110,7 +110,7 @@ def to_int32(piece: tuple[str, object]) -> int:
     kind, value = piece
     if kind == "string":
         return _str_to_int32(value)  # type: ignore[arg-type]
-    if kind in ("int", "uint") and _INT32[0] <= value <= _INT32[1]:  # type: ignore[operator]
+    if kind == "int" and _INT32[0] <= value <= _INT32[1]:  # type: ignore[operator]
         return value  # type: ignore[return-value]
     if kind == "double" and value == int(value) and _INT32[0] <= value <= _INT32[1]:  # type: ignore[arg-type]
         return int(value)  # type: ignore[arg-type]
@@ -139,7 +139,7 @@ def to_bool(piece: tuple[str, object]) -> bool:
         folded = "".join(c.lower() if c.isascii() else c for c in value)  # type: ignore[union-attr]
         if folded in _TRUE or folded in _FALSE:
             return folded in _TRUE
-    if kind in ("int", "uint", "double") and value in (0, 1):
+    if kind in ("int", "double") and value in (0, 1):
         return bool(value)
     raise ConversionError(value_text(piece))
 
@@ -419,15 +419,12 @@ class _Members(list):
 
 
 def _number(text: str, *, integer: bool) -> tuple[str, object]:
-    """A JSON number as ``JsonStreamParser`` reads it: an integer without a sign is a ``uint`` while
-    it fits uint64 and one with a sign an ``int`` while it fits int64, and anything else a
-    ``double``, which past a double's range is refused."""
-    if integer:
-        value = int(text)
-        if text[0] == "-" and value >= -(2**63):
-            return ("int", value)
-        if text[0] != "-" and value < 2**64:
-            return ("uint", value)
+    """A JSON number as ``JsonStreamParser`` reads it: an integer from int64's least to uint64's
+    greatest is an ``int``, and any other number a ``double``, which past a double's range is
+    refused. Measured 2026-10-06, `-9223372036854775808` and `18446744073709551615` are quoted back
+    as sent and the integers just past them as doubles."""
+    if integer and -(2**63) <= (value := int(text)) < 2**64:
+        return ("int", value)
     number = float(text)
     if not math.isfinite(number):
         raise ValueError(text)

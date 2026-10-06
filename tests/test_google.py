@@ -6805,6 +6805,11 @@ MEASURED_BY_FILTER = [
     ('values', 'probe', b'{"a":"\x01"}', 400, 'Invalid JSON payload received. Unknown name "a": Cannot find field.'),
     ('values', 'probe', b'{"a\xff":1}', 400, 'Invalid JSON payload received. Unknown name "a ": Cannot find field.'),
     ('sheet', 'probe', b'{"dataFilters":[{"a1Range":"a\xffb"}]}', 400, 'Unable to parse range: a b'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": -9223372036854775808}}]}', 400, "Invalid value at 'data_filters[0].grid_range.start_row_index.value' (TYPE_INT32), -9223372036854775808"),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": -9223372036854775809}}]}', 400, "Invalid value at 'data_filters[0].grid_range.start_row_index.value' (TYPE_INT32), -9.2233720368547758e+18"),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": 18446744073709551615}}]}', 400, "Invalid value at 'data_filters[0].grid_range.start_row_index.value' (TYPE_INT32), 18446744073709551615"),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": 18446744073709551616}}]}', 400, "Invalid value at 'data_filters[0].grid_range.start_row_index.value' (TYPE_INT32), 1.8446744073709552e+19"),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": 9223372036854775808}}]}', 400, "Invalid value at 'data_filters[0].grid_range.start_row_index.value' (TYPE_INT32), 9223372036854775808"),
 ]
 # fmt: on
 

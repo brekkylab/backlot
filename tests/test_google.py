@@ -2496,12 +2496,23 @@ def test_every_google_get_refuses_a_callback_it_cannot_call_and_no_post_reads_on
 
     `callback` is NOT declared router-wide beside `$.xgafv` — Sheets is the only family whose
     SUCCESS is wrapped, and `qp` declares only what Backlot honours — so this is the whole of what
-    the document says about it."""
+    the document says about it.
+
+    A byte-stream read is not JSONP and is pinned by the tests beside
+    `test_a_callback_on_a_download_is_real_503_to_the_byte` instead, because the answer an
+    uncallable name gets there is not this 400 but real's 503 `Backend Error` (measured 2026-10-04
+    and 2026-10-07) -- which is what the anonymous case here asserts before the path leaves the
+    sweep."""
     spec = client.get("/openapi.json").json()
     families = ("/drive/v3", "/gmail/v1", "/docs/v1", "/sheets/v4", "/slides/v1")
     gets, posts, wrong = 0, 0, []
     for path, item in spec["paths"].items():
         if not path.startswith(families):
+            continue
+        if path.endswith("/export"):
+            anonymous = client.get(f"{path}?callback=a%20b")
+            assert anonymous.status_code == 503, path
+            assert "Backend Error" in anonymous.text, path
             continue
         for method, op in item.items():
             if method not in ("get", "post", "put", "patch", "delete"):
@@ -2828,6 +2839,195 @@ def test_drive_export_and_media_stay_non_json(client, admin_h):
     pdf = _drive_find(client, admin_h, "Whitepaper")
     med = client.get(f"/drive/v3/files/{pdf['id']}", params={"alt": "media"}, headers=admin_h)
     assert med.status_code == 200 and "application/json" not in med.headers["content-type"]
+
+
+# Real's 503 body for a download carrying a `callback`, to the byte: measured 2026-10-07 over the
+# thirteen request shapes that reach one, the `errors[]` entry is written INLINE and the body ends
+# with the closing brace and no trailing newline -- which is not the shape `respond`, the serializer
+# every other Google body goes through, writes for that envelope.
+DOWNLOAD_503_BODY = (
+    "{\n"
+    '  "error": {\n'
+    '    "code": 503,\n'
+    '    "message": "Backend Error",\n'
+    '    "errors": [{\n'
+    '      "message": "Backend Error",\n'
+    '      "domain": "global",\n'
+    '      "reason": "backendError"\n'
+    "    }]\n"
+    "  }\n"
+    "}"
+)
+DOWNLOAD_503_TYPE = "text/javascript; charset=UTF-8"
+MISSING_API_KEY = "The request is missing a valid API key."
+
+
+def _download_requests(client, admin_h):
+    """The two byte-stream reads of the bundled corpus, and the metadata read of the same PDF."""
+    pdf = _drive_find(client, admin_h, "Whitepaper")["id"]
+    doc = _drive_find(client, admin_h, "Brand")["id"]
+    return {
+        "media": (f"/drive/v3/files/{pdf}", {"alt": "media"}),
+        "export": (f"/drive/v3/files/{doc}/export", {"mimeType": "text/plain"}),
+        "metadata": (f"/drive/v3/files/{pdf}", {}),
+        "doc": doc,
+    }
+
+
+def test_a_download_names_the_missing_api_key_where_the_metadata_read_does_not(client, admin_h):
+    """Measured 2026-10-04 on `files.export` and 2026-10-05 on `files.get?alt=media`: a byte-stream
+    read with no credential answers real's missing-API-key sentence with `reason: forbidden` and no
+    `status`, where the metadata read of the same file answers the unregistered caller."""
+    requests = _download_requests(client, admin_h)
+    for kind in ("media", "export"):
+        url, params = requests[kind]
+        refusal = client.get(url, params=params)
+        assert refusal.status_code == 403, url
+        error = refusal.json()["error"]
+        assert error["message"] == MISSING_API_KEY, url
+        assert error["errors"][0]["reason"] == "forbidden", url
+        assert "status" not in error, url
+    metadata_url, metadata_params = requests["metadata"]
+    metadata = client.get(metadata_url, params=metadata_params)
+    assert metadata.json()["error"]["status"] == "PERMISSION_DENIED"
+
+
+def test_a_download_answers_its_parameters_before_a_missing_credential(client, admin_h):
+    """Measured 2026-10-07: without a credential a download answers an absent `mimeType` and a
+    mistyped `supportsAllDrives` with their 400, where the metadata read of the same file answers
+    the unregistered caller first. Together with the `callback` 503 ahead of them and the missing
+    API key after, that is the whole measured order a byte-stream read answers in. Beside a callable
+    `callback` each of the two is the download's 503 instead, credential or not."""
+    pdf = _drive_find(client, admin_h, "Whitepaper")["id"]
+    doc = _drive_find(client, admin_h, "Brand")["id"]
+    bad_param = (f"/drive/v3/files/{pdf}", {"alt": "media", "supportsAllDrives": "NOPE"})
+    no_mime = (f"/drive/v3/files/{doc}/export", {})
+    for url, params in (bad_param, no_mime):
+        anonymous = client.get(url, params=params)
+        assert anonymous.status_code == 400, (url, anonymous.text)
+        assert client.get(url, params=params, headers=admin_h).status_code == 400, url
+        assert client.get(url, params={**params, "callback": "cb"}).status_code == 503, url
+    assert "TYPE_BOOL" in client.get(bad_param[0], params=bad_param[1]).text
+    assert "mimeType" in client.get(no_mime[0], params=no_mime[1]).text
+    metadata = client.get(f"/drive/v3/files/{pdf}", params={"supportsAllDrives": "NOPE"})
+    assert metadata.status_code == 403
+    assert metadata.json()["error"]["status"] == "PERMISSION_DENIED"
+
+
+def test_a_callback_on_a_download_is_real_503_to_the_byte(client, admin_h):
+    """Measured 2026-10-07: a `callback` that cannot be called on a byte-stream read is 503
+    `Backend Error` under the script's type, unwrapped, and the body is one fixed string -- the
+    `errors[]` entry inline and no trailing newline, where the serializer every other Google body
+    goes through writes the array expanded and ends with one.
+
+    The same request with no credential answers it too: the callback is refused ahead of the
+    missing-API-key 403, which is the order real answers them in."""
+    requests = _download_requests(client, admin_h)
+    for kind in ("media", "export"):
+        url, params = requests[kind]
+        for headers in (admin_h, {}):
+            refusal = client.get(url, params={**params, "callback": "a b"}, headers=headers)
+            assert refusal.status_code == 503, (kind, headers)
+            assert refusal.headers["content-type"] == DOWNLOAD_503_TYPE, kind
+            assert refusal.text == DOWNLOAD_503_BODY, kind
+    # the exception the route raises still describes that body, so the signal and the literal
+    # cannot drift apart
+    assert json.loads(DOWNLOAD_503_BODY) == gerr.http_body(
+        "/drive/v3/files/x", gerr.backend_error()
+    )
+
+
+def test_a_callback_on_a_download_turns_every_later_error_into_the_same_503(client, admin_h):
+    """Measured 2026-10-07: on a byte-stream read carrying a name a script can call, EVERY error is
+    the same 503 `Backend Error` -- a missing id, a Docs file read with `alt=media`, a mistyped
+    `supportsAllDrives`, an absent `mimeType` and no credential alike -- where each of those without
+    the callback keeps its own status. Only a success lets the name through."""
+    pdf = _drive_find(client, admin_h, "Whitepaper")["id"]
+    doc = _drive_find(client, admin_h, "Brand")["id"]
+    for url, params, headers in (
+        (f"/drive/v3/files/{pdf}", {"alt": "media", "supportsAllDrives": "NOPE"}, admin_h),
+        ("/drive/v3/files/nosuch", {"alt": "media"}, admin_h),
+        (f"/drive/v3/files/{doc}", {"alt": "media"}, admin_h),
+        (f"/drive/v3/files/{doc}/export", {}, admin_h),
+        (f"/drive/v3/files/{pdf}", {"alt": "media"}, {}),
+    ):
+        plain = client.get(url, params=params, headers=headers)
+        assert plain.status_code != 503, (url, plain.text)
+        refusal = client.get(url, params={**params, "callback": "cb"}, headers=headers)
+        assert refusal.status_code == 503, (url, refusal.text)
+        assert refusal.text == DOWNLOAD_503_BODY, (url, refusal.text)
+
+
+def test_the_refusal_order_on_a_download_is_system_bearer_then_callback(client, admin_h):
+    """Measured 2026-10-07: `$.xgafv` 400 first, then a `Bearer` that does not resolve 401, then the
+    callback's 503 -- so a bad token never reaches its 401 when a callback is present, and a value
+    that is not `Bearer <token>` is not a credential at that layer, so `Basic` reaches the
+    callback."""
+    url, params = _download_requests(client, admin_h)["media"]
+    bad = {**params, "callback": "a b"}
+    xgafv = client.get(url, params={**bad, "$.xgafv": "9"}, headers=BAD_TOKEN)
+    assert xgafv.status_code == 400 and XGAFV_REFUSAL.format("9") in xgafv.text
+    # whatever `auth.bearer_token` reads as a token is that 401 ahead of the callback, in any case,
+    # with the callback and without it alike
+    for scheme in ("Bearer", "bearer", "BEARER", "token"):
+        headers = {"Authorization": f"{scheme} not-a-real-token"}
+        for callback in (None, "a b"):
+            refused = client.get(
+                url,
+                params=params if callback is None else {**params, "callback": callback},
+                headers=headers,
+            )
+            assert refused.status_code == 401, (scheme, callback)
+            assert refused.json()["error"]["status"] == "UNAUTHENTICATED", (scheme, callback)
+    # a value that is not one is not a credential at that layer: the callback's 503 beside it, and
+    # the 401 of `_require` without one
+    for value in ("Basic YWJjOmRlZg==", "bearer", "nope"):
+        headers = {"Authorization": value}
+        assert client.get(url, params=bad, headers=headers).status_code == 503, value
+        assert client.get(url, params=params, headers=headers).status_code == 401, value
+
+
+def test_a_download_is_the_route_not_the_path_shape(client, admin_h):
+    """Measured 2026-10-07: `files.export` is a download only with no `alt`, an empty one or
+    `alt=media`. An export asking for `alt=json` is an ordinary read -- the unregistered-caller 403
+    without a credential, the wrapped `callback` 400 with one -- and a file whose id is literally
+    `export` is a `files.get`, answering the metadata read."""
+    doc = _drive_find(client, admin_h, "Brand")["id"]
+    anonymous = client.get(f"/drive/v3/files/{doc}/export", params={"mimeType": "x", "alt": "json"})
+    assert anonymous.status_code == 403
+    assert anonymous.json()["error"]["status"] == "PERMISSION_DENIED"
+    wrapped = client.get(
+        f"/drive/v3/files/{doc}/export",
+        params={"mimeType": "x", "alt": "json", "callback": "a b"},
+        headers=admin_h,
+    )
+    assert wrapped.status_code == 200 and "Invalid JSONP callback name" in wrapped.text
+    literal = client.get("/drive/v3/files/export")
+    assert literal.status_code == 403
+    assert literal.json()["error"]["status"] == "PERMISSION_DENIED"
+    cb = client.get("/drive/v3/files/export", params={"callback": "a b"}, headers=admin_h)
+    assert cb.status_code == 200 and "Invalid JSONP callback name" in cb.text
+
+
+def test_a_download_reads_the_first_callback_repeat_and_an_empty_one_is_none(client, admin_h):
+    """Measured 2026-10-07: `cb&a b` on a download answers the bytes where `a b&cb` answers the 503,
+    so the first repeat decides as it does for every other `callback`. An empty `callback=` is no
+    callback at all: the download answers the plain 403."""
+    pdf = _drive_find(client, admin_h, "Whitepaper")["id"]
+    url = f"/drive/v3/files/{pdf}"
+    raw = client.get(url, params={"alt": "media"}, headers=admin_h)
+    first = client.get(f"{url}?alt=media&callback=cb&callback=a%20b", headers=admin_h)
+    assert first.status_code == 200 and first.content == raw.content
+    second = client.get(f"{url}?alt=media&callback=a%20b&callback=cb", headers=admin_h)
+    assert second.status_code == 503 and second.text == DOWNLOAD_503_BODY
+    assert client.get(f"{url}?alt=media&callback=", headers=admin_h).content == raw.content
+    anonymous = client.get(f"{url}?alt=media&callback=")
+    assert anonymous.status_code == 403
+    assert anonymous.json()["error"]["message"] == MISSING_API_KEY
+    # ...and the case of `alt` does not decide either: `alt=MEDIA` is the same download, and the
+    # same callback 503, as `alt=media` (measured 2026-09-17 and 2026-10-07)
+    upper = client.get(f"{url}?alt=MEDIA&callback=a%20b", headers=admin_h)
+    assert upper.status_code == 503 and upper.text == DOWNLOAD_503_BODY
 
 
 def test_the_alt_that_downloads_is_read_the_way_every_other_alt_is(client, admin_h, tokens):

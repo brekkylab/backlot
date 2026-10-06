@@ -46,9 +46,10 @@ from backlot.pagination import decode_cursor, decode_cursor_or_none, next_page_t
 
 
 def _system_parameters(request: Request) -> None:
-    """`gerr.validate_system_parameters`, with `callback` left alone on a Drive download inside a
-    batch, which real redirects whatever `callback` holds -- see `_drive_batch_redirect`."""
-    gerr.validate_system_parameters(request, callback=not _drive_batch_download(request))
+    """`gerr.validate_system_parameters`, with `callback` left alone on a Drive download: real
+    answers an uncallable name there with its own 503, and a batch part with a 302, rather than
+    refusing the name (see `gerr.refuse_download` and `_drive_batch_redirect`)."""
+    gerr.validate_system_parameters(request, callback=not _drive_download_request(request))
 
 
 router = APIRouter(tags=["google"], dependencies=[Depends(_system_parameters)])
@@ -254,18 +255,40 @@ async def batch(request: Request, api: str = "", version: str = "") -> Response:
     return Response(content=body, media_type=f'multipart/mixed; boundary="{_BATCH_BOUNDARY}"')
 
 
-def _require(request: Request) -> Caller:
+def _require(request: Request, *, download: bool = False) -> Caller:
     """The caller, or the error real Google gives — NOT the shared ``auth.require_bearer``, because
     Google's answer is not one status. Measured: a present-but-invalid bearer is 401 UNAUTHENTICATED
     everywhere, while NO Authorization header at all is 403 PERMISSION_DENIED on a Drive or Sheets
     GET (they accept API keys, so an anonymous GET is a caller with no established identity) and
-    401 on the OAuth-only Gmail/Docs/Slides and on a POST to any family."""
+    401 on the OAuth-only Gmail/Docs/Slides and on a POST to any family.
+
+    ``download`` is that third answer for a byte-stream read: measured 2026-10-04 on `files.export`
+    and 2026-10-05 on `files.get?alt=media`, a missing credential there names the missing API key
+    (:func:`gerr.missing_api_key`) instead of the anonymous GET's unregistered caller, and real puts
+    it AFTER the download's own parameters — which is why the handlers resolve a download late."""
     caller = auth.resolve_bearer(request)
     if caller is None:
         if not request.headers.get("authorization"):
+            if download:
+                raise gerr.missing_api_key()
             raise gerr.no_credentials(request.url.path, request.method)
         raise gerr.bad_token()
     return caller
+
+
+def _require_download_bearer(request: Request) -> None:
+    """The 401 a Drive download answers ahead of its own refusals, for a credential that IS a
+    `Bearer` token -- read by ``auth.bearer_token``, so any case and either scheme -- and does not
+    resolve.
+
+    Measured 2026-10-07 on `files.get?alt=media` and `files.export`: `Bearer nope` beside
+    `callback=a b` answers the 401, where `Basic YWJjOmRlZg==` answers the callback's 503. So a
+    value ``auth.bearer_token`` does not read as a token is not a credential at this layer and is
+    left to :func:`gerr.refuse_download` -- the boundary `_drive_batch_redirect` draws, except that
+    this one is also the parser `_require` reads a credential with, so the 401 does not turn on the
+    spelling of the scheme."""
+    if auth.bearer_token(request) is not None and auth.resolve_bearer(request) is None:
+        raise gerr.bad_token()
 
 
 def _b64url(text: str) -> str:
@@ -2243,10 +2266,22 @@ async def drive_files_list(request: Request):
 async def drive_files_get(file_id: str, request: Request):
     if _drive_batch_download(request):
         _drive_batch_redirect(request)
+    # A byte-stream read answers in real's measured order: a `Bearer` that does not resolve is its
+    # 401 (2026-10-07), a `callback` is the 503 an uncallable name answers whatever the download
+    # would have done (2026-10-04, 2026-10-05), and the absent credential is named afterwards, once
+    # `_drive_typed` has had its say (2026-10-07) -- `gerr.refuse_download` and the late `_require`.
+    # The metadata read below keeps its own order: its credential first, then the typed parameters.
+    # Inside a batch the redirect above answers first, whatever the part carries.
+    download = _drive_download_request(request)
     conn = auth.conn(request)
-    caller = _require(request)
-    download = gerr.alt_format(request.query_params) == "media"
+    if download:
+        _require_download_bearer(request)
+        gerr.refuse_download(request)
+    else:
+        caller = _require(request)
     _drive_typed(request, "acknowledgeAbuse", "supportsAllDrives", "supportsTeamDrives")
+    if download:
+        caller = _require(request, download=True)
     # Measured 2026-10-04: before the lookup, so a file that does not exist is refused alike, and
     # before `fields`. Inside a batch real checks a part's own flag only when the part is the
     # batch's one part that is not a download, measured 2026-10-05 beside downloads, other reads and
@@ -2287,6 +2322,12 @@ async def drive_files_export(file_id: str, request: Request):
     last one is matched without regard to case -- `TEXT/CSV` exports -- and an empty `mimeType=`
     is one of them rather than an absent parameter.
 
+    A byte-stream read layers real's three download refusals before those, measured 2026-10-04,
+    2026-10-05 and 2026-10-07: a `Bearer` that does not resolve is its 401, a `callback` is the 503
+    an uncallable name answers and the shape every later error takes, and a missing credential is
+    named only after `mimeType` (`gerr.missing_api_key`). An export asking for `alt=json` is none of
+    that -- it is an ordinary read, which `_drive_download` decides.
+
     The export's `Content-Type` is the `mimeType` as sent and nothing more, measured 2026-09-30 on
     eleven formats of a spreadsheet and a document under five `Accept` values each (none, `*/*`,
     `application/json`, `text/html`, `application/xml`): `text/csv`, `TEXT/CSV`, `Text/Csv`,
@@ -2295,11 +2336,18 @@ async def drive_files_export(file_id: str, request: Request):
     lower-case `text/` type."""
     if _drive_batch_download(request):
         _drive_batch_redirect(request)
+    download = _drive_download_request(request)
     conn = auth.conn(request)
-    caller = _require(request)
+    if download:
+        _require_download_bearer(request)
+        gerr.refuse_download(request)
+    else:
+        caller = _require(request)
     requested = gerr.first_repeat(request.query_params, "mimeType")
     if requested is None:
         raise gerr.required("mimeType")
+    if download:
+        caller = _require(request, download=True)
     ids = auth.visible_ids(request, caller)
     row = store.gdrive_by_id(conn, file_id, visible_ids=ids)
     if row is None:
@@ -4390,12 +4438,20 @@ def _drive_download(endpoint, query) -> bool:
     )
 
 
+def _drive_download_request(request: Request) -> bool:
+    """Whether this request is a Drive download (`_drive_download`), read off the route it matched.
+
+    The one question ``_system_parameters`` and the two ``files.get``/``files.export`` handlers ask,
+    so a download sent on its own and one sent as a batch part are answered alike, and so a request
+    that merely LOOKS like one is not: measured 2026-10-07, an export asking for `alt=json` and a
+    file whose id is literally `export` are ordinary reads to real."""
+    return _drive_download(request.scope.get("endpoint"), request.query_params)
+
+
 def _drive_batch_download(request: Request) -> bool:
     """Whether this request is a Drive download sent as a part of a batch. Read off the route the
     request matched, so the router's dependency can ask before the route runs."""
-    return _BATCH_OUTER.get() is not None and _drive_download(
-        request.scope.get("endpoint"), request.query_params
-    )
+    return _BATCH_OUTER.get() is not None and _drive_download_request(request)
 
 
 _URL_ESCAPE = re.compile(r"%([0-9A-Fa-f]{2})")

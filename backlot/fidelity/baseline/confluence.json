@@ -3,7 +3,7 @@
   "endpoints": [
     "https://developer.atlassian.com/cloud/confluence/swagger.v3.json"
   ],
-  "measured": "2026-09-01",
+  "measured": "2026-10-06",
   "acknowledged": [
     {
       "kind": "extra_operation",
@@ -412,12 +412,6 @@
       "kind": "missing_param",
       "severity": "gap",
       "path": "GET /wiki/rest/api/search?cqlcontext",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/search?cursor",
       "detail": "the vendor accepts it; Backlot does not"
     },
     {

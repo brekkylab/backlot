@@ -12,6 +12,7 @@ answer carries (:func:`vendor_headers`, put on by ``backlot.main.report_atlassia
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import json
 import re
@@ -120,7 +121,14 @@ _P_EXPAND = {"parameters": [qp("expand")]}
 _P_JIRA_COMMENTS = {
     "parameters": [qp("startAt", "integer"), qp("maxResults", "integer"), qp("orderBy")]
 }
-_P_CQL = {"parameters": [qp("cql", required=True), qp("limit", "integer"), qp("start", "integer")]}
+_P_CQL = {
+    "parameters": [
+        qp("cql", required=True),
+        qp("cursor"),
+        qp("limit", "integer"),
+        qp("start", "integer"),
+    ]
+}
 _P_CONTENT = {
     "parameters": [
         qp("expand"),
@@ -1341,12 +1349,26 @@ async def confluence_space_get(key: str, request: Request):
 
 @router.get("/wiki/rest/api/search", response_model=ConfluenceResults, openapi_extra=_P_CQL)
 async def confluence_cql_search(request: Request):
-    """CQL search used by Confluence clients (e.g. mcp-atlassian). We parse the
-    `~ "term"` operand and do a keyword search over the ACL-visible corpus."""
+    """CQL search used by Confluence clients (e.g. mcp-atlassian). Four clauses are read: a `~`
+    operand is a keyword search over the ACL-visible corpus, and `space`, `type` and `label` filter
+    its matches, or the whole ACL-visible corpus when there is no `~`. Measured 2026-10-05 with no
+    `~`: real's `type=page` is every page on the site and `space=<KEY> and type=page` that space's
+    pages; its `space=<KEY>` also holds the space's attachments, comments and the space itself,
+    where this server answers the space's pages and blogposts. A CQL holding none of the four names
+    only fields this route does not read, and answers no row."""
     conn = auth.conn(request)
     caller = _confluence_caller(request)
     ids = auth.visible_ids(request, caller)
-    cql = _str_param(request, "cql", "") or ""
+    # Not `_confluence_page_params`: see `_cql_page_param`.
+    limit = _cql_page_param(request, "limit", 25)
+    start = _cql_page_param(request, "start", 0)
+    if limit is None or start is None:
+        return Response(status_code=404)
+    # the first value, between the 404 and the negative check: see `errors_atlassian.cql_required`
+    cqls = request.query_params.getlist("cql")
+    if not cqls or not cqls[0]:
+        raise errors_atlassian.cql_required()
+    cql = cqls[0]
     m = re.search(r'(?:text|title)\s*~\s*"?([^"~]+)"?', cql) or re.search(r'~\s*"?([^"~]+)"?', cql)
     term = m.group(1).strip() if m else ""
     # honor the common structured CQL clauses: space / type / label
@@ -1363,19 +1385,21 @@ async def confluence_cql_search(request: Request):
     want_type = mt.group(1) if mt else None
     ml = re.search(r'label\s*(?:=|in)\s*"?([^")\s]+)"?', cql)
     want_label = ml.group(1) if ml else None
-    # NOT `_confluence_page_params`: this route is not bound by Spring the way `content` is, and a
-    # value it cannot convert is a bodiless 404 (JAX-RS's answer for a `@QueryParam`) rather than
-    # the Spring 400 — while `?limit=%20` and `?limit=` are 200 with the default. Serving `content`'s
-    # refusal here would trade one divergence for another, so the lenient read stays until #216
-    # reproduces the 404. The NEGATIVE check is shared, and measured on this route: `?limit=-1` and
-    # `?start=-1` are the same `IllegalArgumentException` 400 `content` gives.
-    limit = _int(request.query_params.get("limit"), 25)
-    start = _int(request.query_params.get("start"), 0)
     _refuse_negative_page_params(limit, start)
+    # An empty `cursor` is none, and of a repeated one the first is read, measured 2026-10-04.
+    sent_cursor = (request.query_params.getlist("cursor") or [None])[0]
+    after = _cql_search_after(sent_cursor) if sent_cursor else None
 
     # fetch the full ACL-visible match set, filter by the clauses, then paginate — so
     # totalSize reflects the true match count (not just the returned page).
-    everything = store.search_documents(conn, term, "confluence", ids, limit=100_000, offset=0)
+    if term:
+        everything = store.search_documents(conn, term, "confluence", ids, limit=100_000, offset=0)
+    elif space_key or want_type or want_label:
+        everything = store.list_documents(
+            conn, "confluence", container=None, visible_ids=ids, limit=100_000, offset=0
+        )
+    else:
+        everything = []
 
     def _match(r) -> bool:
         if space_unresolvable:
@@ -1390,7 +1414,11 @@ async def confluence_cql_search(request: Request):
 
     matched = [r for r in everything if _match(r)]
     total = len(matched)
-    rows = matched[start : start + limit]
+    position = _cql_position(matched, after[0]) if after else 0
+    rows = matched[position : position + limit]
+    reached = position + max(len(rows), 1)
+    if reached < total and start + max(len(rows), 1) > 2**31 - 1:
+        raise errors_atlassian.search_next_out_of_range()
     results = []
     for r in rows:
         page = _confluence_page(conn, request, r, "version,space")
@@ -1413,8 +1441,9 @@ async def confluence_cql_search(request: Request):
         limit=limit,
         size=len(results),
         total=total,
-        cursor=_cql_cursor(rows, matched),
-        sent_cursor=request.query_params.get("cursor"),
+        cursor=_cql_cursor(rows, matched, position),
+        sent_cursor=sent_cursor,
+        reached=reached,
     )
     return {
         "results": results,
@@ -1791,20 +1820,6 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
     return page
 
 
-def _int(v, default: int) -> int:
-    """One of Confluence's CQL query parameters (`limit`, `start`), read leniently: `int(v)`, or
-    `default` for `None`, `""`, or anything `int()` itself refuses.
-
-    Deliberately lenient rather than routed through :func:`_int_param`'s Spring rules: CQL's own
-    route is not Spring-bound (see the comment at its call site), so a value it cannot convert is a
-    refusal this function does not reproduce.
-    """
-    try:
-        return int(v) if v not in (None, "") else default
-    except (ValueError, TypeError):
-        return default
-
-
 # What real converts a query parameter with. Measured on brekkylab.atlassian.net, 2026-09-14,
 # against Jira's comment read and Confluence's space listing, which agree on every case:
 #
@@ -1972,9 +1987,8 @@ def _confluence_page_params(
     `limit` — and among two negatives `start` is the one named: `?limit=-1&start=-1` reports
     `start cannot be less than zero`.
 
-    The CQL search reads its own pair: it is not Spring-bound and refuses a value it cannot convert
-    as a bodiless 404. It shares :func:`_refuse_negative_page_params`, which is measured on that
-    route too.
+    The CQL search reads its own pair (:func:`_cql_page_param`), JAX-RS-bound rather than Spring's,
+    and shares :func:`_refuse_negative_page_params`, which is measured on that route too.
 
     ``start_bound`` is `content`'s alone and sits between the two refusals above, measured with
     both wrong at once: `?limit=abc&start=100001` is the conversion failure, `?limit=-1&
@@ -2004,29 +2018,129 @@ def _confluence_page_params(
     return limit, start
 
 
+# What Java's `String.trim()` removes: every character up to and including the space.
+_JAVA_TRIMMED = "".join(map(chr, range(0x21)))
+
+
+def _cql_page_param(request: Request, name: str, default: int) -> int | None:
+    """The CQL search's `limit` or `start`, read the way its JAX-RS binding reads an `int`, or
+    ``None`` where real answers the 404 with no body and no `content-type` a `@QueryParam` it
+    cannot convert gets.
+
+    Measured 2026-10-04 on a live site, with an `Accept` that takes JSON: the first of a repeated
+    parameter is the one read (`limit=5&limit=abc` is five, `limit=abc&limit=5` the 404); an empty
+    value or one `trim()` empties (a space, a tab, a newline, and on 2026-10-05 `%01` and `%1F`
+    alone) is the default; anything else is `Integer.valueOf` of the value as sent, so a sign and
+    leading zeros pass and a Unicode decimal digit counts (`٥` and `５` are five) unless it lies
+    past U+FFFF, which Java reads as two halves of a surrogate pair (`𝟓` is the 404), where a space
+    beside the digits, `1.5`, `1_0`, `0x10`, `1e3` and a value outside `int` are the 404 too. The
+    404 comes after the credential's refusal and before every other one the route makes. A NUL
+    never gets this far: Tomcat answers it with an HTML 400 page.
+    """
+    values = request.query_params.getlist(name)
+    if not values or not values[0].strip(_JAVA_TRIMMED):
+        return default
+    if not re.fullmatch(r"[+-]?\d+", values[0]) or max(map(ord, values[0])) > 0xFFFF:
+        return None
+    value = int(values[0])
+    return value if -(2**31) <= value < 2**31 else None
+
+
+def _cql_search_after(token: str) -> list | None:
+    """What a sent `cursor` says the page goes on after: a list holding the one sort value it
+    carries, ``None`` for a token that reads as no cursor, or real's refusal of a token it cannot
+    page by (:func:`backlot.errors.atlassian.search_cursor_refused`).
+
+    Measured 2026-10-04 and 2026-10-05: a token is `_t_` and `_h_` around two base64 parts, either
+    alphabet, each read as the first JSON value in it, leading whitespace skipped and whatever
+    follows ignored, and real's own hold the sort value in a list and then `[]`. The 400 answers a
+    token without `_t_` or `_h_`, a part that is not base64 or holds no JSON value, `NaN`,
+    `Infinity` or `-Infinity` in either part, an `_h_` that is not a list or holds `null`, a list or
+    an object, and a `_t_` that is neither a list nor `null` or holds two values. Past those, a
+    `_t_` of `null` is no cursor, and the 500 answers an empty list or a list or an object as the
+    value: `_t_` `[]` with `_h_` `[null]` is the 400 and with `_h_` `[1]` the 500. A string, a
+    number, `true`, `false` and `null` as the value are served (:func:`_cql_position`). Both
+    refusals come after the route's of `limit` and `start`: `?limit=abc&cursor=abc` is the 404 and
+    `?limit=-1&cursor=abc` the negative 400.
+    """
+    parts = re.fullmatch(r"_t_(.*)_h_(.*)", token, re.S)
+    first, then = (_cql_token_part(part) for part in parts.groups()) if parts else (_NO_JSON,) * 2
+    if (
+        not isinstance(then, list)
+        or any(each is None or isinstance(each, (list, dict)) for each in then)
+        or not (first is None or isinstance(first, list) and len(first) <= 1)
+    ):
+        raise errors_atlassian.search_cursor_refused()
+    if first is not None and (not first or isinstance(first[0], (list, dict))):
+        raise errors_atlassian.search_cursor_refused(failed=True)
+    return first
+
+
+# What `_cql_token_part` answers for a part holding no JSON value it reads.
+_NO_JSON = object()
+
+
+def _refuse_a_json_constant(name: str):
+    """Refuses the three constants Python's JSON reads and real's does not
+    (:func:`_cql_search_after`)."""
+    raise ValueError(name)
+
+
+def _cql_token_part(part: str):
+    """One part of a CQL search cursor read as :func:`_cql_search_after` says real reads it, or
+    ``_NO_JSON``, which a part nesting deeper than Python's JSON reader recurses gets as well."""
+    standard = part.replace("-", "+").replace("_", "/") + "=" * (-len(part) % 4)
+    decoder = json.JSONDecoder(parse_constant=_refuse_a_json_constant)
+    try:
+        raw = base64.b64decode(standard, validate=True)
+        return decoder.raw_decode(raw.decode("utf-8").lstrip(" \t\n\r"))[0]
+    except (ValueError, binascii.Error, RecursionError):
+        return _NO_JSON
+
+
+def _cql_position(matched: list, sort_value) -> int:
+    """Where in ``matched`` the CQL search's page starts, given the value a sent cursor carries
+    (:func:`_cql_search_after`): after the row whose id follows the tab a string value opens with,
+    after every row for `null`, and at the first match for any other value.
+
+    Measured 2026-10-04 on a nine-page site: `start` is echoed and advanced in the links but never
+    positions the page, so `?limit=1&start=100001` serves the first match, and a cursor naming the
+    second match serves the third onwards at any `start`. Real's own value is `"\\t<id> …"`, and it
+    serves the rows whose value sorts after the one sent, in the descending order of those values it
+    answers in, which puts a number, `true`, `false` and `null` where the summary above does. This
+    server's matches are in an order of its own, so a string naming none of them starts at the first
+    match, where real may answer an empty page or one from the middle (`"\\t3"` started at the sixth
+    of nine).
+    """
+    if sort_value is None:
+        return len(matched)
+    named = re.match(r"\t(\S+)", sort_value) if isinstance(sort_value, str) else None
+    for i, row in enumerate(matched if named else ()):
+        if str(row["id"]) == named.group(1):
+            return i + 1
+    return 0
+
+
 # The `start` past which `content` answers `start_too_large`. The same `start` is a 200 on the
-# neighbours: an empty page on `space` and on `child/page`, and on the CQL search a page holding a
-# row, where this server answers the empty slice (:func:`_cql_cursor` says why).
+# neighbours: an empty page on `space` and on `child/page`, and on the CQL search the page `start`
+# does not position (:func:`_cql_position`).
 _CONTENT_START_BOUND = 100_000
 
 
-def _cql_cursor(served: list, matched: list) -> str | None:
+def _cql_cursor(served: list, matched: list, position: int) -> str | None:
     """The `cursor` real's CQL search carries on `next`: a token naming the last row the page
-    served, or the first match when it served none.
+    served, or on a page that served none the row it would have started with
+    (:func:`_cql_position`).
 
     Measured 2026-09-23 on a nine-page site: the token names the second match at `limit=2` and the
-    fifth at `limit=5`, moves with each `next` followed, and on an empty page sent no cursor names
-    the first match whatever `start` says. Real's token is opaque and carries that row's id inside
-    a base64 payload; this builds one of its own from the same thing, so a client sees a token
-    shaped like real's.
-
-    The route does not read a cursor sent back. Real positions the page by it and not by `start`,
-    which it echoes and advances without reading: `?limit=1&start=5` with no cursor serves the first
-    match, and following `next` from `?limit=0` moves the token one row per hop. This server
-    positions by `start`, which following its own `next` keeps in step with the cursor whenever
-    `limit` is above zero; those two cases are where it answers otherwise.
+    fifth at `limit=5`, and moves with each `next` followed. Measured 2026-10-04, an empty page
+    names the first match when no cursor was sent, whatever `start` says, and the row after the sent
+    one's when one was: `?limit=0` with a cursor naming the second match names the third. Real's
+    token carries the row's sort value (:func:`_cql_search_after`); this builds one of its own from
+    the row's id, so a client sees a token shaped like real's, and real reads this one back as it
+    reads its own.
     """
-    row = served[-1] if served else (matched[0] if matched else None)
+    row = served[-1] if served else (matched[position] if position < len(matched) else None)
     if row is None:
         return None
     payload = base64.b64encode(f'["\\t{row["id"]}"]'.encode()).decode("ascii")
@@ -2065,6 +2179,7 @@ def _confluence_envelope(
     total: int,
     cursor: str | None = None,
     sent_cursor: str | None = None,
+    reached: int | None = None,
 ) -> dict:
     """`_links` as every paged Confluence listing answers it: `base`, `context` and `self` on every
     page, plus `next`/`prev` from :func:`backlot.pagination.confluence_page_links`.
@@ -2074,10 +2189,11 @@ def _confluence_envelope(
     `self` is the request's URL with `limit`, `start` and the two markers removed and every other
     parameter kept — a cache-buster sent with the request comes back inside `self`.
 
-    ``cursor`` and ``sent_cursor`` are the CQL search's: the token this page's `next` carries and
-    the one the request brought. Measured 2026-09-23 following `next` three hops at `limit=0`, `1`
-    and `2`: the sent one is not carried the way other parameters are, so `self` holds no cursor
-    and `next` the new one alone, and `prev` is where it goes back out.
+    ``cursor``, ``sent_cursor`` and ``reached`` are the CQL search's: the token this page's `next`
+    carries, the one the request brought, and where among the matches the page ends, as
+    :func:`backlot.pagination.confluence_page_links` counts it. Measured 2026-09-23 following `next`
+    three hops at `limit=0`, `1` and `2`: the sent one is not carried the way other parameters are,
+    so `self` holds no cursor and `next` the new one alone, and `prev` is where it goes back out.
     """
     lead, trail = _confluence_carried(request, own=() if sent_cursor is None else ("cursor",))
     query = "&".join(p for p in (lead.rstrip("&"), trail) if p)
@@ -2087,7 +2203,9 @@ def _confluence_envelope(
         "self": f"{_site(request)}/wiki{route}" + (f"?{query}" if query else ""),
     }
     sent = quote(sent_cursor, safe="") if sent_cursor else None
-    links.update(confluence_page_links(route, start, limit, size, total, lead, trail, cursor, sent))
+    links.update(
+        confluence_page_links(route, start, limit, size, total, lead, trail, cursor, sent, reached)
+    )
     return links
 
 

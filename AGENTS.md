@@ -61,6 +61,16 @@ through the vendor APIs.
 - A PR's title and description follow items 5 and 6 of Pull requests in CONTRIBUTING.md: for a
   `fidelity` issue the title opens with that issue's `<source>:` prefix, and the description starts
   from `.github/pull_request_template.md`, which `gh pr create --body` bypasses.
+- From a fork, start only on an issue that no open PR closes and no one is assigned to. The first
+  command below lists those sized for a first PR. Run the second for issue N before starting: unless
+  both lists it prints are empty, the issue is taken, so pick another. A PR for an issue an open PR
+  already closes is closed (item 7).
+
+  ```bash
+  gh issue list -R brekkylab/backlot --search "is:open no:assignee -linked:pr label:hacktoberfest"
+  gh issue view N -R brekkylab/backlot --json closedByPullRequestsReferences,assignees
+  ```
+
 - From a fork, run `gh pr list -R brekkylab/backlot --author @me --state open` before opening a PR.
   If that already reaches the limit in item 7 there (one until a PR of yours is merged here, three
   after, drafts counted), stop and tell the person you work for. Open the PR ready for review.

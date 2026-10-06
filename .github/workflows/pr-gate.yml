@@ -1,5 +1,6 @@
 # Holds a pull request from a fork to Pull requests in CONTRIBUTING.md: how many the author may
-# have open, and what its title and description carry. `scripts/pr_gate.py` has both rules.
+# have open, whether an older open pull request already closes its issue, and what its title and
+# description carry. `scripts/pr_gate.py` has the rules.
 #
 # `pull_request_target` runs this file and the script as they are on `main`, with a token that can
 # comment and close. That is safe only because nothing from the pull request's branch is checked

@@ -1351,11 +1351,11 @@ def test_jira_json_carries_the_charset_real_sends_and_confluence_does_not(client
     """Measured on a live Atlassian Cloud site, 2026-09-15 and 2026-09-18: Jira answers
     `application/json;charset=UTF-8` on its 200s, a 404 under either mount and a plain 400, and the
     bare `application/json` on the one 403 this server answers, the gateway's for a bearer it cannot
-    read. Confluence answers the bare type on every JSON body measured — its 200s, 404s, 400, 403
-    and 405. The RFC 7807 refusals keep `application/problem+json`, which the middleware never
-    touches. The spelling is pinned here rather than read from the constant, so a reformat into
-    GitHub's `application/json; charset=utf-8` is caught in the file a reader of the Jira rule
-    opens."""
+    read. Confluence answers the bare type on every JSON body measured, whose statuses and dates
+    ``errors.atlassian.json_media_type`` lists. The RFC 7807 refusals keep
+    `application/problem+json`, which the middleware never touches. The spelling is pinned here
+    rather than read from the constant, so a reformat into GitHub's
+    `application/json; charset=utf-8` is caught in the file a reader of the Jira rule opens."""
     jira, bare = "application/json;charset=UTF-8", "application/json"
     assert errors_atlassian.JIRA_JSON_MEDIA_TYPE == jira
     unreadable = {"Authorization": "Bearer usr-nope"}

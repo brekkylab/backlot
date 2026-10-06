@@ -1119,6 +1119,12 @@ _DRIVE_BOOL_ROWS = (
         + [(v, False) for v in ("off", "2", "01", "00", "1.0", "-1", "+1", " true", "true ")]
     ]
     + [
+        # the letters outside ASCII `_DRIVE_BOOLS` records, which are not case-folded
+        (path, param, value, False)
+        for path, param in _DRIVE_BOOL_ROUTES
+        for value in ("yeſ", "falſe")
+    ]
+    + [
         # the two routes `_DRIVE_BOOLS` records as declaring none
         ("/drive/v3/files/{doc}/export?mimeType=text/plain", "supportsAllDrives", "NOPE", True),
         ("/drive/v3/about?fields=user", "supportsAllDrives", "NOPE", True),
@@ -1131,9 +1137,10 @@ def test_drive_a_declared_boolean_takes_the_protobuf_spellings_and_another_is_ig
     client, admin_h, path, param, value, accepted
 ):
     """The spellings `_DRIVE_BOOLS` records, one request per value on each route; the `files.list`
-    `supportsAllDrives` rows are 24 of the 30 swept. `true` is sent on those rows alone: measured
-    2026-09-23, four of the other flags answer a `true` with a check of their own (a 403 for
-    `includeItemsFromAllDrives` without `supportsAllDrives`), which Backlot does not model."""
+    `supportsAllDrives` rows are 24 of the 30 swept and two spellings outside ASCII. `true` is sent
+    on those rows alone: measured 2026-09-23, four of the other flags answer a `true` with a check
+    of their own (a 403 for `includeItemsFromAllDrives` without `supportsAllDrives`), which Backlot
+    does not model."""
     doc = _drive_find(client, admin_h, "Brand")["id"]
     url = path.format(doc=doc)
     # the query string is built here because httpx's `params` replaces the one the row's path has

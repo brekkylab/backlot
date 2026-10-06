@@ -4218,8 +4218,9 @@ def _typed_query(request: Request, readers: dict) -> dict[str, list]:
 # The typed booleans each Drive method Backlot serves declares, as the proto field its refusal
 # names. Parsed only, never read: none of them changes what a My Drive corpus answers. Measured
 # 2026-09-23 on each of them: the Sheets boolean spellings (`_sheets_bool_value`), 30 of them swept
-# on `supportsAllDrives`. `files.export` and `about.get` declare none, and real ignores
-# `supportsAllDrives=NOPE` on both.
+# on `supportsAllDrives`; and on 2026-10-06 `yeſ`, `YEſ`, `falſe` and `FALſE`, each refused, since
+# only ASCII letters are folded (`protojson.to_bool`). `files.export` and `about.get` declare none,
+# and real ignores `supportsAllDrives=NOPE` on both.
 _DRIVE_BOOLS = {
     "supportsAllDrives": "supports_all_drives",
     "supportsTeamDrives": "supports_team_drives",

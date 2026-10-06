@@ -1,5 +1,6 @@
 # Backlot
 
+[![GitHub stars](https://img.shields.io/github/stars/brekkylab/backlot?style=social&label=Star)](https://github.com/brekkylab/backlot)
 [![python](https://img.shields.io/pypi/pyversions/backlot)](https://pypi.org/project/backlot/)
 [![PyPI](https://img.shields.io/pypi/v/backlot)](https://pypi.org/project/backlot/)
 [![tests](https://github.com/brekkylab/backlot/actions/workflows/ci.yml/badge.svg)](https://github.com/brekkylab/backlot/actions/workflows/ci.yml)

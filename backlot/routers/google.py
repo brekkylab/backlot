@@ -17,6 +17,7 @@ import quopri
 import re
 import string
 from email.parser import BytesParser
+from email.utils import formataddr, getaddresses
 from http import HTTPStatus
 from typing import NamedTuple
 
@@ -745,6 +746,68 @@ def _header(name: str, value: str) -> dict:
     return {"name": name, "value": value}
 
 
+# RFC 2047 encoded-word budget is 75 octets. `=?UTF-8?B?` + `?=` leaves 63, and base64 length
+# must be a multiple of 4, so 60 chars / 45 UTF-8 bytes per word. RFC 2047 §5 keeps a multi-octet
+# character within one word, so a word ends at the last whole character inside those 45 bytes.
+# Adjacent words are separated by a space, which a decoder discards (RFC 2047 §6.2).
+_ENCODED_WORD_BYTES = 45
+
+
+def _encoded_words(text: str) -> str:
+    """`text` as UTF-8 `B` encoded-words, as many as `_ENCODED_WORD_BYTES` needs."""
+    chunks = [b""]
+    for char in text:
+        encoded = char.encode("utf-8")
+        if len(chunks[-1]) + len(encoded) > _ENCODED_WORD_BYTES:
+            chunks.append(b"")
+        chunks[-1] += encoded
+    return " ".join(f"=?UTF-8?B?{base64.b64encode(c).decode('ascii')}?=" for c in chunks)
+
+
+def _raw_mailbox(display: str, address: str) -> str:
+    """One mailbox of an address header, for `_raw_header_value`: only the display name is
+    encoded, since RFC 2047 §5 keeps encoded-words out of an addr-spec."""
+    if not display.isascii():
+        return f"{_encoded_words(display)} <{address}>"
+    if not address.isascii():
+        # `formataddr` refuses a non-ASCII address
+        return f"{display} <{address}>" if display else address
+    return formataddr((display, address))
+
+
+def _raw_header_value(name: str, value: str) -> str:
+    """One header's value as `format=raw` writes it. `payload.headers` under `full` and
+    `metadata` serve the value as it is.
+
+    Measured on 2026-10-05, on a message composed in the Gmail web client: real's `raw` is ASCII. It
+    writes the subject as a UTF-8 `B` encoded-word, a Hangul display name in `From` and `To` as one
+    encoded-word before the ASCII `<address>`, with no quotes, and the attachment's `name=` and
+    `filename=` as encoded-words inside their quotes. `Cc`, `Bcc` and `Reply-To` were not measured
+    and are written the way `To` is; any other header is encoded whole, as the subject is. A
+    non-ASCII address is written as it is (see `_raw_mailbox`), so it stays non-ASCII in `raw`.
+    """
+    if value.isascii():
+        return value
+    if name.lower() in {"content-type", "content-disposition"}:
+
+        def quoted(match: re.Match) -> str:
+            inner = match.group(1)
+            if inner.isascii():
+                return match.group(0)
+            return f'"{_encoded_words(inner)}"'
+
+        return re.sub(r'"([^"]*)"', quoted, value)
+    if name.lower() in {"from", "to", "cc", "bcc", "reply-to", "delivered-to"}:
+        mailboxes = getaddresses([value])
+        if all("@" in address for _, address in mailboxes):
+            return ", ".join(_raw_mailbox(display, address) for display, address in mailboxes)
+    return _encoded_words(value)
+
+
+def _raw_header_block(headers: list[dict]) -> str:
+    return "\r\n".join(f"{h['name']}: {_raw_header_value(h['name'], h['value'])}" for h in headers)
+
+
 def _text_node(mime: str, data: str, encoding: str | None) -> dict:
     """A text leaf, sent in `encoding` (None: as it is, with no `Content-Transfer-Encoding`)."""
     headers = [_header("Content-Type", f'{mime}; charset="UTF-8"')]
@@ -850,7 +913,7 @@ def _json_part(node: dict, part_id: str, message_id: str) -> dict:
 
 def _mime_part(node: dict, message_id: str) -> str:
     """One node of `_mime_tree` as a MIME entity, encoded as its own headers declare."""
-    head = "\r\n".join(f"{h['name']}: {h['value']}" for h in node["headers"])
+    head = _raw_header_block(node["headers"])
     if "parts" in node:
         body = _mime_multipart(node["parts"], node["boundary"], message_id)
     elif "attachment" in node:
@@ -955,7 +1018,7 @@ def _gmail_message(
     html = row["body_html"] or f"<html><body><p>{row['content']}</p></body></html>"
     nodes = _mime_tree(row, html, attachments)
     mime_body = _mime_multipart(nodes, boundary, row["id"])
-    raw = "\r\n".join(f"{h['name']}: {h['value']}" for h in headers) + "\r\n\r\n" + mime_body
+    raw = _raw_header_block(headers) + "\r\n\r\n" + mime_body
     msg["sizeEstimate"] = _byte_len(raw)
     if fmt == "minimal":
         return msg

@@ -2089,12 +2089,12 @@ def _cql_position(matched: list, sort_value) -> int:
 
     Measured 2026-10-04 on a nine-page site: `start` is echoed and advanced in the links but never
     positions the page, so `?limit=1&start=100001` serves the first match, and a cursor naming the
-    second match serves the third onwards at any `start`. Real's own value is `"\\t<id> …"`, and
-    it serves the rows whose value sorts after the one sent, in the descending order of those values
-    it answers in: a number, `true` or `false` start at the first match and `null` after the last.
-    This server's matches are in an order of its own, so it positions after the row whose id a
-    string names, and starts at the first match for one naming none of them, where real may answer
-    an empty page or one from the middle (`"\\t3"` started at the sixth of nine).
+    second match serves the third onwards at any `start`. Real's own value is `"\\t<id> …"`, and it
+    serves the rows whose value sorts after the one sent, in the descending order of those values it
+    answers in, which puts a number, `true`, `false` and `null` where the summary above does. This
+    server's matches are in an order of its own, so a string naming none of them starts at the first
+    match, where real may answer an empty page or one from the middle (`"\\t3"` started at the sixth
+    of nine).
     """
     if sort_value is None:
         return len(matched)

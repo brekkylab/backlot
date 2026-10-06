@@ -484,12 +484,19 @@ _SEARCH_BODY_TYPE_ROWS = [
     ids=[row[0] for row in _SEARCH_BODY_TYPE_ROWS],
 )
 def test_notion_search_reads_query_and_filter_by_their_types_like_real(
-    client, admin_h, notion_h, label, body, versioned, status, code, message
+    client, admin_h, notion_h, monkeypatch, label, body, versioned, status, code, message
 ):
     """The rule the comment in ``search`` states: a string query, a filter object and an
-    omitted member are accepted; query errors precede filter errors, and version comes first."""
+    omitted member are accepted; query errors precede filter errors, and version comes first.
+    A refused request is answered before ``auth.visible_ids`` runs; a served one runs it."""
+    from backlot import auth
+
+    looked_up = []
+    see = auth.visible_ids
+    monkeypatch.setattr(auth, "visible_ids", lambda *a, **k: looked_up.append(a) or see(*a, **k))
     r = client.post("/notion/v1/search", json=body, headers=notion_h if versioned else admin_h)
     assert r.status_code == status, (label, r.text)
+    assert bool(looked_up) is (code is None), label
     payload = r.json()
     if code is None:
         assert payload["object"] == "list"
@@ -497,18 +504,6 @@ def test_notion_search_reads_query_and_filter_by_their_types_like_real(
         assert (payload["object"], payload["status"], payload["code"]) == ("error", status, code)
         assert payload["message"] == message
         assert payload["request_id"] == r.headers["x-notion-request-id"]
-
-
-def test_notion_search_refuses_wrong_types_before_acl_lookup(client, notion_h, monkeypatch):
-    from backlot.routers import notion
-
-    def unexpected_acl_lookup(*args, **kwargs):
-        raise AssertionError("A refused search must not look up visible documents")
-
-    monkeypatch.setattr(notion.auth, "visible_ids", unexpected_acl_lookup)
-    response = client.post("/notion/v1/search", json={"query": 5}, headers=notion_h)
-    assert response.status_code == 400
-    assert response.json()["code"] == "validation_error"
 
 
 def test_notion_search_filter_database_only(client, notion_h):

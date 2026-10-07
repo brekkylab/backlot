@@ -303,24 +303,6 @@ def test_gmail_threads_list_is_the_mailbox_searched_or_not(client, tokens):
     )
 
 
-def test_gmail_attachment_resolves_under_a_hex_message_id(client, admin_h, ro_conn):
-
-    row = ro_conn.execute(
-        "SELECT * FROM gmail_messages WHERE COALESCE(attachments,'') NOT IN ('', '[]') LIMIT 1"
-    ).fetchone()
-    assert row is not None, "SAMPLE should hold a message with an attachment"
-    hexid = row["id"]
-    m = client.get(
-        f"/gmail/v1/users/me/messages/{hexid}", headers=admin_h, params={"format": "full"}
-    ).json()
-    att = next(p for p in m["payload"]["parts"] if p.get("filename"))
-    r = client.get(
-        f"/gmail/v1/users/me/messages/{hexid}/attachments/{att['body']['attachmentId']}",
-        headers=admin_h,
-    )
-    assert r.status_code == 200 and r.json()["size"] > 0
-
-
 @pytest.mark.parametrize(
     "msg_key",
     ["owner", "other", "missing", "non_hex"],
@@ -330,10 +312,9 @@ def test_gmail_attachment_resolves_under_a_hex_message_id(client, admin_h, ro_co
     [("valid", 200), ("bogus", 400), ("altered", 400)],
 )
 def test_gmail_attachment_errors(client, admin_h, ro_conn, msg_key, att_key, expect_status):
-    """An attachment id is served under ANY message id — the one it belongs to, another real
-    message, a well-formed id no message has, or a non-hex string alike — real Gmail's answer
-    turns on the attachment id alone, not the path's message id (measured against
-    gmail.googleapis.com on 2026-10-01). Only an attachment id nothing has gets 400."""
+    """Under each of the four message ids, an attachment id gets the answer it gets under its own
+    message: 200 with its bytes when a message holds it, 400 when none does, as the comment in
+    `gmail_attachment` records."""
     row = ro_conn.execute(
         "SELECT * FROM gmail_messages WHERE COALESCE(attachments,'') NOT IN ('', '[]') LIMIT 1"
     ).fetchone()
@@ -412,7 +393,7 @@ _ATTACHMENT_ACL = [
         "author_email": "ava@acme.com",
         "readers": ["ava@acme.com"],
         "created": "2026-02-02T09:00:00Z",
-        "attachments": [{"filename": "memo.txt", "mime": "text/plain", "content": "memo text"}],
+        "attachments": [{"filename": "memo.txt", "mime": "text/plain"}],
     },
     {
         "source_type": "gmail",
@@ -448,33 +429,26 @@ def attachment_acl(tmp_path):
         yield client, h, att
 
 
-def test_gmail_attachment_resolves_to_its_own_message_under_another_id(attachment_acl):
-    """With two attachment-bearing messages, each attachment id lands its own bytes, asked under a
-    third message's id that holds no attachment."""
+@pytest.mark.parametrize("under", ["ava-deck", "ava-memo", "mia-note"])
+@pytest.mark.parametrize("caller", ["admin", "ava", "mia"])
+def test_gmail_attachment_is_found_by_its_id_within_the_acl(attachment_acl, under, caller):
+    """Under each of the three message ids, each of ava's attachment ids lands its own bytes for
+    the admin and ava, and mia, who cannot see ava's messages, gets the 400 an id nothing has gets.
+    The memo states no `content`, so its bytes are the stand-in `_att_content` writes, which names
+    the attachment's id."""
     client, h, att = attachment_acl
-    under = served_id("gmail", "mia-note")
-    for doc, content in (("ava-deck", b"deck"), ("ava-memo", b"memo text")):
+    want = {"ava-deck": b"deck", "ava-memo": f"attachment {att['ava-memo']}".encode()}
+    for doc, content in want.items():
         r = client.get(
-            f"/gmail/v1/users/me/messages/{under}/attachments/{att[doc]}", headers=h["admin"]
+            f"/gmail/v1/users/me/messages/{served_id('gmail', under)}/attachments/{att[doc]}",
+            headers=h[caller],
         )
-        assert r.status_code == 200, doc
-        assert base64.urlsafe_b64decode(r.json()["data"]) == content, doc
-
-
-@pytest.mark.parametrize("under", ["ava-deck", "mia-note"])
-def test_gmail_attachment_any_message_id_still_enforces_the_acl(attachment_acl, under):
-    """Serving an attachment under any message id must not serve it to a caller who cannot see the
-    message it belongs to: mia gets the unknown-attachment 400 for ava's deck whether she names
-    ava's message or her own, where ava and the admin get the deck."""
-    client, h, att = attachment_acl
-    url = f"/gmail/v1/users/me/messages/{served_id('gmail', under)}/attachments/{att['ava-deck']}"
-    for caller in ("admin", "ava"):
-        r = client.get(url, headers=h[caller])
-        assert r.status_code == 200, caller
-        assert base64.urlsafe_b64decode(r.json()["data"]) == b"deck", caller
-    r = client.get(url, headers=h["mia"])
-    assert r.status_code == 400
-    assert r.json()["error"]["message"] == "Invalid attachment token"
+        if caller == "mia":
+            assert r.status_code == 400, doc
+            assert r.json()["error"]["message"] == "Invalid attachment token", doc
+        else:
+            assert r.status_code == 200, doc
+            assert base64.urlsafe_b64decode(r.json()["data"]) == content, doc
 
 
 @pytest.mark.parametrize(

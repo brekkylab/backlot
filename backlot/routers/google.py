@@ -621,18 +621,14 @@ async def gmail_attachment(user_id: str, msg_id: str, att_id: str, request: Requ
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     # The path's message id plays no part in the answer, in real Gmail or here: an attachment id
-    # is served under the message it belongs to, under any other message id, under a well-formed
-    # id no message has, and under a non-hex id alike — all four landed the same bytes, measured
-    # against gmail.googleapis.com on 2026-10-01. So the lookup is by attachment id alone, over
-    # every attachment-bearing message the caller can see, not the one msg_id names.
-    found = next(
-        (
-            (row["id"], i, a)
-            for row in store.gmail_rows_with_attachments(conn, visible_ids=ids)
-            for i, a in enumerate(store.jcol(row, "attachments"))
-            if _att_id(row["id"], i) == att_id
-        ),
-        None,
+    # is served under the message it belongs to, under another message's id, under a well-formed
+    # id no message has and under a non-hex id alike, with the same bytes, measured against
+    # gmail.googleapis.com on 2026-10-01 and again on 2026-10-07. The message the path names is
+    # one point lookup, so it is tried first; only an attachment id it does not hold pays for
+    # scanning every attachment-bearing message the caller can see.
+    named = store.gmail_by_id(conn, msg_id, visible_ids=ids)
+    found = _attachment([] if named is None else [named], att_id) or _attachment(
+        store.gmail_rows_with_attachments(conn, visible_ids=ids), att_id
     )
     if found is None:
         raise gerr.invalid_attachment_token()
@@ -640,6 +636,19 @@ async def gmail_attachment(user_id: str, msg_id: str, att_id: str, request: Requ
     body = _att_content(message_id, i, att)
     # `{size, data}` alone: real names no `attachmentId` here, measured on 2026-09-30
     return {"size": _byte_len(body), "data": _b64url(body)}
+
+
+def _attachment(rows, att_id: str) -> tuple[str, int, dict] | None:
+    """The message id, index and attachment among ``rows`` whose ``_att_id`` is ``att_id``."""
+    return next(
+        (
+            (row["id"], i, a)
+            for row in rows
+            for i, a in enumerate(store.jcol(row, "attachments"))
+            if _att_id(row["id"], i) == att_id
+        ),
+        None,
+    )
 
 
 @router.get(

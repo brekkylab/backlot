@@ -2704,11 +2704,7 @@ def gmail_thread(conn, thread_id, visible_ids=None) -> list[sqlite3.Row]:
 
 
 def gmail_rows_with_attachments(conn, visible_ids=None) -> list[sqlite3.Row]:
-    """Every visible Gmail message that declares at least one attachment. An attachment id is
-    self-contained (see the router's ``_att_id``) and carries no message id a lookup could key
-    on, so resolving one means scanning the attachment-bearing messages a caller can see — real
-    Gmail's ``attachments.get`` answers the same under any message id, well-formed or not
-    (measured against gmail.googleapis.com on 2026-10-01)."""
+    """Every Gmail message the caller can see that holds at least one attachment."""
     sql = "SELECT * FROM gmail_messages WHERE COALESCE(attachments, '') NOT IN ('', '[]')"
     clause, cp = _acl_clause("gmail", visible_ids=visible_ids)
     return conn.execute(sql + clause, cp).fetchall()

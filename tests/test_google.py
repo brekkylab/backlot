@@ -999,29 +999,45 @@ def test_drive_a_listing_that_never_issued_a_token_refuses_one_it_did_not_issue(
     client, admin_h, path
 ):
     """The `pageToken` rule `drive_files_list` applies, on the two Drive listings that read none:
-    a token that does not decode is the same 400 `files.list` answers. Neither pages here, so the
-    first page is the whole answer and an empty token is it -- a listing that issued no token of
-    its own is the only case this refuses."""
+    every token is one the route did not issue, because neither pages, so the refusal is a presence
+    test and not a decode -- `bzow` is `o:0` and a `files.list` token is a real offset, and both are
+    400 here where `files.list` serves them. The empty spelling is `permissions.list`'s own 403;
+    on `drives.list` the one page is the whole answer and an empty token is it."""
     doc = _drive_find(client, admin_h, "Brand")["id"]
     url = path.format(doc=doc)
-    refused = client.get(url, headers=admin_h, params={"pageToken": "bad"})
-    assert refused.status_code == 400, refused.text
-    e = _gerr(refused)
-    assert e["code"] == 400
-    assert e["errors"] == [
-        {
-            "message": "Invalid Value",
-            "domain": "global",
-            "reason": "invalid",
-            "location": "pageToken",
-            "locationType": "parameter",
-        }
-    ]
-    assert "status" not in e
+    listing = client.get("/drive/v3/files", headers=admin_h, params={"pageSize": 1}).json()
+    for token in ("bad", "bzow", listing["nextPageToken"]):
+        refused = client.get(url, headers=admin_h, params={"pageToken": token})
+        assert refused.status_code == 400, (token, refused.text)
+        e = _gerr(refused)
+        assert e["code"] == 400
+        assert e["errors"] == [
+            {
+                "message": "Invalid Value",
+                "domain": "global",
+                "reason": "invalid",
+                "location": "pageToken",
+                "locationType": "parameter",
+            }
+        ], token
+        assert "status" not in e
+    empty = client.get(url, headers=admin_h, params={"pageToken": ""})
     first = client.get(url, headers=admin_h)
     assert first.status_code == 200 and "nextPageToken" not in first.json()
-    empty = client.get(url, headers=admin_h, params={"pageToken": ""})
-    assert empty.status_code == 200 and empty.json() == first.json()
+    if path.endswith("/permissions"):
+        assert empty.status_code == 403, empty.text
+        e = _gerr(empty)
+        assert e["code"] == 403
+        assert e["message"] == "The specified page token has expired, and can no longer be used."
+        assert e["errors"] == [
+            {"message": e["message"], "domain": "global", "reason": "pageTokenExpired"}
+        ]
+        assert "location" not in e["errors"][0]
+        # the file is never looked up: the refusal is ahead of it, as on a non-empty token
+        missing = path.format(doc="nosuchfile000").replace("{doc}", "nosuchfile000")
+        assert client.get(missing, headers=admin_h, params={"pageToken": ""}).status_code == 403
+    else:
+        assert empty.status_code == 200 and empty.json() == first.json()
 
 
 @pytest.mark.parametrize("path", ["/drive/v3/files/{doc}/permissions", "/drive/v3/drives"])
@@ -1134,6 +1150,7 @@ def test_drive_a_declared_boolean_takes_the_protobuf_spellings_and_another_is_ig
         ("/drive/v3/files/{id}", "acknowledgeAbuse=NOPE"),
         ("/drive/v3/files/{id}/permissions", "supportsAllDrives=NOPE"),
         ("/drive/v3/files/{id}/permissions", "pageSize=0"),
+        ("/drive/v3/files/{id}/permissions", "pageToken=bad"),
         ("/sheets/v4/spreadsheets/{id}/values/Sheet1!A1", "majorDimension=NOPE"),
         ("/sheets/v4/spreadsheets/{id}/values:batchGet", "valueRenderOption=NOPE"),
         ("/sheets/v4/spreadsheets/{id}", "includeGridData=NOPE"),
@@ -1915,6 +1932,8 @@ REPEATED = [
     ("GET", _FILES, {}, "pageSize", "1", "3", "first", _ids),
     ("GET", _FILES, {"pageSize": "1"}, "pageToken", "{token}", "BOGUS", "first", _ids),
     ("GET", _FILES, {"pageSize": "1"}, "pageToken", "", "{token}", "first", _ids),
+    ("GET", _FILES + "/{sid}/permissions", {}, "pageToken", "", "bad", "first", _keys),
+    ("GET", "/drive/v3/drives", {}, "pageToken", "", "bad", "first", _keys),
     ("GET", _FILES, {"pageSize": "3"}, "orderBy", "name", "name desc", "first", _names),
     ("GET", _FILES, {"pageSize": "3"}, "orderBy", "name", "bogus", "first", _names),
     (

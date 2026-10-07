@@ -301,7 +301,9 @@ is looked up. On Drive's `files.list`, one `pageSize` outside 1-1000 is refused 
 sentence (1-100 on `permissions.list` and `drives.list`), while a repeated one is read from the
 first and never range-checked; a `pageToken` it did not issue is 400 `Invalid Value` on all three
 listings, where on `permissions.list` and `drives.list` the token comes ahead of the
-`useDomainAdminAccess` refusal; and the refusals come in the order `pageSize`, `orderBy`, `q`,
+`useDomainAdminAccess` refusal and an empty one is 403 `pageTokenExpired` on `permissions.list`
+alone, `drives.list` and `files.list` both answering their first page to it; and the refusals come
+in the order `pageSize`, `orderBy`, `q`,
 `pageToken`, `fields`. A blank `fields` on
 `files.list` or `files.get` answers `{}`. `files.export` refuses a format the file's type does not
 export to, the empty `mimeType=` among them, with `The requested conversion is not supported.`,

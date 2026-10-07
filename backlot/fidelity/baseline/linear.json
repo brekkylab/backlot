@@ -3,7 +3,7 @@
   "endpoints": [
     "https://api.linear.app/graphql"
   ],
-  "measured": "2026-10-05",
+  "measured": "2026-10-07",
   "acknowledged": [
     {
       "kind": "missing_field",
@@ -477,6 +477,13 @@
     {
       "kind": "missing_field",
       "severity": "gap",
+      "path": "Document.parentDocument",
+      "detail": "vendor serves parentDocument: Document; Backlot does not",
+      "note": "Linear's own description marks it internal: \"[Internal] The parent document. Null if the document is not a sub-document.\" It joins the family whose gap is recorded on `Query.document`."
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
       "path": "Document.project",
       "detail": "vendor serves project: Project; Backlot does not"
     },
@@ -497,6 +504,13 @@
       "severity": "gap",
       "path": "Document.sortOrder",
       "detail": "vendor serves sortOrder: Float!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Document.subDocumentSortOrder",
+      "detail": "vendor serves subDocumentSortOrder: Float; Backlot does not",
+      "note": "Linear's own description marks it internal: \"[Internal] The sort order of the sub-document among its siblings. Null if the document is not a sub-document.\" It joins the family whose gap is recorded on `Query.document`."
     },
     {
       "kind": "missing_field",
@@ -3078,7 +3092,8 @@
       "kind": "missing_field",
       "severity": "gap",
       "path": "Query.document",
-      "detail": "vendor serves document: Document!; Backlot does not"
+      "detail": "vendor serves document: Document!; Backlot does not",
+      "note": "No corpus states a document. Linear's own description of `Document`: \"A rich-text document that lives within a project, initiative, team, issue, release, or cycle.\" A Linear record here is an issue with its team, its comments and the people on it, and nothing in it is a document, so `Document` is one of the id-only stubs at the top of `backlot/graphql/linear.graphql`, and this root, `documents` and the `Document.*` entries here, its fields beyond `id`, are gaps. The one field in this schema that answers a `Document`, `DocumentContent.document`, is never reached: `Comment.documentContent` and `Project.documentContent` resolve to null and `Release.releaseNotes` is an empty list. Measured against api.linear.app on 2026-10-07: none of the vendor's `Document` fields is deprecated, and the workspace measured has no document, `documents(first: 50, includeArchived: true)` answering an empty list."
     },
     {
       "kind": "missing_field",
@@ -3465,14 +3480,21 @@
       "severity": "gap",
       "path": "Query.originInstallUrl",
       "detail": "vendor serves originInstallUrl: OriginInstallUrlPayload!; Backlot does not",
-      "note": "Linear's own description marks it internal: \"[Internal] Builds the URL that starts installing Linear's Origin app into a codebase.\" It joins the family whose gap is recorded on `Query.originInstallation`. Measured against api.linear.app on 2026-10-05: it takes no argument and answers `OriginInstallUrlPayload!`, an object of one field, `installUrl: String!` (\"The Origin URL to send the user to in order to install Linear's app.\"). Asked once, it answered a `https://cursor.com/codebase/apps/install` URL whose query carries `client_id`, `scope`, `redirect_uri`, `state`, `summary` and `include_granted_scopes`. This schema does not declare `OriginInstallUrlPayload`."
+      "note": "Linear's own description marks it internal: \"[Internal] Builds the URL that starts installing Linear's Origin app into a codebase, or reinstalling it to grant new scopes.\" It joins the family whose gap is recorded on `Query.originInstallation`. Measured against api.linear.app on 2026-10-07: it takes no argument and answers `OriginInstallUrlPayload!`, an object of one field, `installUrl: String!` (\"The Origin URL to send the user to in order to install Linear's app.\"). Asked once, it answered a `https://cursor.com/codebase/apps/install` URL whose query carries `client_id`, `scope`, `redirect_uri`, `state`, `summary` and `include_granted_scopes`. This schema does not declare `OriginInstallUrlPayload`."
     },
     {
       "kind": "missing_field",
       "severity": "gap",
       "path": "Query.originInstallation",
       "detail": "vendor serves originInstallation: OriginInstallationDetails!; Backlot does not",
-      "note": "No corpus states an Origin installation. Linear's own description marks the root internal: \"[Internal] Describes an Origin installation that started on Origin, for its installer to confirm before connecting.\" What it describes is the Origin side of an install: the Origin owner Linear's app was installed on, which of that owner's repositories it covers, and who installed it. A Linear record here is an issue with its team, its comments and the people on it, and nothing in it says the app was installed anywhere, so both `origin*` roots on `Query` are a gap, this one and `originInstallUrl`. Measured against api.linear.app on 2026-10-05: it takes one argument, `installationId: String!` (\"The Origin installation id from the install redirect.\"), and answers `OriginInstallationDetails!`, whose six fields are `ownerSlug`, `ownerType` (\"Whether the Origin owner is a `team` or a `user`.\"), `repositorySelection` (\"Whether the installation covers `all` repositories of the owner or only `selected` ones.\"), `installedByEmail`, `installedByName` and `installedByMatchesUser`. Asked for three ids no installation carries (`not-a-real-installation`, `12345678` and the nil UUID), it answered each with a 200 whose body is `data: null` and an `errors` member, `Internal server error` with `INTERNAL_SERVER_ERROR` and `userError: false`. This schema does not declare `OriginInstallationDetails`. The same introspection lists three Origin mutations, `integrationOriginConnect`, `integrationOriginConnectInstallation` and `originInstallationCancel`, which this comparison does not read because Backlot declares no `Mutation` type."
+      "note": "No corpus states an Origin installation. Linear's own description marks the root internal: \"[Internal] Describes an Origin installation that started on Origin, for its installer to confirm before connecting.\" What it describes is the Origin side of an install: the Origin owner Linear's app was installed on, which of that owner's repositories it covers, and whether the current workspace has connected it. A Linear record here is an issue with its team, its comments and the people on it, and nothing in it says the app was installed anywhere, so the three `origin*` roots on `Query` are a gap: this one, `originInstallUrl` and `originPendingInstallations`. Measured against api.linear.app on 2026-10-07: it takes one argument, `installationId: String!` (\"The Origin installation id from the install redirect.\"), and answers `OriginInstallationDetails!`, whose five fields are `installationId`, `ownerSlug`, `ownerType` (\"Whether the Origin owner is a `team` or a `user`.\"), `repositorySelection` (\"Whether the installation covers `all` repositories of the owner or only `selected` ones.\") and `connectedToWorkspace` (\"Whether the installation is already connected to the current workspace, as after a reinstall that updated it.\"). Asked for three ids no installation carries (`not-a-real-installation`, `12345678` and the nil UUID), it answered each with a 200 whose body is `data: null` and an `errors` member, `Internal server error` with `INTERNAL_SERVER_ERROR` and `userError: false`. This schema does not declare `OriginInstallationDetails`. The same introspection lists three Origin mutations, `integrationOriginConnect`, `integrationOriginConnectInstallation` and `originInstallationCancel`, which this comparison does not read because Backlot declares no `Mutation` type."
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.originPendingInstallations",
+      "detail": "vendor serves originPendingInstallations: [OriginInstallationDetails!]!; Backlot does not",
+      "note": "Linear's own description marks it internal: \"[Internal] Lists the Origin installations the current user started on Origin that no workspace has connected yet, matched by the user's email.\" It joins the family whose gap is recorded on `Query.originInstallation`, and each item is the `OriginInstallationDetails` that root answers. Measured against api.linear.app on 2026-10-07: it takes no argument and answered `[]` for the user the API key belongs to, so a constant empty list would match that answer and state nothing."
     },
     {
       "kind": "missing_field",
@@ -3576,6 +3598,13 @@
       "severity": "gap",
       "path": "Query.pushSubscriptionTest",
       "detail": "vendor serves pushSubscriptionTest: PushSubscriptionTestPayload!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.quotas",
+      "detail": "vendor serves quotas: OrganizationQuotaConnection!; Backlot does not",
+      "note": "Linear's own description: \"Public resource quotas for the authenticated workspace. These are not subscription limits.\" No corpus states a workspace's limits: a Linear record here is an issue with its team, its comments and the people on it, and `Query.organization` is a gap in this file as well. Measured against api.linear.app on 2026-10-07: it takes `filter: OrganizationQuotaFilter` (\"Filter public workspace quotas by key.\", over `key`, `and` and `or`) and `before`, `after`, `first` and `last`, and answers an `OrganizationQuotaConnection!` of `OrganizationQuota` (\"A public resource quota for the current workspace.\"), whose five fields are `id`, `key` (\"Stable quota key.\"), `limit: Float!` (\"Effective quota limit, including workspace overrides.\"), `name` and `description`. The workspace measured answered 27 quotas on one page, each with an `id` equal to its `key`, such as `max-teams` at 1000 and `max-issues-per-team` at 60000. Since each `limit` includes the workspace's own overrides, serving the measured values would present one workspace's limits as every corpus's. This schema declares none of `OrganizationQuotaConnection`, `OrganizationQuota` or `OrganizationQuotaFilter`."
     },
     {
       "kind": "missing_field",

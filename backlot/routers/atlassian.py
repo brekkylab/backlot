@@ -2873,6 +2873,11 @@ def vendor_headers(request: Request, status_code: int) -> dict[str, str]:
         return dict(_EDGE) if errors_atlassian.cdn_forbids(request.method) else {}
     headers = {**request_ids(request), **_EDGE}
     if errors_atlassian.is_confluence(path):
+        # Confluence Cloud /wiki/rest/api/search, 2026-10-04: GET/HEAD pages and refusals
+        # carry this pair; /content does not. Gateway-refused methods returned above.
+        if request.method in ("GET", "HEAD") and _vendor_path(path) == "/wiki/rest/api/search":
+            headers["cache-control"] = "no-cache, no-store, must-revalidate"
+            headers["expires"] = "Thu, 01 Jan 1970 00:00:00 GMT"
         headers["x-confluence-request-time"] = str(int(time.time() * 1000))
         # the notice rides on what a v1 service answers: a route's own answer, not one given
         # around it

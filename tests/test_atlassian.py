@@ -4046,3 +4046,34 @@ def test_jira_issue_ids_that_hash_alike_each_read_back_their_own_issue(tmp_path,
         assert parent["subtasks"][0]["self"].endswith("/issue/" + ids["PAY-2172"])
         child = c.get(path + ids["PAY-2172"], headers=h).json()["fields"]
         assert child["parent"]["id"] == ids["PAY-1425"]
+
+
+@pytest.mark.parametrize("method", ["GET", "HEAD"])
+@pytest.mark.parametrize(
+    "query,anonymous,status",
+    [
+        ("cql=type%3Dpage&limit=1", False, 200),
+        ("cql=type%3Dpage&limit=-1", False, 400),
+        ("cql=type%3Dpage&limit=abc", False, 404),
+        ("cql=type%3Dpage&start=abc", False, 404),
+        ("cql=type%3Dpage&limit=2&cursor=abc", False, 400),
+        ("cql=type%3Dpage&limit=1", True, 403),
+    ],
+)
+def test_confluence_search_cache_headers_cover_success_and_refusals(
+    client, admin_h, method, query, anonymous, status
+):
+    """Confluence Cloud search, measured 2026-10-04: the pair rides on pages and refusals."""
+    response = client.request(
+        method,
+        f"/atlassian/wiki/rest/api/search?{query}",
+        headers={} if anonymous else admin_h,
+    )
+    assert response.status_code == status
+    assert response.headers["cache-control"] == "no-cache, no-store, must-revalidate"
+    assert response.headers["expires"] == "Thu, 01 Jan 1970 00:00:00 GMT"
+    if method == "HEAD":
+        assert response.content == b""
+    control = client.request(method, "/atlassian/wiki/rest/api/content?limit=1", headers=admin_h)
+    assert control.status_code == 200
+    assert "cache-control" not in control.headers and "expires" not in control.headers

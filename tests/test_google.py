@@ -2959,39 +2959,41 @@ def test_a_callback_on_a_download_turns_every_later_error_into_the_same_503(clie
 
 
 def test_the_refusal_order_on_a_download_is_system_bearer_then_callback(client, admin_h):
-    """Measured 2026-10-07: `$.xgafv` 400 first, then a `Bearer` that does not resolve 401, then the
-    callback's 503 -- so a bad token never reaches its 401 when a callback is present, and a value
-    that is not `Bearer <token>` is not a credential at that layer, so `Basic` reaches the
-    callback."""
-    url, params = _download_requests(client, admin_h)["media"]
-    bad = {**params, "callback": "a b"}
-    xgafv = client.get(url, params={**bad, "$.xgafv": "9"}, headers=BAD_TOKEN)
-    assert xgafv.status_code == 400 and XGAFV_REFUSAL.format("9") in xgafv.text
-    # whatever `auth.bearer_token` reads as a token is that 401 ahead of the callback, in any case,
-    # with the callback and without it alike
-    for scheme in ("Bearer", "bearer", "BEARER", "token"):
-        headers = {"Authorization": f"{scheme} not-a-real-token"}
-        for callback in (None, "a b"):
-            refused = client.get(
-                url,
-                params=params if callback is None else {**params, "callback": callback},
-                headers=headers,
-            )
-            assert refused.status_code == 401, (scheme, callback)
-            assert refused.json()["error"]["status"] == "UNAUTHENTICATED", (scheme, callback)
-    # a value that is not one is not a credential at that layer: the callback's 503 beside it, and
-    # the 401 of `_require` without one
-    for value in ("Basic YWJjOmRlZg==", "bearer", "nope"):
-        headers = {"Authorization": value}
-        assert client.get(url, params=bad, headers=headers).status_code == 503, value
-        assert client.get(url, params=params, headers=headers).status_code == 401, value
+    """On both downloads, `$.xgafv` 400 first, then a `Bearer` token that does not resolve 401, then
+    the callback's 503 -- the order `gerr.missing_api_key` records. Only the header
+    `_sends_a_bearer_token` accepts is a credential at that layer (`_require_download_bearer`):
+    every other value below reaches the callback's 503 beside `callback=a b`, and each of them is
+    a 401 without one."""
+    requests = _download_requests(client, admin_h)
+    for kind in ("media", "export"):
+        url, params = requests[kind]
+        bad = {**params, "callback": "a b"}
+        xgafv = client.get(url, params={**bad, "$.xgafv": "9"}, headers=BAD_TOKEN)
+        assert xgafv.status_code == 400 and XGAFV_REFUSAL.format("9") in xgafv.text, kind
+        for value, beside_callback in (
+            ("Bearer not-a-real-token", 401),
+            ("bearer not-a-real-token", 503),
+            ("BEARER not-a-real-token", 503),
+            ("token not-a-real-token", 503),
+            ("Bearer", 503),
+            ("bearer", 503),
+            ("nope", 503),
+            ("Basic YWJjOmRlZg==", 503),
+        ):
+            headers = {"Authorization": value}
+            answer = client.get(url, params=bad, headers=headers)
+            assert answer.status_code == beside_callback, (kind, value)
+            if beside_callback == 503:
+                assert answer.text == DOWNLOAD_503_BODY, (kind, value)
+            else:
+                assert answer.json()["error"]["status"] == "UNAUTHENTICATED", (kind, value)
+            assert client.get(url, params=params, headers=headers).status_code == 401, (kind, value)
 
 
 def test_a_download_is_the_route_not_the_path_shape(client, admin_h):
-    """Measured 2026-10-07: `files.export` is a download only with no `alt`, an empty one or
-    `alt=media`. An export asking for `alt=json` is an ordinary read -- the unregistered-caller 403
-    without a credential, the wrapped `callback` 400 with one -- and a file whose id is literally
-    `export` is a `files.get`, answering the metadata read."""
+    """Measured 2026-10-07: an export asking for `alt=json` is not a download but an ordinary read
+    -- the unregistered-caller 403 without a credential, the wrapped `callback` 400 with one -- and
+    a file whose id is literally `export` is a `files.get`, answering the metadata read."""
     doc = _drive_find(client, admin_h, "Brand")["id"]
     anonymous = client.get(f"/drive/v3/files/{doc}/export", params={"mimeType": "x", "alt": "json"})
     assert anonymous.status_code == 403

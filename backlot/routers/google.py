@@ -262,10 +262,11 @@ def _require(request: Request, *, download: bool = False) -> Caller:
     GET (they accept API keys, so an anonymous GET is a caller with no established identity) and
     401 on the OAuth-only Gmail/Docs/Slides and on a POST to any family.
 
-    ``download`` is that third answer for a byte-stream read: measured 2026-10-04 on `files.export`
-    and 2026-10-05 on `files.get?alt=media`, a missing credential there names the missing API key
-    (:func:`gerr.missing_api_key`) instead of the anonymous GET's unregistered caller, and real puts
-    it AFTER the download's own parameters — which is why the handlers resolve a download late."""
+    ``download`` asks for a byte-stream read's answer instead: measured 2026-10-04 on
+    `files.export` and 2026-10-05 on `files.get?alt=media`, a missing credential there names the
+    missing API key (:func:`gerr.missing_api_key`) instead of the anonymous GET's unregistered
+    caller, and real puts it AFTER the download's own parameters — which is why the handlers
+    resolve a download late."""
     caller = auth.resolve_bearer(request)
     if caller is None:
         if not request.headers.get("authorization"):
@@ -276,18 +277,26 @@ def _require(request: Request, *, download: bool = False) -> Caller:
     return caller
 
 
-def _require_download_bearer(request: Request) -> None:
-    """The 401 a Drive download answers ahead of its own refusals, for a credential that IS a
-    `Bearer` token -- read by ``auth.bearer_token``, so any case and either scheme -- and does not
-    resolve.
+def _sends_a_bearer_token(request: Request) -> bool:
+    """Whether ``Authorization`` is `Bearer`, spelt exactly so, and a token: the one header a Drive
+    download treats as a credential ahead of its own refusals, on its own
+    (`_require_download_bearer`) and as a batch part (`_drive_batch_redirect`). Narrower than
+    ``auth.bearer_token``, which `_require` reads a credential with and which also takes `bearer`,
+    `BEARER` and `token`."""
+    scheme, _, token = (request.headers.get("authorization") or "").partition(" ")
+    return scheme == "Bearer" and bool(token.strip())
 
-    Measured 2026-10-07 on `files.get?alt=media` and `files.export`: `Bearer nope` beside
-    `callback=a b` answers the 401, where `Basic YWJjOmRlZg==` answers the callback's 503. So a
-    value ``auth.bearer_token`` does not read as a token is not a credential at this layer and is
-    left to :func:`gerr.refuse_download` -- the boundary `_drive_batch_redirect` draws, except that
-    this one is also the parser `_require` reads a credential with, so the 401 does not turn on the
-    spelling of the scheme."""
-    if auth.bearer_token(request) is not None and auth.resolve_bearer(request) is None:
+
+def _require_download_bearer(request: Request) -> None:
+    """The 401 a Drive download answers ahead of its own refusals, for a `Bearer` token
+    (`_sends_a_bearer_token`) that does not resolve.
+
+    Measured 2026-10-07 and 2026-10-08 on `files.get?alt=media` and `files.export` beside
+    `callback=a b`: `Bearer nope` answers the 401, where `bearer nope`, `BEARER nope`,
+    `token nope`, a bare `Bearer`, `bearer`, `nope` and `Basic YWJjOmRlZg==` each answer the
+    callback's 503. Every other value is left to :func:`gerr.refuse_download`, and without a
+    `callback` is `_require`'s to answer."""
+    if _sends_a_bearer_token(request) and auth.resolve_bearer(request) is None:
         raise gerr.bad_token()
 
 
@@ -4505,8 +4514,7 @@ def _drive_batch_redirect(request: Request) -> None:
     `Foo` does not, and a name the batch repeats is carried every time. The path and the query are
     read from the request's raw bytes, not its decoded URL, in which `%23` would start a
     fragment."""
-    scheme, _, token = (request.headers.get("authorization") or "").partition(" ")
-    if scheme == "Bearer" and token.strip():
+    if _sends_a_bearer_token(request):
         _require(request)
     outer = _BATCH_OUTER.get()
     path = _batch_escapes(request.scope["raw_path"].decode("latin-1"), "-._~")

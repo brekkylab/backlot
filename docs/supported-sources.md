@@ -273,20 +273,20 @@ format is matched without regard to case and an empty `alt=` names none, so `alt
 and `alt=` each ask for the JSON the default serves rather than for a format of their own. An empty
 `callback=` is no callback, and a POST ignores the parameter outright, as real does, since JSONP is
 what a `<script>` element fetches and a `<script>` element issues a GET. A Drive download — an
-export with no `alt`, an empty one or `alt=media`, or a `files.get` with `alt=media` — is not JSONP
-at all: a `callback` there is never wrapped, is ignored when the download succeeds, and turns every
-other answer into 503 `Backend Error` under `text/javascript; charset=UTF-8` with a body of real's
-own (the `errors[]` entry inline and no trailing newline), while a name that cannot be called is
-that 503 even where the download would have succeeded. A missing credential on one names the
-missing API key rather than the unregistered caller, and only after the download's `mimeType` and
-typed-parameter checks, so the order a byte-stream read answers in is `$.xgafv`, a `Bearer` that
-does not resolve, the `callback`, the parameters, then that 403. Inside a batch a download is a 302
-instead (the `/batch` row above). A SUCCESS body is wrapped and
-indented on the `/sheets/v4` routes only; the other four families honour `callback` on their errors
-and not yet on their 200s. Measured against the live Sheets, Docs, Drive, Gmail and Slides APIs on
-2026-09-15, 2026-09-16 and 2026-09-17: the wrap, the indent and the charset first, the suppression
-across the four non-Sheets families next, and the escape set and the case-insensitive `alt` last;
-the download refusals on 2026-10-04, 2026-10-05 and 2026-10-07.
+export with no `alt` or with `alt=media`, or a `files.get` with `alt=media` — is not JSONP at all: a
+`callback` there is never wrapped, is ignored when the download succeeds, and turns every other
+answer into 503 `Backend Error` under `text/javascript; charset=UTF-8` with a body of real's own
+(the `errors[]` entry inline and no trailing newline), while a name that cannot be called is that
+503 even where the download would have succeeded. A missing credential on one names the missing API
+key rather than the unregistered caller, and only after the download's `mimeType` and
+typed-parameter checks, so the order a byte-stream read answers in is `$.xgafv`, a `Bearer` token
+that does not resolve (that scheme, spelt exactly so), the `callback`, the parameters, then that
+403. Inside a batch a download is a 302 instead (the `/batch` row above). A SUCCESS body is wrapped
+and indented on the `/sheets/v4` routes only; the other four families honour `callback` on their
+errors and not yet on their 200s. Measured against the live Sheets, Docs, Drive, Gmail and Slides
+APIs on 2026-09-15, 2026-09-16 and 2026-09-17: the wrap, the indent and the charset first, the
+suppression across the four non-Sheets families next, and the escape set and the case-insensitive
+`alt` last; the download refusals on 2026-10-04, 2026-10-05, 2026-10-07 and 2026-10-08.
 
 **A repeated query parameter is read from the end real reads it from**, which is the first for some
 parameters and the last for others. The first repeat decides `fields`, `q`, `pageSize`, `pageToken`

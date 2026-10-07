@@ -462,10 +462,8 @@ def no_credentials(path: str, method: str) -> GoogleError:
     all five families: a GET on Drive or Sheets is the 403 unregistered caller, and a POST on any of
     the five — Sheets' two data-filter reads included — is the 401 missing credential.
 
-    A byte-stream read is the third answer, and the route asks for it by name: measured 2026-10-04 on
-    `files.export` and 2026-10-05 on `files.get?alt=media`, real names the missing API key
-    (:func:`missing_api_key`) where the same request without the download answers this one. It is
-    answered AFTER the download's own parameter checks -- see :func:`missing_api_key`.
+    A byte-stream read with no credential is a third answer, :func:`missing_api_key`, which the
+    route asks for by name.
     """
     if method == "GET" and (family(path) == DRIVE or path.startswith("/sheets/v4")):
         return unregistered_caller()
@@ -506,9 +504,7 @@ def missing_api_key() -> GoogleError:
     Real answers it last of the refusals a download makes, which is why the route raises it after
     the download's parameters rather than at the top. Measured 2026-10-07, the order a byte-stream
     read answers in is: `$.xgafv` 400, a `Bearer` that does not resolve 401, `callback` 503, a
-    mistyped parameter or an absent `mimeType` 400, this 403, then the lookup. The two 400s are the
-    reason a `Basic` credential with no `callback` answers the 401 of ``routers.google._require``
-    rather than this."""
+    mistyped parameter or an absent `mimeType` 400, this 403, then the lookup."""
     return GoogleError(403, MISSING_API_KEY_MESSAGE, reason="forbidden")
 
 
@@ -713,8 +709,8 @@ def jsonp_callback(request: Request) -> str | None:
     element fetches, and a `<script>` element issues a GET. Measured on Sheets, a `callback` on
     `values:batchGetByDataFilter` and on `spreadsheets:getByDataFilter` is ignored outright -- no
     wrap on a success, none on an error, and a name that a GET would be refused for is not even
-    looked at -- where the same POST honours `$.xgafv` and `prettyPrint`. So GET is the whole of
-    where this parameter applies.
+    looked at -- where the same POST honours `$.xgafv` and `prettyPrint`. So GET is the only
+    method this parameter applies to.
 
     Two values that look like a callback are not one either. An empty `callback=` is absent:
     measured, it answers the plain body at the real status, success and error alike. So is any

@@ -23,9 +23,9 @@ import sys
 import urllib.request
 
 API = "https://api.github.com/graphql"
-COLUMNS = 12
-SIZE = 64
-GAP = 6
+COLUMNS = 18
+SIZE = 40
+GAP = 4
 
 QUERY = """
 query($owner: String!, $name: String!, $branch: String!, $after: String) {

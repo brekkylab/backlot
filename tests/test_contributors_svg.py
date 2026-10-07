@@ -56,13 +56,13 @@ def test_tally(commits, logins):
 @pytest.mark.parametrize(
     ("count", "width", "height", "last"),
     [
-        (1, 64, 64, ("0", "0")),
-        (12, 834, 64, ("770", "0")),
-        (13, 834, 134, ("0", "70")),
-        (25, 834, 204, ("0", "140")),
+        (1, 40, 40, ("0", "0")),
+        (18, 788, 40, ("748", "0")),
+        (19, 788, 84, ("0", "44")),
+        (37, 788, 128, ("0", "88")),
     ],
 )
-def test_render_lays_the_faces_out_twelve_to_a_row(count, width, height, last):
+def test_render_lays_the_faces_out_eighteen_to_a_row(count, width, height, last):
     faces = [(f"user{i}", f"data:image/png;base64,{i}") for i in range(count)]
     svg = wall.render(faces)
     assert re.search(rf'width="{width}" height="{height}" viewBox="0 0 {width} {height}"', svg)

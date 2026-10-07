@@ -146,6 +146,8 @@ Every imported identity gets deterministic credentials, listed at `GET /_meta/us
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Fidelity to the real APIs is the point, so a divergence is a bug — measure against the real service, and bring a test that fails without your fix.
 
+Backlot exists thanks to all the people who contribute.
+
 <a href="https://github.com/brekkylab/backlot/graphs/contributors"><img alt="Avatars of Backlot's contributors" src="https://raw.githubusercontent.com/brekkylab/backlot/contributors/contributors.svg"></a>
 
 ## License

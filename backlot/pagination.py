@@ -429,6 +429,7 @@ def confluence_page_links(
     after: str = "",
     cursor: str | None = None,
     sent_cursor: str | None = None,
+    reached: int | None = None,
 ) -> dict:
     """The `next` and `prev` every paged Confluence listing answers, literal for literal.
 
@@ -438,11 +439,14 @@ def confluence_page_links(
 
     - each link carries its own marker, `next=true` or `prev=true`, which nothing else names;
     - `next` is answered whenever the rows served have not reached `total`, not "the page came back
-      full", so a three-space site answers `?limit=3` no `next` and `?limit=2` a `start=2`. An
-      empty page advances nothing, so `?limit=0` answers a link to the page it is on rather than
-      withholding one, where a `start` past `total` answers none. The rows are counted from `start`
-      on every listing but the CQL search, which counts them from its cursor
-      (:func:`backlot.routers.atlassian._cql_cursor`);
+      full", so a three-space site answers `?limit=3` no `next` and `?limit=2` a `start=2`. On
+      every listing but the CQL search the rows are counted from `start`: an empty page advances
+      nothing, so `?limit=0` answers a `next` linking to the page it is on, and a `start` past
+      `total` answers none. The CQL search's page is not positioned by `start`
+      (:func:`backlot.routers.atlassian._cql_position`); it passes ``reached``, the number of
+      matches up to the end of its page, a page that served none counting as reaching one match on
+      (measured 2026-10-04), and its `next` carries the cursor
+      :func:`backlot.routers.atlassian._cql_cursor` picks;
     - `prev` walks back by `limit` clamped at zero, and its own `limit` is the number of rows
       actually skipped, so `?start=1` at the default 25 answers `limit=1&start=0`, and
       `?limit=5&start=2` answers `limit=2&start=0` on all six (measured 2026-09-23);
@@ -462,7 +466,7 @@ def confluence_page_links(
     lead = (f"cursor={cursor}&" if cursor else "") + before
     tail = f"&{after}" if after else ""
     nxt = start + size
-    if nxt < total:
+    if (nxt if reached is None else reached) < total:
         links["next"] = f"{path}?next=true&{lead}limit={limit}&start={nxt}{tail}"
     if sent_cursor:
         links["prev"] = (

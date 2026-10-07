@@ -1,4 +1,4 @@
-"""`scripts/pr_gate.py`'s two rules, without the network.
+"""`scripts/pr_gate.py`'s rules, without the network.
 
 The titles are taken, or edited, from ones pull requests here were opened with.
 """
@@ -137,3 +137,79 @@ FOUR_IN_A_MINUTE = [
 )
 def test_kept_if_over(number, open_prs, merged, kept):
     assert gate.kept_if_over(number, open_prs, merged) == kept
+
+
+# Two pull requests that close one issue, the second opened two hours after the first.
+FIRST = ("2026-10-05T17:29:30Z", 492, [479])
+SECOND = ("2026-10-05T19:33:30Z", 497, [479])
+
+
+@pytest.mark.parametrize(
+    ("number", "open_prs", "held"),
+    [
+        (492, [FIRST, SECOND], {}),
+        (497, [FIRST, SECOND], {479: 492}),
+        # Listed newest first, the oldest still holds.
+        (497, [SECOND, FIRST], {479: 492}),
+        # Opened in the same second, the lower number holds.
+        (434, [(FOUR_IN_A_MINUTE[0][0], 434, [9]), (FOUR_IN_A_MINUTE[0][0], 433, [9])], {9: 433}),
+        (500, [FIRST, ("2026-10-06T00:00:00Z", 500, [480, 479])], {479: 492}),
+        (
+            500,
+            [
+                FIRST,
+                ("2026-10-05T18:00:00Z", 498, [480]),
+                ("2026-10-06T00:00:00Z", 500, [479, 480]),
+            ],
+            {479: 492, 480: 498},
+        ),
+        (500, [FIRST, ("2026-10-06T00:00:00Z", 500, [])], {}),
+    ],
+)
+def test_held_elsewhere(number, open_prs, held):
+    assert gate.held_elsewhere(number, open_prs) == held
+
+
+def _pr(created_at: str, number: int, issues: list[int], login: str) -> dict:
+    """A pull request as the API and the event list it, closing ``issues``."""
+    return {
+        "number": number,
+        "created_at": created_at,
+        "user": {"login": login},
+        "state": "open",
+        "author_association": "CONTRIBUTOR",
+        "title": "hubspot: NEQ, NOT_IN and NOT_CONTAINS_TOKEN include a record without the property",
+        "body": FILLED.replace("Closes #412.", " ".join(f"Closes #{i}." for i in issues)),
+    }
+
+
+@pytest.mark.parametrize(
+    ("number", "action", "sender", "closed"),
+    [
+        (492, "opened", "first-author", False),
+        (497, "opened", "second-author", True),
+        (497, "reopened", "second-author", True),
+        # A maintainer's reopening is left alone.
+        (497, "reopened", "a-maintainer", False),
+    ],
+)
+def test_a_pull_request_for_a_held_issue_is_closed(
+    monkeypatch, capsys, number, action, sender, closed
+):
+    """A dry run, with the open pull requests and the API's answers served from here."""
+    listed = [_pr(*FIRST, "first-author"), _pr(*SECOND, "second-author")]
+    monkeypatch.setattr(gate, "_pages", lambda path: listed if "/pulls?" in path else [])
+    monkeypatch.setattr(
+        gate,
+        "_api",
+        lambda method, path, payload=None: (
+            {"total_count": 0}
+            if path.startswith("/search/")
+            else {"title": "hubspot: NEQ …", "labels": [{"name": "fidelity"}]}
+        ),
+    )
+    pr = next(p for p in listed if p["number"] == number)
+    gate.run("brekkylab/backlot", action, pr, sender, write=False)
+    out = capsys.readouterr().out
+    assert (f"PATCH /repos/brekkylab/backlot/pulls/{number}" in out) is closed
+    assert ("#492, opened before it, already closes #479," in out) is closed

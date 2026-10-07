@@ -10,8 +10,10 @@ envelope is NOT uniform — three families differ in which optional members they
 
     family                  errors[]           status               no Authorization header, GET
     ------------------------|------------------|---------------------|-----------------------------
-    Drive v3                | always           | auth failures and   | 403 PERMISSION_DENIED
-                            |                  | typed values only   |
+    Drive v3                | always           | auth failures,      | 403 PERMISSION_DENIED
+                            |                  | typed values,       |
+                            |                  | `$.xgafv` and the   |
+                            |                  | batch redirect only |
     Gmail v1                | unless $.xgafv=2 | always              | 401 UNAUTHENTICATED
     Docs v1 / Slides v1     | $.xgafv=1        | always              | 401 UNAUTHENTICATED
     Sheets v4               | $.xgafv=1        | always              | 403 PERMISSION_DENIED
@@ -41,14 +43,16 @@ also where the indentation and the charset every Google error carries are decide
 
 Inside `errors[]` the entry follows the constructor that raised it, and each one carries its own
 measurement. Measured on Sheets and Docs at `$.xgafv=1`: a typed value the proto layer refuses is
-``reason: invalid`` with NO ``domain`` (:func:`invalid_field_value`); every other measured 400 is
-``badRequest`` under ``global`` (:func:`invalid_argument`, :func:`bad_field_mask`); a 404 is
-``notFound``; a bad token ``authError`` at ``location: Authorization``; an anonymous Sheets GET
-``forbidden``; the missing credential — any anonymous POST, and a GET on the three OAuth-only APIs
-— ``required`` with the short ``Login Required.``. The two editor 400s NOT measured keep whatever
-their constructor already renders — ``Invalid gridRange`` is :func:`invalid_argument`, so
-``badRequest``, but an Office file read as a native document is :func:`failed_precondition`, so
-``failedPrecondition``.
+``reason: invalid`` with NO ``domain`` (:func:`invalid_field_value`), and so are a JSON body member
+the request message does not have and a JSON body that is not an object
+(:func:`invalid_field_values`); a request body that is not JSON is ``parseError``
+(:func:`invalid_json`); every other measured 400 is ``badRequest`` under ``global``
+(:func:`invalid_argument`, :func:`bad_field_mask`); a 404 is ``notFound``; a bad token ``authError``
+at ``location: Authorization``; an anonymous Sheets GET ``forbidden``; the missing credential — any
+anonymous POST, and a GET on the three OAuth-only APIs — ``required`` with the short
+``Login Required.``; and the 500 the data-filter reads answer ``backendError``
+(:func:`internal_error`). The editor 400 NOT measured keeps whatever its constructor renders: an
+Office file read as a native document is :func:`failed_precondition`, so ``failedPrecondition``.
 """
 
 from __future__ import annotations
@@ -60,9 +64,9 @@ from collections.abc import Mapping
 from fastapi import HTTPException, Request, Response
 
 DRIVE, GMAIL, EDITOR = "drive", "gmail", "editor"
-# `status` needs no per-family flag: Drive's parameter failures other than a typed value simply do
-# not have one, while every Gmail and editor error does, so "the error carries a status" is the
-# whole condition.
+# `status` needs no per-family flag: each constructor passes one exactly where the module
+# docstring's table says its family carries one, so "the error carries a status" is the whole
+# condition.
 _PREFIX_FAMILY = (
     ("/drive/v3", DRIVE),
     ("/gmail/v1", GMAIL),
@@ -133,8 +137,9 @@ class GoogleError(HTTPException):
         self.status = status
         self.short = short
         self.details = details
-        # `errors[0].domain`. Every measured entry says `global` except the proto layer's typed-value
-        # refusal, which carries none — so a constructor that renders that one passes ``None``.
+        # `errors[0].domain`. Every measured entry says `global` except the proto layer's refusals
+        # (a typed value, a body member or root the request message cannot take), which carry none —
+        # so a constructor that renders one of those passes ``None``.
         self.domain = domain
 
 
@@ -169,6 +174,17 @@ def page_token_expired() -> GoogleError:
     )
 
 
+def duplicate_sort_keys() -> GoogleError:
+    """Drive's refusal of an ``orderBy`` that names one sort key twice — a 403, not a 400, measured
+    against Drive v3 on 2026-10-03 and 2026-10-04."""
+    return GoogleError(
+        403,
+        "The orderBy parameter cannot contain duplicate sort keys.",
+        reason="orderByContainsDuplicateSortKeys",
+        location="orderBy",
+    )
+
+
 def not_found_file(file_id: str) -> GoogleError:
     """Drive's not-found, which names the id so a batch caller can tell which request failed."""
     return GoogleError(404, f"File not found: {file_id}.", reason="notFound", location="fileId")
@@ -194,32 +210,87 @@ def not_downloadable() -> GoogleError:
     )
 
 
+def supports_all_drives_required() -> GoogleError:
+    """`files.list` asked for shared-drive items without saying it supports shared drives. No
+    `location` and no `status`, measured 2026-10-04."""
+    return GoogleError(
+        403,
+        "The supportsAllDrives parameter was not set to true.",
+        reason="supportsTeamDrivesRequired",
+    )
+
+
+def domain_admin_privilege_required() -> GoogleError:
+    """`drives.list` asked for a domain administrator's access, from a Workspace member who is not
+    one. No `location` and no `status`, measured 2026-10-06."""
+    return GoogleError(
+        403,
+        "The requesting user does not have the administrator privilege required to list or manage "
+        "all shared drives.",
+        reason="noListTeamDrivesAdministratorPrivilege",
+    )
+
+
+def abuse_acknowledgment_not_applicable() -> GoogleError:
+    """`files.get` acknowledged abuse on a read that downloads nothing. Measured 2026-10-04."""
+    return GoogleError(
+        403,
+        "The acknowledgeAbuse parameter is only applicable for download requests.",
+        reason="invalidAbuseAcknowledgment",
+        location="acknowledgeAbuse",
+    )
+
+
+def download_redirect(location: str) -> GoogleError:
+    """A Drive download inside a batch, redirected rather than answered -- see
+    ``routers.google._drive_batch_redirect``. Measured 2026-10-04: a 302 carrying ``Location`` and
+    this error body."""
+    exc = GoogleError(302, "Unknown Error.", reason="backendError", status="UNKNOWN")
+    exc.headers = {"Location": location}
+    return exc
+
+
+def unimplemented() -> GoogleError:
+    """A Sheets read inside a batch. Measured 2026-10-04, its `errors[]` entry, shown at
+    `$.xgafv=1`, is ``notImplemented`` under ``global``."""
+    return GoogleError(
+        501,
+        "Operation is not implemented, or supported, or enabled.",
+        reason="notImplemented",
+        status="UNIMPLEMENTED",
+    )
+
+
 def invalid_argument(message: str) -> GoogleError:
     """The editor APIs' generic 400. Its `errors[]` entry, shown at `$.xgafv=1`, is ``badRequest``
     under ``global`` — measured on an unparseable range, a range past the grid, an unsupported
-    ``alt``, ``dataFilter.filter must be specified.``, ``No sheet with id``, ``Must specify at least
-    one dataFilter.`` and a non-JSON body. A typed value the proto layer refuses is a different
-    entry: :func:`invalid_field_value`."""
+    ``alt``, ``dataFilter.filter must be specified.``, ``No sheet with id``,
+    ``Must specify at least one dataFilter.``, and on 2026-10-04 ``No grid with id`` and
+    ``GridRange indexes must be >= 0``. A typed value the proto layer refuses is a different entry
+    (:func:`invalid_field_value`), and so is :func:`invalid_json`'s."""
     return GoogleError(400, message, reason="badRequest", status="INVALID_ARGUMENT")
 
 
 def invalid_field_value(field: str, message: str) -> GoogleError:
     """The proto layer's refusal of a typed value — ``Invalid value at '<field>' (<type>),
     "<value>"`` for an enum, a bool or an int32. Measured at `$.xgafv=1`, its `errors[]` entry is
-    ``reason: invalid`` and carries no ``domain``, which no other Google error measured does."""
+    ``reason: invalid`` and carries no ``domain``."""
     return invalid_field_values([(field, message)])
 
 
-def invalid_field_values(violations: list[tuple[str, str]]) -> GoogleError:
+def invalid_field_values(violations: list[tuple[str | None, str]]) -> GoogleError:
     """One refusal for every typed value the proto layer could not read, as ``(field, message)``
-    pairs in the order to report them.
+    pairs in the order to report them. A refusal at the root of a JSON body (an unknown top-level
+    name, a body that is not an object) has no field, and its violation carries none, measured
+    2026-10-04.
 
     Measured 2026-09-23 on Sheets `values.get`, `spreadsheets.get` and `:getByDataFilter` and on
     Drive `files.list`, over query parameters and a JSON body alike: each refused value is a
     ``google.rpc.BadRequest`` field violation in `details`, naming the field the way its message
     does and repeating the message as its description, and a request with several is one 400 whose
     message joins theirs with newlines, in the order `details` lists them. Which order that is,
-    is ``routers.google._typed_query``'s."""
+    is the caller's: ``routers.google._typed_query``'s for a query string,
+    :func:`backlot.protojson.read`'s for a body."""
     return GoogleError(
         400,
         "\n".join(message for _, message in violations),
@@ -230,17 +301,40 @@ def invalid_field_values(violations: list[tuple[str, str]]) -> GoogleError:
             {
                 "@type": "type.googleapis.com/google.rpc.BadRequest",
                 "fieldViolations": [
-                    {"field": field, "description": message} for field, message in violations
+                    {"field": field, "description": message} if field else {"description": message}
+                    for field, message in violations
                 ],
             }
         ],
     )
 
 
-def field_violations(exc: GoogleError) -> list[tuple[str, str]]:
+def field_violations(exc: GoogleError) -> list[tuple[str | None, str]]:
     """The ``(field, message)`` pairs an :func:`invalid_field_values` refusal carries, so a caller
     reading several values can gather every refusal into one."""
-    return [(v["field"], v["description"]) for d in exc.details or () for v in d["fieldViolations"]]
+    return [
+        (v.get("field"), v["description"]) for d in exc.details or () for v in d["fieldViolations"]
+    ]
+
+
+def invalid_json(message: str) -> GoogleError:
+    """A request body that is not JSON (``backlot.protojson.read``). Measured 2026-10-04 on the two
+    Sheets data-filter POSTs: ``Invalid JSON payload received.`` and a sentence, no `details`, and
+    at `$.xgafv=1` an `errors[]` entry of ``parseError`` under ``global``."""
+    return GoogleError(
+        400,
+        f"Invalid JSON payload received. {message}",
+        reason="parseError",
+        status="INVALID_ARGUMENT",
+    )
+
+
+def internal_error() -> GoogleError:
+    """Real's 500 on the Sheets data-filter reads, measured 2026-10-04: an enum number the proto
+    does not declare in some fields, and a `ROW`, `COLUMN` or `SHEET` lookup beside a `spreadsheet`
+    location. ``routers.google._sheets_check_lookup`` and ``sheets_values_batch_get_by_data_filter``
+    list which."""
+    return GoogleError(500, "Internal error encountered.", reason="backendError", status="INTERNAL")
 
 
 def unsupported_conversion() -> GoogleError:
@@ -531,7 +625,7 @@ def jsonp_callback(request: Request) -> str | None:
     return first_repeat(query, CALLBACK) or None
 
 
-def validate_system_parameters(request: Request) -> None:
+def validate_system_parameters(request: Request, *, callback: bool = True) -> None:
     """Refuse a `$.xgafv` other than `1` or `2`, or a `callback` that cannot be a JavaScript name,
     on a Google-family path, before the route runs.
 
@@ -541,19 +635,25 @@ def validate_system_parameters(request: Request) -> None:
     because it beats `callback` too -- measured, `callback=a b&$.xgafv=9` answers the `$.xgafv`
     sentence, wrapped through the very name the other check would have refused. The batch endpoint
     is not a family path and is left alone.
+
+    ``callback=False`` leaves `callback` alone: it is not checked, and no refusal, the `$.xgafv` one
+    included, is wrapped through it. The caller decides when, since which requests real exempts is a
+    question about the route.
     """
     if family(request.url.path) is None:
         return
-    # That this ran at all is what :func:`rendered` needs to know, and only this call can say so:
-    # a ROUTER dependency runs once a route has matched, so an unrouted family path reaches the
-    # renderer with a `callback` nothing has looked at.
-    request.state.google_system_parameters_checked = True
+    # Whether `callback` was checked is what :func:`rendered` needs to know, and only this call can
+    # say so: a ROUTER dependency runs once a route has matched, so an unrouted family path reaches
+    # the renderer with a `callback` nothing has looked at.
+    request.state.google_system_parameters_checked = callback
     value = xgafv(request.query_params)
     if value is not None and value not in XGAFV_VALUES:
         raise bad_system_parameter(XGAFV, value)
-    callback = jsonp_callback(request)
-    if callback is not None and not _CALLBACK_NAME.fullmatch(callback):
-        raise bad_jsonp_callback(callback)
+    if not callback:
+        return
+    name = jsonp_callback(request)
+    if name is not None and not _CALLBACK_NAME.fullmatch(name):
+        raise bad_jsonp_callback(name)
 
 
 def has_errors_array(fam: str, value: str | None) -> bool:
@@ -754,12 +854,13 @@ def rendered(
     parameter reaches the success path only (``routers.google._sheets_respond``) and nothing here
     reads it.
 
-    Wrapped only where ``validate_system_parameters`` ran, which is where a route matched. That is a
-    ROUTER dependency, so a family path with NO route -- `/sheets/v4/nope` -- reaches this having
-    been refused nothing, and `callback=a b` there would be answered by calling `a b`. Real answers
-    such a path from its front end as HTML, measured 2026-09-16 with a `callback` and without: 400
-    on Sheets, Docs and Slides, 404 on Drive and Gmail. So JSONP is not its shape there under any
-    name, and the plain body is the nearer of the two answers Backlot can give.
+    Wrapped only where ``validate_system_parameters`` checked `callback`, which is where a route
+    matched and did not exempt it. That is a ROUTER dependency, so a family path with NO route --
+    `/sheets/v4/nope` -- reaches this having been refused nothing, and `callback=a b` there would be
+    answered by calling `a b`. Real answers such a path from its front end as HTML, measured
+    2026-09-16 with a `callback` and without: 400 on Sheets, Docs and Slides, 404 on Drive and
+    Gmail. So JSONP is not its shape there under any name, and the plain body is the nearer of the
+    two answers Backlot can give.
 
     Where the check DID run the name needs no second look, and the body being wrapped may BE its
     refusal -- that is real's own answer, measured the same day: `callback=evil);alert(1);//` on a

@@ -200,7 +200,7 @@ def test_gmail_messages_list_serves_hex_ids(client, admin_h):
     not hex, so real Gmail would call it an invalid id value.
 
     Up to 16 digits, not exactly 16: real Gmail renders the integer, so an id whose top nibble is
-    zero is shorter there — and the real API resolves that spelling while 404ing the padded one."""
+    zero is shorter there."""
     msgs = client.get(
         "/gmail/v1/users/me/messages", headers=admin_h, params={"maxResults": 10}
     ).json()["messages"]
@@ -226,11 +226,47 @@ def test_gmail_hex_id_resolves_to_the_same_document(client, admin_h, ro_conn):
     assert base64.urlsafe_b64decode(_gmail_plain(m["payload"])).decode() == row["content"]
     # The stored column is lowercase hex, but a client may spell the id in either case (Gmail's ids
     # are case-insensitive hex) -- resolution must fold case rather than requiring the exact stored
-    # spelling. `store.gmail_by_id` is the one place that has to do this.
+    # spelling. `store.gmail_id_spelling` is the one place that has to do this.
     upper = client.get(
         f"/gmail/v1/users/me/messages/{hexid.upper()}", headers=admin_h, params={"format": "full"}
     ).json()
     assert upper["id"] == m["id"]
+
+
+@pytest.mark.parametrize(
+    "spelling, same_as",
+    [
+        ("{ROOT}", "{root}"),
+        ("0{root}", "{root}"),
+        ("00{root}", "{root}"),
+        ("0000000000{root}", "{root}"),
+        ("0{ROOT}", "{root}"),
+        ("0{reply}", "1"),
+    ],
+)
+def test_gmail_threads_get_reads_an_id_as_a_hex_integer(
+    client, admin_h, ro_conn, spelling, same_as
+):
+    """`threads.get` on a thread's id in uppercase, or with one, two or ten zeros in front and its
+    hex in either case, serves the thread as the lowercase id without them does; on a reply's id
+    with a zero in front it serves the 404 of an id the mailbox does not hold (`1`). The measurement
+    is beside the return in `gmail_thread_get`."""
+    row = ro_conn.execute(
+        "SELECT * FROM gmail_messages WHERE COALESCE(thread_id,'') != '' "
+        "AND thread_id != id LIMIT 1"
+    ).fetchone()
+    assert row is not None, "SAMPLE should hold a threaded reply"
+    ids = {"root": row["thread_id"], "ROOT": row["thread_id"].upper(), "reply": row["id"]}
+
+    def threads_get(thread_id):
+        return client.get(
+            f"/gmail/v1/users/me/threads/{thread_id.format(**ids)}",
+            headers=admin_h,
+            params={"format": "minimal"},
+        )
+
+    got, want = threads_get(spelling), threads_get(same_as)
+    assert (got.status_code, got.json()) == (want.status_code, want.json())
 
 
 def test_gmail_thread_id_matches_the_message_id_for_a_lone_message(client, admin_h, ro_conn):
@@ -250,9 +286,6 @@ def test_gmail_thread_id_matches_the_message_id_for_a_lone_message(client, admin
     assert m["id"] == m["threadId"] == hexid
     t = client.get(f"/gmail/v1/users/me/threads/{hexid}", headers=admin_h)
     assert t.status_code == 200 and t.json()["id"] == hexid
-    # A gmail id is hex and real resolves either spelling, so `threads.get` must fold case the way
-    # `messages.get` does — an exact `thread_id = ?` lookup on the caller's spelling missed and
-    # served a one-message thread for a thread that has more.
     upper = client.get(f"/gmail/v1/users/me/threads/{hexid.upper()}", headers=admin_h)
     assert upper.status_code == 200 and upper.json() == t.json()
 
@@ -495,6 +528,34 @@ def test_gmail_messages_list_pagination_stable_and_ordered(client, admin_h, ro_c
     assert [m["id"] for m in both] == [a, b]  # pages concatenate in order
 
 
+def test_gmail_max_results_is_capped_at_500(tmp_path):
+    """The cap `_gmail_max_results` records, on both listings."""
+    from tests._helpers import corpus_client
+
+    records = [
+        {
+            "source_type": "gmail",
+            "doc_id": f"m{i}",
+            "mailbox": "ava",
+            "title": f"Message {i}",
+            "content": f"Body {i}.",
+            "author_email": "bob@acme.com",
+            "readers": ["ava@acme.com"],
+            "created": f"2026-01-{i % 28 + 1:02d}T{i // 28 % 24:02d}:00:00Z",
+        }
+        for i in range(502)
+    ]
+    with corpus_client(tmp_path, records) as (client, settings):
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        for kind in ("messages", "threads"):
+            for asked, served in ((499, 499), (500, 500), (501, 500), (1000, 500), (100000, 500)):
+                page = client.get(
+                    f"/gmail/v1/users/me/{kind}", headers=h, params={"maxResults": asked}
+                ).json()
+                assert len(page[kind]) == served, (kind, asked)
+                assert "nextPageToken" in page, (kind, asked)
+
+
 def test_gmail_attachment_size_matches_part_metadata(client, admin_h, ro_conn):
     # Real Gmail's contract: a part's body.size equals the byte length attachments.get serves, so a
     # client can stat an attachment from message metadata alone. Reporting the corpus-declared
@@ -656,6 +717,246 @@ def test_google_batch_honors_subrequest_query_params(client, admin_h, uri):
     assert "payload" not in _batch_one(
         client, admin_h, mid, "minimal", uri
     )  # format=minimal honored
+
+
+_REDIRECTED = {
+    "error": {
+        "code": 302,
+        "message": "Unknown Error.",
+        "errors": [{"message": "Unknown Error.", "domain": "global", "reason": "backendError"}],
+        "status": "UNKNOWN",
+    }
+}
+_UNIMPLEMENTED_MESSAGE = "Operation is not implemented, or supported, or enabled."
+_UNIMPLEMENTED = {
+    "error": {"code": 501, "message": _UNIMPLEMENTED_MESSAGE, "status": "UNIMPLEMENTED"}
+}
+_UNIMPLEMENTED_AT_XGAFV_1 = {
+    "error": {
+        **_UNIMPLEMENTED["error"],
+        "errors": [
+            {"message": _UNIMPLEMENTED_MESSAGE, "domain": "global", "reason": "notImplemented"}
+        ],
+    }
+}
+_DRIVE_BATCH = "/batch/drive/v3?quotaUser=7"
+_SHEETS_BATCH = "/batch?quotaUser=7"
+_BAD = "Bearer nope"
+_MIA = "{mia}"  # the scoped token, which cannot see the spreadsheet
+_ANON = "anonymous"  # no credential on the part or on the batch
+_NORMALISED = "/batch/drive/v3?quotaUser=7&foo=%41&b%61r=1&~t=%7e&&"
+_A1_FILTER = '{"dataFilters": [{"a1Range": "A1"}]}'
+_BAD_FILTER = '{"dataFilters": "abc"}'
+
+# One part per batch, as real's Drive batch and Sheets batch answered it. A row is the batch URI
+# with its query, the part as (method, target, body, its own Authorization), the status in the batch
+# and the status of the same request sent on its own, then a 302's `Location` below the server's
+# base URL or a 501's body. The status on its own is ``None`` where real's is one Backlot does not
+# give: the export with an empty `alt=` (400), the id holding a `%` no two hex digits follow (503),
+# the two downloads with `callback=a%20b` (503), the export with that `callback` beside `$.xgafv=9`
+# (400) and the Sheets read of a spreadsheet the caller cannot see (403
+# `The caller does not have permission`, where Backlot answers as for one that does not exist).
+# `_drive_batch_download`, `_drive_batch_redirect` and `_workbook` record the rules.
+# fmt: off
+_BATCH_ROWS = [
+    # a Drive download is redirected ahead of the lookup and the typed, `fields` and `mimeType`
+    # refusals
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{sheet}/export?mimeType=text/csv", None, None), 302, 200, "download/drive/v3/files/{sheet}/export?mimeType=text/csv&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{doc}/export?mimeType=", None, None), 302, 400, "download/drive/v3/files/{doc}/export?mimeType=&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{doc}/export", None, None), 302, 400, "download/drive/v3/files/{doc}/export?quotaUser=7"),
+    ("/batch/drive/v3", ("GET", "/drive/v3/files/{doc}/export", None, None), 302, 400, "download/drive/v3/files/{doc}/export"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{nope}/export?mimeType=text/plain", None, None), 302, 404, "download/drive/v3/files/{nope}/export?mimeType=text/plain&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{sheet}/export?mimeType=text/csv", None, _MIA), 302, 404, "download/drive/v3/files/{sheet}/export?mimeType=text/csv&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain&alt=media", None, None), 302, 200, "download/drive/v3/files/{doc}/export?mimeType=text/plain&alt=media&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain&alt=", None, None), 302, None, "download/drive/v3/files/{doc}/export?mimeType=text/plain&alt=&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media", None, None), 302, 200, "download/drive/v3/files/{pdf}?alt=media&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=MEDIA", None, None), 302, 200, "download/drive/v3/files/{pdf}?alt=MEDIA&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media&alt=json", None, None), 302, 200, "download/drive/v3/files/{pdf}?alt=media&alt=json&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{nope}?alt=media", None, None), 302, 404, "download/drive/v3/files/{nope}?alt=media&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{doc}?alt=media", None, None), 302, 403, "download/drive/v3/files/{doc}?alt=media&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media&supportsAllDrives=NOPE", None, None), 302, 400, "download/drive/v3/files/{pdf}?alt=media&supportsAllDrives=NOPE&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media&fields=bogus", None, None), 302, 200, "download/drive/v3/files/{pdf}?alt=media&fields=bogus&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media&acknowledgeAbuse=true", None, None), 302, 200, "download/drive/v3/files/{pdf}?alt=media&acknowledgeAbuse=true&quotaUser=7"),
+    # the batch's query follows the part's, less each name the part's query carries
+    ("/batch/drive/v3?quotaUser=7&prettyPrint=false", ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain&prettyPrint=true", None, None), 302, 200, "download/drive/v3/files/{doc}/export?mimeType=text/plain&prettyPrint=true&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media&quotaUser=PARTQ", None, None), 302, 200, "download/drive/v3/files/{pdf}?alt=media&quotaUser=PARTQ"),
+    ("/batch/drive/v3?quotaUser=7&foo=1&foo=2", ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain&Foo=3", None, None), 302, 200, "download/drive/v3/files/{doc}/export?mimeType=text/plain&Foo=3&quotaUser=7&foo=1&foo=2"),
+    ("/batch/drive/v3?quotaUser=7&foo=1&foo=2", ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain&foo=", None, None), 302, 200, "download/drive/v3/files/{doc}/export?mimeType=text/plain&foo=&quotaUser=7"),
+    ("/batch/drive/v3?quotaUser=7&a%20b=c%2Fd&e=f+g&h", ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain", None, None), 302, 200, "download/drive/v3/files/{doc}/export?mimeType=text/plain&quotaUser=7&a%20b=c%2Fd&e=f+g&h="),
+    # its pairs as real writes them: an empty one dropped, an escaped letter or digit decoded, any
+    # other escape's hex in upper case, a bare name given `=`, and names matched as written
+    (_NORMALISED, ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain&&y=%41", None, None), 302, 200, "download/drive/v3/files/{doc}/export?mimeType=text/plain&y=A&quotaUser=7&foo=A&bar=1&~t=%7E"),
+    (_NORMALISED, ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain&fo%6F=3", None, None), 302, 200, "download/drive/v3/files/{doc}/export?mimeType=text/plain&foo=3&quotaUser=7&bar=1&~t=%7E"),
+    (_NORMALISED, ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain&x%2Dy=1&x%2fy=2", None, None), 302, 200, "download/drive/v3/files/{doc}/export?mimeType=text/plain&x%2Dy=1&x%2Fy=2&quotaUser=7&foo=A&bar=1&~t=%7E"),
+    (_NORMALISED, ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain&n=%7E&k=%4a&z", None, None), 302, 200, "download/drive/v3/files/{doc}/export?mimeType=text/plain&n=%7E&k=J&z=&quotaUser=7&foo=A&bar=1&~t=%7E"),
+    (_NORMALISED, ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain&~t=1", None, None), 302, 200, "download/drive/v3/files/{doc}/export?mimeType=text/plain&~t=1&quotaUser=7&foo=A&bar=1"),
+    ("/batch/drive/v3?quotaUser=7&n%31=%32", ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain&d=%31&dot=%2E&us=%5F&pct=%25&q=%3f", None, None), 302, 200, "download/drive/v3/files/{doc}/export?mimeType=text/plain&d=1&dot=%2E&us=%5F&pct=%25&q=%3F&quotaUser=7&n1=2"),
+    ("/batch/drive/v3?quotaUser=7&n%31=%32", ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain&n1=9", None, None), 302, 200, "download/drive/v3/files/{doc}/export?mimeType=text/plain&n1=9&quotaUser=7"),
+    # its path's escapes, as `_drive_batch_redirect` records them
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/a%20b%3fc%25d?alt=media", None, None), 302, 404, "download/drive/v3/files/a%20b%3Fc%25d?alt=media&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/a%7eb%2dc%2Ed%5fe%41%7a%30?alt=media", None, None), 302, 404, "download/drive/v3/files/a~b-c.d_eAz0?alt=media&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/a%E2%82%ACb?alt=media", None, None), 302, 404, "download/drive/v3/files/a%E2%82%ACb?alt=media&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/a%c3%a9b%2a?alt=media", None, None), 302, 404, "download/drive/v3/files/a%C3%A9b%2A?alt=media&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/a%23b/export?mimeType=text/plain", None, None), 302, 404, "download/drive/v3/files/a%23b/export?mimeType=text/plain&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/a%b%4?alt=media", None, None), 302, None, "download/drive/v3/files/a%b%4?alt=media&quotaUser=7"),
+    # its place among `$.xgafv`, the credential and `callback`, as `_drive_batch_redirect` records
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain", None, _BAD), 401, 401, None),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media", None, "Basic YWJjOmRlZg=="), 302, 401, "download/drive/v3/files/{pdf}?alt=media&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media", None, "bearer nope"), 302, 401, "download/drive/v3/files/{pdf}?alt=media&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media", None, "Bearer"), 302, 401, "download/drive/v3/files/{pdf}?alt=media&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media", None, "nope"), 302, 401, "download/drive/v3/files/{pdf}?alt=media&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain", None, _ANON), 302, 403, "download/drive/v3/files/{doc}/export?mimeType=text/plain&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media", None, _ANON), 302, 403, "download/drive/v3/files/{pdf}?alt=media&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{doc}", None, _ANON), 403, 403, None),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain&callback=cb", None, None), 302, 200, "download/drive/v3/files/{doc}/export?mimeType=text/plain&callback=cb&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain&callback=a%20b", None, None), 302, None, "download/drive/v3/files/{doc}/export?mimeType=text/plain&callback=a%20b&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media&callback=a%20b", None, None), 302, None, "download/drive/v3/files/{pdf}?alt=media&callback=a%20b&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain&callback=a%20b&$.xgafv=9", None, None), 400, None, None),
+    # what is not a download is answered as it is on its own, the one part of its batch here (a part
+    # beside others is in `_BATCH_ACK_ROWS`)
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=json&alt=media", None, None), 200, 200, None),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{doc}?acknowledgeAbuse=TRUE", None, None), 403, 403, None),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{nope}?acknowledgeAbuse=true", None, None), 403, 403, None),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files?pageSize=1&includeItemsFromAllDrives=true", None, None), 403, 403, None),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{doc}/permissions?useDomainAdminAccess=true", None, None), 404, 404, None),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/drives?useDomainAdminAccess=true", None, None), 403, 403, None),
+    # a Sheets read is not implemented, at the point `_workbook` records
+    (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/A1", None, None), 501, 200, _UNIMPLEMENTED),
+    (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}", None, None), 501, 200, _UNIMPLEMENTED),
+    (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values:batchGet?ranges=A1", None, None), 501, 200, _UNIMPLEMENTED),
+    (_SHEETS_BATCH, ("POST", "/sheets/v4/spreadsheets/{sheet}:getByDataFilter", "{}", None), 501, 200, _UNIMPLEMENTED),
+    (_SHEETS_BATCH, ("POST", "/sheets/v4/spreadsheets/{sheet}/values:batchGetByDataFilter", _A1_FILTER, None), 501, 200, _UNIMPLEMENTED),
+    (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{nope}/values/A1", None, None), 501, 404, _UNIMPLEMENTED),
+    (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/A1", None, _MIA), 501, None, _UNIMPLEMENTED),
+    (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/NoSuchSheet!A1", None, None), 501, 400, _UNIMPLEMENTED),
+    (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/A1?alt=media", None, None), 501, 400, _UNIMPLEMENTED),
+    (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/A1?$.xgafv=1", None, None), 501, 200, _UNIMPLEMENTED_AT_XGAFV_1),
+    (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/A1?majorDimension=NOPE", None, None), 400, 400, None),
+    (_SHEETS_BATCH, ("POST", "/sheets/v4/spreadsheets/{sheet}:getByDataFilter", _BAD_FILTER, None), 400, 400, None),
+    (_SHEETS_BATCH, ("POST", "/sheets/v4/spreadsheets/{sheet}/values:batchGetByDataFilter", _BAD_FILTER, None), 400, 400, None),
+    (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/A1", None, _BAD), 401, 401, None),
+    (_SHEETS_BATCH, ("POST", "/sheets/v4/spreadsheets/{sheet}:getByDataFilter", "{}", _BAD), 401, 401, None),
+    (_SHEETS_BATCH, ("POST", "/sheets/v4/spreadsheets/{sheet}:getByDataFilter", _BAD_FILTER, _BAD), 401, 401, None),
+]
+# fmt: on
+
+
+def _batch_answer(client, headers, uri, method, target, body, auth):
+    """The one part of a one-part batch, as ``(status, header lines, body)``."""
+    head = f"{method} {target} HTTP/1.1\r\n"
+    if auth:
+        head += f"Authorization: {auth}\r\n"
+    if body is not None:
+        head += f"Content-Type: application/json\r\n\r\n{body}"
+    payload = (
+        f"--b\r\nContent-Type: application/http\r\nContent-ID: <p0>\r\n\r\n{head}\r\n--b--\r\n"
+    )
+    r = client.post(
+        uri, headers={**headers, "Content-Type": "multipart/mixed; boundary=b"}, content=payload
+    )
+    assert r.status_code == 200, r.text
+    part = r.text.split("\r\n\r\n", 1)[1].rsplit("\r\n--", 1)[0]
+    sub_head, _, sub_body = part.partition("\r\n\r\n")
+    status_line, *lines = sub_head.split("\r\n")
+    return int(status_line.split(" ")[1]), lines, sub_body
+
+
+@pytest.mark.parametrize("uri, part, status, alone, detail", _BATCH_ROWS)
+def test_google_batch_redirects_a_drive_download_and_refuses_a_sheets_read(
+    client, admin_h, tokens, uri, part, status, alone, detail
+):
+    """The rows `_BATCH_ROWS` records, each beside the same request sent on its own where the row
+    gives that request's status. A part the redirect answers carries real's three headers in real's
+    order. Neither answer looks the file up, so a spreadsheet the scoped token cannot see is
+    answered as one that does not exist is."""
+    ids = {
+        "doc": _drive_find(client, admin_h, "Brand")["id"],
+        "pdf": _drive_find(client, admin_h, "Whitepaper")["id"],
+        "sheet": _drive_find(client, admin_h, "Q1 Revenue Model")["id"],
+        "nope": "nosuchfile000",
+    }
+    method, target, body, auth = part
+    target = target.format(**ids)
+    outer = {} if auth == _ANON else admin_h
+    auth = None if auth == _ANON else auth and auth.format(mia=f"Bearer {tokens['mia@acme.com']}")
+    got, lines, sub_body = _batch_answer(client, outer, uri, method, target, body, auth)
+    assert got == status, sub_body
+    if status == 302:
+        location = f"Location: http://testserver/{detail.format(**ids)}"
+        assert lines == [
+            "Content-Length: 0",
+            "Content-Type: application/json; charset=UTF-8",
+            location,
+        ]
+        assert json.loads(sub_body) == _REDIRECTED
+    elif status == 501:
+        assert json.loads(sub_body) == detail
+    if alone is not None:
+        headers = {"Authorization": auth} if auth else outer
+        sent = client.request(method, target, headers=headers, content=body)
+        assert sent.status_code == alone, sent.text
+
+
+def test_google_batch_passes_on_no_location_on_the_host_it_sends_parts_to(client, admin_h):
+    """`batch` sends its parts to a host nothing answers, so a redirect a route builds from it is
+    passed on without its `Location`. A function of its own: a GitHub part is no answer real's
+    Drive batch gives, so it is no row of `_BATCH_ROWS`."""
+    target = "/github/repos/acme/gateway/contents/src/"
+    alone = client.get(target, headers=admin_h, follow_redirects=False)
+    assert (alone.status_code, "location" in alone.headers) == (302, True)
+    status, lines, _ = _batch_answer(client, admin_h, _DRIVE_BATCH, "GET", target, None, None)
+    assert (status, lines) == (302, ["Content-Type: text/html;charset=utf-8"])
+
+
+_ACK = "/drive/v3/files/{doc}?acknowledgeAbuse=true&fields=id"
+_ACK_NOPE = "/drive/v3/files/{nope}?acknowledgeAbuse=true"
+_DOWNLOAD = "/drive/v3/files/{pdf}?alt=media"
+_EXPORT = "/drive/v3/files/{doc}/export?mimeType=text/plain"
+_ABOUT = "/drive/v3/about?fields=user"
+_SHARED = "/drive/v3/files?pageSize=1&includeItemsFromAllDrives=true"
+
+# Batches of several parts, one or two of them asking `acknowledgeAbuse` on a read that downloads
+# nothing, with the status of each part as real answered it. The flag is checked where its part is
+# the one part of the batch that is not a download (`drive_files_get`).
+_BATCH_ACK_ROWS = [
+    ([_ACK, _ABOUT], [200, 200]),
+    ([_ABOUT, _ACK], [200, 200]),
+    ([_ACK, _ACK], [200, 200]),
+    ([_ACK_NOPE, _ABOUT], [404, 200]),
+    ([_SHARED, _ACK], [403, 200]),
+    ([_DOWNLOAD, _ACK, _ACK], [302, 200, 200]),
+    ([_ABOUT, _DOWNLOAD, _ACK], [200, 302, 200]),
+    ([_DOWNLOAD, _ACK], [302, 403]),
+    ([_ACK, _DOWNLOAD], [403, 302]),
+    ([_EXPORT, _ACK], [302, 403]),
+    ([_DOWNLOAD, _ACK_NOPE], [302, 403]),
+    ([_DOWNLOAD, _DOWNLOAD, _ACK], [302, 302, 403]),
+]
+
+
+@pytest.mark.parametrize("targets, statuses", _BATCH_ACK_ROWS)
+def test_google_batch_checks_acknowledge_abuse_on_its_one_part_that_is_not_a_download(
+    client, admin_h, targets, statuses
+):
+    """The rows `_BATCH_ACK_ROWS` records. A function of its own: a row is a batch of several
+    parts, where a `_BATCH_ROWS` row is one part."""
+    ids = {
+        "doc": _drive_find(client, admin_h, "Brand")["id"],
+        "pdf": _drive_find(client, admin_h, "Whitepaper")["id"],
+        "nope": "nosuchfile000",
+    }
+    payload = "".join(
+        f"--b\r\nContent-Type: application/http\r\nContent-ID: <p{i}>\r\n\r\n"
+        f"GET {target.format(**ids)} HTTP/1.1\r\n\r\n"
+        for i, target in enumerate(targets)
+    )
+    r = client.post(
+        _DRIVE_BATCH,
+        headers={**admin_h, "Content-Type": "multipart/mixed; boundary=b"},
+        content=payload + "--b--\r\n",
+    )
+    assert r.status_code == 200, r.text
+    assert [int(code) for code in re.findall(r"^HTTP/1\.1 (\d+)", r.text, re.M)] == statuses
 
 
 def test_user_cannot_fetch_others_private_gmail(client, tokens_yaml, admin_h, ro_conn):
@@ -1043,8 +1344,8 @@ def test_drive_a_listing_that_never_issued_a_token_refuses_one_it_did_not_issue(
 @pytest.mark.parametrize("path", ["/drive/v3/files/{doc}/permissions", "/drive/v3/drives"])
 def test_drive_a_page_token_is_refused_ahead_of_the_domain_admin_flag(client, admin_h, path):
     """The order #465 records for the two routes: sent together, `pageToken` is the refusal, where
-    real makes one of `useDomainAdminAccess=true` on both. The flag itself is #339's answer and
-    changes nothing here -- only which of the two a request naming both gets."""
+    real makes one of `useDomainAdminAccess=true` on both. The flag is refused on its own too, so
+    the pair pins which of the two a request naming both gets."""
     doc = _drive_find(client, admin_h, "Brand")["id"]
     url = path.format(doc=doc)
     both = client.get(
@@ -1052,30 +1353,40 @@ def test_drive_a_page_token_is_refused_ahead_of_the_domain_admin_flag(client, ad
     )
     assert both.status_code == 400, both.text
     assert _gerr(both)["errors"][0]["location"] == "pageToken"
-    assert (
-        client.get(url, headers=admin_h, params={"useDomainAdminAccess": "true"}).status_code == 200
+    # the flag alone is #339's refusal, which this one comes ahead of
+    assert client.get(
+        url, headers=admin_h, params={"useDomainAdminAccess": "true"}
+    ).status_code in (
+        403,
+        404,
     )
 
 
 @pytest.mark.parametrize(
-    "query, location",
+    "query, code, location",
     [
-        ([("pageToken", "BOGUS"), ("pageSize", "NOPE")], None),
-        ([("fields", "bogus"), ("pageSize", "0")], "page_size"),
-        ([("fields", "bogus"), ("pageToken", "BOGUS")], "pageToken"),
-        ([("pageToken", "BOGUS"), ("fields", "bogus")], "pageToken"),
-        ([("pageToken", "BOGUS"), ("q", "nosuchfield = 1")], "q"),
-        ([("fields", "bogus"), ("q", "nosuchfield = 1")], "q"),
-        ([("q", "nosuchfield = 1"), ("orderBy", "bogus")], "orderBy"),
-        ([("orderBy", "bogus"), ("q", "nosuchfield = 1")], "orderBy"),
-        ([("fields", "bogus"), ("orderBy", "bogus")], "orderBy"),
+        ([("pageToken", "BOGUS"), ("pageSize", "NOPE")], 400, None),
+        ([("fields", "bogus"), ("pageSize", "0")], 400, "page_size"),
+        ([("fields", "bogus"), ("pageToken", "BOGUS")], 400, "pageToken"),
+        ([("pageToken", "BOGUS"), ("fields", "bogus")], 400, "pageToken"),
+        ([("pageToken", "BOGUS"), ("q", "nosuchfield = 1")], 400, "q"),
+        ([("fields", "bogus"), ("q", "nosuchfield = 1")], 400, "q"),
+        ([("q", "nosuchfield = 1"), ("orderBy", "bogus")], 400, "orderBy"),
+        ([("orderBy", "bogus"), ("q", "nosuchfield = 1")], 400, "orderBy"),
+        ([("fields", "bogus"), ("orderBy", "bogus")], 400, "orderBy"),
+        ([("orderBy", "name,name"), ("pageSize", "0")], 400, "page_size"),
+        ([("orderBy", "name,name"), ("pageSize", "NOPE")], 400, None),
+        ([("q", "nosuchfield = 1"), ("orderBy", "name,name")], 403, "orderBy"),
+        ([("orderBy", "name,name"), ("q", "nosuchfield = 1")], 403, "orderBy"),
+        ([("pageToken", "BOGUS"), ("orderBy", "name,name")], 403, "orderBy"),
+        ([("fields", "bogus"), ("orderBy", "name,name")], 403, "orderBy"),
     ],
 )
-def test_drive_files_list_refuses_in_reals_order(client, admin_h, query, location):
+def test_drive_files_list_refuses_in_reals_order(client, admin_h, query, code, location):
     """Two bad values at once, each pair in the order `drive_files_list`'s comment records. A
     `pageSize` the proto layer cannot read has no `location`."""
     e = _gerr(client.get("/drive/v3/files", headers=admin_h, params=query))
-    assert e["code"] == 400
+    assert e["code"] == code
     assert e["errors"][0].get("location") == location
 
 
@@ -1115,6 +1426,12 @@ _DRIVE_BOOL_ROWS = (
         + [(v, False) for v in ("off", "2", "01", "00", "1.0", "-1", "+1", " true", "true ")]
     ]
     + [
+        # the letters outside ASCII `_DRIVE_BOOLS` records, which are not case-folded
+        (path, param, value, False)
+        for path, param in _DRIVE_BOOL_ROUTES
+        for value in ("yeſ", "falſe")
+    ]
+    + [
         # the two routes `_DRIVE_BOOLS` records as declaring none
         ("/drive/v3/files/{doc}/export?mimeType=text/plain", "supportsAllDrives", "NOPE", True),
         ("/drive/v3/about?fields=user", "supportsAllDrives", "NOPE", True),
@@ -1127,9 +1444,9 @@ def test_drive_a_declared_boolean_takes_the_protobuf_spellings_and_another_is_ig
     client, admin_h, path, param, value, accepted
 ):
     """The spellings `_DRIVE_BOOLS` records, one request per value on each route; the `files.list`
-    `supportsAllDrives` rows are 24 of the 30 swept. `true` is sent on those rows alone: measured
-    2026-09-23, four of the other flags answer a `true` with a check of their own (a 403 for
-    `includeItemsFromAllDrives` without `supportsAllDrives`), which Backlot does not model."""
+    `supportsAllDrives` rows are 24 of the 30 swept and two spellings outside ASCII. `true` is sent
+    on those rows alone: four of the other flags answer a `true` with a check of their own, which
+    `_DRIVE_CHECK_ROWS` holds."""
     doc = _drive_find(client, admin_h, "Brand")["id"]
     url = path.format(doc=doc)
     # the query string is built here because httpx's `params` replaces the one the row's path has
@@ -1144,39 +1461,200 @@ def test_drive_a_declared_boolean_takes_the_protobuf_spellings_and_another_is_ig
     assert e["details"][0]["fieldViolations"] == [{"field": field, "description": message}]
 
 
+_SHARED_DRIVES = (
+    403,
+    "supportsTeamDrivesRequired",
+    None,
+    "The supportsAllDrives parameter was not set to true.",
+)
+_ABUSE = (
+    403,
+    "invalidAbuseAcknowledgment",
+    "acknowledgeAbuse",
+    "The acknowledgeAbuse parameter is only applicable for download requests.",
+)
+_ADMIN_ONLY = (
+    403,
+    "noListTeamDrivesAdministratorPrivilege",
+    None,
+    "The requesting user does not have the administrator privilege required to list or manage all "
+    "shared drives.",
+)
+_SERVED = (200, None, None, None)
+_TYPED = (400, "invalid", None, None)
+_RANGE = (400, "invalidParameter", "page_size", None)
+
+# A Drive request beside real's answer, one request per row: the route, its query and who sends it,
+# then the status and `errors[0]`'s reason, location and, for the three 403s a flag spelled `true`
+# is refused with (`_drive_true`), message. The `1` spellings, which parse as true and run no check,
+# are rows of `_DRIVE_BOOL_ROWS`.
+# fmt: off
+_DRIVE_CHECK_ROWS = [
+    # the export and download refusals
+    ("/drive/v3/files/{pdf}/export", "mimeType=text/plain", "admin", (403, "fileNotExportable", None, None)),
+    # the empty value is present, so in the order `drive_files_export` records it meets the 403
+    ("/drive/v3/files/{pdf}/export", "mimeType=", "admin", (403, "fileNotExportable", None, None)),
+    ("/drive/v3/files/{doc}", "alt=media", "admin", (403, "fileNotDownloadable", "alt", None)),
+    # the shared-drive items need a companion flag, which the same spelling turns on
+    ("/drive/v3/files", "includeItemsFromAllDrives=true", "admin", _SHARED_DRIVES),
+    ("/drive/v3/files", "includeItemsFromAllDrives=TRUE", "admin", _SHARED_DRIVES),
+    ("/drive/v3/files", "includeItemsFromAllDrives=tRuE", "admin", _SHARED_DRIVES),
+    ("/drive/v3/files", "includeItemsFromAllDrives=t", "admin", _SERVED),
+    ("/drive/v3/files", "includeItemsFromAllDrives=yes", "admin", _SERVED),
+    ("/drive/v3/files", "includeTeamDriveItems=true", "admin", _SHARED_DRIVES),
+    ("/drive/v3/files", "includeItemsFromAllDrives=true&supportsAllDrives=tRuE", "admin", _SERVED),
+    ("/drive/v3/files", "includeItemsFromAllDrives=true&supportsAllDrives=t", "admin", _SHARED_DRIVES),
+    ("/drive/v3/files", "includeItemsFromAllDrives=true&supportsAllDrives=1", "admin", _SHARED_DRIVES),
+    ("/drive/v3/files", "includeItemsFromAllDrives=true&supportsAllDrives=yes", "admin", _SHARED_DRIVES),
+    ("/drive/v3/files", "includeItemsFromAllDrives=true&supportsTeamDrives=true", "admin", _SERVED),
+    ("/drive/v3/files", "includeTeamDriveItems=true&supportsTeamDrives=true", "admin", _SERVED),
+    ("/drive/v3/files", "includeTeamDriveItems=true&supportsTeamDrives=1", "admin", _SHARED_DRIVES),
+    ("/drive/v3/files", "includeTeamDriveItems=true&supportsAllDrives=true", "admin", _SERVED),
+    # each read from its first repeat
+    ("/drive/v3/files", "includeItemsFromAllDrives=true&includeItemsFromAllDrives=false", "admin", _SHARED_DRIVES),
+    ("/drive/v3/files", "includeItemsFromAllDrives=false&includeItemsFromAllDrives=true", "admin", _SERVED),
+    ("/drive/v3/files", "includeItemsFromAllDrives=true&supportsAllDrives=false&supportsAllDrives=true", "admin", _SHARED_DRIVES),
+    ("/drive/v3/files", "includeItemsFromAllDrives=true&supportsAllDrives=true&supportsAllDrives=false", "admin", _SERVED),
+    # its place among the other refusals, which `drive_files_list` records
+    ("/drive/v3/files", "includeItemsFromAllDrives=true&supportsAllDrives=NOPE", "admin", _TYPED),
+    ("/drive/v3/files", "includeItemsFromAllDrives=true&pageSize=0", "admin", _RANGE),
+    ("/drive/v3/files", "includeItemsFromAllDrives=true&orderBy=bogus", "admin", (400, "invalid", "orderBy", None)),
+    ("/drive/v3/files", "includeItemsFromAllDrives=true&orderBy=name,name", "admin", (403, "orderByContainsDuplicateSortKeys", "orderBy", None)),
+    ("/drive/v3/files", "includeItemsFromAllDrives=true&q=bad", "admin", _SHARED_DRIVES),
+    ("/drive/v3/files", "includeItemsFromAllDrives=true&pageToken=bad", "admin", _SHARED_DRIVES),
+    ("/drive/v3/files", "includeItemsFromAllDrives=true&fields=bad", "admin", _SHARED_DRIVES),
+    # acknowledging abuse on a read that downloads nothing
+    ("/drive/v3/files/{doc}", "acknowledgeAbuse=true", "admin", _ABUSE),
+    ("/drive/v3/files/{doc}", "acknowledgeAbuse=TRUE", "admin", _ABUSE),
+    ("/drive/v3/files/{doc}", "acknowledgeAbuse=t", "admin", _SERVED),
+    ("/drive/v3/files/{doc}", "acknowledgeAbuse=true&acknowledgeAbuse=false", "admin", _ABUSE),
+    ("/drive/v3/files/{doc}", "acknowledgeAbuse=false&acknowledgeAbuse=true", "admin", _SERVED),
+    ("/drive/v3/files/{pdf}", "acknowledgeAbuse=true&alt=media", "admin", _SERVED),
+    ("/drive/v3/files/{pdf}", "acknowledgeAbuse=true&alt=json", "admin", _ABUSE),
+    ("/drive/v3/files/{doc}", "acknowledgeAbuse=true&alt=media", "admin", (403, "fileNotDownloadable", "alt", None)),
+    ("/drive/v3/files/{doc}", "acknowledgeAbuse=true&fields=bad", "admin", _ABUSE),
+    ("/drive/v3/files/{doc}", "acknowledgeAbuse=true&supportsAllDrives=NOPE", "admin", _TYPED),
+    # before the lookup: a file that does not exist and one the caller cannot see, beside the
+    # second without the flag
+    ("/drive/v3/files/{nope}", "acknowledgeAbuse=true", "admin", _ABUSE),
+    ("/drive/v3/files/{hidden}", "acknowledgeAbuse=true", "mia", _ABUSE),
+    ("/drive/v3/files/{hidden}", "acknowledgeAbuse=false", "mia", (404, "notFound", "fileId", None)),
+    ("/drive/v3/files/{hidden}", "acknowledgeAbuse=false", "admin", _SERVED),
+    # the routes that declare no such check
+    ("/drive/v3/files/{doc}/export", "mimeType=text/plain&acknowledgeAbuse=true", "admin", _SERVED),
+    ("/drive/v3/about", "fields=user&includeItemsFromAllDrives=true", "admin", _SERVED),
+    # a domain administrator's access, which no caller here has
+    ("/drive/v3/files/{doc}/permissions", "useDomainAdminAccess=true", "admin", (404, "notFound", "fileId", None)),
+    ("/drive/v3/files/{doc}/permissions", "useDomainAdminAccess=TRUE", "admin", (404, "notFound", "fileId", None)),
+    ("/drive/v3/files/{hidden}/permissions", "useDomainAdminAccess=true", "mia", (404, "notFound", "fileId", None)),
+    ("/drive/v3/files/{hidden}/permissions", "useDomainAdminAccess=false", "mia", (404, "notFound", "fileId", None)),
+    ("/drive/v3/files/{hidden}/permissions", "useDomainAdminAccess=false", "admin", _SERVED),
+    ("/drive/v3/files/{doc}/permissions", "useDomainAdminAccess=true&pageSize=0", "admin", _RANGE),
+    ("/drive/v3/files/{doc}/permissions", "useDomainAdminAccess=true&supportsAllDrives=NOPE", "admin", _TYPED),
+    ("/drive/v3/drives", "useDomainAdminAccess=true", "admin", _ADMIN_ONLY),
+    ("/drive/v3/drives", "useDomainAdminAccess=TRUE", "admin", _ADMIN_ONLY),
+    ("/drive/v3/drives", "useDomainAdminAccess=true&useDomainAdminAccess=false", "admin", _ADMIN_ONLY),
+    ("/drive/v3/drives", "useDomainAdminAccess=false&useDomainAdminAccess=true", "admin", _SERVED),
+    ("/drive/v3/drives", "useDomainAdminAccess=true&pageSize=0", "admin", _RANGE),
+    ("/drive/v3/drives", "useDomainAdminAccess=true&q=name%3D%27x%27", "admin", _ADMIN_ONLY),
+]
+# fmt: on
+
+
+@pytest.mark.parametrize("path, query, caller, expected", _DRIVE_CHECK_ROWS)
+def test_drive_answers_each_check_with_reals_status_and_reason(
+    client, admin_h, tokens, path, query, caller, expected
+):
+    """The rows `_DRIVE_CHECK_ROWS` records. The 403 for a file the scoped token cannot see is the
+    one for a file that does not exist, and both name no file, so the check tells the caller
+    nothing about what it cannot read; the permissions 404 names the file it was asked about, and
+    is the same 404 the scoped token gets for that file without the flag."""
+    ids = {
+        "doc": _drive_find(client, admin_h, "Brand")["id"],
+        "pdf": _drive_find(client, admin_h, "Whitepaper")["id"],
+        "hidden": _drive_find(client, admin_h, "Q1 Revenue Model")["id"],
+        "nope": "nosuchfile000",
+    }
+    headers = (
+        admin_h if caller == "admin" else {"Authorization": f"Bearer {tokens['mia@acme.com']}"}
+    )
+    r = client.get(f"{path.format(**ids)}?{query}", headers=headers)
+    status, reason, location, message = expected
+    assert r.status_code == status, r.text
+    if status == 200:
+        return
+    e = _gerr(r)
+    assert (e["errors"][0].get("reason"), e["errors"][0].get("location")) == (reason, location)
+    if message is not None:
+        assert (e["message"], "status" in e) == (message, False)
+
+
 @pytest.mark.parametrize(
-    "path, query",
+    "path, query, body, good",
     [
-        ("/drive/v3/files/{id}", "acknowledgeAbuse=NOPE"),
-        ("/drive/v3/files/{id}/permissions", "supportsAllDrives=NOPE"),
-        ("/drive/v3/files/{id}/permissions", "pageSize=0"),
-        ("/drive/v3/files/{id}/permissions", "pageToken=bad"),
-        ("/sheets/v4/spreadsheets/{id}/values/Sheet1!A1", "majorDimension=NOPE"),
-        ("/sheets/v4/spreadsheets/{id}/values:batchGet", "valueRenderOption=NOPE"),
-        ("/sheets/v4/spreadsheets/{id}", "includeGridData=NOPE"),
+        ("/drive/v3/files/{id}", "acknowledgeAbuse=NOPE", None, None),
+        ("/drive/v3/files/{id}/permissions", "supportsAllDrives=NOPE", None, None),
+        ("/drive/v3/files/{id}/permissions", "pageSize=0", None, None),
+        ("/drive/v3/files/{id}/permissions", "pageToken=bad", None, None),
+        ("/sheets/v4/spreadsheets/{id}/values/Sheet1!A1", "majorDimension=NOPE", None, None),
+        ("/sheets/v4/spreadsheets/{id}/values:batchGet", "valueRenderOption=NOPE", None, None),
+        ("/sheets/v4/spreadsheets/{id}", "includeGridData=NOPE", None, None),
+        # the data-filter reads, whose typed values are in the body, served the empty grid range
+        # they answer at 200
+        (
+            "/sheets/v4/spreadsheets/{id}/values:batchGetByDataFilter",
+            "",
+            {"dataFilters": [{"gridRange": {"startRowIndex": "abc"}}]},
+            {"dataFilters": [{"gridRange": {"startRowIndex": 1, "endRowIndex": 1}}]},
+        ),
+        (
+            "/sheets/v4/spreadsheets/{id}:getByDataFilter",
+            "",
+            {"dataFilters": [{"gridRange": {"startRowIndex": "abc"}}]},
+            {"dataFilters": [{"gridRange": {"startRowIndex": 1, "endRowIndex": 1}}]},
+        ),
+        # and a developer metadata lookup, which selects nothing
+        (
+            "/sheets/v4/spreadsheets/{id}/values:batchGetByDataFilter",
+            "",
+            {"dataFilters": [{"developerMetadataLookup": {"locationType": "NOPE"}}]},
+            {"dataFilters": [{"developerMetadataLookup": {"metadataKey": "owner"}}]},
+        ),
+        (
+            "/sheets/v4/spreadsheets/{id}:getByDataFilter",
+            "",
+            {"dataFilters": [{"developerMetadataLookup": {"locationType": "NOPE"}}]},
+            {"dataFilters": [{"developerMetadataLookup": {"metadataKey": "owner"}}]},
+        ),
     ],
 )
 def test_a_typed_refusal_comes_after_the_credential_and_before_the_lookup(
-    client, admin_h, tokens, path, query
+    client, admin_h, tokens, path, query, body, good
 ):
-    """The order `_typed_query`'s docstring records. The refusal is the same bytes for a
-    spreadsheet the scoped token cannot see as for one that does not exist, where without the bad
-    value the first is a 200 to the admin and both are the 404 to the scoped token. With no
-    credential or a bad one the bad value changes nothing: the answer is the credential's refusal,
-    the 401 for a bad one."""
+    """The order `_typed_query`'s docstring records, and `sheets_values_batch_get_by_data_filter`'s
+    for a data-filter body. The refusal is the same bytes for a spreadsheet the scoped token cannot
+    see as for one that does not exist, where without the bad value (with ``good`` for a body) the
+    first is a 200 to the admin and both are the 404 to the scoped token. With no credential or a
+    bad one the bad value changes nothing: the answer is the credential's refusal, the 401 for a bad
+    one."""
+
+    def send(url, headers, bad=False):
+        if body is None:
+            return client.get(f"{url}?{query}" if bad else url, headers=headers)
+        return client.post(url, headers=headers, json=body if bad else good)
+
     scoped = {"Authorization": f"Bearer {tokens['mia@acme.com']}"}
     missing = path.format(id="nosuchspreadsheet000")
     hidden = path.format(id=_drive_find(client, admin_h, "Q1 Revenue Model")["id"])
-    refused = client.get(f"{missing}?{query}", headers=scoped)
+    refused = send(missing, scoped, bad=True)
     assert _gerr(refused)["code"] == 400
-    assert client.get(f"{hidden}?{query}", headers=scoped).content == refused.content
-    assert client.get(hidden, headers=admin_h).status_code == 200
-    assert client.get(hidden, headers=scoped).status_code == 404
-    assert client.get(missing, headers=scoped).status_code == 404
-    assert client.get(missing, headers=BAD_TOKEN).status_code == 401
+    assert send(hidden, scoped, bad=True).content == refused.content
+    assert send(hidden, admin_h).status_code == 200
+    assert send(hidden, scoped).status_code == 404
+    assert send(missing, scoped).status_code == 404
+    assert send(missing, BAD_TOKEN).status_code == 401
     for headers in ({}, BAD_TOKEN):
-        without = client.get(missing, headers=headers).content
-        assert client.get(f"{missing}?{query}", headers=headers).content == without
+        assert send(missing, headers, bad=True).content == send(missing, headers).content
 
 
 @pytest.mark.parametrize("mask", ["", " "])
@@ -1194,24 +1672,6 @@ def test_drive_a_blank_fields_mask_selects_nothing(client, admin_h, mask):
         assert client.get(path, headers=admin_h).json(), path
     about = _gerr(client.get(ABOUT, headers=admin_h, params={"fields": mask}))
     assert about["message"] == "The 'fields' parameter is required for this method."
-
-
-@pytest.mark.parametrize(
-    "path, reason, location",
-    [
-        ("/drive/v3/files/{pdf}/export?mimeType=text/plain", "fileNotExportable", None),
-        # the empty value is present, so in the order `drive_files_export` records it meets the 403
-        ("/drive/v3/files/{pdf}/export?mimeType=", "fileNotExportable", None),
-        ("/drive/v3/files/{doc}?alt=media", "fileNotDownloadable", "alt"),
-    ],
-)
-def test_drive_403s_carry_their_own_reasons(client, admin_h, path, reason, location):
-    doc = _drive_find(client, admin_h, "Brand")["id"]
-    pdf = _drive_find(client, admin_h, "Whitepaper")["id"]
-    e = _gerr(client.get(path.format(doc=doc, pdf=pdf), headers=admin_h))
-    assert e["code"] == 403
-    assert e["errors"][0]["reason"] == reason
-    assert e["errors"][0].get("location") == location
 
 
 BAD_TOKEN = {"Authorization": "Bearer not-a-real-token"}
@@ -2559,6 +3019,47 @@ def test_drive_order_by_rejects_keys_it_cannot_honor(client, admin_h):
     assert ok.status_code == 200
 
 
+@pytest.mark.parametrize(
+    "order_by, status",
+    [
+        ("name", 200),
+        ("name,modifiedTime", 200),
+        ("name desc,modifiedTime", 200),
+        ("recency,modifiedTime", 200),
+        ("name,name", 403),
+        ("name desc,name", 403),
+        ("name,name desc", 403),
+        ("name desc,name desc", 403),
+        ("modifiedTime,name,modifiedTime", 403),
+        ("name_natural,name", 403),
+        ("name,name_natural", 403),
+        ("name,name,bogus", 403),
+        ("name,bogus,name", 400),
+        ("name,name sideways", 400),
+    ],
+)
+def test_drive_order_by_refuses_a_repeated_sort_key(client, admin_h, order_by, status):
+    """A key named twice is the 403 `_drive_order_specs` describes, and its `error` object is the
+    one real sends; an unusable token at or before the repeat is the 400."""
+    r = client.get("/drive/v3/files", headers=admin_h, params={"pageSize": 1, "orderBy": order_by})
+    assert r.status_code == status, r.text
+    if status == 403:
+        message = "The orderBy parameter cannot contain duplicate sort keys."
+        assert _gerr(r) == {
+            "code": 403,
+            "message": message,
+            "errors": [
+                {
+                    "message": message,
+                    "domain": "global",
+                    "reason": "orderByContainsDuplicateSortKeys",
+                    "location": "orderBy",
+                    "locationType": "parameter",
+                }
+            ],
+        }
+
+
 def test_drive_invalid_fields_mask_is_rejected(client, admin_h):
     """Accepting an unknown field name and yielding empty file objects (200 {}) lets a typo or a
     stale field name in a consumer's mask pass every Backlot-backed test and 400 in production."""
@@ -2968,9 +3469,8 @@ def test_sheets_get_returns_grid_when_asked(base, admin_h):
     assert data["rowMetadata"] == [{"pixelSize": 21}] * 1000
     assert data["columnMetadata"] == [{"pixelSize": 100}] * 26
     rows = data["rowData"]
-    # a cell object per column of the range (26), the empty ones carrying no value — measured shape
-    assert {len(r["values"]) for r in rows} == {26}
-    assert all(c == {} for r in rows for c in r["values"][1:])
+    # the values end at the row's last cell holding a value — real shape
+    assert {len(r["values"]) for r in rows} == {1}
     assert [r["values"][0]["formattedValue"] for r in rows] == [
         "month,revenue",
         "Jan,120000",
@@ -3363,6 +3863,18 @@ def test_sheets_values_get_rejects_an_unusable_range(base, admin_h, sheet_id, rn
         ({"majorDimension": ""}, "major_dimension", "Dimension"),
         ({"valueRenderOption": ""}, "value_render_option", "ValueRenderOption"),
         ({"dateTimeRenderOption": ""}, "date_time_render_option", "DateTimeRenderOption"),
+        # A number the enum does not have, one written as a decimal or behind a space, and the
+        # lower-camel name (`protojson.enum_from_string`).
+        ({"majorDimension": "3"}, "major_dimension", "Dimension"),
+        ({"majorDimension": "-1"}, "major_dimension", "Dimension"),
+        ({"majorDimension": "2.0"}, "major_dimension", "Dimension"),
+        ({"majorDimension": " 2"}, "major_dimension", "Dimension"),
+        ({"majorDimension": "dimensionUnspecified"}, "major_dimension", "Dimension"),
+        ({"valueRenderOption": "3"}, "value_render_option", "ValueRenderOption"),
+        ({"dateTimeRenderOption": "2"}, "date_time_render_option", "DateTimeRenderOption"),
+        # A letter outside ASCII keeps its case (`protojson.enum_from_string`).
+        ({"majorDimension": "rowſ"}, "major_dimension", "Dimension"),
+        ({"majorDimension": "ROWſ"}, "major_dimension", "Dimension"),
     ],
 )
 def test_sheets_values_get_rejects_a_bad_enum(base, admin_h, sheet_id, params, field, enum):
@@ -3411,7 +3923,11 @@ def test_include_grid_data_takes_every_boolean_spelling_the_real_api_takes(
 
 
 @pytest.mark.parametrize("param", ["includeGridData", "excludeTablesInBandedRanges"])
-@pytest.mark.parametrize("value", ["NOPE", "", "2", "01", "1.0", "on", "off", " true", "true "])
+@pytest.mark.parametrize(
+    "value",
+    # `yeſ`: `protojson.to_bool` folds the case of ASCII letters only.
+    ["NOPE", "", "2", "01", "1.0", "on", "off", " true", "true ", "yeſ"],
+)
 def test_a_boolean_query_param_refuses_what_is_not_a_boolean(base, admin_h, sheet_id, param, value):
     """Measured message shape, which names the proto type rather than a message name: `Invalid
     value at 'include_grid_data' (TYPE_BOOL), "NOPE"`. Surrounding whitespace is not trimmed, and
@@ -3633,9 +4149,9 @@ def test_every_typed_value_is_parsed_and_every_one_refused_is_named(
 ):
     """The rule `_typed_query` and `gerr.invalid_field_values` record, on Sheets and Drive: every
     repeat parsed and every value the proto layer cannot read named in one 400. `refused` is in the
-    order sent. A body's refusals are compared exactly, in the order
-    `sheets_values_batch_get_by_data_filter` records; a query's keep each field's refusals in that
-    order and leave the order between fields open, as `_typed_query` records real does."""
+    order sent. A body's refusals are compared exactly, in the order `protojson.read` records; a
+    query's keep each field's refusals in that order and leave the order between fields open, as
+    `_typed_query` records real does."""
     url = {
         "values": f"/sheets/v4/spreadsheets/{sheet_id}/values/Sheet1!A1",
         "book": f"/sheets/v4/spreadsheets/{sheet_id}",
@@ -3681,18 +4197,49 @@ def test_every_typed_value_is_parsed_and_every_one_refused_is_named(
         {"valueRenderOption": "Unformatted_Value"},
         {"dateTimeRenderOption": "serial_number"},
         {"dateTimeRenderOption": "formatted_string"},
+        # the name the discovery document lists first, and a `-` for a `_`
+        {"majorDimension": "DIMENSION_UNSPECIFIED"},
+        {"majorDimension": "dimension-unspecified"},
+        # each enum by the number its name has, a sign and a leading zero allowed
+        {"majorDimension": "0"},
+        {"majorDimension": "+2"},
+        {"valueRenderOption": "1"},
+        {"valueRenderOption": "01"},
+        {"dateTimeRenderOption": "1"},
+        {"dateTimeRenderOption": "+1"},
     ],
 )
-def test_sheets_read_enums_are_case_insensitive(base, admin_h, sheet_id, params):
+def test_sheets_read_enums_take_a_name_in_any_case_or_its_number(base, admin_h, sheet_id, params):
     """Measured: real Sheets accepts every one of these and 400s only on a value that is not the
-    enum at all. Matching case-sensitively would refuse a request the real API answers."""
+    enum at all (`test_sheets_values_get_rejects_a_bad_enum`), by `protojson.enum_from_string`'s
+    rule."""
     assert _values(base, admin_h, sheet_id, "Sheet1!A1:A2", **params).status_code == 200
 
 
-def test_sheets_values_get_echoes_the_major_dimension_upper_cased(base, admin_h, sheet_id):
-    """Measured: the echo is the canonical spelling whatever the request used."""
-    r = _values(base, admin_h, sheet_id, "Sheet1!A1:A2", majorDimension="columns")
-    assert r.json()["majorDimension"] == "COLUMNS"
+@pytest.mark.parametrize("read", ["values", "batchGet"])
+@pytest.mark.parametrize(
+    "sent, echoed",
+    [
+        ("columns", "COLUMNS"),
+        ("2", "COLUMNS"),
+        ("02", "COLUMNS"),
+        ("DIMENSION_UNSPECIFIED", "ROWS"),
+        ("0", "ROWS"),
+        ("1", "ROWS"),
+    ],
+)
+def test_sheets_values_get_echoes_the_major_dimension_by_its_name(
+    base, admin_h, sheet_id, read, sent, echoed
+):
+    """Measured: the echo is the canonical name whatever the request used, and
+    `DIMENSION_UNSPECIFIED` reads as `ROWS` (`_sheets_major`), on `values.get` and
+    `values:batchGet` alike."""
+    if read == "values":
+        r = _values(base, admin_h, sheet_id, "Sheet1!A1:A2", majorDimension=sent)
+        assert r.json()["majorDimension"] == echoed
+    else:
+        r = _batch(base, admin_h, sheet_id, ["Sheet1!A1:A2"], majorDimension=sent)
+        assert r.json()["valueRanges"][0]["majorDimension"] == echoed
 
 
 def test_sheets_values_get_render_options_agree_on_a_prose_spreadsheet(base, admin_h, sheet_id):
@@ -4822,6 +5369,44 @@ def test_gmail_raw_and_headers(tmp_path):
     assert plain_parts and plain_parts[0].get_payload(decode=True).decode() == "body text"
 
 
+@pytest.mark.parametrize(
+    "name,value,written",
+    [
+        # the line real's `raw` wrote for this subject (see `_raw_header_value`)
+        ("Subject", "backlot probe 회의 일정", "=?UTF-8?B?YmFja2xvdCBwcm9iZSDtmozsnZgg7J287KCV?="),
+        # 58 bytes: "청" takes the 44th to 46th, so the first word ends before it
+        (
+            "Subject",
+            "Fwd: 2026년 하반기 예산안 검토 요청드립니다",
+            "=?UTF-8?B?RndkOiAyMDI264WEIO2VmOuwmOq4sCDsmIjsgrDslYgg6rKA7YagIOyalA==?= "
+            "=?UTF-8?B?7LKt65Oc66a964uI64uk?=",
+        ),
+        ("To", "회의 <peer@x.com>", "=?UTF-8?B?7ZqM7J2Y?= <peer@x.com>"),
+        (
+            "To",
+            '"김, 철수" <kim@x.com>, 박영희 <park@x.com>',
+            "=?UTF-8?B?6rmALCDssqDsiJg=?= <kim@x.com>, =?UTF-8?B?67CV7JiB7Z2s?= <park@x.com>",
+        ),
+        ("To", "회의@x.com", "회의@x.com"),
+        (
+            "Content-Type",
+            'text/plain; charset="UTF-8"; name="회의록.txt"',
+            'text/plain; charset="UTF-8"; name="=?UTF-8?B?7ZqM7J2Y66GdLnR4dA==?="',
+        ),
+        (
+            "Content-Disposition",
+            'attachment; filename="회의록.txt"',
+            'attachment; filename="=?UTF-8?B?7ZqM7J2Y66GdLnR4dA==?="',
+        ),
+    ],
+)
+def test_gmail_raw_writes_non_ascii_header_text_as_encoded_words(name, value, written):
+    """The forms `_raw_header_value` describes, one header value each."""
+    from backlot.routers.google import _raw_header_value
+
+    assert _raw_header_value(name, value) == written
+
+
 def test_gmail_raw_with_attachment_is_valid_mime(tmp_path):
     from backlot.routers.google import _gmail_message
 
@@ -4917,6 +5502,17 @@ _GMAIL_SHAPES = [
         "content": "see attached",
         "author_email": "ceo@x.com",
         "attachments": [{"filename": "notes.txt", "mime": "text/plain", "content": "안녕"}],
+    },
+    # a non-ASCII subject, display name and attachment name, which `raw` writes as encoded-words
+    {
+        "source_type": "gmail",
+        "doc_id": "hdr-ko",
+        "mailbox": "ceo",
+        "title": "회의 일정",
+        "content": "see attached",
+        "author_email": "ceo@x.com",
+        "to": "회의 <peer@x.com>",
+        "attachments": [{"filename": "회의록.txt", "mime": "text/plain", "content": "안녕"}],
     },
 ]
 
@@ -5019,22 +5615,27 @@ def test_gmail_a_text_attachment_names_us_ascii_or_utf8_by_its_content(gmail_sha
     }
 
 
-@pytest.mark.parametrize("doc", ["att", "lt", "ko", "html175", "html325", "att-ko"])
+@pytest.mark.parametrize("doc", ["att", "lt", "ko", "html175", "html325", "att-ko", "hdr-ko"])
 def test_gmail_raw_and_full_describe_one_message(gmail_shapes, doc):
-    """`format=raw` and the `full` payload are the same tree, with the same headers on each part,
-    and each raw part decodes, by its own Content-Transfer-Encoding, to the bytes `full` serves."""
+    """`format=raw` is ASCII, and it and the `full` payload are the same tree, with the same
+    headers on the message and on each part once `raw`'s encoded-words are decoded, and each raw
+    part decodes, by its own Content-Transfer-Encoding, to the bytes `full` serves."""
     import email
+    import email.policy
 
     client, h = gmail_shapes
     url = f"/gmail/v1/users/me/messages/{served_id('gmail', doc)}"
     full = client.get(url, headers=h).json()["payload"]
-    raw = client.get(url, headers=h, params={"format": "raw"}).json()["raw"]
-    mime = email.message_from_bytes(base64.urlsafe_b64decode(raw))
+    raw = base64.urlsafe_b64decode(
+        client.get(url, headers=h, params={"format": "raw"}).json()["raw"]
+    )
+    assert raw.isascii()
+    mime = email.message_from_bytes(raw, policy=email.policy.default)
     assert not mime.defects
 
     def check(part, entity):
         assert entity.get_content_type() == part["mimeType"]
-        assert {k: v for k, v in entity.items()} == _hdrs(part)
+        assert {k: str(v) for k, v in entity.items()} == _hdrs(part)
         if "parts" in part:
             children = entity.get_payload()
             assert len(children) == len(part["parts"])
@@ -5048,6 +5649,7 @@ def test_gmail_raw_and_full_describe_one_message(gmail_shapes, doc):
                 assert body.isascii() and max(map(len, body.splitlines())) <= 76
 
     assert mime.get_content_type() == full["mimeType"]
+    assert {k: str(v) for k, v in mime.items()} == _hdrs(full)
     for part, entity in zip(full["parts"], mime.get_payload(), strict=True):
         check(part, entity)
 
@@ -5063,6 +5665,41 @@ def test_gmail_metadata_payload_is_mime_type_and_headers(gmail_shapes):
                 f"/gmail/v1/users/me/messages/{served_id('gmail', doc)}", headers=h, params=params
             ).json()
             assert sorted(m["payload"]) == ["headers", "mimeType"], (doc, params)
+
+
+def test_gmail_metadata_headers_keeps_the_named_headers(gmail_shapes):
+    """The rule the comment in `_gmail_message`'s `metadata` branch records, on `messages.get` and
+    on `threads.get`, and nothing changed by the parameter without `format=metadata`."""
+    client, h = gmail_shapes
+    mid = served_id("gmail", "lt")
+    url = f"/gmail/v1/users/me/messages/{mid}"
+
+    def names(params, path=url):
+        body = client.get(path, headers=h, params=params).json()
+        payload = body["messages"][0]["payload"] if "messages" in body else body["payload"]
+        return [x["name"] for x in payload["headers"]] if "headers" in payload else None
+
+    every = names({"format": "metadata"})
+    assert {"Subject", "From", "Message-ID"} <= set(every)
+    for sent, want in (
+        (["Subject"], ["Subject"]),
+        (["subject"], ["Subject"]),
+        (["MESSAGE-ID"], ["Message-ID"]),
+        (["From", "subject"], [n for n in every if n in ("Subject", "From")]),
+        (["Subject", "Subject"], ["Subject"]),
+        (["X-Nope"], None),
+        ([""], None),
+        (["", "Subject"], ["Subject"]),
+        ([" Subject"], None),
+        (["Subject "], None),
+        (["Subject,From"], None),
+    ):
+        assert names({"format": "metadata", "metadataHeaders": sent}) == want, sent
+    thread = f"/gmail/v1/users/me/threads/{mid}"
+    assert names({"format": "metadata", "metadataHeaders": "Subject"}, thread) == ["Subject"]
+    full = names({})
+    assert names({"metadataHeaders": "Subject"}) == full
+    assert len(full) > 1
 
 
 @pytest.mark.parametrize("doc", ["att", "ko", "att-ko"])
@@ -5305,7 +5942,7 @@ GRID_RECORDS = [
             # default grid while `AB` is column 28 of a 26-column sheet, so the two fail
             # differently -- one serves the wrong cells, the other 400s.
             {"title": "AB", "grid": [["I_AM_SHEET_AB"]]},
-            {"title": "Ragged", "grid": [["a", None, "c"]]},
+            {"title": "Ragged", "grid": [["a", None, "c"], [None], ["z"], [None, None, "w"]]},
             {"title": "Blank", "grid": []},
         ],
     },
@@ -5510,13 +6147,78 @@ def test_a_typed_cell_carries_all_three_value_fields(gc, gh, book):
     }
 
 
-def test_an_empty_cell_carries_no_value_object(gc, gh, book):
-    r = gc.get(
-        f"/sheets/v4/spreadsheets/{book}",
-        headers=gh,
-        params={"includeGridData": "true", "ranges": "Ragged!A1:C1"},
-    )
-    assert r.json()["sheets"][0]["data"][0]["rowData"][0]["values"][1] == {}
+_GRID_KEYS = ["rowData", "rowMetadata", "columnMetadata"]
+_RAGGED_ROWS = [["a", {}, "c"], {}, ["z"], [{}, {}, "w"]]
+
+
+@pytest.mark.parametrize(
+    "read, rng, keys, rows",
+    [
+        ("get", "Ragged!A1:D5", _GRID_KEYS, _RAGGED_ROWS),
+        ("filter", "Ragged!A1:D5", _GRID_KEYS, _RAGGED_ROWS),
+        ("get", "Ragged", _GRID_KEYS, _RAGGED_ROWS),
+        ("get", "Ragged!B1:D1", ["startColumn", *_GRID_KEYS], [[{}, "c"]]),
+        ("get", "Ragged!B1:D4", ["startColumn", *_GRID_KEYS], [[{}, "c"], {}, {}, [{}, "w"]]),
+        ("get", "Ragged!A2:B3", ["startRow", *_GRID_KEYS], [{}, ["z"]]),
+        ("get", "Ragged!B2:D4", ["startRow", "startColumn", *_GRID_KEYS], [{}, {}, [{}, "w"]]),
+        ("filter", "Ragged!B2:D4", ["startRow", "startColumn", *_GRID_KEYS], [{}, {}, [{}, "w"]]),
+        ("get", "Ragged!A1:B2", _GRID_KEYS, [["a"]]),
+        ("filter", "Ragged!A1:B2", _GRID_KEYS, [["a"]]),
+        ("get", "Ragged!C1:C3", ["startColumn", *_GRID_KEYS], [["c"]]),
+        ("get", "Ragged!B1:B4", ["startColumn", "rowMetadata", "columnMetadata"], []),
+        ("get", "Blank", ["rowMetadata", "columnMetadata"], []),
+        ("filter", "Blank", ["rowMetadata", "columnMetadata"], []),
+        # A `gridRange` holding no cell, on the first sheet.
+        ("filter", {"startRowIndex": 1, "endRowIndex": 1}, ["startRow", "columnMetadata"], []),
+        (
+            "filter",
+            {"startColumnIndex": 1, "endColumnIndex": 1},
+            ["startColumn", "rowMetadata"],
+            [],
+        ),
+        (
+            "filter",
+            {"startRowIndex": 2, "endRowIndex": 2, "startColumnIndex": 1, "endColumnIndex": 4},
+            ["startRow", "startColumn", "columnMetadata"],
+            [],
+        ),
+        (
+            "filter",
+            {"startRowIndex": 1, "endRowIndex": 4, "startColumnIndex": 2, "endColumnIndex": 2},
+            ["startRow", "startColumn", "rowMetadata"],
+            [],
+        ),
+        ("filter", {"endRowIndex": 0}, ["columnMetadata"], []),
+    ],
+)
+def test_a_grid_data_block_serves_reals_keys_and_rows(gc, gh, book, read, rng, keys, rows):
+    """Each block as real Sheets served it from a sheet laid out like `Ragged` or `Blank`,
+    measured as `_sheets_grid_data` records, and for a `gridRange` holding no cell as
+    `_sheets_empty_grid_data` records. A cell is written here as its `formattedValue`, and an empty
+    cell or a row holding no value as the `{}` served for it."""
+    if read == "get":
+        r = gc.get(
+            f"/sheets/v4/spreadsheets/{book}",
+            headers=gh,
+            params={"includeGridData": "true", "ranges": rng},
+        )
+    else:
+        r = gc.post(
+            f"/sheets/v4/spreadsheets/{book}:getByDataFilter",
+            headers=gh,
+            json={
+                "dataFilters": [{"gridRange": rng} if isinstance(rng, dict) else {"a1Range": rng}],
+                "includeGridData": True,
+            },
+        )
+    assert r.status_code == 200, r.text
+    block = r.json()["sheets"][0]["data"][0]
+    assert list(block) == keys
+    got = [
+        [c["formattedValue"] if c else {} for c in row["values"]] if "values" in row else row
+        for row in block.get("rowData", [])
+    ]
+    assert got == rows
 
 
 @pytest.mark.parametrize(
@@ -5527,6 +6229,10 @@ def test_an_empty_cell_carries_no_value_object(gc, gh, book):
         # the identical raw value for every cell that is not a formula
         ("UNFORMATTED_VALUE", [["EMEA", 12, True]]),
         ("FORMULA", [["EMEA", 12, True]]),
+        # by number, in the order `_PJ_RENDER` lists them
+        ("0", [["EMEA", "12", "TRUE"]]),
+        ("1", [["EMEA", 12, True]]),
+        ("2", [["EMEA", 12, True]]),
         # a repeated option is read from its LAST repeat (gerr.first_repeat)
         (["FORMATTED_VALUE", "UNFORMATTED_VALUE"], [["EMEA", 12, True]]),
         (["UNFORMATTED_VALUE", "FORMATTED_VALUE"], [["EMEA", "12", "TRUE"]]),
@@ -5613,10 +6319,9 @@ def test_include_grid_data_without_ranges_gives_every_sheet_its_own_cells(gc, gh
     got = {}
     for s in r.json()["sheets"]:
         rows = s["data"][0].get("rowData", [])
-        # Each row is padded to the grid's width with empty cell objects, which real Sheets does
-        # too; the occupied prefix is what says which sheet answered.
+        # The cells holding a value are what say which sheet answered; an empty one is `{}`.
         got[s["properties"]["title"]] = [
-            [v["formattedValue"] for v in row["values"] if v] for row in rows
+            [v["formattedValue"] for v in row.get("values", []) if v] for row in rows
         ]
     assert got["A1"] == [["I_AM_SHEET_A1"]]
     assert got["AB"] == [["I_AM_SHEET_AB"]]
@@ -5671,17 +6376,6 @@ def test_ranges_without_include_grid_data_still_filters_and_serves_no_cells(gc, 
     sheets = r.json()["sheets"]
     assert [s["properties"]["title"] for s in sheets] == ["Summary"]
     assert "data" not in sheets[0]
-
-
-def test_an_empty_sheet_omits_row_data_entirely(gc, gh, book):
-    """Measured: an empty sheet's GridData block carries its metadata and no `rowData` key at all,
-    not an empty list."""
-    r = gc.get(
-        f"/sheets/v4/spreadsheets/{book}",
-        headers=gh,
-        params={"includeGridData": "true", "ranges": "Blank"},
-    )
-    assert "rowData" not in r.json()["sheets"][0]["data"][0]
 
 
 # --- Drive export must keep agreeing with the Sheets API --------------------------------------
@@ -5914,8 +6608,7 @@ def _by_filter(gc, gh, book, body):
 
 
 def test_batch_get_by_data_filter_answers_each_filter_with_the_filter_beside_it(gc, gh, book):
-    """Measured: each entry carries the `valueRange` AND the filter that selected it, so a caller
-    that sent several pairs by the filter rather than by position."""
+    """The entry `sheets_values_batch_get_by_data_filter` describes, for one filter."""
     r = _by_filter(gc, gh, book, {"dataFilters": [{"a1Range": "Summary!A1:B2"}]})
     assert r.status_code == 200, r.text
     assert r.json() == {
@@ -5948,7 +6641,8 @@ def test_a_data_filter_may_name_a_grid_range_instead_of_an_a1_string(gc, gh, boo
     assert r.status_code == 200
     got = r.json()["valueRanges"][0]
     assert got["valueRange"]["range"] == "Summary!A1:B2"
-    assert got["dataFilters"] == [{"gridRange": grid}]
+    # the first sheet's `sheetId` is 0, which the echo leaves out (`_sheets_filter_echo`)
+    assert got["dataFilters"] == [{"gridRange": {k: v for k, v in grid.items() if k != "sheetId"}}]
 
 
 def test_the_answers_come_back_sorted_by_where_each_range_starts(gc, gh, book):
@@ -5976,22 +6670,719 @@ def test_the_answers_come_back_sorted_by_where_each_range_starts(gc, gh, book):
     ]
 
 
+# Data-filter requests measured against real Sheets on 2026-10-04, and those below the lines
+# `# measured 2026-10-05` and `# measured 2026-10-06` on those days, as
+# ``(route, target, body, status, shown)``: `values` is `values:batchGetByDataFilter` and `sheet` is
+# `:getByDataFilter`; the target is the probe-shaped spreadsheet
+# `test_the_data_filter_reads_answer_every_measured_request` builds, one no spreadsheet has
+# (`nosuch`), or the probe with no credential (`anon`); the body is the bytes sent, with the probe's
+# sheet ids as `ID_SHEET1`, `ID_DATA` and `ID_R1C1`. ``shown`` is the message of a refusal,
+# `(message, reason, domain)` for one sent with `$.xgafv=1`, and of a success each answer's
+# `(range, majorDimension, echoed filters…)` on `values` (``None`` for no `valueRanges` at all) and
+# each sheet's `(title, data blocks)` on `sheet`, a block's `rowData` left out and its other lists
+# by their length. The two `sheetId: 0` rows were sent to a spreadsheet whose one sheet has that id,
+# as the probe's first sheet has here.
+# fmt: off
+MEASURED_BY_FILTER = [
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": "abc"}}]}', 400, 'Invalid value at \'data_filters[0].grid_range.start_row_index.value\' (TYPE_INT32), "abc"'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": 1.7}}]}', 400, "Invalid value at 'data_filters[0].grid_range.start_row_index.value' (TYPE_INT32), 1.7"),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": true}}]}', 400, "Invalid value at 'data_filters[0].grid_range.start_row_index.value' (TYPE_INT32), true"),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": []}}]}', 400, 'Invalid JSON payload received. Unknown name "startRowIndex" at \'data_filters[0].grid_range\': Proto field is not repeating, cannot start list.'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": {"a": 1}}}]}', 400, 'Invalid JSON payload received. Unknown name "a" at \'data_filters[0].grid_range.start_row_index\': Cannot find field.'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": ""}}]}', 400, 'Invalid value at \'data_filters[0].grid_range.start_row_index.value\' (TYPE_INT32), ""'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": " 1"}}]}', 400, 'Invalid value at \'data_filters[0].grid_range.start_row_index.value\' (TYPE_INT32), " 1"'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": "1.0"}}]}', 400, 'Invalid value at \'data_filters[0].grid_range.start_row_index.value\' (TYPE_INT32), "1.0"'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": "0x1"}}]}', 400, 'Invalid value at \'data_filters[0].grid_range.start_row_index.value\' (TYPE_INT32), "0x1"'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": 2147483648}}]}', 400, "Invalid value at 'data_filters[0].grid_range.start_row_index.value' (TYPE_INT32), 2147483648"),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": "2147483648"}}]}', 400, 'Invalid value at \'data_filters[0].grid_range.start_row_index.value\' (TYPE_INT32), "2147483648"'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": 1e+20}}]}', 400, "Invalid value at 'data_filters[0].grid_range.start_row_index.value' (TYPE_INT32), 1e+20"),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": -0.5}}]}', 400, "Invalid value at 'data_filters[0].grid_range.start_row_index.value' (TYPE_INT32), -0.5"),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": 2147483647}}]}', 400, 'Invalid dataFilter[0]: Range (Sheet1!-2147483648:) exceeds grid limits. Max rows: 1000, max columns: 26'),
+    ('sheet', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": "abc"}}]}', 400, 'Invalid value at \'data_filters[0].grid_range.start_row_index.value\' (TYPE_INT32), "abc"'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": "abc"}}]}', 400, 'Invalid value at \'data_filters[0].grid_range.sheet_id\' (TYPE_INT32), "abc"'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": {}}}]}', 400, "Invalid value at 'data_filters[0].grid_range' (sheet_id), Starting an object on a scalar field"),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": []}}]}', 400, 'Invalid JSON payload received. Unknown name "sheetId" at \'data_filters[0].grid_range\': Proto field is not repeating, cannot start list.'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": -1}}]}', 400, 'Invalid dataFilter[0]: No grid with id: -1'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": {"value": "abc"}}}]}', 400, 'Invalid value at \'data_filters[0].grid_range.start_row_index.value\' (TYPE_INT32), "abc"'),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": 5}]}', 400, "Invalid value at 'data_filters[0].a1_range' (TYPE_STRING), 5"),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": null}]}', 400, 'Invalid dataFilter[0]: dataFilter.filter must be specified.'),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": []}]}', 400, 'Invalid JSON payload received. Unknown name "a1Range" at \'data_filters[0]\': Proto field is not repeating, cannot start list.'),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": {}}]}', 400, "Invalid value at 'data_filters[0]' (a1_range), Starting an object on a scalar field"),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": ""}]}', 400, 'Invalid dataFilter[0]: Unable to parse range: '),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": "abc"}]}', 400, 'Invalid value at \'data_filters[0].grid_range\' (type.googleapis.com/google.apps.sheets.v4.GridRange), "abc"'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": []}]}', 400, 'Invalid JSON payload received. Unknown name "gridRange" at \'data_filters[0]\': Proto field is not repeating, cannot start list.'),
+    ('values', 'probe', b'{"dataFilters": "abc"}', 400, 'Invalid value at \'data_filters\' (type.googleapis.com/google.apps.sheets.v4.DataFilter), "abc"'),
+    ('values', 'probe', b'{"dataFilters": {}}', 400, 'Invalid dataFilter[0]: dataFilter.filter must be specified.'),
+    ('values', 'probe', b'{"dataFilters": ["abc"]}', 400, 'Invalid value at \'data_filters[0]\' (type.googleapis.com/google.apps.sheets.v4.DataFilter), "abc"'),
+    ('values', 'probe', b'{"dataFilters": [null]}', 400, 'Must specify at least one dataFilter.'),
+    ('values', 'probe', b'{"dataFilters": [[]]}', 400, 'Must specify at least one dataFilter.'),
+    ('values', 'probe', b'{"dataFilters": [{}]}', 400, 'Invalid dataFilter[0]: dataFilter.filter must be specified.'),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Sheet1!A1", "gridRange": {"sheetId": ID_SHEET1}}]}', 400, "Invalid value at 'data_filters[0]' (oneof), oneof field 'filter' is already set. Cannot set 'gridRange'"),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Sheet1!A1"}], "bogus": 1}', 400, 'Invalid JSON payload received. Unknown name "bogus": Cannot find field.'),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Sheet1!A1", "bogus": 1}]}', 400, 'Invalid JSON payload received. Unknown name "bogus" at \'data_filters[0]\': Cannot find field.'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "bogus": 1}}]}', 400, 'Invalid JSON payload received. Unknown name "bogus" at \'data_filters[0].grid_range\': Cannot find field.'),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Sheet1!A1"}], "bogus": 1, "majorDimension": "NOPE"}', 400, 'Invalid JSON payload received. Unknown name "bogus": Cannot find field.\nInvalid value at \'major_dimension\' (type.googleapis.com/google.apps.sheets.v4.Dimension), "NOPE"'),
+    ('values', 'probe', b'{"majorDimension": "NOPE", "dataFilters": [{"a1Range": "Sheet1!A1"}], "bogus": 1}', 400, 'Invalid value at \'major_dimension\' (type.googleapis.com/google.apps.sheets.v4.Dimension), "NOPE"\nInvalid JSON payload received. Unknown name "bogus": Cannot find field.'),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Sheet1!A1"}], "includeGridData": true}', 400, 'Invalid JSON payload received. Unknown name "includeGridData": Cannot find field.'),
+    ('values', 'probe', b'[]', 400, 'Invalid JSON payload received. Unknown name "": Root element must be a message.'),
+    ('values', 'probe', b'5', 400, 'Invalid JSON payload received. Unknown name "": Root element must be a message.'),
+    ('values', 'probe', b'', 400, 'Must specify at least one dataFilter.'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": "abc"}}]}', 400, ('Invalid value at \'data_filters[0].grid_range.start_row_index.value\' (TYPE_INT32), "abc"', 'invalid', None)),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Sheet1!A1"}], "bogus": 1}', 400, ('Invalid JSON payload received. Unknown name "bogus": Cannot find field.', 'invalid', None)),
+    ('values', 'probe', b'[]', 400, ('Invalid JSON payload received. Unknown name "": Root element must be a message.', 'invalid', None)),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": -1}}]}', 400, ('Invalid dataFilter[0]: GridRange indexes must be >= 0', 'badRequest', 'global')),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": 5}}]}', 400, ('Invalid dataFilter[0]: No grid with id: 5', 'badRequest', 'global')),
+    ('values', 'probe', b'{}', 400, ('Must specify at least one dataFilter.', 'badRequest', 'global')),
+    ('values', 'probe', b'{"DataFilters": [{"a1Range": "Sheet1!A1"}]}', 400, 'Invalid JSON payload received. Unknown name "DataFilters": Cannot find field.'),
+    ('values', 'nosuch', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": "abc"}}]}', 400, 'Invalid value at \'data_filters[0].grid_range.start_row_index.value\' (TYPE_INT32), "abc"'),
+    ('values', 'nosuch', b'{"dataFilters": [{"a1Range": "Sheet1!A1"}], "bogus": 1}', 400, 'Invalid JSON payload received. Unknown name "bogus": Cannot find field.'),
+    ('values', 'nosuch', b'[]', 400, 'Invalid JSON payload received. Unknown name "": Root element must be a message.'),
+    ('values', 'nosuch', b'{"dataFilters": [{"a1Range": "Sheet1!A1", "gridRange": {"sheetId": ID_SHEET1}}]}', 400, "Invalid value at 'data_filters[0]' (oneof), oneof field 'filter' is already set. Cannot set 'gridRange'"),
+    ('values', 'nosuch', b'{}', 404, 'Requested entity was not found.'),
+    ('values', 'nosuch', b'{"dataFilters": [{}]}', 404, 'Requested entity was not found.'),
+    ('values', 'nosuch', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": -1}}]}', 404, 'Requested entity was not found.'),
+    ('values', 'nosuch', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": 2, "endRowIndex": 1}}]}', 404, 'Requested entity was not found.'),
+    ('values', 'nosuch', b'{"dataFilters": [{"gridRange": {"sheetId": 5}}]}', 404, 'Requested entity was not found.'),
+    ('values', 'nosuch', b'{"dataFilters": [{"a1Range": "Nope!A1"}]}', 404, 'Requested entity was not found.'),
+    ('sheet', 'nosuch', b'{"dataFilters": [{}]}', 404, 'Requested entity was not found.'),
+    ('values', 'anon', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": "abc"}}]}', 401, 'Request is missing required authentication credential. Expected OAuth 2 access token, login cookie or other valid authentication credential. See https://developers.google.com/identity/sign-in/web/devconsole-project.'),
+    ('values', 'anon', b'abc', 401, 'Request is missing required authentication credential. Expected OAuth 2 access token, login cookie or other valid authentication credential. See https://developers.google.com/identity/sign-in/web/devconsole-project.'),
+    ('sheet', 'anon', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": "abc"}}]}', 401, 'Request is missing required authentication credential. Expected OAuth 2 access token, login cookie or other valid authentication credential. See https://developers.google.com/identity/sign-in/web/devconsole-project.'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": -1}}]}', 400, 'Invalid dataFilter[0]: GridRange indexes must be >= 0'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "endColumnIndex": -1}}]}', 400, 'Invalid dataFilter[0]: GridRange indexes must be >= 0'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": 2, "endRowIndex": 1}}]}', 400, 'Invalid dataFilter[0]: endRowIndex[1] cannot be before startRowIndex[2]'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startColumnIndex": 2, "endColumnIndex": 1}}]}', 400, 'Invalid dataFilter[0]: endColumnIndex[1] cannot be before startColumnIndex[2]'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startColumnIndex": 2, "endColumnIndex": 1, "startRowIndex": 2, "endRowIndex": 1}}]}', 400, 'Invalid dataFilter[0]: endRowIndex[1] cannot be before startRowIndex[2]'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": 2, "endRowIndex": 1, "startColumnIndex": -1}}]}', 400, 'Invalid dataFilter[0]: GridRange indexes must be >= 0'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": 1000, "endRowIndex": 1000}}]}', 400, 'Invalid dataFilter[0]: Range ((empty) Sheet1!1001:1000) exceeds grid limits. Max rows: 1000, max columns: 26'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": 1000}}]}', 400, 'Invalid dataFilter[0]: Range (Sheet1!1001:) exceeds grid limits. Max rows: 1000, max columns: 26'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startColumnIndex": 26}}]}', 400, 'Invalid dataFilter[0]: Range (Sheet1!AA:) exceeds grid limits. Max rows: 1000, max columns: 26'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": 0, "endRowIndex": 0, "startColumnIndex": 2, "endColumnIndex": 1}}]}', 400, 'Invalid dataFilter[0]: endColumnIndex[1] cannot be before startColumnIndex[2]'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": 5}}]}', 400, 'Invalid dataFilter[0]: No grid with id: 5'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": -1}}, {"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": 2, "endRowIndex": 1}}]}', 400, 'Invalid dataFilter[0]: GridRange indexes must be >= 0'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": 2, "endRowIndex": 1}}, {"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": -1}}]}', 400, 'Invalid dataFilter[0]: endRowIndex[1] cannot be before startRowIndex[2]'),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Nope!A1"}, {"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": -1}}]}', 400, 'Invalid dataFilter[0]: Unable to parse range: Nope!A1'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": -1}}, {"a1Range": "Nope!A1"}]}', 400, 'Invalid dataFilter[0]: GridRange indexes must be >= 0'),
+    ('sheet', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": -1}}]}', 400, 'GridRange indexes must be >= 0'),
+    ('sheet', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": 2, "endRowIndex": 1}}]}', 400, 'endRowIndex[1] cannot be before startRowIndex[2]'),
+    ('sheet', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": 1000}}]}', 400, 'Range (Sheet1!1001:) exceeds grid limits. Max rows: 1000, max columns: 26'),
+    ('sheet', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": 5}}]}', 400, 'No sheet with id: 5'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": 1000, "startColumnIndex": 1, "endColumnIndex": 3}}]}', 400, 'Invalid dataFilter[0]: Range (Sheet1!B1001:C) exceeds grid limits. Max rows: 1000, max columns: 26'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": 1000, "endRowIndex": 1005, "endColumnIndex": 3}}]}', 400, 'Invalid dataFilter[0]: Range (Sheet1!1001:C1005) exceeds grid limits. Max rows: 1000, max columns: 26'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": 1000, "endRowIndex": 1001, "startColumnIndex": 0, "endColumnIndex": 1}}]}', 400, 'Invalid dataFilter[0]: Range (Sheet1!A1001) exceeds grid limits. Max rows: 1000, max columns: 26'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startColumnIndex": 26, "endRowIndex": 5}}]}', 400, 'Invalid dataFilter[0]: Range (Sheet1!AA:5) exceeds grid limits. Max rows: 1000, max columns: 26'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startColumnIndex": 26, "endColumnIndex": 26}}]}', 400, 'Invalid dataFilter[0]: Range ((empty) Sheet1!AA:Z) exceeds grid limits. Max rows: 1000, max columns: 26'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": 1000, "endRowIndex": 1000, "startColumnIndex": 1, "endColumnIndex": 3}}]}', 400, 'Invalid dataFilter[0]: Range ((empty) Sheet1!B1001:C1000) exceeds grid limits. Max rows: 1000, max columns: 26'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": 2000, "endRowIndex": 1500}}]}', 400, 'Invalid dataFilter[0]: endRowIndex[1500] cannot be before startRowIndex[2000]'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": 5, "endRowIndex": 5, "startColumnIndex": 26}}]}', 400, 'Invalid dataFilter[0]: Range ((empty) Sheet1!AA6:5) exceeds grid limits. Max rows: 1000, max columns: 26'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_R1C1, "startRowIndex": 1000}}]}', 400, "Invalid dataFilter[0]: Range ('R1C1'!1001:) exceeds grid limits. Max rows: 1000, max columns: 26"),
+    ('values', 'probe', b'\xef\xbb\xbf{}', 400, 'Must specify at least one dataFilter.'),
+    ('sheet', 'probe', b'{"dataFilters": [{"a1Range": "Sheet1!A1"}], "includeGridData": 2}', 400, "Invalid value at 'include_grid_data' (TYPE_BOOL), 2"),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Sheet1!A1:B2"}], "majorDimension": 3}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Sheet1!A1:B2"}], "majorDimension": 1.5}', 400, "Invalid value at 'major_dimension' (type.googleapis.com/google.apps.sheets.v4.Dimension), 1.5"),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Sheet1!A1:B2"}], "majorDimension": true}', 400, "Invalid value at 'major_dimension' (type.googleapis.com/google.apps.sheets.v4.Dimension), true"),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Sheet1!A1:B2"}], "majorDimension": "3"}', 400, 'Invalid value at \'major_dimension\' (type.googleapis.com/google.apps.sheets.v4.Dimension), "3"'),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Sheet1!A1:B2"}], "majorDimension": " 2"}', 400, 'Invalid value at \'major_dimension\' (type.googleapis.com/google.apps.sheets.v4.Dimension), " 2"'),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Sheet1!A1:B2"}], "majorDimension": "dimensionUnspecified"}', 400, 'Invalid value at \'major_dimension\' (type.googleapis.com/google.apps.sheets.v4.Dimension), "dimensionUnspecified"'),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Sheet1!A1:B2"}], "majorDimension": {}}', 400, 'Invalid value (major_dimension), Starting an object on a scalar field'),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Sheet1!A1:B2"}], "majorDimension": []}', 400, 'Invalid JSON payload received. Unknown name "majorDimension": Proto field is not repeating, cannot start list.'),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Sheet1!A1"}], "valueRenderOption": 3}', 400, 'Invalid valueRenderOption: UNRECOGNIZED'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"bogus": 1}}]}', 400, 'Invalid JSON payload received. Unknown name "bogus" at \'data_filters[0].developer_metadata_lookup\': Cannot find field.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "NOPE"}}]}', 400, 'Invalid value at \'data_filters[0].developer_metadata_lookup.location_type\' (type.googleapis.com/google.apps.sheets.v4.DeveloperMetadataLocationType), "NOPE"'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": "abc"}]}', 400, 'Invalid value at \'data_filters[0].developer_metadata_lookup\' (type.googleapis.com/google.apps.sheets.v4.DeveloperMetadataLookup), "abc"'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": "a\\"b"}}]}', 400, 'Invalid value at \'data_filters[0].grid_range.start_row_index.value\' (TYPE_INT32), "a"b"'),
+    ('values', 'probe', b'{"dataFilters":[{"gridRange":{"sheetId":ID_SHEET1,"startRowIndex":1E20}}]}', 400, "Invalid value at 'data_filters[0].grid_range.start_row_index.value' (TYPE_INT32), 1e+20"),
+    ('values', 'probe', b'{"dataFilters":[{"gridRange":{"sheetId":ID_SHEET1,"startRowIndex":12345678901234567890}}]}', 400, "Invalid value at 'data_filters[0].grid_range.start_row_index.value' (TYPE_INT32), 12345678901234567890"),
+    ('values', 'probe', b'{"dataFilters":[{"gridRange":{"sheetId":ID_SHEET1,"startRowIndex":1e-2}}]}', 400, "Invalid value at 'data_filters[0].grid_range.start_row_index.value' (TYPE_INT32), 0.01"),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Sheet1!A1"}], "excludeTablesInBandedRanges": true}', 400, 'Invalid JSON payload received. Unknown name "excludeTablesInBandedRanges": Cannot find field.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataId": "abc"}}]}', 400, 'Invalid value at \'data_filters[0].developer_metadata_lookup.metadata_id.value\' (TYPE_INT32), "abc"'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"sheetId": {}}}}]}', 400, "Invalid value at 'data_filters[0].developer_metadata_lookup.metadata_location' (sheet_id), Starting an object on a scalar field"),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"spreadsheet": "maybe"}}}]}', 400, 'Invalid value at \'data_filters[0].developer_metadata_lookup.metadata_location.spreadsheet\' (TYPE_BOOL), "maybe"'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataKey": 5}}]}', 400, "Invalid value at 'data_filters[0].developer_metadata_lookup.metadata_key.value' (TYPE_STRING), 5"),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"spreadsheet": true, "sheetId": 1}}}]}', 400, "Invalid value at 'data_filters[0].developer_metadata_lookup.metadata_location' (oneof), oneof field 'location' is already set. Cannot set 'sheetId'"),
+    ('values', 'nosuch', b'{"dataFilters": [{"a1Range": "Sheet1!A1"}], "majorDimension": 3}', 404, 'Requested entity was not found.'),
+    ('values', 'nosuch', b'{"dataFilters": [{"a1Range": "Sheet1!A1"}], "valueRenderOption": 3}', 404, 'Requested entity was not found.'),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Sheet1!A1"}], "majorDimension": 3, "valueRenderOption": 3}', 400, 'Invalid valueRenderOption: UNRECOGNIZED'),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Nope!A1"}], "valueRenderOption": 3}', 400, 'Invalid valueRenderOption: UNRECOGNIZED'),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Nope!A1"}], "majorDimension": 3}', 400, 'Invalid dataFilter[0]: Unable to parse range: Nope!A1'),
+    ('sheet', 'probe', b'{"dataFilters": [{"a1Range": "Sheet1!A1"}], "commentsViewMode": "NOPE"}', 400, 'Invalid value at \'comments_view_mode\' (type.googleapis.com/google.apps.sheets.v4.CommentsViewMode), "NOPE"'),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Sheet1!A1"}], "majorDimension": 3}', 500, ('Internal error encountered.', 'backendError', 'global')),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Sheet1!A1"}], "valueRenderOption": 3}', 400, ('Invalid valueRenderOption: UNRECOGNIZED', 'badRequest', 'global')),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"dimensionRange": {"sheetId": ID_SHEET1, "startIndex": 0, "endIndex": 1}}}}]}', 400, 'Invalid dataFilter[0]: No dimension specified'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"dimensionRange": {"sheetId": 5, "dimension": "ROWS", "startIndex": 0, "endIndex": 1}}}}]}', 400, 'Invalid dataFilter[0]: No grid with id: 5'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"dimensionRange": {"sheetId": ID_SHEET1, "dimension": "ROWS", "startIndex": -1, "endIndex": 1}}}}]}', 400, 'Invalid dataFilter[0]: DimensionRange must represent a single row or column.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"dimensionRange": {"sheetId": ID_SHEET1, "dimension": "ROWS", "endIndex": 1}}}}]}', 400, 'Invalid dataFilter[0]: DimensionRange must specify both a startIndex and an endIndex.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"sheetId": 5}}}]}', 400, 'Invalid dataFilter[0]: No grid with id: 5'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"spreadsheet": true}}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: A locationMatchingStrategy was specified, but no metadataLocation was specified: lookups must always specify a metadataLocation when specifying a locationMatchingStrategy.'),
+    ('values', 'nosuch', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"dimensionRange": {"sheetId": ID_SHEET1, "startIndex": 0}}}}]}', 404, 'Requested entity was not found.'),
+    ('sheet', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"dimensionRange": {"sheetId": ID_SHEET1, "startIndex": 0}}}}]}', 400, 'DimensionRange must specify both a startIndex and an endIndex.'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": 0}}]}', 200, [('Sheet1!A1:Z1000', 'ROWS', {'gridRange': {}})]),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": 0, "startRowIndex": 0}}]}', 200, [('Sheet1!A1:Z1000', 'ROWS', {'gridRange': {'startRowIndex': 0}})]),
+    ('values', 'probe', b'{"dataFilters": {"a1Range": 5}}', 400, "Invalid value at 'data_filters.a1_range' (TYPE_STRING), 5"),
+    ('values', 'probe', b'{"dataFilters":[{"gridRange":{"sheetId":ID_SHEET1},"gridRange":{"sheetId":ID_SHEET1}}]}', 400, "Invalid value at 'data_filters[0]' (oneof), oneof field 'filter' is already set. Cannot set 'gridRange'"),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"dimensionRange": {"sheetId": ID_SHEET1, "dimension": "ROWS", "startIndex": 999, "endIndex": 1000}}}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"dimensionRange": {"sheetId": ID_SHEET1, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 27}}}}]}', 400, 'Invalid dataFilter[0]: DimensionRange must represent a single row or column.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"dimensionRange": {"sheetId": ID_SHEET1, "dimension": "DIMENSION_UNSPECIFIED", "startIndex": 0, "endIndex": 1}}}}]}', 400, 'Invalid dataFilter[0]: No dimension specified'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"dimensionRange": {"sheetId": ID_SHEET1, "dimension": "ROWS", "startIndex": 1000, "endIndex": 1001}}}}]}', 400, 'Invalid dataFilter[0]: DimensionRange startIndex [1000] is after the last ROWS index [999] of the sheet [ID_SHEET1].'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": -1}}, {"developerMetadataLookup": {"metadataLocation": {"sheetId": 5}}}]}', 400, 'Invalid dataFilter[0]: GridRange indexes must be >= 0'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"sheetId": 5}}}, {"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": -1}}]}', 400, 'Invalid dataFilter[0]: No grid with id: 5'),
+    ('sheet', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"sheetId": 5}}}]}', 400, 'No grid with id: 5'),
+    ('sheet', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataKey": "k"}}, {"a1Range": "Nope!A1"}]}', 400, 'Unable to parse range: Nope!A1'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"dimensionRange": {"sheetId": ID_SHEET1, "dimension": "ROWS", "startIndex": 1000, "endIndex": 1002}}}}]}', 400, 'Invalid dataFilter[0]: DimensionRange must represent a single row or column.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"dimensionRange": {"sheetId": 5, "startIndex": 0, "endIndex": 1}}}}]}', 400, 'Invalid dataFilter[0]: No grid with id: 5'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"dimensionRange": {"sheetId": 5, "dimension": "ROWS", "startIndex": 0}}}}]}', 400, 'Invalid dataFilter[0]: DimensionRange must specify both a startIndex and an endIndex.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"dimensionRange": {"sheetId": ID_SHEET1, "startIndex": 0, "endIndex": 5}}}}]}', 400, 'Invalid dataFilter[0]: DimensionRange must represent a single row or column.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"dimensionRange": {"sheetId": ID_SHEET1, "dimension": "COLUMNS", "startIndex": 26, "endIndex": 27}}}}]}', 400, 'Invalid dataFilter[0]: DimensionRange startIndex [26] is after the last COLUMNS index [25] of the sheet [ID_SHEET1].'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"dimensionRange": {"sheetId": ID_SHEET1, "dimension": "ROWS", "startIndex": -5, "endIndex": -4}}}}]}', 400, 'Invalid dataFilter[0]: DimensionRange indexes must be >= 0'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationMatchingStrategy": "EXACT_LOCATION", "metadataKey": "x"}}]}', 400, 'Invalid dataFilter[0]: A locationMatchingStrategy was specified, but no metadataLocation was specified: lookups must always specify a metadataLocation when specifying a locationMatchingStrategy.'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": 1000, "endRowIndex": 1001}}]}', 400, 'Invalid dataFilter[0]: Range (Sheet1!1001) exceeds grid limits. Max rows: 1000, max columns: 26'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startColumnIndex": 26, "endColumnIndex": 27, "startRowIndex": 0}}]}', 400, 'Invalid dataFilter[0]: Range (Sheet1!AA1:AA) exceeds grid limits. Max rows: 1000, max columns: 26'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": 5, "startRowIndex": -1}}]}', 400, 'Invalid dataFilter[0]: No grid with id: 5'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": 2147483647, "endRowIndex": 2147483647}}]}', 400, 'Invalid dataFilter[0]: Range ((empty) Sheet1!-2147483648:2147483647) exceeds grid limits. Max rows: 1000, max columns: 26'),
+    ('sheet', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": 5, "startRowIndex": -1}}]}', 400, 'No sheet with id: 5'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": 1, "endRowIndex": 1}}, {"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": -1}}]}', 400, 'Invalid dataFilter[1]: GridRange indexes must be >= 0'),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Sheet1!A1"}], "bogus": null}', 400, 'Invalid JSON payload received. Unknown name "bogus": Cannot find field.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataValue": 5}}]}', 400, "Invalid value at 'data_filters[0].developer_metadata_lookup.metadata_value.value' (TYPE_STRING), 5"),
+    ('values', 'probe', b'{"valueRenderOption": 3}', 400, 'Invalid valueRenderOption: UNRECOGNIZED'),
+    ('values', 'probe', b'{"majorDimension": 3}', 400, 'Must specify at least one dataFilter.'),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Sheet1!A2000"}, {"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": -1}}]}', 400, 'Invalid dataFilter[0]: Range (Sheet1!A2000) exceeds grid limits. Max rows: 1000, max columns: 26'),
+    ('sheet', 'probe', b'{"dataFilters": [{"a1Range": "Sheet1!A2000"}]}', 400, 'Range (Sheet1!A2000) exceeds grid limits. Max rows: 1000, max columns: 26'),
+    ('values', 'probe', b'{"dataFilters": [null, "abc"]}', 400, 'Invalid value at \'data_filters[0]\' (type.googleapis.com/google.apps.sheets.v4.DataFilter), "abc"'),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Sheet1!A1"}, "abc"]}', 400, 'Invalid value at \'data_filters[1]\' (type.googleapis.com/google.apps.sheets.v4.DataFilter), "abc"'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationMatchingStrategy": 7}}]}', 400, 'Invalid dataFilter[0]: A locationMatchingStrategy was specified, but no metadataLocation was specified: lookups must always specify a metadataLocation when specifying a locationMatchingStrategy.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"dimensionRange": {"sheetId": ID_SHEET1, "dimension": 7, "startIndex": 0, "endIndex": 1}}}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"endColumnIndex": "x", "sheetId": "abc", "startRowIndex": 1.5}}]}', 400, 'Invalid value at \'data_filters[0].grid_range.end_column_index.value\' (TYPE_INT32), "x"\nInvalid value at \'data_filters[0].grid_range.sheet_id\' (TYPE_INT32), "abc"\nInvalid value at \'data_filters[0].grid_range.start_row_index.value\' (TYPE_INT32), 1.5'),
+    ('values', 'probe', b'{"majorDimension": "NOPE", "dataFilters": [{"gridRange": {"startRowIndex": "a"}}, {"a1Range": 5}]}', 400, 'Invalid value at \'major_dimension\' (type.googleapis.com/google.apps.sheets.v4.Dimension), "NOPE"\nInvalid value at \'data_filters[0].grid_range.start_row_index.value\' (TYPE_INT32), "a"\nInvalid value at \'data_filters[1].a1_range\' (TYPE_STRING), 5'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": 9}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"visibility": 9}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"locationType": 9}}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"dimensionRange": {"sheetId": ID_SHEET1, "dimension": 7, "startIndex": 0, "endIndex": 3}}}}]}', 400, 'Invalid dataFilter[0]: DimensionRange must represent a single row or column.'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "startRowIndex": "+1"}}]}', 200, [('Data!A2:Z1000', 'ROWS', {'gridRange': {'sheetId': 'ID_DATA', 'startRowIndex': 1}})]),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "startRowIndex": "01"}}]}', 200, [('Data!A2:Z1000', 'ROWS', {'gridRange': {'sheetId': 'ID_DATA', 'startRowIndex': 1}})]),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "startRowIndex": 1.0}}]}', 200, [('Data!A2:Z1000', 'ROWS', {'gridRange': {'sheetId': 'ID_DATA', 'startRowIndex': 1}})]),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "startRowIndex": {}}}]}', 200, [('Data!A1:Z1000', 'ROWS', {'gridRange': {'sheetId': 'ID_DATA', 'startRowIndex': 0}})]),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "startRowIndex": {"value": 1}}}]}', 200, [('Data!A2:Z1000', 'ROWS', {'gridRange': {'sheetId': 'ID_DATA', 'startRowIndex': 1}})]),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "startRowIndex": {"value": null}}}]}', 200, [('Data!A1:Z1000', 'ROWS', {'gridRange': {'sheetId': 'ID_DATA', 'startRowIndex': 0}})]),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "startRowIndex": "\\t1"}}]}', 200, [('Data!A2:Z1000', 'ROWS', {'gridRange': {'sheetId': 'ID_DATA', 'startRowIndex': 1}})]),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "endRowIndex": 2000}}]}', 200, [('Data!A1:Z1000', 'ROWS', {'gridRange': {'endRowIndex': 2000, 'sheetId': 'ID_DATA'}})]),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "startRowIndex": 999, "endRowIndex": 1001}}]}', 200, [('Data!A1000:Z1000', 'ROWS', {'gridRange': {'endRowIndex': 1001, 'sheetId': 'ID_DATA', 'startRowIndex': 999}})]),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "startRowIndex": 0, "endRowIndex": 0}}]}', 200, [('#REF!', 'ROWS', {'gridRange': {'endRowIndex': 0, 'sheetId': 'ID_DATA', 'startRowIndex': 0}})]),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "startColumnIndex": 3, "endColumnIndex": 3}}]}', 200, [('#REF!', 'ROWS', {'gridRange': {'endColumnIndex': 3, 'sheetId': 'ID_DATA', 'startColumnIndex': 3}})]),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "endRowIndex": 0}}]}', 200, [('#REF!', 'ROWS', {'gridRange': {'endRowIndex': 0, 'sheetId': 'ID_DATA'}})]),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "startRowIndex": 1, "endRowIndex": 1, "startColumnIndex": 1, "endColumnIndex": 1}}]}', 200, [('#REF!', 'ROWS', {'gridRange': {'endColumnIndex': 1, 'endRowIndex': 1, 'sheetId': 'ID_DATA', 'startColumnIndex': 1, 'startRowIndex': 1}})]),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "startRowIndex": null}}]}', 200, [('Data!A1:Z1000', 'ROWS', {'gridRange': {'sheetId': 'ID_DATA'}})]),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": "ID_DATA"}}]}', 200, [('Data!A1:Z1000', 'ROWS', {'gridRange': {'sheetId': 'ID_DATA'}})]),
+    ('values', 'probe', b'{"data_filters": [{"grid_range": {"sheet_id": ID_DATA, "start_row_index": 1}}]}', 200, [('Data!A2:Z1000', 'ROWS', {'gridRange': {'sheetId': 'ID_DATA', 'startRowIndex': 1}})]),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": null, "gridRange": {"sheetId": ID_DATA, "endRowIndex": 1, "endColumnIndex": 1}}]}', 200, [('Data!A1', 'ROWS', {'gridRange': {'endColumnIndex': 1, 'endRowIndex': 1, 'sheetId': 'ID_DATA'}})]),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Data!A1"}, {"gridRange": {"sheetId": ID_DATA, "startRowIndex": 1, "endRowIndex": 1}}], "majorDimension": "COLUMNS"}', 200, [('Data!A1', 'COLUMNS', {'a1Range': 'Data!A1'}), ('#REF!', 'COLUMNS', {'gridRange': {'endRowIndex': 1, 'sheetId': 'ID_DATA', 'startRowIndex': 1}})]),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataKey": "k"}}, {"gridRange": {"sheetId": ID_DATA, "endRowIndex": 1, "endColumnIndex": 1}}]}', 200, [('Data!A1', 'ROWS', {'gridRange': {'endColumnIndex': 1, 'endRowIndex': 1, 'sheetId': 'ID_DATA'}})]),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Data!A1:B2"}], "majorDimension": 2}', 200, [('Data!A1:B2', 'COLUMNS', {'a1Range': 'Data!A1:B2'})]),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Data!A1:B2"}], "majorDimension": "dimension-unspecified"}', 200, [('Data!A1:B2', 'ROWS', {'a1Range': 'Data!A1:B2'})]),
+    ('values', 'probe', b'{"dataFilters":[{"a1Range":"Data!A1:B2"}],"majorDimension":"COLUMNS","majorDimension":"ROWS"}', 200, [('Data!A1:B2', 'ROWS', {'a1Range': 'Data!A1:B2'})]),
+    ('sheet', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "startRowIndex": 1, "endRowIndex": 1, "startColumnIndex": 2, "endColumnIndex": 2}}], "includeGridData": true}', 200, [('Data', [{'startColumn': 2, 'startRow': 1}])]),
+    ('sheet', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "startRowIndex": 1, "endRowIndex": 1}}], "includeGridData": true}', 200, [('Data', [{'columnMetadata': 26, 'startRow': 1}])]),
+    ('sheet', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "startColumnIndex": 1, "endColumnIndex": 1}}], "includeGridData": true}', 200, [('Data', [{'rowMetadata': 1000, 'startColumn': 1}])]),
+    ('sheet', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataKey": "k"}}, {"a1Range": "Data!A1"}]}', 200, [('Data', None)]),
+    ('sheet', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataKey": "k"}}, {"developerMetadataLookup": {"metadataId": 3}}], "includeGridData": true}', 200, [('Sheet1', [{'columnMetadata': 26, 'rowMetadata': 1000}]), ('Data', [{'columnMetadata': 26, 'rowMetadata': 1000}]), ('R1C1', [{'columnMetadata': 26, 'rowMetadata': 1000}]), ('RC', [{'columnMetadata': 26, 'rowMetadata': 1000}]), ('A', [{'columnMetadata': 26, 'rowMetadata': 1000}])]),
+    ('sheet', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataKey": "k"}}], "includeGridData": true}', 200, [('Sheet1', [{'columnMetadata': 26, 'rowMetadata': 1000}]), ('Data', [{'columnMetadata': 26, 'rowMetadata': 1000}]), ('R1C1', [{'columnMetadata': 26, 'rowMetadata': 1000}]), ('RC', [{'columnMetadata': 26, 'rowMetadata': 1000}]), ('A', [{'columnMetadata': 26, 'rowMetadata': 1000}])]),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": 1000, "endRowIndex": 1005}}]}', 400, 'Invalid dataFilter[0]: Range (Sheet1!1001:1005) exceeds grid limits. Max rows: 1000, max columns: 26'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": 1000, "startColumnIndex": 1}}]}', 400, 'Invalid dataFilter[0]: Range (Sheet1!B1001:) exceeds grid limits. Max rows: 1000, max columns: 26'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": 1000, "endColumnIndex": 3}}]}', 400, 'Invalid dataFilter[0]: Range (Sheet1!1001:C) exceeds grid limits. Max rows: 1000, max columns: 26'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": 1000, "endRowIndex": 1005, "startColumnIndex": 1}}]}', 400, 'Invalid dataFilter[0]: Range (Sheet1!B1001:1005) exceeds grid limits. Max rows: 1000, max columns: 26'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": 1000, "endRowIndex": 1005, "startColumnIndex": 1, "endColumnIndex": 3}}]}', 400, 'Invalid dataFilter[0]: Range (Sheet1!B1001:C1005) exceeds grid limits. Max rows: 1000, max columns: 26'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startColumnIndex": 26, "endColumnIndex": 28}}]}', 400, 'Invalid dataFilter[0]: Range (Sheet1!AA:AB) exceeds grid limits. Max rows: 1000, max columns: 26'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startColumnIndex": 26, "startRowIndex": 1}}]}', 400, 'Invalid dataFilter[0]: Range (Sheet1!AA2:) exceeds grid limits. Max rows: 1000, max columns: 26'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startColumnIndex": 26, "endColumnIndex": 28, "startRowIndex": 1}}]}', 400, 'Invalid dataFilter[0]: Range (Sheet1!AA2:AB) exceeds grid limits. Max rows: 1000, max columns: 26'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startColumnIndex": 26, "endColumnIndex": 28, "endRowIndex": 5}}]}', 400, 'Invalid dataFilter[0]: Range (Sheet1!AA:AB5) exceeds grid limits. Max rows: 1000, max columns: 26'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startColumnIndex": 26, "startRowIndex": 1, "endRowIndex": 5}}]}', 400, 'Invalid dataFilter[0]: Range (Sheet1!AA2:5) exceeds grid limits. Max rows: 1000, max columns: 26'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startColumnIndex": 26, "endColumnIndex": 28, "startRowIndex": 1, "endRowIndex": 5}}]}', 400, 'Invalid dataFilter[0]: Range (Sheet1!AA2:AB5) exceeds grid limits. Max rows: 1000, max columns: 26'),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Sheet1!A1"}], "bogus": {"majorDimension": "NOPE", "x": [1, {"y": 2}]}, "valueRenderOption": "NOPE"}', 400, 'Invalid JSON payload received. Unknown name "bogus": Cannot find field.\nInvalid value at \'value_render_option\' (type.googleapis.com/google.apps.sheets.v4.ValueRenderOption), "NOPE"'),
+    ('values', 'probe', b'{"bogus": [{"majorDimension": "NOPE"}], "dataFilters": [{"a1Range": "Sheet1!A1"}]}', 400, 'Invalid JSON payload received. Unknown name "bogus": Cannot find field.'),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Sheet1!A1", "bogus": {"gridRange": "abc"}}]}', 400, 'Invalid JSON payload received. Unknown name "bogus" at \'data_filters[0]\': Cannot find field.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationMatchingStrategy": "EXACT_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: A locationMatchingStrategy was specified, but no metadataLocation was specified: lookups must always specify a metadataLocation when specifying a locationMatchingStrategy.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationMatchingStrategy": 9}}]}', 400, 'Invalid dataFilter[0]: A locationMatchingStrategy was specified, but no metadataLocation was specified: lookups must always specify a metadataLocation when specifying a locationMatchingStrategy.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {}}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {}, "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: A locationMatchingStrategy was specified, but no metadataLocation was specified: lookups must always specify a metadataLocation when specifying a locationMatchingStrategy.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {}, "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: A locationMatchingStrategy was specified, but no metadataLocation was specified: lookups must always specify a metadataLocation when specifying a locationMatchingStrategy.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {}, "locationMatchingStrategy": 9}}]}', 400, 'Invalid dataFilter[0]: A locationMatchingStrategy was specified, but no metadataLocation was specified: lookups must always specify a metadataLocation when specifying a locationMatchingStrategy.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"spreadsheet": true}, "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"spreadsheet": true}, "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: DeveloperMetadataLookup.spreadsheet is true, but locationMatchingStrategy was specified as INTERSECTING.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"spreadsheet": true}, "locationMatchingStrategy": 9}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"spreadsheet": false}}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"spreadsheet": false}, "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"spreadsheet": false}, "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"spreadsheet": false}, "locationMatchingStrategy": 9}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"sheetId": ID_DATA}}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"sheetId": ID_DATA}, "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"sheetId": ID_DATA}, "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"sheetId": ID_DATA}, "locationMatchingStrategy": 9}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"sheetId": 5}, "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: No grid with id: 5'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"sheetId": 5}, "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: No grid with id: 5'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"sheetId": 5}, "locationMatchingStrategy": 9}}]}', 400, 'Invalid dataFilter[0]: No grid with id: 5'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "ROWS", "startIndex": 0, "endIndex": 1}}}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "ROWS", "startIndex": 0, "endIndex": 1}}, "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "ROWS", "startIndex": 0, "endIndex": 1}}, "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "ROWS", "startIndex": 0, "endIndex": 1}}, "locationMatchingStrategy": 9}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 1}}}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 1}}, "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 1}}, "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 1}}, "locationMatchingStrategy": 9}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "ROW"}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "ROW", "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: The locationMatchingStrategy was specified as EXACT_LOCATION, but a locationType was also specified: lookups cannot limit by a location type when matching an exact location.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "ROW", "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: A locationMatchingStrategy was specified, but no metadataLocation was specified: lookups must always specify a metadataLocation when specifying a locationMatchingStrategy.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "ROW", "locationMatchingStrategy": 9}}]}', 400, 'Invalid dataFilter[0]: A locationMatchingStrategy was specified, but no metadataLocation was specified: lookups must always specify a metadataLocation when specifying a locationMatchingStrategy.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "ROW", "metadataLocation": {}}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "ROW", "metadataLocation": {}, "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: The locationMatchingStrategy was specified as EXACT_LOCATION, but a locationType was also specified: lookups cannot limit by a location type when matching an exact location.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "ROW", "metadataLocation": {}, "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: A locationMatchingStrategy was specified, but no metadataLocation was specified: lookups must always specify a metadataLocation when specifying a locationMatchingStrategy.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "ROW", "metadataLocation": {}, "locationMatchingStrategy": 9}}]}', 400, 'Invalid dataFilter[0]: A locationMatchingStrategy was specified, but no metadataLocation was specified: lookups must always specify a metadataLocation when specifying a locationMatchingStrategy.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "ROW", "metadataLocation": {"spreadsheet": true}}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "ROW", "metadataLocation": {"spreadsheet": true}, "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: The locationMatchingStrategy was specified as EXACT_LOCATION, but a locationType was also specified: lookups cannot limit by a location type when matching an exact location.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "ROW", "metadataLocation": {"spreadsheet": true}, "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: DeveloperMetadataLookup.spreadsheet is true, but locationMatchingStrategy was specified as INTERSECTING.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "ROW", "metadataLocation": {"spreadsheet": true}, "locationMatchingStrategy": 9}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "ROW", "metadataLocation": {"spreadsheet": false}}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "ROW", "metadataLocation": {"spreadsheet": false}, "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: The locationMatchingStrategy was specified as EXACT_LOCATION, but a locationType was also specified: lookups cannot limit by a location type when matching an exact location.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "ROW", "metadataLocation": {"spreadsheet": false}, "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "ROW", "metadataLocation": {"spreadsheet": false}, "locationMatchingStrategy": 9}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "ROW", "metadataLocation": {"sheetId": ID_DATA}}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "ROW", "metadataLocation": {"sheetId": ID_DATA}, "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: The locationMatchingStrategy was specified as EXACT_LOCATION, but a locationType was also specified: lookups cannot limit by a location type when matching an exact location.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "ROW", "metadataLocation": {"sheetId": ID_DATA}, "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "ROW", "metadataLocation": {"sheetId": ID_DATA}, "locationMatchingStrategy": 9}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "ROW", "metadataLocation": {"sheetId": 5}}}]}', 400, 'Invalid dataFilter[0]: No grid with id: 5'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "ROW", "metadataLocation": {"sheetId": 5}, "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: The locationMatchingStrategy was specified as EXACT_LOCATION, but a locationType was also specified: lookups cannot limit by a location type when matching an exact location.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "ROW", "metadataLocation": {"sheetId": 5}, "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: No grid with id: 5'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "ROW", "metadataLocation": {"sheetId": 5}, "locationMatchingStrategy": 9}}]}', 400, 'Invalid dataFilter[0]: No grid with id: 5'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "ROW", "metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "ROWS", "startIndex": 0, "endIndex": 1}}}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "ROW", "metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "ROWS", "startIndex": 0, "endIndex": 1}}, "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: The locationMatchingStrategy was specified as EXACT_LOCATION, but a locationType was also specified: lookups cannot limit by a location type when matching an exact location.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "ROW", "metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "ROWS", "startIndex": 0, "endIndex": 1}}, "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "ROW", "metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "ROWS", "startIndex": 0, "endIndex": 1}}, "locationMatchingStrategy": 9}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "ROW", "metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 1}}}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "ROW", "metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 1}}, "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: The locationMatchingStrategy was specified as EXACT_LOCATION, but a locationType was also specified: lookups cannot limit by a location type when matching an exact location.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "ROW", "metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 1}}, "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "ROW", "metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 1}}, "locationMatchingStrategy": 9}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "COLUMN"}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "COLUMN", "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: The locationMatchingStrategy was specified as EXACT_LOCATION, but a locationType was also specified: lookups cannot limit by a location type when matching an exact location.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "COLUMN", "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: A locationMatchingStrategy was specified, but no metadataLocation was specified: lookups must always specify a metadataLocation when specifying a locationMatchingStrategy.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "COLUMN", "locationMatchingStrategy": 9}}]}', 400, 'Invalid dataFilter[0]: A locationMatchingStrategy was specified, but no metadataLocation was specified: lookups must always specify a metadataLocation when specifying a locationMatchingStrategy.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "COLUMN", "metadataLocation": {}}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "COLUMN", "metadataLocation": {}, "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: The locationMatchingStrategy was specified as EXACT_LOCATION, but a locationType was also specified: lookups cannot limit by a location type when matching an exact location.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "COLUMN", "metadataLocation": {}, "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: A locationMatchingStrategy was specified, but no metadataLocation was specified: lookups must always specify a metadataLocation when specifying a locationMatchingStrategy.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "COLUMN", "metadataLocation": {}, "locationMatchingStrategy": 9}}]}', 400, 'Invalid dataFilter[0]: A locationMatchingStrategy was specified, but no metadataLocation was specified: lookups must always specify a metadataLocation when specifying a locationMatchingStrategy.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "COLUMN", "metadataLocation": {"spreadsheet": true}}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "COLUMN", "metadataLocation": {"spreadsheet": true}, "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: The locationMatchingStrategy was specified as EXACT_LOCATION, but a locationType was also specified: lookups cannot limit by a location type when matching an exact location.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "COLUMN", "metadataLocation": {"spreadsheet": true}, "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: DeveloperMetadataLookup.spreadsheet is true, but locationMatchingStrategy was specified as INTERSECTING.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "COLUMN", "metadataLocation": {"spreadsheet": true}, "locationMatchingStrategy": 9}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "COLUMN", "metadataLocation": {"spreadsheet": false}}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "COLUMN", "metadataLocation": {"spreadsheet": false}, "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: The locationMatchingStrategy was specified as EXACT_LOCATION, but a locationType was also specified: lookups cannot limit by a location type when matching an exact location.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "COLUMN", "metadataLocation": {"spreadsheet": false}, "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "COLUMN", "metadataLocation": {"spreadsheet": false}, "locationMatchingStrategy": 9}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "COLUMN", "metadataLocation": {"sheetId": ID_DATA}}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "COLUMN", "metadataLocation": {"sheetId": ID_DATA}, "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: The locationMatchingStrategy was specified as EXACT_LOCATION, but a locationType was also specified: lookups cannot limit by a location type when matching an exact location.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "COLUMN", "metadataLocation": {"sheetId": ID_DATA}, "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "COLUMN", "metadataLocation": {"sheetId": ID_DATA}, "locationMatchingStrategy": 9}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "COLUMN", "metadataLocation": {"sheetId": 5}}}]}', 400, 'Invalid dataFilter[0]: No grid with id: 5'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "COLUMN", "metadataLocation": {"sheetId": 5}, "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: The locationMatchingStrategy was specified as EXACT_LOCATION, but a locationType was also specified: lookups cannot limit by a location type when matching an exact location.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "COLUMN", "metadataLocation": {"sheetId": 5}, "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: No grid with id: 5'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "COLUMN", "metadataLocation": {"sheetId": 5}, "locationMatchingStrategy": 9}}]}', 400, 'Invalid dataFilter[0]: No grid with id: 5'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "COLUMN", "metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "ROWS", "startIndex": 0, "endIndex": 1}}}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "COLUMN", "metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "ROWS", "startIndex": 0, "endIndex": 1}}, "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: The locationMatchingStrategy was specified as EXACT_LOCATION, but a locationType was also specified: lookups cannot limit by a location type when matching an exact location.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "COLUMN", "metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "ROWS", "startIndex": 0, "endIndex": 1}}, "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "COLUMN", "metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "ROWS", "startIndex": 0, "endIndex": 1}}, "locationMatchingStrategy": 9}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "COLUMN", "metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 1}}}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "COLUMN", "metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 1}}, "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: The locationMatchingStrategy was specified as EXACT_LOCATION, but a locationType was also specified: lookups cannot limit by a location type when matching an exact location.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "COLUMN", "metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 1}}, "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "COLUMN", "metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 1}}, "locationMatchingStrategy": 9}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SHEET"}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SHEET", "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: The locationMatchingStrategy was specified as EXACT_LOCATION, but a locationType was also specified: lookups cannot limit by a location type when matching an exact location.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SHEET", "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: A locationMatchingStrategy was specified, but no metadataLocation was specified: lookups must always specify a metadataLocation when specifying a locationMatchingStrategy.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SHEET", "locationMatchingStrategy": 9}}]}', 400, 'Invalid dataFilter[0]: A locationMatchingStrategy was specified, but no metadataLocation was specified: lookups must always specify a metadataLocation when specifying a locationMatchingStrategy.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SHEET", "metadataLocation": {}}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SHEET", "metadataLocation": {}, "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: The locationMatchingStrategy was specified as EXACT_LOCATION, but a locationType was also specified: lookups cannot limit by a location type when matching an exact location.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SHEET", "metadataLocation": {}, "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: A locationMatchingStrategy was specified, but no metadataLocation was specified: lookups must always specify a metadataLocation when specifying a locationMatchingStrategy.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SHEET", "metadataLocation": {}, "locationMatchingStrategy": 9}}]}', 400, 'Invalid dataFilter[0]: A locationMatchingStrategy was specified, but no metadataLocation was specified: lookups must always specify a metadataLocation when specifying a locationMatchingStrategy.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SHEET", "metadataLocation": {"spreadsheet": true}}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SHEET", "metadataLocation": {"spreadsheet": true}, "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: The locationMatchingStrategy was specified as EXACT_LOCATION, but a locationType was also specified: lookups cannot limit by a location type when matching an exact location.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SHEET", "metadataLocation": {"spreadsheet": true}, "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: DeveloperMetadataLookup.spreadsheet is true, but locationMatchingStrategy was specified as INTERSECTING.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SHEET", "metadataLocation": {"spreadsheet": true}, "locationMatchingStrategy": 9}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SHEET", "metadataLocation": {"spreadsheet": false}}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SHEET", "metadataLocation": {"spreadsheet": false}, "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: The locationMatchingStrategy was specified as EXACT_LOCATION, but a locationType was also specified: lookups cannot limit by a location type when matching an exact location.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SHEET", "metadataLocation": {"spreadsheet": false}, "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SHEET", "metadataLocation": {"spreadsheet": false}, "locationMatchingStrategy": 9}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SHEET", "metadataLocation": {"sheetId": ID_DATA}}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SHEET", "metadataLocation": {"sheetId": ID_DATA}, "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: The locationMatchingStrategy was specified as EXACT_LOCATION, but a locationType was also specified: lookups cannot limit by a location type when matching an exact location.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SHEET", "metadataLocation": {"sheetId": ID_DATA}, "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SHEET", "metadataLocation": {"sheetId": ID_DATA}, "locationMatchingStrategy": 9}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SHEET", "metadataLocation": {"sheetId": 5}}}]}', 400, 'Invalid dataFilter[0]: No grid with id: 5'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SHEET", "metadataLocation": {"sheetId": 5}, "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: The locationMatchingStrategy was specified as EXACT_LOCATION, but a locationType was also specified: lookups cannot limit by a location type when matching an exact location.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SHEET", "metadataLocation": {"sheetId": 5}, "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: No grid with id: 5'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SHEET", "metadataLocation": {"sheetId": 5}, "locationMatchingStrategy": 9}}]}', 400, 'Invalid dataFilter[0]: No grid with id: 5'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SHEET", "metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "ROWS", "startIndex": 0, "endIndex": 1}}}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SHEET", "metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "ROWS", "startIndex": 0, "endIndex": 1}}, "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: The locationMatchingStrategy was specified as EXACT_LOCATION, but a locationType was also specified: lookups cannot limit by a location type when matching an exact location.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SHEET", "metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "ROWS", "startIndex": 0, "endIndex": 1}}, "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SHEET", "metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "ROWS", "startIndex": 0, "endIndex": 1}}, "locationMatchingStrategy": 9}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SHEET", "metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 1}}}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SHEET", "metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 1}}, "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: The locationMatchingStrategy was specified as EXACT_LOCATION, but a locationType was also specified: lookups cannot limit by a location type when matching an exact location.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SHEET", "metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 1}}, "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SHEET", "metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 1}}, "locationMatchingStrategy": 9}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SPREADSHEET"}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SPREADSHEET", "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: The locationMatchingStrategy was specified as EXACT_LOCATION, but a locationType was also specified: lookups cannot limit by a location type when matching an exact location.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SPREADSHEET", "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: A locationMatchingStrategy was specified, but no metadataLocation was specified: lookups must always specify a metadataLocation when specifying a locationMatchingStrategy.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SPREADSHEET", "locationMatchingStrategy": 9}}]}', 400, 'Invalid dataFilter[0]: A locationMatchingStrategy was specified, but no metadataLocation was specified: lookups must always specify a metadataLocation when specifying a locationMatchingStrategy.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SPREADSHEET", "metadataLocation": {}}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SPREADSHEET", "metadataLocation": {}, "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: The locationMatchingStrategy was specified as EXACT_LOCATION, but a locationType was also specified: lookups cannot limit by a location type when matching an exact location.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SPREADSHEET", "metadataLocation": {}, "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: A locationMatchingStrategy was specified, but no metadataLocation was specified: lookups must always specify a metadataLocation when specifying a locationMatchingStrategy.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SPREADSHEET", "metadataLocation": {}, "locationMatchingStrategy": 9}}]}', 400, 'Invalid dataFilter[0]: A locationMatchingStrategy was specified, but no metadataLocation was specified: lookups must always specify a metadataLocation when specifying a locationMatchingStrategy.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SPREADSHEET", "metadataLocation": {"spreadsheet": true}}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SPREADSHEET", "metadataLocation": {"spreadsheet": true}, "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: The locationMatchingStrategy was specified as EXACT_LOCATION, but a locationType was also specified: lookups cannot limit by a location type when matching an exact location.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SPREADSHEET", "metadataLocation": {"spreadsheet": true}, "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: DeveloperMetadataLookup.spreadsheet is true, but locationMatchingStrategy was specified as INTERSECTING.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SPREADSHEET", "metadataLocation": {"spreadsheet": true}, "locationMatchingStrategy": 9}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SPREADSHEET", "metadataLocation": {"spreadsheet": false}}}]}', 400, 'Invalid dataFilter[0]: Cannot limit by location type of SPREADSHEET for the location spreadsheet'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SPREADSHEET", "metadataLocation": {"spreadsheet": false}, "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: Cannot limit by location type of SPREADSHEET for the location spreadsheet'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SPREADSHEET", "metadataLocation": {"spreadsheet": false}, "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: Cannot limit by location type of SPREADSHEET for the location spreadsheet'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SPREADSHEET", "metadataLocation": {"spreadsheet": false}, "locationMatchingStrategy": 9}}]}', 400, 'Invalid dataFilter[0]: Cannot limit by location type of SPREADSHEET for the location spreadsheet'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SPREADSHEET", "metadataLocation": {"sheetId": ID_DATA}}}]}', 400, 'Invalid dataFilter[0]: Cannot limit by location type of SPREADSHEET for the location sheetId'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SPREADSHEET", "metadataLocation": {"sheetId": ID_DATA}, "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: Cannot limit by location type of SPREADSHEET for the location sheetId'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SPREADSHEET", "metadataLocation": {"sheetId": ID_DATA}, "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: Cannot limit by location type of SPREADSHEET for the location sheetId'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SPREADSHEET", "metadataLocation": {"sheetId": ID_DATA}, "locationMatchingStrategy": 9}}]}', 400, 'Invalid dataFilter[0]: Cannot limit by location type of SPREADSHEET for the location sheetId'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SPREADSHEET", "metadataLocation": {"sheetId": 5}}}]}', 400, 'Invalid dataFilter[0]: Cannot limit by location type of SPREADSHEET for the location sheetId'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SPREADSHEET", "metadataLocation": {"sheetId": 5}, "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: Cannot limit by location type of SPREADSHEET for the location sheetId'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SPREADSHEET", "metadataLocation": {"sheetId": 5}, "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: Cannot limit by location type of SPREADSHEET for the location sheetId'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SPREADSHEET", "metadataLocation": {"sheetId": 5}, "locationMatchingStrategy": 9}}]}', 400, 'Invalid dataFilter[0]: Cannot limit by location type of SPREADSHEET for the location sheetId'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SPREADSHEET", "metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "ROWS", "startIndex": 0, "endIndex": 1}}}}]}', 400, 'Invalid dataFilter[0]: Cannot limit by location type of SPREADSHEET for the location dimensionRange'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SPREADSHEET", "metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "ROWS", "startIndex": 0, "endIndex": 1}}, "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: Cannot limit by location type of SPREADSHEET for the location dimensionRange'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SPREADSHEET", "metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "ROWS", "startIndex": 0, "endIndex": 1}}, "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: Cannot limit by location type of SPREADSHEET for the location dimensionRange'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SPREADSHEET", "metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "ROWS", "startIndex": 0, "endIndex": 1}}, "locationMatchingStrategy": 9}}]}', 400, 'Invalid dataFilter[0]: Cannot limit by location type of SPREADSHEET for the location dimensionRange'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SPREADSHEET", "metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 1}}}}]}', 400, 'Invalid dataFilter[0]: Cannot limit by location type of SPREADSHEET for the location dimensionRange'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SPREADSHEET", "metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 1}}, "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: Cannot limit by location type of SPREADSHEET for the location dimensionRange'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SPREADSHEET", "metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 1}}, "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: Cannot limit by location type of SPREADSHEET for the location dimensionRange'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": "SPREADSHEET", "metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 1}}, "locationMatchingStrategy": 9}}]}', 400, 'Invalid dataFilter[0]: Cannot limit by location type of SPREADSHEET for the location dimensionRange'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": 9, "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: The locationMatchingStrategy was specified as EXACT_LOCATION, but a locationType was also specified: lookups cannot limit by a location type when matching an exact location.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": 9, "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: A locationMatchingStrategy was specified, but no metadataLocation was specified: lookups must always specify a metadataLocation when specifying a locationMatchingStrategy.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": 9, "locationMatchingStrategy": 9}}]}', 400, 'Invalid dataFilter[0]: A locationMatchingStrategy was specified, but no metadataLocation was specified: lookups must always specify a metadataLocation when specifying a locationMatchingStrategy.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": 9, "metadataLocation": {}}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": 9, "metadataLocation": {}, "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: The locationMatchingStrategy was specified as EXACT_LOCATION, but a locationType was also specified: lookups cannot limit by a location type when matching an exact location.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": 9, "metadataLocation": {}, "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: A locationMatchingStrategy was specified, but no metadataLocation was specified: lookups must always specify a metadataLocation when specifying a locationMatchingStrategy.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": 9, "metadataLocation": {}, "locationMatchingStrategy": 9}}]}', 400, 'Invalid dataFilter[0]: A locationMatchingStrategy was specified, but no metadataLocation was specified: lookups must always specify a metadataLocation when specifying a locationMatchingStrategy.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": 9, "metadataLocation": {"spreadsheet": true}}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": 9, "metadataLocation": {"spreadsheet": true}, "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: The locationMatchingStrategy was specified as EXACT_LOCATION, but a locationType was also specified: lookups cannot limit by a location type when matching an exact location.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": 9, "metadataLocation": {"spreadsheet": true}, "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: DeveloperMetadataLookup.spreadsheet is true, but locationMatchingStrategy was specified as INTERSECTING.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": 9, "metadataLocation": {"spreadsheet": true}, "locationMatchingStrategy": 9}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": 9, "metadataLocation": {"spreadsheet": false}}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": 9, "metadataLocation": {"spreadsheet": false}, "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: The locationMatchingStrategy was specified as EXACT_LOCATION, but a locationType was also specified: lookups cannot limit by a location type when matching an exact location.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": 9, "metadataLocation": {"spreadsheet": false}, "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": 9, "metadataLocation": {"spreadsheet": false}, "locationMatchingStrategy": 9}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": 9, "metadataLocation": {"sheetId": ID_DATA}}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": 9, "metadataLocation": {"sheetId": ID_DATA}, "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: The locationMatchingStrategy was specified as EXACT_LOCATION, but a locationType was also specified: lookups cannot limit by a location type when matching an exact location.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": 9, "metadataLocation": {"sheetId": ID_DATA}, "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": 9, "metadataLocation": {"sheetId": ID_DATA}, "locationMatchingStrategy": 9}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": 9, "metadataLocation": {"sheetId": 5}}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": 9, "metadataLocation": {"sheetId": 5}, "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: The locationMatchingStrategy was specified as EXACT_LOCATION, but a locationType was also specified: lookups cannot limit by a location type when matching an exact location.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": 9, "metadataLocation": {"sheetId": 5}, "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": 9, "metadataLocation": {"sheetId": 5}, "locationMatchingStrategy": 9}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": 9, "metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "ROWS", "startIndex": 0, "endIndex": 1}}}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": 9, "metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "ROWS", "startIndex": 0, "endIndex": 1}}, "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: The locationMatchingStrategy was specified as EXACT_LOCATION, but a locationType was also specified: lookups cannot limit by a location type when matching an exact location.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": 9, "metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "ROWS", "startIndex": 0, "endIndex": 1}}, "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": 9, "metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "ROWS", "startIndex": 0, "endIndex": 1}}, "locationMatchingStrategy": 9}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": 9, "metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 1}}}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": 9, "metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 1}}, "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: The locationMatchingStrategy was specified as EXACT_LOCATION, but a locationType was also specified: lookups cannot limit by a location type when matching an exact location.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": 9, "metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 1}}, "locationMatchingStrategy": "INTERSECTING_LOCATION"}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": 9, "metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 1}}, "locationMatchingStrategy": 9}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "startIndex": -1, "endIndex": 0}}}}]}', 400, 'Invalid dataFilter[0]: DimensionRange indexes must be >= 0'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": 7, "startIndex": -1, "endIndex": 0}}}}]}', 400, 'Invalid dataFilter[0]: DimensionRange indexes must be >= 0'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"dimensionRange": {"sheetId": 5, "startIndex": -1, "endIndex": 0}}}}]}', 400, 'Invalid dataFilter[0]: DimensionRange indexes must be >= 0'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": 7, "startIndex": 1000, "endIndex": 1001}}}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "startIndex": 1000, "endIndex": 1001}}}}]}', 400, 'Invalid dataFilter[0]: No dimension specified'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "COLUMNS", "startIndex": -3, "endIndex": -2}}}}]}', 400, 'Invalid dataFilter[0]: DimensionRange indexes must be >= 0'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "startIndex": -5, "endIndex": -1}}}}]}', 400, 'Invalid dataFilter[0]: DimensionRange must represent a single row or column.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": 7, "startIndex": 0, "endIndex": 2}}}}]}', 400, 'Invalid dataFilter[0]: DimensionRange must represent a single row or column.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"visibility": 9, "metadataLocation": {"sheetId": 5}}}]}', 400, 'Invalid dataFilter[0]: No grid with id: 5'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"visibility": 9, "locationMatchingStrategy": "EXACT_LOCATION"}}]}', 400, 'Invalid dataFilter[0]: A locationMatchingStrategy was specified, but no metadataLocation was specified: lookups must always specify a metadataLocation when specifying a locationMatchingStrategy.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"locationType": "ROW", "spreadsheet": true}}}]}', 200, None),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"locationType": "SPREADSHEET", "sheetId": ID_DATA}}}]}', 200, None),
+    ('values', 'probe', b'null', 400, 'Invalid JSON payload received. Unknown name "": Root element must be a message.'),
+    ('sheet', 'probe', b'null', 400, 'Invalid JSON payload received. Unknown name "": Root element must be a message.'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "startRowIndex": 1000, "endColumnIndex": 0}}]}', 400, 'Invalid dataFilter[0]: Range (Data!1001:) exceeds grid limits. Max rows: 1000, max columns: 26'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "startColumnIndex": 26, "endRowIndex": 0}}]}', 400, 'Invalid dataFilter[0]: Range (Data!AA:0) exceeds grid limits. Max rows: 1000, max columns: 26'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "endRowIndex": 0, "startColumnIndex": 26, "endColumnIndex": 27}}]}', 400, 'Invalid dataFilter[0]: Range (Data!AA:AA0) exceeds grid limits. Max rows: 1000, max columns: 26'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "startRowIndex": 0, "endRowIndex": 0, "startColumnIndex": 26}}]}', 400, 'Invalid dataFilter[0]: Range ((empty) Data!AA1:0) exceeds grid limits. Max rows: 1000, max columns: 26'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "startColumnIndex": 26, "endColumnIndex": 26, "startRowIndex": 1000}}]}', 400, 'Invalid dataFilter[0]: Range ((empty) Data!AA1001:Z) exceeds grid limits. Max rows: 1000, max columns: 26'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "endColumnIndex": 18279}}]}', 200, [('Data!A1:Z1000', 'ROWS', {'gridRange': {'endColumnIndex': 18279, 'sheetId': 'ID_DATA'}})]),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "endColumnIndex": 20000}}]}', 200, [('Data!A1:Z1000', 'ROWS', {'gridRange': {'endColumnIndex': 20000, 'sheetId': 'ID_DATA'}})]),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "endColumnIndex": 2147483647}}]}', 200, [('Data!A1:Z1000', 'ROWS', {'gridRange': {'endColumnIndex': 2147483647, 'sheetId': 'ID_DATA'}})]),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "endRowIndex": 2147483647}}]}', 200, [('Data!A1:Z1000', 'ROWS', {'gridRange': {'endRowIndex': 2147483647, 'sheetId': 'ID_DATA'}})]),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "startRowIndex": 5, "endColumnIndex": 100000}}]}', 200, [('Data!A6:Z1000', 'ROWS', {'gridRange': {'endColumnIndex': 100000, 'sheetId': 'ID_DATA', 'startRowIndex': 5}})]),
+    ('sheet', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "startRowIndex": 1000, "endColumnIndex": 0}}]}', 400, 'Range (Data!1001:) exceeds grid limits. Max rows: 1000, max columns: 26'),
+    ('sheet', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "endColumnIndex": 20000}}], "includeGridData": false}', 200, [('Data', None)]),
+    ('values', 'probe', b'{"dataFilters":[{"a1Range":"\\ud800"}]}', 400, 'Invalid dataFilter[0]: Unable to parse range: �'),
+    ('values', 'probe', b'{"dataFilters":[{"a1Range":"\\udc00"}]}', 400, 'Invalid dataFilter[0]: Unable to parse range: �'),
+    ('values', 'probe', b'{"dataFilters":[{"a1Range":"\\ud800A"}]}', 400, 'Invalid dataFilter[0]: Unable to parse range: �A'),
+    ('values', 'probe', b'{"\\ud800x": 1}', 400, 'Invalid JSON payload received. Unknown name "�x": Cannot find field.'),
+    ('values', 'probe', b'{"dataFilters":[{"a1Range":"\\ud800\\ud800"}]}', 400, 'Invalid dataFilter[0]: Unable to parse range: ��'),
+    ('values', 'probe', b'{"dataFilters":[{"a1Range":"\\ud800\\u0041"}]}', 400, 'Invalid dataFilter[0]: Unable to parse range: �A'),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Data!A1"}, [{"a1Range": 5}]]}', 400, "Invalid value at 'data_filters[0][0].a1_range' (TYPE_STRING), 5"),
+    ('values', 'probe', b'{"dataFilters": [[{"a1Range": 5}]]}', 400, "Invalid value at 'data_filters[0].a1_range' (TYPE_STRING), 5"),
+    ('values', 'probe', b'{"dataFilters": [[{"a1Range": "Data!A1"}, {"a1Range": 5}]]}', 400, "Invalid value at 'data_filters[1].a1_range' (TYPE_STRING), 5"),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Data!A1"}, {"a1Range": "Data!A2"}, [{"a1Range": 5}]]}', 400, "Invalid value at 'data_filters[1][0].a1_range' (TYPE_STRING), 5"),
+    ('values', 'probe', b'{"dataFilters": [[{"a1Range": "Data!A1"}], {"a1Range": 5}]}', 400, "Invalid value at 'data_filters[0].a1_range' (TYPE_STRING), 5"),
+    ('values', 'probe', b'{"dataFilters": [[], {"a1Range": 5}]}', 400, "Invalid value at 'data_filters[0].a1_range' (TYPE_STRING), 5"),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Data!A1"}, ["abc"]]}', 400, 'Invalid value at \'data_filters[0][0]\' (type.googleapis.com/google.apps.sheets.v4.DataFilter), "abc"'),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Data!A1"}, [[{"a1Range": 5}]]]}', 400, "Invalid value at 'data_filters[0][0].a1_range' (TYPE_STRING), 5"),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Data!A1"}, [{"a1Range": "Data!A1"}, {"a1Range": 5}]]}', 400, "Invalid value at 'data_filters[0][1].a1_range' (TYPE_STRING), 5"),
+    ('sheet', 'probe', b'{"dataFilters": [{"a1Range": "Data!A1"}], "includeGridData": 1}', 200, [('Data', [{'columnMetadata': 1, 'rowMetadata': 1}])]),
+    ('sheet', 'probe', b'{"dataFilters": [{"a1Range": "Data!A1"}], "includeGridData": 1.0}', 200, [('Data', [{'columnMetadata': 1, 'rowMetadata': 1}])]),
+    ('sheet', 'probe', b'{"dataFilters": [{"a1Range": "Data!A1"}], "includeGridData": 0}', 200, [('Data', None)]),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "startRowIndex": 1, "endRowIndex": 1}}, {"gridRange": {"sheetId": ID_DATA, "startRowIndex": 2, "endRowIndex": 2}}]}', 200, [('#REF!', 'ROWS', {'gridRange': {'endRowIndex': 1, 'sheetId': 'ID_DATA', 'startRowIndex': 1}}, {'gridRange': {'endRowIndex': 2, 'sheetId': 'ID_DATA', 'startRowIndex': 2}})]),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "startRowIndex": 1, "endRowIndex": 1}}, {"gridRange": {"sheetId": ID_DATA, "startRowIndex": 1, "endRowIndex": 1}}]}', 200, [('#REF!', 'ROWS', {'gridRange': {'endRowIndex': 1, 'sheetId': 'ID_DATA', 'startRowIndex': 1}}, {'gridRange': {'endRowIndex': 1, 'sheetId': 'ID_DATA', 'startRowIndex': 1}})]),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "startRowIndex": 1, "endRowIndex": 1}}, {"gridRange": {"sheetId": ID_DATA, "startColumnIndex": 1, "endColumnIndex": 1}}]}', 200, [('#REF!', 'ROWS', {'gridRange': {'endRowIndex': 1, 'sheetId': 'ID_DATA', 'startRowIndex': 1}}, {'gridRange': {'endColumnIndex': 1, 'sheetId': 'ID_DATA', 'startColumnIndex': 1}})]),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Data!A1:A1"}, {"a1Range": "Data!A1"}]}', 200, [('Data!A1', 'ROWS', {'a1Range': 'Data!A1:A1'}, {'a1Range': 'Data!A1'})]),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "data!A1"}, {"a1Range": "Data!A1"}]}', 200, [('Data!A1', 'ROWS', {'a1Range': 'data!A1'}, {'a1Range': 'Data!A1'})]),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Data"}, {"a1Range": "Data!A1:Z1000"}]}', 200, [('Data!A1:Z1000', 'ROWS', {'a1Range': 'Data'}, {'a1Range': 'Data!A1:Z1000'})]),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Data!A1:B2"}, {"gridRange": {"sheetId": ID_DATA, "startRowIndex": 0, "endRowIndex": 2, "startColumnIndex": 0, "endColumnIndex": 2}}]}', 200, [('Data!A1:B2', 'ROWS', {'a1Range': 'Data!A1:B2'}, {'gridRange': {'endColumnIndex': 2, 'endRowIndex': 2, 'sheetId': 'ID_DATA', 'startColumnIndex': 0, 'startRowIndex': 0}})]),
+    ('sheet', 'probe', b'{"dataFilters": [{"a1Range": "Data!A1:A1"}, {"a1Range": "Data!A1"}], "includeGridData": true}', 200, [('Data', [{'columnMetadata': 1, 'rowMetadata': 1}])]),
+    ('sheet', 'probe', b'{"dataFilters": [{"a1Range": "data!A1"}, {"a1Range": "Data!A1"}], "includeGridData": true}', 200, [('Data', [{'columnMetadata': 1, 'rowMetadata': 1}])]),
+    ('sheet', 'probe', b'{"dataFilters": [{"a1Range": "Data!A1"}, {"a1Range": "Data!B1"}, {"a1Range": "Data!A1"}], "includeGridData": true}', 200, [('Data', [{'columnMetadata': 1, 'rowMetadata': 1}, {'columnMetadata': 1, 'rowMetadata': 1, 'startColumn': 1}])]),
+    ('sheet', 'probe', b'{"dataFilters": [{"a1Range": "Data!A1:B2"}, {"gridRange": {"sheetId": ID_DATA, "startRowIndex": 0, "endRowIndex": 2, "startColumnIndex": 0, "endColumnIndex": 2}}], "includeGridData": true}', 200, [('Data', [{'columnMetadata': 2, 'rowMetadata': 2}])]),
+    ('sheet', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "startRowIndex": 1, "endRowIndex": 1}}, {"gridRange": {"sheetId": ID_DATA, "startRowIndex": 2, "endRowIndex": 2}}], "includeGridData": true}', 200, [('Data', [{'columnMetadata': 26, 'startRow': 1}, {'columnMetadata': 26, 'startRow': 2}])]),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": "ROWS", "startIndex": 2147483647, "endIndex": -2147483648}}}}]}', 400, 'Invalid dataFilter[0]: DimensionRange indexes must be >= 0'),
+    ('sheet', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "startRowIndex": 1, "endRowIndex": 1}}, {"gridRange": {"sheetId": ID_DATA, "startRowIndex": 1, "endRowIndex": 1}}], "includeGridData": true}', 200, [('Data', [{'columnMetadata': 26, 'startRow': 1}])]),
+    ('sheet', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "startRowIndex": 1, "endRowIndex": 1}}, {"gridRange": {"sheetId": ID_DATA, "startColumnIndex": 1, "endColumnIndex": 1}}], "includeGridData": true}', 200, [('Data', [{'columnMetadata': 26, 'startRow': 1}, {'rowMetadata': 1000, 'startColumn': 1}])]),
+    ('sheet', 'probe', b'{"dataFilters": [{"a1Range": "Data"}, {"a1Range": "Data!A1:Z1000"}], "includeGridData": true}', 200, [('Data', [{'columnMetadata': 26, 'rowMetadata': 1000}])]),
+    ('sheet', 'probe', b'{"dataFilters": [{"a1Range": "Data!A1:A2000"}, {"a1Range": "Data!A1:A1000"}], "includeGridData": true}', 200, [('Data', [{'columnMetadata': 1, 'rowMetadata': 1000}])]),
+    ('sheet', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "startRowIndex": 0, "endRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": 100}}, {"gridRange": {"sheetId": ID_DATA, "startRowIndex": 0, "endRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": 26}}], "includeGridData": true}', 200, [('Data', [{'columnMetadata': 26, 'rowMetadata': 1}])]),
+    ('sheet', 'probe', b'{"dataFilters": [{"a1Range": "Sheet1!A1"}, {"a1Range": "Data!A1"}], "includeGridData": true}', 200, [('Sheet1', [{'columnMetadata': 1, 'rowMetadata': 1}]), ('Data', [{'columnMetadata': 1, 'rowMetadata': 1}])]),
+    ('sheet', 'probe', b'{"dataFilters": [{"a1Range": "Data!B1"}, {"a1Range": "Data!A1"}, {"a1Range": "Data!B1"}], "includeGridData": true}', 200, [('Data', [{'columnMetadata': 1, 'rowMetadata': 1, 'startColumn': 1}, {'columnMetadata': 1, 'rowMetadata': 1}])]),
+    ('sheet', 'probe', b'{"dataFilters": [{"a1Range": "Data!A2"}, {"a1Range": "Data!A1"}], "includeGridData": true}', 200, [('Data', [{'columnMetadata': 1, 'rowMetadata': 1, 'startRow': 1}, {'columnMetadata': 1, 'rowMetadata': 1}])]),
+    ('sheet', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "startRowIndex": 1, "endRowIndex": 1}}, {"a1Range": "Data!A1"}, {"gridRange": {"sheetId": ID_DATA, "startRowIndex": 1, "endRowIndex": 1}}], "includeGridData": true}', 200, [('Data', [{'columnMetadata': 26, 'startRow': 1}, {'columnMetadata': 1, 'rowMetadata': 1}])]),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Data!A1:A2000"}, {"a1Range": "Data!A1:A1000"}]}', 200, [('Data!A1:A1000', 'ROWS', {'a1Range': 'Data!A1:A2000'}, {'a1Range': 'Data!A1:A1000'})]),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "startRowIndex": 0, "endRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": 100}}, {"gridRange": {"sheetId": ID_DATA, "startRowIndex": 0, "endRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": 26}}]}', 200, [('Data!A1:Z1', 'ROWS', {'gridRange': {'endColumnIndex': 100, 'endRowIndex': 1, 'sheetId': 'ID_DATA', 'startColumnIndex': 0, 'startRowIndex': 0}}, {'gridRange': {'endColumnIndex': 26, 'endRowIndex': 1, 'sheetId': 'ID_DATA', 'startColumnIndex': 0, 'startRowIndex': 0}})]),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Sheet1!A1"}, {"a1Range": "Data!A1"}]}', 200, [('Sheet1!A1', 'ROWS', {'a1Range': 'Sheet1!A1'}), ('Data!A1', 'ROWS', {'a1Range': 'Data!A1'})]),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Data!B1"}, {"a1Range": "Data!A1"}, {"a1Range": "Data!B1"}]}', 200, [('Data!A1', 'ROWS', {'a1Range': 'Data!A1'}), ('Data!B1', 'ROWS', {'a1Range': 'Data!B1'}, {'a1Range': 'Data!B1'})]),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Data!A2"}, {"a1Range": "Data!A1"}]}', 200, [('Data!A1', 'ROWS', {'a1Range': 'Data!A1'}), ('Data!A2', 'ROWS', {'a1Range': 'Data!A2'})]),
+    ('sheet', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "startRowIndex": 1, "endRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": 100}}, {"gridRange": {"sheetId": ID_DATA, "startRowIndex": 1, "endRowIndex": 1}}], "includeGridData": true}', 200, [('Data', [{'columnMetadata': 26, 'startRow': 1}])]),
+    ('sheet', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "startRowIndex": 1, "endRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": 5}}, {"gridRange": {"sheetId": ID_DATA, "startRowIndex": 1, "endRowIndex": 1}}], "includeGridData": true}', 200, [('Data', [{'columnMetadata': 5, 'startRow': 1}, {'columnMetadata': 26, 'startRow': 1}])]),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Data!A1"}], "": "x"}', 400, 'Invalid JSON payload received. Unknown name "": Proto fields must have a name.'),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Data!A1"}], "": {"a": 1}}', 400, 'Invalid JSON payload received. Unknown name "": Proto fields must have a name.'),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Data!A1"}], "": [1]}', 400, 'Invalid JSON payload received. Unknown name "": Proto fields must have a name.'),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Data!A1"}], "": null}', 400, 'Invalid JSON payload received. Unknown name "": Proto fields must have a name.'),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Data!A1"}], "": {}}', 400, 'Invalid JSON payload received. Unknown name "": Proto fields must have a name.'),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Data!A1"}], "": 1}', 400, 'Invalid JSON payload received. Unknown name "": Proto fields must have a name.'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "": 1}}]}', 400, 'Invalid JSON payload received. Unknown name "" at \'data_filters[0].grid_range\': Proto fields must have a name.'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "": {}}}]}', 400, 'Invalid JSON payload received. Unknown name "" at \'data_filters[0].grid_range\': Proto fields must have a name.'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "": null}}]}', 400, 'Invalid JSON payload received. Unknown name "" at \'data_filters[0].grid_range\': Proto fields must have a name.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"": 1}}]}', 400, 'Invalid JSON payload received. Unknown name "" at \'data_filters[0].developer_metadata_lookup\': Proto fields must have a name.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"": 1}}}]}', 400, 'Invalid JSON payload received. Unknown name "" at \'data_filters[0].developer_metadata_lookup.metadata_location\': Proto fields must have a name.'),
+    ('values', 'probe', b'{"dataFilters": [{"": 1}]}', 400, "Invalid value at 'data_filters[0]' (type.googleapis.com/google.apps.sheets.v4.DataFilter), 1"),
+    ('values', 'probe', b'{"dataFilters": [{"": "x"}]}', 400, 'Invalid value at \'data_filters[0]\' (type.googleapis.com/google.apps.sheets.v4.DataFilter), "x"'),
+    ('values', 'probe', b'{"dataFilters": [{"": null}]}', 400, 'Invalid dataFilter[0]: dataFilter.filter must be specified.'),
+    ('values', 'probe', b'{"dataFilters": [{"": []}]}', 400, 'Invalid dataFilter[0]: dataFilter.filter must be specified.'),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Data!A1", "": 1}]}', 400, "Invalid value at 'data_filters[0]' (type.googleapis.com/google.apps.sheets.v4.DataFilter), 1"),
+    ('values', 'probe', b'{"dataFilters": [{"": 1, "a1Range": "Data!A1"}]}', 400, "Invalid value at 'data_filters[0]' (type.googleapis.com/google.apps.sheets.v4.DataFilter), 1"),
+    ('values', 'probe', b'{"dataFilters": [{"": 1}, {"": 2}]}', 400, "Invalid value at 'data_filters[0]' (type.googleapis.com/google.apps.sheets.v4.DataFilter), 1\nInvalid value at 'data_filters[1]' (type.googleapis.com/google.apps.sheets.v4.DataFilter), 2"),
+    ('values', 'probe', b'{"dataFilters": [[{"": 1}]]}', 400, "Invalid value at 'data_filters[0]' (type.googleapis.com/google.apps.sheets.v4.DataFilter), 1"),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Data!A1"}, {"": 1}]}', 400, "Invalid value at 'data_filters[1]' (type.googleapis.com/google.apps.sheets.v4.DataFilter), 1"),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "startColumnIndex": 18277}}]}', 400, 'Invalid dataFilter[0]: Range (Data!ZZZ:) exceeds grid limits. Max rows: 1000, max columns: 26'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "startColumnIndex": 18278}}]}', 400, 'Invalid dataFilter[0]: Range (Data!) exceeds grid limits. Max rows: 1000, max columns: 26'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "startColumnIndex": 26, "endColumnIndex": 18279}}]}', 400, 'Invalid dataFilter[0]: Range (Data!AA:) exceeds grid limits. Max rows: 1000, max columns: 26'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "startColumnIndex": 26, "endColumnIndex": 18278}}]}', 400, 'Invalid dataFilter[0]: Range (Data!AA:ZZZ) exceeds grid limits. Max rows: 1000, max columns: 26'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "startRowIndex": 0, "endRowIndex": 2, "startColumnIndex": 18278, "endColumnIndex": 18279}}]}', 400, 'Invalid dataFilter[0]: Range (Data!1:2) exceeds grid limits. Max rows: 1000, max columns: 26'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "startColumnIndex": 18278, "endColumnIndex": 18278}}]}', 400, 'Invalid dataFilter[0]: Range ((empty) Data!:ZZZ) exceeds grid limits. Max rows: 1000, max columns: 26'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "startColumnIndex": 2147483647}}]}', 400, 'Invalid dataFilter[0]: Range (Data!) exceeds grid limits. Max rows: 1000, max columns: 26'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "startRowIndex": 4, "startColumnIndex": 100000, "endColumnIndex": 100001}}]}', 400, 'Invalid dataFilter[0]: Range (Data!5:) exceeds grid limits. Max rows: 1000, max columns: 26'),
+    ('sheet', 'probe', b'{"dataFilters": [{"a1Range": "Data!A1"}], "": 1}', 400, 'Invalid JSON payload received. Unknown name "": Proto fields must have a name.'),
+    ('sheet', 'probe', b'{"dataFilters": [{"": 1}]}', 400, "Invalid value at 'data_filters[0]' (type.googleapis.com/google.apps.sheets.v4.DataFilter), 1"),
+    ('sheet', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "startColumnIndex": 18278}}]}', 400, 'Range (Data!) exceeds grid limits. Max rows: 1000, max columns: 26'),
+    ('sheet', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "startColumnIndex": 1, "endColumnIndex": 1, "endRowIndex": 2000}}], "includeGridData": true}', 200, [('Data', [{'rowMetadata': 1000, 'startColumn': 1}])]),
+    ('sheet', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_DATA, "startRowIndex": 3, "startColumnIndex": 1, "endColumnIndex": 1, "endRowIndex": 2000}}], "includeGridData": true}', 200, [('Data', [{'rowMetadata': 997, 'startColumn': 1, 'startRow': 3}])]),
+    ('values', 'probe', b'{"dataFilters": [{"": {"bogus": 1}}]}', 400, 'Invalid JSON payload received. Unknown name "bogus" at \'data_filters[0]\': Cannot find field.'),
+    ('values', 'probe', b'{"dataFilters": [{"": {"a1Range": 5}}]}', 400, "Invalid value at 'data_filters[0].a1_range' (TYPE_STRING), 5"),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Data!A1"}], "": 1}', 400, ('Invalid JSON payload received. Unknown name "": Proto fields must have a name.', 'invalid', None)),
+    ('values', 'probe', b'{"dataFilters": [{"": 1}]}', 400, ("Invalid value at 'data_filters[0]' (type.googleapis.com/google.apps.sheets.v4.DataFilter), 1", 'invalid', None)),
+    # measured 2026-10-05
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Data!A1:B2"}], "valueRenderOption": -1}', 400, 'Invalid valueRenderOption: UNRECOGNIZED'),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Data!A1:B2"}], "majorDimension": -1}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Data!A1:B2"}], "dateTimeRenderOption": -1}', 200, [('Data!A1:B2', 'ROWS', {'a1Range': 'Data!A1:B2'})]),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Data!A1:B2"}], "majorDimension": "row\xc5\xbf"}', 400, 'Invalid value at \'major_dimension\' (type.googleapis.com/google.apps.sheets.v4.Dimension), "rowſ"'),
+    ('values', 'probe', b'{"dataFilters": [{"a1Range": "Data!A1:B2"}], "valueRenderOption": "formula\xc5\xbf"}', 400, 'Invalid value at \'value_render_option\' (type.googleapis.com/google.apps.sheets.v4.ValueRenderOption), "formulaſ"'),
+    ('sheet', 'probe', b'{"dataFilters": [{"a1Range": "Data!A1"}], "includeGridData": "ye\xc5\xbf"}', 400, 'Invalid value at \'include_grid_data\' (TYPE_BOOL), "yeſ"'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": -1}}]}', 500, 'Internal error encountered.'),
+    ('sheet', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"locationType": -1}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"sheetId": ID_DATA}, "locationMatchingStrategy": -1}}]}', 500, 'Internal error encountered.'),
+    ('sheet', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"sheetId": ID_DATA}, "locationMatchingStrategy": -1}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"visibility": -1}}]}', 500, 'Internal error encountered.'),
+    ('sheet', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"visibility": -1}}]}', 500, 'Internal error encountered.'),
+    ('values', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": -1, "startIndex": 0, "endIndex": 1}}}}]}', 500, 'Internal error encountered.'),
+    ('sheet', 'probe', b'{"dataFilters": [{"developerMetadataLookup": {"metadataLocation": {"dimensionRange": {"sheetId": ID_DATA, "dimension": -1, "startIndex": 0, "endIndex": 1}}}}]}', 500, 'Internal error encountered.'),
+    # measured 2026-10-06
+    ('values', 'probe', b'{"dataFilters":[{"a1Range":"\xff"}]}', 400, 'Invalid dataFilter[0]: Unable to parse range:  '),
+    ('values', 'probe', b'{"dataFilters":[{"a1Range":"a\xffb"}]}', 400, 'Invalid dataFilter[0]: Unable to parse range: a b'),
+    ('values', 'probe', b'{"dataFilters":[{"a1Range":"a\xe2\x82b"}]}', 400, 'Invalid dataFilter[0]: Unable to parse range: a  b'),
+    ('values', 'probe', b'{"dataFilters":[{"a1Range":"a\xed\xa0\x80b"}]}', 400, 'Invalid dataFilter[0]: Unable to parse range: a   b'),
+    ('values', 'probe', b'{"dataFilters":[{"a1Range":"a\x01b"}]}', 400, 'Invalid dataFilter[0]: Unable to parse range: a\x01b'),
+    ('values', 'probe', b'{"dataFilters":[{"a1Range":"a\tb"}]}', 400, 'Invalid dataFilter[0]: Unable to parse range: a\tb'),
+    ('values', 'probe', b'{"a":"\xff"}', 400, 'Invalid JSON payload received. Unknown name "a": Cannot find field.'),
+    ('values', 'probe', b'{"a":"\x01"}', 400, 'Invalid JSON payload received. Unknown name "a": Cannot find field.'),
+    ('values', 'probe', b'{"a\xff":1}', 400, 'Invalid JSON payload received. Unknown name "a ": Cannot find field.'),
+    ('sheet', 'probe', b'{"dataFilters":[{"a1Range":"a\xffb"}]}', 400, 'Unable to parse range: a b'),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": -9223372036854775808}}]}', 400, "Invalid value at 'data_filters[0].grid_range.start_row_index.value' (TYPE_INT32), -9223372036854775808"),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": -9223372036854775809}}]}', 400, "Invalid value at 'data_filters[0].grid_range.start_row_index.value' (TYPE_INT32), -9.2233720368547758e+18"),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": 18446744073709551615}}]}', 400, "Invalid value at 'data_filters[0].grid_range.start_row_index.value' (TYPE_INT32), 18446744073709551615"),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": 18446744073709551616}}]}', 400, "Invalid value at 'data_filters[0].grid_range.start_row_index.value' (TYPE_INT32), 1.8446744073709552e+19"),
+    ('values', 'probe', b'{"dataFilters": [{"gridRange": {"sheetId": ID_SHEET1, "startRowIndex": 9223372036854775808}}]}', 400, "Invalid value at 'data_filters[0].grid_range.start_row_index.value' (TYPE_INT32), 9223372036854775808"),
+]
+# fmt: on
+
+
+def _by_filter_shown(route: str, r, xgafv: bool):
+    """What a `MEASURED_BY_FILTER` row's ``shown`` holds, read off a Backlot answer."""
+    body = r.json()
+    if r.status_code != 200:
+        err = body["error"]
+        if not xgafv:
+            return err["message"]
+        return (err["message"], err["errors"][0].get("reason"), err["errors"][0].get("domain"))
+    if route == "values":
+        if "valueRanges" not in body:
+            return None
+        return [
+            (v["valueRange"]["range"], v["valueRange"]["majorDimension"], *v["dataFilters"])
+            for v in body["valueRanges"]
+        ]
+    return [
+        (
+            s["properties"]["title"],
+            [
+                {k: len(v) if isinstance(v, list) else v for k, v in d.items() if k != "rowData"}
+                for d in s["data"]
+            ]
+            if "data" in s
+            else None,
+        )
+        for s in body["sheets"]
+    ]
+
+
+def test_the_data_filter_reads_answer_every_measured_request(tmp_path):
+    """All `MEASURED_BY_FILTER` rows over a corpus with the probe's five sheets, one test for the
+    reason `test_sheets_values_answer_every_measured_r1c1_request_as_real_does` is one.
+
+    A refusal of a value or a name also carries a field violation per line of its message, naming
+    the location the line quotes, or none at the root of the body (`gerr.invalid_field_values`)."""
+    from tests._helpers import build_corpus, client_for
+
+    grid = [["a", "b"], ["c", "d"], ["e", "f"]]
+    record = {
+        "source_type": "google_drive",
+        "doc_id": "probe",
+        "folder": "mk",
+        "title": "backlot #174 R1C1 probe",
+        "author_email": "a@x.com",
+        "visibility": "public",
+        "subtype": "spreadsheet",
+        "sheets": [
+            {"title": t, "grid": grid if t in ("Sheet1", "Data") else []}
+            for t in ("Sheet1", "Data", "R1C1", "RC", "A")
+        ],
+    }
+    settings = build_corpus(tmp_path, [record], name="corpus.jsonl")
+    with client_for(settings, reload=True) as client:
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        (book,) = client.get(
+            "/drive/v3/files", headers=h, params={"q": "name = 'backlot #174 R1C1 probe'"}
+        ).json()["files"]
+        sheets = client.get(f"/sheets/v4/spreadsheets/{book['id']}", headers=h).json()["sheets"]
+        ids = {s["properties"]["title"]: s["properties"]["sheetId"] for s in sheets}
+        tokens = {f"ID_{title.upper()}": ids[title] for title in ("Sheet1", "Data", "R1C1")}
+
+        def detokenize(value):
+            """A row's ``shown`` with the probe's sheet ids in place of their tokens: a whole
+            token is an echoed `sheetId`, one inside a message is the id the message names."""
+            if isinstance(value, str):
+                if value in tokens:
+                    return tokens[value]
+                for token, sheet_id in tokens.items():
+                    value = value.replace(token, str(sheet_id))
+                return value
+            if isinstance(value, (list, tuple)):
+                return type(value)(detokenize(v) for v in value)
+            if isinstance(value, dict):
+                return {k: detokenize(v) for k, v in value.items()}
+            return value
+
+        drifted = []
+        for route, target, body, status, shown in MEASURED_BY_FILTER:
+            for token, sheet_id in tokens.items():
+                body = body.replace(token.encode(), str(sheet_id).encode())
+            spreadsheet = "nosuchspreadsheet" if target == "nosuch" else book["id"]
+            path = f"/sheets/v4/spreadsheets/{spreadsheet}"
+            path += "/values:batchGetByDataFilter" if route == "values" else ":getByDataFilter"
+            xgafv = isinstance(shown, tuple)
+            r = client.post(
+                path,
+                headers={} if target == "anon" else h,
+                params={"$.xgafv": "1"} if xgafv else {},
+                content=body,
+            )
+            got = _by_filter_shown(route, r, xgafv)
+            if (r.status_code, got) != (status, detokenize(shown)):
+                drifted.append(
+                    f"{body!r}: real {status} {shown!r}, Backlot {r.status_code} {got!r}"
+                )
+                continue
+            message = got[0] if xgafv else got
+            if status == 400 and re.match(
+                r"Invalid value[ (]|Invalid JSON payload received\. Unknown", message
+            ):
+                # a violation at the root of the body carries no `field` at all, not a null one
+                want = [
+                    {"field": m.group(1), "description": x}
+                    if (m := re.search(r" at '([^']*)'", x))
+                    else {"description": x}
+                    for x in message.split("\n")
+                ]
+                fields = [v for d in r.json()["error"]["details"] for v in d["fieldViolations"]]
+                if fields != want:
+                    drifted.append(f"{body!r}: field violations {fields!r}")
+        assert drifted == [], "\n".join(drifted)
+
+
+_NOT_JSON = "Invalid JSON payload received. Unexpected token."
+
+
+@pytest.mark.parametrize("route", ["/values:batchGetByDataFilter", ":getByDataFilter"])
 @pytest.mark.parametrize(
     "body, message",
     [
-        ({}, "Must specify at least one dataFilter."),
-        ({"dataFilters": []}, "Must specify at least one dataFilter."),
+        (b"abc", _NOT_JSON),
+        (b'{"dataFilters": "abc"', _NOT_JSON),
+        (b'{"a": NaN}', _NOT_JSON),
+        (b'{"a": Infinity}', _NOT_JSON),
+        (b'{"a": -Infinity}', _NOT_JSON),
+        (b'{"a": 1e400}', _NOT_JSON),
+        (b'{"a": -1e400}', _NOT_JSON),
+        # the largest double, which is read
         (
-            {"dataFilters": [{"a1Range": "Nope!A1"}]},
-            "Invalid dataFilter[0]: Unable to parse range: Nope!A1",
+            b'{"a": 1.7976931348623157e308}',
+            'Invalid JSON payload received. Unknown name "a": Cannot find field.',
         ),
-        ({"dataFilters": [{}]}, "Invalid dataFilter[0]: dataFilter.filter must be specified."),
     ],
 )
-def test_a_values_data_filter_read_refuses_what_it_cannot_use(gc, gh, book, body, message):
-    r = _by_filter(gc, gh, book, body)
-    assert r.status_code == 400
-    assert r.json()["error"]["message"] == message
+def test_a_body_that_does_not_parse_is_refused_before_the_lookup(
+    gc, gh, book, route, body, message
+):
+    """The refusal `protojson.read` gives a body that does not parse, with a `parseError` entry at
+    `$.xgafv=1` (`gerr.invalid_json`), the same for a spreadsheet that does not exist. These are not
+    rows of `MEASURED_BY_FILTER`, since the sentence is not the one real gives."""
+    for spreadsheet in (book, "nosuchspreadsheet"):
+        r = gc.post(
+            f"/sheets/v4/spreadsheets/{spreadsheet}{route}",
+            headers=gh,
+            params={"$.xgafv": "1"},
+            content=body,
+        )
+        err = _gerr(r)
+        assert (r.status_code, err["message"]) == (400, message)
+        assert err["errors"][0]["reason"] == ("parseError" if message == _NOT_JSON else "invalid")
 
 
 def test_get_by_data_filter_scopes_the_sheets_array_like_ranges_does(gc, gh, book):
@@ -6014,18 +7405,6 @@ def test_get_by_data_filter_takes_no_filters_to_mean_every_sheet(gc, gh, book):
     assert len(r.json()["sheets"]) == 7
 
 
-def test_get_by_data_filter_reports_a_bad_range_without_the_filter_index(gc, gh, book):
-    """The other half of the same measurement: only the values-level endpoint prefixes
-    `Invalid dataFilter[N]: `."""
-    r = gc.post(
-        f"/sheets/v4/spreadsheets/{book}:getByDataFilter",
-        headers=gh,
-        json={"dataFilters": [{"a1Range": "Nope!A1"}]},
-    )
-    assert r.status_code == 400
-    assert r.json()["error"]["message"] == "Unable to parse range: Nope!A1"
-
-
 @pytest.mark.parametrize(
     "key, field, enum",
     [
@@ -6038,9 +7417,9 @@ def test_get_by_data_filter_reports_a_bad_range_without_the_filter_index(gc, gh,
 def test_a_read_enum_carried_in_the_body_follows_the_query_strings_rule(
     gc, gh, book, key, field, enum, value
 ):
-    """The by-data-filter read takes its enums in the request body, and the rule must not fork:
-    case-insensitive, an empty value refused rather than defaulted, and `dateTimeRenderOption`
-    validated even though a corpus states no date cell for it to render."""
+    """The by-data-filter read takes its enums in the request body, and for a string value the rule
+    must not fork: ASCII case ignored, an empty value refused rather than defaulted, and
+    `dateTimeRenderOption` validated even though a corpus states no date cell for it to render."""
     r = _by_filter(gc, gh, book, {"dataFilters": [{"a1Range": "Summary!A1"}], key: value})
     assert r.status_code == 400, r.text
     assert r.json()["error"]["message"] == (
@@ -6298,8 +7677,9 @@ def test_a_field_mask_decides_the_grid_when_one_is_set(gc, gh, book, mask, wants
     "value, grid",
     [("false", False), ("no", False), ("0", False), (False, False), ("true", True), (1, True)],
 )
-def test_include_grid_data_in_the_body_follows_the_query_strings_rule(gc, gh, book, value, grid):
-    """`bool()` on the raw body value made the STRING "false" true."""
+def test_include_grid_data_in_the_body_is_read_as_a_proto_bool(gc, gh, book, value, grid):
+    """`includeGridData` in the body, read by `protojson.to_bool`: a string by its words, a number
+    when it is 0 or 1."""
     r = gc.post(
         f"/sheets/v4/spreadsheets/{book}:getByDataFilter",
         headers=gh,
@@ -6310,21 +7690,41 @@ def test_include_grid_data_in_the_body_follows_the_query_strings_rule(gc, gh, bo
 
 
 @pytest.mark.parametrize(
-    "grid_range, status",
-    [
-        ({"sheetId": 0, "startRowIndex": "abc"}, 400),  # was a 500
-        ({"sheetId": 0, "startRowIndex": 1.7}, 400),  # was silently 1
-        ({"sheetId": 0, "startRowIndex": -1}, 400),
-        ({"sheetId": 0, "startRowIndex": True}, 400),
-        ({"sheetId": 0, "startRowIndex": 2, "endRowIndex": 1}, 400),  # answered 3 rows
-        ({"sheetId": 0, "startRowIndex": 0, "endRowIndex": 0}, 400),
-        # proto3's JSON mapping takes a decimal string for an int32
-        ({"sheetId": "0", "startRowIndex": 0, "endRowIndex": 1}, 200),
-        ({"sheetId": 0, "startRowIndex": 0, "endRowIndex": 2}, 200),
-    ],
+    "title,content",
+    [("ASCII", "hello there"), ("ASCII", "안녕하세요"), ("회의 일정", "😀 café")],
 )
-def test_a_grid_range_member_is_checked_before_it_reaches_the_parser(
-    gc, gh, book, grid_range, status
-):
-    r = _by_filter(gc, gh, book, {"dataFilters": [{"gridRange": grid_range}]})
-    assert r.status_code == status, r.text
+def test_gmail_size_estimate_matches_raw_bytes_in_every_format(tmp_path, title, content):
+    """The `sizeEstimate` rule in `_byte_len`, under every `format` and in the thread. `raw`
+    carries a non-ASCII body transfer-encoded and a non-ASCII subject as an encoded-word, longer
+    than the subject's text, so the third row tells a size counted from the served `raw` apart
+    from one counted before its headers are encoded.
+    """
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "gmail",
+                "doc_id": "size",
+                "mailbox": "owner",
+                "title": title,
+                "author_email": "owner@example.com",
+                "created": "2026-10-01T00:00:00Z",
+                "content": content,
+            }
+        ],
+    )
+    with client_for(s) as c:
+        h = {"Authorization": "Bearer " + yaml.safe_load(s.tokens_path.read_text())["admin_token"]}
+        mid = c.get("/gmail/v1/users/me/messages", headers=h).json()["messages"][0]["id"]
+        path = "/gmail/v1/users/me/messages/" + mid
+        raw = c.get(path + "?format=raw", headers=h).json()
+        encoded = raw["raw"]
+        size = len(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
+        assert raw["sizeEstimate"] == size
+        for fmt in ["minimal", "metadata", "full"]:
+            message = c.get(path + "?format=" + fmt, headers=h).json()
+            assert message["sizeEstimate"] == size
+            tid = message["threadId"]
+            thread = c.get(f"/gmail/v1/users/me/threads/{tid}?format={fmt}", headers=h)
+            assert thread.status_code == 200
+            assert thread.json()["messages"][0]["sizeEstimate"] == size

@@ -1221,6 +1221,39 @@ def _get_xml(base_url, path, token):
         return ET.fromstring(r.read())
 
 
+def test_list_objects_v2_carries_the_owner_under_fetch_owner_true(live_server):
+    """The rule `_list_objects` records for `fetch-owner`, and the V1 listing carrying `Owner`
+    whatever the parameter says."""
+    base_url, settings = live_server
+    for query, owned in (
+        ("list-type=2&fetch-owner=true", True),
+        ("list-type=2&fetch-owner=TRUE", False),
+        ("list-type=2&fetch-owner=True", False),
+        ("list-type=2&fetch-owner=%20true", False),
+        ("list-type=2&fetch-owner=true&fetch-owner=false", True),
+        ("list-type=2&fetch-owner=false&fetch-owner=true", False),
+        ("list-type=2&fetch-owner=false", False),
+        ("list-type=2&fetch-owner=bogus", False),
+        ("list-type=2&fetch-owner=1", False),
+        ("list-type=2&fetch-owner=", False),
+        ("list-type=2", False),
+        ("fetch-owner=true", True),
+        ("fetch-owner=bogus", True),
+    ):
+        root = _get_xml(base_url, f"/s3/eng-artifacts?{query}", settings.admin_token)
+        contents = root.findall(f"{NS}Contents")
+        assert contents, query
+        for c in contents:
+            tags = [e.tag.removeprefix(NS) for e in c]
+            if owned:
+                assert tags == ["Key", "LastModified", "ETag", "Size", "Owner", "StorageClass"], (
+                    query
+                )
+                assert re.fullmatch("[0-9a-f]{64}", c.findtext(f"{NS}Owner/{NS}ID")), query
+            else:
+                assert tags == ["Key", "LastModified", "ETag", "Size", "StorageClass"], query
+
+
 def test_list_buckets_xml_shape(live_server):
     """The bare page ``backlot.routers.s3.list_buckets`` describes, the owner as its 64-hex id
     alone; `max-directory-buckets`, not one of its parameters, leaves it as it is (measured
@@ -3081,6 +3114,8 @@ def test_boto3_list_objects_paginator_walks_the_bucket_and_keeps_marker_and_owne
     page = s3.list_objects(Bucket="eng-artifacts", MaxKeys=1)
     assert page["Marker"] == "" and page["Contents"][0]["Owner"]["ID"]
     assert "Owner" not in s3.list_objects_v2(Bucket="eng-artifacts", MaxKeys=1)["Contents"][0]
+    owned = s3.list_objects_v2(Bucket="eng-artifacts", MaxKeys=1, FetchOwner=True)
+    assert owned["Contents"][0]["Owner"] == page["Contents"][0]["Owner"]
 
 
 def test_boto3_reads_a_buckets_configuration_and_an_objects_and_gets_one_client_error_for_a_write(

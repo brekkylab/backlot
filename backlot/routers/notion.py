@@ -551,7 +551,7 @@ async def get_block(block_id: str, request: Request):
         "object": "block",
         "id": bid,
         "type": kind,
-        "has_children": True,
+        "has_children": row["subtype"] != "database",
         "archived": False,
         "in_trash": False,
         "created_time": synth.rfc3339(row["created_ts"]),
@@ -576,7 +576,10 @@ async def get_block_children(block_id: str, request: Request):
         return _error(
             request, 404, "object_not_found", f"Could not find block with ID: {block_id}."
         )
-    blocks = synth.notion_blocks(row["id"], row["content"])
+    # A database's rows are pages reached through the query route, not blocks: on api.notion.com
+    # (2026-10-04, three databases, Notion-Version 2022-06-28 and 2025-09-03) its children are the
+    # empty list, and its block reports `has_children` false.
+    blocks = [] if row["subtype"] == "database" else synth.notion_blocks(row["id"], row["content"])
     offset = pagination.decode_cursor(request.query_params.get("start_cursor"))
     limit = _page_size(request.query_params.get("page_size"))
     page = blocks[offset : offset + limit]
@@ -677,11 +680,25 @@ async def search(request: Request):
     caller = auth.resolve_bearer(request)
     if (refusal := _refusal(request, caller)) is not None:
         return refusal
+    body = await json_body(request)
+    # Measured against api.notion.com on 2026-10-01 and 2026-10-04: once the credential and the
+    # version clear, a `query` that is present must be a string and a `filter` that is present an
+    # object, `null` included, or the request is 400 `validation_error` quoting the value back.
+    # When both are wrong the message names `query`, wherever each sits in the body.
+    for member, kind, named in (("query", str, "a string"), ("filter", dict, "an object")):
+        if member in body and not isinstance(body[member], kind):
+            value = json.dumps(body[member], ensure_ascii=False, separators=(",", ":"))
+            return _error(
+                request,
+                400,
+                "validation_error",
+                f"body failed validation: body.{member} should be {named} or `undefined`, "
+                f"instead was `{value}`.",
+            )
     conn = auth.conn(request)
     visible = auth.visible_ids(request, caller)
-    body = await json_body(request)
-    query = body.get("query") or ""
-    want = (body.get("filter") or {}).get("value")  # 'page' | 'database' | None
+    query = body.get("query", "")
+    want = body.get("filter", {}).get("value")  # 'page' | 'database' | None
     offset = pagination.decode_cursor(body.get("start_cursor"))
     limit = _page_size(body.get("page_size"))
     # Over-fetch so object-type filtering still fills a page; cap keeps it bounded. An empty query

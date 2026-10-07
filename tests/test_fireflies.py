@@ -254,6 +254,9 @@ def test_fireflies_date_selects_a_day_and_the_singular_email_filters_narrow(clie
 
     # 2026-04-10T16:00:00Z, the all-hands meeting: its own instant, and midnight that day
     assert titles("date: 1775836800000") == {"April all-hands"}
+    # api.fireflies.ai (2026-10-03): the seconds spelling is read as milliseconds.
+    assert titles("date: 1775836800") == set()
+    assert titles("date: 0") == set()
     assert titles("date: 1775779200000") == {"April all-hands"}
     # the discovery call is a different day, so it is not in either answer
     assert titles("date: 1775142000000") == {"Acme x Northwind — latency discovery"}

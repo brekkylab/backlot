@@ -2873,9 +2873,9 @@ async def get_readme_for_a_directory(
     than the root one, and `readme/` — the empty directory — is the repository's own README, which
     is why a trailing slash answers 200 here where it is a refusal on the routes around it.
 
-    The empty directory is a directory like any other, so it is looked up here rather than handed
-    to :func:`get_readme`, whose stub would answer 200: measured 2026-09-28, `readme/` on a
-    repository holding no README (octocat/test-repo1) is the same directory-anchor 404.
+    The empty directory is looked up here to preserve the directory-specific error anchor:
+    measured 2026-09-28, `readme/` on a repository holding no README (octocat/test-repo1)
+    is the same directory-anchor 404.
 
     Slashes, measured 2026-09-28 on github/gitignore and python/cpython: a path ending in up to two
     still names the directory, and one ending in three does not. `readme//` and `readme/Doc//` are
@@ -2885,7 +2885,8 @@ async def get_readme_for_a_directory(
 
     WHICH file it serves is where this and real part: real answers whatever the directory's README
     is, `Doc/README.rst` on python/cpython among them, and this looks for `README.md` and then
-    `readme.md`, as the root route does. A corpus stating `docs/README.rst` gets a 404 here and a
+    `readme.md`. The root route also accepts extensionless `README`; this directory route does
+    not. A corpus stating `docs/README.rst` gets a 404 here and a
     200 there.
     """
     conn = auth.conn(request)
@@ -2919,38 +2920,17 @@ async def get_readme(owner: str, repo: str, request: Request, ref: str | None = 
     _require_repo(conn, repo, ids)
     _require_ref(conn, owner, repo, ref, ids)
     ab = _api_base(request)
-    row = store.get_repo_file(conn, repo, "README.md", ids, ref=ref) or store.get_repo_file(
-        conn, repo, "readme.md", ids, ref=ref
+    row = (
+        store.get_repo_file(conn, repo, "README.md", ids, ref=ref)
+        or store.get_repo_file(conn, repo, "readme.md", ids, ref=ref)
+        or store.get_repo_file(conn, repo, "README", ids, ref=ref)
     )
+    # api.github.com (2026-10-04): octocat/Hello-World serves README; test-repo1 returns 404.
     if row is not None:
         return _raw_response(request, row["content"], _CONTENT_RAW_TYPE) or _file_obj(
             owner, repo, row, ab, ref
         )
-    text = f"# {repo}\n\nRepository `{owner}/{repo}`.\n"
-    raw = _raw_response(request, text, _CONTENT_RAW_TYPE)
-    if raw is not None:
-        return raw
-    sha = hashlib.sha1(text.encode()).hexdigest()
-    url = f"{ab}/repos/{owner}/{repo}/contents/README.md"
-    return {
-        "type": "file",
-        "name": "README.md",
-        "path": "README.md",
-        "encoding": "base64",
-        "content": base64.b64encode(text.encode()).decode(),
-        "size": len(text),
-        "sha": sha,
-        "node_id": synth.node_id("Blob", sha[:12]),
-        "url": url,
-        "git_url": f"{ab}/repos/{owner}/{repo}/git/blobs/{sha}",
-        "html_url": f"https://github.com/{owner}/{repo}/blob/main/README.md",
-        "download_url": f"https://raw.githubusercontent.com/{owner}/{repo}/main/README.md",
-        "_links": {
-            "self": url,
-            "git": f"{ab}/repos/{owner}/{repo}/git/blobs/{sha}",
-            "html": f"https://github.com/{owner}/{repo}/blob/main/README.md",
-        },
-    }
+    raise HTTPException(status_code=404, detail="Not Found")
 
 
 @router.get("/repos/{owner}/{repo}/collaborators")

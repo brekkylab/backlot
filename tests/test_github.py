@@ -1813,10 +1813,56 @@ def test_github_readme_real_content(gh_client, gh_admin_h, gh_org):
     assert body["sha"] == hashlib.sha1(text.encode()).hexdigest()
 
 
-def test_github_readme_stub_when_no_readme_file(client, admin_h, org):
-    # 'gateway' (base SAMPLE) has issues/PRs but no file docs -> falls back to the stub
-    body = client.get(f"/github/repos/{org}/gateway/readme", headers=admin_h).json()
-    assert base64.b64decode(body["content"]).decode().startswith("# gateway")
+@pytest.mark.parametrize("accept", ["application/vnd.github+json", "application/vnd.github.raw"])
+def test_github_readme_missing_file_is_not_fabricated(client, admin_h, org, accept):
+    """api.github.com (2026-10-04): octocat/test-repo1 has no README, in either media type."""
+    response = client.get(
+        f"/github/repos/{org}/gateway/readme", headers={**admin_h, "Accept": accept}
+    )
+    assert response.status_code == 404
+    assert response.json()["message"] == "Not Found"
+    assert response.json()["documentation_url"].endswith("#get-a-repository-readme")
+
+
+def test_github_extensionless_readme_preserves_content_and_scope(tmp_path):
+    """api.github.com (2026-10-04): octocat/Hello-World serves its extensionless README."""
+    settings = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "github",
+                "doc_id": "readme-owner",
+                "repo": "plain",
+                "subtype": "file",
+                "path": "README",
+                "content": "Hello World!\n",
+                "author_email": "owner@x.com",
+                "visibility": "private",
+            },
+            {
+                "source_type": "github",
+                "doc_id": "readme-outsider",
+                "repo": "plain",
+                "title": "public issue",
+                "author_email": "outsider@x.com",
+                "visibility": "public",
+            },
+        ],
+    )
+    with client_for(settings, reload=True) as c:
+        admin = {"Authorization": f"Bearer {settings.admin_token}"}
+        org = c.get("/_meta/users", headers=admin).json()["org"]
+        url = f"/github/repos/{org}/plain/readme"
+        body = c.get(url, headers=admin).json()
+        assert body["path"] == "README" and body["size"] == 13
+        assert base64.b64decode(body["content"]) == b"Hello World!\n"
+        raw = c.get(url, headers={**admin, "Accept": "application/vnd.github.raw"})
+        assert raw.status_code == 200 and raw.content == b"Hello World!\n"
+        tokens = yaml.safe_load(settings.tokens_path.read_text())["users"]
+        outsider = next(u["token"] for u in tokens if u["email"] == "outsider@x.com")
+        for accept in ("application/vnd.github+json", "application/vnd.github.raw"):
+            hidden = c.get(url, headers={"Authorization": f"Bearer {outsider}", "Accept": accept})
+            assert hidden.status_code == 404
 
 
 def test_github_file_excluded_from_issues_and_pulls(gh_client, gh_admin_h, gh_org):
@@ -3427,16 +3473,11 @@ def test_github_raw_media_type_returns_the_bytes(gh_client, gh_admin_h, gh_org, 
             "application/vnd.github.raw",
             _CODEBASE_README,
         ),
-        # 'gateway' carries no README doc, so this one exercises the synthesized-stub branch
-        (f"/github/repos/{gh_org}/gateway/readme", "application/vnd.github.raw", None),
     ]:
         r = c.get(url, headers={**gh_admin_h, "Accept": accept})
         assert r.status_code == 200, url
         assert r.headers["content-type"].startswith(ctype), url
-        if body is None:
-            assert r.text.startswith("# gateway")
-        else:
-            assert r.text == body and len(r.content) == len(body.encode()), url
+        assert r.text == body and len(r.content) == len(body.encode()), url
 
 
 def test_github_raw_accept_leaves_the_json_envelope_alone(gh_client, gh_admin_h, gh_org):
@@ -3569,7 +3610,10 @@ def test_github_user_repos(gh_client, gh_admin_h, gh_user_tokens, gh_org):
         "/teams",
     ):
         assert c.get(f"/github/repos/{gh_org}/vault{path}", headers=bob_h).status_code == 404, path
-        assert c.get(f"/github/repos/{gh_org}/vault{path}", headers=gh_admin_h).status_code == 200
+        expected = 404 if path == "/readme" else 200  # vault has no README file
+        assert (
+            c.get(f"/github/repos/{gh_org}/vault{path}", headers=gh_admin_h).status_code == expected
+        )
 
     page = c.get("/github/user/repos", headers=gh_admin_h, params={"per_page": 1, "page": 1})
     assert len(page.json()) == 1 and 'rel="next"' in page.headers.get("Link", "")

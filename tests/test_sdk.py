@@ -325,7 +325,7 @@ def sheets():
 
 # ------------------------------------------------------------------ GitHub
 def github():
-    from github import Auth, Github
+    from github import Auth, Github, UnknownObjectException
 
     gh = Github(auth=Auth.Token(ADMIN), base_url=f"{BASE}/github")
     repo = gh.get_repo("acme/gateway")  # the SAMPLE corpus is @acme.com; owner is echoed by Backlot
@@ -340,7 +340,17 @@ def github():
     prs = list(repo.get_pulls(state="all"))
     check("GitHub", "get_pulls")(lambda: f"{len(prs)} PRs")
     check("GitHub", "pull.get_reviews")(lambda: f"{len(list(prs[0].get_reviews()))} reviews")
-    check("GitHub", "get_readme")(lambda: repo.get_readme().name)
+
+    def missing_readme():
+        # api.github.com (2026-10-04): a repository without a README returns 404.
+        try:
+            repo.get_readme()
+        except UnknownObjectException as error:
+            assert error.status == 404 and error.data["message"] == "Not Found"
+            return "missing README refused"
+        raise AssertionError("a nonexistent README was fabricated")
+
+    check("GitHub", "get_readme missing file")(missing_readme)
     sr = gh.search_issues(query="refill")
     check("GitHub", "search_issues")(lambda: f"{sr.totalCount} hits" if sr.totalCount else 1 / 0)
     # what a client asks before a crawl: a 404 here raised UnknownObjectException before the first
@@ -360,7 +370,7 @@ def github():
     # a wrong token is BadCredentialsException and a missing repo is UnknownObjectException; against
     # a `detail` body both were GithubException. Deleting backlot.errors.github's envelope puts them
     # back, which is what these two catch.
-    from github import BadCredentialsException, UnknownObjectException
+    from github import BadCredentialsException
 
     def _wrong_token():
         bad = Github(auth=Auth.Token("usr-not-a-real-token"), base_url=f"{BASE}/github")

@@ -1,0 +1,57 @@
+# Draws the contributors to `main` as round avatars, which the README shows under Contributing.
+# `scripts/contributors_svg.py` has who is drawn and in what order.
+#
+# The drawing is committed to the `contributors` branch rather than to `main`, whose ruleset wants
+# the CI checks passing before a change lands, and the README reads it from there through
+# raw.githubusercontent.com. A run that draws what the branch already holds commits nothing.
+name: Contributors
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# A later push's run reads every commit an earlier run would, so the earlier one is cancelled.
+concurrency:
+  group: contributors
+  cancel-in-progress: true
+
+jobs:
+  draw:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/contributors_svg.py
+          sparse-checkout-cone-mode: false
+      - name: Draw
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/contributors_svg.py "$RUNNER_TEMP/contributors.svg"
+      - name: Commit to the contributors branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git init -q "$RUNNER_TEMP/wall"
+          cd "$RUNNER_TEMP/wall"
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if git ls-remote --exit-code --heads origin contributors > /dev/null; then
+            git fetch -q --depth 1 origin contributors
+            git checkout -q -b contributors FETCH_HEAD
+          else
+            git checkout -q --orphan contributors
+          fi
+          cp "$RUNNER_TEMP/contributors.svg" contributors.svg
+          git add contributors.svg
+          if git diff --cached --quiet; then
+            echo "The drawing is unchanged."
+            exit 0
+          fi
+          git -c user.name="github-actions[bot]" \
+            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -q -m "Draw the contributors to main at ${GITHUB_SHA::7}"
+          git push -q origin contributors

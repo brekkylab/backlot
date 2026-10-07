@@ -6,6 +6,8 @@ or call the response builder directly.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from backlot import store
@@ -381,7 +383,12 @@ def test_hubspot_search_every_operator(client, admin_h):
     non-archived records participate — search excludes the archived view, as the real API does."""
     f = lambda **kw: _hs_filter(client, admin_h, **kw)  # noqa: E731
     assert f(propertyName="name", operator="EQ", value="Acme Health") == {"Acme Health"}
-    assert "Acme Health" not in f(propertyName="name", operator="NEQ", value="Acme Health")
+    # The negative operators include a record without the property: Stealth Health Co has no
+    # `domain`, so each of the three below finds it as well.
+    assert f(propertyName="domain", operator="NEQ", value="acme-health.com") == {
+        "Borealis Clinics",
+        "Stealth Health Co",
+    }
     assert f(propertyName="employees", operator="LT", value="200") == {"Acme Health"}
     assert f(propertyName="employees", operator="LTE", value="150") == {"Acme Health"}
     assert f(propertyName="employees", operator="GT", value="200") == {"Borealis Clinics"}
@@ -397,17 +404,19 @@ def test_hubspot_search_every_operator(client, admin_h):
     assert f(
         propertyName="lifecyclestage", operator="IN", values=["evaluation", "procurement"]
     ) == {"Acme Health", "Borealis Clinics"}
-    assert "Acme Health" not in f(
-        propertyName="lifecyclestage", operator="NOT_IN", values=["evaluation"]
-    )
+    assert f(propertyName="domain", operator="NOT_IN", values=["acme-health.com"]) == {
+        "Borealis Clinics",
+        "Stealth Health Co",
+    }
     assert f(propertyName="domain", operator="HAS_PROPERTY") == {"Acme Health", "Borealis Clinics"}
     assert f(propertyName="domain", operator="NOT_HAS_PROPERTY") == {"Stealth Health Co"}
     assert f(propertyName="name", operator="CONTAINS_TOKEN", value="Clinics") == {
         "Borealis Clinics"
     }
-    assert "Borealis Clinics" not in f(
-        propertyName="name", operator="NOT_CONTAINS_TOKEN", value="Clinics"
-    )
+    assert f(propertyName="domain", operator="NOT_CONTAINS_TOKEN", value="borealis") == {
+        "Acme Health",
+        "Stealth Health Co",
+    }
 
 
 @pytest.mark.parametrize(
@@ -447,6 +456,119 @@ def test_hubspot_wildcard_needle_with_many_stars_stays_fast():
     assert hs._match_one("a" * 20000 + "b", f) is True
 
 
+def _enum_refusal(line: int, column: int) -> dict:
+    return {
+        "status": "error",
+        "message": f"Invalid input JSON on line {line}, column {column}: Enum type must be one of: "
+        "[IN, NOT_HAS_PROPERTY, LT, EQ, GT, NOT_IN, GTE, CONTAINS_TOKEN, HAS_PROPERTY, LTE, "
+        "NOT_CONTAINS_TOKEN, BETWEEN, NEQ]",
+        "category": "VALIDATION_ERROR",
+    }
+
+
+def _empty_operator_refusal(group: int, position: int) -> dict:
+    return {
+        "status": "error",
+        "message": "Invalid input JSON: unable to deserialize field "
+        f'"filterGroups[{group}].filters[{position}].operator". Invalid value: ',
+        "category": "VALIDATION_ERROR",
+    }
+
+
+def _jobtitle(*groups, compact=True, **top) -> str:
+    """A search body on `jobtitle`, one group per argument, each a list of `(operator, value)`."""
+    body = {
+        "filterGroups": [
+            {"filters": [{"propertyName": "jobtitle", "operator": o, "value": v} for o, v in g]}
+            for g in groups
+        ],
+        **top,
+    }
+    return json.dumps(body, separators=(",", ":")) if compact else json.dumps(body)
+
+
+def _value_first(value: str, *, ensure_ascii: bool) -> str:
+    f = {"propertyName": "jobtitle", "value": value, "operator": "neq"}
+    return json.dumps(
+        {"filterGroups": [{"filters": [f]}]}, separators=(",", ":"), ensure_ascii=ensure_ascii
+    )
+
+
+def _op(id, raw, want, object_type="contacts", authed=True):
+    return pytest.param(raw, want, object_type, authed, id=id)
+
+
+def _served_as(name):
+    return ("served as", _jobtitle([(name, "Salesperson")]))
+
+
+# fmt: off
+_OPERATOR_ROWS = [
+    _op("compact", _jobtitle([("neq", "Salesperson")]), _enum_refusal(1, 68)),
+    _op("default-separators", _jobtitle([("neq", "Salesperson")], compact=False), _enum_refusal(1, 73)),
+    _op("indent", json.dumps(json.loads(_jobtitle([("neq", "Salesperson")])), indent=2), _enum_refusal(7, 23)),
+    _op("crlf", json.dumps(json.loads(_jobtitle([("neq", "Salesperson")])), indent=2).replace("\n", "\r\n"), _enum_refusal(7, 23)),
+    _op("tab-indent", json.dumps(json.loads(_jobtitle([("neq", "Salesperson")])), indent="\t"), _enum_refusal(7, 18)),
+    _op("two-byte-chars-before", _value_first("ééé", ensure_ascii=False), _enum_refusal(1, 85)),
+    _op("escaped-chars-before", _value_first("ééé", ensure_ascii=True), _enum_refusal(1, 97)),
+    _op("four-byte-char-before", _value_first(chr(0x1F600), ensure_ascii=False), _enum_refusal(1, 83)),
+    _op("mixed-case", _jobtitle([("Eq", "x")]), _enum_refusal(1, 68)),
+    _op("unknown-name", _jobtitle([("BOGUS", "x")]), _enum_refusal(1, 68)),
+    _op("non-ascii-name", json.dumps(json.loads(_jobtitle([("NÉQ", "x")])), separators=(",", ":"), ensure_ascii=False), _enum_refusal(1, 68)),
+    _op("no-break-space-before", _jobtitle([(chr(0xA0) + "EQ", "Salesperson")]), _enum_refusal(1, 68)),
+    _op("em-space-after", _jobtitle([("EQ" + chr(0x2003), "Salesperson")]), _enum_refusal(1, 68)),
+    _op("index-13", _jobtitle([("13", "Salesperson")]), _enum_refusal(1, 68)),
+    _op("index-01", _jobtitle([("01", "Salesperson")]), _enum_refusal(1, 68)),
+    _op("index-plus-1", _jobtitle([("+1", "Salesperson")]), _enum_refusal(1, 68)),
+    _op("empty", _jobtitle([("", "x")]), _empty_operator_refusal(0, 0)),
+    _op("blank", _jobtitle([("  ", "Salesperson")]), _empty_operator_refusal(0, 0)),
+    _op("empty-second", _jobtitle([("EQ", "Salesperson"), ("", "Salesperson")]), _empty_operator_refusal(0, 1)),
+    _op("second-filter", _jobtitle([("EQ", "x"), ("neq", "x")]), _enum_refusal(1, 124)),
+    _op("second-group", _jobtitle([("EQ", "x")], [("neq", "x")]), _enum_refusal(1, 138)),
+    _op("first-of-two-unknown", _jobtitle([("bogus", "x"), ("neq", "x")]), _enum_refusal(1, 68)),
+    _op("first-of-two-groups", _jobtitle([("bogus", "x")], [("neq", "x")]), _enum_refusal(1, 68)),
+    _op("empty-in-second-group", _jobtitle([("EQ", "x")], [("", "x")]), _empty_operator_refusal(1, 0)),
+    _op("empty-before-unknown", _jobtitle([("", "Salesperson"), ("neq", "Salesperson")]), _empty_operator_refusal(0, 0)),
+    _op("unknown-before-empty", _jobtitle([("neq", "Salesperson"), ("", "Salesperson")]), _enum_refusal(1, 68)),
+    _op("repeated-operator-key", '{"filterGroups":[{"filters":[{"propertyName":"jobtitle","operator":"EQ","operator":"neq","value":"Salesperson"}]}]}', _enum_refusal(1, 84)),
+    _op("repeated-filtergroups-key", '{"filterGroups":[{"filters":[{"propertyName":"jobtitle","operator":"EQ","value":"x"}]}],"filterGroups":[{"filters":[{"propertyName":"jobtitle","operator":"neq","value":"x"}]}]}', _enum_refusal(1, 155)),
+    _op("after-an-integer-operator", '{"filterGroups":[{"filters":[{"propertyName":"jobtitle","operator":5,"value":"x"},{"propertyName":"jobtitle","operator":"neq","value":"x"}]}]}', _enum_refusal(1, 121)),
+    _op("before-a-cursor-naming-no-record", _jobtitle([("neq", "x")], after="10000"), _enum_refusal(1, 68)),
+    _op("after-an-unknown-type", _jobtitle([("neq", "Salesperson")]), {"status": "error", "message": "Unable to infer object type from: nosuchtype"}, object_type="nosuchtype"),
+    _op("after-the-credential", _jobtitle([("neq", "Salesperson")]), 401, authed=False),
+    _op("space-before", _jobtitle([(" NEQ", "Salesperson")]), _served_as("NEQ")),
+    _op("tab-before", _jobtitle([("\tNEQ", "Salesperson")]), _served_as("NEQ")),
+    _op("u0001-before", _jobtitle([(chr(1) + "NEQ", "Salesperson")]), _served_as("NEQ")),
+    _op("space-after", _jobtitle([("NEQ ", "Salesperson")]), _served_as("NEQ")),
+    _op("index-0", _jobtitle([("0", "Salesperson")]), 200),
+    _op("index-12", _jobtitle([("12", "Salesperson")]), 200),
+    _op("index-1-after-a-space", _jobtitle([(" 1", "Salesperson")]), 200),
+]
+# fmt: on
+
+
+@pytest.mark.parametrize("raw, want, object_type, authed", _OPERATOR_ROWS)
+def test_hubspot_search_reads_a_filter_operator_as_real_does(
+    client, admin_h, raw, want, object_type, authed
+):
+    """`_refuse_an_operator`'s rule, one body per row: the status and message real answered for each
+    operator it could not read, and a 200 for each it trims (`_TRIM`) or reads as an index
+    (`_OPERATOR_INDEXES`). The trimmed rows put real's trimmed spellings around `NEQ`, whose page on
+    this corpus is not empty, and compare that page with `NEQ`'s own; the index rows check only that
+    the body is served."""
+    headers = {"Content-Type": "application/json", **(admin_h if authed else {})}
+    url = f"/hubspot/crm/v3/objects/{object_type}/search"
+    r = client.post(url, headers=headers, content=raw.encode())
+    if isinstance(want, dict):
+        assert (r.status_code, r.json()) == (400, want)
+    elif isinstance(want, tuple):
+        control = client.post(url, headers=headers, content=want[1].encode()).json()["results"]
+        assert r.status_code == 200
+        assert r.json()["results"] == control != []
+    else:
+        assert r.status_code == want
+
+
 def test_hubspot_search_prefilter_cannot_change_results(client, admin_h, monkeypatch):
     """The SQL pre-filter is a pure optimisation: it may only skip rows Python would have rejected
     anyway. Every query is run twice — once with the pushdown, once with it disabled — and the
@@ -478,6 +600,21 @@ def test_hubspot_search_prefilter_cannot_change_results(client, admin_h, monkeyp
                             "propertyName": "lifecyclestage",
                             "operator": "IN",
                             "values": ["evaluation", "procurement"],
+                        }
+                    ]
+                }
+            ]
+        },
+        # IN on `domain`, which Stealth Health Co lacks: the pushdown drops that record, so Python
+        # has to as well
+        {
+            "filterGroups": [
+                {
+                    "filters": [
+                        {
+                            "propertyName": "domain",
+                            "operator": "IN",
+                            "values": ["acme-health.com", "borealis.example"],
                         }
                     ]
                 }

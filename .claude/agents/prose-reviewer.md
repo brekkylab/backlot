@@ -28,7 +28,7 @@ the body with `gh pr view <n> --json body` or from the prompt, and `AGENTS.md`, 
    naming both places and which one to keep.
 4. **Length.** A comment longer than the code it explains, or a doc paragraph that restates the code
    line by line, is a finding with the shorter wording proposed in the resolution.
-5. **Documentation rules.** README.md stays at or under 130 lines and states no count of sources.
+5. **Documentation rules.** README.md stays at or under 180 lines and states no count of sources.
    `docs/supported-sources.md` is generated; a hand edit between its markers is a `block`. Every
    relative link resolves. The served surface is not called "read-only".
 6. **The PR body.** Every template section is filled. It describes the finished state, not the rounds

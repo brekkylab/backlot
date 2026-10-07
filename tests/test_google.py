@@ -1295,71 +1295,69 @@ def test_drive_a_page_token_it_did_not_issue_is_refused(client, admin_h):
     assert token.status_code == 200 and token.json()["files"] != first["files"]
 
 
-@pytest.mark.parametrize("path", ["/drive/v3/files/{doc}/permissions", "/drive/v3/drives"])
-def test_drive_a_listing_that_never_issued_a_token_refuses_one_it_did_not_issue(
-    client, admin_h, path
-):
-    """The `pageToken` rule `drive_files_list` applies, on the two Drive listings that read none:
-    every token is one the route did not issue, because neither pages, so the refusal is a presence
-    test and not a decode -- `bzow` is `o:0` and a `files.list` token is a real offset, and both are
-    400 here where `files.list` serves them. The empty spelling is `permissions.list`'s own 403;
-    on `drives.list` the one page is the whole answer and an empty token is it."""
-    doc = _drive_find(client, admin_h, "Brand")["id"]
-    url = path.format(doc=doc)
-    listing = client.get("/drive/v3/files", headers=admin_h, params={"pageSize": 1}).json()
-    for token in ("bad", "bzow", listing["nextPageToken"]):
-        refused = client.get(url, headers=admin_h, params={"pageToken": token})
-        assert refused.status_code == 400, (token, refused.text)
-        e = _gerr(refused)
-        assert e["code"] == 400
-        assert e["errors"] == [
-            {
-                "message": "Invalid Value",
-                "domain": "global",
-                "reason": "invalid",
-                "location": "pageToken",
-                "locationType": "parameter",
-            }
-        ], token
-        assert "status" not in e
-    empty = client.get(url, headers=admin_h, params={"pageToken": ""})
-    first = client.get(url, headers=admin_h)
-    assert first.status_code == 200 and "nextPageToken" not in first.json()
-    if path.endswith("/permissions"):
-        assert empty.status_code == 403, empty.text
-        e = _gerr(empty)
-        assert e["code"] == 403
-        assert e["message"] == "The specified page token has expired, and can no longer be used."
-        assert e["errors"] == [
-            {"message": e["message"], "domain": "global", "reason": "pageTokenExpired"}
-        ]
-        assert "location" not in e["errors"][0]
-        # the file is never looked up: the refusal is ahead of it, as on a non-empty token
-        missing = path.format(doc="nosuchfile000").replace("{doc}", "nosuchfile000")
-        assert client.get(missing, headers=admin_h, params={"pageToken": ""}).status_code == 403
+_PERMS = "/drive/v3/files/{doc}/permissions"
+_TOKEN_INVALID = {
+    "code": 400,
+    "message": "Invalid Value",
+    "errors": [
+        {
+            "message": "Invalid Value",
+            "domain": "global",
+            "reason": "invalid",
+            "location": "pageToken",
+            "locationType": "parameter",
+        }
+    ],
+}
+_TOKEN_EXPIRED = {
+    "code": 403,
+    "message": "The specified page token has expired, and can no longer be used.",
+    "errors": [
+        {
+            "message": "The specified page token has expired, and can no longer be used.",
+            "domain": "global",
+            "reason": "pageTokenExpired",
+        }
+    ],
+}
+
+
+@pytest.mark.parametrize(
+    "path, query, error",
+    [
+        *[
+            (path, query, error)
+            for path in (_PERMS, "/drive/v3/drives")
+            for query, error in [
+                ([("pageToken", "bad")], _TOKEN_INVALID),
+                ([("pageToken", "bzow")], _TOKEN_INVALID),
+                ([("useDomainAdminAccess", "true"), ("pageToken", "bad")], _TOKEN_INVALID),
+                ([("pageToken", "bad"), ("useDomainAdminAccess", "true")], _TOKEN_INVALID),
+                ([("pageToken", "bad"), ("pageSize", "0")], None),
+                ([("pageToken", "bad"), ("useDomainAdminAccess", "NOPE")], None),
+            ]
+        ],
+        (_PERMS, [("pageToken", "")], _TOKEN_EXPIRED),
+        (_PERMS, [("useDomainAdminAccess", "true"), ("pageToken", "")], _TOKEN_EXPIRED),
+        ("/drive/v3/files/nosuchfileid000000/permissions", [("pageToken", "")], _TOKEN_EXPIRED),
+        ("/drive/v3/drives", [("pageToken", "{token}")], _TOKEN_INVALID),
+        ("/drive/v3/drives", [("pageToken", "")], None),
+        ("/drive/v3/drives", [("useDomainAdminAccess", "true"), ("pageToken", "")], None),
+    ],
+)
+def test_drive_a_listing_that_issues_no_page_token_refuses_one(client, admin_h, path, query, error):
+    """The rule `_drive_listing_page_token` records, one request per row. `None` is a token that
+    changes nothing: the answer is the one the request gets without it, a page or the refusal of
+    the value beside it. `{token}` is filled from the first page of `files.list`."""
+    url = path.format(doc=_drive_find(client, admin_h, "Brand")["id"])
+    issued = client.get("/drive/v3/files", headers=admin_h, params={"pageSize": 1}).json()
+    query = [(k, v.format(token=issued["nextPageToken"])) for k, v in query]
+    r = client.get(url, headers=admin_h, params=query)
+    if error is None:
+        without = [(k, v) for k, v in query if k != "pageToken"]
+        assert r.content == client.get(url, headers=admin_h, params=without).content
     else:
-        assert empty.status_code == 200 and empty.json() == first.json()
-
-
-@pytest.mark.parametrize("path", ["/drive/v3/files/{doc}/permissions", "/drive/v3/drives"])
-def test_drive_a_page_token_is_refused_ahead_of_the_domain_admin_flag(client, admin_h, path):
-    """The order #465 records for the two routes: sent together, `pageToken` is the refusal, where
-    real makes one of `useDomainAdminAccess=true` on both. The flag is refused on its own too, so
-    the pair pins which of the two a request naming both gets."""
-    doc = _drive_find(client, admin_h, "Brand")["id"]
-    url = path.format(doc=doc)
-    both = client.get(
-        url, headers=admin_h, params=[("useDomainAdminAccess", "true"), ("pageToken", "bad")]
-    )
-    assert both.status_code == 400, both.text
-    assert _gerr(both)["errors"][0]["location"] == "pageToken"
-    # the flag alone is #339's refusal, which this one comes ahead of
-    assert client.get(
-        url, headers=admin_h, params={"useDomainAdminAccess": "true"}
-    ).status_code in (
-        403,
-        404,
-    )
+        assert (r.status_code, _gerr(r)) == (error["code"], error)
 
 
 @pytest.mark.parametrize(

@@ -4468,21 +4468,23 @@ def _drive_page_size_in_range(sizes: list[int], top: int) -> None:
 
 
 def _drive_listing_page_token(request: Request, *, expired_empty: bool = False) -> None:
-    """Real's refusal of a `pageToken` a listing never issued. Neither `permissions.list` nor
-    `drives.list` emits a `nextPageToken` — one returns a file's whole sharing and the other an
-    empty list — so every token is one the route did not issue and there is no offset to read:
-    presence is the whole test, and the decoder is not called.
+    """Refuse a `pageToken` sent to a listing that issues no `nextPageToken`, where every token is
+    one it did not issue: `permissions.list`, which serves a file's whole sharing on one page, and
+    `drives.list`, which is empty. Presence is the whole test: `decode_cursor_or_none`, which
+    `files.list` calls, reads `bzow` and that route's own tokens as offsets. Read from the first
+    repeat, after the typed and range refusals and ahead of the `useDomainAdminAccess=true` refusal
+    and `permissions.list`'s file lookup. Measured 2026-10-04 and 2026-10-05, and the empty, `bad`,
+    `bzow`, `BOGUS` and issued-token cells again on 2026-10-07 as a Workspace member::
 
-    Measured on Drive 2026-10-05: a non-empty token is 400 `Invalid Value` at `location: pageToken`
-    on both routes, in the position `files.list` refuses one (after the `pageSize` range check,
-    ahead of the `useDomainAdminAccess` refusal of #339), and an empty one is 403
-    `pageTokenExpired` — which `files.list` answers with its first page, so the empty case is
-    `permissions.list`'s alone.
+        pageToken                         permissions.list          drives.list
+        --------------------------------|-------------------------|-------------------------
+        empty                           | 403 `pageTokenExpired`  | the first page
+        `bad`, `bzow`, `AAAA`           | 400 `Invalid Value`     | 400 `Invalid Value`
+        `BOGUS`, `0`, `a`, a space, a   | 500 `Unknown Error.`    | 400 `Invalid Value`
+        token `files.list` issued       |                         |
 
-    The empty token is behind ``expired_empty`` for that reason: `drives.list` answers its empty
-    list to one, so only the caller that measured the 403 asks for it. A repeated token is read
-    from the first, like `files.list` — `&bad` gets what an empty token gets and `bad&` the 400.
-    """
+    ``expired_empty`` asks for the empty row's 403, which only `permissions.list` answers. The 500
+    is not modelled; those tokens get the 400 here too."""
     token = gerr.first_repeat(request.query_params, "pageToken")
     if token is None:
         return

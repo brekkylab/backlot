@@ -29,6 +29,57 @@ def test_admin_hubspot_crawls_all(client, admin_h, ro_conn):
     assert all(r["archived"] is True for r in archived)
 
 
+@pytest.mark.parametrize(
+    "value,archived",
+    [
+        ("true", True),
+        ("TRUE", True),
+        ("True", True),
+        ("1", False),
+        ("yes", False),
+        ("abc", False),
+        ("", False),
+        (" true", False),
+        ("true ", False),
+        ("\ttrue", False),
+        ("true\t", False),
+        ("\ntrue", False),
+        ("true\n", False),
+        ("\rtrue", False),
+        ("true\r", False),
+        ("\u00a0true", False),
+        ("true\u00a0", False),
+        (["true", "false"], True),
+        (["true", ""], True),
+        (["true", "abc"], True),
+        (["TRUE", "false"], True),
+        (["True", "false"], True),
+        (["true", "false", "false"], True),
+        (["false", "true"], False),
+        (["", "true"], False),
+        (["yes", "true"], False),
+        (["1", "true"], False),
+        (["abc", "true"], False),
+        ([" true", "true"], False),
+        (["false", "TRUE"], False),
+        (["false", "false", "true"], False),
+    ],
+)
+def test_hubspot_archived_parameter_reads_its_first_value_and_only_true_as_true(
+    client, admin_h, value, archived
+):
+    """`_flag`'s rule over companies, on the first value when `archived` repeats (a list row is
+    sent as the key repeated in list order): the one archived company when `_flag` reads that value
+    as true, and otherwise the same page as a request without `archived`."""
+    url = "/hubspot/crm/v3/objects/companies"
+    r = client.get(url, headers=admin_h, params={"archived": value})
+    assert r.status_code == 200
+    if archived:
+        assert [x["properties"]["name"] for x in r.json()["results"]] == ["Defunct Labs"]
+    else:
+        assert r.json() == client.get(url, headers=admin_h).json()
+
+
 def test_hubspot_list_cursor_pages_without_overlap(client, admin_h):
     """The cursor path itself: pages of two over the three non-archived companies, no repeats, no
     gaps, and the walk ends by `paging.next` disappearing rather than by a page coming back empty."""

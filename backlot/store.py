@@ -2715,6 +2715,13 @@ def gmail_thread(conn, thread_id, visible_ids=None) -> list[sqlite3.Row]:
     return conn.execute(sql, params).fetchall()
 
 
+def gmail_rows_with_attachments(conn, visible_ids=None) -> list[sqlite3.Row]:
+    """Every Gmail message the caller can see that holds at least one attachment."""
+    sql = "SELECT * FROM gmail_messages WHERE COALESCE(attachments, '') NOT IN ('', '[]')"
+    clause, cp = _acl_clause("gmail", visible_ids=visible_ids)
+    return conn.execute(sql + clause, cp).fetchall()
+
+
 def gmail_by_id(conn, message_id, visible_ids=None) -> sqlite3.Row | None:
     """One message by the id the API reports. The stored key is unpadded lowercase hex; callers
     pass the id as the client spelled it, so both the case and any leading zeros are normalized

@@ -156,9 +156,23 @@ def _clamp(raw, default: int, cap: int) -> int:
 
 
 def _flag(raw) -> bool:
-    """`archived=1` must not silently serve the un-archived view; accept the spellings a raw caller
-    plausibly sends (the official client always sends `true`/`false`)."""
-    return str(raw or "").strip().lower() in {"true", "1", "yes"}
+    """`archived` is true when its value is `true` in any letter case, with nothing trimmed.
+    Measured against api.hubapi.com (2026-10-01, 2026-10-07, 2026-10-08): `true`, `TRUE` and `True`
+    serve the archived view; `1`, `yes`, `abc`, an empty value, and `true` with whitespace before or
+    after it (a space, tab, newline, carriage return or no-break space) serve the active one. The
+    Python client `hubspot-api-client` 12.0.0 sends `True`/`False`, and the Node client
+    `@hubspot/api-client` 14.0.1 sends `true`/`false`."""
+    return str(raw or "").lower() == "true"
+
+
+def _first_query(qp, name: str):
+    """The first value the query carries for ``name``, or ``None`` when it carries none.
+    Real reads a repeated `archived` on an object listing from its first value, measured against
+    api.hubapi.com (2026-10-07, 2026-10-08): `archived=true&archived=false` serves the archived
+    view, and `archived=false&archived=true`, `archived=&archived=true` and
+    `archived=yes&archived=true` the active one. Starlette's `QueryParams.get` returns the last."""
+    values = qp.getlist(name)
+    return values[0] if values else None
 
 
 def _props(row) -> dict:
@@ -759,7 +773,7 @@ async def list_objects(object_type: str, request: Request):
         after_id=after_doc,
         visible_ids=auth.visible_ids(request, caller),
         limit=limit + 1,
-        archived=_flag(qp.get("archived")),
+        archived=_flag(_first_query(qp, "archived")),
     )
     return _page(rows, limit, _keep(qp.get("properties")))
 

@@ -53,10 +53,26 @@ class _ALoose(BaseModel):
     model_config = ConfigDict(extra="allow")
 
 
+# Every member `jira_server_info` answers, declared in the order Jira Cloud answers them: the
+# response is written in declaration order whatever order the handler's dict has. `serverTime`,
+# absent for the anonymous caller, falls back to `None`, which the routes'
+# `response_model_exclude_none` leaves out.
 class JiraServerInfo(_ALoose):
     baseUrl: str
+    displayUrl: str
+    displayUrlServicedeskHelpCenter: str
+    displayUrlCSMHelpSeeker: str
+    displayUrlConfluence: str
     version: str
+    versionNumbers: list[int]
     deploymentType: str = "Cloud"
+    buildNumber: int
+    buildDate: str
+    serverTime: str | None = None
+    scmInfo: str
+    serverTitle: str
+    defaultLocale: dict
+    serverTimeZone: str
 
 
 class JiraSearchResult(_ALoose):
@@ -294,15 +310,21 @@ def _resolve_jira_key(request: Request, conn, key: str, ids):
 
 
 @router.get(
-    "/rest/api/2/serverInfo", response_model=JiraServerInfo
+    "/rest/api/2/serverInfo",
+    response_model=JiraServerInfo,
+    response_model_exclude_none=True,
 )  # jira PyPI client probes this on connect
-@router.get("/rest/api/3/serverInfo", response_model=JiraServerInfo)
+@router.get(
+    "/rest/api/3/serverInfo",
+    response_model=JiraServerInfo,
+    response_model_exclude_none=True,
+)
 async def jira_server_info(request: Request):
     """The members Jira Cloud answers, the same on v2 and v3 (measured 2026-10-03, 2026-10-05 and
     2026-10-07).
 
-    A signed-in caller gets fifteen, with `serverTime` between `buildDate` and `scmInfo`. The
-    anonymous caller `_jira_caller` returns gets the other fourteen: measured with no
+    A signed-in caller gets fifteen, in the order `JiraServerInfo` declares them. The anonymous
+    caller `_jira_caller` returns gets all of them but `serverTime`: measured with no
     `Authorization` header, a failed `email:api_token` pair, an empty password, a Basic value that
     is not base64 and an unknown scheme. `serverTime` is milliseconds and a `+HHMM` offset, the form
     of `buildDate` (`synth.jira_datetime`). The offset is the tenant's own and not read from
@@ -317,8 +339,8 @@ async def jira_server_info(request: Request):
         "baseUrl": site,
         "displayUrl": site,
         "displayUrlServicedeskHelpCenter": site,
-        "displayUrlConfluence": site,
         "displayUrlCSMHelpSeeker": site,
+        "displayUrlConfluence": site,
         "version": "1001.0.0-SNAPSHOT",
         "versionNumbers": [1001, 0, 0],
         "deploymentType": "Cloud",

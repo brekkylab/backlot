@@ -369,9 +369,24 @@ def test_jira_serverinfo_answers_reals_fifteen_members_on_v2_and_v3(client, admi
     # `jira_server_info` records.
     v2 = client.get("/atlassian/rest/api/2/serverInfo", headers=admin_h).json()
     v3 = client.get("/atlassian/rest/api/3/serverInfo", headers=admin_h).json()
-    assert v2 == v3
-    keys = list(v3)
-    assert keys[keys.index("buildDate") :][:3] == ["buildDate", "serverTime", "scmInfo"]
+    assert list(v2.items()) == list(v3.items())
+    assert list(v3) == [
+        "baseUrl",
+        "displayUrl",
+        "displayUrlServicedeskHelpCenter",
+        "displayUrlCSMHelpSeeker",
+        "displayUrlConfluence",
+        "version",
+        "versionNumbers",
+        "deploymentType",
+        "buildNumber",
+        "buildDate",
+        "serverTime",
+        "scmInfo",
+        "serverTitle",
+        "defaultLocale",
+        "serverTimeZone",
+    ]
     site = v3["baseUrl"]
     synthesized = {k: v3.pop(k) for k in ("buildDate", "serverTime", "scmInfo")}
     assert v3 == {

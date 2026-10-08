@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import re
 from functools import lru_cache
+from uuid import uuid4
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -38,6 +39,15 @@ router = APIRouter(prefix="/hubspot", tags=["hubspot"])
 _PAGE_MAX = 100
 # The associations endpoint pages at 500 per request, like the vendor's.
 _ASSOC_PAGE_MAX = 500
+
+# api.hubapi.com refused archived listings for these four types in the 2026-10-08 measurement;
+# other types that the key could not read, and custom objects, were unmeasured.
+_NO_ARCHIVED_PAGING = {
+    "meetings": "0-47 (MEETING_EVENT)",
+    "communications": "0-18 (COMMUNICATION)",
+    "deal_splits": "0-72 (DEAL_SPLIT)",
+    "quote_templates": "0-64 (QUOTE_TEMPLATE)",
+}
 
 
 # --- OpenAPI enrichment --------------------------------------------------
@@ -767,13 +777,29 @@ async def list_objects(object_type: str, request: Request):
     after_doc, err = _resolve_cursor(request, qp.get("after"))
     if err is not None:
         return err
+    archived = _flag(_first_query(qp, "archived"))
+    type_label = _NO_ARCHIVED_PAGING.get(_CANONICAL.get(object_type, object_type))
+    if archived and type_label is not None:
+        return JSONResponse(
+            status_code=400,
+            media_type="application/json;charset=utf-8",
+            content={
+                "status": "error",
+                "message": (
+                    "Paging through deleted objects is not yet supported for object type "
+                    f"{type_label}"
+                ),
+                "correlationId": str(uuid4()),
+                "category": "VALIDATION_ERROR",
+            },
+        )
     rows = store.list_hubspot_objects(
         auth.conn(request),
         spellings,
         after_id=after_doc,
         visible_ids=auth.visible_ids(request, caller),
         limit=limit + 1,
-        archived=_flag(_first_query(qp, "archived")),
+        archived=archived,
     )
     return _page(rows, limit, _keep(qp.get("properties")))
 

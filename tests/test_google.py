@@ -431,14 +431,28 @@ def attachment_acl(tmp_path):
 
 @pytest.mark.parametrize("under", ["ava-deck", "ava-memo", "mia-note"])
 @pytest.mark.parametrize("caller", ["admin", "ava", "mia"])
-def test_gmail_attachment_is_found_by_its_id_within_the_acl(attachment_acl, under, caller):
+def test_gmail_attachment_is_found_by_its_id_within_the_acl(
+    attachment_acl, monkeypatch, under, caller
+):
     """Under each of the three message ids, each of ava's attachment ids lands its own bytes for
     the admin and ava, and mia, who cannot see ava's messages, gets the 400 an id nothing has gets.
     The memo states no `content`, so its bytes are the stand-in `_att_content` writes, which names
-    the attachment's id."""
+    the attachment's id. The scan the comment in `gmail_attachment` describes is skipped only when
+    the path names the message holding the attachment and the caller can see it. It reads ava's two
+    messages for the admin and ava, and none for mia, whose one message holds no attachment."""
     client, h, att = attachment_acl
+    scanned, scan = [], store.gmail_rows_with_attachments
+
+    def spy(*args, **kwargs):
+        rows = scan(*args, **kwargs)
+        scanned.append({row["id"] for row in rows})
+        return rows
+
+    monkeypatch.setattr(store, "gmail_rows_with_attachments", spy)
     want = {"ava-deck": b"deck", "ava-memo": f"attachment {att['ava-memo']}".encode()}
+    reads = set() if caller == "mia" else {served_id("gmail", doc) for doc in want}
     for doc, content in want.items():
+        scanned.clear()
         r = client.get(
             f"/gmail/v1/users/me/messages/{served_id('gmail', under)}/attachments/{att[doc]}",
             headers=h[caller],
@@ -449,6 +463,7 @@ def test_gmail_attachment_is_found_by_its_id_within_the_acl(attachment_acl, unde
         else:
             assert r.status_code == 200, doc
             assert base64.urlsafe_b64decode(r.json()["data"]) == content, doc
+        assert scanned == ([] if under == doc and caller != "mia" else [reads]), doc
 
 
 @pytest.mark.parametrize(

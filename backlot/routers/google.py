@@ -645,17 +645,18 @@ def _gmail_max_results(request: Request) -> int:
     """The page size `messages.list` and `threads.list` serve.
 
     Measured on gmail.googleapis.com on 2026-10-07 with a Workspace user's `gmail.readonly` token,
-    one request per row, and the same status and error on `threads.list`. The proto layer parses
-    every repeat as a uint32 and names every repeat it cannot read in one 400, as
-    `Invalid value at 'max_results' (TYPE_UINT32), "<value>"`, the value quoted
-    as sent. `+2` and `02` are numbers. A leading `-` is refused even on `-0`, and so are an empty
-    value, `1.5` and a value past 2**32 - 1 (`4294967296`). The method reads the last repeat: `0`
-    (`+0`, `00`) and anything from 2**31 up (`2147483648`, `+2147483648`, `4294967295`) are
-    `Invalid maxResults`, while `2147483647` is served; `1&3` is 3, `3&1` is 1, `0&3` is 3 and
-    `3&0` is refused. Below 2**31 a value is capped at 500, not refused: on 2026-10-03, `501` and
-    `1000` each answered 500 messages with a `nextPageToken`, and the reference gives both methods
-    "The maximum allowed value for this field is 500". With no `maxResults`, the page is the
-    default size capped at 500. A sent value is also capped at the deployment's `max_page_size`.
+    one request per row; `threads.list` answered every row with the same status and error, on
+    2026-10-07 or 2026-10-08. The proto layer parses every repeat as a uint32 and names every repeat
+    it cannot read in one 400, as `Invalid value at 'max_results' (TYPE_UINT32), "<value>"`, the
+    value quoted as sent. `+2` and `02` are numbers. A leading `-` is refused even on `-0`, and so
+    are an empty value, `1.5`, the Arabic-Indic digit `٣` and a value past 2**32 - 1 (`4294967296`).
+    The method reads the last repeat (the pair is in `gerr.first_repeat`'s table): `0` (`+0`, `00`)
+    and anything from 2**31 up (`2147483648`, `+2147483648`, `4294967295`) are `Invalid maxResults`,
+    while `2147483647` is served; `0&3` is 3 and `3&0` is refused. Below 2**31 a value is capped at
+    500, not refused: on 2026-10-03, `501` and `1000` each answered 500 messages with a
+    `nextPageToken`, and the reference gives both methods "The maximum allowed value for this field
+    is 500". With no `maxResults`, the page is the default size capped at 500. A sent value is also
+    capped at the deployment's `max_page_size`.
     """
     sizes = _typed_query(request, {"maxResults": _gmail_uint32})["maxResults"]
     if not sizes:
@@ -666,9 +667,8 @@ def _gmail_max_results(request: Request) -> int:
     return min(size, 500, get_settings().max_page_size)
 
 
-# A uint32, which is what Gmail's proto layer reads `maxResults` as — not `_INT32`. Drive's parser
-# takes a leading `-` (`-0` is 0) and stops past 2**31 - 1; this one refuses a leading `-` even on
-# `-0`, and a value past 2**32 - 1. The date and the values are `_gmail_max_results`'s.
+# `maxResults` as Gmail's proto layer reads it: a uint32, where Drive's `pageSize` is an int32
+# (`_INT32`). The spellings and the bound are `_gmail_max_results`'s.
 _UINT32 = re.compile(r"\+?[0-9]+")
 
 

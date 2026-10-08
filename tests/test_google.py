@@ -623,7 +623,7 @@ def test_gmail_messages_list_pagination_stable_and_ordered(client, admin_h, ro_c
 def test_gmail_max_results_is_capped_at_500(tmp_path, monkeypatch):
     """The cap `_gmail_max_results` records, on both listings."""
     from backlot.routers import google
-    from tests._helpers import client_for, tiny_corpus
+    from tests._helpers import corpus_client
 
     records = [
         {
@@ -638,9 +638,7 @@ def test_gmail_max_results_is_capped_at_500(tmp_path, monkeypatch):
         }
         for i in range(502)
     ]
-    # A second lifespan on the app the module `client` holds closes that client's connection.
-    settings = tiny_corpus(tmp_path, records)
-    with client_for(settings, reload=True) as client:
+    with corpus_client(tmp_path, records) as (client, settings):
         h = {"Authorization": f"Bearer {settings.admin_token}"}
         for kind in ("messages", "threads"):
             for asked, served in (
@@ -681,6 +679,7 @@ _GMAIL_MAX_RESULTS = [
     (["abc"], "uint32", ("abc",)),
     ([""], "uint32", ("",)),
     (["1.5"], "uint32", ("1.5",)),
+    (["\u0663"], "uint32", ("\u0663",)),
     (["-0", "3"], "uint32", ("-0",)),
     (["0"], "maxResults", None),
     (["+0"], "maxResults", None),

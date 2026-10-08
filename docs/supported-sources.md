@@ -307,26 +307,27 @@ the Gmail `$.xgafv` on 2026-09-22, `pageToken` on the other two Drive listings o
 one 400**: the message joins theirs with newlines and `details` carries a `google.rpc.BadRequest`
 field violation for each, a parameter's repeats together and in query order, on Sheets'
 `majorDimension`, `valueRenderOption`, `dateTimeRenderOption`, `includeGridData` and
-`excludeTablesInBandedRanges`, Drive's `pageSize` and the booleans each served Drive method declares
+`excludeTablesInBandedRanges`, Drive's `pageSize`, the booleans each served Drive method declares
 (`supportsAllDrives`, `includeItemsFromAllDrives`, `acknowledgeAbuse`, `useDomainAdminAccess` and
-the two deprecated team-drive ones) alike, and a Sheets data-filter body's values carry the same
-`details`. A typed refusal comes after the credential check and before the file or spreadsheet is
-looked up. On Drive's `files.list`, one `pageSize` outside 1-1000 is refused with the range sentence
-(1-100 on `permissions.list` and `drives.list`), while a repeated one is read from the first and
-never range-checked; a `pageToken` it did not issue is 400 `Invalid Value`; and the refusals come in
-the order `pageSize`, `orderBy`, `q`, an `orderBy` beside a `fullText` term in `q` (403
-`forbidden`), `pageToken`, `fields`, an `orderBy` naming `starred` after another key being real's
-500 `Internal Error` between `pageToken` and `fields`. `permissions.list` and `drives.list` issue no
-`nextPageToken` and refuse every non-empty `pageToken` with that 400, and `permissions.list` an
-empty one with 403 `pageTokenExpired`, after the typed and range refusals and ahead of the
-`useDomainAdminAccess=true` refusal and `permissions.list`'s file lookup. A blank `fields` on
-`files.list` or `files.get` answers `{}`. `files.export` refuses a format the file's type does not
-export to, the empty `mimeType=` among them, with `The requested conversion is not supported.`,
-matching the format without regard to case, refuses an absent `mimeType` ahead of looking the file
-up, and serves an export under the `mimeType` exactly as sent, with no `charset`. Measured against
-the live Drive and Sheets APIs on 2026-09-23, the `fullText` 403 on 2026-10-05 and 2026-10-07, the
-`starred` 500 on 2026-10-04 and 2026-10-07, the `pageToken` of `permissions.list` and `drives.list`
-on 2026-10-04, 2026-10-05 and 2026-10-07, and the export's `Content-Type` on 2026-09-30.
+the two deprecated team-drive ones) and Gmail's `maxResults` alike, and a Sheets data-filter body's
+values carry the same `details`. A typed refusal comes after the credential check and before the
+file or spreadsheet is looked up. On Drive's `files.list`, one `pageSize` outside 1-1000 is refused
+with the range sentence (1-100 on `permissions.list` and `drives.list`), while a repeated one is
+read from the first and never range-checked; a `pageToken` it did not issue is 400 `Invalid Value`;
+and the refusals come in the order `pageSize`, `orderBy`, `q`, an `orderBy` beside a `fullText` term
+in `q` (403 `forbidden`), `pageToken`, `fields`, an `orderBy` naming `starred` after another key
+being real's 500 `Internal Error` between `pageToken` and `fields`. `permissions.list` and
+`drives.list` issue no `nextPageToken` and refuse every non-empty `pageToken` with that 400, and
+`permissions.list` an empty one with 403 `pageTokenExpired`, after the typed and range refusals and
+ahead of the `useDomainAdminAccess=true` refusal and `permissions.list`'s file lookup. A blank
+`fields` on `files.list` or `files.get` answers `{}`. `files.export` refuses a format the file's
+type does not export to, the empty `mimeType=` among them, with
+`The requested conversion is not supported.`, matching the format without regard to case, refuses an
+absent `mimeType` ahead of looking the file up, and serves an export under the `mimeType` exactly as
+sent, with no `charset`. Measured against the live Drive and Sheets APIs on 2026-09-23, the
+`fullText` 403 on 2026-10-05 and 2026-10-07, the `starred` 500 on 2026-10-04 and 2026-10-07, the
+`pageToken` of `permissions.list` and `drives.list` on 2026-10-04, 2026-10-05 and 2026-10-07, and
+the export's `Content-Type` on 2026-09-30.
 
 **Four Drive flags spelled `true`, in any case, run a check of their own**, where `1`, `t` and `yes`
 parse as true and run none. `includeItemsFromAllDrives` or `includeTeamDriveItems` on `files.list`

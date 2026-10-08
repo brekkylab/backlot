@@ -634,6 +634,8 @@ def first_repeat(query: Mapping[str, str] | None, name: str) -> str | None:
                           | the value, the reverse the formula   |
         includeGridData   | `true&false` answers no grid         | Sheets spreadsheets.get
                           |                                      | 2026-09-22
+        maxResults        | `1&3` is 3, `3&1` is 1               | Gmail messages.list and
+                          |                                      | threads.list 2026-10-08
 
     An empty first repeat is read as itself rather than skipped, measured 2026-09-23:
     `q=&q=<folders>` is the unfiltered listing, `fields=&fields=id` on Drive `files.get` answers
@@ -651,8 +653,7 @@ def first_repeat(query: Mapping[str, str] | None, name: str) -> str | None:
     2026-09-22.
 
     Gmail's `q` and `pageToken` stay on ``.get`` because which end real reads them from is
-    unmeasured. `maxResults` is not one of them: every repeat is parsed and the last is read, and
-    the measurement is ``routers.google._gmail_max_results``'s.
+    unmeasured.
     """
     if query is None:
         return None

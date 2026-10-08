@@ -734,6 +734,10 @@ def _team(container: str, info) -> dict:
         "slackIssueStatuses": False,
         "scimManaged": False,
         "scimGroupName": None,
+        # Linear's own description says it "Runs the same checks `teamMembershipCreate` applies to
+        # a viewer joining on their own", and this server declares no `Mutation` type, so no viewer
+        # can join a team here. A real team answers its own member `false` (measured 2026-10-08).
+        "viewerCanJoin": False,
         "icon": None,
         "color": None,
         "description": None,

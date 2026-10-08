@@ -3,7 +3,7 @@
   "endpoints": [
     "https://api.linear.app/graphql"
   ],
-  "measured": "2026-10-07",
+  "measured": "2026-10-08",
   "acknowledged": [
     {
       "kind": "missing_field",
@@ -4150,6 +4150,13 @@
     {
       "kind": "missing_field",
       "severity": "gap",
+      "path": "Team.agentAutomationEnabled",
+      "detail": "vendor serves agentAutomationEnabled: Boolean!; Backlot does not",
+      "note": "Linear's own description marks it internal: \"[Internal] Whether the team has enabled agent automation.\" A corpus names an issue's team and states none of that team's settings, so this field and `Team.codingAgentEnabled` are a gap. `@linear/sdk` 97.1.0 has neither on its generated `Team` type, and no document it sends selects either. Measured against api.linear.app on 2026-10-08: neither is deprecated, and the one team in the workspace measured answered `true` for both, which a constant here would present as every corpus's setting."
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
       "path": "Team.ancestors",
       "detail": "vendor serves ancestors: [Team!]!; Backlot does not"
     },
@@ -4158,6 +4165,13 @@
       "severity": "gap",
       "path": "Team.children",
       "detail": "vendor serves children: [Team!]!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Team.codingAgentEnabled",
+      "detail": "vendor serves codingAgentEnabled: Boolean!; Backlot does not",
+      "note": "Linear's own description marks it internal: \"[Internal] Whether the team has enabled Coding Sessions.\" It joins the gap recorded on `Team.agentAutomationEnabled`."
     },
     {
       "kind": "missing_field",

@@ -2505,15 +2505,18 @@ def _editor_doc(request: Request, file_id: str, *, expect: str):
     reading a Doc through the Sheets API answers 200 with prose sliced into a "grid", plausible
     enough that a client trusts it rather than noticing the id was wrong.
 
-    Visibility resolves FIRST, so a caller who cannot see the file gets not-found and never a type
-    error: the type of a document you cannot access is not something the API should confirm."""
+    Sheets and Docs resolve the stored type before visibility: a hidden file of their own type is
+    permission-denied, while a hidden file of another type gets that type's usual answer. Measured
+    on 2026-10-06. Slides was not measured and retains visibility-first resolution."""
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
+    type_before_acl = expect in {"document", "spreadsheet"}
     # A native Doc/Sheet/Slides id is the SAME id space as Drive's own file id --
     # real Google resolves docs.googleapis.com/etc. off the identical Drive file id, so this has
-    # to resolve the file's own id.
-    row = store.gdrive_by_id(conn, file_id, visible_ids=ids)
+    # to resolve the file's own id. Sheets and Docs need the unscoped row to distinguish a missing
+    # id from a stored file that this caller cannot see.
+    row = store.gdrive_by_id(conn, file_id, visible_ids=None if type_before_acl else ids)
     if row is None:
         # Folders are synthesized rather than stored, so they miss the lookup above. Real Google
         # calls a folder an invalid argument, not a missing entity, so resolve it before giving up.
@@ -2524,6 +2527,8 @@ def _editor_doc(request: Request, file_id: str, *, expect: str):
     # here too — the fallback stays in one place rather than being decided per route.
     subtype = row["subtype"] or "document"
     if subtype == expect:
+        if type_before_acl and store.gdrive_by_id(conn, file_id, visible_ids=ids) is None:
+            raise gerr.permission_denied()
         return row
     if subtype in _EDITOR_NATIVE:  # a different Workspace type: not this API's entity at all
         raise gerr.not_found_entity()

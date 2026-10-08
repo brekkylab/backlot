@@ -202,6 +202,17 @@ def not_found_file(file_id: str) -> GoogleError:
     return GoogleError(404, f"File not found: {file_id}.", reason="notFound", location="fileId")
 
 
+def permission_denied() -> GoogleError:
+    """An editor API resolved a file of its own type but the caller cannot read it. Measured on
+    Sheets and Docs on 2026-10-06; unlike a missing id, this is a 403 with ``forbidden``."""
+    return GoogleError(
+        403,
+        "The caller does not have permission",
+        reason="forbidden",
+        status="PERMISSION_DENIED",
+    )
+
+
 def not_found_entity() -> GoogleError:
     """The not-found every API other than Drive gives: no id, no location."""
     return GoogleError(

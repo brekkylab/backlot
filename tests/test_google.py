@@ -1864,10 +1864,9 @@ def test_a_typed_refusal_comes_after_the_credential_and_before_the_lookup(
 ):
     """The order `_typed_query`'s docstring records, and `sheets_values_batch_get_by_data_filter`'s
     for a data-filter body. The refusal is the same bytes for a spreadsheet the scoped token cannot
-    see as for one that does not exist, where without the bad value (with ``good`` for a body) the
-    first is a 200 to the admin and both are the 404 to the scoped token. With no credential or a
-    bad one the bad value changes nothing: the answer is the credential's refusal, the 401 for a bad
-    one."""
+    see as for one that does not exist, while a valid request distinguishes the hidden spreadsheet's
+    403 from the missing id's 404. With no credential or a bad one the bad value changes nothing: the
+    answer is the credential's refusal, the 401 for a bad one."""
 
     def send(url, headers, bad=False):
         if body is None:
@@ -1881,7 +1880,8 @@ def test_a_typed_refusal_comes_after_the_credential_and_before_the_lookup(
     assert _gerr(refused)["code"] == 400
     assert send(hidden, scoped, bad=True).content == refused.content
     assert send(hidden, admin_h).status_code == 200
-    assert send(hidden, scoped).status_code == 404
+    expected_hidden = 403 if path.startswith("/sheets/") else 404
+    assert send(hidden, scoped).status_code == expected_hidden
     assert send(missing, scoped).status_code == 404
     assert send(missing, BAD_TOKEN).status_code == 401
     for headers in ({}, BAD_TOKEN):
@@ -4105,37 +4105,86 @@ def test_editor_apis_reject_a_folder(base, admin_h):
     assert r.json()["error"]["message"] == INVALID_ARG
 
 
-def test_wrong_type_is_refused_before_it_is_read(base, live_server):
-    """A caller who cannot see the file still gets 404, not 400: the type of a document you have
-    no access to is not something the API should confirm."""
-    import yaml
-
-    tokens = {
-        u["email"]: u["token"]
-        for u in yaml.safe_load(live_server[1].tokens_path.read_text())["users"]
-    }
-    admin_h = {"Authorization": f"Bearer {live_server[1].admin_token}"}
-    sheet, _ = _drive_by_mime(
-        base, admin_h, "application/vnd.google-apps.spreadsheet", name="Q1 Revenue Model"
+def test_editor_apis_distinguish_hidden_type_permission_and_missing(tmp_path):
+    """Editor APIs resolve a stored file's type before its visibility. A hidden file of the API's
+    native type is permission-denied, another native type is not-found, and a PDF is an invalid
+    argument; an id that does not exist remains not-found."""
+    records = [
+        {
+            "source_type": "google_drive",
+            "doc_id": f"hidden-{kind}",
+            "title": kind,
+            "content": "private",
+            "subtype": kind,
+            "author_email": "owner@acme.com",
+            "readers": ["owner@acme.com"],
+        }
+        for kind in ("spreadsheet", "document", "pdf")
+    ]
+    records.append(
+        {
+            "source_type": "google_drive",
+            "doc_id": "mia-visible",
+            "title": "visible",
+            "content": "public",
+            "subtype": "document",
+            "author_email": "mia@acme.com",
+            "visibility": "public",
+        }
     )
-    outsider = {"Authorization": f"Bearer {tokens['mia@acme.com']}"}  # cannot see the finance sheet
-    assert httpx.get(f"{base}/docs/v1/documents/{sheet}", headers=outsider).status_code == 404
-
-
-def test_editor_apis_enforce_acl(base, live_server):
-    """The finance spreadsheet is group-restricted; a non-member gets 404, not the content."""
-    import yaml
-
-    tokens = {
-        u["email"]: u["token"]
-        for u in yaml.safe_load(live_server[1].tokens_path.read_text())["users"]
+    settings = tiny_corpus(tmp_path, records)
+    token_data = yaml.safe_load(settings.tokens_path.read_text())
+    tokens = {u["email"]: u["token"] for u in token_data["users"]}
+    outsider = {"Authorization": f"Bearer {tokens['mia@acme.com']}"}
+    sheet = served_id("google_drive", "hidden-spreadsheet")
+    doc = served_id("google_drive", "hidden-document")
+    pdf = served_id("google_drive", "hidden-pdf")
+    permission = {
+        "error": {
+            "code": 403,
+            "message": "The caller does not have permission",
+            "status": "PERMISSION_DENIED",
+        }
     }
-    admin_h = {"Authorization": f"Bearer {live_server[1].admin_token}"}
-    fid, _ = _drive_by_mime(
-        base, admin_h, "application/vnd.google-apps.spreadsheet", name="Q1 Revenue Model"
-    )
-    outsider = {"Authorization": f"Bearer {tokens['mia@acme.com']}"}  # marketing, not finance
-    assert httpx.get(f"{base}/sheets/v4/spreadsheets/{fid}", headers=outsider).status_code == 404
+    not_found = {
+        "error": {
+            "code": 404,
+            "message": "Requested entity was not found.",
+            "status": "NOT_FOUND",
+        }
+    }
+    invalid = {
+        "error": {
+            "code": 400,
+            "message": "Request contains an invalid argument.",
+            "status": "INVALID_ARGUMENT",
+        }
+    }
+
+    rows = [
+        (f"/sheets/v4/spreadsheets/{sheet}", 403, permission),
+        (f"/docs/v1/documents/{doc}", 403, permission),
+        (f"/sheets/v4/spreadsheets/{pdf}", 400, invalid),
+        (f"/docs/v1/documents/{pdf}", 400, invalid),
+        (f"/docs/v1/documents/{sheet}", 404, not_found),
+        ("/sheets/v4/spreadsheets/nosuchfile000", 404, not_found),
+        ("/docs/v1/documents/nosuchfile000", 404, not_found),
+    ]
+    with client_for(settings, reload=True) as client:
+        for path, status, body in rows:
+            response = client.get(path, headers=outsider)
+            assert response.status_code == status, path
+            assert response.json() == body, path
+        verbose = client.get(
+            f"/sheets/v4/spreadsheets/{sheet}", headers=outsider, params={"$.xgafv": "1"}
+        )
+        assert verbose.json()["error"]["errors"] == [
+            {
+                "message": "The caller does not have permission",
+                "domain": "global",
+                "reason": "forbidden",
+            }
+        ]
 
 
 # --- Sheets values.get / values.batchGet ----------------------------------------
@@ -4787,8 +4836,8 @@ def test_sheets_values_get_enforces_the_acl(base, live_server, sheet_id):
     # the admin arm is what keeps this honest: without it a missing route 404s and the test passes
     assert _values(base, admin_h, sheet_id, "Sheet1").status_code == 200
     assert _batch(base, admin_h, sheet_id, ["Sheet1"]).status_code == 200
-    assert _values(base, outsider, sheet_id, "Sheet1").status_code == 404
-    assert _batch(base, outsider, sheet_id, ["Sheet1"]).status_code == 404
+    assert _values(base, outsider, sheet_id, "Sheet1").status_code == 403
+    assert _batch(base, outsider, sheet_id, ["Sheet1"]).status_code == 403
 
 
 def test_sheets_values_get_needs_auth(base, sheet_id):

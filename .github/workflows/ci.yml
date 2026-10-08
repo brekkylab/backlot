@@ -71,6 +71,5 @@ jobs:
       - name: ruff check
         run: ruff check .
       - name: Prose checks on the comments and docstrings a pull request adds
-        # Warnings on the lines they name, and never a failure.
         if: github.event_name == 'pull_request'
         run: python scripts/prose_check.py --github HEAD^1

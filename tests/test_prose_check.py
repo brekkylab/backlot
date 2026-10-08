@@ -97,6 +97,26 @@ def _message(number: str) -> str:
             [],
             id="entity-digit-and-colour",
         ),
+        pytest.param("# See backlot#90469.\n", None, (), [1], id="repository-prefixed-number"),
+        pytest.param(
+            "# On psf/requests#7616 it answers 404.\n",
+            None,
+            (),
+            [],
+            id="another-repository-prefixed",
+        ),
+        pytest.param(
+            "# Same on brekkylab/backlot (#90469).\n", None, (), [1], id="this-repository"
+        ),
+        pytest.param(
+            "# Answers application/json (#90469).\n", None, (), [1], id="media-type-is-not-a-repo"
+        ),
+        pytest.param("# GET/POST both 405 (#90469).\n", None, (), [1], id="methods-are-not-a-repo"),
+        pytest.param(
+            "# On NVIDIA/cutlass#1234 it answers 404.\n", None, (), [], id="upper-case-owner"
+        ),
+        pytest.param("# An admin and/or scoped token (#90469).\n", None, (), [1], id="and-or"),
+        pytest.param("# Measured (#90473).\nx = (\n", None, (), [1], id="does-not-tokenize"),
     ],
 )
 def test_issue_numbers(src, added, local, lines):
@@ -154,6 +174,15 @@ TEST = "tests/test_x.py"
         ),
         pytest.param(
             {
+                CODE: 'URL = f"/{x}?version=2022-11-28"\n# The 2022-11-28 bodies carry it.\n',
+                TEST: "# The 2022-11-28 bodies carry it.\n",
+            },
+            {},
+            [],
+            id="api-version-in-an-f-string",
+        ),
+        pytest.param(
+            {
                 CODE: 'def v():\n    """2026-10-05 is when."""\n# Measured 2026-10-05.\n',
                 TEST: "# Measured 2026-10-05.\n",
             },
@@ -178,8 +207,10 @@ def test_redated_tests(sources, added, found):
 @pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
 def test_the_command_reads_the_change_from_its_merge_base(tmp_path, monkeypatch, capsys):
     """A line from before the merge base with BASE is left alone, also where BASE has since dropped
-    it. A line committed after it, an uncommitted line and an untracked file are read. `--github`
-    writes warnings, escapes the path, fills the job summary and exits 0."""
+    it. A line committed after it, an uncommitted line and untracked files are read, with
+    `diff.noprefix` and `diff.external` set too, and both checks run on them; the test's date that
+    is an API version the code uses is left alone. `--github` writes warnings, escapes the path,
+    fills the job summary and exits 0."""
     for name, value in {
         "GIT_CONFIG_GLOBAL": os.devnull,
         "GIT_CONFIG_NOSYSTEM": "1",
@@ -196,6 +227,8 @@ def test_the_command_reads_the_change_from_its_merge_base(tmp_path, monkeypatch,
         return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout
 
     git("init", "-q")
+    git("config", "diff.noprefix", "true")
+    git("config", "diff.external", "false")
     a.write_text("# Measured on 2026-10-05 (#90012).\n")
     git("add", "a.py")
     git("commit", "-q", "-m", "fork point")
@@ -207,17 +240,32 @@ def test_the_command_reads_the_change_from_its_merge_base(tmp_path, monkeypatch,
     git("commit", "-q", "-am", "change")
     a.write_text(a.read_text() + "# Read first (#90013).\n")
     (tmp_path / "odd,name.py").write_text("x = 1  # see #90014\n")
+    (tmp_path / "backlot").mkdir()
+    (tmp_path / "backlot" / "x.py").write_text(
+        'V = "2022-11-28"\n# Measured on 2026-10-05 under 2022-11-28: 400.\n'
+    )
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_x.py").write_text("# 2026-10-05, under 2022-11-28: 400.\n")
     summary = tmp_path / "summary.md"
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
-    found = [("a.py", 2, "#90015"), ("a.py", 3, "#90013"), ("odd,name.py", 1, "#90014")]
+    found = [
+        ("a.py", 2, _message("#90015")),
+        ("a.py", 3, _message("#90013")),
+        ("odd,name.py", 1, _message("#90014")),
+        (
+            "tests/test_x.py",
+            1,
+            "2026-10-05 dates a measurement backlot/x.py:2 records: point at it rather than dating "
+            "it again",
+        ),
+    ]
 
     assert check.main(["upstream"]) == 1
-    assert capsys.readouterr().out == "".join(f"{p}:{n}: {_message(i)}\n" for p, n, i in found)
+    assert capsys.readouterr().out == "".join(f"{p}:{n}: {m}\n" for p, n, m in found)
     assert check.main(["--github", "upstream"]) == 0
     assert capsys.readouterr().out == "".join(
-        f"::warning file={p.replace(',', '%2C')},line={n},title=prose::{_message(i)}\n"
-        for p, n, i in found
+        f"::warning file={p.replace(',', '%2C')},line={n},title=prose::{m}\n" for p, n, m in found
     )
     assert summary.read_text() == "### Prose checks\n\n" + "".join(
-        f"- `{p}:{n}`: {_message(i)}\n" for p, n, i in found
+        f"- `{p}:{n}`: {m}\n" for p, n, m in found
     )

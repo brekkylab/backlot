@@ -5,19 +5,18 @@
 The change is the working tree against the merge base of BASE and HEAD, so committed, uncommitted
 and untracked files are all read. What it reports:
 
-- An issue or pull request number in a comment or docstring, a hash and its digits. Merged, the
-  number points at a change rather than at what the code does. The comment says what was measured
-  and when, and the number goes in the pull request's description. A number in a sentence that
-  names another repository as `owner/repo` is that repository's, and is left alone.
+- An issue or pull request number in a comment or docstring, a hash and two to five digits.
+  Merged, the number points at a change rather than at what the code does. The comment says what
+  was measured and when, and the number goes in the pull request's description. A number in a
+  sentence that names another repository as `owner/repo` is that repository's, and is left alone.
 - A date on a comment or docstring line under `tests/` that the same change also writes into a
   comment or docstring outside it. The code's prose is the measurement's home, and the test points
   at it rather than dating it again. A date that code outside `tests/` uses as a value, in a string
   literal, is a version such as an API's rather than a measurement's, and is left alone.
 
 The first is the pull request template's third checkbox, the second is "Said once" in
-`.claude/agents/prose-reviewer.md`. CI runs this on a pull request with `--github`, which prints
-each finding as a warning on its line and exits 0. Without it, the script exits 1 when it finds
-anything.
+`.claude/agents/prose-reviewer.md`. With `--github` it prints each finding as a GitHub warning on
+its line and exits 0; without it, it exits 1 when it finds anything.
 """
 
 from __future__ import annotations
@@ -32,13 +31,17 @@ import sys
 import tokenize
 from pathlib import Path
 
-#: Up to five digits: six are a colour, `#000000`.
-NUMBER = re.compile(r"(?<![\w&])#\d{2,5}\b")
+#: Up to five digits, since six are a colour (`#000000`), and not after `&`, an entity (`&#123;`).
+NUMBER = re.compile(r"(?<!&)#\d{2,5}\b")
 #: Two path segments, each starting with a letter, with nothing either side that would make them
 #: part of a longer path: `psf/requests`, not `backlot/routers/github.py` or `…/merge`.
 REPOSITORY = re.compile(r"(?<![\w./{}…-])[A-Za-z][\w.-]*/[A-Za-z][\w.-]*(?![\w/{}])")
 #: A last segment ending in one of these makes the two segments a file, `botocore/handlers.py`.
 FILE = re.compile(r"\.(?:py|pyi|md|json|jsonl|toml|ya?ml|txt|cfg|ini|sh|js|mjs|ts|tsx|html)$")
+#: First segments that make two segments a media type, `application/json`, rather than a repository.
+MEDIA_TYPES = frozenset(
+    {"application", "audio", "font", "image", "message", "model", "multipart", "text", "video"}
+)
 DATE = re.compile(r"\b20\d\d-\d\d-\d\d\b")
 #: The end of a sentence, or of a paragraph: `issue_numbers` joins a block's lines with spaces and
 #: writes a blank line as a newline.
@@ -75,7 +78,20 @@ def added_lines(diff: str) -> dict[str, set[int]]:
 def changed(root: Path, base: str) -> dict[str, set[int]]:
     """The added lines of every Python file the change touches, untracked files whole."""
     merge_base = git(root, "merge-base", base, "HEAD").strip()
-    files = added_lines(git(root, "diff", "-U0", "--no-color", merge_base, "--", "*.py"))
+    files = added_lines(
+        git(
+            root,
+            "diff",
+            "-U0",
+            "--no-color",
+            "--no-ext-diff",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            merge_base,
+            "--",
+            "*.py",
+        )
+    )
     for path in git(root, "ls-files", "--others", "--exclude-standard", "--", "*.py").splitlines():
         lines = (root / path).read_text(encoding="utf-8").count("\n") + 1
         files[path] = set(range(1, lines + 1))
@@ -140,12 +156,20 @@ def sentence_at(text: str, at: int) -> str:
 
 
 def names_repository(sentence: str, local: frozenset[str]) -> bool:
-    """Whether SENTENCE names a repository as `owner/repo` that is neither a file nor a path under
-    LOCAL, the names at this repository's root."""
-    return any(
-        not FILE.search(m.group()) and m.group().split("/")[0] not in local
-        for m in REPOSITORY.finditer(sentence)
-    )
+    """Whether SENTENCE names a repository as `owner/repo` other than this one, and other than a
+    file, a path under LOCAL (the names at this repository's root), a media type, `and/or` or two
+    upper-case words such as `GET/POST`."""
+    for m in REPOSITORY.finditer(sentence):
+        owner, repo = m.group().split("/", 1)
+        if not (
+            FILE.search(repo)
+            or owner in local
+            or owner.lower() in MEDIA_TYPES
+            or m.group().lower() in {"and/or", "brekkylab/backlot"}
+            or (owner.isupper() and repo.isupper())
+        ):
+            return True
+    return False
 
 
 def issue_numbers(

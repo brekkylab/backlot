@@ -682,9 +682,9 @@ def resolve_team_issue_count(team, info) -> int:
 
 
 def _team(container: str, info) -> dict:
-    """A ``Team``. 43 of its fields are non-null in the SDK's fragment; the ones Backlot cannot
-    know take Linear's own product defaults (cycles off, 2-week duration, estimate scale
-    ``notUsed``) rather than zero values that would read as configured."""
+    """A ``Team``. 43 of its fields are non-null in the SDK's fragment, and so is ``__typename``;
+    the ones Backlot cannot know take Linear's own product defaults (cycles off, 2-week duration,
+    estimate scale ``notUsed``) rather than zero values that would read as configured."""
     key = _team_key(container, info)
     created = synth.rfc3339(synth.epoch("linear-team:" + container))
     return {

@@ -19,6 +19,7 @@ omit it. :func:`_page` is the single place that decides this.
 
 from __future__ import annotations
 
+import json
 import re
 from functools import lru_cache
 
@@ -155,9 +156,13 @@ def _clamp(raw, default: int, cap: int) -> int:
 
 
 def _flag(raw) -> bool:
-    """`archived=1` must not silently serve the un-archived view; accept the spellings a raw caller
-    plausibly sends (the official client always sends `true`/`false`)."""
-    return str(raw or "").strip().lower() in {"true", "1", "yes"}
+    """`archived` is true when its value is `true` in any letter case, with nothing trimmed.
+    Measured against api.hubapi.com (2026-10-01, 2026-10-07, 2026-10-08): `true`, `TRUE` and `True`
+    serve the archived view; `1`, `yes`, `abc`, an empty value, and `true` with whitespace before or
+    after it (a space, tab, newline, carriage return or no-break space) serve the active one. The
+    Python client `hubspot-api-client` 12.0.0 sends `True`/`False`, and the Node client
+    `@hubspot/api-client` 14.0.1 sends `true`/`false`."""
+    return str(raw or "").lower() == "true"
 
 
 def _props(row) -> dict:
@@ -431,32 +436,167 @@ _TOKEN_RE = re.compile(r"[^\W_]+", re.UNICODE)
 # Same class as a lookaround pair, so a needle matches only on token boundaries — equivalent to
 # testing membership in the haystack's token set, without having to build that set.
 _TOK = r"[^\W_]"
+# A needle token may carry `*`, which real reads as any run of token characters, the empty run
+# included (measured 2026-10-03 and 2026-10-05 on a contact named `Maria`: `Mar*`, `*ari*`,
+# `*ria`, `Maria*`, `M*a` and `M**a` find it, `Mar` and `?aria` do not).
+_NEEDLE_RE = re.compile(r"(?:[^\W_]|\*)+", re.UNICODE)
 
 
 def _tokens(s: str) -> set[str]:
     return set(_TOKEN_RE.findall(s.lower()))
 
 
+def _wildcard_match(needle: str, token: str) -> bool:
+    """Whether `token` matches `needle`, where `*` stands for any run of characters.
+
+    Greedy with a single backtrack point, so it is linear in practice and O(len(needle) *
+    len(token)) at worst. A regex built from the needle backtracks polynomially on a needle with
+    many `*`, and the needle comes from the request."""
+    n = t = 0
+    star = mark = -1
+    while t < len(token):
+        if n < len(needle) and needle[n] == "*":
+            star, mark = n, t
+            n += 1
+        elif n < len(needle) and needle[n] == token[t]:
+            n += 1
+            t += 1
+        elif star != -1:
+            mark += 1
+            n, t = star + 1, mark
+        else:
+            return False
+    return needle[n:].strip("*") == ""
+
+
+def _needle_matcher(needle: str):
+    if "*" not in needle:
+        return re.compile(f"(?<!{_TOK}){re.escape(needle)}(?!{_TOK})").search
+    return lambda hay: any(_wildcard_match(needle, t) for t in _TOKEN_RE.findall(hay))
+
+
 @lru_cache(maxsize=512)
 def _token_patterns(target: str) -> tuple:
-    """One compiled boundary-anchored pattern per token in the needle.
+    """One matcher per token in the needle, each called with the lowercased haystack.
 
     Scanning a large object type called this once per row with the same needle, and tokenizing the
     whole haystack to test a couple of needle tokens: both are wasted. Compiling per needle (cached)
     and searching the haystack lets a miss bail on the first absent token instead of building a full
-    token set for every row."""
-    return tuple(re.compile(f"(?<!{_TOK}){re.escape(t)}(?!{_TOK})") for t in _tokens(target))
+    token set for every row. A needle token with `*` does tokenize the haystack, to match token by
+    token. A token that is only `*` matches any token, so it asks only that the value has one:
+    `*` alone found the two contacts with a `jobtitle` and none of the three without (measured
+    2026-10-05)."""
+    needles = set(_NEEDLE_RE.findall(target.lower()))
+    return tuple(_needle_matcher(t) for t in needles)
+
+
+# The thirteen filter operators, in the order real's refusal lists them (the same order on
+# 2026-09-30 and 2026-10-06).
+_OPERATORS = (
+    "IN",
+    "NOT_HAS_PROPERTY",
+    "LT",
+    "EQ",
+    "GT",
+    "NOT_IN",
+    "GTE",
+    "CONTAINS_TOKEN",
+    "HAS_PROPERTY",
+    "LTE",
+    "NOT_CONTAINS_TOKEN",
+    "BETWEEN",
+    "NEQ",
+)
+# Real reads "0" to "12" as a position in its own list of the operators: "6" is refused as BETWEEN
+# without a `highValue`, while "13" and "01" are refused as no operator at all (measured
+# 2026-10-06). That list's order is not modelled, so such a filter is served and matches nothing.
+_OPERATOR_INDEXES = frozenset(str(i) for i in range(len(_OPERATORS)))
+# What Java's `String.trim` strips from both ends, which real does to an operator before reading
+# it: `EQ` after a space, a tab or a U+0001 still reads as `EQ`, after a U+00A0 or before a U+2003
+# it does not (measured 2026-10-06).
+_TRIM = "".join(map(chr, range(0x21)))
+_WS = re.compile(r"[ \t\n\r]*")
+
+
+def _operator(f: dict):
+    return (f.get("operator") or "EQ").strip(_TRIM)
+
+
+def _token_at(raw: bytes, path: tuple) -> tuple[int, int]:
+    """Where the value at `path` starts in the JSON body `raw`, as real reports a position: a
+    1-based line and a 1-based column counted in UTF-8 bytes, so `ééé` before the value moves it
+    six columns and a CRLF line ending none (measured 2026-10-06). A key the body repeats resolves
+    to its last occurrence, the one `json.loads` keeps."""
+    text = raw.decode(json.detect_encoding(raw), "surrogatepass")
+    decoder = json.JSONDecoder()
+    pos = _WS.match(text).end()
+    for step in path:
+        pos = _WS.match(text, pos + 1).end()
+        if isinstance(step, int):
+            for _ in range(step):
+                pos = _WS.match(text, decoder.raw_decode(text, pos)[1]).end()
+                pos = _WS.match(text, pos + 1).end()
+            continue
+        found = pos
+        while text[pos] != "}":
+            key, pos = decoder.raw_decode(text, pos)
+            pos = _WS.match(text, _WS.match(text, pos).end() + 1).end()
+            if key == step:
+                found = pos
+            pos = _WS.match(text, decoder.raw_decode(text, pos)[1]).end()
+            if text[pos] == ",":
+                pos = _WS.match(text, pos + 1).end()
+        pos = found
+    line_start = text.rfind("\n", 0, pos) + 1
+    column = len(text[line_start:pos].encode("utf-8", "surrogatepass")) + 1
+    return text.count("\n", 0, pos) + 1, column
+
+
+def _refuse_an_operator(raw: bytes, body: dict) -> JSONResponse | None:
+    """Real's 400 for the first filter, in body order, whose operator it cannot read, or None.
+
+    An operator that trims to nothing is named by its path in the body; one that trims to anything
+    but a name in `_OPERATORS` or an index into it is named by where it starts (`_token_at`). Real
+    reads the body in order and stops at the first operator of either kind, an unreadable one
+    included when the filter repeats `operator` with a readable one after it. It reads an integer
+    operator as an index too, answers a boolean, float, object or array operator with a different
+    400, and refuses a filter with no operator. This router models none of those cases."""
+    for i, group in enumerate(body.get("filterGroups") or []):
+        if not isinstance(group, dict):
+            continue
+        for j, f in enumerate(group.get("filters") or []):
+            if not isinstance(f, dict) or not isinstance(f.get("operator"), str):
+                continue
+            op = f["operator"].strip(_TRIM)
+            if op == "":
+                return _error(
+                    400,
+                    "Invalid input JSON: unable to deserialize field "
+                    f'"filterGroups[{i}].filters[{j}].operator". Invalid value: ',
+                )
+            if op not in _OPERATORS and op not in _OPERATOR_INDEXES:
+                line, column = _token_at(raw, ("filterGroups", i, "filters", j, "operator"))
+                return _error(
+                    400,
+                    f"Invalid input JSON on line {line}, column {column}: "
+                    f"Enum type must be one of: [{', '.join(_OPERATORS)}]",
+                )
+    return None
 
 
 def _match_one(prop, f: dict) -> bool:
-    op = (f.get("operator") or "EQ").upper()
+    op = _operator(f)
     present = prop is not None
     if op == "HAS_PROPERTY":
         return present
     if op == "NOT_HAS_PROPERTY":
         return not present
     if not present:
-        return False
+        # Of the operators below, a record without the property matches only the three negative
+        # ones: real includes it under NEQ, NOT_IN and NOT_CONTAINS_TOKEN and leaves it out under
+        # EQ, IN, CONTAINS_TOKEN, BETWEEN, LT, LTE, GT and GTE, measured against api.hubapi.com on
+        # 2026-10-05 and 2026-10-06.
+        return op in ("NEQ", "NOT_IN", "NOT_CONTAINS_TOKEN")
     target = f.get("value")
     cands = _values_of(prop)
 
@@ -469,7 +609,7 @@ def _match_one(prop, f: dict) -> bool:
         return hit if op == "IN" else not hit
     if op in ("CONTAINS_TOKEN", "NOT_CONTAINS_TOKEN"):
         pats = _token_patterns(str(target or ""))
-        hit = bool(pats) and any(all(p.search(c.lower()) for p in pats) for c in cands)
+        hit = bool(pats) and any(all(match(c.lower()) for match in pats) for c in cands)
         return hit if op == "CONTAINS_TOKEN" else not hit
     if op == "BETWEEN":
         # Numeric when all three parse as numbers, else lexicographic — the same fallback LT/GT
@@ -553,7 +693,7 @@ def _sql_prefilter(body: dict):
     for f in groups[0].get("filters") or []:
         if not isinstance(f, dict) or not f.get("propertyName"):
             return None
-        name, op = f["propertyName"], (f.get("operator") or "EQ").upper()
+        name, op = f["propertyName"], _operator(f)
         if not name.isascii() or not name.replace("_", "").isalnum():
             return None  # keep the JSON path a literal we can trust
         path = f"$.{name}"
@@ -657,6 +797,11 @@ async def search_objects(object_type: str, request: Request):
     if spellings is None:
         return _unknown_type(object_type)
     body = await json_body(request)
+    # Before `after`: real refuses the operator first when the cursor is one it can parse but
+    # names no record (measured 2026-10-06).
+    refused = _refuse_an_operator(await request.body(), body)
+    if refused is not None:
+        return refused
     limit = _clamp(body.get("limit"), 10, _PAGE_MAX)
     visible = auth.visible_ids(request, caller)
     conn = auth.conn(request)

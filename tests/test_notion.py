@@ -423,6 +423,89 @@ def test_notion_comments_answers_a_block_id_the_way_real_does(
         assert body["message"] == expected
 
 
+_NOT_A_STRING = "body failed validation: body.query should be a string or `undefined`, instead was "
+_NOT_AN_OBJECT = (
+    "body failed validation: body.filter should be an object or `undefined`, instead was "
+)
+_NO_VERSION = (
+    "Notion-Version header failed validation: Notion-Version header should be defined, "
+    "instead was `undefined`."
+)
+
+# label, body, whether to send Notion-Version, status, error code, message
+_SEARCH_BODY_TYPE_ROWS = [
+    ("neither member", {}, True, 200, None, None),
+    ("string query", {"query": "on-call"}, True, 200, None, None),
+    ("object filter", {"filter": {"property": "object", "value": "page"}}, True, 200, None, None),
+    ("numeric query", {"query": 5}, True, 400, "validation_error", _NOT_A_STRING + "`5`."),
+    ("list query", {"query": ["x"]}, True, 400, "validation_error", _NOT_A_STRING + '`["x"]`.'),
+    ("null query", {"query": None}, True, 400, "validation_error", _NOT_A_STRING + "`null`."),
+    (
+        "object query",
+        {"query": {"a": 1, "b": [1, 2]}},
+        True,
+        400,
+        "validation_error",
+        _NOT_A_STRING + '`{"a":1,"b":[1,2]}`.',
+    ),
+    (
+        "string filter",
+        {"filter": "page"},
+        True,
+        400,
+        "validation_error",
+        _NOT_AN_OBJECT + '`"page"`.',
+    ),
+    ("non-ascii filter", {"filter": "é"}, True, 400, "validation_error", _NOT_AN_OBJECT + '`"é"`.'),
+    (
+        "list filter",
+        {"filter": ["page"]},
+        True,
+        400,
+        "validation_error",
+        _NOT_AN_OBJECT + '`["page"]`.',
+    ),
+    ("null filter", {"filter": None}, True, 400, "validation_error", _NOT_AN_OBJECT + "`null`."),
+    (
+        "both, filter first",
+        {"filter": "page", "query": 5},
+        True,
+        400,
+        "validation_error",
+        _NOT_A_STRING + "`5`.",
+    ),
+    ("no version", {"query": 5}, False, 400, "missing_version", _NO_VERSION),
+]
+
+
+@pytest.mark.parametrize(
+    "label, body, versioned, status, code, message",
+    _SEARCH_BODY_TYPE_ROWS,
+    ids=[row[0] for row in _SEARCH_BODY_TYPE_ROWS],
+)
+def test_notion_search_reads_query_and_filter_by_their_types_like_real(
+    client, admin_h, notion_h, monkeypatch, label, body, versioned, status, code, message
+):
+    """The rule the comment in ``search`` states: a string query, a filter object and an
+    omitted member are accepted; query errors precede filter errors, and version comes first.
+    A refused request is answered before ``auth.visible_ids`` runs; a served one runs it."""
+    from backlot import auth
+
+    looked_up = []
+    see = auth.visible_ids
+    monkeypatch.setattr(auth, "visible_ids", lambda *a, **k: looked_up.append(a) or see(*a, **k))
+    r = client.post("/notion/v1/search", json=body, headers=notion_h if versioned else admin_h)
+    assert r.status_code == status, (label, r.text)
+    assert bool(looked_up) is (code is None), label
+    payload = r.json()
+    if code is None:
+        assert payload["object"] == "list"
+    else:
+        assert (payload["object"], payload["status"], payload["code"]) == ("error", status, code)
+        assert payload["message"] == message
+        assert payload["request_id"] == r.headers["x-notion-request-id"]
+
+
 def test_notion_search_filter_database_only(client, notion_h):
     s = client.post(
         "/notion/v1/search",
@@ -830,3 +913,23 @@ def test_notion_user_and_block_shape(tmp_path):
     b = blocks[0]
     assert b["object"] == "block" and b["type"] == "heading_1"
     assert b["heading_1"]["rich_text"][0]["plain_text"] == "On-call"
+
+
+@pytest.mark.parametrize("version", ["2022-06-28", "2025-09-03"])
+def test_database_blocks_have_no_children(client, admin_h, version):
+    """A database's block has no children and lists none, beside a page that has both (see
+    `get_block_children`)."""
+    h = {**admin_h, "Notion-Version": version}
+    bid = synth.notion_id("nt-tasks-db")
+    block = client.get(f"/notion/v1/blocks/{bid}", headers=h)
+    assert block.status_code == 200
+    assert block.json()["type"] == "child_database"
+    assert block.json()["has_children"] is False
+    children = client.get(f"/notion/v1/blocks/{bid}/children", headers=h)
+    assert children.status_code == 200
+    assert children.json()["results"] == []
+    assert children.json()["next_cursor"] is None
+    assert children.json()["has_more"] is False
+    pid = synth.notion_id("nt-runbook")
+    assert client.get(f"/notion/v1/blocks/{pid}", headers=h).json()["has_children"] is True
+    assert client.get(f"/notion/v1/blocks/{pid}/children", headers=h).json()["results"]

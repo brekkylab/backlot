@@ -15,7 +15,7 @@ import time
 from collections.abc import Callable
 from email.utils import formatdate
 from typing import NamedTuple
-from urllib.parse import quote
+from urllib.parse import quote, unquote_plus
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
@@ -2379,8 +2379,10 @@ def _ref_exists(conn, owner: str, repo: str, ref: str, ids) -> bool:
 async def get_tree(
     owner: str, repo: str, ref: str, request: Request, recursive: str | None = Query(None)
 ):
-    """The repo's file set as a git tree (real API shape). `recursive` (any truthy value,
-    GitHub-style) returns every blob/tree entry; otherwise only the entries directly under root.
+    """The repo's file set as a git tree (real API shape). `recursive=` with any value, the empty
+    one, `0` and `false` included, returns every blob/tree entry; without it, or written bare as
+    `?recursive`, only the entries directly under root. Repeated, the last one decides. Measured on
+    api.github.com (2026-10-04): psf/requests answers 21 entries flat and 153 recursive.
 
     `ref` selects WHICH tree, exactly as on real GitHub: a SUBTREE's own sha — the one a client
     reads out of a parent listing's `tree` entry — answers that directory's entries, with paths
@@ -2438,7 +2440,7 @@ async def get_tree(
         entries = [
             {**e, "path": e["path"][len(prefix) :]} for e in entries if e["path"].startswith(prefix)
         ]
-    if not _truthy(recursive):
+    if recursive is None or _written_bare(request, "recursive"):
         entries = [e for e in entries if "/" not in e["path"]]
     entries, truncated = _cap_tree(entries)
     tree_sha = _repo_tree_sha(repo) if subtree is None else _dir_sha(repo, subtree)
@@ -2609,6 +2611,16 @@ async def get_blob(owner: str, repo: str, sha: str, request: Request):
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     _require_repo(conn, repo, ids)
+    # Measured on psf/requests on 2026-10-03: a seven-character prefix, an upper-case sha and
+    # `zzzz` each answered this 422 with the route's own documentation_url, where a well-formed
+    # sha naming no blob is the 404 below. Upper case is refused here though `commits/{ref}`
+    # resolves it. A repository that does not exist is the 404 above, whatever the sha (measured
+    # 2026-10-05 with `zzzz` on a missing repository and on a missing owner).
+    if not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise HTTPException(
+            status_code=422,
+            detail="The sha parameter must be exactly 40 characters and contain only [0-9a-f].",
+        )
     # every snapshot, not just HEAD: a blob sha is content-addressed, so a superseded snapshot
     # keeps its own and stays fetchable at it (see store.iter_repo_file_snapshots). Streamed, so a
     # match stops the scan rather than reading the repo's every file first.
@@ -2657,27 +2669,25 @@ async def list_branches(
     both would hand a client a field real GitHub never sends here.
 
     `?protected=` selects, so it is honoured rather than ignored: a client that asked for the
-    protected branches and got an unprotected one back would read that branch as push-guarded.
-    Real has three answers — only protected branches for a true value, only unprotected ones for
-    `false`, and all of them when the parameter is omitted — and parses the value the way
-    `?recursive=` is parsed, every non-empty value but `false`/`0` reading true. Measured on
-    fastapi/fastapi (22 branches, one of them protected): `true`/`1`/`TRUE`/`yes`/`banana` answer
-    1, `false`/`0` answer 21, an empty value and an omitted one answer 22.
+    protected branches and got an unprotected one back would read that branch as push-guarded. Real
+    has three answers — only protected branches for a true value, only unprotected ones for a false
+    value, and all of them when the parameter is omitted or empty. Which spellings real reads as
+    false is :func:`_truthy`, with the measurement.
 
     All three answers are distinct for a repo whose `subtype: "repo"` record states which branches
     are protected. For one that does not, every branch is unprotected and real's last two coincide
     — a pull cannot imply protection, so an inferred listing has none (see :func:`_branch_rows`).
 
     `?protected=` selects AHEAD of the page cut, so the `Link` counts the pages of the selection:
-    `?protected=false&per_page=1` on fastapi/fastapi answers one of the 21 unprotected branches and
-    reports `rel="last"` page 21, not the 22 of the whole listing.
+    `?protected=false&per_page=1` on fastapi/fastapi (2026-10-05) answers one of the 24 unprotected
+    branches and reports `rel="last"` page 24, not the 25 of the whole listing.
     """
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     _require_repo(conn, repo, ids)
     rows = _branch_rows(conn, owner, repo, ids)
-    if protected:  # an EMPTY value selects nothing, as an absent one does: real answers all 22
+    if protected:  # an empty or absent value leaves the listing unfiltered
         rows = [b for b in rows if b["protected"] is _truthy(protected)]
     page, per_page = _clamp(page, per_page)
     start = (page - 1) * per_page
@@ -3048,9 +3058,28 @@ _DEFAULT_BRANCH = store.GITHUB_DEFAULT_BRANCH
 _UNSTATED_HEAD_REF = "feature"
 
 
-def _truthy(v: str | None) -> bool:
-    """GitHub's `?recursive=` accepts any non-empty, non-'0'/'false' value as true."""
-    return v is not None and v.lower() not in ("", "0", "false")
+def _written_bare(request: Request, name: str) -> bool:
+    """Whether the last `name` in the query string has no `=`. Starlette reads `?name` and `?name=`
+    alike as the empty string, and :func:`get_tree` answers them differently. Keys are matched
+    percent-decoded, as Starlette and api.github.com both read them: on psf/requests (2026-10-05)
+    `?%72ecursive` answers the flat tree and `?%72ecursive=0` the recursive one."""
+    last = None
+    for pair in request.scope.get("query_string", b"").decode("latin-1").split("&"):
+        key, eq, _ = pair.partition("=")
+        if unquote_plus(key) == name:
+            last = eq
+    return last == ""
+
+
+def _truthy(v: str) -> bool:
+    """How :func:`list_branches` reads `?protected=`. Measured on fastapi/fastapi (25 branches, one
+    protected), 2026-10-05, unauthenticated with API version 2022-11-28 and a fresh nonce per
+    request: `0`, `f`, `F`, `false`, `FALSE`, `off`, `OFF` select the 24 unprotected branches.
+    `False`, `fAlSe`, `Off`, `oFF`, `0 `, ` false`, `f `, `false ` and ` off ` select the protected
+    one: do not fold case or strip. An empty or omitted value answers all 25, so the route leaves it
+    unfiltered.
+    """
+    return v not in ("0", "f", "F", "false", "FALSE", "off", "OFF")
 
 
 def _blob_sha(content: str) -> str:

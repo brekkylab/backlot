@@ -128,8 +128,8 @@ def json_media_type(path: str, status_code: int) -> str | None:
     measured 2026-09-16 and 2026-09-18 on `serverInfo`, `field` and `project/search`. That 403 is
     the only one this server answers on a Jira path, so the status alone selects it. Confluence
     answers the bare type on every JSON body measured — the 200s, the 404s, the 400, 403 and 405
-    (2026-09-15 and 2026-09-18) — so `/wiki` is ``None`` throughout; its 401 is Tomcat's HTML page,
-    which the envelope here does not reproduce.
+    (2026-09-15 and 2026-09-18), and the CQL search's 400s and 500 (2026-10-05) — so `/wiki` is
+    ``None`` throughout; its 401 is Tomcat's HTML page, which the envelope here does not reproduce.
 
     The RFC 7807 refusals are not this function's: they ride on :class:`AtlassianError` under
     :data:`PROBLEM_JSON`, and ``main.vendor_json_media_type`` rewrites only a response that is
@@ -237,6 +237,32 @@ def integer_conversion_failure(path: str, name: str, values: list[str]) -> Atlas
     )
 
 
+def cql_required() -> AtlassianError:
+    """The CQL search's refusal of a request whose first `cql` is absent or empty.
+
+    Measured 2026-10-05: no `cql`, `?cql=` and a bare `?cql` are this 400, and so is
+    `?CQL=type=page`, the name being case-sensitive. A repeated `cql` is read from its first value:
+    `?cql=&cql=type=page` is this 400 and `?cql=type=page&cql=` a 200. It comes after the 404 for a
+    `limit` or `start` real cannot convert (``backlot.routers.atlassian._cql_page_param``) and ahead
+    of the negative `limit`/`start` refusal: `?cql=&limit=abc` is that 404 (measured 2026-10-06) and
+    `?limit=-1` with no `cql` is this 400. The body carries the `data` object
+    :func:`start_too_large` describes. A whitespace-only `cql` (`%20`, `%09`) is not this refusal:
+    real answers it after the negative one with `Could not parse cql : `, its message for a CQL it
+    cannot parse, and this server does not check CQL syntax.
+    """
+    return AtlassianError(
+        400,
+        {
+            "statusCode": 400,
+            "data": {"authorized": True, "valid": True, "errors": [], "successful": True},
+            "message": (
+                "com.atlassian.confluence.api.service.exceptions.api.BadRequestException: "
+                "cql query parameter is required"
+            ),
+        },
+    )
+
+
 def start_too_large() -> AtlassianError:
     """`content`'s refusal of a `start` above 100000, which `space` does not share.
 
@@ -255,6 +281,54 @@ def start_too_large() -> AtlassianError:
                 "Start of this size is no longer supported. If you need to fetch this amount of "
                 "content, please use either the search endpoint or get the content by a space at "
                 "a time."
+            ),
+        },
+    )
+
+
+def search_cursor_refused(*, failed: bool = False) -> AtlassianError:
+    """The CQL search's refusal of a `cursor` it cannot page by
+    (``backlot.routers.atlassian._cql_search_after`` says which): a 400, or with ``failed`` a 500.
+    Both bodies name the search service behind the route, which is where the token is read."""
+    status = 500 if failed else 400
+    failure = (
+        "There was an error returned from XP-Search Aggregator API: HTTP/1.1 500 Internal Server "
+        "Error"
+        if failed
+        else "There was an illegal request passed to XP-Search Aggregator API : HTTP/1.1 400 Bad "
+        "Request"
+    )
+    scale = "com.atlassian.confluence.api.service.exceptions.scale.SSStatusCodeException"
+    return AtlassianError(
+        status,
+        {
+            "statusCode": status,
+            "message": (
+                f"{scale}: CQL was parsed but the search manager was unable to execute the search. "
+                f"Error message: {scale}: {failure}"
+            ),
+        },
+    )
+
+
+def search_next_out_of_range() -> AtlassianError:
+    """The CQL search's refusal of a page that answers `next` where `start` plus the rows served,
+    or plus one on a page that served none, passes Java's `int`.
+
+    Measured 2026-10-04 on nine matches: `?limit=2&start=2147483646` and `?limit=0&start=2147483647`
+    are this 400, `?limit=1&start=2147483646` and `?limit=0&start=2147483646` are served, and so is
+    `?start=2147483647`, which serves all nine and answers no `next`. The body carries the `data`
+    member :func:`start_too_large`'s does.
+    """
+    return AtlassianError(
+        400,
+        {
+            "statusCode": 400,
+            "data": {"authorized": True, "valid": True, "errors": [], "successful": True},
+            "message": (
+                "com.atlassian.confluence.api.service.exceptions.api.BadRequestException: CQL was "
+                "parsed but the search manager was unable to execute the search. Error message: "
+                "java.lang.IllegalArgumentException"
             ),
         },
     )

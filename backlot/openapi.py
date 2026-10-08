@@ -218,10 +218,12 @@ def google_system_parameters(spec: dict) -> dict:
 
     `$.xgafv` alone, though real's document declares `callback` beside it and Backlot validates that
     one for the router too (``errors.google.validate_system_parameters``). `callback` is honoured on
-    a Google error answered to a GET — a POST ignores it, as real's POSTs do — and on a SUCCESS only
-    under ``/sheets/v4``, which is where :func:`qp` declares it. The two Sheets POST routes share
-    that declaration and ignore the parameter exactly as real's do, so it promises a caller no more
-    there than the vendor's own document does."""
+    a Google error answered to a GET — a POST ignores it outright, as real's POSTs do, and a Drive
+    download neither wraps nor refuses through it but answers it with real's own 503
+    (``routers.google._system_parameters``) — and on a SUCCESS only under ``/sheets/v4``, which is
+    where :func:`qp` declares it. The two Sheets POST routes share that declaration and ignore the
+    parameter exactly as real's do, so it promises a caller no more there than the vendor's own
+    document does."""
     for path, item in spec.get("paths", {}).items():
         if gerr.family(path) is None:
             continue

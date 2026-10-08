@@ -1,5 +1,6 @@
 # Backlot
 
+[![GitHub stars](https://img.shields.io/github/stars/brekkylab/backlot?style=social&label=Star)](https://github.com/brekkylab/backlot)
 [![python](https://img.shields.io/pypi/pyversions/backlot)](https://pypi.org/project/backlot/)
 [![PyPI](https://img.shields.io/pypi/v/backlot)](https://pypi.org/project/backlot/)
 [![tests](https://github.com/brekkylab/backlot/actions/workflows/ci.yml/badge.svg)](https://github.com/brekkylab/backlot/actions/workflows/ci.yml)
@@ -144,6 +145,10 @@ Every imported identity gets deterministic credentials, listed at `GET /_meta/us
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Fidelity to the real APIs is the point, so a divergence is a bug — measure against the real service, and bring a test that fails without your fix.
+
+Backlot exists thanks to all the people who contribute.
+
+<a href="https://github.com/brekkylab/backlot/graphs/contributors"><img alt="Avatars of Backlot's contributors" src="https://raw.githubusercontent.com/brekkylab/backlot/contributors/contributors.svg"></a>
 
 ## License
 

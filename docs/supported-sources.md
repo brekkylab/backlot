@@ -284,8 +284,9 @@ parameters and the last for others. The first repeat decides `fields`, `q`, `pag
 and `orderBy` on Drive's `files.list`, `fields` on `files.get` and `about`, and `mimeType` on
 `files.export`, and on Sheets `fields` and `prettyPrint`, as it decides `callback` and `alt`; the
 last decides `$.xgafv`, `majorDimension`, `valueRenderOption` and `includeGridData`. An empty first
-repeat is read as the empty value, not skipped. Gmail's `q`, `pageToken` and `maxResults` are read
-here from the last, and which end real reads is unmeasured. On a Sheets success, `prettyPrint` is
+repeat is read as the empty value, not skipped. Gmail's `q` and `pageToken` are read here from
+the last, and which end real reads is unmeasured; `maxResults` is parsed in every repeat and read
+from the last (`backlot.routers.google._gmail_max_results`). On a Sheets success, `prettyPrint` is
 compact at `false` and `0` and at none of the eighteen other spellings measured, `FALSE`, `no` and
 `f` among them. Measured against the live Drive, Sheets and Gmail APIs, each pair sent both ways
 round: `callback`, `alt` and the Sheets `$.xgafv` between 2026-09-15 and 2026-09-17,

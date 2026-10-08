@@ -44,9 +44,10 @@ router = APIRouter(tags=["google"], dependencies=[Depends(gerr.validate_system_p
 
 
 # --- OpenAPI enrichment --------------------------------------------------
-# Query params are read query-only (via _int/request.query_params); documenting them with
-# openapi_extra keeps the handler bodies untouched and merges cleanly with the auto-generated
-# path params. Response models use extra="allow" so builders' full field set passes through.
+# Query params are read query-only (via request.query_params, a typed one through _typed_query).
+# Documenting them with openapi_extra keeps the handler bodies untouched and merges cleanly with
+# the auto-generated path params. Response models use extra="allow" so builders' full field set
+# passes through.
 
 
 class _GLoose(BaseModel):
@@ -544,32 +545,42 @@ def _by_thread(rows) -> list:
 
 
 def _gmail_max_results(request: Request) -> int:
-    """The page size `messages.list` and `threads.list` serve. A `maxResults` above 500 is capped
-    at 500, not refused: measured on 2026-10-03, `501` and `1000` each answered 500 messages with a
-    `nextPageToken`, and the reference gives both methods "The maximum allowed value for this field
-    is 500".
+    """The page size `messages.list` and `threads.list` serve.
 
-    A value that is not one is refused, measured on gmail.googleapis.com 2026-09-30: `0` is 400
-    `Invalid maxResults` — an empty page whose `nextPageToken` encodes that same offset again,
-    so a client paging until the token is absent never stops — and a negative,
-    non-numeric or empty value is the proto layer's `Invalid value at 'max_results'
-    (TYPE_UINT32), "<value>"`, the value quoted as sent. A `-1` reached SQLite as `LIMIT -1`, which
-    is every row in the mailbox.
+    Measured on gmail.googleapis.com on 2026-10-07 with a Workspace user's `gmail.readonly` token,
+    one request per row, and the same status and error on `threads.list`. The proto layer parses
+    every repeat as a uint32 and names every repeat it cannot read in one 400, as
+    `Invalid value at 'max_results' (TYPE_UINT32), "<value>"`, the value quoted
+    as sent. `+2` and `02` are numbers. A leading `-` is refused even on `-0`, and so are an empty
+    value, `1.5` and a value past 2**32 - 1 (`4294967296`). The method reads the last repeat: `0`
+    (`+0`, `00`) and anything from 2**31 up (`2147483648`, `+2147483648`, `4294967295`) are
+    `Invalid maxResults`, while `2147483647` is served; `1&3` is 3, `3&1` is 1, `0&3` is 3 and
+    `3&0` is refused. Below 2**31 a value is capped at 500, not refused: on 2026-10-03, `501` and
+    `1000` each answered 500 messages with a `nextPageToken`, and the reference gives both methods
+    "The maximum allowed value for this field is 500". With no `maxResults`, the page is the
+    default size capped at 500. A sent value is also capped at the deployment's `max_page_size`.
     """
-    raw = request.query_params.get("maxResults")
-    if raw is None:
+    sizes = _typed_query(request, {"maxResults": _gmail_uint32})["maxResults"]
+    if not sizes:
         return min(get_settings().default_page_size, 500)
-    # The spellings the parser takes are `_INT32`'s, the one the proto layer applies to the numeric
-    # query parameters of this API too: `+2` and `02` are numbers, and `1_0`, a padded value, an
-    # empty one and `1.5` are not (measured on Drive's `pageSize`, 2026-09-23).
-    value = int(raw) if _INT32.fullmatch(raw) else None
-    if value is None or value < 0:
-        raise gerr.invalid_field_value(
-            "max_results", f"Invalid value at 'max_results' (TYPE_UINT32), \"{raw}\""
-        )
-    if value == 0:
+    size = sizes[-1]
+    if size == 0 or size >= 2**31:
         raise gerr.invalid_max_results()
-    return min(value, 500)
+    return min(size, 500, get_settings().max_page_size)
+
+
+# A uint32, which is what Gmail's proto layer reads `maxResults` as — not `_INT32`. Drive's parser
+# takes a leading `-` (`-0` is 0) and stops past 2**31 - 1; this one refuses a leading `-` even on
+# `-0`, and a value past 2**32 - 1. The date and the values are `_gmail_max_results`'s.
+_UINT32 = re.compile(r"\+?[0-9]+")
+
+
+def _gmail_uint32(raw: str) -> int:
+    if _UINT32.fullmatch(raw) and int(raw) < 2**32:
+        return int(raw)
+    raise gerr.invalid_field_value(
+        "max_results", f"Invalid value at 'max_results' (TYPE_UINT32), \"{raw}\""
+    )
 
 
 def _gmail_ids(row) -> tuple[str, str]:

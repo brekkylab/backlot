@@ -329,10 +329,11 @@ def invalid_id_value() -> GoogleError:
 
 
 def invalid_max_results() -> GoogleError:
-    """Gmail's answer to a `maxResults` of zero — measured on gmail.googleapis.com 2026-09-30: 400
-    INVALID_ARGUMENT, ``Invalid maxResults``, whose `errors[]` entry is `global` /
-    `invalidArgument` and which carries no `details`. A value the proto layer cannot read at all is
-    :func:`invalid_field_value`'s shape instead, which names the field it refused."""
+    """Gmail's ``Invalid maxResults`` for a `maxResults` of zero or from 2**31 up: 400
+    INVALID_ARGUMENT, whose `errors[]` entry is `global` / `invalidArgument` and which carries no
+    `details`. The values and the measurement are ``routers.google._gmail_max_results``'s. A value
+    the proto layer cannot read at all is :func:`invalid_field_value`'s shape instead, which names
+    the field it refused."""
     return GoogleError(
         400, "Invalid maxResults", reason="invalidArgument", status="INVALID_ARGUMENT"
     )
@@ -480,8 +481,9 @@ def first_repeat(query: Mapping[str, str] | None, name: str) -> str | None:
     `excludeTablesInBandedRanges`, measured the same day, and of `majorDimension`, measured
     2026-09-22.
 
-    Gmail's `q`, `pageToken` and `maxResults` stay on ``.get`` because their end is unmeasured: a
-    Gmail list answers 200 only to a scope the measuring credential cannot be granted.
+    Gmail's `q` and `pageToken` stay on ``.get`` because which end real reads them from is
+    unmeasured. `maxResults` is not one of them: every repeat is parsed and the last is read, and
+    the measurement is ``routers.google._gmail_max_results``'s.
     """
     if query is None:
         return None

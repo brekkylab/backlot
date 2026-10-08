@@ -213,6 +213,45 @@ def test_gmail_messages_list_serves_hex_ids(client, admin_h):
         assert not m["id"].startswith("dsid_")
 
 
+@pytest.mark.parametrize("resource", ["messages", "threads"])
+def test_gmail_lists_refuse_an_invalid_page_token_but_accept_empty(client, admin_h, resource):
+    """A corrupt crawl cursor must fail instead of silently replaying page one. An explicitly empty
+    token still means the first page, which distinguishes it from a token that failed to decode."""
+    path = f"/gmail/v1/users/me/{resource}"
+    first = client.get(path, headers=admin_h, params={"maxResults": 1})
+    empty = client.get(path, headers=admin_h, params={"maxResults": 1, "pageToken": ""})
+    refused = client.get(path, headers=admin_h, params={"maxResults": 1, "pageToken": "bogus"})
+
+    assert first.status_code == empty.status_code == 200
+    assert empty.json() == first.json()
+    assert refused.status_code == 400
+    assert refused.json() == {
+        "error": {
+            "code": 400,
+            "message": "Invalid pageToken",
+            "errors": [
+                {
+                    "message": "Invalid pageToken",
+                    "domain": "global",
+                    "reason": "invalidArgument",
+                }
+            ],
+            "status": "INVALID_ARGUMENT",
+        }
+    }
+
+
+def test_gmail_messages_list_accepts_its_own_page_token(client, admin_h):
+    """Strict validation must retain the opaque cursor emitted by the preceding page."""
+    path = "/gmail/v1/users/me/messages"
+    first = client.get(path, headers=admin_h, params={"maxResults": 1})
+    token = first.json()["nextPageToken"]
+    second = client.get(path, headers=admin_h, params={"maxResults": 1, "pageToken": token})
+
+    assert second.status_code == 200
+    assert second.json()["messages"][0] != first.json()["messages"][0]
+
+
 def test_gmail_hex_id_resolves_to_the_same_document(client, admin_h, ro_conn):
     """The hex id maps back to its dsid, so the body a client reads by hex is the stored body. A
     one-way id would make every message unreadable."""

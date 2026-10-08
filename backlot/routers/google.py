@@ -33,7 +33,7 @@ from backlot.acl import Caller
 from backlot.config import get_settings
 from backlot.errors import google as gerr
 from backlot.openapi import qp
-from backlot.pagination import decode_cursor, decode_cursor_or_none, next_page_token
+from backlot.pagination import decode_cursor_or_none, next_page_token
 
 # `$.xgafv` is checked before any route runs, and `callback` too but on a Drive download inside a
 # batch — see `_system_parameters`. A router dependency runs only once a route has MATCHED, so a
@@ -670,7 +670,9 @@ async def gmail_messages_list(user_id: str, request: Request):
     ids = auth.visible_ids(request, caller)
     mailbox = _mailbox_container(conn, caller, user_id)  # None = all mailboxes
     limit = _gmail_max_results(request)
-    offset = decode_cursor(request.query_params.get("pageToken"))
+    offset = decode_cursor_or_none(request.query_params.get("pageToken"))
+    if offset is None:
+        raise gerr.invalid_page_token()
     q = request.query_params.get("q", "") or ""
     if q.strip():  # search: filter the ACL-visible set by the query, then paginate
         matched = _gmail_query(conn, mailbox, ids, q)
@@ -777,7 +779,9 @@ async def gmail_threads_list(user_id: str, request: Request):
     # disagreed about what a thread list is.
     mailbox = _mailbox_container(conn, caller, user_id)
     limit = _gmail_max_results(request)
-    offset = decode_cursor(request.query_params.get("pageToken"))
+    offset = decode_cursor_or_none(request.query_params.get("pageToken"))
+    if offset is None:
+        raise gerr.invalid_page_token()
     q = request.query_params.get("q", "") or ""
     if q.strip():
         # A search returns the THREADS its matches are in: Gmail lists a thread whose match is in a

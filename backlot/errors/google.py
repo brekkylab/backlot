@@ -394,6 +394,14 @@ def bad_field_mask(path: str) -> GoogleError:
     )
 
 
+def invalid_page_token() -> GoogleError:
+    """Gmail's answer to a page token it did not issue, measured on 2026-09-30 for both
+    ``messages.list`` and ``threads.list``. An empty token still names the first page."""
+    return GoogleError(
+        400, "Invalid pageToken", reason="invalidArgument", status="INVALID_ARGUMENT"
+    )
+
+
 def invalid_attachment_token() -> GoogleError:
     """Gmail's answer to an attachment id it does not hold. Measured 2026-09-30 and 2026-10-01:
     400 INVALID_ARGUMENT for a made-up id and for a real one with characters changed, whatever

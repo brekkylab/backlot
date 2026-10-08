@@ -622,42 +622,44 @@ _OWN_CHANNEL = "<the caller's own channel>"  # stands for an id only the test bo
 
 
 @pytest.mark.parametrize(
-    "method, params, error",
+    "method, params, error, missing",
     [
         # An ABSENT required argument — the request is malformed, and no channel was ever named.
-        ("conversations.info", {}, "invalid_arguments"),
-        ("conversations.members", {}, "invalid_arguments"),
-        ("conversations.history", {}, "invalid_arguments"),
-        ("conversations.replies", {}, "invalid_arguments"),
-        ("conversations.replies", {"channel": "C_NOPE"}, "invalid_arguments"),  # ts absent
+        ("conversations.info", {}, "invalid_arguments", ["channel"]),
+        ("conversations.members", {}, "invalid_arguments", ["channel"]),
+        ("conversations.history", {}, "invalid_arguments", ["channel"]),
+        ("conversations.replies", {}, "invalid_arguments", ["channel", "ts"]),
+        ("conversations.replies", {"channel": "C_NOPE"}, "invalid_arguments", ["ts"]),
+        ("conversations.replies", {"ts": "1.0"}, "invalid_arguments", ["channel"]),
+        ("conversations.replies", {"channel": ""}, "invalid_arguments", ["ts"]),
         # PRESENT and empty, or present and naming nothing — the argument arrived, so what is
         # missing is the channel.
-        ("conversations.info", {"channel": ""}, "channel_not_found"),
-        ("conversations.members", {"channel": ""}, "channel_not_found"),
-        ("conversations.history", {"channel": ""}, "channel_not_found"),
-        ("conversations.info", {"channel": "C_NOPE"}, "channel_not_found"),
-        ("conversations.members", {"channel": "C_NOPE"}, "channel_not_found"),
-        ("conversations.history", {"channel": "C_NOPE"}, "channel_not_found"),
-        ("conversations.replies", {"channel": "C_NOPE", "ts": "1.0"}, "channel_not_found"),
+        ("conversations.info", {"channel": ""}, "channel_not_found", []),
+        ("conversations.members", {"channel": ""}, "channel_not_found", []),
+        ("conversations.history", {"channel": ""}, "channel_not_found", []),
+        ("conversations.info", {"channel": "C_NOPE"}, "channel_not_found", []),
+        ("conversations.members", {"channel": "C_NOPE"}, "channel_not_found", []),
+        ("conversations.history", {"channel": "C_NOPE"}, "channel_not_found", []),
+        ("conversations.replies", {"channel": "C_NOPE", "ts": "1.0"}, "channel_not_found", []),
         # ...and a ts that arrived empty is answered by the thread, the channel being readable.
-        ("conversations.replies", {"channel": _OWN_CHANNEL, "ts": ""}, "thread_not_found"),
+        ("conversations.replies", {"channel": _OWN_CHANNEL, "ts": ""}, "thread_not_found", []),
         # The search family draws the line in the same place, and has its OWN name for the blank
         # half: `no_query`, the vendor's spelling for a query that arrived with nothing in it.
-        ("search.messages", {}, "invalid_arguments"),
-        ("search.all", {}, "invalid_arguments"),
-        ("search.files", {}, "invalid_arguments"),
-        ("search.messages", {"query": ""}, "no_query"),
-        ("search.all", {"query": ""}, "no_query"),
-        ("search.files", {"query": ""}, "no_query"),
-        ("search.messages", {"query": "   "}, "no_query"),  # whitespace is not a query either
+        ("search.messages", {}, "invalid_arguments", ["query"]),
+        ("search.all", {}, "invalid_arguments", ["query"]),
+        ("search.files", {}, "invalid_arguments", ["query"]),
+        ("search.messages", {"query": ""}, "no_query", []),
+        ("search.all", {"query": ""}, "no_query", []),
+        ("search.files", {"query": ""}, "no_query", []),
+        ("search.messages", {"query": "   "}, "no_query", []),  # whitespace is not a query either
         # users.info is the exception, and is left one: live it answers `user_not_found` to all of
         # them, absent argument included. Pinned so the rule above is not "tidied" onto it.
-        ("users.info", {}, "user_not_found"),
-        ("users.info", {"user": ""}, "user_not_found"),
+        ("users.info", {}, "user_not_found", []),
+        ("users.info", {"user": ""}, "user_not_found", []),
     ],
 )
 def test_slack_an_absent_argument_is_not_a_thing_that_was_not_found(
-    client, admin_h, method, params, error
+    client, admin_h, method, params, error, missing
 ):
     """Slack separates "you did not pass the argument" from "what you passed names nothing", and
     Backlot had only the second — so a client that omitted `channel` was told the thing it never
@@ -671,7 +673,12 @@ def test_slack_an_absent_argument_is_not_a_thing_that_was_not_found(
         k: (_a_channel_id(client, admin_h) if v == _OWN_CHANNEL else v) for k, v in params.items()
     }
     j = client.get(f"/slack/api/{method}", headers=admin_h, params=params).json()
-    assert j == {"ok": False, "error": error}
+    want = {"ok": False, "error": error}
+    if missing:
+        want["response_metadata"] = {
+            "messages": [f"[ERROR] missing required field: {name}" for name in missing]
+        }
+    assert j == want
 
 
 @pytest.mark.parametrize("method", ["search.messages", "search.all", "search.files"])
@@ -710,7 +717,11 @@ def test_slack_search_sort_dir_outside_the_enum_is_invalid_arguments(
     elif want == "ok":
         assert j["ok"] is True
     else:
-        assert j["error"] == "invalid_arguments" and j != enum
+        assert j == {
+            "ok": False,
+            "error": "invalid_arguments",
+            "response_metadata": {"messages": ["[ERROR] missing required field: query"]},
+        }
 
 
 def test_slack_search_all(client, admin_h):
@@ -1353,11 +1364,6 @@ def test_slack_chronology_is_numeric_not_lexicographic(tmp_path):
     latest = store.slack_latest_reply_ts(conn, "inc", root["ts"])
     assert latest == thread[-1]["ts"] and thread[-1]["created_ts"] == 10
     assert _message(root, reply_count=2, latest_reply=latest)["latest_reply"] == latest
-
-
-# Placed after every `client`-fixture test in this module: it opens a SECOND app over a different DB
-# via `corpus_client`, which overwrites the module-scoped fixture's shared `app.state` (see
-# `tests._helpers.client_for`'s docstring).
 
 
 def test_slack_a_private_channels_members_are_its_readers(tmp_path):

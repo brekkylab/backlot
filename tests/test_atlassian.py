@@ -56,12 +56,13 @@ UNRESOLVABLE = [
 
 
 @pytest.mark.parametrize("headers", UNRESOLVABLE)
-def test_jira_processes_a_credential_it_cannot_resolve_as_anonymous(client, headers):
+def test_jira_processes_a_credential_it_cannot_resolve_as_anonymous(client, admin_h, headers):
     """Real Jira does not refuse an unresolvable credential on these routes — it drops the caller
     to anonymous and answers the request. `project/search` is 200 with the projects an anonymous
     caller may see, a bounded `search/jql` is 200 with that query's anonymous view, and an issue
     is Jira's own 404. No document in a Backlot corpus is granted to a principal outside the org,
-    so anonymous reaches none of them and each listing comes back empty."""
+    so anonymous reaches none of them and each listing comes back empty. `serverInfo` is 200 with
+    the signed-in body less `serverTime`, on v2 and v3 (see `jira_server_info`)."""
     projects = client.get("/atlassian/rest/api/3/project/search", headers=headers)
     assert projects.status_code == 200 and projects.json()["values"] == []
     found = client.get(
@@ -73,6 +74,11 @@ def test_jira_processes_a_credential_it_cannot_resolve_as_anonymous(client, head
     assert issue.json()["errorMessages"] == [
         "Issue does not exist or you do not have permission to see it."
     ]
+    for ver in ("2", "3"):
+        info = client.get(f"/atlassian/rest/api/{ver}/serverInfo", headers=headers)
+        signed = client.get(f"/atlassian/rest/api/{ver}/serverInfo", headers=admin_h).json()
+        assert info.status_code == 200
+        assert list(info.json().items()) == [(k, v) for k, v in signed.items() if k != "serverTime"]
 
 
 @pytest.mark.parametrize("path", ["/rest/api/3/field", "/rest/api/3/issueLinkType"])
@@ -363,7 +369,24 @@ def test_jira_serverinfo_answers_reals_fifteen_members_on_v2_and_v3(client, admi
     # `jira_server_info` records.
     v2 = client.get("/atlassian/rest/api/2/serverInfo", headers=admin_h).json()
     v3 = client.get("/atlassian/rest/api/3/serverInfo", headers=admin_h).json()
-    assert v2 == v3
+    assert list(v2.items()) == list(v3.items())
+    assert list(v3) == [
+        "baseUrl",
+        "displayUrl",
+        "displayUrlServicedeskHelpCenter",
+        "displayUrlCSMHelpSeeker",
+        "displayUrlConfluence",
+        "version",
+        "versionNumbers",
+        "deploymentType",
+        "buildNumber",
+        "buildDate",
+        "serverTime",
+        "scmInfo",
+        "serverTitle",
+        "defaultLocale",
+        "serverTimeZone",
+    ]
     site = v3["baseUrl"]
     synthesized = {k: v3.pop(k) for k in ("buildDate", "serverTime", "scmInfo")}
     assert v3 == {
@@ -382,8 +405,10 @@ def test_jira_serverinfo_answers_reals_fifteen_members_on_v2_and_v3(client, admi
     }
     assert re.fullmatch(r"[0-9a-f]{40}", synthesized["scmInfo"])
     built = synthesized["buildDate"]
-    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}[+-]\d{4}", built)
-    served = datetime.fromisoformat(synthesized["serverTime"])
+    stamp = r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}[+-]\d{4}"
+    assert re.fullmatch(stamp, built)
+    assert re.fullmatch(stamp, synthesized["serverTime"])
+    served = datetime.strptime(synthesized["serverTime"], "%Y-%m-%dT%H:%M:%S.%f%z")
     assert datetime.strptime(built, "%Y-%m-%dT%H:%M:%S.%f%z") < served
 
 

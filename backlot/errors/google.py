@@ -10,8 +10,10 @@ envelope is NOT uniform — three families differ in which optional members they
 
     family                  errors[]           status               no Authorization header, GET
     ------------------------|------------------|---------------------|-----------------------------
-    Drive v3                | always           | auth failures and   | 403 PERMISSION_DENIED
-                            |                  | typed values only   |
+    Drive v3                | always           | auth failures,      | 403 PERMISSION_DENIED
+                            |                  | typed values,       |
+                            |                  | `$.xgafv` and the   |
+                            |                  | batch redirect only |
     Gmail v1                | unless $.xgafv=2 | always              | 401 UNAUTHENTICATED
     Docs v1 / Slides v1     | $.xgafv=1        | always              | 401 UNAUTHENTICATED
     Sheets v4               | $.xgafv=1        | always              | 403 PERMISSION_DENIED
@@ -62,9 +64,9 @@ from collections.abc import Mapping
 from fastapi import HTTPException, Request, Response
 
 DRIVE, GMAIL, EDITOR = "drive", "gmail", "editor"
-# `status` needs no per-family flag: Drive's parameter failures other than a typed value simply do
-# not have one, while every Gmail and editor error does, so "the error carries a status" is the
-# whole condition.
+# `status` needs no per-family flag: each constructor passes one exactly where the module
+# docstring's table says its family carries one, so "the error carries a status" is the whole
+# condition.
 _PREFIX_FAMILY = (
     ("/drive/v3", DRIVE),
     ("/gmail/v1", GMAIL),
@@ -89,6 +91,7 @@ UNREGISTERED_CALLER_MESSAGE = (
     "Method doesn't allow unregistered callers (callers without established identity). Please use "
     "API Key or other form of API consumer identity to call this API."
 )
+MISSING_API_KEY_MESSAGE = "The request is missing a valid API key."
 
 
 def family(path: str) -> str | None:
@@ -163,6 +166,15 @@ def invalid_value(param: str, message: str | None = None) -> GoogleError:
     return GoogleError(400, message or "Invalid Value", reason="invalid", location=param)
 
 
+def page_token_expired() -> GoogleError:
+    """Drive's 403 for a page token it calls expired, which carries no `location`."""
+    return GoogleError(
+        403,
+        "The specified page token has expired, and can no longer be used.",
+        reason="pageTokenExpired",
+    )
+
+
 def duplicate_sort_keys() -> GoogleError:
     """Drive's refusal of an ``orderBy`` that names one sort key twice — a 403, not a 400, measured
     against Drive v3 on 2026-10-03 and 2026-10-04."""
@@ -170,6 +182,17 @@ def duplicate_sort_keys() -> GoogleError:
         403,
         "The orderBy parameter cannot contain duplicate sort keys.",
         reason="orderByContainsDuplicateSortKeys",
+        location="orderBy",
+    )
+
+
+def sorting_not_supported_fulltext() -> GoogleError:
+    """Drive's refusal of an ``orderBy`` on queries with fullText terms — a 403, measured against
+    Drive v3 on 2026-10-05 and 2026-10-07."""
+    return GoogleError(
+        403,
+        "Sorting is not supported for queries with fullText terms. Results are always in descending relevance order.",
+        reason="forbidden",
         location="orderBy",
     )
 
@@ -196,6 +219,57 @@ def not_downloadable() -> GoogleError:
         "Only files with binary content can be downloaded. Use Export with Docs Editors files.",
         reason="fileNotDownloadable",
         location="alt",
+    )
+
+
+def supports_all_drives_required() -> GoogleError:
+    """`files.list` asked for shared-drive items without saying it supports shared drives. No
+    `location` and no `status`, measured 2026-10-04."""
+    return GoogleError(
+        403,
+        "The supportsAllDrives parameter was not set to true.",
+        reason="supportsTeamDrivesRequired",
+    )
+
+
+def domain_admin_privilege_required() -> GoogleError:
+    """`drives.list` asked for a domain administrator's access, from a Workspace member who is not
+    one. No `location` and no `status`, measured 2026-10-06."""
+    return GoogleError(
+        403,
+        "The requesting user does not have the administrator privilege required to list or manage "
+        "all shared drives.",
+        reason="noListTeamDrivesAdministratorPrivilege",
+    )
+
+
+def abuse_acknowledgment_not_applicable() -> GoogleError:
+    """`files.get` acknowledged abuse on a read that downloads nothing. Measured 2026-10-04."""
+    return GoogleError(
+        403,
+        "The acknowledgeAbuse parameter is only applicable for download requests.",
+        reason="invalidAbuseAcknowledgment",
+        location="acknowledgeAbuse",
+    )
+
+
+def download_redirect(location: str) -> GoogleError:
+    """A Drive download inside a batch, redirected rather than answered -- see
+    ``routers.google._drive_batch_redirect``. Measured 2026-10-04: a 302 carrying ``Location`` and
+    this error body."""
+    exc = GoogleError(302, "Unknown Error.", reason="backendError", status="UNKNOWN")
+    exc.headers = {"Location": location}
+    return exc
+
+
+def unimplemented() -> GoogleError:
+    """A Sheets read inside a batch. Measured 2026-10-04, its `errors[]` entry, shown at
+    `$.xgafv=1`, is ``notImplemented`` under ``global``."""
+    return GoogleError(
+        501,
+        "Operation is not implemented, or supported, or enabled.",
+        reason="notImplemented",
+        status="UNIMPLEMENTED",
     )
 
 
@@ -273,6 +347,13 @@ def internal_error() -> GoogleError:
     location. ``routers.google._sheets_check_lookup`` and ``sheets_values_batch_get_by_data_filter``
     list which."""
     return GoogleError(500, "Internal error encountered.", reason="backendError", status="INTERNAL")
+
+
+def drive_internal_error() -> GoogleError:
+    """Drive's 500 `Internal Error`, which `files.list` answers to an ``orderBy`` naming ``starred``
+    second or third, after each of the other ten documented keys and in either direction, while
+    ``starred`` first is served. Measured against Drive v3 on 2026-10-04 and 2026-10-07."""
+    return GoogleError(500, "Internal Error", reason="internalError")
 
 
 def unsupported_conversion() -> GoogleError:
@@ -390,10 +471,96 @@ def no_credentials(path: str, method: str) -> GoogleError:
     with Docs and Slides but not this behaviour, so it is resolved from the path rather than the
     family; and the path is half the rule. Measured 2026-09-22 with no ``Authorization`` header on
     all five families: a GET on Drive or Sheets is the 403 unregistered caller, and a POST on any of
-    the five — Sheets' two data-filter reads included — is the 401 missing credential."""
+    the five — Sheets' two data-filter reads included — is the 401 missing credential.
+
+    A byte-stream read with no credential is a third answer, :func:`missing_api_key`, which the
+    route asks for by name.
+    """
     if method == "GET" and (family(path) == DRIVE or path.startswith("/sheets/v4")):
         return unregistered_caller()
     return missing_credentials()
+
+
+def refuse_download(request: Request) -> None:
+    """The one refusal a byte-stream read makes before it reads its parameters: a `callback` that
+    cannot be called is real's 503 `Backend Error`.
+
+    A `callback` on a download is not JSONP. Measured 2026-10-07 on `files.get?alt=media` and
+    `files.export`, against a PDF and a Doc: a name a script can call is ignored when the download
+    succeeds (200, the bytes) and turns EVERY other answer into the same 503, while a name that
+    cannot be called is that 503 even where the download would have succeeded. So this raises the
+    503 for the uncallable name and leaves ``google_download_live`` on the request for the renderer,
+    which turns whatever else the request raises into the same 503 (:func:`rendered`).
+
+    Whether a request is a download is `routers.google._drive_download`'s question, read off the
+    route, and the route calls this once it is true: an export asking for `alt=json` and a file
+    whose id is literally `export` are ordinary reads to real (measured 2026-10-07), so neither
+    reaches here. A present-but-invalid `Bearer` answers its own 401 ahead of this, which is where
+    real puts it.
+    """
+    callback = first_repeat(request.query_params, CALLBACK) or ""
+    if not callback:
+        return
+    request.state.google_download_live = True
+    if not callable_jsonp_name(callback):
+        raise backend_error()
+
+
+def missing_api_key() -> GoogleError:
+    """No credential on a byte-stream read. Measured 2026-10-04 on `files.export` and 2026-10-05 on
+    `files.get?alt=media`, on an existing file and on a missing id alike: 403 with this sentence and
+    `reason: forbidden`, and NO ``status`` -- where the same route without the download answers
+    :func:`unregistered_caller`'s sentence with `PERMISSION_DENIED`.
+
+    Real answers it last of the refusals a download makes, which is why the route raises it after
+    the download's parameters rather than at the top. Measured 2026-10-07, the order a byte-stream
+    read answers in is: `$.xgafv` 400, a `Bearer` that does not resolve 401, `callback` 503, a
+    mistyped parameter or an absent `mimeType` 400, this 403, then the lookup."""
+    return GoogleError(403, MISSING_API_KEY_MESSAGE, reason="forbidden")
+
+
+# Real's 503 body for a download carrying a `callback`, to the byte, measured 2026-10-07 over every
+# error a download answered beside one: the `errors[]` entry is written INLINE, and the body ends
+# with the closing brace and no trailing newline. `respond`'s serializer writes the array expanded
+# and ends with a newline, so this one body is a literal rather than a rendering of `backend_error`.
+DOWNLOAD_BACKEND_ERROR_BODY = (
+    "{\n"
+    '  "error": {\n'
+    '    "code": 503,\n'
+    '    "message": "Backend Error",\n'
+    '    "errors": [{\n'
+    '      "message": "Backend Error",\n'
+    '      "domain": "global",\n'
+    '      "reason": "backendError"\n'
+    "    }]\n"
+    "  }\n"
+    "}"
+)
+
+
+def backend_error() -> GoogleError:
+    """A `callback` that cannot be called, on a byte-stream read where JSONP does not apply: 503
+    `Backend Error`, in the script's content type, unwrapped.
+
+    Measured 2026-10-04 on `files.export` and 2026-10-05 on `files.get?alt=media` for the uncallable
+    name, and 2026-10-07 that every other error on a download carrying a `callback` -- a missing id,
+    a Docs file read with `alt=media`, a mistyped `supportsAllDrives`, an absent `mimeType`, no
+    credential -- becomes this same 503. The body is :data:`DOWNLOAD_BACKEND_ERROR_BODY`, which
+    :func:`backend_error_response` writes literally; an ordinary read beside an uncallable name is
+    the wrapped 400 at 200 instead (:func:`bad_jsonp_callback`).
+    """
+    return GoogleError(503, "Backend Error", reason="backendError")
+
+
+def backend_error_response(headers: Mapping[str, str] | None = None) -> Response:
+    """The whole answer a download carrying a `callback` gets when it fails: 503,
+    `text/javascript; charset=UTF-8`, and :data:`DOWNLOAD_BACKEND_ERROR_BODY` byte for byte."""
+    return Response(
+        DOWNLOAD_BACKEND_ERROR_BODY,
+        status_code=503,
+        media_type="text/javascript; charset=UTF-8",
+        headers=headers,
+    )
 
 
 # --- system parameters ---------------------------------------------------------------------------
@@ -452,6 +619,8 @@ def first_repeat(query: Mapping[str, str] | None, name: str) -> str | None:
         pageSize          | `1&3` is one file                    | Drive files.list 2026-09-23
         pageToken         | `<valid>&BOGUS` is the next page,    | Drive files.list 2026-09-23
                           | `BOGUS&<valid>` a 400                |
+                          | `&bad` is what an empty token gets,  | Drive permissions.list and
+                          | `bad&` a 400                         | drives.list 2026-10-05
         orderBy           | `name&name desc` ascends             | Drive files.list 2026-09-23
         mimeType          | `text/csv&text/tab-separated-values` | Drive files.export 2026-09-23
                           | answers CSV                          |
@@ -506,6 +675,17 @@ CALLBACK = "callback"
 _CALLBACK_NAME = re.compile(r"[A-Za-z0-9_$.\[\]]+")
 
 
+def callable_jsonp_name(name: str) -> bool:
+    """Whether `name` is a callback a script can call, which is the regex :func:`bad_jsonp_callback`
+    refuses: ASCII letters and digits plus ``_``, ``$``, ``.``, ``[`` and ``]``, at any position.
+
+    Public because :func:`validate_system_parameters` and :func:`refuse_download` ask the same
+    question of the same name, and answer it differently: the wrapped 400 of
+    :func:`bad_jsonp_callback` on an ordinary read, :func:`backend_error`'s 503 on a download.
+    """
+    return _CALLBACK_NAME.fullmatch(name) is not None
+
+
 def bad_jsonp_callback(name: str) -> GoogleError:
     """A `callback` whose value cannot be a JavaScript name. Measured on Sheets, Drive and Gmail,
     authenticated and anonymous: 400 INVALID_ARGUMENT with this sentence, and its `errors[]` entry
@@ -541,8 +721,8 @@ def jsonp_callback(request: Request) -> str | None:
     element fetches, and a `<script>` element issues a GET. Measured on Sheets, a `callback` on
     `values:batchGetByDataFilter` and on `spreadsheets:getByDataFilter` is ignored outright -- no
     wrap on a success, none on an error, and a name that a GET would be refused for is not even
-    looked at -- where the same POST honours `$.xgafv` and `prettyPrint`. So GET is the whole of
-    where this parameter applies.
+    looked at -- where the same POST honours `$.xgafv` and `prettyPrint`. So GET is the only
+    method this parameter applies to.
 
     Two values that look like a callback are not one either. An empty `callback=` is absent:
     measured, it answers the plain body at the real status, success and error alike. So is any
@@ -556,6 +736,12 @@ def jsonp_callback(request: Request) -> str | None:
     for every family here rather than only where ``routers.google._sheets_respond`` refuses the
     value. Refusing it is still Sheets-only, and the four families that accept a format they cannot
     render where real answers a 400 are a gap of their own.
+
+    A Drive byte-stream read is out of the JSONP path for a third reason, and one this function is
+    not asked to decide: a `callback` on a download is neither refused nor wrapped by the JSONP
+    path but is real's 503 on any failure (:func:`refuse_download`). Which requests those are is
+    ``routers.google._drive_download``'s question, read off the route, and the dependency that
+    would call this for one passes ``callback=False`` instead.
 
     Which `alt` counts as JSON is :func:`alt_format`'s question, not this one's -- `alt=JSON` and
     `alt=` are the JSON the default spells, and answering them unwrapped is the divergence that
@@ -573,7 +759,7 @@ def jsonp_callback(request: Request) -> str | None:
     return first_repeat(query, CALLBACK) or None
 
 
-def validate_system_parameters(request: Request) -> None:
+def validate_system_parameters(request: Request, *, callback: bool = True) -> None:
     """Refuse a `$.xgafv` other than `1` or `2`, or a `callback` that cannot be a JavaScript name,
     on a Google-family path, before the route runs.
 
@@ -583,19 +769,26 @@ def validate_system_parameters(request: Request) -> None:
     because it beats `callback` too -- measured, `callback=a b&$.xgafv=9` answers the `$.xgafv`
     sentence, wrapped through the very name the other check would have refused. The batch endpoint
     is not a family path and is left alone.
+
+    ``callback=False`` leaves `callback` alone: it is not checked, and no refusal, the `$.xgafv` one
+    included, is wrapped through it. The caller decides when, since which requests real exempts is a
+    question about the route -- a POST, and a Drive download, which answers an uncallable name with
+    :func:`backend_error`'s 503 rather than this 400 (see ``routers.google._system_parameters``).
     """
     if family(request.url.path) is None:
         return
-    # That this ran at all is what :func:`rendered` needs to know, and only this call can say so:
-    # a ROUTER dependency runs once a route has matched, so an unrouted family path reaches the
-    # renderer with a `callback` nothing has looked at.
-    request.state.google_system_parameters_checked = True
+    # Whether `callback` was checked is what :func:`rendered` needs to know, and only this call can
+    # say so: a ROUTER dependency runs once a route has matched, so an unrouted family path reaches
+    # the renderer with a `callback` nothing has looked at.
+    request.state.google_system_parameters_checked = callback
     value = xgafv(request.query_params)
     if value is not None and value not in XGAFV_VALUES:
         raise bad_system_parameter(XGAFV, value)
-    callback = jsonp_callback(request)
-    if callback is not None and not _CALLBACK_NAME.fullmatch(callback):
-        raise bad_jsonp_callback(callback)
+    if not callback:
+        return
+    name = jsonp_callback(request)
+    if name is not None and not callable_jsonp_name(name):
+        raise bad_jsonp_callback(name)
 
 
 def has_errors_array(fam: str, value: str | None) -> bool:
@@ -761,6 +954,10 @@ def respond(
     The status the caller would have seen survives only inside `error.code`, which is the point of
     JSONP: a browser loading the answer through a `<script>` element can read neither a status nor
     a body that did not arrive as JavaScript.
+
+    This is NOT the path a Drive download carrying a `callback` is rendered through: that answer is
+    always real's 503 in the script's type with no call around it, and it is
+    :func:`backend_error_response` that writes it (see :func:`rendered`).
     """
     text = _escaped(
         json.dumps(body, ensure_ascii=False, separators=(",", ":"))
@@ -796,20 +993,30 @@ def rendered(
     parameter reaches the success path only (``routers.google._sheets_respond``) and nothing here
     reads it.
 
-    Wrapped only where ``validate_system_parameters`` ran, which is where a route matched. That is a
-    ROUTER dependency, so a family path with NO route -- `/sheets/v4/nope` -- reaches this having
-    been refused nothing, and `callback=a b` there would be answered by calling `a b`. Real answers
-    such a path from its front end as HTML, measured 2026-09-16 with a `callback` and without: 400
-    on Sheets, Docs and Slides, 404 on Drive and Gmail. So JSONP is not its shape there under any
-    name, and the plain body is the nearer of the two answers Backlot can give.
+    Wrapped only where ``validate_system_parameters`` checked `callback`, which is where a route
+    matched and did not exempt it. That is a ROUTER dependency, so a family path with NO route --
+    `/sheets/v4/nope` -- reaches this having been refused nothing, and `callback=a b` there would be
+    answered by calling `a b`. Real answers such a path from its front end as HTML, measured
+    2026-09-16 with a `callback` and without: 400 on Sheets, Docs and Slides, 404 on Drive and
+    Gmail. So JSONP is not its shape there under any name, and the plain body is the nearer of the
+    two answers Backlot can give.
 
     Where the check DID run the name needs no second look, and the body being wrapped may BE its
     refusal -- that is real's own answer, measured the same day: `callback=evil);alert(1);//` on a
     Sheets read comes back 200 calling that very name, escaped the way :func:`_escaped_name`
     escapes one.
 
+    A request :func:`refuse_download` marked ``google_download_live`` is answered here instead, and
+    whatever it raised becomes real's 503 -- measured 2026-10-07, EVERY error a Drive download
+    answers beside a `callback` is the same 503 `Backend Error`, in the script's type and
+    unwrapped, including a missing id's 404 and a mistyped parameter's 400. The marker is set once
+    the route has passed real's two earlier refusals, so a `$.xgafv` 400 and a bad `Bearer` 401,
+    which the marker is not set for, keep their own shape.
+
     It takes the whole request because :func:`jsonp_callback` reads the method as well as the query.
     """
+    if getattr(request.state, "google_download_live", False):
+        return backend_error_response(headers)
     checked = getattr(request.state, "google_system_parameters_checked", False)
     callback = jsonp_callback(request) if checked else None
     return respond(body, callback=callback, status_code=status_code, headers=headers)

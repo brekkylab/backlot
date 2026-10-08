@@ -53,10 +53,26 @@ class _ALoose(BaseModel):
     model_config = ConfigDict(extra="allow")
 
 
+# Every member `jira_server_info` answers, declared in the order Jira Cloud answers them: the
+# response is written in declaration order whatever order the handler's dict has. `serverTime`,
+# absent for the anonymous caller, falls back to `None`, which the routes'
+# `response_model_exclude_none` leaves out.
 class JiraServerInfo(_ALoose):
     baseUrl: str
+    displayUrl: str
+    displayUrlServicedeskHelpCenter: str
+    displayUrlCSMHelpSeeker: str
+    displayUrlConfluence: str
     version: str
+    versionNumbers: list[int]
     deploymentType: str = "Cloud"
+    buildNumber: int
+    buildDate: str
+    serverTime: str | None = None
+    scmInfo: str
+    serverTitle: str
+    defaultLocale: dict
+    serverTimeZone: str
 
 
 class JiraSearchResult(_ALoose):
@@ -294,34 +310,51 @@ def _resolve_jira_key(request: Request, conn, key: str, ids):
 
 
 @router.get(
-    "/rest/api/2/serverInfo", response_model=JiraServerInfo
+    "/rest/api/2/serverInfo",
+    response_model=JiraServerInfo,
+    response_model_exclude_none=True,
 )  # jira PyPI client probes this on connect
-@router.get("/rest/api/3/serverInfo", response_model=JiraServerInfo)
+@router.get(
+    "/rest/api/3/serverInfo",
+    response_model=JiraServerInfo,
+    response_model_exclude_none=True,
+)
 async def jira_server_info(request: Request):
-    """The fifteen members Jira Cloud answers a signed-in caller, the same on v2 and v3 (measured
-    2026-10-03 and 2026-10-05). The four display URLs are the site's URL, `serverTitle` is `Jira`,
-    and the version and build number are the ones that site served. `scmInfo` is a synthesized
-    40-hex commit id, and `buildDate` a day before `serverTime`, since a build precedes the server
-    running it."""
+    """The members Jira Cloud answers, the same on v2 and v3 (measured 2026-10-03, 2026-10-05 and
+    2026-10-07).
+
+    A signed-in caller gets fifteen, in the order `JiraServerInfo` declares them. The anonymous
+    caller `_jira_caller` returns gets all of them but `serverTime`: measured with no
+    `Authorization` header, a failed `email:api_token` pair, an empty password, a Basic value that
+    is not base64 and an unknown scheme. `serverTime` is milliseconds and a `+HHMM` offset, the form
+    of `buildDate` (`synth.jira_datetime`). The offset is the tenant's own and not read from
+    `serverTimeZone`: the tenant measured wrote both members with `+0900` while `serverTimeZone`
+    answered `Etc/UTC`. This server writes `+0000`. The four display URLs are the site's URL,
+    `serverTitle` is `Jira`, and the version and build number are the ones that site served.
+    `scmInfo` is a synthesized 40-hex commit id, and `buildDate` a day before `serverTime`, since a
+    build precedes the server running it."""
     site = _site(request)
     ts = synth.epoch("serverInfo")
-    return {
+    body = {
         "baseUrl": site,
         "displayUrl": site,
         "displayUrlServicedeskHelpCenter": site,
-        "displayUrlConfluence": site,
         "displayUrlCSMHelpSeeker": site,
+        "displayUrlConfluence": site,
         "version": "1001.0.0-SNAPSHOT",
         "versionNumbers": [1001, 0, 0],
         "deploymentType": "Cloud",
         "buildNumber": 100294,
         "buildDate": synth.jira_datetime(ts - 86400),
-        "serverTime": synth.rfc3339_millis(ts),
+        "serverTime": synth.jira_datetime(ts),
         "scmInfo": hashlib.sha1(b"serverInfo").hexdigest(),
         "serverTitle": "Jira",
         "defaultLocale": {"locale": "en_US"},
         "serverTimeZone": "Etc/UTC",
     }
+    if _jira_caller(request).is_anonymous:
+        del body["serverTime"]
+    return body
 
 
 def _reachable_projects(conn, ids) -> list:

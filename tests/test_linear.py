@@ -3019,10 +3019,7 @@ def test_linear_issue_resolves_first_by_id_when_identifier_repeats(tmp_path):
     `store.linear_issue_by_identifier` carries that rule; this pins
     that `resolve_issue`'s new served-id-first stage still falls through to it for an
     identifier -- a served UUID lookup can never itself be ambiguous like this, since `id`
-    is UNIQUE. Placed after every `client`-fixture test in this module, not beside its sibling
-    `issue(id:)` tests above: it opens a SECOND app over a different DB via `corpus_client`,
-    which overwrites the module-scoped `client` fixture's shared `app.state` (see
-    `tests._helpers.client_for`'s docstring) -- fine here because nothing after it needs `client`."""
+    is UNIQUE."""
     docs = [
         {
             "source_type": "linear",

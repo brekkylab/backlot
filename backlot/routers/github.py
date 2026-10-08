@@ -2669,26 +2669,25 @@ async def list_branches(
     both would hand a client a field real GitHub never sends here.
 
     `?protected=` selects, so it is honoured rather than ignored: a client that asked for the
-    protected branches and got an unprotected one back would read that branch as push-guarded.
-    Real has three answers — only protected branches for a true value, only unprotected ones for
-    `false`, and all of them when the parameter is omitted. Measured on fastapi/fastapi (22
-    branches, one of them protected): `true`/`1`/`TRUE`/`yes`/`banana` answer 1, `false`/`0` answer
-    21, an empty value and an omitted one answer 22.
+    protected branches and got an unprotected one back would read that branch as push-guarded. Real
+    has three answers — only protected branches for a true value, only unprotected ones for a false
+    value, and all of them when the parameter is omitted or empty. Which spellings real reads as
+    false is :func:`_truthy`, with the measurement.
 
     All three answers are distinct for a repo whose `subtype: "repo"` record states which branches
     are protected. For one that does not, every branch is unprotected and real's last two coincide
     — a pull cannot imply protection, so an inferred listing has none (see :func:`_branch_rows`).
 
     `?protected=` selects AHEAD of the page cut, so the `Link` counts the pages of the selection:
-    `?protected=false&per_page=1` on fastapi/fastapi answers one of the 21 unprotected branches and
-    reports `rel="last"` page 21, not the 22 of the whole listing.
+    `?protected=false&per_page=1` on fastapi/fastapi (2026-10-05) answers one of the 24 unprotected
+    branches and reports `rel="last"` page 24, not the 25 of the whole listing.
     """
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     _require_repo(conn, repo, ids)
     rows = _branch_rows(conn, owner, repo, ids)
-    if protected:  # an EMPTY value selects nothing, as an absent one does: real answers all 22
+    if protected:  # an empty or absent value leaves the listing unfiltered
         rows = [b for b in rows if b["protected"] is _truthy(protected)]
     page, per_page = _clamp(page, per_page)
     start = (page - 1) * per_page
@@ -3072,10 +3071,15 @@ def _written_bare(request: Request, name: str) -> bool:
     return last == ""
 
 
-def _truthy(v: str | None) -> bool:
-    """How :func:`list_branches` reads a non-empty `?protected=`: anything but `false` and `0`, in
-    any case, is true."""
-    return v is not None and v.lower() not in ("", "0", "false")
+def _truthy(v: str) -> bool:
+    """How :func:`list_branches` reads `?protected=`. Measured on fastapi/fastapi (25 branches, one
+    protected), 2026-10-05, unauthenticated with API version 2022-11-28 and a fresh nonce per
+    request: `0`, `f`, `F`, `false`, `FALSE`, `off`, `OFF` select the 24 unprotected branches.
+    `False`, `fAlSe`, `Off`, `oFF`, `0 `, ` false`, `f `, `false ` and ` off ` select the protected
+    one: do not fold case or strip. An empty or omitted value answers all 25, so the route leaves it
+    unfiltered.
+    """
+    return v not in ("0", "f", "F", "false", "FALSE", "off", "OFF")
 
 
 def _blob_sha(content: str) -> str:

@@ -201,13 +201,14 @@ def build_corpus(
 
 
 @contextlib.contextmanager
-def client_for(settings: Settings, *, reload: bool = False):
+def client_for(settings: Settings, *, reload: bool = True):
     """A TestClient whose app is pointed at ``settings``, with the env restored on exit.
 
-    ``reload=True`` re-imports ``backlot.main`` first. Needed only when a test opens a SECOND client
-    over a different DB in the same session: the lifespan writes the connection and the reverse
-    indexes onto the module-level ``app.state``, so a second lifespan start on the same object
-    would overwrite the first client's state.
+    ``backlot.main`` is re-imported first, so each client starts its lifespan on an app of its own.
+    The lifespan puts its connection on ``app.state`` and closes it on exit, so two clients open on
+    one app would both read the second one's database, and once the second exits the first reads a
+    closed one; the Slack router's caches on ``app.state`` also outlive the client that built them.
+    ``reload=False`` serves the app ``backlot.main`` holds without re-importing it.
     """
     prev = os.environ.get("BACKLOT_DATA_DIR")
     os.environ["BACKLOT_DATA_DIR"] = str(settings.data_dir)

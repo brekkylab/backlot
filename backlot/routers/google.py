@@ -16,6 +16,7 @@ import json
 import quopri
 import re
 import string
+from contextvars import ContextVar
 from email.parser import BytesParser
 from email.utils import formataddr, getaddresses
 from http import HTTPStatus
@@ -24,6 +25,8 @@ from typing import NamedTuple
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict
+from starlette.datastructures import QueryParams
+from starlette.routing import Match
 
 from backlot import auth, protojson, sheets_grid, store, synth
 from backlot.acl import Caller
@@ -32,15 +35,24 @@ from backlot.errors import google as gerr
 from backlot.openapi import qp
 from backlot.pagination import decode_cursor, decode_cursor_or_none, next_page_token
 
-# `$.xgafv` and `callback` are checked before any route runs — see
-# `gerr.validate_system_parameters`. A router dependency runs only once a route has MATCHED, so a
-# family path with no route 404s here rather than refusing either value — which is why this call
-# records that it ran and `gerr.rendered` wraps nothing without it: an unrouted path must not be
-# answered by calling a name nothing refused. Nothing to match there — measured 2026-09-16, real
-# answers an unrouted family path from its front end, as HTML, 400 on Sheets, Docs and Slides and
-# 404 on Drive and Gmail, with or without either parameter, so no JSON envelope of its own exists
-# to compare against.
-router = APIRouter(tags=["google"], dependencies=[Depends(gerr.validate_system_parameters)])
+# `$.xgafv` is checked before any route runs, and `callback` too but on a Drive download inside a
+# batch — see `_system_parameters`. A router dependency runs only once a route has MATCHED, so a
+# family path with no route 404s here rather than refusing either value — which is why the check
+# records whether it looked at `callback` and `gerr.rendered` wraps nothing without it: an unrouted
+# path must not be answered by calling a name nothing refused. Nothing to match there — measured
+# 2026-09-16, real answers an unrouted family path from its front end, as HTML, 400 on Sheets, Docs
+# and Slides and 404 on Drive and Gmail, with or without either parameter, so no JSON envelope of
+# its own exists to compare against.
+
+
+def _system_parameters(request: Request) -> None:
+    """`gerr.validate_system_parameters`, with `callback` left alone on a Drive download: real
+    answers an uncallable name there with its own 503, and a batch part with a 302, rather than
+    refusing the name (see `gerr.refuse_download` and `_drive_batch_redirect`)."""
+    gerr.validate_system_parameters(request, callback=not _drive_download_request(request))
+
+
+router = APIRouter(tags=["google"], dependencies=[Depends(_system_parameters)])
 
 
 # --- OpenAPI enrichment --------------------------------------------------
@@ -112,6 +124,35 @@ _BATCH_BOUNDARY = "erb_batch_boundary_9f2a7c"
 _BATCH_DROP_HEADERS = {"host", "content-length", "content-transfer-encoding", "connection"}
 
 
+class _BatchOuter(NamedTuple):
+    """The batch a sub-request came in."""
+
+    base: str  # the batch request's base URL
+    query: str  # the batch request's query string
+    lone: bool  # whether exactly one of its parts is not a Drive download (`_drive_download`)
+
+
+# The batch a sub-request came in, or ``None`` for a request sent on its own.
+# ``httpx.ASGITransport`` runs the app in the task that `batch` dispatches from, so the routes a
+# part reaches see what `batch` set.
+_BATCH_OUTER: ContextVar[_BatchOuter | None] = ContextVar("google_batch_outer", default=None)
+
+
+def _batch_part_downloads(method: str, target: str) -> bool:
+    """Whether a part's request line is a Drive download (`_drive_download`), asked of the route its
+    path matches before any part is sent. Asked of this module's `router`, which owns the Drive
+    routes: the app holds it wrapped, and the wrapper's match carries no endpoint."""
+    import httpx
+
+    url = httpx.URL(target)
+    scope = {"type": "http", "method": method, "path": url.path, "root_path": ""}
+    for route in router.routes:
+        match, child = route.matches(scope)
+        if match is Match.FULL:
+            return _drive_download(child.get("endpoint"), QueryParams(url.query))
+    return False
+
+
 def _batch_reason(code: int) -> str:
     try:
         return HTTPStatus(code).phrase
@@ -136,6 +177,24 @@ def _parse_batch_subrequest(payload: str):
     return method, target, headers, body
 
 
+def _batch_sub_response(r, base: str) -> str:
+    """One part's answer as the `application/http` payload a batch carries, `base` being the batch
+    request's base URL. The download redirect (:func:`gerr.download_redirect`), the 302 whose
+    `Location` is under `base`'s `/download`, carries real's three headers, measured 2026-10-04 in
+    this order: `Content-Length: 0`, though its error body follows, `Content-Type` and `Location`.
+    Any other part carries `Content-Type` alone, so the `Location` of a redirect a route builds from
+    the host the parts are dispatched to, which nothing answers, is not passed on."""
+    location = r.headers.get("location", "")
+    redirect = r.status_code == 302 and location.startswith(f"{base}download/")
+    lines = [f"HTTP/1.1 {r.status_code} {_batch_reason(r.status_code)}"]
+    if redirect:
+        lines.append("Content-Length: 0")
+    lines.append(f"Content-Type: {r.headers.get('content-type', 'application/json')}")
+    if redirect:
+        lines.append(f"Location: {location}")
+    return "\r\n".join(lines) + f"\r\n\r\n{r.text}"
+
+
 @router.post("/batch")
 @router.post("/batch/{api}/{version}")
 async def batch(request: Request, api: str = "", version: str = "") -> Response:
@@ -156,29 +215,36 @@ async def batch(request: Request, api: str = "", version: str = "") -> Response:
     outer_auth = request.headers.get("authorization")
     transport = httpx.ASGITransport(app=request.app, raise_app_exceptions=False)
     out_parts: list[tuple[str, str]] = []
-    async with httpx.AsyncClient(transport=transport, base_url="http://backlot.batch") as client:
-        for part in parsed.get_payload():
-            cid = part.get("Content-ID", "")
-            method, target, sub_headers, sub_body = _parse_batch_subrequest(
-                part.get_payload(decode=False)
-            )
-            if outer_auth and not any(k.lower() == "authorization" for k in sub_headers):
-                sub_headers["Authorization"] = outer_auth
-            if not method or not target:
-                sub_resp = "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\n\r\nmalformed sub-request"
-            else:
-                r = await client.request(
-                    method,
-                    target,
-                    headers=sub_headers,
-                    content=sub_body.encode() if sub_body else None,
-                )
-                sub_resp = (
-                    f"HTTP/1.1 {r.status_code} {_batch_reason(r.status_code)}\r\n"
-                    f"Content-Type: {r.headers.get('content-type', 'application/json')}\r\n"
-                    f"\r\n{r.text}"
-                )
-            out_parts.append((cid, sub_resp))
+    parts = [
+        (part.get("Content-ID", ""), *_parse_batch_subrequest(part.get_payload(decode=False)))
+        for part in parsed.get_payload()
+    ]
+    others = sum(
+        1
+        for _, method, target, _, _ in parts
+        if not (method and target and _batch_part_downloads(method, target))
+    )
+    outer = _BATCH_OUTER.set(_BatchOuter(str(request.base_url), request.url.query, others == 1))
+    try:
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://backlot.batch"
+        ) as client:
+            for cid, method, target, sub_headers, sub_body in parts:
+                if outer_auth and not any(k.lower() == "authorization" for k in sub_headers):
+                    sub_headers["Authorization"] = outer_auth
+                if not method or not target:
+                    sub_resp = "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\n\r\nmalformed sub-request"
+                else:
+                    r = await client.request(
+                        method,
+                        target,
+                        headers=sub_headers,
+                        content=sub_body.encode() if sub_body else None,
+                    )
+                    sub_resp = _batch_sub_response(r, str(request.base_url))
+                out_parts.append((cid, sub_resp))
+    finally:
+        _BATCH_OUTER.reset(outer)
 
     body = ""
     for cid, sub_resp in out_parts:
@@ -190,18 +256,49 @@ async def batch(request: Request, api: str = "", version: str = "") -> Response:
     return Response(content=body, media_type=f'multipart/mixed; boundary="{_BATCH_BOUNDARY}"')
 
 
-def _require(request: Request) -> Caller:
+def _require(request: Request, *, download: bool = False) -> Caller:
     """The caller, or the error real Google gives — NOT the shared ``auth.require_bearer``, because
     Google's answer is not one status. Measured: a present-but-invalid bearer is 401 UNAUTHENTICATED
     everywhere, while NO Authorization header at all is 403 PERMISSION_DENIED on a Drive or Sheets
     GET (they accept API keys, so an anonymous GET is a caller with no established identity) and
-    401 on the OAuth-only Gmail/Docs/Slides and on a POST to any family."""
+    401 on the OAuth-only Gmail/Docs/Slides and on a POST to any family.
+
+    ``download`` asks for a byte-stream read's answer instead: measured 2026-10-04 on
+    `files.export` and 2026-10-05 on `files.get?alt=media`, a missing credential there names the
+    missing API key (:func:`gerr.missing_api_key`) instead of the anonymous GET's unregistered
+    caller, and real puts it AFTER the download's own parameters — which is why the handlers
+    resolve a download late."""
     caller = auth.resolve_bearer(request)
     if caller is None:
         if not request.headers.get("authorization"):
+            if download:
+                raise gerr.missing_api_key()
             raise gerr.no_credentials(request.url.path, request.method)
         raise gerr.bad_token()
     return caller
+
+
+def _sends_a_bearer_token(request: Request) -> bool:
+    """Whether ``Authorization`` is `Bearer`, spelt exactly so, and a token: the one header a Drive
+    download treats as a credential ahead of its own refusals, on its own
+    (`_require_download_bearer`) and as a batch part (`_drive_batch_redirect`). Narrower than
+    ``auth.bearer_token``, which `_require` reads a credential with and which also takes `bearer`,
+    `BEARER` and `token`."""
+    scheme, _, token = (request.headers.get("authorization") or "").partition(" ")
+    return scheme == "Bearer" and bool(token.strip())
+
+
+def _require_download_bearer(request: Request) -> None:
+    """The 401 a Drive download answers ahead of its own refusals, for a `Bearer` token
+    (`_sends_a_bearer_token`) that does not resolve.
+
+    Measured 2026-10-07 and 2026-10-08 on `files.get?alt=media` and `files.export` beside
+    `callback=a b`: `Bearer nope` answers the 401, where `bearer nope`, `BEARER nope`,
+    `token nope`, a bare `Bearer`, `bearer`, `nope` and `Basic YWJjOmRlZg==` each answer the
+    callback's 503. Every other value is left to :func:`gerr.refuse_download`, and without a
+    `callback` is `_require`'s to answer."""
+    if _sends_a_bearer_token(request) and auth.resolve_bearer(request) is None:
+        raise gerr.bad_token()
 
 
 def _b64url(text: str) -> str:
@@ -665,25 +762,35 @@ async def gmail_attachment(user_id: str, msg_id: str, att_id: str, request: Requ
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    # No shape check on the message id: real Gmail's answer here does not depend on it (see
-    # `gerr.invalid_attachment_token`), so a non-hex one is not "Invalid id value" on this route.
-    row = store.gmail_by_id(conn, msg_id, visible_ids=ids)
-    if row is None:
+    # The path's message id plays no part in the answer, in real Gmail or here: an attachment id
+    # is served under the message it belongs to, under another message's id, under a well-formed
+    # id no message has and under a non-hex id alike, with the same bytes, measured against
+    # gmail.googleapis.com on 2026-10-01 and again on 2026-10-07. The message the path names is
+    # one point lookup, so it is tried first; only an attachment id it does not hold pays for
+    # scanning every attachment-bearing message the caller can see.
+    named = store.gmail_by_id(conn, msg_id, visible_ids=ids)
+    found = _attachment([] if named is None else [named], att_id) or _attachment(
+        store.gmail_rows_with_attachments(conn, visible_ids=ids), att_id
+    )
+    if found is None:
         raise gerr.invalid_attachment_token()
-    message_id = row["id"]
-    found = next(
+    message_id, i, att = found
+    body = _att_content(message_id, i, att)
+    # `{size, data}` alone: real names no `attachmentId` here, measured on 2026-09-30
+    return {"size": _byte_len(body), "data": _b64url(body)}
+
+
+def _attachment(rows, att_id: str) -> tuple[str, int, dict] | None:
+    """The message id, index and attachment among ``rows`` whose ``_att_id`` is ``att_id``."""
+    return next(
         (
-            (i, a)
+            (row["id"], i, a)
+            for row in rows
             for i, a in enumerate(store.jcol(row, "attachments"))
-            if _att_id(message_id, i) == att_id
+            if _att_id(row["id"], i) == att_id
         ),
         None,
     )
-    if not found:
-        raise gerr.invalid_attachment_token()
-    body = _att_content(message_id, found[0], found[1])
-    # `{size, data}` alone: real names no `attachmentId` here, measured on 2026-09-30
-    return {"size": _byte_len(body), "data": _b64url(body)}
 
 
 @router.get(
@@ -1720,9 +1827,9 @@ _DRIVE_ORDER_UNMODELLED = ("viewedByMeTime", "modifiedByMeTime")
 
 def _drive_order_specs(order_by: str | None) -> list[tuple]:
     """Parse ``orderBy`` — comma-separated keys, each optionally suffixed ``desc`` — into
-    ``(key function, reverse)`` pairs. An unusable key is a 400, as on the real API — accepting one
-    and not applying it would let a client relying on server-side ordering pass here and misbehave
-    against the real thing. A key named twice is a 403."""
+    ``(key, reverse)`` pairs. An unusable key is a 400, as on the real API — accepting one and not
+    applying it would let a client relying on server-side ordering pass here and misbehave against
+    the real thing. A key named twice is a 403."""
     specs = []
     seen: set[str] = set()
     for tok in (order_by or "").split(","):
@@ -1732,13 +1839,7 @@ def _drive_order_specs(order_by: str | None) -> list[tuple]:
         key = parts[0]
         if len(parts) > 2 or (len(parts) == 2 and parts[1] != "desc"):
             raise gerr.invalid_value("orderBy", f"Invalid sort key: {tok.strip()}")
-        if key in _DRIVE_ORDER_UNMODELLED:
-            raise gerr.invalid_value(
-                "orderBy",
-                f"Sorting by '{key}' is not supported by Backlot (it models no per-caller "
-                f"view/share timestamps). Supported: {', '.join(sorted(_DRIVE_ORDER_KEYS))}.",
-            )
-        if key not in _DRIVE_ORDER_KEYS:
+        if key not in _DRIVE_ORDER_KEYS and key not in _DRIVE_ORDER_UNMODELLED:
             raise gerr.invalid_value("orderBy", f"Invalid sort key: {tok.strip()}")
         # Real Drive (measured 2026-10-04) 403s a key named twice whatever either direction is, and
         # reads `name_natural` as `name` but `recency` and `modifiedTime` as two keys — so this
@@ -1748,8 +1849,21 @@ def _drive_order_specs(order_by: str | None) -> list[tuple]:
         if name in seen:
             raise gerr.duplicate_sort_keys()
         seen.add(name)
-        specs.append((_DRIVE_ORDER_KEYS[key], len(parts) == 2))
+        specs.append((key, len(parts) == 2))
     return specs
+
+
+def _drive_order_keyfns(specs: list[tuple]) -> list[tuple]:
+    """``(key function, reverse)`` pairs for the keys ``_drive_order_specs`` passed. A key Backlot
+    cannot sort by is refused here, after the 403 a `fullText` term gets."""
+    for key, _ in specs:
+        if key in _DRIVE_ORDER_UNMODELLED:
+            raise gerr.invalid_value(
+                "orderBy",
+                f"Sorting by '{key}' is not supported by Backlot (it models no per-caller "
+                f"view/share timestamps). Supported: {', '.join(sorted(_DRIVE_ORDER_KEYS))}.",
+            )
+    return [(_DRIVE_ORDER_KEYS[key], reverse) for key, reverse in specs]
 
 
 def _drive_sort(files: list[dict], specs: list[tuple]) -> list[dict]:
@@ -1760,6 +1874,14 @@ def _drive_sort(files: list[dict], specs: list[tuple]) -> list[dict]:
     for keyfn, reverse in reversed(specs):
         files.sort(key=keyfn, reverse=reverse)
     return files
+
+
+def _drive_starred_after_another_key(order_by: str | None) -> bool:
+    """Whether ``starred`` follows another key in an ``orderBy`` that ``_drive_order_specs`` passed,
+    the case `gerr.drive_internal_error` answers. An empty token is no key: `,starred` is served and
+    `name,,starred` is the 500."""
+    keys = [parts[0] for tok in (order_by or "").split(",") if (parts := tok.split())]
+    return "starred" in keys[1:]
 
 
 def _drive_q_plain_folder(query) -> bool:
@@ -2044,6 +2166,12 @@ async def drive_shared_drives(request: Request):
     _drive_page_size_in_range(
         _drive_typed(request, "useDomainAdminAccess", page_size=True)["pageSize"], 100
     )
+    _drive_listing_page_token(request)
+    # Every caller here is a member of one Workspace domain and none is its administrator: a
+    # member's 403, with a `q` sent and without one, on its own and in a batch, measured 2026-10-06.
+    # Real answers a domain administrator 200 and a consumer account 400 at `q`.
+    if _drive_true(request, "useDomainAdminAccess"):
+        raise gerr.domain_admin_privilege_required()
     return {"kind": "drive#driveList", "drives": []}
 
 
@@ -2061,7 +2189,11 @@ async def drive_files_list(request: Request):
     # Each read off the first repeat, as real reads them -- see `gerr.first_repeat`. Refused in
     # real's order, measured 2026-09-23 by sending two bad values at once: `pageSize` first, then
     # `orderBy`, `q`, `pageToken` and `fields`, whichever order the query names them in. The 403 for
-    # an `orderBy` naming a key twice comes at the same point, measured 2026-10-05.
+    # an `orderBy` naming a key twice comes at the same point, measured 2026-10-05, the shared-drive
+    # 403 between `orderBy` and `q`, measured 2026-10-04, the 403 for an `orderBy` on a `q` with a
+    # `fullText` term between `q` and `pageToken`, measured 2026-10-05 and 2026-10-07, and the 500
+    # for `starred` after another key between `pageToken` and `fields`, measured 2026-10-04 and
+    # 2026-10-07.
     params = request.query_params
     typed = _drive_typed(
         request,
@@ -2074,13 +2206,25 @@ async def drive_files_list(request: Request):
     limit = _drive_page_size(typed["pageSize"])
     # 400 on an unusable key, 403 on a key named twice
     order = _drive_order_specs(gerr.first_repeat(params, "orderBy"))
+    shared_items = _drive_true(request, "includeItemsFromAllDrives") or _drive_true(
+        request, "includeTeamDriveItems"
+    )
+    if shared_items and not (
+        _drive_true(request, "supportsAllDrives") or _drive_true(request, "supportsTeamDrives")
+    ):
+        raise gerr.supports_all_drives_required()
     q = gerr.first_repeat(params, "q") or ""
     query = _drive_q_parse(q)  # 400 on a clause Backlot cannot evaluate; None when there is no q
+    if order and query is not None and any(t.field == "fullText" for t in _drive_q_terms(query)):
+        raise gerr.sorting_not_supported_fulltext()
+    order = _drive_order_keyfns(order)
     # Measured 2026-09-23: a token the API did not issue is 400 `Invalid Value`, where an empty one
     # is the first page.
     offset = decode_cursor_or_none(gerr.first_repeat(params, "pageToken"))
     if offset is None:
         raise gerr.invalid_value("pageToken")
+    if _drive_starred_after_another_key(gerr.first_repeat(params, "orderBy")):
+        raise gerr.drive_internal_error()
     mask = gerr.first_repeat(params, "fields")
     if mask is not None and not mask.strip():
         # The blank mask `_drive_get_field_keys` describes; on a listing it drops `kind` and
@@ -2171,9 +2315,31 @@ async def drive_files_list(request: Request):
 
 @router.get("/drive/v3/files/{file_id}", openapi_extra={"parameters": _P_DRIVE_ALT})
 async def drive_files_get(file_id: str, request: Request):
+    if _drive_batch_download(request):
+        _drive_batch_redirect(request)
+    # A byte-stream read answers in real's measured order: a `Bearer` that does not resolve is its
+    # 401 (2026-10-07), a `callback` is the 503 an uncallable name answers whatever the download
+    # would have done (2026-10-04, 2026-10-05), and the absent credential is named afterwards, once
+    # `_drive_typed` has had its say (2026-10-07) -- `gerr.refuse_download` and the late `_require`.
+    # The metadata read below keeps its own order: its credential first, then the typed parameters.
+    # Inside a batch the redirect above answers first, whatever the part carries.
+    download = _drive_download_request(request)
     conn = auth.conn(request)
-    caller = _require(request)
+    if download:
+        _require_download_bearer(request)
+        gerr.refuse_download(request)
+    else:
+        caller = _require(request)
     _drive_typed(request, "acknowledgeAbuse", "supportsAllDrives", "supportsTeamDrives")
+    if download:
+        caller = _require(request, download=True)
+    # Measured 2026-10-04: before the lookup, so a file that does not exist is refused alike, and
+    # before `fields`. Inside a batch real checks a part's own flag only when the part is the
+    # batch's one part that is not a download, measured 2026-10-05 beside downloads, other reads and
+    # a second flagged part.
+    outer = _BATCH_OUTER.get()
+    if not download and _drive_true(request, "acknowledgeAbuse") and (outer is None or outer.lone):
+        raise gerr.abuse_acknowledgment_not_applicable()
     ids = auth.visible_ids(request, caller)
     row = store.gdrive_by_id(conn, file_id, visible_ids=ids)
     if row is None:
@@ -2207,17 +2373,32 @@ async def drive_files_export(file_id: str, request: Request):
     last one is matched without regard to case -- `TEXT/CSV` exports -- and an empty `mimeType=`
     is one of them rather than an absent parameter.
 
+    A byte-stream read layers real's three download refusals before those, measured 2026-10-04,
+    2026-10-05 and 2026-10-07: a `Bearer` that does not resolve is its 401, a `callback` is the 503
+    an uncallable name answers and the shape every later error takes, and a missing credential is
+    named only after `mimeType` (`gerr.missing_api_key`). An export asking for `alt=json` is none of
+    that -- it is an ordinary read, which `_drive_download` decides.
+
     The export's `Content-Type` is the `mimeType` as sent and nothing more, measured 2026-09-30 on
     eleven formats of a spreadsheet and a document under five `Accept` values each (none, `*/*`,
     `application/json`, `text/html`, `application/xml`): `text/csv`, `TEXT/CSV`, `Text/Csv`,
     `text/markdown` and `text/html` each came back as exactly that, with no `charset`. So the
     header is set whole, where a ``media_type`` would have Starlette append `; charset=utf-8` to a
     lower-case `text/` type."""
+    if _drive_batch_download(request):
+        _drive_batch_redirect(request)
+    download = _drive_download_request(request)
     conn = auth.conn(request)
-    caller = _require(request)
+    if download:
+        _require_download_bearer(request)
+        gerr.refuse_download(request)
+    else:
+        caller = _require(request)
     requested = gerr.first_repeat(request.query_params, "mimeType")
     if requested is None:
         raise gerr.required("mimeType")
+    if download:
+        caller = _require(request, download=True)
     ids = auth.visible_ids(request, caller)
     row = store.gdrive_by_id(conn, file_id, visible_ids=ids)
     if row is None:
@@ -2254,6 +2435,11 @@ async def drive_files_permissions(file_id: str, request: Request):
         request, "supportsAllDrives", "supportsTeamDrives", "useDomainAdminAccess", page_size=True
     )["pageSize"]
     _drive_page_size_in_range(sizes, 100)
+    _drive_listing_page_token(request, expired_empty=True)
+    # No caller here is a domain administrator: 404 for the file, even one the caller owns,
+    # measured 2026-10-04 on a consumer account and 2026-10-06 on a Workspace member.
+    if _drive_true(request, "useDomainAdminAccess"):
+        raise gerr.not_found_file(file_id)
     ids = auth.visible_ids(request, caller)
     row = store.gdrive_by_id(conn, file_id, visible_ids=ids)
     if row is None:
@@ -3402,11 +3588,18 @@ def _workbook(request: Request, spreadsheet_id: str) -> tuple:
 
     A document that STATES a grid answers with its stored sheets; one that does not answers with a
     SINGLE synthesized sheet holding ``_sheets_grid``'s line-per-cell reading. Prose is therefore
-    one more grid, which is what leaves a single serving path below and stops the three Sheets
-    calls disagreeing about a cell.
+    one more grid, which is what leaves a single serving path below and stops the five Sheets reads
+    disagreeing about a cell.
 
     A prose sheet's cells are strings and STAY strings. Nothing here sniffs a line for a number or
-    a boolean: a cell's type is something a corpus states, never something this module infers."""
+    a boolean: a cell's type is something a corpus states, never something this module infers.
+
+    Inside a batch there is no lookup: real's batch does not implement the Sheets reads. Measured
+    2026-10-04 on the five reads this module serves, and on the two POST reads' bodies 2026-10-06,
+    the answer is 501 after the credential, the typed query values and a POST read's body and before
+    the spreadsheet is looked up, so one that does not exist gets it as well."""
+    if _BATCH_OUTER.get() is not None:
+        raise gerr.unimplemented()
     row = _editor_doc(request, spreadsheet_id, expect="spreadsheet")
     stored = store.gdrive_sheets_for(auth.conn(request), spreadsheet_id)
     if not stored:
@@ -4248,11 +4441,12 @@ def _typed_query(request: Request, readers: dict) -> dict[str, list]:
 
 
 # The typed booleans each Drive method Backlot serves declares, as the proto field its refusal
-# names. Parsed only, never read: none of them changes what a My Drive corpus answers. Measured
-# 2026-09-23 on each of them: the Sheets boolean spellings (`_sheets_bool_value`), 30 of them swept
-# on `supportsAllDrives`; and on 2026-10-06 `yeſ`, `YEſ`, `falſe` and `FALſE`, each refused, since
-# only ASCII letters are folded (`protojson.to_bool`). `files.export` and `about.get` declare none,
-# and real ignores `supportsAllDrives=NOPE` on both.
+# names. Each is parsed and the parsed value never read. Measured 2026-09-23 on each of them: the
+# Sheets boolean spellings (`_sheets_bool_value`), 30 of them swept on `supportsAllDrives`; and on
+# 2026-10-06 `yeſ`, `YEſ`, `falſe` and `FALſE`, each refused, since only ASCII letters are folded
+# (`protojson.to_bool`). Spelled `true`, four of them run a check of their own and two lift one --
+# see `_drive_true`. `files.export` and `about.get` declare none, and real ignores
+# `supportsAllDrives=NOPE` on both.
 _DRIVE_BOOLS = {
     "supportsAllDrives": "supports_all_drives",
     "supportsTeamDrives": "supports_team_drives",
@@ -4273,6 +4467,104 @@ def _drive_typed(request: Request, *bools: str, page_size: bool = False) -> dict
     if page_size:
         readers["pageSize"] = _drive_int32
     return _typed_query(request, readers)
+
+
+def _drive_true(request: Request, name: str) -> bool:
+    """Whether a Drive flag's first repeat is the word `true`, in any case.
+
+    Four flags run a check of their own when spelled `true`, and the check reads the spelling rather
+    than the boolean `_drive_typed` parses. Measured 2026-10-04 on `files.list`'s
+    `includeItemsFromAllDrives`: `true`, `TRUE` and `tRuE` run it, while `t`, `1`, `y` and `yes`,
+    which parse as true, do not; and `supportsAllDrives` lifts it at `true` and not at `t`, `1` or
+    `yes`. `true&false` runs it and `false&true` does not."""
+    return (gerr.first_repeat(request.query_params, name) or "").casefold() == "true"
+
+
+def _drive_download(endpoint, query) -> bool:
+    """Whether a request to `endpoint` with `query` is a Drive download: `files.get` with
+    `alt=media`, or `files.export` with no `alt`, an empty one or `alt=media`."""
+    alt = gerr.alt_format(query)
+    return (endpoint is drive_files_get and alt == "media") or (
+        endpoint is drive_files_export and alt in ("", "media")
+    )
+
+
+def _drive_download_request(request: Request) -> bool:
+    """Whether this request is a Drive download (`_drive_download`), read off the route it matched.
+
+    The one question ``_system_parameters`` and the two ``files.get``/``files.export`` handlers ask,
+    so a download sent on its own and one sent as a batch part are answered alike, and so a request
+    that merely LOOKS like one is not: measured 2026-10-07, an export asking for `alt=json` and a
+    file whose id is literally `export` are ordinary reads to real."""
+    return _drive_download(request.scope.get("endpoint"), request.query_params)
+
+
+def _drive_batch_download(request: Request) -> bool:
+    """Whether this request is a Drive download sent as a part of a batch. Read off the route the
+    request matched, so the router's dependency can ask before the route runs."""
+    return _BATCH_OUTER.get() is not None and _drive_download_request(request)
+
+
+_URL_ESCAPE = re.compile(r"%([0-9A-Fa-f]{2})")
+
+
+def _batch_escapes(text: str, decoded: str) -> str:
+    """`text` with each escape of an ASCII letter or digit, or of a character in `decoded`, decoded,
+    and each other escape kept with its hex in upper case. A `%` that two hex digits do not follow
+    stays as sent."""
+
+    def one(match: "re.Match[str]") -> str:
+        char = chr(int(match.group(1), 16))
+        if char.isascii() and (char.isalnum() or char in decoded):
+            return char
+        return "%" + match.group(1).upper()
+
+    return _URL_ESCAPE.sub(one, text)
+
+
+def _batch_query_pairs(query: str) -> list[tuple[str, str]]:
+    """A query string's pairs as real writes them into a batch redirect's `Location`. Measured
+    2026-10-04, in a name and a value alike: an empty pair is dropped, a name with no `=` gains one,
+    and an escape of an ASCII letter or digit is decoded, where any other escape keeps its byte and
+    has its hex written in upper case (`%7e` is `%7E`, `%2d` is `%2D`); `+` and `%20` stay as
+    sent."""
+    return [
+        (_batch_escapes(name, ""), _batch_escapes(value, ""))
+        for name, _, value in (pair.partition("=") for pair in query.split("&") if pair)
+    ]
+
+
+def _drive_batch_redirect(request: Request) -> None:
+    """A Drive download inside a batch, answered with real's redirect: a 302 to the same path under
+    `/download`.
+
+    Measured 2026-10-04 on `files.get` with `alt=media` and on `files.export`: the redirect comes
+    after `$.xgafv` and after a credential the part carries, a bad one being the 401, while a part
+    with no credential at all is redirected. Only `Bearer` and a token is a credential there:
+    measured 2026-10-05, `Basic YWJjOmRlZg==`, `bearer nope`, a bare `Bearer` and `nope` are each
+    redirected, though each is the 401 on a download sent on its own. The redirect comes ahead of
+    everything else measured beside it: a file that does not exist, `supportsAllDrives=NOPE`,
+    `fields=bogus`, an absent or empty `mimeType`, a Docs file read with `alt=media`, and a
+    `callback`, which neither wraps the redirect (`cb`) nor refuses it (`a b`).
+
+    `Location` is the request's path under `/download`, as sent but for its escapes: measured
+    2026-10-05 on `files/a%XXb` for each byte 0x20-0x7E, real decodes an escape of an ASCII letter,
+    digit, `-`, `.`, `_` or `~` and keeps any other with its hex in upper case, `%23`, `%2F` and
+    `%E2%82%AC` among them. Then come the request's query pairs, then each of the batch request's
+    whose name the request's pairs do not carry, in the batch's order, all as `_batch_query_pairs`
+    writes them. A name is matched as written there, so `fo%6F=` keeps the batch's `foo` out and
+    `Foo` does not, and a name the batch repeats is carried every time. The path and the query are
+    read from the request's raw bytes, not its decoded URL, in which `%23` would start a
+    fragment."""
+    if _sends_a_bearer_token(request):
+        _require(request)
+    outer = _BATCH_OUTER.get()
+    path = _batch_escapes(request.scope["raw_path"].decode("latin-1"), "-._~")
+    pairs = _batch_query_pairs(request.scope["query_string"].decode("latin-1"))
+    named = {name for name, _ in pairs}
+    pairs += [(name, value) for name, value in _batch_query_pairs(outer.query) if name not in named]
+    query = "&".join(f"{name}={value}" for name, value in pairs)
+    raise gerr.download_redirect(f"{outer.base}download{path}" + (f"?{query}" if query else ""))
 
 
 # An int32 as the Drive query parser takes one. Measured on `pageSize`, on `files.list` 2026-09-23
@@ -4302,6 +4594,33 @@ def _drive_page_size_in_range(sizes: list[int], top: int) -> None:
             f"Invalid value '{sizes[0]}'. Values must be within the range: [value: 1\n, value: "
             f"{top}\n]",
         )
+
+
+def _drive_listing_page_token(request: Request, *, expired_empty: bool = False) -> None:
+    """Refuse a `pageToken` sent to a listing that issues no `nextPageToken`, where every token is
+    one it did not issue: `permissions.list`, which serves a file's whole sharing on one page, and
+    `drives.list`, which is empty. Presence is the whole test: `decode_cursor_or_none`, which
+    `files.list` calls, reads `bzow` and that route's own tokens as offsets. Read from the first
+    repeat, after the typed and range refusals and ahead of the `useDomainAdminAccess=true` refusal
+    and `permissions.list`'s file lookup. Measured 2026-10-04 and 2026-10-05, and the empty, `bad`,
+    `bzow`, `BOGUS` and issued-token cells again on 2026-10-07 as a Workspace member::
+
+        pageToken                         permissions.list          drives.list
+        --------------------------------|-------------------------|-------------------------
+        empty                           | 403 `pageTokenExpired`  | the first page
+        `bad`, `bzow`, `AAAA`           | 400 `Invalid Value`     | 400 `Invalid Value`
+        `BOGUS`, `0`, `a`, a space, a   | 500 `Unknown Error.`    | 400 `Invalid Value`
+        token `files.list` issued       |                         |
+
+    ``expired_empty`` asks for the empty row's 403, which only `permissions.list` answers. The 500
+    is not modelled; those tokens get the 400 here too."""
+    token = gerr.first_repeat(request.query_params, "pageToken")
+    if token is None:
+        return
+    if not token and expired_empty:
+        raise gerr.page_token_expired()
+    if token:
+        raise gerr.invalid_value("pageToken")
 
 
 def _drive_page_size(sizes: list[int]) -> int:

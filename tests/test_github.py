@@ -1211,10 +1211,9 @@ def test_github_lists_the_refs_a_client_enumerates_before_it_reads(gh_client, gh
     assert body[0]["commit"]["url"] == single["commit"]["url"]
 
     # `?protected=` selects: real answers only the protected branches for a true value, only the
-    # unprotected ones for `false`/`0`, and all of them for an empty or omitted parameter —
-    # measured on fastapi/fastapi, 22 branches with one protected, answering 1 / 21 / 22. The one
-    # branch here is unprotected, so those last two coincide and `_truthy`'s split is the whole
-    # rule.
+    # unprotected ones for a false one, and all of them for an empty or omitted parameter (`_truthy`
+    # carries the measurement). The one branch here is unprotected, so those last two coincide and
+    # `_truthy`'s split is the whole rule.
     for value, kept in (("true", 0), ("1", 0), ("yes", 0), ("false", 1), ("0", 1), ("", 1)):
         r = c.get(
             f"/github/repos/{gh_org}/codebase/branches",
@@ -1306,16 +1305,66 @@ def test_github_a_stated_branch_listing_replaces_the_inferred_one(gh_client, gh_
     assert c.get(f"{base}/branches/trunk", headers=gh_admin_h).status_code == 200
 
 
+@pytest.mark.parametrize(
+    "value, selection",
+    [
+        pytest.param(None, None, id="omitted"),
+        pytest.param("", None, id="empty"),
+        pytest.param("0", False, id="zero"),
+        pytest.param("f", False, id="lower-f"),
+        pytest.param("F", False, id="upper-f"),
+        pytest.param("false", False, id="lower-false"),
+        pytest.param("FALSE", False, id="upper-false"),
+        pytest.param("off", False, id="lower-off"),
+        pytest.param("OFF", False, id="upper-off"),
+        pytest.param("1", True, id="one"),
+        pytest.param("t", True, id="lower-t"),
+        pytest.param("true", True, id="lower-true"),
+        pytest.param("TRUE", True, id="upper-true"),
+        pytest.param("yes", True, id="yes"),
+        pytest.param("banana", True, id="arbitrary"),
+        pytest.param("no", True, id="no"),
+        pytest.param("n", True, id="lower-n"),
+        pytest.param("00", True, id="double-zero"),
+        pytest.param("False", True, id="title-false"),
+        pytest.param("fAlSe", True, id="mixed-false"),
+        pytest.param("Off", True, id="title-off"),
+        pytest.param("oFF", True, id="mixed-off"),
+        pytest.param("0 ", True, id="zero-trailing-space"),
+        pytest.param(" false", True, id="false-leading-space"),
+        pytest.param("f ", True, id="f-trailing-space"),
+        pytest.param("false ", True, id="false-trailing-space"),
+        pytest.param(" off ", True, id="off-surrounded-spaces"),
+        pytest.param(" true ", True, id="true-surrounded-spaces"),
+    ],
+)
+def test_github_protected_filter_matches_measured_values(
+    gh_client, gh_admin_h, gh_org, value, selection
+):
+    """Each row is the selection real answered for that spelling on fastapi/fastapi (the date and
+    the method are :func:`backlot.routers.github._truthy`'s). The fixture holds one protected
+    branch and one unprotected one, so the three answers are distinct.
+    """
+    c, _ = gh_client
+    params = {} if value is None else {"protected": value}
+    response = c.get(
+        f"/github/repos/{gh_org}/stated-repo/branches", headers=gh_admin_h, params=params
+    )
+    assert response.status_code == 200, response.text
+    expected = {
+        None: [("release/2026-03", False), ("trunk", True)],
+        False: [("release/2026-03", False)],
+        True: [("trunk", True)],
+    }
+    assert [(b["name"], b["protected"]) for b in response.json()] == expected[selection]
+
+
 def test_github_stated_protection_decides_the_filter_and_the_protection_object(
     gh_client, gh_admin_h, gh_org
 ):
-    """`?protected=` selects for real once a corpus states which branches are protected, and the
-    same stated bit decides `protection.enabled` on the branch object.
-
-    Real is three-valued — a truthy value selects the protected branches, `false`/`0` the
-    unprotected ones, an absent or empty parameter all of them (measured on fastapi/fastapi: 22
-    branches, one protected, answering 1 / 21 / 22). Until a corpus could say so, every branch was
-    unprotected and the last two answers coincided; they no longer have to.
+    """`?protected=` selects ahead of the page cut once a corpus states which branches are
+    protected, and the same stated bit decides `protection.enabled` on the branch object. Which
+    branches each value selects is `test_github_protected_filter_matches_measured_values`.
 
     `protection.enabled` reports CLASSIC protection where `protected` covers any mechanism, and a
     stated bit is read as the classic one — measured 2026-09-03, see
@@ -1324,20 +1373,14 @@ def test_github_stated_protection_decides_the_filter_and_the_protection_object(
     c, _ = gh_client
     url = f"/github/repos/{gh_org}/stated-repo/branches"
 
-    def names(params):
-        return [b["name"] for b in c.get(url, headers=gh_admin_h, params=params).json()]
-
     def next_url(params):
-        return _link_rels(c.get(url, headers=gh_admin_h, params=params).headers["Link"])["next"]
-
-    assert names({"protected": "true"}) == ["trunk"]
-    assert names({"protected": "1"}) == ["trunk"]
-    assert names({"protected": "false"}) == ["release/2026-03"]
-    assert names({"protected": "0"}) == ["release/2026-03"]
-    assert names({"protected": ""}) == ["release/2026-03", "trunk"]
-    assert names(None) == ["release/2026-03", "trunk"]
-    # and the flag rides on the entry itself, in both listings
-    assert [b["protected"] for b in c.get(url, headers=gh_admin_h).json()] == [False, True]
+        response = c.get(url, headers=gh_admin_h, params=params)
+        assert response.status_code == 200, response.text
+        links = _link_rels(response.headers["Link"])
+        assert set(links) == {"next", "last"}
+        assert links["next"] == links["last"]
+        assert links["last"].endswith("page=2")
+        return links["next"]
 
     # real's six members on EVERY branch, protected or not, and PyGithub's `Branch` declares the
     # three this used to omit
@@ -1390,9 +1433,15 @@ def test_github_stated_protection_decides_the_filter_and_the_protection_object(
 
     # the selection happens ahead of the page cut, and a page url spells out only a parameter the
     # caller sent, an empty value included (`list_branches` and `_echo` carry the measurements)
-    paged = c.get(url, headers=gh_admin_h, params={"protected": "false", "per_page": 1})
-    assert [b["name"] for b in paged.json()] == ["release/2026-03"]
-    assert "Link" not in paged.headers, "one unprotected branch here is a single page"
+    # `trunk` sorts second, so selecting it on page one also rules out filtering AFTER the cut.
+    for value, expected in (("f", [("release/2026-03", False)]), ("False", [("trunk", True)])):
+        params = {"protected": value, "per_page": 1}
+        paged = c.get(url, headers=gh_admin_h, params=params)
+        assert paged.status_code == 200, paged.text
+        assert [(b["name"], b["protected"]) for b in paged.json()] == expected
+        assert "Link" not in paged.headers, "the filtered listing has only one page"
+        past_last = c.get(url, headers=gh_admin_h, params={**params, "page": 2})
+        assert past_last.status_code == 200 and past_last.json() == []
     assert "protected=&" in next_url({"protected": "", "per_page": 1})
     assert "protected" not in next_url({"per_page": 1})
 
@@ -3510,6 +3559,8 @@ def test_github_user_repos(gh_client, gh_admin_h, gh_user_tokens, gh_org):
         "/git/trees/main",
         "/git/ref/heads/main",
         "/branches",
+        "/branches?protected=f",
+        "/branches?protected=False",
         "/branches/main",
         "/tags",
         "/commits/main",
@@ -4120,11 +4171,7 @@ def test_github_pull_diff_reverse_applies_with_real_git(
 
 def test_github_pull_files_empty_when_the_repo_has_no_file_docs(tmp_path):
     """No file docs means no snapshot to diff against, so the changeset is empty rather than
-    invented — and the pull object's counts follow it down to zero.
-
-    Driven through the builders rather than a client: this file's two module-scoped clients share
-    ``backlot.main.app``'s state (see ``client_for``), so "a corpus with no file docs" is not
-    something an HTTP test here can rely on."""
+    invented — and the pull object's counts follow it down to zero."""
     from backlot.routers.github import _pr_files, _pr_obj
 
     s = tiny_corpus(

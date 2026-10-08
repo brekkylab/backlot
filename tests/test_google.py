@@ -336,46 +336,38 @@ def test_gmail_threads_list_is_the_mailbox_searched_or_not(client, tokens):
     )
 
 
-def test_gmail_attachment_resolves_under_a_hex_message_id(client, admin_h, ro_conn):
-
-    row = ro_conn.execute(
-        "SELECT * FROM gmail_messages WHERE COALESCE(attachments,'') NOT IN ('', '[]') LIMIT 1"
-    ).fetchone()
-    assert row is not None, "SAMPLE should hold a message with an attachment"
-    hexid = row["id"]
-    m = client.get(
-        f"/gmail/v1/users/me/messages/{hexid}", headers=admin_h, params={"format": "full"}
-    ).json()
-    att = next(p for p in m["payload"]["parts"] if p.get("filename"))
-    r = client.get(
-        f"/gmail/v1/users/me/messages/{hexid}/attachments/{att['body']['attachmentId']}",
-        headers=admin_h,
-    )
-    assert r.status_code == 200 and r.json()["size"] > 0
-
-
 @pytest.mark.parametrize(
-    "msg_key, att_key, expect_status",
-    [
-        ("valid", "valid", 200),
-        ("valid", "bogus", 400),
-        ("valid", "altered", 400),
-        ("missing", "bogus", 400),
-        ("non_hex", "bogus", 400),
-    ],
+    "msg_key",
+    ["owner", "other", "missing", "non_hex"],
+)
+@pytest.mark.parametrize(
+    "att_key, expect_status",
+    [("valid", 200), ("bogus", 400), ("altered", 400)],
 )
 def test_gmail_attachment_errors(client, admin_h, ro_conn, msg_key, att_key, expect_status):
+    """Under each of the four message ids, an attachment id gets the answer it gets under its own
+    message: 200 with its bytes when a message holds it, 400 when none does, as the comment in
+    `gmail_attachment` records."""
     row = ro_conn.execute(
         "SELECT * FROM gmail_messages WHERE COALESCE(attachments,'') NOT IN ('', '[]') LIMIT 1"
     ).fetchone()
     assert row is not None, "SAMPLE should hold a message with an attachment"
     hexid = row["id"]
+    other_row = ro_conn.execute(
+        "SELECT id FROM gmail_messages WHERE id != ? LIMIT 1", (hexid,)
+    ).fetchone()
+    assert other_row is not None, "SAMPLE should hold a second gmail message"
     m = client.get(
         f"/gmail/v1/users/me/messages/{hexid}", headers=admin_h, params={"format": "full"}
     ).json()
     valid_att = next(p for p in m["payload"]["parts"] if p.get("filename"))["body"]["attachmentId"]
 
-    msg_id = hexid if msg_key == "valid" else "0000000000000001" if msg_key == "missing" else "zzz"
+    msg_id = {
+        "owner": hexid,
+        "other": other_row["id"],
+        "missing": "0000000000000001",
+        "non_hex": "zzz",
+    }[msg_key]
     att_id = (
         valid_att
         if att_key == "valid"
@@ -405,6 +397,106 @@ def test_gmail_attachment_errors(client, admin_h, ro_conn, msg_key, att_key, exp
                 "status": "INVALID_ARGUMENT",
             }
         }
+    else:
+        owned = client.get(
+            f"/gmail/v1/users/me/messages/{hexid}/attachments/{valid_att}", headers=admin_h
+        ).json()
+        assert owned["size"] > 0
+        assert r.json() == owned
+
+
+_ATTACHMENT_ACL = [
+    {
+        "source_type": "gmail",
+        "doc_id": "ava-deck",
+        "mailbox": "ava",
+        "title": "Deck",
+        "content": "Deck attached.",
+        "author_email": "ava@acme.com",
+        "readers": ["ava@acme.com"],
+        "created": "2026-02-01T09:00:00Z",
+        "attachments": [{"filename": "deck.pdf", "mime": "application/pdf", "content": "deck"}],
+    },
+    {
+        "source_type": "gmail",
+        "doc_id": "ava-memo",
+        "mailbox": "ava",
+        "title": "Memo",
+        "content": "Memo attached.",
+        "author_email": "ava@acme.com",
+        "readers": ["ava@acme.com"],
+        "created": "2026-02-02T09:00:00Z",
+        "attachments": [{"filename": "memo.txt", "mime": "text/plain"}],
+    },
+    {
+        "source_type": "gmail",
+        "doc_id": "mia-note",
+        "mailbox": "mia",
+        "title": "Note",
+        "content": "No attachment.",
+        "author_email": "mia@acme.com",
+        "readers": ["mia@acme.com"],
+        "created": "2026-02-03T09:00:00Z",
+    },
+]
+
+
+@pytest.fixture
+def attachment_acl(tmp_path):
+    """Two of ava's messages with one attachment each, and a message of mia's with none. Yields the
+    client, a header per caller, and each attachment id by the doc it belongs to."""
+    settings = tiny_corpus(tmp_path, _ATTACHMENT_ACL)
+    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    h = {"admin": {"Authorization": f"Bearer {settings.admin_token}"}}
+    for name in ("ava", "mia"):
+        h[name] = {"Authorization": f"Bearer {tok(tokens, f'{name}@acme.com')}"}
+    with client_for(settings, reload=True) as client:
+        att = {}
+        for doc in ("ava-deck", "ava-memo"):
+            m = client.get(
+                f"/gmail/v1/users/me/messages/{served_id('gmail', doc)}", headers=h["admin"]
+            ).json()
+            att[doc] = next(p for p in m["payload"]["parts"] if p.get("filename"))["body"][
+                "attachmentId"
+            ]
+        yield client, h, att
+
+
+@pytest.mark.parametrize("under", ["ava-deck", "ava-memo", "mia-note"])
+@pytest.mark.parametrize("caller", ["admin", "ava", "mia"])
+def test_gmail_attachment_is_found_by_its_id_within_the_acl(
+    attachment_acl, monkeypatch, under, caller
+):
+    """Under each of the three message ids, each of ava's attachment ids lands its own bytes for
+    the admin and ava, and mia, who cannot see ava's messages, gets the 400 an id nothing has gets.
+    The memo states no `content`, so its bytes are the stand-in `_att_content` writes, which names
+    the attachment's id. The scan the comment in `gmail_attachment` describes is skipped only when
+    the path names the message holding the attachment and the caller can see it. It reads ava's two
+    messages for the admin and ava, and none for mia, whose one message holds no attachment."""
+    client, h, att = attachment_acl
+    scanned, scan = [], store.gmail_rows_with_attachments
+
+    def spy(*args, **kwargs):
+        rows = scan(*args, **kwargs)
+        scanned.append({row["id"] for row in rows})
+        return rows
+
+    monkeypatch.setattr(store, "gmail_rows_with_attachments", spy)
+    want = {"ava-deck": b"deck", "ava-memo": f"attachment {att['ava-memo']}".encode()}
+    reads = set() if caller == "mia" else {served_id("gmail", doc) for doc in want}
+    for doc, content in want.items():
+        scanned.clear()
+        r = client.get(
+            f"/gmail/v1/users/me/messages/{served_id('gmail', under)}/attachments/{att[doc]}",
+            headers=h[caller],
+        )
+        if caller == "mia":
+            assert r.status_code == 400, doc
+            assert r.json()["error"]["message"] == "Invalid attachment token", doc
+        else:
+            assert r.status_code == 200, doc
+            assert base64.urlsafe_b64decode(r.json()["data"]) == content, doc
+        assert scanned == ([] if under == doc and caller != "mia" else [reads]), doc
 
 
 @pytest.mark.parametrize(
@@ -813,6 +905,246 @@ def test_google_batch_honors_subrequest_query_params(client, admin_h, uri):
     )  # format=minimal honored
 
 
+_REDIRECTED = {
+    "error": {
+        "code": 302,
+        "message": "Unknown Error.",
+        "errors": [{"message": "Unknown Error.", "domain": "global", "reason": "backendError"}],
+        "status": "UNKNOWN",
+    }
+}
+_UNIMPLEMENTED_MESSAGE = "Operation is not implemented, or supported, or enabled."
+_UNIMPLEMENTED = {
+    "error": {"code": 501, "message": _UNIMPLEMENTED_MESSAGE, "status": "UNIMPLEMENTED"}
+}
+_UNIMPLEMENTED_AT_XGAFV_1 = {
+    "error": {
+        **_UNIMPLEMENTED["error"],
+        "errors": [
+            {"message": _UNIMPLEMENTED_MESSAGE, "domain": "global", "reason": "notImplemented"}
+        ],
+    }
+}
+_DRIVE_BATCH = "/batch/drive/v3?quotaUser=7"
+_SHEETS_BATCH = "/batch?quotaUser=7"
+_BAD = "Bearer nope"
+_MIA = "{mia}"  # the scoped token, which cannot see the spreadsheet
+_ANON = "anonymous"  # no credential on the part or on the batch
+_NORMALISED = "/batch/drive/v3?quotaUser=7&foo=%41&b%61r=1&~t=%7e&&"
+_A1_FILTER = '{"dataFilters": [{"a1Range": "A1"}]}'
+_BAD_FILTER = '{"dataFilters": "abc"}'
+
+# One part per batch, as real's Drive batch and Sheets batch answered it. A row is the batch URI
+# with its query, the part as (method, target, body, its own Authorization), the status in the batch
+# and the status of the same request sent on its own, then a 302's `Location` below the server's
+# base URL or a 501's body. The status on its own is ``None`` where real's is one Backlot does not
+# give: the export with an empty `alt=` (400), the id holding a `%` no two hex digits follow (503),
+# the two downloads with `callback=a%20b` (503), the export with that `callback` beside `$.xgafv=9`
+# (400) and the Sheets read of a spreadsheet the caller cannot see (403
+# `The caller does not have permission`, where Backlot answers as for one that does not exist).
+# `_drive_batch_download`, `_drive_batch_redirect` and `_workbook` record the rules.
+# fmt: off
+_BATCH_ROWS = [
+    # a Drive download is redirected ahead of the lookup and the typed, `fields` and `mimeType`
+    # refusals
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{sheet}/export?mimeType=text/csv", None, None), 302, 200, "download/drive/v3/files/{sheet}/export?mimeType=text/csv&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{doc}/export?mimeType=", None, None), 302, 400, "download/drive/v3/files/{doc}/export?mimeType=&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{doc}/export", None, None), 302, 400, "download/drive/v3/files/{doc}/export?quotaUser=7"),
+    ("/batch/drive/v3", ("GET", "/drive/v3/files/{doc}/export", None, None), 302, 400, "download/drive/v3/files/{doc}/export"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{nope}/export?mimeType=text/plain", None, None), 302, 404, "download/drive/v3/files/{nope}/export?mimeType=text/plain&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{sheet}/export?mimeType=text/csv", None, _MIA), 302, 404, "download/drive/v3/files/{sheet}/export?mimeType=text/csv&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain&alt=media", None, None), 302, 200, "download/drive/v3/files/{doc}/export?mimeType=text/plain&alt=media&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain&alt=", None, None), 302, None, "download/drive/v3/files/{doc}/export?mimeType=text/plain&alt=&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media", None, None), 302, 200, "download/drive/v3/files/{pdf}?alt=media&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=MEDIA", None, None), 302, 200, "download/drive/v3/files/{pdf}?alt=MEDIA&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media&alt=json", None, None), 302, 200, "download/drive/v3/files/{pdf}?alt=media&alt=json&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{nope}?alt=media", None, None), 302, 404, "download/drive/v3/files/{nope}?alt=media&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{doc}?alt=media", None, None), 302, 403, "download/drive/v3/files/{doc}?alt=media&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media&supportsAllDrives=NOPE", None, None), 302, 400, "download/drive/v3/files/{pdf}?alt=media&supportsAllDrives=NOPE&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media&fields=bogus", None, None), 302, 200, "download/drive/v3/files/{pdf}?alt=media&fields=bogus&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media&acknowledgeAbuse=true", None, None), 302, 200, "download/drive/v3/files/{pdf}?alt=media&acknowledgeAbuse=true&quotaUser=7"),
+    # the batch's query follows the part's, less each name the part's query carries
+    ("/batch/drive/v3?quotaUser=7&prettyPrint=false", ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain&prettyPrint=true", None, None), 302, 200, "download/drive/v3/files/{doc}/export?mimeType=text/plain&prettyPrint=true&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media&quotaUser=PARTQ", None, None), 302, 200, "download/drive/v3/files/{pdf}?alt=media&quotaUser=PARTQ"),
+    ("/batch/drive/v3?quotaUser=7&foo=1&foo=2", ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain&Foo=3", None, None), 302, 200, "download/drive/v3/files/{doc}/export?mimeType=text/plain&Foo=3&quotaUser=7&foo=1&foo=2"),
+    ("/batch/drive/v3?quotaUser=7&foo=1&foo=2", ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain&foo=", None, None), 302, 200, "download/drive/v3/files/{doc}/export?mimeType=text/plain&foo=&quotaUser=7"),
+    ("/batch/drive/v3?quotaUser=7&a%20b=c%2Fd&e=f+g&h", ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain", None, None), 302, 200, "download/drive/v3/files/{doc}/export?mimeType=text/plain&quotaUser=7&a%20b=c%2Fd&e=f+g&h="),
+    # its pairs as real writes them: an empty one dropped, an escaped letter or digit decoded, any
+    # other escape's hex in upper case, a bare name given `=`, and names matched as written
+    (_NORMALISED, ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain&&y=%41", None, None), 302, 200, "download/drive/v3/files/{doc}/export?mimeType=text/plain&y=A&quotaUser=7&foo=A&bar=1&~t=%7E"),
+    (_NORMALISED, ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain&fo%6F=3", None, None), 302, 200, "download/drive/v3/files/{doc}/export?mimeType=text/plain&foo=3&quotaUser=7&bar=1&~t=%7E"),
+    (_NORMALISED, ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain&x%2Dy=1&x%2fy=2", None, None), 302, 200, "download/drive/v3/files/{doc}/export?mimeType=text/plain&x%2Dy=1&x%2Fy=2&quotaUser=7&foo=A&bar=1&~t=%7E"),
+    (_NORMALISED, ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain&n=%7E&k=%4a&z", None, None), 302, 200, "download/drive/v3/files/{doc}/export?mimeType=text/plain&n=%7E&k=J&z=&quotaUser=7&foo=A&bar=1&~t=%7E"),
+    (_NORMALISED, ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain&~t=1", None, None), 302, 200, "download/drive/v3/files/{doc}/export?mimeType=text/plain&~t=1&quotaUser=7&foo=A&bar=1"),
+    ("/batch/drive/v3?quotaUser=7&n%31=%32", ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain&d=%31&dot=%2E&us=%5F&pct=%25&q=%3f", None, None), 302, 200, "download/drive/v3/files/{doc}/export?mimeType=text/plain&d=1&dot=%2E&us=%5F&pct=%25&q=%3F&quotaUser=7&n1=2"),
+    ("/batch/drive/v3?quotaUser=7&n%31=%32", ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain&n1=9", None, None), 302, 200, "download/drive/v3/files/{doc}/export?mimeType=text/plain&n1=9&quotaUser=7"),
+    # its path's escapes, as `_drive_batch_redirect` records them
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/a%20b%3fc%25d?alt=media", None, None), 302, 404, "download/drive/v3/files/a%20b%3Fc%25d?alt=media&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/a%7eb%2dc%2Ed%5fe%41%7a%30?alt=media", None, None), 302, 404, "download/drive/v3/files/a~b-c.d_eAz0?alt=media&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/a%E2%82%ACb?alt=media", None, None), 302, 404, "download/drive/v3/files/a%E2%82%ACb?alt=media&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/a%c3%a9b%2a?alt=media", None, None), 302, 404, "download/drive/v3/files/a%C3%A9b%2A?alt=media&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/a%23b/export?mimeType=text/plain", None, None), 302, 404, "download/drive/v3/files/a%23b/export?mimeType=text/plain&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/a%b%4?alt=media", None, None), 302, None, "download/drive/v3/files/a%b%4?alt=media&quotaUser=7"),
+    # its place among `$.xgafv`, the credential and `callback`, as `_drive_batch_redirect` records
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain", None, _BAD), 401, 401, None),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media", None, "Basic YWJjOmRlZg=="), 302, 401, "download/drive/v3/files/{pdf}?alt=media&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media", None, "bearer nope"), 302, 401, "download/drive/v3/files/{pdf}?alt=media&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media", None, "Bearer"), 302, 401, "download/drive/v3/files/{pdf}?alt=media&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media", None, "nope"), 302, 401, "download/drive/v3/files/{pdf}?alt=media&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain", None, _ANON), 302, 403, "download/drive/v3/files/{doc}/export?mimeType=text/plain&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media", None, _ANON), 302, 403, "download/drive/v3/files/{pdf}?alt=media&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{doc}", None, _ANON), 403, 403, None),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain&callback=cb", None, None), 302, 200, "download/drive/v3/files/{doc}/export?mimeType=text/plain&callback=cb&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain&callback=a%20b", None, None), 302, None, "download/drive/v3/files/{doc}/export?mimeType=text/plain&callback=a%20b&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media&callback=a%20b", None, None), 302, None, "download/drive/v3/files/{pdf}?alt=media&callback=a%20b&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain&callback=a%20b&$.xgafv=9", None, None), 400, None, None),
+    # what is not a download is answered as it is on its own, the one part of its batch here (a part
+    # beside others is in `_BATCH_ACK_ROWS`)
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=json&alt=media", None, None), 200, 200, None),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{doc}?acknowledgeAbuse=TRUE", None, None), 403, 403, None),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{nope}?acknowledgeAbuse=true", None, None), 403, 403, None),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files?pageSize=1&includeItemsFromAllDrives=true", None, None), 403, 403, None),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{doc}/permissions?useDomainAdminAccess=true", None, None), 404, 404, None),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/drives?useDomainAdminAccess=true", None, None), 403, 403, None),
+    # a Sheets read is not implemented, at the point `_workbook` records
+    (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/A1", None, None), 501, 200, _UNIMPLEMENTED),
+    (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}", None, None), 501, 200, _UNIMPLEMENTED),
+    (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values:batchGet?ranges=A1", None, None), 501, 200, _UNIMPLEMENTED),
+    (_SHEETS_BATCH, ("POST", "/sheets/v4/spreadsheets/{sheet}:getByDataFilter", "{}", None), 501, 200, _UNIMPLEMENTED),
+    (_SHEETS_BATCH, ("POST", "/sheets/v4/spreadsheets/{sheet}/values:batchGetByDataFilter", _A1_FILTER, None), 501, 200, _UNIMPLEMENTED),
+    (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{nope}/values/A1", None, None), 501, 404, _UNIMPLEMENTED),
+    (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/A1", None, _MIA), 501, None, _UNIMPLEMENTED),
+    (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/NoSuchSheet!A1", None, None), 501, 400, _UNIMPLEMENTED),
+    (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/A1?alt=media", None, None), 501, 400, _UNIMPLEMENTED),
+    (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/A1?$.xgafv=1", None, None), 501, 200, _UNIMPLEMENTED_AT_XGAFV_1),
+    (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/A1?majorDimension=NOPE", None, None), 400, 400, None),
+    (_SHEETS_BATCH, ("POST", "/sheets/v4/spreadsheets/{sheet}:getByDataFilter", _BAD_FILTER, None), 400, 400, None),
+    (_SHEETS_BATCH, ("POST", "/sheets/v4/spreadsheets/{sheet}/values:batchGetByDataFilter", _BAD_FILTER, None), 400, 400, None),
+    (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/A1", None, _BAD), 401, 401, None),
+    (_SHEETS_BATCH, ("POST", "/sheets/v4/spreadsheets/{sheet}:getByDataFilter", "{}", _BAD), 401, 401, None),
+    (_SHEETS_BATCH, ("POST", "/sheets/v4/spreadsheets/{sheet}:getByDataFilter", _BAD_FILTER, _BAD), 401, 401, None),
+]
+# fmt: on
+
+
+def _batch_answer(client, headers, uri, method, target, body, auth):
+    """The one part of a one-part batch, as ``(status, header lines, body)``."""
+    head = f"{method} {target} HTTP/1.1\r\n"
+    if auth:
+        head += f"Authorization: {auth}\r\n"
+    if body is not None:
+        head += f"Content-Type: application/json\r\n\r\n{body}"
+    payload = (
+        f"--b\r\nContent-Type: application/http\r\nContent-ID: <p0>\r\n\r\n{head}\r\n--b--\r\n"
+    )
+    r = client.post(
+        uri, headers={**headers, "Content-Type": "multipart/mixed; boundary=b"}, content=payload
+    )
+    assert r.status_code == 200, r.text
+    part = r.text.split("\r\n\r\n", 1)[1].rsplit("\r\n--", 1)[0]
+    sub_head, _, sub_body = part.partition("\r\n\r\n")
+    status_line, *lines = sub_head.split("\r\n")
+    return int(status_line.split(" ")[1]), lines, sub_body
+
+
+@pytest.mark.parametrize("uri, part, status, alone, detail", _BATCH_ROWS)
+def test_google_batch_redirects_a_drive_download_and_refuses_a_sheets_read(
+    client, admin_h, tokens, uri, part, status, alone, detail
+):
+    """The rows `_BATCH_ROWS` records, each beside the same request sent on its own where the row
+    gives that request's status. A part the redirect answers carries real's three headers in real's
+    order. Neither answer looks the file up, so a spreadsheet the scoped token cannot see is
+    answered as one that does not exist is."""
+    ids = {
+        "doc": _drive_find(client, admin_h, "Brand")["id"],
+        "pdf": _drive_find(client, admin_h, "Whitepaper")["id"],
+        "sheet": _drive_find(client, admin_h, "Q1 Revenue Model")["id"],
+        "nope": "nosuchfile000",
+    }
+    method, target, body, auth = part
+    target = target.format(**ids)
+    outer = {} if auth == _ANON else admin_h
+    auth = None if auth == _ANON else auth and auth.format(mia=f"Bearer {tokens['mia@acme.com']}")
+    got, lines, sub_body = _batch_answer(client, outer, uri, method, target, body, auth)
+    assert got == status, sub_body
+    if status == 302:
+        location = f"Location: http://testserver/{detail.format(**ids)}"
+        assert lines == [
+            "Content-Length: 0",
+            "Content-Type: application/json; charset=UTF-8",
+            location,
+        ]
+        assert json.loads(sub_body) == _REDIRECTED
+    elif status == 501:
+        assert json.loads(sub_body) == detail
+    if alone is not None:
+        headers = {"Authorization": auth} if auth else outer
+        sent = client.request(method, target, headers=headers, content=body)
+        assert sent.status_code == alone, sent.text
+
+
+def test_google_batch_passes_on_no_location_on_the_host_it_sends_parts_to(client, admin_h):
+    """`batch` sends its parts to a host nothing answers, so a redirect a route builds from it is
+    passed on without its `Location`. A function of its own: a GitHub part is no answer real's
+    Drive batch gives, so it is no row of `_BATCH_ROWS`."""
+    target = "/github/repos/acme/gateway/contents/src/"
+    alone = client.get(target, headers=admin_h, follow_redirects=False)
+    assert (alone.status_code, "location" in alone.headers) == (302, True)
+    status, lines, _ = _batch_answer(client, admin_h, _DRIVE_BATCH, "GET", target, None, None)
+    assert (status, lines) == (302, ["Content-Type: text/html;charset=utf-8"])
+
+
+_ACK = "/drive/v3/files/{doc}?acknowledgeAbuse=true&fields=id"
+_ACK_NOPE = "/drive/v3/files/{nope}?acknowledgeAbuse=true"
+_DOWNLOAD = "/drive/v3/files/{pdf}?alt=media"
+_EXPORT = "/drive/v3/files/{doc}/export?mimeType=text/plain"
+_ABOUT = "/drive/v3/about?fields=user"
+_SHARED = "/drive/v3/files?pageSize=1&includeItemsFromAllDrives=true"
+
+# Batches of several parts, one or two of them asking `acknowledgeAbuse` on a read that downloads
+# nothing, with the status of each part as real answered it. The flag is checked where its part is
+# the one part of the batch that is not a download (`drive_files_get`).
+_BATCH_ACK_ROWS = [
+    ([_ACK, _ABOUT], [200, 200]),
+    ([_ABOUT, _ACK], [200, 200]),
+    ([_ACK, _ACK], [200, 200]),
+    ([_ACK_NOPE, _ABOUT], [404, 200]),
+    ([_SHARED, _ACK], [403, 200]),
+    ([_DOWNLOAD, _ACK, _ACK], [302, 200, 200]),
+    ([_ABOUT, _DOWNLOAD, _ACK], [200, 302, 200]),
+    ([_DOWNLOAD, _ACK], [302, 403]),
+    ([_ACK, _DOWNLOAD], [403, 302]),
+    ([_EXPORT, _ACK], [302, 403]),
+    ([_DOWNLOAD, _ACK_NOPE], [302, 403]),
+    ([_DOWNLOAD, _DOWNLOAD, _ACK], [302, 302, 403]),
+]
+
+
+@pytest.mark.parametrize("targets, statuses", _BATCH_ACK_ROWS)
+def test_google_batch_checks_acknowledge_abuse_on_its_one_part_that_is_not_a_download(
+    client, admin_h, targets, statuses
+):
+    """The rows `_BATCH_ACK_ROWS` records. A function of its own: a row is a batch of several
+    parts, where a `_BATCH_ROWS` row is one part."""
+    ids = {
+        "doc": _drive_find(client, admin_h, "Brand")["id"],
+        "pdf": _drive_find(client, admin_h, "Whitepaper")["id"],
+        "nope": "nosuchfile000",
+    }
+    payload = "".join(
+        f"--b\r\nContent-Type: application/http\r\nContent-ID: <p{i}>\r\n\r\n"
+        f"GET {target.format(**ids)} HTTP/1.1\r\n\r\n"
+        for i, target in enumerate(targets)
+    )
+    r = client.post(
+        _DRIVE_BATCH,
+        headers={**admin_h, "Content-Type": "multipart/mixed; boundary=b"},
+        content=payload + "--b--\r\n",
+    )
+    assert r.status_code == 200, r.text
+    assert [int(code) for code in re.findall(r"^HTTP/1\.1 (\d+)", r.text, re.M)] == statuses
+
+
 def test_user_cannot_fetch_others_private_gmail(client, tokens_yaml, admin_h, ro_conn):
     # a private gmail doc owned by user B, fetched with user A's token -> 404
     user_a, user_b = tokens_yaml["users"][0], tokens_yaml["users"][1]
@@ -1149,6 +1481,71 @@ def test_drive_a_page_token_it_did_not_issue_is_refused(client, admin_h):
     assert token.status_code == 200 and token.json()["files"] != first["files"]
 
 
+_PERMS = "/drive/v3/files/{doc}/permissions"
+_TOKEN_INVALID = {
+    "code": 400,
+    "message": "Invalid Value",
+    "errors": [
+        {
+            "message": "Invalid Value",
+            "domain": "global",
+            "reason": "invalid",
+            "location": "pageToken",
+            "locationType": "parameter",
+        }
+    ],
+}
+_TOKEN_EXPIRED = {
+    "code": 403,
+    "message": "The specified page token has expired, and can no longer be used.",
+    "errors": [
+        {
+            "message": "The specified page token has expired, and can no longer be used.",
+            "domain": "global",
+            "reason": "pageTokenExpired",
+        }
+    ],
+}
+
+
+@pytest.mark.parametrize(
+    "path, query, error",
+    [
+        *[
+            (path, query, error)
+            for path in (_PERMS, "/drive/v3/drives")
+            for query, error in [
+                ([("pageToken", "bad")], _TOKEN_INVALID),
+                ([("pageToken", "bzow")], _TOKEN_INVALID),
+                ([("useDomainAdminAccess", "true"), ("pageToken", "bad")], _TOKEN_INVALID),
+                ([("pageToken", "bad"), ("useDomainAdminAccess", "true")], _TOKEN_INVALID),
+                ([("pageToken", "bad"), ("pageSize", "0")], None),
+                ([("pageToken", "bad"), ("useDomainAdminAccess", "NOPE")], None),
+            ]
+        ],
+        (_PERMS, [("pageToken", "")], _TOKEN_EXPIRED),
+        (_PERMS, [("useDomainAdminAccess", "true"), ("pageToken", "")], _TOKEN_EXPIRED),
+        ("/drive/v3/files/nosuchfileid000000/permissions", [("pageToken", "")], _TOKEN_EXPIRED),
+        ("/drive/v3/drives", [("pageToken", "{token}")], _TOKEN_INVALID),
+        ("/drive/v3/drives", [("pageToken", "")], None),
+        ("/drive/v3/drives", [("useDomainAdminAccess", "true"), ("pageToken", "")], None),
+    ],
+)
+def test_drive_a_listing_that_issues_no_page_token_refuses_one(client, admin_h, path, query, error):
+    """The rule `_drive_listing_page_token` records, one request per row. `None` is a token that
+    changes nothing: the answer is the one the request gets without it, a page or the refusal of
+    the value beside it. `{token}` is filled from the first page of `files.list`."""
+    url = path.format(doc=_drive_find(client, admin_h, "Brand")["id"])
+    issued = client.get("/drive/v3/files", headers=admin_h, params={"pageSize": 1}).json()
+    query = [(k, v.format(token=issued["nextPageToken"])) for k, v in query]
+    r = client.get(url, headers=admin_h, params=query)
+    if error is None:
+        without = [(k, v) for k, v in query if k != "pageToken"]
+        assert r.content == client.get(url, headers=admin_h, params=without).content
+    else:
+        assert (r.status_code, _gerr(r)) == (error["code"], error)
+
+
 @pytest.mark.parametrize(
     "query, code, location",
     [
@@ -1167,11 +1564,57 @@ def test_drive_a_page_token_it_did_not_issue_is_refused(client, admin_h):
         ([("orderBy", "name,name"), ("q", "nosuchfield = 1")], 403, "orderBy"),
         ([("pageToken", "BOGUS"), ("orderBy", "name,name")], 403, "orderBy"),
         ([("fields", "bogus"), ("orderBy", "name,name")], 403, "orderBy"),
+        ([("orderBy", "name,starred"), ("pageSize", "0")], 400, "page_size"),
+        ([("orderBy", "name,starred"), ("q", "nosuchfield = 1")], 400, "q"),
+        ([("orderBy", "name,starred"), ("pageToken", "BOGUS")], 400, "pageToken"),
+        ([("fields", "bogus"), ("orderBy", "name,starred")], 500, None),
+        ([("fields", ""), ("orderBy", "name,starred")], 500, None),
+        ([("q", "name = 'no such file'"), ("orderBy", "name,starred")], 500, None),
+        (
+            [("q", "fullText contains 'the'"), ("orderBy", "name"), ("pageSize", "0")],
+            400,
+            "page_size",
+        ),
+        (
+            [("q", "fullText contains 'the'"), ("orderBy", "name"), ("pageSize", "NOPE")],
+            400,
+            None,
+        ),
+        ([("q", "fullText contains 'the'"), ("orderBy", "bogus")], 400, "orderBy"),
+        ([("q", "fullText contains 'the' and nosuchfield = 1"), ("orderBy", "name")], 400, "q"),
+        (
+            [("q", "fullText contains 'the' and nosuchfield = 1"), ("orderBy", "viewedByMeTime")],
+            400,
+            "q",
+        ),
+        (
+            [("q", "fullText contains 'the'"), ("orderBy", "name"), ("pageToken", "BOGUS")],
+            403,
+            "orderBy",
+        ),
+        (
+            [("pageToken", "BOGUS"), ("q", "fullText contains 'the'"), ("orderBy", "name")],
+            403,
+            "orderBy",
+        ),
+        (
+            [("q", "fullText contains 'the'"), ("orderBy", "name"), ("fields", "bogus")],
+            403,
+            "orderBy",
+        ),
+        (
+            [("fields", "bogus"), ("q", "fullText contains 'the'"), ("orderBy", "name")],
+            403,
+            "orderBy",
+        ),
+        ([("q", "fullText contains 'the'"), ("orderBy", "name"), ("fields", "")], 403, "orderBy"),
+        ([("fields", ""), ("q", "fullText contains 'the'"), ("orderBy", "name")], 403, "orderBy"),
     ],
 )
 def test_drive_files_list_refuses_in_reals_order(client, admin_h, query, code, location):
-    """Two bad values at once, each pair in the order `drive_files_list`'s comment records. A
-    `pageSize` the proto layer cannot read has no `location`."""
+    """Two values at once, refused in the order `drive_files_list`'s comment records, where a `q`
+    with a `fullText` term and an `orderBy` count as one, the 403. A `pageSize` the proto layer
+    cannot read has no `location`."""
     e = _gerr(client.get("/drive/v3/files", headers=admin_h, params=query))
     assert e["code"] == code
     assert e["errors"][0].get("location") == location
@@ -1232,9 +1675,8 @@ def test_drive_a_declared_boolean_takes_the_protobuf_spellings_and_another_is_ig
 ):
     """The spellings `_DRIVE_BOOLS` records, one request per value on each route; the `files.list`
     `supportsAllDrives` rows are 24 of the 30 swept and two spellings outside ASCII. `true` is sent
-    on those rows alone: measured 2026-09-23, four of the other flags answer a `true` with a check
-    of their own (a 403 for `includeItemsFromAllDrives` without `supportsAllDrives`), which Backlot
-    does not model."""
+    on those rows alone: four of the other flags answer a `true` with a check of their own, which
+    `_DRIVE_CHECK_ROWS` holds."""
     doc = _drive_find(client, admin_h, "Brand")["id"]
     url = path.format(doc=doc)
     # the query string is built here because httpx's `params` replaces the one the row's path has
@@ -1249,12 +1691,143 @@ def test_drive_a_declared_boolean_takes_the_protobuf_spellings_and_another_is_ig
     assert e["details"][0]["fieldViolations"] == [{"field": field, "description": message}]
 
 
+_SHARED_DRIVES = (
+    403,
+    "supportsTeamDrivesRequired",
+    None,
+    "The supportsAllDrives parameter was not set to true.",
+)
+_ABUSE = (
+    403,
+    "invalidAbuseAcknowledgment",
+    "acknowledgeAbuse",
+    "The acknowledgeAbuse parameter is only applicable for download requests.",
+)
+_ADMIN_ONLY = (
+    403,
+    "noListTeamDrivesAdministratorPrivilege",
+    None,
+    "The requesting user does not have the administrator privilege required to list or manage all "
+    "shared drives.",
+)
+_SERVED = (200, None, None, None)
+_TYPED = (400, "invalid", None, None)
+_RANGE = (400, "invalidParameter", "page_size", None)
+
+# A Drive request beside real's answer, one request per row: the route, its query and who sends it,
+# then the status and `errors[0]`'s reason, location and, for the three 403s a flag spelled `true`
+# is refused with (`_drive_true`), message. The `1` spellings, which parse as true and run no check,
+# are rows of `_DRIVE_BOOL_ROWS`.
+# fmt: off
+_DRIVE_CHECK_ROWS = [
+    # the export and download refusals
+    ("/drive/v3/files/{pdf}/export", "mimeType=text/plain", "admin", (403, "fileNotExportable", None, None)),
+    # the empty value is present, so in the order `drive_files_export` records it meets the 403
+    ("/drive/v3/files/{pdf}/export", "mimeType=", "admin", (403, "fileNotExportable", None, None)),
+    ("/drive/v3/files/{doc}", "alt=media", "admin", (403, "fileNotDownloadable", "alt", None)),
+    # the shared-drive items need a companion flag, which the same spelling turns on
+    ("/drive/v3/files", "includeItemsFromAllDrives=true", "admin", _SHARED_DRIVES),
+    ("/drive/v3/files", "includeItemsFromAllDrives=TRUE", "admin", _SHARED_DRIVES),
+    ("/drive/v3/files", "includeItemsFromAllDrives=tRuE", "admin", _SHARED_DRIVES),
+    ("/drive/v3/files", "includeItemsFromAllDrives=t", "admin", _SERVED),
+    ("/drive/v3/files", "includeItemsFromAllDrives=yes", "admin", _SERVED),
+    ("/drive/v3/files", "includeTeamDriveItems=true", "admin", _SHARED_DRIVES),
+    ("/drive/v3/files", "includeItemsFromAllDrives=true&supportsAllDrives=tRuE", "admin", _SERVED),
+    ("/drive/v3/files", "includeItemsFromAllDrives=true&supportsAllDrives=t", "admin", _SHARED_DRIVES),
+    ("/drive/v3/files", "includeItemsFromAllDrives=true&supportsAllDrives=1", "admin", _SHARED_DRIVES),
+    ("/drive/v3/files", "includeItemsFromAllDrives=true&supportsAllDrives=yes", "admin", _SHARED_DRIVES),
+    ("/drive/v3/files", "includeItemsFromAllDrives=true&supportsTeamDrives=true", "admin", _SERVED),
+    ("/drive/v3/files", "includeTeamDriveItems=true&supportsTeamDrives=true", "admin", _SERVED),
+    ("/drive/v3/files", "includeTeamDriveItems=true&supportsTeamDrives=1", "admin", _SHARED_DRIVES),
+    ("/drive/v3/files", "includeTeamDriveItems=true&supportsAllDrives=true", "admin", _SERVED),
+    # each read from its first repeat
+    ("/drive/v3/files", "includeItemsFromAllDrives=true&includeItemsFromAllDrives=false", "admin", _SHARED_DRIVES),
+    ("/drive/v3/files", "includeItemsFromAllDrives=false&includeItemsFromAllDrives=true", "admin", _SERVED),
+    ("/drive/v3/files", "includeItemsFromAllDrives=true&supportsAllDrives=false&supportsAllDrives=true", "admin", _SHARED_DRIVES),
+    ("/drive/v3/files", "includeItemsFromAllDrives=true&supportsAllDrives=true&supportsAllDrives=false", "admin", _SERVED),
+    # its place among the other refusals, which `drive_files_list` records
+    ("/drive/v3/files", "includeItemsFromAllDrives=true&supportsAllDrives=NOPE", "admin", _TYPED),
+    ("/drive/v3/files", "includeItemsFromAllDrives=true&pageSize=0", "admin", _RANGE),
+    ("/drive/v3/files", "includeItemsFromAllDrives=true&orderBy=bogus", "admin", (400, "invalid", "orderBy", None)),
+    ("/drive/v3/files", "includeItemsFromAllDrives=true&orderBy=name,name", "admin", (403, "orderByContainsDuplicateSortKeys", "orderBy", None)),
+    ("/drive/v3/files", "includeItemsFromAllDrives=true&orderBy=name,starred", "admin", _SHARED_DRIVES),
+    ("/drive/v3/files", "q=fullText%20contains%20%27zzqqxx%27&orderBy=viewedByMeTime&includeItemsFromAllDrives=true", "admin", _SHARED_DRIVES),
+    ("/drive/v3/files", "includeItemsFromAllDrives=true&q=bad", "admin", _SHARED_DRIVES),
+    ("/drive/v3/files", "includeItemsFromAllDrives=true&pageToken=bad", "admin", _SHARED_DRIVES),
+    ("/drive/v3/files", "includeItemsFromAllDrives=true&fields=bad", "admin", _SHARED_DRIVES),
+    # acknowledging abuse on a read that downloads nothing
+    ("/drive/v3/files/{doc}", "acknowledgeAbuse=true", "admin", _ABUSE),
+    ("/drive/v3/files/{doc}", "acknowledgeAbuse=TRUE", "admin", _ABUSE),
+    ("/drive/v3/files/{doc}", "acknowledgeAbuse=t", "admin", _SERVED),
+    ("/drive/v3/files/{doc}", "acknowledgeAbuse=true&acknowledgeAbuse=false", "admin", _ABUSE),
+    ("/drive/v3/files/{doc}", "acknowledgeAbuse=false&acknowledgeAbuse=true", "admin", _SERVED),
+    ("/drive/v3/files/{pdf}", "acknowledgeAbuse=true&alt=media", "admin", _SERVED),
+    ("/drive/v3/files/{pdf}", "acknowledgeAbuse=true&alt=json", "admin", _ABUSE),
+    ("/drive/v3/files/{doc}", "acknowledgeAbuse=true&alt=media", "admin", (403, "fileNotDownloadable", "alt", None)),
+    ("/drive/v3/files/{doc}", "acknowledgeAbuse=true&fields=bad", "admin", _ABUSE),
+    ("/drive/v3/files/{doc}", "acknowledgeAbuse=true&supportsAllDrives=NOPE", "admin", _TYPED),
+    # before the lookup: a file that does not exist and one the caller cannot see, beside the
+    # second without the flag
+    ("/drive/v3/files/{nope}", "acknowledgeAbuse=true", "admin", _ABUSE),
+    ("/drive/v3/files/{hidden}", "acknowledgeAbuse=true", "mia", _ABUSE),
+    ("/drive/v3/files/{hidden}", "acknowledgeAbuse=false", "mia", (404, "notFound", "fileId", None)),
+    ("/drive/v3/files/{hidden}", "acknowledgeAbuse=false", "admin", _SERVED),
+    # the routes that declare no such check
+    ("/drive/v3/files/{doc}/export", "mimeType=text/plain&acknowledgeAbuse=true", "admin", _SERVED),
+    ("/drive/v3/about", "fields=user&includeItemsFromAllDrives=true", "admin", _SERVED),
+    # a domain administrator's access, which no caller here has
+    ("/drive/v3/files/{doc}/permissions", "useDomainAdminAccess=true", "admin", (404, "notFound", "fileId", None)),
+    ("/drive/v3/files/{doc}/permissions", "useDomainAdminAccess=TRUE", "admin", (404, "notFound", "fileId", None)),
+    ("/drive/v3/files/{hidden}/permissions", "useDomainAdminAccess=true", "mia", (404, "notFound", "fileId", None)),
+    ("/drive/v3/files/{hidden}/permissions", "useDomainAdminAccess=false", "mia", (404, "notFound", "fileId", None)),
+    ("/drive/v3/files/{hidden}/permissions", "useDomainAdminAccess=false", "admin", _SERVED),
+    ("/drive/v3/files/{doc}/permissions", "useDomainAdminAccess=true&pageSize=0", "admin", _RANGE),
+    ("/drive/v3/files/{doc}/permissions", "useDomainAdminAccess=true&supportsAllDrives=NOPE", "admin", _TYPED),
+    ("/drive/v3/drives", "useDomainAdminAccess=true", "admin", _ADMIN_ONLY),
+    ("/drive/v3/drives", "useDomainAdminAccess=TRUE", "admin", _ADMIN_ONLY),
+    ("/drive/v3/drives", "useDomainAdminAccess=true&useDomainAdminAccess=false", "admin", _ADMIN_ONLY),
+    ("/drive/v3/drives", "useDomainAdminAccess=false&useDomainAdminAccess=true", "admin", _SERVED),
+    ("/drive/v3/drives", "useDomainAdminAccess=true&pageSize=0", "admin", _RANGE),
+    ("/drive/v3/drives", "useDomainAdminAccess=true&q=name%3D%27x%27", "admin", _ADMIN_ONLY),
+]
+# fmt: on
+
+
+@pytest.mark.parametrize("path, query, caller, expected", _DRIVE_CHECK_ROWS)
+def test_drive_answers_each_check_with_reals_status_and_reason(
+    client, admin_h, tokens, path, query, caller, expected
+):
+    """The rows `_DRIVE_CHECK_ROWS` records. The 403 for a file the scoped token cannot see is the
+    one for a file that does not exist, and both name no file, so the check tells the caller
+    nothing about what it cannot read; the permissions 404 names the file it was asked about, and
+    is the same 404 the scoped token gets for that file without the flag."""
+    ids = {
+        "doc": _drive_find(client, admin_h, "Brand")["id"],
+        "pdf": _drive_find(client, admin_h, "Whitepaper")["id"],
+        "hidden": _drive_find(client, admin_h, "Q1 Revenue Model")["id"],
+        "nope": "nosuchfile000",
+    }
+    headers = (
+        admin_h if caller == "admin" else {"Authorization": f"Bearer {tokens['mia@acme.com']}"}
+    )
+    r = client.get(f"{path.format(**ids)}?{query}", headers=headers)
+    status, reason, location, message = expected
+    assert r.status_code == status, r.text
+    if status == 200:
+        return
+    e = _gerr(r)
+    assert (e["errors"][0].get("reason"), e["errors"][0].get("location")) == (reason, location)
+    if message is not None:
+        assert (e["message"], "status" in e) == (message, False)
+
+
 @pytest.mark.parametrize(
     "path, query, body, good",
     [
         ("/drive/v3/files/{id}", "acknowledgeAbuse=NOPE", None, None),
         ("/drive/v3/files/{id}/permissions", "supportsAllDrives=NOPE", None, None),
         ("/drive/v3/files/{id}/permissions", "pageSize=0", None, None),
+        ("/drive/v3/files/{id}/permissions", "pageToken=bad", None, None),
         ("/sheets/v4/spreadsheets/{id}/values/Sheet1!A1", "majorDimension=NOPE", None, None),
         ("/sheets/v4/spreadsheets/{id}/values:batchGet", "valueRenderOption=NOPE", None, None),
         ("/sheets/v4/spreadsheets/{id}", "includeGridData=NOPE", None, None),
@@ -1331,24 +1904,6 @@ def test_drive_a_blank_fields_mask_selects_nothing(client, admin_h, mask):
         assert client.get(path, headers=admin_h).json(), path
     about = _gerr(client.get(ABOUT, headers=admin_h, params={"fields": mask}))
     assert about["message"] == "The 'fields' parameter is required for this method."
-
-
-@pytest.mark.parametrize(
-    "path, reason, location",
-    [
-        ("/drive/v3/files/{pdf}/export?mimeType=text/plain", "fileNotExportable", None),
-        # the empty value is present, so in the order `drive_files_export` records it meets the 403
-        ("/drive/v3/files/{pdf}/export?mimeType=", "fileNotExportable", None),
-        ("/drive/v3/files/{doc}?alt=media", "fileNotDownloadable", "alt"),
-    ],
-)
-def test_drive_403s_carry_their_own_reasons(client, admin_h, path, reason, location):
-    doc = _drive_find(client, admin_h, "Brand")["id"]
-    pdf = _drive_find(client, admin_h, "Whitepaper")["id"]
-    e = _gerr(client.get(path.format(doc=doc, pdf=pdf), headers=admin_h))
-    assert e["code"] == 403
-    assert e["errors"][0]["reason"] == reason
-    assert e["errors"][0].get("location") == location
 
 
 BAD_TOKEN = {"Authorization": "Bearer not-a-real-token"}
@@ -2069,6 +2624,8 @@ REPEATED = [
     ("GET", _FILES, {}, "pageSize", "1", "3", "first", _ids),
     ("GET", _FILES, {"pageSize": "1"}, "pageToken", "{token}", "BOGUS", "first", _ids),
     ("GET", _FILES, {"pageSize": "1"}, "pageToken", "", "{token}", "first", _ids),
+    ("GET", _FILES + "/{sid}/permissions", {}, "pageToken", "", "bad", "first", _keys),
+    ("GET", "/drive/v3/drives", {}, "pageToken", "", "bad", "first", _keys),
     ("GET", _FILES, {"pageSize": "3"}, "orderBy", "name", "name desc", "first", _names),
     ("GET", _FILES, {"pageSize": "3"}, "orderBy", "name", "bogus", "first", _names),
     (
@@ -2125,12 +2682,23 @@ def test_every_google_get_refuses_a_callback_it_cannot_call_and_no_post_reads_on
 
     `callback` is NOT declared router-wide beside `$.xgafv` — Sheets is the only family whose
     SUCCESS is wrapped, and `qp` declares only what Backlot honours — so this is the whole of what
-    the document says about it."""
+    the document says about it.
+
+    A byte-stream read is not JSONP and is pinned by the tests beside
+    `test_a_callback_on_a_download_is_real_503_to_the_byte` instead, because the answer an
+    uncallable name gets there is not this 400 but real's 503 `Backend Error` (measured 2026-10-04
+    and 2026-10-07) -- which is what the anonymous case here asserts before the path leaves the
+    sweep."""
     spec = client.get("/openapi.json").json()
     families = ("/drive/v3", "/gmail/v1", "/docs/v1", "/sheets/v4", "/slides/v1")
     gets, posts, wrong = 0, 0, []
     for path, item in spec["paths"].items():
         if not path.startswith(families):
+            continue
+        if path.endswith("/export"):
+            anonymous = client.get(f"{path}?callback=a%20b")
+            assert anonymous.status_code == 503, path
+            assert "Backend Error" in anonymous.text, path
             continue
         for method, op in item.items():
             if method not in ("get", "post", "put", "patch", "delete"):
@@ -2459,6 +3027,197 @@ def test_drive_export_and_media_stay_non_json(client, admin_h):
     assert med.status_code == 200 and "application/json" not in med.headers["content-type"]
 
 
+# Real's 503 body for a download carrying a `callback`, to the byte: measured 2026-10-07 over the
+# thirteen request shapes that reach one, the `errors[]` entry is written INLINE and the body ends
+# with the closing brace and no trailing newline -- which is not the shape `respond`, the serializer
+# every other Google body goes through, writes for that envelope.
+DOWNLOAD_503_BODY = (
+    "{\n"
+    '  "error": {\n'
+    '    "code": 503,\n'
+    '    "message": "Backend Error",\n'
+    '    "errors": [{\n'
+    '      "message": "Backend Error",\n'
+    '      "domain": "global",\n'
+    '      "reason": "backendError"\n'
+    "    }]\n"
+    "  }\n"
+    "}"
+)
+DOWNLOAD_503_TYPE = "text/javascript; charset=UTF-8"
+MISSING_API_KEY = "The request is missing a valid API key."
+
+
+def _download_requests(client, admin_h):
+    """The two byte-stream reads of the bundled corpus, and the metadata read of the same PDF."""
+    pdf = _drive_find(client, admin_h, "Whitepaper")["id"]
+    doc = _drive_find(client, admin_h, "Brand")["id"]
+    return {
+        "media": (f"/drive/v3/files/{pdf}", {"alt": "media"}),
+        "export": (f"/drive/v3/files/{doc}/export", {"mimeType": "text/plain"}),
+        "metadata": (f"/drive/v3/files/{pdf}", {}),
+        "doc": doc,
+    }
+
+
+def test_a_download_names_the_missing_api_key_where_the_metadata_read_does_not(client, admin_h):
+    """Measured 2026-10-04 on `files.export` and 2026-10-05 on `files.get?alt=media`: a byte-stream
+    read with no credential answers real's missing-API-key sentence with `reason: forbidden` and no
+    `status`, where the metadata read of the same file answers the unregistered caller."""
+    requests = _download_requests(client, admin_h)
+    for kind in ("media", "export"):
+        url, params = requests[kind]
+        refusal = client.get(url, params=params)
+        assert refusal.status_code == 403, url
+        error = refusal.json()["error"]
+        assert error["message"] == MISSING_API_KEY, url
+        assert error["errors"][0]["reason"] == "forbidden", url
+        assert "status" not in error, url
+    metadata_url, metadata_params = requests["metadata"]
+    metadata = client.get(metadata_url, params=metadata_params)
+    assert metadata.json()["error"]["status"] == "PERMISSION_DENIED"
+
+
+def test_a_download_answers_its_parameters_before_a_missing_credential(client, admin_h):
+    """Measured 2026-10-07: without a credential a download answers an absent `mimeType` and a
+    mistyped `supportsAllDrives` with their 400, where the metadata read of the same file answers
+    the unregistered caller first. Together with the `callback` 503 ahead of them and the missing
+    API key after, that is the whole measured order a byte-stream read answers in. Beside a callable
+    `callback` each of the two is the download's 503 instead, credential or not."""
+    pdf = _drive_find(client, admin_h, "Whitepaper")["id"]
+    doc = _drive_find(client, admin_h, "Brand")["id"]
+    bad_param = (f"/drive/v3/files/{pdf}", {"alt": "media", "supportsAllDrives": "NOPE"})
+    no_mime = (f"/drive/v3/files/{doc}/export", {})
+    for url, params in (bad_param, no_mime):
+        anonymous = client.get(url, params=params)
+        assert anonymous.status_code == 400, (url, anonymous.text)
+        assert client.get(url, params=params, headers=admin_h).status_code == 400, url
+        assert client.get(url, params={**params, "callback": "cb"}).status_code == 503, url
+    assert "TYPE_BOOL" in client.get(bad_param[0], params=bad_param[1]).text
+    assert "mimeType" in client.get(no_mime[0], params=no_mime[1]).text
+    metadata = client.get(f"/drive/v3/files/{pdf}", params={"supportsAllDrives": "NOPE"})
+    assert metadata.status_code == 403
+    assert metadata.json()["error"]["status"] == "PERMISSION_DENIED"
+
+
+def test_a_callback_on_a_download_is_real_503_to_the_byte(client, admin_h):
+    """Measured 2026-10-07: a `callback` that cannot be called on a byte-stream read is 503
+    `Backend Error` under the script's type, unwrapped, and the body is one fixed string -- the
+    `errors[]` entry inline and no trailing newline, where the serializer every other Google body
+    goes through writes the array expanded and ends with one.
+
+    The same request with no credential answers it too: the callback is refused ahead of the
+    missing-API-key 403, which is the order real answers them in."""
+    requests = _download_requests(client, admin_h)
+    for kind in ("media", "export"):
+        url, params = requests[kind]
+        for headers in (admin_h, {}):
+            refusal = client.get(url, params={**params, "callback": "a b"}, headers=headers)
+            assert refusal.status_code == 503, (kind, headers)
+            assert refusal.headers["content-type"] == DOWNLOAD_503_TYPE, kind
+            assert refusal.text == DOWNLOAD_503_BODY, kind
+    # the exception the route raises still describes that body, so the signal and the literal
+    # cannot drift apart
+    assert json.loads(DOWNLOAD_503_BODY) == gerr.http_body(
+        "/drive/v3/files/x", gerr.backend_error()
+    )
+
+
+def test_a_callback_on_a_download_turns_every_later_error_into_the_same_503(client, admin_h):
+    """Measured 2026-10-07: on a byte-stream read carrying a name a script can call, EVERY error is
+    the same 503 `Backend Error` -- a missing id, a Docs file read with `alt=media`, a mistyped
+    `supportsAllDrives`, an absent `mimeType` and no credential alike -- where each of those without
+    the callback keeps its own status. Only a success lets the name through."""
+    pdf = _drive_find(client, admin_h, "Whitepaper")["id"]
+    doc = _drive_find(client, admin_h, "Brand")["id"]
+    for url, params, headers in (
+        (f"/drive/v3/files/{pdf}", {"alt": "media", "supportsAllDrives": "NOPE"}, admin_h),
+        ("/drive/v3/files/nosuch", {"alt": "media"}, admin_h),
+        (f"/drive/v3/files/{doc}", {"alt": "media"}, admin_h),
+        (f"/drive/v3/files/{doc}/export", {}, admin_h),
+        (f"/drive/v3/files/{pdf}", {"alt": "media"}, {}),
+    ):
+        plain = client.get(url, params=params, headers=headers)
+        assert plain.status_code != 503, (url, plain.text)
+        refusal = client.get(url, params={**params, "callback": "cb"}, headers=headers)
+        assert refusal.status_code == 503, (url, refusal.text)
+        assert refusal.text == DOWNLOAD_503_BODY, (url, refusal.text)
+
+
+def test_the_refusal_order_on_a_download_is_system_bearer_then_callback(client, admin_h):
+    """On both downloads, `$.xgafv` 400 first, then a `Bearer` token that does not resolve 401, then
+    the callback's 503 -- the order `gerr.missing_api_key` records. Only the header
+    `_sends_a_bearer_token` accepts is a credential at that layer (`_require_download_bearer`):
+    every other value below reaches the callback's 503 beside `callback=a b`, and each of them is
+    a 401 without one."""
+    requests = _download_requests(client, admin_h)
+    for kind in ("media", "export"):
+        url, params = requests[kind]
+        bad = {**params, "callback": "a b"}
+        xgafv = client.get(url, params={**bad, "$.xgafv": "9"}, headers=BAD_TOKEN)
+        assert xgafv.status_code == 400 and XGAFV_REFUSAL.format("9") in xgafv.text, kind
+        for value, beside_callback in (
+            ("Bearer not-a-real-token", 401),
+            ("bearer not-a-real-token", 503),
+            ("BEARER not-a-real-token", 503),
+            ("token not-a-real-token", 503),
+            ("Bearer", 503),
+            ("bearer", 503),
+            ("nope", 503),
+            ("Basic YWJjOmRlZg==", 503),
+        ):
+            headers = {"Authorization": value}
+            answer = client.get(url, params=bad, headers=headers)
+            assert answer.status_code == beside_callback, (kind, value)
+            if beside_callback == 503:
+                assert answer.text == DOWNLOAD_503_BODY, (kind, value)
+            else:
+                assert answer.json()["error"]["status"] == "UNAUTHENTICATED", (kind, value)
+            assert client.get(url, params=params, headers=headers).status_code == 401, (kind, value)
+
+
+def test_a_download_is_the_route_not_the_path_shape(client, admin_h):
+    """Measured 2026-10-07: an export asking for `alt=json` is not a download but an ordinary read
+    -- the unregistered-caller 403 without a credential, the wrapped `callback` 400 with one -- and
+    a file whose id is literally `export` is a `files.get`, answering the metadata read."""
+    doc = _drive_find(client, admin_h, "Brand")["id"]
+    anonymous = client.get(f"/drive/v3/files/{doc}/export", params={"mimeType": "x", "alt": "json"})
+    assert anonymous.status_code == 403
+    assert anonymous.json()["error"]["status"] == "PERMISSION_DENIED"
+    wrapped = client.get(
+        f"/drive/v3/files/{doc}/export",
+        params={"mimeType": "x", "alt": "json", "callback": "a b"},
+        headers=admin_h,
+    )
+    assert wrapped.status_code == 200 and "Invalid JSONP callback name" in wrapped.text
+    literal = client.get("/drive/v3/files/export")
+    assert literal.status_code == 403
+    assert literal.json()["error"]["status"] == "PERMISSION_DENIED"
+    cb = client.get("/drive/v3/files/export", params={"callback": "a b"}, headers=admin_h)
+    assert cb.status_code == 200 and "Invalid JSONP callback name" in cb.text
+
+
+def test_a_download_reads_the_first_callback_repeat_and_an_empty_one_is_none(client, admin_h):
+    """Measured 2026-10-07: `cb&a b` on a download answers the bytes where `a b&cb` answers the 503,
+    so the first repeat decides as it does for every other `callback`. An empty `callback=` is no
+    callback at all: the download answers the plain 403."""
+    pdf = _drive_find(client, admin_h, "Whitepaper")["id"]
+    url = f"/drive/v3/files/{pdf}"
+    raw = client.get(url, params={"alt": "media"}, headers=admin_h)
+    first = client.get(f"{url}?alt=media&callback=cb&callback=a%20b", headers=admin_h)
+    assert first.status_code == 200 and first.content == raw.content
+    second = client.get(f"{url}?alt=media&callback=a%20b&callback=cb", headers=admin_h)
+    assert second.status_code == 503 and second.text == DOWNLOAD_503_BODY
+    assert client.get(f"{url}?alt=media&callback=", headers=admin_h).content == raw.content
+    anonymous = client.get(f"{url}?alt=media&callback=")
+    assert anonymous.status_code == 403
+    assert anonymous.json()["error"]["message"] == MISSING_API_KEY
+    # ...and the case of `alt` does not decide either: `alt=MEDIA` is the same download, and the
+    # same callback 503, as `alt=media` (measured 2026-09-17 and 2026-10-07)
+    upper = client.get(f"{url}?alt=MEDIA&callback=a%20b", headers=admin_h)
+    assert upper.status_code == 503 and upper.text == DOWNLOAD_503_BODY
+
+
 def test_the_alt_that_downloads_is_read_the_way_every_other_alt_is(client, admin_h, tokens):
     """Case does not decide a download and neither does the last repeat.
 
@@ -2694,32 +3453,89 @@ def test_drive_order_by_rejects_keys_it_cannot_honor(client, admin_h):
     assert ok.status_code == 200
 
 
+_DUPLICATE_403 = (
+    "orderByContainsDuplicateSortKeys",
+    "The orderBy parameter cannot contain duplicate sort keys.",
+)
+_FULLTEXT_403 = (
+    "forbidden",
+    "Sorting is not supported for queries with fullText terms. Results are always in descending relevance order.",
+)
+
+
 @pytest.mark.parametrize(
-    "order_by, status",
+    "q, order_by, status, error",
     [
-        ("name", 200),
-        ("name,modifiedTime", 200),
-        ("name desc,modifiedTime", 200),
-        ("recency,modifiedTime", 200),
-        ("name,name", 403),
-        ("name desc,name", 403),
-        ("name,name desc", 403),
-        ("name desc,name desc", 403),
-        ("modifiedTime,name,modifiedTime", 403),
-        ("name_natural,name", 403),
-        ("name,name_natural", 403),
-        ("name,name,bogus", 403),
-        ("name,bogus,name", 400),
-        ("name,name sideways", 400),
+        (None, "name", 200, None),
+        (None, "name,modifiedTime", 200, None),
+        (None, "name desc,modifiedTime", 200, None),
+        (None, "recency,modifiedTime", 200, None),
+        (None, "name,name", 403, _DUPLICATE_403),
+        (None, "name desc,name", 403, _DUPLICATE_403),
+        (None, "name,name desc", 403, _DUPLICATE_403),
+        (None, "name desc,name desc", 403, _DUPLICATE_403),
+        (None, "modifiedTime,name,modifiedTime", 403, _DUPLICATE_403),
+        (None, "name_natural,name", 403, _DUPLICATE_403),
+        (None, "name,name_natural", 403, _DUPLICATE_403),
+        (None, "name,name,bogus", 403, _DUPLICATE_403),
+        (None, "name,bogus,name", 400, None),
+        (None, "name,name sideways", 400, None),
+        (None, "starred", 200, None),
+        (None, "starred desc", 200, None),
+        (None, "starred,name", 200, None),
+        (None, "starred desc,name", 200, None),
+        (None, "starred,name,folder", 200, None),
+        (None, ",starred", 200, None),
+        (None, "name,starred", 500, None),
+        (None, "name, starred", 500, None),
+        (None, "name desc,starred desc", 500, None),
+        (None, "folder,starred,name", 500, None),
+        (None, "name,folder,starred", 500, None),
+        (None, "createdTime,starred", 500, None),
+        (None, "quotaBytesUsed,starred", 500, None),
+        (None, "name,,starred", 500, None),
+        (None, "name,starred,name", 403, _DUPLICATE_403),
+        (None, "starred,starred", 403, _DUPLICATE_403),
+        (None, "name,starred,bogus", 400, None),
+        ("fullText contains 'the'", "name", 403, _FULLTEXT_403),
+        ("fullText contains 'the'", "name desc", 403, _FULLTEXT_403),
+        ("fullText contains 'the'", "name,modifiedTime", 403, _FULLTEXT_403),
+        ("fullText contains 'the'", "name,starred", 403, _FULLTEXT_403),
+        ("fullText contains 'the'", "name,viewedByMeTime", 403, _FULLTEXT_403),
+        ("fullText contains 'the'", "viewedByMeTime", 403, _FULLTEXT_403),
+        ("fullText contains 'the'", "viewedByMeTime desc", 403, _FULLTEXT_403),
+        ("fullText contains 'the'", "modifiedByMeTime", 403, _FULLTEXT_403),
+        ("fullText contains 'the'", "name,name", 403, _DUPLICATE_403),
+        ("fullText contains 'the'", "viewedByMeTime,viewedByMeTime", 403, _DUPLICATE_403),
+        ("fullText contains 'zzqqxx'", "name", 403, _FULLTEXT_403),
+        ("fullText contains 'zzqqxx'", None, 200, None),
+        ("fullText contains 'zzqqxx'", "", 200, None),
+        ("fullText contains 'zzqqxx' and trashed = false", "name", 403, _FULLTEXT_403),
+        ("fullText contains 'zzqqxx' or name contains 'zzqqxx'", "name", 403, _FULLTEXT_403),
+        ("not fullText contains 'the'", "name", 403, _FULLTEXT_403),
+        ("(fullText contains 'the')", "name", 403, _FULLTEXT_403),
+        ("name contains 'the'", "name", 200, None),
+        ("name contains 'fullText'", "name", 200, None),
     ],
 )
-def test_drive_order_by_refuses_a_repeated_sort_key(client, admin_h, order_by, status):
-    """A key named twice is the 403 `_drive_order_specs` describes, and its `error` object is the
-    one real sends; an unusable token at or before the repeat is the 400."""
-    r = client.get("/drive/v3/files", headers=admin_h, params={"pageSize": 1, "orderBy": order_by})
+def test_drive_order_by_is_refused_where_real_refuses_it(
+    client, admin_h, q, order_by, status, error
+):
+    """`orderBy` on its own and beside a `q`, answered with the 403s `_drive_order_specs` and
+    `gerr.sorting_not_supported_fulltext` describe and the 500 `gerr.drive_internal_error`
+    describes, each `error` object the one real sends. An unusable token at or before a repeat is
+    the 400, the parse is refused ahead of the 500 wherever `starred` sits and the repeat ahead of
+    the `fullText` 403, and an absent or empty `orderBy`, or a `q` with no `fullText` term, is
+    served."""
+    params = {"pageSize": 1, "q": q, "orderBy": order_by}
+    r = client.get(
+        "/drive/v3/files",
+        headers=admin_h,
+        params={k: v for k, v in params.items() if v is not None},
+    )
     assert r.status_code == status, r.text
-    if status == 403:
-        message = "The orderBy parameter cannot contain duplicate sort keys."
+    if error is not None:
+        reason, message = error
         assert _gerr(r) == {
             "code": 403,
             "message": message,
@@ -2727,10 +3543,18 @@ def test_drive_order_by_refuses_a_repeated_sort_key(client, admin_h, order_by, s
                 {
                     "message": message,
                     "domain": "global",
-                    "reason": "orderByContainsDuplicateSortKeys",
+                    "reason": reason,
                     "location": "orderBy",
                     "locationType": "parameter",
                 }
+            ],
+        }
+    if status == 500:
+        assert _gerr(r) == {
+            "code": 500,
+            "message": "Internal Error",
+            "errors": [
+                {"message": "Internal Error", "domain": "global", "reason": "internalError"}
             ],
         }
 

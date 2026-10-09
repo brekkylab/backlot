@@ -342,7 +342,7 @@ def github():
     check("GitHub", "pull.get_reviews")(lambda: f"{len(list(prs[0].get_reviews()))} reviews")
 
     def missing_readme():
-        # api.github.com (2026-10-04): a repository without a README returns 404.
+        # gateway holds no README, which is real's 404 (`backlot.routers.github.get_readme`)
         try:
             repo.get_readme()
         except UnknownObjectException as error:

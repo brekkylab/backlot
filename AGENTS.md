@@ -44,6 +44,8 @@ docs, `pyproject.toml` keywords.
 ## Tests
 
 - Run the suite before pushing: `pytest -q`. The docs tests above fail CI exactly like code tests.
+- Also run `python scripts/prose_check.py` before pushing, and fix what it reports or say in the PR
+  why a finding stands. CI shows the same findings only as warnings, and a run with them is green.
 - Vendor tests are written against measured responses, not vendor docs. Bring a test that fails
   without your fix.
 - Examples are self-contained: each script spins up its own throwaway server via

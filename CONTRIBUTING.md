@@ -56,6 +56,7 @@ Two words, and they are not interchangeable:
 pytest                    # unit + HTTP endpoint tests; needs no data and no network
 pytest -rs                # the same, and it names every test that skipped, with the reason
 ruff check . && ruff format --check .    # both gate CI; ruff comes from the `dev` extra
+python scripts/prose_check.py   # issue numbers and re-dated measurements in new comments
 ```
 
 Everything that runs on a `dev` install must pass for every change, and it needs no data and no
@@ -74,7 +75,7 @@ file with them:
 | `.[mirage]` | the shim tests in `tests/test_integrations.py` |
 | `.[fsspec]` — `fsspec` and `gdrive-fsspec` | the Google Drive and GitHub filesystem tests in `tests/test_integrations.py` |
 | Docker, `npx`, `uvx` | one `tests/test_mcp.py` test each — the Atlassian, Notion and AWS MCP servers |
-| `git` | the tests in `tests/test_github.py` that build a real repo |
+| `git` | the tests in `tests/test_github.py` that build a real repo, and the one in `tests/test_prose_check.py` |
 
 Install with `uv sync --all-extras --locked` — the same command CI runs, and the one to use rather
 than pip, whose resolver cannot solve this dependency graph. It installs every extra above, so
@@ -90,7 +91,8 @@ uv pip install --no-deps "llama-index-readers-hubspot<0.6"
 (`.[all]` names the same set for anyone installing Backlot from PyPI rather than a checkout.)
 
 CI runs the suite, ruff, and the Linear example on every push to `main` and every pull request
-(see `.github/workflows/ci.yml`).
+(see `.github/workflows/ci.yml`). On a pull request it also runs `scripts/prose_check.py`, whose
+findings show as warnings on the lines they name and do not fail the run.
 
 ### Testing the agent skill
 

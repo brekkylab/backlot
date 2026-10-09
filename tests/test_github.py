@@ -179,7 +179,7 @@ def test_github_a_directory_readme_is_that_directorys_and_acl_scoped(tmp_path):
     with as many slashes around it as real reads past. The route reads corpus content, so a caller
     the document is not visible to gets the 404 the repository's own lookup gives rather than the
     file. Stated in a corpus of its own, since the bundled ones hold no directory README, none
-    spelt `readme.md`, and none to scope."""
+    spelt `readme.md` or `README`, and none to scope."""
     s = tiny_corpus(
         tmp_path,
         [
@@ -190,6 +190,17 @@ def test_github_a_directory_readme_is_that_directorys_and_acl_scoped(tmp_path):
                 "subtype": "file",
                 "path": "README.md",
                 "content": "# the repository",
+                "author_email": "owner@x.com",
+                "visibility": "public",
+            },
+            {
+                # beside `README.md`, as on curl/curl, where `README.md` is the one served
+                "source_type": "github",
+                "doc_id": "gh-acl-root-plain",
+                "repo": "scoped",
+                "subtype": "file",
+                "path": "README",
+                "content": "plain",
                 "author_email": "owner@x.com",
                 "visibility": "public",
             },
@@ -225,6 +236,28 @@ def test_github_a_directory_readme_is_that_directorys_and_acl_scoped(tmp_path):
                 "author_email": "owner@x.com",
                 "visibility": "public",
             },
+            {
+                "source_type": "github",
+                "doc_id": "gh-plain-readme",
+                "repo": "plain",
+                "subtype": "file",
+                "path": "README",
+                "content": "Hello World!\n",
+                "author_email": "owner@x.com",
+                "visibility": "private",
+            },
+            {
+                # what lets the outsider see the repository, so the README's own scope is what
+                # hides it
+                "source_type": "github",
+                "doc_id": "gh-plain-outsider",
+                "repo": "plain",
+                "title": "unrelated",
+                "content": "x",
+                "author_email": "outsider@x.com",
+                "visibility": "public",
+                "number": 1,
+            },
         ],
     )
     with client_for(s, reload=True) as c:
@@ -248,6 +281,16 @@ def test_github_a_directory_readme_is_that_directorys_and_acl_scoped(tmp_path):
         lower = c.get(f"/github/repos/{org}/lower/readme/", headers=admin)
         assert lower.status_code == 200 and lower.json()["path"] == "readme.md"
         assert c.get(url, headers={"Authorization": f"Bearer {outsider}"}).status_code == 404
+        # measured on octocat/Hello-World: a README with no extension, at either spelling and in
+        # either media type
+        for tail in ("readme", "readme/"):
+            plain = f"/github/repos/{org}/plain/{tail}"
+            got = c.get(plain, headers=admin).json()
+            assert got["path"] == "README" and got["size"] == 13, tail
+            raw = c.get(plain, headers={**admin, "Accept": "application/vnd.github.raw"})
+            assert raw.content == b"Hello World!\n", tail
+            hidden = c.get(plain, headers={"Authorization": f"Bearer {outsider}"})
+            assert hidden.status_code == 404, tail
 
 
 def test_github_the_redirect_does_not_precede_the_repository(tmp_path):
@@ -317,7 +360,7 @@ def test_github_readme_with_an_empty_directory_is_the_repositorys_own(
     assert empty.status_code == 200 and empty.json()["path"] == root["path"]
 
 
-_DIRECTORY_README_404_ROWS = [
+_README_404_ROWS = [
     # repo, path, message, where documentation_url ends
     ("codebase", "readme/docs", "Not Found", "#get-a-repository-readme-for-a-directory"),
     # a repository holding no README
@@ -326,25 +369,29 @@ _DIRECTORY_README_404_ROWS = [
     ("codebase", "readme///", "Not Found", "#get-a-repository-readme-for-a-directory"),
     # the ref is refused before the slashes are (measured: `readme///?ref=nope`)
     ("codebase", "readme///?ref=nope", "No commit found for the ref nope", "/v3/repos/contents/"),
+    # the root route, on a repository holding no README
+    ("gateway", "readme", "Not Found", "#get-a-repository-readme"),
 ]
 
 
 @pytest.mark.parametrize(
     "repo, tail, message, anchor",
-    _DIRECTORY_README_404_ROWS,
-    ids=[f"{r[0]}-{r[1]}" for r in _DIRECTORY_README_404_ROWS],
+    _README_404_ROWS,
+    ids=[f"{r[0]}-{r[1]}" for r in _README_404_ROWS],
 )
-def test_github_readme_for_a_directory_holding_none_is_the_directory_anchors_404(
+def test_github_a_readme_route_holding_none_is_its_own_anchors_404(
     gh_client, gh_org, gh_admin_h, repo, tail, message, anchor
 ):
-    """Measured: the 404 names `#get-a-repository-readme-for-a-directory`, where the root route's
-    names `#get-a-repository-readme`, and it is also what `readme/` answers on a repository
-    holding no README and what a path ending in three slashes answers."""
+    """Measured: the directory route's 404 names `#get-a-repository-readme-for-a-directory`, where
+    the root route's names `#get-a-repository-readme`, and it is also what `readme/` answers on a
+    repository holding no README and what a path ending in three slashes answers. The raw media
+    type answers each of them with the same JSON."""
     c, _ = gh_client
-    r = c.get(f"/github/repos/{gh_org}/{repo}/{tail}", headers=gh_admin_h)
-    assert r.status_code == 404
-    assert r.json()["message"] == message
-    assert r.json()["documentation_url"].endswith(anchor)
+    for accept in ({}, {"Accept": "application/vnd.github.raw"}):
+        r = c.get(f"/github/repos/{gh_org}/{repo}/{tail}", headers={**gh_admin_h, **accept})
+        assert r.status_code == 404, accept
+        assert r.json()["message"] == message
+        assert r.json()["documentation_url"].endswith(anchor)
 
 
 def test_github_serves_a_comment_dated_at_the_epoch(tmp_path):
@@ -1811,12 +1858,6 @@ def test_github_readme_real_content(gh_client, gh_admin_h, gh_org):
     text = "# codebase\n\nCore service source, browsable via the tree/contents API.\n"
     assert base64.b64decode(body["content"]).decode() == text
     assert body["sha"] == hashlib.sha1(text.encode()).hexdigest()
-
-
-def test_github_readme_stub_when_no_readme_file(client, admin_h, org):
-    # 'gateway' (base SAMPLE) has issues/PRs but no file docs -> falls back to the stub
-    body = client.get(f"/github/repos/{org}/gateway/readme", headers=admin_h).json()
-    assert base64.b64decode(body["content"]).decode().startswith("# gateway")
 
 
 def test_github_file_excluded_from_issues_and_pulls(gh_client, gh_admin_h, gh_org):
@@ -3427,16 +3468,11 @@ def test_github_raw_media_type_returns_the_bytes(gh_client, gh_admin_h, gh_org, 
             "application/vnd.github.raw",
             _CODEBASE_README,
         ),
-        # 'gateway' carries no README doc, so this one exercises the synthesized-stub branch
-        (f"/github/repos/{gh_org}/gateway/readme", "application/vnd.github.raw", None),
     ]:
         r = c.get(url, headers={**gh_admin_h, "Accept": accept})
         assert r.status_code == 200, url
         assert r.headers["content-type"].startswith(ctype), url
-        if body is None:
-            assert r.text.startswith("# gateway")
-        else:
-            assert r.text == body and len(r.content) == len(body.encode()), url
+        assert r.text == body and len(r.content) == len(body.encode()), url
 
 
 def test_github_raw_accept_leaves_the_json_envelope_alone(gh_client, gh_admin_h, gh_org):
@@ -3569,7 +3605,10 @@ def test_github_user_repos(gh_client, gh_admin_h, gh_user_tokens, gh_org):
         "/teams",
     ):
         assert c.get(f"/github/repos/{gh_org}/vault{path}", headers=bob_h).status_code == 404, path
-        assert c.get(f"/github/repos/{gh_org}/vault{path}", headers=gh_admin_h).status_code == 200
+        expected = 404 if path == "/readme" else 200  # vault has no README file
+        assert (
+            c.get(f"/github/repos/{gh_org}/vault{path}", headers=gh_admin_h).status_code == expected
+        )
 
     page = c.get("/github/user/repos", headers=gh_admin_h, params={"per_page": 1, "page": 1})
     assert len(page.json()) == 1 and 'rel="next"' in page.headers.get("Link", "")

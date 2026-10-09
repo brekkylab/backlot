@@ -476,6 +476,23 @@ def test_slack_history_rejects_a_malformed_timestamp(client, admin_h, param, err
     assert r.json() == {"ok": False, "error": error}
 
 
+@pytest.mark.parametrize(
+    "param, error", [("latest", "invalid_ts_latest"), ("oldest", "invalid_ts_oldest")]
+)
+@pytest.mark.parametrize("value", ["inf", "-inf", "nan", "Infinity", "-Infinity", "NaN", "1e999"])
+def test_slack_history_rejects_a_non_finite_timestamp(client, admin_h, param, value, error):
+    """`float()` reads a timestamp no window can be built from — `_slack_ts` records the live
+    measurement — and the window's `int()` raises on infinity and NaN alike, so every spelling
+    that parses to a non-finite value answered 500 where the live API answers the named error."""
+    r = client.get(
+        "/slack/api/conversations.history",
+        headers=admin_h,
+        params={"channel": _a_channel_id(client, admin_h), param: value},
+    )
+    assert r.status_code == 200
+    assert r.json() == {"ok": False, "error": error}
+
+
 @pytest.mark.parametrize("path", ["conversations.list", "users.list"])
 def test_slack_rejects_an_invalid_cursor(client, admin_h, path):
     """An undecodable cursor was treated as offset 0, so a client paginating with a corrupted

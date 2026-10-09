@@ -4072,7 +4072,8 @@ _SEARCH = "/atlassian/wiki/rest/api/search?cql=type%3Dpage"
 def test_confluence_search_carries_the_cache_pair_where_real_does(
     client, admin_h, method, path, credential, status, cached
 ):
-    """Pins search headers to the reviewer's Confluence Cloud measurements of 2026-10-07."""
+    """Pins where ``backlot.routers.atlassian.vendor_headers`` puts the search's `cache-control`
+    and `expires`, each row's status and headers as Confluence Cloud answered it."""
     headers = {"admin": admin_h, None: {}}.get(credential, {"Authorization": credential})
     r = client.request(method, path, headers=headers)
     assert r.status_code == status, r.text

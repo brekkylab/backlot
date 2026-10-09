@@ -358,7 +358,7 @@ def resolve_transcripts(
         # before or after returns nothing, whichever zone the caller is in. Narrowed against any
         # fromDate/toDate already given. The value is milliseconds whatever its size: real answered
         # a transcript's date divided by 1000 with no transcripts, and the millisecond before a
-        # midnight with the day before (reviewer measurement, 2026-10-07).
+        # midnight with the day before (2026-10-07).
         day = int(date // 1000)
         start = day - (day % 86400)
         from_ts = start if from_ts is None else max(from_ts, start)

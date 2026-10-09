@@ -255,8 +255,8 @@ def test_fireflies_date_selects_a_day_and_the_singular_email_filters_narrow(clie
     # 2026-04-10T16:00:00Z, the all-hands meeting: its own instant, and midnight that day
     assert titles("date: 1775836800000") == {"April all-hands"}
     assert titles("date: 1775779200000") == {"April all-hands"}
-    # The millisecond before midnight selects the previous day; seconds are milliseconds too.
-    # api.fireflies.ai, re-measured by the reviewer 2026-10-07.
+    # the millisecond before that midnight is the day before, and the instant in seconds is read
+    # as milliseconds, a day in January 1970
     assert titles("date: 1775779199999") == set()
     assert titles("date: 1775836800") == set()
     # the discovery call is a different day, so it is not in either answer

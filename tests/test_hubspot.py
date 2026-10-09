@@ -80,6 +80,33 @@ def test_hubspot_archived_parameter_reads_its_first_value_and_only_true_as_true(
         assert r.json() == client.get(url, headers=admin_h).json()
 
 
+def test_hubspot_an_archived_record_is_read_only_with_archived_true(client, admin_h):
+    """Measured against api.hubapi.com on 2026-09-30 over a portal with one archived contact: its
+    `GET …/{id}` was a 404, the same with `?archived=true` a 200 with the record, and batch/read
+    without `archived=true` a 207 with `results` empty and the not-found error for its id."""
+    (defunct,) = client.get(
+        "/hubspot/crm/v3/objects/companies", headers=admin_h, params={"archived": "true"}
+    ).json()["results"]
+    url = f"/hubspot/crm/v3/objects/companies/{defunct['id']}"
+
+    r = client.get(url, headers=admin_h)
+    assert r.status_code == 404
+    assert r.json()["category"] == "OBJECT_NOT_FOUND"
+
+    r = client.get(url, headers=admin_h, params={"archived": "true"})
+    assert r.status_code == 200
+    assert (r.json()["id"], r.json()["archived"]) == (defunct["id"], True)
+
+    r = client.post(
+        "/hubspot/crm/v3/objects/companies/batch/read",
+        headers=admin_h,
+        json={"inputs": [{"id": defunct["id"]}]},
+    )
+    assert r.status_code == 207
+    assert r.json()["results"] == []
+    assert [e["context"]["id"] for e in r.json()["errors"]] == [[defunct["id"]]]
+
+
 def test_hubspot_list_cursor_pages_without_overlap(client, admin_h):
     """The cursor path itself: pages of two over the three non-archived companies, no repeats, no
     gaps, and the walk ends by `paging.next` disappearing rather than by a page coming back empty."""

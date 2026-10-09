@@ -44,6 +44,7 @@ warnings.filterwarnings("ignore", message="Duplicate Operation ID", category=Use
 SOURCE_PREFIXES: dict[str, list[str]] = {
     "github": ["/github"],
     "slack": ["/slack/api"],
+    "msteams": ["/msgraph"],
     "gmail": ["/gmail"],
     "gdrive": ["/drive/v3", "/docs/v1", "/sheets/v4", "/slides/v1"],
     "notion": ["/notion/v1"],

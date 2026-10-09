@@ -19,6 +19,7 @@ from tests._helpers import complete
 
 ALL_SOURCES = [
     "slack",
+    "msteams",
     "gmail",
     "google_drive",
     "github",
@@ -314,16 +315,17 @@ def test_acl_table_registry_covers_every_source(tmp_path):
 def test_id_seed_registry_covers_every_source_whose_id_is_a_1_arity_hash():
     """`ID_SEED` holds the sources whose served id is a pure function of ONE value — the incoming
     record's own dataset identifier — so a single assignment method can seed and probe all of them.
-    It is deliberately NOT total over `SOURCE_TABLE`; three sources cannot honour that contract and
+    It is deliberately NOT total over `SOURCE_TABLE`; four sources cannot honour that contract and
     get their own assignment pass instead:
 
     - `jira`'s key is COMPOSED from its project's prefix, so its seed is (project, dataset id).
-    - `slack`'s ts is a function of the row's `created_ts` and its thread root as well.
+    - `slack`'s ts and `msteams`' message id are functions of the row's `created_ts` and of what
+      the channel has already issued in that second, not of the dataset id alone.
     - `s3`'s (bucket, key) is stated outright by the corpus; nothing synthesizes it at all.
 
     Widening the tuple to fit those would make every other source pay for their shape — the same
     call `fireflies_users` and `linear_teams` made when they were converted."""
-    assert set(store.ID_SEED) == set(store.SOURCE_TABLE) - {"jira", "slack", "s3"}
+    assert set(store.ID_SEED) == set(store.SOURCE_TABLE) - {"jira", "slack", "msteams", "s3"}
     # Confluence's own entry -- seed function, then the columns its probe holds fixed (none:
     # confluence resolves an id corpus-wide). The column the seed FILLS is not in this registry:
     # it is the table's primary key, which `id_columns` already names.

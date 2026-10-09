@@ -1,0 +1,8 @@
+{
+  "source": "msteams",
+  "endpoints": [
+    "https://graph.microsoft.com/v1.0/$metadata"
+  ],
+  "measured": "2026-10-08",
+  "acknowledged": []
+}

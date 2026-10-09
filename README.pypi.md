@@ -79,6 +79,7 @@ It emulates the documented subset of each API it supports, not every vendor endp
 | Service | Base path | Example, on the official SDK |
 |---|---|---|
 | Slack | `/slack/api` | [`slack.py`](https://github.com/brekkylab/backlot/blob/main/examples/using-official-sdk/slack.py) |
+| Microsoft Teams | `/msgraph/v1.0` | [`msteams.py`](https://github.com/brekkylab/backlot/blob/main/examples/using-official-sdk/msteams.py) |
 | Gmail | `/gmail/v1` | [`gmail.py`](https://github.com/brekkylab/backlot/blob/main/examples/using-official-sdk/gmail.py) |
 | Google Drive (Docs, Sheets, Slides) | `/drive/v3` `/docs/v1` `/sheets/v4` `/slides/v1` | [`gdrive.py`](https://github.com/brekkylab/backlot/blob/main/examples/using-official-sdk/gdrive.py) |
 | GitHub | `/github` | [`github.py`](https://github.com/brekkylab/backlot/blob/main/examples/using-official-sdk/github.py) |

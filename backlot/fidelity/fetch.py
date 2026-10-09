@@ -12,6 +12,24 @@ import httpx
 from backlot.fidelity.errors import FidelityError
 
 
+def fetch_text(url: str, *, timeout: float = 120.0) -> str:
+    """A vendor document that is not JSON, with the same failure this module's JSON reader gives.
+
+    One vendor publishes its type system as CSDL XML rather than as JSON, and the distinction that
+    matters is unchanged: a document that cannot be fetched is not a divergence, so it raises
+    :class:`FidelityError` and never reaches a comparison as an empty result.
+    """
+    try:
+        response = httpx.get(url, timeout=timeout, follow_redirects=True)
+    except httpx.HTTPError as e:
+        raise FidelityError(f"{url} unreachable: {e}") from e
+    if response.status_code != 200:
+        raise FidelityError(f"{url} answered {response.status_code}")
+    if not response.text.strip():
+        raise FidelityError(f"{url} answered an empty body")
+    return response.text
+
+
 def fetch_json(url: str, *, timeout: float = 120.0) -> dict:
     try:
         response = httpx.get(url, timeout=timeout, follow_redirects=True)

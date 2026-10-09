@@ -27,6 +27,14 @@ bodies are out of scope here: a vendor spec describes them through deep `$ref` c
 Backlot's `response_model` set does not mirror shape-for-shape, so a body diff would report how two
 documents are written rather than how two servers answer.
 
+For **Microsoft Teams**, the type system Microsoft Graph publishes as CSDL at
+`https://graph.microsoft.com/v1.0/$metadata`, anonymously and from the live service. A CSDL
+enumerates neither Backlot's paths nor the vendor's: it declares entity types, which of their
+properties may be null, whether a type accepts properties it does not name, and the members of
+every enum. So Backlot's side is not a document either — it is the responses a running server
+actually sends. See [Teams is asked against its type
+system](#teams-is-asked-against-its-type-system).
+
 Path templates are compared with placeholders flattened. The vendor calling a segment `{userId}`
 and Backlot calling it `{user_id}` is not a divergence.
 
@@ -61,7 +69,7 @@ Each source **declares** the credentials it needs, by a logical name and the env
 it is read from, and `--credential NAME=VALUE` repeats for as many as a source declares. A single
 `--token` would not stretch: a vendor authenticated with SigV4 needs an access key *and* a secret,
 and a Google service account needs a client id, a client secret and a private key. Declaring them
-also means a name a source does not take is **refused** rather than ignored — nine of the eleven
+also means a name a source does not take is **refused** rather than ignored — ten of the twelve
 sources need no credential at all, and that is exactly where a silently accepted option goes
 unnoticed.
 
@@ -186,6 +194,50 @@ What the batch endpoint *does* — the multipart envelope, the `Content-ID` pair
 credential applying to a sub-request that carries none — is behaviour, and is held by
 `tests/test_google.py` rather than by this comparison.
 
+## Teams is asked against its type system
+
+Graph publishes a machine-readable contract, richer than any other source's, and it is not a path
+map. `$metadata` declares entity and complex types plus enums; it is not a served-path inventory. So Backlot's side cannot be `/openapi.json`: the response models under `/msgraph`
+allow extra fields and name none of them, deliberately, because a Graph response carries thirty
+keys and mirroring that in a Pydantic model would be a second declaration to keep in step.
+
+What the vendor's declaration is compared against is a sample of a running server's answers.
+Backlot starts on a free port and samples the Teams read surface as the service account. The walk
+checks first pages only and expanded replies returned inline; it does not follow collection or
+reply continuation links. It is a shape sample, not an exhaustive corpus crawl or pagination check.
+Sampled messages and the nested objects the walk enumerates (`body`, `from`, `channelIdentity`,
+reactions, attachments and mentions) are checked against their declared types:
+
+- a property served on a **closed** type that the type does not declare
+- a property declared `Nullable="false"` served as **null**
+- an **enum-typed** property carrying a value the enum does not list
+
+All three are classified as **breaking by Backlot's schema-conformance gate**. That classification
+is not proof that every official SDK rejects the payload: the Python Graph SDK, for example, can
+retain an unknown property in `additional_data`. Null and enum handling also depends on the client.
+The gate reports a declaration mismatch, not a guaranteed deserialization failure.
+
+A property the document declares and the response **omits** is not reported. Every one of these
+APIs projects — Graph returns eleven of `user`'s eighty-one properties unless `$select` asks for
+more — so "declared, not served" is the normal case and reporting it would bury the three above.
+`Nullable="false"` is read as *not null when returned*, never as *always returned*.
+
+Two more things the document says are honoured rather than assumed. `team` and `user` are
+`OpenType="true"`, so a property they do not declare is something the vendor **permits**, and they
+are not held to the first check at all; `chatMessage`, `channel` and `chatMessageReaction` are
+closed, and they are. And a type name is keyed by its namespace: `user`, `identity` and `group` are
+each declared in more than one of Graph's schemas, and a bare-name lookup answers with whichever
+came last.
+
+This is not a probe. A [probe](#s3-is-asked-not-read) is for a contract that cannot be read off a
+document at all; here every finding names a property, a type or an enum member the vendor declared
+and quotes what it declared about it. What the two share is only that Backlot's side comes from a
+running server, which is a consequence of the vendor describing types rather than routes.
+
+Which request answers with which declared type is the one thing no document carries, so
+[`msgraph_walk`](../backlot/fidelity/msgraph_walk.py) states it and the source names that walk.
+Deriving it from the source's name would turn a rename into an `ImportError` on a nightly run.
+
 ## The baseline
 
 `backlot/fidelity/baseline/<source>.json` holds the divergences already read and accepted, so a run
@@ -270,6 +322,7 @@ each of those is compared, and a test fails if the two sets ever drift apart.
 | Confluence | published OpenAPI (v1) | none |
 | HubSpot | published OpenAPI, CRM v3 and Associations v4, resolved through the API catalog | none |
 | Notion | published OpenAPI | none |
+| Microsoft Teams (`msteams`) | Graph's published CSDL, against served responses — see [Teams is asked against its type system](#teams-is-asked-against-its-type-system) | none |
 | Amazon S3 | botocore service model, **probed** — see [S3 is asked, not read](#s3-is-asked-not-read) | none |
 
 The credential column is measured, not read off a page: Linear's personal API keys go in bare, and

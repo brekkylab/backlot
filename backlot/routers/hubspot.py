@@ -22,7 +22,6 @@ from __future__ import annotations
 import json
 import re
 from functools import lru_cache
-from uuid import uuid4
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -780,18 +779,9 @@ async def list_objects(object_type: str, request: Request):
     archived = _flag(_first_query(qp, "archived"))
     type_label = _NO_ARCHIVED_PAGING.get(_CANONICAL.get(object_type, object_type))
     if archived and type_label is not None:
-        return JSONResponse(
-            status_code=400,
-            media_type="application/json;charset=utf-8",
-            content={
-                "status": "error",
-                "message": (
-                    "Paging through deleted objects is not yet supported for object type "
-                    f"{type_label}"
-                ),
-                "correlationId": str(uuid4()),
-                "category": "VALIDATION_ERROR",
-            },
+        return _error(
+            400,
+            f"Paging through deleted objects is not yet supported for object type {type_label}",
         )
     rows = store.list_hubspot_objects(
         auth.conn(request),

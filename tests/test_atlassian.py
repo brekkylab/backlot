@@ -304,7 +304,11 @@ def test_confluence_refuses_an_unreadable_bearer_with_its_own_403_not_jiras(clie
 def test_confluence_refuses_an_unresolvable_credential_with_its_own_403(client, headers):
     """Confluence does not process an anonymous caller the way Jira does: it rejects the request
     outright, with a 403 in its own envelope, whether the credential failed or was never sent."""
-    for path in ("/wiki/rest/api/space", "/wiki/rest/api/content/1"):
+    for path in (
+        "/wiki/rest/api/space",
+        "/wiki/rest/api/content/1",
+        "/wiki/rest/api/content/1/child/attachment?limit=abc",
+    ):
         r = client.get(f"/atlassian{path}", headers=headers)
         assert r.status_code == 403, path
         assert r.json()["message"] == errors_atlassian.CONFLUENCE_FORBIDDEN
@@ -1087,24 +1091,21 @@ def test_confluence_restrictions_has_update(tmp_path):
     assert result["read"]["restrictions"]["user"]["results"]  # the private doc's author
 
 
-def test_confluence_child_page_and_restriction_match_a_nonexistent_id_for_an_outsider(
-    client, tokens, ro_conn
-):
-    """`_confluence_doc_id` (`:981`) is deliberately unscoped -- of its four callers, `child/
-    comment` and `label` already re-check with `store.get_document(..., visible_ids=...)` and 404
-    on a miss; `child/page` and `restriction/byOperation` used not to. That let an outsider use
-    `child/page`'s 200 as an existence oracle for a page they cannot read, and
-    `restriction/byOperation` handed back the READER ROSTER -- emails, account ids, display names
-    -- for that same page: data, not just existence. Handled the same way `child/comment`/`label`
-    are: a restricted page must be byte-identical, status AND
-    body, to a made-up id -- checked here on the actual response bytes, not merely "not 200"."""
+@pytest.mark.parametrize("route", ["child/page", "child/attachment", "restriction/byOperation"])
+def test_confluence_a_page_an_outsider_cannot_read_is_a_made_up_id(client, admin_h, tokens, route):
+    """A page the caller cannot read answers what a made-up id answers, status and body byte for
+    byte, so neither a listing's 200 nor `restriction/byOperation`'s reader roster tells an outsider
+    the page is there. The admin's 200 on the same URL is the control."""
     cid = served_id("confluence", "cf-comp")  # people-only
+    path = f"/atlassian/wiki/rest/api/content/{cid}/{route}"
+    served = client.get(path, headers=admin_h)
+    assert served.status_code == 200, served.text
+
     h = {"Authorization": f"Bearer {tokens['ava@acme.com']}"}  # engineering; cannot see cf-comp
-    for path in ("child/page", "restriction/byOperation"):
-        hidden = client.get(f"/atlassian/wiki/rest/api/content/{cid}/{path}", headers=h)
-        made_up = client.get(f"/atlassian/wiki/rest/api/content/999999999/{path}", headers=h)
-        assert hidden.status_code == made_up.status_code == 404
-        assert hidden.content == made_up.content
+    hidden = client.get(path, headers=h)
+    made_up = client.get(f"/atlassian/wiki/rest/api/content/999999999/{route}", headers=h)
+    assert hidden.status_code == made_up.status_code == 404
+    assert hidden.content == made_up.content
 
 
 # --- Jira: a page of comments is a page -------------------------------------------------------
@@ -1557,14 +1558,15 @@ _CAPS = [
     ("space", None, 5000, 1000),
     ("child/comment", "comment", 1001, 1000),
     ("label", "label", 1001, 200),
-    ("child/page", "child", 1001, 1001),  # the one listing real caps nowhere
+    ("child/page", "child", 1001, 1001),
+    ("child/attachment", "attachment", 1001, 1001),
 ]
 
 
 @pytest.mark.parametrize("route, kind, sent, want", _CAPS, ids=[f"{r[0]}-{r[2]}" for r in _CAPS])
 def test_confluence_caps_limit_where_real_caps_it(client, admin_h, route, kind, sent, want):
-    """Each cap measured on its own route: `content`, `space` and `child/comment` at 1000, `label`
-    at 200, `child/page` nowhere. A value above the cap is answered with the cap, not refused."""
+    """Each cap :func:`backlot.routers.atlassian._confluence_page_params` records, on its own
+    route. A value above the cap is answered with the cap, not refused."""
     if kind is None:
         path = f"/atlassian/wiki/rest/api/{route}"
     else:
@@ -1577,19 +1579,26 @@ def test_confluence_caps_limit_where_real_caps_it(client, admin_h, route, kind, 
     assert r.json()["limit"] == want
 
 
-def test_confluence_label_defaults_to_two_hundred_where_the_others_default_to_25(client, admin_h):
-    """Measured: with no `limit`, `label` answers 200 and `content`, `space`, `child/page` and
-    `child/comment` answer 25."""
+_DEFAULTS = [
+    ("content", 25),
+    ("space", 25),
+    ("child/page", 25),
+    ("child/comment", 25),
+    ("child/attachment", 50),
+    ("label", 200),
+]
+
+
+@pytest.mark.parametrize("route, want", _DEFAULTS)
+def test_confluence_each_listing_answers_its_own_default_limit(client, admin_h, route, want):
+    """Measured: the `limit` each listing answers when none is sent."""
     api = "/atlassian/wiki/rest/api"
-    cid = client.get(f"{api}/content?limit=1", headers=admin_h).json()["results"][0]["id"]
-    assert client.get(f"{api}/content/{cid}/label", headers=admin_h).json()["limit"] == 200
-    for path in (
-        f"{api}/content",
-        f"{api}/space",
-        f"{api}/content/{cid}/child/page",
-        f"{api}/content/{cid}/child/comment",
-    ):
-        assert client.get(path, headers=admin_h).json()["limit"] == 25, path
+    if route in ("content", "space"):
+        path = f"{api}/{route}"
+    else:
+        cid = client.get(f"{api}/content?limit=1", headers=admin_h).json()["results"][0]["id"]
+        path = f"{api}/content/{cid}/{route}"
+    assert client.get(path, headers=admin_h).json()["limit"] == want
 
 
 def test_confluence_content_refuses_a_start_above_the_bound_where_space_serves_one(client, admin_h):
@@ -1608,7 +1617,7 @@ def test_confluence_content_refuses_a_start_above_the_bound_where_space_serves_o
     assert client.get(f"{api}/space?start=100001", headers=admin_h).status_code == 200
 
 
-_PAGED = ["content", "space", "child/page", "child/comment", "label"]
+_PAGED = ["content", "space", "child/page", "child/comment", "child/attachment", "label"]
 
 
 @pytest.mark.parametrize("route", _PAGED)
@@ -1690,7 +1699,36 @@ def test_confluence_label_serves_one_of_two_labels_and_a_next(client, admin_h):
     assert page["_links"]["next"].endswith("next=true&limit=1&start=1")
 
 
-@pytest.mark.parametrize("route", ["child/page", "child/comment", "label"])
+# (query, start, limit, prev) for a page holding no attachment, which every corpus page is
+_ATTACHMENT_PAGES = [
+    ("", 0, 50, None),
+    ("limit=0", 0, 0, None),
+    ("start=1", 1, 50, "prev=true&limit=1&start=0"),
+    ("limit=0&start=1", 1, 0, "prev=true&limit=0&start=1"),
+    ("start=100001", 100001, 50, "prev=true&limit=50&start=99951"),
+]
+
+
+@pytest.mark.parametrize("query, start, limit, prev", _ATTACHMENT_PAGES)
+def test_confluence_child_attachment_is_the_empty_page_from_any_start(
+    client, admin_h, query, start, limit, prev
+):
+    """Measured: no rows and no `next` at any `start`, a `prev` from any `start` past 0, and no
+    bound on `start` of the kind `content` has."""
+    api = "/atlassian/wiki/rest/api"
+    cid = client.get(f"{api}/content?limit=1", headers=admin_h).json()["results"][0]["id"]
+    r = client.get(f"{api}/content/{cid}/child/attachment?{query}", headers=admin_h)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert (body["results"], body["size"], body["start"], body["limit"]) == ([], 0, start, limit)
+    assert "next" not in body["_links"]
+    if prev is None:
+        assert "prev" not in body["_links"]
+    else:
+        assert body["_links"]["prev"].endswith(f"/child/attachment?{prev}")
+
+
+@pytest.mark.parametrize("route", ["child/page", "child/comment", "child/attachment", "label"])
 def test_confluence_child_listings_refuse_a_limit_they_cannot_convert(client, admin_h, route):
     """Measured: each answers Spring's two-key 400, the same body `content` gives."""
     api = "/atlassian/wiki/rest/api"
@@ -2203,6 +2241,9 @@ def test_confluence_names_the_trimmed_value_where_jira_names_the_raw_one(client,
         # `label`'s zero-`limit` refusal comes after conversion and after the negative
         ("label", "limit=0&start=abc", 'For input string: "abc"'),
         ("label", "limit=0&start=-1", "start cannot be less than zero"),
+        # on `child/attachment` the conversion and the negative both come before an unknown id's 404
+        ("content/999999999/child/attachment", "limit=abc", 'For input string: "abc"'),
+        ("content/999999999/child/attachment", "limit=-1", "limit cannot be less than zero"),
     ],
 )
 def test_confluence_refuses_the_parameter_real_names_when_both_are_wrong(
@@ -3012,6 +3053,7 @@ def _routes(keys: dict[str, str]) -> list[str]:
         f"/atlassian/wiki/rest/api/content/{c}",
         f"/atlassian/wiki/rest/api/content/{c}/child/page",
         f"/atlassian/wiki/rest/api/content/{c}/child/comment",
+        f"/atlassian/wiki/rest/api/content/{c}/child/attachment",
         f"/atlassian/wiki/rest/api/content/{c}/label",
         f"/atlassian/wiki/rest/api/content/{c}/restriction/byOperation",
         "/atlassian/wiki/rest/api/search?cql=type%3Dpage",
@@ -3736,6 +3778,8 @@ def test_jira_names_the_caller_and_counts_its_quota_once_a_credential_resolves(
         ("GET", "/atlassian/wiki/rest/api/content", False, True),
         ("GET", "/atlassian/wiki/rest/api/content/{content}/child/page", False, True),
         ("GET", "/atlassian/wiki/rest/api/content/{content}/label", False, True),
+        ("GET", "/atlassian/wiki/rest/api/content/{content}/child/attachment", False, True),
+        ("GET", "/atlassian/wiki/rest/api/content/999999999/child/attachment", False, True),
         ("GET", "/atlassian/wiki/rest/api/space/NOPESUCH", False, True),
         ("HEAD", "/atlassian/wiki/rest/api/space", False, True),
         ("GET", "/atlassian/wiki/rest/api/search?cql=type%3Dpage", False, False),
@@ -4046,3 +4090,39 @@ def test_jira_issue_ids_that_hash_alike_each_read_back_their_own_issue(tmp_path,
         assert parent["subtasks"][0]["self"].endswith("/issue/" + ids["PAY-2172"])
         child = c.get(path + ids["PAY-2172"], headers=h).json()["fields"]
         assert child["parent"]["id"] == ids["PAY-1425"]
+
+
+_SEARCH = "/atlassian/wiki/rest/api/search?cql=type%3Dpage"
+
+
+@pytest.mark.parametrize(
+    "method,path,credential,status,cached",
+    [
+        ("GET", _SEARCH + "&limit=1", "admin", 200, True),
+        ("HEAD", _SEARCH + "&limit=1", "admin", 200, True),
+        ("GET", _SEARCH + "&limit=-1", "admin", 400, True),
+        ("GET", _SEARCH + "&limit=abc", "admin", 404, True),
+        ("HEAD", _SEARCH + "&start=abc", "admin", 404, True),
+        ("GET", _SEARCH + "&limit=2&cursor=abc", "admin", 400, True),
+        ("GET", _SEARCH + "&limit=1", None, 403, True),
+        ("HEAD", _SEARCH + "&limit=1", None, 403, True),
+        ("GET", _SEARCH + "&limit=1", "Basic !!!", 401, False),
+        ("HEAD", _SEARCH + "&limit=1", "Basic !!!", 401, False),
+        ("POST", _SEARCH + "&limit=1", "admin", 405, False),
+        ("OPTIONS", _SEARCH + "&limit=1", "admin", 200, False),
+        ("GET", "/atlassian/wiki/rest/api/content?limit=1", "admin", 200, False),
+    ],
+)
+def test_confluence_search_carries_the_cache_pair_where_real_does(
+    client, admin_h, method, path, credential, status, cached
+):
+    """Pins where ``backlot.routers.atlassian.vendor_headers`` puts the search's `cache-control`
+    and `expires`, each row's status and headers as Confluence Cloud answered it."""
+    headers = {"admin": admin_h, None: {}}.get(credential, {"Authorization": credential})
+    r = client.request(method, path, headers=headers)
+    assert r.status_code == status, r.text
+    if cached:
+        assert r.headers["cache-control"] == "no-cache, no-store, must-revalidate"
+        assert r.headers["expires"] == "Thu, 01 Jan 1970 00:00:00 GMT"
+    else:
+        assert "cache-control" not in r.headers and "expires" not in r.headers

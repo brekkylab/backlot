@@ -12,8 +12,10 @@ envelope is NOT uniform — three families differ in which optional members they
     ------------------------|------------------|---------------------|-----------------------------
     Drive v3                | always           | auth failures,      | 403 PERMISSION_DENIED
                             |                  | typed values,       |
-                            |                  | `$.xgafv` and the   |
-                            |                  | batch redirect only |
+                            |                  | `$.xgafv`, the      |
+                            |                  | batch redirect and  |
+                            |                  | `Unknown Error.`    |
+                            |                  | only                |
     Gmail v1                | unless $.xgafv=2 | always              | 401 UNAUTHENTICATED
     Docs v1 / Slides v1     | $.xgafv=1        | always              | 401 UNAUTHENTICATED
     Sheets v4               | $.xgafv=1        | always              | 403 PERMISSION_DENIED
@@ -51,7 +53,8 @@ the request message does not have and a JSON body that is not an object
 at ``location: Authorization``; an anonymous Sheets GET ``forbidden``; the missing credential — any
 anonymous POST, and a GET on the three OAuth-only APIs — ``required`` with the short
 ``Login Required.``; and the 500 the data-filter reads answer ``backendError``
-(:func:`internal_error`). The editor 400 NOT measured keeps whatever its constructor renders: an
+(:func:`internal_error`). Drive's `Unknown Error.` 500 carries one entry with no members at all
+(:func:`unknown_error`). The editor 400 NOT measured keeps whatever its constructor renders: an
 Office file read as a native document is :func:`failed_precondition`, so ``failedPrecondition``.
 """
 
@@ -129,6 +132,7 @@ class GoogleError(HTTPException):
         short: str | None = None,
         details: list | None = None,
         domain: str | None = "global",
+        empty_entry: bool = False,
     ):
         super().__init__(status_code=status_code, detail=message)
         self.message = message
@@ -142,6 +146,8 @@ class GoogleError(HTTPException):
         # (a typed value, a body member or root the request message cannot take), which carry none —
         # so a constructor that renders one of those passes ``None``.
         self.domain = domain
+        # `errors[0]` rendered as `{}`, the entry :func:`unknown_error` carries.
+        self.empty_entry = empty_entry
 
 
 # --- constructors: the call site names the KIND of failure, which is what only it knows ---------
@@ -356,6 +362,16 @@ def drive_internal_error() -> GoogleError:
     return GoogleError(500, "Internal Error", reason="internalError")
 
 
+def unknown_error() -> GoogleError:
+    """Drive's 500 `Unknown Error.`, whose `errors[]` entry has no members, for two or more
+    `pageSize` values on `permissions.list` whose first is outside 1-100;
+    ``routers.google._drive_permissions_page_size`` records the measurement. Real answers the same
+    body to a `permissions.list` `pageToken` of `BOGUS`, `0`, a `files.list` token or an issued
+    token with `.` added, measured 2026-10-09, which
+    ``routers.google._drive_permissions_page_token`` refuses with its 400 instead."""
+    return GoogleError(500, "Unknown Error.", status="UNKNOWN", empty_entry=True)
+
+
 def unsupported_conversion() -> GoogleError:
     """`files.export` asked for a format the file's type does not export to. Measured 2026-09-23
     on a spreadsheet: `text/plain`, `bogus/type`, a native Google type, a padded `text/csv `,
@@ -407,6 +423,17 @@ def invalid_id_value() -> GoogleError:
     """Gmail's answer to an id it cannot parse — measured: 400 INVALID_ARGUMENT "Invalid id value"
     for a non-hex id or one at/above 2**63, where a well-formed but unknown id is 404 instead."""
     return GoogleError(400, "Invalid id value", reason="invalidArgument", status="INVALID_ARGUMENT")
+
+
+def invalid_max_results() -> GoogleError:
+    """Gmail's ``Invalid maxResults`` for a `maxResults` of zero or from 2**31 up: 400
+    INVALID_ARGUMENT, whose `errors[]` entry is `global` / `invalidArgument` and which carries no
+    `details`. The values and the measurement are ``routers.google._gmail_max_results``'s. A value
+    the proto layer cannot read at all is :func:`invalid_field_value`'s shape instead, which names
+    the field it refused."""
+    return GoogleError(
+        400, "Invalid maxResults", reason="invalidArgument", status="INVALID_ARGUMENT"
+    )
 
 
 def failed_precondition(message: str) -> GoogleError:
@@ -623,6 +650,8 @@ def first_repeat(query: Mapping[str, str] | None, name: str) -> str | None:
                           | the value, the reverse the formula   |
         includeGridData   | `true&false` answers no grid         | Sheets spreadsheets.get
                           |                                      | 2026-09-22
+        maxResults        | `1&3` is 3, `3&1` is 1               | Gmail messages.list and
+                          |                                      | threads.list 2026-10-08
 
     An empty first repeat is read as itself rather than skipped, measured 2026-09-23:
     `q=&q=<folders>` is the unfiltered listing, `fields=&fields=id` on Drive `files.get` answers
@@ -639,8 +668,8 @@ def first_repeat(query: Mapping[str, str] | None, name: str) -> str | None:
     `excludeTablesInBandedRanges`, measured the same day, and of `majorDimension`, measured
     2026-09-22.
 
-    Gmail's `q`, `pageToken` and `maxResults` stay on ``.get`` because their end is unmeasured: a
-    Gmail list answers 200 only to a scope the measuring credential cannot be granted.
+    Gmail's `q` and `pageToken` stay on ``.get`` because which end real reads them from is
+    unmeasured.
     """
     if query is None:
         return None
@@ -820,7 +849,7 @@ def http_body(path: str, exc: HTTPException, query: Mapping[str, str] | None = N
         if location:
             entry["location"] = location
             entry["locationType"] = getattr(exc, "location_type", "parameter")
-        err["errors"] = [entry]
+        err["errors"] = [{} if getattr(exc, "empty_entry", False) else entry]
     status = getattr(exc, "status", None)
     if status:
         err["status"] = status

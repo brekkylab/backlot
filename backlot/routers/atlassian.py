@@ -155,7 +155,7 @@ _P_CONTENT = {
     ]
 }
 _P_SPACE = {"parameters": [qp("expand"), qp("limit", "integer"), qp("start", "integer")]}
-# The three listings under `content/{id}`, which read the same pair with their own defaults and
+# The four listings under `content/{id}`, which read the same pair with their own defaults and
 # caps. `child/page` is the one of them this router also reads an `expand` on.
 _P_CHILD_PAGE = {"parameters": [qp("expand"), qp("limit", "integer"), qp("start", "integer")]}
 _P_CONTENT_CHILD = {"parameters": [qp("limit", "integer"), qp("start", "integer")]}
@@ -1623,6 +1623,37 @@ async def confluence_comments(content_id: int, request: Request):
     }
 
 
+@router.get("/wiki/rest/api/content/{content_id}/child/attachment", openapi_extra=_P_CONTENT_CHILD)
+async def confluence_attachments(content_id: int, request: Request):
+    """A page's attachments, which is the empty page for every page: a corpus record states no
+    attachment, and this is the page real answers for a page holding none.
+
+    Measured 2026-10-10: `limit` and `start` are read before the page is looked up, so
+    `content/999999999/child/attachment?limit=abc` is the conversion 400 and `?limit=-1` the
+    negative one, not the unknown id's 404.
+    """
+    conn = auth.conn(request)
+    caller = _confluence_caller(request)
+    limit, start = _confluence_page_params(request, default=50)
+    ids = auth.visible_ids(request, caller)
+    if store.get_document(conn, "confluence", content_id, visible_ids=ids) is None:
+        raise HTTPException(status_code=404, detail="No content found with id")
+    return {
+        "results": [],
+        "start": start,
+        "limit": limit,
+        "size": 0,
+        "_links": _confluence_envelope(
+            request,
+            f"/rest/api/content/{content_id}/child/attachment",
+            start=start,
+            limit=limit,
+            size=0,
+            total=0,
+        ),
+    }
+
+
 @router.get("/wiki/rest/api/content/{content_id}/label", openapi_extra=_P_CONTENT_CHILD)
 async def confluence_labels(content_id: int, request: Request):
     conn = auth.conn(request)
@@ -2010,10 +2041,10 @@ def _confluence_page_params(
 ) -> tuple[int, int]:
     """Confluence's `limit` and `start`, which refuse a negative where Jira's clamp one.
 
-    Measured on the five routes that call it, `content` and `space` on 2026-09-14 and the three
-    under `content/{id}` on 2026-09-23: `?limit=-1` and `?start=-1` are 400. Unclamped they reached
-    SQLite, which reads a negative LIMIT as no limit at all — so the answer to `?limit=-1` was the
-    whole collection.
+    Measured on the six routes that call it, `content` and `space` on 2026-09-14, `child/page`,
+    `child/comment` and `label` on 2026-09-23 and `child/attachment` on 2026-10-10: `?limit=-1` and
+    `?start=-1` are 400. Unclamped, `content` would hand them to SQLite, which reads a negative
+    LIMIT as no limit at all and so would answer `?limit=-1` with the whole collection.
 
     Order is measured too, because both parameters can be wrong at once. Conversion comes first for
     BOTH — `?limit=-1&start=abc` is the conversion failure about `abc`, not the negative about
@@ -2035,9 +2066,10 @@ def _confluence_page_params(
 
     ``default`` and ``cap`` are per route, measured 2026-09-22 on a live site: `content`, `space`
     and `child/comment` cap `limit` at 1000, `label` defaults to 200 and caps there, `child/page`
-    defaults to 25 and caps nowhere (`?limit=1001` is echoed), and the CQL search caps nowhere
-    either. A value above the cap is answered with the cap rather than refused, so a client asking
-    for more than real serves gets real's page size back.
+    defaults to 25 and caps nowhere (`?limit=1001` is echoed), `child/attachment` defaults to 50
+    and caps nowhere, and the CQL search caps nowhere either. A value above the cap is answered
+    with the cap rather than refused, so a client asking for more than real serves gets real's page
+    size back.
     """
     limit = _int_param(request, "limit", default)
     start = _int_param(request, "start", 0)
@@ -2217,10 +2249,11 @@ def _confluence_envelope(
     """`_links` as every paged Confluence listing answers it: `base`, `context` and `self` on every
     page, plus `next`/`prev` from :func:`backlot.pagination.confluence_page_links`.
 
-    Measured 2026-09-22 on `content`, `space`, the CQL `search` and the three listings under
-    `content/{id}`: all three keys ride every page, `context` is the product's own prefix and
-    `self` is the request's URL with `limit`, `start` and the two markers removed and every other
-    parameter kept — a cache-buster sent with the request comes back inside `self`.
+    Measured 2026-09-22 on `content`, `space`, the CQL `search`, `child/page`, `child/comment` and
+    `label`, and 2026-10-10 on `child/attachment`: all three keys ride every page, `context` is the
+    product's own prefix and `self` is the request's URL with `limit`, `start` and the two markers
+    removed and every other parameter kept — a cache-buster sent with the request comes back inside
+    `self`.
 
     ``cursor``, ``sent_cursor`` and ``reached`` are the CQL search's: the token this page's `next`
     carries, the one the request brought, and where among the matches the page ends, as
@@ -2498,7 +2531,8 @@ def _options_answer(request: Request) -> Response:
     happens to implement (`errors.atlassian.jira_options_allow`). Confluence answers 404 in the
     `errors` list its 405 uses, on every route measured but `search` (:func:`_search_options`), for
     the `Accept` values ``errors.atlassian.CONFLUENCE_OPTIONS_NOT_FOUND`` names. Measured on
-    Atlassian Cloud, 2026-09-22, over all 24 routes here.
+    Atlassian Cloud over every route here, `child/attachment` on 2026-10-10 and the others on
+    2026-09-22.
 
     Jira's 200 is for a caller whose credential resolves. Anyone else — no credential, the Basic
     pair it rejects, an unknown scheme, and here an unreadable bearer too, which a `GET` draws the
@@ -2807,7 +2841,8 @@ def rate_limit_headers(request: Request, caller: Caller) -> dict[str, str]:
 #: Confluence says its v1 REST API is deprecated, in three headers, on the answers the content and
 #: space services give — including their 404s. Measured 2026-09-22: `content`, `content/{id}`,
 #: `child/comment`, `child/page`, `label`, `space`, `space/{key}` and the 404s for an unknown space
-#: and an unknown content id all carry them; `search`, `restriction/byOperation`, the 405 at
+#: and an unknown content id all carry them, and so do `child/attachment`, its 400 and an unknown
+#: id's 404, measured 2026-10-10; `search`, `restriction/byOperation`, the 405 at
 #: `space/{key}/permission`, the 403 an anonymous request gets and an `OPTIONS` on `space`,
 #: `space/{key}`, an unknown space and `permission` carry none. Nor does an answer the catch-all
 #: gives, measured 2026-09-30 over twenty of them on ten paths: the JAX-RS 404 in both shapes and
@@ -2859,9 +2894,10 @@ def vendor_headers(request: Request, status_code: int) -> dict[str, str]:
     the caller's own account id, with the rate-limit four where a route answers or an `OPTIONS` asks
     at its path. The gateway's own refusals (the Connect-token 403 and a `PATCH`) carry the two ids
     and :data:`_EDGE` and nothing else; the CDN's carry :data:`_EDGE` on its 403 and nothing on its
-    405 or its 400. Confluence: the millisecond clock it stamps every answer with, and the
-    deprecation trio where the v1 services send it. Measured on Atlassian Cloud 2026-09-22 and
-    2026-09-30; what is deliberately not here is in `backlot.main.report_atlassian_headers`.
+    405 or its 400. Confluence: the millisecond clock it stamps every answer with, the deprecation
+    trio where the v1 services send it, and the search's `cache-control` and `expires`. Measured on
+    Atlassian Cloud 2026-09-22 and 2026-09-30, the search's pair 2026-10-07; what is deliberately
+    not here is in `backlot.main.report_atlassian_headers`.
     """
     path = request.url.path
     if request.method not in errors_atlassian.SERVED_METHODS:
@@ -2873,6 +2909,14 @@ def vendor_headers(request: Request, status_code: int) -> dict[str, str]:
         return dict(_EDGE) if errors_atlassian.cdn_forbids(request.method) else {}
     headers = {**request_ids(request), **_EDGE}
     if errors_atlassian.is_confluence(path):
+        # The search's GET/HEAD 200, 400, 403 and 404 carry the pair; Tomcat's 401 does not.
+        if (
+            request.method in ("GET", "HEAD")
+            and status_code != 401
+            and _vendor_path(path) == "/wiki/rest/api/search"
+        ):
+            headers["cache-control"] = "no-cache, no-store, must-revalidate"
+            headers["expires"] = "Thu, 01 Jan 1970 00:00:00 GMT"
         headers["x-confluence-request-time"] = str(int(time.time() * 1000))
         # the notice rides on what a v1 service answers: a route's own answer, not one given
         # around it

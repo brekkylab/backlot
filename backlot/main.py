@@ -518,14 +518,15 @@ async def refuse_a_bearer_jira_cannot_read(request: Request, call_next):
 # The path prefixes whose `HEAD` is the GET with the body left off. GitHub, Atlassian and Notion
 # because each is measured to be, and a vendor is added here once its own is rather than by a
 # rewrite that assumes they share GitHub's: both Atlassian products answered a `HEAD` with the
-# `GET`'s status and `content-type` and nothing in the body, on all 24 routes served here and on an
-# unknown issue's and an unknown space's 404, measured 2026-09-22, and api.notion.com answered
-# `HEAD /v1/users/me` the credential's 401 and `HEAD /v1/nonexistent_thing/xyz` the URL's 400 on
-# 2026-09-22, each with the `content-length` and `content-type` of the GET body beside it (178 and
-# 145 bytes). What the vendors do NOT share is the length — see ``errors.head_content_length``,
-# asked below. `/health` and `/_meta` are Backlot's own routes, with no vendor to measure against: a
-# `HEAD /health` is the shape a liveness probe takes, and with `/health` left out of this tuple it
-# is the 405 with `allow: GET` a GitHub route gets with `/github` left out.
+# `GET`'s status and `content-type` and nothing in the body, on every route served here and on an
+# unknown issue's and an unknown space's 404, measured 2026-09-22 and on Confluence's
+# `child/attachment` 2026-10-10, and api.notion.com answered `HEAD /v1/users/me` the credential's
+# 401 and `HEAD /v1/nonexistent_thing/xyz` the URL's 400 on 2026-09-22, each with the
+# `content-length` and `content-type` of the GET body beside it (178 and 145 bytes). What the
+# vendors do NOT share is the length — see ``errors.head_content_length``, asked below. `/health`
+# and `/_meta` are Backlot's own routes, with no vendor to measure against: a `HEAD /health` is the
+# shape a liveness probe takes, and with `/health` left out of this tuple it is the 405 with
+# `allow: GET` a GitHub route gets with `/github` left out.
 _HEAD_IS_THE_GET_WITHOUT_ITS_BODY = ("/github", "/atlassian", "/notion", "/health", "/_meta")
 
 

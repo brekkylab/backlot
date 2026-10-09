@@ -2862,6 +2862,22 @@ async def get_commit(owner: str, repo: str, sha: str, request: Request):
     }
 
 
+#: The names a README is looked up by, the first the corpus holds winning. Measured 2026-10-07:
+#: curl/curl holds `README` and `README.md` and is served `README.md`, octocat/Hello-World's
+#: `README` is served at `readme` and at `readme/`, and torvalds/linux's `fs/cramfs/README` at
+#: `readme/fs/cramfs`.
+_README_NAMES = ("README.md", "readme.md", "README")
+
+
+def _readme_row(conn, repo: str, directory: str, ids, ref: str | None):
+    """The first of :data:`_README_NAMES` the corpus holds in ``directory`` for this caller."""
+    for name in _README_NAMES:
+        row = store.get_repo_file(conn, repo, f"{directory}{name}", ids, ref=ref)
+        if row is not None:
+            return row
+    return None
+
+
 @router.get("/repos/{owner}/{repo}/readme/{dir:path}")
 async def get_readme_for_a_directory(
     owner: str, repo: str, dir: str, request: Request, ref: str | None = Query(None)
@@ -2873,9 +2889,9 @@ async def get_readme_for_a_directory(
     than the root one, and `readme/` — the empty directory — is the repository's own README, which
     is why a trailing slash answers 200 here where it is a refusal on the routes around it.
 
-    The empty directory is looked up here to preserve the directory-specific error anchor:
-    measured 2026-09-28, `readme/` on a repository holding no README (octocat/test-repo1)
-    is the same directory-anchor 404.
+    The empty directory is a directory like any other, so it is looked up here rather than handed
+    to :func:`get_readme`, whose 404 names the root anchor: measured 2026-09-28, `readme/` on a
+    repository holding no README (octocat/test-repo1) is the same directory-anchor 404.
 
     Slashes, measured 2026-09-28 on github/gitignore and python/cpython: a path ending in up to two
     still names the directory, and one ending in three does not. `readme//` and `readme/Doc//` are
@@ -2884,10 +2900,8 @@ async def get_readme_for_a_directory(
     credential and after `?ref=` (`readme///?ref=nope` is the ref's own 404).
 
     WHICH file it serves is where this and real part: real answers whatever the directory's README
-    is, `Doc/README.rst` on python/cpython among them, and this looks for `README.md` and then
-    `readme.md`. The root route also accepts extensionless `README`; this directory route does
-    not. A corpus stating `docs/README.rst` gets a 404 here and a
-    200 there.
+    is, `Doc/README.rst` on python/cpython among them, and this looks for :data:`_README_NAMES`, as
+    the root route does. A corpus stating `docs/README.rst` gets a 404 here and a 200 on real.
     """
     conn = auth.conn(request)
     caller = _require(request)
@@ -2898,10 +2912,7 @@ async def get_readme_for_a_directory(
     if len(sent) - len(sent.rstrip("/")) > 2:
         raise HTTPException(status_code=404, detail="Not Found")
     inside = dir.strip("/")
-    prefix = f"{inside}/" if inside else ""
-    row = store.get_repo_file(conn, repo, f"{prefix}README.md", ids, ref=ref) or (
-        store.get_repo_file(conn, repo, f"{prefix}readme.md", ids, ref=ref)
-    )
+    row = _readme_row(conn, repo, f"{inside}/" if inside else "", ids, ref)
     if row is None:
         raise HTTPException(status_code=404, detail="Not Found")
     return _raw_response(request, row["content"], _CONTENT_RAW_TYPE) or _file_obj(
@@ -2911,7 +2922,10 @@ async def get_readme_for_a_directory(
 
 @router.get("/repos/{owner}/{repo}/readme")
 async def get_readme(owner: str, repo: str, request: Request, ref: str | None = Query(None)):
-    """`ref` selects a snapshot, as on `/contents` — real GitHub takes it here too, and both serve
+    """The repository's README (:func:`_readme_row`), and where the corpus holds none the 404 real
+    gives octocat/test-repo1 in either media type (measured 2026-10-07).
+
+    `ref` selects a snapshot, as on `/contents` — real GitHub takes it here too, and both serve
     the same underlying object (see :func:`_file_obj`), so a README the corpus snapshots would
     otherwise be reachable at an older revision through one route and not the other."""
     conn = auth.conn(request)
@@ -2920,12 +2934,7 @@ async def get_readme(owner: str, repo: str, request: Request, ref: str | None = 
     _require_repo(conn, repo, ids)
     _require_ref(conn, owner, repo, ref, ids)
     ab = _api_base(request)
-    row = (
-        store.get_repo_file(conn, repo, "README.md", ids, ref=ref)
-        or store.get_repo_file(conn, repo, "readme.md", ids, ref=ref)
-        or store.get_repo_file(conn, repo, "README", ids, ref=ref)
-    )
-    # api.github.com (2026-10-04): octocat/Hello-World serves README; test-repo1 returns 404.
+    row = _readme_row(conn, repo, "", ids, ref)
     if row is not None:
         return _raw_response(request, row["content"], _CONTENT_RAW_TYPE) or _file_obj(
             owner, repo, row, ab, ref

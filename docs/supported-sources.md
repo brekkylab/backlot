@@ -65,8 +65,9 @@ that no route here serves refuses a caller with no credential with a served rout
 few services with `Current user not permitted to use Confluence`, and a caller whose credential
 resolves gets the 404 an unserved path gets. Every answer Confluence itself gives carries
 `atl-request-id`, `atl-traceid` (the same value without its dashes), `x-confluence-request-time`,
-`x-content-type-options` and `x-xss-protection`, and what the content and space services' routes
-answer adds the three headers that say the v1 REST API is deprecated.
+`x-content-type-options` and `x-xss-protection`, what the content and space services' routes answer
+adds the three headers that say the v1 REST API is deprecated, and what `search` answers a `GET` or
+`HEAD`, but for a 401, adds the `cache-control` and 1970 `expires` that say not to cache it.
 
 ### Fireflies — `/fireflies/graphql`
 

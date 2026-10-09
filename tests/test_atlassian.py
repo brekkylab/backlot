@@ -4048,32 +4048,36 @@ def test_jira_issue_ids_that_hash_alike_each_read_back_their_own_issue(tmp_path,
         assert child["parent"]["id"] == ids["PAY-1425"]
 
 
-@pytest.mark.parametrize("method", ["GET", "HEAD"])
+_SEARCH = "/atlassian/wiki/rest/api/search?cql=type%3Dpage"
+
+
 @pytest.mark.parametrize(
-    "query,anonymous,status",
+    "method,path,credential,status,cached",
     [
-        ("cql=type%3Dpage&limit=1", False, 200),
-        ("cql=type%3Dpage&limit=-1", False, 400),
-        ("cql=type%3Dpage&limit=abc", False, 404),
-        ("cql=type%3Dpage&start=abc", False, 404),
-        ("cql=type%3Dpage&limit=2&cursor=abc", False, 400),
-        ("cql=type%3Dpage&limit=1", True, 403),
+        ("GET", _SEARCH + "&limit=1", "admin", 200, True),
+        ("HEAD", _SEARCH + "&limit=1", "admin", 200, True),
+        ("GET", _SEARCH + "&limit=-1", "admin", 400, True),
+        ("GET", _SEARCH + "&limit=abc", "admin", 404, True),
+        ("HEAD", _SEARCH + "&start=abc", "admin", 404, True),
+        ("GET", _SEARCH + "&limit=2&cursor=abc", "admin", 400, True),
+        ("GET", _SEARCH + "&limit=1", None, 403, True),
+        ("HEAD", _SEARCH + "&limit=1", None, 403, True),
+        ("GET", _SEARCH + "&limit=1", "Basic !!!", 401, False),
+        ("HEAD", _SEARCH + "&limit=1", "Basic !!!", 401, False),
+        ("POST", _SEARCH + "&limit=1", "admin", 405, False),
+        ("OPTIONS", _SEARCH + "&limit=1", "admin", 200, False),
+        ("GET", "/atlassian/wiki/rest/api/content?limit=1", "admin", 200, False),
     ],
 )
-def test_confluence_search_cache_headers_cover_success_and_refusals(
-    client, admin_h, method, query, anonymous, status
+def test_confluence_search_carries_the_cache_pair_where_real_does(
+    client, admin_h, method, path, credential, status, cached
 ):
-    """Confluence Cloud search, measured 2026-10-04: the pair rides on pages and refusals."""
-    response = client.request(
-        method,
-        f"/atlassian/wiki/rest/api/search?{query}",
-        headers={} if anonymous else admin_h,
-    )
-    assert response.status_code == status
-    assert response.headers["cache-control"] == "no-cache, no-store, must-revalidate"
-    assert response.headers["expires"] == "Thu, 01 Jan 1970 00:00:00 GMT"
-    if method == "HEAD":
-        assert response.content == b""
-    control = client.request(method, "/atlassian/wiki/rest/api/content?limit=1", headers=admin_h)
-    assert control.status_code == 200
-    assert "cache-control" not in control.headers and "expires" not in control.headers
+    """Pins search headers to the reviewer's Confluence Cloud measurements of 2026-10-07."""
+    headers = {"admin": admin_h, None: {}}.get(credential, {"Authorization": credential})
+    r = client.request(method, path, headers=headers)
+    assert r.status_code == status, r.text
+    if cached:
+        assert r.headers["cache-control"] == "no-cache, no-store, must-revalidate"
+        assert r.headers["expires"] == "Thu, 01 Jan 1970 00:00:00 GMT"
+    else:
+        assert "cache-control" not in r.headers and "expires" not in r.headers

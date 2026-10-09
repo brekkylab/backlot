@@ -2859,9 +2859,10 @@ def vendor_headers(request: Request, status_code: int) -> dict[str, str]:
     the caller's own account id, with the rate-limit four where a route answers or an `OPTIONS` asks
     at its path. The gateway's own refusals (the Connect-token 403 and a `PATCH`) carry the two ids
     and :data:`_EDGE` and nothing else; the CDN's carry :data:`_EDGE` on its 403 and nothing on its
-    405 or its 400. Confluence: the millisecond clock it stamps every answer with, and the
-    deprecation trio where the v1 services send it. Measured on Atlassian Cloud 2026-09-22 and
-    2026-09-30; what is deliberately not here is in `backlot.main.report_atlassian_headers`.
+    405 or its 400. Confluence: the millisecond clock it stamps every answer with, the deprecation
+    trio where the v1 services send it, and the search's `cache-control` and `expires`. Measured on
+    Atlassian Cloud 2026-09-22 and 2026-09-30, the search's pair 2026-10-07; what is deliberately
+    not here is in `backlot.main.report_atlassian_headers`.
     """
     path = request.url.path
     if request.method not in errors_atlassian.SERVED_METHODS:
@@ -2873,9 +2874,12 @@ def vendor_headers(request: Request, status_code: int) -> dict[str, str]:
         return dict(_EDGE) if errors_atlassian.cdn_forbids(request.method) else {}
     headers = {**request_ids(request), **_EDGE}
     if errors_atlassian.is_confluence(path):
-        # Confluence Cloud /wiki/rest/api/search, 2026-10-04: GET/HEAD pages and refusals
-        # carry this pair; /content does not. Gateway-refused methods returned above.
-        if request.method in ("GET", "HEAD") and _vendor_path(path) == "/wiki/rest/api/search":
+        # The search's GET/HEAD 200, 400, 403 and 404 carry the pair; Tomcat's 401 does not.
+        if (
+            request.method in ("GET", "HEAD")
+            and status_code != 401
+            and _vendor_path(path) == "/wiki/rest/api/search"
+        ):
             headers["cache-control"] = "no-cache, no-store, must-revalidate"
             headers["expires"] = "Thu, 01 Jan 1970 00:00:00 GMT"
         headers["x-confluence-request-time"] = str(int(time.time() * 1000))

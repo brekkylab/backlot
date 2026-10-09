@@ -3,7 +3,7 @@
   "endpoints": [
     "https://api.linear.app/graphql"
   ],
-  "measured": "2026-10-08",
+  "measured": "2026-10-09",
   "acknowledged": [
     {
       "kind": "missing_field",
@@ -4328,6 +4328,20 @@
       "severity": "gap",
       "path": "Team.templates",
       "detail": "vendor serves templates: TemplateConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Team.viewerCanLeave",
+      "detail": "vendor serves viewerCanLeave: Boolean!; Backlot does not",
+      "note": "Linear's own description: \"Whether the viewer can remove themselves from the team. False when the viewer is not a member, the team is SCIM-managed, the viewer is an app user the team does not accept, or leaving would leave the viewer without an active team. Otherwise mirrors the checks `teamMembershipDelete` applies to a viewer leaving on their own.\" The `false` measured is no default to serve: the member it answered is in no other team, so leaving would leave them without an active team. It joins the gap recorded on `Team.viewerMembership`."
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Team.viewerMembership",
+      "detail": "vendor serves viewerMembership: TeamMembership; Backlot does not",
+      "note": "Linear's own description: \"The viewer's membership in the team. Null when the viewer is not a member.\" It answers a `TeamMembership`, a type this server does not declare, and Backlot serves no team membership: `Team.members`, `membership` and `memberships` are gaps too. `@linear/sdk` 97.1.0 has neither this field nor `Team.viewerCanLeave` on its generated `Team` type and selects neither in any document it sends, so both are a gap. Measured against api.linear.app on 2026-10-09: neither is deprecated, and the one team in the workspace answered its member a `TeamMembership` here and `false` for `Team.viewerCanLeave`."
     },
     {
       "kind": "missing_field",

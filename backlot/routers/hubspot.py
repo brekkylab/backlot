@@ -39,8 +39,10 @@ _PAGE_MAX = 100
 # The associations endpoint pages at 500 per request, like the vendor's.
 _ASSOC_PAGE_MAX = 500
 
-# api.hubapi.com refused archived listings for these four types in the 2026-10-08 measurement;
-# other types that the key could not read, and custom objects, were unmeasured.
+# Object types whose archived listing api.hubapi.com refused with a 400, measured 2026-10-08,
+# mapped to the objectTypeId and name that 400's message gives. The standard types the key had no
+# scope for, and custom objects (the key cannot read their schemas), were not measured and serve
+# the archived view here.
 _NO_ARCHIVED_PAGING = {
     "meetings": "0-47 (MEETING_EVENT)",
     "communications": "0-18 (COMMUNICATION)",
@@ -167,19 +169,19 @@ def _clamp(raw, default: int, cap: int) -> int:
 def _flag(raw) -> bool:
     """`archived` is true when its value is `true` in any letter case, with nothing trimmed.
     Measured against api.hubapi.com (2026-10-01, 2026-10-07, 2026-10-08): `true`, `TRUE` and `True`
-    serve the archived view; `1`, `yes`, `abc`, an empty value, and `true` with whitespace before or
-    after it (a space, tab, newline, carriage return or no-break space) serve the active one. The
-    Python client `hubspot-api-client` 12.0.0 sends `True`/`False`, and the Node client
-    `@hubspot/api-client` 14.0.1 sends `true`/`false`."""
+    serve the archived view (a 400 on the types in `_NO_ARCHIVED_PAGING`); `1`, `yes`, `abc`, an
+    empty value, and `true` with whitespace before or after it (a space, tab, newline, carriage
+    return or no-break space) serve the active one. The Python client `hubspot-api-client` 12.0.0
+    sends `True`/`False`, and the Node client `@hubspot/api-client` 14.0.1 sends `true`/`false`."""
     return str(raw or "").lower() == "true"
 
 
 def _first_query(qp, name: str):
     """The first value the query carries for ``name``, or ``None`` when it carries none.
-    Real reads a repeated `archived` on an object listing from its first value, measured against
-    api.hubapi.com (2026-10-07, 2026-10-08): `archived=true&archived=false` serves the archived
-    view, and `archived=false&archived=true`, `archived=&archived=true` and
-    `archived=yes&archived=true` the active one. Starlette's `QueryParams.get` returns the last."""
+    Real reads a repeated `archived` on an object listing from its first value, where Starlette's
+    `QueryParams.get` returns the last. Measured against api.hubapi.com (2026-10-07, 2026-10-08):
+    `archived=true&archived=false` answers like `archived=true`, and `archived=false&archived=true`,
+    `archived=&archived=true` and `archived=yes&archived=true` like `archived=false`."""
     values = qp.getlist(name)
     return values[0] if values else None
 

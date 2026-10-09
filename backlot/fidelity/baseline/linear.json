@@ -4152,7 +4152,7 @@
       "severity": "gap",
       "path": "Team.agentAutomationEnabled",
       "detail": "vendor serves agentAutomationEnabled: Boolean!; Backlot does not",
-      "note": "Linear's own description marks it internal: \"[Internal] Whether the team has enabled agent automation.\" A corpus names an issue's team and states none of that team's settings, so this field and `Team.codingAgentEnabled` are a gap. `@linear/sdk` 97.1.0 has neither on its generated `Team` type, and no document it sends selects either. Measured against api.linear.app on 2026-10-08: neither is deprecated, and the one team in the workspace measured answered `true` for both, which a constant here would present as every corpus's setting."
+      "note": "Linear's own description marks it internal: \"[Internal] Whether the team has enabled agent automation.\" `@linear/sdk` 97.1.0 has neither this field nor `Team.codingAgentEnabled` on its generated `Team` type and selects neither in any document it sends, so both are a gap; so is the internal `Team.joinByDefault`, which that type declares and no document selects. No product default is measured to serve in their place: against api.linear.app on 2026-10-09 neither is deprecated, and the one team in the workspace measured answered `true` for both, as did the workspace's `Organization.agentAutomationEnabled` and `Organization.codingAgentEnabled`, which Backlot leaves undeclared with `Query.organization`."
     },
     {
       "kind": "missing_field",

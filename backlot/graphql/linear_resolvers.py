@@ -734,9 +734,12 @@ def _team(container: str, info) -> dict:
         "slackIssueStatuses": False,
         "scimManaged": False,
         "scimGroupName": None,
-        # Linear's own description says it "Runs the same checks `teamMembershipCreate` applies to
-        # a viewer joining on their own", and this server declares no `Mutation` type, so no viewer
-        # can join a team here. A real team answers its own member `false` (measured 2026-10-08).
+        # A real team answers its own member `false` (measured 2026-10-08), and Backlot serves no
+        # team membership: `Team.members`, `membership`, `memberships` and `viewerMembership` are
+        # gaps. What a real team answers a non-member is unmeasured, as the workspace measured has
+        # one team with the key's user in it and a second would be a write; the field's own
+        # description says it "Runs the same checks `teamMembershipCreate` applies", and this server
+        # declares no `Mutation` type.
         "viewerCanJoin": False,
         "icon": None,
         "color": None,

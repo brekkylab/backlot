@@ -620,8 +620,9 @@ def test_gmail_messages_list_pagination_stable_and_ordered(client, admin_h, ro_c
     assert [m["id"] for m in both] == [a, b]  # pages concatenate in order
 
 
-def test_gmail_max_results_is_capped_at_500(tmp_path):
+def test_gmail_max_results_is_capped_at_500(tmp_path, monkeypatch):
     """The cap `_gmail_max_results` records, on both listings."""
+    from backlot.routers import google
     from tests._helpers import corpus_client
 
     records = [
@@ -640,12 +641,104 @@ def test_gmail_max_results_is_capped_at_500(tmp_path):
     with corpus_client(tmp_path, records) as (client, settings):
         h = {"Authorization": f"Bearer {settings.admin_token}"}
         for kind in ("messages", "threads"):
-            for asked, served in ((499, 499), (500, 500), (501, 500), (1000, 500), (100000, 500)):
+            for asked, served in (
+                (499, 499),
+                (500, 500),
+                (501, 500),
+                (1000, 500),
+                (100000, 500),
+                (2147483647, 500),
+            ):
                 page = client.get(
                     f"/gmail/v1/users/me/{kind}", headers=h, params={"maxResults": asked}
                 ).json()
                 assert len(page[kind]) == served, (kind, asked)
                 assert "nextPageToken" in page, (kind, asked)
+        # BACKLOT_MAX_PAGE_SIZE still caps a sent value: 10 serves 5.
+        monkeypatch.setattr(google.get_settings(), "max_page_size", 5)
+        for kind in ("messages", "threads"):
+            page = client.get(
+                f"/gmail/v1/users/me/{kind}", headers=h, params={"maxResults": 10}
+            ).json()
+            assert len(page[kind]) == 5, kind
+            assert "nextPageToken" in page, kind
+
+
+# The rows `_gmail_max_results` records. A `size` is served, `uint32` is the proto layer's refusal
+# of each named repeat, and `maxResults` is `Invalid maxResults`. The measurement is that
+# function's.
+_GMAIL_MAX_RESULTS = [
+    (["+2"], "size", 2),
+    (["02"], "size", 2),
+    (["0", "3"], "size", 3),
+    (["-0"], "uint32", ("-0",)),
+    (["4294967296"], "uint32", ("4294967296",)),
+    (["abc", "3"], "uint32", ("abc",)),
+    (["abc", "def"], "uint32", ("abc", "def")),
+    (["-1"], "uint32", ("-1",)),
+    (["abc"], "uint32", ("abc",)),
+    ([""], "uint32", ("",)),
+    (["1.5"], "uint32", ("1.5",)),
+    (["\u0663"], "uint32", ("\u0663",)),
+    (["-0", "3"], "uint32", ("-0",)),
+    (["0"], "maxResults", None),
+    (["+0"], "maxResults", None),
+    (["00"], "maxResults", None),
+    (["2147483648"], "maxResults", None),
+    (["+2147483648"], "maxResults", None),
+    (["4294967295"], "maxResults", None),
+    (["3", "0"], "maxResults", None),
+    (["3", "2147483648"], "maxResults", None),
+]
+
+
+@pytest.mark.parametrize("kind", ["messages", "threads"])
+@pytest.mark.parametrize("values, shape, named", _GMAIL_MAX_RESULTS)
+def test_gmail_refuses_a_max_results_it_cannot_read(client, admin_h, kind, values, shape, named):
+    """The refusals `_gmail_max_results` records, on both listings."""
+    r = client.get(
+        f"/gmail/v1/users/me/{kind}",
+        headers=admin_h,
+        params=[("maxResults", value) for value in values],
+    )
+    if shape == "size":
+        assert r.status_code == 200, (kind, values, r.text)
+        body = r.json()
+        assert body["resultSizeEstimate"] >= named, (kind, values)
+        assert len(body[kind]) == named, (kind, values)
+        return
+    assert r.status_code == 400, (kind, values, r.text)
+    err = r.json()["error"]
+    if shape == "maxResults":
+        assert err == {
+            "code": 400,
+            "message": "Invalid maxResults",
+            "errors": [
+                {
+                    "message": "Invalid maxResults",
+                    "domain": "global",
+                    "reason": "invalidArgument",
+                }
+            ],
+            "status": "INVALID_ARGUMENT",
+        }, (kind, values)
+        return
+    messages = [f"Invalid value at 'max_results' (TYPE_UINT32), \"{raw}\"" for raw in named]
+    message = "\n".join(messages)
+    assert err == {
+        "code": 400,
+        "message": message,
+        "errors": [{"message": message, "reason": "invalid"}],
+        "status": "INVALID_ARGUMENT",
+        "details": [
+            {
+                "@type": "type.googleapis.com/google.rpc.BadRequest",
+                "fieldViolations": [
+                    {"field": "max_results", "description": one} for one in messages
+                ],
+            }
+        ],
+    }, (kind, values)
 
 
 def test_gmail_attachment_size_matches_part_metadata(client, admin_h, ro_conn):

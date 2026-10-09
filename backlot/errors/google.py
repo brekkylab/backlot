@@ -409,6 +409,17 @@ def invalid_id_value() -> GoogleError:
     return GoogleError(400, "Invalid id value", reason="invalidArgument", status="INVALID_ARGUMENT")
 
 
+def invalid_max_results() -> GoogleError:
+    """Gmail's ``Invalid maxResults`` for a `maxResults` of zero or from 2**31 up: 400
+    INVALID_ARGUMENT, whose `errors[]` entry is `global` / `invalidArgument` and which carries no
+    `details`. The values and the measurement are ``routers.google._gmail_max_results``'s. A value
+    the proto layer cannot read at all is :func:`invalid_field_value`'s shape instead, which names
+    the field it refused."""
+    return GoogleError(
+        400, "Invalid maxResults", reason="invalidArgument", status="INVALID_ARGUMENT"
+    )
+
+
 def failed_precondition(message: str) -> GoogleError:
     """The editor APIs' "right shape, wrong state" 400 — an Office file read as a native doc."""
     return GoogleError(400, message, reason="failedPrecondition", status="FAILED_PRECONDITION")
@@ -623,6 +634,8 @@ def first_repeat(query: Mapping[str, str] | None, name: str) -> str | None:
                           | the value, the reverse the formula   |
         includeGridData   | `true&false` answers no grid         | Sheets spreadsheets.get
                           |                                      | 2026-09-22
+        maxResults        | `1&3` is 3, `3&1` is 1               | Gmail messages.list and
+                          |                                      | threads.list 2026-10-08
 
     An empty first repeat is read as itself rather than skipped, measured 2026-09-23:
     `q=&q=<folders>` is the unfiltered listing, `fields=&fields=id` on Drive `files.get` answers
@@ -639,8 +652,8 @@ def first_repeat(query: Mapping[str, str] | None, name: str) -> str | None:
     `excludeTablesInBandedRanges`, measured the same day, and of `majorDimension`, measured
     2026-09-22.
 
-    Gmail's `q`, `pageToken` and `maxResults` stay on ``.get`` because their end is unmeasured: a
-    Gmail list answers 200 only to a scope the measuring credential cannot be granted.
+    Gmail's `q` and `pageToken` stay on ``.get`` because which end real reads them from is
+    unmeasured.
     """
     if query is None:
         return None

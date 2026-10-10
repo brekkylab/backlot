@@ -2362,7 +2362,16 @@ def _ref_exists(conn, owner: str, repo: str, ref: str, ids) -> bool:
         return bool(name) and name in _repo_tags(conn, repo)
     if head == "pull":
         number, _, kind = name.partition("/")
-        if kind not in ("head", "merge") or not number.isdigit():
+        # A pull ref names {number}/head or {number}/merge. Real GitHub only accepts ASCII decimal
+        # digits up to SQLite/int64 range; non-ASCII digits (like fullwidth or Arabic-Indic),
+        # non-digit numeric characters (like '²'), and numbers beyond int64 return 404 rather than
+        # resolving or raising 500.
+        if kind not in ("head", "merge") or not (
+            number.isascii()
+            and number.isdigit()
+            and len(number) <= 19
+            and int(number) <= 9223372036854775807
+        ):
             return False
         row = store.github_by_number(conn, repo, int(number), ids)
         if row is None or row["kind"] != "pull_request":

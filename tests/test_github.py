@@ -1750,6 +1750,17 @@ def test_github_git_ref_resolves_a_pulls_own_ref(gh_client, gh_admin_h, gh_org):
         assert r.status_code == 200, suffix
         assert r.json()["ref"] == f"refs/pull/{num}/{suffix}"
     assert c.get(f"{base}/git/ref/pull/999999/head", headers=gh_admin_h).status_code == 404
+    # Real GitHub answers 404 on non-ASCII digits (fullwidth, Arabic-Indic), superscript digits,
+    # and strings beyond int64 range, rather than resolving or raising 500.
+    for non_ascii_or_bad in ("１３０５３", "١٣٠٥٣", "²", "1" * 4301, "9" * 20):
+        assert (
+            c.get(f"{base}/git/ref/pull/{non_ascii_or_bad}/head", headers=gh_admin_h).status_code
+            == 404
+        )
+        assert (
+            c.get(f"{base}/git/ref/pull/{non_ascii_or_bad}/merge", headers=gh_admin_h).status_code
+            == 404
+        )
     # this repo states no tags and `/tags` says so, so a tag ref cannot resolve either
     assert c.get(f"{base}/git/ref/tags/v1", headers=gh_admin_h).status_code == 404
 

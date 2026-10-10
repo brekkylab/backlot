@@ -2758,6 +2758,9 @@ def github_by_number(conn, repo, number, visible_ids=None) -> sqlite3.Row | None
     can be primary (see the schema) — so this CAN return a file row, and the caller must reject
     one. `routers.github._issue_row` is where that happens; a file is addressed by (repo, path)
     and its number is never served."""
+    # Issue #546 measured the same route-specific 404 for unknown and out-of-range numbers on GitHub.
+    if not -(1 << 63) <= number < (1 << 63):
+        return None
     clause, cp = _acl_clause("github", visible_ids=visible_ids)
     return conn.execute(
         f"SELECT * FROM github_items WHERE repo = ? AND number = ?{clause}",
@@ -2914,6 +2917,8 @@ def get_github_comment(conn, comment_id: int) -> sqlite3.Row | None:
     A PRIMARY KEY lookup: the id is assigned at import (see :mod:`backlot.importer.byo`), so it
     cannot be ambiguous.
     """
+    if not -(1 << 63) <= comment_id < (1 << 63):
+        return None
     return conn.execute(
         "SELECT id, repo, number, seq, author_email, body, created_ts, reactions, path, line, "
         "diff_hunk FROM github_comments WHERE id = ?",

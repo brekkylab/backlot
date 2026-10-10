@@ -1155,9 +1155,13 @@ def _space_container_for_key(conn, space_key: str) -> str | None:
     by its corpus name, so both the synthesized key (``synth.confluence_space_key(name)``, the
     hash-suffixed value ``/space`` advertises) and the literal container name (e.g. ``"handbook"``,
     a legitimate natural key) resolve. Anything else is unresolvable -> ``None``, which no caller
-    reads as "no filter": the CQL search matches nothing and the content listing answers its 404."""
+    reads as "no filter": the CQL search matches nothing and the content listing answers its 404.
+    Case does not enter the comparison: real reads a key whatever its case (measured 2026-10-10,
+    `space/mfs` and `space/MfS` answering the space `space/MFS` does), and the name half is folded
+    too because a natural key the corpus names may be typed in any case."""
+    key = space_key.lower()
     for r in store.list_containers(conn, "confluence"):
-        if space_key == synth.confluence_space_key(r["name"]) or space_key == r["name"]:
+        if key == synth.confluence_space_key(r["name"]).lower() or key == r["name"].lower():
             return r["name"]
     return None
 

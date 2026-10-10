@@ -646,6 +646,32 @@ def test_confluence_content_filtered_by_space_key(client, admin_h, tokens, calle
         assert sorted(x["title"] for x in r.json()["results"]) == want
 
 
+def test_confluence_reads_a_space_key_whatever_its_case(client, admin_h):
+    """Real reads a space key whatever its case, as `_space_container_for_key` records of its
+    measurement. All three readers of it — the space read, the CQL `space=` clause and
+    `content?spaceKey=` — are asked for a space under a re-cased key here, and each answers it as
+    the space has the key."""
+    from backlot import synth
+
+    key = synth.confluence_space_key("handbook")
+    rekeyed = key.swapcase()
+    assert rekeyed != key
+    want = ["Engineering Handbook", "On-call Runbook"]
+
+    single = client.get(f"/atlassian/wiki/rest/api/space/{rekeyed}", headers=admin_h)
+    assert (single.status_code, single.json()["key"]) == (200, key)
+
+    found = client.get(
+        "/atlassian/wiki/rest/api/search", headers=admin_h, params={"cql": f"space={rekeyed}"}
+    ).json()
+    assert sorted(r["title"] for r in found["results"]) == want
+
+    listed = client.get(
+        "/atlassian/wiki/rest/api/content", headers=admin_h, params={"spaceKey": rekeyed}
+    ).json()
+    assert sorted(r["title"] for r in listed["results"]) == want
+
+
 def test_confluence_content_filtered_by_title(client, admin_h, tokens):
     """The rule the comment in `confluence_content_list` records, over the caller's own pages."""
     url = "/atlassian/wiki/rest/api/content"

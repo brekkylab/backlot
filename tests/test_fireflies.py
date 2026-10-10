@@ -268,28 +268,13 @@ def test_fireflies_date_selects_a_day_and_the_singular_email_filters_narrow(clie
 
     assert titles('organizer_email: "ava@acme.com"') == {"Acme x Northwind — latency discovery"}
     assert titles('participant_email: "ava@acme.com"') == {"Acme x Northwind — latency discovery"}
+    # upper-cased, the organizer address finds nothing while the participant address still
+    # matches, as measured beside the organizer filter in `store._fireflies_where`
+    assert titles('organizer_email: "AVA@ACME.COM"') == set()
+    assert titles('participant_email: "AVA@ACME.COM"') == {"Acme x Northwind — latency discovery"}
     # `participants` is who the SENTENCES attribute, so a guest-list-only attendee is not one
     assert titles('participant_email: "dana@northwind.example"') == set()
     assert titles('participant_email: "nobody@acme.com"') == set()
-
-
-def test_fireflies_organizer_email_matches_the_address_as_written(client, admin_h):
-    """`organizer_email` answers the address as stored and nothing for it upper-cased, while
-    `participant_email` folds case — measured against the live API, as recorded beside the
-    organizer filter in `store._fireflies_where`."""
-
-    def titles(arglist):
-        return {
-            t["title"]
-            for t in ff_gql(
-                client, "{ transcripts(%s, limit: 50) { title } }" % arglist, admin_h
-            ).json()["data"]["transcripts"]
-        }
-
-    meeting = {"Acme x Northwind — latency discovery"}
-    assert titles('organizer_email: "ava@acme.com"') == meeting
-    assert titles('organizer_email: "AVA@ACME.COM"') == set()
-    assert titles('participant_email: "AVA@ACME.COM"') == meeting
 
 
 def test_fireflies_unknown_scope_is_a_field_error_not_a_silent_widening(client, admin_h):

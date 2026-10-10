@@ -50,6 +50,7 @@ FIDELITY_SOURCES = (
     "hubspot",
     "jira",
     "linear",
+    "msteams",
     "notion",
     "s3",
     "slack",

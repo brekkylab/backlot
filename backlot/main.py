@@ -31,6 +31,7 @@ from backlot.routers import (
     google,
     hubspot,
     linear,
+    msteams,
     notion,
     oauth,
     s3,
@@ -75,12 +76,18 @@ async def lifespan(app: FastAPI):
     _src = store.read_meta(conn, "source_documents")
     app.state.source_documents = int(_src) if _src is not None else None
 
-    # Three caches the warm-up below fills, each too slow to compute per request on a large corpus:
+    # Caches the warm-up below fills, each too slow to compute per request on a large corpus:
     # per-source COUNT(*), channel -> principals granted on any of its docs, and channel -> member
     # count. Every consumer treats None as "not warm yet" and falls back to its own query.
+    #
+    # The two conversation sources get their OWN pair rather than sharing one keyed by source: a
+    # channel name is unique within its source and nothing stops `#incidents` existing in both, so
+    # one map would answer for a channel the caller asked nothing about.
     app.state.doc_counts = None
     app.state.channel_acl = None
     app.state.channel_members = None
+    app.state.msteams_channel_acl = None
+    app.state.msteams_channel_members = None
 
     app.state.warm_error = None
 
@@ -98,17 +105,24 @@ async def lifespan(app: FastAPI):
                 temp_memory=True,
             )
             try:
-                cacl: dict[str, set] = {}
-                for ch, pid in c.execute(
-                    f"SELECT DISTINCT a.channel, a.principal_id FROM {store.acl_table('slack')} a"
-                ):
-                    cacl.setdefault(ch, set()).add(pid)
-                app.state.channel_acl = {k: frozenset(v) for k, v in cacl.items()}
+
+                def _channel_acl(src: str) -> dict:
+                    cacl: dict[str, set] = {}
+                    for ch, pid in c.execute(
+                        f"SELECT DISTINCT a.{store.grouping_col(src)}, a.principal_id "
+                        f"FROM {store.acl_table(src)} a"
+                    ):
+                        cacl.setdefault(ch, set()).add(pid)
+                    return {k: frozenset(v) for k, v in cacl.items()}
+
+                app.state.channel_acl = _channel_acl("slack")
+                app.state.msteams_channel_acl = _channel_acl("msteams")
                 app.state.doc_counts = {
                     src: c.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
                     for src, tbl in store.SOURCE_TABLE.items()
                 }
-                app.state.channel_members = store.slack_channel_member_counts(c)
+                app.state.channel_members = store.conversation_member_counts(c, "slack")
+                app.state.msteams_channel_members = store.conversation_member_counts(c, "msteams")
             finally:
                 c.close()
         except Exception as e:  # noqa: BLE001 — a warm-up must not be able to kill the server
@@ -808,6 +822,7 @@ async def meta_openapi(source: str, request: Request):
 
 app.include_router(oauth.router)
 app.include_router(slack.router)
+app.include_router(msteams.router)
 app.include_router(google.router)
 app.include_router(github.router)
 app.include_router(atlassian.router)

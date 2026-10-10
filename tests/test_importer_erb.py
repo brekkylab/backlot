@@ -117,9 +117,9 @@ def test_every_bench_source_has_a_converter():
 
 
 def test_byo_only_sources_have_no_bench_representation():
-    """Notion and S3 are the only sources Backlot serves that the bench does not ship, so they can
-    arrive solely through a BYO corpus."""
-    assert set(store.SOURCE_TABLE) - BENCH_SOURCES == {"notion", "s3"}
+    """Notion, S3 and Microsoft Teams are the sources Backlot serves that the bench does not ship,
+    so they can arrive solely through a BYO corpus."""
+    assert set(store.SOURCE_TABLE) - BENCH_SOURCES == {"notion", "s3", "msteams"}
 
 
 # ---------------------------------------------------------------------------

@@ -64,7 +64,7 @@ sees least. Nothing about the request changes but the identity.
 
 | Service | Header |
 |---|---|
-| Slack, Gmail, Google Drive/Docs/Sheets/Slides, Notion, HubSpot, Fireflies | `Authorization: Bearer <token>` |
+| Slack, Microsoft Teams, Gmail, Google Drive/Docs/Sheets/Slides, Notion, HubSpot, Fireflies | `Authorization: Bearer <token>` |
 | GitHub | `Authorization: Bearer <token>`, or the legacy `token <token>` |
 | Jira, Confluence | HTTP Basic with the token as the **password**, or a plain `Bearer` |
 | Linear | A **bare** `Authorization: <token>`, or `Bearer` |
@@ -194,6 +194,31 @@ against Confluence, or against a Jira read you know the account can see.
 not one username and one password (an empty password included). Measured against a public
 Atlassian Cloud site and a private one on 2026-09-04, with a wrong password, an empty one, a value
 that is not base64, an unknown scheme, and no header at all.
+
+### Microsoft Teams — `Bearer`
+
+```bash
+curl -s "localhost:8000/msgraph/v1.0/me/joinedTeams" \
+  -H "Authorization: Bearer usr-29b84da5703116c2a832"
+```
+
+Backlot accepts these header schemes. Anonymous requests to graph.microsoft.com on
+**October 8, 2026**, using only missing or deliberately malformed credentials, returned three
+error messages. This measures refusal of malformed tokens, not acceptance of valid tenant tokens
+under non-Bearer schemes:
+
+| What was sent | `error.code` | `error.message` |
+|---|---|---|
+| No `Authorization` header | `InvalidAuthenticationToken` | `Access token is empty.` |
+| `Authorization: Bearer` with nothing after it | `InvalidAuthenticationToken` | `UnableToParseTokens` |
+| Any non-empty value that resolves to nobody | `InvalidAuthenticationToken` | `Protocol 'Bearer' failed to validate because The token could not be read.` |
+
+The last case was measured with `nope`, `Bearer nope`, the lowercase and uppercase Bearer
+spellings, `token nope`, and `Basic bm9wZTpub3Bl`. All nine requests returned 401 and an
+`innerError` containing `date`, `request-id`, and `client-request-id`; Backlot generates all three.
+No real Teams token was used. Human-readable error messages can change: the patch author's earlier
+observation returned different text. Authenticated permissions and hidden-resource statuses remain
+unmeasured; see the [Teams limitations](supported-sources.md#microsoft-teams--msgraphv10).
 
 ### Notion — `Bearer`
 

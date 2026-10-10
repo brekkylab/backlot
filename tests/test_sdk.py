@@ -3,9 +3,14 @@
 Uses the ``live_server`` fixture (a real ``uvicorn`` on the conftest SAMPLE corpus, which
 carries the +α surface) — the official SDKs make real HTTP calls, so they need a listening
 port rather than the in-process ``TestClient``. Exercises every service's SDK read methods — Slack (slack_sdk),
-Gmail+Drive+Sheets (google-api-python-client), GitHub (PyGithub), Jira+Confluence
-(atlassian-python-api) — asserting all return shape-correct data. Skipped unless the optional
-SDKs (``.[official-sdk]``) are installed.
+Microsoft Teams (msgraph-sdk), Gmail+Drive+Sheets (google-api-python-client), GitHub (PyGithub),
+Jira+Confluence (atlassian-python-api) — asserting all return shape-correct data. Skipped unless
+the optional SDKs (``.[official-sdk]``) are installed.
+
+The Graph SDK earns its place beyond "a client can reach the route": it deserializes into
+generated models, so a field Backlot spells wrong does not raise — it silently arrives as ``None``.
+Every assertion below therefore reads a TYPED attribute (``message_type``, ``from_.user``,
+``membership_type``) rather than a dict key, which is what makes a wrong name fail here.
 """
 
 from __future__ import annotations
@@ -535,6 +540,109 @@ def notion():
     check("Notion", "comments.list")(lambda: c.comments.list(block_id=pid)["results"][0]["object"])
 
 
+# ------------------------------------------------------- Microsoft Teams (Graph)
+
+
+def _graph_client(base_url, token):
+    """A ``GraphServiceClient`` pointed at Backlot — the same two-line shim the example documents."""
+    from azure.core.credentials import AccessToken
+    from kiota_authentication_azure.azure_identity_authentication_provider import (
+        AzureIdentityAuthenticationProvider,
+    )
+    from msgraph import GraphServiceClient
+    from msgraph.graph_request_adapter import GraphRequestAdapter
+
+    class _Static:
+        def get_token(self, *scopes, **kwargs):
+            return AccessToken(token, 2**31 - 1)
+
+    auth = AzureIdentityAuthenticationProvider(_Static(), scopes=["/.default"])
+    adapter = GraphRequestAdapter(auth)
+    adapter.base_url = f"{base_url.rstrip('/')}/msgraph/v1.0"
+    return GraphServiceClient(request_adapter=adapter)
+
+
+async def _msteams_reads(graph):
+    from kiota_abstractions.base_request_configuration import RequestConfiguration
+    from msgraph.generated.teams.item.channels.item.messages.messages_request_builder import (
+        MessagesRequestBuilder,
+    )
+
+    me = await graph.me.get()
+    check("Teams", "me")(lambda: me.user_principal_name)
+
+    teams = await graph.me.joined_teams.get()
+    check("Teams", "me.joinedTeams")(lambda: teams.value[0].display_name)
+    team = graph.teams.by_team_id(teams.value[0].id)
+
+    channels = await team.channels.get()
+    by_name = {c.display_name: c for c in channels.value}
+    check("Teams", "channels")(lambda: f"{len(channels.value)} channels")
+    # The enum deserializes only if the served string is a member the schema declares.
+    check("Teams", "channel.membershipType")(lambda: by_name["Platform"].membership_type.value)
+
+    one = await team.channels.by_channel_id(by_name["Platform"].id).get()
+    check("Teams", "channels/{id}")(lambda: one.layout_type.value)
+
+    incidents = team.channels.by_channel_id(by_name["Incidents"].id)
+    config = RequestConfiguration(
+        query_parameters=MessagesRequestBuilder.MessagesRequestBuilderGetQueryParameters(
+            expand=["replies"]
+        )
+    )
+    posts = await incidents.messages.get(request_configuration=config)
+    root = next(m for m in posts.value if "502s" in m.body.content)
+    check("Teams", "channel messages")(lambda: f"{posts.odata_count} roots")
+    # The SDK parses a datetime. Its relation to the id is a Backlot synthesis convention,
+    # not a Microsoft guarantee about real message ids or etags.
+    check("Teams", "id is createdDateTime")(
+        lambda: round(root.created_date_time.timestamp() * 1000) == int(root.id) or 1 / 0
+    )
+    check("Teams", "etag is id")(lambda: root.etag == root.id or 1 / 0)
+    check("Teams", "message.from")(lambda: root.from_.user.display_name)
+    check("Teams", "message.messageType")(lambda: root.message_type.value)
+    check("Teams", "$expand=replies")(lambda: f"{len(root.replies)} inline")
+
+    replies = await incidents.messages.by_chat_message_id(root.id).replies.get()
+    check("Teams", "message replies")(
+        lambda: (
+            f"{len(replies.value)} replies"
+            if all(r.reply_to_id == root.id for r in replies.value)
+            else 1 / 0
+        )
+    )
+    fetched = await incidents.messages.by_chat_message_id(replies.value[0].id).get()
+    check("Teams", "messages/{id} on a reply")(lambda: fetched.reply_to_id == root.id or 1 / 0)
+
+    members = await incidents.members.get()
+    check("Teams", "channel members")(lambda: ", ".join(sorted(m.email for m in members.value)))
+
+    users = await graph.users.get()
+    check("Teams", "users")(lambda: f"{len(users.value)} users")
+    got = await graph.users.by_user_id("ava@acme.com").get()
+    check("Teams", "users/{upn}")(lambda: got.user_principal_name)
+
+    # The SDK raises its own ODataError only if it could parse Backlot's error envelope.
+    from kiota_abstractions.api_error import APIError
+
+    raised = None
+    try:
+        await incidents.messages.by_chat_message_id("9999999999999").get()
+    except APIError as exc:
+        # Rebound, because Python clears an `except ... as` name at the end of its block and the
+        # closure below outlives it.
+        raised = exc
+    check("Teams", "404 is an ODataError")(
+        lambda: raised.error.code if raised and raised.response_status_code == 404 else 1 / 0
+    )
+
+
+def msteams():
+    import asyncio
+
+    asyncio.run(_msteams_reads(_graph_client(BASE, ADMIN)))
+
+
 def test_sdk_read_coverage(live_server):
     global BASE, ADMIN
     base, settings = live_server
@@ -544,6 +652,8 @@ def test_sdk_read_coverage(live_server):
 
     if importlib.util.find_spec("notion_client"):  # optional; only on .[official-sdk]
         fns.append(notion)
+    if importlib.util.find_spec("msgraph"):
+        fns.append(msteams)
     for fn in fns:
         try:
             fn()
@@ -665,3 +775,44 @@ def test_s3_sdk_acl_scopes_to_user(live_server, tokens):
     with pytest.raises(ClientError) as e:
         s3.get_object(Bucket="people-vault", Key="comp/bands.csv")
     assert e.value.response["Error"]["Code"] in ("NoSuchKey", "NoSuchBucket", "AccessDenied")
+
+
+def test_msteams_sdk_acl_scopes_to_user(live_server, tokens):
+    """`People Confidential` is group-scoped to people; bob is engineering.
+
+    Asserted through the SDK rather than over HTTP because that is where a client would notice: the
+    channel has to be absent from the listing AND unreachable by id, or a caller who saved the id
+    keeps reading a room they were removed from.
+    """
+    pytest.importorskip("msgraph")
+    import asyncio
+
+    from kiota_abstractions.api_error import APIError
+
+    base_url, _ = live_server
+
+    async def visible(token):
+        graph = _graph_client(base_url, token)
+        teams = await graph.me.joined_teams.get()
+        team = graph.teams.by_team_id(teams.value[0].id)
+        channels = await team.channels.get()
+        return team, {c.display_name: c.id for c in channels.value}
+
+    _, hana_sees = asyncio.run(visible(tokens["hana@acme.com"]))
+    assert "People Confidential" in hana_sees
+    confidential = hana_sees["People Confidential"]
+
+    async def bob():
+        graph = _graph_client(base_url, tokens["bob@acme.com"])
+        teams = await graph.me.joined_teams.get()
+        team = graph.teams.by_team_id(teams.value[0].id)
+        names = {c.display_name for c in (await team.channels.get()).value}
+        try:
+            await team.channels.by_channel_id(confidential).get()
+            return names, None
+        except APIError as e:
+            return names, e.response_status_code
+
+    names, status = asyncio.run(bob())
+    assert "People Confidential" not in names
+    assert status == 404, "a channel bob cannot read must not resolve by id either"

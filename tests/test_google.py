@@ -4975,7 +4975,7 @@ def test_sheets_values_get_enforces_the_acl(base, live_server, sheet_id):
     }
     outsider = {"Authorization": f"Bearer {tokens['mia@acme.com']}"}  # marketing, not finance
     admin_h = {"Authorization": f"Bearer {live_server[1].admin_token}"}
-    # the admin arm is what keeps this honest: without it a missing route 404s and the test passes
+    # the admin arm keeps this honest: without it a route that refused every caller would pass
     assert _values(base, admin_h, sheet_id, "Sheet1").status_code == 200
     assert _batch(base, admin_h, sheet_id, ["Sheet1"]).status_code == 200
     assert _values(base, outsider, sheet_id, "Sheet1").status_code == 403

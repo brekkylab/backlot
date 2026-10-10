@@ -2188,6 +2188,7 @@ def test_github_documentation_url_names_the_route_that_failed(gh_client, gh_admi
             f"{missing}/collaborators",
             "rest/collaborators/collaborators#list-repository-collaborators",
         ),
+        (f"{missing}/issues/1", "rest/issues/issues#get-an-issue"),
         (f"{missing}/pulls/1/files", "rest/pulls/pulls#list-pull-requests-files"),
         # the two routes that take the rest of the path as one parameter still resolve
         (f"{missing}/git/ref/heads/release/2026-03", "rest/git/refs#get-a-reference"),
@@ -2415,12 +2416,18 @@ def test_github_pages_at_reals_thirty_and_caps_at_its_hundred(tmp_path):
         "git/ref/pull/{number}/merge",
     ],
 )
-@pytest.mark.parametrize("number", ["9223372036854775808", "-9223372036854775809"])
-def test_github_out_of_range_numbers_match_unknown_number_404(
+@pytest.mark.parametrize("number", ["notanint", "9223372036854775808", "-9223372036854775809"])
+def test_github_a_path_number_it_cannot_read_is_the_unknown_number_404(
     gh_client, gh_admin_h, gh_org, route, number
 ):
-    """A number outside 64 bits gets the 404 an unknown number gets, byte for byte, as real answers
-    it (see store.github_by_number)."""
+    """A path number that is not an integer, or one outside 64 bits (see store.github_by_number),
+    gets the 404 an unknown number gets on that route, byte for byte, as real answers both.
+
+    The routes that declare the number an `int` match `notanint` and then fail to validate it, and
+    that has to be the route's 404 rather than a 422: `{"detail": [...]}` would announce itself as
+    the mock's own default, and an envelope would not, so a status real never sends would read as
+    measured.
+    """
     c, _ = gh_client
     base = f"/github/repos/{gh_org}/codebase/"
     unknown = c.get(base + route.format(number="999999999"), headers=gh_admin_h)
@@ -2428,25 +2435,6 @@ def test_github_out_of_range_numbers_match_unknown_number_404(
     assert unknown.status_code == 404
     assert actual.status_code == unknown.status_code
     assert actual.content == unknown.content
-
-
-def test_github_a_path_parameter_it_cannot_parse_is_the_route_s_404(gh_client, gh_admin_h, gh_org):
-    """Real has no route for `/issues/notanint`, so it answers the 404 that route's own anchor
-    names — measured: `Not Found`, `documentation_url: .../rest/issues/issues#get-an-issue`.
-
-    Backlot declares `number: int` and so matches the route and fails after, which is a difference
-    in how the two arrive rather than in what they answer. What it must not do is answer a 422:
-    `{"detail": [...]}` announced itself as the mock's own default, and an envelope does not — a
-    status real never sends would read as measured.
-    """
-    c, _ = gh_client
-    r = c.get(f"/github/repos/{gh_org}/codebase/issues/notanint", headers=gh_admin_h)
-    assert r.status_code == 404
-    assert r.json() == {
-        "message": "Not Found",
-        "documentation_url": "https://docs.github.com/rest/issues/issues#get-an-issue",
-        "status": "404",
-    }
 
 
 def test_github_a_wrong_method_is_not_dressed_as_a_measured_answer(gh_client, gh_admin_h, gh_org):

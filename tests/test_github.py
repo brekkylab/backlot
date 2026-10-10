@@ -1080,34 +1080,6 @@ def _fresh_github_rate_limits(gh_client):
     c.app.state.github_rate_limits = RateLimitWindows()
 
 
-@pytest.mark.parametrize(
-    "route",
-    [
-        "issues/{number}",
-        "issues/{number}/comments",
-        "issues/comments/{number}",
-        "pulls/{number}",
-        "pulls/{number}/reviews",
-        "pulls/{number}/comments",
-        "pulls/{number}/commits",
-        "pulls/{number}/files",
-        "pulls/comments/{number}",
-    ],
-)
-@pytest.mark.parametrize("number", ["9223372036854775808", "-9223372036854775809"])
-def test_github_out_of_range_numbers_match_unknown_number_404(
-    gh_client, gh_admin_h, gh_org, route, number
-):
-    """An out-of-range issue, pull or comment id must not reach SQLite as a bind parameter."""
-    c, _ = gh_client
-    base = f"/github/repos/{gh_org}/codebase/"
-    unknown = c.get(base + route.format(number="999999999"), headers=gh_admin_h)
-    actual = c.get(base + route.format(number=number), headers=gh_admin_h)
-    assert unknown.status_code == 404
-    assert actual.status_code == unknown.status_code
-    assert actual.content == unknown.content
-
-
 def test_github_tree_recursive(gh_client, gh_admin_h, gh_org):
     c, _ = gh_client
     body = c.get(
@@ -2425,6 +2397,37 @@ def test_github_pages_at_reals_thirty_and_caps_at_its_hundred(tmp_path):
         assert (gh.PER_PAGE_DEFAULT, gh.PER_PAGE_MAX) == (30, 100)
         assert Settings.model_fields["default_page_size"].default == 100
         assert Settings.model_fields["max_page_size"].default == 1000
+
+
+@pytest.mark.parametrize(
+    "route",
+    [
+        "issues/{number}",
+        "issues/{number}/comments",
+        "issues/comments/{number}",
+        "pulls/{number}",
+        "pulls/{number}/reviews",
+        "pulls/{number}/comments",
+        "pulls/{number}/commits",
+        "pulls/{number}/files",
+        "pulls/comments/{number}",
+        "git/ref/pull/{number}/head",
+        "git/ref/pull/{number}/merge",
+    ],
+)
+@pytest.mark.parametrize("number", ["9223372036854775808", "-9223372036854775809"])
+def test_github_out_of_range_numbers_match_unknown_number_404(
+    gh_client, gh_admin_h, gh_org, route, number
+):
+    """A number outside 64 bits gets the 404 an unknown number gets, byte for byte, as real answers
+    it (see store.github_by_number)."""
+    c, _ = gh_client
+    base = f"/github/repos/{gh_org}/codebase/"
+    unknown = c.get(base + route.format(number="999999999"), headers=gh_admin_h)
+    actual = c.get(base + route.format(number=number), headers=gh_admin_h)
+    assert unknown.status_code == 404
+    assert actual.status_code == unknown.status_code
+    assert actual.content == unknown.content
 
 
 def test_github_a_path_parameter_it_cannot_parse_is_the_route_s_404(gh_client, gh_admin_h, gh_org):

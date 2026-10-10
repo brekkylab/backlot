@@ -2507,7 +2507,8 @@ def _editor_doc(request: Request, file_id: str, *, expect: str):
 
     Sheets and Docs resolve the stored type before visibility: a hidden file of their own type is
     permission-denied, while a hidden file of another type gets that type's usual answer. Measured
-    on 2026-10-06. Slides was not measured and retains visibility-first resolution."""
+    on 2026-10-06, and for an Office file on 2026-10-09. Slides was not measured and resolves
+    visibility first."""
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)

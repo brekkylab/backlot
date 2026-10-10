@@ -160,10 +160,8 @@ async def _http_exception_handler(request: Request, exc: StarletteHTTPException)
     # is asked for here rather than raised where the other refusals are. The exception is replaced
     # rather than edited: what follows reads the body, media type and headers off it either way.
     if exc.status_code == 405:
-        # Named as ``backlot.routers.atlassian._echoed_path`` gives it rather than as routed,
-        # which has lost a trailing slash the request carried.
-        path = request.scope.get("atlassian_echo_path", request.url.path)
-        vendor = errors.method_not_allowed(path, request.method)
+        # The path as a refusal echoes it, which is the routed one on any vendor but Atlassian.
+        vendor = errors.method_not_allowed(atlassian._echoed_path(request), request.method)
         if vendor is not None:
             if vendor.headers is None:
                 vendor.headers = getattr(exc, "headers", None)
@@ -443,8 +441,7 @@ async def normalise_the_slashes_in_an_atlassian_path(request: Request, call_next
     collapses an interior run in `detail`, `instance` and Confluence's `null for uri:` message
     (`/api/3//nope` comes back `/api/3/nope`) but leaves a trailing slash in all three
     (`/nopesuchroute/` comes back `/nopesuchroute/`). The collapsed spelling is stashed on the
-    scope, where ``backlot.routers.atlassian._echoed_path`` and :func:`_http_exception_handler`
-    read it.
+    scope for ``backlot.routers.atlassian._echoed_path`` to read.
 
     Ahead of routing, because the answer for a path no route matches is a route of its own
     (`atlassian.unmatched_router`), which would otherwise claim every slashed spelling of a served

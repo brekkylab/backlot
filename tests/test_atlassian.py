@@ -2426,11 +2426,12 @@ def test_jira_search_default_page_size_is_never_checked_against_the_range(
         assert post_r.status_code == 200, post_r.text
 
 
-@pytest.mark.parametrize("value", [0, -1, 5001, "0", "-1", "5001", None])
+@pytest.mark.parametrize("value", [0, -1, 5001, "0", "-1", "5001", None, 2147483647, -2147483648])
 def test_jira_search_refuses_a_max_results_outside_the_range_on_post(client, admin_h, value):
     """Measured 2026-09-18: the same range applies to the POST body, and a JSON `null` is not the
     parameter unsent the way it is for `jql` — Jackson reads a null int field as `0`, which fails
-    this same check."""
+    this same check. Both ends of Java's `int` bind and reach it too; see
+    `_jira_search_max_results`."""
     r = _search_post(client, admin_h, jql="project = payments", maxResults=value)
     assert r.status_code == 400, r.text
     assert r.json() == {"errorMessages": [_MAX_RESULTS_RANGE_MESSAGE], "errors": {}}
@@ -2442,10 +2443,25 @@ def test_jira_search_serves_a_max_results_at_the_range_bounds_on_post(client, ad
     assert r.status_code == 200, r.text
 
 
-@pytest.mark.parametrize("value", ["abc", True, False])
+@pytest.mark.parametrize(
+    "value",
+    [
+        "abc",
+        True,
+        False,
+        2147483648,
+        -2147483649,
+        2147483647.5,
+        -2147483648.5,
+        int("1" * 1000),
+        -int("1" * 1000),
+    ],
+)
 def test_jira_search_post_refuses_a_max_results_the_vendor_will_not_coerce(client, admin_h, value):
     """Measured 2026-09-18: Jackson refuses a non-numeral string or a boolean with the body-wide
-    sentence, naming no parameter."""
+    sentence, naming no parameter. A number past Java's `int` draws the same sentence, a fraction
+    past it included (see `_jira_search_max_results`), up to the 1000 digits real still reads (see
+    `_jira_json_number`)."""
     r = _search_post(client, admin_h, jql="project = payments", maxResults=value)
     assert r.status_code == 400, r.text
     assert r.json() == {"errorMessages": [errors_atlassian.BODY_NOT_AN_OBJECT]}
@@ -2475,6 +2491,7 @@ def test_jira_search_post_refuses_an_unknown_body_field(client, admin_h, bogus):
     "field,value",
     [
         ("fields", ["summary"]),
+        ("fields", [1, None, True]),
         ("fieldsByKeys", True),
         ("expand", "names"),
         ("properties", ["prop1"]),
@@ -2623,6 +2640,62 @@ def test_jira_search_post_reads_the_media_type_the_way_real_matches_it(
         ("true", "Invalid request payload. Refer to the REST API documentation and try again."),
         # whitespace alone is NOT the parse error a JSON reader would raise, and not "no content"
         ("   ", "Invalid request payload. Refer to the REST API documentation and try again."),
+        # constants Python's reader takes and real's does not (see `_reject_json_constant`)
+        *[
+            (
+                '{"jql": "project = payments", "maxResults": %s}' % value,
+                errors_atlassian.BODY_UNPARSEABLE,
+            )
+            for value in ("NaN", "Infinity", "-Infinity")
+        ],
+        # `1e400` reads as an infinite float, past Java's `int` (see `_jira_search_max_results`)
+        *[
+            (
+                '{"jql": "project = payments", "maxResults": %s}' % value,
+                errors_atlassian.BODY_NOT_AN_OBJECT,
+            )
+            for value in ("1e400", "-1e400")
+        ],
+        # a `fields` that is not a list of scalars (see `jira_search`)
+        *[
+            (
+                json.dumps({"jql": "project = payments", "fields": fields}),
+                errors_atlassian.BODY_NOT_AN_OBJECT,
+            )
+            for fields in ([["id"]], [{}], {}, "id")
+        ],
+        # nested past the recursion limit of Python 3.11's reader (999) and of 3.13's (100000),
+        # so each row pins the answer on one side of a limit that moves with the Python
+        *[
+            pytest.param(
+                '{"jql": "project = payments", "fields": %s"id"%s}' % ("[" * depth, "]" * depth),
+                errors_atlassian.BODY_NOT_AN_OBJECT,
+                id=f"fields-nested-{depth}",
+            )
+            for depth in (999, 100_000)
+        ],
+        # a number past 1000 digits inside a list or an object, whichever member holds it (see
+        # `_jira_search_body`); as the body or a member's value it is
+        # `test_jira_search_post_refuses_a_number_past_1000_digits_as_failed_read`
+        *[
+            pytest.param(raw, errors_atlassian.BODY_NOT_AN_OBJECT, id=name)
+            for name, raw in [
+                ("fields-list", '{"jql": "project = payments", "fields": [%s]}' % ("1" * 1001)),
+                (
+                    "properties-list",
+                    '{"jql": "project = payments", "properties": [%s]}' % ("1" * 5000),
+                ),
+                (
+                    "reconcileIssues-nested",
+                    '{"jql": "project = payments", "reconcileIssues": [[%s]]}' % ("1" * 1001),
+                ),
+                (
+                    "expand-object",
+                    '{"jql": "project = payments", "expand": {"a": %s}}' % ("1" * 1001),
+                ),
+                ("body-list", "[%s]" % ("1" * 1001)),
+            ]
+        ],
     ],
 )
 def test_jira_search_post_refuses_a_body_it_cannot_turn_into_an_object(
@@ -2638,16 +2711,76 @@ def test_jira_search_post_refuses_a_body_it_cannot_turn_into_an_object(
     assert r.json() == {"errorMessages": [message]}
 
 
-def test_jira_search_post_ignores_bytes_after_a_complete_body(client, admin_h):
+@pytest.mark.parametrize("tail", [" trailing", " " + "[" * 1001])
+def test_jira_search_post_ignores_bytes_after_a_complete_body(client, admin_h, tail):
     """Measured: `{"jql": …} junk` is answered 200 — the vendor's parser reads the first value and
     lets the rest go, where a whole-input JSON read would refuse it."""
     r = client.post(
         "/atlassian/rest/api/3/search/jql",
         headers={**admin_h, "Content-Type": "application/json"},
-        content=json.dumps({"jql": "project = payments"}) + " trailing",
+        content=json.dumps({"jql": "project = payments"}) + tail,
     )
     assert r.status_code == 200, r.text
     assert r.json()["issues"]
+
+
+_SEARCH_V3 = "/rest/api/3/search/jql"
+
+
+@pytest.mark.parametrize(
+    "path,raw,echoed",
+    [
+        pytest.param(_SEARCH_V3, body, _SEARCH_V3, id=name)
+        for name, body in [
+            ("maxResults-1001", '{"jql": "x", "maxResults": %s}' % ("1" * 1001)),
+            ("maxResults-negative-1001", '{"jql": "x", "maxResults": -%s}' % ("1" * 1001)),
+            ("maxResults-4301", '{"jql": "x", "maxResults": %s}' % ("1" * 4301)),
+            ("maxResults-5000", '{"jql": "x", "maxResults": %s}' % ("1" * 5000)),
+            ("maxResults-1000-then-fraction", '{"jql": "x", "maxResults": %s.5}' % ("1" * 1000)),
+            ("maxResults-exponent", '{"jql": "x", "maxResults": 1.%se1}' % ("1" * 999)),
+            ("jql", '{"jql": %s}' % ("1" * 1001)),
+            ("nextPageToken", '{"jql": "x", "nextPageToken": %s}' % ("1" * 1001)),
+            ("expand", '{"jql": "x", "expand": %s}' % ("1" * 5000)),
+            ("fieldsByKeys", '{"jql": "x", "fieldsByKeys": %s}' % ("1" * 1001)),
+            ("properties", '{"jql": "x", "properties": %s}' % ("1" * 1001)),
+            ("reconcileIssues", '{"jql": "x", "reconcileIssues": %s}' % ("1" * 1001)),
+            ("fields", '{"jql": "x", "fields": %s}' % ("1" * 1001)),
+            ("undeclared-member", '{"jql": "x", "bogus": %s}' % ("1" * 1001)),
+            ("body-1001", "1" * 1001),
+            ("body-5000", "1" * 5000),
+        ]
+    ]
+    + [
+        # the path a refusal echoes, as `_echoed_path` gives it
+        pytest.param(path, '{"jql": %s}' % ("1" * 1001), echoed, id=path)
+        for path, echoed in [
+            ("/rest/api/3/search/jql/", "/rest/api/3/search/jql/"),
+            ("/rest/api/3//search/jql", _SEARCH_V3),
+            ("/rest/api/2/search/jql", "/rest/api/2/search/jql"),
+        ]
+    ],
+)
+def test_jira_search_post_refuses_a_number_past_1000_digits_as_failed_read(
+    client, admin_h, path, raw, echoed
+):
+    """A number literal past 1000 digits, the fraction's and exponent's counted, is real's
+    problem+json refusal as the body or as any member's value (see `_jira_search_body`); inside a
+    list or an object it is a row of
+    `test_jira_search_post_refuses_a_body_it_cannot_turn_into_an_object`."""
+    r = client.post(
+        f"/atlassian{path}",
+        headers={**admin_h, "Content-Type": "application/json"},
+        content=raw,
+    )
+    assert r.status_code == 400, r.text
+    assert r.headers["content-type"] == "application/problem+json;charset=UTF-8"
+    assert r.json() == {
+        "type": "about:blank",
+        "title": "Bad Request",
+        "status": 400,
+        "detail": "Failed to read request",
+        "instance": echoed,
+    }
 
 
 def test_jira_search_post_with_no_body_at_all_is_the_media_type_refusal(client, admin_h):

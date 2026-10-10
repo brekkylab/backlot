@@ -28,6 +28,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
 from backlot import auth, store, synth
+from backlot.acl import Caller
 from backlot.openapi import qp
 from backlot.routers import json_body
 
@@ -758,6 +759,27 @@ def _matches(row, body: dict) -> bool:
     )
 
 
+def _bearer_credential(request: Request) -> str | None:
+    """The key from `Authorization: Bearer <key>`: the scheme in that case, one space, and a key
+    with no whitespace in it. Space or tab around the whole value is not part of it.
+
+    `auth.bearer_token` reads the scheme in any case and any run of whitespace after it, and takes
+    GitHub's `token <t>` as well. HubSpot does not: measured against api.hubapi.com on 2026-09-30
+    with a valid key, `bearer <key>`, `Bearer  <key>` (two spaces), `Bearer <key> x`,
+    `Basic Zm9vOmJhcg==` and the bare key were each answered with the INVALID_AUTHENTICATION 401
+    where `Bearer <key>` is served. On 2026-10-09 `BEARER <key>`, a tab after the scheme and
+    `token <key>` were the 401 too, and a space or tab before or after `Bearer <key>` was served.
+    """
+    scheme, _, key = (request.headers.get("authorization") or "").strip(" \t").partition(" ")
+    if scheme == "Bearer" and key and not any(c.isspace() for c in key):
+        return key
+    return None
+
+
+def _caller(request: Request) -> Caller | None:
+    return auth.acl(request).resolve(_bearer_credential(request))
+
+
 # --------------------------------------------------------------------------- routes
 
 
@@ -767,7 +789,7 @@ def _matches(row, body: dict) -> bool:
     openapi_extra={"parameters": _P_LIST},
 )
 async def list_objects(object_type: str, request: Request):
-    caller = auth.resolve_bearer(request)
+    caller = _caller(request)
     if caller is None:
         return _error(401, "Authentication credentials not found.", "INVALID_AUTHENTICATION")
     spellings = _resolve_type(request, object_type)
@@ -802,7 +824,7 @@ async def list_objects(object_type: str, request: Request):
     openapi_extra={"parameters": _P_READ},
 )
 async def get_object(object_type: str, record_id: str, request: Request):
-    caller = auth.resolve_bearer(request)
+    caller = _caller(request)
     if caller is None:
         return _error(401, "Authentication credentials not found.", "INVALID_AUTHENTICATION")
     # One ACL-scoped query, not a resolve followed by a get_document refetch of the same row:
@@ -818,7 +840,7 @@ async def get_object(object_type: str, record_id: str, request: Request):
     "/crm/v3/objects/{object_type}/search", response_model=HubspotPage, openapi_extra=_B_SEARCH
 )
 async def search_objects(object_type: str, request: Request):
-    caller = auth.resolve_bearer(request)
+    caller = _caller(request)
     if caller is None:
         return _error(401, "Authentication credentials not found.", "INVALID_AUTHENTICATION")
     spellings = _resolve_type(request, object_type)
@@ -883,7 +905,7 @@ async def search_objects(object_type: str, request: Request):
     "/crm/v3/objects/{object_type}/batch/read", response_model=HubspotPage, openapi_extra=_B_BATCH
 )
 async def batch_read(object_type: str, request: Request):
-    caller = auth.resolve_bearer(request)
+    caller = _caller(request)
     if caller is None:
         return _error(401, "Authentication credentials not found.", "INVALID_AUTHENTICATION")
     spellings = _resolve_type(request, object_type)
@@ -929,7 +951,7 @@ async def batch_read(object_type: str, request: Request):
 async def list_associations(
     object_type: str, record_id: str, to_object_type: str, request: Request
 ):
-    caller = auth.resolve_bearer(request)
+    caller = _caller(request)
     if caller is None:
         return _error(401, "Authentication credentials not found.", "INVALID_AUTHENTICATION")
     conn, visible = auth.conn(request), auth.visible_ids(request, caller)

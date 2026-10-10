@@ -423,8 +423,12 @@ def bad_field_mask(path: str) -> GoogleError:
 
 
 def invalid_page_token() -> GoogleError:
-    """Gmail's answer to a page token it did not issue, measured on 2026-09-30 for both
-    ``messages.list`` and ``threads.list``. An empty token still names the first page."""
+    """Gmail's answer to a page token that does not parse, on both listings: 400 INVALID_ARGUMENT,
+    whose `errors[]` entry is `global` / `invalidArgument` and which carries no `details`. Real
+    does not check that it issued the token: on 2026-10-09 both listings served `0`, `1` and an
+    issued token with its last digit changed or dropped, and refused one with a 21st digit, a
+    letter or a leading space. Where it comes among the other refusals is
+    ``routers.google._gmail_page``'s."""
     return GoogleError(
         400, "Invalid pageToken", reason="invalidArgument", status="INVALID_ARGUMENT"
     )
@@ -448,7 +452,7 @@ def invalid_id_value() -> GoogleError:
 def invalid_max_results() -> GoogleError:
     """Gmail's ``Invalid maxResults`` for a `maxResults` of zero or from 2**31 up: 400
     INVALID_ARGUMENT, whose `errors[]` entry is `global` / `invalidArgument` and which carries no
-    `details`. The values and the measurement are ``routers.google._gmail_max_results``'s. A value
+    `details`. The values and the measurement are ``routers.google._gmail_page``'s. A value
     the proto layer cannot read at all is :func:`invalid_field_value`'s shape instead, which names
     the field it refused."""
     return GoogleError(
@@ -672,6 +676,8 @@ def first_repeat(query: Mapping[str, str] | None, name: str) -> str | None:
                           |                                      | 2026-09-22
         maxResults        | `1&3` is 3, `3&1` is 1               | Gmail messages.list and
                           |                                      | threads.list 2026-10-08
+        pageToken         | `bad&<valid>` is the next page,      | Gmail messages.list and
+                          | `<valid>&bad` a 400                  | threads.list 2026-10-09
 
     An empty first repeat is read as itself rather than skipped, measured 2026-09-23:
     `q=&q=<folders>` is the unfiltered listing, `fields=&fields=id` on Drive `files.get` answers
@@ -688,8 +694,7 @@ def first_repeat(query: Mapping[str, str] | None, name: str) -> str | None:
     `excludeTablesInBandedRanges`, measured the same day, and of `majorDimension`, measured
     2026-09-22.
 
-    Gmail's `q` and `pageToken` stay on ``.get`` because which end real reads them from is
-    unmeasured.
+    Gmail's `q` stays on ``.get`` because which end real reads it from is unmeasured.
     """
     if query is None:
         return None

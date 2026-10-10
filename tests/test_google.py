@@ -213,45 +213,6 @@ def test_gmail_messages_list_serves_hex_ids(client, admin_h):
         assert not m["id"].startswith("dsid_")
 
 
-@pytest.mark.parametrize("resource", ["messages", "threads"])
-def test_gmail_lists_refuse_an_invalid_page_token_but_accept_empty(client, admin_h, resource):
-    """A corrupt crawl cursor must fail instead of silently replaying page one. An explicitly empty
-    token still means the first page, which distinguishes it from a token that failed to decode."""
-    path = f"/gmail/v1/users/me/{resource}"
-    first = client.get(path, headers=admin_h, params={"maxResults": 1})
-    empty = client.get(path, headers=admin_h, params={"maxResults": 1, "pageToken": ""})
-    refused = client.get(path, headers=admin_h, params={"maxResults": 1, "pageToken": "bogus"})
-
-    assert first.status_code == empty.status_code == 200
-    assert empty.json() == first.json()
-    assert refused.status_code == 400
-    assert refused.json() == {
-        "error": {
-            "code": 400,
-            "message": "Invalid pageToken",
-            "errors": [
-                {
-                    "message": "Invalid pageToken",
-                    "domain": "global",
-                    "reason": "invalidArgument",
-                }
-            ],
-            "status": "INVALID_ARGUMENT",
-        }
-    }
-
-
-def test_gmail_messages_list_accepts_its_own_page_token(client, admin_h):
-    """Strict validation must retain the opaque cursor emitted by the preceding page."""
-    path = "/gmail/v1/users/me/messages"
-    first = client.get(path, headers=admin_h, params={"maxResults": 1})
-    token = first.json()["nextPageToken"]
-    second = client.get(path, headers=admin_h, params={"maxResults": 1, "pageToken": token})
-
-    assert second.status_code == 200
-    assert second.json()["messages"][0] != first.json()["messages"][0]
-
-
 def test_gmail_hex_id_resolves_to_the_same_document(client, admin_h, ro_conn):
     """The hex id maps back to its dsid, so the body a client reads by hex is the stored body. A
     one-way id would make every message unreadable."""
@@ -660,7 +621,7 @@ def test_gmail_messages_list_pagination_stable_and_ordered(client, admin_h, ro_c
 
 
 def test_gmail_max_results_is_capped_at_500(tmp_path, monkeypatch):
-    """The cap `_gmail_max_results` records, on both listings."""
+    """The cap `_gmail_page` records, on both listings."""
     from backlot.routers import google
     from tests._helpers import corpus_client
 
@@ -703,7 +664,7 @@ def test_gmail_max_results_is_capped_at_500(tmp_path, monkeypatch):
             assert "nextPageToken" in page, kind
 
 
-# The rows `_gmail_max_results` records. A `size` is served, `uint32` is the proto layer's refusal
+# The rows `_gmail_page` records. A `size` is served, `uint32` is the proto layer's refusal
 # of each named repeat, and `maxResults` is `Invalid maxResults`. The measurement is that
 # function's.
 _GMAIL_MAX_RESULTS = [
@@ -734,7 +695,7 @@ _GMAIL_MAX_RESULTS = [
 @pytest.mark.parametrize("kind", ["messages", "threads"])
 @pytest.mark.parametrize("values, shape, named", _GMAIL_MAX_RESULTS)
 def test_gmail_refuses_a_max_results_it_cannot_read(client, admin_h, kind, values, shape, named):
-    """The refusals `_gmail_max_results` records, on both listings."""
+    """The refusals `_gmail_page` records, on both listings."""
     r = client.get(
         f"/gmail/v1/users/me/{kind}",
         headers=admin_h,
@@ -778,6 +739,80 @@ def test_gmail_refuses_a_max_results_it_cannot_read(client, admin_h, kind, value
             }
         ],
     }, (kind, values)
+
+
+_GMAIL_TOKEN = {
+    "code": 400,
+    "message": "Invalid pageToken",
+    "errors": [{"message": "Invalid pageToken", "domain": "global", "reason": "invalidArgument"}],
+    "status": "INVALID_ARGUMENT",
+}
+_GMAIL_RANGE = {
+    "code": 400,
+    "message": "Invalid maxResults",
+    "errors": [{"message": "Invalid maxResults", "domain": "global", "reason": "invalidArgument"}],
+    "status": "INVALID_ARGUMENT",
+}
+_GMAIL_UINT32_ABC = {
+    "code": 400,
+    "message": "Invalid value at 'max_results' (TYPE_UINT32), \"abc\"",
+    "errors": [
+        {"message": "Invalid value at 'max_results' (TYPE_UINT32), \"abc\"", "reason": "invalid"}
+    ],
+    "status": "INVALID_ARGUMENT",
+    "details": [
+        {
+            "@type": "type.googleapis.com/google.rpc.BadRequest",
+            "fieldViolations": [
+                {
+                    "field": "max_results",
+                    "description": "Invalid value at 'max_results' (TYPE_UINT32), \"abc\"",
+                }
+            ],
+        }
+    ],
+}
+
+
+# fmt: off
+_GMAIL_PAGE_TOKEN_ROWS = [
+    ([("pageToken", "bogus")], _GMAIL_TOKEN, _GMAIL_TOKEN),
+    ([("pageToken", "")], None, None),
+    ([("maxResults", "1"), ("pageToken", "{token}")], "second", "second"),
+    ([("maxResults", "0"), ("pageToken", "bogus")], _GMAIL_TOKEN, _GMAIL_RANGE),
+    ([("pageToken", "garbage"), ("maxResults", "0")], _GMAIL_TOKEN, _GMAIL_RANGE),
+    ([("maxResults", "2147483648"), ("pageToken", "garbage")], _GMAIL_TOKEN, _GMAIL_RANGE),
+    ([("pageToken", "garbage"), ("maxResults", "abc")], _GMAIL_UINT32_ABC, _GMAIL_UINT32_ABC),
+    ([("pageToken", "garbage"), ("pageToken", "")], None, None),
+    ([("pageToken", ""), ("pageToken", "garbage")], _GMAIL_TOKEN, _GMAIL_TOKEN),
+    ([("maxResults", "1"), ("pageToken", "garbage"), ("pageToken", "{token}")], "second", "second"),
+    ([("maxResults", "1"), ("pageToken", "{token}"), ("pageToken", "garbage")], _GMAIL_TOKEN, _GMAIL_TOKEN),
+]
+# fmt: on
+
+
+@pytest.mark.parametrize("query, on_messages, on_threads", _GMAIL_PAGE_TOKEN_ROWS)
+@pytest.mark.parametrize("kind", ["messages", "threads"])
+def test_gmail_lists_read_a_page_token_as_real_does(
+    client, admin_h, kind, query, on_messages, on_threads
+):
+    """The rules `_gmail_page` and `gerr.invalid_page_token` record, one request per row and
+    listing. `None` is the answer the request gets without a `pageToken`, `"second"` the page after
+    the first at `maxResults=1`, and `{token}` the `nextPageToken` of that first page."""
+    path = f"/gmail/v1/users/me/{kind}"
+    first = client.get(path, headers=admin_h, params={"maxResults": 1}).json()
+    query = [(k, v.format(token=first["nextPageToken"])) for k, v in query]
+    r = client.get(path, headers=admin_h, params=query)
+    want = on_messages if kind == "messages" else on_threads
+    if want is None:
+        without = [(k, v) for k, v in query if k != "pageToken"]
+        assert r.content == client.get(path, headers=admin_h, params=without).content
+    elif want == "second":
+        both = client.get(path, headers=admin_h, params={"maxResults": 2}).json()[kind]
+        assert r.status_code == 200, r.text
+        assert r.json()[kind] == both[1:]
+    else:
+        assert (r.status_code, _gerr(r)) == (400, want)
 
 
 def test_gmail_attachment_size_matches_part_metadata(client, admin_h, ro_conn):

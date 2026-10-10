@@ -642,8 +642,9 @@ def _by_thread(rows) -> list:
     return out
 
 
-def _gmail_max_results(request: Request) -> int:
-    """The page size `messages.list` and `threads.list` serve.
+def _gmail_page(request: Request, listing: str) -> tuple[int, int]:
+    """The page size and offset `messages.list` and `threads.list` serve, refused in the order real
+    refuses them on each.
 
     Measured on gmail.googleapis.com on 2026-10-07 with a Workspace user's `gmail.readonly` token,
     one request per row; `threads.list` answered every row with the same status and error, on
@@ -658,18 +659,37 @@ def _gmail_max_results(request: Request) -> int:
     `nextPageToken`, and the reference gives both methods "The maximum allowed value for this field
     is 500". With no `maxResults`, the page is the default size capped at 500. A sent value is also
     capped at the deployment's `max_page_size`.
+
+    The uint32 refusal comes first on both listings. After it `messages.list` refuses a `pageToken`
+    that does not parse (:func:`_gmail_page_token`) before a `maxResults` out of range, and
+    `threads.list` the range before the token: measured on 2026-10-09 with `maxResults` of `0` and
+    `2147483648` beside a token that does not parse, each request sent four times with the same
+    answer.
     """
     sizes = _typed_query(request, {"maxResults": _gmail_uint32})["maxResults"]
+    offset = _gmail_page_token(request) if listing == "messages" else None
     if not sizes:
-        return min(get_settings().default_page_size, 500)
-    size = sizes[-1]
-    if size == 0 or size >= 2**31:
+        limit = min(get_settings().default_page_size, 500)
+    elif sizes[-1] == 0 or sizes[-1] >= 2**31:
         raise gerr.invalid_max_results()
-    return min(size, 500, get_settings().max_page_size)
+    else:
+        limit = min(sizes[-1], 500, get_settings().max_page_size)
+    if offset is None:
+        offset = _gmail_page_token(request)
+    return limit, offset
+
+
+def _gmail_page_token(request: Request) -> int:
+    """The offset a Gmail `pageToken` names, read from its last repeat as real reads it. An empty
+    token is the first page, and one that does not decode is :func:`gerr.invalid_page_token`."""
+    offset = decode_cursor_or_none(request.query_params.get("pageToken"))
+    if offset is None:
+        raise gerr.invalid_page_token()
+    return offset
 
 
 # `maxResults` as Gmail's proto layer reads it: a uint32, where Drive's `pageSize` is an int32
-# (`_INT32`). The spellings and the bound are `_gmail_max_results`'s.
+# (`_INT32`). The spellings and the bound are `_gmail_page`'s.
 _UINT32 = re.compile(r"\+?[0-9]+")
 
 
@@ -702,10 +722,7 @@ async def gmail_messages_list(user_id: str, request: Request):
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     mailbox = _mailbox_container(conn, caller, user_id)  # None = all mailboxes
-    limit = _gmail_max_results(request)
-    offset = decode_cursor_or_none(request.query_params.get("pageToken"))
-    if offset is None:
-        raise gerr.invalid_page_token()
+    limit, offset = _gmail_page(request, "messages")
     q = request.query_params.get("q", "") or ""
     if q.strip():  # search: filter the ACL-visible set by the query, then paginate
         matched = _gmail_query(conn, mailbox, ids, q)
@@ -811,10 +828,7 @@ async def gmail_threads_list(user_id: str, request: Request):
     # received, and `q` was already scoping by container, so the two halves of this one listing
     # disagreed about what a thread list is.
     mailbox = _mailbox_container(conn, caller, user_id)
-    limit = _gmail_max_results(request)
-    offset = decode_cursor_or_none(request.query_params.get("pageToken"))
-    if offset is None:
-        raise gerr.invalid_page_token()
+    limit, offset = _gmail_page(request, "threads")
     q = request.query_params.get("q", "") or ""
     if q.strip():
         # A search returns the THREADS its matches are in: Gmail lists a thread whose match is in a

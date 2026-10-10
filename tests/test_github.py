@@ -4805,16 +4805,24 @@ def test_github_the_statuses_listing_declares_the_page_parameters_real_accepts(c
     assert {"page", "per_page"} <= {p["name"] for p in op.get("parameters", [])}
 
 
-def test_github_search_still_filters_by_q(client, admin_h):
-    body = client.get("/github/search/issues", params={"q": "is:issue"}, headers=admin_h).json()
-    assert "items" in body and "total_count" in body
-
-
-@pytest.mark.parametrize("q", ["is:issue", "is:pr", "no-matching-issue-lexical-search"])
-def test_github_issue_search_reports_lexical_search_type(client, admin_h, q):
-    response = client.get("/github/search/issues", params={"q": q}, headers=admin_h)
+@pytest.mark.parametrize(
+    "path, q, search_type",
+    [
+        ("/github/search/issues", "is:issue", "lexical"),
+        ("/github/search/issues", "is:pr", "lexical"),
+        ("/github/search/issues", "no-matching-issue-lexical-search", "lexical"),
+        ("/github/search/code", "extension:md", None),
+    ],
+)
+def test_github_search_envelope_members_and_their_order_match_real(
+    client, admin_h, path, q, search_type
+):
+    """Issue search sends `search_type` last, after `items`; code search sends no such member."""
+    response = client.get(path, params={"q": q}, headers=admin_h)
     assert response.status_code == 200
-    assert response.json()["search_type"] == "lexical"
+    members = ["total_count", "incomplete_results", "items"] + ["search_type"] * bool(search_type)
+    assert list(response.json()) == members
+    assert response.json().get("search_type") == search_type
 
 
 def test_github_issue_search_schema_requires_search_type(client):

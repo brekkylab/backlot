@@ -210,6 +210,16 @@ def test_slack_auth_test_identifies_the_caller(client, admin_h, tokens):
     assert admin["user"] == "service-account" and admin["user_id"] == "USERVICE0"
 
 
+@pytest.mark.parametrize("method", ["get", "post"])
+@pytest.mark.parametrize("as_admin", [True, False])
+def test_slack_auth_test_reports_workspace_install(client, admin_h, tokens, method, as_admin):
+    headers = admin_h if as_admin else {"Authorization": f"Bearer {tokens['ava@acme.com']}"}
+    response = getattr(client, method)("/slack/api/auth.test", headers=headers)
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert response.json()["is_enterprise_install"] is False
+
+
 def _a_channel_id(client, admin_h):
     return client.get("/slack/api/conversations.list", headers=admin_h, params={"limit": 1}).json()[
         "channels"

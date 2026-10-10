@@ -465,6 +465,8 @@ async def auth_test(request: Request):
         "user": who,
         "user_id": "USERVICE0" if caller.is_admin else synth.slack_user_id(caller.email),
         "team_id": TEAM_ID,
+        # Slack (2026-10-09), measured by the maintainer: workspace tokens report false.
+        "is_enterprise_install": False,
     }
 
 

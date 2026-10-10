@@ -1156,11 +1156,11 @@ def _space_container_for_key(conn, space_key: str) -> str | None:
     hash-suffixed value ``/space`` advertises) and the literal container name (e.g. ``"handbook"``,
     a legitimate natural key) resolve. Anything else is unresolvable -> ``None``, which no caller
     reads as "no filter": the CQL search matches nothing and the content listing answers its 404."""
-    for r in store.list_containers(conn, "confluence"):
-        if space_key == synth.confluence_space_key(r["name"]) or space_key == r["name"]:
-            return r["name"]
-    return None
-
+   wanted = space_key.casefold()
+   for r in store.list_containers(conn, "confluence"):
+       if wanted == synth.confluence_space_key(r["name"]).casefold() or space_key == r["name"]:
+           return r["name"]
+   return None
 
 def _content_space(conn, ids, space_key: str) -> str:
     """The container `content?spaceKey=` filters by, or :func:`errors_atlassian.no_space_with_key`.

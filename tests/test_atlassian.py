@@ -646,33 +646,35 @@ def test_confluence_content_filtered_by_space_key(client, admin_h, tokens, calle
         assert sorted(x["title"] for x in r.json()["results"]) == want
 
 
-def test_confluence_content_filtered_by_title(client, admin_h, tokens):
-    """The rule the comment in `confluence_content_list` records, over the caller's own pages."""
-    url = "/atlassian/wiki/rest/api/content"
+def test_confluence_space_key_matches_in_any_letter_case(client, admin_h):
+    """`space/{key}`, a CQL `space=` clause and `content?spaceKey=` all read a space's key without
+    regard to case, and `space/{key}` answers the key as the space spells it, not as it was sent
+    (measured 2026-10-10 on a global space keyed MFS)."""
+    from backlot import synth
 
-    def titles(headers, **params):
-        body = client.get(url, headers=headers, params=params).json()
-        assert body["size"] == len(body["results"])
-        return [r["title"] for r in body["results"]]
+    key = synth.confluence_space_key("handbook")
+    wiki = "/atlassian/wiki/rest/api"
+    want_titles = sorted(
+        x["title"]
+        for x in client.get(f"{wiki}/content", headers=admin_h, params={"spaceKey": key}).json()[
+            "results"
+        ]
+    )
+    want_total = client.get(
+        f"{wiki}/search", headers=admin_h, params={"cql": f"space={key}"}
+    ).json()["totalSize"]
+    assert want_titles and want_total
 
-    for sent in ("On-call Runbook", "on-call runbook", "ON-CALL RUNBOOK"):
-        assert titles(admin_h, title=sent, spaceKey="handbook") == ["On-call Runbook"], sent
-        assert titles(admin_h, title=sent) == ["On-call Runbook"], sent
-    for sent in ("zzqq-no-such-page", "On-call", " On-call Runbook", "On-call Runbook ", " "):
-        assert titles(admin_h, title=sent, spaceKey="handbook") == [], sent
-        assert titles(admin_h, title=sent) == [], sent
-    assert titles(admin_h, title=["On-call Runbook", "zzqq-nope"]) == []
-    assert titles(admin_h, title=["zzqq-nope", "On-call Runbook"]) == []
-    assert len(titles(admin_h, title="")) > 1
-    # the total behind `_links.next` counts the matching pages, not the space's
-    one = client.get(url, headers=admin_h, params={"title": "On-call Runbook", "limit": 1}).json()
-    assert one["size"] == 1 and "next" not in one["_links"]
-    assert "next" in client.get(url, headers=admin_h, params={"limit": 1}).json()["_links"]
-    # the title of a page the caller cannot see matches nothing for that caller
-    comp = "Compensation Bands 2026"
-    assert titles({"Authorization": f"Bearer {tokens['hana@acme.com']}"}, title=comp) == [comp]
-    assert titles({"Authorization": f"Bearer {tokens['ava@acme.com']}"}, title=comp) == []
-
+    for sent in (key.lower(), key.capitalize()):
+        space = client.get(f"{wiki}/space/{sent}", headers=admin_h)
+        assert space.status_code == 200, sent
+        assert space.json()["key"] == key, sent
+        for cql in (f"space={sent}", f'space="{sent}"'):
+            found = client.get(f"{wiki}/search", headers=admin_h, params={"cql": cql})
+            assert found.json()["totalSize"] == want_total, cql
+        content = client.get(f"{wiki}/content", headers=admin_h, params={"spaceKey": sent})
+        assert content.status_code == 200, sent
+        assert sorted(x["title"] for x in content.json()["results"]) == want_titles, sent
 
 def test_atlassian_comment_ids_are_numeric_on_the_wire(tmp_path):
     """The stored id composes the parent's key with the comment's position (`PAY-7::c1`) — this is

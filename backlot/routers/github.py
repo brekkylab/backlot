@@ -660,6 +660,7 @@ class GitHubIssue(_Loose):
 class GitHubIssueSearch(_Loose):
     total_count: int
     incomplete_results: bool
+    search_type: str
     items: list[GitHubIssue]
 
 
@@ -1247,7 +1248,13 @@ async def search_issues(
         for r in matched[start : start + per_page]
     ]
     _search_paged(request, response, q, page, per_page, len(matched))
-    return {"total_count": len(matched), "incomplete_results": False, "items": items}
+    # GitHub (2026-10-10): issue search reports lexical search, including empty results.
+    return {
+        "total_count": len(matched),
+        "incomplete_results": False,
+        "search_type": "lexical",
+        "items": items,
+    }
 
 
 # --- code search ----------------------------------------------------------------

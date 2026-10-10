@@ -4810,6 +4810,20 @@ def test_github_search_still_filters_by_q(client, admin_h):
     assert "items" in body and "total_count" in body
 
 
+@pytest.mark.parametrize("q", ["is:issue", "is:pr", "no-matching-issue-lexical-search"])
+def test_github_issue_search_reports_lexical_search_type(client, admin_h, q):
+    response = client.get("/github/search/issues", params={"q": q}, headers=admin_h)
+    assert response.status_code == 200
+    assert response.json()["search_type"] == "lexical"
+
+
+def test_github_issue_search_schema_requires_search_type(client):
+    spec = client.get("/openapi.json").json()
+    schema = spec["components"]["schemas"]["GitHubIssueSearch"]
+    assert "search_type" in schema["required"]
+    assert schema["properties"]["search_type"]["type"] == "string"
+
+
 def test_github_responses_unchanged_by_enrichment(client, admin_h):
     # Fidelity guard: the rich issue field set must survive query-param + response_model enrichment.
     body = client.get("/github/search/issues", params={"q": "is:issue"}, headers=admin_h).json()

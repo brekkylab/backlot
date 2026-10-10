@@ -6153,6 +6153,18 @@ _GMAIL_SHAPES = [
         "to": "회의 <peer@x.com>",
         "attachments": [{"filename": "회의록.txt", "mime": "text/plain", "content": "안녕"}],
     },
+    {
+        "source_type": "gmail",
+        "doc_id": "two-files",
+        "mailbox": "ava",
+        "title": "Two files",
+        "content": "Both attached.",
+        "author_email": "ava@acme.com",
+        "attachments": [
+            {"filename": "a.txt", "mime": "text/plain", "content": "hello"},
+            {"filename": "b.txt", "mime": "text/plain"},
+        ],
+    },
 ]
 
 
@@ -8367,3 +8379,22 @@ def test_gmail_size_estimate_matches_raw_bytes_in_every_format(tmp_path, title, 
             thread = c.get(f"/gmail/v1/users/me/threads/{tid}?format={fmt}", headers=h)
             assert thread.status_code == 200
             assert thread.json()["messages"][0]["sizeEstimate"] == size
+
+
+def test_gmail_two_attachments_carry_distinct_attachment_ids(gmail_shapes):
+    """Two attachments of one message must not share X-Attachment-Id/Content-ID.
+
+    Guards the `_mime_tree` salt mutation from #575 (one salt for both parts
+    gives both parts one Content-ID, and the suite stayed green).
+    """
+    client, h = gmail_shapes
+    payload = client.get(
+        f"/gmail/v1/users/me/messages/{served_id('gmail', 'two-files')}", headers=h
+    ).json()["payload"]
+    parts = [p for p in payload["parts"] if p.get("filename")]
+    assert [p["filename"] for p in parts] == ["a.txt", "b.txt"]
+    ids = [_hdrs(p)["X-Attachment-Id"] for p in parts]
+    assert len(set(ids)) == 2, f"attachments share X-Attachment-Id: {ids}"
+    for part in parts:
+        part_h = _hdrs(part)
+        assert part_h["Content-ID"] == f"<{part_h['X-Attachment-Id']}>"

@@ -4253,7 +4253,8 @@ def test_editor_apis_distinguish_hidden_type_permission_and_missing(tmp_path):
     file of the API's own family is a failed precondition, and a PDF or an Office file of the other
     family is an invalid argument. Slides resolves visibility first, so a hidden presentation is
     not-found there, as an id that does not exist is on Sheets and Docs. The files the scoped token
-    can see are served."""
+    can see are served. At `$.xgafv=1` the 403's entry is ``forbidden`` and the Office 400's
+    ``failedPrecondition``."""
     hidden = ("spreadsheet", "document", "presentation", "pdf", "xlsx", "docx")
     records = [
         {
@@ -4318,16 +4319,14 @@ def test_editor_apis_distinguish_hidden_type_permission_and_missing(tmp_path):
             assert response.status_code == status, path
             if body is not None:
                 assert response.json() == body, path
-        verbose = client.get(
-            f"/sheets/v4/spreadsheets/{sheet}", headers=outsider, params={"$.xgafv": "1"}
-        )
-        assert verbose.json()["error"]["errors"] == [
-            {
-                "message": "The caller does not have permission",
-                "domain": "global",
-                "reason": "forbidden",
-            }
-        ]
+        for path, message, reason in (
+            (f"/sheets/v4/spreadsheets/{sheet}", permission["error"]["message"], "forbidden"),
+            (f"/docs/v1/documents/{docx}", OFFICE_MSG, "failedPrecondition"),
+        ):
+            verbose = client.get(path, headers=outsider, params={"$.xgafv": "1"})
+            assert verbose.json()["error"]["errors"] == [
+                {"message": message, "domain": "global", "reason": reason}
+            ], path
 
 
 # --- Sheets values.get / values.batchGet ----------------------------------------

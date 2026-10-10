@@ -48,14 +48,15 @@ measurement. Measured on Sheets and Docs at `$.xgafv=1`: a typed value the proto
 ``reason: invalid`` with NO ``domain`` (:func:`invalid_field_value`), and so are a JSON body member
 the request message does not have and a JSON body that is not an object
 (:func:`invalid_field_values`); a request body that is not JSON is ``parseError``
-(:func:`invalid_json`); every other measured 400 is ``badRequest`` under ``global``
-(:func:`invalid_argument`, :func:`bad_field_mask`); a 404 is ``notFound``; a bad token ``authError``
-at ``location: Authorization``; an anonymous Sheets GET ``forbidden``; the missing credential — any
-anonymous POST, and a GET on the three OAuth-only APIs — ``required`` with the short
-``Login Required.``; and the 500 the data-filter reads answer ``backendError``
-(:func:`internal_error`). Drive's `Unknown Error.` 500 carries one entry with no members at all
-(:func:`unknown_error`). The editor 400 NOT measured keeps whatever its constructor renders: an
-Office file read as a native document is :func:`failed_precondition`, so ``failedPrecondition``.
+(:func:`invalid_json`); an Office file read through the API of its own family is
+``failedPrecondition`` under ``global`` (:func:`failed_precondition`); every other measured 400 is
+``badRequest`` under ``global`` (:func:`invalid_argument`, :func:`bad_field_mask`); a 404 is
+``notFound``; a file of the API's own type that the caller cannot see ``forbidden``
+(:func:`permission_denied`); a bad token ``authError`` at ``location: Authorization``; an anonymous
+Sheets GET ``forbidden``; the missing credential — any anonymous POST, and a GET on the three
+OAuth-only APIs — ``required`` with the short ``Login Required.``; and the 500 the data-filter reads
+answer ``backendError`` (:func:`internal_error`). Drive's `Unknown Error.` 500 carries one entry
+with no members at all (:func:`unknown_error`).
 """
 
 from __future__ import annotations

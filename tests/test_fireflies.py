@@ -268,6 +268,10 @@ def test_fireflies_date_selects_a_day_and_the_singular_email_filters_narrow(clie
 
     assert titles('organizer_email: "ava@acme.com"') == {"Acme x Northwind — latency discovery"}
     assert titles('participant_email: "ava@acme.com"') == {"Acme x Northwind — latency discovery"}
+    # upper-cased, the organizer address finds nothing while the participant address still
+    # matches, as measured beside the organizer filter in `store._fireflies_where`
+    assert titles('organizer_email: "AVA@ACME.COM"') == set()
+    assert titles('participant_email: "AVA@ACME.COM"') == {"Acme x Northwind — latency discovery"}
     # `participants` is who the SENTENCES attribute, so a guest-list-only attendee is not one
     assert titles('participant_email: "dana@northwind.example"') == set()
     assert titles('participant_email: "nobody@acme.com"') == set()

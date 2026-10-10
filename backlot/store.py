@@ -2065,9 +2065,15 @@ def _fireflies_where(
         # `organizer_email` is null when the organizer IS the host, which is the common case, so
         # the filter has to consider both — otherwise organizing a meeting you also hosted would
         # not match your own address.
+        #
+        # Matched as written, not case-folded: measured against api.fireflies.ai on 2026-10-10, an
+        # organizer's address as stored found their meetings, and none came back with all of it, its
+        # local part, its domain or only its first letter upper-cased, while `participant_email`
+        # folds case. That workspace's organizer and participant addresses are all lower-case, so
+        # these requests cannot tell an exact match from one that folds the stored side alone.
         marks = ", ".join("?" for _ in organizers)
-        sql += f" AND lower(COALESCE(organizer_email, author_email)) IN ({marks})"
-        params += [o.lower() for o in organizers]
+        sql += f" AND COALESCE(organizer_email, author_email) IN ({marks})"
+        params += list(organizers)
     for email in participants or []:
         # `participants` is a JSON array column; json_each is the exact membership test (a LIKE on
         # the serialized text would match an address that is merely a substring of another).
@@ -2752,6 +2758,10 @@ def github_by_number(conn, repo, number, visible_ids=None) -> sqlite3.Row | None
     can be primary (see the schema) — so this CAN return a file row, and the caller must reject
     one. `routers.github._issue_row` is where that happens; a file is addressed by (repo, path)
     and its number is never served."""
+    # Real answers a number outside 64 bits with the 404 an unknown number gets (api.github.com,
+    # 2026-10-10). SQLite holds no such number, and sqlite3 raises OverflowError binding one.
+    if not -(2**63) <= number < 2**63:
+        return None
     clause, cp = _acl_clause("github", visible_ids=visible_ids)
     return conn.execute(
         f"SELECT * FROM github_items WHERE repo = ? AND number = ?{clause}",
@@ -2908,6 +2918,8 @@ def get_github_comment(conn, comment_id: int) -> sqlite3.Row | None:
     A PRIMARY KEY lookup: the id is assigned at import (see :mod:`backlot.importer.byo`), so it
     cannot be ambiguous.
     """
+    if not -(2**63) <= comment_id < 2**63:  # a miss, as in github_by_number
+        return None
     return conn.execute(
         "SELECT id, repo, number, seq, author_email, body, created_ts, reactions, path, line, "
         "diff_hunk FROM github_comments WHERE id = ?",

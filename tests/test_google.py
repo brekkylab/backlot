@@ -659,8 +659,9 @@ def test_gmail_messages_list_pagination_stable_and_ordered(client, admin_h, ro_c
     assert [m["id"] for m in both] == [a, b]  # pages concatenate in order
 
 
-def test_gmail_max_results_is_capped_at_500(tmp_path):
+def test_gmail_max_results_is_capped_at_500(tmp_path, monkeypatch):
     """The cap `_gmail_max_results` records, on both listings."""
+    from backlot.routers import google
     from tests._helpers import corpus_client
 
     records = [
@@ -679,12 +680,104 @@ def test_gmail_max_results_is_capped_at_500(tmp_path):
     with corpus_client(tmp_path, records) as (client, settings):
         h = {"Authorization": f"Bearer {settings.admin_token}"}
         for kind in ("messages", "threads"):
-            for asked, served in ((499, 499), (500, 500), (501, 500), (1000, 500), (100000, 500)):
+            for asked, served in (
+                (499, 499),
+                (500, 500),
+                (501, 500),
+                (1000, 500),
+                (100000, 500),
+                (2147483647, 500),
+            ):
                 page = client.get(
                     f"/gmail/v1/users/me/{kind}", headers=h, params={"maxResults": asked}
                 ).json()
                 assert len(page[kind]) == served, (kind, asked)
                 assert "nextPageToken" in page, (kind, asked)
+        # BACKLOT_MAX_PAGE_SIZE still caps a sent value: 10 serves 5.
+        monkeypatch.setattr(google.get_settings(), "max_page_size", 5)
+        for kind in ("messages", "threads"):
+            page = client.get(
+                f"/gmail/v1/users/me/{kind}", headers=h, params={"maxResults": 10}
+            ).json()
+            assert len(page[kind]) == 5, kind
+            assert "nextPageToken" in page, kind
+
+
+# The rows `_gmail_max_results` records. A `size` is served, `uint32` is the proto layer's refusal
+# of each named repeat, and `maxResults` is `Invalid maxResults`. The measurement is that
+# function's.
+_GMAIL_MAX_RESULTS = [
+    (["+2"], "size", 2),
+    (["02"], "size", 2),
+    (["0", "3"], "size", 3),
+    (["-0"], "uint32", ("-0",)),
+    (["4294967296"], "uint32", ("4294967296",)),
+    (["abc", "3"], "uint32", ("abc",)),
+    (["abc", "def"], "uint32", ("abc", "def")),
+    (["-1"], "uint32", ("-1",)),
+    (["abc"], "uint32", ("abc",)),
+    ([""], "uint32", ("",)),
+    (["1.5"], "uint32", ("1.5",)),
+    (["\u0663"], "uint32", ("\u0663",)),
+    (["-0", "3"], "uint32", ("-0",)),
+    (["0"], "maxResults", None),
+    (["+0"], "maxResults", None),
+    (["00"], "maxResults", None),
+    (["2147483648"], "maxResults", None),
+    (["+2147483648"], "maxResults", None),
+    (["4294967295"], "maxResults", None),
+    (["3", "0"], "maxResults", None),
+    (["3", "2147483648"], "maxResults", None),
+]
+
+
+@pytest.mark.parametrize("kind", ["messages", "threads"])
+@pytest.mark.parametrize("values, shape, named", _GMAIL_MAX_RESULTS)
+def test_gmail_refuses_a_max_results_it_cannot_read(client, admin_h, kind, values, shape, named):
+    """The refusals `_gmail_max_results` records, on both listings."""
+    r = client.get(
+        f"/gmail/v1/users/me/{kind}",
+        headers=admin_h,
+        params=[("maxResults", value) for value in values],
+    )
+    if shape == "size":
+        assert r.status_code == 200, (kind, values, r.text)
+        body = r.json()
+        assert body["resultSizeEstimate"] >= named, (kind, values)
+        assert len(body[kind]) == named, (kind, values)
+        return
+    assert r.status_code == 400, (kind, values, r.text)
+    err = r.json()["error"]
+    if shape == "maxResults":
+        assert err == {
+            "code": 400,
+            "message": "Invalid maxResults",
+            "errors": [
+                {
+                    "message": "Invalid maxResults",
+                    "domain": "global",
+                    "reason": "invalidArgument",
+                }
+            ],
+            "status": "INVALID_ARGUMENT",
+        }, (kind, values)
+        return
+    messages = [f"Invalid value at 'max_results' (TYPE_UINT32), \"{raw}\"" for raw in named]
+    message = "\n".join(messages)
+    assert err == {
+        "code": 400,
+        "message": message,
+        "errors": [{"message": message, "reason": "invalid"}],
+        "status": "INVALID_ARGUMENT",
+        "details": [
+            {
+                "@type": "type.googleapis.com/google.rpc.BadRequest",
+                "fieldViolations": [
+                    {"field": "max_results", "description": one} for one in messages
+                ],
+            }
+        ],
+    }, (kind, values)
 
 
 def test_gmail_attachment_size_matches_part_metadata(client, admin_h, ro_conn):
@@ -884,10 +977,9 @@ _BAD_FILTER = '{"dataFilters": "abc"}'
 # and the status of the same request sent on its own, then a 302's `Location` below the server's
 # base URL or a 501's body. The status on its own is ``None`` where real's is one Backlot does not
 # give: the export with an empty `alt=` (400), the id holding a `%` no two hex digits follow (503),
-# the two downloads with `callback=a%20b` (503), the export with that `callback` beside `$.xgafv=9`
-# (400) and the Sheets read of a spreadsheet the caller cannot see (403
-# `The caller does not have permission`, where Backlot answers as for one that does not exist).
-# `_drive_batch_download`, `_drive_batch_redirect` and `_workbook` record the rules.
+# the two downloads with `callback=a%20b` (503) and the export with that `callback` beside
+# `$.xgafv=9` (400). `_drive_batch_download`, `_drive_batch_redirect` and `_workbook` record the
+# rules.
 # fmt: off
 _BATCH_ROWS = [
     # a Drive download is redirected ahead of the lookup and the typed, `fields` and `mimeType`
@@ -958,7 +1050,7 @@ _BATCH_ROWS = [
     (_SHEETS_BATCH, ("POST", "/sheets/v4/spreadsheets/{sheet}:getByDataFilter", "{}", None), 501, 200, _UNIMPLEMENTED),
     (_SHEETS_BATCH, ("POST", "/sheets/v4/spreadsheets/{sheet}/values:batchGetByDataFilter", _A1_FILTER, None), 501, 200, _UNIMPLEMENTED),
     (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{nope}/values/A1", None, None), 501, 404, _UNIMPLEMENTED),
-    (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/A1", None, _MIA), 501, None, _UNIMPLEMENTED),
+    (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/A1", None, _MIA), 501, 403, _UNIMPLEMENTED),
     (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/NoSuchSheet!A1", None, None), 501, 400, _UNIMPLEMENTED),
     (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/A1?alt=media", None, None), 501, 400, _UNIMPLEMENTED),
     (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/A1?$.xgafv=1", None, None), 501, 200, _UNIMPLEMENTED_AT_XGAFV_1),
@@ -1324,17 +1416,19 @@ def test_drive_a_listing_takes_an_int32_page_size_from_1_to_its_top(
 ):
     """The rules `_INT32` and `_drive_page_size_in_range` record, on each route, each value alone
     unless the row lists two. `range` is the range refusal naming the value as an int, `int32` the
-    proto layer's `TYPE_INT32` one quoting it, and `size` a 200, which on `files.list` lists that
-    many files; `permissions.list` and `drives.list` declare a page size and read none here."""
+    proto layer's `TYPE_INT32` one quoting it, and `size` a 200, which lists that many files on
+    `files.list` and that many permissions on `permissions.list`, or all there are, and none on
+    `drives.list`."""
     fill = {"top": top, "above": top + 1}
     named = named.format(**fill)
     url = path.format(doc=_drive_find(client, admin_h, "Brand")["id"])
     r = client.get(url, headers=admin_h, params=[("pageSize", v.format(**fill)) for v in values])
     if kind == "size":
         assert r.status_code == 200, r.text
-        if path == "/drive/v3/files":
-            total = len(client.get(url, headers=admin_h, params={"pageSize": 1000}).json()["files"])
-            assert len(r.json()["files"]) == min(int(named), total)
+        listed = {"/drive/v3/files": "files", _PERMS: "permissions"}.get(path)
+        if listed:
+            total = len(client.get(url, headers=admin_h, params={"pageSize": top}).json()[listed])
+            assert len(r.json()[listed]) == min(int(named), total)
         return
     e = _gerr(r)
     assert e["code"] == 400
@@ -1451,6 +1545,7 @@ _TOKEN_EXPIRED = {
         }
     ],
 }
+_UNKNOWN_ERROR = {"code": 500, "message": "Unknown Error.", "errors": [{}], "status": "UNKNOWN"}
 
 
 @pytest.mark.parametrize(
@@ -1462,6 +1557,7 @@ _TOKEN_EXPIRED = {
             for query, error in [
                 ([("pageToken", "bad")], _TOKEN_INVALID),
                 ([("pageToken", "bzow")], _TOKEN_INVALID),
+                ([("pageToken", "{token}")], _TOKEN_INVALID),
                 ([("useDomainAdminAccess", "true"), ("pageToken", "bad")], _TOKEN_INVALID),
                 ([("pageToken", "bad"), ("useDomainAdminAccess", "true")], _TOKEN_INVALID),
                 ([("pageToken", "bad"), ("pageSize", "0")], None),
@@ -1471,24 +1567,142 @@ _TOKEN_EXPIRED = {
         (_PERMS, [("pageToken", "")], _TOKEN_EXPIRED),
         (_PERMS, [("useDomainAdminAccess", "true"), ("pageToken", "")], _TOKEN_EXPIRED),
         ("/drive/v3/files/nosuchfileid000000/permissions", [("pageToken", "")], _TOKEN_EXPIRED),
-        ("/drive/v3/drives", [("pageToken", "{token}")], _TOKEN_INVALID),
+        ("/drive/v3/files/nosuchfileid000000/permissions", [("pageToken", "bzow")], _TOKEN_INVALID),
+        (_PERMS, [("pageSize", "1"), ("pageToken", "{issued}.")], _TOKEN_INVALID),
+        (_PERMS, [("pageSize", "1"), ("pageToken", "{at_zero}")], _TOKEN_INVALID),
         ("/drive/v3/drives", [("pageToken", "")], None),
         ("/drive/v3/drives", [("useDomainAdminAccess", "true"), ("pageToken", "")], None),
     ],
 )
-def test_drive_a_listing_that_issues_no_page_token_refuses_one(client, admin_h, path, query, error):
-    """The rule `_drive_listing_page_token` records, one request per row. `None` is a token that
-    changes nothing: the answer is the one the request gets without it, a page or the refusal of
-    the value beside it. `{token}` is filled from the first page of `files.list`."""
-    url = path.format(doc=_drive_find(client, admin_h, "Brand")["id"])
-    issued = client.get("/drive/v3/files", headers=admin_h, params={"pageSize": 1}).json()
-    query = [(k, v.format(token=issued["nextPageToken"])) for k, v in query]
+def test_drive_permissions_and_drives_refuse_a_page_token_they_did_not_issue(
+    client, admin_h, path, query, error
+):
+    """The rules `_drive_permissions_page_token` and `_drive_listing_page_token` record, one request
+    per row. `None` is a token that changes nothing: the answer is the one the request gets without
+    it, a page or the refusal of the value beside it. `{token}` is filled from the first page of
+    `files.list`, `{issued}` from the first page of this file's `permissions.list` at `pageSize=1`,
+    and `{at_zero}` is `_drive_permissions_token`'s spelling for an offset of 0, which it never
+    issues."""
+    from backlot.routers import google
+
+    doc = _drive_find(client, admin_h, "Brand")["id"]
+    url = path.format(doc=doc)
+    files = client.get("/drive/v3/files", headers=admin_h, params={"pageSize": 1}).json()
+    issued = client.get(_PERMS.format(doc=doc), headers=admin_h, params={"pageSize": 1}).json()
+    fill = {
+        "token": files["nextPageToken"],
+        "issued": issued["nextPageToken"],
+        "at_zero": google._drive_permissions_token(doc, 0),
+    }
+    query = [(k, v.format(**fill)) for k, v in query]
     r = client.get(url, headers=admin_h, params=query)
     if error is None:
         without = [(k, v) for k, v in query if k != "pageToken"]
         assert r.content == client.get(url, headers=admin_h, params=without).content
     else:
         assert (r.status_code, _gerr(r)) == (error["code"], error)
+
+
+# fmt: off
+_PERMISSION_PAGES = [
+    # the first request's query, the query its token is sent back with, and the length of each page
+    # until one carries no token, or the error the first request is refused with
+    ([], [], [2]),
+    ([("pageSize", "1")], [("pageSize", "1")], [1, 1]),
+    ([("pageSize", "1")], [("pageSize", "2")], [1, 1]),
+    ([("pageSize", "1")], [], [1, 1]),
+    ([("pageSize", "2")], [], [2]),
+    ([("pageSize", "3")], [], [2]),
+    ([("pageSize", "100")], [], [2]),
+    # two or more values, read from the first
+    ([("pageSize", "1"), ("pageSize", "0")], [], [1, 1]),
+    ([("pageSize", "+1"), ("pageSize", "0")], [], [1, 1]),
+    ([("pageSize", "1"), ("pageSize", "2")], [], [1, 1]),
+    ([("pageSize", "1"), ("pageSize", "2"), ("pageSize", "3")], [], [1, 1]),
+    ([("pageSize", "100"), ("pageSize", "2")], [], [2]),
+    ([("pageSize", "2"), ("pageSize", "0"), ("pageSize", "0")], [], [2]),
+    # and the 500 when the first is outside 1-100, after the `pageToken` refusals
+    ([("pageSize", "0"), ("pageSize", "2")], [], _UNKNOWN_ERROR),
+    ([("pageSize", "-0"), ("pageSize", "2")], [], _UNKNOWN_ERROR),
+    ([("pageSize", "-1"), ("pageSize", "2")], [], _UNKNOWN_ERROR),
+    ([("pageSize", "0"), ("pageSize", "0")], [], _UNKNOWN_ERROR),
+    ([("pageSize", "0"), ("pageSize", "101")], [], _UNKNOWN_ERROR),
+    ([("pageSize", "101"), ("pageSize", "2")], [], _UNKNOWN_ERROR),
+    ([("pageSize", "101"), ("pageSize", "101")], [], _UNKNOWN_ERROR),
+    ([("pageSize", "2147483647"), ("pageSize", "2")], [], _UNKNOWN_ERROR),
+    ([("pageSize", "-2147483648"), ("pageSize", "2")], [], _UNKNOWN_ERROR),
+    ([("pageSize", "0"), ("pageSize", "2"), ("pageSize", "2")], [], _UNKNOWN_ERROR),
+    ([("pageSize", "0"), ("pageSize", "2"), ("pageToken", "bad")], [], _TOKEN_INVALID),
+    ([("pageToken", "bad"), ("pageSize", "0"), ("pageSize", "2")], [], _TOKEN_INVALID),
+    ([("pageSize", "0"), ("pageSize", "2"), ("pageToken", "")], [], _TOKEN_EXPIRED),
+]
+# fmt: on
+
+
+@pytest.mark.parametrize("first, follow, expected", _PERMISSION_PAGES)
+def test_drive_permissions_list_pages_in_the_unpaged_order(
+    client, admin_h, first, follow, expected
+):
+    """The rules `_drive_permission_page` and `_drive_permissions_page_size` record, on a file with
+    two permissions. A row of page lengths also checks that the pages, joined, are the unpaged
+    list."""
+    url = _PERMS.format(doc=_drive_find(client, admin_h, "Brand")["id"])
+    whole = client.get(url, headers=admin_h).json()["permissions"]
+    assert len(whole) == 2
+    r = client.get(url, headers=admin_h, params=first)
+    if isinstance(expected, dict):
+        assert (r.status_code, _gerr(r)) == (expected["code"], expected)
+        return
+    pages = [r]
+    while "nextPageToken" in pages[-1].json() and len(pages) < len(expected):
+        token = pages[-1].json()["nextPageToken"]
+        pages.append(client.get(url, headers=admin_h, params=[*follow, ("pageToken", token)]))
+    assert [p.status_code for p in pages] == [200] * len(pages)
+    assert [len(p.json()["permissions"]) for p in pages] == expected
+    assert "nextPageToken" not in pages[-1].json()
+    assert [x for p in pages for x in p.json()["permissions"]] == whole
+
+
+@pytest.mark.parametrize("size, lengths", [(1, [1, 1, 1]), (2, [2, 1])])
+def test_drive_permissions_list_pages_a_file_with_three_permissions(tmp_path, size, lengths):
+    """`_drive_permission_page` past the second page: at `pageSize=1` the page a token serves
+    carries the token for the third, at `pageSize=2` the second page starts after the two the first
+    served, and the pages joined are the unpaged list. The files measured had two permissions
+    each, so neither was measured."""
+    from tests._helpers import corpus_client
+
+    record = {
+        "source_type": "google_drive",
+        "doc_id": "three",
+        "folder": "mk",
+        "title": "Three readers",
+        "content": "x",
+        "author_email": "a@x.com",
+        "readers": ["b@x.com", "c@x.com"],
+    }
+    with corpus_client(tmp_path, [record]) as (client, settings):
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        q = {"q": "name = 'Three readers'"}
+        (doc,) = client.get("/drive/v3/files", headers=h, params=q).json()["files"]
+        url = f"/drive/v3/files/{doc['id']}/permissions"
+        whole = client.get(url, headers=h).json()["permissions"]
+        assert len(whole) == 3
+        pages = [client.get(url, headers=h, params={"pageSize": size}).json()]
+        while "nextPageToken" in pages[-1] and len(pages) < len(lengths):
+            token = pages[-1]["nextPageToken"]
+            pages.append(
+                client.get(url, headers=h, params={"pageSize": size, "pageToken": token}).json()
+            )
+    assert [len(p["permissions"]) for p in pages] == lengths
+    assert "nextPageToken" not in pages[-1]
+    assert [x for p in pages for x in p["permissions"]] == whole
+
+
+def test_drive_permissions_list_declares_the_parameters_it_pages_by(client):
+    """`pageSize` and `pageToken` shape the page, so a client reading the OpenAPI document can
+    find them, and `backlot diff --source google_drive` reports neither as missing."""
+    op = client.app.openapi()["paths"]["/drive/v3/files/{file_id}/permissions"]["get"]
+    assert {"pageSize", "pageToken"} <= {p["name"] for p in op["parameters"]}
 
 
 @pytest.mark.parametrize(
@@ -1658,6 +1872,8 @@ _ADMIN_ONLY = (
 _SERVED = (200, None, None, None)
 _TYPED = (400, "invalid", None, None)
 _RANGE = (400, "invalidParameter", "page_size", None)
+_PAGE_EXPIRED = (403, "pageTokenExpired", None, None)
+_UNKNOWN = (500, None, None, None)
 
 # A Drive request beside real's answer, one request per row: the route, its query and who sends it,
 # then the status and `errors[0]`'s reason, location and, for the three 403s a flag spelled `true`
@@ -1728,6 +1944,18 @@ _DRIVE_CHECK_ROWS = [
     ("/drive/v3/files/{hidden}/permissions", "useDomainAdminAccess=false", "admin", _SERVED),
     ("/drive/v3/files/{doc}/permissions", "useDomainAdminAccess=true&pageSize=0", "admin", _RANGE),
     ("/drive/v3/files/{doc}/permissions", "useDomainAdminAccess=true&supportsAllDrives=NOPE", "admin", _TYPED),
+    # a token `permissions.list` issued for {doc}, refused for another file once that file is found
+    # and past the domain-administrator refusal, beside two `pageSize` values whose first is outside
+    # 1-100, the 500 ahead of all of it
+    ("/drive/v3/files/{doc}/permissions", "pageSize=1&pageToken={issued}", "admin", _SERVED),
+    ("/drive/v3/files/{pdf}/permissions", "pageSize=1&pageToken={issued}", "admin", _PAGE_EXPIRED),
+    ("/drive/v3/files/{pdf}/permissions", "pageToken={issued}&useDomainAdminAccess=true", "admin", (404, "notFound", "fileId", None)),
+    ("/drive/v3/files/{nope}/permissions", "pageToken={issued}", "admin", (404, "notFound", "fileId", None)),
+    ("/drive/v3/files/{hidden}/permissions", "pageToken={issued}", "mia", (404, "notFound", "fileId", None)),
+    ("/drive/v3/files/{pdf}/permissions", "pageSize=0&pageSize=2&pageToken={issued}", "admin", _UNKNOWN),
+    ("/drive/v3/files/{doc}/permissions", "pageSize=0&pageSize=2&useDomainAdminAccess=true", "admin", _UNKNOWN),
+    ("/drive/v3/files/{nope}/permissions", "pageSize=0&pageSize=2", "admin", _UNKNOWN),
+    ("/drive/v3/files/{hidden}/permissions", "pageSize=0&pageSize=2", "mia", _UNKNOWN),
     ("/drive/v3/drives", "useDomainAdminAccess=true", "admin", _ADMIN_ONLY),
     ("/drive/v3/drives", "useDomainAdminAccess=TRUE", "admin", _ADMIN_ONLY),
     ("/drive/v3/drives", "useDomainAdminAccess=true&useDomainAdminAccess=false", "admin", _ADMIN_ONLY),
@@ -1746,16 +1974,21 @@ def test_drive_answers_each_check_with_reals_status_and_reason(
     one for a file that does not exist, and both name no file, so the check tells the caller
     nothing about what it cannot read; the permissions 404 names the file it was asked about, and
     is the same 404 the scoped token gets for that file without the flag."""
+    doc = _drive_find(client, admin_h, "Brand")["id"]
+    issued = client.get(
+        f"/drive/v3/files/{doc}/permissions", headers=admin_h, params={"pageSize": 1}
+    )
     ids = {
-        "doc": _drive_find(client, admin_h, "Brand")["id"],
+        "doc": doc,
         "pdf": _drive_find(client, admin_h, "Whitepaper")["id"],
         "hidden": _drive_find(client, admin_h, "Q1 Revenue Model")["id"],
         "nope": "nosuchfile000",
+        "issued": issued.json()["nextPageToken"],
     }
     headers = (
         admin_h if caller == "admin" else {"Authorization": f"Bearer {tokens['mia@acme.com']}"}
     )
-    r = client.get(f"{path.format(**ids)}?{query}", headers=headers)
+    r = client.get(f"{path.format(**ids)}?{query.format(**ids)}", headers=headers)
     status, reason, location, message = expected
     assert r.status_code == status, r.text
     if status == 200:
@@ -1810,8 +2043,9 @@ def test_a_typed_refusal_comes_after_the_credential_and_before_the_lookup(
 ):
     """The order `_typed_query`'s docstring records, and `sheets_values_batch_get_by_data_filter`'s
     for a data-filter body. The refusal is the same bytes for a spreadsheet the scoped token cannot
-    see as for one that does not exist, where without the bad value (with ``good`` for a body) the
-    first is a 200 to the admin and both are the 404 to the scoped token. With no credential or a
+    see as for one that does not exist. Without the bad value (with ``good`` for a body) the hidden
+    spreadsheet is a 200 to the admin. To the scoped token a Sheets read answers the hidden
+    spreadsheet 403 and the missing id 404, where Drive answers both 404. With no credential or a
     bad one the bad value changes nothing: the answer is the credential's refusal, the 401 for a bad
     one."""
 
@@ -1827,7 +2061,8 @@ def test_a_typed_refusal_comes_after_the_credential_and_before_the_lookup(
     assert _gerr(refused)["code"] == 400
     assert send(hidden, scoped, bad=True).content == refused.content
     assert send(hidden, admin_h).status_code == 200
-    assert send(hidden, scoped).status_code == 404
+    expected_hidden = 403 if path.startswith("/sheets/") else 404
+    assert send(hidden, scoped).status_code == expected_hidden
     assert send(missing, scoped).status_code == 404
     assert send(missing, BAD_TOKEN).status_code == 401
     for headers in ({}, BAD_TOKEN):
@@ -4051,37 +4286,86 @@ def test_editor_apis_reject_a_folder(base, admin_h):
     assert r.json()["error"]["message"] == INVALID_ARG
 
 
-def test_wrong_type_is_refused_before_it_is_read(base, live_server):
-    """A caller who cannot see the file still gets 404, not 400: the type of a document you have
-    no access to is not something the API should confirm."""
-    import yaml
+def test_editor_apis_distinguish_hidden_type_permission_and_missing(tmp_path):
+    """Sheets and Docs resolve a stored file's type before its visibility (`_editor_doc`). A hidden
+    file of the API's own type is permission-denied, another native type is not-found, an Office
+    file of the API's own family is a failed precondition, and a PDF or an Office file of the other
+    family is an invalid argument. Slides resolves visibility first, so a hidden presentation is
+    not-found there, as an id that does not exist is on Sheets and Docs. The files the scoped token
+    can see are served. At `$.xgafv=1` the 403's entry is ``forbidden`` and the Office 400's
+    ``failedPrecondition``."""
+    hidden = ("spreadsheet", "document", "presentation", "pdf", "xlsx", "docx")
+    records = [
+        {
+            "source_type": "google_drive",
+            "doc_id": f"hidden-{kind}",
+            "title": kind,
+            "content": "private",
+            "subtype": kind,
+            "author_email": "owner@acme.com",
+            "readers": ["owner@acme.com"],
+        }
+        for kind in hidden
+    ]
+    records += [
+        {
+            "source_type": "google_drive",
+            "doc_id": f"mia-{kind}",
+            "title": kind,
+            "content": "public",
+            "subtype": kind,
+            "author_email": "mia@acme.com",
+            "visibility": "public",
+        }
+        for kind in ("spreadsheet", "document")
+    ]
+    settings = tiny_corpus(tmp_path, records)
+    token_data = yaml.safe_load(settings.tokens_path.read_text())
+    tokens = {u["email"]: u["token"] for u in token_data["users"]}
+    outsider = {"Authorization": f"Bearer {tokens['mia@acme.com']}"}
+    sheet, doc, deck, pdf, xlsx, docx = (served_id("google_drive", f"hidden-{k}") for k in hidden)
+    own_sheet = served_id("google_drive", "mia-spreadsheet")
+    own_doc = served_id("google_drive", "mia-document")
 
-    tokens = {
-        u["email"]: u["token"]
-        for u in yaml.safe_load(live_server[1].tokens_path.read_text())["users"]
-    }
-    admin_h = {"Authorization": f"Bearer {live_server[1].admin_token}"}
-    sheet, _ = _drive_by_mime(
-        base, admin_h, "application/vnd.google-apps.spreadsheet", name="Q1 Revenue Model"
-    )
-    outsider = {"Authorization": f"Bearer {tokens['mia@acme.com']}"}  # cannot see the finance sheet
-    assert httpx.get(f"{base}/docs/v1/documents/{sheet}", headers=outsider).status_code == 404
+    def refusal(code, message, status):
+        return {"error": {"code": code, "message": message, "status": status}}
 
+    permission = refusal(403, "The caller does not have permission", "PERMISSION_DENIED")
+    not_found = refusal(404, NOT_FOUND, "NOT_FOUND")
+    invalid = refusal(400, INVALID_ARG, "INVALID_ARGUMENT")
+    office = refusal(400, OFFICE_MSG, "FAILED_PRECONDITION")
 
-def test_editor_apis_enforce_acl(base, live_server):
-    """The finance spreadsheet is group-restricted; a non-member gets 404, not the content."""
-    import yaml
-
-    tokens = {
-        u["email"]: u["token"]
-        for u in yaml.safe_load(live_server[1].tokens_path.read_text())["users"]
-    }
-    admin_h = {"Authorization": f"Bearer {live_server[1].admin_token}"}
-    fid, _ = _drive_by_mime(
-        base, admin_h, "application/vnd.google-apps.spreadsheet", name="Q1 Revenue Model"
-    )
-    outsider = {"Authorization": f"Bearer {tokens['mia@acme.com']}"}  # marketing, not finance
-    assert httpx.get(f"{base}/sheets/v4/spreadsheets/{fid}", headers=outsider).status_code == 404
+    rows = [
+        (f"/sheets/v4/spreadsheets/{own_sheet}", 200, None),
+        (f"/docs/v1/documents/{own_doc}", 200, None),
+        (f"/sheets/v4/spreadsheets/{sheet}", 403, permission),
+        (f"/docs/v1/documents/{doc}", 403, permission),
+        (f"/sheets/v4/spreadsheets/{xlsx}", 400, office),
+        (f"/docs/v1/documents/{docx}", 400, office),
+        (f"/sheets/v4/spreadsheets/{pdf}", 400, invalid),
+        (f"/docs/v1/documents/{pdf}", 400, invalid),
+        (f"/sheets/v4/spreadsheets/{docx}", 400, invalid),
+        (f"/docs/v1/documents/{xlsx}", 400, invalid),
+        (f"/sheets/v4/spreadsheets/{doc}", 404, not_found),
+        (f"/docs/v1/documents/{sheet}", 404, not_found),
+        (f"/slides/v1/presentations/{deck}", 404, not_found),
+        ("/sheets/v4/spreadsheets/nosuchfile000", 404, not_found),
+        ("/docs/v1/documents/nosuchfile000", 404, not_found),
+    ]
+    with client_for(settings, reload=True) as client:
+        for path, status, body in rows:
+            response = client.get(path, headers=outsider)
+            assert response.status_code == status, path
+            if body is not None:
+                assert response.json() == body, path
+        for path, message, reason in (
+            (f"/sheets/v4/spreadsheets/{sheet}", permission["error"]["message"], "forbidden"),
+            (f"/docs/v1/documents/{docx}", OFFICE_MSG, "failedPrecondition"),
+        ):
+            verbose = client.get(path, headers=outsider, params={"$.xgafv": "1"})
+            assert verbose.json()["error"]["errors"] == [
+                {"message": message, "domain": "global", "reason": reason}
+            ], path
 
 
 # --- Sheets values.get / values.batchGet ----------------------------------------
@@ -4730,11 +5014,11 @@ def test_sheets_values_get_enforces_the_acl(base, live_server, sheet_id):
     }
     outsider = {"Authorization": f"Bearer {tokens['mia@acme.com']}"}  # marketing, not finance
     admin_h = {"Authorization": f"Bearer {live_server[1].admin_token}"}
-    # the admin arm is what keeps this honest: without it a missing route 404s and the test passes
+    # the admin arm keeps this honest: without it a route that refused every caller would pass
     assert _values(base, admin_h, sheet_id, "Sheet1").status_code == 200
     assert _batch(base, admin_h, sheet_id, ["Sheet1"]).status_code == 200
-    assert _values(base, outsider, sheet_id, "Sheet1").status_code == 404
-    assert _batch(base, outsider, sheet_id, ["Sheet1"]).status_code == 404
+    assert _values(base, outsider, sheet_id, "Sheet1").status_code == 403
+    assert _batch(base, outsider, sheet_id, ["Sheet1"]).status_code == 403
 
 
 def test_sheets_values_get_needs_auth(base, sheet_id):

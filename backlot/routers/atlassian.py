@@ -53,10 +53,26 @@ class _ALoose(BaseModel):
     model_config = ConfigDict(extra="allow")
 
 
+# Every member `jira_server_info` answers, declared in the order Jira Cloud answers them: the
+# response is written in declaration order whatever order the handler's dict has. `serverTime`,
+# absent for the anonymous caller, falls back to `None`, which the routes'
+# `response_model_exclude_none` leaves out.
 class JiraServerInfo(_ALoose):
     baseUrl: str
+    displayUrl: str
+    displayUrlServicedeskHelpCenter: str
+    displayUrlCSMHelpSeeker: str
+    displayUrlConfluence: str
     version: str
+    versionNumbers: list[int]
     deploymentType: str = "Cloud"
+    buildNumber: int
+    buildDate: str
+    serverTime: str | None = None
+    scmInfo: str
+    serverTitle: str
+    defaultLocale: dict
+    serverTimeZone: str
 
 
 class JiraSearchResult(_ALoose):
@@ -139,7 +155,7 @@ _P_CONTENT = {
     ]
 }
 _P_SPACE = {"parameters": [qp("expand"), qp("limit", "integer"), qp("start", "integer")]}
-# The three listings under `content/{id}`, which read the same pair with their own defaults and
+# The four listings under `content/{id}`, which read the same pair with their own defaults and
 # caps. `child/page` is the one of them this router also reads an `expand` on.
 _P_CHILD_PAGE = {"parameters": [qp("expand"), qp("limit", "integer"), qp("start", "integer")]}
 _P_CONTENT_CHILD = {"parameters": [qp("limit", "integer"), qp("start", "integer")]}
@@ -294,15 +310,21 @@ def _resolve_jira_key(request: Request, conn, key: str, ids):
 
 
 @router.get(
-    "/rest/api/2/serverInfo", response_model=JiraServerInfo
+    "/rest/api/2/serverInfo",
+    response_model=JiraServerInfo,
+    response_model_exclude_none=True,
 )  # jira PyPI client probes this on connect
-@router.get("/rest/api/3/serverInfo", response_model=JiraServerInfo)
+@router.get(
+    "/rest/api/3/serverInfo",
+    response_model=JiraServerInfo,
+    response_model_exclude_none=True,
+)
 async def jira_server_info(request: Request):
     """The members Jira Cloud answers, the same on v2 and v3 (measured 2026-10-03, 2026-10-05 and
     2026-10-07).
 
-    A signed-in caller gets fifteen, with `serverTime` between `buildDate` and `scmInfo`. The
-    anonymous caller `_jira_caller` returns gets the other fourteen: measured with no
+    A signed-in caller gets fifteen, in the order `JiraServerInfo` declares them. The anonymous
+    caller `_jira_caller` returns gets all of them but `serverTime`: measured with no
     `Authorization` header, a failed `email:api_token` pair, an empty password, a Basic value that
     is not base64 and an unknown scheme. `serverTime` is milliseconds and a `+HHMM` offset, the form
     of `buildDate` (`synth.jira_datetime`). The offset is the tenant's own and not read from
@@ -317,8 +339,8 @@ async def jira_server_info(request: Request):
         "baseUrl": site,
         "displayUrl": site,
         "displayUrlServicedeskHelpCenter": site,
-        "displayUrlConfluence": site,
         "displayUrlCSMHelpSeeker": site,
+        "displayUrlConfluence": site,
         "version": "1001.0.0-SNAPSHOT",
         "versionNumbers": [1001, 0, 0],
         "deploymentType": "Cloud",
@@ -483,19 +505,29 @@ def _jira_search_max_results(value) -> int:
     non-numeral string and a boolean are refused with the body-wide sentence a body Jackson cannot
     deserialize at all gets (:data:`errors_atlassian.BODY_NOT_AN_OBJECT`): `bool` is checked before
     `int`/`float` because Python's `int` is their common base class.
+
+    A number must also fit the bean's Java `int`. 2147483647 and -2147483648 bind and reach the
+    1-5000 range check, where 2147483648, -2147483649, 2147483647.5, -2147483648.5 and the infinite
+    float `1e400` reads as are the body-wide sentence (measured 2026-10-06, the fractions
+    2026-10-09). A float is compared with the bounds before it is truncated, since
+    `int(2147483647.5)` is in range.
     """
     if isinstance(value, bool):
         raise errors_atlassian.body_not_read(errors_atlassian.BODY_NOT_AN_OBJECT)
     if value is None:
         return 0
     if isinstance(value, (int, float)):
-        return int(value)
-    if isinstance(value, str):
+        n = value
+    elif isinstance(value, str):
         try:
-            return int(value)
+            n = int(value)
         except ValueError:
             raise errors_atlassian.body_not_read(errors_atlassian.BODY_NOT_AN_OBJECT) from None
-    raise errors_atlassian.body_not_read(errors_atlassian.BODY_NOT_AN_OBJECT)
+    else:
+        raise errors_atlassian.body_not_read(errors_atlassian.BODY_NOT_AN_OBJECT)
+    if not -(2**31) <= n <= 2**31 - 1:
+        raise errors_atlassian.body_not_read(errors_atlassian.BODY_NOT_AN_OBJECT)
+    return int(n)
 
 
 @router.api_route(
@@ -531,6 +563,17 @@ async def jira_search(request: Request):
             # instead reaches its own handling below — the JQL parser for `jql`, which
             # `_str_param`'s docstring already documents as lenient here, and the token decoder for
             # `nextPageToken`.
+            raise errors_atlassian.body_not_read(errors_atlassian.BODY_NOT_AN_OBJECT)
+        raw_fields = body.get("fields")
+        if raw_fields is not None and (
+            not isinstance(raw_fields, list)
+            or any(isinstance(field, (list, dict)) for field in raw_fields)
+        ):
+            # `fields` is declared by the request bean even though Backlot does not otherwise use
+            # it. Real Jira still binds its value: a list of scalars is served (`["id"]`, `[1]`,
+            # `[null]`, `[true]`), while an object, a bare string, a nested list or a list holding
+            # an object is a body-wide invalid-payload refusal (measured 2026-10-06; the lists of
+            # scalars and the bare string 2026-10-09).
             raise errors_atlassian.body_not_read(errors_atlassian.BODY_NOT_AN_OBJECT)
         # A JSON null is the parameter unsent, not the string "None": real answers
         # `{"jql": null}` with the same unbounded-JQL refusal it gives `{}` (measured 2026-09-16).
@@ -1601,6 +1644,37 @@ async def confluence_comments(content_id: int, request: Request):
     }
 
 
+@router.get("/wiki/rest/api/content/{content_id}/child/attachment", openapi_extra=_P_CONTENT_CHILD)
+async def confluence_attachments(content_id: int, request: Request):
+    """A page's attachments, which is the empty page for every page: a corpus record states no
+    attachment, and this is the page real answers for a page holding none.
+
+    Measured 2026-10-10: `limit` and `start` are read before the page is looked up, so
+    `content/999999999/child/attachment?limit=abc` is the conversion 400 and `?limit=-1` the
+    negative one, not the unknown id's 404.
+    """
+    conn = auth.conn(request)
+    caller = _confluence_caller(request)
+    limit, start = _confluence_page_params(request, default=50)
+    ids = auth.visible_ids(request, caller)
+    if store.get_document(conn, "confluence", content_id, visible_ids=ids) is None:
+        raise HTTPException(status_code=404, detail="No content found with id")
+    return {
+        "results": [],
+        "start": start,
+        "limit": limit,
+        "size": 0,
+        "_links": _confluence_envelope(
+            request,
+            f"/rest/api/content/{content_id}/child/attachment",
+            start=start,
+            limit=limit,
+            size=0,
+            total=0,
+        ),
+    }
+
+
 @router.get("/wiki/rest/api/content/{content_id}/label", openapi_extra=_P_CONTENT_CHILD)
 async def confluence_labels(content_id: int, request: Request):
     conn = auth.conn(request)
@@ -1901,12 +1975,51 @@ def _int_param(
             raise ValueError(cleaned)
         n = int(cleaned)
     except ValueError:
-        raise errors_atlassian.integer_conversion_failure(request.url.path, name, values) from None
+        raise errors_atlassian.integer_conversion_failure(
+            _echoed_path(request), name, values
+        ) from None
     if not width[0] <= n <= width[1]:
         # Python's int is unbounded, so a page size computed from a timestamp or a byte count
         # flowed into the query where real answered 400.
-        raise errors_atlassian.integer_conversion_failure(request.url.path, name, values)
+        raise errors_atlassian.integer_conversion_failure(_echoed_path(request), name, values)
     return n
+
+
+def _reject_json_constant(value: str):
+    """A `parse_constant` hook. Python's decoder reads `NaN`, `Infinity` and `-Infinity`, which real
+    refuses as malformed JSON (measured 2026-10-06, `-Infinity` 2026-10-09), so raising here sends
+    them to the parse error `_jira_search_body` answers a body it cannot parse with.
+    """
+    raise ValueError(value)
+
+
+class _JiraOversizedNumber:
+    """A number literal of more than 1000 digits, left unconverted for the body checks to refuse."""
+
+    def __init__(self, raw: str):
+        self.raw = raw
+
+
+def _jira_json_number(read, oversized: list[_JiraOversizedNumber]):
+    """A `parse_int` / `parse_float` hook that counts a literal's digits before `read` sees it, and
+    returns a literal past 1000 as a `_JiraOversizedNumber` it also appends to `oversized`.
+
+    Real counts every digit, the fraction's and the exponent's included, and reads a literal of up
+    to 1000. As `maxResults`, `1.` and 998 digits then `e1` is served, while `1.` and 999 then
+    `e1`, `0.` and 999 zeros then `1`, and 1000 digits then `.5` get `Failed to read request`, as
+    integers of 1001, 4300, 4301 and 5000 digits do (Jira Cloud, 2026-10-06 and 2026-10-09).
+    Counting here also keeps a literal past Python's own 4300-digit `int` limit away from `int()`.
+    Which refusal such a literal draws depends on where it sits; see :func:`_jira_search_body`.
+    """
+
+    def parse(raw: str):
+        if sum(ch.isdigit() for ch in raw) > 1000:
+            number = _JiraOversizedNumber(raw)
+            oversized.append(number)
+            return number
+        return read(raw)
+
+    return parse
 
 
 async def _jira_search_body(request: Request) -> dict:
@@ -1918,8 +2031,8 @@ async def _jira_search_body(request: Request) -> dict:
     and ignoring parameters — `APPLICATION/JSON` and `application/json; charset=utf-8` are both
     read, `*/*` and `application/xml` are not.
 
-    Then the body, which real sorts into three sentences, and the boundaries between them are not
-    where a JSON parser would draw them:
+    Then the body, which real sorts into three sentences (a number too long to read aside, below),
+    and the boundaries between them are not where a JSON parser would draw them:
 
     - a body of zero length, and a literal `null`, are "no content"
     - bytes that do not parse are a parse error — but a body that is only WHITESPACE is not, it is
@@ -1934,10 +2047,24 @@ async def _jira_search_body(request: Request) -> dict:
     the four ASCII ones, so a non-breaking space in front of the object is the parse error, where
     `str.lstrip()` would skip it and read the object behind it. Bytes that are not UTF-8 are the
     not-an-object sentence, where `errors="replace"` would repair them into U+FFFD and parse.
+
+    Python's decoder is constrained in three places where it reads differently from real. `NaN` and
+    `Infinity` are the parse error (see :func:`_reject_json_constant`). A number literal past 1000
+    digits (see :func:`_jira_json_number`) is real's problem+json `Failed to read request` when it
+    is the body or the value of a member, and the not-an-object sentence when it sits inside a list
+    or an object. Both hold whichever member it is, an undeclared one included (measured on each
+    member `_JIRA_SEARCH_BODY_KEYS` declares, on `bogus`, and on a body of the number alone or in a
+    list, 2026-10-09 and 2026-10-10). Nesting deep enough to exhaust Python's reader is the
+    not-an-object sentence, the refusal real gives such a body at every depth measured.
+
+    Real reads the members in order and answers the first one it cannot read or bind, so
+    `{"bogus": 1, "jql": <1001 digits>}` is the not-an-object sentence there, and the other way
+    round it is `Failed to read request` (2026-10-10). This reader refuses an oversized literal
+    before it looks at any member, whatever the order.
     """
     content_type = request.headers.get("content-type")
     if (content_type or "").split(";")[0].strip().lower() != "application/json":
-        raise errors_atlassian.unsupported_media_type(request.url.path, content_type)
+        raise errors_atlassian.unsupported_media_type(_echoed_path(request), content_type)
     raw = await request.body()
     if not raw:
         raise errors_atlassian.body_not_read(errors_atlassian.BODY_EMPTY)
@@ -1945,8 +2072,17 @@ async def _jira_search_body(request: Request) -> dict:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
         raise errors_atlassian.body_not_read(errors_atlassian.BODY_NOT_AN_OBJECT) from None
+    oversized: list[_JiraOversizedNumber] = []
     try:
-        parsed, _end = json.JSONDecoder().raw_decode(text.lstrip(" \t\n\r"))
+        parsed, _end = json.JSONDecoder(
+            parse_constant=_reject_json_constant,
+            parse_int=_jira_json_number(int, oversized),
+            parse_float=_jira_json_number(float, oversized),
+        ).raw_decode(text.lstrip(" \t\n\r"))
+    except RecursionError:
+        # Real refuses a `fields` nested 998 to 300000 deep as a payload it cannot bind (measured
+        # 2026-10-06), so the depth Python's reader gives out at must not change the answer.
+        raise errors_atlassian.body_not_read(errors_atlassian.BODY_NOT_AN_OBJECT) from None
     except ValueError:
         message = (
             errors_atlassian.BODY_NOT_AN_OBJECT
@@ -1956,7 +2092,10 @@ async def _jira_search_body(request: Request) -> dict:
         raise errors_atlassian.body_not_read(message) from None
     if parsed is None:
         raise errors_atlassian.body_not_read(errors_atlassian.BODY_EMPTY)
-    if not isinstance(parsed, dict):
+    members = parsed.values() if isinstance(parsed, dict) else [parsed]
+    if any(isinstance(value, _JiraOversizedNumber) for value in members):
+        raise errors_atlassian.failed_to_read_request(_echoed_path(request))
+    if oversized or not isinstance(parsed, dict):
         raise errors_atlassian.body_not_read(errors_atlassian.BODY_NOT_AN_OBJECT)
     return parsed
 
@@ -1988,10 +2127,10 @@ def _confluence_page_params(
 ) -> tuple[int, int]:
     """Confluence's `limit` and `start`, which refuse a negative where Jira's clamp one.
 
-    Measured on the five routes that call it, `content` and `space` on 2026-09-14 and the three
-    under `content/{id}` on 2026-09-23: `?limit=-1` and `?start=-1` are 400. Unclamped they reached
-    SQLite, which reads a negative LIMIT as no limit at all — so the answer to `?limit=-1` was the
-    whole collection.
+    Measured on the six routes that call it, `content` and `space` on 2026-09-14, `child/page`,
+    `child/comment` and `label` on 2026-09-23 and `child/attachment` on 2026-10-10: `?limit=-1` and
+    `?start=-1` are 400. Unclamped, `content` would hand them to SQLite, which reads a negative
+    LIMIT as no limit at all and so would answer `?limit=-1` with the whole collection.
 
     Order is measured too, because both parameters can be wrong at once. Conversion comes first for
     BOTH — `?limit=-1&start=abc` is the conversion failure about `abc`, not the negative about
@@ -2013,9 +2152,10 @@ def _confluence_page_params(
 
     ``default`` and ``cap`` are per route, measured 2026-09-22 on a live site: `content`, `space`
     and `child/comment` cap `limit` at 1000, `label` defaults to 200 and caps there, `child/page`
-    defaults to 25 and caps nowhere (`?limit=1001` is echoed), and the CQL search caps nowhere
-    either. A value above the cap is answered with the cap rather than refused, so a client asking
-    for more than real serves gets real's page size back.
+    defaults to 25 and caps nowhere (`?limit=1001` is echoed), `child/attachment` defaults to 50
+    and caps nowhere, and the CQL search caps nowhere either. A value above the cap is answered
+    with the cap rather than refused, so a client asking for more than real serves gets real's page
+    size back.
     """
     limit = _int_param(request, "limit", default)
     start = _int_param(request, "start", 0)
@@ -2195,10 +2335,11 @@ def _confluence_envelope(
     """`_links` as every paged Confluence listing answers it: `base`, `context` and `self` on every
     page, plus `next`/`prev` from :func:`backlot.pagination.confluence_page_links`.
 
-    Measured 2026-09-22 on `content`, `space`, the CQL `search` and the three listings under
-    `content/{id}`: all three keys ride every page, `context` is the product's own prefix and
-    `self` is the request's URL with `limit`, `start` and the two markers removed and every other
-    parameter kept — a cache-buster sent with the request comes back inside `self`.
+    Measured 2026-09-22 on `content`, `space`, the CQL `search`, `child/page`, `child/comment` and
+    `label`, and 2026-10-10 on `child/attachment`: all three keys ride every page, `context` is the
+    product's own prefix and `self` is the request's URL with `limit`, `start` and the two markers
+    removed and every other parameter kept — a cache-buster sent with the request comes back inside
+    `self`.
 
     ``cursor``, ``sent_cursor`` and ``reached`` are the CQL search's: the token this page's `next`
     carries, the one the request brought, and where among the matches the page ends, as
@@ -2421,7 +2562,8 @@ def _echoed_path(request: Request) -> str:
 
     Real collapses an interior run of slashes in what it echoes and keeps a trailing one, where
     routing ignores both (``backlot.main.normalise_the_slashes_in_an_atlassian_path``, which
-    stashes the collapsed spelling on the scope for this).
+    stashes the collapsed spelling on the scope for this). Measured 2026-10-10 on Jira's 415,
+    conversion 400 and 405, each of which keeps the trailing slash in `instance`.
     """
     return request.scope.get("atlassian_echo_path", request.url.path)
 
@@ -2476,7 +2618,8 @@ def _options_answer(request: Request) -> Response:
     happens to implement (`errors.atlassian.jira_options_allow`). Confluence answers 404 in the
     `errors` list its 405 uses, on every route measured but `search` (:func:`_search_options`), for
     the `Accept` values ``errors.atlassian.CONFLUENCE_OPTIONS_NOT_FOUND`` names. Measured on
-    Atlassian Cloud, 2026-09-22, over all 24 routes here.
+    Atlassian Cloud over every route here, `child/attachment` on 2026-10-10 and the others on
+    2026-09-22.
 
     Jira's 200 is for a caller whose credential resolves. Anyone else — no credential, the Basic
     pair it rejects, an unknown scheme, and here an unreadable bearer too, which a `GET` draws the
@@ -2600,7 +2743,7 @@ async def unmatched_path(request: Request, rest: str) -> Response:
     if _some_atlassian_route_matches(request):
         if request.method == "OPTIONS":
             return _options_answer(request)
-        raise errors_atlassian.method_not_allowed(request.url.path, request.method)
+        raise errors_atlassian.method_not_allowed(_echoed_path(request), request.method)
     path = request.url.path
     vendor_path = _vendor_path(path)
     anonymous = auth.atlassian_caller(request).is_anonymous
@@ -2785,7 +2928,8 @@ def rate_limit_headers(request: Request, caller: Caller) -> dict[str, str]:
 #: Confluence says its v1 REST API is deprecated, in three headers, on the answers the content and
 #: space services give — including their 404s. Measured 2026-09-22: `content`, `content/{id}`,
 #: `child/comment`, `child/page`, `label`, `space`, `space/{key}` and the 404s for an unknown space
-#: and an unknown content id all carry them; `search`, `restriction/byOperation`, the 405 at
+#: and an unknown content id all carry them, and so do `child/attachment`, its 400 and an unknown
+#: id's 404, measured 2026-10-10; `search`, `restriction/byOperation`, the 405 at
 #: `space/{key}/permission`, the 403 an anonymous request gets and an `OPTIONS` on `space`,
 #: `space/{key}`, an unknown space and `permission` carry none. Nor does an answer the catch-all
 #: gives, measured 2026-09-30 over twenty of them on ten paths: the JAX-RS 404 in both shapes and
@@ -2837,9 +2981,10 @@ def vendor_headers(request: Request, status_code: int) -> dict[str, str]:
     the caller's own account id, with the rate-limit four where a route answers or an `OPTIONS` asks
     at its path. The gateway's own refusals (the Connect-token 403 and a `PATCH`) carry the two ids
     and :data:`_EDGE` and nothing else; the CDN's carry :data:`_EDGE` on its 403 and nothing on its
-    405 or its 400. Confluence: the millisecond clock it stamps every answer with, and the
-    deprecation trio where the v1 services send it. Measured on Atlassian Cloud 2026-09-22 and
-    2026-09-30; what is deliberately not here is in `backlot.main.report_atlassian_headers`.
+    405 or its 400. Confluence: the millisecond clock it stamps every answer with, the deprecation
+    trio where the v1 services send it, and the search's `cache-control` and `expires`. Measured on
+    Atlassian Cloud 2026-09-22 and 2026-09-30, the search's pair 2026-10-07; what is deliberately
+    not here is in `backlot.main.report_atlassian_headers`.
     """
     path = request.url.path
     if request.method not in errors_atlassian.SERVED_METHODS:
@@ -2851,6 +2996,14 @@ def vendor_headers(request: Request, status_code: int) -> dict[str, str]:
         return dict(_EDGE) if errors_atlassian.cdn_forbids(request.method) else {}
     headers = {**request_ids(request), **_EDGE}
     if errors_atlassian.is_confluence(path):
+        # The search's GET/HEAD 200, 400, 403 and 404 carry the pair; Tomcat's 401 does not.
+        if (
+            request.method in ("GET", "HEAD")
+            and status_code != 401
+            and _vendor_path(path) == "/wiki/rest/api/search"
+        ):
+            headers["cache-control"] = "no-cache, no-store, must-revalidate"
+            headers["expires"] = "Thu, 01 Jan 1970 00:00:00 GMT"
         headers["x-confluence-request-time"] = str(int(time.time() * 1000))
         # the notice rides on what a v1 service answers: a route's own answer, not one given
         # around it

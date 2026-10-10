@@ -218,7 +218,8 @@ input kind the issue names — a measurement of one does not carry to its neighb
 - A new or changed read of corpus content gets an admin-token test and a scoped-token test.
 - Comments state the measurement and the date. No issue numbers, no "previously", no story.
 - If a schema under `backlot/schemas/` changed, run `python scripts/gen_docs.py`.
-- Run `uv run pytest -q` and `uv run ruff check . && uv run ruff format --check .` clean.
+- Run `uv run pytest -q`, `uv run ruff check . && uv run ruff format --check .` and
+  `uv run python scripts/prose_check.py` clean.
 
 ## 7. File the residue
 

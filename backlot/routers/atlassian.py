@@ -1975,11 +1975,14 @@ def _int_param(
             raise ValueError(cleaned)
         n = int(cleaned)
     except ValueError:
-        raise errors_atlassian.integer_conversion_failure(request.url.path, name, values) from None
+        # Measured 2026-10-10: real keeps a trailing slash in `instance`; the routed path does not.
+        raise errors_atlassian.integer_conversion_failure(
+            _echoed_path(request), name, values
+        ) from None
     if not width[0] <= n <= width[1]:
         # Python's int is unbounded, so a page size computed from a timestamp or a byte count
         # flowed into the query where real answered 400.
-        raise errors_atlassian.integer_conversion_failure(request.url.path, name, values)
+        raise errors_atlassian.integer_conversion_failure(_echoed_path(request), name, values)
     return n
 
 
@@ -2062,7 +2065,8 @@ async def _jira_search_body(request: Request) -> dict:
     """
     content_type = request.headers.get("content-type")
     if (content_type or "").split(";")[0].strip().lower() != "application/json":
-        raise errors_atlassian.unsupported_media_type(request.url.path, content_type)
+        # Measured 2026-10-10: real keeps a trailing slash in `instance`; the routed path does not.
+        raise errors_atlassian.unsupported_media_type(_echoed_path(request), content_type)
     raw = await request.body()
     if not raw:
         raise errors_atlassian.body_not_read(errors_atlassian.BODY_EMPTY)
@@ -2740,7 +2744,8 @@ async def unmatched_path(request: Request, rest: str) -> Response:
     if _some_atlassian_route_matches(request):
         if request.method == "OPTIONS":
             return _options_answer(request)
-        raise errors_atlassian.method_not_allowed(request.url.path, request.method)
+        # Measured 2026-10-10: real keeps a trailing slash in `instance`; the routed path does not.
+        raise errors_atlassian.method_not_allowed(_echoed_path(request), request.method)
     path = request.url.path
     vendor_path = _vendor_path(path)
     anonymous = auth.atlassian_caller(request).is_anonymous

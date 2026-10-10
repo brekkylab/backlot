@@ -160,7 +160,10 @@ async def _http_exception_handler(request: Request, exc: StarletteHTTPException)
     # is asked for here rather than raised where the other refusals are. The exception is replaced
     # rather than edited: what follows reads the body, media type and headers off it either way.
     if exc.status_code == 405:
-        vendor = errors.method_not_allowed(request.url.path, request.method)
+        # Prefer the path a refusal echoes: Atlassian keeps a trailing slash in `instance`
+        # (measured 2026-10-10) where routing has already stripped it from ``request.url.path``.
+        path = request.scope.get("atlassian_echo_path", request.url.path)
+        vendor = errors.method_not_allowed(path, request.method)
         if vendor is not None:
             if vendor.headers is None:
                 vendor.headers = getattr(exc, "headers", None)

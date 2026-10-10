@@ -629,8 +629,12 @@ _JIRA_ALLOW_PATTERNS = tuple((route_regex(t), methods) for t, methods in _JIRA_A
 
 def jira_allow(path: str) -> str | None:
     """The `Allow` real sends on a 405 at ``path``, or ``None`` for a Jira route no row above
-    covers. ``path`` is Backlot's, prefix and all."""
-    vendor_path = _instance(path)
+    covers. ``path`` is Backlot's, prefix and all.
+
+    A trailing slash is stripped before matching: the path a refusal echoes may keep one
+    (``backlot.routers.atlassian._echoed_path``, measured 2026-10-10), where the route tables do not.
+    """
+    vendor_path = _instance(path).rstrip("/")
     for pattern, methods in _JIRA_ALLOW_PATTERNS:
         if pattern.fullmatch(vendor_path):
             return ", ".join(methods)

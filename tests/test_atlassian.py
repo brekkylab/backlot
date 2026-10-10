@@ -2895,6 +2895,82 @@ def test_jira_refuses_a_wrong_method_as_rfc_7807_naming_the_methods_it_takes(
 
 
 @pytest.mark.parametrize(
+    "method,path,query,extra_headers,body,status,detail,allow",
+    [
+        # the three refusals that name the path in `instance`, each with the trailing slash real
+        # keeps there (see `_echoed_path` and the raises that hand it that path)
+        (
+            "POST",
+            "/rest/api/3/search/jql/",
+            "",
+            {"Content-Type": "text/plain"},
+            b"{}",
+            415,
+            "Content-Type 'text/plain' is not supported.",
+            None,
+        ),
+        (
+            "GET",
+            "/rest/api/3/search/jql/",
+            "?jql=project%20is%20not%20EMPTY&maxResults=abc",
+            {},
+            None,
+            400,
+            "Failed to convert 'maxResults' with value: 'abc'",
+            None,
+        ),
+        (
+            "GET",
+            "/rest/api/3/issue/NOPE-1/comment/",
+            "?maxResults=abc",
+            {},
+            None,
+            400,
+            "Failed to convert 'maxResults' with value: 'abc'",
+            None,
+        ),
+        (
+            "PUT",
+            "/rest/api/3/search/jql/",
+            "",
+            {},
+            None,
+            405,
+            "Method 'PUT' is not supported.",
+            "GET, POST",
+        ),
+        (
+            "DELETE",
+            "/rest/api/3/serverInfo/",
+            "",
+            {},
+            None,
+            405,
+            "Method 'DELETE' is not supported.",
+            "GET",
+        ),
+    ],
+)
+def test_jira_refusal_instance_keeps_the_trailing_slash_it_was_sent_with(
+    client, admin_h, method, path, query, extra_headers, body, status, detail, allow
+):
+    """Pins the trailing slash in `instance` for the three refusals that name the path: the 415 in
+    `_jira_search_body`, the integer-conversion 400 in `_int_param`, and the 405
+    `errors.atlassian.method_not_allowed` builds. Without `_echoed_path` each answers the routed
+    spelling and leaves the slash out."""
+    headers = {**admin_h, **extra_headers}
+    r = client.request(method, f"/atlassian{path}{query}", headers=headers, content=body)
+    assert r.status_code == status, r.text
+    assert r.headers["content-type"] == errors_atlassian.PROBLEM_JSON
+    assert r.json()["instance"] == path
+    assert r.json()["detail"] == detail
+    if allow is None:
+        assert "allow" not in r.headers
+    else:
+        assert r.headers["allow"] == allow
+
+
+@pytest.mark.parametrize(
     "table",
     [errors_atlassian.jira_allow, errors_atlassian.jira_options_allow],
     ids=["405", "options"],

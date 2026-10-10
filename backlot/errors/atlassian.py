@@ -548,6 +548,34 @@ def unbounded_jql() -> AtlassianError:
     )
 
 
+def properties_null_element(index: int) -> AtlassianError:
+    """Jira's 500 for a `search/jql` body whose `properties` list holds a ``null``, measured
+    2026-10-10: the message names the first null's index (`["a", null]` names index 1) and the
+    body rides on `application/json;charset=UTF-8` like every other JSON status Jira answers.
+    """
+    return AtlassianError(
+        500,
+        {"message": f"at index {index}", "status-code": 500, "stack-trace": ""},
+        media_type=JIRA_JSON_MEDIA_TYPE,
+    )
+
+
+def reconcile_issues_null() -> AtlassianError:
+    """Jira's 500 for a `search/jql` body whose `reconcileIssues` is JSON ``null`` rather than
+    unsent, measured 2026-10-10: the message is the NPE the operation throws streaming the list,
+    verbatim, on the same `application/json;charset=UTF-8` as the 400s.
+    """
+    return AtlassianError(
+        500,
+        {
+            "message": 'Cannot invoke "java.util.List.stream()" because "reconcileIssues" is null',
+            "status-code": 500,
+            "stack-trace": "",
+        },
+        media_type=JIRA_JSON_MEDIA_TYPE,
+    )
+
+
 def max_results_out_of_range() -> AtlassianError:
     """Jira's 400 for `search/jql`'s `maxResults` outside 1-5000, on both methods and both
     placements — the query string and the POST body. Measured 2026-09-18 against Jira Cloud:

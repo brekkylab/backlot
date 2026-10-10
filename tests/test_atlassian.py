@@ -2507,6 +2507,110 @@ def test_jira_search_post_accepts_every_field_the_vendors_bean_declares(
     assert r.status_code == 200, r.text
 
 
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("expand", "names"),
+        ("expand", "bogus"),
+        ("expand", 1),
+        ("expand", 1.5),
+        ("expand", True),
+        ("fieldsByKeys", True),
+        ("fieldsByKeys", False),
+        ("fieldsByKeys", "true"),
+        ("fieldsByKeys", "false"),
+        ("fieldsByKeys", 0),
+        ("fieldsByKeys", 1),
+        ("fieldsByKeys", 2),
+        ("properties", ["prop1"]),
+        ("properties", [1]),
+        ("properties", [True]),
+        ("properties", []),
+        ("reconcileIssues", [1, 2]),
+        ("reconcileIssues", ["1"]),
+        ("reconcileIssues", [1.5]),
+        ("reconcileIssues", [None]),
+        ("reconcileIssues", []),
+        ("reconcileIssues", [-1]),
+    ],
+)
+def test_jira_search_post_serves_the_values_the_vendors_bean_binds(client, admin_h, field, value):
+    """Measured 2026-10-10 (#579): the four members Backlot does not act on still have their
+    values bound, and these are the values that bind — where a JSON null is the member unsent
+    for all but `reconcileIssues`, whose bare null is real's 500 below."""
+    r = _search_post(client, admin_h, jql="project = payments", **{field: value})
+    assert r.status_code == 200, r.text
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("expand", []),
+        ("expand", ["names"]),
+        ("expand", [1]),
+        ("expand", {}),
+        ("fieldsByKeys", "yes"),
+        ("fieldsByKeys", "x"),
+        ("fieldsByKeys", 1.5),
+        ("fieldsByKeys", []),
+        ("fieldsByKeys", {}),
+        ("properties", "prop1"),
+        ("properties", 1),
+        ("properties", {}),
+        ("properties", [[1]]),
+        ("properties", [{}]),
+        ("reconcileIssues", ["a"]),
+        ("reconcileIssues", [True]),
+        ("reconcileIssues", 1),
+        ("reconcileIssues", "1"),
+        ("reconcileIssues", {}),
+        ("reconcileIssues", [[1]]),
+        ("reconcileIssues", [9223372036854775808]),
+    ],
+)
+def test_jira_search_post_refuses_a_value_the_vendors_bean_cannot_bind(
+    client, admin_h, field, value
+):
+    """Measured 2026-10-10 (#579): every one of these draws the same body-wide sentence a
+    `fields` that cannot bind draws, because the bean deserializes the whole body or none of
+    it."""
+    r = _search_post(client, admin_h, jql="project = payments", **{field: value})
+    assert r.status_code == 400, r.text
+    assert r.json() == {"errorMessages": [errors_atlassian.BODY_NOT_AN_OBJECT]}
+
+
+@pytest.mark.parametrize(
+    "value,want",
+    [
+        ([None], "at index 0"),
+        (["a", None], "at index 1"),
+        (["a", "b", None], "at index 2"),
+    ],
+)
+def test_jira_search_post_answers_a_properties_null_with_reals_500(client, admin_h, value, want):
+    """Measured 2026-10-10 (#579): a `properties` list holding a null is not the 400 the other
+    unbindable values draw but a 500 whose message names the first null's index, served on
+    `application/json;charset=UTF-8`."""
+    r = _search_post(client, admin_h, jql="project = payments", properties=value)
+    assert r.status_code == 500, r.text
+    assert r.headers["content-type"].startswith("application/json")
+    assert r.json() == {"message": want, "status-code": 500, "stack-trace": ""}
+
+
+def test_jira_search_post_answers_a_bare_null_reconcile_issues_with_reals_500(client, admin_h):
+    """Measured 2026-10-10 (#579): `"reconcileIssues": null` is the NPE the operation throws
+    streaming the list, verbatim, where the null unsent member is a 200 and a null *element*
+    binds."""
+    r = _search_post(client, admin_h, jql="project = payments", reconcileIssues=None)
+    assert r.status_code == 500, r.text
+    assert r.headers["content-type"].startswith("application/json")
+    assert r.json() == {
+        "message": 'Cannot invoke "java.util.List.stream()" because "reconcileIssues" is null',
+        "status-code": 500,
+        "stack-trace": "",
+    }
+
+
 def test_jira_search_post_refuses_a_jql_shaped_as_a_list(client, admin_h):
     """Measured 2026-09-18: `{"jql": [...]}` draws the same not-an-object refusal as an unknown
     field, where a scalar `jql` (a number, say) is coerced to a string and reaches the (lenient)

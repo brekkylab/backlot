@@ -1975,7 +1975,6 @@ def _int_param(
             raise ValueError(cleaned)
         n = int(cleaned)
     except ValueError:
-        # Measured 2026-10-10: real keeps a trailing slash in `instance`; the routed path does not.
         raise errors_atlassian.integer_conversion_failure(
             _echoed_path(request), name, values
         ) from None
@@ -2065,7 +2064,6 @@ async def _jira_search_body(request: Request) -> dict:
     """
     content_type = request.headers.get("content-type")
     if (content_type or "").split(";")[0].strip().lower() != "application/json":
-        # Measured 2026-10-10: real keeps a trailing slash in `instance`; the routed path does not.
         raise errors_atlassian.unsupported_media_type(_echoed_path(request), content_type)
     raw = await request.body()
     if not raw:
@@ -2564,7 +2562,8 @@ def _echoed_path(request: Request) -> str:
 
     Real collapses an interior run of slashes in what it echoes and keeps a trailing one, where
     routing ignores both (``backlot.main.normalise_the_slashes_in_an_atlassian_path``, which
-    stashes the collapsed spelling on the scope for this).
+    stashes the collapsed spelling on the scope for this). Measured 2026-10-10 on Jira's 415,
+    conversion 400 and 405, each of which keeps the trailing slash in `instance`.
     """
     return request.scope.get("atlassian_echo_path", request.url.path)
 
@@ -2744,7 +2743,6 @@ async def unmatched_path(request: Request, rest: str) -> Response:
     if _some_atlassian_route_matches(request):
         if request.method == "OPTIONS":
             return _options_answer(request)
-        # Measured 2026-10-10: real keeps a trailing slash in `instance`; the routed path does not.
         raise errors_atlassian.method_not_allowed(_echoed_path(request), request.method)
     path = request.url.path
     vendor_path = _vendor_path(path)

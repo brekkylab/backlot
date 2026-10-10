@@ -1354,6 +1354,8 @@ def test_jira_comment_paging_is_declared_so_a_client_can_discover_it(paged):
 # its own two-key body carrying a raw Java exception string on a bare `application/json`.
 
 
+# the path a refusal echoes, as `_echoed_path` gives it
+@pytest.mark.parametrize("slash", ["", "/"])
 @pytest.mark.parametrize(
     "param,value",
     [
@@ -1371,9 +1373,9 @@ def test_jira_comment_paging_is_declared_so_a_client_can_discover_it(paged):
         ("startAt", "-9223372036854775809"),
     ],
 )
-def test_jira_refuses_an_integer_parameter_it_cannot_convert(paged, param, value):
+def test_jira_refuses_an_integer_parameter_it_cannot_convert(paged, param, value, slash):
     client, h = paged
-    r = client.get(f"/atlassian/rest/api/3/issue/PAY-7/comment?{param}={value}", headers=h)
+    r = client.get(f"/atlassian/rest/api/3/issue/PAY-7/comment{slash}?{param}={value}", headers=h)
     assert r.status_code == 400, r.text
     assert r.headers["content-type"] == "application/problem+json;charset=UTF-8"
     assert r.json() == {
@@ -1381,7 +1383,7 @@ def test_jira_refuses_an_integer_parameter_it_cannot_convert(paged, param, value
         "title": "Bad Request",
         "status": 400,
         "detail": f"Failed to convert '{param}' with value: '{value}'",
-        "instance": "/rest/api/3/issue/PAY-7/comment",
+        "instance": f"/rest/api/3/issue/PAY-7/comment{slash}",
     }
 
 
@@ -1461,11 +1463,12 @@ def test_jira_comma_joins_a_repeated_string_parameter_before_validating_it(paged
     assert "bogus" in r.json()["errorMessages"][0]
 
 
-def test_jira_search_refuses_an_integer_parameter_it_cannot_convert(client, admin_h):
-    r = client.get("/atlassian/rest/api/3/search/jql?maxResults=abc", headers=admin_h)
+@pytest.mark.parametrize("slash", ["", "/"])
+def test_jira_search_refuses_an_integer_parameter_it_cannot_convert(client, admin_h, slash):
+    r = client.get(f"/atlassian/rest/api/3/search/jql{slash}?maxResults=abc", headers=admin_h)
     assert r.status_code == 400, r.text
     assert r.json()["detail"] == "Failed to convert 'maxResults' with value: 'abc'"
-    assert r.json()["instance"] == "/rest/api/3/search/jql"
+    assert r.json()["instance"] == f"/rest/api/3/search/jql{slash}"
 
 
 @pytest.mark.parametrize("param", ["limit", "start"])
@@ -2578,6 +2581,7 @@ def test_jira_search_declares_each_placement_on_the_method_that_reads_it(client)
     assert paths["post"]["requestBody"]["required"] is True
 
 
+@pytest.mark.parametrize("slash", ["", "/"])
 @pytest.mark.parametrize(
     "content_type,named",
     [
@@ -2588,7 +2592,7 @@ def test_jira_search_declares_each_placement_on_the_method_that_reads_it(client)
     ],
 )
 def test_jira_search_post_refuses_a_media_type_it_does_not_read(
-    client, admin_h, content_type, named
+    client, admin_h, content_type, named, slash
 ):
     """Measured: the header decides before the bytes are looked at, so the JSON body sent with each
     of these is never reached."""
@@ -2596,7 +2600,7 @@ def test_jira_search_post_refuses_a_media_type_it_does_not_read(
     if content_type is not None:
         headers["Content-Type"] = content_type
     r = client.post(
-        "/atlassian/rest/api/3/search/jql",
+        f"/atlassian/rest/api/3/search/jql{slash}",
         headers=headers,
         content=json.dumps({"jql": "project = payments"}),
     )
@@ -2607,7 +2611,7 @@ def test_jira_search_post_refuses_a_media_type_it_does_not_read(
         "title": "Unsupported Media Type",
         "status": 415,
         "detail": f"Content-Type '{named}' is not supported.",
-        "instance": "/rest/api/3/search/jql",
+        "instance": f"/rest/api/3/search/jql{slash}",
     }
 
 
@@ -2863,6 +2867,7 @@ def test_confluence_refuses_a_wrong_method_with_springs_errors_list_and_no_allow
     }
 
 
+@pytest.mark.parametrize("slash", ["", "/"])
 @pytest.mark.parametrize(
     "method,path,allow",
     [
@@ -2879,9 +2884,9 @@ def test_confluence_refuses_a_wrong_method_with_springs_errors_list_and_no_allow
     ],
 )
 def test_jira_refuses_a_wrong_method_as_rfc_7807_naming_the_methods_it_takes(
-    client, admin_h, method, path, allow
+    client, admin_h, method, path, allow, slash
 ):
-    r = getattr(client, method)(f"/atlassian{path}", headers=admin_h)
+    r = getattr(client, method)(f"/atlassian{path}{slash}", headers=admin_h)
     assert r.status_code == 405, r.text
     assert r.headers["content-type"] == errors_atlassian.PROBLEM_JSON
     assert r.headers["allow"] == allow
@@ -2890,84 +2895,8 @@ def test_jira_refuses_a_wrong_method_as_rfc_7807_naming_the_methods_it_takes(
         "title": "Method Not Allowed",
         "status": 405,
         "detail": f"Method '{method.upper()}' is not supported.",
-        "instance": path,
+        "instance": f"{path}{slash}",
     }
-
-
-@pytest.mark.parametrize(
-    "method,path,query,extra_headers,body,status,detail,allow",
-    [
-        # the three refusals that name the path in `instance`, each with the trailing slash real
-        # keeps there (see `_echoed_path` and the raises that hand it that path)
-        (
-            "POST",
-            "/rest/api/3/search/jql/",
-            "",
-            {"Content-Type": "text/plain"},
-            b"{}",
-            415,
-            "Content-Type 'text/plain' is not supported.",
-            None,
-        ),
-        (
-            "GET",
-            "/rest/api/3/search/jql/",
-            "?jql=project%20is%20not%20EMPTY&maxResults=abc",
-            {},
-            None,
-            400,
-            "Failed to convert 'maxResults' with value: 'abc'",
-            None,
-        ),
-        (
-            "GET",
-            "/rest/api/3/issue/NOPE-1/comment/",
-            "?maxResults=abc",
-            {},
-            None,
-            400,
-            "Failed to convert 'maxResults' with value: 'abc'",
-            None,
-        ),
-        (
-            "PUT",
-            "/rest/api/3/search/jql/",
-            "",
-            {},
-            None,
-            405,
-            "Method 'PUT' is not supported.",
-            "GET, POST",
-        ),
-        (
-            "DELETE",
-            "/rest/api/3/serverInfo/",
-            "",
-            {},
-            None,
-            405,
-            "Method 'DELETE' is not supported.",
-            "GET",
-        ),
-    ],
-)
-def test_jira_refusal_instance_keeps_the_trailing_slash_it_was_sent_with(
-    client, admin_h, method, path, query, extra_headers, body, status, detail, allow
-):
-    """Pins the trailing slash in `instance` for the three refusals that name the path: the 415 in
-    `_jira_search_body`, the integer-conversion 400 in `_int_param`, and the 405
-    `errors.atlassian.method_not_allowed` builds. Without `_echoed_path` each answers the routed
-    spelling and leaves the slash out."""
-    headers = {**admin_h, **extra_headers}
-    r = client.request(method, f"/atlassian{path}{query}", headers=headers, content=body)
-    assert r.status_code == status, r.text
-    assert r.headers["content-type"] == errors_atlassian.PROBLEM_JSON
-    assert r.json()["instance"] == path
-    assert r.json()["detail"] == detail
-    if allow is None:
-        assert "allow" not in r.headers
-    else:
-        assert r.headers["allow"] == allow
 
 
 @pytest.mark.parametrize(

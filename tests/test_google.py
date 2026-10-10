@@ -621,7 +621,7 @@ def test_gmail_messages_list_pagination_stable_and_ordered(client, admin_h, ro_c
 
 
 def test_gmail_max_results_is_capped_at_500(tmp_path, monkeypatch):
-    """The cap `_gmail_max_results` records, on both listings."""
+    """The cap `_gmail_page` records, on both listings."""
     from backlot.routers import google
     from tests._helpers import corpus_client
 
@@ -664,7 +664,7 @@ def test_gmail_max_results_is_capped_at_500(tmp_path, monkeypatch):
             assert "nextPageToken" in page, kind
 
 
-# The rows `_gmail_max_results` records. A `size` is served, `uint32` is the proto layer's refusal
+# The rows `_gmail_page` records. A `size` is served, `uint32` is the proto layer's refusal
 # of each named repeat, and `maxResults` is `Invalid maxResults`. The measurement is that
 # function's.
 _GMAIL_MAX_RESULTS = [
@@ -695,7 +695,7 @@ _GMAIL_MAX_RESULTS = [
 @pytest.mark.parametrize("kind", ["messages", "threads"])
 @pytest.mark.parametrize("values, shape, named", _GMAIL_MAX_RESULTS)
 def test_gmail_refuses_a_max_results_it_cannot_read(client, admin_h, kind, values, shape, named):
-    """The refusals `_gmail_max_results` records, on both listings."""
+    """The refusals `_gmail_page` records, on both listings."""
     r = client.get(
         f"/gmail/v1/users/me/{kind}",
         headers=admin_h,
@@ -739,6 +739,80 @@ def test_gmail_refuses_a_max_results_it_cannot_read(client, admin_h, kind, value
             }
         ],
     }, (kind, values)
+
+
+_GMAIL_TOKEN = {
+    "code": 400,
+    "message": "Invalid pageToken",
+    "errors": [{"message": "Invalid pageToken", "domain": "global", "reason": "invalidArgument"}],
+    "status": "INVALID_ARGUMENT",
+}
+_GMAIL_RANGE = {
+    "code": 400,
+    "message": "Invalid maxResults",
+    "errors": [{"message": "Invalid maxResults", "domain": "global", "reason": "invalidArgument"}],
+    "status": "INVALID_ARGUMENT",
+}
+_GMAIL_UINT32_ABC = {
+    "code": 400,
+    "message": "Invalid value at 'max_results' (TYPE_UINT32), \"abc\"",
+    "errors": [
+        {"message": "Invalid value at 'max_results' (TYPE_UINT32), \"abc\"", "reason": "invalid"}
+    ],
+    "status": "INVALID_ARGUMENT",
+    "details": [
+        {
+            "@type": "type.googleapis.com/google.rpc.BadRequest",
+            "fieldViolations": [
+                {
+                    "field": "max_results",
+                    "description": "Invalid value at 'max_results' (TYPE_UINT32), \"abc\"",
+                }
+            ],
+        }
+    ],
+}
+
+
+# fmt: off
+_GMAIL_PAGE_TOKEN_ROWS = [
+    ([("pageToken", "bogus")], _GMAIL_TOKEN, _GMAIL_TOKEN),
+    ([("pageToken", "")], None, None),
+    ([("maxResults", "1"), ("pageToken", "{token}")], "second", "second"),
+    ([("maxResults", "0"), ("pageToken", "bogus")], _GMAIL_TOKEN, _GMAIL_RANGE),
+    ([("pageToken", "garbage"), ("maxResults", "0")], _GMAIL_TOKEN, _GMAIL_RANGE),
+    ([("maxResults", "2147483648"), ("pageToken", "garbage")], _GMAIL_TOKEN, _GMAIL_RANGE),
+    ([("pageToken", "garbage"), ("maxResults", "abc")], _GMAIL_UINT32_ABC, _GMAIL_UINT32_ABC),
+    ([("pageToken", "garbage"), ("pageToken", "")], None, None),
+    ([("pageToken", ""), ("pageToken", "garbage")], _GMAIL_TOKEN, _GMAIL_TOKEN),
+    ([("maxResults", "1"), ("pageToken", "garbage"), ("pageToken", "{token}")], "second", "second"),
+    ([("maxResults", "1"), ("pageToken", "{token}"), ("pageToken", "garbage")], _GMAIL_TOKEN, _GMAIL_TOKEN),
+]
+# fmt: on
+
+
+@pytest.mark.parametrize("query, on_messages, on_threads", _GMAIL_PAGE_TOKEN_ROWS)
+@pytest.mark.parametrize("kind", ["messages", "threads"])
+def test_gmail_lists_read_a_page_token_as_real_does(
+    client, admin_h, kind, query, on_messages, on_threads
+):
+    """The rules `_gmail_page` and `gerr.invalid_page_token` record, one request per row and
+    listing. `None` is the answer the request gets without a `pageToken`, `"second"` the page after
+    the first at `maxResults=1`, and `{token}` the `nextPageToken` of that first page."""
+    path = f"/gmail/v1/users/me/{kind}"
+    first = client.get(path, headers=admin_h, params={"maxResults": 1}).json()
+    query = [(k, v.format(token=first["nextPageToken"])) for k, v in query]
+    r = client.get(path, headers=admin_h, params=query)
+    want = on_messages if kind == "messages" else on_threads
+    if want is None:
+        without = [(k, v) for k, v in query if k != "pageToken"]
+        assert r.content == client.get(path, headers=admin_h, params=without).content
+    elif want == "second":
+        both = client.get(path, headers=admin_h, params={"maxResults": 2}).json()[kind]
+        assert r.status_code == 200, r.text
+        assert r.json()[kind] == both[1:]
+    else:
+        assert (r.status_code, _gerr(r)) == (400, want)
 
 
 def test_gmail_attachment_size_matches_part_metadata(client, admin_h, ro_conn):
@@ -938,10 +1012,9 @@ _BAD_FILTER = '{"dataFilters": "abc"}'
 # and the status of the same request sent on its own, then a 302's `Location` below the server's
 # base URL or a 501's body. The status on its own is ``None`` where real's is one Backlot does not
 # give: the export with an empty `alt=` (400), the id holding a `%` no two hex digits follow (503),
-# the two downloads with `callback=a%20b` (503), the export with that `callback` beside `$.xgafv=9`
-# (400) and the Sheets read of a spreadsheet the caller cannot see (403
-# `The caller does not have permission`, where Backlot answers as for one that does not exist).
-# `_drive_batch_download`, `_drive_batch_redirect` and `_workbook` record the rules.
+# the two downloads with `callback=a%20b` (503) and the export with that `callback` beside
+# `$.xgafv=9` (400). `_drive_batch_download`, `_drive_batch_redirect` and `_workbook` record the
+# rules.
 # fmt: off
 _BATCH_ROWS = [
     # a Drive download is redirected ahead of the lookup and the typed, `fields` and `mimeType`
@@ -1012,7 +1085,7 @@ _BATCH_ROWS = [
     (_SHEETS_BATCH, ("POST", "/sheets/v4/spreadsheets/{sheet}:getByDataFilter", "{}", None), 501, 200, _UNIMPLEMENTED),
     (_SHEETS_BATCH, ("POST", "/sheets/v4/spreadsheets/{sheet}/values:batchGetByDataFilter", _A1_FILTER, None), 501, 200, _UNIMPLEMENTED),
     (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{nope}/values/A1", None, None), 501, 404, _UNIMPLEMENTED),
-    (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/A1", None, _MIA), 501, None, _UNIMPLEMENTED),
+    (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/A1", None, _MIA), 501, 403, _UNIMPLEMENTED),
     (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/NoSuchSheet!A1", None, None), 501, 400, _UNIMPLEMENTED),
     (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/A1?alt=media", None, None), 501, 400, _UNIMPLEMENTED),
     (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/A1?$.xgafv=1", None, None), 501, 200, _UNIMPLEMENTED_AT_XGAFV_1),
@@ -2005,8 +2078,9 @@ def test_a_typed_refusal_comes_after_the_credential_and_before_the_lookup(
 ):
     """The order `_typed_query`'s docstring records, and `sheets_values_batch_get_by_data_filter`'s
     for a data-filter body. The refusal is the same bytes for a spreadsheet the scoped token cannot
-    see as for one that does not exist, where without the bad value (with ``good`` for a body) the
-    first is a 200 to the admin and both are the 404 to the scoped token. With no credential or a
+    see as for one that does not exist. Without the bad value (with ``good`` for a body) the hidden
+    spreadsheet is a 200 to the admin. To the scoped token a Sheets read answers the hidden
+    spreadsheet 403 and the missing id 404, where Drive answers both 404. With no credential or a
     bad one the bad value changes nothing: the answer is the credential's refusal, the 401 for a bad
     one."""
 
@@ -2022,7 +2096,8 @@ def test_a_typed_refusal_comes_after_the_credential_and_before_the_lookup(
     assert _gerr(refused)["code"] == 400
     assert send(hidden, scoped, bad=True).content == refused.content
     assert send(hidden, admin_h).status_code == 200
-    assert send(hidden, scoped).status_code == 404
+    expected_hidden = 403 if path.startswith("/sheets/") else 404
+    assert send(hidden, scoped).status_code == expected_hidden
     assert send(missing, scoped).status_code == 404
     assert send(missing, BAD_TOKEN).status_code == 401
     for headers in ({}, BAD_TOKEN):
@@ -4246,37 +4321,86 @@ def test_editor_apis_reject_a_folder(base, admin_h):
     assert r.json()["error"]["message"] == INVALID_ARG
 
 
-def test_wrong_type_is_refused_before_it_is_read(base, live_server):
-    """A caller who cannot see the file still gets 404, not 400: the type of a document you have
-    no access to is not something the API should confirm."""
-    import yaml
+def test_editor_apis_distinguish_hidden_type_permission_and_missing(tmp_path):
+    """Sheets and Docs resolve a stored file's type before its visibility (`_editor_doc`). A hidden
+    file of the API's own type is permission-denied, another native type is not-found, an Office
+    file of the API's own family is a failed precondition, and a PDF or an Office file of the other
+    family is an invalid argument. Slides resolves visibility first, so a hidden presentation is
+    not-found there, as an id that does not exist is on Sheets and Docs. The files the scoped token
+    can see are served. At `$.xgafv=1` the 403's entry is ``forbidden`` and the Office 400's
+    ``failedPrecondition``."""
+    hidden = ("spreadsheet", "document", "presentation", "pdf", "xlsx", "docx")
+    records = [
+        {
+            "source_type": "google_drive",
+            "doc_id": f"hidden-{kind}",
+            "title": kind,
+            "content": "private",
+            "subtype": kind,
+            "author_email": "owner@acme.com",
+            "readers": ["owner@acme.com"],
+        }
+        for kind in hidden
+    ]
+    records += [
+        {
+            "source_type": "google_drive",
+            "doc_id": f"mia-{kind}",
+            "title": kind,
+            "content": "public",
+            "subtype": kind,
+            "author_email": "mia@acme.com",
+            "visibility": "public",
+        }
+        for kind in ("spreadsheet", "document")
+    ]
+    settings = tiny_corpus(tmp_path, records)
+    token_data = yaml.safe_load(settings.tokens_path.read_text())
+    tokens = {u["email"]: u["token"] for u in token_data["users"]}
+    outsider = {"Authorization": f"Bearer {tokens['mia@acme.com']}"}
+    sheet, doc, deck, pdf, xlsx, docx = (served_id("google_drive", f"hidden-{k}") for k in hidden)
+    own_sheet = served_id("google_drive", "mia-spreadsheet")
+    own_doc = served_id("google_drive", "mia-document")
 
-    tokens = {
-        u["email"]: u["token"]
-        for u in yaml.safe_load(live_server[1].tokens_path.read_text())["users"]
-    }
-    admin_h = {"Authorization": f"Bearer {live_server[1].admin_token}"}
-    sheet, _ = _drive_by_mime(
-        base, admin_h, "application/vnd.google-apps.spreadsheet", name="Q1 Revenue Model"
-    )
-    outsider = {"Authorization": f"Bearer {tokens['mia@acme.com']}"}  # cannot see the finance sheet
-    assert httpx.get(f"{base}/docs/v1/documents/{sheet}", headers=outsider).status_code == 404
+    def refusal(code, message, status):
+        return {"error": {"code": code, "message": message, "status": status}}
 
+    permission = refusal(403, "The caller does not have permission", "PERMISSION_DENIED")
+    not_found = refusal(404, NOT_FOUND, "NOT_FOUND")
+    invalid = refusal(400, INVALID_ARG, "INVALID_ARGUMENT")
+    office = refusal(400, OFFICE_MSG, "FAILED_PRECONDITION")
 
-def test_editor_apis_enforce_acl(base, live_server):
-    """The finance spreadsheet is group-restricted; a non-member gets 404, not the content."""
-    import yaml
-
-    tokens = {
-        u["email"]: u["token"]
-        for u in yaml.safe_load(live_server[1].tokens_path.read_text())["users"]
-    }
-    admin_h = {"Authorization": f"Bearer {live_server[1].admin_token}"}
-    fid, _ = _drive_by_mime(
-        base, admin_h, "application/vnd.google-apps.spreadsheet", name="Q1 Revenue Model"
-    )
-    outsider = {"Authorization": f"Bearer {tokens['mia@acme.com']}"}  # marketing, not finance
-    assert httpx.get(f"{base}/sheets/v4/spreadsheets/{fid}", headers=outsider).status_code == 404
+    rows = [
+        (f"/sheets/v4/spreadsheets/{own_sheet}", 200, None),
+        (f"/docs/v1/documents/{own_doc}", 200, None),
+        (f"/sheets/v4/spreadsheets/{sheet}", 403, permission),
+        (f"/docs/v1/documents/{doc}", 403, permission),
+        (f"/sheets/v4/spreadsheets/{xlsx}", 400, office),
+        (f"/docs/v1/documents/{docx}", 400, office),
+        (f"/sheets/v4/spreadsheets/{pdf}", 400, invalid),
+        (f"/docs/v1/documents/{pdf}", 400, invalid),
+        (f"/sheets/v4/spreadsheets/{docx}", 400, invalid),
+        (f"/docs/v1/documents/{xlsx}", 400, invalid),
+        (f"/sheets/v4/spreadsheets/{doc}", 404, not_found),
+        (f"/docs/v1/documents/{sheet}", 404, not_found),
+        (f"/slides/v1/presentations/{deck}", 404, not_found),
+        ("/sheets/v4/spreadsheets/nosuchfile000", 404, not_found),
+        ("/docs/v1/documents/nosuchfile000", 404, not_found),
+    ]
+    with client_for(settings, reload=True) as client:
+        for path, status, body in rows:
+            response = client.get(path, headers=outsider)
+            assert response.status_code == status, path
+            if body is not None:
+                assert response.json() == body, path
+        for path, message, reason in (
+            (f"/sheets/v4/spreadsheets/{sheet}", permission["error"]["message"], "forbidden"),
+            (f"/docs/v1/documents/{docx}", OFFICE_MSG, "failedPrecondition"),
+        ):
+            verbose = client.get(path, headers=outsider, params={"$.xgafv": "1"})
+            assert verbose.json()["error"]["errors"] == [
+                {"message": message, "domain": "global", "reason": reason}
+            ], path
 
 
 # --- Sheets values.get / values.batchGet ----------------------------------------
@@ -4925,11 +5049,11 @@ def test_sheets_values_get_enforces_the_acl(base, live_server, sheet_id):
     }
     outsider = {"Authorization": f"Bearer {tokens['mia@acme.com']}"}  # marketing, not finance
     admin_h = {"Authorization": f"Bearer {live_server[1].admin_token}"}
-    # the admin arm is what keeps this honest: without it a missing route 404s and the test passes
+    # the admin arm keeps this honest: without it a route that refused every caller would pass
     assert _values(base, admin_h, sheet_id, "Sheet1").status_code == 200
     assert _batch(base, admin_h, sheet_id, ["Sheet1"]).status_code == 200
-    assert _values(base, outsider, sheet_id, "Sheet1").status_code == 404
-    assert _batch(base, outsider, sheet_id, ["Sheet1"]).status_code == 404
+    assert _values(base, outsider, sheet_id, "Sheet1").status_code == 403
+    assert _batch(base, outsider, sheet_id, ["Sheet1"]).status_code == 403
 
 
 def test_sheets_values_get_needs_auth(base, sheet_id):

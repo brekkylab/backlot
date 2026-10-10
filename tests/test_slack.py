@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import pytest
 import yaml
+from fastapi.responses import JSONResponse
 
 from backlot import store, synth
 from backlot.routers import slack
@@ -1830,3 +1831,126 @@ def test_slack_deactivation_changes_every_slack_answer_about_a_member_and_nothin
         assert store.slack_channel_has_author(conn, "incidents", "bo@acme.com") is True
     finally:
         conn.close()
+
+
+_FORM = "application/x-www-form-urlencoded"
+_MULTIPART = "multipart/form-data; boundary=b"
+_ONE_PART = b'--b\r\nContent-Disposition: form-data; name="x"\r\n\r\ny\r\n--b--\r\n'
+
+
+@pytest.mark.parametrize(
+    "verb, method, content_type, body, want_warning",
+    [
+        ("POST", "auth.test", "application/json", b"{}", "missing_charset"),
+        ("POST", "auth.test", "application/json", b"", None),
+        ("POST", "auth.test", "text/plain", b"{}", "missing_charset"),
+        ("POST", "auth.test", "text/plain", b"", None),
+        ("POST", "auth.test", "text/plain; charset=utf-8", b"{}", None),
+        ("POST", "auth.test", "application/json; charset=", b"{}", "missing_charset"),
+        ("POST", "auth.test", 'application/json; charset=""', b"{}", "missing_charset"),
+        ("POST", "auth.test", "application/json; CHARSET=utf-8", b"{}", "missing_charset"),
+        ("POST", "auth.test", "application/json; charset =utf-8", b"{}", "missing_charset"),
+        ("POST", "auth.test", "application/json; charset= utf-8", b"{}", "missing_charset"),
+        ("POST", "auth.test", "application/json; charset=utf-8", b"{}", None),
+        ("POST", "auth.test", "application/json;charset=UTF-8", b"{}", None),
+        ("POST", "auth.test", "application/json; charset=iso-8859-1", b"{}", None),
+        ("POST", "auth.test", 'application/json; charset="utf-8"', b"{}", None),
+        ("POST", "auth.test", "APPLICATION/JSON", b"{}", None),
+        ("POST", "auth.test", _FORM, b"", None),
+        ("POST", "auth.test", f"{_FORM}; charset=utf-8", b"", "superfluous_charset"),
+        ("POST", "auth.test", f"{_FORM};charset=UTF-8", b"", "superfluous_charset"),
+        ("POST", "auth.test", f"{_FORM}; charset=iso-8859-1", b"", "superfluous_charset"),
+        ("POST", "auth.test", f'{_FORM}; charset="utf-8"', b"", "superfluous_charset"),
+        ("POST", "auth.test", f"{_FORM}; charset=", b"", None),
+        ("POST", "auth.test", f"{_FORM}; CHARSET=utf-8", b"", None),
+        ("POST", "auth.test", f"{_FORM.upper()}; charset=utf-8", b"", None),
+        ("POST", "auth.test", f"{_MULTIPART}; charset=utf-8", _ONE_PART, "superfluous_charset"),
+        ("POST", "auth.test", _MULTIPART, _ONE_PART, None),
+        ("POST", "auth.test", None, b"", None),
+        ("GET", "auth.test", "application/json", None, None),
+        ("GET", "auth.test", f"{_FORM}; charset=utf-8", None, None),
+        ("POST", "api.test", "application/json", b"{}", "missing_charset"),
+        ("POST", "api.test", f"{_FORM}; charset=utf-8", b"", "superfluous_charset"),
+        ("POST", "conversations.list", "application/json", b"{}", "missing_charset"),
+        ("POST", "conversations.history", "application/json", b"{}", "missing_charset"),
+        ("POST", "conversations.history", f"{_FORM}; charset=utf-8", b"", "superfluous_charset"),
+    ],
+)
+def test_slack_post_charset_warnings(
+    client, admin_h, verb, method, content_type, body, want_warning
+):
+    """The warning ``slack.post_charset_warning`` decides, sent with a body each media type parses,
+    where ``slack.attach_warning`` puts it: last, after whatever `response_metadata` holds. Rendered
+    as every Slack answer is, warning or not, with a `content-length` that counts the bytes sent."""
+    headers = dict(admin_h)
+    if content_type is not None:
+        headers["content-type"] = content_type
+    r = client.request(verb, f"/slack/api/{method}", headers=headers, content=body)
+    j = r.json()
+    assert r.content == JSONResponse(j).body
+    assert r.headers["content-length"] == str(len(r.content))
+    if want_warning is None:
+        assert "warning" not in j
+        assert "warnings" not in j.get("response_metadata", {})
+    else:
+        assert list(j)[-2:] == ["warning", "response_metadata"]
+        assert j["warning"] == want_warning
+        assert list(j["response_metadata"].items())[-1] == ("warnings", [want_warning])
+
+
+@pytest.mark.parametrize(
+    "method, token, content_type, body, want",
+    [
+        (
+            "conversations.history",
+            "admin",
+            "application/json",
+            b"{}",
+            {
+                "ok": False,
+                "error": "invalid_arguments",
+                "warning": "missing_charset",
+                "response_metadata": {
+                    "messages": ["[ERROR] missing required field: channel"],
+                    "warnings": ["missing_charset"],
+                },
+            },
+        ),
+        (
+            "auth.test",
+            None,
+            "application/json",
+            b"{}",
+            {
+                "ok": False,
+                "error": "not_authed",
+                "warning": "missing_charset",
+                "response_metadata": {"warnings": ["missing_charset"]},
+            },
+        ),
+        (
+            "auth.test",
+            "bad-token",
+            f"{_FORM}; charset=utf-8",
+            b"",
+            {
+                "ok": False,
+                "error": "invalid_auth",
+                "warning": "superfluous_charset",
+                "response_metadata": {"warnings": ["superfluous_charset"]},
+            },
+        ),
+    ],
+)
+def test_slack_post_charset_warning_on_a_refusal(
+    client, admin_h, method, token, content_type, body, want
+):
+    """A refusal is warned as an answer is, where ``slack.attach_warning`` puts the two keys. The
+    bytes are ``want`` rendered, so the order of its members is asserted as well as their values."""
+    headers = {"content-type": content_type}
+    if token == "admin":
+        headers.update(admin_h)
+    elif token is not None:
+        headers["authorization"] = f"Bearer {token}"
+    r = client.post(f"/slack/api/{method}", headers=headers, content=body)
+    assert r.content == JSONResponse(want).body

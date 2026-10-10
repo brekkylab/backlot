@@ -160,7 +160,8 @@ async def _http_exception_handler(request: Request, exc: StarletteHTTPException)
     # is asked for here rather than raised where the other refusals are. The exception is replaced
     # rather than edited: what follows reads the body, media type and headers off it either way.
     if exc.status_code == 405:
-        vendor = errors.method_not_allowed(request.url.path, request.method)
+        # The path as a refusal echoes it, which is the routed one on any vendor but Atlassian.
+        vendor = errors.method_not_allowed(atlassian._echoed_path(request), request.method)
         if vendor is not None:
             if vendor.headers is None:
                 vendor.headers = getattr(exc, "headers", None)
@@ -440,7 +441,7 @@ async def normalise_the_slashes_in_an_atlassian_path(request: Request, call_next
     collapses an interior run in `detail`, `instance` and Confluence's `null for uri:` message
     (`/api/3//nope` comes back `/api/3/nope`) but leaves a trailing slash in all three
     (`/nopesuchroute/` comes back `/nopesuchroute/`). The collapsed spelling is stashed on the
-    scope for :func:`backlot.routers.atlassian.unmatched_path` to echo.
+    scope for ``backlot.routers.atlassian._echoed_path`` to read.
 
     Ahead of routing, because the answer for a path no route matches is a route of its own
     (`atlassian.unmatched_router`), which would otherwise claim every slashed spelling of a served
@@ -642,6 +643,34 @@ async def parse_slack_form(request: Request, call_next):
         if "application/x-www-form-urlencoded" in ctype:
             request.state._form = dict(await request.form())
     return await call_next(request)
+
+
+@app.middleware("http")
+async def warn_slack_post_charset(request: Request, call_next):
+    """Add the charset warning ``slack.post_charset_warning`` decides to a Slack POST's answer.
+
+    Middleware because the answers it goes on are built all over the router, the refusals of
+    ``slack._caller_or_error`` and ``slack._missing_argument`` among them. The body is rendered
+    again by ``JSONResponse``, which renders every Slack answer, so a warned answer is the unwarned
+    one's bytes with the two keys added; ``slack.attach_warning`` says where they go.
+    """
+    if not (request.url.path.startswith("/slack/") and request.method == "POST"):
+        return await call_next(request)
+
+    warning = slack.post_charset_warning(
+        request.headers.get("content-type"), bool(await request.body())
+    )
+    response = await call_next(request)
+    if warning is None or response.status_code != 200:
+        return response
+
+    body = b"".join([chunk async for chunk in response.body_iterator])
+    headers = {k: v for k, v in response.headers.items() if k != "content-length"}
+    return JSONResponse(
+        slack.attach_warning(json.loads(body), warning),
+        status_code=response.status_code,
+        headers=headers,
+    )
 
 
 @app.middleware("http")

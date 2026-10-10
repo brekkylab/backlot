@@ -661,6 +661,8 @@ class GitHubIssueSearch(_Loose):
     total_count: int
     incomplete_results: bool
     items: list[GitHubIssue]
+    # After `items`, where real sends it; a response's members go out in the order declared here.
+    search_type: str
 
 
 class GitHubCodeHit(_Loose):
@@ -1247,7 +1249,15 @@ async def search_issues(
         for r in matched[start : start + per_page]
     ]
     _search_paged(request, response, q, page, per_page, len(matched))
-    return {"total_count": len(matched), "incomplete_results": False, "items": items}
+    # Real answers `lexical` to a search that does not ask for `search_type=semantic` or `hybrid`,
+    # an empty one included (measured 2026-10-10). This route ignores `search_type` and always
+    # matches lexically.
+    return {
+        "total_count": len(matched),
+        "incomplete_results": False,
+        "items": items,
+        "search_type": "lexical",
+    }
 
 
 # --- code search ----------------------------------------------------------------

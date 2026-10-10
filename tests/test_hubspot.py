@@ -185,6 +185,54 @@ def test_hubspot_read_one_record(client, admin_h):
     assert got["createdAt"].endswith("Z")
 
 
+def _each_route(client, company: str, headers: dict) -> list:
+    """One request to each HubSpot route: the listing, a record, search, batch/read and the
+    record's associations."""
+    return [
+        client.get("/hubspot/crm/v3/objects/companies", headers=headers),
+        client.get(f"/hubspot/crm/v3/objects/companies/{company}", headers=headers),
+        client.post("/hubspot/crm/v3/objects/companies/search", headers=headers, json={}),
+        client.post(
+            "/hubspot/crm/v3/objects/companies/batch/read",
+            headers=headers,
+            json={"inputs": [{"id": company}]},
+        ),
+        client.get(
+            f"/hubspot/crm/v4/objects/companies/{company}/associations/contacts", headers=headers
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("authorization", "status"),
+    [
+        ("Bearer {key}", 200),
+        (" Bearer {key}", 200),
+        ("Bearer {key} ", 200),
+        ("Bearer {key}\t", 200),
+        ("bearer {key}", 401),
+        ("BEARER {key}", 401),
+        ("Bearer  {key}", 401),
+        ("Bearer\t{key}", 401),
+        ("Bearer {key} x", 401),
+        ("token {key}", 401),
+        ("Basic Zm9vOmJhcg==", 401),
+        ("{key}", 401),
+    ],
+)
+def test_hubspot_reads_the_bearer_scheme_spelled_exactly(
+    client, admin_h, tokens_yaml, authorization, status
+):
+    """Each of the five routes serves what `_bearer_credential` in `backlot.routers.hubspot`
+    records as served, and answers the other spellings with the INVALID_AUTHENTICATION 401."""
+    company = client.get("/hubspot/crm/v3/objects/companies", headers=admin_h).json()["results"][0]
+    headers = {"Authorization": authorization.format(key=tokens_yaml["admin_token"])}
+    for r in _each_route(client, company["id"], headers):
+        assert r.status_code == status, (authorization, r.request.url)
+        if status == 401:
+            assert r.json()["category"] == "INVALID_AUTHENTICATION"
+
+
 def test_hubspot_unknown_object_type_is_400(client, admin_h):
     """A typo'd object type must not read as "this type has no records" — that silently turns a
     client bug into an empty result. An object type the caller simply cannot see any rows of is a

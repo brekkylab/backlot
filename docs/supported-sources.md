@@ -36,7 +36,7 @@ Ordered as the table above, by `source_type`.
 
 | Endpoint | Notes |
 |---|---|
-| `content` | `spaceKey`, `title` (the whole title, ignoring ASCII case) |
+| `content` | `spaceKey`, `type` (`page` or `blogpost`), `title` (the whole title, ignoring ASCII case). An unknown `spaceKey`, one the caller cannot reach and a repeated one are real's 404, and each other `type` gets real's answer (`backlot.routers.atlassian._CONTENT_TYPES`) |
 | `content/{id}` | |
 | `content/{id}/child/attachment` | always the empty page: a record states no attachment |
 | `content/{id}/child/comment` | |
@@ -190,7 +190,9 @@ default branch only; an older snapshot stays reachable at `contents/{path}?ref=`
 
 Message and thread ids are Gmail-shaped — 16 lowercase hex under 2^63, sharing one id space as the
 real API does — and map back to the corpus document; an id the real API could not parse is refused
-the same way.
+the same way. On both listings a `pageToken` that does not parse is real's 400 `Invalid pageToken`
+and an empty one is the first page, refused where each listing refuses it beside `maxResults`
+(`backlot.routers.google._gmail_page`).
 
 ### Google Drive, Docs, Sheets, Slides — `/drive/v3` `/docs/v1` `/sheets/v4` `/slides/v1`
 
@@ -295,15 +297,16 @@ parameters and the last for others. The first repeat decides `fields`, `q`, `pag
 and `orderBy` on Drive's `files.list`, `pageSize` and `pageToken` on `permissions.list`, `pageToken`
 on `drives.list`, `fields` on `files.get` and `about`, and `mimeType` on `files.export`, and on
 Sheets `fields` and `prettyPrint`, as it decides `callback` and `alt`; the last decides `$.xgafv`,
-`majorDimension`, `valueRenderOption` and `includeGridData`. An empty first repeat is read as the
-empty value, not skipped. Gmail's `q` and `pageToken` are read here from the last, and which end
-real reads is unmeasured; `maxResults` is parsed in every repeat and read from the last
-(`backlot.routers.google._gmail_max_results`). On a Sheets success, `prettyPrint` is compact at
+`majorDimension`, `valueRenderOption`, `includeGridData` and Gmail's `pageToken`. An empty first
+repeat is read as the empty value, not skipped. Gmail's `q` is read here from the last, and which
+end real reads is unmeasured; `maxResults` is parsed in every repeat and read from the last
+(`backlot.routers.google._gmail_page`). On a Sheets success, `prettyPrint` is compact at
 `false` and `0` and at none of the eighteen other spellings measured, `FALSE`, `no` and `f` among
 them. Measured against the live Drive, Sheets and Gmail APIs, each pair sent both ways round:
 `callback`, `alt` and the Sheets `$.xgafv` between 2026-09-15 and 2026-09-17, `includeGridData` and
 the Gmail `$.xgafv` on 2026-09-22, `pageToken` on the other two Drive listings on 2026-10-05 and
-2026-10-07, `pageSize` on `permissions.list` on 2026-10-08, and the rest on 2026-09-23.
+2026-10-07, `pageSize` on `permissions.list` on 2026-10-08, Gmail's `pageToken` on 2026-10-09, and
+the rest on 2026-09-23.
 
 **A typed query parameter is parsed in every repeat, and every value it cannot read is refused in
 one 400**: the message joins theirs with newlines and `details` carries a `google.rpc.BadRequest`
@@ -589,6 +592,10 @@ A channel the caller cannot see is refused by id as well as hidden from the list
 answer an id that names nothing gets, so a private room's name, purpose and membership are not
 readable from its id alone. A required argument that was never sent is `invalid_arguments` rather
 than a `not_found` for something the caller never named.
+
+A POST with a body sent as `application/json` or `text/plain` with no charset is answered with
+real's `missing_charset` warning, and a form or multipart one that names a charset with
+`superfluous_charset`, each in `warning` and in `response_metadata.warnings`.
 
 ## Backlot's own endpoints
 

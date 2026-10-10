@@ -263,6 +263,77 @@ def cql_required() -> AtlassianError:
     )
 
 
+def _service_refusal(status: int, exception: str, message: str) -> AtlassianError:
+    """A refusal Confluence's API service layer raises: `statusCode`, the `data` object it always
+    carries, and the exception's name before its message, as :func:`start_too_large` records."""
+    return AtlassianError(
+        status,
+        {
+            "statusCode": status,
+            "data": {"authorized": True, "valid": True, "errors": [], "successful": True},
+            "message": f"com.atlassian.confluence.api.service.exceptions.{exception}: {message}",
+        },
+    )
+
+
+def no_space_with_key(space_key: str) -> AtlassianError:
+    """`content`'s refusal of a space key naming no space, as sent: the key is not trimmed (`' '` is
+    named as a space), and a repeated one is its comma-join, which no key holds. Where it comes
+    among the route's other refusals is ``routers.atlassian._CONTENT_TYPES``'s."""
+    return _service_refusal(404, "api.NotFoundException", f"No space with key : {space_key}")
+
+
+def unknown_content_type(type_value: str) -> AtlassianError:
+    """`content`'s refusal of a content type Confluence does not have, named as sent, when neither
+    a space nor a title is given. The types it has, and the measurement, are
+    ``routers.atlassian._CONTENT_TYPES``'s."""
+    return _service_refusal(
+        501,
+        "unchecked.NotImplementedServiceException",
+        f"Cannot find custom content type : {type_value}",
+    )
+
+
+def content_finder_cannot_fetch(content_type: str) -> AtlassianError:
+    """`content`'s 501 for `type=comment` and `type=folder`, measured 2026-10-10: the message names
+    the type in the plural."""
+    return _service_refusal(
+        501,
+        "unchecked.NotImplementedServiceException",
+        f"Cannot fetch {content_type}s with ContentFinder",
+    )
+
+
+def not_a_custom_content_type(content_type: str) -> AtlassianError:
+    """`content`'s 400 for `type=whiteboard`, `database` and `embed`, measured 2026-10-10: the bare
+    exception string, as :func:`negative_not_allowed` is."""
+    return AtlassianError(
+        400,
+        {
+            "statusCode": 400,
+            "message": (
+                f"java.lang.IllegalArgumentException: Type is not a custom content type : "
+                f"{content_type}"
+            ),
+        },
+    )
+
+
+def attachment_without_container() -> AtlassianError:
+    """`content`'s 500 for `type=attachment`, which real answers alone, beside a space and beside a
+    title alike (2026-10-10): a `NullPointerException` with no `data`."""
+    return AtlassianError(
+        500,
+        {
+            "statusCode": 500,
+            "message": (
+                'java.lang.NullPointerException: Cannot invoke "com.atlassian.confluence.api.model.'
+                'content.id.ContentId.asLong()" because "containerId" is null'
+            ),
+        },
+    )
+
+
 def start_too_large() -> AtlassianError:
     """`content`'s refusal of a `start` above 100000, which `space` does not share.
 
@@ -271,18 +342,11 @@ def start_too_large() -> AtlassianError:
     negative 400 above carry `statusCode` and `message` alone. `start=100000` is a 200, so the
     bound is inclusive.
     """
-    return AtlassianError(
+    return _service_refusal(
         400,
-        {
-            "statusCode": 400,
-            "data": {"authorized": True, "valid": True, "errors": [], "successful": True},
-            "message": (
-                "com.atlassian.confluence.api.service.exceptions.api.BadRequestException: "
-                "Start of this size is no longer supported. If you need to fetch this amount of "
-                "content, please use either the search endpoint or get the content by a space at "
-                "a time."
-            ),
-        },
+        "api.BadRequestException",
+        "Start of this size is no longer supported. If you need to fetch this amount of content, "
+        "please use either the search endpoint or get the content by a space at a time.",
     )
 
 
@@ -513,6 +577,25 @@ def body_not_read(message: str) -> AtlassianError:
     return AtlassianError(400, {"errorMessages": [message]})
 
 
+def failed_to_read_request(path: str) -> AtlassianError:
+    """Jira's RFC 7807 refusal for a `search/jql` body its reader will not read (see
+    `routers.atlassian._jira_search_body` for which). Measured 2026-10-06 on
+    `POST /rest/api/3/search/jql`, in `application/problem+json` where the other body refusals use
+    the `errorMessages` envelope.
+    """
+    return AtlassianError(
+        400,
+        {
+            "type": "about:blank",
+            "title": "Bad Request",
+            "status": 400,
+            "detail": "Failed to read request",
+            "instance": _instance(path),
+        },
+        media_type=PROBLEM_JSON,
+    )
+
+
 def unbounded_jql() -> AtlassianError:
     """Jira's 400 for `search/jql` given no `jql` at all — on GET or POST, measured 2026-09-16
     against `brekkylab.atlassian.net`. The sentence is Backlot's own: real answers in the
@@ -610,8 +693,10 @@ _JIRA_ALLOW_PATTERNS = tuple((route_regex(t), methods) for t, methods in _JIRA_A
 
 def jira_allow(path: str) -> str | None:
     """The `Allow` real sends on a 405 at ``path``, or ``None`` for a Jira route no row above
-    covers. ``path`` is Backlot's, prefix and all."""
-    vendor_path = _instance(path)
+    covers. ``path`` is Backlot's, prefix and all, and a trailing slash on it is dropped before
+    matching: it is the path a refusal echoes (``backlot.routers.atlassian._echoed_path``), and
+    no row above has one."""
+    vendor_path = _instance(path).rstrip("/")
     for pattern, methods in _JIRA_ALLOW_PATTERNS:
         if pattern.fullmatch(vendor_path):
             return ", ".join(methods)

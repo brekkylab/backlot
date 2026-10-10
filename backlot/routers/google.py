@@ -33,7 +33,7 @@ from backlot.acl import Caller
 from backlot.config import get_settings
 from backlot.errors import google as gerr
 from backlot.openapi import qp
-from backlot.pagination import decode_cursor, decode_cursor_or_none, next_page_token
+from backlot.pagination import decode_cursor_or_none, next_page_token
 
 # `$.xgafv` is checked before any route runs, and `callback` too but on a Drive download inside a
 # batch — see `_system_parameters`. A router dependency runs only once a route has MATCHED, so a
@@ -642,8 +642,9 @@ def _by_thread(rows) -> list:
     return out
 
 
-def _gmail_max_results(request: Request) -> int:
-    """The page size `messages.list` and `threads.list` serve.
+def _gmail_page(request: Request, listing: str) -> tuple[int, int]:
+    """The page size and offset `messages.list` and `threads.list` serve, refused in the order real
+    refuses them on each.
 
     Measured on gmail.googleapis.com on 2026-10-07 with a Workspace user's `gmail.readonly` token,
     one request per row; `threads.list` answered every row with the same status and error, on
@@ -658,18 +659,37 @@ def _gmail_max_results(request: Request) -> int:
     `nextPageToken`, and the reference gives both methods "The maximum allowed value for this field
     is 500". With no `maxResults`, the page is the default size capped at 500. A sent value is also
     capped at the deployment's `max_page_size`.
+
+    The uint32 refusal comes first on both listings. After it `messages.list` refuses a `pageToken`
+    that does not parse (:func:`_gmail_page_token`) before a `maxResults` out of range, and
+    `threads.list` the range before the token: measured on 2026-10-09 with `maxResults` of `0` and
+    `2147483648` beside a token that does not parse, each request sent four times with the same
+    answer.
     """
     sizes = _typed_query(request, {"maxResults": _gmail_uint32})["maxResults"]
+    offset = _gmail_page_token(request) if listing == "messages" else None
     if not sizes:
-        return min(get_settings().default_page_size, 500)
-    size = sizes[-1]
-    if size == 0 or size >= 2**31:
+        limit = min(get_settings().default_page_size, 500)
+    elif sizes[-1] == 0 or sizes[-1] >= 2**31:
         raise gerr.invalid_max_results()
-    return min(size, 500, get_settings().max_page_size)
+    else:
+        limit = min(sizes[-1], 500, get_settings().max_page_size)
+    if offset is None:
+        offset = _gmail_page_token(request)
+    return limit, offset
+
+
+def _gmail_page_token(request: Request) -> int:
+    """The offset a Gmail `pageToken` names, read from its last repeat as real reads it. An empty
+    token is the first page, and one that does not decode is :func:`gerr.invalid_page_token`."""
+    offset = decode_cursor_or_none(request.query_params.get("pageToken"))
+    if offset is None:
+        raise gerr.invalid_page_token()
+    return offset
 
 
 # `maxResults` as Gmail's proto layer reads it: a uint32, where Drive's `pageSize` is an int32
-# (`_INT32`). The spellings and the bound are `_gmail_max_results`'s.
+# (`_INT32`). The spellings and the bound are `_gmail_page`'s.
 _UINT32 = re.compile(r"\+?[0-9]+")
 
 
@@ -702,8 +722,7 @@ async def gmail_messages_list(user_id: str, request: Request):
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     mailbox = _mailbox_container(conn, caller, user_id)  # None = all mailboxes
-    limit = _gmail_max_results(request)
-    offset = decode_cursor(request.query_params.get("pageToken"))
+    limit, offset = _gmail_page(request, "messages")
     q = request.query_params.get("q", "") or ""
     if q.strip():  # search: filter the ACL-visible set by the query, then paginate
         matched = _gmail_query(conn, mailbox, ids, q)
@@ -809,8 +828,7 @@ async def gmail_threads_list(user_id: str, request: Request):
     # received, and `q` was already scoping by container, so the two halves of this one listing
     # disagreed about what a thread list is.
     mailbox = _mailbox_container(conn, caller, user_id)
-    limit = _gmail_max_results(request)
-    offset = decode_cursor(request.query_params.get("pageToken"))
+    limit, offset = _gmail_page(request, "threads")
     q = request.query_params.get("q", "") or ""
     if q.strip():
         # A search returns the THREADS its matches are in: Gmail lists a thread whose match is in a
@@ -2514,15 +2532,19 @@ def _editor_doc(request: Request, file_id: str, *, expect: str):
     reading a Doc through the Sheets API answers 200 with prose sliced into a "grid", plausible
     enough that a client trusts it rather than noticing the id was wrong.
 
-    Visibility resolves FIRST, so a caller who cannot see the file gets not-found and never a type
-    error: the type of a document you cannot access is not something the API should confirm."""
+    Sheets and Docs resolve the stored type before visibility: a hidden file of their own type is
+    permission-denied, while a hidden file of another type gets that type's usual answer. Measured
+    on 2026-10-06, and for an Office file on 2026-10-09. Slides was not measured and resolves
+    visibility first."""
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
+    type_before_acl = expect in {"document", "spreadsheet"}
     # A native Doc/Sheet/Slides id is the SAME id space as Drive's own file id --
     # real Google resolves docs.googleapis.com/etc. off the identical Drive file id, so this has
-    # to resolve the file's own id.
-    row = store.gdrive_by_id(conn, file_id, visible_ids=ids)
+    # to resolve the file's own id. Sheets and Docs need the unscoped row to distinguish a missing
+    # id from a stored file that this caller cannot see.
+    row = store.gdrive_by_id(conn, file_id, visible_ids=None if type_before_acl else ids)
     if row is None:
         # Folders are synthesized rather than stored, so they miss the lookup above. Real Google
         # calls a folder an invalid argument, not a missing entity, so resolve it before giving up.
@@ -2533,6 +2555,8 @@ def _editor_doc(request: Request, file_id: str, *, expect: str):
     # here too — the fallback stays in one place rather than being decided per route.
     subtype = row["subtype"] or "document"
     if subtype == expect:
+        if type_before_acl and store.gdrive_by_id(conn, file_id, visible_ids=ids) is None:
+            raise gerr.permission_denied()
         return row
     if subtype in _EDITOR_NATIVE:  # a different Workspace type: not this API's entity at all
         raise gerr.not_found_entity()

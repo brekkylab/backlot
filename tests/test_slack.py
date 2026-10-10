@@ -463,27 +463,12 @@ def test_slack_conversations_list_rejects_an_unknown_type(client, admin_h):
 @pytest.mark.parametrize(
     "param, error", [("latest", "invalid_ts_latest"), ("oldest", "invalid_ts_oldest")]
 )
-def test_slack_history_rejects_a_malformed_timestamp(client, admin_h, param, error):
-    """`float(oldest)` was unguarded, so a bad argument was a 500 — which clients that back off on
-    5xx will retry, burning the whole budget on a request that can never succeed. Real Slack
-    answers 200 with the named error."""
-    r = client.get(
-        "/slack/api/conversations.history",
-        headers=admin_h,
-        params={"channel": _a_channel_id(client, admin_h), param: "not-a-ts"},
-    )
-    assert r.status_code == 200
-    assert r.json() == {"ok": False, "error": error}
-
-
 @pytest.mark.parametrize(
-    "param, error", [("latest", "invalid_ts_latest"), ("oldest", "invalid_ts_oldest")]
+    "value", ["not-a-ts", "inf", "-inf", "nan", "Infinity", "-Infinity", "NaN"]
 )
-@pytest.mark.parametrize("value", ["inf", "-inf", "nan", "Infinity", "-Infinity", "NaN", "1e999"])
-def test_slack_history_rejects_a_non_finite_timestamp(client, admin_h, param, value, error):
-    """`float()` reads a timestamp no window can be built from — `_slack_ts` records the live
-    measurement — and the window's `int()` raises on infinity and NaN alike, so every spelling
-    that parses to a non-finite value answered 500 where the live API answers the named error."""
+def test_slack_history_rejects_a_malformed_timestamp(client, admin_h, param, value, error):
+    """Real Slack answers 200 with the named error for each spelling, those `float()` refuses and
+    those it reads as infinite or NaN alike — `_slack_ts` records the measurement."""
     r = client.get(
         "/slack/api/conversations.history",
         headers=admin_h,

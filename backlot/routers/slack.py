@@ -10,8 +10,8 @@ up — so ``_caller_or_error`` decides it once for every method here.
 
 from __future__ import annotations
 
+import math
 import re
-from math import isfinite
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -141,18 +141,19 @@ def _slack_ts(value: str | None) -> float | None | bool:
     """A Slack timestamp argument as a float; ``False`` marks one that does not parse. Unguarded
     ``float()`` made a bad argument a 500, and a 5xx is retried by clients that back off on it —
     so a request that can never succeed burned the whole retry budget. ``float()`` also reads
-    values no window can be built from, and ``int()`` on them raised the same 500: measured
-    against the live API on 2026-10-09, ``oldest=inf`` and ``oldest=nan`` answer the same
-    ``invalid_ts_oldest`` a string that does not parse does (and ``latest`` its own error),
-    so a reading with no finite value is one that does not parse, whatever spelling produced
-    it — ``Infinity``, ``-inf``, ``NaN``, ``1e999``."""
+    ``inf`` and ``nan``, which no window can be built from. Measured against the live API on
+    2026-10-10, ``inf``, ``-inf``, ``nan``, ``Infinity``, ``-Infinity`` and ``NaN`` each answer
+    the same ``invalid_ts_oldest``/``invalid_ts_latest`` a string that does not parse does. A
+    spelling with digits that ``float()`` overflows is not one of them: real reads ``1e999`` as
+    1999 and answers a window, where a non-finite reading is refused here whatever spelling
+    produced it."""
     if value is None or value == "":
         return None
     try:
         ts = float(value)
     except ValueError:
         return False
-    return ts if isfinite(ts) else False
+    return ts if math.isfinite(ts) else False
 
 
 def _caller_or_error(request: Request) -> tuple[Caller | None, dict | None]:

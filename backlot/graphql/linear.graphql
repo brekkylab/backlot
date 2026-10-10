@@ -911,6 +911,7 @@ type Team {
   defaultIssueEstimate: Float!
   setIssueSortOrderOnStateChange: String!
   allMembersCanJoin: Boolean
+  viewerCanJoin: Boolean!
   requirePriorityToLeaveTriage: Boolean!
   autoCloseChildIssues: Boolean
   autoCloseParentIssues: Boolean

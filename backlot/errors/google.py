@@ -48,14 +48,15 @@ measurement. Measured on Sheets and Docs at `$.xgafv=1`: a typed value the proto
 ``reason: invalid`` with NO ``domain`` (:func:`invalid_field_value`), and so are a JSON body member
 the request message does not have and a JSON body that is not an object
 (:func:`invalid_field_values`); a request body that is not JSON is ``parseError``
-(:func:`invalid_json`); every other measured 400 is ``badRequest`` under ``global``
-(:func:`invalid_argument`, :func:`bad_field_mask`); a 404 is ``notFound``; a bad token ``authError``
-at ``location: Authorization``; an anonymous Sheets GET ``forbidden``; the missing credential — any
-anonymous POST, and a GET on the three OAuth-only APIs — ``required`` with the short
-``Login Required.``; and the 500 the data-filter reads answer ``backendError``
-(:func:`internal_error`). Drive's `Unknown Error.` 500 carries one entry with no members at all
-(:func:`unknown_error`). The editor 400 NOT measured keeps whatever its constructor renders: an
-Office file read as a native document is :func:`failed_precondition`, so ``failedPrecondition``.
+(:func:`invalid_json`); an Office file read through the API of its own family is
+``failedPrecondition`` under ``global`` (:func:`failed_precondition`); every other measured 400 is
+``badRequest`` under ``global`` (:func:`invalid_argument`, :func:`bad_field_mask`); a 404 is
+``notFound``; a file of the API's own type that the caller cannot see ``forbidden``
+(:func:`permission_denied`); a bad token ``authError`` at ``location: Authorization``; an anonymous
+Sheets GET ``forbidden``; the missing credential — any anonymous POST, and a GET on the three
+OAuth-only APIs — ``required`` with the short ``Login Required.``; and the 500 the data-filter reads
+answer ``backendError`` (:func:`internal_error`). Drive's `Unknown Error.` 500 carries one entry
+with no members at all (:func:`unknown_error`).
 """
 
 from __future__ import annotations
@@ -206,6 +207,17 @@ def sorting_not_supported_fulltext() -> GoogleError:
 def not_found_file(file_id: str) -> GoogleError:
     """Drive's not-found, which names the id so a batch caller can tell which request failed."""
     return GoogleError(404, f"File not found: {file_id}.", reason="notFound", location="fileId")
+
+
+def permission_denied() -> GoogleError:
+    """An editor API resolved a file of its own type but the caller cannot read it. Measured on
+    Sheets and Docs on 2026-10-06; unlike a missing id, this is a 403 with ``forbidden``."""
+    return GoogleError(
+        403,
+        "The caller does not have permission",
+        reason="forbidden",
+        status="PERMISSION_DENIED",
+    )
 
 
 def not_found_entity() -> GoogleError:

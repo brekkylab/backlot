@@ -218,6 +218,11 @@ curl -s "localhost:8000/hubspot/crm/v3/objects/contacts" \
   -H "Authorization: Bearer usr-29b84da5703116c2a832"
 ```
 
+Spelt exactly that way. The real API reads the scheme case-sensitively and wants one space after
+it, so `bearer <token>`, `BEARER <token>`, `token <token>` and `Bearer  <token>` are refused with a
+`401` of category `INVALID_AUTHENTICATION`, there and here. Space or tab around the whole header
+value is ignored by both.
+
 ### Linear — bare, or `Bearer`
 
 Linear's personal API keys go in the header with **no scheme**, and Backlot accepts that spelling

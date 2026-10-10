@@ -12,8 +12,10 @@ envelope is NOT uniform — three families differ in which optional members they
     ------------------------|------------------|---------------------|-----------------------------
     Drive v3                | always           | auth failures,      | 403 PERMISSION_DENIED
                             |                  | typed values,       |
-                            |                  | `$.xgafv` and the   |
-                            |                  | batch redirect only |
+                            |                  | `$.xgafv`, the      |
+                            |                  | batch redirect and  |
+                            |                  | `Unknown Error.`    |
+                            |                  | only                |
     Gmail v1                | unless $.xgafv=2 | always              | 401 UNAUTHENTICATED
     Docs v1 / Slides v1     | $.xgafv=1        | always              | 401 UNAUTHENTICATED
     Sheets v4               | $.xgafv=1        | always              | 403 PERMISSION_DENIED
@@ -51,7 +53,8 @@ the request message does not have and a JSON body that is not an object
 at ``location: Authorization``; an anonymous Sheets GET ``forbidden``; the missing credential — any
 anonymous POST, and a GET on the three OAuth-only APIs — ``required`` with the short
 ``Login Required.``; and the 500 the data-filter reads answer ``backendError``
-(:func:`internal_error`). The editor 400 NOT measured keeps whatever its constructor renders: an
+(:func:`internal_error`). Drive's `Unknown Error.` 500 carries one entry with no members at all
+(:func:`unknown_error`). The editor 400 NOT measured keeps whatever its constructor renders: an
 Office file read as a native document is :func:`failed_precondition`, so ``failedPrecondition``.
 """
 
@@ -129,6 +132,7 @@ class GoogleError(HTTPException):
         short: str | None = None,
         details: list | None = None,
         domain: str | None = "global",
+        empty_entry: bool = False,
     ):
         super().__init__(status_code=status_code, detail=message)
         self.message = message
@@ -142,6 +146,8 @@ class GoogleError(HTTPException):
         # (a typed value, a body member or root the request message cannot take), which carry none —
         # so a constructor that renders one of those passes ``None``.
         self.domain = domain
+        # `errors[0]` rendered as `{}`, the entry :func:`unknown_error` carries.
+        self.empty_entry = empty_entry
 
 
 # --- constructors: the call site names the KIND of failure, which is what only it knows ---------
@@ -365,6 +371,16 @@ def drive_internal_error() -> GoogleError:
     second or third, after each of the other ten documented keys and in either direction, while
     ``starred`` first is served. Measured against Drive v3 on 2026-10-04 and 2026-10-07."""
     return GoogleError(500, "Internal Error", reason="internalError")
+
+
+def unknown_error() -> GoogleError:
+    """Drive's 500 `Unknown Error.`, whose `errors[]` entry has no members, for two or more
+    `pageSize` values on `permissions.list` whose first is outside 1-100;
+    ``routers.google._drive_permissions_page_size`` records the measurement. Real answers the same
+    body to a `permissions.list` `pageToken` of `BOGUS`, `0`, a `files.list` token or an issued
+    token with `.` added, measured 2026-10-09, which
+    ``routers.google._drive_permissions_page_token`` refuses with its 400 instead."""
+    return GoogleError(500, "Unknown Error.", status="UNKNOWN", empty_entry=True)
 
 
 def unsupported_conversion() -> GoogleError:
@@ -844,7 +860,7 @@ def http_body(path: str, exc: HTTPException, query: Mapping[str, str] | None = N
         if location:
             entry["location"] = location
             entry["locationType"] = getattr(exc, "location_type", "parameter")
-        err["errors"] = [entry]
+        err["errors"] = [{} if getattr(exc, "empty_entry", False) else entry]
     status = getattr(exc, "status", None)
     if status:
         err["status"] = status

@@ -1377,17 +1377,19 @@ def test_drive_a_listing_takes_an_int32_page_size_from_1_to_its_top(
 ):
     """The rules `_INT32` and `_drive_page_size_in_range` record, on each route, each value alone
     unless the row lists two. `range` is the range refusal naming the value as an int, `int32` the
-    proto layer's `TYPE_INT32` one quoting it, and `size` a 200, which on `files.list` lists that
-    many files; `permissions.list` and `drives.list` declare a page size and read none here."""
+    proto layer's `TYPE_INT32` one quoting it, and `size` a 200, which lists that many files on
+    `files.list` and that many permissions on `permissions.list`, or all there are, and none on
+    `drives.list`."""
     fill = {"top": top, "above": top + 1}
     named = named.format(**fill)
     url = path.format(doc=_drive_find(client, admin_h, "Brand")["id"])
     r = client.get(url, headers=admin_h, params=[("pageSize", v.format(**fill)) for v in values])
     if kind == "size":
         assert r.status_code == 200, r.text
-        if path == "/drive/v3/files":
-            total = len(client.get(url, headers=admin_h, params={"pageSize": 1000}).json()["files"])
-            assert len(r.json()["files"]) == min(int(named), total)
+        listed = {"/drive/v3/files": "files", _PERMS: "permissions"}.get(path)
+        if listed:
+            total = len(client.get(url, headers=admin_h, params={"pageSize": top}).json()[listed])
+            assert len(r.json()[listed]) == min(int(named), total)
         return
     e = _gerr(r)
     assert e["code"] == 400
@@ -1504,6 +1506,7 @@ _TOKEN_EXPIRED = {
         }
     ],
 }
+_UNKNOWN_ERROR = {"code": 500, "message": "Unknown Error.", "errors": [{}], "status": "UNKNOWN"}
 
 
 @pytest.mark.parametrize(
@@ -1515,6 +1518,7 @@ _TOKEN_EXPIRED = {
             for query, error in [
                 ([("pageToken", "bad")], _TOKEN_INVALID),
                 ([("pageToken", "bzow")], _TOKEN_INVALID),
+                ([("pageToken", "{token}")], _TOKEN_INVALID),
                 ([("useDomainAdminAccess", "true"), ("pageToken", "bad")], _TOKEN_INVALID),
                 ([("pageToken", "bad"), ("useDomainAdminAccess", "true")], _TOKEN_INVALID),
                 ([("pageToken", "bad"), ("pageSize", "0")], None),
@@ -1524,24 +1528,142 @@ _TOKEN_EXPIRED = {
         (_PERMS, [("pageToken", "")], _TOKEN_EXPIRED),
         (_PERMS, [("useDomainAdminAccess", "true"), ("pageToken", "")], _TOKEN_EXPIRED),
         ("/drive/v3/files/nosuchfileid000000/permissions", [("pageToken", "")], _TOKEN_EXPIRED),
-        ("/drive/v3/drives", [("pageToken", "{token}")], _TOKEN_INVALID),
+        ("/drive/v3/files/nosuchfileid000000/permissions", [("pageToken", "bzow")], _TOKEN_INVALID),
+        (_PERMS, [("pageSize", "1"), ("pageToken", "{issued}.")], _TOKEN_INVALID),
+        (_PERMS, [("pageSize", "1"), ("pageToken", "{at_zero}")], _TOKEN_INVALID),
         ("/drive/v3/drives", [("pageToken", "")], None),
         ("/drive/v3/drives", [("useDomainAdminAccess", "true"), ("pageToken", "")], None),
     ],
 )
-def test_drive_a_listing_that_issues_no_page_token_refuses_one(client, admin_h, path, query, error):
-    """The rule `_drive_listing_page_token` records, one request per row. `None` is a token that
-    changes nothing: the answer is the one the request gets without it, a page or the refusal of
-    the value beside it. `{token}` is filled from the first page of `files.list`."""
-    url = path.format(doc=_drive_find(client, admin_h, "Brand")["id"])
-    issued = client.get("/drive/v3/files", headers=admin_h, params={"pageSize": 1}).json()
-    query = [(k, v.format(token=issued["nextPageToken"])) for k, v in query]
+def test_drive_permissions_and_drives_refuse_a_page_token_they_did_not_issue(
+    client, admin_h, path, query, error
+):
+    """The rules `_drive_permissions_page_token` and `_drive_listing_page_token` record, one request
+    per row. `None` is a token that changes nothing: the answer is the one the request gets without
+    it, a page or the refusal of the value beside it. `{token}` is filled from the first page of
+    `files.list`, `{issued}` from the first page of this file's `permissions.list` at `pageSize=1`,
+    and `{at_zero}` is `_drive_permissions_token`'s spelling for an offset of 0, which it never
+    issues."""
+    from backlot.routers import google
+
+    doc = _drive_find(client, admin_h, "Brand")["id"]
+    url = path.format(doc=doc)
+    files = client.get("/drive/v3/files", headers=admin_h, params={"pageSize": 1}).json()
+    issued = client.get(_PERMS.format(doc=doc), headers=admin_h, params={"pageSize": 1}).json()
+    fill = {
+        "token": files["nextPageToken"],
+        "issued": issued["nextPageToken"],
+        "at_zero": google._drive_permissions_token(doc, 0),
+    }
+    query = [(k, v.format(**fill)) for k, v in query]
     r = client.get(url, headers=admin_h, params=query)
     if error is None:
         without = [(k, v) for k, v in query if k != "pageToken"]
         assert r.content == client.get(url, headers=admin_h, params=without).content
     else:
         assert (r.status_code, _gerr(r)) == (error["code"], error)
+
+
+# fmt: off
+_PERMISSION_PAGES = [
+    # the first request's query, the query its token is sent back with, and the length of each page
+    # until one carries no token, or the error the first request is refused with
+    ([], [], [2]),
+    ([("pageSize", "1")], [("pageSize", "1")], [1, 1]),
+    ([("pageSize", "1")], [("pageSize", "2")], [1, 1]),
+    ([("pageSize", "1")], [], [1, 1]),
+    ([("pageSize", "2")], [], [2]),
+    ([("pageSize", "3")], [], [2]),
+    ([("pageSize", "100")], [], [2]),
+    # two or more values, read from the first
+    ([("pageSize", "1"), ("pageSize", "0")], [], [1, 1]),
+    ([("pageSize", "+1"), ("pageSize", "0")], [], [1, 1]),
+    ([("pageSize", "1"), ("pageSize", "2")], [], [1, 1]),
+    ([("pageSize", "1"), ("pageSize", "2"), ("pageSize", "3")], [], [1, 1]),
+    ([("pageSize", "100"), ("pageSize", "2")], [], [2]),
+    ([("pageSize", "2"), ("pageSize", "0"), ("pageSize", "0")], [], [2]),
+    # and the 500 when the first is outside 1-100, after the `pageToken` refusals
+    ([("pageSize", "0"), ("pageSize", "2")], [], _UNKNOWN_ERROR),
+    ([("pageSize", "-0"), ("pageSize", "2")], [], _UNKNOWN_ERROR),
+    ([("pageSize", "-1"), ("pageSize", "2")], [], _UNKNOWN_ERROR),
+    ([("pageSize", "0"), ("pageSize", "0")], [], _UNKNOWN_ERROR),
+    ([("pageSize", "0"), ("pageSize", "101")], [], _UNKNOWN_ERROR),
+    ([("pageSize", "101"), ("pageSize", "2")], [], _UNKNOWN_ERROR),
+    ([("pageSize", "101"), ("pageSize", "101")], [], _UNKNOWN_ERROR),
+    ([("pageSize", "2147483647"), ("pageSize", "2")], [], _UNKNOWN_ERROR),
+    ([("pageSize", "-2147483648"), ("pageSize", "2")], [], _UNKNOWN_ERROR),
+    ([("pageSize", "0"), ("pageSize", "2"), ("pageSize", "2")], [], _UNKNOWN_ERROR),
+    ([("pageSize", "0"), ("pageSize", "2"), ("pageToken", "bad")], [], _TOKEN_INVALID),
+    ([("pageToken", "bad"), ("pageSize", "0"), ("pageSize", "2")], [], _TOKEN_INVALID),
+    ([("pageSize", "0"), ("pageSize", "2"), ("pageToken", "")], [], _TOKEN_EXPIRED),
+]
+# fmt: on
+
+
+@pytest.mark.parametrize("first, follow, expected", _PERMISSION_PAGES)
+def test_drive_permissions_list_pages_in_the_unpaged_order(
+    client, admin_h, first, follow, expected
+):
+    """The rules `_drive_permission_page` and `_drive_permissions_page_size` record, on a file with
+    two permissions. A row of page lengths also checks that the pages, joined, are the unpaged
+    list."""
+    url = _PERMS.format(doc=_drive_find(client, admin_h, "Brand")["id"])
+    whole = client.get(url, headers=admin_h).json()["permissions"]
+    assert len(whole) == 2
+    r = client.get(url, headers=admin_h, params=first)
+    if isinstance(expected, dict):
+        assert (r.status_code, _gerr(r)) == (expected["code"], expected)
+        return
+    pages = [r]
+    while "nextPageToken" in pages[-1].json() and len(pages) < len(expected):
+        token = pages[-1].json()["nextPageToken"]
+        pages.append(client.get(url, headers=admin_h, params=[*follow, ("pageToken", token)]))
+    assert [p.status_code for p in pages] == [200] * len(pages)
+    assert [len(p.json()["permissions"]) for p in pages] == expected
+    assert "nextPageToken" not in pages[-1].json()
+    assert [x for p in pages for x in p.json()["permissions"]] == whole
+
+
+@pytest.mark.parametrize("size, lengths", [(1, [1, 1, 1]), (2, [2, 1])])
+def test_drive_permissions_list_pages_a_file_with_three_permissions(tmp_path, size, lengths):
+    """`_drive_permission_page` past the second page: at `pageSize=1` the page a token serves
+    carries the token for the third, at `pageSize=2` the second page starts after the two the first
+    served, and the pages joined are the unpaged list. The files measured had two permissions
+    each, so neither was measured."""
+    from tests._helpers import corpus_client
+
+    record = {
+        "source_type": "google_drive",
+        "doc_id": "three",
+        "folder": "mk",
+        "title": "Three readers",
+        "content": "x",
+        "author_email": "a@x.com",
+        "readers": ["b@x.com", "c@x.com"],
+    }
+    with corpus_client(tmp_path, [record]) as (client, settings):
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        q = {"q": "name = 'Three readers'"}
+        (doc,) = client.get("/drive/v3/files", headers=h, params=q).json()["files"]
+        url = f"/drive/v3/files/{doc['id']}/permissions"
+        whole = client.get(url, headers=h).json()["permissions"]
+        assert len(whole) == 3
+        pages = [client.get(url, headers=h, params={"pageSize": size}).json()]
+        while "nextPageToken" in pages[-1] and len(pages) < len(lengths):
+            token = pages[-1]["nextPageToken"]
+            pages.append(
+                client.get(url, headers=h, params={"pageSize": size, "pageToken": token}).json()
+            )
+    assert [len(p["permissions"]) for p in pages] == lengths
+    assert "nextPageToken" not in pages[-1]
+    assert [x for p in pages for x in p["permissions"]] == whole
+
+
+def test_drive_permissions_list_declares_the_parameters_it_pages_by(client):
+    """`pageSize` and `pageToken` shape the page, so a client reading the OpenAPI document can
+    find them, and `backlot diff --source google_drive` reports neither as missing."""
+    op = client.app.openapi()["paths"]["/drive/v3/files/{file_id}/permissions"]["get"]
+    assert {"pageSize", "pageToken"} <= {p["name"] for p in op["parameters"]}
 
 
 @pytest.mark.parametrize(
@@ -1711,6 +1833,8 @@ _ADMIN_ONLY = (
 _SERVED = (200, None, None, None)
 _TYPED = (400, "invalid", None, None)
 _RANGE = (400, "invalidParameter", "page_size", None)
+_PAGE_EXPIRED = (403, "pageTokenExpired", None, None)
+_UNKNOWN = (500, None, None, None)
 
 # A Drive request beside real's answer, one request per row: the route, its query and who sends it,
 # then the status and `errors[0]`'s reason, location and, for the three 403s a flag spelled `true`
@@ -1781,6 +1905,18 @@ _DRIVE_CHECK_ROWS = [
     ("/drive/v3/files/{hidden}/permissions", "useDomainAdminAccess=false", "admin", _SERVED),
     ("/drive/v3/files/{doc}/permissions", "useDomainAdminAccess=true&pageSize=0", "admin", _RANGE),
     ("/drive/v3/files/{doc}/permissions", "useDomainAdminAccess=true&supportsAllDrives=NOPE", "admin", _TYPED),
+    # a token `permissions.list` issued for {doc}, refused for another file once that file is found
+    # and past the domain-administrator refusal, beside two `pageSize` values whose first is outside
+    # 1-100, the 500 ahead of all of it
+    ("/drive/v3/files/{doc}/permissions", "pageSize=1&pageToken={issued}", "admin", _SERVED),
+    ("/drive/v3/files/{pdf}/permissions", "pageSize=1&pageToken={issued}", "admin", _PAGE_EXPIRED),
+    ("/drive/v3/files/{pdf}/permissions", "pageToken={issued}&useDomainAdminAccess=true", "admin", (404, "notFound", "fileId", None)),
+    ("/drive/v3/files/{nope}/permissions", "pageToken={issued}", "admin", (404, "notFound", "fileId", None)),
+    ("/drive/v3/files/{hidden}/permissions", "pageToken={issued}", "mia", (404, "notFound", "fileId", None)),
+    ("/drive/v3/files/{pdf}/permissions", "pageSize=0&pageSize=2&pageToken={issued}", "admin", _UNKNOWN),
+    ("/drive/v3/files/{doc}/permissions", "pageSize=0&pageSize=2&useDomainAdminAccess=true", "admin", _UNKNOWN),
+    ("/drive/v3/files/{nope}/permissions", "pageSize=0&pageSize=2", "admin", _UNKNOWN),
+    ("/drive/v3/files/{hidden}/permissions", "pageSize=0&pageSize=2", "mia", _UNKNOWN),
     ("/drive/v3/drives", "useDomainAdminAccess=true", "admin", _ADMIN_ONLY),
     ("/drive/v3/drives", "useDomainAdminAccess=TRUE", "admin", _ADMIN_ONLY),
     ("/drive/v3/drives", "useDomainAdminAccess=true&useDomainAdminAccess=false", "admin", _ADMIN_ONLY),
@@ -1799,16 +1935,21 @@ def test_drive_answers_each_check_with_reals_status_and_reason(
     one for a file that does not exist, and both name no file, so the check tells the caller
     nothing about what it cannot read; the permissions 404 names the file it was asked about, and
     is the same 404 the scoped token gets for that file without the flag."""
+    doc = _drive_find(client, admin_h, "Brand")["id"]
+    issued = client.get(
+        f"/drive/v3/files/{doc}/permissions", headers=admin_h, params={"pageSize": 1}
+    )
     ids = {
-        "doc": _drive_find(client, admin_h, "Brand")["id"],
+        "doc": doc,
         "pdf": _drive_find(client, admin_h, "Whitepaper")["id"],
         "hidden": _drive_find(client, admin_h, "Q1 Revenue Model")["id"],
         "nope": "nosuchfile000",
+        "issued": issued.json()["nextPageToken"],
     }
     headers = (
         admin_h if caller == "admin" else {"Authorization": f"Bearer {tokens['mia@acme.com']}"}
     )
-    r = client.get(f"{path.format(**ids)}?{query}", headers=headers)
+    r = client.get(f"{path.format(**ids)}?{query.format(**ids)}", headers=headers)
     status, reason, location, message = expected
     assert r.status_code == status, r.text
     if status == 200:

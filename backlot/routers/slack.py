@@ -463,9 +463,11 @@ async def auth_test(request: Request):
         "url": f"https://{get_settings().org_name}.slack.com/",
         "team": get_settings().org_name,
         "user": who,
-        "user_id": "USERVICE0" if caller.is_admin else synth.slack_user_id(caller.email),
         "team_id": TEAM_ID,
-        # Slack (2026-10-09), measured by the maintainer: workspace tokens report false.
+        "user_id": "USERVICE0" if caller.is_admin else synth.slack_user_id(caller.email),
+        # Measured against slack.com on 2026-10-09 and 2026-10-11 with a user token, on a workspace
+        # outside any Enterprise organization: every `ok: true` answer, over GET and POST, has these
+        # members in this order and ends with `"is_enterprise_install": false`.
         "is_enterprise_install": False,
     }
 

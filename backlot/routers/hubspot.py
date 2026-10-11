@@ -606,6 +606,49 @@ def _refuse_an_operator(raw: bytes, body: dict) -> JSONResponse | None:
     return None
 
 
+# The JSON value kinds real names when it refuses a non-list `inputs`: (kind, Jackson token).
+_JSON_TOKENS = {
+    str: ("String", "VALUE_STRING"),
+    dict: ("Object", "START_OBJECT"),
+    int: ("Integer", "VALUE_NUMBER_INT"),
+}
+
+
+def _refuse_a_batch_read_shape(raw: bytes, body: dict) -> JSONResponse | None:
+    """Real's 400 for the first batch/read member, in body order, whose JSON type it cannot read,
+    or None. `inputs` must be a list; an element of it may be an object or a bare id string, but
+    not a number. `properties` and `propertiesWithHistory` must be lists: unlike a GET's query
+    string, a string here is refused rather than split on commas (measured 2026-10-09)."""
+    for key, value in body.items():
+        if key == "inputs" and type(value) in _JSON_TOKENS:
+            kind, token = _JSON_TOKENS[type(value)]
+            line, column = _token_at(raw, ("inputs",))
+            return _error(
+                400,
+                f"Invalid input JSON on line {line}, column {column}: Cannot deserialize value "
+                f"of type <>` from {kind} value (token `JsonToken.{token}`)",
+            )
+        if key == "inputs" and isinstance(value, list):
+            for i, item in enumerate(value):
+                if type(item) is int:
+                    line, column = _token_at(raw, ("inputs", i))
+                    return _error(
+                        400,
+                        f"Invalid input JSON on line {line}, column {column}: Cannot construct "
+                        "instance of  (although at least one Creator exists): no long/Long-argument "
+                        f"constructor/factory method to deserialize from Number value ({item})",
+                    )
+        if key in ("properties", "propertiesWithHistory") and isinstance(value, str):
+            line, column = _token_at(raw, (key,))
+            return _error(
+                400,
+                f"Invalid input JSON on line {line}, column {column}: Cannot construct instance "
+                "of  (although at least one Creator exists): no String-argument "
+                f"constructor/factory method to deserialize from String value ('{value}')",
+            )
+    return None
+
+
 def _match_one(prop, f: dict) -> bool:
     op = _operator(f)
     present = prop is not None
@@ -912,11 +955,14 @@ async def batch_read(object_type: str, request: Request):
     if spellings is None:
         return _unknown_type(object_type)
     body = await json_body(request)
+    refused = _refuse_a_batch_read_shape(await request.body(), body)
+    if refused is not None:
+        return refused
     conn, visible = auth.conn(request), auth.visible_ids(request, caller)
     keep = _keep(body.get("properties"))
     results, errors = [], []
     for item in body.get("inputs") or []:
-        rid = str(item.get("id"))
+        rid = item if isinstance(item, str) else str(item.get("id"))
         # One ACL-scoped query, not a resolve followed by a get_document refetch of the same
         # row -- see get_object's comment for why the collapse is safe.
         row = store.hubspot_by_id(conn, rid, visible)

@@ -921,6 +921,52 @@ def test_hubspot_batch_read(client, admin_h):
     assert {r["id"] for r in j["results"]} == set(ids)
 
 
+def test_hubspot_batch_read_refuses_bodies_real_cannot_read(client, admin_h):
+    """`inputs` that is not a list, a numeric id, and a string `properties` or
+    `propertiesWithHistory` are real's 400 refusals, not a 500 or a 200, as measured in
+    `_refuse_a_batch_read_shape`. The column is where the offending value starts in the body."""
+    url = "/hubspot/crm/v3/objects/companies/batch/read"
+    headers = {**admin_h, "Content-Type": "application/json"}
+    cases = [
+        ('{"inputs":"x"}', 11, "from String value (token `JsonToken.VALUE_STRING`)"),
+        ('{"inputs":{"id":"1"}}', 11, "from Object value (token `JsonToken.START_OBJECT`)"),
+        ('{"inputs":5}', 11, "from Integer value (token `JsonToken.VALUE_NUMBER_INT`)"),
+        ('{"inputs":[7]}', 12, "deserialize from Number value (7)"),
+        (
+            '{"inputs":[{"id":"1"}],"properties":"name"}',
+            37,
+            "deserialize from String value ('name')",
+        ),
+        (
+            '{"inputs":[{"id":"1"}],"propertiesWithHistory":"name"}',
+            48,
+            "deserialize from String value ('name')",
+        ),
+    ]
+    for body, column, tail in cases:
+        r = client.post(url, headers=headers, content=body)
+        assert r.status_code == 400, body
+        j = r.json()
+        assert j["category"] == "VALIDATION_ERROR"
+        assert j["message"].startswith(f"Invalid input JSON on line 1, column {column}: "), body
+        assert j["message"].endswith(tail), body
+
+
+def test_hubspot_batch_read_accepts_bare_id_strings(client, admin_h):
+    """Real reads a bare id string in `inputs` as that id, alone or mixed with objects."""
+    listed = client.get(
+        "/hubspot/crm/v3/objects/companies", headers=admin_h, params={"limit": 2}
+    ).json()["results"]
+    a, b = listed[0]["id"], listed[1]["id"]
+    r = client.post(
+        "/hubspot/crm/v3/objects/companies/batch/read",
+        headers=admin_h,
+        json={"inputs": [a, {"id": b}]},
+    )
+    assert r.status_code == 200
+    assert {x["id"] for x in r.json()["results"]} == {a, b}
+
+
 # --- HubSpot ---------------------------------------------------------------------
 
 

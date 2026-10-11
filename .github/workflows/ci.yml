@@ -55,6 +55,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # A pull request is checked out as its merge into the base branch, whose first parent is
+          # the base branch's head, so the prose checks below read the change from `HEAD^1`.
+          fetch-depth: 2
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
@@ -66,3 +70,6 @@ jobs:
         run: ruff format --check .
       - name: ruff check
         run: ruff check .
+      - name: Prose checks on the comments and docstrings a pull request adds
+        if: github.event_name == 'pull_request'
+        run: python scripts/prose_check.py --github HEAD^1

@@ -22,6 +22,13 @@
     {
       "kind": "extra_operation",
       "severity": "breaking",
+      "path": "GET /wiki/rest/api/content/{}/child/attachment",
+      "detail": "the vendor's spec declares no such operation",
+      "note": "Atlassian's published v1 document does not describe this read, though it describes the writes on the same path. Measured against a live site on 2026-10-10, a page holding no attachment answers 200 with `results`, `start`, `limit` (50 by default), `size` and `_links`, which is the page Backlot serves for every page."
+    },
+    {
+      "kind": "extra_operation",
+      "severity": "breaking",
       "path": "GET /wiki/rest/api/content/{}/child/comment",
       "detail": "the vendor's spec declares no such operation",
       "note": "Atlassian's published v1 document no longer describes the content and space reads Backlot serves; it still describes 65 reads and the writes. These v1 reads are deprecated in favour of Confluence REST v2, not documented as removed. Read off the document on 2026-09-01; not measured against a live site."

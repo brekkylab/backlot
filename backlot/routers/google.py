@@ -33,7 +33,7 @@ from backlot.acl import Caller
 from backlot.config import get_settings
 from backlot.errors import google as gerr
 from backlot.openapi import qp
-from backlot.pagination import decode_cursor, decode_cursor_or_none, next_page_token
+from backlot.pagination import decode_cursor_or_none, next_page_token
 
 # `$.xgafv` is checked before any route runs, and `callback` too but on a Drive download inside a
 # batch — see `_system_parameters`. A router dependency runs only once a route has MATCHED, so a
@@ -107,6 +107,7 @@ class DrivePermissionList(_GLoose):
 # drive_files_get / .export return a raw Response on some branches — they get openapi_extra params
 # only (no JSON response_model, which would mis-serialize the raw body).
 _P_DRIVE_LIST = [qp("pageSize", "integer"), qp("pageToken"), qp("q"), qp("fields"), qp("orderBy")]
+_P_DRIVE_PERMISSIONS = [qp("pageSize", "integer"), qp("pageToken")]
 _P_DRIVE_ALT = [qp("alt"), qp("fields")]
 _P_DRIVE_EXPORT = [qp("mimeType", required=True)]
 _P_DRIVE_ABOUT = [qp("fields", required=True)]
@@ -641,8 +642,9 @@ def _by_thread(rows) -> list:
     return out
 
 
-def _gmail_max_results(request: Request) -> int:
-    """The page size `messages.list` and `threads.list` serve.
+def _gmail_page(request: Request, listing: str) -> tuple[int, int]:
+    """The page size and offset `messages.list` and `threads.list` serve, refused in the order real
+    refuses them on each.
 
     Measured on gmail.googleapis.com on 2026-10-07 with a Workspace user's `gmail.readonly` token,
     one request per row; `threads.list` answered every row with the same status and error, on
@@ -657,18 +659,37 @@ def _gmail_max_results(request: Request) -> int:
     `nextPageToken`, and the reference gives both methods "The maximum allowed value for this field
     is 500". With no `maxResults`, the page is the default size capped at 500. A sent value is also
     capped at the deployment's `max_page_size`.
+
+    The uint32 refusal comes first on both listings. After it `messages.list` refuses a `pageToken`
+    that does not parse (:func:`_gmail_page_token`) before a `maxResults` out of range, and
+    `threads.list` the range before the token: measured on 2026-10-09 with `maxResults` of `0` and
+    `2147483648` beside a token that does not parse, each request sent four times with the same
+    answer.
     """
     sizes = _typed_query(request, {"maxResults": _gmail_uint32})["maxResults"]
+    offset = _gmail_page_token(request) if listing == "messages" else None
     if not sizes:
-        return min(get_settings().default_page_size, 500)
-    size = sizes[-1]
-    if size == 0 or size >= 2**31:
+        limit = min(get_settings().default_page_size, 500)
+    elif sizes[-1] == 0 or sizes[-1] >= 2**31:
         raise gerr.invalid_max_results()
-    return min(size, 500, get_settings().max_page_size)
+    else:
+        limit = min(sizes[-1], 500, get_settings().max_page_size)
+    if offset is None:
+        offset = _gmail_page_token(request)
+    return limit, offset
+
+
+def _gmail_page_token(request: Request) -> int:
+    """The offset a Gmail `pageToken` names, read from its last repeat as real reads it. An empty
+    token is the first page, and one that does not decode is :func:`gerr.invalid_page_token`."""
+    offset = decode_cursor_or_none(request.query_params.get("pageToken"))
+    if offset is None:
+        raise gerr.invalid_page_token()
+    return offset
 
 
 # `maxResults` as Gmail's proto layer reads it: a uint32, where Drive's `pageSize` is an int32
-# (`_INT32`). The spellings and the bound are `_gmail_max_results`'s.
+# (`_INT32`). The spellings and the bound are `_gmail_page`'s.
 _UINT32 = re.compile(r"\+?[0-9]+")
 
 
@@ -701,8 +722,7 @@ async def gmail_messages_list(user_id: str, request: Request):
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     mailbox = _mailbox_container(conn, caller, user_id)  # None = all mailboxes
-    limit = _gmail_max_results(request)
-    offset = decode_cursor(request.query_params.get("pageToken"))
+    limit, offset = _gmail_page(request, "messages")
     q = request.query_params.get("q", "") or ""
     if q.strip():  # search: filter the ACL-visible set by the query, then paginate
         matched = _gmail_query(conn, mailbox, ids, q)
@@ -808,8 +828,7 @@ async def gmail_threads_list(user_id: str, request: Request):
     # received, and `q` was already scoping by container, so the two halves of this one listing
     # disagreed about what a thread list is.
     mailbox = _mailbox_container(conn, caller, user_id)
-    limit = _gmail_max_results(request)
-    offset = decode_cursor(request.query_params.get("pageToken"))
+    limit, offset = _gmail_page(request, "threads")
     q = request.query_params.get("q", "") or ""
     if q.strip():
         # A search returns the THREADS its matches are in: Gmail lists a thread whose match is in a
@@ -2427,7 +2446,11 @@ async def drive_files_export(file_id: str, request: Request):
     return Response(body, headers={"content-type": requested})
 
 
-@router.get("/drive/v3/files/{file_id}/permissions", response_model=DrivePermissionList)
+@router.get(
+    "/drive/v3/files/{file_id}/permissions",
+    response_model=DrivePermissionList,
+    openapi_extra={"parameters": _P_DRIVE_PERMISSIONS},
+)
 async def drive_files_permissions(file_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
@@ -2435,7 +2458,12 @@ async def drive_files_permissions(file_id: str, request: Request):
         request, "supportsAllDrives", "supportsTeamDrives", "useDomainAdminAccess", page_size=True
     )["pageSize"]
     _drive_page_size_in_range(sizes, 100)
-    _drive_listing_page_token(request, expired_empty=True)
+    # Refused in real's order, measured by sending two bad values at once: the `pageToken`
+    # refusals, a repeated `pageSize`'s 500, the domain-administrator refusal and the file lookup
+    # below, and a token issued for another file last, in `_drive_permission_page`. The places of
+    # the 500 and of that last refusal were measured 2026-10-08.
+    token = _drive_permissions_page_token(request)
+    size = _drive_permissions_page_size(sizes)
     # No caller here is a domain administrator: 404 for the file, even one the caller owns,
     # measured 2026-10-04 on a consumer account and 2026-10-06 on a Workspace member.
     if _drive_true(request, "useDomainAdminAccess"):
@@ -2449,11 +2477,10 @@ async def drive_files_permissions(file_id: str, request: Request):
         name = _drive_folder_name_by_id(conn, file_id)
         if name is None:
             raise gerr.not_found_file(file_id)
-        return {
-            "kind": "drive#permissionList",
-            "permissions": _drive_permissions(conn, file_id, folder=name),
-        }
-    return {"kind": "drive#permissionList", "permissions": _drive_permissions(conn, row["id"])}
+        permissions = _drive_permissions(conn, file_id, folder=name)
+    else:
+        permissions = _drive_permissions(conn, row["id"])
+    return _drive_permission_page(permissions, file_id, size, token)
 
 
 # --- Google Workspace editors read APIs (Docs / Sheets / Slides) ------------------
@@ -2505,15 +2532,19 @@ def _editor_doc(request: Request, file_id: str, *, expect: str):
     reading a Doc through the Sheets API answers 200 with prose sliced into a "grid", plausible
     enough that a client trusts it rather than noticing the id was wrong.
 
-    Visibility resolves FIRST, so a caller who cannot see the file gets not-found and never a type
-    error: the type of a document you cannot access is not something the API should confirm."""
+    Sheets and Docs resolve the stored type before visibility: a hidden file of their own type is
+    permission-denied, while a hidden file of another type gets that type's usual answer. Measured
+    on 2026-10-06, and for an Office file on 2026-10-09. Slides was not measured and resolves
+    visibility first."""
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
+    type_before_acl = expect in {"document", "spreadsheet"}
     # A native Doc/Sheet/Slides id is the SAME id space as Drive's own file id --
     # real Google resolves docs.googleapis.com/etc. off the identical Drive file id, so this has
-    # to resolve the file's own id.
-    row = store.gdrive_by_id(conn, file_id, visible_ids=ids)
+    # to resolve the file's own id. Sheets and Docs need the unscoped row to distinguish a missing
+    # id from a stored file that this caller cannot see.
+    row = store.gdrive_by_id(conn, file_id, visible_ids=None if type_before_acl else ids)
     if row is None:
         # Folders are synthesized rather than stored, so they miss the lookup above. Real Google
         # calls a folder an invalid argument, not a missing entity, so resolve it before giving up.
@@ -2524,6 +2555,8 @@ def _editor_doc(request: Request, file_id: str, *, expect: str):
     # here too — the fallback stays in one place rather than being decided per route.
     subtype = row["subtype"] or "document"
     if subtype == expect:
+        if type_before_acl and store.gdrive_by_id(conn, file_id, visible_ids=ids) is None:
+            raise gerr.permission_denied()
         return row
     if subtype in _EDITOR_NATIVE:  # a different Workspace type: not this API's entity at all
         raise gerr.not_found_entity()
@@ -4586,8 +4619,9 @@ def _drive_page_size_in_range(sizes: list[int], top: int) -> None:
     """Refuse one `pageSize` outside 1 to ``top`` with real's range sentence, which names the value
     as an int. Measured 2026-09-23, and on each of the three routes again 2026-09-30: ``top`` is
     1000 on `files.list` and 100 on `permissions.list` and `drives.list`; `0`, `-1`, `-0` (named
-    `0`), ``top + 1`` and `2147483647` are refused alike; and two or more values are not
-    range-checked at all."""
+    `0`), ``top + 1`` and `2147483647` are refused alike; and two or more values get no range
+    sentence, the first of them deciding instead, in `_drive_page_size` on `files.list` and
+    `_drive_permissions_page_size` on `permissions.list`."""
     if len(sizes) == 1 and not 1 <= sizes[0] <= top:
         raise gerr.invalid_parameter(
             "page_size",
@@ -4596,29 +4630,95 @@ def _drive_page_size_in_range(sizes: list[int], top: int) -> None:
         )
 
 
-def _drive_listing_page_token(request: Request, *, expired_empty: bool = False) -> None:
-    """Refuse a `pageToken` sent to a listing that issues no `nextPageToken`, where every token is
-    one it did not issue: `permissions.list`, which serves a file's whole sharing on one page, and
-    `drives.list`, which is empty. Presence is the whole test: `decode_cursor_or_none`, which
-    `files.list` calls, reads `bzow` and that route's own tokens as offsets. Read from the first
-    repeat, after the typed and range refusals and ahead of the `useDomainAdminAccess=true` refusal
-    and `permissions.list`'s file lookup. Measured 2026-10-04 and 2026-10-05, and the empty, `bad`,
-    `bzow`, `BOGUS` and issued-token cells again on 2026-10-07 as a Workspace member::
+def _drive_permissions_token(file_id: str, offset: int) -> str:
+    """The `nextPageToken` `permissions.list` issues: the offset of the next page and the file it
+    pages, so that `_drive_permission_page` can refuse a token sent back to another file."""
+    return base64.urlsafe_b64encode(f"p:{offset}:{file_id}".encode()).decode()
+
+
+def _drive_permissions_page_token(request: Request) -> tuple[int, str] | None:
+    """The `pageToken` sent to `permissions.list`, as the offset and the file it was issued for, or
+    ``None`` when none was sent. Read from the first repeat. Measured against Drive v3 on 2026-10-04
+    and 2026-10-05, the empty, `bad`, `bzow`, `BOGUS` and `files.list`-token cells again on
+    2026-10-07 as a Workspace member, and `bzox` and the last two rows on 2026-10-08 on a consumer
+    account::
 
         pageToken                         permissions.list          drives.list
         --------------------------------|-------------------------|-------------------------
         empty                           | 403 `pageTokenExpired`  | the first page
-        `bad`, `bzow`, `AAAA`           | 400 `Invalid Value`     | 400 `Invalid Value`
+        `bad`, `bzow`, `bzox`, `AAAA`   | 400 `Invalid Value`     | 400 `Invalid Value`
         `BOGUS`, `0`, `a`, a space, a   | 500 `Unknown Error.`    | 400 `Invalid Value`
         token `files.list` issued       |                         |
+        one issued for another file     | 403 `pageTokenExpired`  |
+        one issued for this file        | the next page           |
 
-    ``expired_empty`` asks for the empty row's 403, which only `permissions.list` answers. The 500
-    is not modelled; those tokens get the 400 here too."""
+    An issued token with a character added, changed or dropped was the 500, the 400, the 403 or the
+    next page by which character it was, measured 2026-10-08. A token here names the offset, from 1,
+    and the file (`_drive_permissions_token`), and only the exact spelling issued is read, so the
+    spellings the table lists against the 400 and the 500, and every altered token, are the 400
+    here: the 500, and an altered token's 403 and next page, are not modelled. A token naming
+    another file does decode, and its 403 comes after the file lookup, in `_drive_permission_page`.
+    `drives.list` issues none, and `_drive_listing_page_token` reads its column."""
     token = gerr.first_repeat(request.query_params, "pageToken")
     if token is None:
-        return
-    if not token and expired_empty:
+        return None
+    if not token:
         raise gerr.page_token_expired()
+    try:
+        _, offset, file_id = base64.urlsafe_b64decode(token).decode().split(":", 2)
+        issued = int(offset), file_id
+    except ValueError:
+        raise gerr.invalid_value("pageToken") from None
+    if issued[0] < 1 or _drive_permissions_token(file_id, issued[0]) != token:
+        raise gerr.invalid_value("pageToken")
+    return issued
+
+
+def _drive_permissions_page_size(sizes: list[int]) -> int | None:
+    """The `pageSize` `permissions.list` pages by, or ``None`` for the whole list. One value outside
+    1-100 is the range refusal `_drive_page_size_in_range` raises; two or more are read from the
+    first, and real answers :func:`gerr.unknown_error` when that one is outside 1-100. Measured
+    against Drive v3 on 2026-10-08 on a consumer account: `0&2`, `-0&2`, `-1&2`, `0&0`, `0&101`,
+    `101&2`, `101&101`, `2147483647&2`, `-2147483648&2` and `0&2&2` each answered the 500, where
+    `100&2` and `2&0&0` served two permissions and `1&0`, `+1&0`, `1&2` and `1&2&3` one and a
+    token."""
+    if not sizes:
+        return None
+    if not 1 <= sizes[0] <= 100:
+        raise gerr.unknown_error()
+    return sizes[0]
+
+
+def _drive_permission_page(
+    permissions: list[dict], file_id: str, size: int | None, token: tuple[int, str] | None
+) -> dict:
+    """One page of a file's permissions, in the unpaged list's order, and the token for the next.
+
+    Measured against Drive v3 on two-permission My Drive files on 2026-10-05, and on a file and a
+    folder on 2026-10-08: no `pageSize` serves the whole list and no `nextPageToken`; `pageSize=1`
+    the first permission and a token; that token, sent back with a `pageSize` of 1 or 2 or with
+    none, the other permission and no token; and a `pageSize` of 2, 3 or 100 both and no token. A
+    token issued for another file is 403 `pageTokenExpired` (`_drive_permissions_page_token`)."""
+    offset = 0
+    if token is not None:
+        offset, issued_for = token
+        if issued_for != file_id:
+            raise gerr.page_token_expired()
+    end = len(permissions) if size is None else offset + size
+    body = {"kind": "drive#permissionList", "permissions": permissions[offset:end]}
+    if end < len(permissions):
+        body["nextPageToken"] = _drive_permissions_token(file_id, end)
+    return body
+
+
+def _drive_listing_page_token(request: Request) -> None:
+    """Refuse a `pageToken` sent to `drives.list`, which is empty and issues no `nextPageToken`,
+    so every token is one it did not issue. Presence is the whole test: `decode_cursor_or_none`,
+    which `files.list` calls, reads `bzow` and that route's own tokens as offsets. Read from the
+    first repeat, after the typed and range refusals and ahead of the `useDomainAdminAccess=true`
+    refusal. What real answers is the `drives.list` column of the table
+    `_drive_permissions_page_token` records."""
+    token = gerr.first_repeat(request.query_params, "pageToken")
     if token:
         raise gerr.invalid_value("pageToken")
 

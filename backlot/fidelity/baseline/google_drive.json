@@ -6,7 +6,7 @@
     "https://www.googleapis.com/discovery/v1/apis/sheets/v4/rest",
     "https://www.googleapis.com/discovery/v1/apis/slides/v1/rest"
   ],
-  "measured": "2026-09-29",
+  "measured": "2026-10-08",
   "acknowledged": [
     {
       "kind": "missing_operation",
@@ -396,18 +396,6 @@
       "kind": "missing_param",
       "severity": "gap",
       "path": "GET /drive/v3/files/{}/permissions?oauth_token",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}/permissions?pageSize",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}/permissions?pageToken",
       "detail": "the vendor accepts it; Backlot does not"
     },
     {

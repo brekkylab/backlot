@@ -10,6 +10,7 @@ up — so ``_caller_or_error`` decides it once for every method here.
 
 from __future__ import annotations
 
+import math
 import re
 
 from fastapi import APIRouter, Request
@@ -137,15 +138,19 @@ def _slack_types(request: Request):
 
 
 def _slack_ts(value: str | None) -> float | None | bool:
-    """A Slack timestamp argument as a float; ``False`` marks one that does not parse. Unguarded
-    ``float()`` made a bad argument a 500, and a 5xx is retried by clients that back off on it —
-    so a request that can never succeed burned the whole retry budget."""
+    """A Slack timestamp argument as a float; ``False`` marks one that does not parse and one
+    ``float()`` reads as infinite or NaN, which no window can be built from. Measured against the
+    live API on 2026-10-10, ``inf``, ``-inf``, ``nan``, ``Infinity``, ``-Infinity`` and ``NaN`` each
+    answer the same ``invalid_ts_oldest``/``invalid_ts_latest`` a string that does not parse does. A
+    spelling with digits that ``float()`` overflows is not one of them: real reads ``1e999`` as 1999
+    and answers a window, where any non-finite reading is refused here."""
     if value is None or value == "":
         return None
     try:
-        return float(value)
+        ts = float(value)
     except ValueError:
         return False
+    return ts if math.isfinite(ts) else False
 
 
 def _caller_or_error(request: Request) -> tuple[Caller | None, dict | None]:
@@ -217,6 +222,47 @@ def _missing_argument(request: Request, *names: str) -> JSONResponse | None:
             }
         )
     return None
+
+
+def post_charset_warning(content_type: str | None, has_body: bool) -> str | None:
+    """The warning real Slack adds to a POST's answer for the charset its Content-Type names, or
+    None: `missing_charset` for `application/json` or `text/plain` that names none and carries a
+    body, `superfluous_charset` for `application/x-www-form-urlencoded` or `multipart/form-data`
+    that names one, an empty body included.
+
+    Matched as sent, measured against slack.com/api on 2026-10-07 and 2026-10-10: an upper-case
+    media type draws neither warning, and `CHARSET=utf-8`, `charset =utf-8`, `charset= utf-8` and
+    an empty value (`charset=`, `charset=""`, `charset=" "`) name no charset.
+    """
+    if not content_type:
+        return None
+    media_type, *params = (p.strip() for p in content_type.split(";"))
+    has_charset = any(
+        name == "charset" and value[:1] != " " and value.strip('" ')
+        for name, _, value in (p.partition("=") for p in params)
+    )
+    if media_type in ("application/json", "text/plain"):
+        return "missing_charset" if has_body and not has_charset else None
+    if media_type in ("application/x-www-form-urlencoded", "multipart/form-data"):
+        return "superfluous_charset" if has_charset else None
+    return None
+
+
+def attach_warning(payload: dict, warning: str) -> dict:
+    """Add `warning` and `response_metadata.warnings` to a Slack answer where real puts them:
+    `warning` after the method's own keys, `response_metadata` after it, and `warnings` after
+    whatever `response_metadata` already holds (`next_cursor`, `messages`). Real does so on each
+    of the twelve methods Backlot serves (slack.com/api, 2026-10-10)."""
+    meta = payload.pop("response_metadata", None)
+    payload["warning"] = warning
+    if meta is not None:
+        warnings = meta.setdefault("warnings", [])
+        if warning not in warnings:
+            warnings.append(warning)
+        payload["response_metadata"] = meta
+    else:
+        payload["response_metadata"] = {"warnings": [warning]}
+    return payload
 
 
 # `sort_dir` is an enum on search.messages, search.all and search.files, matched as sent: measured

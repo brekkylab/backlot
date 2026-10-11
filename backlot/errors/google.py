@@ -12,8 +12,10 @@ envelope is NOT uniform — three families differ in which optional members they
     ------------------------|------------------|---------------------|-----------------------------
     Drive v3                | always           | auth failures,      | 403 PERMISSION_DENIED
                             |                  | typed values,       |
-                            |                  | `$.xgafv` and the   |
-                            |                  | batch redirect only |
+                            |                  | `$.xgafv`, the      |
+                            |                  | batch redirect and  |
+                            |                  | `Unknown Error.`    |
+                            |                  | only                |
     Gmail v1                | unless $.xgafv=2 | always              | 401 UNAUTHENTICATED
     Docs v1 / Slides v1     | $.xgafv=1        | always              | 401 UNAUTHENTICATED
     Sheets v4               | $.xgafv=1        | always              | 403 PERMISSION_DENIED
@@ -46,13 +48,15 @@ measurement. Measured on Sheets and Docs at `$.xgafv=1`: a typed value the proto
 ``reason: invalid`` with NO ``domain`` (:func:`invalid_field_value`), and so are a JSON body member
 the request message does not have and a JSON body that is not an object
 (:func:`invalid_field_values`); a request body that is not JSON is ``parseError``
-(:func:`invalid_json`); every other measured 400 is ``badRequest`` under ``global``
-(:func:`invalid_argument`, :func:`bad_field_mask`); a 404 is ``notFound``; a bad token ``authError``
-at ``location: Authorization``; an anonymous Sheets GET ``forbidden``; the missing credential — any
-anonymous POST, and a GET on the three OAuth-only APIs — ``required`` with the short
-``Login Required.``; and the 500 the data-filter reads answer ``backendError``
-(:func:`internal_error`). The editor 400 NOT measured keeps whatever its constructor renders: an
-Office file read as a native document is :func:`failed_precondition`, so ``failedPrecondition``.
+(:func:`invalid_json`); an Office file read through the API of its own family is
+``failedPrecondition`` under ``global`` (:func:`failed_precondition`); every other measured 400 is
+``badRequest`` under ``global`` (:func:`invalid_argument`, :func:`bad_field_mask`); a 404 is
+``notFound``; a file of the API's own type that the caller cannot see ``forbidden``
+(:func:`permission_denied`); a bad token ``authError`` at ``location: Authorization``; an anonymous
+Sheets GET ``forbidden``; the missing credential — any anonymous POST, and a GET on the three
+OAuth-only APIs — ``required`` with the short ``Login Required.``; and the 500 the data-filter reads
+answer ``backendError`` (:func:`internal_error`). Drive's `Unknown Error.` 500 carries one entry
+with no members at all (:func:`unknown_error`).
 """
 
 from __future__ import annotations
@@ -129,6 +133,7 @@ class GoogleError(HTTPException):
         short: str | None = None,
         details: list | None = None,
         domain: str | None = "global",
+        empty_entry: bool = False,
     ):
         super().__init__(status_code=status_code, detail=message)
         self.message = message
@@ -142,6 +147,8 @@ class GoogleError(HTTPException):
         # (a typed value, a body member or root the request message cannot take), which carry none —
         # so a constructor that renders one of those passes ``None``.
         self.domain = domain
+        # `errors[0]` rendered as `{}`, the entry :func:`unknown_error` carries.
+        self.empty_entry = empty_entry
 
 
 # --- constructors: the call site names the KIND of failure, which is what only it knows ---------
@@ -200,6 +207,17 @@ def sorting_not_supported_fulltext() -> GoogleError:
 def not_found_file(file_id: str) -> GoogleError:
     """Drive's not-found, which names the id so a batch caller can tell which request failed."""
     return GoogleError(404, f"File not found: {file_id}.", reason="notFound", location="fileId")
+
+
+def permission_denied() -> GoogleError:
+    """An editor API resolved a file of its own type but the caller cannot read it. Measured on
+    Sheets and Docs on 2026-10-06; unlike a missing id, this is a 403 with ``forbidden``."""
+    return GoogleError(
+        403,
+        "The caller does not have permission",
+        reason="forbidden",
+        status="PERMISSION_DENIED",
+    )
 
 
 def not_found_entity() -> GoogleError:
@@ -356,6 +374,16 @@ def drive_internal_error() -> GoogleError:
     return GoogleError(500, "Internal Error", reason="internalError")
 
 
+def unknown_error() -> GoogleError:
+    """Drive's 500 `Unknown Error.`, whose `errors[]` entry has no members, for two or more
+    `pageSize` values on `permissions.list` whose first is outside 1-100;
+    ``routers.google._drive_permissions_page_size`` records the measurement. Real answers the same
+    body to a `permissions.list` `pageToken` of `BOGUS`, `0`, a `files.list` token or an issued
+    token with `.` added, measured 2026-10-09, which
+    ``routers.google._drive_permissions_page_token`` refuses with its 400 instead."""
+    return GoogleError(500, "Unknown Error.", status="UNKNOWN", empty_entry=True)
+
+
 def unsupported_conversion() -> GoogleError:
     """`files.export` asked for a format the file's type does not export to. Measured 2026-09-23
     on a spreadsheet: `text/plain`, `bogus/type`, a native Google type, a padded `text/csv `,
@@ -394,6 +422,18 @@ def bad_field_mask(path: str) -> GoogleError:
     )
 
 
+def invalid_page_token() -> GoogleError:
+    """Gmail's answer to a page token that does not parse, on both listings: 400 INVALID_ARGUMENT,
+    whose `errors[]` entry is `global` / `invalidArgument` and which carries no `details`. Real
+    does not check that it issued the token: on 2026-10-09 both listings served `0`, `1` and an
+    issued token with its last digit changed or dropped, and refused one with a 21st digit, a
+    letter or a leading space. Where it comes among the other refusals is
+    ``routers.google._gmail_page``'s."""
+    return GoogleError(
+        400, "Invalid pageToken", reason="invalidArgument", status="INVALID_ARGUMENT"
+    )
+
+
 def invalid_attachment_token() -> GoogleError:
     """Gmail's answer to an attachment id it does not hold. Measured 2026-09-30 and 2026-10-01:
     400 INVALID_ARGUMENT for a made-up id and for a real one with characters changed, whatever
@@ -412,7 +452,7 @@ def invalid_id_value() -> GoogleError:
 def invalid_max_results() -> GoogleError:
     """Gmail's ``Invalid maxResults`` for a `maxResults` of zero or from 2**31 up: 400
     INVALID_ARGUMENT, whose `errors[]` entry is `global` / `invalidArgument` and which carries no
-    `details`. The values and the measurement are ``routers.google._gmail_max_results``'s. A value
+    `details`. The values and the measurement are ``routers.google._gmail_page``'s. A value
     the proto layer cannot read at all is :func:`invalid_field_value`'s shape instead, which names
     the field it refused."""
     return GoogleError(
@@ -636,6 +676,8 @@ def first_repeat(query: Mapping[str, str] | None, name: str) -> str | None:
                           |                                      | 2026-09-22
         maxResults        | `1&3` is 3, `3&1` is 1               | Gmail messages.list and
                           |                                      | threads.list 2026-10-08
+        pageToken         | `bad&<valid>` is the next page,      | Gmail messages.list and
+                          | `<valid>&bad` a 400                  | threads.list 2026-10-09
 
     An empty first repeat is read as itself rather than skipped, measured 2026-09-23:
     `q=&q=<folders>` is the unfiltered listing, `fields=&fields=id` on Drive `files.get` answers
@@ -652,8 +694,7 @@ def first_repeat(query: Mapping[str, str] | None, name: str) -> str | None:
     `excludeTablesInBandedRanges`, measured the same day, and of `majorDimension`, measured
     2026-09-22.
 
-    Gmail's `q` and `pageToken` stay on ``.get`` because which end real reads them from is
-    unmeasured.
+    Gmail's `q` stays on ``.get`` because which end real reads it from is unmeasured.
     """
     if query is None:
         return None
@@ -833,7 +874,7 @@ def http_body(path: str, exc: HTTPException, query: Mapping[str, str] | None = N
         if location:
             entry["location"] = location
             entry["locationType"] = getattr(exc, "location_type", "parameter")
-        err["errors"] = [entry]
+        err["errors"] = [{} if getattr(exc, "empty_entry", False) else entry]
     status = getattr(exc, "status", None)
     if status:
         err["status"] = status

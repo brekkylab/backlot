@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import base64
 import csv
-import email
 import io
 import json
 import re
@@ -498,74 +497,6 @@ def test_gmail_attachment_is_found_by_its_id_within_the_acl(
             assert r.status_code == 200, doc
             assert base64.urlsafe_b64decode(r.json()["data"]) == content, doc
         assert scanned == ([] if under == doc and caller != "mia" else [reads]), doc
-
-
-# One message holding TWO attachments, and only the first states `content`. Every other Gmail corpus
-# the tests in this file serve holds one attachment, so an index that went wrong only past the first
-# was never read back: `gmail_attachment` and `_attachment` in the route, `_json_part`'s
-# `attachmentId` and `_mime_part`'s bytes each reach for attachment `i`, and the second attachment is
-# what says whether `i` is that part's own index.
-_TWO_ATTACHMENTS = [
-    {
-        "source_type": "gmail",
-        "doc_id": "two-att",
-        "mailbox": "ava",
-        "title": "Two files",
-        "content": "Both attached.",
-        "author_email": "ava@acme.com",
-        "readers": ["ava@acme.com"],
-        "created": "2026-02-04T09:00:00Z",
-        "attachments": [
-            {"filename": "a.txt", "mime": "text/plain", "content": "hello"},
-            # No `content`: `_att_content` stands in `attachment <this part's own id>`, so reaching
-            # for attachment 0's content in its place serves a DIFFERENT string of the SAME length.
-            {"filename": "b.txt", "mime": "text/plain"},
-        ],
-    },
-]
-
-
-@pytest.fixture
-def two_attachments(tmp_path):
-    """One message holding two attachments, the second stating no `content`. Yields the client and
-    the admin header."""
-    settings = tiny_corpus(tmp_path, _TWO_ATTACHMENTS)
-    with client_for(settings, reload=True) as client:
-        yield client, {"Authorization": f"Bearer {settings.admin_token}"}
-
-
-def test_gmail_each_of_two_attachments_serves_its_own_raw_part_bytes(two_attachments):
-    """Both attachments of one message, each fetched by the id its own part names, hold the bytes
-    that part holds in `format=raw`. `a.txt` states its content; `b.txt` states none, so its bytes
-    are the stand-in naming its own id — the case where attachment 0's content is a substitution a
-    client can see rather than the same string by coincidence.
-
-    The two parts name different ids, and each answer's `size` is the length of the bytes it
-    carries, so identity and length are pinned alongside the bytes."""
-    client, h = two_attachments
-    url = f"/gmail/v1/users/me/messages/{served_id('gmail', 'two-att')}"
-    parts = [
-        p
-        for p in client.get(url, headers=h, params={"format": "full"}).json()["payload"]["parts"]
-        if p.get("filename")
-    ]
-    assert [p["filename"] for p in parts] == ["a.txt", "b.txt"]
-    ids = [p["body"]["attachmentId"] for p in parts]
-    assert len(set(ids)) == 2, "each attachment part names its own id"
-
-    mime = email.message_from_bytes(
-        base64.urlsafe_b64decode(client.get(url, headers=h, params={"format": "raw"}).json()["raw"])
-    )
-    in_raw = {p.get_filename(): p.get_payload(decode=True) for p in mime.walk() if p.get_filename()}
-    assert sorted(in_raw) == ["a.txt", "b.txt"]
-
-    for part in parts:
-        r = client.get(f"{url}/attachments/{part['body']['attachmentId']}", headers=h)
-        assert r.status_code == 200, part["filename"]
-        body = r.json()
-        served = base64.urlsafe_b64decode(body["data"])
-        assert served == in_raw[part["filename"]], part["filename"]
-        assert body["size"] == part["body"]["size"] == len(served)
 
 
 @pytest.mark.parametrize(
@@ -6346,6 +6277,20 @@ _GMAIL_SHAPES = [
         "to": "회의 <peer@x.com>",
         "attachments": [{"filename": "회의록.txt", "mime": "text/plain", "content": "안녕"}],
     },
+    # two attachments, the second stating no `content`, so its bytes are `attachment <its own id>`:
+    # as long as the stand-in for any other id, and equal to none of them
+    {
+        "source_type": "gmail",
+        "doc_id": "att2",
+        "mailbox": "ceo",
+        "title": "Two attachments",
+        "content": "see attached",
+        "author_email": "ceo@x.com",
+        "attachments": [
+            {"filename": "a.txt", "mime": "text/plain", "content": "hello"},
+            {"filename": "b.txt", "mime": "text/plain"},
+        ],
+    },
 ]
 
 
@@ -6447,11 +6392,14 @@ def test_gmail_a_text_attachment_names_us_ascii_or_utf8_by_its_content(gmail_sha
     }
 
 
-@pytest.mark.parametrize("doc", ["att", "lt", "ko", "html175", "html325", "att-ko", "hdr-ko"])
+@pytest.mark.parametrize(
+    "doc", ["att", "lt", "ko", "html175", "html325", "att-ko", "hdr-ko", "att2"]
+)
 def test_gmail_raw_and_full_describe_one_message(gmail_shapes, doc):
     """`format=raw` is ASCII, and it and the `full` payload are the same tree, with the same
     headers on the message and on each part once `raw`'s encoded-words are decoded, and each raw
-    part decodes, by its own Content-Transfer-Encoding, to the bytes `full` serves."""
+    part decodes, by its own Content-Transfer-Encoding, to the bytes `full` serves, or for an
+    attachment, to the bytes `attachments.get` serves for the id its `full` part names."""
     import email
     import email.policy
 
@@ -6473,6 +6421,9 @@ def test_gmail_raw_and_full_describe_one_message(gmail_shapes, doc):
             assert len(children) == len(part["parts"])
             for child, sub in zip(part["parts"], children):
                 check(child, sub)
+        elif "attachmentId" in part["body"]:
+            got = client.get(f"{url}/attachments/{part['body']['attachmentId']}", headers=h)
+            assert entity.get_payload(decode=True) == base64.urlsafe_b64decode(got.json()["data"])
         elif "data" in part["body"]:
             assert entity.get_payload(decode=True) == base64.urlsafe_b64decode(part["body"]["data"])
             if "Content-Transfer-Encoding" in entity:
@@ -6534,10 +6485,11 @@ def test_gmail_metadata_headers_keeps_the_named_headers(gmail_shapes):
     assert len(full) > 1
 
 
-@pytest.mark.parametrize("doc", ["att", "ko", "att-ko"])
+@pytest.mark.parametrize("doc", ["att", "ko", "att-ko", "att2"])
 def test_gmail_a_parts_size_is_the_byte_length_of_its_data(gmail_shapes, doc):
     """The rule `_byte_len` states, over every part of the message: `att` is ASCII, where bytes and
-    characters are one count, and `ko` and `att-ko` are where they differ."""
+    characters are one count, and `ko` and `att-ko` are where they differ. `att2` holds two
+    attachments, each fetched by the id its own part names."""
     client, h = gmail_shapes
     url = f"/gmail/v1/users/me/messages/{served_id('gmail', doc)}"
     parts = [client.get(url, headers=h).json()["payload"]]

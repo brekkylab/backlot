@@ -2066,19 +2066,20 @@ def _fireflies_where(
     if channel is not None:
         sql += " AND channel = ?"
         params.append(channel)
+    # `host_email` and `organizers` match an address as written, not case-folded. Measured against
+    # api.fireflies.ai on 2026-10-10 over a workspace whose owner organized both of its meetings,
+    # which serve `host_email: null`: the owner's address as served found both under `host_email`
+    # and `organizer_email`, and none came back with all of it, its local part, its domain or only
+    # its first letter upper-cased, while `participant_email` folds case. That workspace's organizer
+    # and participant addresses are all lower-case, so these requests cannot tell an exact match
+    # from one that folds the stored side alone.
     if host_email:
-        sql += " AND lower(author_email) = ?"
-        params.append(host_email.lower())
+        sql += " AND author_email = ?"
+        params.append(host_email)
     if organizers:
         # `organizer_email` is null when the organizer IS the host, which is the common case, so
         # the filter has to consider both — otherwise organizing a meeting you also hosted would
         # not match your own address.
-        #
-        # Matched as written, not case-folded: measured against api.fireflies.ai on 2026-10-10, an
-        # organizer's address as stored found their meetings, and none came back with all of it, its
-        # local part, its domain or only its first letter upper-cased, while `participant_email`
-        # folds case. That workspace's organizer and participant addresses are all lower-case, so
-        # these requests cannot tell an exact match from one that folds the stored side alone.
         marks = ", ".join("?" for _ in organizers)
         sql += f" AND COALESCE(organizer_email, author_email) IN ({marks})"
         params += list(organizers)

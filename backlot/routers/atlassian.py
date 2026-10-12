@@ -155,7 +155,9 @@ _P_CONTENT = {
         qp("start", "integer"),
     ]
 }
-_P_SPACE = {"parameters": [qp("expand"), qp("limit", "integer"), qp("start", "integer")]}
+_P_SPACE = {
+    "parameters": [qp("expand"), qp("spaceKey"), qp("limit", "integer"), qp("start", "integer")]
+}
 # The four listings under `content/{id}`, which read the same pair with their own defaults and
 # caps. `child/page` is the one of them this router also reads an `expand` on.
 _P_CHILD_PAGE = {"parameters": [qp("expand"), qp("limit", "integer"), qp("start", "integer")]}
@@ -1233,7 +1235,7 @@ def _space_container_for_key(conn, space_key: str) -> str | None:
     its corpus name, so both the synthesized key (``synth.confluence_space_key(name)``, the
     hash-suffixed value ``/space`` advertises) and the literal container name (e.g. ``"handbook"``,
     a legitimate natural key) resolve. Anything else is unresolvable -> ``None``, which no caller
-    reads as "no filter": the CQL search matches nothing and the content listing answers its 404.
+    reads as "no filter": a CQL search matches nothing, `content` 404s and `space` leaves it out.
     Case does not decide whether a key resolves: real reads a key whatever its case (measured
     2026-10-10, `space/mfs` and `space/MfS` answering the space `space/MFS` does), and the name half
     is folded too because a natural key the corpus names may be typed in any case. The fold is
@@ -1277,6 +1279,23 @@ def _reachable_spaces(conn, ids) -> list:
     if ids is None:
         return rows
     return [r for r in rows if store.has_visible_document(conn, "confluence", r["name"], ids)]
+
+
+def _space_keys(request: Request) -> list[str] | None:
+    """The keys `space?spaceKey=` narrows the listing to, or ``None`` for no narrowing.
+
+    Read the way Spring binds a list parameter, measured 2026-10-12 on Confluence Cloud. One value
+    is split at each comma and each piece trimmed as Java's `String.trim()` trims: `spaceKey=A,B`
+    names two spaces, `%20A` and `%09A` are `A`, and a no-break space is kept, so `%C2%A0A` names
+    nothing. Two or more values are taken as sent, neither split nor trimmed:
+    `spaceKey=NOSUCH&spaceKey=%20A` lists nothing, and `spaceKey=NOSUCH&spaceKey=A,B` lists nothing
+    either. An empty value alone is no narrowing at all, while a piece that trims to nothing names
+    no space, so `spaceKey=%20` and `spaceKey=%2C` list nothing.
+    """
+    values = request.query_params.getlist("spaceKey")
+    if len(values) == 1:
+        values = [v.strip(_JAVA_TRIMMED) for v in values[0].split(",")] if values[0] else []
+    return values or None
 
 
 def _require_space(request: Request, conn, key: str) -> str:
@@ -1445,6 +1464,14 @@ async def confluence_spaces(request: Request):
     applied per space through :func:`_space` and carried into `next`/`prev`/`self` too.
 
     `limit` is capped at 1000, as real caps it.
+
+    `spaceKey` narrows the listing to the spaces it names (:func:`_space_keys`), each resolved as
+    every other reader resolves a key (:func:`_space_container_for_key`), and `total`, `next` and
+    `prev` count the narrowed listing. Measured 2026-10-12 on Confluence Cloud: the spaces come back
+    in the listing's own order whatever order the keys were sent in, a space named twice is listed
+    once, and a key naming no space is no refusal, so `spaceKey=NOSUCH` is a 200 with no results
+    where `content?spaceKey=NOSUCH` is a 404. The narrowing applies to the spaces the caller
+    reaches, so a key naming a space they reach no page in is left out as a key naming nothing is.
     """
     conn = auth.conn(request)
     ids = auth.visible_ids(request, _confluence_caller(request))
@@ -1453,13 +1480,23 @@ async def confluence_spaces(request: Request):
     # store.list_containers orders by name; real's own order is none of name, key or id (measured
     # 2026-09-17).
     reachable = _reachable_spaces(conn, ids)
+    keys = _space_keys(request)
+    if keys is not None:
+        named = {_space_container_for_key(conn, key) for key in keys}
+        reachable = [r for r in reachable if r["name"] in named]
     total = len(reachable)
     results = [
         _space(request, conn, r["name"], expand, listed=True)
         for r in reachable[start : start + limit]
     ]
     links = _confluence_envelope(
-        request, "/rest/api/space", start=start, limit=limit, size=len(results), total=total
+        request,
+        "/rest/api/space",
+        start=start,
+        limit=limit,
+        size=len(results),
+        total=total,
+        head=("spaceKey",),
     )
     return {
         "results": results,
@@ -2437,10 +2474,14 @@ def _cql_cursor(served: list, matched: list, position: int) -> str | None:
 
 
 def _confluence_carried(
-    request: Request, *, first: tuple[str, ...] = ("expand",), own: tuple[str, ...] = ()
-) -> tuple[str, str]:
-    """The request's other parameters, split into what leads `limit`/`start` in a page link and
-    what trails `start`.
+    request: Request,
+    *,
+    first: tuple[str, ...] = ("expand",),
+    own: tuple[str, ...] = (),
+    head: tuple[str, ...] = (),
+) -> tuple[str, str, str]:
+    """The request's other parameters, split into what leads everything else in a page link, what
+    leads `limit`/`start` and what trails `start`.
 
     Measured 2026-09-17 and 2026-09-22: `expand` leads `limit`/`start`, and on `prev` it leads the
     marker as well. Where a name real does not read lands is a Java map's iteration order rather
@@ -2448,14 +2489,23 @@ def _confluence_carried(
     each on its own request — so the names in ``first`` lead and everything else trails in the
     order the caller sent it, which reproduces the `cql` and `nonce` cases and not the other two.
 
+    ``head`` names what a route's links carry ahead of all of that, the marker and `expand`
+    included: `space` carries `spaceKey` there, on `next`, `prev` and `self` alike, whichever order
+    it was sent in beside `expand` (measured 2026-10-12).
+
     ``own`` names what the route writes into its links itself, so it is not carried as well.
     """
-    lead, trail = [], []
+    front, lead, trail = [], [], []
     for name, value in request.query_params.multi_items():
         if name in ("limit", "start", "next", "prev", *own):
             continue
-        (lead if name in first else trail).append(f"{name}={quote(str(value), safe='')}")
-    return ("&".join(lead) + "&" if lead else "", "&".join(trail))
+        pair = f"{name}={quote(str(value), safe='')}"
+        (front if name in head else lead if name in first else trail).append(pair)
+    return (
+        "&".join(front) + "&" if front else "",
+        "&".join(lead) + "&" if lead else "",
+        "&".join(trail),
+    )
 
 
 def _confluence_envelope(
@@ -2469,6 +2519,7 @@ def _confluence_envelope(
     cursor: str | None = None,
     sent_cursor: str | None = None,
     reached: int | None = None,
+    head: tuple[str, ...] = (),
 ) -> dict:
     """`_links` as every paged Confluence listing answers it: `base`, `context` and `self` on every
     page, plus `next`/`prev` from :func:`backlot.pagination.confluence_page_links`.
@@ -2484,9 +2535,13 @@ def _confluence_envelope(
     :func:`backlot.pagination.confluence_page_links` counts it. Measured 2026-09-23 following `next`
     three hops at `limit=0`, `1` and `2`: the sent one is not carried the way other parameters are,
     so `self` holds no cursor and `next` the new one alone, and `prev` is where it goes back out.
+
+    ``head`` is passed to :func:`_confluence_carried`, which says where those parameters ride.
     """
-    lead, trail = _confluence_carried(request, own=() if sent_cursor is None else ("cursor",))
-    query = "&".join(p for p in (lead.rstrip("&"), trail) if p)
+    front, lead, trail = _confluence_carried(
+        request, own=() if sent_cursor is None else ("cursor",), head=head
+    )
+    query = "&".join(p for p in (front.rstrip("&"), lead.rstrip("&"), trail) if p)
     links = {
         "base": f"{_site(request)}/wiki",
         "context": "/wiki",
@@ -2494,7 +2549,9 @@ def _confluence_envelope(
     }
     sent = quote(sent_cursor, safe="") if sent_cursor else None
     links.update(
-        confluence_page_links(route, start, limit, size, total, lead, trail, cursor, sent, reached)
+        confluence_page_links(
+            route, start, limit, size, total, lead, trail, cursor, sent, reached, head=front
+        )
     )
     return links
 

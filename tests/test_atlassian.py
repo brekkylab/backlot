@@ -17,7 +17,7 @@ import pytest
 import yaml
 from starlette.requests import Request
 
-from backlot import store
+from backlot import store, synth
 from backlot.errors import atlassian as errors_atlassian
 from tests._helpers import (
     bare_request,
@@ -1004,7 +1004,7 @@ def test_confluence_spaces_are_paged_not_served_whole(client, admin_h, tokens):
         "context": "/wiki",
         "self": "http://testserver/wiki/rest/api/space",
     }  # a full page: no next, no prev. `self` carries no query string for a request that sends
-    # none of `limit`/`start`/`expand` — the only parameters this route reads.
+    # none of `limit`/`start`/`expand`/`spaceKey` — the only parameters this route reads.
 
     # `_site` echoes the caller's own Host, not a fixed org name — proved here since this route's
     # `base`/`self` are the only place that claim goes untested.
@@ -1065,6 +1065,67 @@ def test_confluence_spaces_are_paged_not_served_whole(client, admin_h, tokens):
     scoped = client.get("/atlassian/wiki/rest/api/space?limit=1", headers=ava_h).json()
     assert [s["name"] for s in scoped["results"]] == ["handbook"]
     assert "next" not in scoped["_links"] and "prev" not in scoped["_links"]
+
+
+# The keys of the bundled corpus's two spaces, which a row below names as `{hb}` and `{po}`
+_SPACE_KEYS = {
+    "hb": synth.confluence_space_key("handbook"),
+    "po": synth.confluence_space_key("people-ops"),
+    "po_lower": synth.confluence_space_key("people-ops").lower(),
+}
+
+# What `space?spaceKey=` lists, as `_space_keys` and `confluence_spaces` record real reading it:
+# the query, whose token asks, the spaces listed, and whether the page answers a `next`. ava
+# reaches `handbook` alone.
+# fmt: off
+_SPACE_KEY_ROWS = [
+    ([("spaceKey", "{po}")], "admin", ["people-ops"], False),
+    ([("spaceKey", "{po_lower}")], "admin", ["people-ops"], False),
+    ([("spaceKey", "NOSUCH")], "admin", [], False),
+    ([("spaceKey", "{po}"), ("spaceKey", "{hb}")], "admin", ["handbook", "people-ops"], False),
+    ([("spaceKey", "{po}"), ("spaceKey", "{po}")], "admin", ["people-ops"], False),
+    ([("spaceKey", "{po},NOSUCH")], "admin", ["people-ops"], False),
+    ([("spaceKey", "{po},{hb}")], "admin", ["handbook", "people-ops"], False),
+    ([("spaceKey", " {po}\t")], "admin", ["people-ops"], False),
+    ([("spaceKey", "\u00a0{po}")], "admin", [], False),
+    ([("spaceKey", "NOSUCH"), ("spaceKey", " {po}")], "admin", [], False),
+    ([("spaceKey", "NOSUCH"), ("spaceKey", "{po},{hb}")], "admin", [], False),
+    ([("spaceKey", "{po}"), ("spaceKey", "")], "admin", ["people-ops"], False),
+    ([("spaceKey", "")], "admin", ["handbook", "people-ops"], False),
+    ([("spaceKey", " ")], "admin", [], False),
+    ([("spaceKey", ",")], "admin", [], False),
+    ([("spaceKey", "{hb}"), ("limit", "1")], "admin", ["handbook"], False),
+    ([("spaceKey", "{po},{hb}"), ("limit", "1")], "admin", ["handbook"], True),
+    ([("spaceKey", "{po}")], "ava", [], False),
+    ([("spaceKey", "{po},{hb}"), ("limit", "1")], "ava", ["handbook"], False),
+]
+# fmt: on
+
+
+@pytest.mark.parametrize("params, caller, names, has_next", _SPACE_KEY_ROWS)
+def test_confluence_space_listing_lists_the_spaces_space_key_names(
+    client, admin_h, tokens, params, caller, names, has_next
+):
+    """Over the bundled corpus, for an admin and for ava, the scoped token the narrowing must not
+    widen; the measurement behind each row is in :func:`backlot.routers.atlassian._space_keys` and
+    :func:`backlot.routers.atlassian.confluence_spaces`."""
+    headers = (
+        admin_h if caller == "admin" else {"Authorization": f"Bearer {tokens['ava@acme.com']}"}
+    )
+    sent = [(name, value.format(**_SPACE_KEYS)) for name, value in params]
+    r = client.get("/atlassian/wiki/rest/api/space", params=sent, headers=headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert [s["name"] for s in body["results"]] == names
+    assert (body["start"], body["size"]) == (0, len(names))
+    assert ("next" in body["_links"]) is has_next
+
+
+def test_confluence_space_listing_declares_the_parameters_it_reads(client):
+    """The served spec names `spaceKey` beside the page pair and `expand`, so a generated client
+    can find the narrowing."""
+    op = client.app.openapi()["paths"]["/atlassian/wiki/rest/api/space"]["get"]
+    assert {p["name"] for p in op["parameters"]} == {"expand", "spaceKey", "limit", "start"}
 
 
 def test_confluence_single_space_get(client, admin_h):
@@ -1886,14 +1947,48 @@ def test_confluence_listings_read_limit_and_start(client, admin_h, route, zero_r
     assert "next" not in past and "prev" in past
 
 
-def test_confluence_a_carried_parameter_sits_where_it_was_measured(client, admin_h):
-    """`expand` leads `limit`/`start` and a name real does not read trails `start`: the placement
-    :func:`backlot.routers.atlassian._confluence_carried` chose, since real's own for the latter is
+# (the request after `/wiki/rest/api`, the page link it answers, that link, the `self` after
+# `/wiki/rest/api`), with `{hb}` and `{po}` read from `_SPACE_KEYS`
+_CARRIED_ROWS = [
+    (
+        "/content?limit=1&bogus=x",
+        "next",
+        "/rest/api/content?next=true&limit=1&start=1&bogus=x",
+        "/content?bogus=x",
+    ),
+    (
+        "/space?spaceKey={po}&start=1",
+        "prev",
+        "/rest/api/space?spaceKey={po}&prev=true&limit=1&start=0",
+        "/space?spaceKey={po}",
+    ),
+    (
+        "/space?expand=description&spaceKey={po},{hb}&limit=1",
+        "next",
+        "/rest/api/space?spaceKey={po}%2C{hb}&next=true&expand=description&limit=1&start=1",
+        "/space?spaceKey={po}%2C{hb}&expand=description",
+    ),
+    (
+        "/space?spaceKey={po}&spaceKey={hb}&expand=description&limit=1&start=1",
+        "prev",
+        "/rest/api/space?spaceKey={po}&spaceKey={hb}&expand=description&prev=true&limit=1&start=0",
+        "/space?spaceKey={po}&spaceKey={hb}&expand=description",
+    ),
+]
+
+
+@pytest.mark.parametrize("request_path, which, link, self_path", _CARRIED_ROWS)
+def test_confluence_a_carried_parameter_sits_where_it_was_measured(
+    client, admin_h, request_path, which, link, self_path
+):
+    """`expand` leads `limit`/`start`, `spaceKey` leads the marker and `expand` on `space`, and a
+    name real does not read trails `start`: the placement
+    :func:`backlot.routers.atlassian._confluence_carried` chose, since real's own for the last is
     no rule a client can rely on."""
     api = "/atlassian/wiki/rest/api"
-    links = client.get(f"{api}/content?limit=1&bogus=x", headers=admin_h).json()["_links"]
-    assert links["next"].endswith("next=true&limit=1&start=1&bogus=x")
-    assert links["self"].endswith("/content?bogus=x")
+    links = client.get(api + request_path.format(**_SPACE_KEYS), headers=admin_h).json()["_links"]
+    assert links[which] == link.format(**_SPACE_KEYS)
+    assert links["self"] == "http://testserver/wiki/rest/api" + self_path.format(**_SPACE_KEYS)
 
 
 def test_confluence_label_serves_one_of_two_labels_and_a_next(client, admin_h):

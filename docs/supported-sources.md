@@ -44,7 +44,7 @@ Ordered as the table above, by `source_type`.
 | `content/{id}/label` | |
 | `content/{id}/restriction/byOperation` | |
 | `search` | CQL |
-| `space` | `expand=description,permissions` |
+| `space` | `spaceKey` (one or more keys, any case; a key naming no space lists nothing), `expand=description,permissions` |
 | `space/{key}` | `expand=description,permissions` |
 
 `expand=permissions` carries the space's permission roster on either read, one entry per ACL grant

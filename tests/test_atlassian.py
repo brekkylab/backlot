@@ -168,12 +168,19 @@ def test_atlassian_lists_only_the_containers_the_caller_can_open(tmp_path):
 
         # The space ava reaches no page in is absent on the space read with the roster asked for and
         # without it, as an unopenable project is on `project/{key}/role`. Bob, who authored the page
-        # in it, reads both. Under both spellings `_space_container_for_key` resolves: the
-        # synthesized key and the name.
+        # in it, reads both, under the spellings `_space_container_for_key` resolves: the
+        # synthesized key and the name, each in upper or lower case. The key with `ſ` for its `S` is
+        # no spelling of it, and both callers get the 404.
         shut = synth.confluence_space_key("secrets")
         ava = {"Authorization": f"Bearer {tokens['ava@acme.com']}"}
         bob = {"Authorization": f"Bearer {tokens['bob@acme.com']}"}
-        for spelling in (shut, "secrets"):
+        for spelling, bob_reads in (
+            (shut, True),
+            (shut.lower(), True),
+            ("secrets", True),
+            ("SECRETS", True),
+            (shut.replace("S", "ſ"), False),
+        ):
             for path in (
                 f"/wiki/rest/api/space/{spelling}",
                 f"/wiki/rest/api/space/{spelling}?expand=permissions",
@@ -181,7 +188,8 @@ def test_atlassian_lists_only_the_containers_the_caller_can_open(tmp_path):
                 refused = c.get(f"/atlassian{path}", headers=ava)
                 assert refused.status_code == 404, path
                 assert refused.json()["message"] == "No space with the given key exists"
-                assert c.get(f"/atlassian{path}", headers=bob).status_code == 200, path
+                read = c.get(f"/atlassian{path}", headers=bob)
+                assert read.status_code == (200 if bob_reads else 404), path
         # ... and the roster she is refused names bob against that space.
         space = c.get(
             f"/atlassian/wiki/rest/api/space/{shut}?expand=permissions", headers=bob
@@ -624,20 +632,27 @@ def test_confluence_content_answers_a_space_key_and_a_type_as_real_does(
         ("admin", "{handbook}", ["Engineering Handbook", "On-call Runbook"]),
         ("admin", "people-ops", ["Compensation Bands 2026"]),
         ("admin", "{people-ops}", ["Compensation Bands 2026"]),
+        ("admin", "{handbook lower}", ["Engineering Handbook", "On-call Runbook"]),
+        ("admin", "HANDBOOK", ["Engineering Handbook", "On-call Runbook"]),
+        ("admin", "people-opſ", 404),
         ("admin", "", ["Compensation Bands 2026", "Engineering Handbook", "On-call Runbook"]),
         ("ava@acme.com", "handbook", ["Engineering Handbook", "On-call Runbook"]),
         ("ava@acme.com", "people-ops", 404),
         ("ava@acme.com", "{people-ops}", 404),
+        ("ava@acme.com", "{people-ops lower}", 404),
+        ("ava@acme.com", "PEOPLE-OPS", 404),
     ],
 )
 def test_confluence_content_filtered_by_space_key(client, admin_h, tokens, caller, space, want):
     """A space key narrows the listing to that space under both spellings `_space_container_for_key`
-    resolves, the name and `{the synthesized key}`, and an empty one narrows nothing. ava reaches no
-    page in `people-ops`, so to her its key is the 404 a key naming nothing gets
-    (`_content_space`)."""
+    resolves, the name and `{the synthesized key}`, each in upper or lower case (`people-opſ` is no
+    spelling of `people-ops`), and an empty one narrows nothing. ava reaches no page in
+    `people-ops`, so to her its key is the 404 a key naming nothing gets (`_content_space`), in
+    upper or lower case."""
     from backlot import synth
 
-    key = space.format(**{n: synth.confluence_space_key(n) for n in ("handbook", "people-ops")})
+    keys = {n: synth.confluence_space_key(n) for n in ("handbook", "people-ops")}
+    key = space.format(**keys, **{f"{n} lower": k.lower() for n, k in keys.items()})
     h = admin_h if caller == "admin" else {"Authorization": f"Bearer {tokens[caller]}"}
     r = client.get("/atlassian/wiki/rest/api/content", headers=h, params={"spaceKey": key})
     if want == 404:
@@ -646,30 +661,51 @@ def test_confluence_content_filtered_by_space_key(client, admin_h, tokens, calle
         assert sorted(x["title"] for x in r.json()["results"]) == want
 
 
-def test_confluence_reads_a_space_key_whatever_its_case(client, admin_h):
-    """Real reads a space key whatever its case, as `_space_container_for_key` records of its
-    measurement. All three readers of it — the space read, the CQL `space=` clause and
-    `content?spaceKey=` — are asked for a space under a re-cased key here, and each answers it as
-    the space has the key."""
+def test_confluence_space_names_that_differ_only_in_case_stay_two_spaces(tmp_path):
+    """A corpus may name two spaces `Ops` and `ops`. An exact spelling is resolved before a folded
+    one (`_space_container_for_key`), so each name answers its own space on the three readers of a
+    key, as each synthesized key sent in lower case does, and a name no other space shares answers
+    in another case too."""
     from backlot import synth
 
-    key = synth.confluence_space_key("handbook")
-    rekeyed = key.swapcase()
-    assert rekeyed != key
-    want = ["Engineering Handbook", "On-call Runbook"]
-
-    single = client.get(f"/atlassian/wiki/rest/api/space/{rekeyed}", headers=admin_h)
-    assert (single.status_code, single.json()["key"]) == (200, key)
-
-    found = client.get(
-        "/atlassian/wiki/rest/api/search", headers=admin_h, params={"cql": f"space={rekeyed}"}
-    ).json()
-    assert sorted(r["title"] for r in found["results"]) == want
-
-    listed = client.get(
-        "/atlassian/wiki/rest/api/content", headers=admin_h, params={"spaceKey": rekeyed}
-    ).json()
-    assert sorted(r["title"] for r in listed["results"]) == want
+    corpus = [
+        {
+            "source_type": "confluence",
+            "doc_id": doc_id,
+            "space": space,
+            "title": title,
+            "content": "Body.",
+            "author_email": "ava@acme.com",
+            "visibility": "public",
+        }
+        for doc_id, space, title in (
+            ("o-up", "Ops", "Upper"),
+            ("o-low", "ops", "Lower"),
+            ("l", "Ledger", "Books"),
+        )
+    ]
+    settings = tiny_corpus(tmp_path, corpus)
+    wiki = "/atlassian/wiki/rest/api"
+    with client_for(settings, reload=True) as c:
+        token = yaml.safe_load(settings.tokens_path.read_text())["admin_token"]
+        admin = {"Authorization": f"Bearer {token}"}
+        for sent, name, title in (
+            ("Ops", "Ops", "Upper"),
+            ("ops", "ops", "Lower"),
+            (synth.confluence_space_key("Ops").lower(), "Ops", "Upper"),
+            (synth.confluence_space_key("ops").lower(), "ops", "Lower"),
+            ("lEDGER", "Ledger", "Books"),
+        ):
+            space = c.get(f"{wiki}/space/{sent}", headers=admin).json()
+            assert (space["name"], space["key"]) == (name, synth.confluence_space_key(name)), sent
+            for url, params in (
+                (f"{wiki}/content", {"spaceKey": sent}),
+                (f"{wiki}/search", {"cql": f"space={sent}"}),
+            ):
+                titles = [
+                    x["title"] for x in c.get(url, headers=admin, params=params).json()["results"]
+                ]
+                assert titles == [title], (url, sent)
 
 
 def test_confluence_content_filtered_by_title(client, admin_h, tokens):
@@ -888,7 +924,7 @@ def test_confluence_cql_search_with_no_tilde_selects_by_its_clauses(tmp_path):
             },
         ],
     )
-    eng = synth.confluence_space_key("eng")
+    eng, ops = synth.confluence_space_key("eng"), synth.confluence_space_key("ops")
     rows = [
         # cql, the titles the admin is served, the titles ava is served. A list goes out as a
         # repeated `cql`, read from its first value as `cql_required` records.
@@ -896,6 +932,9 @@ def test_confluence_cql_search_with_no_tilde_selects_by_its_clauses(tmp_path):
         ("type=blogpost", {"Post"}, {"Post"}),
         (f"space={eng}", {"Guide", "Post"}, {"Guide", "Post"}),
         (f"space={eng} and type=page", {"Guide"}, {"Guide"}),
+        (f"space={eng.lower()}", {"Guide", "Post"}, {"Guide", "Post"}),
+        (f'space="{ops.lower()}"', {"Shut"}, set()),
+        ("space=OPS", {"Shut"}, set()),
         ("label=runbook", {"Guide"}, {"Guide"}),
         ("space=NOPE", set(), set()),
         ('title="Guide"', set(), set()),

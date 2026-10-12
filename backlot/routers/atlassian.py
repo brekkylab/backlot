@@ -1151,18 +1151,23 @@ def _export_view(content: str) -> str:
 
 
 def _space_container_for_key(conn, space_key: str) -> str | None:
-    """Resolve a Confluence ``spaceKey`` to its backing container name. Backlot models a space
-    by its corpus name, so both the synthesized key (``synth.confluence_space_key(name)``, the
+    """Resolve a Confluence ``spaceKey`` to its backing container name. Backlot models a space by
+    its corpus name, so both the synthesized key (``synth.confluence_space_key(name)``, the
     hash-suffixed value ``/space`` advertises) and the literal container name (e.g. ``"handbook"``,
     a legitimate natural key) resolve. Anything else is unresolvable -> ``None``, which no caller
     reads as "no filter": the CQL search matches nothing and the content listing answers its 404.
-    Case does not enter the comparison: real reads a key whatever its case (measured 2026-10-10,
-    `space/mfs` and `space/MfS` answering the space `space/MFS` does), and the name half is folded
-    too because a natural key the corpus names may be typed in any case."""
-    key = space_key.lower()
-    for r in store.list_containers(conn, "confluence"):
-        if key == synth.confluence_space_key(r["name"]).lower() or key == r["name"].lower():
-            return r["name"]
+    Case does not decide whether a key resolves: real reads a key whatever its case (measured
+    2026-10-10, `space/mfs` and `space/MfS` answering the space `space/MFS` does), and the name half
+    is folded too because a natural key the corpus names may be typed in any case. The fold is
+    `str.lower`: real answers `space/MFſ` and `content?spaceKey=MFſ` with the 404 a key naming no
+    space gets (measured 2026-10-11), and `str.casefold` would read that `ſ` as `s`. An exact
+    spelling is tried first, so two spaces whose names differ only in case each keep their own
+    name."""
+    names = [r["name"] for r in store.list_containers(conn, "confluence")]
+    for fold in (str, str.lower):
+        for name in names:
+            if fold(space_key) in (fold(synth.confluence_space_key(name)), fold(name)):
+                return name
     return None
 
 

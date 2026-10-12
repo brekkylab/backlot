@@ -377,12 +377,8 @@ def test_s3_a_bucket_write_at_a_trailing_slash_is_the_bucket(
 ):
     """The bucket's own answer, not a key's: `/{bucket}/` is not the key `""` in that bucket."""
     base_url, settings = live_server
-    bare = _signed(
-        base_url, f"/s3/eng-artifacts{query}", settings.admin_token, method=method
-    )
-    slashed = _signed(
-        base_url, f"/s3/eng-artifacts/{query}", settings.admin_token, method=method
-    )
+    bare = _signed(base_url, f"/s3/eng-artifacts{query}", settings.admin_token, method=method)
+    slashed = _signed(base_url, f"/s3/eng-artifacts/{query}", settings.admin_token, method=method)
     assert bare.status_code == status == slashed.status_code
     assert f"<Code>{code}</Code>" in bare.text and member in bare.text
     assert f"<Code>{code}</Code>" in slashed.text and member in slashed.text

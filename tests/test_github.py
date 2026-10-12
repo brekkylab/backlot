@@ -1750,6 +1750,16 @@ def test_github_git_ref_resolves_a_pulls_own_ref(gh_client, gh_admin_h, gh_org):
         assert r.status_code == 200, suffix
         assert r.json()["ref"] == f"refs/pull/{num}/{suffix}"
     assert c.get(f"{base}/git/ref/pull/999999/head", headers=gh_admin_h).status_code == 404
+    # the same number in other digits, or with a leading zero, names no ref (see `_ref_exists`)
+    digits = str(num)
+    for spelling in (
+        digits.translate(str.maketrans("0123456789", "０１２３４５６７８９")),
+        digits.translate(str.maketrans("0123456789", "٠١٢٣٤٥٦٧٨٩")),
+        f"0{digits}",
+    ):
+        for suffix in ("head", "merge"):
+            r = c.get(f"{base}/git/ref/pull/{spelling}/{suffix}", headers=gh_admin_h)
+            assert r.status_code == 404, (spelling, suffix)
     # this repo states no tags and `/tags` says so, so a tag ref cannot resolve either
     assert c.get(f"{base}/git/ref/tags/v1", headers=gh_admin_h).status_code == 404
 
@@ -2416,12 +2426,24 @@ def test_github_pages_at_reals_thirty_and_caps_at_its_hundred(tmp_path):
         "git/ref/pull/{number}/merge",
     ],
 )
-@pytest.mark.parametrize("number", ["notanint", "9223372036854775808", "-9223372036854775809"])
+@pytest.mark.parametrize(
+    "number",
+    [
+        "notanint",
+        "²",
+        "9223372036854775808",
+        "-9223372036854775809",
+        pytest.param("1" * 4301, id="4301-digits"),
+    ],
+)
 def test_github_a_path_number_it_cannot_read_is_the_unknown_number_404(
     gh_client, gh_admin_h, gh_org, route, number
 ):
-    """A path number that is not an integer, or one outside 64 bits (see store.github_by_number),
-    gets the 404 an unknown number gets on that route, byte for byte, as real answers both.
+    """A path number that is not an integer (`²` included), or one outside 64 bits (see
+    store.github_by_number), gets the 404 an unknown number gets on that route, byte for byte, as
+    real answers both; `²` was measured on all eleven routes. A number of 4,301 digits, one more
+    than `int()` converts, gets that 404 too, where real answers a path that long with a 414 on
+    `issues/{number}` and the git refs, and with a 404 on `pulls/{number}`.
 
     The routes that declare the number an `int` match `notanint` and then fail to validate it, and
     that has to be the route's 404 rather than a 422: `{"detail": [...]}` would announce itself as

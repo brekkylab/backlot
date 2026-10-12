@@ -2372,7 +2372,18 @@ def _ref_exists(conn, owner: str, repo: str, ref: str, ids) -> bool:
         return bool(name) and name in _repo_tags(conn, repo)
     if head == "pull":
         number, _, kind = name.partition("/")
-        if kind not in ("head", "merge") or not number.isdigit():
+        # Only a pull's number in its own decimal spelling names its ref. Measured on
+        # octocat/Hello-World (api.github.com, 2026-10-11): `pull/11482/head` and `…/merge` are
+        # 200, and the same number in fullwidth, Arabic-Indic or Devanagari digits, with leading
+        # zeros or a sign, and `²` are each the 404 an unknown number gets. Nineteen digits hold
+        # every number SQLite stores (`store.github_by_number` misses one past 64 bits), and the
+        # bound keeps `int()` off a string longer than the 4,300 digits it converts.
+        if kind not in ("head", "merge") or not (
+            number.isascii()
+            and number.isdigit()
+            and len(number) <= 19
+            and str(int(number)) == number
+        ):
             return False
         row = store.github_by_number(conn, repo, int(number), ids)
         if row is None or row["kind"] != "pull_request":

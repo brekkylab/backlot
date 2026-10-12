@@ -617,6 +617,99 @@ def _refuse_an_operator(raw: bytes, body: dict) -> JSONResponse | None:
     return None
 
 
+def _java_double(x: float) -> str:
+    """``x`` as real echoes it, in the form of Java's `Double.toString`: plain from 10^-3 up to
+    10^7, and otherwise with one digit before the point (`1.0E7`, `1.23456789125E8`, `1.0E-4`)."""
+    if x == 0 or 1e-3 <= abs(x) < 1e7:
+        return repr(x)
+    if abs(x) == float("inf"):
+        return "Infinity" if x > 0 else "-Infinity"
+    digits = repr(abs(x)).split("e")[0].replace(".", "").strip("0")
+    mantissa, exponent = format(x, f".{max(len(digits) - 1, 1)}e").split("e")
+    return f"{mantissa}E{int(exponent)}"
+
+
+def _not_a_list(value) -> str:
+    """Real's text for a batch/read member it reads as a list when the body holds something else
+    there, naming the JSON value it found."""
+    if isinstance(value, bool):
+        kind, token = "Boolean", "VALUE_TRUE" if value else "VALUE_FALSE"
+    elif isinstance(value, int):
+        kind, token = "Integer", "VALUE_NUMBER_INT"
+    elif isinstance(value, float):
+        kind, token = "Floating-point", "VALUE_NUMBER_FLOAT"
+    elif isinstance(value, str):
+        kind, token = "String", "VALUE_STRING"
+    else:
+        kind, token = "Object", "START_OBJECT"
+    return f"Cannot deserialize value of type <>` from {kind} value (token `JsonToken.{token}`)"
+
+
+def _not_an_input(item) -> str:
+    """Real's text for an element of `inputs` that is an array, a boolean or a number. For an
+    integer it names the narrowest of Java's int, long and BigInteger that holds the value."""
+    if isinstance(item, list):
+        return "Cannot deserialize value of type  from Array value (token `JsonToken.START_ARRAY`)"
+    if isinstance(item, bool):
+        arg, shown = "boolean/Boolean", f"boolean value ({str(item).lower()})"
+    elif isinstance(item, float):
+        arg, shown = "double/Double", f"Number value ({_java_double(item)})"
+    elif -(2**31) <= item < 2**31:
+        arg, shown = "int/Int", f"Number value ({item})"
+    elif -(2**63) <= item < 2**63:
+        arg, shown = "long/Long", f"Number value ({item})"
+    else:
+        arg, shown = "BigInteger", f"Number value ({item})"
+    return (
+        "Cannot construct instance of  (although at least one Creator exists): "
+        f"no {arg}-argument constructor/factory method to deserialize from {shown}"
+    )
+
+
+def _invalid_at(raw: bytes, path: tuple, text: str) -> JSONResponse:
+    line, column = _token_at(raw, path)
+    return _error(400, f"Invalid input JSON on line {line}, column {column}: {text}")
+
+
+def _refuse_a_batch_read_shape(raw: bytes, body: dict) -> JSONResponse | None:
+    """Real's 400 for a batch/read body it cannot read, or None. Measured against api.hubapi.com on
+    2026-10-09, 2026-10-11 and 2026-10-12: real reads `inputs`, `properties` and
+    `propertiesWithHistory` in body order and stops at the first that is neither null nor a list, or
+    at the first element of `inputs` that is neither an object nor a string, naming where that value
+    starts. A string `properties` or `propertiesWithHistory` is echoed trimmed (`_TRIM`), and one
+    that trims to nothing is named by its field alone. A null element of `inputs` is refused only
+    once the rest of the body has been read, in an envelope with no `category`. The elements of
+    `properties` and the members of an object in `inputs` are not checked here."""
+    null_input = False
+    for key, value in body.items():
+        if key not in ("inputs", "properties", "propertiesWithHistory") or value is None:
+            continue
+        if not isinstance(value, list):
+            if key == "inputs" or not isinstance(value, str):
+                return _invalid_at(raw, (key,), _not_a_list(value))
+            if not value.strip(_TRIM):
+                return _error(
+                    400, f'Invalid input JSON: unable to deserialize field "{key}". Invalid value: '
+                )
+            return _invalid_at(
+                raw,
+                (key,),
+                "Cannot construct instance of  (although at least one Creator exists): no "
+                "String-argument constructor/factory method to deserialize from String value "
+                f"('{value.strip(_TRIM)}')",
+            )
+        for i, item in enumerate(value if key == "inputs" else ()):
+            if item is None:
+                null_input = True
+            elif not isinstance(item, (str, dict)):
+                return _invalid_at(raw, ("inputs", i), _not_an_input(item))
+    if null_input:
+        return JSONResponse(
+            status_code=400, content={"status": "error", "message": "Input IDs must be non-null."}
+        )
+    return None
+
+
 def _match_one(prop, f: dict) -> bool:
     op = _operator(f)
     present = prop is not None
@@ -927,11 +1020,15 @@ async def batch_read(object_type: str, request: Request):
     if spellings is None:
         return _unknown_type(object_type)
     body = await json_body(request)
+    refused = _refuse_a_batch_read_shape(await request.body(), body)
+    if refused is not None:
+        return refused
     conn, visible = auth.conn(request), auth.visible_ids(request, caller)
     keep = _keep(body.get("properties"))
     results, errors = [], []
     for item in body.get("inputs") or []:
-        rid = str(item.get("id"))
+        # A string in `inputs` is answered as `{"id": <that string>}` is (measured 2026-10-11).
+        rid = item if isinstance(item, str) else str(item.get("id"))
         # One ACL-scoped query, not a resolve followed by a get_document refetch of the same
         # row -- see get_object's comment for why the collapse is safe.
         row = store.hubspot_by_id(conn, rid, visible)

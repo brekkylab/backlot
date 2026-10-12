@@ -24,7 +24,7 @@ Generated from `backlot/schemas/*.schema.json` and the app's own `/openapi.json`
 | `jira` | Jira | `/atlassian/rest/api` | 14 | [`jira.schema.json`](../backlot/schemas/jira.schema.json) | A Jira issue. |
 | `linear` | Linear | `/linear/graphql` | GraphQL (one `POST`) | [`linear.schema.json`](../backlot/schemas/linear.schema.json) | A Linear issue. |
 | `notion` | Notion | `/notion/v1` | 12 | [`notion.schema.json`](../backlot/schemas/notion.schema.json) | A Notion page or database. |
-| `s3` | Amazon S3 | `/s3` | 4 | [`s3.schema.json`](../backlot/schemas/s3.schema.json) | An S3 object. |
+| `s3` | Amazon S3 | `/s3` | 5 | [`s3.schema.json`](../backlot/schemas/s3.schema.json) | An S3 object. |
 | `slack` | Slack | `/slack/api` | 12 | [`slack.schema.json`](../backlot/schemas/slack.schema.json) | A Slack message. |
 <!-- generated:sources end -->
 
@@ -44,7 +44,7 @@ Ordered as the table above, by `source_type`.
 | `content/{id}/label` | |
 | `content/{id}/restriction/byOperation` | |
 | `search` | CQL |
-| `space` | `expand=description,permissions` |
+| `space` | `spaceKey` (one or more keys, any case; a key naming no space lists nothing), `expand=description,permissions` |
 | `space/{key}` | `expand=description,permissions` |
 
 `expand=permissions` carries the space's permission roster on either read, one entry per ACL grant

@@ -17,7 +17,7 @@ import pytest
 import yaml
 from starlette.requests import Request
 
-from backlot import store
+from backlot import store, synth
 from backlot.errors import atlassian as errors_atlassian
 from tests._helpers import (
     bare_request,
@@ -168,20 +168,34 @@ def test_atlassian_lists_only_the_containers_the_caller_can_open(tmp_path):
 
         # The space ava reaches no page in is absent on the space read with the roster asked for and
         # without it, as an unopenable project is on `project/{key}/role`. Bob, who authored the page
-        # in it, reads both. Under both spellings `_space_container_for_key` resolves: the
-        # synthesized key and the name.
+        # in it, reads both, under the spellings `_space_container_for_key` resolves: the
+        # synthesized key and the name, each in upper or lower case. The key with `ſ` for its `S` is
+        # no spelling of it, and both callers get the 404.
         shut = synth.confluence_space_key("secrets")
         ava = {"Authorization": f"Bearer {tokens['ava@acme.com']}"}
         bob = {"Authorization": f"Bearer {tokens['bob@acme.com']}"}
-        for spelling in (shut, "secrets"):
+        for spelling, bob_reads in (
+            (shut, True),
+            (shut.lower(), True),
+            ("secrets", True),
+            ("SECRETS", True),
+            (shut.replace("S", "ſ"), False),
+        ):
             for path in (
                 f"/wiki/rest/api/space/{spelling}",
                 f"/wiki/rest/api/space/{spelling}?expand=permissions",
             ):
                 refused = c.get(f"/atlassian{path}", headers=ava)
                 assert refused.status_code == 404, path
-                assert refused.json()["message"] == "No space with the given key exists"
-                assert c.get(f"/atlassian{path}", headers=bob).status_code == 200, path
+                assert refused.json() == {
+                    "statusCode": 404,
+                    "message": (
+                        "org.springframework.web.server.ResponseStatusException: "
+                        f'404 NOT_FOUND "No space found with key : {spelling}"'
+                    ),
+                }
+                read = c.get(f"/atlassian{path}", headers=bob)
+                assert read.status_code == (200 if bob_reads else 404), path
         # ... and the roster she is refused names bob against that space.
         space = c.get(
             f"/atlassian/wiki/rest/api/space/{shut}?expand=permissions", headers=bob
@@ -624,26 +638,80 @@ def test_confluence_content_answers_a_space_key_and_a_type_as_real_does(
         ("admin", "{handbook}", ["Engineering Handbook", "On-call Runbook"]),
         ("admin", "people-ops", ["Compensation Bands 2026"]),
         ("admin", "{people-ops}", ["Compensation Bands 2026"]),
+        ("admin", "{handbook lower}", ["Engineering Handbook", "On-call Runbook"]),
+        ("admin", "HANDBOOK", ["Engineering Handbook", "On-call Runbook"]),
+        ("admin", "people-opſ", 404),
         ("admin", "", ["Compensation Bands 2026", "Engineering Handbook", "On-call Runbook"]),
         ("ava@acme.com", "handbook", ["Engineering Handbook", "On-call Runbook"]),
         ("ava@acme.com", "people-ops", 404),
         ("ava@acme.com", "{people-ops}", 404),
+        ("ava@acme.com", "{people-ops lower}", 404),
+        ("ava@acme.com", "PEOPLE-OPS", 404),
     ],
 )
 def test_confluence_content_filtered_by_space_key(client, admin_h, tokens, caller, space, want):
     """A space key narrows the listing to that space under both spellings `_space_container_for_key`
-    resolves, the name and `{the synthesized key}`, and an empty one narrows nothing. ava reaches no
-    page in `people-ops`, so to her its key is the 404 a key naming nothing gets
-    (`_content_space`)."""
+    resolves, the name and `{the synthesized key}`, each in upper or lower case (`people-opſ` is no
+    spelling of `people-ops`), and an empty one narrows nothing. ava reaches no page in
+    `people-ops`, so to her its key is the 404 a key naming nothing gets (`_content_space`), in
+    upper or lower case."""
     from backlot import synth
 
-    key = space.format(**{n: synth.confluence_space_key(n) for n in ("handbook", "people-ops")})
+    keys = {n: synth.confluence_space_key(n) for n in ("handbook", "people-ops")}
+    key = space.format(**keys, **{f"{n} lower": k.lower() for n, k in keys.items()})
     h = admin_h if caller == "admin" else {"Authorization": f"Bearer {tokens[caller]}"}
     r = client.get("/atlassian/wiki/rest/api/content", headers=h, params={"spaceKey": key})
     if want == 404:
         assert (r.status_code, r.json()) == _no_space(key)
     else:
         assert sorted(x["title"] for x in r.json()["results"]) == want
+
+
+def test_confluence_space_names_that_differ_only_in_case_stay_two_spaces(tmp_path):
+    """A corpus may name two spaces `Ops` and `ops`. An exact spelling is resolved before a folded
+    one (`_space_container_for_key`), so each name answers its own space on the three readers of a
+    key, as each synthesized key sent in lower case does, and a name no other space shares answers
+    in another case too."""
+    from backlot import synth
+
+    corpus = [
+        {
+            "source_type": "confluence",
+            "doc_id": doc_id,
+            "space": space,
+            "title": title,
+            "content": "Body.",
+            "author_email": "ava@acme.com",
+            "visibility": "public",
+        }
+        for doc_id, space, title in (
+            ("o-up", "Ops", "Upper"),
+            ("o-low", "ops", "Lower"),
+            ("l", "Ledger", "Books"),
+        )
+    ]
+    settings = tiny_corpus(tmp_path, corpus)
+    wiki = "/atlassian/wiki/rest/api"
+    with client_for(settings, reload=True) as c:
+        token = yaml.safe_load(settings.tokens_path.read_text())["admin_token"]
+        admin = {"Authorization": f"Bearer {token}"}
+        for sent, name, title in (
+            ("Ops", "Ops", "Upper"),
+            ("ops", "ops", "Lower"),
+            (synth.confluence_space_key("Ops").lower(), "Ops", "Upper"),
+            (synth.confluence_space_key("ops").lower(), "ops", "Lower"),
+            ("lEDGER", "Ledger", "Books"),
+        ):
+            space = c.get(f"{wiki}/space/{sent}", headers=admin).json()
+            assert (space["name"], space["key"]) == (name, synth.confluence_space_key(name)), sent
+            for url, params in (
+                (f"{wiki}/content", {"spaceKey": sent}),
+                (f"{wiki}/search", {"cql": f"space={sent}"}),
+            ):
+                titles = [
+                    x["title"] for x in c.get(url, headers=admin, params=params).json()["results"]
+                ]
+                assert titles == [title], (url, sent)
 
 
 def test_confluence_content_filtered_by_title(client, admin_h, tokens):
@@ -862,7 +930,7 @@ def test_confluence_cql_search_with_no_tilde_selects_by_its_clauses(tmp_path):
             },
         ],
     )
-    eng = synth.confluence_space_key("eng")
+    eng, ops = synth.confluence_space_key("eng"), synth.confluence_space_key("ops")
     rows = [
         # cql, the titles the admin is served, the titles ava is served. A list goes out as a
         # repeated `cql`, read from its first value as `cql_required` records.
@@ -870,6 +938,9 @@ def test_confluence_cql_search_with_no_tilde_selects_by_its_clauses(tmp_path):
         ("type=blogpost", {"Post"}, {"Post"}),
         (f"space={eng}", {"Guide", "Post"}, {"Guide", "Post"}),
         (f"space={eng} and type=page", {"Guide"}, {"Guide"}),
+        (f"space={eng.lower()}", {"Guide", "Post"}, {"Guide", "Post"}),
+        (f'space="{ops.lower()}"', {"Shut"}, set()),
+        ("space=OPS", {"Shut"}, set()),
         ("label=runbook", {"Guide"}, {"Guide"}),
         ("space=NOPE", set(), set()),
         ('title="Guide"', set(), set()),
@@ -939,7 +1010,7 @@ def test_confluence_spaces_are_paged_not_served_whole(client, admin_h, tokens):
         "context": "/wiki",
         "self": "http://testserver/wiki/rest/api/space",
     }  # a full page: no next, no prev. `self` carries no query string for a request that sends
-    # none of `limit`/`start`/`expand` — the only parameters this route reads.
+    # none of `limit`/`start`/`expand`/`spaceKey` — the only parameters this route reads.
 
     # `_site` echoes the caller's own Host, not a fixed org name — proved here since this route's
     # `base`/`self` are the only place that claim goes untested.
@@ -1002,6 +1073,67 @@ def test_confluence_spaces_are_paged_not_served_whole(client, admin_h, tokens):
     assert "next" not in scoped["_links"] and "prev" not in scoped["_links"]
 
 
+# The keys of the bundled corpus's two spaces, which a row below names as `{hb}` and `{po}`
+_SPACE_KEYS = {
+    "hb": synth.confluence_space_key("handbook"),
+    "po": synth.confluence_space_key("people-ops"),
+    "po_lower": synth.confluence_space_key("people-ops").lower(),
+}
+
+# What `space?spaceKey=` lists, as `_space_keys` and `confluence_spaces` record real reading it:
+# the query, whose token asks, the spaces listed, and whether the page answers a `next`. ava
+# reaches `handbook` alone.
+# fmt: off
+_SPACE_KEY_ROWS = [
+    ([("spaceKey", "{po}")], "admin", ["people-ops"], False),
+    ([("spaceKey", "{po_lower}")], "admin", ["people-ops"], False),
+    ([("spaceKey", "NOSUCH")], "admin", [], False),
+    ([("spaceKey", "{po}"), ("spaceKey", "{hb}")], "admin", ["handbook", "people-ops"], False),
+    ([("spaceKey", "{po}"), ("spaceKey", "{po}")], "admin", ["people-ops"], False),
+    ([("spaceKey", "{po},NOSUCH")], "admin", ["people-ops"], False),
+    ([("spaceKey", "{po},{hb}")], "admin", ["handbook", "people-ops"], False),
+    ([("spaceKey", " {po}\t")], "admin", ["people-ops"], False),
+    ([("spaceKey", "\u00a0{po}")], "admin", [], False),
+    ([("spaceKey", "NOSUCH"), ("spaceKey", " {po}")], "admin", [], False),
+    ([("spaceKey", "NOSUCH"), ("spaceKey", "{po},{hb}")], "admin", [], False),
+    ([("spaceKey", "{po}"), ("spaceKey", "")], "admin", ["people-ops"], False),
+    ([("spaceKey", "")], "admin", ["handbook", "people-ops"], False),
+    ([("spaceKey", " ")], "admin", [], False),
+    ([("spaceKey", ",")], "admin", [], False),
+    ([("spaceKey", "{hb}"), ("limit", "1")], "admin", ["handbook"], False),
+    ([("spaceKey", "{po},{hb}"), ("limit", "1")], "admin", ["handbook"], True),
+    ([("spaceKey", "{po}")], "ava", [], False),
+    ([("spaceKey", "{po},{hb}"), ("limit", "1")], "ava", ["handbook"], False),
+]
+# fmt: on
+
+
+@pytest.mark.parametrize("params, caller, names, has_next", _SPACE_KEY_ROWS)
+def test_confluence_space_listing_lists_the_spaces_space_key_names(
+    client, admin_h, tokens, params, caller, names, has_next
+):
+    """Over the bundled corpus, for an admin and for ava, the scoped token the narrowing must not
+    widen; the measurement behind each row is in :func:`backlot.routers.atlassian._space_keys` and
+    :func:`backlot.routers.atlassian.confluence_spaces`."""
+    headers = (
+        admin_h if caller == "admin" else {"Authorization": f"Bearer {tokens['ava@acme.com']}"}
+    )
+    sent = [(name, value.format(**_SPACE_KEYS)) for name, value in params]
+    r = client.get("/atlassian/wiki/rest/api/space", params=sent, headers=headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert [s["name"] for s in body["results"]] == names
+    assert (body["start"], body["size"]) == (0, len(names))
+    assert ("next" in body["_links"]) is has_next
+
+
+def test_confluence_space_listing_declares_the_parameters_it_reads(client):
+    """The served spec names `spaceKey` beside the page pair and `expand`, so a generated client
+    can find the narrowing."""
+    op = client.app.openapi()["paths"]["/atlassian/wiki/rest/api/space"]["get"]
+    assert {p["name"] for p in op["parameters"]} == {"expand", "spaceKey", "limit", "start"}
+
+
 def test_confluence_single_space_get(client, admin_h):
     spaces = client.get("/atlassian/wiki/rest/api/space", headers=admin_h).json()["results"]
     assert spaces
@@ -1015,12 +1147,23 @@ def test_confluence_single_space_get(client, admin_h):
         "operation": "read",
         "targetType": "space",
     }
-    # An unknown space is the same atlassian-shaped 404 with the expansion and without it, so a
-    # space the caller cannot reach cannot be told apart from one that is not there.
-    for path in ("/wiki/rest/api/space/NOSUCH", "/wiki/rest/api/space/NOSUCH?expand=permissions"):
-        absent = client.get(f"/atlassian{path}", headers=admin_h)
-        assert absent.status_code == 404, path
-        assert absent.json()["message"] == "No space with the given key exists", path
+    # No space has these keys, and each is refused naming it as `errors_atlassian.space_not_found`
+    # records, with the expansion and without it.
+    for sent, named in (
+        ("NOSUCH", "NOSUCH"),
+        ("nosuch?expand=permissions", "nosuch"),
+        ("%20NOSUCH", " NOSUCH"),
+        ("NO%3FSUCH", "NO?SUCH"),
+    ):
+        absent = client.get(f"/atlassian/wiki/rest/api/space/{sent}", headers=admin_h)
+        assert absent.status_code == 404, sent
+        assert absent.json() == {
+            "statusCode": 404,
+            "message": (
+                "org.springframework.web.server.ResponseStatusException: "
+                f'404 NOT_FOUND "No space found with key : {named}"'
+            ),
+        }, sent
 
 
 # --- OpenAPI enrichment: atlassian (jira + confluence) ------------------------------------
@@ -1821,14 +1964,48 @@ def test_confluence_listings_read_limit_and_start(client, admin_h, route, zero_r
     assert "next" not in past and "prev" in past
 
 
-def test_confluence_a_carried_parameter_sits_where_it_was_measured(client, admin_h):
-    """`expand` leads `limit`/`start` and a name real does not read trails `start`: the placement
-    :func:`backlot.routers.atlassian._confluence_carried` chose, since real's own for the latter is
+# (the request after `/wiki/rest/api`, the page link it answers, that link, the `self` after
+# `/wiki/rest/api`), with `{hb}` and `{po}` read from `_SPACE_KEYS`
+_CARRIED_ROWS = [
+    (
+        "/content?limit=1&bogus=x",
+        "next",
+        "/rest/api/content?next=true&limit=1&start=1&bogus=x",
+        "/content?bogus=x",
+    ),
+    (
+        "/space?spaceKey={po}&start=1",
+        "prev",
+        "/rest/api/space?spaceKey={po}&prev=true&limit=1&start=0",
+        "/space?spaceKey={po}",
+    ),
+    (
+        "/space?expand=description&spaceKey={po},{hb}&limit=1",
+        "next",
+        "/rest/api/space?spaceKey={po}%2C{hb}&next=true&expand=description&limit=1&start=1",
+        "/space?spaceKey={po}%2C{hb}&expand=description",
+    ),
+    (
+        "/space?spaceKey={po}&spaceKey={hb}&expand=description&limit=1&start=1",
+        "prev",
+        "/rest/api/space?spaceKey={po}&spaceKey={hb}&expand=description&prev=true&limit=1&start=0",
+        "/space?spaceKey={po}&spaceKey={hb}&expand=description",
+    ),
+]
+
+
+@pytest.mark.parametrize("request_path, which, link, self_path", _CARRIED_ROWS)
+def test_confluence_a_carried_parameter_sits_where_it_was_measured(
+    client, admin_h, request_path, which, link, self_path
+):
+    """`expand` leads `limit`/`start`, `spaceKey` leads the marker and `expand` on `space`, and a
+    name real does not read trails `start`: the placement
+    :func:`backlot.routers.atlassian._confluence_carried` chose, since real's own for the last is
     no rule a client can rely on."""
     api = "/atlassian/wiki/rest/api"
-    links = client.get(f"{api}/content?limit=1&bogus=x", headers=admin_h).json()["_links"]
-    assert links["next"].endswith("next=true&limit=1&start=1&bogus=x")
-    assert links["self"].endswith("/content?bogus=x")
+    links = client.get(api + request_path.format(**_SPACE_KEYS), headers=admin_h).json()["_links"]
+    assert links[which] == link.format(**_SPACE_KEYS)
+    assert links["self"] == "http://testserver/wiki/rest/api" + self_path.format(**_SPACE_KEYS)
 
 
 def test_confluence_label_serves_one_of_two_labels_and_a_next(client, admin_h):
@@ -2651,6 +2828,133 @@ def test_jira_search_post_accepts_every_field_the_vendors_bean_declares(
     unknown-field refusal above must not catch them even though Backlot acts on none of them."""
     r = _search_post(client, admin_h, jql="project = payments", **{field: value})
     assert r.status_code == 200, r.text
+
+
+def _bean(members: str, jql: str | None = '"project = payments"') -> str:
+    """A `search/jql` POST body: `jql` first unless ``jql`` is None, then ``members`` as written."""
+    return "{" + ", ".join(m for m in (jql and f'"jql": {jql}', members) if m) + "}"
+
+
+_BEAN_REFUSED = {"errorMessages": [errors_atlassian.BODY_NOT_AN_OBJECT]}
+_RECONCILE_NULL = {
+    "message": 'Cannot invoke "java.util.List.stream()" because "reconcileIssues" is null',
+    "status-code": 500,
+    "stack-trace": "",
+}
+
+
+def _properties_null(index: int) -> dict:
+    return {"message": f"at index {index}", "status-code": 500, "stack-trace": ""}
+
+
+# What real answers for a value of each of the four bean members Backlot does not act on, alone and
+# beside a second refusal: the rules are `_jira_fields_by_keys_ok`, `_jira_reconcile_issue_ok` and
+# where `jira_search` raises the two 500s. `None` is a 200. The one value of each that
+# `test_jira_search_post_accepts_every_field_the_vendors_bean_declares` serves is left to that test.
+_BEAN_MEMBER_ROWS = [
+    *[(_bean(f'"expand": {v}'), None) for v in ('"bogus"', '""', "1", "1.5", "true", "null")],
+    *[(_bean(f'"expand": {v}'), _BEAN_REFUSED) for v in ("[]", '["names"]', "[1]", "{}")],
+    *[
+        (_bean(f'"fieldsByKeys": {v}'), None)
+        for v in (
+            *("false", "null", "0", "2", "-1", "9223372036854775808"),
+            *('"true"', '"True"', '"TRUE"', '"false"', '"False"', '"FALSE"', '" TRUE "'),
+            *('""', '" "', '"null"'),
+            json.dumps(chr(1) + "true"),
+        )
+    ],
+    *[
+        (_bean(f'"fieldsByKeys": {v}'), _BEAN_REFUSED)
+        for v in (
+            *('"yes"', '"x"', '"tRuE"', '"NULL"', '"1"', '"\\u00a0true"'),
+            *("1.5", "1.0", "[]", "{}"),
+        )
+    ],
+    *[
+        (_bean(f'"properties": {v}'), None)
+        for v in ("[1]", "[1.5]", "[true]", '[""]', "[]", "null")
+    ],
+    *[
+        (_bean(f'"properties": {v}'), _BEAN_REFUSED)
+        for v in ('"prop1"', '""', "1", "{}", "[[1]]", "[{}]", "[null, [1]]", "[{}, null]")
+    ],
+    *[
+        (_bean(f'"properties": {v}'), _properties_null(i))
+        for v, i in (("[null]", 0), ('["a", null]', 1), ('["a", "b", null, null]', 2))
+    ],
+    *[
+        (_bean(f'"reconcileIssues": {v}'), None)
+        for v in (
+            *("[]", "[null]", "[1, null, 2]", "[-1]", "[-9223372036854775808]"),
+            *("[1.5]", "[1e2]", "[9.2e18]", "[-9.2e18]"),
+            *("[9223372036854775807.0]", "[-9223372036854775808.0]", '["%s1"]' % ("0" * 999)),
+            *('["1"]', '[" 1"]', '["+1"]', '["01"]', '["\\u0661"]', '["\\u0665"]'),
+            *('["9223372036854775807"]',),
+            *('[""]', '[" "]', '["null"]', json.dumps([chr(1) + "1"])),
+        )
+    ],
+    *[
+        (_bean(f'"reconcileIssues": {v}'), _BEAN_REFUSED)
+        for v in (
+            *('["a"]', "[true]", "1", '"1"', "{}", "[[1]]", '[null, "a"]'),
+            *("[9223372036854775808]", "[-9223372036854775809]", "[9.3e18]", "[-1e19]"),
+            *('["1.5"]', '["1e2"]', '["0x10"]', '["1_000"]', '["\\u00a01"]'),
+            *('["9223372036854775808"]', '["%s1"]' % ("0" * 1000), '["\\ud835\\udfd3"]'),
+            *("[9223372036854777856.0]", "[-9223372036854777856.0]"),
+        )
+    ],
+    (_bean('"reconcileIssues": null'), _RECONCILE_NULL),
+    # The two 500s beside a second refusal.
+    (_bean('"reconcileIssues": null', jql=None), errors_atlassian.unbounded_jql().body),
+    (
+        _bean('"reconcileIssues": null, "maxResults": 0'),
+        errors_atlassian.max_results_out_of_range().body,
+    ),
+    (
+        _bean('"maxResults": 0, "reconcileIssues": null'),
+        errors_atlassian.max_results_out_of_range().body,
+    ),
+    (
+        _bean('"reconcileIssues": null, "nextPageToken": "bogus"'),
+        errors_atlassian.bad_page_token().body,
+    ),
+    (_bean('"reconcileIssues": null, "maxResults": "abc"'), _BEAN_REFUSED),
+    (_bean('"maxResults": "abc", "reconcileIssues": null'), _BEAN_REFUSED),
+    (_bean('"reconcileIssues": null, "bogus": 1'), _BEAN_REFUSED),
+    (_bean('"reconcileIssues": null', jql='"project = ZZZNOPE999"'), _RECONCILE_NULL),
+    (_bean('"properties": [null], "reconcileIssues": ["a"]'), _BEAN_REFUSED),
+    (_bean('"reconcileIssues": ["a"], "properties": [null]'), _BEAN_REFUSED),
+    (_bean('"properties": [null], "maxResults": "abc"'), _BEAN_REFUSED),
+    (_bean('"maxResults": "abc", "properties": [null]'), _BEAN_REFUSED),
+    (_bean('"properties": [null], "expand": []'), _BEAN_REFUSED),
+    (_bean('"properties": [null], "bogus": 1'), _BEAN_REFUSED),
+    *[
+        (raw, _properties_null(0))
+        for raw in (
+            _bean('"properties": [null]', jql=None),
+            _bean('"properties": [null], "maxResults": 0'),
+            _bean('"properties": [null], "nextPageToken": "bogus"'),
+            _bean('"properties": [null], "reconcileIssues": null'),
+            _bean('"reconcileIssues": null, "properties": [null]'),
+        )
+    ],
+]
+
+
+@pytest.mark.parametrize("raw,want", _BEAN_MEMBER_ROWS)
+def test_jira_search_post_binds_the_members_it_does_not_act_on_as_real_binds_them(
+    client, admin_h, raw, want
+):
+    r = client.post(
+        "/atlassian/rest/api/3/search/jql",
+        headers={**admin_h, "Content-Type": "application/json"},
+        content=raw,
+    )
+    if want is None:
+        assert r.status_code == 200, r.text
+    else:
+        assert (r.status_code, r.json()) == (want.get("status-code", 400), want), r.text
+        assert r.headers["content-type"] == "application/json;charset=UTF-8"
 
 
 def test_jira_search_post_refuses_a_jql_shaped_as_a_list(client, admin_h):

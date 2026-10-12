@@ -921,50 +921,134 @@ def test_hubspot_batch_read(client, admin_h):
     assert {r["id"] for r in j["results"]} == set(ids)
 
 
-def test_hubspot_batch_read_refuses_bodies_real_cannot_read(client, admin_h):
-    """`inputs` that is not a list, a numeric id, and a string `properties` or
-    `propertiesWithHistory` are real's 400 refusals, not a 500 or a 200, as measured in
-    `_refuse_a_batch_read_shape`. The column is where the offending value starts in the body."""
-    url = "/hubspot/crm/v3/objects/companies/batch/read"
-    headers = {**admin_h, "Content-Type": "application/json"}
-    cases = [
-        ('{"inputs":"x"}', 11, "from String value (token `JsonToken.VALUE_STRING`)"),
-        ('{"inputs":{"id":"1"}}', 11, "from Object value (token `JsonToken.START_OBJECT`)"),
-        ('{"inputs":5}', 11, "from Integer value (token `JsonToken.VALUE_NUMBER_INT`)"),
-        ('{"inputs":[7]}', 12, "deserialize from Number value (7)"),
-        (
-            '{"inputs":[{"id":"1"}],"properties":"name"}',
-            37,
-            "deserialize from String value ('name')",
-        ),
-        (
-            '{"inputs":[{"id":"1"}],"propertiesWithHistory":"name"}',
-            48,
-            "deserialize from String value ('name')",
-        ),
-    ]
-    for body, column, tail in cases:
-        r = client.post(url, headers=headers, content=body)
-        assert r.status_code == 400, body
-        j = r.json()
-        assert j["category"] == "VALIDATION_ERROR"
-        assert j["message"].startswith(f"Invalid input JSON on line 1, column {column}: "), body
-        assert j["message"].endswith(tail), body
+def _batch_refusal(column: int, text: str) -> dict:
+    return {
+        "status": "error",
+        "message": f"Invalid input JSON on line 1, column {column}: {text}",
+        "category": "VALIDATION_ERROR",
+    }
 
 
-def test_hubspot_batch_read_accepts_bare_id_strings(client, admin_h):
-    """Real reads a bare id string in `inputs` as that id, alone or mixed with objects."""
+def _not_a_list(kind: str, token: str) -> str:
+    return f"Cannot deserialize value of type <>` from {kind} value (token `JsonToken.{token}`)"
+
+
+def _no_creator(arg: str, shown: str) -> str:
+    return (
+        "Cannot construct instance of  (although at least one Creator exists): "
+        f"no {arg}-argument constructor/factory method to deserialize from {shown}"
+    )
+
+
+def _blank_field(field: str) -> dict:
+    return {
+        "status": "error",
+        "message": f'Invalid input JSON: unable to deserialize field "{field}". Invalid value: ',
+        "category": "VALIDATION_ERROR",
+    }
+
+
+def _br(id, raw, want, object_type="companies", authed=True):
+    return pytest.param(raw, want, object_type, authed, id=id)
+
+
+_ONE = '{"inputs":[{"id":"1"}],'
+_ARRAY = "Cannot deserialize value of type  from Array value (token `JsonToken.START_ARRAY`)"
+
+# fmt: off
+_BATCH_BODY_ROWS = [
+    _br("inputs-string", '{"inputs":"x"}', _batch_refusal(11, _not_a_list("String", "VALUE_STRING"))),
+    _br("inputs-blank-string", '{"inputs":" "}', _batch_refusal(11, _not_a_list("String", "VALUE_STRING"))),
+    _br("inputs-object", '{"inputs":{"id":"1"}}', _batch_refusal(11, _not_a_list("Object", "START_OBJECT"))),
+    _br("inputs-integer", '{"inputs":5}', _batch_refusal(11, _not_a_list("Integer", "VALUE_NUMBER_INT"))),
+    _br("inputs-float", '{"inputs":1.5}', _batch_refusal(11, _not_a_list("Floating-point", "VALUE_NUMBER_FLOAT"))),
+    _br("inputs-true", '{"inputs":true}', _batch_refusal(11, _not_a_list("Boolean", "VALUE_TRUE"))),
+    _br("inputs-false", '{"inputs":false}', _batch_refusal(11, _not_a_list("Boolean", "VALUE_FALSE"))),
+    _br("int-element", '{"inputs":[7]}', _batch_refusal(12, _no_creator("int/Int", "Number value (7)"))),
+    _br("int-element-minus-2^31", '{"inputs":[-2147483648]}', _batch_refusal(12, _no_creator("int/Int", "Number value (-2147483648)"))),
+    _br("int-element-2^31", '{"inputs":[2147483648]}', _batch_refusal(12, _no_creator("long/Long", "Number value (2147483648)"))),
+    _br("int-element-2^63", '{"inputs":[9223372036854775808]}', _batch_refusal(12, _no_creator("BigInteger", "Number value (9223372036854775808)"))),
+    _br("float-element", '{"inputs":[1.5]}', _batch_refusal(12, _no_creator("double/Double", "Number value (1.5)"))),
+    _br("float-element-1e7", '{"inputs":[1e7]}', _batch_refusal(12, _no_creator("double/Double", "Number value (1.0E7)"))),
+    _br("float-element-1e-4", '{"inputs":[1e-4]}', _batch_refusal(12, _no_creator("double/Double", "Number value (1.0E-4)"))),
+    _br("float-element-1e400", '{"inputs":[1e400]}', _batch_refusal(12, _no_creator("double/Double", "Number value (Infinity)"))),
+    _br("float-element-minus-zero", '{"inputs":[-0.0]}', _batch_refusal(12, _no_creator("double/Double", "Number value (-0.0)"))),
+    _br("boolean-element", '{"inputs":[true]}', _batch_refusal(12, _no_creator("boolean/Boolean", "boolean value (true)"))),
+    _br("array-element", '{"inputs":[["1"]]}', _batch_refusal(12, _ARRAY)),
+    _br("int-after-a-string", '{"inputs":["1",7]}', _batch_refusal(16, _no_creator("int/Int", "Number value (7)"))),
+    _br("int-after-an-object", '{"inputs":[{"id":"1"},7]}', _batch_refusal(23, _no_creator("int/Int", "Number value (7)"))),
+    _br("null-element", '{"inputs":[null]}', {"status": "error", "message": "Input IDs must be non-null."}),
+    _br("int-after-null", '{"inputs":[null,7]}', _batch_refusal(17, _no_creator("int/Int", "Number value (7)"))),
+    _br("properties-after-null", '{"inputs":[null],"properties":"x"}', _batch_refusal(31, _no_creator("String", "String value ('x')"))),
+    _br("properties-string", _ONE + '"properties":"name"}', _batch_refusal(37, _no_creator("String", "String value ('name')"))),
+    _br("properties-padded", _ONE + '"properties":" name\\t"}', _batch_refusal(37, _no_creator("String", "String value ('name')"))),
+    _br("properties-commas", _ONE + '"properties":"name,domain"}', _batch_refusal(37, _no_creator("String", "String value ('name,domain')"))),
+    _br("properties-no-break-space", _ONE + '"properties":"\\u00a0"}', _batch_refusal(37, _no_creator("String", "String value (' ')"))),
+    _br("properties-empty", _ONE + '"properties":""}', _blank_field("properties")),
+    _br("properties-blank", _ONE + '"properties":' + json.dumps(" \t\n\x01") + "}", _blank_field("properties")),
+    _br("properties-integer", _ONE + '"properties":5}', _batch_refusal(37, _not_a_list("Integer", "VALUE_NUMBER_INT"))),
+    _br("properties-object", _ONE + '"properties":{}}', _batch_refusal(37, _not_a_list("Object", "START_OBJECT"))),
+    _br("properties-false", _ONE + '"properties":false}', _batch_refusal(37, _not_a_list("Boolean", "VALUE_FALSE"))),
+    _br("with-history-string", _ONE + '"propertiesWithHistory":"name"}', _batch_refusal(48, _no_creator("String", "String value ('name')"))),
+    _br("with-history-empty", _ONE + '"propertiesWithHistory":""}', _blank_field("propertiesWithHistory")),
+    _br("with-history-float", _ONE + '"propertiesWithHistory":1.5}', _batch_refusal(48, _not_a_list("Floating-point", "VALUE_NUMBER_FLOAT"))),
+    _br("properties-before-inputs", '{"properties":"name","inputs":"x"}', _batch_refusal(15, _no_creator("String", "String value ('name')"))),
+    _br("integer-properties-before-inputs", '{"properties":5,"inputs":"x"}', _batch_refusal(15, _not_a_list("Integer", "VALUE_NUMBER_INT"))),
+    _br("inputs-before-properties", '{"inputs":1.5,"properties":"x"}', _batch_refusal(11, _not_a_list("Floating-point", "VALUE_NUMBER_FLOAT"))),
+    _br("with-history-before-properties", _ONE + '"propertiesWithHistory":"a","properties":"b"}', _batch_refusal(48, _no_creator("String", "String value ('a')"))),
+    _br("after-an-unknown-member", '{"bogus":1,"inputs":"x"}', _batch_refusal(21, _not_a_list("String", "VALUE_STRING"))),
+    _br("after-an-unknown-type", '{"inputs":"x"}', {"status": "error", "message": "Unable to infer object type from: nosuchtype"}, object_type="nosuchtype"),
+    _br("after-the-credential", '{"inputs":"x"}', 401, authed=False),
+    _br("null-inputs", '{"inputs":null}', 200),
+    _br("null-properties", _ONE + '"properties":null}', 207),
+    _br("number-in-properties", _ONE + '"properties":[5]}', 207),
+]
+# fmt: on
+
+
+@pytest.mark.parametrize("raw, want, object_type, authed", _BATCH_BODY_ROWS)
+def test_hubspot_batch_read_refuses_a_body_real_cannot_read(
+    client, admin_h, raw, want, object_type, authed
+):
+    """`_refuse_a_batch_read_shape`'s rule, one body per row: the status and body real answered,
+    including which member it names when two are wrong, and the status for a null member or a
+    number in `properties`, which real reads (a 207 here because no company has id `1`)."""
+    headers = {"Content-Type": "application/json", **(admin_h if authed else {})}
+    url = f"/hubspot/crm/v3/objects/{object_type}/batch/read"
+    r = client.post(url, headers=headers, content=raw.encode())
+    if isinstance(want, dict):
+        assert (r.status_code, r.json()) == (400, want)
+    else:
+        assert r.status_code == want
+
+
+@pytest.mark.parametrize(
+    "inputs, status",
+    [
+        (["{a}"], 200),
+        (["{a}", {"id": "{b}"}], 200),
+        (["111111111111"], 207),
+        ([" {a} "], 207),
+        ([""], 207),
+    ],
+    ids=["alone", "beside-an-object", "missing", "padded", "empty"],
+)
+def test_hubspot_batch_read_reads_a_bare_id_string_as_that_id(client, admin_h, inputs, status):
+    """`batch_read`'s reading of a bare string in `inputs`: each row's answer, status and body,
+    against the answer to the same ids sent as objects."""
     listed = client.get(
         "/hubspot/crm/v3/objects/companies", headers=admin_h, params={"limit": 2}
     ).json()["results"]
-    a, b = listed[0]["id"], listed[1]["id"]
-    r = client.post(
-        "/hubspot/crm/v3/objects/companies/batch/read",
-        headers=admin_h,
-        json={"inputs": [a, {"id": b}]},
-    )
-    assert r.status_code == 200
-    assert {x["id"] for x in r.json()["results"]} == {a, b}
+    ids = {"a": listed[0]["id"], "b": listed[1]["id"]}
+    bare = [
+        x.format(**ids) if isinstance(x, str) else {"id": x["id"].format(**ids)} for x in inputs
+    ]
+    url = "/hubspot/crm/v3/objects/companies/batch/read"
+    r = client.post(url, headers=admin_h, json={"inputs": bare})
+    as_objects = [{"id": x} if isinstance(x, str) else x for x in bare]
+    control = client.post(url, headers=admin_h, json={"inputs": as_objects})
+    assert control.status_code == status
+    assert (r.status_code, r.json()) == (status, control.json())
 
 
 # --- HubSpot ---------------------------------------------------------------------

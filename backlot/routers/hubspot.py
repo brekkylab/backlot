@@ -116,6 +116,7 @@ _B_SEARCH = {
     }
 }
 _B_BATCH = {
+    "parameters": [qp("archived", "boolean")],
     "requestBody": {
         "content": {
             "application/json": {
@@ -132,7 +133,7 @@ _B_BATCH = {
                 }
             }
         }
-    }
+    },
 }
 
 
@@ -175,6 +176,16 @@ def _flag(raw) -> bool:
     return or no-break space) serve the active one. The Python client `hubspot-api-client` 12.0.0
     sends `True`/`False`, and the Node client `@hubspot/api-client` 14.0.1 sends `true`/`false`."""
     return str(raw or "").lower() == "true"
+
+
+def _hidden_archived(row, request: Request) -> bool:
+    """Whether ``row`` is archived and the request did not ask for archived records, reading
+    `archived` as the listing does (`_flag` of its first value). Measured against api.hubapi.com
+    over a portal with one archived contact (2026-09-30, 2026-10-09): `GET …/{id}` answers it with
+    the 404 a missing id gets, and batch/read with the not-found error a missing id gets, unless the
+    first `archived` is `true` in any letter case; an active contact is served by both whatever
+    `archived` is."""
+    return row["archived"] is not None and not _flag(_first_query(request.query_params, "archived"))
 
 
 def _first_query(qp, name: str):
@@ -831,7 +842,11 @@ async def get_object(object_type: str, record_id: str, request: Request):
     # `id` is the PRIMARY KEY, so the ACL clause can only narrow "found" to "not found", never
     # redirect to a different row (see store.hubspot_by_id).
     row = store.hubspot_by_id(auth.conn(request), record_id, auth.visible_ids(request, caller))
-    if row is None or row["object_type"] not in _aliases(object_type):
+    if (
+        row is None
+        or row["object_type"] not in _aliases(object_type)
+        or _hidden_archived(row, request)
+    ):
         return _error(404, "resource not found", "OBJECT_NOT_FOUND")
     return _record(row, _keep(request.query_params.get("properties")))
 
@@ -920,7 +935,11 @@ async def batch_read(object_type: str, request: Request):
         # One ACL-scoped query, not a resolve followed by a get_document refetch of the same
         # row -- see get_object's comment for why the collapse is safe.
         row = store.hubspot_by_id(conn, rid, visible)
-        if row is None or row["object_type"] not in _aliases(object_type):
+        if (
+            row is None
+            or row["object_type"] not in _aliases(object_type)
+            or _hidden_archived(row, request)
+        ):
             errors.append(
                 {
                     "status": "error",

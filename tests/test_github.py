@@ -1750,6 +1750,16 @@ def test_github_git_ref_resolves_a_pulls_own_ref(gh_client, gh_admin_h, gh_org):
         assert r.status_code == 200, suffix
         assert r.json()["ref"] == f"refs/pull/{num}/{suffix}"
     assert c.get(f"{base}/git/ref/pull/999999/head", headers=gh_admin_h).status_code == 404
+    # the same number in other digits, or with a leading zero, names no ref (see `_ref_exists`)
+    digits = str(num)
+    for spelling in (
+        digits.translate(str.maketrans("0123456789", "０１２３４５６７８９")),
+        digits.translate(str.maketrans("0123456789", "٠١٢٣٤٥٦٧٨٩")),
+        f"0{digits}",
+    ):
+        for suffix in ("head", "merge"):
+            r = c.get(f"{base}/git/ref/pull/{spelling}/{suffix}", headers=gh_admin_h)
+            assert r.status_code == 404, (spelling, suffix)
     # this repo states no tags and `/tags` says so, so a tag ref cannot resolve either
     assert c.get(f"{base}/git/ref/tags/v1", headers=gh_admin_h).status_code == 404
 
@@ -2188,6 +2198,7 @@ def test_github_documentation_url_names_the_route_that_failed(gh_client, gh_admi
             f"{missing}/collaborators",
             "rest/collaborators/collaborators#list-repository-collaborators",
         ),
+        (f"{missing}/issues/1", "rest/issues/issues#get-an-issue"),
         (f"{missing}/pulls/1/files", "rest/pulls/pulls#list-pull-requests-files"),
         # the two routes that take the rest of the path as one parameter still resolve
         (f"{missing}/git/ref/heads/release/2026-03", "rest/git/refs#get-a-reference"),
@@ -2399,23 +2410,53 @@ def test_github_pages_at_reals_thirty_and_caps_at_its_hundred(tmp_path):
         assert Settings.model_fields["max_page_size"].default == 1000
 
 
-def test_github_a_path_parameter_it_cannot_parse_is_the_route_s_404(gh_client, gh_admin_h, gh_org):
-    """Real has no route for `/issues/notanint`, so it answers the 404 that route's own anchor
-    names — measured: `Not Found`, `documentation_url: .../rest/issues/issues#get-an-issue`.
+@pytest.mark.parametrize(
+    "route",
+    [
+        "issues/{number}",
+        "issues/{number}/comments",
+        "issues/comments/{number}",
+        "pulls/{number}",
+        "pulls/{number}/reviews",
+        "pulls/{number}/comments",
+        "pulls/{number}/commits",
+        "pulls/{number}/files",
+        "pulls/comments/{number}",
+        "git/ref/pull/{number}/head",
+        "git/ref/pull/{number}/merge",
+    ],
+)
+@pytest.mark.parametrize(
+    "number",
+    [
+        "notanint",
+        "²",
+        "9223372036854775808",
+        "-9223372036854775809",
+        pytest.param("1" * 4301, id="4301-digits"),
+    ],
+)
+def test_github_a_path_number_it_cannot_read_is_the_unknown_number_404(
+    gh_client, gh_admin_h, gh_org, route, number
+):
+    """A path number that is not an integer (`²` included), or one outside 64 bits (see
+    store.github_by_number), gets the 404 an unknown number gets on that route, byte for byte, as
+    real answers both; `²` was measured on all eleven routes. A number of 4,301 digits, one more
+    than `int()` converts, gets that 404 too, where real answers a path that long with a 414 on
+    `issues/{number}` and the git refs, and with a 404 on `pulls/{number}`.
 
-    Backlot declares `number: int` and so matches the route and fails after, which is a difference
-    in how the two arrive rather than in what they answer. What it must not do is answer a 422:
-    `{"detail": [...]}` announced itself as the mock's own default, and an envelope does not — a
-    status real never sends would read as measured.
+    The routes that declare the number an `int` match `notanint` and then fail to validate it, and
+    that has to be the route's 404 rather than a 422: `{"detail": [...]}` would announce itself as
+    the mock's own default, and an envelope would not, so a status real never sends would read as
+    measured.
     """
     c, _ = gh_client
-    r = c.get(f"/github/repos/{gh_org}/codebase/issues/notanint", headers=gh_admin_h)
-    assert r.status_code == 404
-    assert r.json() == {
-        "message": "Not Found",
-        "documentation_url": "https://docs.github.com/rest/issues/issues#get-an-issue",
-        "status": "404",
-    }
+    base = f"/github/repos/{gh_org}/codebase/"
+    unknown = c.get(base + route.format(number="999999999"), headers=gh_admin_h)
+    actual = c.get(base + route.format(number=number), headers=gh_admin_h)
+    assert unknown.status_code == 404
+    assert actual.status_code == unknown.status_code
+    assert actual.content == unknown.content
 
 
 def test_github_a_wrong_method_is_not_dressed_as_a_measured_answer(gh_client, gh_admin_h, gh_org):
@@ -4805,9 +4846,31 @@ def test_github_the_statuses_listing_declares_the_page_parameters_real_accepts(c
     assert {"page", "per_page"} <= {p["name"] for p in op.get("parameters", [])}
 
 
-def test_github_search_still_filters_by_q(client, admin_h):
-    body = client.get("/github/search/issues", params={"q": "is:issue"}, headers=admin_h).json()
-    assert "items" in body and "total_count" in body
+@pytest.mark.parametrize(
+    "path, q, search_type",
+    [
+        ("/github/search/issues", "is:issue", "lexical"),
+        ("/github/search/issues", "is:pr", "lexical"),
+        ("/github/search/issues", "no-matching-issue-lexical-search", "lexical"),
+        ("/github/search/code", "extension:md", None),
+    ],
+)
+def test_github_search_envelope_members_and_their_order_match_real(
+    client, admin_h, path, q, search_type
+):
+    """Issue search sends `search_type` last, after `items`; code search sends no such member."""
+    response = client.get(path, params={"q": q}, headers=admin_h)
+    assert response.status_code == 200
+    members = ["total_count", "incomplete_results", "items"] + ["search_type"] * bool(search_type)
+    assert list(response.json()) == members
+    assert response.json().get("search_type") == search_type
+
+
+def test_github_issue_search_schema_requires_search_type(client):
+    spec = client.get("/openapi.json").json()
+    schema = spec["components"]["schemas"]["GitHubIssueSearch"]
+    assert "search_type" in schema["required"]
+    assert schema["properties"]["search_type"]["type"] == "string"
 
 
 def test_github_responses_unchanged_by_enrichment(client, admin_h):

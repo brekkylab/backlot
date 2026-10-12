@@ -430,6 +430,7 @@ def confluence_page_links(
     cursor: str | None = None,
     sent_cursor: str | None = None,
     reached: int | None = None,
+    head: str = "",
 ) -> dict:
     """The `next` and `prev` every paged Confluence listing answers, literal for literal.
 
@@ -453,8 +454,10 @@ def confluence_page_links(
     - `next` is built before `prev`, because real emits `_links` alphabetically and a caller
       reading key order sees `next` first.
 
-    ``before`` and ``after`` are the request's other parameters, split where
-    :func:`backlot.routers.atlassian._confluence_carried` says real puts them.
+    ``head``, ``before`` and ``after`` are the request's other parameters, split where
+    :func:`backlot.routers.atlassian._confluence_carried` says real puts them. ``head`` leads
+    `next` and `prev`, ahead of the marker; the CQL search, whose `prev` leads with
+    ``sent_cursor``, passes none.
 
     ``cursor`` and ``sent_cursor`` are the CQL search's. ``cursor`` rides `next` alone, between the
     marker and `limit`. ``sent_cursor`` is the one the request brought, and it changes `prev`,
@@ -467,7 +470,7 @@ def confluence_page_links(
     tail = f"&{after}" if after else ""
     nxt = start + size
     if (nxt if reached is None else reached) < total:
-        links["next"] = f"{path}?next=true&{lead}limit={limit}&start={nxt}{tail}"
+        links["next"] = f"{path}?{head}next=true&{lead}limit={limit}&start={nxt}{tail}"
     if sent_cursor:
         links["prev"] = (
             f"{path}?cursor={sent_cursor}&{before}prev=true&limit={limit}"
@@ -476,6 +479,6 @@ def confluence_page_links(
     elif start > 0:
         prev_start = max(0, start - limit)
         links["prev"] = (
-            f"{path}?{before}prev=true&limit={start - prev_start}&start={prev_start}{tail}"
+            f"{path}?{head}{before}prev=true&limit={start - prev_start}&start={prev_start}{tail}"
         )
     return links

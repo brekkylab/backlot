@@ -2901,6 +2901,9 @@ _VERSION_AFTER_THE_BUCKET = frozenset({("PUT", "acl"), ("POST", "restore")})
 @router.api_route(
     "/{bucket}", methods=["PUT", "POST", "DELETE", "PATCH", "OPTIONS"], include_in_schema=False
 )
+@router.api_route(
+    "/{bucket}/", methods=["PUT", "POST", "DELETE", "PATCH", "OPTIONS"], include_in_schema=False
+)
 async def bucket_method_refusal(request: Request, bucket: str) -> Response:
     """Without a selector, `PUT` creates the bucket on real, `DELETE` removes it and `POST` is a
     form upload, and `PATCH` is a refusal of real's own; with one, the selector decides. Real's

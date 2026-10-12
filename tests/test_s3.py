@@ -362,6 +362,34 @@ def test_s3_a_bucket_path_ending_in_a_slash_is_the_bucket(live_server, query, me
     assert _without_request_ids(slashed.text) == _without_request_ids(bare.text)
 
 
+# POST and PATCH at a bucket path with a trailing slash answer as the bucket, not as the key "",
+# measured against s3.amazonaws.com (us-east-1, 2026-10-12).
+_BUCKET_WRITE_SLASH = [
+    ("POST", "", 412, "PreconditionFailed", "multipart/form-data</Condition>"),
+    ("POST", "?restore", 400, "UserKeyMustBeSpecified", "User key must be specified."),
+    ("PATCH", "", 405, "MethodNotAllowed", "<ResourceType>BUCKET</"),
+]
+
+
+@pytest.mark.parametrize("method, query, status, code, member", _BUCKET_WRITE_SLASH)
+def test_s3_a_bucket_write_at_a_trailing_slash_is_the_bucket(
+    live_server, method, query, status, code, member
+):
+    """The bucket's own answer, not a key's: `/{bucket}/` is not the key `""` in that bucket."""
+    base_url, settings = live_server
+    bare = _signed(
+        base_url, f"/s3/eng-artifacts{query}", settings.admin_token, method=method
+    )
+    slashed = _signed(
+        base_url, f"/s3/eng-artifacts/{query}", settings.admin_token, method=method
+    )
+    assert bare.status_code == status == slashed.status_code
+    assert f"<Code>{code}</Code>" in bare.text and member in bare.text
+    assert f"<Code>{code}</Code>" in slashed.text and member in slashed.text
+    assert sorted(slashed.headers) == sorted(bare.headers)
+    assert _without_request_ids(slashed.text) == _without_request_ids(bare.text)
+
+
 def test_s3_every_bucket_selector_a_get_answers_is_declared():
     """What a bucket's GET answers is what its OpenAPI declares, so the tool `backlot mcp` hands an
     agent offers each operation the route serves (``backlot.openapi.qp``)."""

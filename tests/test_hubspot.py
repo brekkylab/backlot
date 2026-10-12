@@ -967,11 +967,15 @@ _BATCH_BODY_ROWS = [
     _br("int-element", '{"inputs":[7]}', _batch_refusal(12, _no_creator("int/Int", "Number value (7)"))),
     _br("int-element-minus-2^31", '{"inputs":[-2147483648]}', _batch_refusal(12, _no_creator("int/Int", "Number value (-2147483648)"))),
     _br("int-element-2^31", '{"inputs":[2147483648]}', _batch_refusal(12, _no_creator("long/Long", "Number value (2147483648)"))),
+    _br("int-element-minus-2^63", '{"inputs":[-9223372036854775808]}', _batch_refusal(12, _no_creator("long/Long", "Number value (-9223372036854775808)"))),
     _br("int-element-2^63", '{"inputs":[9223372036854775808]}', _batch_refusal(12, _no_creator("BigInteger", "Number value (9223372036854775808)"))),
     _br("float-element", '{"inputs":[1.5]}', _batch_refusal(12, _no_creator("double/Double", "Number value (1.5)"))),
     _br("float-element-1e7", '{"inputs":[1e7]}', _batch_refusal(12, _no_creator("double/Double", "Number value (1.0E7)"))),
+    _br("float-element-mantissa", '{"inputs":[123456789.125]}', _batch_refusal(12, _no_creator("double/Double", "Number value (1.23456789125E8)"))),
+    _br("float-element-1e-3", '{"inputs":[0.001]}', _batch_refusal(12, _no_creator("double/Double", "Number value (0.001)"))),
     _br("float-element-1e-4", '{"inputs":[1e-4]}', _batch_refusal(12, _no_creator("double/Double", "Number value (1.0E-4)"))),
     _br("float-element-1e400", '{"inputs":[1e400]}', _batch_refusal(12, _no_creator("double/Double", "Number value (Infinity)"))),
+    _br("float-element-minus-1e400", '{"inputs":[-1e400]}', _batch_refusal(12, _no_creator("double/Double", "Number value (-Infinity)"))),
     _br("float-element-minus-zero", '{"inputs":[-0.0]}', _batch_refusal(12, _no_creator("double/Double", "Number value (-0.0)"))),
     _br("boolean-element", '{"inputs":[true]}', _batch_refusal(12, _no_creator("boolean/Boolean", "boolean value (true)"))),
     _br("array-element", '{"inputs":[["1"]]}', _batch_refusal(12, _ARRAY)),
@@ -1023,30 +1027,51 @@ def test_hubspot_batch_read_refuses_a_body_real_cannot_read(
 
 
 @pytest.mark.parametrize(
-    "inputs, status",
+    "inputs, caller, status",
     [
-        (["{a}"], 200),
-        (["{a}", {"id": "{b}"}], 200),
-        (["111111111111"], 207),
-        ([" {a} "], 207),
-        ([""], 207),
+        (["{a}"], None, 200),
+        (["{a}", {"id": "{b}"}], None, 200),
+        (["111111111111"], None, 207),
+        ([" {a} "], None, 207),
+        ([""], None, 207),
+        (["{secret}"], "ava@acme.com", 207),
+        (["{secret}"], "hana@acme.com", 200),
     ],
-    ids=["alone", "beside-an-object", "missing", "padded", "empty"],
+    ids=[
+        "alone",
+        "beside-an-object",
+        "missing",
+        "padded",
+        "empty",
+        "a-record-the-caller-cannot-read",
+        "a-record-the-caller-can-read",
+    ],
 )
-def test_hubspot_batch_read_reads_a_bare_id_string_as_that_id(client, admin_h, inputs, status):
+def test_hubspot_batch_read_reads_a_bare_id_string_as_that_id(
+    client, admin_h, tokens_yaml, inputs, caller, status
+):
     """`batch_read`'s reading of a bare string in `inputs`: each row's answer, status and body,
-    against the answer to the same ids sent as objects."""
+    against the answer to the same ids sent as objects by the same caller (the admin where
+    `caller` is None). `{secret}` is the company only hana may read, so ava's bare string gets
+    the not-found error a missing id gets and hana's gets the record."""
     listed = client.get(
         "/hubspot/crm/v3/objects/companies", headers=admin_h, params={"limit": 2}
     ).json()["results"]
-    ids = {"a": listed[0]["id"], "b": listed[1]["id"]}
+    secret = next(
+        r["id"]
+        for r in crawl_hubspot(client, admin_h, "companies")
+        if r["properties"].get("name") == "Stealth Health Co"
+    )
+    ids = {"a": listed[0]["id"], "b": listed[1]["id"], "secret": secret}
+    users = {u["email"]: u["token"] for u in tokens_yaml["users"]}
+    headers = {"Authorization": f"Bearer {users[caller]}"} if caller else admin_h
     bare = [
         x.format(**ids) if isinstance(x, str) else {"id": x["id"].format(**ids)} for x in inputs
     ]
     url = "/hubspot/crm/v3/objects/companies/batch/read"
-    r = client.post(url, headers=admin_h, json={"inputs": bare})
+    r = client.post(url, headers=headers, json={"inputs": bare})
     as_objects = [{"id": x} if isinstance(x, str) else x for x in bare]
-    control = client.post(url, headers=admin_h, json={"inputs": as_objects})
+    control = client.post(url, headers=headers, json={"inputs": as_objects})
     assert control.status_code == status
     assert (r.status_code, r.json()) == (status, control.json())
 

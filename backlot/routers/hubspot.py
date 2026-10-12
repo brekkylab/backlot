@@ -661,14 +661,14 @@ def _invalid_at(raw: bytes, path: tuple, text: str) -> JSONResponse:
 
 
 def _refuse_a_batch_read_shape(raw: bytes, body: dict) -> JSONResponse | None:
-    """Real's 400 for a batch/read body it cannot read, or None. Measured against api.hubapi.com
-    on 2026-10-09 and 2026-10-11: real reads `inputs`, `properties` and `propertiesWithHistory` in
-    body order and stops at the first that is neither null nor a list, or at the first element of
-    `inputs` that is neither an object nor a string, naming where that value starts. A string
-    `properties` or `propertiesWithHistory` is echoed trimmed (`_TRIM`), and one that trims to
-    nothing is named by its field alone. A null element of `inputs` is refused only once the rest
-    of the body has been read, in an envelope with no `category`. The elements of `properties` and
-    the members of an object in `inputs` are not checked here."""
+    """Real's 400 for a batch/read body it cannot read, or None. Measured against api.hubapi.com on
+    2026-10-09, 2026-10-11 and 2026-10-12: real reads `inputs`, `properties` and
+    `propertiesWithHistory` in body order and stops at the first that is neither null nor a list, or
+    at the first element of `inputs` that is neither an object nor a string, naming where that value
+    starts. A string `properties` or `propertiesWithHistory` is echoed trimmed (`_TRIM`), and one
+    that trims to nothing is named by its field alone. A null element of `inputs` is refused only
+    once the rest of the body has been read, in an envelope with no `category`. The elements of
+    `properties` and the members of an object in `inputs` are not checked here."""
     null_input = False
     for key, value in body.items():
         if key not in ("inputs", "properties", "propertiesWithHistory") or value is None:

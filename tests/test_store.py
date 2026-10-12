@@ -2277,9 +2277,10 @@ def test_fireflies_filters_narrow_by_channel_host_and_date(db, keys):
     assert [r["id"] for r in store.list_fireflies_transcripts(db, channel="all-hands")] == [
         keys["ff-allhands"][0]
     ]
-    assert [r["id"] for r in store.list_fireflies_transcripts(db, host_email="AVA@acme.com")] == [
+    assert [r["id"] for r in store.list_fireflies_transcripts(db, host_email="ava@acme.com")] == [
         keys["ff-discovery"][0]
-    ]  # case-insensitive
+    ]
+    assert store.list_fireflies_transcripts(db, host_email="AVA@acme.com") == []
     ts = store.list_fireflies_transcripts(db, channel="sales-calls")[0]["created_ts"]
     assert [r["id"] for r in store.list_fireflies_transcripts(db, to_ts=ts)] == [
         keys["ff-discovery"][0]

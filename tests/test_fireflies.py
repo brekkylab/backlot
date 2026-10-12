@@ -266,10 +266,12 @@ def test_fireflies_date_selects_a_day_and_the_singular_email_filters_narrow(clie
     # `date` narrows AGAINST a range rather than replacing it: a toDate before that day wins
     assert titles("date: 1775836800000, toDate: 1775142000000") == set()
 
+    assert titles('host_email: "ava@acme.com"') == {"Acme x Northwind — latency discovery"}
     assert titles('organizer_email: "ava@acme.com"') == {"Acme x Northwind — latency discovery"}
     assert titles('participant_email: "ava@acme.com"') == {"Acme x Northwind — latency discovery"}
-    # upper-cased, the organizer address finds nothing while the participant address still
-    # matches, as measured beside the organizer filter in `store._fireflies_where`
+    # upper-cased, the host and organizer addresses find nothing while the participant address
+    # still matches, as measured above those two filters in `store._fireflies_where`
+    assert titles('host_email: "AVA@ACME.COM"') == set()
     assert titles('organizer_email: "AVA@ACME.COM"') == set()
     assert titles('participant_email: "AVA@ACME.COM"') == {"Acme x Northwind — latency discovery"}
     # `participants` is who the SENTENCES attribute, so a guest-list-only attendee is not one

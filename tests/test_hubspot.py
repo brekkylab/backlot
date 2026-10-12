@@ -32,6 +32,7 @@ def test_admin_hubspot_crawls_all(client, admin_h, ro_conn):
 @pytest.mark.parametrize(
     "value,archived",
     [
+        (None, False),
         ("true", True),
         ("TRUE", True),
         ("True", True),
@@ -69,15 +70,42 @@ def test_hubspot_archived_parameter_reads_its_first_value_and_only_true_as_true(
     client, admin_h, value, archived
 ):
     """`_flag`'s rule over companies, on the first value when `archived` repeats (a list row is
-    sent as the key repeated in list order): the one archived company when `_flag` reads that value
-    as true, and otherwise the same page as a request without `archived`."""
+    sent as the key repeated in list order, and `None` sends no `archived`). The listing answers the
+    one archived company when `_flag` reads that value as true, and otherwise the same page as a
+    request without `archived`. Read by id, alone or through batch/read, that company is served
+    when `_flag` reads the value as true and otherwise answered as a missing id is (see
+    `_hidden_archived`); an active company is served whatever the value."""
     url = "/hubspot/crm/v3/objects/companies"
-    r = client.get(url, headers=admin_h, params={"archived": value})
+    params = {} if value is None else {"archived": value}
+    r = client.get(url, headers=admin_h, params=params)
     assert r.status_code == 200
     if archived:
         assert [x["properties"]["name"] for x in r.json()["results"]] == ["Defunct Labs"]
     else:
         assert r.json() == client.get(url, headers=admin_h).json()
+
+    (defunct,) = client.get(url, headers=admin_h, params={"archived": "true"}).json()["results"]
+    active = client.get(url, headers=admin_h).json()["results"][0]["id"]
+    missing = "999999999999"
+    for rid, served in ((defunct["id"], archived), (active, True)):
+        got = client.get(f"{url}/{rid}", headers=admin_h, params=params)
+        batch = client.post(
+            f"{url}/batch/read", headers=admin_h, params=params, json={"inputs": [{"id": rid}]}
+        )
+        if served:
+            assert (got.status_code, got.json()["id"]) == (200, rid)
+            assert (batch.status_code, [x["id"] for x in batch.json()["results"]]) == (200, [rid])
+        else:
+            assert (got.status_code, got.json()) == (
+                404,
+                client.get(f"{url}/{missing}", headers=admin_h).json(),
+            )
+            assert (batch.status_code, json.loads(batch.text.replace(rid, missing))) == (
+                207,
+                client.post(
+                    f"{url}/batch/read", headers=admin_h, json={"inputs": [{"id": missing}]}
+                ).json(),
+            )
 
 
 @pytest.mark.parametrize(

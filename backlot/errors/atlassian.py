@@ -550,8 +550,8 @@ def unbounded_jql() -> AtlassianError:
 
 def properties_null_element(index: int) -> AtlassianError:
     """Jira's 500 for a `search/jql` body whose `properties` list holds a ``null``, measured
-    2026-10-10: the message names the first null's index (`["a", null]` names index 1) and the
-    body rides on `application/json;charset=UTF-8` like every other JSON status Jira answers.
+    2026-10-10: the message names the first null's index (`["a", null]` names index 1), on the
+    same `application/json;charset=UTF-8` as the 400s.
     """
     return AtlassianError(
         500,

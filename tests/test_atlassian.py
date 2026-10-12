@@ -2507,108 +2507,131 @@ def test_jira_search_post_accepts_every_field_the_vendors_bean_declares(
     assert r.status_code == 200, r.text
 
 
-@pytest.mark.parametrize(
-    "field,value",
-    [
-        ("expand", "names"),
-        ("expand", "bogus"),
-        ("expand", 1),
-        ("expand", 1.5),
-        ("expand", True),
-        ("fieldsByKeys", True),
-        ("fieldsByKeys", False),
-        ("fieldsByKeys", "true"),
-        ("fieldsByKeys", "false"),
-        ("fieldsByKeys", 0),
-        ("fieldsByKeys", 1),
-        ("fieldsByKeys", 2),
-        ("properties", ["prop1"]),
-        ("properties", [1]),
-        ("properties", [True]),
-        ("properties", []),
-        ("reconcileIssues", [1, 2]),
-        ("reconcileIssues", ["1"]),
-        ("reconcileIssues", [1.5]),
-        ("reconcileIssues", [None]),
-        ("reconcileIssues", []),
-        ("reconcileIssues", [-1]),
-    ],
-)
-def test_jira_search_post_serves_the_values_the_vendors_bean_binds(client, admin_h, field, value):
-    """Measured 2026-10-10 (#579): the four members Backlot does not act on still have their
-    values bound, and these are the values that bind — where a JSON null is the member unsent
-    for all but `reconcileIssues`, whose bare null is real's 500 below."""
-    r = _search_post(client, admin_h, jql="project = payments", **{field: value})
-    assert r.status_code == 200, r.text
+def _bean(members: str, jql: str | None = '"project = payments"') -> str:
+    """A `search/jql` POST body: `jql` first unless ``jql`` is None, then ``members`` as written."""
+    return "{" + ", ".join(m for m in (jql and f'"jql": {jql}', members) if m) + "}"
 
 
-@pytest.mark.parametrize(
-    "field,value",
-    [
-        ("expand", []),
-        ("expand", ["names"]),
-        ("expand", [1]),
-        ("expand", {}),
-        ("fieldsByKeys", "yes"),
-        ("fieldsByKeys", "x"),
-        ("fieldsByKeys", 1.5),
-        ("fieldsByKeys", []),
-        ("fieldsByKeys", {}),
-        ("properties", "prop1"),
-        ("properties", 1),
-        ("properties", {}),
-        ("properties", [[1]]),
-        ("properties", [{}]),
-        ("reconcileIssues", ["a"]),
-        ("reconcileIssues", [True]),
-        ("reconcileIssues", 1),
-        ("reconcileIssues", "1"),
-        ("reconcileIssues", {}),
-        ("reconcileIssues", [[1]]),
-        ("reconcileIssues", [9223372036854775808]),
+_BEAN_REFUSED = {"errorMessages": [errors_atlassian.BODY_NOT_AN_OBJECT]}
+_RECONCILE_NULL = {
+    "message": 'Cannot invoke "java.util.List.stream()" because "reconcileIssues" is null',
+    "status-code": 500,
+    "stack-trace": "",
+}
+
+
+def _properties_null(index: int) -> dict:
+    return {"message": f"at index {index}", "status-code": 500, "stack-trace": ""}
+
+
+# What real answers for a value of each of the four bean members Backlot does not act on, alone and
+# beside a second refusal: the rules are `_jira_fields_by_keys_ok`, `_jira_reconcile_issue_ok` and
+# where `jira_search` raises the two 500s. `None` is a 200. The one value of each that
+# `test_jira_search_post_accepts_every_field_the_vendors_bean_declares` serves is left to that test.
+_BEAN_MEMBER_ROWS = [
+    *[(_bean(f'"expand": {v}'), None) for v in ('"bogus"', '""', "1", "1.5", "true", "null")],
+    *[(_bean(f'"expand": {v}'), _BEAN_REFUSED) for v in ("[]", '["names"]', "[1]", "{}")],
+    *[
+        (_bean(f'"fieldsByKeys": {v}'), None)
+        for v in (
+            *("false", "null", "0", "2", "-1", "9223372036854775808"),
+            *('"true"', '"True"', '"TRUE"', '"false"', '"False"', '"FALSE"', '" TRUE "'),
+            *('""', '" "', '"null"'),
+            json.dumps(chr(1) + "true"),
+        )
     ],
-)
-def test_jira_search_post_refuses_a_value_the_vendors_bean_cannot_bind(
-    client, admin_h, field, value
+    *[
+        (_bean(f'"fieldsByKeys": {v}'), _BEAN_REFUSED)
+        for v in (
+            *('"yes"', '"x"', '"tRuE"', '"NULL"', '"1"', '"\\u00a0true"'),
+            *("1.5", "1.0", "[]", "{}"),
+        )
+    ],
+    *[
+        (_bean(f'"properties": {v}'), None)
+        for v in ("[1]", "[1.5]", "[true]", '[""]', "[]", "null")
+    ],
+    *[
+        (_bean(f'"properties": {v}'), _BEAN_REFUSED)
+        for v in ('"prop1"', '""', "1", "{}", "[[1]]", "[{}]", "[null, [1]]", "[{}, null]")
+    ],
+    *[
+        (_bean(f'"properties": {v}'), _properties_null(i))
+        for v, i in (("[null]", 0), ('["a", null]', 1), ('["a", "b", null, null]', 2))
+    ],
+    *[
+        (_bean(f'"reconcileIssues": {v}'), None)
+        for v in (
+            *("[]", "[null]", "[1, null, 2]", "[-1]", "[-9223372036854775808]"),
+            *("[1.5]", "[1e2]", "[9.2e18]", "[-9.2e18]"),
+            *("[9223372036854775807.0]", "[-9223372036854775808.0]", '["%s1"]' % ("0" * 999)),
+            *('["1"]', '[" 1"]', '["+1"]', '["01"]', '["\\u0661"]', '["\\u0665"]'),
+            *('["9223372036854775807"]',),
+            *('[""]', '[" "]', '["null"]', json.dumps([chr(1) + "1"])),
+        )
+    ],
+    *[
+        (_bean(f'"reconcileIssues": {v}'), _BEAN_REFUSED)
+        for v in (
+            *('["a"]', "[true]", "1", '"1"', "{}", "[[1]]", '[null, "a"]'),
+            *("[9223372036854775808]", "[-9223372036854775809]", "[9.3e18]", "[-1e19]"),
+            *('["1.5"]', '["1e2"]', '["0x10"]', '["1_000"]', '["\\u00a01"]'),
+            *('["9223372036854775808"]', '["%s1"]' % ("0" * 1000), '["\\ud835\\udfd3"]'),
+            *("[9223372036854777856.0]", "[-9223372036854777856.0]"),
+        )
+    ],
+    (_bean('"reconcileIssues": null'), _RECONCILE_NULL),
+    # The two 500s beside a second refusal.
+    (_bean('"reconcileIssues": null', jql=None), errors_atlassian.unbounded_jql().body),
+    (
+        _bean('"reconcileIssues": null, "maxResults": 0'),
+        errors_atlassian.max_results_out_of_range().body,
+    ),
+    (
+        _bean('"maxResults": 0, "reconcileIssues": null'),
+        errors_atlassian.max_results_out_of_range().body,
+    ),
+    (
+        _bean('"reconcileIssues": null, "nextPageToken": "bogus"'),
+        errors_atlassian.bad_page_token().body,
+    ),
+    (_bean('"reconcileIssues": null, "maxResults": "abc"'), _BEAN_REFUSED),
+    (_bean('"maxResults": "abc", "reconcileIssues": null'), _BEAN_REFUSED),
+    (_bean('"reconcileIssues": null, "bogus": 1'), _BEAN_REFUSED),
+    (_bean('"reconcileIssues": null', jql='"project = ZZZNOPE999"'), _RECONCILE_NULL),
+    (_bean('"properties": [null], "reconcileIssues": ["a"]'), _BEAN_REFUSED),
+    (_bean('"reconcileIssues": ["a"], "properties": [null]'), _BEAN_REFUSED),
+    (_bean('"properties": [null], "maxResults": "abc"'), _BEAN_REFUSED),
+    (_bean('"maxResults": "abc", "properties": [null]'), _BEAN_REFUSED),
+    (_bean('"properties": [null], "expand": []'), _BEAN_REFUSED),
+    (_bean('"properties": [null], "bogus": 1'), _BEAN_REFUSED),
+    *[
+        (raw, _properties_null(0))
+        for raw in (
+            _bean('"properties": [null]', jql=None),
+            _bean('"properties": [null], "maxResults": 0'),
+            _bean('"properties": [null], "nextPageToken": "bogus"'),
+            _bean('"properties": [null], "reconcileIssues": null'),
+            _bean('"reconcileIssues": null, "properties": [null]'),
+        )
+    ],
+]
+
+
+@pytest.mark.parametrize("raw,want", _BEAN_MEMBER_ROWS)
+def test_jira_search_post_binds_the_members_it_does_not_act_on_as_real_binds_them(
+    client, admin_h, raw, want
 ):
-    """Measured 2026-10-10 (#579): every one of these draws the same body-wide sentence a
-    `fields` that cannot bind draws, because the bean deserializes the whole body or none of
-    it."""
-    r = _search_post(client, admin_h, jql="project = payments", **{field: value})
-    assert r.status_code == 400, r.text
-    assert r.json() == {"errorMessages": [errors_atlassian.BODY_NOT_AN_OBJECT]}
-
-
-@pytest.mark.parametrize(
-    "value,want",
-    [
-        ([None], "at index 0"),
-        (["a", None], "at index 1"),
-        (["a", "b", None], "at index 2"),
-    ],
-)
-def test_jira_search_post_answers_a_properties_null_with_reals_500(client, admin_h, value, want):
-    """Measured 2026-10-10 (#579): a `properties` list holding a null is not the 400 the other
-    unbindable values draw but a 500 whose message names the first null's index, served on
-    `application/json;charset=UTF-8`."""
-    r = _search_post(client, admin_h, jql="project = payments", properties=value)
-    assert r.status_code == 500, r.text
-    assert r.headers["content-type"].startswith("application/json")
-    assert r.json() == {"message": want, "status-code": 500, "stack-trace": ""}
-
-
-def test_jira_search_post_answers_a_bare_null_reconcile_issues_with_reals_500(client, admin_h):
-    """Measured 2026-10-10 (#579): `"reconcileIssues": null` is the NPE the operation throws
-    streaming the list, verbatim, where the null unsent member is a 200 and a null *element*
-    binds."""
-    r = _search_post(client, admin_h, jql="project = payments", reconcileIssues=None)
-    assert r.status_code == 500, r.text
-    assert r.headers["content-type"].startswith("application/json")
-    assert r.json() == {
-        "message": 'Cannot invoke "java.util.List.stream()" because "reconcileIssues" is null',
-        "status-code": 500,
-        "stack-trace": "",
-    }
+    r = client.post(
+        "/atlassian/rest/api/3/search/jql",
+        headers={**admin_h, "Content-Type": "application/json"},
+        content=raw,
+    )
+    if want is None:
+        assert r.status_code == 200, r.text
+    else:
+        assert (r.status_code, r.json()) == (want.get("status-code", 400), want), r.text
+        assert r.headers["content-type"] == "application/json;charset=UTF-8"
 
 
 def test_jira_search_post_refuses_a_jql_shaped_as_a_list(client, admin_h):

@@ -530,28 +530,49 @@ def _jira_search_max_results(value) -> int:
     return int(n)
 
 
-def _jira_reconcile_issue_ok(value) -> bool:
-    """Whether one `reconcileIssues` element binds to the bean's Java `Long`, as measured
-    2026-10-10: a number, a numeric string and a null all bind — the null as a null `Long`, not
-    the refusal a bare null `reconcileIssues` itself is — where a boolean, any other string, a
-    list and an object do not, and neither does an integer past `Long.MAX_VALUE`
-    (9223372036854775808 is refused where -1 is served). A float always binds, the way
-    `1.5` binds `maxResults`' int; the digits past 1000 that would float to infinity never get
-    here, :func:`_jira_search_body` refuses the literal first.
+_JIRA_BOOLEAN_TEXTS = frozenset({"", "null", "true", "True", "TRUE", "false", "False", "FALSE"})
+
+
+def _jira_fields_by_keys_ok(value) -> bool:
+    """Whether a `fieldsByKeys` binds to the bean's boolean, the way Jira Cloud bound it on
+    2026-10-10 and 2026-10-11. `null`, a boolean and any integer bind. A string binds when, trimmed
+    (see :data:`_JAVA_TRIMMED`), it is empty, `null`, or `true` or `false` in lower, title or upper
+    case: `" TRUE "`, `"False"`, `""` and `"null"` bind, where `"tRuE"`, `"NULL"`, `"1"`, `"yes"`
+    and a `true` behind a no-break space do not. A float, a list and an object do not bind.
     """
-    if value is None or isinstance(value, float):
+    if value is None or isinstance(value, int):
+        return True
+    if isinstance(value, str):
+        return value.strip(_JAVA_TRIMMED) in _JIRA_BOOLEAN_TEXTS
+    return False
+
+
+def _jira_reconcile_issue_ok(value) -> bool:
+    """Whether one `reconcileIssues` element binds to the bean's Java `Long`, as measured against
+    Jira Cloud on 2026-10-10 and 2026-10-11. A null binds, as a null `Long`, where a bare null
+    `reconcileIssues` does not (see `jira_search`). An integer binds from -2**63 up to 2**63 - 1. A
+    float binds from -2**63 up to 2**63, both ends included, and is truncated: `1.5`, `9.2e18` and
+    `9223372036854775807.0` (2**63 as a double) bind, where `9.3e18`, `1e19` and the next double
+    past either end do not. A string binds when, trimmed (see :data:`_JAVA_TRIMMED`), it is empty,
+    `null`, or at most 1000 characters of a sign and decimal digits, in any script up to U+FFFF,
+    naming an integer in range: `" 1"`, `"+1"`, `"٥"` and a `1` behind 999 zeros bind, where
+    `"1.5"`, `"1_000"`, `"0x10"`, `"𝟓"`, a `1` behind 1000 zeros and a `1` behind a no-break space
+    do not. A boolean, a list and an object do not bind.
+    """
+    if value is None:
         return True
     if isinstance(value, bool):
         return False
-    if isinstance(value, int):
-        return -(2**63) <= value <= 2**63 - 1
+    if isinstance(value, float):
+        return -(2**63) <= value <= 2**63
     if isinstance(value, str):
-        try:
-            n = int(value)
-        except ValueError:
+        text = value.strip(_JAVA_TRIMMED)
+        if text in ("", "null"):
+            return True
+        if len(text) > 1000 or not re.fullmatch(r"[+-]?\d+", text) or max(map(ord, text)) > 0xFFFF:
             return False
-        return -(2**63) <= n <= 2**63 - 1
-    return False
+        value = int(text)
+    return isinstance(value, int) and -(2**63) <= value < 2**63
 
 
 @router.api_route(
@@ -599,51 +620,46 @@ async def jira_search(request: Request):
             # an object is a body-wide invalid-payload refusal (measured 2026-10-06; the lists of
             # scalars and the bare string 2026-10-09).
             raise errors_atlassian.body_not_read(errors_atlassian.BODY_NOT_AN_OBJECT)
-        # The four members Backlot does not act on still have their values bound by the bean,
-        # and each binds less than a JSON value can be (measured 2026-10-10; see #579). `expand`
-        # takes a scalar only — a list or an object is the body-wide refusal.
+        # The four members Backlot does not act on still have their values bound by the bean
+        # (measured 2026-10-10 and 2026-10-11): `expand` takes a scalar, `properties` a list of
+        # scalars, `reconcileIssues` a list of what `_jira_reconcile_issue_ok` accepts, and
+        # `fieldsByKeys` what `_jira_fields_by_keys_ok` accepts. Anything else is the body-wide
+        # refusal, which real gives ahead of the 500s a null `properties` element and a null
+        # `reconcileIssues` draw further down.
         if isinstance(body.get("expand"), (list, dict)):
             raise errors_atlassian.body_not_read(errors_atlassian.BODY_NOT_AN_OBJECT)
-        # `fieldsByKeys` is a boolean that Jackson also coerces from `"true"`/`"false"` and from
-        # any int; other strings, a float, a list or an object are refused.
-        raw_by_keys = body.get("fieldsByKeys")
-        if not (
-            raw_by_keys is None
-            or isinstance(raw_by_keys, (bool, int))
-            or (isinstance(raw_by_keys, str) and raw_by_keys in ("true", "false"))
+        if not _jira_fields_by_keys_ok(body.get("fieldsByKeys")):
+            raise errors_atlassian.body_not_read(errors_atlassian.BODY_NOT_AN_OBJECT)
+        raw_properties = body.get("properties")
+        if raw_properties is not None and (
+            not isinstance(raw_properties, list)
+            or any(isinstance(prop, (list, dict)) for prop in raw_properties)
         ):
             raise errors_atlassian.body_not_read(errors_atlassian.BODY_NOT_AN_OBJECT)
-        # `properties` is a list of scalars; a null among them is real's 500 naming its index.
-        raw_properties = body.get("properties")
-        if raw_properties is not None:
-            if not isinstance(raw_properties, list) or any(
-                isinstance(prop, (list, dict)) for prop in raw_properties
-            ):
-                raise errors_atlassian.body_not_read(errors_atlassian.BODY_NOT_AN_OBJECT)
-            if any(prop is None for prop in raw_properties):
-                raise errors_atlassian.properties_null_element(raw_properties.index(None))
-        # `reconcileIssues` is a list of longs — a number, a numeric string or a null each — where
-        # a bare null is real's NPE 500, and anything else is the body-wide refusal. The int
-        # bound is Java's long: 9223372036854775808 is refused where -1 is served.
-        if "reconcileIssues" in body:
-            raw_reconcile = body["reconcileIssues"]
-            if raw_reconcile is None:
-                raise errors_atlassian.reconcile_issues_null()
-            if not isinstance(raw_reconcile, list) or not all(
-                _jira_reconcile_issue_ok(issue) for issue in raw_reconcile
-            ):
-                raise errors_atlassian.body_not_read(errors_atlassian.BODY_NOT_AN_OBJECT)
+        raw_reconcile = body.get("reconcileIssues")
+        if raw_reconcile is not None and (
+            not isinstance(raw_reconcile, list)
+            or not all(_jira_reconcile_issue_ok(issue) for issue in raw_reconcile)
+        ):
+            raise errors_atlassian.body_not_read(errors_atlassian.BODY_NOT_AN_OBJECT)
         # A JSON null is the parameter unsent, not the string "None": real answers
         # `{"jql": null}` with the same unbounded-JQL refusal it gives `{}` (measured 2026-09-16).
         jql = "" if raw_jql is None else str(raw_jql)
         max_results_sent = "maxResults" in body
         limit = _jira_search_max_results(body["maxResults"]) if max_results_sent else default_size
+        if raw_properties is not None and None in raw_properties:
+            # Real answers this after the binding refusals above (measured beside `maxResults`,
+            # `reconcileIssues`, `expand`, `jql` and an unknown member) and ahead of every refusal
+            # below (measured 2026-10-11).
+            raise errors_atlassian.properties_null_element(raw_properties.index(None))
         token = raw_token
+        reconcile_null = "reconcileIssues" in body and raw_reconcile is None
     else:
         jql = _str_param(request, "jql") or ""
         max_results_sent = _jira_max_results_was_sent(request)
         limit = _int_param(request, "maxResults", default_size)
         token = _str_param(request, "nextPageToken")
+        reconcile_null = False
     # An undecodable token is refused before the project clause is resolved (measured
     # 2026-09-16; see test_jira_search_refuses_a_page_token_it_cannot_decode).
     offset = decode_cursor_or_none(None if token is None else str(token))
@@ -659,6 +675,10 @@ async def jira_search(request: Request):
     # 2026-09-16; see test_jira_search_refuses_no_jql_at_all).
     if not jql.strip():
         raise errors_atlassian.unbounded_jql()
+    if reconcile_null:
+        # Real answers this after the page token, the range and the JQL, and before it looks up
+        # the project (measured 2026-10-11).
+        raise errors_atlassian.reconcile_issues_null()
     container = _project_from_jql(conn, jql, request)
     if container is _JIRA_PROJECT_UNRESOLVED:
         # a project= clause was present but didn't match any project: strict 0 matches, not

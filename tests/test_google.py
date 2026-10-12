@@ -6277,6 +6277,20 @@ _GMAIL_SHAPES = [
         "to": "회의 <peer@x.com>",
         "attachments": [{"filename": "회의록.txt", "mime": "text/plain", "content": "안녕"}],
     },
+    # two attachments, the second stating no `content`, so its bytes are `attachment <its own id>`:
+    # as long as the stand-in for any other id, and equal to none of them
+    {
+        "source_type": "gmail",
+        "doc_id": "att2",
+        "mailbox": "ceo",
+        "title": "Two attachments",
+        "content": "see attached",
+        "author_email": "ceo@x.com",
+        "attachments": [
+            {"filename": "a.txt", "mime": "text/plain", "content": "hello"},
+            {"filename": "b.txt", "mime": "text/plain"},
+        ],
+    },
 ]
 
 
@@ -6321,7 +6335,7 @@ def test_gmail_a_message_with_an_attachment_nests_its_text_in_multipart_alternat
     assert att_h["Content-Type"] == 'text/plain; charset="US-ASCII"; name="notes.txt"'
     assert att_h["Content-Disposition"] == 'attachment; filename="notes.txt"'
     assert att_h["Content-Transfer-Encoding"] == "base64"
-    # one attachment was measured, so only the prefix and the Content-ID equality are pinned
+    # past `f_` the value is Backlot's, so only the prefix and the Content-ID equality are pinned
     assert att_h["X-Attachment-Id"].startswith("f_")
     assert att_h["Content-ID"] == f"<{att_h['X-Attachment-Id']}>"
 
@@ -6334,6 +6348,24 @@ def test_gmail_a_message_with_an_attachment_nests_its_text_in_multipart_alternat
         ("0", ["Content-Type"]),
         ("1", ["Content-Type"]),
     ]
+
+
+def test_gmail_two_attachments_carry_distinct_attachment_ids(gmail_shapes):
+    """Each of a message's two attachments carries its own `X-Attachment-Id`, and its `Content-ID`
+    is that value in angle brackets, as measured on 2026-10-09 and 2026-10-11 over a Google
+    Workspace mailbox: in each of the 11 messages whose two or more parts with an `attachmentId` all
+    carried the header, no value repeated."""
+    client, h = gmail_shapes
+    payload = client.get(
+        f"/gmail/v1/users/me/messages/{served_id('gmail', 'att2')}", headers=h
+    ).json()["payload"]
+    parts = [p for p in payload["parts"] if p.get("filename")]
+    assert [p["filename"] for p in parts] == ["a.txt", "b.txt"]
+    ids = [_hdrs(p)["X-Attachment-Id"] for p in parts]
+    assert len(set(ids)) == 2, f"attachments share X-Attachment-Id: {ids}"
+    for part in parts:
+        part_h = _hdrs(part)
+        assert part_h["Content-ID"] == f"<{part_h['X-Attachment-Id']}>"
 
 
 def _cte(client, h, doc: str) -> dict[str, str | None]:
@@ -6378,11 +6410,14 @@ def test_gmail_a_text_attachment_names_us_ascii_or_utf8_by_its_content(gmail_sha
     }
 
 
-@pytest.mark.parametrize("doc", ["att", "lt", "ko", "html175", "html325", "att-ko", "hdr-ko"])
+@pytest.mark.parametrize(
+    "doc", ["att", "lt", "ko", "html175", "html325", "att-ko", "hdr-ko", "att2"]
+)
 def test_gmail_raw_and_full_describe_one_message(gmail_shapes, doc):
     """`format=raw` is ASCII, and it and the `full` payload are the same tree, with the same
     headers on the message and on each part once `raw`'s encoded-words are decoded, and each raw
-    part decodes, by its own Content-Transfer-Encoding, to the bytes `full` serves."""
+    part decodes, by its own Content-Transfer-Encoding, to the bytes `full` serves, or for an
+    attachment, to the bytes `attachments.get` serves for the id its `full` part names."""
     import email
     import email.policy
 
@@ -6404,6 +6439,9 @@ def test_gmail_raw_and_full_describe_one_message(gmail_shapes, doc):
             assert len(children) == len(part["parts"])
             for child, sub in zip(part["parts"], children):
                 check(child, sub)
+        elif "attachmentId" in part["body"]:
+            got = client.get(f"{url}/attachments/{part['body']['attachmentId']}", headers=h)
+            assert entity.get_payload(decode=True) == base64.urlsafe_b64decode(got.json()["data"])
         elif "data" in part["body"]:
             assert entity.get_payload(decode=True) == base64.urlsafe_b64decode(part["body"]["data"])
             if "Content-Transfer-Encoding" in entity:
@@ -6465,10 +6503,11 @@ def test_gmail_metadata_headers_keeps_the_named_headers(gmail_shapes):
     assert len(full) > 1
 
 
-@pytest.mark.parametrize("doc", ["att", "ko", "att-ko"])
+@pytest.mark.parametrize("doc", ["att", "ko", "att-ko", "att2"])
 def test_gmail_a_parts_size_is_the_byte_length_of_its_data(gmail_shapes, doc):
     """The rule `_byte_len` states, over every part of the message: `att` is ASCII, where bytes and
-    characters are one count, and `ko` and `att-ko` are where they differ."""
+    characters are one count, and `ko` and `att-ko` are where they differ. `att2` holds two
+    attachments, each fetched by the id its own part names."""
     client, h = gmail_shapes
     url = f"/gmail/v1/users/me/messages/{served_id('gmail', doc)}"
     parts = [client.get(url, headers=h).json()["payload"]]

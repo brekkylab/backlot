@@ -1022,6 +1022,7 @@ _ALLOW_OBJECT = "GET, HEAD"
 
 
 @router.head("/{bucket}")
+@router.head("/{bucket}/")
 async def head_bucket(request: Request, bucket: str):
     """HeadBucket — 200 if the caller can see this bucket, 404 if they cannot (an unsigned caller
     sees none), and a refused credential's own status, 403 or 400, as its status alone.
@@ -1066,6 +1067,7 @@ async def head_bucket(request: Request, bucket: str):
 
 
 @router.get("/{bucket}", openapi_extra={"parameters": _P_BUCKET_GET})
+@router.get("/{bucket}/", openapi_extra={"parameters": _P_BUCKET_GET})
 async def bucket_get(request: Request, bucket: str):
     """ListObjects or ListObjectsV2 — one page of the keys in this bucket that the caller can read.
 
@@ -1888,6 +1890,9 @@ async def object_get(request: Request, bucket: str, key: str):
         "ETag": synth.s3_etag(row["key"], row["content"]),
         "Last-Modified": synth.s3_http_date(ts),
         "Accept-Ranges": "bytes",
+        # SSE-S3, the default `_ANSWERED["encryption"]` declares, which real names on an object's
+        # own 200 and 206, GET and HEAD alike (measured in us-east-1 on 2026-10-11).
+        "x-amz-server-side-encryption": "AES256",
     }
     ctype = row["content_type"] or "text/plain"
     # Set Content-Type via the headers dict, not the `media_type=` kwarg: Starlette auto-appends

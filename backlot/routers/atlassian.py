@@ -531,6 +531,51 @@ def _jira_search_max_results(value) -> int:
     return int(n)
 
 
+_JIRA_BOOLEAN_TEXTS = frozenset({"", "null", "true", "True", "TRUE", "false", "False", "FALSE"})
+
+
+def _jira_fields_by_keys_ok(value) -> bool:
+    """Whether a `fieldsByKeys` binds to the bean's boolean, the way Jira Cloud bound it on
+    2026-10-10 and 2026-10-11. `null`, a boolean and any integer bind. A string binds when, trimmed
+    (see :data:`_JAVA_TRIMMED`), it is empty, `null`, or `true` or `false` in lower, title or upper
+    case: `" TRUE "`, `"False"`, `""` and `"null"` bind, where `"tRuE"`, `"NULL"`, `"1"`, `"yes"`
+    and a `true` behind a no-break space do not. A float, a list and an object do not bind.
+    """
+    if value is None or isinstance(value, int):
+        return True
+    if isinstance(value, str):
+        return value.strip(_JAVA_TRIMMED) in _JIRA_BOOLEAN_TEXTS
+    return False
+
+
+def _jira_reconcile_issue_ok(value) -> bool:
+    """Whether one `reconcileIssues` element binds to the bean's Java `Long`, as measured against
+    Jira Cloud on 2026-10-10 and 2026-10-11. A null binds, as a null `Long`, where a bare null
+    `reconcileIssues` does not (see `jira_search`). An integer binds from -2**63 up to 2**63 - 1. A
+    float binds from -2**63 up to 2**63, both ends included, and is truncated: `1.5`, `9.2e18` and
+    `9223372036854775807.0` (2**63 as a double) bind, where `9.3e18`, `1e19` and the next double
+    past either end do not. A string binds when, trimmed (see :data:`_JAVA_TRIMMED`), it is empty,
+    `null`, or at most 1000 characters of a sign and decimal digits, in any script up to U+FFFF,
+    naming an integer in range: `" 1"`, `"+1"`, `"٥"` and a `1` behind 999 zeros bind, where
+    `"1.5"`, `"1_000"`, `"0x10"`, `"𝟓"`, a `1` behind 1000 zeros and a `1` behind a no-break space
+    do not. A boolean, a list and an object do not bind.
+    """
+    if value is None:
+        return True
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, float):
+        return -(2**63) <= value <= 2**63
+    if isinstance(value, str):
+        text = value.strip(_JAVA_TRIMMED)
+        if text in ("", "null"):
+            return True
+        if len(text) > 1000 or not re.fullmatch(r"[+-]?\d+", text) or max(map(ord, text)) > 0xFFFF:
+            return False
+        value = int(text)
+    return isinstance(value, int) and -(2**63) <= value < 2**63
+
+
 @router.api_route(
     "/rest/api/2/search/jql",
     methods=["GET", "POST"],  # atlassian-python-api uses v2
@@ -576,17 +621,46 @@ async def jira_search(request: Request):
             # an object is a body-wide invalid-payload refusal (measured 2026-10-06; the lists of
             # scalars and the bare string 2026-10-09).
             raise errors_atlassian.body_not_read(errors_atlassian.BODY_NOT_AN_OBJECT)
+        # The four members Backlot does not act on still have their values bound by the bean
+        # (measured 2026-10-10 and 2026-10-11): `expand` takes a scalar, `properties` a list of
+        # scalars, `reconcileIssues` a list of what `_jira_reconcile_issue_ok` accepts, and
+        # `fieldsByKeys` what `_jira_fields_by_keys_ok` accepts. Anything else is the body-wide
+        # refusal, which real gives ahead of the 500s a null `properties` element and a null
+        # `reconcileIssues` draw further down.
+        if isinstance(body.get("expand"), (list, dict)):
+            raise errors_atlassian.body_not_read(errors_atlassian.BODY_NOT_AN_OBJECT)
+        if not _jira_fields_by_keys_ok(body.get("fieldsByKeys")):
+            raise errors_atlassian.body_not_read(errors_atlassian.BODY_NOT_AN_OBJECT)
+        raw_properties = body.get("properties")
+        if raw_properties is not None and (
+            not isinstance(raw_properties, list)
+            or any(isinstance(prop, (list, dict)) for prop in raw_properties)
+        ):
+            raise errors_atlassian.body_not_read(errors_atlassian.BODY_NOT_AN_OBJECT)
+        raw_reconcile = body.get("reconcileIssues")
+        if raw_reconcile is not None and (
+            not isinstance(raw_reconcile, list)
+            or not all(_jira_reconcile_issue_ok(issue) for issue in raw_reconcile)
+        ):
+            raise errors_atlassian.body_not_read(errors_atlassian.BODY_NOT_AN_OBJECT)
         # A JSON null is the parameter unsent, not the string "None": real answers
         # `{"jql": null}` with the same unbounded-JQL refusal it gives `{}` (measured 2026-09-16).
         jql = "" if raw_jql is None else str(raw_jql)
         max_results_sent = "maxResults" in body
         limit = _jira_search_max_results(body["maxResults"]) if max_results_sent else default_size
+        if raw_properties is not None and None in raw_properties:
+            # Real answers this after the binding refusals above (measured beside `maxResults`,
+            # `reconcileIssues`, `expand`, `jql` and an unknown member) and ahead of every refusal
+            # below (measured 2026-10-11).
+            raise errors_atlassian.properties_null_element(raw_properties.index(None))
         token = raw_token
+        reconcile_null = "reconcileIssues" in body and raw_reconcile is None
     else:
         jql = _str_param(request, "jql") or ""
         max_results_sent = _jira_max_results_was_sent(request)
         limit = _int_param(request, "maxResults", default_size)
         token = _str_param(request, "nextPageToken")
+        reconcile_null = False
     # An undecodable token is refused before the project clause is resolved (measured
     # 2026-09-16; see test_jira_search_refuses_a_page_token_it_cannot_decode).
     offset = decode_cursor_or_none(None if token is None else str(token))
@@ -602,6 +676,10 @@ async def jira_search(request: Request):
     # 2026-09-16; see test_jira_search_refuses_no_jql_at_all).
     if not jql.strip():
         raise errors_atlassian.unbounded_jql()
+    if reconcile_null:
+        # Real answers this after the page token, the range and the JQL, and before it looks up
+        # the project (measured 2026-10-11).
+        raise errors_atlassian.reconcile_issues_null()
     container = _project_from_jql(conn, jql, request)
     if container is _JIRA_PROJECT_UNRESOLVED:
         # a project= clause was present but didn't match any project: strict 0 matches, not
@@ -1151,14 +1229,23 @@ def _export_view(content: str) -> str:
 
 
 def _space_container_for_key(conn, space_key: str) -> str | None:
-    """Resolve a Confluence ``spaceKey`` to its backing container name. Backlot models a space
-    by its corpus name, so both the synthesized key (``synth.confluence_space_key(name)``, the
+    """Resolve a Confluence ``spaceKey`` to its backing container name. Backlot models a space by
+    its corpus name, so both the synthesized key (``synth.confluence_space_key(name)``, the
     hash-suffixed value ``/space`` advertises) and the literal container name (e.g. ``"handbook"``,
     a legitimate natural key) resolve. Anything else is unresolvable -> ``None``, which no caller
-    reads as "no filter": the CQL search matches nothing and the content listing answers its 404."""
-    for r in store.list_containers(conn, "confluence"):
-        if space_key == synth.confluence_space_key(r["name"]) or space_key == r["name"]:
-            return r["name"]
+    reads as "no filter": the CQL search matches nothing and the content listing answers its 404.
+    Case does not decide whether a key resolves: real reads a key whatever its case (measured
+    2026-10-10, `space/mfs` and `space/MfS` answering the space `space/MFS` does), and the name half
+    is folded too because a natural key the corpus names may be typed in any case. The fold is
+    `str.lower`: real answers `space/MFſ` and `content?spaceKey=MFſ` with the 404 a key naming no
+    space gets (measured 2026-10-11), and `str.casefold` would read that `ſ` as `s`. An exact
+    spelling is tried first, so two spaces whose names differ only in case each keep their own
+    name."""
+    names = [r["name"] for r in store.list_containers(conn, "confluence")]
+    for fold in (str, str.lower):
+        for name in names:
+            if fold(space_key) in (fold(synth.confluence_space_key(name)), fold(name)):
+                return name
     return None
 
 

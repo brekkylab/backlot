@@ -78,6 +78,7 @@ _PREFIX_FAMILY = (
     ("/sheets/v4", EDITOR),
     ("/slides/v1", EDITOR),
 )
+PREFIXES = tuple(prefix for prefix, _ in _PREFIX_FAMILY)
 
 # The long forms Google actually sends. Kept verbatim: a client that matches on the message needs
 # the real text, and the short "Invalid Credentials" belongs in `errors[0]`, not at the top.
@@ -764,7 +765,11 @@ def jsonp_callback(request: Request) -> str | None:
     `values:batchGetByDataFilter` and on `spreadsheets:getByDataFilter` is ignored outright -- no
     wrap on a success, none on an error, and a name that a GET would be refused for is not even
     looked at -- where the same POST honours `$.xgafv` and `prettyPrint`. So GET is the only
-    method this parameter applies to.
+    method this parameter applies to. A `HEAD` (``request.state.answering_head``) is not GET here
+    either: measured 2026-10-11 on Drive's `files.list` and Gmail's `profile`, a callable name and
+    an uncallable one each answered a `HEAD` with 200 `application/json; charset=UTF-8`, where the
+    GET beside it was the script, and a `HEAD` that failed beside one kept its own status — no
+    credential's and a bad one's, and a missing file's 404 — where its GET was the script at 200.
 
     Two values that look like a callback are not one either. An empty `callback=` is absent:
     measured, it answers the plain body at the real status, success and error alike. So is any
@@ -792,7 +797,7 @@ def jsonp_callback(request: Request) -> str | None:
     Both are read as :func:`first_repeat`, not off ``QueryParams.get``: real answers a repeated
     `callback` through the first name and a repeated `alt` through the first format.
     """
-    if request.method != "GET":
+    if request.method != "GET" or getattr(request.state, "answering_head", False):
         return None
     query = request.query_params
     alt = alt_format(query)
@@ -1062,3 +1067,55 @@ def rendered(
     checked = getattr(request.state, "google_system_parameters_checked", False)
     callback = jsonp_callback(request) if checked else None
     return respond(body, callback=callback, status_code=status_code, headers=headers)
+
+
+# --- a `HEAD` -----------------------------------------------------------------------------------
+
+
+def refuses_head(path: str) -> bool:
+    """Whether a `HEAD` on ``path`` is :func:`head_refusal`: on any path of the editor family,
+    routed or not, where Drive and Gmail answer one as the GET
+    (``backlot.main._HEAD_IS_THE_GET_WITHOUT_ITS_BODY``).
+
+    A prefix test with no boundary, as :func:`family`'s is, because the host refuses the method past
+    the version segment as well: `HEAD /v4x` and `/v4x/spreadsheets/abc` on Sheets, `/v1x` on Docs
+    and `/v1x/presentations/abc` on Slides each answered the 400 too, measured 2026-10-11."""
+    return family(path) == EDITOR
+
+
+def head_refusal() -> Response:
+    """What the Docs, Sheets and Slides hosts answer a `HEAD` with: 400, `text/html; charset=utf-8`,
+    `content-length: 0` and no body, ahead of the credential and of the system parameter alike.
+    Measured 2026-10-11 on routed paths, an unrouted one and the root, beside an unknown `$.xgafv`
+    and with a trailing slash, with a Workspace member's token, a bad one and none.
+
+    Sheets answers some with its host's HTML 404 page instead, and not by class of credential. On
+    2026-10-13 one Workspace spreadsheet's id got the 404 on 32 of 32, whoever asked; across 20
+    other Sheets paths two gcloud-issued tokens (that member's and a consumer account's) got the 400
+    on 160 of 160, while a bad token and no credential got the 404 on 28 of 160; that member's
+    token from the OAuth 2.0 Playground got the 400 on 35 of 35 across seven of those paths, and
+    that member's gcloud token got the 400 on 18 of 18 across six other spreadsheets the member can
+    open. Nor does Sheets go by whether the caller is a domain administrator: that member is not
+    one, like every caller modelled here, and another Workspace member who is not one either got the
+    404 on each made-up Sheets path it tried, with `drive`, `gmail.readonly` or both, but the 400 on
+    a spreadsheet that exists, while that domain's administrator got the 400 on both through the
+    same OAuth client. What picks the page was not found, so every caller gets the 400 here."""
+    return Response(status_code=400, media_type="text/html")
+
+
+def head_content_length(request: Request, status_code: int) -> bool:
+    """True only where the GET a `HEAD` runs as is a Drive download's 200.
+
+    Measured 2026-10-11 under `Accept-Encoding: identity` on every Drive and Gmail route served
+    here, each `HEAD` beside its GET: the `HEAD` answered the GET's status and `content-type` with
+    no body — the 200s; a missing file's, label's and message's 404; an unparseable id's, a bad page
+    size's and an unknown `$.xgafv`'s 400; the 401s and 403s a missing or bad credential gets; and
+    on a download the missing API key's 403 and an uncallable name's 503. Every answer but a
+    download's was chunked, with no `content-length` on either method. A download's 200 declares one
+    on the `HEAD` as on the GET — `files.export` to `text/plain` and to `text/html` and
+    `files.get?alt=media` on a PDF, 16, 798 and 587 bytes — while a download that fails declares a
+    length on its GET (`File not found`, an unsupported `mimeType`, an absent one, a Docs file read
+    with `alt=media`, no credential, the 503) and none on its `HEAD`.
+
+    ``request.state.google_download`` is set by ``routers.google._system_parameters``."""
+    return status_code == 200 and getattr(request.state, "google_download", False)

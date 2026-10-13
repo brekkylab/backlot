@@ -597,12 +597,66 @@ def _token_at(raw: bytes, path: tuple) -> tuple[int, int]:
             if text[pos] == ",":
                 pos = _WS.match(text, pos + 1).end()
         pos = found
+    return _position(text, pos)
+
+
+def _position(text: str, pos: int) -> tuple[int, int]:
+    """The offset `pos` into the decoded body `text` as `_token_at` reports a position."""
     line_start = text.rfind("\n", 0, pos) + 1
     column = len(text[line_start:pos].encode("utf-8", "surrogatepass")) + 1
     return text.count("\n", 0, pos) + 1, column
 
 
-def _refuse_an_operator(raw: bytes, body: dict) -> JSONResponse | None:
+# A JSON string, or one of the three number tokens `json.loads` reads and JSON does not have. A
+# string is matched so that a token spelled inside one is passed over.
+_NON_STANDARD_NUMBER = re.compile(r'"(?:[^"\\]|\\.)*"|-?Infinity|NaN')
+
+
+def _non_standard_number(raw: bytes) -> tuple[tuple[int, int], JSONResponse] | tuple[None, None]:
+    """Where the first `NaN`, `Infinity` or `-Infinity` in a POST body starts, and real's 400 for
+    it; `(None, None)` when the body holds none.
+
+    Measured against api.hubapi.com on 2026-10-12 and 2026-10-13, on `batch/read` and `search`: real
+    refuses the token wherever it stands, in a member it does not read and as the whole body too,
+    names it with its sign, and gives the column just past it, in an envelope with no `category`. It
+    reads the body in order and stops at the first value it cannot read, so a value
+    `_refuse_a_batch_read_shape` or `_refuse_an_operator` refuses is named instead when it starts
+    ahead of the token (`{"inputs":[5,NaN]}` names the `5`, `{"inputs":[NaN,5]}` the token); both
+    take the token's start as `before`. A byte that does not decode in the body's encoding stops
+    real too, with a 400 of its own that this router does not send, so only the text ahead of the
+    first such byte is scanned: a token there is named, and a body with none is left to the route.
+    `json.loads` reads the three as floats, so without this the routes answer for a float there."""
+    encoding = json.detect_encoding(raw)
+    try:
+        text = raw.decode(encoding, "surrogatepass")
+    except UnicodeDecodeError as e:
+        # `e.start` counts from past a UTF-8 byte-order mark, as `e.object` does and `raw` does not
+        text = e.object[: e.start].decode(encoding, "surrogatepass")
+    for found in _NON_STANDARD_NUMBER.finditer(text):
+        token = found[0]
+        if token.startswith('"'):
+            continue
+        line, column = _position(text, found.end())
+        return _position(text, found.start()), JSONResponse(
+            status_code=400,
+            content={
+                "status": "error",
+                "message": f"Invalid input JSON on line {line}, column {column}: Non-standard "
+                f"token '{token}': enable `JsonReadFeature.ALLOW_NON_NUMERIC_NUMBERS` to allow",
+            },
+        )
+    return None, None
+
+
+def _ahead(raw: bytes, path: tuple, before: tuple[int, int] | None) -> bool:
+    """Whether the value at `path` starts ahead of `before`, as every value does when `before` is
+    None."""
+    return before is None or _token_at(raw, path) < before
+
+
+def _refuse_an_operator(
+    raw: bytes, body: dict, before: tuple[int, int] | None = None
+) -> JSONResponse | None:
     """Real's 400 for the first filter, in body order, whose operator it cannot read, or None.
 
     An operator that trims to nothing is named by its path in the body; one that trims to anything
@@ -610,27 +664,34 @@ def _refuse_an_operator(raw: bytes, body: dict) -> JSONResponse | None:
     reads the body in order and stops at the first operator of either kind, an unreadable one
     included when the filter repeats `operator` with a readable one after it. It reads an integer
     operator as an index too, answers a boolean, float, object or array operator with a different
-    400, and refuses a filter with no operator. This router models none of those cases."""
-    for i, group in enumerate(body.get("filterGroups") or []):
+    400, and refuses a filter with no operator. This router models none of those cases. `before` is
+    where `_non_standard_number` found a token, and an operator from there on is left to it."""
+    groups = body.get("filterGroups")
+    for i, group in enumerate(groups if isinstance(groups, list) else ()):
         if not isinstance(group, dict):
             continue
-        for j, f in enumerate(group.get("filters") or []):
+        filters = group.get("filters")
+        for j, f in enumerate(filters if isinstance(filters, list) else ()):
             if not isinstance(f, dict) or not isinstance(f.get("operator"), str):
                 continue
             op = f["operator"].strip(_TRIM)
+            if op in _OPERATORS or op in _OPERATOR_INDEXES:
+                continue
+            path = ("filterGroups", i, "filters", j, "operator")
+            if not _ahead(raw, path, before):
+                return None
             if op == "":
                 return _error(
                     400,
                     "Invalid input JSON: unable to deserialize field "
                     f'"filterGroups[{i}].filters[{j}].operator". Invalid value: ',
                 )
-            if op not in _OPERATORS and op not in _OPERATOR_INDEXES:
-                line, column = _token_at(raw, ("filterGroups", i, "filters", j, "operator"))
-                return _error(
-                    400,
-                    f"Invalid input JSON on line {line}, column {column}: "
-                    f"Enum type must be one of: [{', '.join(_OPERATORS)}]",
-                )
+            line, column = _token_at(raw, path)
+            return _error(
+                400,
+                f"Invalid input JSON on line {line}, column {column}: "
+                f"Enum type must be one of: [{', '.join(_OPERATORS)}]",
+            )
     return None
 
 
@@ -688,7 +749,9 @@ def _invalid_at(raw: bytes, path: tuple, text: str) -> JSONResponse:
     return _error(400, f"Invalid input JSON on line {line}, column {column}: {text}")
 
 
-def _refuse_a_batch_read_shape(raw: bytes, body: dict) -> JSONResponse | None:
+def _refuse_a_batch_read_shape(
+    raw: bytes, body: dict, before: tuple[int, int] | None = None
+) -> JSONResponse | None:
     """Real's 400 for a batch/read body it cannot read, or None. Measured against api.hubapi.com on
     2026-10-09, 2026-10-11 and 2026-10-12: real reads `inputs`, `properties` and
     `propertiesWithHistory` in body order and stops at the first that is neither null nor a list, or
@@ -696,12 +759,15 @@ def _refuse_a_batch_read_shape(raw: bytes, body: dict) -> JSONResponse | None:
     starts. A string `properties` or `propertiesWithHistory` is echoed trimmed (`_TRIM`), and one
     that trims to nothing is named by its field alone. A null element of `inputs` is refused only
     once the rest of the body has been read, in an envelope with no `category`. The elements of
-    `properties` and the members of an object in `inputs` are not checked here."""
+    `properties` and the members of an object in `inputs` are not checked here. With a `before`
+    from `_non_standard_number`, a value from there on and a null element are left to the token."""
     null_input = False
     for key, value in body.items():
         if key not in ("inputs", "properties", "propertiesWithHistory") or value is None:
             continue
         if not isinstance(value, list):
+            if not _ahead(raw, (key,), before):
+                return None
             if key == "inputs" or not isinstance(value, str):
                 return _invalid_at(raw, (key,), _not_a_list(value))
             if not value.strip(_TRIM):
@@ -719,8 +785,10 @@ def _refuse_a_batch_read_shape(raw: bytes, body: dict) -> JSONResponse | None:
             if item is None:
                 null_input = True
             elif not isinstance(item, (str, dict)):
+                if not _ahead(raw, ("inputs", i), before):
+                    return None
                 return _invalid_at(raw, ("inputs", i), _not_an_input(item))
-    if null_input:
+    if null_input and before is None:
         return JSONResponse(
             status_code=400, content={"status": "error", "message": "Input IDs must be non-null."}
         )
@@ -977,9 +1045,10 @@ async def search_objects(object_type: str, request: Request):
     if spellings is None:
         return _unknown_type(object_type)
     body = await json_body(request)
+    before, refused = _non_standard_number(await request.body())
     # Before `after`: real refuses the operator first when the cursor is one it can parse but
     # names no record (measured 2026-10-06).
-    refused = _refuse_an_operator(await request.body(), body)
+    refused = _refuse_an_operator(await request.body(), body, before) or refused
     if refused is not None:
         return refused
     limit = _clamp(body.get("limit"), 10, _PAGE_MAX)
@@ -1042,7 +1111,8 @@ async def batch_read(object_type: str, request: Request):
     if spellings is None:
         return _unknown_type(object_type)
     body = await json_body(request)
-    refused = _refuse_a_batch_read_shape(await request.body(), body)
+    before, refused = _non_standard_number(await request.body())
+    refused = _refuse_a_batch_read_shape(await request.body(), body, before) or refused
     if refused is not None:
         return refused
     conn, visible = auth.conn(request), auth.visible_ids(request, caller)

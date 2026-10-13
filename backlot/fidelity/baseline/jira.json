@@ -4,7 +4,7 @@
     "https://developer.atlassian.com/cloud/jira/platform/swagger-v3.v3.json",
     "https://developer.atlassian.com/cloud/jira/platform/swagger.v3.json"
   ],
-  "measured": "2026-09-30",
+  "measured": "2026-10-13",
   "acknowledged": [
     {
       "kind": "missing_operation",
@@ -1941,6 +1941,27 @@
     {
       "kind": "missing_operation",
       "severity": "gap",
+      "path": "GET /rest/api/2/policies",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Read off Atlassian's own v2 document on 2026-10-13: `listPolicies`, marked `x-experimental`, whose description opens \"Returns a paginated summary of all known policies, including their names, descriptions, and which projects each policy is assigned to.\" One-way data flow is not what keeps it out: it reads. Scope is. A Backlot jira record is an issue carrying its project, status, comments and the people on it, and a policy is a rule the site holds for a project's configuration, which no record carries. Measured against a live Jira Cloud site on 2026-10-13 as a non-administrator: 200 listing three policies, the first \"Global fields only\", described \"Prevent team-managed spaces from creating their own fields.\", none of them applied to a project."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /rest/api/2/policies/project/{}",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Read off Atlassian's own v2 document on 2026-10-13: `getPolicyState`, marked `x-experimental`, whose description opens \"Returns the policies applied to a project.\" One-way data flow is not what keeps it out: it reads. Scope is. A Backlot jira record is an issue carrying its project, status, comments and the people on it, and a policy is a rule the site holds for a project's configuration, which no record carries. Measured against a live Jira Cloud site on 2026-10-13 as a non-administrator: 200 `[]` for a project the site has, and 404 \"Project not found.\" for a key it does not have, where a path the same site does not serve draws 404 \"No endpoint GET /rest/api/2/policies/project/NOPEZZ/nosuchthing.\""
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /rest/api/2/policies/project/{}/rules",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Read off Atlassian's own v2 document on 2026-10-13: `getProjectRules`, marked `x-experimental`, whose description opens \"Returns the configuration of the queried rule type IDs for a given project.\" One-way data flow is not what keeps it out: it reads. Scope is. A Backlot jira record is an issue carrying its project, status, comments and the people on it, and a policy is a rule the site holds for a project's configuration, which no record carries. Measured against a live Jira Cloud site on 2026-10-13 as a non-administrator: 200 `[]` for a project the site has, and 404 \"Project not found.\" for a key it does not have, where a path the same site does not serve draws 404 \"No endpoint GET /rest/api/2/policies/project/NOPEZZ/rules/nosuchthing.\""
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
       "path": "GET /rest/api/2/priority",
       "detail": "the vendor serves it; Backlot does not"
     },
@@ -3597,6 +3618,27 @@
     {
       "kind": "missing_operation",
       "severity": "gap",
+      "path": "GET /rest/api/3/policies",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Read off Atlassian's own v3 document on 2026-10-13: `listPolicies`, marked `x-experimental`, whose description opens \"Returns a paginated summary of all known policies, including their names, descriptions, and which projects each policy is assigned to.\" One-way data flow is not what keeps it out: it reads. Scope is. A Backlot jira record is an issue carrying its project, status, comments and the people on it, and a policy is a rule the site holds for a project's configuration, which no record carries. Measured against a live Jira Cloud site on 2026-10-13 as a non-administrator: 200 listing three policies, the first \"Global fields only\", described \"Prevent team-managed spaces from creating their own fields.\", none of them applied to a project."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /rest/api/3/policies/project/{}",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Read off Atlassian's own v3 document on 2026-10-13: `getPolicyState`, marked `x-experimental`, whose description opens \"Returns the policies applied to a project.\" One-way data flow is not what keeps it out: it reads. Scope is. A Backlot jira record is an issue carrying its project, status, comments and the people on it, and a policy is a rule the site holds for a project's configuration, which no record carries. Measured against a live Jira Cloud site on 2026-10-13 as a non-administrator: 200 `[]` for a project the site has, and 404 \"Project not found.\" for a key it does not have, where a path the same site does not serve draws 404 \"No endpoint GET /rest/api/3/policies/project/NOPEZZ/nosuchthing.\""
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /rest/api/3/policies/project/{}/rules",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Read off Atlassian's own v3 document on 2026-10-13: `getProjectRules`, marked `x-experimental`, whose description opens \"Returns the configuration of the queried rule type IDs for a given project.\" One-way data flow is not what keeps it out: it reads. Scope is. A Backlot jira record is an issue carrying its project, status, comments and the people on it, and a policy is a rule the site holds for a project's configuration, which no record carries. Measured against a live Jira Cloud site on 2026-10-13 as a non-administrator: 200 `[]` for a project the site has, and 404 \"Project not found.\" for a key it does not have, where a path the same site does not serve draws 404 \"No endpoint GET /rest/api/3/policies/project/NOPEZZ/rules/nosuchthing.\""
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
       "path": "GET /rest/api/3/priority",
       "detail": "the vendor serves it; Backlot does not"
     },
@@ -4900,6 +4942,27 @@
     {
       "kind": "missing_operation",
       "severity": "gap",
+      "path": "POST /rest/api/2/policies/project/{}/validate",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Read off Atlassian's own v2 document on 2026-10-13: `validatePolicyApplication`, marked `x-experimental`, whose description opens \"Validates whether a set of policies can be applied to a project without actually applying them.\" One-way data flow is not what keeps it out: as the description says, it applies nothing. Scope is. A Backlot jira record is an issue carrying its project, status, comments and the people on it, and a policy is a rule the site holds for a project's configuration, which no record carries. Measured against a live Jira Cloud site on 2026-10-13 as a non-administrator: an empty object, for a project key the site does not have, draws 404 \"Project not found.\", where a path the same site does not serve draws 404 \"No endpoint POST /rest/api/2/policies/project/NOPEZZ/validate/nosuchthing.\" to the same body."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /rest/api/2/policies/{}/apply",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Read off Atlassian's own v2 document on 2026-10-13: `addPolicyToProjects`, marked `x-experimental`, whose description opens \"Adds a policy to a set of projects.\" It writes, and Backlot's data flows one way (a corpus enters through `backlot import`, never through a served route), so there is nothing here for a served route to answer. Measured against a live Jira Cloud site on 2026-10-13 as a non-administrator: an empty object, for a policy id the site does not have, draws 403 \"Only Jira Administrators can modify policy assignments.\", where a path the same site does not serve draws 404 \"No endpoint POST /rest/api/2/policies/999999999/apply/nosuchthing.\" to the same body."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /rest/api/2/policies/{}/remove",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Read off Atlassian's own v2 document on 2026-10-13: `removePolicyFromProjects`, marked `x-experimental`, whose description opens \"Removes a policy from a set of projects.\" It writes, and Backlot's data flows one way (a corpus enters through `backlot import`, never through a served route), so there is nothing here for a served route to answer. Measured against a live Jira Cloud site on 2026-10-13 as a non-administrator: an empty object, for a policy id the site does not have, draws 403 \"Only Jira Administrators can modify policy assignments.\", where a path the same site does not serve draws 404 \"No endpoint POST /rest/api/2/policies/999999999/remove/nosuchthing.\" to the same body."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
       "path": "POST /rest/api/2/priority",
       "detail": "the vendor serves it; Backlot does not"
     },
@@ -5215,6 +5278,20 @@
       "severity": "gap",
       "path": "POST /rest/api/2/worklog/list",
       "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /rest/api/3/agents/bulk/invoke/batch",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Read off Atlassian's own v3 document on 2026-10-13: `startBatch`, marked `x-experimental`, whose description opens \"Starts agent sessions for a batch of issues, with an agent and optional prompt specified per invocation.\" and goes on \"Session-start outcomes are returned inline; the agent's work continues asynchronously.\" It writes, and Backlot's data flows one way (a corpus enters through `backlot import`, never through a served route), so there is nothing here for a served route to answer. Measured against a live Jira Cloud site on 2026-10-13 as a non-administrator holding the global bulk change permission: an empty object, which names no agent and no issue, draws 400 \"Invalid request content.\", where a path the same site does not serve draws 404 \"No endpoint POST /rest/api/3/agents/bulk/invoke/batch/nosuchthing.\" to the same body. The v2 document does not publish it, and `POST /rest/api/2/agents/bulk/invoke/batch` draws the same 400."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /rest/api/3/agents/bulk/invoke/uniform",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Read off Atlassian's own v3 document on 2026-10-13: `startUniform`, marked `x-experimental`, whose description opens \"Starts the same agent on between 1 and 50 issues, with an optional prompt shared by every invocation.\" and goes on \"Session-start outcomes are returned inline; the agent's work continues asynchronously.\" It writes, and Backlot's data flows one way (a corpus enters through `backlot import`, never through a served route), so there is nothing here for a served route to answer. Measured against a live Jira Cloud site on 2026-10-13 as a non-administrator holding the global bulk change permission: an empty object, which names no agent and no issue, draws 400 \"Invalid request content.\", where a path the same site does not serve draws 404 \"No endpoint POST /rest/api/3/agents/bulk/invoke/uniform/nosuchthing.\" to the same body. The v2 document does not publish it, and `POST /rest/api/2/agents/bulk/invoke/uniform` draws the same 400."
     },
     {
       "kind": "missing_operation",
@@ -5684,6 +5761,27 @@
       "severity": "gap",
       "path": "POST /rest/api/3/plans/plan/{}/team/planonly",
       "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /rest/api/3/policies/project/{}/validate",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Read off Atlassian's own v3 document on 2026-10-13: `validatePolicyApplication`, marked `x-experimental`, whose description opens \"Validates whether a set of policies can be applied to a project without actually applying them.\" One-way data flow is not what keeps it out: as the description says, it applies nothing. Scope is. A Backlot jira record is an issue carrying its project, status, comments and the people on it, and a policy is a rule the site holds for a project's configuration, which no record carries. Measured against a live Jira Cloud site on 2026-10-13 as a non-administrator: an empty object, for a project key the site does not have, draws 404 \"Project not found.\", where a path the same site does not serve draws 404 \"No endpoint POST /rest/api/3/policies/project/NOPEZZ/validate/nosuchthing.\" to the same body."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /rest/api/3/policies/{}/apply",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Read off Atlassian's own v3 document on 2026-10-13: `addPolicyToProjects`, marked `x-experimental`, whose description opens \"Adds a policy to a set of projects.\" It writes, and Backlot's data flows one way (a corpus enters through `backlot import`, never through a served route), so there is nothing here for a served route to answer. Measured against a live Jira Cloud site on 2026-10-13 as a non-administrator: an empty object, for a policy id the site does not have, draws 403 \"Only Jira Administrators can modify policy assignments.\", where a path the same site does not serve draws 404 \"No endpoint POST /rest/api/3/policies/999999999/apply/nosuchthing.\" to the same body."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /rest/api/3/policies/{}/remove",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Read off Atlassian's own v3 document on 2026-10-13: `removePolicyFromProjects`, marked `x-experimental`, whose description opens \"Removes a policy from a set of projects.\" It writes, and Backlot's data flows one way (a corpus enters through `backlot import`, never through a served route), so there is nothing here for a served route to answer. Measured against a live Jira Cloud site on 2026-10-13 as a non-administrator: an empty object, for a policy id the site does not have, draws 403 \"Only Jira Administrators can modify policy assignments.\", where a path the same site does not serve draws 404 \"No endpoint POST /rest/api/3/policies/999999999/remove/nosuchthing.\" to the same body."
     },
     {
       "kind": "missing_operation",
@@ -6476,6 +6574,13 @@
     {
       "kind": "missing_operation",
       "severity": "gap",
+      "path": "PUT /rest/api/2/policies/project/{}/policies",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Read off Atlassian's own v2 document on 2026-10-13: `setProjectPolicies`, marked `x-experimental`, whose description opens \"Sets the complete set of policies on a project (full replacement).\" It writes, and Backlot's data flows one way (a corpus enters through `backlot import`, never through a served route), so there is nothing here for a served route to answer. Measured against a live Jira Cloud site on 2026-10-13 as a non-administrator: an empty object, for a project key the site does not have, draws 403 \"Only Jira Administrators can set policies on a project.\", where a path the same site does not serve draws 404 \"No endpoint PUT /rest/api/2/policies/project/NOPEZZ/policies/nosuchthing.\" to the same body."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
       "path": "PUT /rest/api/2/priority/default",
       "detail": "the vendor serves it; Backlot does not"
     },
@@ -7163,6 +7268,13 @@
       "severity": "gap",
       "path": "PUT /rest/api/3/plans/plan/{}/trash",
       "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "PUT /rest/api/3/policies/project/{}/policies",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Read off Atlassian's own v3 document on 2026-10-13: `setProjectPolicies`, marked `x-experimental`, whose description opens \"Sets the complete set of policies on a project (full replacement).\" It writes, and Backlot's data flows one way (a corpus enters through `backlot import`, never through a served route), so there is nothing here for a served route to answer. Measured against a live Jira Cloud site on 2026-10-13 as a non-administrator: an empty object, for a project key the site does not have, draws 403 \"Only Jira Administrators can set policies on a project.\", where a path the same site does not serve draws 404 \"No endpoint PUT /rest/api/3/policies/project/NOPEZZ/policies/nosuchthing.\" to the same body."
     },
     {
       "kind": "missing_operation",

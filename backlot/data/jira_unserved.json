@@ -222,6 +222,9 @@
     "GET /rest/api/2/plans/plan/{}/team": {},
     "GET /rest/api/2/plans/plan/{}/team/atlassian/{}": {},
     "GET /rest/api/2/plans/plan/{}/team/planonly/{}": {},
+    "GET /rest/api/2/policies": {},
+    "GET /rest/api/2/policies/project/{}": {},
+    "GET /rest/api/2/policies/project/{}/rules": {},
     "GET /rest/api/2/priority/search": {},
     "GET /rest/api/2/priorityscheme": {},
     "GET /rest/api/2/priorityscheme/priorities/available": {},
@@ -371,6 +374,9 @@
     "GET /rest/api/3/plans/plan/{}/team": {},
     "GET /rest/api/3/plans/plan/{}/team/atlassian/{}": {},
     "GET /rest/api/3/plans/plan/{}/team/planonly/{}": {},
+    "GET /rest/api/3/policies": {},
+    "GET /rest/api/3/policies/project/{}": {},
+    "GET /rest/api/3/policies/project/{}/rules": {},
     "GET /rest/api/3/priority/search": {},
     "GET /rest/api/3/priorityscheme": {},
     "GET /rest/api/3/priorityscheme/priorities/available": {},
@@ -617,6 +623,9 @@
     "POST /rest/api/2/plans/plan/{}/duplicate": {},
     "POST /rest/api/2/plans/plan/{}/team/atlassian": {},
     "POST /rest/api/2/plans/plan/{}/team/planonly": {},
+    "POST /rest/api/2/policies/project/{}/validate": {},
+    "POST /rest/api/2/policies/{}/apply": {},
+    "POST /rest/api/2/policies/{}/remove": {},
     "POST /rest/api/2/priority": {
       "consumes": [
         "application/json"
@@ -772,6 +781,16 @@
       ]
     },
     "POST /rest/api/2/worklog/list": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/agents/bulk/invoke/batch": {
+      "consumes": [
+        "application/json"
+      ]
+    },
+    "POST /rest/api/3/agents/bulk/invoke/uniform": {
       "consumes": [
         "application/json"
       ]
@@ -973,6 +992,9 @@
     "POST /rest/api/3/plans/plan/{}/duplicate": {},
     "POST /rest/api/3/plans/plan/{}/team/atlassian": {},
     "POST /rest/api/3/plans/plan/{}/team/planonly": {},
+    "POST /rest/api/3/policies/project/{}/validate": {},
+    "POST /rest/api/3/policies/{}/apply": {},
+    "POST /rest/api/3/policies/{}/remove": {},
     "POST /rest/api/3/priority": {
       "consumes": [
         "application/json"
@@ -1407,6 +1429,7 @@
       ]
     },
     "PUT /rest/api/2/plans/plan/{}/trash": {},
+    "PUT /rest/api/2/policies/project/{}/policies": {},
     "PUT /rest/api/2/priority/default": {
       "consumes": [
         "application/json"
@@ -1824,6 +1847,7 @@
       ]
     },
     "PUT /rest/api/3/plans/plan/{}/trash": {},
+    "PUT /rest/api/3/policies/project/{}/policies": {},
     "PUT /rest/api/3/priority/default": {
       "consumes": [
         "application/json"

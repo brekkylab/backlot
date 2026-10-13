@@ -48,8 +48,12 @@ from backlot.pagination import decode_cursor_or_none, next_page_token
 def _system_parameters(request: Request) -> None:
     """`gerr.validate_system_parameters`, with `callback` left alone on a Drive download: real
     answers an uncallable name there with its own 503, and a batch part with a 302, rather than
-    refusing the name (see `gerr.refuse_download` and `_drive_batch_redirect`)."""
-    gerr.validate_system_parameters(request, callback=not _drive_download_request(request))
+    refusing the name (see `gerr.refuse_download` and `_drive_batch_redirect`). Whether the request
+    is a download is left on ``request.state`` for `gerr.head_content_length`, which is asked once
+    the route has answered."""
+    download = _drive_download_request(request)
+    request.state.google_download = download
+    gerr.validate_system_parameters(request, callback=not download)
 
 
 router = APIRouter(tags=["google"], dependencies=[Depends(_system_parameters)])

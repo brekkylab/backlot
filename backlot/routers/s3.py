@@ -38,13 +38,14 @@ import contextvars
 import hashlib
 import re
 import zlib
+from datetime import datetime, timezone
 from xml.etree import ElementTree
 from xml.sax.saxutils import escape
 
 import xxhash
 from fastapi import APIRouter, Request, Response
 
-from backlot import auth, sigv4, store, synth
+from backlot import auth, sigv2, sigv4, store, synth
 from backlot.openapi import qp
 
 router = APIRouter(prefix="/s3", tags=["s3"])
@@ -473,6 +474,59 @@ _CONFIGURATION_LISTS = {
 # --------------------------------------------------------------------------- helpers
 
 
+def _etag_matches(sent: list[str], etag: str) -> bool:
+    """Whether the values of an `If-Match` or an `If-None-Match`, every line of it, name an object
+    whose unquoted ETag is ``etag``, as real S3 matched them (us-east-1, 2026-10-13): split at each
+    `"`, `,`, space and tab, they match where a piece is the ETag, case and all, or `*`. So
+    `W/"<etag>"`, `w/"<etag>"`, `"*"`, `"0000" "<etag>"` and `"0000";"<etag>"` match, where
+    `W/<etag>`, `W/*`, `'<etag>'`, `"0000";<etag>` and an empty value do not."""
+    pieces = re.split(r'[", \t]+', ",".join(sent))
+    return etag in pieces or "*" in pieces
+
+
+def _http_date(value: str) -> datetime | None:
+    """A condition's date as real S3 read an `If-Modified-Since` and an `If-Unmodified-Since`
+    (us-east-1, 2026-10-13), or ``None`` where it read none and left the condition out: as
+    ``sigv2.parse_date`` reads a `Date`, except that the ISO 8601 basic form an `x-amz-date` takes
+    is no date here, and neither is a year past 9999, which a `Date` is a 500 for."""
+    if value[:1].isdigit():
+        return None
+    try:
+        return sigv2.parse_date(value)
+    except sigv2.DateOutOfRange:
+        return None
+
+
+def _precondition(request, etag: str, last_modified: datetime):
+    """Return ("412", condition_name), ("304", None) or None. Order follows RFC 9110 section
+    13.2.2, which matches the measured rows (us-east-1, 2026-10-11 to 2026-10-13). Every line of an
+    ETag condition is read, and the first line of a date."""
+    h = request.headers
+    if_match = h.getlist("if-match")
+    if if_match:
+        if not _etag_matches(if_match, etag):
+            return ("412", "If-Match")
+    else:
+        since = h.get("if-unmodified-since")
+        if since is not None:
+            d = _http_date(since)
+            if d is not None and last_modified > d:
+                return ("412", "If-Unmodified-Since")
+
+    none_match = h.getlist("if-none-match")
+    if none_match:
+        if _etag_matches(none_match, etag):
+            return ("304", None)
+    else:
+        since = h.get("if-modified-since")
+        if since is not None:
+            d = _http_date(since)
+            now = datetime.now(timezone.utc)
+            if d is not None and d <= now and last_modified <= d:
+                return ("304", None)
+    return None
+
+
 def _xml(
     body: str,
     status: int = 200,
@@ -892,7 +946,9 @@ def _key_selected(q) -> list[str]:
     refusal is what most of them give and what a HEAD gets. At a bucket's path it is left to the
     listing, as real leaves it. `partNumber` beside a selector other than `uploadId` is the conflict
     too (`?partNumber=1&tagging` is "partNumber, tagging", same date); alone it is GetObject's
-    (``_part_refusal``), and beside `uploadId` UploadPart."""
+    (``_part_refusal``), and beside `uploadId` UploadPart.
+
+    An `OPTIONS` at a key's path reads them the same way (``_cors_preflight``)."""
     selected = _selected(q, _OBJECT_READ_SELECTORS)
     if "annotationName" in q and "annotation" not in q:
         selected = sorted([*selected, "annotationName"])
@@ -1858,7 +1914,8 @@ def _configuration_list(q, selector: str) -> Response:
 
 # The query parameters an object's GET and HEAD set a response header with, and the header each one
 # sets, on the 200 and the 206 and not on a sub-resource's answer or a refusal (real S3, us-east-1,
-# measured 2026-10-11). The bytes, the ETag and the length stay the object's.
+# measured 2026-10-11). The bytes, the ETag and the length stay the object's. A 304 carries each
+# header but `Content-Type` (2026-10-13).
 _RESPONSE_HEADERS = {
     "response-content-type": "Content-Type",
     "response-content-language": "Content-Language",
@@ -1880,9 +1937,9 @@ def _response_override_refusal(q) -> Response | None:
     one holding a `"` that opens a quoted span it does not close, where a backslash escapes the
     character after it inside the quotes or out: `a"b` and `"a\\"` are refused, `"a"b` and `a\\"b`
     are not. Real S3 refused both ahead of a bucket or a key that does not exist, a `versionId`, a
-    `partNumber`, a `Range`, a checksum mode or a precondition it refuses, a sub-resource's answer
-    and an unsigned request's 400, and ahead of the credential in 30 of 32 requests whose signature
-    or key it refused (us-east-1, 2026-10-13).
+    `partNumber`, a `Range`, a checksum mode, a condition's 304 or 412, a sub-resource's answer and
+    an unsigned request's 400, and ahead of the credential in 30 of 32 requests whose signature or
+    key it refused (us-east-1, 2026-10-13).
     """
     for name in _RESPONSE_HEADERS:
         value = _first(q, name, None)
@@ -2052,6 +2109,35 @@ async def object_get(request: Request, bucket: str, key: str):
 
     data = row["content"].encode("utf-8")
     total = len(data)
+    ts = row["updated_ts"] or row["created_ts"]
+    etag = synth.s3_etag(row["key"], row["content"])
+    last_modified = synth.s3_http_date(ts)
+
+    # Conditional headers. Real S3 (us-east-1, 2026-10-11 and 2026-10-12) answers the 304 and the
+    # 412 after a key's sub-resources, which read no condition, and ahead of the part-number refusal
+    # and the Range parse, GET and HEAD alike, but a bad checksum mode is refused ahead of both.
+    verdict = _precondition(request, etag.strip('"'), _http_date(last_modified))
+    if verdict is not None:
+        if _checksum_mode(request) is None:
+            return _head(400) if head else _error("InvalidRequest", _BAD_CHECKSUM_MODE)
+        kind, condition = verdict
+        if kind == "304":
+            # ETag, Last-Modified and the overrides `_RESPONSE_HEADERS` puts on a 304; the
+            # request-id pair comes from the /s3 middleware.
+            carried = _response_overrides(q)
+            carried.pop("Content-Type", None)
+            return Response(
+                status_code=304,
+                headers={"ETag": etag, "Last-Modified": last_modified, **carried},
+            )
+        if head:
+            return _head(412)
+        return _error(
+            "PreconditionFailed",
+            "At least one of the pre-conditions you specified did not hold",
+            f"<Condition>{condition}</Condition>",
+        )
+
     if number is not None and number > 1:
         # Every object here is one part. The part is named as parsed, `02` as `2` (2026-09-29).
         if head:
@@ -2062,10 +2148,9 @@ async def object_get(request: Request, bucket: str, key: str):
             f"<PartNumberRequested>{number}</PartNumberRequested>"
             "<ActualPartCount>1</ActualPartCount>",
         )
-    ts = row["updated_ts"] or row["created_ts"]
     headers = {
-        "ETag": synth.s3_etag(row["key"], row["content"]),
-        "Last-Modified": synth.s3_http_date(ts),
+        "ETag": etag,
+        "Last-Modified": last_modified,
         "Accept-Ranges": "bytes",
         # SSE-S3, the default `_ANSWERED["encryption"]` declares, which real names on an object's
         # own 200 and 206, GET and HEAD alike (measured in us-east-1 on 2026-10-11).
@@ -2496,7 +2581,17 @@ def _method_type(method: str, resource_type: str) -> str:
 
 
 def _cors_preflight(request: Request, message: str) -> Response:
-    """Real's answer to an `OPTIONS`, which its CORS front end gives before anything reads the path.
+    """Real's answer to an `OPTIONS` whose query is not refused first.
+
+    Three queries are refused ahead of it with the 400 a GET gets, with or without an `Origin` and
+    ahead of the 400 for an `Access-Control-Request-Method` real does not take: two selectors or
+    more at a bucket's path or a key's, a bucket's `partNumber` and a key's `annotationName` without
+    `annotation`. One selector otherwise, a key's `partNumber` and `partNumber` beside `uploadId`
+    at either path are this answer, and so was each query sent to the service root. Measured
+    2026-10-13 against s3.amazonaws.com (us-east-1), path-style, at `noaa-ghcn-pds`, a bucket name
+    nobody owns, a key in each and the service root: every selector of `_BUCKET_WRITE_SELECTORS`
+    and `_OBJECT_WRITE_SELECTORS` alone and beside `acl` at both paths unsigned, and the three
+    refusals signed and over a bad secret as well.
 
     Without an `Origin`, or with an empty one, it is the same 400 on a bucket, a key and the service
     root; with one it is a 403 whose message says which way the lookup failed, whose `ResourceType`
@@ -3088,10 +3183,14 @@ async def bucket_method_refusal(request: Request, bucket: str) -> Response:
     refusals are answered as real answers them, and its writes are the ones this server refuses
     instead."""
     method = request.method
-    if method == "OPTIONS":
-        return _cors_preflight(request, _CORS_DISABLED)
     q = request.query_params
     selected = _bucket_selected(q, frozenset(_BUCKET_WRITE_SELECTORS))
+    if method == "OPTIONS":
+        if len(selected) > 1:
+            return _conflict(selected)
+        if selected == ["partNumber"]:
+            return _error("InvalidRequest", _KEY_REQUIRED)
+        return _cors_preflight(request, _CORS_DISABLED)
     late = len(selected) == 1 and (method, selected[0]) in _VERSION_AFTER_THE_BUCKET
     if len(selected) <= 1 and selected != ["partNumber"]:
         skip = late or (method == "POST" and not selected)
@@ -3136,6 +3235,11 @@ async def object_method_refusal(request: Request, bucket: str, key: str) -> Resp
     `PATCH` and `POST` with the 405 that names `OBJECT`; with one, the selector decides."""
     method = request.method
     if method == "OPTIONS":
+        selected = _key_selected(request.query_params)
+        if len(selected) > 1:
+            return _conflict(selected)
+        if selected == ["annotationName"]:
+            return _argument_error("Unexpected query string parameter", "ResourceType", selected[0])
         return _cors_preflight(request, _CORS_DISABLED)
     q = request.query_params
     selected = _selected(q, frozenset(_OBJECT_PATH_WRITE_SELECTORS))

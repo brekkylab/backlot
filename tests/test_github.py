@@ -5317,6 +5317,44 @@ def test_github_sort_and_direction_order_the_issue_and_pull_listings_as_measured
         assert _numbers(c, pulls, h, sort="created", per_page=1, page=2) == [4]
 
 
+def test_github_issues_updated_in_the_same_second_stay_newest_first(tmp_path):
+    """Under `sort=updated` the issue listing serves a tie newest first in either direction and the
+    pull listing serves it by number in the direction asked (see `_ISSUE_ORDERING` and
+    `_PULL_ORDERING`). Every document here shares one `updated_at`, so the whole answer is the tie.
+    """
+    updated = "2021-09-09T00:28:33Z"
+    docs = [
+        {
+            "source_type": "github",
+            "doc_id": f"tie-{n}",
+            "repo": "ties",
+            "subtype": "pull_request" if n > 3 else "issue",
+            "number": n,
+            "title": f"Document {n}",
+            "content": "x",
+            "author_email": "bob@acme.com",
+            "visibility": "public",
+            "state": "open",
+            "created": f"2020-01-0{n}T00:00:00Z",
+            "updated": updated,
+            **({"head": f"feat/{n}", "base": "main"} if n > 3 else {}),
+        }
+        for n in range(1, 7)
+    ]
+    settings = build_corpus(tmp_path, docs, name="ties.jsonl")
+    with client_for(settings, reload=True) as c:
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        org = c.get("/_meta/users").json()["org"]
+        issues = f"/github/repos/{org}/ties/issues"
+        # 6 is newest; the issue listing includes the pulls, and both directions keep that order
+        assert _numbers(c, issues, h, sort="updated", direction="asc") == [6, 5, 4, 3, 2, 1]
+        assert _numbers(c, issues, h, sort="updated", direction="desc") == [6, 5, 4, 3, 2, 1]
+        pulls = f"/github/repos/{org}/ties/pulls"
+        assert _numbers(c, pulls, h, sort="updated", direction="asc") == [4, 5, 6]
+        assert _numbers(c, pulls, h, sort="updated") == [4, 5, 6]
+        assert _numbers(c, pulls, h, sort="updated", direction="desc") == [6, 5, 4]
+
+
 def test_github_type_visibility_sort_and_direction_on_the_repository_listings(tmp_path):
     """`GET /orgs/{org}/repos` takes `type`, `sort` and `direction` and `GET /user/repos`
     `visibility`, `sort` and `direction`, each declared in GitHub's OpenAPI description with an

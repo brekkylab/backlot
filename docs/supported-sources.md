@@ -192,7 +192,8 @@ Message and thread ids are Gmail-shaped — 16 lowercase hex under 2^63, sharing
 real API does — and map back to the corpus document; an id the real API could not parse is refused
 the same way. On both listings a `pageToken` that does not parse is real's 400 `Invalid pageToken`
 and an empty one is the first page, refused where each listing refuses it beside `maxResults`
-(`backlot.routers.google._gmail_page`).
+(`backlot.routers.google._gmail_page`). A `HEAD` and a trailing slash are answered as on Drive,
+in the section below.
 
 ### Google Drive, Docs, Sheets, Slides — `/drive/v3` `/docs/v1` `/sheets/v4` `/slides/v1`
 
@@ -356,6 +357,17 @@ writes it: every value it cannot convert and every name the request message lack
 400, each named by its proto path where it has one. Measured against the live Sheets API on
 2026-10-04, and a non-ASCII letter's case on 2026-10-05.
 
+**A `HEAD` on Drive or Gmail is the `GET` with the body left off**, status for status, and declares
+a `content-length` only on a download's 200, where it is the length of the bytes the `GET` serves;
+every other answer declares none, as real's chunked answers do. `callback` does not reach a `HEAD`
+but as the 503 a download answers beside an uncallable name. A `HEAD` on Docs, Sheets or Slides is
+the host's 400 with an empty `text/html; charset=utf-8` body, ahead of the credential and of
+`$.xgafv`; real Sheets answers some `HEAD`s with its HTML 404 page instead, which is not modelled
+(`backlot.errors.google.head_refusal`). Trailing slashes are not part of a path on any of the five
+families — `files/`, `labels///` and `spreadsheets/{id}/` each answer what the path without them
+answers — while a doubled slash mid-path is kept, as a segment no route matches. Measured against
+the live Drive, Gmail, Sheets, Docs and Slides APIs on 2026-10-11.
+
 ### HubSpot — `/hubspot/crm/v3` `/hubspot/crm/v4`
 
 | Endpoint | Notes |
@@ -499,7 +511,7 @@ virtual-hosted client looks for `acme-artifacts.localhost:8000` and finds nothin
 | `ListMultipartUploads` | Always the empty page, since data enters through `backlot import` and no upload is ever in progress. `prefix`, `delimiter` and `key-marker` are echoed, `max-uploads` and `encoding-type` validated and echoed, as real does |
 | `ListObjects` | The bare bucket GET, and what any `list-type` other than `2` selects. `prefix`, `delimiter`, `marker`, `max-keys`, `encoding-type`; `Marker` echoed, `NextMarker` under a delimiter, an `Owner` on every object |
 | `ListObjectsV2` | Selected by `list-type=2`. `prefix`, `delimiter`, `start-after`, `continuation-token`, `max-keys`, `encoding-type`, `fetch-owner`; `KeyCount` and the continuation tokens, an `Owner` on every object only under `fetch-owner=true` |
-| `GetObject` | `Range`; `partNumber`, where part `1` is the whole object as the 206 of its range, a higher part real's 416 and a number outside 1 to 10000 or one beside a `Range` real's 400; `versionId=null`, the one version each key has, where any other `versionId` is real's 400; and checksum mode, where an answer holding the whole object carries its CRC-64/NVME and another mode is real's 400. A key in a bucket that does not exist, or that the caller cannot see, is `NoSuchBucket`, as on real |
+| `GetObject` | `Range`; `partNumber`, where part `1` is the whole object as the 206 of its range, a higher part real's 416 and a number outside 1 to 10000 or one beside a `Range` real's 400; `versionId=null`, the one version each key has, where any other `versionId` is real's 400; checksum mode, where an answer holding the whole object carries its CRC-64/NVME and another mode is real's 400; and `If-Match`, `If-Unmodified-Since`, `If-None-Match` and `If-Modified-Since`, read as real reads them and answered with its 304 or 412 ahead of the range and the part. A key in a bucket that does not exist, or that the caller cannot see, is `NoSuchBucket`, as on real |
 | `HeadObject` | |
 | `GetObjectAcl`, `GetObjectTagging`, `GetObjectAttributes` and the rest of an object's sub-resources | Each as real answers an object with no tags or annotations, written with no checksum header, in a bucket without Object Lock, byte for byte: `?acl` the owner's `FULL_CONTROL`, `?tagging` an empty `TagSet`, `?attributes` the ETag, checksum, storage class and size asked for, `?annotation` no annotations and `NoSuchAnnotation` for one named, `?legal-hold` and `?retention` real's 400 for a bucket without Object Lock, and `?torrent` real's 405 |
 | `ListParts` | Always `NoSuchUpload`, since no upload is ever in progress; `max-parts` and `part-number-marker` validated first, as real does |
@@ -507,19 +519,21 @@ virtual-hosted client looks for `acme-artifacts.localhost:8000` and finds nothin
 An object's GET and HEAD also read the six `response-*` query parameters, `response-content-type`,
 `response-content-language`, `response-expires`, `response-cache-control`,
 `response-content-disposition` and `response-content-encoding`: each sets the header it names on the
-200 and the 206 and leaves the bytes as stored. Their names are case-sensitive, a repeated one is
-read from its first value, and a control character other than a tab comes back as a space. A value
-real cannot put in a header, a non-Latin-1 character or an unclosed quote, is its 400
-`InvalidArgument`, and an unsigned GET or HEAD carrying an override its 400 `InvalidRequest`.
+200 and the 206, every one but `Content-Type` on a 304, and leaves the bytes as stored. Their names
+are case-sensitive, a repeated one is read from its first value, and a control character other than
+a tab comes back as a space. A value real cannot put in a header, a non-Latin-1 character or an
+unclosed quote, is its 400 `InvalidArgument`, and an unsigned GET or HEAD carrying an override its
+400 `InvalidRequest`.
 
 The other sub-resources are answered as real answers them. `?session` is the listing: CreateSession
 is for directory buckets only and real S3 answers it with the listing on a general purpose bucket. A
 sub-resource whose operations are all on another method, `?delete` and a key's `?restore` and
 `?select` among them, is the 405 a GET or a HEAD naming it gets, and a key's `?uploads` on a GET is
 real's 400. A `?partNumber` at a bucket's path, which names a part of an object, is real's 400 on a
-GET, a HEAD, a `PUT`, a `POST`, a `DELETE` and a `PATCH`, and beside `?uploadId` it is UploadPart's
-405. At a bucket's path `?torrent` is real's 405 and `?uploadId` real's 400 once the bucket is
-found. At a key's path `?accelerate`, `?cors`, `?inventory`, `?lifecycle`, `?location`,
+GET, a HEAD, a `PUT`, a `POST`, a `DELETE`, a `PATCH` and an `OPTIONS`. Beside `?uploadId` an
+`OPTIONS` reaches the CORS preflight, while a GET, a HEAD, a `POST`, a `DELETE` and a `PATCH` get
+UploadPart's 405. At a bucket's path `?torrent` is real's 405 and `?uploadId` real's 400 once the
+bucket is found. At a key's path `?accelerate`, `?cors`, `?inventory`, `?lifecycle`, `?location`,
 `?notification`, `?policy`, `?replication`, `?requestPayment`, `?versioning` and `?website` are the
 bucket's answer whatever the key, and `?logging` and `?versions` real's 400s; a bucket's other
 sub-resources are ignored there, as on real. A `versionId` at a bucket's path is real's 400 on a GET

@@ -521,8 +521,11 @@ def test_notion_users(client, notion_h):
     assert me["object"] == "user" and me["type"] == "bot"
     lst = client.get("/notion/v1/users", headers=notion_h).json()
     assert lst["results"] and all(u["object"] == "user" for u in lst["results"])
-    uid = lst["results"][0]["id"]
-    assert client.get(f"/notion/v1/users/{uid}", headers=notion_h).json()["id"] == uid
+    person = next(u for u in lst["results"] if u.get("type") == "person")
+    assert person["person"]["email_verified"] is True
+    uid = person["id"]
+    retrieved = client.get(f"/notion/v1/users/{uid}", headers=notion_h).json()
+    assert retrieved["id"] == uid and retrieved["person"]["email_verified"] is True
 
 
 def test_notion_unauth_is_401(client):
@@ -907,7 +910,8 @@ def test_notion_user_and_block_shape(tmp_path):
     conn = _notion_conn(tmp_path)
     u = _user_obj(conn, "ava@acme.com")
     assert u["object"] == "user" and u["type"] == "person"
-    assert u["person"]["email"] == "ava@acme.com"
+    assert list(u["person"]) == ["email", "email_verified"]
+    assert u["person"]["email"] == "ava@acme.com" and u["person"]["email_verified"] is True
     assert u["id"] == synth.notion_user_id("ava@acme.com")
     blocks = synth.notion_blocks("nf-page", "# On-call\n\nRoll back and page.")
     b = blocks[0]

@@ -1028,6 +1028,9 @@ _BATCH_ROWS = [
     (_DRIVE_BATCH, ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain&alt=media", None, None), 302, 200, "download/drive/v3/files/{doc}/export?mimeType=text/plain&alt=media&quotaUser=7"),
     (_DRIVE_BATCH, ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain&alt=", None, None), 302, None, "download/drive/v3/files/{doc}/export?mimeType=text/plain&alt=&quotaUser=7"),
     (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media", None, None), 302, 200, "download/drive/v3/files/{pdf}?alt=media&quotaUser=7"),
+    # a trailing slash is routed past but kept in the `Location`
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}//?alt=media", None, None), 302, 200, "download/drive/v3/files/{pdf}//?alt=media&quotaUser=7"),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{doc}/export/?mimeType=text/plain", None, None), 302, 200, "download/drive/v3/files/{doc}/export/?mimeType=text/plain&quotaUser=7"),
     (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=MEDIA", None, None), 302, 200, "download/drive/v3/files/{pdf}?alt=MEDIA&quotaUser=7"),
     (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media&alt=json", None, None), 302, 200, "download/drive/v3/files/{pdf}?alt=media&alt=json&quotaUser=7"),
     (_DRIVE_BATCH, ("GET", "/drive/v3/files/{nope}?alt=media", None, None), 302, 404, "download/drive/v3/files/{nope}?alt=media&quotaUser=7"),
@@ -2457,6 +2460,205 @@ def test_a_missing_header_differs_by_family_and_method(client, method, path, cod
         assert "unregistered callers" in e["message"]
     else:
         assert "missing required authentication credential" in e["message"]
+
+
+# --- a `HEAD`, and a trailing slash ------------------------------------------------------------
+
+_REFUSED = "refused"  # the editor hosts' empty 400 (`errors.google.head_refusal`)
+
+# A `HEAD` per row, answered as the `GET` of the same URL (or of the URL in the third column) with
+# the body left off, or refused. The credential is `admin`, `mia` (the scoped token, which can see
+# neither the spreadsheet nor the CFO's message), `bad` or None for no header; the status is the
+# `HEAD`'s, and the GET's too where the row is not refused; the last column is whether the `HEAD`
+# declares a length (`errors.google.head_content_length`).
+# fmt: off
+_HEAD_ROWS = [
+    ("/drive/v3/files", "admin", None, 200, False),
+    ("/drive/v3/files", None, None, 403, False),
+    ("/drive/v3/files", "bad", None, 401, False),
+    ("/drive/v3/files/{doc}", "admin", None, 200, False),
+    ("/drive/v3/files/{sheet}", "mia", None, 404, False),
+    ("/drive/v3/files/nosuchfile000", "admin", None, 404, False),
+    ("/drive/v3/files/{doc}/export?mimeType=text/plain", "admin", None, 200, True),
+    ("/drive/v3/files/{sheet}/export?mimeType=text/csv", "mia", None, 404, False),
+    ("/drive/v3/files/{doc}/export?mimeType=text/plain", None, None, 403, False),
+    ("/drive/v3/files/{doc}/export?mimeType=text/plain&callback=cb", "admin", None, 200, True),
+    ("/drive/v3/files/{pdf}?alt=media", "admin", None, 200, True),
+    ("/drive/v3/files/{doc}?alt=media", "admin", None, 403, False),
+    ("/drive/v3/files/{pdf}?alt=media&callback=a%20b", "admin", None, 503, False),
+    ("/drive/v3/files/{doc}/permissions", "admin", None, 200, False),
+    ("/drive/v3/about?fields=user", "admin", None, 200, False),
+    ("/drive/v3/about", "admin", None, 400, False),
+    ("/drive/v3/drives", "admin", None, 200, False),
+    ("/drive/v3/files?pageSize=0", "admin", None, 400, False),
+    ("/drive/v3/files?%24.xgafv=9", "admin", None, 400, False),
+    # each answered as the read without its `callback` (``errors.google.jsonp_callback``)
+    ("/drive/v3/files?callback=cb", "admin", "/drive/v3/files", 200, False),
+    ("/drive/v3/files?callback=a%20b", "admin", "/drive/v3/files", 200, False),
+    ("/drive/v3/files?callback=cb", "bad", "/drive/v3/files", 401, False),
+    ("/gmail/v1/users/me/profile?callback=a%20b", None, "/gmail/v1/users/me/profile", 401, False),
+    ("/drive/v3/files/", "admin", None, 200, False),
+    ("/gmail/v1/users/me/profile", "admin", None, 200, False),
+    ("/gmail/v1/users/me/profile", None, None, 401, False),
+    ("/gmail/v1/users/me/profile", "bad", None, 401, False),
+    ("/gmail/v1/users/me/profile?callback=cb", "admin", "/gmail/v1/users/me/profile", 200, False),
+    ("/gmail/v1/users/me/labels", "admin", None, 200, False),
+    ("/gmail/v1/users/me/labels/INBOX", "admin", None, 200, False),
+    ("/gmail/v1/users/me/labels/", "admin", None, 200, False),
+    ("/gmail/v1/users/me/messages", "admin", None, 200, False),
+    ("/gmail/v1/users/me/messages?maxResults=0", "admin", None, 400, False),
+    ("/gmail/v1/users/me/messages/{comp}", "admin", None, 200, False),
+    ("/gmail/v1/users/me/messages/{comp}", "mia", None, 404, False),
+    ("/gmail/v1/users/me/messages/zzz", "admin", None, 400, False),
+    ("/gmail/v1/users/me/threads", "admin", None, 200, False),
+    ("/gmail/v1/users/me/threads/{comp}", "admin", None, 200, False),
+    ("/sheets/v4/spreadsheets/{sheet}", "admin", _REFUSED, 400, False),
+    ("/sheets/v4/spreadsheets/{sheet}", None, _REFUSED, 400, False),
+    ("/sheets/v4/spreadsheets/{sheet}/values/A1", "admin", _REFUSED, 400, False),
+    ("/sheets/v4/spreadsheets/{sheet}?%24.xgafv=9", "admin", _REFUSED, 400, False),
+    ("/sheets/v4/spreadsheets/{sheet}/", "admin", _REFUSED, 400, False),
+    ("/sheets/v4/nope", "admin", _REFUSED, 400, False),
+    ("/sheets/v4x/spreadsheets/abc", None, _REFUSED, 400, False),
+    ("/docs/v1/documents/{doc}", "bad", _REFUSED, 400, False),
+    ("/slides/v1/presentations/x", None, _REFUSED, 400, False),
+]
+# fmt: on
+
+
+@pytest.mark.parametrize("path, caller, get_path, status, declares", _HEAD_ROWS)
+def test_google_a_head_is_the_get_without_its_body_or_the_editor_hosts_400(
+    client, admin_h, tokens, ro_conn, path, caller, get_path, status, declares
+):
+    """The rows `_HEAD_ROWS` records. Drive and Gmail answer the `HEAD` as the GET, status and
+    `content-type` alike, with a length only where `declares` says; the three editor hosts answer
+    their empty 400, where the GET beside it is a JSON answer of its own. The body a `HEAD` leaves
+    off is read from the ASGI messages the app sends, since the test client discards it."""
+    from starlette.testclient import TestClient
+
+    ids = {
+        "doc": _drive_find(client, admin_h, "Brand")["id"],
+        "pdf": _drive_find(client, admin_h, "Whitepaper")["id"],
+        "sheet": _drive_find(client, admin_h, "Q1 Revenue Model")["id"],
+        "comp": ro_conn.execute(
+            "SELECT id FROM gmail_messages WHERE title LIKE 'Confidential comp%'"
+        ).fetchone()["id"],
+    }
+    headers = {
+        "admin": admin_h,
+        "mia": {"Authorization": f"Bearer {tokens['mia@acme.com']}"},
+        "bad": BAD_TOKEN,
+        None: {},
+    }[caller]
+    url = path.format(**ids)
+    head = client.head(url, headers=headers)
+    get = client.get(url if get_path in (None, _REFUSED) else get_path, headers=headers)
+    assert head.status_code == status, url
+    if get_path == _REFUSED:
+        assert head.headers["content-type"] == "text/html; charset=utf-8", url
+        assert head.headers["content-length"] == "0", url
+        assert get.headers["content-type"].startswith("application/json"), url
+    else:
+        assert get.status_code == status, url
+        assert head.headers["content-type"] == get.headers["content-type"], url
+        if declares:
+            assert head.headers["content-length"] == str(len(get.content)), url
+        else:
+            assert "content-length" not in head.headers, url
+    sent = []
+
+    async def recording(scope, receive, send):
+        async def record(message):
+            sent.append(message)
+            await send(message)
+
+        await client.app(scope, receive, record)
+
+    TestClient(recording).head(url, headers=headers)  # outside `with`, so `client` keeps its state
+    assert b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body") == b""
+
+
+# A slashed request per row, the spellings measured for
+# ``backlot.main.serve_a_slashed_google_path_as_the_path_without_it``: the slashed request, the
+# request it answers as (None where that is the unrouted 404), the credential as in `_HEAD_ROWS`,
+# and the status.
+# fmt: off
+_SLASHED_ROWS = [
+    ("GET /drive/v3/files/", "GET /drive/v3/files", "admin", 200),
+    ("GET /drive/v3/files//", "GET /drive/v3/files", "admin", 200),
+    ("GET /drive/v3/files/", "GET /drive/v3/files", None, 403),
+    ("GET /drive/v3/files/{doc}/", "GET /drive/v3/files/{doc}", "admin", 200),
+    ("GET /drive/v3/files/{sheet}/", "GET /drive/v3/files/{sheet}", "mia", 404),
+    ("GET /drive/v3/files/nosuchfile000/", "GET /drive/v3/files/nosuchfile000", "admin", 404),
+    ("GET /drive/v3/files/{doc}/export/?mimeType=text/plain", "GET /drive/v3/files/{doc}/export?mimeType=text/plain", "admin", 200),
+    ("GET /drive/v3/files/{doc}/permissions/", "GET /drive/v3/files/{doc}/permissions", "admin", 200),
+    ("GET /drive/v3/about/?fields=user", "GET /drive/v3/about?fields=user", "admin", 200),
+    ("GET /drive/v3/drives/", "GET /drive/v3/drives", "admin", 200),
+    ("GET /gmail/v1/users/me/profile/", "GET /gmail/v1/users/me/profile", None, 401),
+    ("GET /gmail/v1/users/me/profile//", "GET /gmail/v1/users/me/profile", "admin", 200),
+    ("GET /gmail/v1/users/me/labels//", "GET /gmail/v1/users/me/labels", "admin", 200),
+    ("GET /gmail/v1/users/me/labels///", "GET /gmail/v1/users/me/labels", "admin", 200),
+    ("GET /gmail/v1/users/me/labels/", "GET /gmail/v1/users/me/labels", "bad", 401),
+    ("GET /gmail/v1/users/me/labels/INBOX/", "GET /gmail/v1/users/me/labels/INBOX", "admin", 200),
+    ("GET /gmail/v1/users/me/messages/?maxResults=1", "GET /gmail/v1/users/me/messages?maxResults=1", "admin", 200),
+    ("GET /gmail/v1/users/me/messages/{comp}/", "GET /gmail/v1/users/me/messages/{comp}", "mia", 404),
+    ("GET /gmail/v1/users/me/messages/{held}/attachments/{att}/", "GET /gmail/v1/users/me/messages/{held}/attachments/{att}", "admin", 200),
+    ("GET /gmail/v1/users/me/threads/", "GET /gmail/v1/users/me/threads", "admin", 200),
+    ("GET /gmail/v1/users/me/threads/{comp}/", "GET /gmail/v1/users/me/threads/{comp}", "admin", 200),
+    ("GET /sheets/v4/spreadsheets/{sheet}/", "GET /sheets/v4/spreadsheets/{sheet}", "admin", 200),
+    ("GET /sheets/v4/spreadsheets/{sheet}//", "GET /sheets/v4/spreadsheets/{sheet}", None, 403),
+    ("GET /sheets/v4/spreadsheets/{sheet}/values/A1/", "GET /sheets/v4/spreadsheets/{sheet}/values/A1", "admin", 200),
+    ("GET /sheets/v4/spreadsheets/{sheet}/values/A1//", "GET /sheets/v4/spreadsheets/{sheet}/values/A1", "admin", 200),
+    # an escaped slash is part of the range, and an empty range is no route at all
+    ("GET /sheets/v4/spreadsheets/{sheet}/values/A1%2F", "GET /sheets/v4/spreadsheets/{sheet}/values/A1%2F", "admin", 400),
+    ("GET /sheets/v4/spreadsheets/{sheet}/values/", None, "admin", 404),
+    ("GET /sheets/v4/spreadsheets/{sheet}/values", None, "admin", 404),
+    ("GET /sheets/v4/spreadsheets/{sheet}/values:batchGet/?ranges=A1", "GET /sheets/v4/spreadsheets/{sheet}/values:batchGet?ranges=A1", "admin", 200),
+    ("POST /sheets/v4/spreadsheets/{sheet}:getByDataFilter/", "POST /sheets/v4/spreadsheets/{sheet}:getByDataFilter", "admin", 200),
+    ("GET /docs/v1/documents/{doc}/", "GET /docs/v1/documents/{doc}", None, 401),
+    ("GET /slides/v1/presentations/x/", "GET /slides/v1/presentations/x", None, 401),
+    ("GET /drive/v3//files", None, "admin", 404),
+    ("GET /gmail/v1/users/me//labels", None, "admin", 404),
+]
+# fmt: on
+
+
+@pytest.mark.parametrize("slashed, slash_free, caller, status", _SLASHED_ROWS)
+def test_google_a_trailing_slash_is_not_part_of_the_path(
+    client, admin_h, tokens, ro_conn, slashed, slash_free, caller, status
+):
+    """The rows `_SLASHED_ROWS` records, each answered byte for byte as the request beside it where
+    it has one (``backlot.main.serve_a_slashed_google_path_as_the_path_without_it``)."""
+    held = ro_conn.execute(
+        "SELECT id FROM gmail_messages WHERE COALESCE(attachments,'') NOT IN ('', '[]') LIMIT 1"
+    ).fetchone()["id"]
+    parts = client.get(f"/gmail/v1/users/me/messages/{held}", headers=admin_h).json()["payload"]
+    ids = {
+        "doc": _drive_find(client, admin_h, "Brand")["id"],
+        "sheet": _drive_find(client, admin_h, "Q1 Revenue Model")["id"],
+        "comp": ro_conn.execute(
+            "SELECT id FROM gmail_messages WHERE title LIKE 'Confidential comp%'"
+        ).fetchone()["id"],
+        "held": held,
+        "att": next(p for p in parts["parts"] if p.get("filename"))["body"]["attachmentId"],
+    }
+    headers = {
+        "admin": admin_h,
+        "mia": {"Authorization": f"Bearer {tokens['mia@acme.com']}"},
+        "bad": BAD_TOKEN,
+        None: {},
+    }[caller]
+
+    def send(request):
+        method, url = request.split(" ", 1)
+        body = "{}" if method == "POST" else None
+        return client.request(
+            method, url.format(**ids), headers=headers, content=body, follow_redirects=False
+        )
+
+    got = send(slashed)
+    assert got.status_code == status, got.text
+    if slash_free is not None:
+        assert got.content == send(slash_free).content
 
 
 # --- `callback`, and the bytes a Google body reaches the wire as -------------------------------
@@ -4588,7 +4790,6 @@ def test_sheets_values_get_omits_values_when_the_range_is_empty(base, admin_h, s
         "not a range",
         "A1:",
         " !A1",  # an empty title is the first sheet; a whitespace one is nothing
-        "",
         "R1C1:",
         "R0C1",  # absolute R1C1 is 1-based
         "R[-1]C[0]",  # an offset is not negative

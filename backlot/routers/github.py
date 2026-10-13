@@ -1009,11 +1009,19 @@ def _updated_ts(row) -> int:
     return row["updated_ts"] or _created_ts(row) + 3600
 
 
-def _issue_sort_keys(conn, repo: str, sort: str, ids) -> dict[str, Callable]:
+def _issue_sort_keys(
+    conn, repo: str, sort: str, ids, *, updated_keeps_unsent: bool = False
+) -> dict[str, Callable]:
     """The sort keys of the issue and pull listings, over the store's rows.
 
     The timestamps are the ones the bodies serve (:func:`_shared_obj` reads the same two
-    functions), and the number breaks a tie the way real's monotonic ids do. `comments` and
+    functions). `created` breaks a same-second tie by number, and `updated` does too on the
+    pull listing, so that number reverses with the direction. The issue listing passes
+    ``updated_keeps_unsent``: there `updated` is the timestamp alone, and rows that share an
+    `updated_at` keep the unsent order in either direction, highest number first. Measured on
+    api.github.com on 2026-10-13 against psf/requests: `issues?labels=Bug&sort=updated` served
+    1703 before 1642, 1755 before 1746 and 1029 before 639 both ways, while `pulls?sort=updated`
+    served 192 before 196 ascending and 7543 before 7520 descending. `comments` and
     `popularity` are one key: both order by the conversation and review comments added together,
     which is the count real orders by (see :data:`_ISSUE_ORDERING`), read in one query for the
     repository and only when asked for. `long-running` is `created` with no filter (see
@@ -1029,7 +1037,10 @@ def _issue_sort_keys(conn, repo: str, sort: str, ids) -> dict[str, Callable]:
         return _created_ts(row), row["number"]
 
     def updated(row):
-        return _updated_ts(row), row["number"]
+        ts = _updated_ts(row)
+        if updated_keeps_unsent:
+            return ts
+        return ts, row["number"]
 
     def comments(row):
         return counts.get(row["number"], 0)
@@ -1919,7 +1930,11 @@ async def list_issues(
     ]
     sort, descending = _order(request, _ISSUE_ORDERING)
     all_rows = _ordered(
-        all_rows, _issue_sort_keys(conn, repo, sort, ids), _ISSUE_ORDERING, sort, descending
+        all_rows,
+        _issue_sort_keys(conn, repo, sort, ids, updated_keeps_unsent=True),
+        _ISSUE_ORDERING,
+        sort,
+        descending,
     )
     asserted = page  # kept: the page urls carry the number the caller claimed, or none at all
     page, per_page = _clamp(page, per_page)

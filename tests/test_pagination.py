@@ -207,11 +207,16 @@ def test_github_cursor_offset_prefers_the_cursor_over_the_page():
 
 def test_github_link_header_percent_encodes_its_param_values():
     """A param value is arbitrary text — a search `q` carries spaces and colons — and a URI cannot
-    hold them raw. Real percent-encodes, and a client that follows the link has to arrive at the
-    same query it was paging."""
+    hold them raw. Real form-encodes it: a space is `+`, a colon, slash, comma or plus is
+    percent-encoded (measured on api.github.com on 2026-10-13), and a client that follows the link
+    has to arrive at the same query it was paging."""
     h = pg.github_link_header("http://x/search/code", {"q": "repo:core in:path a b"}, 1, 2, 10)
-    assert "q=repo%3Acore%20in%3Apath%20a%20b" in h
+    assert "q=repo%3Acore+in%3Apath+a+b" in h
     assert " " not in h[h.index("<") : h.index(">")]
+    h = pg.github_link_header(
+        "http://x/repos/o/r/issues", {"labels": "Question/Not a bug,C++"}, 1, 2, 10
+    )
+    assert "labels=Question%2FNot+a+bug%2CC%2B%2B" in h
 
 
 def test_confluence_page_links():

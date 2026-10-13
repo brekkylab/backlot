@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import base64
 from typing import Annotated
-from urllib.parse import quote
+from urllib.parse import quote_plus
 
 from fastapi import Query
 from pydantic import BeforeValidator
@@ -233,8 +233,14 @@ def clamp_page(
 
 
 def _page_url(url_no_query: str, params: dict) -> str:
-    """One page url in a `Link` header, `<…>`-wrapped with its query percent-encoded."""
-    q = "&".join(f"{k}={quote(str(v), safe='')}" for k, v in params.items())
+    """One page url in a `Link` header, `<…>`-wrapped with its query form-encoded.
+
+    A space is `+` and everything else outside the unreserved set is percent-encoded, as real
+    writes it whichever way the request spelt the space: measured on api.github.com on 2026-10-13,
+    `search/issues?q=repo:psf/requests%20is:issue` links `q=repo%3Apsf%2Frequests+is%3Aissue`, and
+    `issues?labels=Needs%20Info` links `labels=Needs+Info`.
+    """
+    q = "&".join(f"{k}={quote_plus(str(v), safe='')}" for k, v in params.items())
     return f"<{url_no_query}?{q}>"
 
 

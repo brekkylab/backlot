@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import base64
 from typing import Annotated
-from urllib.parse import quote
+from urllib.parse import quote_plus
 
 from fastapi import Query
 from pydantic import BeforeValidator
@@ -233,8 +233,14 @@ def clamp_page(
 
 
 def _page_url(url_no_query: str, params: dict) -> str:
-    """One page url in a `Link` header, `<…>`-wrapped with its query percent-encoded."""
-    q = "&".join(f"{k}={quote(str(v), safe='')}" for k, v in params.items())
+    """One page url in a `Link` header, `<…>`-wrapped with its query encoded as real encodes it.
+
+    Measured against api.github.com on 2026-10-13: a space in a carried value is `+`, while
+    every other reserved character is percent-encoded (`:` → `%3A`, `/` → `%2F`, `,` → `%2C`),
+    so values go through :func:`urllib.parse.quote_plus` rather than :func:`urllib.parse.quote`
+    (see issue #650). Whichever spelling the request used, the link spells a space `+`.
+    """
+    q = "&".join(f"{k}={quote_plus(str(v), safe='')}" for k, v in params.items())
     return f"<{url_no_query}?{q}>"
 
 
@@ -283,8 +289,9 @@ def github_link_header(
     The rels come in one fixed order whichever of them a page has — prev, next, last, first — which
     is the order real emits across all four of those pages.
 
-    Values are percent-encoded because a param value is arbitrary text — a search `q` carries
-    spaces and colons — and a URI cannot hold them raw. A client that follows the link has to
+    Values are encoded as real encodes them — a space as `+`, the rest percent-encoded — because a
+    param value is arbitrary text, a search `q` carries spaces and colons, and a URI cannot hold
+    them raw. A client that follows the link has to
     arrive at the query it was paging, not at a truncated one.
     """
     last_page = max(1, (total + per_page - 1) // per_page)

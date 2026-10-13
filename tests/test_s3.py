@@ -333,9 +333,11 @@ def test_s3_a_head_at_the_service_root_is_the_405_without_its_body(live_server, 
     assert _signed(base_url, path, settings.admin_token).status_code == 200
 
 
-# The queries real answered alike at a bucket's path with and without a trailing slash, on a GET
-# and on a HEAD: the same status, header names and body once the request ids are set aside
-# (s3.amazonaws.com, us-east-1, 2026-10-11).
+# What real answered alike at a bucket's path with and without a trailing slash: the same status,
+# header names and body once the request ids are set aside (s3.amazonaws.com, us-east-1; the GET
+# and HEAD rows on 2026-10-11, the others on 2026-10-13). On the second date no pair differed among
+# the methods `bucket_method_refusal` takes, each sent with each selector of
+# `_BUCKET_WRITE_SELECTORS` and `_OBJECT_WRITE_SELECTORS` to another account's bucket.
 _BUCKET_QUERIES = [
     "",
     "?list-type=2",
@@ -346,11 +348,19 @@ _BUCKET_QUERIES = [
     "?max-keys=abc",
     "?acl",
 ]
+_BUCKET_SLASH_ROWS = [
+    *((method, query) for query in _BUCKET_QUERIES for method in ("GET", "HEAD")),
+    ("POST", ""),
+    ("POST", "?restore"),
+    ("PATCH", ""),
+    ("PUT", "?versionId=x"),
+    ("DELETE", "?uploadId=u"),
+    ("DELETE", "?retention"),
+]
 
 
-@pytest.mark.parametrize("method", ["GET", "HEAD"])
-@pytest.mark.parametrize("query", _BUCKET_QUERIES)
-def test_s3_a_bucket_path_ending_in_a_slash_is_the_bucket(live_server, query, method):
+@pytest.mark.parametrize("method, query", _BUCKET_SLASH_ROWS)
+def test_s3_a_bucket_path_ending_in_a_slash_is_the_bucket(live_server, method, query):
     """The bucket's own answer, not a key's: `/{bucket}/` is not the key `""` in that bucket."""
     base_url, settings = live_server
     bare, slashed = (
@@ -358,30 +368,6 @@ def test_s3_a_bucket_path_ending_in_a_slash_is_the_bucket(live_server, query, me
         for slash in ("", "/")
     )
     assert slashed.status_code == bare.status_code
-    assert sorted(slashed.headers) == sorted(bare.headers)
-    assert _without_request_ids(slashed.text) == _without_request_ids(bare.text)
-
-
-# POST and PATCH at a bucket path with a trailing slash answer as the bucket, not as the key "",
-# measured against s3.amazonaws.com (us-east-1, 2026-10-12).
-_BUCKET_WRITE_SLASH = [
-    ("POST", "", 412, "PreconditionFailed", "multipart/form-data</Condition>"),
-    ("POST", "?restore", 400, "UserKeyMustBeSpecified", "User key must be specified."),
-    ("PATCH", "", 405, "MethodNotAllowed", "<ResourceType>BUCKET</"),
-]
-
-
-@pytest.mark.parametrize("method, query, status, code, member", _BUCKET_WRITE_SLASH)
-def test_s3_a_bucket_write_at_a_trailing_slash_is_the_bucket(
-    live_server, method, query, status, code, member
-):
-    """The bucket's own answer, not a key's: `/{bucket}/` is not the key `""` in that bucket."""
-    base_url, settings = live_server
-    bare = _signed(base_url, f"/s3/eng-artifacts{query}", settings.admin_token, method=method)
-    slashed = _signed(base_url, f"/s3/eng-artifacts/{query}", settings.admin_token, method=method)
-    assert bare.status_code == status == slashed.status_code
-    assert f"<Code>{code}</Code>" in bare.text and member in bare.text
-    assert f"<Code>{code}</Code>" in slashed.text and member in slashed.text
     assert sorted(slashed.headers) == sorted(bare.headers)
     assert _without_request_ids(slashed.text) == _without_request_ids(bare.text)
 
@@ -554,6 +540,8 @@ def test_s3_a_request_in_a_bucket_the_caller_cannot_see_is_nosuchbucket(live_ser
         ("DELETE", "/s3/people-vault", 501),
         ("POST", "/s3/people-vault?delete", 400),
         ("POST", "/s3/people-vault?restore", 400),
+        ("POST", "/s3/people-vault/?restore", 400),
+        ("DELETE", "/s3/people-vault/?uploadId=u", 400),
         # A write's checks come after the bucket, so the scoped caller is told there is none
         # whatever the request carries, where the admin gets the check's 400.
         ("POST", "/s3/people-vault/comp/bands.csv?delete", 400, {"Content-MD5": "garbage"}),

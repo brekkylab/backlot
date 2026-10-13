@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from urllib.parse import parse_qsl, quote, unquote, urlencode
 
+import httpx
 import pytest
 import yaml
 from starlette.requests import Request
@@ -2087,6 +2088,217 @@ def test_an_objects_subresource_refusals_sit_where_real_puts_them(
     assert r.status_code == status
     assert f"<Code>{code}</Code>" in r.text and fragment in r.text
     assert "x-amz-server-side-encryption" not in r.headers
+
+
+def _overridable(name: str, value: str) -> str:
+    """The unknown-`response-` name error ``backlot.routers.s3._unknown_response_header`` sends."""
+    return (
+        f"<Message>{name} is not in the set of overridable response headers. Please refer to the "
+        "S3 API documentation for a complete list of overridable response headers.</Message>"
+        f"{_argued(name, value)}"
+    )
+
+
+def _header_value(message: str, name: str, value: str) -> str:
+    """An override-value error ``backlot.routers.s3._override_value_refusal`` sends."""
+    return f"<Message>{message}</Message>{_argued(name, value)}"
+
+
+_ISO_8859 = "Header value cannot be represented using ISO-8859-1."
+_OPEN_SPAN = "Header value contained an open quoted span."
+_BUCKET = "/s3/eng-artifacts"
+_ABSENT_KEY = "/s3/no-such-bucket/k.txt"
+_MISSING_KEY = "/s3/eng-artifacts/no/such.md"
+# A `response-` query outside the six overrides, or an override value no header can carry at a
+# bucket's path: the path, the query, the query the same request is without that parameter
+# (``None`` when the answer is the 400), whether it is signed, and the error fragment.
+_RESPONSE_QUERY_ROWS = [
+    (OBJECT_PATH, "response-foo=x", None, True, _overridable("response-foo", "x")),
+    (
+        OBJECT_PATH,
+        "response-content-length=12",
+        None,
+        True,
+        _overridable("response-content-length", "12"),
+    ),
+    (OBJECT_PATH, "response-etag=5", None, True, _overridable("response-etag", "5")),
+    (
+        OBJECT_PATH,
+        "response-last-modified=x",
+        None,
+        True,
+        _overridable("response-last-modified", "x"),
+    ),
+    (
+        OBJECT_PATH,
+        "response-content-range=bytes",
+        None,
+        True,
+        _overridable("response-content-range", "bytes"),
+    ),
+    (
+        OBJECT_PATH,
+        "response-x-amz-meta-a=1",
+        None,
+        True,
+        _overridable("response-x-amz-meta-a", "1"),
+    ),
+    (OBJECT_PATH, "response-", None, True, _overridable("response-", "")),
+    (
+        OBJECT_PATH,
+        "response-Content-Type=text/csv",
+        None,
+        True,
+        _overridable("response-Content-Type", "text/csv"),
+    ),
+    (
+        OBJECT_PATH,
+        "response-content-TYPE=text/csv",
+        None,
+        True,
+        _overridable("response-content-TYPE", "text/csv"),
+    ),
+    (_MISSING_KEY, "response-foo=x", None, True, _overridable("response-foo", "x")),
+    (_ABSENT_KEY, "response-foo=x", None, True, _overridable("response-foo", "x")),
+    (_BUCKET, "response-foo=x", None, True, _overridable("response-foo", "x")),
+    (_BUCKET, "list-type=2&response-foo=x", None, True, _overridable("response-foo", "x")),
+    (_BUCKET, "location&response-foo=x", None, True, _overridable("response-foo", "x")),
+    (OBJECT_PATH, "response-foo=x", None, False, _overridable("response-foo", "x")),
+    (_BUCKET, "response-foo=x", None, False, _overridable("response-foo", "x")),
+    (OBJECT_PATH, "acl&response-foo=x", None, True, _overridable("response-foo", "x")),
+    (OBJECT_PATH, "versionId=bogus&response-foo=x", None, True, _overridable("response-foo", "x")),
+    (OBJECT_PATH, "partNumber=abc&response-foo=x", None, True, _overridable("response-foo", "x")),
+    (_BUCKET, "acl&response-foo=x", None, True, _overridable("response-foo", "x")),
+    (_BUCKET, "versionId=bogus&response-foo=x", None, True, _overridable("response-foo", "x")),
+    (_BUCKET, "partNumber=abc&response-foo=x", None, True, _overridable("response-foo", "x")),
+    (OBJECT_PATH, "response-zzz=1&response-aaa=2", None, True, _overridable("response-aaa", "2")),
+    (OBJECT_PATH, "response-aaa=2&response-zzz=1", None, True, _overridable("response-aaa", "2")),
+    (
+        OBJECT_PATH,
+        "response-foo=first&response-foo=second",
+        None,
+        True,
+        _overridable("response-foo", "first"),
+    ),
+    (_BUCKET, "response-foo", None, True, _overridable("response-foo", "")),
+    (
+        _BUCKET,
+        "response-content-type=%ED%95%9C",
+        None,
+        True,
+        _header_value(_ISO_8859, "response-content-type", "\ud55c"),
+    ),
+    (
+        _BUCKET,
+        "list-type=2&response-content-type=%ED%95%9C",
+        None,
+        True,
+        _header_value(_ISO_8859, "response-content-type", "\ud55c"),
+    ),
+    (
+        _BUCKET,
+        "location&response-content-type=a%22b",
+        None,
+        True,
+        _header_value(_OPEN_SPAN, "response-content-type", 'a"b'),
+    ),
+    (
+        "/s3/no-such-bucket",
+        "response-content-type=%ED%95%9C",
+        None,
+        True,
+        _header_value(_ISO_8859, "response-content-type", "\ud55c"),
+    ),
+    (
+        "/s3/no-such-bucket",
+        "response-content-type=a%22b",
+        None,
+        True,
+        _header_value(_OPEN_SPAN, "response-content-type", 'a"b'),
+    ),
+    (
+        _BUCKET,
+        "response-cache-control=%C4%80",
+        None,
+        True,
+        _header_value(_ISO_8859, "response-cache-control", "\u0100"),
+    ),
+    (
+        _BUCKET,
+        "response-expires=a%22b",
+        None,
+        True,
+        _header_value(_OPEN_SPAN, "response-expires", 'a"b'),
+    ),
+    (OBJECT_PATH, "Response-foo=x", "", True, None),
+    (OBJECT_PATH, "Response-Content-Type=text/csv", "", True, None),
+    (_BUCKET, "response-content-type=text/csv", "", True, None),
+    (_BUCKET, "list-type=2&response-content-type=text/csv", "list-type=2", True, None),
+    (_BUCKET, "location&response-content-type=text/csv", "location", True, None),
+    (_BUCKET, "response-content-type=", "", True, None),
+    (_BUCKET, "response-content-type=%22a%22b", "", True, None),
+    (_BUCKET, "response-content-type=%C3%BF", "", True, None),
+]
+
+
+def _s3_exchange(base_url, token, path, query, signed, method):
+    target = f"{path}?{query}" if query else path
+    if signed:
+        return _signed(base_url, target, token, method=method)
+    return httpx.request(method, f"{base_url}{target}")
+
+
+@pytest.mark.parametrize(
+    "path, query, baseline, signed, fragment",
+    _RESPONSE_QUERY_ROWS,
+    ids=[
+        f"{'anon-' if not signed else ''}{path}?{query}"
+        for path, query, _, signed, _ in _RESPONSE_QUERY_ROWS
+    ],
+)
+def test_a_response_parameter_real_refuses_is_its_400(
+    live_server, path, query, baseline, signed, fragment
+):
+    """Unknown `response-` names, and override values no header can carry at a bucket's path, are
+    the 400 ``backlot.routers.s3._read_refusal`` answers before the bucket, the key and a
+    selector. A name in another case, and a value a header can carry, are the answer without the
+    parameter. A HEAD of either refusal has no body."""
+    base_url, settings = live_server
+    got = _s3_exchange(base_url, settings.admin_token, path, query, signed, "GET")
+    head = _s3_exchange(base_url, settings.admin_token, path, query, signed, "HEAD")
+    if fragment is not None:
+        assert got.status_code == 400
+        assert f"<Code>InvalidArgument</Code>{fragment}" in got.text
+        assert head.status_code == 400 and head.content == b""
+        return
+    plain = _s3_exchange(base_url, settings.admin_token, path, baseline, signed, "GET")
+    plain_head = _s3_exchange(base_url, settings.admin_token, path, baseline, signed, "HEAD")
+    assert got.status_code == plain.status_code
+    assert got.headers.get("content-type") == plain.headers.get("content-type")
+    assert _without_request_ids(got.text) == _without_request_ids(plain.text)
+    assert (head.status_code, head.content) == (plain_head.status_code, b"")
+
+
+@pytest.mark.parametrize("method", ["GET", "HEAD"])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "response-cache-control",
+        "response-content-disposition",
+        "response-content-encoding",
+        "response-content-language",
+        "response-content-type",
+        "response-expires",
+    ],
+)
+def test_the_six_response_overrides_are_not_the_unknown_name_refusal(live_server, method, name):
+    """Each name in ``backlot.routers.s3._RESPONSE_OVERRIDES`` is left for the object's own answer
+    on a GET and a HEAD, rather than refused as a name outside that set."""
+    base_url, settings = live_server
+    response = _signed(base_url, f"{OBJECT_PATH}?{name}=v", settings.admin_token, method=method)
+    assert response.status_code == 200
+    assert b"InvalidArgument" not in response.content
+    assert response.content == (OBJECT_TEXT if method == "GET" else b"")
 
 
 _FULL_RANGE = f"bytes 0-{len(OBJECT_TEXT) - 1}/{len(OBJECT_TEXT)}"

@@ -722,26 +722,118 @@ def _bucket_selected(q, selectors: frozenset[str]) -> list[str]:
     return selected
 
 
+# The six response-header overrides, matched as written. A query name that starts with the
+# lower-case prefix `response-` and is not one of them is refused; `Response-Content-Type` and
+# `Response-foo` are ignored (measured 2026-10-13 against s3.amazonaws.com, us-east-1).
+_RESPONSE_OVERRIDES = frozenset(
+    {
+        "response-cache-control",
+        "response-content-disposition",
+        "response-content-encoding",
+        "response-content-language",
+        "response-content-type",
+        "response-expires",
+    }
+)
+
+
+def _unknown_response_header(q) -> Response | None:
+    """The 400 for a `response-` name outside ``_RESPONSE_OVERRIDES``, or ``None``.
+
+    Real S3 names the one first in alphabetical order, with the value as sent and an empty value
+    for a bare parameter, on an object's GET and HEAD, a missing key, a bucket that does not
+    exist and a bucket's own path, unsigned, and ahead of `?acl`, a `versionId` and a
+    `partNumber` (measured 2026-10-13, us-east-1).
+    """
+    names = sorted(
+        {
+            name
+            for name in q.keys()
+            if name.startswith("response-") and name not in _RESPONSE_OVERRIDES
+        }
+    )
+    if not names:
+        return None
+    name = names[0]
+    return _argument_error(
+        f"{name} is not in the set of overridable response headers. Please refer to the S3 API "
+        "documentation for a complete list of overridable response headers.",
+        name,
+        _first(q, name),
+    )
+
+
+def _open_quoted_span(value: str) -> bool:
+    """Whether ``value`` leaves a quoted span open.
+
+    A `"` toggles the span and a backslash escapes the next character. Real S3 refused `a"b`
+    with "Header value contained an open quoted span." (measured 2026-10-13, us-east-1).
+    """
+    quoted = escaped = False
+    for ch in value:
+        if escaped:
+            escaped = False
+        elif ch == "\\":
+            escaped = True
+        elif ch == '"':
+            quoted = not quoted
+    return quoted
+
+
+def _override_value_refusal(q) -> Response | None:
+    """The 400 for an override value no header can carry at a bucket's path, or ``None``.
+
+    One of the six sets nothing on a listing, but its value is still checked. A character past
+    U+00FF is "Header value cannot be represented using ISO-8859-1." and a `"` that does not
+    close is "Header value contained an open quoted span.", each naming the parameter and the
+    decoded value. Real answered both on the listing, `?list-type=2` and `?location`, in a bucket
+    that does not exist, on a GET and a HEAD, a HEAD of `?location` included (measured
+    2026-10-13, us-east-1).
+    """
+    for name in sorted(_RESPONSE_OVERRIDES):
+        value = _first(q, name, None)
+        if value is None:
+            continue
+        if any(ord(ch) > 0xFF for ch in value):
+            return _argument_error(
+                "Header value cannot be represented using ISO-8859-1.", name, value
+            )
+        if _open_quoted_span(value):
+            return _argument_error("Header value contained an open quoted span.", name, value)
+    return None
+
+
 def _read_refusal(
     request: Request,
     selected: list[str],
     refused: dict[str, str],
     served_on_get: frozenset[str],
     first: Response | None = None,
+    *,
+    bucket: bool = False,
 ) -> Response | None:
     """What a GET or a HEAD naming a selector is refused with before the bucket is looked up, or
     ``None`` when the request goes on to be answered.
 
-    Two selectors are the conflict before any credential is read: real answered seven such requests,
-    at a bucket and at a key, on a GET and a HEAD, and in a bucket that does not exist, with the 400
-    whether each was signed, unsigned, signed over a bad secret or sent with an unknown key
-    (2026-09-29). So is a bucket's `partNumber` (``_bucket_selected``). Then ``first``, what the
-    caller refuses before the credential — the parses, a `versionId`, a valued `website`
-    (``_version_id_refusal``, ``_website_refusal``) — and after it one selector is refused on a
-    HEAD whatever it is (``_head_refusal``) and on a GET when the GET cannot take it (``refused``,
-    the type its 405 names), once a signature that was sent verifies (``_signature_refusal``).
+    A `response-` name outside the six overrides is refused first
+    (``_unknown_response_header``), and at a bucket's path an override value no header can carry
+    is too (``_override_value_refusal``). Two selectors are the conflict before any credential is
+    read: real answered seven such requests, at a bucket and at a key, on a GET and a HEAD, and
+    in a bucket that does not exist, with the 400 whether each was signed, unsigned, signed over
+    a bad secret or sent with an unknown key (2026-09-29). So is a bucket's `partNumber`
+    (``_bucket_selected``). Then ``first``, what the caller refuses before the credential — the
+    parses, a `versionId`, a valued `website` (``_version_id_refusal``, ``_website_refusal``) —
+    and after it one selector is refused on a HEAD whatever it is (``_head_refusal``) and on a
+    GET when the GET cannot take it (``refused``, the type its 405 names), once a signature that
+    was sent verifies (``_signature_refusal``).
     """
     head = request.method == "HEAD"
+    q = request.query_params
+    response = _unknown_response_header(q)
+    if response is None and bucket:
+        response = _override_value_refusal(q)
+    if response is not None:
+        return _head(400) if head else response
     if len(selected) > 1:
         return _head_refusal(selected, served_on_get) if head else _conflict(selected)
     if selected == ["partNumber"]:
@@ -1041,7 +1133,9 @@ async def head_bucket(request: Request, bucket: str):
     q = request.query_params
     selected = _bucket_selected(q, _BUCKET_READ_SELECTORS)
     first = _version_id_refusal(q, selected) or _website_refusal(q)
-    refused = _read_refusal(request, selected, _BUCKET_GET_REFUSALS, _BUCKET_GETS, first)
+    refused = _read_refusal(
+        request, selected, _BUCKET_GET_REFUSALS, _BUCKET_GETS, first, bucket=True
+    )
     if refused is not None:
         return refused
     v2 = _first(q, "list-type", None) == _LIST_TYPE_V2
@@ -1100,7 +1194,9 @@ async def bucket_get(request: Request, bucket: str):
     elif not selected:
         max_keys, first = _listing_parse(q, v2)
     first = first or _version_id_refusal(q, selected) or _website_refusal(q)
-    refused = _read_refusal(request, selected, _BUCKET_GET_REFUSALS, _BUCKET_GETS, first)
+    refused = _read_refusal(
+        request, selected, _BUCKET_GET_REFUSALS, _BUCKET_GETS, first, bucket=True
+    )
     if refused is not None:
         return refused
     caller, visible, err = _auth(request)

@@ -1132,6 +1132,102 @@ def test_hubspot_batch_read_refuses_a_body_real_cannot_read(
         assert r.status_code == want
 
 
+def _token_refusal(column: int, token: str, line: int = 1) -> dict:
+    return {
+        "status": "error",
+        "message": f"Invalid input JSON on line {line}, column {column}: Non-standard token "
+        f"'{token}': enable `JsonReadFeature.ALLOW_NON_NUMERIC_NUMBERS` to allow",
+    }
+
+
+def _nt(id, route, raw, want, object_type="companies", authed=True):
+    return pytest.param(route, raw, want, object_type, authed, id=id)
+
+
+_A_FILTER = '{"filterGroups":[{"filters":[{"propertyName":"name","operator":"EQ","value":%s}]}]}'
+_AN_OPERATOR = '"filterGroups":[{"filters":[{"propertyName":"name","operator":%s,"value":"x"}]}]'
+
+# fmt: off
+_TOKEN_ROWS = [
+    _nt("inputs", "batch/read", '{"inputs":NaN}', _token_refusal(14, "NaN")),
+    _nt("an-input", "batch/read", '{"inputs":[NaN]}', _token_refusal(15, "NaN")),
+    _nt("an-input-infinity", "batch/read", '{"inputs":[Infinity]}', _token_refusal(20, "Infinity")),
+    _nt("an-input-minus-infinity", "batch/read", '{"inputs":[-Infinity]}', _token_refusal(21, "-Infinity")),
+    _nt("properties", "batch/read", _ONE + '"properties":NaN}', _token_refusal(40, "NaN")),
+    _nt("an-id-in-an-input", "batch/read", '{"inputs":[{"id":NaN}]}', _token_refusal(21, "NaN")),
+    _nt("an-unknown-member", "batch/read", '{"bogus":NaN}', _token_refusal(13, "NaN")),
+    _nt("limit", "search", '{"limit":NaN}', _token_refusal(13, "NaN")),
+    _nt("limit-infinity", "search", '{"limit":Infinity}', _token_refusal(18, "Infinity")),
+    _nt("after", "search", '{"after":NaN}', _token_refusal(13, "NaN")),
+    _nt("a-filter-value", "search", _A_FILTER % "NaN", _token_refusal(80, "NaN")),
+    _nt("filter-groups", "search", '{"filterGroups":NaN}', _token_refusal(20, "NaN")),
+    _nt("filters", "search", '{"filterGroups":[{"filters":NaN}]}', _token_refusal(32, "NaN")),
+    _nt("contacts", "search", '{"limit":NaN}', _token_refusal(13, "NaN"), object_type="contacts"),
+    _nt("a-bare-token", "search", "NaN", _token_refusal(4, "NaN")),
+    _nt("a-bare-minus-infinity", "batch/read", "-Infinity", _token_refusal(10, "-Infinity")),
+    # the position, counted as `_token_at` counts one
+    _nt("lf", "search", '{\n"limit":NaN}', _token_refusal(12, "NaN", line=2)),
+    _nt("crlf", "search", '{\r\n"limit":NaN}', _token_refusal(12, "NaN", line=2)),
+    _nt("tab", "search", '{\t"limit":NaN}', _token_refusal(14, "NaN")),
+    _nt("two-byte-char-before", "search", '{"query":"é","limit":NaN}', _token_refusal(26, "NaN")),
+    _nt("three-and-four-byte-chars-before", "search", '{"query":"' + chr(0x20AC) + chr(0x1F600) + '","limit":NaN}', _token_refusal(31, "NaN")),
+    _nt("escaped-char-before", "search", '{"query":"\\u00e9","limit":NaN}', _token_refusal(30, "NaN")),
+    _nt("spelled-in-a-string-before", "search", '{"query":"a\\"NaN","limit":NaN}', _token_refusal(30, "NaN")),
+    _nt("repeated-key", "search", '{"limit":5,"limit":NaN}', _token_refusal(23, "NaN")),
+    # UTF-16, and a byte that does not decode behind the token: the text ahead of it is scanned
+    _nt("utf-16", "search", '{"limit":NaN}'.encode("utf-16-be"), _token_refusal(13, "NaN")),
+    _nt("a-byte-that-does-not-decode-behind", "search", b'{"limit":NaN,"query":"\xff"}', _token_refusal(13, "NaN")),
+    _nt("a-byte-order-mark-and-a-byte-that-does-not-decode", "batch/read", b'\xef\xbb\xbf{\n"inputs":[NaN,"\xff"]}', _token_refusal(14, "NaN", line=2)),
+    # the token and a value real refuses for its type: whichever starts first is named
+    _nt("inputs-ahead", "batch/read", '{"inputs":"x","properties":NaN}', _batch_refusal(11, _not_a_list("String", "VALUE_STRING"))),
+    _nt("inputs-behind", "batch/read", '{"properties":NaN,"inputs":"x"}', _token_refusal(18, "NaN")),
+    _nt("an-input-ahead", "batch/read", '{"inputs":[5,NaN]}', _batch_refusal(12, _no_creator("int/Int", "Number value (5)"))),
+    _nt("an-input-behind", "batch/read", '{"inputs":[NaN,5]}', _token_refusal(15, "NaN")),
+    _nt("an-array-input-around-it", "batch/read", '{"inputs":[[NaN]]}', _batch_refusal(12, _ARRAY)),
+    _nt("properties-ahead", "batch/read", '{"properties":"x","inputs":[NaN]}', _batch_refusal(15, _no_creator("String", "String value ('x')"))),
+    _nt("blank-properties-ahead", "batch/read", '{"properties":" ","inputs":[NaN]}', _blank_field("properties")),
+    _nt("blank-properties-behind", "batch/read", '{"inputs":[NaN],"properties":" "}', _token_refusal(15, "NaN")),
+    _nt("a-null-input-ahead", "batch/read", '{"inputs":[null],"properties":NaN}', _token_refusal(34, "NaN")),
+    _nt("a-null-input-and-an-unknown-member", "batch/read", '{"inputs":[null],"bogus":NaN}', _token_refusal(29, "NaN")),
+    _nt("a-null-input-and-an-id", "batch/read", '{"inputs":[null,{"id":NaN}]}', _token_refusal(26, "NaN")),
+    _nt("operator-ahead", "search", "{" + _AN_OPERATOR % '"BOGUS"' + ',"limit":NaN}', _enum_refusal(1, 64)),
+    _nt("operator-behind", "search", '{"limit":NaN,' + _AN_OPERATOR % '"BOGUS"' + "}", _token_refusal(13, "NaN")),
+    _nt("operator-ahead-in-its-filter", "search", '{"filterGroups":[{"filters":[{"propertyName":"name","operator":"BOGUS","value":NaN}]}]}', _enum_refusal(1, 64)),
+    _nt("operator-behind-in-its-filter", "search", '{"filterGroups":[{"filters":[{"propertyName":"name","value":NaN,"operator":"BOGUS"}]}]}', _token_refusal(64, "NaN")),
+    _nt("operator-ahead-of-filters", "search", '{"filterGroups":[{"filters":[{"propertyName":"name","operator":"BOGUS"}]},{"filters":Infinity}]}', _enum_refusal(1, 64)),
+    _nt("blank-operator-ahead", "search", "{" + _AN_OPERATOR % '" "' + ',"limit":NaN}', _empty_operator_refusal(0, 0)),
+    _nt("blank-operator-behind", "search", '{"limit":NaN,' + _AN_OPERATOR % '" "' + "}", _token_refusal(13, "NaN")),
+    # after the type and the credential
+    _nt("after-an-unknown-type", "search", '{"limit":NaN}', {"status": "error", "message": "Unable to infer object type from: nosuchtype"}, object_type="nosuchtype"),
+    _nt("after-the-credential", "batch/read", '{"inputs":[NaN]}', 401, authed=False),
+    # inside a string the three spellings are text
+    _nt("an-id", "batch/read", '{"inputs":["NaN"]}', 207),
+    _nt("an-id-in-an-object", "batch/read", '{"inputs":[{"id":"-Infinity"}]}', 207),
+    _nt("a-query", "search", '{"query":"Infinity"}', 200),
+    _nt("a-filter-value-with-quotes", "search", _A_FILTER % '"a \\"NaN\\" b"', 200),
+    _nt("after-an-empty-string", "search", '{"query":"","bogus":"NaN"}', 200),
+]
+# fmt: on
+
+
+@pytest.mark.parametrize("route, raw, want, object_type, authed", _TOKEN_ROWS)
+def test_hubspot_refuses_a_non_standard_number_token(
+    client, admin_h, route, raw, want, object_type, authed
+):
+    """`_non_standard_number`'s rule, one body per row: the status and body real answered,
+    including which value it names when the body also holds one `_refuse_a_batch_read_shape` or
+    `_refuse_an_operator` refuses, and the status for the three spellings inside a string, which
+    real reads as text (a 207 for batch/read because no company has those ids)."""
+    headers = {"Content-Type": "application/json", **(admin_h if authed else {})}
+    url = f"/hubspot/crm/v3/objects/{object_type}/{route}"
+    content = raw if isinstance(raw, bytes) else raw.encode()
+    r = client.post(url, headers=headers, content=content)
+    if isinstance(want, dict):
+        assert (r.status_code, r.json()) == (400, want)
+    else:
+        assert r.status_code == want
+
+
 @pytest.mark.parametrize(
     "inputs, caller, status",
     [

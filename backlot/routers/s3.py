@@ -1760,6 +1760,67 @@ def _configuration_list(q, selector: str) -> Response:
     )
 
 
+# The query parameters an object's GET and HEAD set a response header with, and the header each one
+# sets, on the 200 and the 206 and not on a sub-resource's answer or a refusal (real S3, us-east-1,
+# measured 2026-10-11). The bytes, the ETag and the length stay the object's.
+_RESPONSE_HEADERS = {
+    "response-content-type": "Content-Type",
+    "response-content-language": "Content-Language",
+    "response-expires": "Expires",
+    "response-cache-control": "Cache-Control",
+    "response-content-disposition": "Content-Disposition",
+    "response-content-encoding": "Content-Encoding",
+}
+# What an override's value carries in place of a control character: a space, for each one below
+# U+0020 but the tab, and for U+007F (measured 2026-10-13).
+_SPACED_CONTROLS = {c: " " for c in (*range(0x09), *range(0x0A, 0x20), 0x7F)}
+
+
+def _response_override_refusal(q) -> Response | None:
+    """Real's 400 for an override whose value no header can carry, or ``None``.
+
+    Each name is read from its first value, as ``_response_overrides`` reads it. A value holding a
+    character past U+00FF is refused, a percent-encoded byte that is not UTF-8 among them, and so is
+    one holding a `"` that opens a quoted span it does not close, where a backslash escapes the
+    character after it inside the quotes or out: `a"b` and `"a\\"` are refused, `"a"b` and `a\\"b`
+    are not. Real S3 refused both ahead of a bucket or a key that does not exist, a `versionId`, a
+    `partNumber`, a `Range`, a checksum mode or a precondition it refuses, a sub-resource's answer
+    and an unsigned request's 400, and ahead of the credential in 30 of 32 requests whose signature
+    or key it refused (us-east-1, 2026-10-13).
+    """
+    for name in _RESPONSE_HEADERS:
+        value = _first(q, name, None)
+        if value is None:
+            continue
+        if any(ord(ch) > 0xFF for ch in value):
+            return _argument_error(
+                "Header value cannot be represented using ISO-8859-1.", name, value
+            )
+        quoted = escaped = False
+        for ch in value:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                quoted = not quoted
+        if quoted:
+            return _argument_error("Header value contained an open quoted span.", name, value)
+    return None
+
+
+def _response_overrides(q) -> dict[str, str]:
+    """The headers the `response-*` overrides set, once ``_response_override_refusal`` has passed
+    them: each name matched as written and read from its first value, so
+    `?response-content-type=a/b&response-content-type=c/d` sets `a/b` (measured 2026-10-13), with
+    the control characters ``_SPACED_CONTROLS`` names as spaces."""
+    return {
+        header: value.translate(_SPACED_CONTROLS)
+        for name, header in _RESPONSE_HEADERS.items()
+        if (value := _first(q, name, None)) is not None
+    }
+
+
 @router.api_route("/{bucket}/{key:path}", methods=["GET", "HEAD"])
 async def object_get(request: Request, bucket: str, key: str):
     """GetObject — the object's bytes, or its metadata headers alone for a HEAD.
@@ -1778,6 +1839,9 @@ async def object_get(request: Request, bucket: str, key: str):
     pair refused the version first (all measured 2026-09-30)."""
     head = request.method == "HEAD"
     q = request.query_params
+    refused = _response_override_refusal(q)
+    if refused is not None:
+        return _head(400) if head else refused
     selected = _key_selected(q)
     if selected == ["uploadId"] and "partNumber" in q:
         # UploadPart, which real refuses a GET and a HEAD of with the 405 naming `PART`, before the
@@ -1804,6 +1868,23 @@ async def object_get(request: Request, bucket: str, key: str):
     caller, visible, err = _auth(request)
     if err:
         return err
+    # An unsigned GET or HEAD of an object with an override is real's 400, naming no bucket or key,
+    # on a key the bucket holds and on one it does not, with no version or the null one; beside a
+    # sub-resource or another version it is not (us-east-1, 2026-10-13). Real answers a bucket
+    # nobody has with `NoSuchBucket`; here every name gets the 400, so the answer does not tell an
+    # anonymous caller which names the corpus holds (``_auth``).
+    if (
+        not selected
+        and caller.is_anonymous
+        and any(name in q for name in _RESPONSE_HEADERS)
+        and _first(q, "versionId", None) in (None, "null")
+    ):
+        if head:
+            return _head(400)
+        return _error(
+            "InvalidRequest",
+            "Request specific response headers cannot be used for anonymous GET requests.",
+        )
     conn = auth.conn(request)
     if not _bucket_visible(conn, bucket, visible):
         return _head(404) if head else _no_such_bucket(bucket)
@@ -1932,6 +2013,7 @@ async def object_get(request: Request, bucket: str, key: str):
 
     length = end - start + 1
     headers["Content-Length"] = str(length)
+    headers.update(_response_overrides(q))
     if head:
         return Response(status_code=status, headers=headers)
     return Response(content=data[start : end + 1], status_code=status, headers=headers)
@@ -2900,6 +2982,9 @@ _VERSION_AFTER_THE_BUCKET = frozenset({("PUT", "acl"), ("POST", "restore")})
 
 @router.api_route(
     "/{bucket}", methods=["PUT", "POST", "DELETE", "PATCH", "OPTIONS"], include_in_schema=False
+)
+@router.api_route(
+    "/{bucket}/", methods=["PUT", "POST", "DELETE", "PATCH", "OPTIONS"], include_in_schema=False
 )
 async def bucket_method_refusal(request: Request, bucket: str) -> Response:
     """Without a selector, `PUT` creates the bucket on real, `DELETE` removes it and `POST` is a

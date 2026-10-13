@@ -1,7 +1,8 @@
 """Auth helpers shared by the vendor routers.
 
 Each vendor carries credentials differently (Slack bearer/query token, Google/GitHub
-bearer, Atlassian Basic email:api_token, Linear a scheme-less API key). These helpers
+bearer, Atlassian Basic email:api_token, Linear a scheme-less API key, Microsoft Graph any
+spelling at all). These helpers
 extract the raw token, resolve it to a :class:`~backlot.acl.Caller` via the app's ACL, and
 compute the caller's visible principal set. Error *shaping* (Slack's ``ok:false`` vs a
 real 401) stays in the routers.
@@ -165,6 +166,44 @@ def slack_bearer_token(request: Request) -> str | None:
     if not hdr.startswith("Bearer "):
         return None
     return hdr[len("Bearer ") :].strip() or None
+
+
+def msgraph_token(request: Request) -> tuple[str, str | None]:
+    """Parse the ``Authorization`` header the way Microsoft Graph does, which is the most permissive
+    of any vendor here: it does not check the scheme at all.
+
+    Measured 2026-10-08 against graph.microsoft.com (``GET /v1.0/me``, without a tenant).
+    Every spelling below with a malformed token gets the same "token could not be read" refusal,
+    rather than "no credential presented". This does not measure valid-token scheme handling::
+
+        Bearer <t>    bearer <t>    BEARER <t>    token <t>    Basic <t>    <t>
+
+    Returns ``(state, token)`` where state is one of:
+
+        "absent"   no Authorization header      -> "Access token is empty."
+        "empty"    `Bearer` with nothing after  -> "UnableToParseTokens"
+        "present"  anything else                -> resolve it, malformed-token message if unknown
+
+    The three-way split is what :mod:`backlot.errors.msgraph` needs, because live Graph gives each
+    a different message. Deliberately NOT :func:`bearer_token`: that one returns None for a
+    ``Basic`` header, which would report a missing credential where Graph reports a malformed one.
+
+    Bounded by the measurement: a lone word is read as the token (`<t>` above), except the word
+    ``Bearer``, which is the scheme with an empty value. Whether live Graph would also treat a lone
+    ``Basic`` that way was not measured, so it is left as a token — the reading that changes only
+    the message, never whether the request is refused.
+    """
+    hdr = _authorization(request)
+    if hdr is None:
+        return "absent", None
+    parts = hdr.split()
+    if not parts:
+        return "empty", None
+    if len(parts) == 1:
+        if parts[0].lower() == "bearer":
+            return "empty", None
+        return "present", parts[0]
+    return "present", parts[1]
 
 
 def slack_token(request: Request) -> str | None:

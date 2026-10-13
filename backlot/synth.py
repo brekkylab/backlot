@@ -229,6 +229,57 @@ def slack_fmt_ts(epoch_sec: int, key: str) -> str:
     return f"{int(epoch_sec)}.{micro:06d}"
 
 
+def msteams_channel_id(channel_name: str) -> str:
+    """A Graph channel id, ``19:<32 hex>@thread.tacv2``.
+
+    The shape is quoted from the vendor's own examples — ``channel-list`` returns
+    ``19:561fbdbbfca848a484f0a6f00ce9dbbd@thread.tacv2``. Nothing parses it (Microsoft says to
+    treat it as opaque), but a client percent-encodes it into a URL, so the two reserved
+    characters real ids carry have to be there.
+    """
+    return "19:" + _digest("msteams-chan:" + channel_name)[:32] + "@thread.tacv2"
+
+
+def msteams_team_id(org: str) -> str:
+    """The one team's id: a GUID, which is the Entra group id Graph addresses a team by."""
+    return _uuid_from("msteams-team:" + org)
+
+
+def msteams_tenant_id(org: str) -> str:
+    """The Entra tenant id a channel and a message webUrl both carry."""
+    return _uuid_from("msteams-tenant:" + org)
+
+
+def msteams_user_id(email: str) -> str:
+    """An Entra user object id — what ``from.user.id``, ``/users/{id}`` and a member's
+    ``userId`` all carry."""
+    return _uuid_from("msteams-user:" + email)
+
+
+def msteams_member_id(team_id: str, user_id: str) -> str:
+    """A channel membership id: base64 of ``<teamId>##<userId>``.
+
+    Read off the vendor's own ``channel-list-members`` example, whose ids decode to exactly that
+    pair. Microsoft documents the value as opaque, so this is not a contract a client may rely on
+    — it is what makes Backlot's ids indistinguishable from real ones for the clients that log or
+    diff them.
+    """
+    return base64.b64encode(f"{team_id}##{user_id}".encode()).decode()
+
+
+# Capacity of Backlot's synthetic channel-second id space, not a Microsoft throughput limit.
+# Millisecond-shaped ids resemble Graph examples, but Microsoft declares ids opaque strings.
+# The importer's collision probe walks exactly this many steps.
+MSTEAMS_ID_FRACTIONS = 1000
+
+
+def msteams_fmt_id(epoch_sec: int, key: str) -> str:
+    """A Graph channel-message id for a given second: epoch milliseconds as a decimal string, with
+    the millisecond keyed on ``key``."""
+    milli = hnum(key, 12, 6) % MSTEAMS_ID_FRACTIONS
+    return str(int(epoch_sec) * 1000 + milli)
+
+
 def gmail_id(seed: str, salt: str = "msg") -> str:
     """An opaque 16-hex token, used for attachment ids — the value is never parsed, so it
     deliberately spans the full 64-bit range. A *message* id is parsed by Gmail and must not; use

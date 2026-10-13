@@ -1,18 +1,20 @@
 """Which comparison each source gets, and what it needs to run.
 
-Four kinds, and they differ in what each side of the comparison is. For the two GraphQL sources,
+Five kinds, and they differ in what each side of the comparison is. For the two GraphQL sources,
 Backlot's side is the SDL the server builds its engine from and the vendor's is a live introspection
 response, which needs a credential. For the eight document sources, Backlot's side is the app's own
 ``app.openapi()`` and the vendor's is one or more documents it publishes, which needs none. For
-S3, whose operations are selected by query string rather than by path, both sides are answers from
-a running server that ``backlot.serve()`` starts.
+S3 and Graph, Backlot's side is the answers of a server that ``backlot.serve()`` starts: S3 selects
+operations by query string rather than by path, and Graph publishes a type system rather than a
+route list.
 
 A document does not always carry one contract. Google names its batch endpoint in a top-level
 ``batchPath`` rather than declaring it under ``resources``, so each Google document is read for two:
 the operations a path diff pairs, and that field, compared against the batch routes ``batch_mount``
 says the source speaks for. Both read the same fetched document.
 
-Nine of the eleven need no credential. All eleven run on a schedule and never on a pull request:
+
+Ten of the twelve need no credential. All twelve run on a schedule and never on a pull request:
 drift is this project's bug, but it is never the bug of whichever pull request happens to be open
 when a vendor ships a change.
 """
@@ -25,9 +27,11 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from backlot.fidelity import (
+    csdl_diff,
     google_discovery_diff,
     graphql_diff,
     hubspot_catalog,
+    msgraph_walk,
     openapi_diff,
     s3_probe,
 )
@@ -223,6 +227,37 @@ class GraphQLComparison:
         self, credentials: Mapping[str, str] | None = None, *, timeout: float = 120.0
     ) -> list[Finding]:
         return graphql_diff.divergences(self, credentials, timeout=min(timeout, 60.0))
+
+
+@dataclass(frozen=True)
+class CSDLComparison:
+    """A source compared against the CSDL its vendor publishes.
+
+    Public like the OpenAPI kind, and unlike it in what the document says. A CSDL declares a type
+    system rather than a path map: entity types and their properties, which properties may be null,
+    whether a type accepts properties it does not name, and the members of every enum. So Backlot's
+    side of the comparison cannot be ``app.openapi()`` either, and is the responses a running server
+    actually sends. See :mod:`backlot.fidelity.csdl_diff` for what that catches.
+
+    ``walk`` is the source's own, for the reason :class:`ProbeComparison` names ``run``: which
+    request answers with which declared type is knowledge no document carries and no convention
+    should be asked to guess at.
+    """
+
+    name: str
+    spec_url: str
+    walk: Callable[[str, str, Any, float], list[Finding]]
+    mount: tuple[str, ...] = ()
+    credentials: tuple[Credential, ...] = ()
+
+    @property
+    def endpoints(self) -> tuple[str, ...]:
+        return (self.spec_url,)
+
+    def divergences(
+        self, credentials: Mapping[str, str] | None = None, *, timeout: float = 120.0
+    ) -> list[Finding]:
+        return csdl_diff.divergences(self, timeout=timeout)
 
 
 @dataclass(frozen=True)
@@ -422,6 +457,17 @@ GRAPHQL = {
     ),
 }
 
+CSDL = {
+    "msteams": CSDLComparison(
+        name="msteams",
+        # Graph serves its own $metadata, anonymously: the type system Backlot is compared against
+        # is the one the live service answers with, not a copy of it in a repository.
+        spec_url="https://graph.microsoft.com/v1.0/$metadata",
+        mount=("/msgraph/v1.0",),
+        walk=msgraph_walk.run,
+    ),
+}
+
 PROBE = {
     "s3": ProbeComparison(
         name="s3",
@@ -430,7 +476,6 @@ PROBE = {
         run=s3_probe.run,
     ),
 }
-
 
 # Served paths no published document covers, and why. Matched by prefix, so `/_meta` covers
 # `/_meta/users`.
@@ -451,10 +496,22 @@ UNCOMPARED = {
     ),
 }
 
-# The four kinds differ in what a vendor gives us to compare against, not in what they are for.
-Comparison = OpenAPIComparison | GoogleDiscoveryComparison | GraphQLComparison | ProbeComparison
+# The kinds differ in what a vendor gives us to compare against, not in what they are for.
+Comparison = (
+    OpenAPIComparison
+    | GoogleDiscoveryComparison
+    | GraphQLComparison
+    | CSDLComparison
+    | ProbeComparison
+)
 
-COMPARISONS: dict[str, Comparison] = {**OPENAPI, **GOOGLE_DISCOVERY, **GRAPHQL, **PROBE}
+COMPARISONS: dict[str, Comparison] = {
+    **OPENAPI,
+    **GOOGLE_DISCOVERY,
+    **GRAPHQL,
+    **CSDL,
+    **PROBE,
+}
 
 
 def _resolve_credentials(
@@ -500,7 +557,13 @@ def divergences(
     """
     if not isinstance(
         comparison,
-        (OpenAPIComparison, GoogleDiscoveryComparison, GraphQLComparison, ProbeComparison),
+        (
+            OpenAPIComparison,
+            GoogleDiscoveryComparison,
+            GraphQLComparison,
+            CSDLComparison,
+            ProbeComparison,
+        ),
     ):
         raise FidelityError(
             f"{type(comparison).__name__} is not a kind of comparison this knows how to run"

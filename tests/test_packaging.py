@@ -133,6 +133,7 @@ _IMPORT_TO_DIST_EXCEPTIONS = {
     "botocore": "boto3",  # carried transitively: boto3 pins it
     "hubspot": "hubspot-api-client",
     "mirage": "mirage-ai",
+    "msgraph": "msgraph-sdk",
 }
 
 # Gates whose distribution deliberately has no extra — CONTRIBUTING's "which no extra carries"

@@ -215,8 +215,10 @@ def test_a_failing_warm_up_is_recorded_instead_of_dying_with_its_thread(tmp_path
     # The thread is the only caller of this, so patching it cannot disturb the serving path.
     monkeypatch.setattr(
         store,
-        "slack_channel_member_counts",
-        lambda conn: (_ for _ in ()).throw(sqlite3.OperationalError("no such table: whatever")),
+        "conversation_member_counts",
+        lambda conn, src: (_ for _ in ()).throw(
+            sqlite3.OperationalError("no such table: whatever")
+        ),
     )
     with client_for(settings, reload=True) as client:
         _join_warm_thread(main_module)

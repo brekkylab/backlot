@@ -5,14 +5,15 @@ Each line is one document:
 
     {
       "source_type": "confluence",        # required: one of the served source types
-                                          #   (slack|gmail|google_drive|github|jira|confluence|
-                                          #    notion|s3|hubspot|linear|fireflies)
-      "title": "Onboarding guide",         # required (slack has none; a hubspot note has none)
+                                          #   (slack|msteams|gmail|google_drive|github|jira|
+                                          #    confluence|notion|s3|hubspot|linear|fireflies)
+      "title": "Onboarding guide",         # required (slack/msteams have none; a hubspot note has none)
       "content": "Full text...",            # required
       "doc_id": "my-123",                  # optional (default: dsid_<sha256(src+title+content)>)
       "space": "handbook",                 # required: the grouping unit, named per service --
                                              #   "channel", gmail "mailbox", google_drive "folder",
-                                             #   github "repo", jira "project", confluence "space",
+                                             #   msteams "channel", github "repo", jira "project",
+                                             #   confluence "space",
                                              #   notion "teamspace", s3 "bucket", hubspot
                                              #   "object_type", linear "team" (default: source_type)
       "group": "people",                   # optional ACL group owning that unit (default: slug(unit))
@@ -33,7 +34,7 @@ Each line is one document:
       "created": "2026-03-01T09:00:00Z",    # required creation time (epoch seconds or ISO 8601)
       "updated": 1740900000,                # modified time; required on drive and notion
       "author_name": "Ava Chen",            # optional display name -> the owner's served name
-      "replies": [                          # slack only: threaded replies — full messages, not just text
+      "replies": [                          # slack/msteams: full replies (Slack reactions shown)
         {"content": "on it", "author_email": "bob@acme.com",  # a reaction names who made it,
          "created": "2026-03-01T09:00:01Z",                   #   by address; the count is derived
          "reactions": [{"name": "eyes", "users": ["ava@acme.com"]}]}
@@ -45,7 +46,7 @@ Each line is one document:
     }
 
 Child rows are per-source, because a document's child means something different in each API:
-slack `replies` are threaded replies, gmail `messages` are further RFC822 messages each with its
+slack/msteams `replies` are threaded replies, gmail `messages` are further RFC822 messages each with its
 own sender and Message-ID, fireflies `sentences` are utterances with a speaker and timing, and
 `comments` are a comment API's rows. The record is always the root (seq 0), each child takes the
 next sequence number, and children inherit the root's container and ACL.
@@ -123,6 +124,19 @@ DEFERRED_ID = {
     "hubspot": "record_id",
 }
 
+# The sources whose documents are channel messages, and whose `replies` are further messages of
+# the same shape rather than a comment API's rows. They share the id-assignment pass below and the
+# thread handling in the record loop; everything a client SEES of them stays in their own router.
+THREADED_REPLIES = ("slack", "msteams")
+
+# source_type -> (id formatter, how many distinct ids one channel-second holds). A Slack ts is
+# `<second>.<microsecond>`; Backlot's synthetic Teams id encodes milliseconds. This local
+# convention does not constrain real Graph ids. See `_Loader._message_id`.
+_MESSAGE_ID = {
+    "slack": (synth.slack_fmt_ts, synth.SLACK_TS_FRACTIONS),
+    "msteams": (synth.msteams_fmt_id, synth.MSTEAMS_ID_FRACTIONS),
+}
+
 # The separator between a child row's parent key and its position. `_settle` recomposes the id in
 # SQL when the parent moves, so this literal is the one definition both sides read -- pinned by
 # test_byo_a_comment_id_follows_its_parents_settled_key.
@@ -179,13 +193,14 @@ def _principal(pid: str) -> tuple[str, str]:
 
 
 def _speakers(rec: dict, src: str, author: str) -> list[str]:
-    """Everyone who speaks in a document: its author, and for a Slack thread its repliers too.
+    """Everyone who speaks in a document: its author, and for a threaded post its repliers too.
 
-    A Slack reply is a message by someone who is in the channel — the same fact
-    ``conversations.members`` serves — so the two have to be one list. Ordered and deduplicated,
-    the author first, because it becomes a grant list and the order is what a reader sees."""
+    A reply is a message by someone who is in the channel — the same fact ``conversations.members``
+    and Graph's ``channels/{id}/members`` serve — so the two have to be one list. Ordered and
+    deduplicated, the author first, because it becomes a grant list and the order is what a reader
+    sees."""
     people = [author]
-    if src == "slack":
+    if src in THREADED_REPLIES:
         people += [r.get("author_email") for r in rec.get("replies") or []]
     return [e for e in dict.fromkeys(people) if e]
 
@@ -289,8 +304,8 @@ def _epoch(v):
 def _thread_seconds(where, root_sec, replies):
     """Every reply's second, checked against the message before it before any row is written.
 
-    A Slack ts is identity as well as a clock, so two messages in one thread cannot hold the same
-    second and a reply cannot precede the message before it.
+    Backlot requires strictly increasing seconds within imported threads. Teams shares this
+    importer constraint with Slack; it is not a Microsoft limit on reply timing or id formats.
     """
     out = []
     prev = root_sec
@@ -341,6 +356,30 @@ def _check_edited(where, edited, created_sec, author):
         )
 
 
+def _msteams_reactions(reactions):
+    """A Teams record's reactions with each own time parsed to epoch seconds.
+
+    Times are parsed at IMPORT for every other field on the record, and a reaction's is no
+    different: leaving the corpus's spelling in the stored JSON would make the router read it per
+    request, which is both slower and a second place that has to agree about what a time looks
+    like. The address stays as written — the router resolves it to Graph's identity set, the same
+    way it resolves `author_email`.
+    """
+    if not reactions:
+        return reactions
+    out = []
+    for i, r in enumerate(reactions, start=1):
+        r = dict(r)
+        if _time_given(r.get("createdDateTime")):
+            r["createdDateTime"] = _epoch_field(
+                r["createdDateTime"], f"reaction {i}", "createdDateTime"
+            )
+        else:
+            r.pop("createdDateTime", None)
+        out.append(r)
+    return out
+
+
 def _service_columns(
     src,
     ex,
@@ -368,7 +407,28 @@ def _service_columns(
     whichever field the service names it in (``author_name``, gmail's ``mailbox_owner``, fireflies'
     ``host_name``). Stored rather than derived from the address, because an accented or initialled
     name ("Tomás Rré", "Aisha K. Patel") does not survive the round trip through
-    ``<slug>@<domain>``. slack/notion/s3 have no such column — those APIs expose no owner name."""
+    ``<slug>@<domain>``. slack/msteams/notion/s3 have no such column — those APIs carry the sender's
+    display name on the message itself (Graph's ``from.user.displayName``), which the principal
+    roster already answers, or expose no owner name at all."""
+    if src == "msteams":
+        # `reply_to_id` is deliberately absent here: it is the thread ROOT's own id, and that value
+        # is only known once the root has been inserted and probed, so the caller sets it.
+        return {
+            "thread_seq": seq,
+            "subject": ex.get("subject"),
+            # Graph's own defaults, so a corpus that states neither still serves the shape every
+            # real response carries rather than two nulls no chatMessage has.
+            "message_type": ex.get("message_type") or "message",
+            "content_type": ex.get("content_type") or "text",
+            "importance": ex.get("importance") or "normal",
+            "reactions": _j(_msteams_reactions(ex.get("reactions"))),
+            "attachments": _j(ex.get("attachments")),
+            "mentions": _j(ex.get("mentions")),
+            "last_edited_ts": _epoch_field(
+                ex.get("lastEditedDateTime"), f"msteams message {seed!r}", "lastEditedDateTime"
+            ),
+            "created_ts": created,
+        }
     if src == "slack":
         # `thread_ts` is deliberately absent here: it is the thread ROOT's `ts`, and that value is
         # only known once the root has been inserted and its ts probed, so the caller sets it.
@@ -1482,57 +1542,73 @@ class _Loader:
             f"for {seed!r}"
         )
 
-    def _slack_ts(self, channel: str, seed: str, created_ts, author_email=None, body=None):
-        """The `ts` a Slack message is served and addressed by, assigned once at import.
+    def _message_id(self, src: str, channel: str, seed: str, created_ts, author_email, body):
+        """The id a conversation message is served and addressed by, assigned once at import.
 
-        It was computed per request from `(created_ts, thread-root key)`, which COLLIDED: every
-        message of a thread hashed the same root key into the same micro-fraction, so two replies
-        landing in the same second produced one ts between them and one of the two was reachable
-        only at the other's. Assigning it here, probed within the channel, is what makes it an
-        identifier rather than a formatting of one.
+        Slack's `ts` was once computed per request from `(created_ts, thread-root key)`, which
+        COLLIDED: every message of a thread hashed the same root key into the same micro-fraction,
+        so two replies landing in the same second produced one ts between them and one of the two
+        was reachable only at the other's. Assigning it here, probed within the channel, is what
+        makes it an identifier rather than a formatting of one. Teams shares the identity and
+        append checks, with its own format and a smaller, exhaustively probed fraction space.
 
-        No deferred pass, unlike github's number: nothing in a corpus ever provides a ts, so there
-        is no provided-beats-synthesized race to settle -- only collisions, which an in-run probe
-        settles the moment they happen. The integer part stays the row's `created_ts`, which is
-        what `store.slack_messages_at_created_ts` resolves a ts by; only the fraction moves.
+        No deferred pass, unlike github's number: nothing in a corpus ever provides one of these
+        ids, so there is no provided-beats-synthesized race to settle -- only collisions, which an
+        in-run probe settles the moment they happen. The whole-second part stays the row's
+        `created_ts`, which is what `store.slack_messages_at_created_ts` resolves a ts by; only the
+        sub-second part moves.
         """
+        fmt, fractions = _MESSAGE_ID[src]
         base = int(created_ts) if created_ts is not None else synth.epoch(seed)
-        taken = self._slack_ts_taken.setdefault(channel, set())
-        preloaded = self._slack_ts_preloaded.get(channel, frozenset())
+        taken = self._msg_ids_taken.setdefault((src, channel), set())
+        preloaded = self._msg_ids_preloaded.get((src, channel), frozenset())
         # Keyed on the message's OWN seed, where the serve-time version keyed a reply on its
         # thread root — that shared key is precisely what made two replies in one second
         # indistinguishable. A reply still sorts after its root because its `created_ts` is the
         # root's plus its position, which is where thread order actually comes from.
-        candidate = synth.slack_fmt_ts(base, seed)
-        for salt in range(1, synth.SLACK_TS_FRACTIONS + 1):
+        candidate = fmt(base, seed)
+        start = int(candidate) % fractions if src == "msteams" else None
+        for salt in range(1, fractions + 1):
             if candidate not in taken:
                 taken.add(candidate)
                 return candidate
             # Taken by a row that PREDATES this run, in the same channel and second, by the same
             # author, saying the same thing: that is this message coming back, not a collision.
-            # Reusing its ts is what makes an --append of an already-imported corpus leave one
+            # Reusing its id is what makes an --append of an already-imported corpus leave one
             # row -- the probe otherwise walked to a free fraction and imported a duplicate no
-            # corpus could opt out of, since nothing in a slack record states a ts. Only against
+            # corpus could opt out of, since nothing in either record states an id. Only against
             # PRELOADED values: two such records in ONE run are two documents, and stay two.
-            if candidate in preloaded and self._is_same_slack_message(
-                channel, candidate, author_email, body
+            if candidate in preloaded and self._is_same_message(
+                src, channel, candidate, author_email, body
             ):
                 return candidate
-            candidate = synth.slack_fmt_ts(base, f"{seed}\x00{salt}")
+            # Teams has only 1000 slots: salted rehashing can revisit occupied fractions and
+            # falsely report exhaustion with a slot still free. Walk each fraction once, keeping
+            # the original hash as the first candidate. Preserve Slack's existing id assignment.
+            candidate = (
+                str(base * 1000 + (start + salt) % fractions)
+                if start is not None
+                else fmt(base, f"{seed}\x00{salt}")
+            )
         raise SystemExit(
-            f"slack: channel {channel!r} has more messages in second {base} than the "
-            f"{synth.SLACK_TS_FRACTIONS} fractions a ts can hold; no ts is free for {seed!r}"
+            f"{src}: channel {channel!r} has more messages in second {base} than the "
+            f"{fractions} sub-second values an id can hold; no id is free for {seed!r}"
         )
 
-    def _is_same_slack_message(self, channel: str, ts: str, author_email, body) -> bool:
-        """Whether the message already stored at this ts is the one now being imported.
+    def _slack_ts(self, channel: str, seed: str, created_ts, author_email=None, body=None):
+        return self._message_id("slack", channel, seed, created_ts, author_email, body)
 
-        Author and text, because a slack record states no id: the channel and the second are
-        already fixed by the ts itself, so those two are what is left to compare, and two messages
+    def _is_same_message(self, src: str, channel: str, mid: str, author_email, body) -> bool:
+        """Whether the message already stored at this id is the one now being imported.
+
+        Author and text, because neither record states an id: the channel and the second are
+        already fixed by the id itself, so those two are what is left to compare, and two messages
         agreeing on all four are indistinguishable to any client of Backlot."""
+        gcol, idcol = store.grouping_col(src), store.id_column(src)
         row = self.conn.execute(
-            "SELECT author_email, content FROM slack_messages WHERE channel = ? AND ts = ?",
-            (channel, ts),
+            f"SELECT author_email, content FROM {store.table(src)} "
+            f"WHERE {gcol} = ? AND {idcol} = ?",
+            (channel, mid),
         ).fetchone()
         return row is not None and row["author_email"] == author_email and row["content"] == body
 
@@ -1586,15 +1662,16 @@ class _Loader:
         # key before the claim order is known, and a final value can never collide with a
         # provisional one still in place.
         self._provisional = 0
-        # channel -> the ts values already issued in it. A ts is unique within its channel (see
-        # store.ID_COLUMNS), so the probe is scoped the same way. Preloaded by seed_tracker_ids so
-        # an append cannot hand a new message a ts an existing one already answers at.
-        self._slack_ts_taken = {}
+        # (source_type, channel) -> the message ids already issued in it. Both conversation
+        # sources key a message within its channel (see store.ID_COLUMNS), so the probe is scoped
+        # the same way. Preloaded by seed_tracker_ids so an append cannot hand a new message an id
+        # an existing one already answers at.
+        self._msg_ids_taken = {}
         # The subset of the above that a PREVIOUS run wrote, which is the only place a re-imported
         # message can be recognised: a repeat within this run is a second document (see the
         # `repeat` comment in `insert`), but a candidate already held before the run started may
-        # be this very message coming back. See `_slack_ts`.
-        self._slack_ts_preloaded = {}
+        # be this very message coming back. See `_message_id`.
+        self._msg_ids_preloaded = {}
         # source_type -> the keys rows written by an EARLIER import already answer at, for the
         # sources a record can state its identity to (see `_states_own_id`). Preloaded by
         # seed_tracker_ids; `_written` is this run's own, so a record repeated within one corpus
@@ -1734,11 +1811,16 @@ class _Loader:
             self._confluence_ids_taken.add(cid)
         for (rid,) in self.conn.execute("SELECT id FROM hubspot_objects"):
             self._hubspot_ids_taken.add(int(rid))
-        # Same claim, per channel, for slack message timestamps -- and remembered separately as
-        # PRE-EXISTING, which is what lets `_slack_ts` tell a re-imported message from a new one.
-        for channel, ts in self.conn.execute("SELECT channel, ts FROM slack_messages"):
-            self._slack_ts_taken.setdefault(channel, set()).add(ts)
-            self._slack_ts_preloaded.setdefault(channel, set()).add(ts)
+        # Same claim, per channel, for the conversation sources' message ids -- and remembered
+        # separately as PRE-EXISTING, which is what lets `_message_id` tell a re-imported message
+        # from a new one.
+        for src in THREADED_REPLIES:
+            gcol, idcol = store.grouping_col(src), store.id_column(src)
+            for channel, mid in self.conn.execute(
+                f"SELECT {gcol}, {idcol} FROM {store.table(src)}"
+            ):
+                self._msg_ids_taken.setdefault((src, channel), set()).add(mid)
+                self._msg_ids_preloaded.setdefault((src, channel), set()).add(mid)
         # The keys an earlier import already answers at, for the sources a record states its own
         # identity to -- the claim the four DEFERRED_ID sources get from `tracker_ids` above, for
         # the two that assign no id of their own.
@@ -2033,6 +2115,13 @@ class _Loader:
             "archived",
             # slack participants — the per-service people-and-scope field
             "participants",
+            # Microsoft Teams (Graph's own field names for a chatMessage). `content_type` is
+            # already listed above for s3, and each source's schema says what its own means.
+            "subject",
+            "message_type",
+            "importance",
+            "mentions",
+            "lastEditedDateTime",
             # Linear (its own field names: `state` not status, camelCase timestamps)
             "identifier",
             "estimate",
@@ -2074,12 +2163,13 @@ class _Loader:
         if src == "slack":
             _check_edited(where, rec.get("edited"), created, author)
 
-        replies = rec.get("replies") if src == "slack" else None
-        # The ROOT's `ts`, which is what a reply stores as its `thread_ts` — and it is not known
-        # until the root has been inserted and probed, so `insert` fills it from here rather than
-        # taking it as an argument. A root with replies carries its OWN ts (Slack does too, so
-        # `thread_ts == ts` is what marks a root); a standalone message carries NULL.
-        slack_thread_ts = None
+        replies = rec.get("replies") if src in THREADED_REPLIES else None
+        # The ROOT's own id, which is what a reply stores as its thread reference — and it is not
+        # known until the root has been inserted and probed, so `insert` fills it from here rather
+        # than taking it as an argument. Slack's `thread_ts` is the root's ts and a root carries its
+        # OWN (so `thread_ts == ts` marks a root); Graph's `replyToId` is NULL on a root, which is
+        # why `insert` writes each source's column rather than sharing one.
+        thread_root_id = None
         # Resolved before the root row is written: a thread's seconds are checked against each
         # other, so a reply out of order is refused before half of it has landed.
         reply_seconds = _thread_seconds(where, created, replies)
@@ -2228,15 +2318,31 @@ class _Loader:
                 self._linear_stamped[did] = (container, key, cols["identifier"])
             if src in ("gmail", "google_drive", "notion", "linear"):
                 cols["id"] = store.id_seed(src)(did)
-            elif src == "slack":
-                cols["ts"] = (
+            elif src in THREADED_REPLIES:
+                idcol = store.id_column(src)
+                cols[idcol] = (
                     repeat[-1]
                     if repeat is not None
-                    else self._slack_ts(container, did, cols.get("created_ts"), email, body)
+                    else self._message_id(src, container, did, cols.get("created_ts"), email, body)
                 )
-                # A reply takes the root's ts (set by the caller once the root landed); a root
-                # with replies takes its own; a standalone message has no thread at all.
-                cols["thread_ts"] = slack_thread_ts if seq else (cols["ts"] if replies else None)
+                if src == "slack":
+                    # A reply takes the root's ts (set by the caller once the root landed); a root
+                    # with replies takes its own; a standalone message has no thread at all.
+                    cols["thread_ts"] = (
+                        thread_root_id if seq else (cols[idcol] if replies else None)
+                    )
+                else:
+                    # Graph's `replyToId`: the root's id on a reply, NULL on a root — including a
+                    # root that HAS replies, which is the difference from slack's `thread_ts`.
+                    cols["reply_to_id"] = thread_root_id if seq else None
+                    # Compare with the served creation milliseconds, including the synthetic
+                    # fraction. A whole-second edit must not precede the message it edits.
+                    edited = cols["last_edited_ts"]
+                    if edited is not None and edited * 1000 < int(cols[idcol]):
+                        raise SystemExit(
+                            f"{where}: message {did!r}: lastEditedDateTime must not precede "
+                            "this message's createdDateTime"
+                        )
             elif src == "fireflies":
                 pass  # `_service_columns` already set `id`, honouring a provided transcript_id
             elif src == "s3":
@@ -2456,10 +2562,10 @@ class _Loader:
             rows = _sheet_rows(file_id, drive_sheets) if drive_sheets is not None else []
             store.gdrive_replace_sheets(conn, file_id, rows)
 
-        if src == "slack":
-            # The root has landed, so its ts is settled — every reply below stores it as its
-            # `thread_ts`. `store.id_columns("slack")` is (channel, ts), so the ts is the second.
-            slack_thread_ts = self.keys[(src, doc_id)][1]
+        if src in THREADED_REPLIES:
+            # The root has landed, so its id is settled — every reply below points at it. Both
+            # sources are keyed (channel, <message id>), so the id is the second element.
+            thread_root_id = self.keys[(src, doc_id)][1]
 
         if src == "linear":
             issue_id = self.keys[(src, doc_id)][0]
@@ -2529,7 +2635,8 @@ class _Loader:
             if (base := _open_pull_base(rec)) is not None:
                 self.gh_open_bases.append((where, container, base))
 
-        # comments on the document — only jira/confluence/github expose them (slack uses replies)
+        # comments on the document — only jira/confluence/github expose them (the conversation
+        # sources use `replies`)
         rec_comments = rec.get("comments") or []
         ctable = store.comment_table(src)
         if rec_comments and ctable is None:
@@ -2587,9 +2694,10 @@ class _Loader:
                 + hashlib.sha256((doc_id + str(i) + rep["content"]).encode()).hexdigest()[:32]
             )
             seen.add((src, rep_id))
-            # A reply is a full message (reactions/files/subtype/edited carry through).
-            # Its second was resolved with the rest of the thread's in `_thread_seconds`,
-            # which is where the ordering rule and its refusals live.
+            # A reply is a full message — every per-message field its source declares carries
+            # through (slack's reactions/files/subtype/edited, Graph's reactions/attachments/
+            # mentions/importance). Its second was resolved with the rest of the thread's in
+            # `_thread_seconds`, which is where the ordering rule and its refusals live.
             rep_cts = reply_seconds[i - 1]
             _check_edited(f"{where}: reply {i}", rep.get("edited"), rep_cts, rep_author)
             insert(
@@ -2645,8 +2753,9 @@ class _Loader:
         """Drop the children of this document that a PREVIOUS version of it left behind.
 
         Everything past the count this version wrote, in both shapes a child takes: a row in the
-        source's child table, and — for gmail and slack, whose thread members are full documents —
-        a row in the source table itself, which takes its ACL grants and its FTS entry with it."""
+        source's child table, and — for gmail and the conversation sources, whose thread members
+        are full documents — a row in the source table itself, which takes its ACL grants and its
+        FTS entry with it."""
         key = self.keys.get((src, doc_id))
         if key is None:
             return
@@ -2655,8 +2764,13 @@ class _Loader:
         if ctable is not None:
             pcols = " AND ".join(f"{c} = ?" for c in store.comment_parent_columns(src))
             conn.execute(f"DELETE FROM {ctable} WHERE {pcols} AND seq > ?", (*key, children))
-        if src in ("gmail", "slack") and thread:
-            tcol, tval = ("thread_id", key[0]) if src == "gmail" else ("thread_ts", key[-1])
+        if src in ("gmail", *THREADED_REPLIES) and thread:
+            # The column that names this row's thread, per source: gmail's `thread_id` holds the
+            # root's id and is corpus-wide unique, while both conversation sources scope theirs to
+            # the channel. slack's `thread_ts` is on the root too, so `> 0` on thread_seq is what
+            # spares it; msteams' `reply_to_id` is only ever on a reply.
+            tcol = {"gmail": "thread_id", "slack": "thread_ts", "msteams": "reply_to_id"}[src]
+            tval = key[0] if src == "gmail" else key[-1]
             scope = "" if src == "gmail" else " AND channel = ?"
             args = (tval,) if src == "gmail" else (tval, key[0])
             stale = [
@@ -3337,6 +3451,8 @@ def _id_map_manifest(loader, conn) -> str:
         containers.setdefault("jira", {})[project] = {"key": key}
     for (channel,) in conn.execute("SELECT channel FROM slack_channels"):
         containers.setdefault("slack", {})[channel] = {"id": synth.slack_channel_id(channel)}
+    for (channel,) in conn.execute("SELECT channel FROM msteams_channels"):
+        containers.setdefault("msteams", {})[channel] = {"id": synth.msteams_channel_id(channel)}
     for (folder,) in conn.execute("SELECT folder FROM gdrive_folders"):
         containers.setdefault("google_drive", {})[folder] = {"id": synth.drive_folder_id(folder)}
     for (space,) in conn.execute("SELECT space FROM confluence_spaces"):
@@ -3559,13 +3675,14 @@ def _load_records(
     # beside it would let a reader the corpus dropped keep reading a document it no longer names.
     # Append-only grants could widen a reader set and never narrow it, and nothing in a corpus
     # could take a reader back.
-    regranted = set()
+    # Clear EVERY written row, including an explicit empty reader list, which contributes
+    # no entries to `grants`. The FTS worklist already records those same served row keys.
+    for source_type, written_keys in fts_ids.items():
+        where = " AND ".join(f"{c} = ?" for c in store.id_columns(source_type))
+        keys = {loader._settled(source_type, key) for key in written_keys}
+        conn.executemany(f"DELETE FROM {store.acl_table(source_type)} WHERE {where}", keys)
     for source_type, written_key, ptype, pid in grants:
         key = loader._settled(source_type, written_key)
-        if (source_type, key) not in regranted:
-            regranted.add((source_type, key))
-            where = " AND ".join(f"{c} = ?" for c in store.id_columns(source_type))
-            conn.execute(f"DELETE FROM {store.acl_table(source_type)} WHERE {where}", key)
         conn.execute(
             f"INSERT OR IGNORE INTO {store.acl_table(source_type)} "
             f"VALUES ({', '.join('?' for _ in range(len(key) + 2))})",
@@ -3576,15 +3693,18 @@ def _load_records(
     # corpus: the answer needs every grant, every group's membership and (under --append) the rows
     # an earlier load wrote, none of which one record can see. Raising here rolls the whole import
     # back — the load is a single transaction.
-    if violations := store.slack_membership_violations(conn):
+    for conv in THREADED_REPLIES:
+        violations = store.conversation_membership_violations(conn, conv)
+        if not violations:
+            continue
         shown = "; ".join(f"{email} in #{channel}" for channel, email in violations[:10])
         rest = len(violations) - 10
         raise SystemExit(
-            "these people speak in a private slack channel they cannot read: "
+            f"these people speak in a private {conv} channel they cannot read: "
             + shown
             + (f" (and {rest} more)" if rest > 0 else "")
-            + ". Posting in a channel is being in it, so each of them is served by "
-            "conversations.members while conversations.info answers them channel_not_found. "
+            + ". Posting in a channel is being in it, so each of them is listed among its members "
+            "while the method that describes the channel answers them as if it did not exist. "
             "Name them in that channel's `readers`, or let `visibility: private` name them by "
             "writing them as the thread's speakers."
         )

@@ -23,10 +23,13 @@ type is just a new `*.schema.json` file here.
 
 ## Child rows are named per source
 
-Most sources' child rows are **comments** (`comments`). Three are not, and each uses the array a
+Most sources' child rows are **comments** (`comments`). Four are not, and each uses the array a
 reader of that source would expect:
 
 - **Slack** uses `replies` — threaded replies to a message, carrying reactions and files.
+- **Microsoft Teams** uses `replies` too — replies to a channel post, each carrying the root's id
+  as its `replyToId`. Its own per-message fields differ from Slack's (`attachments` and `mentions`
+  where Slack has `files`), which is why the two are separate schemas rather than one shared one.
 - **Gmail** uses `messages` — the rest of the thread. Each is a full RFC822 message with its own
   sender, recipients and Message-ID, which a *reply* is not; and one may have an empty body, since
   a header-only auto-ack is still a message in the thread.
@@ -109,7 +112,7 @@ backlot import generated.jsonl --dry-run && backlot import generated.jsonl
 
 ## What the schemas enforce
 
-- **Strict** — `source_type` (const); `content` (+ `title` for every source except Slack and
+- **Strict** — `source_type` (const); `content` (+ `title` for every source except Slack, Teams and
   hubspot, whose notes have no name); the container each source groups by (`channel`, `mailbox`,
   `folder`, `repo`, `project`, `space`, `teamspace`, `bucket`, `object_type`, `team`);
   `author_email` (fireflies may spell it `host_email`); `created`; and per source whatever its

@@ -14,7 +14,7 @@ authors = [
     { name = "nuri-yoo", email = "yoonuri1@gmail.com" },
     { name = "khj809", email = "onsealeatang@gmail.com" },
 ]
-keywords = ["mock", "rag", "slack", "gmail", "google-drive", "jira", "confluence", "github", "notion", "s3", "amazon-s3", "hubspot", "linear", "graphql", "benchmark"]
+keywords = ["mock", "rag", "slack", "microsoft-teams", "microsoft-graph", "gmail", "google-drive", "jira", "confluence", "github", "notion", "s3", "amazon-s3", "hubspot", "linear", "graphql", "benchmark"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -71,6 +71,10 @@ dev = [
 # Official SDKs used by examples/using-official-sdk/, tests/test_sdk.py (one per service) + the ACL demo.
 official-sdk = [
     "slack_sdk>=3.43",
+    # Microsoft Graph. Pulls azure-core/azure-identity and the kiota runtime with it, which is why
+    # the Teams example documents the two-line shim rather than hiding it: a reader who does not
+    # want that tree can drive the same endpoints over plain HTTP.
+    "msgraph-sdk>=1.5",
     "PyGithub>=2.3",
     "atlassian-python-api>=3.41",
     "google-api-python-client>=2.198",
@@ -200,6 +204,11 @@ filterwarnings = [
     "ignore:Duplicate Operation ID:UserWarning",
     # llama-index reads a pydantic field API pydantic itself deprecated; nothing here to change.
     "ignore:Call to deprecated function \\(or staticmethod\\) extra_info:DeprecationWarning",
+    # msgraph-sdk's GENERATED request builders warn on their own per-endpoint RequestConfiguration
+    # classes, which the kiota generator still emits. Raised by the SDK about itself on every
+    # Teams call, so it says nothing about this repo and there is nothing here to change.
+    "ignore:This class is deprecated. Please use the generic RequestConfiguration:DeprecationWarning",
+    "ignore:GetQueryParameters is deprecated:DeprecationWarning",
 ]
 
 [tool.setuptools_scm]

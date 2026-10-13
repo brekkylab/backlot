@@ -1,0 +1,298 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/brekkylab/backlot/schemas/msteams.schema.json",
+  "title": "BYO corpus record — msteams",
+  "description": "A Microsoft Teams channel message. Title is optional (a chatMessage has a `subject`, and it is null on almost every one). A record with `replies` becomes a root post; each reply is served under conversations' `replies` relationship and only the root shows in the channel's message list, which is what `GET /channels/{id}/messages` returns.",
+  "type": "object",
+  "properties": {
+    "source_type": {
+      "const": "msteams"
+    },
+    "content": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The retrieval payload served verbatim as the message `body.content`."
+    },
+    "doc_id": {
+      "type": "string",
+      "description": "Stable id (default: dsid_<sha256(source_type+title+content)>)."
+    },
+    "channel": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The channel this message belongs to. Its `displayName`; the served `19:…@thread.tacv2` id is derived from it."
+    },
+    "group": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "ACL group owning the channel (default: slug(channel)); null means the channel owns no group, so nothing is group-scoped to it."
+    },
+    "author_email": {
+      "type": "string",
+      "format": "email",
+      "description": "The sender — the message's `from.user`."
+    },
+    "author_name": {
+      "type": "string",
+      "description": "The sender's display name, used for their principal entry and served as `from.user.displayName`."
+    },
+    "author_groups": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Groups the author belongs to."
+    },
+    "visibility": {
+      "enum": [
+        "public",
+        "group",
+        "private"
+      ],
+      "description": "public = org-wide (a `standard` channel), group = the channel's group, private = the post's speakers (its author and everyone who replies), who are its members by having posted in it. Anything other than public makes the channel `private` in `membershipType`."
+    },
+    "readers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Explicit reader principals. `user:<email>` / `group:<id>` / `org:<name>` state the type; unprefixed, an address is a user and anything else a group. Overrides visibility — and an EMPTY array means nobody may read the document (admin-only), not everybody."
+    },
+    "subject": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "The message's `subject`, in plaintext. Null on almost every real message; Teams shows one only where the poster typed it."
+    },
+    "message_type": {
+      "enum": [
+        "message",
+        "systemEventMessage"
+      ],
+      "description": "Graph's `messageType` (default: message). `systemEventMessage` is a notice Teams itself generated (a member joined), which carries no `from`."
+    },
+    "content_type": {
+      "enum": [
+        "text",
+        "html"
+      ],
+      "description": "The `body.contentType` this content is written in (default: text)."
+    },
+    "importance": {
+      "enum": [
+        "normal",
+        "high",
+        "urgent"
+      ],
+      "description": "Graph's `importance` (default: normal)."
+    },
+    "reactions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "description": "One chatMessageReaction. `reactionType` and `user` are required because Graph's own metadata declares both non-nullable, along with `createdDateTime` — a reaction real Graph could not send is not one a corpus should be able to write. `user` is an ADDRESS, not Graph's identitySet: the router builds that from it, the same way it builds a message's `from` from `author_email`. Give an address the corpus names elsewhere, so the user id served here resolves at `/users/{id}`.",
+        "properties": {
+          "reactionType": {
+            "type": "string",
+            "minLength": 1,
+            "description": "e.g. like, heart, laugh, surprised, sad, angry."
+          },
+          "user": {
+            "type": "string",
+            "format": "email",
+            "description": "Who reacted."
+          },
+          "createdDateTime": {
+            "type": [
+              "integer",
+              "number",
+              "string"
+            ],
+            "description": "When they reacted (epoch seconds or ISO 8601). Defaults to the message's own time, since Graph declares this non-nullable and a reaction has to carry one."
+          },
+          "displayName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The reaction's display name, where a custom one has one."
+          },
+          "reactionContentUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "URL of a custom reaction's content."
+          }
+        },
+        "required": [
+          "reactionType",
+          "user"
+        ],
+        "additionalProperties": false
+      },
+      "description": "Reactions to this message. `chatMessageReaction` is a closed type in Graph's metadata and declares `reactionType`, `createdDateTime` and `user` non-nullable, so the shape is enforced here rather than passed through."
+    },
+    "attachments": {
+      "type": "array",
+      "description": "chatMessageAttachment objects."
+    },
+    "mentions": {
+      "type": "array",
+      "description": "chatMessageMention objects: [{id, mentionText, mentioned}]."
+    },
+    "lastEditedDateTime": {
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "description": "When the message was last edited (epoch seconds or ISO 8601). Absent means it never was, which the API reports as null."
+    },
+    "created": {
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "minLength": 1,
+      "description": "Creation time (epoch seconds or ISO 8601). Sets `createdDateTime`, and the second the message id is drawn from."
+    },
+    "replies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "description": "A reply to this post — a full message that inherits the root's channel and ACL, and carries the root's id as its `replyToId`. Its time is its own `created`.",
+        "properties": {
+          "content": {
+            "type": "string",
+            "minLength": 1
+          },
+          "author_email": {
+            "type": "string",
+            "format": "email"
+          },
+          "author_name": {
+            "type": "string"
+          },
+          "doc_id": {
+            "type": "string",
+            "description": "Optional stable id for the reply."
+          },
+          "created": {
+            "type": [
+              "integer",
+              "number",
+              "string"
+            ],
+            "minLength": 1,
+            "description": "Reply time. Backlot requires a later second than the preceding message in an imported thread; this is an emulator constraint, not a Microsoft limit."
+          },
+          "subject": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message_type": {
+            "enum": [
+              "message",
+              "systemEventMessage"
+            ]
+          },
+          "content_type": {
+            "enum": [
+              "text",
+              "html"
+            ]
+          },
+          "importance": {
+            "enum": [
+              "normal",
+              "high",
+              "urgent"
+            ]
+          },
+          "reactions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One chatMessageReaction. `reactionType` and `user` are required because Graph's own metadata declares both non-nullable, along with `createdDateTime` — a reaction real Graph could not send is not one a corpus should be able to write. `user` is an ADDRESS, not Graph's identitySet: the router builds that from it, the same way it builds a message's `from` from `author_email`. Give an address the corpus names elsewhere, so the user id served here resolves at `/users/{id}`.",
+              "properties": {
+                "reactionType": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "e.g. like, heart, laugh, surprised, sad, angry."
+                },
+                "user": {
+                  "type": "string",
+                  "format": "email",
+                  "description": "Who reacted."
+                },
+                "createdDateTime": {
+                  "type": [
+                    "integer",
+                    "number",
+                    "string"
+                  ],
+                  "description": "When they reacted (epoch seconds or ISO 8601). Defaults to the message's own time, since Graph declares this non-nullable and a reaction has to carry one."
+                },
+                "displayName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The reaction's display name, where a custom one has one."
+                },
+                "reactionContentUrl": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "URL of a custom reaction's content."
+                }
+              },
+              "required": [
+                "reactionType",
+                "user"
+              ],
+              "additionalProperties": false
+            },
+            "description": "Reactions to this message. `chatMessageReaction` is a closed type in Graph's metadata and declares `reactionType`, `createdDateTime` and `user` non-nullable, so the shape is enforced here rather than passed through."
+          },
+          "attachments": {
+            "type": "array"
+          },
+          "mentions": {
+            "type": "array"
+          },
+          "lastEditedDateTime": {
+            "type": [
+              "integer",
+              "number",
+              "string"
+            ]
+          }
+        },
+        "required": [
+          "author_email",
+          "content",
+          "created"
+        ],
+        "additionalProperties": false
+      },
+      "description": "Replies to this post."
+    }
+  },
+  "required": [
+    "author_email",
+    "channel",
+    "content",
+    "created",
+    "source_type"
+  ],
+  "additionalProperties": false
+}

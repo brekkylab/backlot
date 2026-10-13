@@ -56,9 +56,9 @@ from __future__ import annotations
 
 from fastapi import Request, Response
 
-from backlot.errors import atlassian, github, google, s3
+from backlot.errors import atlassian, github, google, msgraph, s3
 
-_ENVELOPES = (atlassian, github, google, s3)
+_ENVELOPES = (atlassian, github, google, msgraph, s3)
 
 
 def http_body(path: str, exc, query=None) -> dict | None:
@@ -143,6 +143,7 @@ __all__ = [
     "atlassian",
     "github",
     "google",
+    "msgraph",
     "http_body",
     "json_media_type",
     "method_not_allowed",

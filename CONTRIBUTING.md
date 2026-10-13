@@ -1,8 +1,8 @@
 # Contributing
 
 Thanks for your interest in improving **Backlot**! Its essence is to serve each vendor's
-**API** — Slack, Gmail, Google Drive, GitHub, Jira, Confluence, Notion, Amazon S3,
-HubSpot, Linear, Fireflies — with the **smallest possible gap** from the real thing, so clients
+**API** — Slack, Microsoft Teams, Gmail, Google Drive, GitHub, Jira, Confluence, Notion,
+Amazon S3, HubSpot, Linear, Fireflies — with the **smallest possible gap** from the real thing, so clients
 built against the real APIs work unchanged against Backlot. The corpus is yours to supply;
 EnterpriseRAG-Bench is just one dataset you can load into that surface. Contributions that shrink
 the gap between Backlot and the real APIs — request/response shapes, status codes, pagination,

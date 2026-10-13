@@ -3943,11 +3943,13 @@ _CREDENTIALS = {
         ("GET", "/atlassian/rest/api/3/myself", "failed-pair", 401),
         ("GET", "/atlassian/rest/api/3/myself", "unknown-scheme", 401),
         ("DELETE", "/atlassian/rest/api/3/screens/999999999", "none", 401),
+        ("GET", "/atlassian/rest/api/2/policies/project/NOPE/rules", "none", 401),
         # the controls: one that runs anonymously on real, where Backlot has no operation to run,
         # and the same refused path with a credential, both the baseline's gap; and a bearer it
         # cannot read on a GET, which is the Connect-token 403 before any of this
         ("GET", "/atlassian/rest/api/3/dashboard", "none", 404),
         ("GET", "/atlassian/rest/api/3/myself", "admin", 404),
+        ("GET", "/atlassian/rest/api/2/policies/project/NOPE/rules", "admin", 404),
         ("GET", "/atlassian/rest/api/3/myself", "unreadable-bearer", 403),
         # an `OPTIONS` on a path Jira publishes something at, served here or not
         ("OPTIONS", "/atlassian/rest/api/3/serverInfo", "none", 401),
@@ -3995,6 +3997,8 @@ _REMOVE_TEMPLATE = "/atlassian/rest/api/3/project-template/remove-template"
 _SERVICE_REGISTRY = "/atlassian/rest/atlassian-connect/1/service-registry?serviceIds=1"
 _COLUMNS = "/atlassian/rest/api/2/settings/columns"
 _PREFERENCES = "/atlassian/rest/api/3/mypreferences"
+_AGENTS = "/atlassian/rest/api/3/agents/bulk/invoke/batch"
+_POLICIES = "/atlassian/rest/api/3/policies/project/NOPE/policies"
 #: a `Content-Type` Spring cannot read, which the 415 names no type for
 _UNREAD = object()
 _JSON = "application/json"
@@ -4028,6 +4032,12 @@ _JSON = "application/json"
         ("PUT", _BANNER, "none", "application/json;charset=latin1", "{}", 401, None, None),
         ("PUT", _BANNER, "none", 'application/json;charset="utf-8"', "{}", 401, None, None),
         ("PUT", _BANNER, "none", "application/json;x", "{}", 401, None, None),
+        # the same check on the bulk agent invocation, a POST
+        ("POST", _AGENTS, "none", "text/plain", "x", 415, "text/plain", _JSON),
+        ("POST", _AGENTS, "admin", "text/plain", "x", 415, "text/plain", _JSON),
+        ("POST", _AGENTS, "none", None, None, 415, "null", _JSON),
+        ("POST", _AGENTS, "none", _JSON, "{}", 401, None, None),
+        ("POST", _AGENTS, "admin", _JSON, "{}", 404, None, None),
         # an `OPTIONS` is not checked, and an unreadable bearer is refused before the check
         ("OPTIONS", _BANNER, "none", "text/plain", "x", 401, None, None),
         ("PUT", _BANNER, "unreadable-bearer", "text/plain", "x", 403, None, None),
@@ -4057,6 +4067,10 @@ _JSON = "application/json"
             None,
             None,
         ),
+        # one documented with a JSON body that checks the type only behind the 401
+        ("PUT", _POLICIES, "none", "text/plain", "x", 401, None, None),
+        ("PUT", _POLICIES, "none", "foo", "x", 401, None, None),
+        ("PUT", _POLICIES, "none", None, None, 401, None, None),
         # two the documents give no body that check for JSON all the same, a GET among them
         ("DELETE", _REMOVE_TEMPLATE, "none", None, None, 415, "null", _JSON),
         ("DELETE", _REMOVE_TEMPLATE, "none", _JSON, "{}", 401, None, None),

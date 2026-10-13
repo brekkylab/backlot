@@ -534,7 +534,7 @@ def refuse_a_media_type(
     Spring's check, and the first thing the operation does: ahead of the 401 a caller with no
     credential gets (:data:`JIRA_UNAUTHENTICATED`) and of the operation itself for one whose
     credential resolves, and behind the gateway's Connect-token 403. Measured on Jira Cloud on
-    2026-09-30, on the operations ``backlot/data/jira_unserved.json`` lists:
+    2026-09-30, on the operations ``backlot/data/jira_unserved.json`` listed that day:
 
     - the media type is compared without its parameters and whatever its case, and a type only a
       wildcard would cover (`application/*`, `*/*`, `*`) is refused where the operation does not

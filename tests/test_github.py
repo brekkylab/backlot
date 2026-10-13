@@ -5195,9 +5195,9 @@ def test_github_sort_and_direction_order_the_issue_and_pull_listings_as_measured
 
 
 def test_github_issues_updated_in_the_same_second_stay_newest_first(tmp_path):
-    """Issues that share an `updated_at` keep the unsent order under `sort=updated`, newest first,
-    in either direction. Pulls that share one still break the tie by number. See
-    `_issue_sort_keys`.
+    """Under `sort=updated` the issue listing serves a tie newest first in either direction and the
+    pull listing serves it by number in the direction asked (see `_ISSUE_ORDERING` and
+    `_PULL_ORDERING`). Every document here shares one `updated_at`, so the whole answer is the tie.
     """
     updated = "2021-09-09T00:28:33Z"
     docs = [

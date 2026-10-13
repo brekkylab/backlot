@@ -3849,12 +3849,6 @@
     {
       "kind": "missing_param",
       "severity": "gap",
-      "path": "GET /repos/{}/{}/issues?labels",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
       "path": "GET /repos/{}/{}/issues?mentioned",
       "detail": "the vendor accepts it; Backlot does not"
     },

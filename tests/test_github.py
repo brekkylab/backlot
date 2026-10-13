@@ -523,6 +523,124 @@ def test_github_pulls_filtered_by_state(client, admin_h, org):
     assert [p["title"] for p in all_body] == ["Fix token-bucket refill off-by-one"]
 
 
+@pytest.fixture(scope="module")
+def gh_labelled(tmp_path_factory):
+    """One repository whose issues carry labels spelt in two cases, one of them a pull and one
+    private to hana, beside a labelled source file, for the issue listing's `labels` filter."""
+    rows = [
+        ("Bug", ["bug"], "issue", "public"),
+        ("Docs", ["documentation"], "issue", "public"),
+        ("Fix", ["BUG", "Documentation"], "pull_request", "public"),
+        ("Private bug", ["bug"], "issue", "private"),
+        ("Source", ["bug"], "file", "public"),
+    ]
+    records = [
+        {
+            "source_type": "github",
+            "doc_id": f"label-{i}",
+            "repo": "triage",
+            "title": title,
+            "labels": labels,
+            "subtype": kind,
+            "visibility": visibility,
+            "author_email": "hana@acme.com" if visibility == "private" else "bob@acme.com",
+            "state": "open",
+            **({"path": "src/main.py"} if kind == "file" else {}),
+        }
+        for i, (title, labels, kind, visibility) in enumerate(rows)
+    ]
+    with corpus_client(tmp_path_factory.mktemp("gh_labelled"), records) as (c, settings):
+        tokens = yaml.safe_load(settings.tokens_path.read_text())
+        org = c.get("/_meta/users").json()["org"]
+        yield (
+            c,
+            f"/github/repos/{org}/triage/issues",
+            {"Authorization": f"Bearer {settings.admin_token}"},
+            {"Authorization": f"Bearer {tok(tokens, 'bob@acme.com')}"},
+        )
+
+
+_LABELLED = {"Bug", "Docs", "Fix", "Private bug"}
+_BUG = {"Bug", "Fix", "Private bug"}
+
+
+@pytest.mark.parametrize(
+    "query, titles",
+    [
+        ("", _LABELLED),
+        ("labels=", _LABELLED),
+        ("labels=bug", _BUG),
+        ("labels=BUG", _BUG),
+        ("labels=documentation", {"Docs", "Fix"}),
+        ("labels=bug,documentation", {"Fix"}),
+        ("labels=Documentation,Bug", {"Fix"}),
+        ("labels=bug,bug", _BUG),
+        ("labels=bug,", _BUG),
+        ("labels=bug,,", _BUG),
+        ("labels=zzqq-no-such-label", set()),
+        ("labels=bug,zzqq-no-such-label", set()),
+        ("labels=%20bug", set()),
+        ("labels=bug%20", set()),
+        ("labels=bug,%20documentation", set()),
+        ("labels=bug,,documentation", set()),
+        # the last of a repeated parameter
+        ("labels=bug&labels=documentation", {"Docs", "Fix"}),
+        ("labels=documentation&labels=bug", _BUG),
+        ("labels=bug&labels=", _LABELLED),
+        # commas alone, or whitespace alone, filter nothing
+        ("labels=,", _LABELLED),
+        ("labels=,,", _LABELLED),
+        ("labels=%20", _LABELLED),
+        ("labels=%09", _LABELLED),
+        ("labels=%C2%A0", _LABELLED),
+        ("labels=%E3%80%80", _LABELLED),
+        ("labels=%1C", set()),
+        ("labels=%20,", set()),
+    ],
+)
+def test_github_the_issue_listing_serves_the_issues_carrying_every_named_label(
+    gh_labelled, query, titles
+):
+    """Each row is the answer real gave that spelling on psf/requests, transposed to this corpus
+    (the rule and its dates are in :func:`backlot.routers.github.list_issues`), asked by the admin
+    and by a token that cannot see the private issue. The pull is served like the issues, and the
+    source file never is."""
+    c, url, admin, scoped = gh_labelled
+    for headers, expected in ((admin, titles), (scoped, titles - {"Private bug"})):
+        r = c.get(f"{url}?{query}", headers=headers)
+        assert r.status_code == 200, r.text
+        assert {row["title"] for row in r.json()} == expected, headers is admin
+
+
+@pytest.mark.parametrize(
+    "query, titles, linked",
+    [
+        ("labels=BUG", _BUG, ["labels=BUG"]),
+        ("labels=documentation&labels=bug", _BUG, ["labels=bug"]),
+        ("labels=,", _LABELLED, ["labels=%2C"]),
+    ],
+)
+def test_github_the_issue_listing_filters_by_label_before_it_pages(
+    gh_labelled, query, titles, linked
+):
+    """The filter runs before the page is cut, so a walk of one-row pages serves each match once,
+    and every `next` carries `labels` once, the value the listing read, as it was spelt (see
+    :func:`backlot.routers.github.list_issues`). A separate walk rather than rows of the table
+    above, since what it reads is the page links."""
+    c, url, admin, _ = gh_labelled
+    r = c.get(f"{url}?{query}&per_page=1", headers=admin)
+    seen = []
+    while True:
+        assert r.status_code == 200, r.text
+        seen += [row["title"] for row in r.json()]
+        nxt = _link_rels(r.headers.get("Link", "")).get("next")
+        if nxt is None:
+            break
+        assert [p for p in nxt.partition("?")[2].split("&") if p.startswith("labels=")] == linked
+        r = c.get(nxt, headers=admin)
+    assert sorted(seen) == sorted(titles)
+
+
 def test_github_state_is_reals_enum_refused_on_issues_and_absorbed_on_pulls(tmp_path):
     """GitHub's OpenAPI description declares `state` on the issue and the pull listing as
     `{type: string, enum: [open, closed, all], default: open}`, described "Indicates the state of
@@ -4826,11 +4944,16 @@ def test_github_tree_truncates_at_the_real_caps(gh_client, gh_admin_h, gh_org, m
 # --- OpenAPI enrichment: github response fidelity ------------------------------------------
 
 
-def test_github_list_issues_documents_state_param(client):
+def test_github_list_issues_documents_its_filters(client):
     op = client.get("/openapi.json").json()["paths"]["/github/repos/{owner}/{repo}/issues"]["get"]
     params = {p["name"]: p for p in op.get("parameters", [])}
     assert "state" in params and {"page", "per_page"} <= set(params)
     assert params["state"]["schema"].get("default") == "open"
+    # `labels` as GitHub's OpenAPI description declares it
+    assert params["labels"]["description"] == (
+        "A list of comma separated label names. Example: `bug,ui,@high`"
+    )
+    assert params["labels"]["schema"]["type"] == "string"
 
 
 def test_github_the_statuses_listing_declares_the_page_parameters_real_accepts(client):

@@ -99,7 +99,7 @@ Field names are snake_case, as Fireflies' own schema has them. Full introspectio
 | `user/repos` | The token's own reach. `visibility`, `sort`, `direction`; `type` and `affiliation` select on what the caller is to a repository, which a corpus does not state, and stay undeclared |
 | `rate_limit` | The windows the `x-ratelimit-*` headers report, `core`, `search` and `code_search`; a read of it does not count, and it answers with no credential at the anonymous limits, the one route here that does |
 | `repos/{o}/{r}` | |
-| `repos/{o}/{r}/issues[/{n}]` | `state` on the listing: `open`\|`closed`\|`all`; any other value is real's 422, and the repository is checked first, so an unknown repo is the 404 instead. `sort`, `direction`: real's enums and defaults, each order as measured |
+| `repos/{o}/{r}/issues[/{n}]` | `state` on the listing: `open`\|`closed`\|`all`; any other value is real's 422, and the repository is checked first, so an unknown repo is the 404 instead. `sort`, `direction`: real's enums and defaults, each order as measured. `labels`: comma-separated names, all required, matched without case; the last repeated parameter is read, and commas alone or whitespace alone filter nothing |
 | `repos/{o}/{r}/issues/{n}/comments` | |
 | `repos/{o}/{r}/issues/comments/{id}` | |
 | `repos/{o}/{r}/pulls[/{n}]` | `state` on the listing: `open`\|`closed`\|`all`; any other value is served as `open`, which is what real does here where the issue listing refuses it. `sort`, `direction` as on issues; `long-running` orders by creation and filters nothing, as it does on the wire |

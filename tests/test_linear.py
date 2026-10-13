@@ -2255,7 +2255,7 @@ def _linear_client(tmp_path):
 
 
 # --- schema drift against api.linear.app (issue #101) --------------------------------------------
-# Every type below started as what introspection of https://api.linear.app/graphql reported on
+# Every type below is what introspection of https://api.linear.app/graphql reported, the oldest on
 # 2026-09-03, copied here as literals so the suite runs offline; a literal moves when a later
 # measurement finds the vendor has moved. `IntegrationService` has gained two members that way
 # since that date, and the enum in `backlot/graphql/linear.graphql` carries their dates.
@@ -2307,6 +2307,7 @@ LINEAR_TYPES = {
     "UserSortInput.name": "UserNameSort",
     # selected by `@linear/sdk`'s own Team and Project fragments
     "Team.initiativesEnabled": "Boolean!",
+    "Team.viewerCanJoin": "Boolean!",
     "Project.resourceCount": "Int!",
     # non-null where Backlot was nullable
     "Issue.sharedAccess": "IssueSharedAccess!",
@@ -2455,16 +2456,20 @@ def test_counts_are_served_as_json_integers(fclient):
 
 
 def test_fields_the_sdk_fragments_select_resolve_to_what_backlot_serves(fclient):
-    """Both are non-null, so a declaration with nothing behind it voids the whole result. A real
-    team answers `initiativesEnabled: false` (measured 2026-09-07); Backlot serves no project
-    resources, so `resourceCount` is a count rather than a stand-in."""
+    """All three are non-null, so a declaration with nothing behind it voids the whole result. A
+    real team answers `initiativesEnabled: false` (measured 2026-09-07), and `_team` gives the
+    reason `viewerCanJoin` is `false`; Backlot serves no project resources, so `resourceCount` is
+    a count rather than a stand-in."""
     r = post(
         fclient,
-        '{ issue(id: "ENG-2") { team { initiativesEnabled } project { resourceCount } } }',
+        '{ issue(id: "ENG-2") { team { initiativesEnabled viewerCanJoin }'
+        " project { resourceCount } } }",
     ).json()
     assert "errors" not in r, r.get("errors")
     d = r["data"]["issue"]
-    assert (d["team"]["initiativesEnabled"], d["project"]["resourceCount"]) == (False, 0)
+    team = d["team"]
+    served = (team["initiativesEnabled"], team["viewerCanJoin"], d["project"]["resourceCount"])
+    assert served == (False, False, 0)
 
 
 def test_enum_fields_serve_a_member_of_the_vendors_enum(fclient):

@@ -661,6 +661,11 @@ async def jira_search(request: Request):
         jql = _str_param(request, "jql") or ""
         max_results_sent = _jira_max_results_was_sent(request)
         limit = _int_param(request, "maxResults", default_size)
+        # Each conversion is refused ahead of the page token, the range and the unbounded JQL:
+        # `maxResults` first, then `fieldsByKeys`, then `reconcileIssues`, whichever order the
+        # query sends them in (measured 2026-10-12).
+        _bool_param(request, "fieldsByKeys")
+        _jira_long_list_param(request, "reconcileIssues")
         token = _str_param(request, "nextPageToken")
         reconcile_null = False
     # An undecodable token is refused before the project clause is resolved (measured
@@ -1301,10 +1306,11 @@ def _space_keys(request: Request) -> list[str] | None:
 def _require_space(request: Request, conn, key: str) -> str:
     """The container behind a space key the caller can reach — `_require_project` for Confluence.
 
-    Both space reads answer an unreachable key with the SAME ``404 {"message": "No space with the
-    given key exists"}`` a key naming nothing gets, so neither confirms the space exists — worth
-    withholding because ``?expand=permissions`` names a principal granted a space the caller cannot
-    open. Unmeasured for a scoped caller, see :func:`_reachable_spaces`.
+    Both space reads answer an unreachable key with the 404 a key naming nothing gets
+    (:func:`errors_atlassian.space_not_found`, which names only the key the caller sent), so neither
+    confirms the space exists — worth withholding because ``?expand=permissions`` names a principal
+    granted a space the caller cannot open. Unmeasured for a scoped caller, see
+    :func:`_reachable_spaces`.
     """
     ids = auth.visible_ids(request, _confluence_caller(request))
     container = _space_container_for_key(conn, key)
@@ -1315,7 +1321,7 @@ def _require_space(request: Request, conn, key: str) -> str:
         ids is None or store.has_visible_document(conn, "confluence", container, ids)
     ):
         return container
-    raise HTTPException(status_code=404, detail="No space with the given key exists")
+    raise errors_atlassian.space_not_found(key)
 
 
 # The thirteen keys real names under `_expandable` on a space, in real's own order. Measured on
@@ -2145,6 +2151,67 @@ def _int_param(
         # flowed into the query where real answered 400.
         raise errors_atlassian.integer_conversion_failure(_echoed_path(request), name, values)
     return n
+
+
+# The words `_bool_param` reads, and the value each one stands for.
+_JIRA_QUERY_BOOLEANS = {
+    "true": True,
+    "on": True,
+    "yes": True,
+    "1": True,
+    "false": False,
+    "off": False,
+    "no": False,
+    "0": False,
+}
+
+
+def _bool_param(request: Request, name: str, default: bool | None = None) -> bool | None:
+    """One query parameter as a boolean, read the way Jira reads `search/jql`'s `fieldsByKeys`
+    (Jira Cloud, 2026-10-12).
+
+    The first value is the one read. What Java's `String.trim` removes comes off it, every character
+    up to U+0020 at either end (`%01true` is read), and no character past U+0020 does (`%C2%A0true`
+    and `%E2%80%80true` are refused). What is left matches a key of :data:`_JIRA_QUERY_BOOLEANS` in
+    any case, compared the way Java's `equalsIgnoreCase` compares, which also reads `ſ` (U+017F) as
+    `s`. A lone empty value is the default. A value the trim empties is refused (`%20`, `%01`), and
+    so is an empty first value of a repeated parameter (`?fieldsByKeys=&fieldsByKeys=yes`).
+    """
+    values = request.query_params.getlist(name)
+    if not values or values == [""]:
+        return default
+    word = values[0].strip(_JAVA_TRIMMED).lower().replace("\u017f", "s")
+    if word not in _JIRA_QUERY_BOOLEANS:
+        raise errors_atlassian.integer_conversion_failure(_echoed_path(request), name, values)
+    return _JIRA_QUERY_BOOLEANS[word]
+
+
+def _jira_long_list_param(request: Request, name: str) -> list[int]:
+    """Every value of a repeated query parameter as a Java `long`, as Jira converts the
+    `reconcileIssues` of a `search/jql` GET (Jira Cloud, 2026-10-12).
+
+    `?reconcileIssues=1&reconcileIssues=2` is served, and a value that will not convert is refused
+    wherever it sits: `1&a` names the array as `a&1` does, where :func:`_int_param` reads the first
+    value alone. A value :func:`errors_atlassian.strip_java_whitespace` empties is passed over, as
+    in `?reconcileIssues=%20&reconcileIssues=1`. The rest convert by :func:`_int_param`'s rules, so
+    `1,2` is refused rather than split.
+    """
+    values = request.query_params.getlist(name)
+    numbers = []
+    for raw in values:
+        cleaned = errors_atlassian.strip_java_whitespace(raw)
+        if cleaned == "":
+            continue
+        try:
+            if "_" in cleaned or any(ch.isspace() for ch in cleaned):
+                raise ValueError(cleaned)
+            n = int(cleaned)
+        except ValueError:
+            n = None
+        if n is None or not JAVA_LONG[0] <= n <= JAVA_LONG[1]:
+            raise errors_atlassian.integer_conversion_failure(_echoed_path(request), name, values)
+        numbers.append(n)
+    return numbers
 
 
 def _reject_json_constant(value: str):

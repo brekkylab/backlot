@@ -1797,9 +1797,16 @@ def hubspot_associations(
 
     No join to ``hubspot_objects``: ``to_id`` IS the served id the v4 payload's ``toObjectId``
     reports, so it is read straight off this row. Recomputing it from a hash would not do —
-    hubspot's id is PROBED, so the raw hash can disagree with what the target resolves at."""
-    sql = "SELECT * FROM hubspot_associations WHERE from_id = ? AND to_type = ?"
-    params: list = [from_id, to_type]
+    hubspot's id is PROBED, so the raw hash can disagree with what the target resolves at.
+
+    ``to_type`` may be several spellings of one type, as for ``list_hubspot_objects``: the corpus
+    states the target's type in whichever spelling it likes."""
+    types = [to_type] if isinstance(to_type, str) else list(to_type)
+    sql = (
+        "SELECT * FROM hubspot_associations WHERE from_id = ? "
+        f"AND to_type IN ({','.join('?' * len(types))})"
+    )
+    params: list = [from_id, *types]
     if after_to_id:
         sql += " AND to_id > ?"
         params.append(after_to_id)

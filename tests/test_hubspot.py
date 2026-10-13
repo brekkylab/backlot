@@ -113,6 +113,8 @@ def test_hubspot_archived_parameter_reads_its_first_value_and_only_true_as_true(
     [
         ("meetings", "0-47 (MEETING_EVENT)"),
         ("meeting", "0-47 (MEETING_EVENT)"),
+        ("Meetings", "0-47 (MEETING_EVENT)"),
+        ("MEETING", "0-47 (MEETING_EVENT)"),
         ("0-47", "0-47 (MEETING_EVENT)"),
         ("communications", "0-18 (COMMUNICATION)"),
         ("communication", "0-18 (COMMUNICATION)"),
@@ -371,12 +373,15 @@ def test_hubspot_one_type_stated_both_ways_is_one_type(tmp_path):
                 assert c.get(f"/hubspot/crm/v3/objects/{asked}/{rid}", headers=h).status_code == 200
 
 
-@pytest.mark.parametrize("asked", ["companies", "company"])
+@pytest.mark.parametrize(
+    "asked", ["companies", "company", "Companies", "COMPANY", "companie\u017f", "compan\u0131es"]
+)
 def test_hubspot_a_standard_type_answers_to_either_spelling(client, admin_h, asked):
     """HubSpot resolves the path segment through its object-type registry, so `/objects/company`
     reaches the same records as `/objects/companies` — measured: both answer 403 MISSING_SCOPES on
     a scope-less key, where an unrecognized word answers 400. A corpus states one spelling or the
-    other, and neither may hide its records from the vendor's own path."""
+    other, and neither may hide its records from the vendor's own path. Either is read in upper
+    case on each route, as `_canonical` records."""
     listed = client.get(
         f"/hubspot/crm/v3/objects/{asked}", headers=admin_h, params={"limit": 100}
     ).json()["results"]
@@ -390,6 +395,16 @@ def test_hubspot_a_standard_type_answers_to_either_spelling(client, admin_h, ask
     one = listed[0]["id"]
     assert client.get(f"/hubspot/crm/v3/objects/{asked}/{one}", headers=admin_h).status_code == 200
     assert client.get(f"/hubspot/crm/v3/objects/tickets/{one}", headers=admin_h).status_code == 404
+    for route, body in (
+        ("search", {"limit": 100}),
+        ("batch/read", {"inputs": [{"id": r["id"]} for r in listed]}),
+    ):
+        spelt = client.post(f"/hubspot/crm/v3/objects/{asked}/{route}", headers=admin_h, json=body)
+        plural = client.post(
+            f"/hubspot/crm/v3/objects/companies/{route}", headers=admin_h, json=body
+        )
+        assert spelt.status_code == plural.status_code == 200, route
+        assert spelt.json() == plural.json(), route
 
 
 def test_hubspot_standard_type_with_no_records_is_an_empty_page(client, admin_h):
@@ -462,6 +477,69 @@ def test_hubspot_associations_v4(client, admin_h):
     assert isinstance(assoc["toObjectId"], int)
     assert assoc["associationTypes"][0]["category"] == "HUBSPOT_DEFINED"
     assert assoc["associationTypes"][0]["label"] == "Primary"
+
+
+@pytest.fixture
+def ava(client, admin_h):
+    """The contact Ava's id. She is associated with one company."""
+    listed = client.get(
+        "/hubspot/crm/v3/objects/contacts", headers=admin_h, params={"limit": 100}
+    ).json()["results"]
+    return next(r for r in listed if r["properties"].get("firstname") == "Ava")["id"]
+
+
+def _assoc(record, to="companies", source="contacts"):
+    return f"/crm/v4/objects/{source}/{record}/associations/{to}"
+
+
+def _cannot_infer(name):
+    return {"status": "error", "message": f"Unable to infer object type from: {name}"}
+
+
+_EMPTY = {"results": []}
+_NOT_FOUND = {"status": "error", "message": "resource not found", "category": "OBJECT_NOT_FOUND"}
+
+
+@pytest.mark.parametrize(
+    ("path", "status", "want"),
+    [
+        ("/crm/v3/objects/nosuch/{ava}", 400, _cannot_infer("nosuch")),
+        ("/crm/v3/objects/tas\u212as", 400, _cannot_infer("tas\u212as")),
+        (_assoc("{ava}", to="company"), 200, _assoc("{ava}")),
+        (_assoc("{ava}", to="0-2"), 200, _assoc("{ava}")),
+        (_assoc("{ava}", to="COMPANIES", source="Contacts"), 200, _assoc("{ava}")),
+        (_assoc("{ava}", to="nosuch"), 400, _cannot_infer("nosuch")),
+        (_assoc("{ava}", source="nosuch"), 400, _cannot_infer("nosuch")),
+        (_assoc("{ava}", to="nosuchtwo", source="nosuchone"), 400, _cannot_infer("nosuchone")),
+        (_assoc("1"), 200, _EMPTY),
+        (_assoc("9223372036854775807"), 200, _EMPTY),
+        (_assoc("0" * 25 + "1"), 200, _EMPTY),
+        (_assoc("{ava}", source="deals"), 200, _EMPTY),
+        (_assoc("abc"), 404, _NOT_FOUND),
+        (_assoc("1.0"), 404, _NOT_FOUND),
+        (_assoc("\u0661"), 404, _NOT_FOUND),
+        (_assoc("0"), 404, _NOT_FOUND),
+        (_assoc("-1"), 404, _NOT_FOUND),
+        (_assoc("9223372036854775808"), 404, _NOT_FOUND),
+        (_assoc("abc") + "?after=bogus", 404, _NOT_FOUND),
+        (_assoc("1") + "?after=bogus", 400, _assoc("{ava}") + "?after=bogus"),
+        (_assoc("{ava}", source="deals") + "?after=bogus", 400, _assoc("{ava}") + "?after=bogus"),
+    ],
+)
+def test_hubspot_object_types_resolve_as_real_resolves_them(
+    client, admin_h, ava, path, status, want
+):
+    """Each row is one that `_canonical`, `get_object` and `list_associations` record as measured.
+    Where `want` is a path, the row answers what that path does, here and on real: the target under
+    its plural, for another spelling of it; and Ava's own associations, for a bad `after`, since the
+    cursor is refused before a missing or mismatched record is an empty page."""
+    r = client.get("/hubspot" + path.format(ava=ava), headers=admin_h)
+    assert r.status_code == status, path
+    if isinstance(want, str):
+        twin = client.get("/hubspot" + want.format(ava=ava), headers=admin_h).json()
+        assert twin != _EMPTY
+        want = twin
+    assert r.json() == want
 
 
 def test_hubspot_search_filter_groups(client, admin_h):

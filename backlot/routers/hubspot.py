@@ -382,13 +382,30 @@ _CANONICAL.update(_SINGULAR)
 _CANONICAL.update(_TYPE_IDS)
 
 
+# `_CANONICAL` keyed by each spelling in upper case, the form `_canonical` reads a segment in.
+_CANONICAL_UPPER = {spelling.upper(): name for spelling, name in _CANONICAL.items()}
+
+
+def _canonical(object_type: str) -> str | None:
+    """The canonical name of a standard object type, read in upper case as real reads the path
+    segment. Asked of api.hubapi.com (2026-09-30, 2026-10-12), `Contacts`, `CONTACT`, `Companies`
+    and `COMPANY` serve the type they spell, and so does a spelling whose upper case is a standard
+    one: `contact` followed by U+017F, the long s, upper-cases to `CONTACTS`, and `companies` with
+    U+0131, the dotless i, in place of its `i` to `COMPANIES`. The company spellings answered as
+    `companies` does on the listing, a record, search and batch/read. `tasks` with U+212A, the
+    Kelvin sign, in place of its `k` is `Unable to infer object type`, since that sign upper-cases
+    to itself. A custom object keeps its exact spelling: the portal measured holds no custom object
+    to ask for in another case."""
+    return _CANONICAL_UPPER.get(object_type.upper())
+
+
 def _aliases(object_type: str) -> list[str]:
     """Every spelling of this object type — plural, singular and objectTypeId — with the one the
     caller asked for first, so a corpus that states two of them keeps the caller's own.
 
     A type outside the standard set is its own only spelling: a custom object is whatever the corpus
     called it."""
-    canonical = _CANONICAL.get(object_type)
+    canonical = _canonical(object_type)
     if canonical is None:
         return [object_type]
     rest = [spelling for spelling in _CANONICAL if _CANONICAL[spelling] == canonical]
@@ -412,7 +429,7 @@ def _resolve_type(request: Request, object_type: str) -> list[str] | None:
     names = _aliases(object_type)
     if any(store.get_container(conn, "hubspot", name) is not None for name in names):
         return names
-    canonical = _CANONICAL.get(object_type)
+    canonical = _canonical(object_type)
     return [canonical] if canonical else None
 
 
@@ -905,7 +922,7 @@ async def list_objects(object_type: str, request: Request):
     if err is not None:
         return err
     archived = _flag(_first_query(qp, "archived"))
-    type_label = _NO_ARCHIVED_PAGING.get(_CANONICAL.get(object_type, object_type))
+    type_label = _NO_ARCHIVED_PAGING.get(_canonical(object_type))
     if archived and type_label is not None:
         return _error(
             400,
@@ -931,6 +948,11 @@ async def get_object(object_type: str, record_id: str, request: Request):
     caller = _caller(request)
     if caller is None:
         return _error(401, "Authentication credentials not found.", "INVALID_AUTHENTICATION")
+    # The type is resolved ahead of the record: on api.hubapi.com, `/crm/v3/objects/nosuch/{id}`
+    # answered `Unable to infer object type from: nosuch` for a contact's id (2026-09-30) and for a
+    # non-numeric and a negative one (2026-10-12).
+    if _resolve_type(request, object_type) is None:
+        return _unknown_type(object_type)
     # One ACL-scoped query, not a resolve followed by a get_document refetch of the same row:
     # `id` is the PRIMARY KEY, so the ACL clause can only narrow "found" to "not found", never
     # redirect to a different row (see store.hubspot_by_id).
@@ -1070,22 +1092,35 @@ async def list_associations(
     caller = _caller(request)
     if caller is None:
         return _error(401, "Authentication credentials not found.", "INVALID_AUTHENTICATION")
-    conn, visible = auth.conn(request), auth.visible_ids(request, caller)
-    # One ACL-scoped query, not a resolve followed by a get_document refetch of the same row --
-    # see get_object's comment for why the collapse is safe.
-    row = store.hubspot_by_id(conn, record_id, visible)
-    if row is None or row["object_type"] not in _aliases(object_type):
+    # In the order real answers them (api.hubapi.com, 2026-09-30 for the types and the empty page,
+    # 2026-10-12 for the rest): a type real cannot infer is its 400 on either side of the path, the
+    # source's when both are; a record id that is not ASCII digits naming 1 to 2**63 - 1, leading
+    # zeros allowed, is a 404 (measured on `abc`, `1.0`, a leading `+`, U+0661, `0`, `-1` and
+    # `9223372036854775808`; real's 404 body differs from this one); then the `after` cursor; then a
+    # record that does not exist, or is of another type, is an empty page. The target is read under
+    # any of its spellings (`company` and `0-2` answer as `companies`).
+    for name in (object_type, to_object_type):
+        if _resolve_type(request, name) is None:
+            return _unknown_type(name)
+    digits = re.fullmatch(r"0*([1-9][0-9]{0,18})", record_id)
+    if digits is None or int(digits[1]) >= 2**63:
         return _error(404, "resource not found", "OBJECT_NOT_FOUND")
+    conn, visible = auth.conn(request), auth.visible_ids(request, caller)
     limit = _clamp(request.query_params.get("limit"), _ASSOC_PAGE_MAX, _ASSOC_PAGE_MAX)
     after_to, err = _resolve_cursor(request, request.query_params.get("after"))
     if err is not None:
         return err
+    # One ACL-scoped query, not a resolve followed by a get_document refetch of the same row --
+    # see get_object's comment for why the collapse is safe.
+    row = store.hubspot_by_id(conn, record_id, visible)
+    if row is None or row["object_type"] not in _aliases(object_type):
+        return {"results": []}
     # limit+1 for the same reason listings do it: the extra row is the only evidence of a further
     # page, and without paging here every association past the first page would be unreachable.
     rows = store.hubspot_associations(
         conn,
         row["id"],
-        to_object_type,
+        _aliases(to_object_type),
         after_to_id=after_to,
         visible_ids=visible,
         limit=limit + 1,

@@ -682,9 +682,9 @@ def resolve_team_issue_count(team, info) -> int:
 
 
 def _team(container: str, info) -> dict:
-    """A ``Team``. 43 of its fields are non-null in the SDK's fragment; the ones Backlot cannot
-    know take Linear's own product defaults (cycles off, 2-week duration, estimate scale
-    ``notUsed``) rather than zero values that would read as configured."""
+    """A ``Team``. 43 of its fields are non-null in the SDK's fragment, and so is ``__typename``;
+    the ones Backlot cannot know take Linear's own product defaults (cycles off, 2-week duration,
+    estimate scale ``notUsed``) rather than zero values that would read as configured."""
     key = _team_key(container, info)
     created = synth.rfc3339(synth.epoch("linear-team:" + container))
     return {
@@ -734,6 +734,13 @@ def _team(container: str, info) -> dict:
         "slackIssueStatuses": False,
         "scimManaged": False,
         "scimGroupName": None,
+        # A real team answers its own member `false` (measured 2026-10-08), and Backlot serves no
+        # team membership: `Team.members`, `membership`, `memberships` and `viewerMembership` are
+        # gaps. What a real team answers a non-member is unmeasured, as the workspace measured has
+        # one team with the key's user in it and a second would be a write; the field's own
+        # description says it "Runs the same checks `teamMembershipCreate` applies", and this server
+        # declares no `Mutation` type.
+        "viewerCanJoin": False,
         "icon": None,
         "color": None,
         "description": None,

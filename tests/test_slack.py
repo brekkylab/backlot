@@ -473,24 +473,6 @@ def test_slack_conversations_list_rejects_an_unknown_type(client, admin_h):
     assert mixed == {"ok": False, "error": "invalid_types"}
 
 
-@pytest.mark.parametrize(
-    "param, error", [("latest", "invalid_ts_latest"), ("oldest", "invalid_ts_oldest")]
-)
-@pytest.mark.parametrize(
-    "value", ["not-a-ts", "inf", "-inf", "nan", "Infinity", "-Infinity", "NaN"]
-)
-def test_slack_history_rejects_a_malformed_timestamp(client, admin_h, param, value, error):
-    """Real Slack answers 200 with the named error for each spelling, those `float()` refuses and
-    those it reads as infinite or NaN alike — `_slack_ts` records the measurement."""
-    r = client.get(
-        "/slack/api/conversations.history",
-        headers=admin_h,
-        params={"channel": _a_channel_id(client, admin_h), param: value},
-    )
-    assert r.status_code == 200
-    assert r.json() == {"ok": False, "error": error}
-
-
 @pytest.mark.parametrize("path", ["conversations.list", "users.list"])
 def test_slack_rejects_an_invalid_cursor(client, admin_h, path):
     """An undecodable cursor was treated as offset 0, so a client paginating with a corrupted
@@ -501,33 +483,42 @@ def test_slack_rejects_an_invalid_cursor(client, admin_h, path):
 
 
 @pytest.mark.parametrize(
-    "path, key",
+    "params, error",
     [
-        ("conversations.list", "channels"),
-        ("users.list", "members"),
-        ("conversations.members", "members"),
-        ("conversations.history", "messages"),
+        # One unreadable argument.
+        *(
+            ({param: value}, error)
+            for param, error in (("latest", "invalid_ts_latest"), ("oldest", "invalid_ts_oldest"))
+            for value in ("not-a-ts", "inf", "-inf", "nan", "Infinity", "-Infinity", "NaN")
+        ),
+        ({"cursor": "zzz"}, "invalid_cursor"),
+        # Two or more unreadable arguments.
+        ({"oldest": "abc", "latest": "abc"}, "invalid_ts_latest"),
+        ({"oldest": "abc", "cursor": "zzz"}, "invalid_ts_oldest"),
+        ({"latest": "abc", "cursor": "zzz"}, "invalid_ts_latest"),
+        ({"oldest": "abc", "latest": "abc", "cursor": "zzz"}, "invalid_ts_latest"),
+        ({"cursor": "zzz", "latest": "abc", "oldest": "abc"}, "invalid_ts_latest"),
+        ({"oldest": "inf", "latest": "inf"}, "invalid_ts_latest"),
+        ({"oldest": "abc", "latest": "inf"}, "invalid_ts_latest"),
+        ({"oldest": "inf", "latest": "abc"}, "invalid_ts_latest"),
+        ({"oldest": "nan", "cursor": "zzz"}, "invalid_ts_oldest"),
+        # An empty timestamp is none, and a channel that names nothing is answered first.
+        ({"latest": "", "cursor": "zzz"}, "invalid_cursor"),
+        ({"oldest": "", "cursor": "zzz"}, "invalid_cursor"),
+        ({"channel": "C00000000", "latest": "abc", "cursor": "zzz"}, "channel_not_found"),
     ],
 )
-def test_slack_limit_zero_is_the_default_page(client, admin_h, path, key):
-    """The rule `_limit` records. An empty page whose cursor names itself would keep a
-    cursor-following client on that page forever."""
-    channel = path in ("conversations.members", "conversations.history")
-    params = {"channel": _a_channel_id(client, admin_h)} if channel else {}
-    unset = client.get(f"/slack/api/{path}", headers=admin_h, params=params).json()
-    assert unset[key], path
-    for zero in ("0", "00"):
-        got = client.get(f"/slack/api/{path}", headers=admin_h, params={**params, "limit": zero})
-        assert got.json() == unset, (path, zero)
-
-
-def test_slack_history_rejects_an_invalid_cursor(client, admin_h):
-    j = client.get(
+def test_slack_history_names_the_first_error_real_would(client, admin_h, params, error):
+    """Real Slack answers 200 with the named error for one unreadable argument, and for two or
+    more with the error of the argument it reads first. `_slack_ts` records the measured
+    spellings, and the comment above the checks in `conversations_history` records the order."""
+    r = client.get(
         "/slack/api/conversations.history",
         headers=admin_h,
-        params={"channel": _a_channel_id(client, admin_h), "cursor": "bogus"},
-    ).json()
-    assert j == {"ok": False, "error": "invalid_cursor"}
+        params={"channel": _a_channel_id(client, admin_h), **params},
+    )
+    assert r.status_code == 200
+    assert r.json() == {"ok": False, "error": error}
 
 
 def test_slack_members_are_the_channels_own_speakers(client, admin_h, tokens, ro_conn):
@@ -737,6 +728,154 @@ def test_slack_search_sort_dir_outside_the_enum_is_invalid_arguments(
             "error": "invalid_arguments",
             "response_metadata": {"messages": ["[ERROR] missing required field: query"]},
         }
+
+
+_UNSET = "<the argument left out>"
+_LIMIT_METHODS = [
+    "conversations.list",
+    "users.list",
+    "conversations.members",
+    "conversations.history",
+]
+_SEARCH_METHODS = ["search.messages", "search.all", "search.files"]
+_CHANNEL_ARG = {m: [("channel", _OWN_CHANNEL)] for m in _LIMIT_METHODS[2:]}
+_NUMBER_LINE = "[ERROR] must provide a number [json-pointer:/{}]".format
+_SORT_DIR_LINE = "[ERROR] must be a valid enum value [json-pointer:/sort_dir]"
+# Each value and the number real reads it as: `_UNSET` where real serves the page it serves with
+# the argument left out, None where it answers `invalid_arguments` with one line naming the field.
+# Of the four `limit` methods, users.list alone holds more than three items in the bundled corpus,
+# so it is where 1, 2 and 3 differ from the page served without `limit`.
+_LIMIT_VALUES = [
+    *((v, _UNSET) for v in ("0", "00", "-0", ".5", "0.0", "1e-1", "1e400")),
+    *((v, 2) for v in ("02", "002", "2.0", "2.9", "2e0", "2E0", "20e-1", "0.2e1", "2.5e0", "2\n")),
+    ("1.5", 1),
+    ("3.99999", 3),
+    *(
+        (v, None)
+        for v in ("abc", "", "5abc", "0x10", " 2", "2 ", "\t2", "+2", "2.", "2e+0", "1_0")
+        + ("\u0662", "\uff12", "Infinity", "NaN", "2\n\n", ".", "1e", "1.e1")
+    ),
+]
+_INTEGER_VALUES = [
+    *((v, int(v)) for v in ("0", "00", "02", "-1", "9223372036854775807", "-9223372036854775808")),
+    *(
+        (v, None)
+        for v in ("abc", "", "5abc", "0x10", " 2", "2 ", "\t2", "+2", "-0", "-00", "-01", "2\n")
+        + ("1_0", "\u0662", "\uff12", "2.0", "2.", "1.5", "1e1", "2e0", "9223372036854775808")
+        + ("-9223372036854775809",)
+    ),
+]
+_PAGE_VALUES = [
+    *((v, int(v)) for v in ("02", "00", "-1", "9223372036854775807")),
+    *((v, None) for v in ("abc", "", "5abc", "0x10", "-0", "2\n", "+2", "2.0", "1.5", "1e2")),
+    ("9223372036854775808", None),
+]
+
+
+def _number_rows():
+    for m in _LIMIT_METHODS:
+        for v, want in _LIMIT_VALUES:
+            yield (
+                m,
+                [*_CHANNEL_ARG.get(m, []), ("limit", v)],
+                [_NUMBER_LINE("limit")] if want is None else want,
+            )
+    for m in _SEARCH_METHODS:
+        for v, n in _INTEGER_VALUES:
+            yield m, [("query", "the"), ("count", v)], [_NUMBER_LINE("count")] if n is None else n
+    for m in _SEARCH_METHODS:
+        for v, n in _PAGE_VALUES:
+            yield m, [("query", "the"), ("page", v)], [_NUMBER_LINE("page")] if n is None else n
+
+
+@pytest.mark.parametrize(
+    "method, params, want",
+    [
+        *_number_rows(),
+        # Real reads a repeated argument by its last value.
+        ("users.list", [("limit", "1"), ("limit", "3")], 3),
+        ("users.list", [("limit", "3"), ("limit", "1")], 1),
+        # A missing required argument answers alone...
+        ("conversations.history", [("limit", "abc")], ["[ERROR] missing required field: channel"]),
+        ("search.messages", [("count", "x")], ["[ERROR] missing required field: query"]),
+        # ...and a refused number answers ahead of the checks that follow it.
+        (
+            "conversations.history",
+            [("channel", "C_NOPE"), ("limit", "abc")],
+            [_NUMBER_LINE("limit")],
+        ),
+        (
+            "conversations.history",
+            [("channel", _OWN_CHANNEL), ("latest", "x"), ("limit", "abc")],
+            [_NUMBER_LINE("limit")],
+        ),
+        (
+            "conversations.history",
+            [("channel", _OWN_CHANNEL), ("cursor", "zzz"), ("limit", "abc")],
+            [_NUMBER_LINE("limit")],
+        ),
+        ("conversations.list", [("types", "bogus"), ("limit", "abc")], [_NUMBER_LINE("limit")]),
+        ("conversations.list", [("cursor", "zzz"), ("limit", "abc")], [_NUMBER_LINE("limit")]),
+        ("users.list", [("cursor", "zzz"), ("limit", "abc")], [_NUMBER_LINE("limit")]),
+        ("users.list", [("sort_dir", "bogus"), ("limit", "abc")], [_NUMBER_LINE("limit")]),
+        (
+            "conversations.members",
+            [("channel", "C_NOPE"), ("limit", "abc")],
+            [_NUMBER_LINE("limit")],
+        ),
+        (
+            "conversations.members",
+            [("channel", _OWN_CHANNEL), ("cursor", "zzz"), ("limit", "abc")],
+            [_NUMBER_LINE("limit")],
+        ),
+        *(
+            (m, [("query", " "), ("count", "abc")], [_NUMBER_LINE("count")])
+            for m in _SEARCH_METHODS
+        ),
+        # Every refused number and an unknown `sort_dir` share one answer, in field order.
+        *(
+            (
+                m,
+                [("query", "the"), ("count", "abc"), ("page", "xyz"), ("sort_dir", "bogus")],
+                [_NUMBER_LINE("count"), _NUMBER_LINE("page"), _SORT_DIR_LINE],
+            )
+            for m in _SEARCH_METHODS
+        ),
+        (
+            "search.messages",
+            [("sort_dir", "bogus"), ("page", "xyz"), ("count", "abc"), ("query", "the")],
+            [_NUMBER_LINE("count"), _NUMBER_LINE("page"), _SORT_DIR_LINE],
+        ),
+    ],
+)
+def test_slack_numeric_arguments_are_read_as_real_reads_them(client, admin_h, method, params, want):
+    """The rule on `_SLACK_INTEGER` and the order `_limit` and `_numbers` answer in, every row as
+    slack.com/api answered it. A row answered as a number is compared with the request that sends
+    that number in its place, and an `_UNSET` row with the request that leaves the argument out,
+    whose page is not empty: an empty page whose cursor names itself would keep a client that
+    follows cursors on that page forever."""
+    cid = _a_channel_id(client, admin_h)
+
+    def get(ps):
+        ps = [(k, cid if v == _OWN_CHANNEL else v) for k, v in ps]
+        r = client.get(f"/slack/api/{method}", headers=admin_h, params=ps)
+        assert r.status_code == 200
+        return r.json()
+
+    got = get(params)
+    if isinstance(want, list):
+        assert got == {
+            "ok": False,
+            "error": "invalid_arguments",
+            "response_metadata": {"messages": want},
+        }
+        return
+    key = params[-1][0]
+    rest = [p for p in params if p[0] != key]
+    same = get(rest if want == _UNSET else [*rest, (key, str(want))])
+    assert got["ok"] is True and got == same
+    if key == "limit" and want == _UNSET:
+        assert any(v for v in same.values() if isinstance(v, list)), same
 
 
 def test_slack_search_all(client, admin_h):

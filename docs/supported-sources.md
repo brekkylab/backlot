@@ -99,7 +99,7 @@ Field names are snake_case, as Fireflies' own schema has them. Full introspectio
 | `user/repos` | The token's own reach. `visibility`, `sort`, `direction`; `type` and `affiliation` select on what the caller is to a repository, which a corpus does not state, and stay undeclared |
 | `rate_limit` | The windows the `x-ratelimit-*` headers report, `core`, `search` and `code_search`; a read of it does not count, and it answers with no credential at the anonymous limits, the one route here that does |
 | `repos/{o}/{r}` | |
-| `repos/{o}/{r}/issues[/{n}]` | `state` on the listing: `open`\|`closed`\|`all`; any other value is real's 422, and the repository is checked first, so an unknown repo is the 404 instead. `sort`, `direction`: real's enums and defaults, each order as measured |
+| `repos/{o}/{r}/issues[/{n}]` | `state` on the listing: `open`\|`closed`\|`all`; any other value is real's 422, and the repository is checked first, so an unknown repo is the 404 instead. `sort`, `direction`: real's enums and defaults, each order as measured. `labels`: comma-separated names, all required, matched without case; the last repeated parameter is read, and commas alone or whitespace alone filter nothing |
 | `repos/{o}/{r}/issues/{n}/comments` | |
 | `repos/{o}/{r}/issues/comments/{id}` | |
 | `repos/{o}/{r}/pulls[/{n}]` | `state` on the listing: `open`\|`closed`\|`all`; any other value is served as `open`, which is what real does here where the issue listing refuses it. `sort`, `direction` as on issues; `long-running` orders by creation and filters nothing, as it does on the wire |
@@ -503,6 +503,14 @@ virtual-hosted client looks for `acme-artifacts.localhost:8000` and finds nothin
 | `HeadObject` | |
 | `GetObjectAcl`, `GetObjectTagging`, `GetObjectAttributes` and the rest of an object's sub-resources | Each as real answers an object with no tags or annotations, written with no checksum header, in a bucket without Object Lock, byte for byte: `?acl` the owner's `FULL_CONTROL`, `?tagging` an empty `TagSet`, `?attributes` the ETag, checksum, storage class and size asked for, `?annotation` no annotations and `NoSuchAnnotation` for one named, `?legal-hold` and `?retention` real's 400 for a bucket without Object Lock, and `?torrent` real's 405 |
 | `ListParts` | Always `NoSuchUpload`, since no upload is ever in progress; `max-parts` and `part-number-marker` validated first, as real does |
+
+An object's GET and HEAD also read the six `response-*` query parameters, `response-content-type`,
+`response-content-language`, `response-expires`, `response-cache-control`,
+`response-content-disposition` and `response-content-encoding`: each sets the header it names on the
+200 and the 206 and leaves the bytes as stored. Their names are case-sensitive, a repeated one is
+read from its first value, and a control character other than a tab comes back as a space. A value
+real cannot put in a header, a non-Latin-1 character or an unclosed quote, is its 400
+`InvalidArgument`, and an unsigned GET or HEAD carrying an override its 400 `InvalidRequest`.
 
 The other sub-resources are answered as real answers them. `?session` is the listing: CreateSession
 is for directory buckets only and real S3 answers it with the listing on a general purpose bucket. A

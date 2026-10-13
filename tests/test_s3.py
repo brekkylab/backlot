@@ -334,10 +334,11 @@ def test_s3_a_head_at_the_service_root_is_the_405_without_its_body(live_server, 
 
 
 # What real answered alike at a bucket's path with and without a trailing slash: the same status,
-# header names and body once the request ids are set aside (s3.amazonaws.com, us-east-1; the GET
-# and HEAD rows on 2026-10-11, the others on 2026-10-13). On the second date no pair differed among
-# the methods `bucket_method_refusal` takes, each sent with each selector of
-# `_BUCKET_WRITE_SELECTORS` and `_OBJECT_WRITE_SELECTORS` to another account's bucket.
+# header names and body once the request ids are set aside (s3.amazonaws.com, us-east-1; the GET and
+# HEAD rows on 2026-10-11, the others on 2026-10-13). On the second date no pair differed among the
+# methods `bucket_method_refusal` takes, each sent to another account's bucket with no query, with
+# `versionId` alone and with each selector of `_BUCKET_WRITE_SELECTORS` and
+# `_OBJECT_WRITE_SELECTORS`.
 _BUCKET_QUERIES = [
     "",
     "?list-type=2",

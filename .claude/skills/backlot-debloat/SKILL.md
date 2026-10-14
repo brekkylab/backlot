@@ -99,15 +99,16 @@ sentence, with no signature and no session link.
 | `s3` | `backlot/routers/s3.py`, `backlot/errors/s3.py`, `backlot/sigv2.py`, `backlot/sigv4.py`, `backlot/sigv4a.py` | `tests/test_s3.py` |
 | `hubspot` | `backlot/routers/hubspot.py` | `tests/test_hubspot.py` |
 | `notion` | `backlot/routers/notion.py` | `tests/test_notion.py` |
-| `linear` | `backlot/graphql/linear_resolvers.py`, `backlot/graphql/linear_filters.py` | `tests/test_linear.py` |
+| `linear` | `backlot/routers/linear.py`, `backlot/graphql/linear_resolvers.py`, `backlot/graphql/linear_filters.py` | `tests/test_linear.py` |
 | `fireflies` | `backlot/routers/fireflies.py`, `backlot/graphql/fireflies_resolvers.py` | `tests/test_fireflies.py` |
-| `graphql` | `backlot/graphql/engine.py`, `backlot/graphql/mcp_tools.py` | `tests/test_graphql.py` |
+| `graphql` | `backlot/graphql/__init__.py`, `backlot/graphql/engine.py`, `backlot/graphql/mcp_tools.py` | `tests/test_graphql.py` |
 | `store` | `backlot/store.py`, `backlot/pagination.py`, `backlot/synth.py` | `tests/test_store.py`, `tests/test_pagination.py`, `tests/test_synth.py`, `tests/test_search.py` |
 | `importer` | `backlot/importer/`, `backlot/validation.py` | `tests/test_importer_byo.py`, `tests/test_importer_erb.py`, `tests/test_schema.py` |
 | `auth` | `backlot/auth.py`, `backlot/acl.py`, `backlot/oauth.py`, `backlot/routers/oauth.py` | `tests/test_auth.py`, `tests/test_acl.py` |
-| `surface` | `backlot/main.py`, `backlot/server.py`, `backlot/cli.py`, `backlot/config.py`, `backlot/openapi.py`, `backlot/mcp.py`, `backlot/integrations/` | `tests/test_server.py`, `tests/test_cli.py`, `tests/test_openapi.py`, `tests/test_mcp.py`, `tests/test_integrations.py`, `tests/test_llamaindex.py`, `tests/test_sdk.py`, `tests/test_cross_vendor.py` |
+| `surface` | `backlot/main.py`, `backlot/routers/__init__.py`, `backlot/server.py`, `backlot/cli.py`, `backlot/config.py`, `backlot/openapi.py`, `backlot/mcp.py`, `backlot/integrations/` | `tests/test_server.py`, `tests/test_config.py`, `tests/test_cli.py`, `tests/test_openapi.py`, `tests/test_mcp.py`, `tests/test_integrations.py`, `tests/test_llamaindex.py`, `tests/test_sdk.py`, `tests/test_cross_vendor.py` |
 | `fidelity` | `backlot/fidelity/` | `tests/test_fidelity.py` |
 | `shared-tests` (`tests` only) | — | `tests/conftest.py`, `tests/_helpers.py`; a helper repeated across test files moves into `tests/_helpers.py`, so that cut needs it open |
+| `repo` (`tests` and `prose` only) | — | `tests/test_docs.py`, `tests/test_packaging.py`, `tests/test_skills.py`, `tests/test_pr_gate.py`, `tests/test_prose_check.py`, `tests/test_contributors_svg.py`, `tests/test_invariance.py` |
 | `docs` (`prose` only) | — | `README.md`, `docs/*.md` except the generated `docs/supported-sources.md` |
 
 A cut may reach outside the area's files when it removes a duplicate whose other copy is in the

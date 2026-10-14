@@ -95,7 +95,7 @@ sentence, with no signature and no session link.
 | `surface` | `backlot/main.py`, `backlot/server.py`, `backlot/cli.py`, `backlot/config.py`, `backlot/openapi.py`, `backlot/mcp.py`, `backlot/integrations/` | `tests/test_server.py`, `tests/test_cli.py`, `tests/test_openapi.py`, `tests/test_mcp.py`, `tests/test_integrations.py`, `tests/test_llamaindex.py`, `tests/test_sdk.py`, `tests/test_cross_vendor.py` |
 | `fidelity` | `backlot/fidelity/` | `tests/test_fidelity.py` |
 | `shared-tests` | — | `tests/conftest.py`, `tests/_helpers.py`, and helpers repeated across test files |
-| `docs` | — | `README.md`, `docs/*.md` outside generated blocks |
+| `docs` | — | `README.md`, `docs/*.md` except the generated `docs/supported-sources.md` |
 
 A cut may reach outside the area's files when it removes a duplicate whose other copy is in the
 area — a helper in two test files moving to `tests/_helpers.py` — but never more than that.
@@ -129,13 +129,19 @@ conflict is worked exactly as in step 2 of the loop's skill, re-running the proo
 change and the reviewers (step 8) after any fix, and that is the run. If two debloat pull requests
 are already open, do nothing else: a maintainer has enough to read.
 
-Otherwise pick the area and kind together. An area is closed to a kind while a pull request in
-review — open, not a draft, not labelled `hold` — touches a file that kind would change: the Code
-column for `code`, the Tests column for `tests`, either column or the markdown for `prose`. A cut
-there would conflict with work a maintainer is about to merge. Of the open pairs, take the one whose last debloat pull
+Otherwise pick the area. A file is closed while a pull request in review — open, not a draft, not
+labelled `hold` — touches it, since a cut there would conflict with work a maintainer is about to
+merge; the run leaves closed files alone and works the rest of its area. The closed files:
+
+```bash
+gh pr list -R brekkylab/backlot --state open --json isDraft,labels,files --limit 100 \
+  --jq '[.[] | select(.isDraft | not) | select([.labels[].name] | index("hold") | not) | .files[].path] | unique[]'
+```
+
+An area whose every file is closed is skipped. Of the rest, take the one whose last debloat pull
 request (its branch is `claude/debloat-<area>-<kind>`) is oldest, an area never debloated counting
 as oldest of all; among those, the one with the most lines. A `routine-fire-payload` naming an area
-means that area; if every kind of it is closed, say which pull requests close it and stop.
+means that area; if every file of it is closed, say which pull requests close it and stop.
 
 ## 2. Read the area and list candidates
 
@@ -155,7 +161,7 @@ Read the area's files whole. Then list what the rules allow, by kind:
 A test candidate is settled by the step-5 comparison, not by reading alone: a line only it executed
 shows up there as lost coverage, and that test is not a *subset*.
 
-Once the base is recorded (step 5 can start now, in the background), run `invariance.py uncovered
+For `code` and `tests`, once the base is recorded (step 5 can start now, in the background), run `invariance.py uncovered
 <base recording> <the area's code paths>`. A line no test executes is either dead code (rule 6) or a
 test that claims more than it reaches; the second is residue for step 7, not a cut.
 
@@ -165,8 +171,8 @@ left for a later run.
 
 ## 3. Branch
 
-`git fetch origin main`, then `git checkout -b claude/debloat-<area>-<kind> origin/main` (rehearsal:
-the branch named above), and fix the base and a scratch directory once for the whole run:
+Live: `git fetch origin main`, then `git checkout -b claude/debloat-<area>-<kind> origin/main`.
+Rehearsal: `git checkout -b claude/rehearsal-debloat-<area>-<MMDDHHMM>` from where you are. Then fix the base and a scratch directory once for the whole run:
 
 ```bash
 BASE=$(git rev-parse HEAD)
@@ -189,7 +195,8 @@ must pass. If a docstring or a schema the generators read changed, `python scrip
 
 ## 5. Prove
 
-Record the base in a throwaway worktree, with its own environment, using the script from your branch:
+`prose` needs no recording; skip to its line below. For `code` and `tests`, record the base in a
+throwaway worktree, with its own environment, using the script from your branch:
 
 ```bash
 git worktree add $REC/tree $BASE
@@ -204,6 +211,9 @@ to a new name (`$REC/head2`).
 Then by kind:
 
 - `prose`: `uv run python scripts/invariance.py prose $BASE`, and `uv run pytest tests/test_docs.py tests/test_skills.py`.
+  Neither sees a fact disappear from prose, so also write the said-once map: for every sentence or
+  comment removed, where the same fact is still stated (file and line at the head), or that it
+  restated the code beside it. A removed fact with no row is a fact lost: put it back.
 - `code`: record the base a second time to `$REC/base2`, then
   `uv run python scripts/invariance.py compare $REC/base $REC/head --mode code --calibration $REC/base2`.
 - `tests`: `uv run python scripts/invariance.py compare $REC/base $REC/head --mode tests`.
@@ -246,7 +256,8 @@ repository's pull request template with every section filled, never hard-wrapped
   candidates seen and left, one line each.
 - **Why this is what the real API does** — nothing the API serves changed: the date, the
   `invariance.py` command and its last lines verbatim, and for `tests` the fact map as a table
-  (removed test, reason, surviving test and assertion, the mutation that proved it).
+  (removed test, reason, surviving test and assertion, the mutation that proved it), for `prose`
+  the said-once map.
 - **Verification** — the three lines the template asks for, plus the measurement table of step 6.
 - Checkboxes: tick the third, which speaks for the lines this pull request writes. Leave the first
   two unticked with `— not applicable: behaviour is unchanged` after each.
@@ -258,7 +269,8 @@ followed by the title and body you would have sent):
 - `subagent_type: invariance-reviewer`
 - `subagent_type: prose-reviewer`
 
-A session started before `.claude/agents/invariance-reviewer.md` existed does not list it; then
+If the Agent tool's list of agent types does not include `invariance-reviewer` (a session started
+before the file existed does not), then
 dispatch `subagent_type: general-purpose` with the prompt `Your instructions are
 .claude/agents/invariance-reviewer.md; follow them as your system prompt.` followed by the line above.
 

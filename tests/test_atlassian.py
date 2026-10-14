@@ -5319,6 +5319,7 @@ def test_atlassian_front_door_answers_before_either_product(
         # a project role write at a key that names nothing is the project's 404
         ("POST", "/rest/api/3/project/NOPESUCHZZ/role/999", "{}", 404),
         ("PUT", "/rest/api/3/project/NOPESUCHZZ/role/999", None, 415),
+        ("PUT", "/rest/api/3/project/NOPESUCHZZ/role/999", "{}", 404),
         ("DELETE", "/rest/api/3/project/NOPESUCHZZ/role/999", None, 404),
         # `issue/archive`'s own write, which real runs (a 400) and Backlot does not
         ("PUT", "/rest/api/3/issue/archive", "{}", 405),
@@ -5458,19 +5459,110 @@ _JSON_TYPE = "application/json"
         ("POST", "/wiki/rest/api/contentbody/convert/async/1", None, "application/json;x", 400)
         + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
         ("POST", "/wiki/rest/api/contentbody/convert/async/1", None, _JSON_TYPE, 404, None),
+        ("POST", "/wiki/rest/api/contentbody/convert/async/bulk/tasks", None, "text/plain", 415)
+        + (b"",),
         ("PUT", "/wiki/rest/api/settings/lookandfeel", None, "text/plain", 403)
         + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
         ("PUT", "/wiki/rest/api/settings/lookandfeel", None, "foo", 400)
         + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
         ("DELETE", "/wiki/rest/api/relation/1/from/user/a/to/content/2", None, None, 403)
         + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+        # each operation the four lists in ``backlot.routers.atlassian`` name, with no credential
+        # (2026-10-14): the nineteen GETs and the JAX-RS writes but the two that run, the
+        # not-permitted 403, the Spring writes that check a type, the 415 for `text/plain`, and the
+        # GETs real serves outside the document, the Stackless 403
+        *(
+            ("GET", f"/wiki/rest/{path}", None, None, 403)
+            + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,)
+            for path in (
+                "api/audit",
+                "api/audit/export",
+                "api/audit/retention",
+                "api/audit/since",
+                "api/content-states",
+                "api/longtask",
+                "api/longtask/1",
+                "api/relation/1/from/1/1/to/1",
+                "api/relation/1/from/1/1/to/1/1",
+                "api/relation/1/to/1/1/from/1",
+                "api/search/user",
+                "api/settings/lookandfeel",
+                "api/template/blueprint",
+                "api/template/page",
+                "api/template/1",
+                "api/user/watch/content/1",
+                "api/user/watch/label/1",
+                "api/user/watch/space/1",
+                "atlassian-connect/1/app/module/dynamic",
+            )
+        ),
+        *(
+            (method, path, None, None, 403, errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY)
+            for method, path in (
+                ("POST", "/wiki/rest/api/audit"),
+                ("PUT", "/wiki/rest/api/audit/retention"),
+                ("POST", "/wiki/rest/api/content/archive"),
+                ("POST", "/wiki/rest/api/content/blueprint/instance/1"),
+                ("PUT", "/wiki/rest/api/content/blueprint/instance/1"),
+                ("PUT", "/wiki/rest/api/relation/1/from/1/1/to/1/1"),
+                ("DELETE", "/wiki/rest/api/relation/1/from/1/1/to/1/1"),
+                ("PUT", "/wiki/rest/api/settings/lookandfeel"),
+                ("POST", "/wiki/rest/api/settings/lookandfeel/custom"),
+                ("DELETE", "/wiki/rest/api/settings/lookandfeel/custom"),
+                ("POST", "/wiki/rest/api/template"),
+                ("PUT", "/wiki/rest/api/template"),
+                ("DELETE", "/wiki/rest/api/template/1"),
+                ("POST", "/wiki/rest/api/user/watch/content/1"),
+                ("DELETE", "/wiki/rest/api/user/watch/content/1"),
+                ("POST", "/wiki/rest/api/user/watch/label/1"),
+                ("DELETE", "/wiki/rest/api/user/watch/label/1"),
+                ("POST", "/wiki/rest/api/user/watch/space/1"),
+                ("DELETE", "/wiki/rest/api/user/watch/space/1"),
+                ("POST", "/wiki/rest/atlassian-connect/1/app/module/dynamic"),
+                ("DELETE", "/wiki/rest/atlassian-connect/1/app/module/dynamic"),
+            )
+        ),
+        *(
+            (method, path, None, "text/plain", 415, "'text/plain'")
+            for method, path in (
+                ("POST", "/wiki/rest/api/content/1/child/attachment"),
+                ("PUT", "/wiki/rest/api/content/1/child/attachment"),
+                ("POST", "/wiki/rest/api/content/1/child/attachment/1/data"),
+                ("POST", "/wiki/rest/api/content/1/pagehierarchy/copy"),
+                ("POST", "/wiki/rest/api/content/1/permission/check"),
+                ("POST", "/wiki/rest/api/content/1/restriction"),
+                ("PUT", "/wiki/rest/api/content/1/restriction"),
+                ("PUT", "/wiki/rest/api/content/1/state"),
+                ("POST", "/wiki/rest/api/content/1/version"),
+                ("POST", "/wiki/rest/api/group"),
+                ("POST", "/wiki/rest/api/group/userByGroupId"),
+                ("POST", "/wiki/rest/api/space/1/permission"),
+                ("POST", "/wiki/rest/api/space/1/permission/custom-content"),
+                ("PUT", "/wiki/rest/api/space/1/theme"),
+                ("POST", "/wiki/rest/api/user/1/property/1"),
+                ("PUT", "/wiki/rest/api/user/1/property/1"),
+            )
+        ),
+        *(
+            ("GET", f"/wiki/rest/api/{path}", None, None, 403)
+            + (errors_atlassian.CONFLUENCE_FORBIDDEN_BODY,)
+            for path in (
+                "content/1/child",
+                "content/1/history",
+                "content/1/property",
+                "content/1/version",
+                "space/ENG/content",
+                "space/ENG/property",
+            )
+        ),
     ],
 )
-def test_confluence_answers_a_published_write_before_it_runs(
+def test_confluence_answers_a_published_operation_before_it_runs(
     client, method, vendor_path, authorization, ctype, status, body
 ):
-    """With no credential real refuses each write before it runs, in the order and shape
-    ``_published_answer``, ``_CONFLUENCE_CONSUMES`` and ``_CONFLUENCE_JAXRS_WRITES`` in
+    """With no credential real refuses each published operation before it runs, in the order and
+    shape ``_published_answer``, ``_CONFLUENCE_CONSUMES``, ``_CONFLUENCE_JAXRS_WRITES``,
+    ``_CONFLUENCE_NOT_PERMITTED_GETS`` and ``_CONFLUENCE_OUTSIDE_THE_DOCUMENT`` in
     ``backlot.routers.atlassian`` carry the measurement for. A 415's ``body`` is the reason Spring
     gives; the 401 is asserted by status alone, its body being JSON here where real's is Tomcat's
     page."""

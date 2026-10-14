@@ -60,7 +60,11 @@ sentence, with no signature and no session link.
    function. A parametrized case gets an `id` that says which behaviour it is. A test stays in the
    file of the layer it tests. "Low value" alone is not a reason.
 8. **Prose is said once and stays true.** A fact in two comments, a comment and a doc, or two docs
-   is kept in the place nearest the code it describes and removed from the other. A docstring that
+   is kept in the place nearest the code it describes and removed from the other; between two docs,
+   in the one a reader looking the fact up would open — the reference entry for that endpoint or
+   setting over an overview. A rewording that saves no line is not a cut. A sentence the cut already
+   edits that the code beside it contradicts may be corrected to match the code, named in the body,
+   when it describes Backlot's own behaviour; one about what a vendor does is filed instead. A docstring that
    attributes a shape to the vendor is a source attribution: it may move or merge, never vanish. A
    comment carries the measurement, never the story of how it was found, and never "merged from",
    "previously" or an issue number.
@@ -95,7 +99,7 @@ sentence, with no signature and no session link.
 | `surface` | `backlot/main.py`, `backlot/server.py`, `backlot/cli.py`, `backlot/config.py`, `backlot/openapi.py`, `backlot/mcp.py`, `backlot/integrations/` | `tests/test_server.py`, `tests/test_cli.py`, `tests/test_openapi.py`, `tests/test_mcp.py`, `tests/test_integrations.py`, `tests/test_llamaindex.py`, `tests/test_sdk.py`, `tests/test_cross_vendor.py` |
 | `fidelity` | `backlot/fidelity/` | `tests/test_fidelity.py` |
 | `shared-tests` | — | `tests/conftest.py`, `tests/_helpers.py`, and helpers repeated across test files |
-| `docs` | — | `README.md`, `docs/*.md` except the generated `docs/supported-sources.md` |
+| `docs` (`prose` only) | — | `README.md`, `docs/*.md` except the generated `docs/supported-sources.md` |
 
 A cut may reach outside the area's files when it removes a duplicate whose other copy is in the
 area — a helper in two test files moving to `tests/_helpers.py` — but never more than that.
@@ -110,8 +114,11 @@ and exit code). Say in the body which you ran.
 
 `$0` set (`/backlot-debloat hubspot`, or `/backlot-debloat hubspot tests` to fix the kind) means
 rehearsal on that area. You read GitHub freely and write to it never: no issue, label, comment,
-push or pull request. Skip the survey: a rehearsal pushes nothing, so it conflicts with nothing,
-but list in your summary the pull requests that would have kept a live run out of the area. Work on a local branch `claude/rehearsal-debloat-<area>-<MMDDHHMM>`
+push or pull request. Skip the survey's choice of area, but leave the closed files alone as a live
+run would, so the rehearsal makes only cuts a live run could, and list them with the pull requests
+that close them in your summary.
+
+Work on a local branch `claude/rehearsal-debloat-<area>-<MMDDHHMM>`
 cut from the HEAD of the branch you started on, which is the base for every proof and for the
 reviewers. End by printing the pull request title and body you would have opened, the issues you
 would have filed, and each reviewer's last verdict, then `git checkout` the branch you started on,
@@ -153,7 +160,8 @@ Read the area's files whole. Then list what the rules allow, by kind:
   by reading.
 - **prose**: the same fact in two comments, a comment that restates the line below it, a docstring
   longer than its function with nothing measured in it, a doc paragraph that a generated table or
-  another doc already carries, a comment narrating history (rule 8).
+  another doc already carries, a comment narrating history (rule 8). For each paragraph, grep its
+  rarest three or four words across `*.md` and `backlot/`; a second hit is a candidate.
 - **tests**: tests whose assertions are a subset of another's, parametrized cases that land in the
   same branch with the same answer shape, setup rebuilt test after test, helpers repeated across
   test files (`grep -hoE '^def _[a-z_]+' tests/*.py | sort | uniq -c | sort -rn`).
@@ -176,7 +184,7 @@ Rehearsal: `git checkout -b claude/rehearsal-debloat-<area>-<MMDDHHMM>` from whe
 
 ```bash
 BASE=$(git rev-parse HEAD)
-REC=$(mktemp -d /tmp/debloat-XXXXXX)
+REC=$(mktemp -d /tmp/debloat-XXXXXX)   # code and tests only
 ```
 
 Creating the branch at the commit you are on and returning to the starting branch at the end are the
@@ -186,12 +194,16 @@ skill and the reviewers are read from it. The base runs in a worktree of its own
 ## 4. Cut
 
 Make the cut one candidate at a time, running the area's test files after each
-(`uv run pytest <files>`, which prints its pass count): a failure is a
+(`uv run pytest <files>`, which prints its pass count; for `prose`, `tests/test_docs.py
+tests/test_skills.py`, once per few candidates): a failure is a
 behaviour you missed, so undo that candidate rather than adjusting a test to it. Commit titles are
 single declarative sentences describing the new state, with no trailers (AGENTS.md).
 
 `uv run ruff check . && uv run ruff format --check .` and `uv run python scripts/prose_check.py`
-must pass. If a docstring or a schema the generators read changed, `python scripts/gen_docs.py`.
+must pass; the latter reads only Python, so its silence says nothing about markdown. If a docstring
+or a schema the generators read changed, `python scripts/gen_docs.py`. Before the pull request, the
+whole suite passes (`uv run pytest`), as AGENTS.md asks; for `code` and `tests` the head recording is
+that run.
 
 ## 5. Prove
 
@@ -211,9 +223,10 @@ to a new name (`$REC/head2`).
 Then by kind:
 
 - `prose`: `uv run python scripts/invariance.py prose $BASE`, and `uv run pytest tests/test_docs.py tests/test_skills.py`.
-  Neither sees a fact disappear from prose, so also write the said-once map: for every sentence or
-  comment removed, where the same fact is still stated (file and line at the head), or that it
-  restated the code beside it. A removed fact with no row is a fact lost: put it back.
+  Neither sees a fact disappear from prose, and for a markdown-only cut `prose` prints `invariant`
+  over zero files, so the said-once map is the proof: for every sentence or comment removed, where
+  the same fact is still stated (file and line at the head), or that it restated the code beside it.
+  A removed fact with no row is a fact lost: put it back.
 - `code`: record the base a second time to `$REC/base2`, then
   `uv run python scripts/invariance.py compare $REC/base $REC/head --mode code --calibration $REC/base2`.
 - `tests`: `uv run python scripts/invariance.py compare $REC/base $REC/head --mode tests`.

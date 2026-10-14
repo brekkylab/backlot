@@ -31,7 +31,10 @@ git worktree add /tmp/inv-base <base> && git worktree add /tmp/inv-head <head>
 ```
 
 - **prose**: `(cd /tmp/inv-head && uv run python scripts/invariance.py prose <base>)` must print
-  `invariant`, and `uv run pytest -q tests/test_docs.py tests/test_skills.py` must pass.
+  `invariant`, and `uv run pytest tests/test_docs.py tests/test_skills.py` must pass. No recording
+  is needed. Over markdown alone that proof is empty, so check the said-once map instead: open each
+  cited file and line at the head and find the removed fact stated there. A removed fact stated
+  nowhere is a `block`; so is a correction of a sentence about vendor behaviour.
 - **code**: record the base a second time to `/tmp/inv-rec/base2`, then
   `uv run python scripts/invariance.py compare /tmp/inv-rec/base /tmp/inv-rec/head --mode code --calibration /tmp/inv-rec/base2`
   must print `invariant`. A difference is reproduced once more with a fresh head recording before

@@ -1017,9 +1017,9 @@ _CHALLENGED = f'{_CHALLENGE}, error="invalid_token"'  # one that names a token t
 # export with an empty `alt=` (400), the id holding a `%` no two hex digits follow (503), the two
 # downloads with `callback=a%20b` (503), the export with that `callback` beside `$.xgafv=9` (400)
 # and the media read with `access_token=nope` (Google's automated-queries page). It is ``None``
-# too where the part reads the batch's query, which the request on its own does not carry.
-# `_drive_batch_download`, `_drive_batch_redirect`, `_query_credential` and `_workbook` record the
-# rules.
+# too on every row whose batch URI names a token, which the request on its own does not carry. `{t}`
+# in a URI or a part's target is the admin token. `_drive_batch_download`, `_drive_batch_redirect`,
+# `_query_credential` and `_workbook` record the rules.
 # fmt: off
 _BATCH_ROWS = [
     # a Drive download is redirected ahead of the lookup and the typed, `fields` and `mimeType`
@@ -1088,6 +1088,13 @@ _BATCH_ROWS = [
     (f"{_DRIVE_BATCH}&access_token=ya29.x", ("GET", "/drive/v3/files?access_token=nope", None, _ANON), 403, None, None),
     (f"{_DRIVE_BATCH}&access_token=ya29.x", ("GET", "/drive/v3/files", None, None), 200, None, None),
     (f"{_DRIVE_BATCH}&access_token=nope", ("GET", "/drive/v3/files", None, "Bearernope"), 401, None, _CHALLENGED),
+    # a name the part carries is read from the part, any other from the batch
+    (_DRIVE_BATCH + "&access_token=nope", ("GET", "/drive/v3/files?bearer_token=ya29.x&oauth_token={t}", None, _ANON), 403, None, None),
+    (_DRIVE_BATCH + "&oauth_token={t}", ("GET", "/drive/v3/files?access_token=ya29.x", None, _ANON), 200, None, None),
+    (_DRIVE_BATCH + "&access_token=ya29.x", ("GET", "/drive/v3/files?oauth_token=nope", None, _ANON), 401, None, _CHALLENGED),
+    (_DRIVE_BATCH + "&access_token=ya29.x&oauth_token={t}", ("GET", "/drive/v3/files?oauth_token=nope", None, _ANON), 401, None, _CHALLENGED),
+    (_DRIVE_BATCH + "&access_token=ya29.x", ("GET", "/drive/v3/files?access_token=ya29.y", None, _ANON), 401, None, _CHALLENGED),
+    (_DRIVE_BATCH + "&access_token=ya29.x", ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain&oauth_token=nope", None, _ANON), 401, None, _CHALLENGED),
     (_DRIVE_BATCH, ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain", None, _ANON), 302, 403, "download/drive/v3/files/{doc}/export?mimeType=text/plain&quotaUser=7"),
     (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media", None, _ANON), 302, 403, "download/drive/v3/files/{pdf}?alt=media&quotaUser=7"),
     (_DRIVE_BATCH, ("GET", "/drive/v3/files/{doc}", None, _ANON), 403, 403, None),
@@ -1146,7 +1153,7 @@ def _batch_answer(client, headers, uri, method, target, body, auth):
 
 @pytest.mark.parametrize("uri, part, status, alone, detail", _BATCH_ROWS)
 def test_google_batch_redirects_a_drive_download_and_refuses_a_sheets_read(
-    client, admin_h, tokens, uri, part, status, alone, detail
+    client, admin_h, tokens, tokens_yaml, uri, part, status, alone, detail
 ):
     """The rows `_BATCH_ROWS` records, each beside the same request sent on its own where the row
     gives that request's status. A part the redirect answers carries real's three headers in real's
@@ -1158,9 +1165,11 @@ def test_google_batch_redirects_a_drive_download_and_refuses_a_sheets_read(
         "pdf": _drive_find(client, admin_h, "Whitepaper")["id"],
         "sheet": _drive_find(client, admin_h, "Q1 Revenue Model")["id"],
         "nope": "nosuchfile000",
+        "t": tokens_yaml["admin_token"],
     }
     method, target, body, auth = part
     target = target.format(**ids)
+    uri = uri.format(**ids)
     outer = {} if auth == _ANON else admin_h
     auth = None if auth == _ANON else auth and auth.format(mia=f"Bearer {tokens['mia@acme.com']}")
     got, lines, sub_body = _batch_answer(client, outer, uri, method, target, body, auth)
@@ -2406,53 +2415,82 @@ def test_the_credential_entries(client):
     assert _gerr(client.get("/gmail/v1/users/me/labels", params={"$.xgafv": "1"})) == gmail
 
 
-def test_every_google_operation_declares_the_system_parameter_and_checks_it(client):
+# The system parameters every Google family operation declares, as real's discovery documents do.
+_SYSTEM_PARAMETERS = [
+    {
+        "name": "$.xgafv",
+        "in": "query",
+        "required": False,
+        "description": "V1 error format.",
+        "schema": {"type": "string", "enum": ["1", "2"]},
+    },
+    {
+        "name": "access_token",
+        "in": "query",
+        "required": False,
+        "description": "OAuth access token.",
+        "schema": {"type": "string"},
+    },
+    {
+        "name": "oauth_token",
+        "in": "query",
+        "required": False,
+        "description": "OAuth 2.0 token for the current user.",
+        "schema": {"type": "string"},
+    },
+]
+
+
+def test_every_google_operation_declares_the_system_parameters_and_reads_them(client):
     """Both directions, and the document asked for twice.
 
-    Declared: every family operation carries it, `/batch` carries nothing. Checked: each operation
-    is SENT a value the parameter does not take and has to refuse it — the declaration is derived
-    from the path, so it would appear on a family route served by some other router while the
-    dependency that validates it never ran, a gap only this half sees. The path parameters are
-    dummies; the refusal comes before the route. The second fetch holds the enrichment idempotent,
-    since it edits the schema FastAPI caches and hands back by identity."""
+    Declared: every family operation carries `$.xgafv`, `access_token` and `oauth_token`, `/batch`
+    none of them. Read: each operation is SENT a `$.xgafv` the parameter does not take and has to
+    refuse it, and an `access_token` of Google's shape that does not resolve and has to answer the
+    bad token's 401 — the declaration is derived from the path, so it would appear on a family
+    route served by some other router while the code that reads it never ran, a gap only this half
+    sees. The path parameters are dummies; both answers come before the route's own work. The
+    second fetch holds the enrichment idempotent, since it edits the schema FastAPI caches and hands
+    back by identity."""
     client.get("/openapi.json")
     spec = client.get("/openapi.json").json()
     families = ("/drive/v3", "/gmail/v1", "/docs/v1", "/sheets/v4", "/slides/v1")
+    names = {p["name"] for p in _SYSTEM_PARAMETERS}
     missing, batch, unchecked = [], [], []
     for path, item in spec["paths"].items():
         for method, op in item.items():
             if method not in ("get", "post", "put", "patch", "delete"):
                 continue
-            declared = [p for p in op.get("parameters", []) if p["name"] == "$.xgafv"]
+            declared = [p for p in op.get("parameters", []) if p["name"] in names]
             if path.startswith(families):
-                if declared != [
-                    {
-                        "name": "$.xgafv",
-                        "in": "query",
-                        "required": False,
-                        "description": "V1 error format.",
-                        "schema": {"type": "string", "enum": ["1", "2"]},
-                    }
-                ]:
+                if declared != _SYSTEM_PARAMETERS:
                     missing.append(f"{method.upper()} {path}")
                 url = re.sub(r"\{[^}]+\}", "dummy", path)
                 r = client.request(method.upper(), f"{url}?$.xgafv=0", json={})
                 if r.status_code != 400 or "system query parameter" not in r.text:
                     unchecked.append(f"{method.upper()} {path} -> {r.status_code}")
+                r = client.request(method.upper(), f"{url}?access_token=ya29.x", json={})
+                if r.headers.get("www-authenticate") != _CHALLENGED:
+                    unchecked.append(f"{method.upper()} {path} access_token -> {r.status_code}")
             elif path.startswith("/batch") and declared:
                 batch.append(f"{method.upper()} {path}")
     assert missing == [] and batch == [] and unchecked == []
 
 
-def test_no_google_baseline_acknowledges_the_system_parameter_any_more():
-    """The 13 `google_drive` and 8 `gmail` entries `missing_param … ?$.xgafv` were the shape of
-    this gap in the fidelity baseline; declaring the parameter is what removes them, and a run of
+def test_no_google_baseline_acknowledges_the_system_parameters_any_more():
+    """The `missing_param` entries for `$.xgafv` (13 in `google_drive`, 8 in `gmail`) and for
+    `access_token` and `oauth_token` (26 and 16) were the shape of this gap in the fidelity
+    baseline; declaring the parameters is what removes them, and a run of
     `backlot diff --source <source> --update-baseline` against the live documents did."""
     from backlot.fidelity import baseline_path
 
     for source in ("google_drive", "gmail"):
         acknowledged = json.loads(baseline_path(source).read_text())["acknowledged"]
-        assert not [e["path"] for e in acknowledged if "$.xgafv" in e["path"]], source
+        for name in ("$.xgafv", "access_token", "oauth_token"):
+            assert not [e["path"] for e in acknowledged if e["path"].endswith(f"?{name}")], (
+                source,
+                name,
+            )
 
 
 # A request with no credential per row: the method, the path, what real answered it with no
@@ -2750,9 +2788,11 @@ def test_an_unserved_operation_reads_the_system_parameters_first(
     client, method, path, params, caller, status, code
 ):
     """The rows `_UNSERVED_PARAMETER_ROWS` records: ahead of the credential, `$.xgafv` refused,
-    and on a GET a `callback` wrapping the refusal or refused itself, as on a served route. The
-    check runs ahead of routing here (``backlot.main.route_a_google_path_the_way_google_does``),
-    where a served route's runs as the router's dependency, so it is pinned on its own."""
+    and on a GET a `callback` wrapping the refusal or refused itself, as on a served route; and a
+    revision's `alt=media` beside an empty `access_token` left to the missing credential's 401
+    rather than a download's answer. The check runs ahead of routing here
+    (``backlot.main.route_a_google_path_the_way_google_does``), where a served route's runs as the
+    router's dependency, so it is pinned on its own."""
     headers = BAD_TOKEN if caller == "bad" else {}
     r = client.request(method, path, params=params, headers=headers)
     assert r.status_code == status, r.text
@@ -3400,8 +3440,9 @@ def test_a_repeated_parameter_is_read_from_the_end_real_reads_it_from(
 
 
 def test_every_google_get_refuses_a_callback_it_cannot_call_and_no_post_reads_one(client):
-    """The other half of ``test_every_google_operation_declares_the_system_parameter_and_checks_it``
-    for the second system parameter, split the way real splits it.
+    """The other half of
+    ``test_every_google_operation_declares_the_system_parameters_and_reads_them`` for `callback`,
+    split the way real splits it.
 
     Every family GET is sent a name that cannot be a JavaScript one and has to refuse it. Every
     family POST is sent the same name and has to IGNORE it: measured on Sheets, a `callback` on
@@ -3922,11 +3963,12 @@ def test_the_refusal_order_on_a_download_is_system_bearer_then_callback(client, 
                 assert _gerr(alone)["status"] == "UNAUTHENTICATED", (kind, value)
 
 
-# A byte-stream read per row whose query names a token, as ``gerr.token_in_query`` records: the
-# read (`media`; `export`; `bare`, an export with no `mimeType`; `missing`, an export of a file that
-# does not exist; `json`, an export asking for `alt=json`), the query, the `Authorization`, and the
-# status real answered with what identifies the answer: the message, or the challenge of a 401. The
-# `media` row with `nope` is the answer real gave inside a batch (``gerr.token_in_query``).
+# A read per row whose query names a token, a byte-stream read but for `json`, as
+# ``gerr.token_in_query`` records: the read (`media`; `export`; `bare`, an export with no
+# `mimeType`; `missing`, an export of a file that does not exist; `json`, an export asking for
+# `alt=json`), the query, the `Authorization`, and the status real answered with what identifies the
+# answer: the message, or the challenge of a 401. The `media` row with `nope` is the answer real
+# gave inside a batch (``gerr.token_in_query``).
 _QUERY_TOKEN = gerr.QUERY_TOKEN_MESSAGE
 # fmt: off
 _DOWNLOAD_QUERY_TOKEN_ROWS = [
@@ -4657,9 +4699,14 @@ def test_drive_about_appears_in_the_openapi_spec(client):
     """The OpenAPI→MCP bridge builds its tools from the spec, so a route the spec omits is a route
     no generated client can reach."""
     op = client.get("/openapi.json").json()["paths"][ABOUT]["get"]
-    # `$.xgafv` beside the route's own parameter: a system parameter, declared on every Google
-    # operation at once (see test_every_google_operation_declares_the_system_parameter).
-    assert {p["name"] for p in op["parameters"]} == {"fields", "$.xgafv"}
+    # The system parameters beside the route's own, declared on every Google operation at once
+    # (see test_every_google_operation_declares_the_system_parameters_and_reads_them).
+    assert {p["name"] for p in op["parameters"]} == {
+        "fields",
+        "$.xgafv",
+        "access_token",
+        "oauth_token",
+    }
 
 
 @pytest.fixture(scope="module")

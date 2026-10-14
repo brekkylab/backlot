@@ -298,7 +298,7 @@ routes only; the other four families honour `callback` on their errors and not y
 Measured against the live Sheets, Docs, Drive, Gmail and Slides APIs on 2026-09-15, 2026-09-16 and
 2026-09-17: the wrap, the indent and the charset first, the suppression across the four non-Sheets
 families next, and the escape set and the case-insensitive `alt` last; the download refusals on
-2026-10-04, 2026-10-05, 2026-10-07 and 2026-10-08.
+2026-10-04, 2026-10-05, 2026-10-07 and 2026-10-08, and a token named in the query on 2026-10-13.
 
 **A repeated query parameter is read from the end real reads it from**, which is the first for some
 parameters and the last for others. The first repeat decides `fields`, `q`, `pageSize`, `pageToken`
@@ -364,31 +364,41 @@ writes it: every value it cannot convert and every name the request message lack
 400, each named by its proto path where it has one. Measured against the live Sheets API on
 2026-10-04, and a non-ASCII letter's case on 2026-10-05.
 
-**A credential is `Bearer` or `OAuth`, spelt so, and a space before the token**, a token a space, a
-tab or a comma ends, or a closing `"` where it opens with one: `Bearer <t> x`, `Bearer <t>,x` and
-`Bearer "<t>"` are served, `Bearer<t>` is a bad token, and `bearer <t>`, `token <t>`, `Basic …` and
-a bare `Bearer` are no credential at all. With none, a request is answered by its operation rather
-than its family: an unregistered caller's 403 on an operation that takes API keys too (Drive's file
-and comment reads among them, and the three Sheets reads), a missing credential's 401 on the rest,
-and on a download the missing API key's 403 with no `Authorization` header, the download server's
-401 with one that is no credential. Each of the front end's 401s carries
-`WWW-Authenticate: Bearer realm="https://accounts.google.com/"`, with `error="invalid_token"` for a
-token that does not resolve, and the download server's names the realm without its trailing slash.
-An operation the two Google baselines acknowledge as `missing_operation` is refused the same way,
-after `$.xgafv` and `callback`, and a caller whose credential resolves gets the 404 or 405 its path
-gets. One of those operations, a revision read, is not answered as a download with `alt=media`:
-with no `Authorization`, an empty one or `Basic …` it is the missing credential's 401. Measured
-against the live Drive, Gmail, Sheets, Docs and Slides APIs on 2026-10-11, and the revision read on
-2026-10-14. A token in the query, under `access_token`, `bearer_token` or `oauth_token`, is read
-where no header outranks it: taken in that order, the first of those names the query carries is a
-gate whose first value has to start `ya29.` or `1/`, as Google's own tokens do, and the last carries
-the token, while beside a scheme run into its token (`Bearer<t>`) there is no gate. So behind no
-header, or one that is no credential, a Backlot token alone in the query is no credential, on the
-real APIs as here (`backlot.routers.google._query_credential`). A byte-stream read refuses any of
-those names, in any case, with real's 400 `OAuth token was passed in the query parameter…`; the
-unserved revision read with `alt=media` and an empty `access_token` is the missing credential's 401
-instead. Measured against the live Drive and Gmail APIs on 2026-10-13, and the revision read on
-2026-10-14.
+**A credential in `Authorization` is `Bearer` or `OAuth`, spelt so, and a space before the token**,
+a token a space, a tab or a comma ends, or a closing `"` where it opens with one: `Bearer <t> x`,
+`Bearer <t>,x` and `Bearer "<t>"` are served, `Bearer<t>` names no token, so is a bad token unless
+the query names one, which is then the token (below), and `bearer <t>`, `token <t>`, `Basic …` and a
+bare `Bearer` are no credential in the header. With none in the header or the query, a request is
+answered by its operation rather than its family: an unregistered caller's 403 on an operation that
+takes API keys too (Drive's file and comment reads among them, and the three Sheets reads), a
+missing credential's 401 on the rest, and on a download the missing API key's 403 with no
+`Authorization` header, the download server's 401 with one that is no credential. Each of the front
+end's 401s carries `WWW-Authenticate: Bearer realm="https://accounts.google.com/"`, with
+`error="invalid_token"` for a token that does not resolve, and the download server's names the realm
+without its trailing slash. An operation the two Google baselines acknowledge as `missing_operation`
+is refused the same way, after `$.xgafv` and `callback`, and a caller whose credential resolves gets
+the 404 or 405 its path gets. One of those operations, a revision read, is not answered as a
+download with `alt=media`: with no `Authorization`, an empty one or `Basic …` it is the missing
+credential's 401. Measured against the live Drive, Gmail, Sheets, Docs and Slides APIs on
+2026-10-11, and the revision read on 2026-10-14.
+
+**A token in the query is read where the header leaves room for it**, under `access_token`,
+`bearer_token` or `oauth_token`: behind no header, behind one that is no credential, and behind a
+scheme run into its token (`Bearer<t>`), where a scheme with a space after it, whether or not it
+names a token, and a bare `Bearer` or `OAuth` keep the query out. Taken in that order, the first of
+those names the query carries is a gate whose first value has to start `ya29.` or `1/`, as Google's
+own tokens do, and the last carries the token; behind a run-in scheme there is no gate. So behind no
+header, or one that is no credential, a token Backlot issues (`usr-…`, or the default
+`admin-service-token`) alone in the query is no credential, on the real APIs as here
+(`backlot.routers.google._query_credential`). Inside a batch a part reads each of those names from
+its own query where it carries it and from the batch's where it does not. `access_token` and
+`oauth_token` are declared on every Google route, as real's discovery documents declare them;
+`bearer_token` is read but not declared, as they do not declare it. A byte-stream read refuses any
+of those names, in any case, with real's 400 `OAuth token was passed in the query parameter…`, after
+the 401 a token read from the query answers when it does not resolve; the unserved revision read
+with `alt=media` and an empty `access_token` is the missing credential's 401 instead. Measured
+against the live Drive and Gmail APIs on 2026-10-13, and the batch's names beside a part's and the
+revision read on 2026-10-14.
 
 **A `HEAD` on Drive or Gmail is the `GET` with the body left off**, status for status, and declares
 a `content-length` only on a download's 200, where it is the length of the bytes the `GET` serves;

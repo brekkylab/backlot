@@ -100,7 +100,7 @@ QUERY_TOKEN_MESSAGE = (
 )
 
 # The query parameters real reads an OAuth token from, in the order its front end ranks them
-# (``routers.google._query_credential``). A byte-stream read refuses any of them, named in any case
+# (``routers.google._query_credential``). A byte-stream read refuses any of them
 # (:func:`token_in_query`).
 QUERY_TOKENS = ("access_token", "bearer_token", "oauth_token")
 
@@ -627,10 +627,11 @@ def names_a_query_token(query: Mapping[str, str]) -> bool:
 
 
 def token_in_query() -> GoogleError:
-    """A byte-stream read whose query names an OAuth token: 400 under `badRequest`, whatever the
-    value, beside a header credential that resolves as beside none. The names are `QUERY_TOKENS` in
-    any case (:func:`names_a_query_token`); a name that only resembles one is left to the download's
-    other refusals.
+    """A byte-stream read whose query names an OAuth token: 400 under `badRequest`, beside a header
+    credential that resolves as beside none, and whatever the value but one the query is read as a
+    token that does not resolve, which answers that token's 401 first (the route's credential check
+    runs ahead of this). The names are :func:`names_a_query_token`'s; a name that only resembles one
+    is left to the download's other refusals.
 
     Measured 2026-10-13 on `files.export`; ``tests/test_google.py::_DOWNLOAD_QUERY_TOKEN_ROWS``
     holds the cases. `files.get?alt=media` answered it with an empty value and inside a batch; sent

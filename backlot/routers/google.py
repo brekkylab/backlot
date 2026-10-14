@@ -286,9 +286,10 @@ def _credential(request: Request) -> tuple[bool, str | None]:
     starts with `"` runs to the next `"` instead, or to the end without one, and loses the spaces,
     tabs and commas at its two ends but none between; what follows the closing `"` is passed over,
     and `""` names no token. A scheme with something other than a space after it, and one whose
-    space leads to nothing but those three, is a credential that names no token; a scheme with
-    nothing but spaces and tabs after it, a scheme in another case and anything else are no
-    credential at all. Measured on 2026-10-11 against Drive (`files.list` and `about`), Sheets,
+    space leads to nothing but those three, is a credential whose header names no token; a scheme
+    with nothing but spaces and tabs after it is no credential at all, the query's included, and a
+    scheme in another case and anything else are no credential in the header, which leaves the query
+    to decide (below). Measured on 2026-10-11 against Drive (`files.list` and `about`), Sheets,
     Docs, Slides and Gmail, with a token that resolves and with `nope`, a quoted token only on
     2026-10-13, and every spelling ``tests/test_google.py::_CREDENTIAL_ROWS`` lists replayed on
     Gmail's `labels.get` and Drive's `files.list` on 2026-10-13.
@@ -330,22 +331,31 @@ def _query_credential(request: Request, *, gated: bool) -> tuple[bool, str | Non
     first the query carries is the gate and the last is the token, wherever each stands in the
     query. ``gated``, the gate's first value has to start `ya29.` or `1/` once decoded, or the query
     names no credential. Past the gate the token's value is resolved as it stands; an empty one, or
-    a token whose name the query repeats, names no token. A part of a batch whose own query carries
-    none of the three names reads the batch's.
+    a token whose name the query repeats, names no token. Inside a batch a part reads each of the
+    three names from its own query where it carries that name and from the batch's where it does
+    not, so a part's values for a name stand in for the batch's rather than join them.
 
     Measured 2026-10-13 on Drive's `files.list` and Gmail's `profile`, each name alone, each pair in
     both orders and `access_token` beside each kind of header, with the rows
     ``tests/test_google.py`` keeps in `_QUERY_CREDENTIAL_ROWS`, and in `_BATCH_ROWS` for a batch. On
     2026-10-14 real answered every row of `_QUERY_CREDENTIAL_ROWS`, a quoted token beside the query
-    among them, as recorded, on Gmail's `labels.get` and Drive's `files.list`. The two prefixes are
-    what a byte sweep over the printable ASCII found, 282 values with each character after ya29 and
-    after 1 and before a slash, and real read a JWT, an API key and a token of Backlot's shape as no
-    credential.
+    among them, as recorded, on Gmail's `labels.get` and Drive's `files.list`, and Drive's batch
+    combined a part's names with the batch's as the `_BATCH_ROWS` rows that mix them record. The two
+    prefixes are what a byte sweep found, 282 values with each of the 94 visible ASCII characters
+    (0x21 to 0x7E) after ya29 and after 1 and before a slash, and real read a JWT, an API key and a
+    token of Backlot's shape as no credential.
     """
     query = request.query_params
     outer = _BATCH_OUTER.get()
-    if outer is not None and not any(name in query for name in gerr.QUERY_TOKENS):
-        query = QueryParams(outer.query)
+    if outer is not None:
+        batch = QueryParams(outer.query)
+        query = QueryParams(
+            [
+                (name, value)
+                for name in gerr.QUERY_TOKENS
+                for value in (query if name in query else batch).getlist(name)
+            ]
+        )
     named = [name for name in gerr.QUERY_TOKENS if name in query]
     if not named:
         return None
@@ -2825,11 +2835,12 @@ def _sheets_grid(content: str | None) -> list[list[str]]:
 #                    response -- Backlot enforces no quota, so there is nothing for it to select
 #   upload_protocol  accepted and ignored on a read
 #
-# `key`, `access_token` and `oauth_token` are NOT here: each is an alternative way to authenticate,
-# and honouring one means a second credential path through `backlot.auth` rather than a parameter
-# this module can read. `uploadType` is not here either -- measured, the real API REFUSES it on a
-# read ("Cannot bind query parameter"), so the baseline's "the vendor accepts it" is not what the
-# vendor does.
+# `key` is NOT here: it is an alternative way to authenticate, and honouring it means a second
+# credential path through `backlot.auth` rather than a parameter this module can read. Nor are
+# `access_token` and `oauth_token`, which `_credential` reads and the router declares for every
+# family (`backlot.openapi.google_system_parameters`). `uploadType` is not here either -- measured,
+# the real API REFUSES it on a read ("Cannot bind query parameter"), so the baseline's "the vendor
+# accepts it" is not what the vendor does.
 _P_SHEETS_STD = [
     qp("fields"),
     qp("prettyPrint", "boolean"),

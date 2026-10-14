@@ -6015,6 +6015,11 @@ _ACCEPT_ROWS = [
     + ({"www-authenticate": _PRESENT},),
     ("OPTIONS", _INFO, "none", "application/json;Q=0x1p-1, text/plain", None, 401)
     + ("text/plain;charset=UTF-8", errors_atlassian.JIRA_UNAUTHENTICATED.encode(), {}),
+    ("OPTIONS", _INFO, "none", "application/json;Q=0X1p-1, text/plain", None, 401)
+    + ("text/plain;charset=UTF-8", errors_atlassian.JIRA_UNAUTHENTICATED.encode(), {}),
+    ("GET", _INFO, "none", "foo, application/json;Q=abc, text/plain", None, 406, _EMPTY_HTML, b"")
+    + ({},),
+    ("GET", _INFO, "none", "application/json;q=-1", None, 406, _EMPTY_HTML, b"", {}),
     # Jira cannot read a header of more than fifty members; Confluence's Spring services can
     ("GET", _INFO, "none", _MEMBERS(51), None, 406, _EMPTY_HTML, b"", {}),
     ("GET", _INFO, "none", _MEMBERS(50), None, 200, _JIRA_JSON, None, {}),
@@ -6036,6 +6041,16 @@ _ACCEPT_ROWS = [
             ("GET", "/atlassian/wiki/rest/api/nopesuchroute", "none", _SORT_FAILS),
         )
     ),
+    ("GET", f"{_SPACES}?limit=abc", "admin", _SORT_FAILS, None, 500, None, b"", {}),
+    # three and four members, where which pairs Java's sort compares decides it
+    *(
+        ("GET", _SPACES, "admin", accept, None, 500, None, b"", {})
+        for accept in (
+            "application/json, application/json, application/json;Q=abc",
+            "application/json;Q=abc, */*, application/json",
+            "text/plain;Q=abc, application/*+json",
+        )
+    ),
     *(
         ("GET", _SPACES, "admin", accept, None, 400, None, b"", {})
         for accept in (
@@ -6043,6 +6058,10 @@ _ACCEPT_ROWS = [
             "application/json, */*;Q=abc",
             "application/json;Q=abc, application/*",
             "*/*;Q=abc, text/*",
+            "application/json, */*;Q=abc, application/json",
+            "application/json, text/plain, application/json, application/*;Q=abc",
+            "application/*;Q=abc, application/json;q=0.5, application/json, text/plain",
+            "application/json, application/*;Q=abc, application/json;q=0.5, text/plain",
         )
     ),
     ("GET", "/atlassian/wiki/rest/api/audit", "none", _SORT_FAILS, None, 400, "text/plain")

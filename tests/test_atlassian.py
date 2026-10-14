@@ -5462,8 +5462,15 @@ _SPACES = "/atlassian/wiki/rest/api/space"
 _ATTACH = "/atlassian/wiki/rest/api/content/1/child/attachment"
 _LABEL = "/atlassian/wiki/rest/api/space/NOPESUCH/label"
 _CQL = "/atlassian/wiki/rest/api/search?cql=type%3Dpage"
-#: Tomcat's page by status, as long as real's was (``errors.atlassian.tomcat_page``).
-_TOMCAT_LENGTHS = {400: 435, 403: 431, 405: 449, 406: 441, 415: 457}
+#: Tomcat's page by status (``errors.atlassian.tomcat_page``): as long as real's was, and the title
+#: real's carried in its `<title>` and its `<h1>`.
+_TOMCAT_PAGES = {
+    400: (435, "HTTP Status 400 – Bad Request"),
+    403: (431, "HTTP Status 403 – Forbidden"),
+    405: (449, "HTTP Status 405 – Method Not Allowed"),
+    406: (441, "HTTP Status 406 – Not Acceptable"),
+    415: (457, "HTTP Status 415 – Unsupported Media Type"),
+}
 _PRESENT = ...
 
 _EMPTY_HTML = errors_atlassian.HTML_MEDIA_TYPE
@@ -6142,8 +6149,12 @@ def test_atlassian_answers_an_accept_where_and_as_real_does(
         body = None
     if isinstance(body, str):
         body = _accept_body(body, status, path.split("?")[0][len("/atlassian") :])
-        if status in _TOMCAT_LENGTHS and media_type == _TOMCAT:
-            assert len(body) == _TOMCAT_LENGTHS[status]
+        if status in _TOMCAT_PAGES and media_type == _TOMCAT:
+            length, title = _TOMCAT_PAGES[status]
+            assert len(body) == length
+            head = f'<!doctype html><html lang="en"><head><title>{title}</title>'
+            assert body.startswith(head.encode())
+            assert body.endswith(f"<body><h1>{title}</h1></body></html>".encode())
     if body is not None:
         assert r.content == body
     for name, value in headers.items():
@@ -6184,22 +6195,3 @@ def test_jira_operations_that_answer_an_accept_with_no_406(client, operation):
     if operation in routers_atlassian._JIRA_UNSERVED["refused"]:
         assert r.status_code == 401
         assert r.headers["content-type"] == "text/html;charset=UTF-8"
-
-
-@pytest.mark.parametrize(
-    "status,title",
-    [
-        (400, "HTTP Status 400 – Bad Request"),
-        (403, "HTTP Status 403 – Forbidden"),
-        (405, "HTTP Status 405 – Method Not Allowed"),
-        (406, "HTTP Status 406 – Not Acceptable"),
-        (415, "HTTP Status 415 – Unsupported Media Type"),
-    ],
-)
-def test_confluence_tomcat_page_is_reals(status, title):
-    """Pins ``errors.atlassian.tomcat_page`` to the page real sent, title and heading copied from
-    it rather than from the template, and its length."""
-    page = errors_atlassian.tomcat_page(status)
-    assert page.startswith(f'<!doctype html><html lang="en"><head><title>{title}</title>')
-    assert page.endswith(f"<body><h1>{title}</h1></body></html>")
-    assert len(page.encode()) == _TOMCAT_LENGTHS[status]

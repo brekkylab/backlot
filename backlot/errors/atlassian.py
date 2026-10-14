@@ -867,11 +867,11 @@ def accepts(
     `application/*+json` admits JSON on Jira and the Spring services and not on the JAX-RS ones,
     and `*/json` and `*/*+json` the other way round.
 
-    Jira and the Spring services cannot read a header any member of which they cannot read
-    (:func:`_accept`: `foo`, `*.*`, `*/json`, a `q` or a `charset` they do not read), wherever it
-    stands, but for :data:`_JIRA_READS_AS_JSON`. The JAX-RS services pass a member with no `/` over,
-    ignore a charset and read `*/json`, cannot read a header that held nothing else, and answer
-    one they cannot parse with a 400 (:func:`_jaxrs_accept`).
+    None is a header the service cannot read: on Jira and the Spring services, one holding a member
+    :func:`_accept` cannot read (`foo`, `*.*` and `*/json` among them), wherever it stands, but for
+    :data:`_JIRA_READS_AS_JSON`; on the JAX-RS services, one whose every member
+    :func:`_jaxrs_accept` passes over. A JAX-RS header that cannot be parsed is the 400
+    :func:`not_acceptable` answers before asking this.
     """
     if reader == "jaxrs":
         found, passed_over, _ = _jaxrs_accept(accept)
@@ -937,12 +937,10 @@ def not_acceptable(
     """The 406 an endpoint at ``path`` answers where ``accept`` admits none of the types it
     ``produces`` (:func:`accepts`), or None.
 
-    Real asks once the request has reached an endpoint and before the endpoint runs: behind a 405
-    for a method the path does not take and a 415 for a body the endpoint does not read, ahead of
-    Jira's 401 (:data:`JIRA_UNAUTHENTICATED`), Confluence's anonymous 403s, a parameter's 400 and
-    the endpoint's own 200 or 404, and behind the 401 Confluence answers an unreadable Basic with.
-    Measured 2026-10-13 by sending each of those wrong beside `Accept: text/html`; the endpoints
-    that answer it are ``backlot.routers.atlassian``'s to say.
+    Real asks once the request has reached an endpoint, so a 405 for a method the path does not
+    take comes first (2026-10-13); where it falls among the endpoint's own refusals is
+    ``backlot.routers.atlassian._checked_before_the_route``'s for a route here and
+    ``backlot.routers.atlassian._published_answer``'s for an operation none serves.
 
     - Jira: RFC 7807 under :data:`PROBLEM_JSON`, ``detail`` naming ``produces``
       (`Acceptable representations: [application/json].`) and `Accept` naming them beside it, the
@@ -1858,10 +1856,10 @@ def no_endpoint(path: str, method: str) -> AtlassianError:
 
 #: Confluence's JAX-RS 404 for a segment under `/wiki/rest/api/` that no resource claims. The shape
 #: follows `Accept` rather than the credential: measured 2026-09-22 on `nopesuchroute` and
-#: `nope/deeper/still`, an `Accept` naming `application/json` answers the JSON below and every other
-#: value -- absent, `*/*`, `application/xml` -- answers the XML, with or without a credential; the
-#: name is read whatever its case (`APPLICATION/JSON`, 2026-10-13). The message carries the full
-#: request URL, query string included.
+#: `nope/deeper/still`, `application/json` answers the JSON below, in any case (`APPLICATION/JSON`,
+#: 2026-10-13), and absent, `*/*` and `application/xml` the XML, with or without a credential; which
+#: a list picks is :func:`jaxrs_picks_json`'s. The message carries the full request URL, query
+#: string included.
 JAXRS_XML_MEDIA_TYPE = "application/xml"
 JAXRS_JSON_MEDIA_TYPE = "application/json"
 _JAXRS_MESSAGE = "null for uri: {url}"

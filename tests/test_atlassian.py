@@ -5705,6 +5705,7 @@ _ACCEPT_ROWS = [
     + ({"allow": "HEAD,GET,OPTIONS"},),
     # -- a member Jira or a Spring service cannot read (``errors.atlassian.accepts``)
     ("GET", _INFO, "none", "foo, application/json", None, 406, _EMPTY_HTML, b"", {}),
+    ("GET", _INFO, "none", "foo, application/json;Q=2", None, 406, _EMPTY_HTML, b"", {}),
     ("GET", _INFO, "none", "application/json, foo", None, 406, _EMPTY_HTML, b"", {}),
     ("GET", _INFO, "none", "application/json,*.*", None, 406, _EMPTY_HTML, b"", {}),
     ("GET", _INFO, "none", "*/json", None, 406, _EMPTY_HTML, b"", {}),
@@ -5750,6 +5751,7 @@ _ACCEPT_ROWS = [
     ("GET", _CQL, "admin", "*/json", None, 200, _JSON, None, {}),
     ("GET", _CQL, "none", "*/*+json", None, 403, _JSON, None, {}),
     ("GET", _CQL, "none", "foo, application/json", None, 403, _JSON, None, {}),
+    ("GET", _CQL, "none", "foo, *.*", None, 406, None, b"", {}),
     ("GET", _CQL, "admin", "application/json;charset=utf-7", None, 200, _JSON, None, {}),
     ("GET", _CQL, "none", "application/json,", None, 403, _JSON, None, {}),
     ("GET", _CQL, "none", "*;q=0.5", None, 403, _JSON, None, {}),

@@ -6114,6 +6114,8 @@ _ACCEPT_ROWS += [
     ("GET", _LICENSE, "none", "foo", None, 401, _EMPTY_HTML, b"")
     + ({"allow": None, "www-authenticate": _PRESENT},),
     ("HEAD", _LICENSE, "none", "*.*", None, 401, _EMPTY_HTML, b"", {"allow": None}),
+    # a `Q=2` beside a member Jira cannot read fails nothing there either
+    ("GET", _LICENSE, "none", "foo, application/json;Q=2", None, 401, _EMPTY_HTML, b"", {}),
     ("GET", _LICENSE, "none", "image/*", None, 500, _OOPS_MEDIA, "oops")
     + ({"allow": None, "www-authenticate": _PRESENT},),
 ]

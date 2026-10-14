@@ -722,10 +722,7 @@ def _java_double(text: str) -> float | None:
     if not _JAVA_DOUBLE.fullmatch(text):
         return None
     sign = -1.0 if text.startswith("-") else 1.0
-    body = text.lstrip("+-")
-    if body in ("NaN", "Infinity"):
-        return sign * float(body.replace("Infinity", "inf"))
-    body = body.rstrip("fFdD")
+    body = text.lstrip("+-").rstrip("fFdD")
     return sign * (float.fromhex(body) if body[:2] in ("0x", "0X") else float(body))
 
 
@@ -868,8 +865,6 @@ def spring_cannot_sort(accept: str | None, *, reader: str = "jira") -> bool:
     and so does a lone member, which is not compared. What each answer then becomes is
     ``backlot.routers.atlassian.spring_sort_failure``.
     """
-    if reader == "jira" and (accept or "").strip() == _JIRA_READS_AS_JSON:
-        return False
     ranges, unread = _accept(accept, reader=reader)
     if unread or len(ranges) < 2:
         return False

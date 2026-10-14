@@ -660,6 +660,18 @@ def reconcile_issues_null() -> AtlassianError:
     )
 
 
+def reconcile_issues_too_many() -> AtlassianError:
+    """Jira's 400 for more than 50 `reconcileIssues`, measured 2026-10-12 on both GET and POST."""
+    return AtlassianError(
+        400,
+        {
+            "errorMessages": ["The max number of issues to reconcile is 50."],
+            "errors": {},
+        },
+        media_type=JIRA_JSON_MEDIA_TYPE,
+    )
+
+
 def max_results_out_of_range() -> AtlassianError:
     """Jira's 400 for `search/jql`'s `maxResults` outside 1-5000, on both methods and both
     placements — the query string and the POST body. Measured 2026-09-18 against Jira Cloud:

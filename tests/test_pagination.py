@@ -205,12 +205,34 @@ def test_github_cursor_offset_prefers_the_cursor_over_the_page():
     assert pg.github_cursor_offset(4, 5, "garbage", None) == 0
 
 
-def test_github_link_header_percent_encodes_its_param_values():
-    """A param value is arbitrary text — a search `q` carries spaces and colons — and a URI cannot
-    hold them raw. Real percent-encodes, and a client that follows the link has to arrive at the
-    same query it was paging."""
-    h = pg.github_link_header("http://x/search/code", {"q": "repo:core in:path a b"}, 1, 2, 10)
-    assert "q=repo%3Acore%20in%3Apath%20a%20b" in h
+@pytest.mark.parametrize(
+    ("link", "value"),
+    [
+        (
+            lambda: pg.github_link_header(
+                "http://x/search/issues", {"q": "repo:core in:path a b"}, 1, 2, 10
+            ),
+            "q=repo%3Acore+in%3Apath+a+b",
+        ),
+        (
+            lambda: pg.github_cursor_link_header(
+                "http://x/repos/o/r/issues", {"labels": "Question/Not a bug,C++"}, None, 2, 10, 0
+            ),
+            "labels=Question%2FNot+a+bug%2CC%2B%2B",
+        ),
+        (
+            lambda: pg.github_code_search_link_header(
+                "http://x/search/code", {"q": "repo:core in:path a b"}, 1, 2, 10
+            ),
+            "q=repo%3Acore%20in%3Apath%20a%20b",
+        ),
+    ],
+    ids=["search-issues", "cursor-listing", "search-code"],
+)
+def test_github_link_headers_encode_their_param_values(link, value):
+    """One row per builder, each spelling a value as :func:`pagination._page_url` records."""
+    h = link()
+    assert value in h
     assert " " not in h[h.index("<") : h.index(">")]
 
 

@@ -257,10 +257,10 @@ def test_jira_refuses_a_bearer_it_cannot_read_as_a_connect_token(client):
         "/atlassian/rest/api/3/project/search", headers={"Authorization": "Bearer usr-nope"}
     )
     assert r.status_code == 403
-    # The whole body, not a subset: this one route answers with a single `error` key, where every
-    # other Jira error on a served route carries `errorMessages` and `errors`
-    # (``errors.atlassian._jira_envelope``). Byte for byte, spelled as
-    # ``backlot.main.refuse_a_bearer_jira_cannot_read`` says real spells it.
+    # The whole body, not a subset: this one route answers with a single `error` key, where a Jira
+    # refusal in its own envelope (``errors.atlassian._jira_envelope``) carries `errorMessages` and
+    # `errors`. Byte for byte, spelled as ``backlot.main.refuse_a_bearer_jira_cannot_read`` says
+    # real spells it.
     assert r.content == b'{"error": "Failed to parse Connect Session Auth Token"}'
     # No Seraph header either — that one reports a failed Basic username, and this is not one.
     assert "x-seraph-loginreason" not in r.headers
@@ -1681,6 +1681,7 @@ def test_jira_comment_paging_is_declared_so_a_client_can_discover_it(paged):
 # --- a project role's id: a `long` path variable, read before the project ---------------------
 
 _MISSING_ID = "Required path variable 'id' is not present."
+_NO_SUCH_ROLE = b'{"errorMessages":[],"errors":{}}'
 
 
 def _unconverted(role_id: str) -> str:
@@ -1743,15 +1744,19 @@ def _unconverted(role_id: str) -> str:
                 "9223372036854775808",
                 "-9223372036854775809",
                 "0x8000000000000000",
+                "0x%C4%B0",
             )
         ),
         # whitespace alone, which leaves the variable missing
         ("GET", "%20", "none", None, 400, _MISSING_ID),
         ("GET", "%E2%80%83", "none", None, 400, _MISSING_ID),
-        # a caller who sees the project gets the same 400, and the id as read
+        # a caller who sees the project gets the same 400, the project's one role for its id
+        # however it is spelled, and the 404 for any other id read
         ("GET", "abc", "admin", None, 400, _unconverted("abc")),
-        ("GET", "-0x1", "admin", None, 200, -1),
-        ("GET", "1%E2%80%831", "admin", None, 200, 11),
+        ("GET", "10002", "admin", None, 200, 10002),
+        ("GET", "0x2712", "admin", None, 200, 10002),
+        ("GET", "-0x1", "admin", None, 404, _NO_SUCH_ROLE),
+        ("GET", "1%E2%80%831", "admin", None, 404, _NO_SUCH_ROLE),
         # the writes read it behind their 415 and ahead of the project
         ("DELETE", "abc", "none", None, 400, _unconverted("abc")),
         ("DELETE", "%20", "none", None, 400, _MISSING_ID),
@@ -1767,7 +1772,7 @@ def test_jira_reads_a_role_id_as_a_long_before_the_project(
 ):
     """Each row as ``backlot.routers.atlassian._role_id`` reads the id, which real answered the same
     with and without a credential; the project is one the anonymous caller cannot see and the admin
-    can."""
+    can, and an id the project has no role for is ``errors.atlassian.no_such_role``."""
     key = synth.jira_project_key("payments")
     headers = dict(admin_h) if caller == "admin" else {}
     if body is not None:
@@ -1783,6 +1788,9 @@ def test_jira_reads_a_role_id_as_a_long_before_the_project(
             assert r.json()["instance"] == f"/rest/api/3/project/{key}/role/{role_id}"
     elif status == 200:
         assert r.json()["id"] == answer
+    elif answer is not None:
+        assert r.headers["content-type"] == "application/json;charset=UTF-8"
+        assert r.content == answer
     else:
         assert r.json()["errorMessages"] == [f"No project could be found with key '{key}'."]
 
@@ -1797,10 +1805,11 @@ def test_jira_role_declares_its_id_as_the_integer_the_document_does(client):
 
 # --- how a query parameter is READ: conversion, range, repetition -------------------------
 
-# Measured on brekkylab.atlassian.net, 2026-09-14. The two products refuse a type-conversion
-# failure in DIFFERENT envelopes, neither of them `errors.atlassian.http_body`'s: Jira answers RFC
-# 7807 on `application/problem+json`, Confluence its own two-key body carrying a raw Java
-# exception string on a bare `application/json`.
+# The two products refuse a type-conversion failure in DIFFERENT envelopes, as measured at
+# ``errors.atlassian.integer_conversion_failure``: Jira answers RFC 7807 on
+# `application/problem+json`, Confluence its own two members
+# (``errors.atlassian._confluence_envelope``) carrying a raw Java exception string on a bare
+# `application/json`.
 
 
 # the path a refusal echoes, as `_echoed_path` gives it

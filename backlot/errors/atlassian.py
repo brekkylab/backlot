@@ -38,14 +38,13 @@ WIKI = f"{PREFIX}/wiki"
 # does not. Measured on brekkylab.atlassian.net, 2026-09-14.
 PROBLEM_JSON = "application/problem+json;charset=UTF-8"
 
-# The two refusals Confluence gives a caller it will not serve, measured against
-# ecosystem.atlassian.net and brekkylab.atlassian.net on 2026-09-04. A credential it read and
-# rejected, and a request that carried none, get the 403 below verbatim on every served route but
-# `search` (:data:`CONFLUENCE_NOT_PERMITTED_BODY`) — the vendor reports its own exception class in
-# the message, and a client that logs the body logs that. A Basic value it could not read gets a 401
-# instead, whose real body is Tomcat's HTML page titled "HTTP Status 401 - Unauthorized"; that title
-# is the message here, because the envelope this module exists to emit is JSON and a client parsing
-# `message` out of the page would find nothing.
+# The two refusals Confluence gives a caller it will not serve, measured against two Atlassian Cloud
+# sites on 2026-09-04. A credential it read and rejected, and a request that carried none, get the
+# 403 below verbatim on every served route but `search` (:data:`CONFLUENCE_NOT_PERMITTED_BODY`) —
+# the vendor reports its own exception class in the message, and a client that logs the body logs
+# that. A Basic value it could not read gets a 401 instead, whose real body is Tomcat's HTML page
+# titled "HTTP Status 401 - Unauthorized"; that title is the message here, because the envelope this
+# module exists to emit is JSON and a client parsing `message` out of the page would find nothing.
 CONFLUENCE_FORBIDDEN = (
     "com.atlassian.confluence.mvc.rest.common.exception.StacklessResponseStatusException: "
     '403 FORBIDDEN "Request rejected because caller cannot access Confluence"'
@@ -162,7 +161,8 @@ def strip_java_whitespace(raw: str) -> str:
 
 
 class AtlassianError(HTTPException):
-    """A refusal whose body real sends verbatim, rather than through :func:`http_body`.
+    """A refusal whose body real sends verbatim, rather than in a product envelope
+    (:func:`_jira_envelope`, :func:`_confluence_envelope`).
 
     Carried on the exception the way Google's errors carry their own fields, so the router raises
     one expression and ``backlot.main``'s handler stays a dispatch. ``media_type`` rides along
@@ -198,10 +198,11 @@ def integer_conversion_failure(path: str, name: str, values: list[str]) -> Atlas
     Jira also answers for one it cannot read as a boolean and for a path variable it cannot read as
     a `long` (``backlot.routers.atlassian._role_id``).
 
-    Measured on brekkylab.atlassian.net, 2026-09-14, on `GET /rest/api/3/issue/{key}/comment` and
-    `GET /wiki/rest/api/space`. The two bodies share no key: Jira's is RFC 7807 naming the
-    parameter, Confluence's is two keys carrying the Spring exception's own ``toString``, which
-    names the value and the type it could not reach but never the parameter.
+    Measured on Jira Cloud and Confluence Cloud, 2026-09-14, on
+    `GET /rest/api/3/issue/{key}/comment` and `GET /wiki/rest/api/space`. The two bodies share no
+    key: Jira's is RFC 7807 naming the parameter, Confluence's is two keys carrying the Spring
+    exception's own ``toString``, which names the value and the type it could not reach but never
+    the parameter.
 
     ``values`` is every value the query string carried for ``name``, because what real reports for
     a REPEATED parameter is the whole array rather than the one value it tried: Confluence renders
@@ -727,7 +728,7 @@ def jaxrs_media_type_refusal(value: str | None, *, checks_type: bool) -> int | N
 
 # The three sentences Jira answers a POST body it cannot turn into an object, measured 2026-09-15.
 # Each arrives as `errorMessages` ALONE — no `errors`, where the refusals below it carry one — so
-# they go through :class:`AtlassianError` rather than :func:`http_body`.
+# they go through :class:`AtlassianError` rather than in Jira's envelope (:func:`_jira_envelope`).
 BODY_EMPTY = "No content to map to Object due to end of input"
 BODY_UNPARSEABLE = "There was an error parsing JSON. Check that your request body is valid."
 BODY_NOT_AN_OBJECT = "Invalid request payload. Refer to the REST API documentation and try again."
@@ -1223,6 +1224,15 @@ def front_door(method: str, raw_path: str, raw_query: str) -> FrontDoor | None:
             400, "gateway", TOMCAT_MEDIA_TYPE, TOMCAT_BAD_REQUEST, {"Content-Language": "en"}
         )
     return None
+
+
+def no_such_role() -> AtlassianError:
+    """Jira's 404 for a project role id that names no role of the project, with an empty
+    `errorMessages` where :func:`_jira_envelope` carries the message: 32 bytes on
+    `application/json;charset=UTF-8`. Measured on Jira Cloud 2026-10-14 with a credential that can
+    read the project's roles, for `-1`, `-0x1`, `11` and a `1` on either side of an em space, each
+    read as ``backlot.routers.atlassian._java_long`` reads it."""
+    return AtlassianError(404, {"errorMessages": [], "errors": {}}, media_type=JIRA_JSON_MEDIA_TYPE)
 
 
 def no_endpoint(path: str, method: str) -> AtlassianError:

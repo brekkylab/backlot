@@ -227,8 +227,7 @@ def _confluence_caller(request: Request, *, not_permitted: bool = False) -> Call
 
     ``not_permitted`` picks the other anonymous 403, the one `search` gives
     (``errors.atlassian.CONFLUENCE_NOT_PERMITTED_BODY``), where every other served route gives the
-    Stackless 403; measured on Confluence Cloud 2026-09-30 and 2026-10-12. The 401 for a Basic value
-    it cannot read is the same on `search` as elsewhere.
+    Stackless 403; measured on Confluence Cloud 2026-09-30 and 2026-10-12.
     """
     caller = auth.atlassian_caller(request)
     if not caller.is_anonymous:
@@ -454,10 +453,14 @@ def _require_project(request: Request, conn, key: str) -> str:
     raise HTTPException(status_code=404, detail=f"No project could be found with key '{key}'.")
 
 
+#: The id of the one role a project has here.
+_JIRA_ROLE = 10002
+
+
 @router.get("/rest/api/3/project/{key}/role")
 async def jira_project_roles(key: str, request: Request):
     _require_project(request, auth.conn(request), key)
-    return {"Users": f"{_site(request)}/rest/api/3/project/{key}/role/10002"}
+    return {"Users": f"{_site(request)}/rest/api/3/project/{key}/role/{_JIRA_ROLE}"}
 
 
 def _java_digit(ch: str, radix: int) -> int | None:
@@ -470,10 +473,9 @@ def _java_digit(ch: str, radix: int) -> int | None:
     decimal = unicodedata.decimal(ch, None)
     if decimal is not None:
         return decimal
-    folded = ch.lower()
-    for first in ("a", "\uff41"):
-        if radix == 16 and ord(first) <= ord(folded) <= ord(first) + 5:
-            return ord(folded) - ord(first) + 10
+    for first in ("a", "A", "\uff41", "\uff21"):
+        if radix == 16 and ord(first) <= ord(ch) <= ord(first) + 5:
+            return ord(ch) - ord(first) + 10
     return None
 
 
@@ -523,10 +525,13 @@ async def jira_project_role(
     key: str, request: Request, role_id: str = PathParameter(json_schema_extra={"type": "integer"})
 ):
     """One project role, its id read as :func:`_role_id` reads it; the schema still declares the
-    integer the vendor's document does."""
+    integer the vendor's document does. An id other than :data:`_JIRA_ROLE` names no role of the
+    project (``errors.atlassian.no_such_role``)."""
     role = _role_id(request, role_id)
     conn = auth.conn(request)
     container = _require_project(request, conn, key)
+    if role != _JIRA_ROLE:
+        raise errors_atlassian.no_such_role()
     actors = []
     if container:
         c = store.get_container(conn, "jira", container)

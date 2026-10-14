@@ -34,9 +34,10 @@ sentence, with no signature and no session link.
    - `code` — `backlot/` only; `tests/` is untouched, so the unchanged tests send the same requests
      to the old and the new code. Proof: `invariance.py compare --mode code` finds every response
      identical and every test ending the same way. That proof sees only what the tests reach, so
-     every line a `code` cut changes or removes must have run in the base recording (`invariance.py
+     every line a `code` cut changes or rewrites must have run in the base recording (`invariance.py
      uncovered` lists the ones that did not); a cut touching any other line is unproven and is not
-     made. A new helper's docstring belongs to the `code` cut that adds the helper.
+     made. Deleting a name nothing reads (rule 6) is the one exception: no request can reach it,
+     so there is nothing for a recording to see. A new helper's docstring belongs to the `code` cut that adds the helper.
    - `tests` — `tests/` only; `backlot/` is untouched. Proof: `invariance.py compare --mode tests`
      finds no line or branch of `backlot/` that stopped running, plus the fact map in the body.
 3. **Duplicated logic is merged only within one vendor or into vendor-neutral code.** Two vendors'
@@ -105,7 +106,8 @@ sentence, with no signature and no session link.
 10. **Worth a review, and small enough for one sitting.** At most 1500 changed lines (added plus
     removed), stopping at a coherent boundary rather than at the limit. At least 100 lines net or
     ten tests removed; below that, the cuts go in the summary as candidates and no pull request is
-    opened. Work the area until its candidates run out or the limit is reached, whichever is first;
+    opened. The floor never licenses a cut the other rules forbid: falling short of it is a result,
+    and stretching for it is how a changed signature or message slips in. Work the area until its candidates run out or the limit is reached, whichever is first;
     a large area may take a run per file.
 11. **Nothing worth doing is a result.** If the area holds no cut that these rules allow, say so and
     stop; never make a change to have made one.
@@ -141,8 +143,8 @@ area — a helper in two test files moving to `tests/_helpers.py` — but never 
 
 Two paths in `code` kind fall outside what the traffic recording sees, and need their own proof on
 top of it: the importer's output (build a DB from `examples/bring-your-own-corpus/sample_corpus.jsonl`
-with `backlot import` at the base and the head and compare `sqlite3 <db> .dump`, minus any line that
-differs between two base imports), and the CLI (run each changed command at both and diff its output
+with `backlot import` at the base and the head and compare `sqlite3 <db> .dump | sort`, since row
+order within a table is not stable between two imports), and the CLI (run each changed command at both and diff its output
 and exit code). Say in the body which you ran.
 
 ## Rehearsal
@@ -255,7 +257,8 @@ Then:
   test files, and the rewrites rule 5 allows.
 
 For `code` and `tests`, when the base recording is done and the area has code paths, run `uv run
-python scripts/invariance.py uncovered $REC/base <the area's code paths>`. A `code` cut stays off every line it lists (rule 2). Each listed line is also
+python scripts/invariance.py uncovered $REC/base <the area's code paths>`, and make no `code` cut
+before it has: a cut in a line it lists is undone, and undoing costs more than waiting. A `code` cut stays off every line it lists (rule 2). Each listed line is also
 residue for step 7: reachable code no test sends the request for, or a test that claims more than
 it reaches.
 
@@ -297,8 +300,9 @@ empty, so a second head recording after a fix goes to a new name (`$REC/head2`).
 - `code`: `uv run python scripts/invariance.py compare $REC/base $REC/head --mode code --calibration $REC/base2`.
 - `tests`: `uv run python scripts/invariance.py compare $REC/base $REC/head --mode tests`.
 
-It must print `invariant`. A difference is a behaviour the cut changed: find which candidate, undo
-it, and prove again. Never widen the comparison to make it pass. Keep `$REC` until the reviewers
+It must print `invariant`. A test whose outcome alone differs, with no response differing, may be a
+timing test failing under load: record the head once more (`$REC/head2`) before blaming a cut. Any
+other difference is a behaviour the cut changed: find which candidate, undo it, and prove again. Never widen the comparison to make it pass. Keep `$REC` until the reviewers
 pass, since a fix is proved against the same base recording, then `git worktree remove --force
 $REC/tree` and, in a live run, `rm -rf $REC`.
 
@@ -342,14 +346,16 @@ repository's pull request template with every section filled, never hard-wrapped
   `invariance.py` command and its last lines verbatim, and for `tests` the fact map as a table
   (removed test, reason, surviving test and assertion, the mutation that proved it), for `prose`
   the fact map, one row per passage.
-- **Verification** — the three lines the template asks for, plus the measurement table of step 6.
+- **Verification** — the three lines the template asks for, plus the measurement table of step 6;
+  each count appears once, in the line or in the table.
+- In a rehearsal, an issue you would have filed is cited by its title in parentheses.
 - Checkboxes: tick the third, which speaks for the lines this pull request writes. Leave the first
   two unticked with `— not applicable: behaviour is unchanged` after each.
 
 Dispatch both reviewers in parallel with the Agent tool, in the foreground so their verdicts come
 back to you, each with the one-line prompt `Review pull request #<n> of brekkylab/backlot`
-(rehearsal: `Review branch <branch> against <base>` followed by the title and the path of a file
-holding the body you would have sent). From the second round on, add `The fact map passed at
+(rehearsal: `Review branch <branch> against <base>; run git from <your working tree>, read-only`,
+followed by the title and the path of a file holding the body you would have sent). From the second round on, add `The fact map passed at
 <sha>; check only the passages changed since.` when the invariance reviewer's last verdict found
 nothing in the map.
 

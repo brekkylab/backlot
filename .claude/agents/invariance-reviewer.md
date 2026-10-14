@@ -82,7 +82,8 @@ recordings when you are done (`git worktree remove --force`).
    something — a scoped token refused or answered, an admin token answered — is never removed, and a
    parametrized case of one counts. A refusal of a missing or unusable credential is authentication,
    not that, and falls under the ordinary rules.
-8. **It got smaller.** Net lines of the kind's paths went down. A helper that adds parameters and
+8. **It got smaller, enough to be worth a review.** Net lines of the kind's paths went down, by at
+   least the floor in the skill's rule 10. A helper that adds parameters and
    branches to save fewer lines than it adds is a `block` with the counts.
 
 ## What you do not flag

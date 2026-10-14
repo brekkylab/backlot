@@ -165,7 +165,7 @@ def _record(out: Path, pytest_args: list[str]) -> int:
         "-m",
         "pytest",
         "-p",
-        "invariance",
+        Path(__file__).stem,
         "--cov=backlot",
         "--cov-branch",
         f"--cov-report=json:{out / 'coverage.json'}",

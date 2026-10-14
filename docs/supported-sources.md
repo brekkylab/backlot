@@ -566,8 +566,10 @@ sub-resources are ignored there, as on real. A `versionId` at a bucket's path is
 and on the writes that refuse it there, and at a key's beside a selector whose operation takes none,
 a `?website` with a value real's 400 at either path, and an `annotationName` at a key without the
 `annotation` it belongs to real's 400, which most of real's front ends answer a GET with and a few
-answer as if it were absent. Two sub-resources at once are `InvalidArgument`, as on real S3, and an
-unknown query key is ignored, as on real S3.
+answer as if it were absent. An `annotation` with a value, `?annotation=x`, is GetObject, as on
+real, the one sub-resource a value turns into another operation; the rest of the query is read
+without it, an `annotationName` beside it ignored. Two sub-resources at once are `InvalidArgument`,
+as on real S3, and an unknown query key is ignored, as on real S3.
 
 A method no operation above serves answers what real answers: the 405 that names the method and
 whether the resource is a `BUCKET`, an `OBJECT` or the `SERVICE`, the 400 an `OPTIONS` without an
@@ -608,7 +610,12 @@ sub-resource, the conflict of two and the parameter refusals before the bucket. 
 sent and does not verify is refused ahead of each 405, with real's members naming the string this
 server signed and, for SigV4 and SigV4a, the canonical request it signed it over, and after the
 conflict and the parameter refusals, as on real. Each other credential refusal is real's own code
-and message too.
+and message too. The two annotation reads, a GET of `?annotation` at a key without or with an
+`annotationName` (ListObjectAnnotations, GetObjectAnnotation) and a HEAD of either, are the
+exception to the unsigned answer and to Signature Version 2: they take SigV4 or SigV4a alone, and
+one sent unsigned or with Signature Version 2 is real's 400 `InvalidRequest` asking for Signature
+Version 4, after the conflict of two, the parameter refusals before the bucket and a V2 credential's
+own shape, and ahead of the bucket, of the 405 a signed HEAD gets and of a V2 key or signature.
 
 ### Slack — `/slack/api`
 

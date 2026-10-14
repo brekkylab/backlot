@@ -375,8 +375,8 @@ def measure(
     *,
     timeout: float = 60.0,
 ) -> Measurement:
-    """This module's entry point: load both schemas for a source, compare them and pair their root
-    fields.
+    """This module's entry point: load both schemas for a source, compare them and lay out every
+    type Backlot declares.
 
     ``credentials`` arrive already resolved — the registry does that once for every kind, so a
     credential a source does not declare is refused there rather than ignored here.

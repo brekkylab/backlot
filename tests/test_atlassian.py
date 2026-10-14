@@ -4124,8 +4124,8 @@ def test_jira_checks_the_media_type_an_operation_takes_before_anything_else(
 
 
 def test_jira_unserved_sorts_every_operation_no_route_serves():
-    """``backlot/data/jira_unserved.json`` sorts each `missing_operation` row of the Jira baseline
-    into `refused` or `run` and holds nothing else, so a row the file has lost, or one the baseline
+    """``backlot/data/jira_unserved.json`` sorts each `missing` operation of the Jira baseline
+    into `refused` or `run` and holds nothing else, so one the file has lost, or one the baseline
     has gained or dropped since the file was written, fails here: the reminder to rerun
     ``scripts/gen_jira_unserved.py``. A route added for one of them drops it from the baseline, and
     the file would otherwise refuse a served operation's path for a method no route takes. Which

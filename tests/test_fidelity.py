@@ -280,13 +280,14 @@ def test_a_finding_two_documents_both_declare_is_recorded_once(monkeypatch, regi
     one of those paths would print and count twice.
 
     The operations they pair join the same way, one entry per operation, and a document whose
-    mount serves one outranks a document that only declares it."""
+    mount serves one outranks a document that only declares it, finding and all."""
     shared = _finding("missing_operation", "GET /rest/forge/1/app/properties")
 
     def fake(spec, *, timeout=120.0, **kw):
         own = spec.mount[0]
+        unserved = [_finding("missing_operation", "GET /both")] if own == "/a" else []
         return Measurement(
-            [shared, _finding("missing_operation", f"GET {own}/own")],
+            [shared, _finding("missing_operation", f"GET {own}/own"), *unserved],
             OperationSurface(
                 (
                     OperationEntry(shared.path, MISSING, "forge-props"),
@@ -1032,6 +1033,10 @@ S3_MODEL = {
         "GetBucketCors": {"http": {"method": "GET", "requestUri": "/{Bucket}?cors"}},
         "GetObjectTagging": {"http": {"method": "GET", "requestUri": "/{Bucket}/{Key+}?tagging"}},
         "ListBuckets": {"http": {"method": "GET", "requestUri": "/"}},
+        "ListDirectoryBuckets": {
+            "http": {"method": "GET", "requestUri": "/"},
+            "staticContextParams": {"UseS3ExpressControlEndpoint": {"value": True}},
+        },
         "PutBucketAcl": {"http": {"method": "PUT", "requestUri": "/{Bucket}?acl"}},
         "WriteGetObjectResponse": {
             "http": {"method": "POST", "requestUri": "/WriteGetObjectResponse"}
@@ -1070,8 +1075,8 @@ def test_the_s3_model_yields_its_operations_keyed_by_what_selects_them():
     assert found["GetObjectTagging"].target == "object"
     assert found["ListBuckets"].query == ""
     # ListParts shares GetObject's `/{Bucket}/{Key+}` and is selected by a REQUIRED querystring
-    # member, so read from the URI alone it came out bare, was skipped as "the bare form", and was
-    # never asked — while the server answers it with the object body.
+    # member: read from the URI alone it comes out bare, where the fallthrough cannot be told
+    # apart, while the server answers it with the object body.
     assert found["ListParts"].query == "uploadId"
     assert found["GetObject"].query == ""  # its `versionId` is optional, not another operation
     # `?analytics` is two operations; keyed on the request alone a baseline would silence one.
@@ -1104,6 +1109,8 @@ def _s3_error(code: str) -> str:
                 "GetObjectTagging": (MISSING, "missing_operation", GAP),
                 "PutBucketAcl": (IMPLEMENTED, "answered_write", BREAKING),
                 "ListBuckets": (IMPLEMENTED, None),
+                # Its `GET /` at the S3 endpoint is ListBuckets; it is served elsewhere.
+                "ListDirectoryBuckets": (MISSING, "missing_operation", GAP),
             },
         ),
         # The error real gives an operation is its answer, as real's `NoSuchCORSConfiguration` is

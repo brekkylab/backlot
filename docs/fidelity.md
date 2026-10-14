@@ -122,8 +122,8 @@ clean match every time — a green check that means nothing.
 
 So S3 is compared by asking a running server instead. Backlot starts on a free port, every
 operation botocore declares is sent to it signed, and the answer is classified. A write is
-`refused` when it is answered with any error, which is what a server that serves reads only owes
-it, and `answered_write`, breaking, when it is not. A read is:
+`refused` when it is answered with any error, which is what it is owed where data enters only
+through `backlot import`, and `answered_write`, breaking, when it is not. A read is:
 
 - **refused with `NotImplemented`** — the honest answer for an operation Backlot does not serve. A
   `gap`, and the operation is `missing`.
@@ -135,7 +135,12 @@ it, and `answered_write`, breaking, when it is not. A read is:
 - **answered distinctly** — implemented. No finding.
 - **answered with the body the same path returns when nothing selects an operation** — Backlot
   neither implements the operation nor refuses it, so the caller parses another operation's body
-  under a 200, with no error and no log line. `silent_fallthrough`, and breaking.
+  under a 200, with no error and no log line. `silent_fallthrough`, and breaking, and the
+  operation is `missing`.
+
+ListDirectoryBuckets is not asked. The model sends it only to the S3 Express control endpoint,
+signed for `s3express`, and its `GET /` at the S3 endpoint is ListBuckets, so it is `missing` and a
+`gap`.
 
 "The same body" is the status, the XML root element and the set of direct child elements. The
 children are what keep the two listings apart: `?list-type=2` and a bare bucket GET are both
@@ -200,8 +205,8 @@ vendor, and can name the operation a request asked for, without the repository o
 The surface takes the shape of the contract:
 
 - **A published document or the S3 model** — `operations`, one entry per operation either side
-  has. `status` is `implemented` (both sides), `missing` (the vendor's only), `extra` (Backlot's
-  only) or, for S3, `refused` (every write). `id` is the vendor's own name for it: the
+  has. `status` is `implemented` (both sides), `missing` (the vendor has it and Backlot does not
+  serve it), `extra` (Backlot's only) or, for S3, `refused` (every write). `id` is the vendor's own name for it: the
   `operationId` for an OpenAPI document, the method `id` for a Discovery document, the botocore
   operation for S3, and the method name for Slack, which names `conversations.list` by its path
   under either verb. A served route its document does not describe carries no `id`. A parameter

@@ -157,7 +157,7 @@ def test_notion_an_operation_notion_publishes_answers_the_credential(
     Backlot serves it, with `abc` in an id's place and with one trailing slash, where the same
     path under a method Notion does not publish for it is the URL's 400 (the rows above).
     A token and a version that clear both get the URL's 400 here, as Backlot has no operation to
-    run: the gap the baseline's `missing_operation` row acknowledges."""
+    run: the gap the baseline's `missing` operation acknowledges."""
     body = {} if method in ("POST", "PATCH") else None
     bare = client.request(method, path, json=body)
     assert bare.status_code == 401 and bare.json()["message"] == _NOT_A_BEARER, path

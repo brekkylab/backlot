@@ -33,7 +33,7 @@ from backlot.fidelity import (
 )
 from backlot.fidelity.errors import CredentialsMissing, FidelityError
 from backlot.fidelity.findings import BREAKING, Finding
-from backlot.fidelity.surface import Measurement, OperationSurface
+from backlot.fidelity.surface import MISSING, Measurement, OperationSurface
 
 
 def _one_report(per_spec: list[Measurement]) -> Measurement:
@@ -46,22 +46,26 @@ def _one_report(per_spec: list[Measurement]) -> Measurement:
     worklog route — so both Jira documents carry them and each reports as ``missing_operation``
     twice. That is a different case from the mirrored ``/rest/api/2/...`` and ``/rest/api/3/...``
     entries, which are distinct paths a client can call and both belong in the baseline. A
-    :class:`~backlot.fidelity.findings.Baseline` is keyed on ``kind:path`` and cannot hold the
+    :class:`~backlot.fidelity.baselines.Baseline` is keyed on ``kind:path`` and cannot hold the
     second copy, so leaving it in makes the file claim more than it can load and prints a genuinely
     new finding on such a path twice.
 
     Ordered here rather than left concatenated because ``diff_operations`` sorts breaking-first-
-    then-path per document, and that ordering does not survive joining two. The baseline is written
-    in the order it is given, so without this the next real change lands buried in a reordering of
-    the whole file.
+    then-path per document, and that ordering does not survive joining two; the command prints
+    them in this order.
     """
+    surface = OperationSurface.joined(m.surface for m in per_spec)
+    # An operation one document's mount serves is not missing because another document declares it
+    # under a mount that does not.
+    served = {e.operation for e in surface.operations if e.status != MISSING}
     seen: dict[str, Finding] = {}
     for m in per_spec:
         for f in m.findings:
-            seen.setdefault(f.key, f)
+            if not (f.kind == "missing_operation" and f.path in served):
+                seen.setdefault(f.key, f)
     return Measurement(
         sorted(seen.values(), key=lambda f: (f.severity != BREAKING, f.path, f.kind)),
-        OperationSurface.joined(m.surface for m in per_spec),
+        surface,
     )
 
 
@@ -284,8 +288,7 @@ OPENAPI = {
                 spec_url="https://raw.githubusercontent.com/slackapi/slack-api-specs/master/web-api/slack_web_openapi_v2.json",
                 mount=("/slack/api",),
                 strip="/slack/api",
-                # The document's `operationId` spells the method `conversations_list`; Slack's
-                # own name for it is the path, `conversations.list`.
+                # Slack names a method by its path; see `operations.inventory`.
                 named_by_path=True,
             ),
         ),

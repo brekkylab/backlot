@@ -2999,7 +2999,7 @@ async def unmatched_path(request: Request, rest: str) -> Response:
     operation will not run anonymously, and any `OPTIONS` on one (:func:`_jira_unauthenticated`),
     and Confluence refuses such a caller on every one (:func:`_confluence_refusal`), each measured
     2026-09-30. A caller the vendor would serve gets the answer above, which is the gap the
-    baseline's `missing_operation` row acknowledges. Outside both API mounts the site is its web app
+    baseline's `missing` operation acknowledges. Outside both API mounts the site is its web app
     (:func:`_site_surface`).
     """
     if _some_atlassian_route_matches(request):

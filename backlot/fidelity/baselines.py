@@ -34,7 +34,8 @@ def _endpoints(raw) -> tuple[str, ...]:
 
 @dataclass(frozen=True)
 class Baseline:
-    """Divergences already read and accepted, so a run reports only what is new.
+    """The surface a source was last measured as, and the divergences already read and accepted
+    on it, so a run reports only what is new.
 
     Without this the first run against Fireflies reports fourteen root fields Backlot never claimed
     to serve, and by the third run nobody reads the output. Acknowledging is a file change, which

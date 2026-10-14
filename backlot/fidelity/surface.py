@@ -25,8 +25,7 @@ IMPLEMENTED, MISSING, EXTRA, REFUSED = "implemented", "missing", "extra", "refus
 _SERVED = (IMPLEMENTED, EXTRA)
 
 _PARAM_KINDS = ("missing_param", "extra_param")
-_BATCH_DOCUMENT_KINDS = ("missing_batch_path", "extra_batch_api")
-_BATCH_ROUTE_KINDS = ("extra_batch_route",)
+_BATCH_KINDS = ("missing_batch_path", "extra_batch_api", "extra_batch_route")
 
 
 def _accepted(f: Finding | None) -> dict[str, str]:
@@ -58,6 +57,17 @@ def _read(raw: Mapping[str, Any], path: str) -> list[Finding]:
             raw.get("note", ""),
         )
     ]
+
+
+def _by_path(findings: Iterable[Finding]) -> dict[str, Finding]:
+    """Findings keyed by the element they name, refusing two on one element: the file has room for
+    one, and keeping either would drop the other without a word."""
+    out: dict[str, Finding] = {}
+    for f in findings:
+        if f.path in out:
+            raise ValueError(f"two findings name one element: {out[f.path].key}, {f.key}")
+        out[f.path] = f
+    return out
 
 
 def _unplaced(findings: Iterable[Finding]) -> None:
@@ -113,7 +123,7 @@ class BatchSurface:
     routes: tuple[BatchRoute, ...]
 
     def to_json(self, findings: Iterable[Finding]) -> dict[str, Any]:
-        by_path = {f.path: f for f in findings}
+        by_path = _by_path(findings)
         documents = []
         for d in self.documents:
             entry = {"document": d.document, "declared": d.declared, "status": d.status}
@@ -157,9 +167,9 @@ class OperationSurface:
     def joined(cls, parts: Iterable["OperationSurface"]) -> "OperationSurface":
         """Several contracts' surfaces as one source's, one entry per operation.
 
-        Two documents of one source can declare the same operation — Jira's both carry the 11
-        paths outside ``/rest/api/{2,3}`` — and only one of them may be the document whose mount
-        serves it, so a served entry wins over a ``missing`` one for the same operation."""
+        Two documents of one source can declare the same operation (see
+        ``comparisons._one_report``), and only one of them may be the document whose mount serves
+        it, so a served entry wins over a ``missing`` one for the same operation."""
         seen: dict[str, OperationEntry] = {}
         batch = None
         for part in parts:
@@ -171,17 +181,13 @@ class OperationSurface:
         return cls(tuple(seen[k] for k in sorted(seen)), batch)
 
     def to_json(self, findings: Iterable[Finding]) -> dict[str, Any]:
-        own: dict[str, Finding] = {}
+        findings = list(findings)
+        batch = [f for f in findings if f.kind in _BATCH_KINDS]
         params: dict[str, dict[str, Finding]] = defaultdict(dict)
-        batch: list[Finding] = []
-        for f in findings:
-            if f.kind in _PARAM_KINDS:
-                operation, _, name = f.path.rpartition("?")
-                params[operation][name] = f
-            elif f.kind in _BATCH_DOCUMENT_KINDS + _BATCH_ROUTE_KINDS:
-                batch.append(f)
-            else:
-                own[f.path] = f
+        for path, f in _by_path(f for f in findings if f.kind in _PARAM_KINDS).items():
+            operation, _, name = path.rpartition("?")
+            params[operation][name] = f
+        own = _by_path(f for f in findings if f.kind not in _PARAM_KINDS + _BATCH_KINDS)
         entries = []
         for e in self.operations:
             entry: dict[str, Any] = {"operation": e.operation}
@@ -276,7 +282,7 @@ class SchemaSurface:
         return out
 
     def to_json(self, findings: Iterable[Finding]) -> dict[str, Any]:
-        by_path = {f.path: f for f in findings}
+        by_path = _by_path(findings)
 
         def member(path: str, m: Member) -> dict[str, Any]:
             d: dict[str, Any] = {"status": m.status}
@@ -341,4 +347,4 @@ class Measurement:
     """What one run of a comparison read: its findings, and the surface they are about."""
 
     findings: list[Finding]
-    surface: Surface | None = None
+    surface: Surface

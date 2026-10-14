@@ -152,10 +152,10 @@ def inventory(
     """One entry per operation either side has: the vendor's id for it, and which side has it.
 
     ``named_by_path`` is for a vendor whose operation IS its path, whatever the verb: Slack's
-    ``conversations.list`` is one method, which its document declares under one verb and its
-    server answers under both. There the id is the path, served routes the document omits
-    included; everywhere else it is only what the document declares, so a served route the
-    document does not describe has none.
+    ``conversations.list`` is one method, which its document declares under one verb (its
+    ``operationId`` spells it ``conversations_list``) and its server answers under both. There the
+    id is the path, served routes the document omits included; everywhere else it is only what the
+    document declares, so a served route the document does not describe has none.
     """
     out = []
     for key in sorted(set(backlot) | set(real)):

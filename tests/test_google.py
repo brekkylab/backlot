@@ -2459,7 +2459,7 @@ _NO_CREDENTIAL_ROWS = [
     ("GET", "/slides/v1/presentations/x", 401, 404),
     ("GET", "/gmail/v1/users/me/profile", 401, 200),
     ("GET", "/gmail/v1/users/me/labels", 401, 200),
-    # the baselines' `missing_operation` rows
+    # the baselines' `missing` operations
     ("GET", "/drive/v3/changes/startPageToken", 401, 404),
     ("GET", "/drive/v3/files/generateIds", 401, 404),
     ("GET", "/drive/v3/files/trash", 403, 404),

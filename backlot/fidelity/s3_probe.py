@@ -10,8 +10,9 @@ and reports a clean match every time — a green check that means nothing, which
 checking at all.
 
 What can be asked instead is what the server actually answers, and every operation the model
-declares is asked. A write must be refused, since Backlot serves reads only. A read Backlot does
-not implement should be REFUSED too, which it does with ``NotImplemented``; one it does implement may answer
+declares is asked. A write must be refused with an error, since data enters Backlot only through
+``backlot import``, and is recorded ``refused``. A read Backlot does not implement should be
+refused with ``NotImplemented`` and is recorded ``missing``; one it does implement may answer
 with an error, the 404 real gives a bucket with no CORS configuration for one, and that is its
 answer only when it is the error real gives that operation (``REAL_ERRORS``); any other error is one
 real does not give, and is reported. The failure this looks for above all is answering an operation
@@ -106,6 +107,11 @@ class S3Operation:
     # The path where it names no bucket or key but a word of its own: WriteGetObjectResponse's
     # `/WriteGetObjectResponse` is the one the model declares.
     literal: str = ""
+    # Served only at the S3 Express control endpoint: an operation naming no bucket that the model
+    # sends there (`UseS3ExpressControlEndpoint`). ListDirectoryBuckets is the one; botocore 1.40.61
+    # sends it to `s3express-control.us-east-1.amazonaws.com` signed for `s3express`, where the
+    # same `GET /` signed for `s3` at the S3 endpoint is ListBuckets (2026-10-14).
+    control_only: bool = False
 
     @property
     def reads(self) -> bool:
@@ -126,8 +132,9 @@ def _required_query_member(shapes: Mapping[str, Any], op: Mapping[str, Any]) -> 
 
     ListParts is the case, and the only one: botocore gives it the same ``/{Bucket}/{Key+}`` as
     GetObject and selects it with a REQUIRED ``uploadId`` in the querystring. Read from the URI
-    alone it comes out bare, is skipped as "the bare form", and never asked — while the server
-    answers it with the object body, which is the silent fallthrough this module exists to catch.
+    alone it comes out bare, and a bare form is never compared with the fallthrough — while the
+    server answers it with the object body, which is the silent fallthrough this module exists to
+    catch.
 
     Required only. GetObject's ``versionId`` and ListObjects' ``prefix`` are optional refinements
     of the bare operation, not a different operation, and treating them as selectors would ask the
@@ -160,7 +167,9 @@ def operations(model: Mapping[str, Any]) -> list[S3Operation]:
         else:
             target = "service"
         literal = path if re.sub(r"\{[^}]*\}", "", path).strip("/") else ""
-        out.append(S3Operation(name, method, target, query, literal))
+        control = (op.get("staticContextParams") or {}).get("UseS3ExpressControlEndpoint") or {}
+        control_only = target == "service" and control.get("value") is True
+        out.append(S3Operation(name, method, target, query, literal, control_only))
     return sorted(out, key=lambda o: (o.target, o.query, o.name))
 
 
@@ -253,6 +262,20 @@ def probe(
     out: list[Finding] = []
     entries: list[OperationEntry] = []
     for op in ops:
+        if op.control_only:
+            # Not asked: Backlot serves the S3 endpoint, and the request this would send there is
+            # another operation's.
+            entries.append(OperationEntry(str(op), MISSING, op.name))
+            out.append(
+                Finding(
+                    "missing_operation",
+                    GAP,
+                    str(op),
+                    f"{op.name} is served only at the S3 Express control endpoint, which Backlot "
+                    "does not serve",
+                )
+            )
+            continue
         response = call(op.method, op.literal or targets[op.target], op.query)
         answer = _shape(response)
         code = _CODE.search(response.text)

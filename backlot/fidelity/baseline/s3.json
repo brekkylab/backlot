@@ -362,7 +362,9 @@
     {
       "operation": "ListDirectoryBuckets: GET /{service}",
       "id": "ListDirectoryBuckets",
-      "status": "implemented"
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
     },
     {
       "operation": "ListMultipartUploads: GET /{bucket}?uploads",

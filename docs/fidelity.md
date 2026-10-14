@@ -120,11 +120,13 @@ at the same path. Backlot serves them from four catch-all routes that read the q
 themselves, so a path-and-parameter diff pairs every S3 operation with the same route and reports a
 clean match every time — a green check that means nothing.
 
-So S3 is compared by asking a running server instead. Backlot starts on a free port, every read
-operation botocore declares is sent to it signed, and the answer is classified:
+So S3 is compared by asking a running server instead. Backlot starts on a free port, every
+operation botocore declares is sent to it signed, and the answer is classified. A write is
+`refused` when it is answered with any error, which is what a server that serves reads only owes
+it, and `answered_write`, breaking, when it is not. A read is:
 
 - **refused with `NotImplemented`** — the honest answer for an operation Backlot does not serve. A
-  `gap`.
+  `gap`, and the operation is `missing`.
 - **answered with the error real gives that operation** — the 404 `NoSuchCORSConfiguration` for a
   bucket nobody configured, for one; `REAL_ERRORS` in `backlot.fidelity.s3_probe` holds each, as
   measured. No finding.
@@ -188,25 +190,46 @@ credential applying to a sub-request that carries none — is behaviour, and is 
 
 ## The baseline
 
-`backlot/fidelity/baseline/<source>.json` holds the divergences already read and accepted, so a run
-reports what is **new**. Without it the first Fireflies run lists fourteen root fields Backlot never
-claimed to serve, and the first Linear run lists seven hundred and eighty-two — by the third run
-nobody reads the output. The baselines ship inside the package, so an installed copy can be compared
-against its vendor without the repository.
+`backlot/fidelity/baseline/<source>.json` is the surface a source was last measured as, with the
+divergences already read and accepted written onto the elements they name, so a run reports what
+is **new**. Without it the first Fireflies run lists fourteen root fields Backlot never claimed to
+serve, and the first Linear run lists seven hundred and eighty-two — by the third run nobody reads
+the output. The baselines ship inside the package, so an installed copy can be compared against its
+vendor, and can name the operation a request asked for, without the repository or the network.
 
-Accepting a divergence is a file change, so it goes through review like any other.
-`--update-baseline` writes the entry; the note beside it is added by hand in that review. Most
-entries are plain — surface the vendor has and Backlot does not — and a note is what records a
-decision someone had to make: a family accepted as a whole, or a shape where a stand-in would break
-a client rather than merely be absent. Those notes are the written record of what Backlot does and
-does not claim about a vendor:
+The surface takes the shape of the contract:
+
+- **A published document or the S3 model** — `operations`, one entry per operation either side
+  has. `status` is `implemented` (both sides), `missing` (the vendor's only), `extra` (Backlot's
+  only) or, for S3, `refused` (every write). `id` is the vendor's own name for it: the
+  `operationId` for an OpenAPI document, the method `id` for a Discovery document, the botocore
+  operation for S3, and the method name for Slack, which names `conversations.list` by its path
+  under either verb. A served route its document does not describe carries no `id`. A parameter
+  appears only where it diverges, under `params` of its operation. A Google source adds `batch`:
+  what each document declares as its `batchPath`, and which of Backlot's batch routes answer it.
+- **A GraphQL schema** — `types`, every type Backlot declares with every field, argument, enum
+  value and union member either side has under it, each with a `status`, and `type` where only the
+  vendor has the member. The vendor's types Backlot does not declare are not listed. `root.query`
+  names the type whose fields are the operations.
 
 ```json
-{
+{ "operation": "GET /gmail/v1/users/{}/messages", "id": "gmail.users.messages.list", "status": "implemented" }
+```
+
+Accepting a divergence is a file change, so it goes through review like any other.
+`--update-baseline` writes `kind` and `severity` onto the element the finding names; the note beside
+them is added by hand in that review. Most are plain — surface the vendor has and Backlot does not —
+and a note is what records a decision someone had to make: a family accepted as a whole, or a shape
+where a stand-in would break a client rather than merely be absent. Those notes are the written
+record of what Backlot does and does not claim about a vendor. Under `types.Query.fields` in
+`fireflies.json`:
+
+```json
+"active_meetings": {
+  "status": "missing",
+  "type": "[ActiveMeeting!]",
   "kind": "missing_field",
   "severity": "gap",
-  "path": "Query.active_meetings",
-  "detail": "vendor serves active_meetings: [ActiveMeeting!]; Backlot does not",
   "note": "Meetings in progress right now. Backlot serves a fixed corpus, so there is no live state to report."
 }
 ```
@@ -214,25 +237,29 @@ does not claim about a vendor:
 `--update-baseline` acknowledges gaps freely and **never acknowledges a breaking finding**, which
 is a bug by this project's own rule rather than a gap. It still writes the gaps — leaving them out
 would bury the breaking ones under hundreds of repeats every run, which is the same silence by
-another route — and exits 1 naming what it left live.
+another route — and exits 1 naming what it left live. The element a breaking finding names is
+written all the same, bare.
 
 There is no flag that silences one. Acknowledging a breaking divergence is a hand edit to the
-baseline file, carrying a note that says why the vendor's shape is not being matched, so what a
-reviewer sees in the diff is the reasoning rather than a flag on a command nobody kept. An entry
-added that way survives later rewrites: `--update-baseline` rewrites the file, it does not
-re-litigate it.
+baseline file — `kind`, `severity`, the `detail` being accepted and a `note` saying why the vendor's
+shape is not being matched, added to the element — so what a reviewer sees in the diff is the
+reasoning rather than a flag on a command nobody kept. One added that way survives later rewrites:
+`--update-baseline` rewrites the file, it does not re-litigate it.
 
 It stops covering a shape that moves, though. A `gap` is acknowledged by what it names — the vendor
 has surface Backlot does not, and the vendor restating it at a new type does not change what was
-accepted. A `breaking` entry is acknowledged by what it names **and** by its `detail`, because
-there the detail *is* the contradiction: an entry reading `vendor: Int, Backlot: Float` says
-nothing about a vendor now serving `String`, and going on silencing it is exactly the March drift
-this command exists to catch. Such an entry is reported again, and left in the file exactly as
-written — the note is the record of the reasoning, and a rewrite does not delete it — until someone
-reads the new shape and rewrites it by hand.
+accepted — so its `detail` is not kept. A `breaking` entry is acknowledged by what it names **and**
+by its `detail`, because there the detail *is* the contradiction: an entry reading
+`vendor: Int, Backlot: Float` says nothing about a vendor now serving `String`, and going on
+silencing it is exactly the March drift this command exists to catch. Such an entry is reported
+again, and left in the file exactly as written — the note is the record of the reasoning, and a
+rewrite does not delete it — until someone reads the new shape and rewrites it by hand.
 
 A run also reports **resolved** entries: an acknowledged divergence the vendor no longer has. The
-baseline has gone stale, which is its own kind of drift.
+baseline has gone stale, which is its own kind of drift. Where Backlot is what changed — a route,
+a parameter or a field added while the file still records it `missing` — `tests/test_fidelity.py`
+reads the served surface off the app and the SDL with no network and fails until the file is
+rewritten.
 
 ## In CI
 

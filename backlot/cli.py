@@ -711,7 +711,7 @@ def diff(
         CredentialsMissing,
         FidelityError,
         baseline_path,
-        divergences,
+        measure,
     )
     from backlot.fidelity import COMPARISONS as _SOURCES
 
@@ -722,7 +722,7 @@ def diff(
         )
     spec = _SOURCES[source]
     try:
-        findings = divergences(spec, _credentials(credential))
+        measured = measure(spec, _credentials(credential))
     except CredentialsMissing as e:
         # Exit 3, not 2: a credential nobody set is this repository's misconfiguration, and
         # answering it like a vendor outage leaves the source uncompared with the run green.
@@ -734,6 +734,7 @@ def diff(
         typer.echo(f"could not read the vendor's schema: {e}", err=True)
         raise typer.Exit(2) from e
 
+    findings = measured.findings
     path = (baseline_dir / f"{source}.json") if baseline_dir else baseline_path(source)
     baseline = (
         Baseline.load(path).identified_as(source, spec.endpoints)
@@ -754,7 +755,7 @@ def diff(
         # again: dropping it would delete the note, which is the record of the reasoning, so it
         # stays in the file and stays reported until someone rewrites it by hand.
         kept = [f for f in findings if f not in breaking or f.key in baseline.acknowledged]
-        baseline.write(path, kept, measured=_today())
+        baseline.write(path, kept, measured=_today(), surface=measured.surface)
         if as_json:
             _emit_json(
                 source,

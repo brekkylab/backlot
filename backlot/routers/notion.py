@@ -877,13 +877,13 @@ _BASELINE = Path(__file__).resolve().parent.parent / "fidelity" / "baseline" / "
 
 def _published_operations_not_served() -> tuple[tuple[str, re.Pattern[str]], ...]:
     """The operations Notion publishes and no route here serves, as (method, path pattern): the
-    baseline's ``missing_operation`` rows, each ``{}`` one path segment. Read off that file rather
+    baseline's ``missing`` operations, each ``{}`` one path segment. Read off that file rather
     than listed here, so an operation Notion adds reaches ``unmatched_path`` once the baseline
     acknowledges it; a route added here wins over ``unmatched_path`` whatever the file says."""
     operations = []
-    for row in json.loads(_BASELINE.read_text())["acknowledged"]:
-        if row["kind"] == "missing_operation":
-            method, path = row["path"].split(" ", 1)
+    for e in json.loads(_BASELINE.read_text())["operations"]:
+        if e["status"] == "missing":
+            method, path = e["operation"].split(" ", 1)
             pattern = "[^/]+".join(re.escape(part) for part in path.split("{}"))
             operations.append((method, re.compile(pattern)))
     return tuple(operations)

@@ -2429,11 +2429,11 @@ def test_no_google_baseline_acknowledges_the_system_parameter_any_more():
     """The 13 `google_drive` and 8 `gmail` entries `missing_param … ?$.xgafv` were the shape of
     this gap in the fidelity baseline; declaring the parameter is what removes them, and a run of
     `backlot diff --source <source> --update-baseline` against the live documents did."""
-    from backlot.fidelity import baseline_path
+    from backlot.fidelity import Baseline, baseline_path
 
     for source in ("google_drive", "gmail"):
-        acknowledged = json.loads(baseline_path(source).read_text())["acknowledged"]
-        assert not [e["path"] for e in acknowledged if "$.xgafv" in e["path"]], source
+        acknowledged = Baseline.load(baseline_path(source)).acknowledged.values()
+        assert not [f.path for f in acknowledged if "$.xgafv" in f.path], source
 
 
 # A request with no credential per row: the method, the path, what real answered it with no

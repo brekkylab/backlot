@@ -4134,8 +4134,8 @@ def test_jira_unserved_sorts_every_operation_no_route_serves():
     import backlot
     from backlot.fidelity.comparisons import baseline_path
 
-    rows = json.loads(baseline_path("jira").read_text())["acknowledged"]
-    unserved = [row["path"] for row in rows if row["kind"] == "missing_operation"]
+    entries = json.loads(baseline_path("jira").read_text())["operations"]
+    unserved = [e["operation"] for e in entries if e["status"] == "missing"]
     table = Path(backlot.__file__).resolve().parent / "data" / "jira_unserved.json"
     content = json.loads(table.read_text())
     assert sorted([*content["refused"], *content["run"]]) == sorted(unserved)

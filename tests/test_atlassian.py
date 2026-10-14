@@ -5462,6 +5462,7 @@ _SPACES = "/atlassian/wiki/rest/api/space"
 _ATTACH = "/atlassian/wiki/rest/api/content/1/child/attachment"
 _LABEL = "/atlassian/wiki/rest/api/space/NOPESUCH/label"
 _CQL = "/atlassian/wiki/rest/api/search?cql=type%3Dpage"
+_LICENSE = "/atlassian/rest/api/3/license/approximateLicenseCount"
 #: Tomcat's page by status (``errors.atlassian.tomcat_page``): as long as real's was, and the title
 #: real's carried in its `<title>` and its `<h1>`.
 _TOMCAT_PAGES = {
@@ -5945,7 +5946,7 @@ def _accept_body(shape, status: int, vendor_path: str) -> bytes:
 
 
 #: Jira's 401 under each `Accept` (``errors.atlassian.jira_unauthenticated``), on
-#: `OPTIONS serverInfo` and, for the last two, `GET myself` with no credential: (method, Accept,
+#: `OPTIONS serverInfo` and, for the `GET` rows, `GET myself` with no credential: (method, Accept,
 #: status, content-type, the body as ``_LINE``, ``_UTF16_LINE`` or none, headers beside the realm).
 _LINE = errors_atlassian.JIRA_UNAUTHENTICATED.encode()
 _UTF16_LINE = b"\xfe\xff" + errors_atlassian.JIRA_UNAUTHENTICATED.encode("utf-16-be")
@@ -6108,6 +6109,13 @@ _ACCEPT_ROWS += [
         )
         for accept, xml in _CONNECT
     ),
+    # the same choice on an operation that asks no 406, where a `GET` and a `HEAD` reach the two
+    # answers that differ by method: neither carries `Allow`, and the wildcard's 500 is the page
+    ("GET", _LICENSE, "none", "foo", None, 401, _EMPTY_HTML, b"")
+    + ({"allow": None, "www-authenticate": _PRESENT},),
+    ("HEAD", _LICENSE, "none", "*.*", None, 401, _EMPTY_HTML, b"", {"allow": None}),
+    ("GET", _LICENSE, "none", "image/*", None, 500, _OOPS_MEDIA, "oops")
+    + ({"allow": None, "www-authenticate": _PRESENT},),
 ]
 
 

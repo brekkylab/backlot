@@ -3012,14 +3012,23 @@ def _is(operations, method: str | None, vendor_path: str) -> bool:
     )
 
 
+def _jira_oops_page(request: Request) -> bytes:
+    """Jira's 500 page for this request (``errors.atlassian.jira_oops_page``), carrying the trace id
+    its headers carry."""
+    trace = request_ids(request)["atl-traceid"]
+    return errors_atlassian.jira_oops_page(synth._uuid_from(f"oops:{trace}"), trace)
+
+
 def _jira_unauthenticated(request: Request) -> Response:
     """Jira's 401 for an operation that will not run for this caller, as real spells it under the
     request's `Accept` (``errors.atlassian.jira_unauthenticated``); the realm is the site,
     percent-encoded."""
     realm = quote(_site(request), safe="")
     status, media_type, body, headers = errors_atlassian.jira_unauthenticated(
-        request.headers.get("accept")
+        request.headers.get("accept"), request.method
     )
+    if body is None:
+        body = _jira_oops_page(request)
     return Response(
         body,
         status_code=status,
@@ -3227,9 +3236,7 @@ def spring_write_failure(request: Request, status: int, headers, body: bytes) ->
         if request.method == "OPTIONS":
             allow = {"Allow": errors_atlassian._JIRA_NO_TYPE_ALLOW}
             return Response(b"", status_code=500, media_type=media, headers={**kept, **allow})
-        trace = request_ids(request)["atl-traceid"]
-        page = errors_atlassian.jira_oops_page(synth._uuid_from(f"oops:{trace}"), trace)
-        return Response(page, status_code=500, media_type=media, headers=kept)
+        return Response(_jira_oops_page(request), status_code=500, media_type=media, headers=kept)
     vendor_path = _vendor_path(request.url.path)
     if vendor_path.startswith("/wiki/rest/api/search"):
         return None

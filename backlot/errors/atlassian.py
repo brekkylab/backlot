@@ -1084,8 +1084,9 @@ def jira_oops_page(log_reference: str, trace_id: str) -> bytes:
     return _JIRA_OOPS_PAGE.replace("{log}", log_reference).replace("{trace}", trace_id).encode()
 
 
-#: The `Allow` Jira's 401 carries where `Accept` holds a member it cannot read, and the one its 500
-#: carries where `Accept` names a wildcard it has no type for (:func:`jira_unauthenticated`).
+#: The `Allow` Jira's 401 to an `OPTIONS` carries where `Accept` holds a member it cannot read, and
+#: the one its 500 to an `OPTIONS` carries where `Accept` names a wildcard it has no type for
+#: (:func:`jira_unauthenticated`).
 _JIRA_UNREAD_ALLOW = "GET, HEAD, POST, PUT, DELETE, OPTIONS, TRACE, PATCH"
 _JIRA_NO_TYPE_ALLOW = "GET, HEAD, POST, PUT, DELETE, OPTIONS, TRACE"
 
@@ -1098,17 +1099,23 @@ def _quality(parameters: list[tuple[str, str]]) -> float:
     return float(text.rstrip("fFdD")) if _spring_quality(text) else 1.0
 
 
-def jira_unauthenticated(accept: str | None) -> tuple[int, str, bytes, dict[str, str]]:
+def jira_unauthenticated(
+    accept: str | None, method: str
+) -> tuple[int, str, bytes | None, dict[str, str]]:
     """``(status, content-type, body, headers)`` for Jira's 401 (:data:`JIRA_UNAUTHENTICATED`), as
-    real picks them from ``accept``; the `WWW-Authenticate` every one carries is the caller's.
+    real picks them from ``accept`` and ``method``; the `WWW-Authenticate` every one carries is the
+    caller's, and a body of None is Jira's 500 page (:func:`jira_oops_page`), which carries the
+    response's own trace id and so is the caller's to fill.
 
     Measured 2026-10-13 on `OPTIONS serverInfo` with no `Accept` and sixty-six values, the same
-    on `GET myself` for each value that admits JSON (the 406 answers the others there first):
+    on `GET myself` for each value that admits JSON (the 406 answers the others there first), and
+    2026-10-14 on `GET` and `HEAD` of operations that ask no 406 (`license/approximateLicenseCount`,
+    `app/module/dynamic`) for the two answers that differ by method:
 
     - a header any member of which Jira cannot read (:func:`_accept`: `foo`, `*.*`, `*/json`,
       `q=2`, `charset=bogus`), wherever it stands: the 401 with no body, under
-      `text/html;charset=UTF-8`, with `Allow` naming eight methods; but
-      :data:`_JIRA_READS_AS_JSON`, which is `application/json`
+      `text/html;charset=UTF-8`, with `Allow` naming eight methods on an `OPTIONS` and none on the
+      others; but :data:`_JIRA_READS_AS_JSON`, which is `application/json`
     - a bare `*` is passed over, and with nothing else, as with no `Accept` or an empty one:
       `text/plain;charset=UTF-8` (`*;q=0.5` too, and `*, application/json` is `application/json`)
     - `text/html` first found anywhere past the header's start, in that case
@@ -1127,15 +1134,17 @@ def jira_unauthenticated(accept: str | None) -> tuple[int, str, bytes, dict[str,
       212, big-endian behind none; `x-MacRoman`, a charset Java knows and Python by another name, is
       53); `text/*` is `text/plain`, `application/*` is `application/json`, and
       `application/*+json`, whatever charset it names, is `application/json;charset=UTF-8`
-    - a wildcard under any other type (`image/*`, `audio/*`, `video/*`, `multipart/*`): a 500 with
-      no body, under `text/html;charset=utf-8`, with `Allow` naming seven methods
+    - a wildcard under any other type (`image/*`, `audio/*`, `video/*`, `multipart/*`): on an
+      `OPTIONS` a 500 with no body, under `text/html;charset=utf-8`, with `Allow` naming seven
+      methods, and on the others Jira's 500 page with no `Allow`
     """
     body = JIRA_UNAUTHENTICATED.encode()
     if (accept or "").strip() == _JIRA_READS_AS_JSON:
         accept = "application/json"
     _, unread = _accept(accept)
+    options = method == "OPTIONS"
     if unread:
-        return 401, HTML_MEDIA_TYPE, b"", {"Allow": _JIRA_UNREAD_ALLOW}
+        return 401, HTML_MEDIA_TYPE, b"", {"Allow": _JIRA_UNREAD_ALLOW} if options else {}
     if (accept or "").find("text/html") > 0:
         return 401, HTML_MEDIA_TYPE, body, {"X-Frame-Options": "SAMEORIGIN"}
     named = [m for m in (accept or "").split(",") if m.split(";", 1)[0].strip() not in ("", "*")]
@@ -1150,7 +1159,9 @@ def jira_unauthenticated(accept: str | None) -> tuple[int, str, bytes, dict[str,
         return 401, JIRA_JSON_MEDIA_TYPE, body, {}
     if subtype == "*":
         if kind not in ("text", "application"):
-            return 500, "text/html;charset=utf-8", b"", {"Allow": _JIRA_NO_TYPE_ALLOW}
+            if not options:
+                return 500, JIRA_OOPS_MEDIA_TYPE, None, {}
+            return 500, JIRA_OOPS_MEDIA_TYPE, b"", {"Allow": _JIRA_NO_TYPE_ALLOW}
         subtype = "plain" if kind == "text" else "json"
     names_charset = any(n.lower() == "charset" for n, _ in parameters)
     keeps_case = (subtype == "json" or subtype.endswith("+json")) and not names_charset

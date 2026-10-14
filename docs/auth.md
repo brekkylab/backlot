@@ -81,8 +81,11 @@ curl -s localhost:8000/slack/api/auth.test \
 
 The scheme is required: a bare token answers `not_authed`. As with the real Web API, an auth failure
 is **HTTP 200 with `ok: false`** — `not_authed` when the header is missing or unscheme'd,
-`invalid_auth` when the token resolves to nobody. The token is also accepted as a `token` query
-parameter or form field, which is where Slack's own clients put it.
+`invalid_auth` when the token resolves to nobody. The token is also accepted as a `token` form
+field, which is where Slack's own clients put it and which real reads ahead of the header. A
+`token` query parameter is refused, since Slack stopped taking one from apps created after February
+24, 2021, the kind of app Backlot answers as: `invalid_auth` for a non-empty value, and for an empty
+one beside a token in the header or the form.
 
 **It is a user token, not a bot token.** Slack has two kinds and they are not interchangeable; a
 Backlot token behaves as the first:

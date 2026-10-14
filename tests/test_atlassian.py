@@ -5112,10 +5112,11 @@ _TOMCAT_PAGE = "text/html;charset=utf-8"
 def test_atlassian_front_door_answers_before_either_product(
     client, admin_h, method, vendor_path, status, page, media_type
 ):
-    """Each refusal is the page real sent, held here as its length and digest; which layer gives
-    it and in what order is ``errors.atlassian.front_door``'s, which carries the measurement. The
-    rows with no page reach the product. The credential does not change which layer answers, so an
-    admin request is enough to show a served route does not reach its handler."""
+    """Each refusal is the page real sent, held here as its length and digest, with the headers real
+    sent beside it (``errors.atlassian.FrontDoor``); which layer gives it and in what order is
+    ``errors.atlassian.front_door``'s, which carries the measurement. The rows with no page reach
+    the product. The credential does not change which layer answers, so an admin request is enough
+    to show a served route does not reach its handler."""
     path, _, query = vendor_path.partition("?")
     answer = errors_atlassian.front_door(method, f"/atlassian{path}", query)
     r = _spelled(client, method).request("GET", f"/atlassian{vendor_path}", headers=admin_h)
@@ -5127,6 +5128,10 @@ def test_atlassian_front_door_answers_before_either_product(
     length, digest = page
     assert "allow" not in r.headers
     assert ("content-language" in r.headers) == (media_type == _TOMCAT_PAGE)
+    for name in ("atl-request-id", "atl-traceid"):
+        assert (name in r.headers) == (page in (_NGINX_400, _OPENRESTY_405, _TOMCAT_400)), name
+    for name in ("x-content-type-options", "x-xss-protection"):
+        assert (name in r.headers) == (page not in (_CLOUDFRONT_405, _CLOUDFRONT_400)), name
     if method == "HEAD":
         assert r.content == b"" and r.headers["content-length"] == str(length)
         return

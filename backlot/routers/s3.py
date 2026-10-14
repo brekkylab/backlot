@@ -860,12 +860,13 @@ def _key_selected(q) -> list[str]:
     too (`?partNumber=1&tagging` is "partNumber, tagging", same date); alone it is GetObject's
     (``_part_refusal``), and beside `uploadId` UploadPart.
 
-    `annotation` is read from its first value, as ``_first`` reads it, and names the operation only
-    when that value is empty: `?annotation=x` is GetObject, whatever else is sent, so an
-    `annotationName`, a `max-annotation-results` or a second selector beside it is read as if the
-    `annotation` were absent, and a version id, a part number and a response override as GetObject
-    reads them, and `?annotation=x&annotation=` is GetObject where `?annotation=&annotation=x` is
-    the listing. No other selector reads its value: `?acl=x`, `?tagging=x`, `?attributes=x`,
+    `annotation` is read from its first value, as ``_first`` reads it, and names the operation
+    only when that value is empty: `?annotation=x` is GetObject, so an `annotationName` beside it is
+    ignored rather than refused as it is on its own (the check reads ``q``, not ``selected``), a
+    `max-annotation-results` is not parsed, a second selector is that selector's operation alone,
+    and a version id, a part number and a response override are read as GetObject reads them;
+    `?annotation=x&annotation=` is GetObject where `?annotation=&annotation=x` is the listing. No
+    other selector picks its operation by its value: `?acl=x`, `?tagging=x`, `?attributes=x`,
     `?torrent=x`, `?uploads=x`, `?legal-hold=x` and `?retention=x` at a key and `?acl=x`,
     `?versioning=x` and `?location=x` at a bucket each got the selector's own answer (us-east-1,
     2026-10-14).

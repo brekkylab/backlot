@@ -2428,7 +2428,7 @@ _OBJECT_ANSWER_ROWS = [
     ("", {"x-amz-checksum-mode": "ENABLED", "Range": "bytes=0-9"}, 206, _FIRST_TEN, False),
     ("", {"x-amz-content-sha256": "STREAMING-AWS4-HMAC-SHA256-PAYLOAD"}, 200, None, False),
     ("", {"x-amz-content-sha256": "0" * 64}, 200, None, False),
-    # A valued `annotation` is GetObject's, whatever is beside it
+    # A valued `annotation` is GetObject's, beside GetObject's own parameters
     # (``backlot.routers.s3._key_selected``).
     ("annotation=x", {}, 200, None, False),
     ("annotation=%20", {}, 200, None, False),

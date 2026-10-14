@@ -567,9 +567,9 @@ and on the writes that refuse it there, and at a key's beside a selector whose o
 a `?website` with a value real's 400 at either path, and an `annotationName` at a key without the
 `annotation` it belongs to real's 400, which most of real's front ends answer a GET with and a few
 answer as if it were absent. An `annotation` with a value, `?annotation=x`, is GetObject, as on
-real, the one sub-resource whose value real reads, and so is what is sent beside it. Two
-sub-resources at once are `InvalidArgument`, as on real S3, and an unknown query key is ignored, as
-on real S3.
+real, the one sub-resource a value turns into another operation; the rest of the query is read
+without it, an `annotationName` beside it ignored. Two sub-resources at once are `InvalidArgument`,
+as on real S3, and an unknown query key is ignored, as on real S3.
 
 A method no operation above serves answers what real answers: the 405 that names the method and
 whether the resource is a `BUCKET`, an `OBJECT` or the `SERVICE`, the 400 an `OPTIONS` without an

@@ -37,7 +37,8 @@ git worktree add /tmp/inv-base <base> && git worktree add /tmp/inv-head <head>
   by passage: every request, answer, status, field, date or place of measurement the old text
   stated, and every constraint on the code it named, is still stated by the new text or at the line
   the map cites. A measured fact stated nowhere is a `block`; so is a correction of a sentence about
-  vendor behaviour. What the map lists as dropped must be what rule 5 lets go.
+  vendor behaviour. What the map lists as dropped must be what rule 5 lets go. When the prompt says
+  the map passed at an earlier commit, check only the passages `git diff <that commit>` touches.
 - **code**: record the base a second time to `/tmp/inv-rec/base2`, then
   `uv run python scripts/invariance.py compare /tmp/inv-rec/base /tmp/inv-rec/head --mode code --calibration /tmp/inv-rec/base2`
   must print `invariant`. A difference is reproduced once more with a fresh head recording before

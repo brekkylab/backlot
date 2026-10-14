@@ -228,9 +228,11 @@ skill and the reviewers are read from it.
 
 ## 3. Read the area and choose the cut
 
-Read the area's code files whole. Of its test files, read what the kind needs: all of them for
-`tests`; for `code`, the private names they import or reach into
-(`grep -nE "from backlot\.[a-z_.]+ import|[a-z_]+\._[a-z]" <files>`), which a `code` cut must keep.
+What to read depends on the kind. `code`: the area's code files whole, and of its test files the
+private names they import or reach into (`grep -nE "from backlot\.[a-z_.]+ import|[a-z_]+\._[a-z]"
+<files>`), which a `code` cut must keep. `tests`: the test files whole. `prose`: the passages the
+`verbose` list below names, longest first, and what each sits over; the prose of both columns of
+the area is in scope.
 Then list what the rules allow, by kind:
 
 Start with two lists. `uv run python scripts/invariance.py verbose <the area's files>` gives every
@@ -252,8 +254,8 @@ Then:
   same branch with the same answer shape, setup rebuilt test after test, helpers repeated across
   test files, and the rewrites rule 5 allows.
 
-When the base recording is done and the area has code paths, run `uv run python
-scripts/invariance.py uncovered $REC/base <the area's code paths>`. A `code` cut stays off every line it lists (rule 2). Each listed line is also
+For `code` and `tests`, when the base recording is done and the area has code paths, run `uv run
+python scripts/invariance.py uncovered $REC/base <the area's code paths>`. A `code` cut stays off every line it lists (rule 2). Each listed line is also
 residue for step 7: reachable code no test sends the request for, or a test that claims more than
 it reaches.
 
@@ -290,14 +292,15 @@ empty, so a second head recording after a fix goes to a new name (`$REC/head2`).
   fact is still stated (file and line at the head). For a passage rewritten: each measured fact and
   constraint it stated, and that the new text still states it; then what was dropped, by rule 5's
   categories (motivation, history, restates the code, …). A measured fact with no row is a fact
-  lost: put it back.
+  lost: put it back. Cite where a fact now lives by function or section name rather than by line,
+  so a fix round does not renumber the map.
 - `code`: `uv run python scripts/invariance.py compare $REC/base $REC/head --mode code --calibration $REC/base2`.
 - `tests`: `uv run python scripts/invariance.py compare $REC/base $REC/head --mode tests`.
 
 It must print `invariant`. A difference is a behaviour the cut changed: find which candidate, undo
 it, and prove again. Never widen the comparison to make it pass. Keep `$REC` until the reviewers
 pass, since a fix is proved against the same base recording, then `git worktree remove --force
-$REC/tree` and `rm -rf $REC`.
+$REC/tree` and, in a live run, `rm -rf $REC`.
 
 For `tests`, also write the fact map: for every test removed or merged, the reason (rule 7) and the
 test and assertion that now carry each fact it asserted. Coverage cannot see a lost assertion, so
@@ -343,9 +346,12 @@ repository's pull request template with every section filled, never hard-wrapped
 - Checkboxes: tick the third, which speaks for the lines this pull request writes. Leave the first
   two unticked with `— not applicable: behaviour is unchanged` after each.
 
-Dispatch both reviewers in parallel with the Agent tool, each with the one-line prompt
-`Review pull request #<n> of brekkylab/backlot` (rehearsal: `Review branch <branch> against <base>`
-followed by the title and body you would have sent):
+Dispatch both reviewers in parallel with the Agent tool, in the foreground so their verdicts come
+back to you, each with the one-line prompt `Review pull request #<n> of brekkylab/backlot`
+(rehearsal: `Review branch <branch> against <base>` followed by the title and the path of a file
+holding the body you would have sent). From the second round on, add `The fact map passed at
+<sha>; check only the passages changed since.` when the invariance reviewer's last verdict found
+nothing in the map.
 
 - `subagent_type: invariance-reviewer`
 - `subagent_type: prose-reviewer`
@@ -357,10 +363,11 @@ by the line above.
 
 Treat findings as the loop's step 9 does: reproduce, then fix or rebut with evidence, prove again
 after any fix, and dispatch again in fresh contexts until both pass on the same commit. A finding
-that a cut changed behaviour is answered by undoing that cut, never by arguing the change is
-harmless. After three rounds with a `block` standing, draft the pull request, add
-`needs-maintainer`, and post a decision comment whose options are `merge`, `drop <the disputed cut>`
-and `close`.
+that a cut changed behaviour or lost a fact is answered by undoing or restoring it, never by arguing
+it is harmless. After three rounds with a `block` standing: if every finding of the last round was
+applied undisputed, dispatch that reviewer once more; otherwise, or if it still blocks, draft the
+pull request, add `needs-maintainer`, and post a decision comment whose options are `merge`,
+`drop <the disputed cut>` and `close`.
 
 ## 9. Hand over
 

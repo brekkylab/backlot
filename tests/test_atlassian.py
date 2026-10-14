@@ -5056,6 +5056,7 @@ _TOMCAT_PAGE = "text/html;charset=utf-8"
         # comes before Tomcat
         ("PATCH", "/rest/api/3/serverInfo", 400, _NGINX_400, _EDGE_PAGE),
         ("PATCH", "/wiki/rest/api/space", 405, _OPENRESTY_405, _EDGE_PAGE),
+        ("PATCH", "/wiki", 405, _OPENRESTY_405, _EDGE_PAGE),
         ("PATCH", "//wiki/rest/api/space", 405, _OPENRESTY_405, _EDGE_PAGE),
         ("PATCH", "/wiki/rest/api/space/NO%2FSUCH", 405, _OPENRESTY_405, _EDGE_PAGE),
         # Confluence's Tomcat: an encoded slash or backslash anywhere under `/wiki/` but `spaces/`
@@ -5266,6 +5267,10 @@ _JSON_TYPE = "application/json"
         ("POST", "/wiki/rest/api/template", None, "application/*+json", 415, b""),
         ("POST", "/wiki/rest/api/template", None, "application/json;;", 403)
         + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+        ("POST", "/wiki/rest/api/template", None, 'application/json;x="a\\"b"', 403)
+        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+        ("POST", "/wiki/rest/api/template", None, "a@b/json", 400)
+        + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
         ("POST", "/wiki/rest/api/template", None, "application/json;=x", 400)
         + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
         ("POST", "/wiki/rest/api/template", None, "application/json;x", 400)

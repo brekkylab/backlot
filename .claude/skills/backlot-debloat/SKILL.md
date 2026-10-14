@@ -159,8 +159,8 @@ Once the base is recorded (step 5 can start now, in the background), run `invari
 <base recording> <the area's code paths>`. A line no test executes is either dead code (rule 6) or a
 test that claims more than it reaches; the second is residue for step 7, not a cut.
 
-Pick the kind by a quick estimate of which holds the largest cut, without working the others out in
-full, or take the kind the rehearsal named. Write the candidate list down; the body carries what you
+Among the kinds the survey left open, pick by a quick estimate of which holds the largest cut,
+without working the others out in full, or take the kind the rehearsal named. Write the candidate list down; the body carries what you
 left for a later run.
 
 ## 3. Branch

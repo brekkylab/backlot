@@ -5982,9 +5982,8 @@ _ACCEPT_ROWS = [
     ("GET", _CQL, "none", "*/*+json", None, 403, _JSON, None, {}),
     ("GET", _CQL, "none", "foo, application/json", None, 403, _JSON, None, {}),
     ("GET", _CQL, "none", "foo, *.*", None, 406, None, b"", {}),
-    # the JAX-RS 404 of a path no resource claims fails to be written under a header Jersey cannot
-    # parse, and a JAX-RS write parses `Accept` between Tomcat's reading of the body's type and the
-    # 415 (2026-10-14)
+    # Jersey under a header it cannot parse: the 404's 500, and a write's 400 ahead of its 415
+    # (``backlot.routers.atlassian._confluence_not_found``, ``_published_answer``)
     *(
         ("GET", "/atlassian/wiki/rest/api/nopesuchroute", "none", accept, None, 500, None, b"")
         + ({"cache-control": None},)
@@ -6176,8 +6175,8 @@ _ACCEPT_ROWS = [
     ("OPTIONS", "/atlassian/wiki/rest/api/nope<script>", "admin", _Q2, None, 403, "text/html", None)
     + ({"content-length": "919"},),
     ("GET", _CQL, "admin", 'application/json;x="a;b"', None, 200, _JSON, None, {}),
-    # -- a `q` named in another case that Spring cannot read as it sorts two members or more
-    # (``errors.atlassian.spring_cannot_sort``, ``backlot.routers.atlassian.spring_sort_failure``)
+    # -- an `Accept` Spring fails to sort (``errors.atlassian.spring_cannot_sort``,
+    # ``backlot.routers.atlassian.spring_sort_failure``)
     *(
         (
             method,
@@ -6232,13 +6231,13 @@ _ACCEPT_ROWS = [
     ("GET", _INFO, "none", "foo, application/json;Q=abc, text/plain", None, 406, _EMPTY_HTML, b"")
     + ({},),
     ("GET", _INFO, "none", "application/json;q=-1", None, 406, _EMPTY_HTML, b"", {}),
-    # Jira cannot read a header of more than fifty members; Confluence's Spring services can
+    # the member limit (``errors.atlassian._accept``)
     ("GET", _INFO, "none", _MEMBERS(51), None, 406, _EMPTY_HTML, b"", {}),
     ("GET", _INFO, "none", _MEMBERS(50), None, 200, _JIRA_JSON, None, {}),
     ("OPTIONS", _INFO, "none", _MEMBERS(51), None, 401, _EMPTY_HTML, b"")
     + ({"allow": "GET, HEAD, POST, PUT, DELETE, OPTIONS, TRACE, PATCH"},),
     ("GET", _SPACES, "admin", _MEMBERS(51), None, 200, _JSON, None, {}),
-    # and on Confluence: an empty 500 but where a wildcard beside a concrete type is sorted unread
+    # and on Confluence, by its own sort (``errors.atlassian.spring_cannot_sort``)
     *(
         (method, path, credential, accept, None, 500, None, b"", {})
         for method, path, credential, accept in (

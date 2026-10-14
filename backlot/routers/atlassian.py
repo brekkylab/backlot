@@ -3323,16 +3323,15 @@ def spring_write_failure(request: Request, status: int, headers, body: bytes) ->
 
 
 def spring_sort_failure(request: Request, status: int, headers, body: bytes) -> Response | None:
-    """What real answers where Spring fails as it sorts the request's `Accept`
-    (``errors.atlassian.spring_cannot_sort``), given the answer this server built, or None where
-    what answers comes before Spring. Measured 2026-10-14 with `application/json;Q=abc, text/plain`
-    and its kin on each answer below.
+    """The answer that replaces this server's where Spring fails as it sorts the request's `Accept`
+    (``errors.atlassian.spring_cannot_sort``), or None where what answers comes before Spring.
+    Measured 2026-10-14 with `application/json;Q=abc, text/plain` and its kin on each answer below.
 
     Spring sorts before it picks a handler, so every answer it would give is replaced, the 404s,
     405s, 406s and 415s among them: on Jira by its 500 page (``errors.atlassian.jira_oops_page``)
     with no `WWW-Authenticate`, an `OPTIONS` by the empty 500 and seven methods in `Allow`, whatever
     the credential; on Confluence by an empty 500 with no `content-type`. What comes before Spring
-    stands: the gateway's Connect-token 403, Tomcat's 401 for a Basic value it cannot read, and on
+    stands: the gateway's Connect-token 403, Tomcat's 401 for an unreadable Basic value, and on
     Confluence's JAX-RS services Jersey's own reading of the header, its 400
     (``errors.atlassian.not_acceptable``) or the 404's 500.
     """

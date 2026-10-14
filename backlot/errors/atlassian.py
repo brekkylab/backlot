@@ -710,15 +710,15 @@ _JIRA_READS_AS_JSON = "application/json,*.*;q=0.9"
 #: floating literal, `NaN` or `Infinity`, signed or not, with an optional `f`, `F`, `d` or `D`.
 _JAVA_DOUBLE = re.compile(
     r"[+-]?(?:NaN|Infinity|(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?[fFdD]?"
-    r"|0[xX](?:[0-9a-fA-F]+\.?[0-9a-fA-F]*|\.[0-9a-fA-F]+)[pP][+-]?\d+[fFdD]?)"
+    r"|0[xX](?:[\da-fA-F]+\.?[\da-fA-F]*|\.[\da-fA-F]+)[pP][+-]?\d+[fFdD]?)"
 )
 #: The characters `String.trim` takes off either end, which `Double.parseDouble` does first.
 _JAVA_TRIMMED = "".join(chr(code) for code in range(0x21))
 
 
 def _java_double(text: str) -> float | None:
-    """``text`` as Java's `Double.parseDouble` reads it, or None where it throws: `0x1p-1` is 0.5,
-    `1e0` and `0.5f` read, `abc` does not."""
+    """``text`` as Java's `Double.parseDouble` reads it, or None where it throws; the hexadecimal
+    `0x1p-1` is 0.5."""
     text = text.strip(_JAVA_TRIMMED)
     if not _JAVA_DOUBLE.fullmatch(text):
         return None
@@ -855,15 +855,15 @@ def spring_cannot_sort(accept: str | None, *, reader: str = "jira") -> bool:
     Spring Framework 6.1, whose `HeaderContentNegotiationStrategy` sorts with
     `MimeTypeUtils.sortBySpecificity`: a bubble sort whose every comparison
     (`MediaType.isMoreSpecific`) reads both members' `q` first, so any such member fails it, and
-    which refuses more than fifty members (:func:`_accept`). Confluence's Spring services' match
-    Spring Framework 5.3, whose strategy sorts with `MediaType.sortBySpecificityAndQuality`, Java's
-    `List.sort` under `SPECIFICITY_COMPARATOR` then `QUALITY_VALUE_COMPARATOR`
-    (:func:`_sorted_alike` over :func:`_java_list_sort`), where a wildcard beside a concrete type is
-    ordered without its `q` being read: `*/*;Q=abc, application/json` sorts,
-    `text/plain;Q=abc, application/json` and `*/*;Q=abc, */*` do not. Read against those classes in
-    spring-framework at `v6.1.14` and `v5.3.39`, and measured on 2026-10-14 with fourteen headers on
-    each of `serverInfo` and `space` and nine on Jira's `OPTIONS`; `Q=NaN` and `Q=Infinity` read,
-    and so does a lone member, which is not compared. What each answer then becomes is
+    which refuses more than fifty members. Confluence's Spring services' match Spring Framework 5.3,
+    whose strategy sorts with `MediaType.sortBySpecificityAndQuality`, Java's `List.sort` under
+    `SPECIFICITY_COMPARATOR` then `QUALITY_VALUE_COMPARATOR` (:func:`_sorted_alike` over
+    :func:`_java_list_sort`), where a wildcard beside a concrete type is ordered without its `q`
+    being read: `*/*;Q=abc, application/json` sorts, `text/plain;Q=abc, application/json` and
+    `*/*;Q=abc, */*` do not. Read against those classes in spring-framework at `v6.1.14` and
+    `v5.3.39`, and measured on 2026-10-14 with fourteen headers on each of `serverInfo` and `space`
+    and nine on Jira's `OPTIONS`; `Q=NaN` and `Q=Infinity` read, and so does a lone member, which is
+    not compared. What each answer then becomes is
     ``backlot.routers.atlassian.spring_sort_failure``.
     """
     ranges, unread = _accept(accept, reader=reader)
@@ -1069,8 +1069,7 @@ def not_acceptable(
 
     Real asks once the request has reached an endpoint, so a 405 for a method the path does not
     take comes first (2026-10-13); where it falls among the endpoint's own refusals is
-    ``backlot.routers.atlassian._checked_before_the_route``'s for a route here and
-    ``backlot.routers.atlassian._published_answer``'s for an operation none serves.
+    ``backlot.routers.atlassian``'s to say.
 
     - Jira: RFC 7807 under :data:`PROBLEM_JSON`, ``detail`` naming ``produces``
       (`Acceptable representations: [application/json].`) and `Accept` naming them beside it, the

@@ -232,7 +232,7 @@ def atlassian_bearer_token(request: Request) -> str | None:
         ' Bearer <t>'   read            BEARER <t>      not read
         Bearer <t>' '   read            token <t>       not read
         Bearer a<TAB>b  read            OAuth <t>       not read
-                                        Bearer  <t>     not read
+        Bearer <TAB><t> read            Bearer  <t>     not read
                                         Bearer<TAB><t>  not read
                                         Bearer<t>       not read
                                         Bearer          not read
@@ -240,7 +240,9 @@ def atlassian_bearer_token(request: Request) -> str | None:
 
     The scheme is case-sensitive and separated from the token by exactly one space, and the token
     holds no space of its own: the `Bearer a b` row above was served anonymously on Jira Cloud on
-    2026-10-12, where a tab, a comma or a dot in the token was read and then refused. Sharing
+    2026-10-12, where a tab, a comma or a dot in the token was read and then refused. Whitespace but
+    a space is the token's own wherever it stands: a tab, two tabs, U+0085 and U+00A0 straight after
+    `Bearer ` were read on Jira Cloud on 2026-10-14, and a tab then a space was not. Sharing
     :func:`bearer_token` would authenticate six of those spellings — every "not read" row above but
     ``OAuth <t>``, ``Bearer<t>`` and the bare ``Bearer`` — so a client sending
     ``Authorization: token <t>`` would pass every test here and read nothing in production. Slack
@@ -253,7 +255,7 @@ def atlassian_bearer_token(request: Request) -> str | None:
     if not hdr.startswith("Bearer "):
         return None
     rest = hdr[len("Bearer ") :]
-    if not rest or rest[0].isspace() or " " in rest:
+    if " " in rest:
         return None
     return rest
 

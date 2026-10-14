@@ -285,11 +285,12 @@ def test_jira_refuses_a_bearer_it_cannot_read_as_a_connect_token(client):
     ):
         assert absent not in r.headers, absent
     # And it is refused ahead of the route: serverInfo needs no credential and still answers 403,
-    # which is why the check is not in the caller helper. A tab, a comma or a dot in the token is
-    # read past, where a space is not (``backlot.auth.atlassian_bearer_token``).
-    for token in ("usr-nope", "a\tb", "a,b", "a.b"):
+    # which is why the check is not in the caller helper. Whitespace but a space, first or not, and
+    # a comma or a dot in the token are read past (``backlot.auth.atlassian_bearer_token``).
+    for token in ("usr-nope", "a\tb", "a,b", "a.b", "\tusr-nope", "\t\tusr-nope", "\x85a", "\xa0a"):
         info = client.get(
-            "/atlassian/rest/api/3/serverInfo", headers={"Authorization": f"Bearer {token}"}
+            "/atlassian/rest/api/3/serverInfo",
+            headers={"Authorization": f"Bearer {token}".encode("latin-1")},
         )
         assert info.status_code == 403 and info.json() == {
             "error": errors_atlassian.CONNECT_TOKEN_UNREADABLE
@@ -327,6 +328,7 @@ def test_jira_answers_a_jwt_shaped_bearer_with_the_403_too(client):
         "Bearer",
         # a space in the token, which the gateway does not read past
         "Bearer a b",
+        "Bearer \t usr-nope",
         "Bearer a  b",
         "Bearer a b c",
     ],
@@ -5248,7 +5250,8 @@ _JSON_TYPE = "application/json"
         ("POST", "/wiki/rest/api/content/archive", None, "foo", 400)
         + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
         # Jersey's own reading of a type: a wildcard JSON matches is JSON, a charset is not looked
-        # up, and a parameter with no `=`, an empty value or space beside the `=` is unreadable
+        # up and an empty parameter is skipped, and a parameter with no name, no `=`, an empty value
+        # or space beside the `=` is unreadable
         ("POST", "/wiki/rest/api/template", None, "*/*", 403)
         + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
         ("POST", "/wiki/rest/api/template", None, "application/*", 403)
@@ -5261,6 +5264,10 @@ _JSON_TYPE = "application/json"
         + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
         ("POST", "/wiki/rest/api/template", None, "text/*", 415, b""),
         ("POST", "/wiki/rest/api/template", None, "application/*+json", 415, b""),
+        ("POST", "/wiki/rest/api/template", None, "application/json;;", 403)
+        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+        ("POST", "/wiki/rest/api/template", None, "application/json;=x", 400)
+        + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
         ("POST", "/wiki/rest/api/template", None, "application/json;x", 400)
         + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
         ("POST", "/wiki/rest/api/template", None, "application/json;x=", 400)
@@ -5281,6 +5288,8 @@ _JSON_TYPE = "application/json"
         + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
         ("POST", "/wiki/rest/api/template", None, "application/json;x=1 ;y=2", 403)
         + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+        ("POST", "/wiki/rest/api/template", None, "application/json;x=1 ;y", 400)
+        + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
         # the two that ran: a type Jersey cannot read is its 400 too, JSON reaches the operation,
         # which real runs and Backlot does not serve
         ("POST", "/wiki/rest/api/contentbody/convert/async/1", None, "application/json;x", 400)

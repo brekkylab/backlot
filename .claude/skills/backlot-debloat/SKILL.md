@@ -73,7 +73,8 @@ sentence, with no signature and no session link.
    of `docs/supported-sources.md` and `skills/backlot/SKILL.md`, the fidelity baseline, `AGENTS.md`,
    `CONTRIBUTING.md`, `.github/`, `.claude/`, `pyproject.toml` and `uv.lock`. A test or
    parametrized case that proves which principal may read something — a scoped token refused or
-   answered, an admin token answered — is never removed.
+   answered, an admin token answered — is never removed. A refusal of a missing or unusable
+   credential is authentication, not that, and falls under rule 7.
 10. **Small enough to review in one sitting**: at most 800 changed lines (added plus removed), in as
     few commits as tell the story. Stop at a coherent boundary rather than at the limit.
 11. **Nothing worth doing is a result.** If the area holds no cut that these rules allow, say so and

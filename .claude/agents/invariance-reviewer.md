@@ -41,7 +41,9 @@ git worktree add /tmp/inv-base <base> && git worktree add /tmp/inv-head <head>
   you call it a finding: timing can line two base runs up by chance.
 - **tests**: `compare /tmp/inv-rec/base /tmp/inv-rec/head --mode tests` must print `invariant`.
 
-Remove the worktrees and recordings when you are done (`git worktree remove --force`).
+Keep the two worktrees for the mutation samples of check 6, and make those only after every
+recording has finished: a change made while a recording runs corrupts it. Remove the worktrees and
+recordings when you are done (`git worktree remove --force`).
 
 ## What you check
 
@@ -73,7 +75,8 @@ Remove the worktrees and recordings when you are done (`git worktree remove --fo
    constant or a library's behaviour, or a repeated setup merged into the test that owns it. A test
    removed for any other reason is a `block`. A test or case that proves which principal may read
    something — a scoped token refused or answered, an admin token answered — is never removed, and a
-   parametrized case of one counts.
+   parametrized case of one counts. A refusal of a missing or unusable credential is authentication,
+   not that, and falls under the ordinary rules.
 8. **It got smaller.** Net lines of the kind's paths went down. A helper that adds parameters and
    branches to save fewer lines than it adds is a `block` with the counts.
 

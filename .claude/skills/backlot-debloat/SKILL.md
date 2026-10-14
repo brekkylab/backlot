@@ -64,8 +64,9 @@ sentence, with no signature and no session link.
 9. **Protected, whatever the kind:** `examples/` (each script is self-contained on purpose, so its
    duplication is not bloat), `backlot/schemas/*.schema.json`, `backlot/data/`, the generated blocks
    of `docs/supported-sources.md` and `skills/backlot/SKILL.md`, the fidelity baseline, `AGENTS.md`,
-   `CONTRIBUTING.md`, `.github/`, `.claude/`, `pyproject.toml` and `uv.lock`. An admin-token and
-   scoped-token test pair that proves a read's ACL is never removed.
+   `CONTRIBUTING.md`, `.github/`, `.claude/`, `pyproject.toml` and `uv.lock`. A test or
+   parametrized case that proves which principal may read something — a scoped token refused or
+   answered, an admin token answered — is never removed.
 10. **Small enough to review in one sitting**: at most 800 changed lines (added plus removed), in as
     few commits as tell the story. Stop at a coherent boundary rather than at the limit.
 11. **Nothing worth doing is a result.** If the area holds no cut that these rules allow, say so and
@@ -190,8 +191,12 @@ it, and prove again. Never widen the comparison to make it pass. Remove the work
 (`git worktree remove --force /tmp/debloat-base`).
 
 For `tests`, also write the fact map: for every test removed or merged, the reason (rule 7) and the
-test and assertion that now carry each fact it asserted. Coverage cannot see a lost assertion, and
-the map is how a reviewer finds one.
+test and assertion that now carry each fact it asserted. Coverage cannot see a lost assertion, so
+prove each row: make a one-line change to `backlot/` that the removed test fails on at the base, then
+run the carrier's file at the head (and the whole suite if that passes). Something must fail. Copy
+the file to `/tmp` before the change and restore it from the copy, never with `git checkout --`. A
+row with no failing head test is a fact you were about to lose: put the test back, or fold its
+assertion into the carrier.
 
 ## 6. Measure
 

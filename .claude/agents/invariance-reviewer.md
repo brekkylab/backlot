@@ -62,13 +62,15 @@ Remove the worktrees and recordings when you are done (`git worktree remove --fo
    asserted before and nowhere after is a `block` even when coverage held, because coverage proves a
    line ran, not that its answer was checked. Then sample: for up to three removed tests, choose a
    one-line change to `backlot/` that the removed test fails on at the base (run it there to prove
-   it), apply the same change at the head, and run the test file the body says took the fact over.
-   It must fail too. Restore each change from a copy you made first, never with `git checkout --`.
+   it), apply the same change at the head, and run the whole suite there (`uv run pytest -q -x`):
+   something must fail, whatever the body names as the carrier. Restore each change from a copy you
+   made first, never with `git checkout --`.
 7. **Each removed test has a stated reason** from the skill's four: an assertion subset of another
    test, a case in the same equivalence class as a kept case, a tautology about the mock's own
    constant or a library's behaviour, or a repeated setup merged into the test that owns it. A test
-   removed for any other reason is a `block`. An admin-token and scoped-token pair proving a read's
-   ACL is never removed.
+   removed for any other reason is a `block`. A test or case that proves which principal may read
+   something — a scoped token refused or answered, an admin token answered — is never removed, and a
+   parametrized case of one counts.
 8. **It got smaller.** Net lines of the kind's paths went down. A helper that adds parameters and
    branches to save fewer lines than it adds is a `block` with the counts.
 

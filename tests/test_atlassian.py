@@ -291,8 +291,8 @@ def test_jira_refuses_a_bearer_it_cannot_read_as_a_connect_token(client):
     ):
         assert absent not in r.headers, absent
     # And it is refused ahead of the route: serverInfo needs no credential and still answers 403,
-    # which is why the check is not in the caller helper. Whitespace but a space, first or not, and
-    # a comma or a dot in the token are read past (``backlot.auth.atlassian_bearer_token``).
+    # which is why the check is not in the caller helper. The tokens are spellings
+    # ``backlot.auth.atlassian_bearer_token`` reads.
     for token in ("usr-nope", "a\tb", "a,b", "a.b", "\tusr-nope", "\t\tusr-nope", "\x85a", "\xa0a"):
         info = client.get(
             "/atlassian/rest/api/3/serverInfo",
@@ -5467,10 +5467,10 @@ _JSON_TYPE = "application/json"
         + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
         ("DELETE", "/wiki/rest/api/relation/1/from/user/a/to/content/2", None, None, 403)
         + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
-        # each operation the four lists in ``backlot.routers.atlassian`` name, with no credential
-        # (2026-10-14): the nineteen GETs and the JAX-RS writes but the two that run, the
-        # not-permitted 403, the Spring writes that check a type, the 415 for `text/plain`, and the
-        # GETs real serves outside the document, the Stackless 403
+        # each operation the four lists in ``backlot.routers.atlassian`` name, with no credential:
+        # the nineteen GETs and the JAX-RS writes but the two that run, the not-permitted 403, the
+        # Spring writes that check a type, the 415 for `text/plain`, and the GETs real serves
+        # outside the document, the Stackless 403
         *(
             ("GET", f"/wiki/rest/{path}", None, None, 403)
             + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,)

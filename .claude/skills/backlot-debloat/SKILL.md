@@ -111,6 +111,9 @@ sentence, with no signature and no session link.
 | `repo` (`tests` and `prose` only) | — | `tests/test_docs.py`, `tests/test_packaging.py`, `tests/test_skills.py`, `tests/test_pr_gate.py`, `tests/test_prose_check.py`, `tests/test_contributors_svg.py`, `tests/test_invariance.py` |
 | `docs` (`prose` only) | — | `README.md`, `docs/*.md` except the generated `docs/supported-sources.md` |
 
+The `repo` tests exercise `scripts/`, which no recording covers, so for them the fact map is the
+whole proof and its mutations go into `scripts/`.
+
 A cut may reach outside the area's files when it removes a duplicate whose other copy is in the
 area — a helper in two test files moving to `tests/_helpers.py` — but never more than that.
 

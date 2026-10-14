@@ -355,12 +355,12 @@ async def refuse_a_trailing_slash_on_github(request: Request, call_next):
     cases, which draw the same line.
 
     `redirect_slashes` is a setting of the whole app's `Router`, shared by every vendor mounted
-    here, and no other vendor's own answer to a trailing slash has been measured — so this
-    intercepts ahead of routing rather than turning the flag off for all of them. Registered inside
-    `resolve_github_id_paths`, so an id-keyed path is already its login-keyed spelling by the time
-    the question is asked and refuses its slash with the rest; and outside `report_github_rate_limit`
-    and the version echo, so a refused path reaches the rate limiter only through the call below and
-    never carries the echo.
+    here, and the vendors measured answer a trailing slash each their own way (Notion, Atlassian and
+    Google have middlewares of their own below) — so this intercepts ahead of routing rather than
+    turning the flag off for all of them. Registered inside `resolve_github_id_paths`, so an
+    id-keyed path is already its login-keyed spelling by the time the question is asked and refuses
+    its slash with the rest; and outside `report_github_rate_limit` and the version echo, so a
+    refused path reaches the rate limiter only through the call below and never carries the echo.
 
     An anonymous caller's spent rate-limit window outranks this 404 too: `GET /repos/{owner}/{repo}/`
     answers real's 403 rather than this 404 once the window is spent, `server: Varnish` (measured
@@ -423,6 +423,59 @@ async def serve_a_slashed_notion_path_as_the_path_without_it(request: Request, c
         trimmed = path[:-1]
         request.scope["path"] = trimmed
         request.scope["raw_path"] = trimmed.encode()
+    return await call_next(request)
+
+
+def _google_route_match(scope: Scope) -> Match:
+    """How the best Google route matches this scope: in full, by its path alone (``PARTIAL``, the
+    router's 405), or not at all. Asked of ``backlot.routers.google.router``, which holds the Google
+    routes and nothing else."""
+    best = Match.NONE
+    for route in google.router.routes:
+        match = route.matches(scope)[0]
+        if match is Match.FULL:
+            return match
+        if match is Match.PARTIAL:
+            best = match
+    return best
+
+
+@app.middleware("http")
+async def route_a_google_path_the_way_google_does(request: Request, call_next):
+    """Trailing slashes on a Google family path are not part of the path: real serves what the
+    slash-free spelling serves, however many there are, refusals included. Measured 2026-10-11
+    against the five hosts, on the spellings ``tests/test_google.py::_SLASHED_ROWS`` lists. And an
+    operation Google publishes that no route here serves under the request's method is refused as a
+    served route refuses before it runs, ahead of the router's 404 or 405
+    (``backlot.routers.google.refuse_an_unserved_operation``).
+
+    An escaped slash is not one of them — `values/A1%2F` is real's 400 `Unable to parse range: A1/`
+    — so the slashes counted are the raw path's. Nor is a run of slashes inside a path:
+    `/drive/v3//files` and `users/me//labels` are real's unrouted 404, and so are `values` and
+    `values/`, whose range would be empty. With the slash gone no route here matches `values`, and
+    the router's `redirect_slashes` would answer it with a 307 to `values/`, which the route reading
+    `values/{a1_range:path}` takes; so a path that matches no route once its slashes are gone is the
+    unrouted 404 here.
+
+    The raw path keeps the slashes, because a Drive download sent as a batch part is redirected to
+    its path as sent, slashes and all, which ``backlot.routers.google._drive_batch_redirect`` builds
+    from the raw bytes. The path is the scope's rather than ``request.url``'s, in which a decoded
+    `%23` would start a fragment and cut the path short.
+    """
+    path = request.scope["path"]
+    if not any(path.startswith(f"{p}/") for p in errors.google.PREFIXES):
+        return await call_next(request)
+    raw = request.scope.get("raw_path") or path.encode()
+    slashes = len(raw) - len(raw.rstrip(b"/"))
+    request.scope["path"] = path[: len(path) - slashes]
+    match = _google_route_match(request.scope)
+    if match is not Match.FULL:
+        try:
+            google.refuse_an_unserved_operation(request)
+        except StarletteHTTPException as exc:
+            return await _http_exception_handler(request, exc)
+        if match is Match.NONE:
+            return await _http_exception_handler(request, StarletteHTTPException(status_code=404))
     return await call_next(request)
 
 
@@ -516,25 +569,49 @@ async def refuse_a_bearer_jira_cannot_read(request: Request, call_next):
     return await call_next(request)
 
 
-# The path prefixes whose `HEAD` is the GET with the body left off. GitHub, Atlassian and Notion
-# because each is measured to be, and a vendor is added here once its own is rather than by a
-# rewrite that assumes they share GitHub's: both Atlassian products answered a `HEAD` with the
-# `GET`'s status and `content-type` and nothing in the body, on every route served here and on an
-# unknown issue's and an unknown space's 404, measured 2026-09-22 and on Confluence's
+@app.middleware("http")
+async def refuse_a_head_on_the_google_editor_hosts(request: Request, call_next):
+    """Refuse a `HEAD` on Docs, Sheets or Slides the way their host does, before anything else
+    reads the request: ``errors.google.head_refusal``, where the measurement is.
+
+    Inside the `HEAD` middleware below, whose tuple leaves these prefixes out, so the method is
+    still `HEAD` when it gets here.
+    """
+    if request.method == "HEAD" and errors.google.refuses_head(request.url.path):
+        return errors.google.head_refusal()
+    return await call_next(request)
+
+
+# The path prefixes whose `HEAD` is the GET with the body left off. GitHub, Atlassian, Notion,
+# Drive and Gmail because each is measured to be, and a vendor is added here once its own is rather
+# than by a rewrite that assumes they share GitHub's: both Atlassian products answered a `HEAD` with
+# the `GET`'s status and `content-type` and nothing in the body, on every route served here and on
+# an unknown issue's and an unknown space's 404, measured 2026-09-22 and on Confluence's
 # `child/attachment` 2026-10-10, and api.notion.com answered `HEAD /v1/users/me` the credential's
 # 401 and `HEAD /v1/nonexistent_thing/xyz` the URL's 400 on 2026-09-22, each with the
-# `content-length` and `content-type` of the GET body beside it (178 and 145 bytes). What the
-# vendors do NOT share is the length — see ``errors.head_content_length``, asked below. `/health`
-# and `/_meta` are Backlot's own routes, with no vendor to measure against: a `HEAD /health` is the
-# shape a liveness probe takes, and with `/health` left out of this tuple it is the 405 with
-# `allow: GET` a GitHub route gets with `/github` left out.
-_HEAD_IS_THE_GET_WITHOUT_ITS_BODY = ("/github", "/atlassian", "/notion", "/health", "/_meta")
+# `content-length` and `content-type` of the GET body beside it (178 and 145 bytes). Drive and
+# Gmail answered each route served here that way on 2026-10-11, refusals included
+# (``errors.google.head_content_length`` lists them), and the other three Google hosts refuse the
+# method (``errors.google.refuses_head``, asked by the middleware above). What the vendors do NOT
+# share is the length — see ``errors.head_content_length``, asked below. `/health` and `/_meta` are
+# Backlot's own routes, with no vendor to measure against: a `HEAD /health` is the shape a liveness
+# probe takes, and with `/health` left out of this tuple it is the 405 with `allow: GET` a GitHub
+# route gets with `/github` left out.
+_HEAD_IS_THE_GET_WITHOUT_ITS_BODY = (
+    "/github",
+    "/atlassian",
+    "/notion",
+    "/drive/v3",
+    "/gmail/v1",
+    "/health",
+    "/_meta",
+)
 
 
 @app.middleware("http")
 async def answer_head_as_the_get_without_its_body(request: Request, call_next):
     """Answer a `HEAD` as the `GET` with the body left off, which is how real GitHub, both Atlassian
-    products and Notion answer one.
+    products, Notion, Drive and Gmail answer one.
 
     FastAPI's ``APIRoute`` does not add `HEAD` to a GET route the way Starlette's ``Route`` does, so
     without this a `HEAD` on a route that serves the GET is a 405, whatever the GET answers. Real
@@ -559,8 +636,9 @@ async def answer_head_as_the_get_without_its_body(request: Request, call_next):
     the only way to have that number; a `HEAD` costs what its GET costs, here as on real.
 
     What the vendors do NOT share is the `content-length`: GitHub and Notion declare the length of
-    the body the `GET` would have carried and Atlassian's answers split, so that header is asked
-    for rather than assumed, through ``errors.head_content_length``.
+    the body the `GET` would have carried, and Atlassian's and Google's answers split, so that
+    header is asked for rather than assumed, through ``errors.head_content_length``. The request
+    is marked ``answering_head`` on its state for ``errors.google.jsonp_callback``, which reads it.
 
     The method goes back to `HEAD` on the scope once the GET has answered, because the server frames
     the response by it: uvicorn's httptools protocol reads ``scope["method"]`` when it writes the
@@ -578,13 +656,14 @@ async def answer_head_as_the_get_without_its_body(request: Request, call_next):
     ):
         return await call_next(request)
     request.scope["method"] = "GET"
+    request.state.answering_head = True
     response = await call_next(request)
     request.scope["method"] = "HEAD"
     length = 0
     async for chunk in response.body_iterator:
         length += len(chunk)
     head = Response(status_code=response.status_code, headers=response.headers)
-    declares = errors.head_content_length(request.url.path, response.status_code)
+    declares = errors.head_content_length(request, response.status_code)
     if declares is False:
         del head.headers["content-length"]
     else:

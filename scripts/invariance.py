@@ -4,6 +4,7 @@
     python scripts/invariance.py record OUT [PYTEST_ARGS...]   # run from the checkout to record
     python scripts/invariance.py compare BASE HEAD --mode code|tests [--calibration BASE2]
     python scripts/invariance.py prose BASE_REF     # Python changed only in comments and docstrings
+    python scripts/invariance.py uncovered OUT PATH...   # lines of PATH no test executed in OUT
 
 ``record`` runs the suite in the current directory with this file loaded as a pytest plugin, and
 writes three things under OUT:
@@ -12,6 +13,7 @@ writes three things under OUT:
   (status, headers, body), keyed by the test's node id and the request's position within it.
 - ``outcomes/``: each test's outcome.
 - ``coverage.json``: line and branch coverage of ``backlot/``.
+- ``meta.json``: the run's exit code, wall time and outcome counts.
 
 ``compare`` answers for a change that must not alter behaviour:
 
@@ -46,6 +48,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from collections import Counter
 from pathlib import Path
 
@@ -165,10 +168,17 @@ def _record(out: Path, pytest_args: list[str]) -> int:
         "--cov=backlot",
         "--cov-branch",
         f"--cov-report=json:{out / 'coverage.json'}",
-        "-q",
         *pytest_args,
     ]
-    return subprocess.call(cmd, env=env)
+    start = time.monotonic()
+    code = subprocess.call(cmd, env=env)
+    meta = {"exit": code, "seconds": round(time.monotonic() - start), **_counts_of(out)}
+    (out / "meta.json").write_text(json.dumps(meta))
+    return code
+
+
+def _counts_of(run: Path) -> dict[str, int]:
+    return dict(Counter(o.split()[-1] for o in _outcomes(run).values()))
 
 
 def _read(directory: Path) -> list[dict]:
@@ -284,7 +294,10 @@ def _compare(base: Path, head: Path, mode: str, calibration: Path | None, limit:
             problems.append(f"test {test} ran on the head and not on the base")
         elif after[test] != "passed":
             problems.append(f"test {test} is new and {after[test]}")
-    print(f"tests: {len(before)} on the base, {len(after)} on the head")
+    for name, run in (("base", base), ("head", head)):
+        meta = json.loads((run / "meta.json").read_text()) if (run / "meta.json").exists() else {}
+        counts = ", ".join(f"{n} {k}" for k, n in sorted(_counts_of(run).items()))
+        print(f"{name}: {counts}" + (f" in {meta['seconds']}s" if "seconds" in meta else ""))
 
     if mode == "code":
         b, h = _traffic(base), _traffic(head)
@@ -375,6 +388,15 @@ def _prose(base_ref: str) -> int:
     return 1 if problems else 0
 
 
+def _uncovered(run: Path, paths: list[str]) -> int:
+    files = json.loads((run / "coverage.json").read_text())["files"]
+    for name, data in sorted(files.items()):
+        if any(name == p or name.startswith(p.rstrip("/") + "/") for p in paths):
+            missing = data["missing_lines"]
+            print(f"{name}: {len(missing)} lines no test executes: {missing}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -391,11 +413,18 @@ def main(argv: list[str] | None = None) -> int:
         help="a second recording of the base; what differs between the two is not compared",
     )
     cmp.add_argument("--limit", type=int, default=10, help="response diffs to print in full")
+    unc = sub.add_parser(
+        "uncovered", help="list the lines of PATHs no test executed in a recording"
+    )
+    unc.add_argument("run", type=Path)
+    unc.add_argument("paths", nargs="+")
     prose = sub.add_parser("prose", help="check Python changed only in comments and docstrings")
     prose.add_argument("base_ref")
     args = parser.parse_args(argv)
     if args.command == "record":
         return _record(args.out, args.pytest_args)
+    if args.command == "uncovered":
+        return _uncovered(args.run, args.paths)
     if args.command == "prose":
         return _prose(args.base_ref)
     return _compare(args.base, args.head, args.mode, args.calibration, args.limit)

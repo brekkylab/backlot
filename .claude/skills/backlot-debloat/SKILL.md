@@ -42,12 +42,15 @@ sentence, with no signature and no session link.
    the difference may be a measurement or a bug, and deciding which is not debloat. File it.
 5. **It gets smaller.** Net lines go down. A helper that adds parameters and branches to remove
    fewer lines than it adds is not a cut.
-6. **Dead code needs three proofs before it goes:** no reference anywhere in the repository by name
-   or by string (`git grep -n '<name>'`, including `examples/`, `docs/`, `scripts/`), no coverage in
-   a recording, and not a public name (`backlot/__init__.py`, or a module `examples/` or the docs
-   import).
-7. **A test is removed or merged for one of four reasons only**, named for each test in the body:
-   - *subset*: everything it asserts, another test asserts on the same state;
+6. **Dead code needs proof before it goes:** it is not a public name (`backlot/__init__.py`, or a
+   module `examples/` or the docs import), and nothing reaches it — for a name, no read anywhere in
+   the repository by name or by string (`git grep -n '<name>'`, including `examples/`, `docs/`,
+   `scripts/`); for a function body or branch, no line of it executed in a recording (`invariance.py
+   uncovered`).
+7. **A test is removed or merged for one of four reasons only**, named in the body for each fact it
+   asserted (a test that asserted two facts may have two reasons):
+   - *subset*: another test asserts the same fact on the same state — the same corpus or fixture, and
+     a request that reaches the same branch of `backlot/`, however else it is spelled;
    - *equivalent case*: a parametrized case in the same equivalence class as a kept case — same
      branch, same answer shape, no boundary of its own;
    - *tautology*: it asserts the mock's own constant, or a library's behaviour rather than Backlot's;
@@ -107,11 +110,12 @@ and exit code). Say in the body which you ran.
 
 `$0` set (`/backlot-debloat hubspot`, or `/backlot-debloat hubspot tests` to fix the kind) means
 rehearsal on that area. You read GitHub freely and write to it never: no issue, label, comment,
-push or pull request. Work on a local branch `claude/rehearsal-debloat-<area>` cut from the branch
-you started on; the base for every proof and for the reviewers is that branch's HEAD. End by
-printing the pull request title and body you would have opened, the issues you would have filed,
-and each reviewer's last verdict, then `git checkout` the branch you started on, leaving the
-rehearsal branch in place.
+push or pull request. Of the survey, only one check applies: if an open pull request touches the
+area's files, say so and stop. Work on a local branch `claude/rehearsal-debloat-<area>-<MMDDHHMM>`
+cut from the HEAD of the branch you started on, which is the base for every proof and for the
+reviewers. End by printing the pull request title and body you would have opened, the issues you
+would have filed, and each reviewer's last verdict, then `git checkout` the branch you started on,
+leaving the rehearsal branch in place.
 
 ## 1. Survey
 
@@ -149,18 +153,32 @@ Read the area's files whole. Then list what the rules allow, by kind:
 A test candidate is settled by the step-5 comparison, not by reading alone: a line only it executed
 shows up there as lost coverage, and that test is not a *subset*.
 
-Pick the kind with the largest cut the rules allow, or the kind the rehearsal named. Write the
-candidate list down; the body carries what you left for a later run.
+Once the base is recorded (step 5 can start now, in the background), run `invariance.py uncovered
+<base recording> <the area's code paths>`. A line no test executes is either dead code (rule 6) or a
+test that claims more than it reaches; the second is residue for step 7, not a cut.
+
+Pick the kind by a quick estimate of which holds the largest cut, without working the others out in
+full, or take the kind the rehearsal named. Write the candidate list down; the body carries what you
+left for a later run.
 
 ## 3. Branch
 
 `git fetch origin main`, then `git checkout -b claude/debloat-<area>-<kind> origin/main` (rehearsal:
-the branch named above). Never check out another commit in the working tree you run in; the skill
-and the reviewers are read from it. The base recording runs in a worktree of its own (step 5).
+the branch named above), and fix the base and a scratch directory once for the whole run:
+
+```bash
+BASE=$(git rev-parse HEAD)
+REC=$(mktemp -d /tmp/debloat-XXXXXX)
+```
+
+Creating the branch at the commit you are on and returning to the starting branch at the end are the
+only checkouts in the working tree you run in; never check out another commit there, since the
+skill and the reviewers are read from it. The base runs in a worktree of its own (step 5).
 
 ## 4. Cut
 
-Make the cut one candidate at a time, running the tests of the area after each: a failure is a
+Make the cut one candidate at a time, running the area's test files after each
+(`uv run pytest <files>`, which prints its pass count): a failure is a
 behaviour you missed, so undo that candidate rather than adjusting a test to it. Commit titles are
 single declarative sentences describing the new state, with no trailers (AGENTS.md).
 
@@ -172,23 +190,26 @@ must pass. If a docstring or a schema the generators read changed, `python scrip
 Record the base in a throwaway worktree, with its own environment, using the script from your branch:
 
 ```bash
-BASE=$(git merge-base origin/main HEAD)
-git worktree add /tmp/debloat-base $BASE
-(cd /tmp/debloat-base && uv sync --all-extras -q && uv run python "$OLDPWD/scripts/invariance.py" record /tmp/debloat-rec/base)
-uv run python scripts/invariance.py record /tmp/debloat-rec/head
+git worktree add $REC/tree $BASE
+(cd $REC/tree && uv sync --all-extras -q && uv run python "$OLDPWD/scripts/invariance.py" record $REC/base)
+uv run python scripts/invariance.py record $REC/head
 ```
+
+A recording takes one to two minutes; start the base one in the background as soon as the branch
+exists. `record` refuses a directory that is not empty, so a second head recording after a fix goes
+to a new name (`$REC/head2`).
 
 Then by kind:
 
-- `prose`: `uv run python scripts/invariance.py prose $BASE`, and `uv run pytest -q tests/test_docs.py tests/test_skills.py`.
-  No recording is needed.
-- `code`: record the base a second time to `/tmp/debloat-rec/base2`, then
-  `uv run python scripts/invariance.py compare /tmp/debloat-rec/base /tmp/debloat-rec/head --mode code --calibration /tmp/debloat-rec/base2`.
-- `tests`: `uv run python scripts/invariance.py compare /tmp/debloat-rec/base /tmp/debloat-rec/head --mode tests`.
+- `prose`: `uv run python scripts/invariance.py prose $BASE`, and `uv run pytest tests/test_docs.py tests/test_skills.py`.
+- `code`: record the base a second time to `$REC/base2`, then
+  `uv run python scripts/invariance.py compare $REC/base $REC/head --mode code --calibration $REC/base2`.
+- `tests`: `uv run python scripts/invariance.py compare $REC/base $REC/head --mode tests`.
 
 It must print `invariant`. A difference is a behaviour the cut changed: find which candidate, undo
-it, and prove again. Never widen the comparison to make it pass. Remove the worktree when done
-(`git worktree remove --force /tmp/debloat-base`).
+it, and prove again. Never widen the comparison to make it pass. Keep `$REC` until the reviewers pass,
+since a fix is proved against the same base recording, then `git worktree remove --force $REC/tree`
+and `rm -rf $REC`.
 
 For `tests`, also write the fact map: for every test removed or merged, the reason (rule 7) and the
 test and assertion that now carry each fact it asserted. Coverage cannot see a lost assertion, so
@@ -201,9 +222,9 @@ assertion into the carrier.
 ## 6. Measure
 
 For the body: `git diff --shortstat $BASE` per kind of path (`backlot/`, `tests/`, markdown), the
-test function count (`grep -cE '^\s*(async )?def test_' <files>`) and the collected test count
-(`tests: N on the base, M on the head` from the compare) before and after, and the suite's wall time
-from both recordings.
+test function count (`grep -cE '^\s*(async )?def test_' <files>`) before and after, and the first
+two lines `compare` prints, which give each run's outcome counts and wall time; the template's
+"Tests" line quotes them.
 
 ## 7. File the residue
 
@@ -219,13 +240,14 @@ what is now true (`hubspot: list and search tests share one corpus per object ty
 repository's pull request template with every section filled, never hard-wrapped:
 
 - **What changed** — the kind, then the cuts as a list, each naming what was removed and where its
-  one remaining copy lives; then candidates seen and left, one line each.
-- **Why this is what the real API does** — nothing the API serves changed: the `invariance.py`
-  command and its last lines verbatim, and for `tests` the fact map as a table (removed test, reason,
-  surviving test and assertion).
+  one remaining copy lives, with counts and call sites read from the head, not remembered; then
+  candidates seen and left, one line each.
+- **Why this is what the real API does** — nothing the API serves changed: the date, the
+  `invariance.py` command and its last lines verbatim, and for `tests` the fact map as a table
+  (removed test, reason, surviving test and assertion, the mutation that proved it).
 - **Verification** — the three lines the template asks for, plus the measurement table of step 6.
-- Checkboxes: tick the third. Leave the first two unticked with `— not applicable: behaviour is
-  unchanged` after each.
+- Checkboxes: tick the third, which speaks for the lines this pull request writes. Leave the first
+  two unticked with `— not applicable: behaviour is unchanged` after each.
 
 Dispatch both reviewers in parallel with the Agent tool, each with the one-line prompt
 `Review pull request #<n> of brekkylab/backlot` (rehearsal: `Review branch <branch> against <base>`
@@ -233,6 +255,10 @@ followed by the title and body you would have sent):
 
 - `subagent_type: invariance-reviewer`
 - `subagent_type: prose-reviewer`
+
+A session started before `.claude/agents/invariance-reviewer.md` existed does not list it; then
+dispatch `subagent_type: general-purpose` with the prompt `Your instructions are
+.claude/agents/invariance-reviewer.md; follow them as your system prompt.` followed by the line above.
 
 Treat findings as the loop's step 9 does: reproduce, then fix or rebut with evidence, prove again
 after any fix, and dispatch again in fresh contexts until both pass on the same commit. A finding

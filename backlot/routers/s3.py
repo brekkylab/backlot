@@ -9,10 +9,10 @@ request is the anonymous caller's, who sees no bucket (``_auth``). A method this
 serve, and a GET or a HEAD naming a selector it cannot take, is refused before the bucket and
 whether or not a credential is sent, as real refuses them, but after a signature that was sent and
 does not verify (``_method_refusal``, ``_read_refusal``); a write resolves the credential and the
-bucket first. The ``?annotation`` reads refuse a request with no credential or a Signature Version 2
-one ahead of the bucket and of a HEAD's selector refusal (``_sigv4_only_refusal``). Responses are S3
-XML (namespace ``http://s3.amazonaws.com/doc/2006-03-01/``) or raw object bytes; errors use the S3
-``<Error>`` envelope.
+bucket first. The ``?annotation`` reads refuse an unsigned caller and an unverified V2 key or
+signature ahead of the bucket and of a HEAD's selector refusal (``_sigv4_only_refusal``). Responses
+are S3 XML (namespace ``http://s3.amazonaws.com/doc/2006-03-01/``) or raw object bytes; errors use
+the S3 ``<Error>`` envelope.
 
 S3 dispatches on the query string: ``?acl``, ``?versioning``, ``?tagging`` and the rest each select
 a different operation at the same path. Every one of a bucket's is answered, as real answers a
@@ -2254,13 +2254,14 @@ def _sigv4_only_refusal(request: Request) -> Response | None:
     and the two lone query parameters it names among them, and Signature Version 2 is the header's
     or the query's. Real refused each of those at an object, the unsigned request and the V2 header
     in a bucket that does not exist too, and a HEAD unsigned or with a V2 header with its status
-    alone; a V2 header with an access key AWS does not know and one whose signature does not verify
-    got the 400 as well, so real checks neither first (us-east-1, 2026-10-13 and 2026-10-14). A V2
-    credential real refuses for its own shape is refused as that instead, which is everything
-    ``backlot.auth.resolve_sigv4`` checks before ``backlot.auth._verify_v2`` reads the key:
-    `Authorization: AWS` with no space, `AWS garbage`, a query `Signature` without `Expires` or past
-    it, a V2 header with no date or a skewed one, and a V2 header beside a presigned query were each
-    that refusal on real, as was `Bearer x`, which is neither unsigned nor V2."""
+    alone; a V2 header or query with an access key AWS does not know and one whose signature does
+    not verify got the 400 as well, so real checks neither first (us-east-1, 2026-10-13 and
+    2026-10-14). A V2 credential real refuses for its own shape is refused as that instead, which is
+    everything ``backlot.auth.resolve_sigv4`` checks before ``backlot.auth._verify_v2`` reads the
+    key; of those, `Authorization: AWS` with no space, `AWS garbage`, a query `Signature` without
+    `Expires` or past it, a V2 header with no date or a skewed one, and a V2 header beside a
+    presigned query were each that refusal on real, as was `Bearer x`, which is neither unsigned nor
+    V2."""
     caller, refusal = auth.resolve_sigv4(request)
     v2 = auth.signed_with_v2(request)
     if refusal is None:

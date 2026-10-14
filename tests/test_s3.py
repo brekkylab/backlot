@@ -2268,6 +2268,7 @@ _OBJECT_ORDER_ROWS = [
      *_ANNOTATION_COUNT_PARSE),
     ("absent", "uploadId=u&max-parts=abc&response-foo=x", {},
      400, "InvalidArgument", "Provided max-parts not an integer or within integer range"),
+    ("present", "max-parts=abc&response-foo=x", {}, *_FOO_REFUSED),
     ("present", "uploadId=u&partNumber=1&response-foo=x", {}, *_FOO_REFUSED),
     ("present", "website=x&response-foo=x", {}, *_FOO_REFUSED),
     ("present", "location&versionId=x&response-content-type=a%22b", {}, *_OPEN_QUOTE),

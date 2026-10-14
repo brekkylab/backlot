@@ -68,7 +68,9 @@ sentence, with no signature and no session link.
    - *Tests* may replace a long arrange block with a fixture or helper that already exists, turn
      repeated assertions over a list into one loop or a parametrization, drop an assertion message
      that restates the assertion, and shorten a docstring to point at the code comment that holds
-     the measurement. A rewritten test still asserts everything it asserted.
+     the measurement. A rewritten test still asserts everything it asserted. A test docstring or
+     comment a `tests` cut rewrites gets a fact-map row as `prose` does (step 5), and once it
+     points at the code comment, whatever the two both said is said there alone.
 6. **Dead code is code no request can reach, shown from the code.** Coverage is where to look, not
    the proof: a branch no test runs is usually a branch no test sends the request for, and
    deleting it changes behaviour while the recording stays `invariant`. Remove a name only when it
@@ -263,7 +265,8 @@ residue for step 7: reachable code no test sends the request for, or a test that
 it reaches.
 
 A test candidate is settled by the step-5 comparison, not by reading alone: a line only it executed
-shows up there as lost coverage, and that test is not a *subset*.
+shows up there as lost coverage, and that test is not a *subset*. A parametrized case that is the
+only one sending its value of a parameter is the usual way an *equivalent case* turns out not to be.
 
 Among the kinds with open files, pick by a quick estimate of which holds the largest cut, without
 working the others out in full, or take the kind the rehearsal named. If no kind reaches rule 10's
@@ -309,9 +312,10 @@ $REC/tree` and, in a live run, `rm -rf $REC`.
 For `tests`, also write the fact map: for every test removed or merged, the reason (rule 7) and the
 test and assertion that now carry each fact it asserted. Coverage cannot see a lost assertion, so
 prove each row: make a one-line change to `backlot/` that the removed test fails on at the base, then
-run the carrier's file at the head (and the whole suite if that passes). Something must fail. Copy
-the file to `/tmp` before the change and restore it from the copy, never with `git checkout --`, and
-never while a recording is running. A row with no failing head test is a fact you were about to
+run the carrier's file at the head (and the whole suite if that passes). Something must fail.
+`uv run python scripts/invariance.py mutate <file> '<old>' '<new>' -- <test files>` makes the
+change, runs the tests, restores the file from memory and prints `caught` or `missed`; run it in
+the base worktree for the removed test and in yours for the carrier, never while a recording runs. A row with no failing head test is a fact you were about to
 lose: put the test back, or fold its assertion into the carrier.
 
 ## 6. Measure
@@ -349,6 +353,9 @@ repository's pull request template with every section filled, never hard-wrapped
 - **Verification** — the three lines the template asks for, plus the measurement table of step 6;
   each count appears once, in the line or in the table.
 - In a rehearsal, an issue you would have filed is cited by its title in parentheses.
+- The body names the recordings `base`, `base2` and `head` whatever their directories are called:
+  how many head recordings it took is the work, not the result. Fix commits from review rounds
+  stay as they are; the maintainer squashes on merge.
 - Checkboxes: tick the third, which speaks for the lines this pull request writes. Leave the first
   two unticked with `— not applicable: behaviour is unchanged` after each.
 

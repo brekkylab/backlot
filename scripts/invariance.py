@@ -7,6 +7,7 @@
     python scripts/invariance.py uncovered OUT PATH...   # lines of PATH no test executed in OUT
     python scripts/invariance.py similar PATH...    # functions in PATH alike to one anywhere else
     python scripts/invariance.py verbose PATH...    # comment and docstring blocks in PATH, longest first
+    python scripts/invariance.py mutate FILE OLD NEW -- PYTEST_ARGS...   # does a test catch OLD -> NEW?
 
 ``record`` runs the suite in the current directory with this file loaded as a pytest plugin, and
 writes three things under OUT:
@@ -476,6 +477,21 @@ def _verbose(paths: list[str], minimum: int) -> int:
     return 0
 
 
+def _mutate(file: Path, old: str, new: str, pytest_args: list[str]) -> int:
+    """Replace the one occurrence of ``old`` in ``file`` with ``new``, run pytest, and put the file
+    back from memory whatever happens. Exits 0 when some test fails, which is what a mutation is for."""
+    original = file.read_text()
+    if original.count(old) != 1:
+        sys.exit(f"mutate: {old!r} occurs {original.count(old)} times in {file}, not once")
+    file.write_text(original.replace(old, new))
+    try:
+        code = subprocess.call([sys.executable, "-m", "pytest", "-x", *pytest_args])
+    finally:
+        file.write_text(original)
+    print("caught" if code else "missed")
+    return 0 if code else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -503,6 +519,11 @@ def main(argv: list[str] | None = None) -> int:
     verb = sub.add_parser("verbose", help="list comment and docstring blocks, longest first")
     verb.add_argument("paths", nargs="+")
     verb.add_argument("--min", type=int, default=6, dest="minimum")
+    mut = sub.add_parser("mutate", help="apply OLD -> NEW in FILE, run pytest, restore")
+    mut.add_argument("file", type=Path)
+    mut.add_argument("old")
+    mut.add_argument("new")
+    mut.add_argument("pytest_args", nargs=argparse.REMAINDER)
     prose = sub.add_parser("prose", help="check Python changed only in comments and docstrings")
     prose.add_argument("base_ref")
     args = parser.parse_args(argv)
@@ -514,6 +535,9 @@ def main(argv: list[str] | None = None) -> int:
         return _similar(args.paths, args.threshold)
     if args.command == "verbose":
         return _verbose(args.paths, args.minimum)
+    if args.command == "mutate":
+        rest = args.pytest_args[1:] if args.pytest_args[:1] == ["--"] else args.pytest_args
+        return _mutate(args.file, args.old, args.new, rest)
     if args.command == "prose":
         return _prose(args.base_ref)
     return _compare(args.base, args.head, args.mode, args.calibration, args.limit)

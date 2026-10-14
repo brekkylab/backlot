@@ -523,8 +523,9 @@ An object's GET and HEAD also read the six `response-*` query parameters, `respo
 are case-sensitive, a repeated one is read from its first value, and a control character other than
 a tab comes back as a space. A value real cannot put in a header, a non-Latin-1 character or an
 unclosed quote, is its 400 `InvalidArgument`, at a bucket's path too, where an override sets
-nothing, and so is a name that starts with `response-` and is not one of the six; an unsigned GET or
-HEAD carrying an override is its 400 `InvalidRequest`.
+nothing, and so is a name that starts with `response-` and is not one of the six; an override on an
+object's GET or HEAD sent unsigned is its 400 `InvalidRequest`, unless a sub-resource or a
+`versionId` other than `null` is beside it.
 
 The other sub-resources are answered as real answers them. `?session` is the listing: CreateSession
 is for directory buckets only and real S3 answers it with the listing on a general purpose bucket. A

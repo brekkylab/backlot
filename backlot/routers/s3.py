@@ -790,11 +790,10 @@ def _read_refusal(
     at a bucket and at a key, on a GET and a HEAD, and in a bucket that does not exist, with the 400
     whether each was signed, unsigned, signed over a bad secret or sent with an unknown key
     (2026-09-29). So is a bucket's `partNumber` (``_bucket_selected``). Then ``first``, what the
-    caller refuses before the credential, the parses and what real refuses after them in the order
-    ``head_bucket``, ``bucket_get`` and ``_object_parse`` build it, and after it one selector is
-    refused on a HEAD whatever it is (``_head_refusal``) and on a GET when the GET cannot take it
-    (``refused``, the type its 405 names), once a signature that was sent verifies
-    (``_signature_refusal``).
+    caller refuses before the credential, in the order ``head_bucket``, ``bucket_get`` and
+    ``_object_parse`` build it, and after it one selector is refused on a HEAD whatever it is
+    (``_head_refusal``) and on a GET when the GET cannot take it (``refused``, the type its 405
+    names), once a signature that was sent verifies (``_signature_refusal``).
     """
     head = request.method == "HEAD"
     if len(selected) > 1:
@@ -1143,8 +1142,8 @@ async def bucket_get(request: Request, bucket: str):
     # The parses come before the credential as well as the bucket: an unsigned request and one
     # signed over a bad secret get the same 400 for `?uploads&max-uploads=abc`, `?max-keys=abc` and
     # `?versions&max-keys=abc` (measured 2026-09-29), and so do the conflict, a bucket's
-    # `partNumber` and, after the parses, the rest of ``first`` in ``_read_refusal``'s order.
-    # What is refused once the bucket is found comes after the signature.
+    # `partNumber` and, after the parses, the rest of ``first`` below. What is refused once the
+    # bucket is found comes after the signature.
     first = None
     if selected == ["uploads"]:
         # Before the bucket is looked up: `?uploads&max-uploads=abc` on a bucket that does not exist

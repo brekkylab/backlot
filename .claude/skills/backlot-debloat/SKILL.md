@@ -110,8 +110,8 @@ and exit code). Say in the body which you ran.
 
 `$0` set (`/backlot-debloat hubspot`, or `/backlot-debloat hubspot tests` to fix the kind) means
 rehearsal on that area. You read GitHub freely and write to it never: no issue, label, comment,
-push or pull request. Of the survey, only one check applies: if an open pull request touches the
-area's files, say so and stop. Work on a local branch `claude/rehearsal-debloat-<area>-<MMDDHHMM>`
+push or pull request. Skip the survey: a rehearsal pushes nothing, so it conflicts with nothing,
+but list in your summary the pull requests that would have kept a live run out of the area. Work on a local branch `claude/rehearsal-debloat-<area>-<MMDDHHMM>`
 cut from the HEAD of the branch you started on, which is the base for every proof and for the
 reviewers. End by printing the pull request title and body you would have opened, the issues you
 would have filed, and each reviewer's last verdict, then `git checkout` the branch you started on,
@@ -120,8 +120,8 @@ leaving the rehearsal branch in place.
 ## 1. Survey
 
 ```bash
-gh pr list --state open --json number,title,labels,headRefName,mergeStateStatus,files --limit 100
-gh pr list --label debloat --state all --json headRefName,createdAt,state --limit 100
+gh pr list -R brekkylab/backlot --state open --json number,title,labels,isDraft,headRefName,mergeStateStatus,files --limit 100
+gh pr list -R brekkylab/backlot --label debloat --state all --json headRefName,createdAt,state --limit 100
 ```
 
 Your own open pull requests come first. One with an unanswered review, a failing check or a merge
@@ -129,11 +129,13 @@ conflict is worked exactly as in step 2 of the loop's skill, re-running the proo
 change and the reviewers (step 8) after any fix, and that is the run. If two debloat pull requests
 are already open, do nothing else: a maintainer has enough to read.
 
-Otherwise pick the area. Drop every area whose files an open pull request — anyone's — touches; a
-cut there would conflict with work in flight. Of the rest, take the one whose last debloat pull
+Otherwise pick the area and kind together. An area is closed to a kind while a pull request in
+review — open, not a draft, not labelled `hold` — touches a file that kind would change: the Code
+column for `code`, the Tests column for `tests`, either column or the markdown for `prose`. A cut
+there would conflict with work a maintainer is about to merge. Of the open pairs, take the one whose last debloat pull
 request (its branch is `claude/debloat-<area>-<kind>`) is oldest, an area never debloated counting
 as oldest of all; among those, the one with the most lines. A `routine-fire-payload` naming an area
-means that area.
+means that area; if every kind of it is closed, say which pull requests close it and stop.
 
 ## 2. Read the area and list candidates
 

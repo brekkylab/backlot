@@ -175,7 +175,7 @@ else's by branch, `claude/` and nothing else, and leaves every other branch alon
 A second routine makes Backlot smaller without changing it, following
 [`.claude/skills/backlot-debloat/SKILL.md`](../.claude/skills/backlot-debloat/SKILL.md). Each run
 takes one area — a vendor, the store, the importer, the docs — and removes one kind of excess from
-it: duplicated code, prose said twice, or tests whose facts other tests already assert.
+it: code, prose or tests that repeat each other or say at length what can be said briefly.
 [`scripts/invariance.py`](../scripts/invariance.py) proves nothing changed: for code, every response
 the suite receives is byte-identical before and after; for tests, no line of `backlot/` stops
 running and every removed test's fact fails some remaining test under a mutation; for prose, the

@@ -33,9 +33,11 @@ git worktree add /tmp/inv-base <base> && git worktree add /tmp/inv-head <head>
 
 - **prose**: `(cd /tmp/inv-head && uv run python scripts/invariance.py prose <base>)` must print
   `invariant`, and `uv run pytest tests/test_docs.py tests/test_skills.py` must pass. No recording
-  is needed. Over markdown alone that proof is empty, so check the said-once map instead: open each
-  cited file and line at the head and find the removed fact stated there. A removed fact stated
-  nowhere is a `block`; so is a correction of a sentence about vendor behaviour.
+  is needed. That proof cannot see a fact disappear, so check the fact map against the diff, passage
+  by passage: every request, answer, status, field, date or place of measurement the old text
+  stated, and every constraint on the code it named, is still stated by the new text or at the line
+  the map cites. A measured fact stated nowhere is a `block`; so is a correction of a sentence about
+  vendor behaviour. What the map lists as dropped must be what rule 5 lets go.
 - **code**: record the base a second time to `/tmp/inv-rec/base2`, then
   `uv run python scripts/invariance.py compare /tmp/inv-rec/base /tmp/inv-rec/head --mode code --calibration /tmp/inv-rec/base2`
   must print `invariant`. A difference is reproduced once more with a fresh head recording before
@@ -82,7 +84,10 @@ recordings when you are done (`git worktree remove --force`).
    something — a scoped token refused or answered, an admin token answered — is never removed, and a
    parametrized case of one counts. A refusal of a missing or unusable credential is authentication,
    not that, and falls under the ordinary rules.
-8. **It got smaller, enough to be worth a review.** Net lines of the kind's paths went down, by at
+8. **Rewrites stay readable** (`code` and `tests`). A rewrite rule 5 does not list, or one that
+   golfs — a comprehension nested past two levels, `and`/`or` for control flow, a chained walrus — is
+   a `block`, as is a changed exception type, message or public name.
+9. **It got smaller, enough to be worth a review.** Net lines of the kind's paths went down, by at
    least the floor in the skill's rule 10. A helper that adds parameters and
    branches to save fewer lines than it adds is a `block` with the counts.
 

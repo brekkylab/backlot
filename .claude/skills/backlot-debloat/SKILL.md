@@ -1,6 +1,6 @@
 ---
 name: backlot-debloat
-description: Remove duplication and excess from one area of Backlot — code, prose or tests — without changing what it does, prove that with scripts/invariance.py, open a pull request, and have the invariance and prose reviewers pass it. `/backlot-debloat` runs live; `/backlot-debloat <area> [prose|code|tests]` rehearses locally with no GitHub writes. Run it only when a person or the routine's own prompt says `/backlot-debloat`.
+description: Remove duplication and verbosity from one area of Backlot — code, prose or tests — without changing what it does, prove that with scripts/invariance.py, open a pull request, and have the invariance and prose reviewers pass it. `/backlot-debloat` runs live; `/backlot-debloat <area> [prose|code|tests]` rehearses locally with no GitHub writes. Run it only when a person or the routine's own prompt says `/backlot-debloat`.
 argument-hint: "[area] [prose|code|tests]"
 allowed-tools: Read, Edit, Write, Grep, Glob, Bash, Agent
 ---
@@ -8,8 +8,10 @@ allowed-tools: Read, Edit, Write, Grep, Glob, Bash, Agent
 # Debloat
 
 You make Backlot smaller without changing it. AGENTS.md is the law of this repository; read it now
-if you have not this session. Every run picks one area, finds the duplication and excess in it,
-removes one kind of it, proves nothing changed, and hands a pull request to a maintainer.
+if you have not this session. Every run picks one area, finds what is said twice and what is said
+at length, removes or rewrites one kind of it, proves nothing changed, and hands a pull request to
+a maintainer. Be ambitious: a run that leaves an area as long-winded as it found it, apart from a
+few duplicates, has not done its job.
 
 "Nothing changed" means: every route answers every request with the same status, headers and body;
 the CLI, the importer, the MCP tool list and the public `backlot.*` names behave the same; and every
@@ -46,8 +48,26 @@ sentence, with no signature and no session link.
    the difference may be a measurement or a bug, and deciding which is not debloat. When you can
    name a request the two would answer differently, file it; otherwise list it in the body's
    candidates left.
-5. **It gets smaller.** Net lines go down. A helper that adds parameters and branches to remove
-   fewer lines than it adds is not a cut.
+5. **It gets smaller, and verbose is excess too.** Net lines go down. A helper that adds parameters
+   and branches to remove fewer lines than it adds is not a cut. Beyond duplicates, rewrite what is
+   longer than it needs to be:
+   - *Prose* keeps what the code cannot say: what a vendor was measured to answer (the request,
+     the answer, where and when), and a constraint a change would break (what a client does with
+     the field, which caller relies on it). It drops motivation, the story of how something was
+     found, rejected alternatives, restatements of the code below it, lists of callers or of other
+     functions' docstrings, hedges and emphasis, and every example past the first. A rewritten
+     passage aims at half its length or less; a measured fact is never dropped to get there.
+   - *Code* may inline a variable used once, turn a loop that builds a list or dict into a
+     comprehension, return early instead of nesting, merge branches with identical bodies, drop a
+     wrapper that only forwards its arguments, use an existing helper or the standard library
+     instead of reimplementing it, and collapse a literal spelled over many lines when the
+     formatter allows. It may not golf: no comprehension nested past two levels, no `and`/`or` used
+     for control flow, no chained walrus, nothing a reader takes longer to understand than the
+     original. Exception types, messages and public names stay as they are.
+   - *Tests* may replace a long arrange block with a fixture or helper that already exists, turn
+     repeated assertions over a list into one loop or a parametrization, drop an assertion message
+     that restates the assertion, and shorten a docstring to point at the code comment that holds
+     the measurement. A rewritten test still asserts everything it asserted.
 6. **Dead code is code no request can reach, shown from the code.** Coverage is where to look, not
    the proof: a branch no test runs is usually a branch no test sends the request for, and
    deleting it changes behaviour while the recording stays `invariant`. Remove a name only when it
@@ -82,9 +102,11 @@ sentence, with no signature and no session link.
    parametrized case that proves which principal may read something — a scoped token refused or
    answered, an admin token answered — is never removed. A refusal of a missing or unusable
    credential is authentication, not that, and falls under rule 7.
-10. **Worth a review, and small enough for one sitting.** At most 800 changed lines (added plus
-    removed), stopping at a coherent boundary rather than at the limit. At least 30 lines net or one
-    test removed; below that, the cuts go in the summary as candidates and no pull request is opened.
+10. **Worth a review, and small enough for one sitting.** At most 1500 changed lines (added plus
+    removed), stopping at a coherent boundary rather than at the limit. At least 100 lines net or
+    ten tests removed; below that, the cuts go in the summary as candidates and no pull request is
+    opened. Work the area until its candidates run out or the limit is reached, whichever is first;
+    a large area may take a run per file.
 11. **Nothing worth doing is a result.** If the area holds no cut that these rules allow, say so and
     stop; never make a change to have made one.
 
@@ -211,19 +233,24 @@ Read the area's code files whole. Of its test files, read what the kind needs: a
 (`grep -nE "from backlot\.[a-z_.]+ import|[a-z_]+\._[a-z]" <files>`), which a `code` cut must keep.
 Then list what the rules allow, by kind:
 
-Start with `uv run python scripts/invariance.py similar <the area's files>`, which lists every
-function in them whose body is at least 80% alike to one anywhere in `backlot/` or `tests/`; a pair
-across two vendors is rule 3's to judge, not a cut by default. Then:
+Start with two lists. `uv run python scripts/invariance.py verbose <the area's files>` gives every
+comment and docstring block of six lines or more, longest first, with how many lines of code a
+docstring sits over; a docstring longer than its code, and a module docstring that summarises the
+docstrings below it, are the first places to rewrite. `uv run python scripts/invariance.py similar
+<the area's files>` lists every function in them whose body is at least 80% alike to one anywhere
+in `backlot/` or `tests/`; a pair across two vendors is rule 3's to judge, not a cut by default.
+Then:
 
 - **code**: functions and blocks repeated within the area or with a neutral module; helpers in two
-  places doing the same thing; names nothing reads (rule 6); constants and tables spelled twice.
-- **prose**: the same fact in two comments, a comment that restates the line below it, a docstring
-  longer than its function with nothing measured in it, a doc paragraph that a generated table or
-  another doc already carries, a comment narrating history (rule 8). For each paragraph, grep its
-  rarest three or four words across `*.md` and `backlot/`; a second hit is a candidate.
+  places doing the same thing; names nothing reads (rule 6); constants and tables spelled twice; and
+  every rewrite rule 5 allows, function by function.
+- **prose**: every passage rule 5 would shorten, longest first; then the same fact in two comments,
+  a doc paragraph that a generated table or another doc already carries, a comment narrating history
+  (rule 8). For each paragraph, grep its rarest three or four words across `*.md` and `backlot/`; a
+  second hit is a candidate.
 - **tests**: tests whose assertions are a subset of another's, parametrized cases that land in the
   same branch with the same answer shape, setup rebuilt test after test, helpers repeated across
-  test files.
+  test files, and the rewrites rule 5 allows.
 
 When the base recording is done and the area has code paths, run `uv run python
 scripts/invariance.py uncovered $REC/base <the area's code paths>`. A `code` cut stays off every line it lists (rule 2). Each listed line is also
@@ -259,9 +286,11 @@ empty, so a second head recording after a fix goes to a new name (`$REC/head2`).
 
 - `prose`: `uv run python scripts/invariance.py prose $BASE`, and `uv run pytest tests/test_docs.py tests/test_skills.py`.
   Neither sees a fact disappear from prose, and for a markdown-only cut `prose` prints `invariant`
-  over zero files, so the said-once map is the proof: for every sentence or comment removed, where
-  the same fact is still stated (file and line at the head), or that it restated the code beside it.
-  A removed fact with no row is a fact lost: put it back.
+  over zero files, so the fact map is the proof. For a passage removed as a duplicate: where the same
+  fact is still stated (file and line at the head). For a passage rewritten: each measured fact and
+  constraint it stated, and that the new text still states it; then what was dropped, by rule 5's
+  categories (motivation, history, restates the code, …). A measured fact with no row is a fact
+  lost: put it back.
 - `code`: `uv run python scripts/invariance.py compare $REC/base $REC/head --mode code --calibration $REC/base2`.
 - `tests`: `uv run python scripts/invariance.py compare $REC/base $REC/head --mode tests`.
 
@@ -309,7 +338,7 @@ repository's pull request template with every section filled, never hard-wrapped
 - **Why this is what the real API does** — nothing the API serves changed: the date, the
   `invariance.py` command and its last lines verbatim, and for `tests` the fact map as a table
   (removed test, reason, surviving test and assertion, the mutation that proved it), for `prose`
-  the said-once map.
+  the fact map, one row per passage.
 - **Verification** — the three lines the template asks for, plus the measurement table of step 6.
 - Checkboxes: tick the third, which speaks for the lines this pull request writes. Leave the first
   two unticked with `— not applicable: behaviour is unchanged` after each.

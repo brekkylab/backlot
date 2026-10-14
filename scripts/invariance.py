@@ -6,6 +6,7 @@
     python scripts/invariance.py prose BASE_REF     # Python changed only in comments and docstrings
     python scripts/invariance.py uncovered OUT PATH...   # lines of PATH no test executed in OUT
     python scripts/invariance.py similar PATH...    # functions in PATH alike to one anywhere else
+    python scripts/invariance.py verbose PATH...    # comment and docstring blocks in PATH, longest first
 
 ``record`` runs the suite in the current directory with this file loaded as a pytest plugin, and
 writes three things under OUT:
@@ -443,6 +444,38 @@ def _similar(paths: list[str], threshold: float) -> int:
     return 0
 
 
+def _verbose(paths: list[str], minimum: int) -> int:
+    blocks = []
+    files = [f for p in map(Path, paths) for f in ([p] if p.is_file() else sorted(p.rglob("*.py")))]
+    for path in files:
+        source = path.read_text()
+        lines = source.splitlines()
+        for node in ast.walk(ast.parse(source)):
+            body = getattr(node, "body", None)
+            if (
+                isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+                and body
+                and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)
+            ):
+                end = len(lines) if isinstance(node, ast.Module) else node.end_lineno
+                code = end - body[0].end_lineno
+                blocks.append((body[0].end_lineno - body[0].lineno + 1, path, body[0].lineno, code))
+        start = None
+        for i, line in enumerate([*lines, ""], start=1):
+            if line.lstrip().startswith("#"):
+                start = start or i
+            elif start:
+                blocks.append((i - start, path, start, None))
+                start = None
+    for length, path, line, code in sorted(blocks, key=lambda b: -b[0]):
+        if length >= minimum:
+            kind = "comment" if code is None else f"docstring over {code} lines of code"
+            print(f"{length:4} {path}:{line} {kind}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -467,6 +500,9 @@ def main(argv: list[str] | None = None) -> int:
     sim = sub.add_parser("similar", help="list functions in PATH alike to one anywhere else")
     sim.add_argument("paths", nargs="+")
     sim.add_argument("--threshold", type=float, default=0.8)
+    verb = sub.add_parser("verbose", help="list comment and docstring blocks, longest first")
+    verb.add_argument("paths", nargs="+")
+    verb.add_argument("--min", type=int, default=6, dest="minimum")
     prose = sub.add_parser("prose", help="check Python changed only in comments and docstrings")
     prose.add_argument("base_ref")
     args = parser.parse_args(argv)
@@ -476,6 +512,8 @@ def main(argv: list[str] | None = None) -> int:
         return _uncovered(args.run, args.paths)
     if args.command == "similar":
         return _similar(args.paths, args.threshold)
+    if args.command == "verbose":
+        return _verbose(args.paths, args.minimum)
     if args.command == "prose":
         return _prose(args.base_ref)
     return _compare(args.base, args.head, args.mode, args.calibration, args.limit)

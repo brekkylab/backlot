@@ -2098,6 +2098,24 @@ _OPEN_QUOTE = (
     "open quoted span.</Message>" + _argued("response-content-type", 'a"b'),
 )
 
+# Real's refusal of a `response-` name outside the six overrides, the name in the message.
+_NOT_OVERRIDABLE = (
+    "{} is not in the set of overridable response headers. Please refer to the S3 API "
+    "documentation for a complete list of overridable response headers."
+)
+
+
+def _not_overridable(name, value):
+    """That refusal as a row of the table below asserts it."""
+    return (
+        400,
+        "InvalidArgument",
+        _NOT_OVERRIDABLE.format(name) + "</Message>" + _argued(name, value),
+    )
+
+
+_FOO_REFUSED = _not_overridable("response-foo", "x")
+
 # Where each of an object's refusals sits against the bucket and the credential, as real answered
 # (2026-09-29, us-east-1): at a key in a bucket that does not exist (`absent`), at the object over a
 # bad secret (`tampered`), at the object signed (`present`) and at a key the bucket does not hold
@@ -2229,6 +2247,47 @@ _OBJECT_ORDER_ROWS = [
      400, "InvalidArgument", _argued("response-cache-control", "a\u0100b")),
     ("absent", "response-content-type=text/csv", {}, *_BUCKET_ABSENT),
     ("tampered", "response-content-type=text/csv", {}, *_SIGNATURE_MISMATCH),
+    # A `response-` name outside the six, as written and with its first value, the parses before it
+    # and the refusals after it, and which of two parameters is named
+    # (``backlot.routers.s3._response_override_refusal``).
+    ("present", "response-foo=x", {}, *_FOO_REFUSED),
+    ("present", "response-foo", {}, *_not_overridable("response-foo", "")),
+    ("present", "response-=x", {}, *_not_overridable("response-", "x")),
+    ("present", "response-Content-Type=text/csv", {},
+     *_not_overridable("response-Content-Type", "text/csv")),
+    ("present", "response-foo=a%2Fb&response-foo=c", {}, *_not_overridable("response-foo", "a/b")),
+    ("absent", "response-foo=x", {}, *_FOO_REFUSED),
+    ("tampered", "response-foo=x", {}, *_FOO_REFUSED),
+    ("missing", "response-foo=x", {}, *_FOO_REFUSED),
+    ("present", "acl&tagging&response-foo=x", {},
+     400, "InvalidArgument", "Conflicting query string parameters: acl, tagging"),
+    ("present", "annotationName=x&response-content-type=a%22b", {},
+     400, "InvalidArgument", "Unexpected query string parameter"),
+    ("present", "attributes&response-foo=x", _attributes("garbage"), *_BAD_ATTRIBUTE),
+    ("present", "annotation&max-annotation-results=abc&response-content-type=a%22b", {},
+     *_ANNOTATION_COUNT_PARSE),
+    ("absent", "uploadId=u&max-parts=abc&response-foo=x", {},
+     400, "InvalidArgument", "Provided max-parts not an integer or within integer range"),
+    ("present", "max-parts=abc&response-foo=x", {}, *_FOO_REFUSED),
+    ("present", "uploadId=u&partNumber=1&response-foo=x", {}, *_FOO_REFUSED),
+    ("present", "website=x&response-foo=x", {}, *_FOO_REFUSED),
+    ("present", "location&versionId=x&response-content-type=a%22b", {}, *_OPEN_QUOTE),
+    ("absent", "versionId=&response-foo=x", {}, *_FOO_REFUSED),
+    ("present", "acl&response-foo=x", {}, *_FOO_REFUSED),
+    ("present", "response-foo=x&partNumber=abc", {}, *_FOO_REFUSED),
+    ("present", "response-foo=x", {"If-Match": '"0000"'}, *_FOO_REFUSED),
+    ("present", "response-foo=x", {"Range": "bytes=999-"}, *_FOO_REFUSED),
+    ("present", "response-foo=x&response-content-type=a%22b", {}, *_OPEN_QUOTE),
+    ("present", "response-aaa=x&response-content-type=a%22b", {}, *_not_overridable("response-aaa", "x")),
+    ("present", "response-content-language=%ED%95%9C&response-content-type=a%22b", {}, *_OPEN_QUOTE),
+    ("present", "response-content-type=a%22b&response-cache-control=%ED%95%9C", {},
+     400, "InvalidArgument", "ISO-8859-1.</Message>" + _argued("response-cache-control", "\ud55c")),
+    ("present", "response-b=1&response-B=2", {}, *_not_overridable("response-b", "1")),
+    ("present", "response-bar=1&response-server=2", {}, *_not_overridable("response-server", "2")),
+    # The parses `backlot.routers.s3._object_parse` puts ahead of a `versionId`.
+    ("present", "attributes&versionId=", _attributes("garbage"), *_BAD_ATTRIBUTE),
+    ("present", "uploadId=u&max-parts=abc&versionId=x", {},
+     400, "InvalidArgument", "Provided max-parts not an integer or within integer range"),
 ]
 # fmt: on
 
@@ -2456,6 +2515,22 @@ _UNSIGNED_OVERRIDE_ROWS = [
         404,
     ),
     (f"{OBJECT_PATH}?acl&response-content-type=text/csv", 404, "NoSuchBucket", _NO_BUCKET, 405),
+    # A `response-` name outside the six, refused ahead of the anonymous caller's 400
+    # (``backlot.routers.s3._response_override_refusal``).
+    (
+        f"{OBJECT_PATH}?response-foo=x",
+        400,
+        "InvalidArgument",
+        _NOT_OVERRIDABLE.format("response-foo"),
+        400,
+    ),
+    (
+        f"{OBJECT_PATH}?response-content-type=text/csv&response-foo=x",
+        400,
+        "InvalidArgument",
+        _NOT_OVERRIDABLE.format("response-foo"),
+        400,
+    ),
 ]
 
 
@@ -2508,9 +2583,12 @@ def test_object_response_overrides_do_not_bypass_credentials_or_acl(live_server,
         (OBJECT_PATH + "?response-content-type=text/csv", {"Range": "bytes=1000-2000"}, 416),
         ("/s3/eng-artifacts/missing?response-content-type=text/csv", {}, 404),
         (OBJECT_PATH + "?tagging&response-content-type=text/csv", {}, 200),
+        ("/s3/eng-artifacts?response-content-type=text/csv", {}, 200),
+        ("/s3/eng-artifacts?location&response-content-type=text/csv", {}, 200),
+        ("/s3/no-such-bucket?response-content-type=text/csv", {}, 404),
     ],
 )
-def test_object_response_overrides_do_not_relabel_other_answers(
+def test_response_overrides_do_not_relabel_other_answers(
     live_server, method, path, extra_headers, status
 ):
     base_url, settings = live_server
@@ -2916,6 +2994,12 @@ _BOGUS_ENCODING = (
     "Invalid Encoding Method specified in Request",
     _argued("encoding-type", "bogus"),
 )
+_FOO_AT_A_BUCKET = (400, _NOT_OVERRIDABLE.format("response-foo"), _argued("response-foo", "x"))
+_OPEN_QUOTE_AT_A_BUCKET = (
+    400,
+    "Header value contained an open quoted span.",
+    _argued("response-content-type", 'a"b'),
+)
 
 # A query parameter real refuses, and which of two it refuses when both are sent: the request, and
 # the status, code, message and members of real's answer (measured 2026-09-29 against us-east-1).
@@ -3022,6 +3106,35 @@ _PARAMETER_ROWS = [
      *_MAX_KEYS_ABC),
     ("GET", "/s3/eng-artifacts?versions&max-keys=abc&acl", 400,
      "Conflicting query string parameters: acl, versions", _argued("ResourceType", "acl")),
+    # A `response-` parameter at a bucket's path, where an override sets nothing, what is refused
+    # before it and what after it (``backlot.routers.s3._response_override_refusal``).
+    ("GET", "/s3/eng-artifacts?list-type=2&response-foo=x", *_FOO_AT_A_BUCKET),
+    ("GET", "/s3/eng-artifacts?location&response-foo=x", *_FOO_AT_A_BUCKET),
+    ("GET", "/s3/no-such-bucket?response-foo=x", *_FOO_AT_A_BUCKET),
+    ("GET", "/s3/eng-artifacts?response-content-type=%ED%95%9C", 400,
+     "Header value cannot be represented using ISO-8859-1.",
+     _argued("response-content-type", "\ud55c")),
+    ("GET", "/s3/eng-artifacts?location&response-content-type=a%22b", *_OPEN_QUOTE_AT_A_BUCKET),
+    ("GET", "/s3/no-such-bucket?response-content-type=a%22b", *_OPEN_QUOTE_AT_A_BUCKET),
+    ("GET", "/s3/eng-artifacts?response-foo=x&response-content-type=a%22b",
+     *_OPEN_QUOTE_AT_A_BUCKET),
+    ("GET", "/s3/eng-artifacts?response-content-type=a%22b&response-content-language=%ED%95%9C",
+     *_OPEN_QUOTE_AT_A_BUCKET),
+    ("GET", "/s3/eng-artifacts?max-keys=abc&response-foo=x", *_MAX_KEYS_ABC),
+    ("GET", "/s3/eng-artifacts?list-type=2&marker=x&response-foo=x", 400,
+     "Marker unsupported with REST.GET.BUCKET in list-type=2", _argued("marker")),
+    ("GET", "/s3/eng-artifacts?uploads&max-uploads=abc&response-content-type=a%22b", 400,
+     "Provided max-uploads not an integer or within integer range", _argued("max-uploads", "abc")),
+    ("GET", "/s3/eng-artifacts?versions&version-id-marker=x&response-foo=x", *_MARKER_WITHOUT_KEY),
+    ("GET", "/s3/eng-artifacts?acl&location&response-content-type=a%22b", 400,
+     "Conflicting query string parameters: acl, location", _argued("ResourceType", "acl")),
+    ("GET", "/s3/eng-artifacts?partNumber=1&response-foo=x", 400,
+     "Object must have a valid key name.", ""),
+    ("GET", "/s3/eng-artifacts?versionId=x&response-foo=x", *_FOO_AT_A_BUCKET),
+    ("GET", "/s3/eng-artifacts?website=v&response-content-type=a%22b", *_OPEN_QUOTE_AT_A_BUCKET),
+    ("GET", "/s3/eng-artifacts?max-keys=-1&response-foo=x", *_FOO_AT_A_BUCKET),
+    ("GET", "/s3/eng-artifacts?encoding-type=bogus&response-foo=x", *_FOO_AT_A_BUCKET),
+    ("GET", "/s3/eng-artifacts?uploads&response-foo=x", *_FOO_AT_A_BUCKET),
 ]
 # fmt: on
 
@@ -3153,6 +3266,12 @@ _HEAD_ROWS = [
     ("/s3/no-such-bucket/a.txt?response-content-type=a%22b", "admin", {}, 400, None),
     (f"{OBJECT_PATH}?acl&response-content-type=a%22b", "tampered", {}, 400, None),
     (f"{OBJECT_PATH}?response-content-type=text/csv", None, {}, 400, None),
+    # A `response-` name, and a value at a bucket's path, ahead of a selector's 405, and ListParts'
+    # integers, which a HEAD leaves to that 405 (``backlot.routers.s3._object_parse``).
+    (f"{OBJECT_PATH}?response-foo=x", "admin", {}, 400, None),
+    ("/s3/eng-artifacts?location&response-content-type=a%22b", "admin", {}, 400, None),
+    (f"{OBJECT_PATH}?uploadId=u&max-parts=abc&response-content-type=a%22b", "admin", {}, 400, None),
+    (f"{OBJECT_PATH}?uploadId=u&max-parts=abc", "admin", {}, 405, None),
 ]
 # fmt: on
 

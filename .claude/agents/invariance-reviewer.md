@@ -20,7 +20,8 @@ names one.
 
 ## Reproduce the proof yourself
 
-Never trust the numbers in the body; make your own. Check out the base and the head in throwaway
+Never trust the numbers in the body; make your own. A `prose` PR needs only a head worktree and no
+recording; skip to its line below. Otherwise check out the base and the head in throwaway
 worktrees under `/tmp` (never in the working tree you were started in), run `uv sync --all-extras -q`
 in each, and run the script from the head:
 

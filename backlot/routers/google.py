@@ -2569,9 +2569,50 @@ def _editor_doc(request: Request, file_id: str, *, expect: str):
     raise gerr.invalid_argument(EDITOR_INVALID_ARG)
 
 
+# `documents.get`'s two enums, names in number order. Measured 2026-10-09: `suggestionsViewMode`
+# reads `0` through `3`, `+1` and `01` (the value numbered 1) and a name in any ASCII case, and
+# refuses `4`, `-1`, `1.0`, a padded `" 1"`, empty and `NOPE`. `commentsViewMode` reads its four
+# names and refuses empty and `NOPE`. `includeTabsContent` is the boolean `_sheets_bool_value`
+# reads. A value that cannot be read is a 400 before the document is looked up.
+_DOCS_VIEW = "type.googleapis.com/google.apps.docs.v1"
+_DOCS_SUGGESTIONS_VIEW = protojson.Enum(
+    f"{_DOCS_VIEW}.SuggestionsViewMode",
+    (
+        "DEFAULT_FOR_CURRENT_ACCESS",
+        "SUGGESTIONS_INLINE",
+        "PREVIEW_SUGGESTIONS_ACCEPTED",
+        "PREVIEW_WITHOUT_SUGGESTIONS",
+    ),
+)
+_DOCS_COMMENTS_VIEW = protojson.Enum(
+    f"{_DOCS_VIEW}.CommentsViewMode",
+    (
+        "COMMENTS_VIEW_MODE_UNSPECIFIED",
+        "COMMENTS_VIEW_MODE_DEFAULT_FOR_CURRENT_ACCESS",
+        "COMMENTS_VIEW_MODE_OMITTED",
+        "COMMENTS_VIEW_MODE_INCLUDED",
+    ),
+)
+
+
 @router.get("/docs/v1/documents/{document_id}")
 async def docs_get(document_id: str, request: Request):
     """The document as Docs structural elements: one ``paragraph`` per line of the stored text."""
+    # The credential, then the typed values, then the lookup -- `_typed_query` records the order.
+    _require(request)
+    # Validated and then unused: a value that is read does not change this body.
+    _typed_query(
+        request,
+        {
+            "suggestionsViewMode": lambda raw: _sheets_enum_value(
+                raw, "suggestions_view_mode", _DOCS_SUGGESTIONS_VIEW
+            ),
+            "includeTabsContent": lambda raw: _sheets_bool_value(raw, "include_tabs_content"),
+            "commentsViewMode": lambda raw: _sheets_enum_value(
+                raw, "comments_view_mode", _DOCS_COMMENTS_VIEW
+            ),
+        },
+    )
     row = _editor_doc(request, document_id, expect="document")
     content = [{"sectionBreak": {"sectionStyle": {}}}]
     for line in (row["content"] or "").split("\n"):

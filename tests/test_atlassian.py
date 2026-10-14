@@ -5491,6 +5491,15 @@ _COLUMNS_PRODUCE = (
 #: and the trace id read as `<log>` and `<trace>` (``errors.atlassian.jira_oops_page``).
 _JIRA_OOPS = (1703, "8f3cc6f7eac5d1b3d98f513cfc5094be6465a48d66717d8b409787c6c7a8d114")
 _Q2 = "application/json;Q=2"
+#: Two members, one with a `q` Spring cannot read as it sorts them
+_SORT_FAILS = "application/json;Q=abc, text/plain"
+
+
+def _MEMBERS(count: int) -> str:
+    """An `Accept` of ``count`` members, the last `application/json`."""
+    return ", ".join([*(f"a/b{i}" for i in range(count - 1)), "application/json"])
+
+
 _OOPS_MEDIA = "text/html;charset=utf-8"
 
 
@@ -5955,6 +5964,90 @@ _ACCEPT_ROWS = [
     ("OPTIONS", "/atlassian/wiki/rest/api/nope<script>", "admin", _Q2, None, 403, "text/html", None)
     + ({"content-length": "919"},),
     ("GET", _CQL, "admin", 'application/json;x="a;b"', None, 200, _JSON, None, {}),
+    # -- a `q` named in another case that Spring cannot read as it sorts two members or more
+    # (``errors.atlassian.spring_cannot_sort``, ``backlot.routers.atlassian.spring_sort_failure``)
+    *(
+        (
+            method,
+            path,
+            credential,
+            accept,
+            sent,
+            500,
+            _OOPS_MEDIA,
+            "oops",
+            {"www-authenticate": None},
+        )
+        for method, path, credential, accept, sent in (
+            ("GET", _INFO, "none", _SORT_FAILS, None),
+            ("GET", _INFO, "none", "text/plain;Q=abc, application/json", None),
+            ("GET", _INFO, "none", "text/plain;Q=abc, text/html;q=0.5", None),
+            ("GET", _INFO, "none", "*;Q=abc, application/json", None),
+            ("GET", _INFO, "none", "application/json, application/json;Q=abc", None),
+            ("GET", _INFO, "none", 'application/json;Q="abc", text/plain', None),
+            ("GET", "/atlassian/rest/api/3/myself", "none", _SORT_FAILS, None),
+            ("GET", "/atlassian/rest/api/3/myself", "admin", _SORT_FAILS, None),
+            ("GET", "/atlassian/rest/api/3/nopesuchroute", "none", _SORT_FAILS, None),
+            ("GET", _ISSUE_NOPE, "none", _SORT_FAILS, None),
+            ("POST", _INFO, "none", _SORT_FAILS, None),
+            ("PUT", "/atlassian/rest/api/3/announcementBanner", "none", _SORT_FAILS)
+            + (("text/plain", b"x"),),
+            ("GET", _LICENSE, "none", _SORT_FAILS, None),
+        )
+    ),
+    ("HEAD", _INFO, "none", _SORT_FAILS, None, 500, _OOPS_MEDIA, b"", {"content-length": "1703"}),
+    *(
+        ("OPTIONS", _INFO, credential, accept, None, 500, _OOPS_MEDIA, b"")
+        + ({"allow": "GET, HEAD, POST, PUT, DELETE, OPTIONS, TRACE", "www-authenticate": None},)
+        for credential, accept in (
+            ("none", _SORT_FAILS),
+            ("admin", _SORT_FAILS),
+            ("none", "*;Q=abc, application/json"),
+            ("none", "text/plain, text/html, application/json;Q=abc"),
+        )
+    ),
+    # a header Spring sorts: a lone member, `NaN`, a hexadecimal `q`
+    ("GET", "/atlassian/rest/api/3/myself", "none", "application/json;Q=abc", None, 500)
+    + (_OOPS_MEDIA, "oops", {"www-authenticate": _PRESENT}),
+    ("GET", "/atlassian/rest/api/3/myself", "none", "application/json;Q=abc,", None, 500)
+    + (_OOPS_MEDIA, "oops", {"www-authenticate": _PRESENT}),
+    ("OPTIONS", _INFO, "none", "application/json;Q=NaN, text/plain", None, 500, _OOPS_MEDIA, b"")
+    + ({"www-authenticate": _PRESENT},),
+    ("OPTIONS", _INFO, "none", "application/json;Q=0x1p-1, text/plain", None, 401)
+    + ("text/plain;charset=UTF-8", errors_atlassian.JIRA_UNAUTHENTICATED.encode(), {}),
+    # Jira cannot read a header of more than fifty members; Confluence's Spring services can
+    ("GET", _INFO, "none", _MEMBERS(51), None, 406, _EMPTY_HTML, b"", {}),
+    ("GET", _INFO, "none", _MEMBERS(50), None, 200, _JIRA_JSON, None, {}),
+    ("OPTIONS", _INFO, "none", _MEMBERS(51), None, 401, _EMPTY_HTML, b"")
+    + ({"allow": "GET, HEAD, POST, PUT, DELETE, OPTIONS, TRACE, PATCH"},),
+    ("GET", _SPACES, "admin", _MEMBERS(51), None, 200, _JSON, None, {}),
+    # and on Confluence: an empty 500 but where a wildcard beside a concrete type is sorted unread
+    *(
+        (method, path, credential, accept, None, 500, None, b"", {})
+        for method, path, credential, accept in (
+            ("GET", _SPACES, "admin", _SORT_FAILS),
+            ("GET", _SPACES, "none", _SORT_FAILS),
+            ("GET", _SPACES, "admin", "text/plain;Q=abc, application/json"),
+            ("GET", _SPACES, "admin", "*/*;Q=abc, */*"),
+            ("GET", _SPACES, "admin", "a/b, text/plain;Q=abc, application/json"),
+            ("GET", f"{_SPACES}/NOPESUCH", "admin", _SORT_FAILS),
+            ("DELETE", _SPACES, "admin", _SORT_FAILS),
+            ("OPTIONS", _SPACES, "admin", _SORT_FAILS),
+            ("GET", "/atlassian/wiki/rest/api/nopesuchroute", "none", _SORT_FAILS),
+        )
+    ),
+    *(
+        ("GET", _SPACES, "admin", accept, None, 400, None, b"", {})
+        for accept in (
+            "*;Q=abc, application/json",
+            "application/json, */*;Q=abc",
+            "application/json;Q=abc, application/*",
+            "*/*;Q=abc, text/*",
+        )
+    ),
+    ("GET", "/atlassian/wiki/rest/api/audit", "none", _SORT_FAILS, None, 400, "text/plain")
+    + (_unparsed(_SORT_FAILS), {}),
+    ("GET", _SPACES, "unparseable-basic", _SORT_FAILS, None, 401, _JSON, None, {}),
 ]
 
 _ACCEPT_CREDENTIALS = {
@@ -6164,6 +6257,8 @@ _ACCEPT_ROWS += [
         )
         for accept, xml in _CONNECT
     ),
+    # the gateway's Connect-token 403 comes before Spring sorts `Accept`
+    ("GET", _INFO, "unreadable-bearer", _SORT_FAILS, None, 403, _JSON, _CONNECT_JSON, {}),
     # the same choice on an operation that asks no 406, where a `GET` and a `HEAD` reach the two
     # answers that differ by method: neither carries `Allow`, and the wildcard's 500 is the page
     ("GET", _LICENSE, "none", "foo", None, 401, _EMPTY_HTML, b"")

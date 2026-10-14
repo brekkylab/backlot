@@ -3296,6 +3296,34 @@ def spring_write_failure(request: Request, status: int, headers, body: bytes) ->
     return errors_atlassian.confluence_refusal(status, b"", "text/html", page_headers)
 
 
+def spring_sort_failure(request: Request, status: int, headers, body: bytes) -> Response | None:
+    """What real answers where Spring fails as it sorts the request's `Accept`
+    (``errors.atlassian.spring_cannot_sort``), given the answer this server built, or None where
+    what answers comes before Spring. Measured 2026-10-14 with `application/json;Q=abc, text/plain`
+    and its kin on each answer below.
+
+    Spring sorts before it picks a handler, so every answer it would give is replaced, the 404s,
+    405s, 406s and 415s among them: on Jira by its 500 page (``errors.atlassian.jira_oops_page``)
+    with no `WWW-Authenticate`, an `OPTIONS` by the empty 500 and seven methods in `Allow`, whatever
+    the credential; on Confluence by an empty 500 with no `content-type`. What comes before Spring
+    stands: the gateway's Connect-token 403, Tomcat's 401 for a Basic value it cannot read, and on
+    Confluence's JAX-RS services Jersey's own reading of the header, its 400
+    (``errors.atlassian.not_acceptable``) or the 404's 500.
+    """
+    if not errors_atlassian.is_confluence(request.url.path):
+        if status == 403 and auth.atlassian_bearer_unreadable(request):
+            return None
+        media = errors_atlassian.JIRA_OOPS_MEDIA_TYPE
+        if request.method == "OPTIONS":
+            allow = {"Allow": errors_atlassian._JIRA_NO_TYPE_ALLOW}
+            return Response(b"", status_code=500, media_type=media, headers=allow)
+        return Response(_jira_oops_page(request), status_code=500, media_type=media)
+    jersey = status == 400 and (headers.get("content-type") or "").startswith("text/plain")
+    if status in (401, 500) or jersey:
+        return None
+    return Response(b"", status_code=500)
+
+
 def _vendor_path(path: str) -> str:
     return (
         path[len(errors_atlassian.PREFIX) :] if path.startswith(errors_atlassian.PREFIX) else path

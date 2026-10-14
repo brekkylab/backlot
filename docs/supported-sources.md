@@ -192,8 +192,15 @@ Message and thread ids are Gmail-shaped — 16 lowercase hex under 2^63, sharing
 real API does — and map back to the corpus document; an id the real API could not parse is refused
 the same way. On both listings a `pageToken` that does not parse is real's 400 `Invalid pageToken`
 and an empty one is the first page, refused where each listing refuses it beside `maxResults`
-(`backlot.routers.google._gmail_page`). A `HEAD` and a trailing slash are answered as on Drive,
-in the section below.
+(`backlot.routers.google._gmail_page`). A credential, a `HEAD` and a trailing slash are answered as
+on Drive, in the section below. A user's token is held to its own mailbox, `me` in any case or its
+own address: another address is the 403 `Delegation denied for <the caller's own address>`, and a
+`userId` without text on both sides of an `@` the 403
+`Invalid user id specified in request/Delegation denied`, as on real, which also answers the second
+to some shapes with text on both sides (`a@b`, `a@b@c`;
+`backlot.routers.google._refuse_another_mailbox` lists those measured, and the refusals that come
+before both and after them). The admin token reads any mailbox. Measured against the live Gmail API
+on 2026-10-11 and 2026-10-12.
 
 ### Google Drive, Docs, Sheets, Slides — `/drive/v3` `/docs/v1` `/sheets/v4` `/slides/v1`
 
@@ -238,7 +245,7 @@ because that is where Google puts them.
 | Endpoint | Notes |
 |---|---|
 | `POST /oauth2/token` | Turns a Google-style client credential into a bearer token the rest of Backlot already understands. Two grants: `refresh_token`, where the refresh token *is* the user's token from `/_meta/users`, and a signed service-account JWT assertion, whose `sub` claim selects the impersonated user under domain-wide delegation. A bare service account with no `sub` resolves to the admin/service identity. Expiry is cosmetic — a re-refresh returns the same token, so a long crawl never breaks |
-| `POST /batch`, `POST /batch/{api}/{version}` | Google's `multipart/mixed` batch envelope: each part is an `application/http` sub-request, answered in order with its `Content-ID` preserved. The outer credential applies to any sub-request that does not carry its own, as real Google does. As in real's Drive batch, a Drive download (`files.export` with no `alt`, an empty one or `alt=media`, or `files.get` with `alt=media`) is a 302 to the same path under `/download`, which this server does not serve, after `$.xgafv` and after a `Bearer` credential the part carries (a part with none, on it or on the batch, is redirected too), and ahead of `callback` and the typed, lookup, `fields` and `mimeType` refusals; as in real's Sheets batch, a Sheets read is 501 `UNIMPLEMENTED` |
+| `POST /batch`, `POST /batch/{api}/{version}` | Google's `multipart/mixed` batch envelope: each part is an `application/http` sub-request, answered in order with its `Content-ID` preserved. The outer credential applies to any sub-request that does not carry its own, as real Google does. As in real's Drive batch, a Drive download (`files.export` with no `alt`, an empty one or `alt=media`, or `files.get` with `alt=media`) is a 302 to the same path under `/download`, which this server does not serve, after `$.xgafv` and after any credential on the part (a part with none, on it or on the batch, is redirected too), and ahead of `callback` and the typed, lookup, `fields` and `mimeType` refusals; as in real's Sheets batch, a Sheets read is 501 `UNIMPLEMENTED` |
 
 `/batch` is Google-shaped but not Google-scoped — sub-requests are dispatched against the whole
 app, so a batch may target any endpoint this server serves, not only Google Drive's.
@@ -255,8 +262,7 @@ array the entry follows the error: a typed value the proto layer refuses (an enu
 int32), an unknown member in a JSON body and a JSON body that is not an object are `reason: invalid`
 and carry no `domain`; under `domain: global`, a body the JSON parser refuses in its own words is
 `parseError`, an Office file read as a native document `failedPrecondition`, a data-filter read's
-500 `backendError` and everything else `badRequest`; and a missing credential — any anonymous POST,
-the two Sheets data-filter reads included, and a GET on Gmail, Docs and Slides — is the short
+500 `backendError` and everything else `badRequest`; and a missing credential is the short
 `Login Required.` at `location: Authorization`, which Gmail shows by default where the editor
 families show it only at `1`. Measured against the live Sheets, Docs and Drive APIs on 2026-09-12,
 against Slides and Gmail on 2026-09-14 through the errors a request with no Authorization header
@@ -284,14 +290,15 @@ answer into 503 `Backend Error` under `text/javascript; charset=UTF-8` with a bo
 (the `errors[]` entry inline and no trailing newline), while a name that cannot be called is that
 503 even where the download would have succeeded. A missing credential on one names the missing API
 key rather than the unregistered caller, and only after the download's `mimeType` and
-typed-parameter checks, so the order a byte-stream read answers in is `$.xgafv`, a `Bearer` token
-that does not resolve (that scheme, spelt exactly so), the `callback`, the parameters, then that
-403. Inside a batch a download is a 302 instead (the `/batch` row above). A SUCCESS body is wrapped
-and indented on the `/sheets/v4` routes only; the other four families honour `callback` on their
-errors and not yet on their 200s. Measured against the live Sheets, Docs, Drive, Gmail and Slides
-APIs on 2026-09-15, 2026-09-16 and 2026-09-17: the wrap, the indent and the charset first, the
-suppression across the four non-Sheets families next, and the escape set and the case-insensitive
-`alt` last; the download refusals on 2026-10-04, 2026-10-05, 2026-10-07 and 2026-10-08.
+typed-parameter checks, so the order a byte-stream read answers in is `$.xgafv`, a credential that
+does not resolve, the `callback`, the parameters, then that 403, or a 401 of the download server's
+own for a header that is no credential. Inside a batch a download is a 302 instead (the `/batch` row
+above). A SUCCESS body is wrapped and indented on the `/sheets/v4` routes only; the other four
+families honour `callback` on their errors and not yet on their 200s. Measured against the live
+Sheets, Docs, Drive, Gmail and Slides APIs on 2026-09-15, 2026-09-16 and 2026-09-17: the wrap, the
+indent and the charset first, the suppression across the four non-Sheets families next, and the
+escape set and the case-insensitive `alt` last; the download refusals on 2026-10-04, 2026-10-05,
+2026-10-07 and 2026-10-08.
 
 **A repeated query parameter is read from the end real reads it from**, which is the first for some
 parameters and the last for others. The first repeat decides `fields`, `q`, `pageSize`, `pageToken`
@@ -356,6 +363,23 @@ as `ROWS`. A data-filter body is written into the request message the way real's
 writes it: every value it cannot convert and every name the request message lacks is refused in one
 400, each named by its proto path where it has one. Measured against the live Sheets API on
 2026-10-04, and a non-ASCII letter's case on 2026-10-05.
+
+**A credential is `Bearer` or `OAuth`, spelt so, and a space before the token**, a token a space, a
+tab or a comma ends, or a closing `"` where it opens with one: `Bearer <t> x`, `Bearer <t>,x` and
+`Bearer "<t>"` are served, `Bearer<t>` is a bad token, and `bearer <t>`, `token <t>`, `Basic …` and
+a bare `Bearer` are no credential at all. With none, a request is answered by its operation rather
+than its family: an unregistered caller's 403 on an operation that takes API keys too (Drive's file
+and comment reads among them, and the three Sheets reads), a missing credential's 401 on the rest,
+and on a download the missing API key's 403 with no `Authorization` header, the download server's
+401 with one that is no credential. Each of the front end's 401s carries
+`WWW-Authenticate: Bearer realm="https://accounts.google.com/"`, with `error="invalid_token"` for a
+token that does not resolve, and the download server's names the realm without its trailing slash.
+An operation the two Google baselines acknowledge as `missing_operation` is refused the same way,
+after `$.xgafv` and `callback`, and a caller whose credential resolves gets the 404 or 405 its path
+gets. One of those operations, a revision read, is not answered as a download with `alt=media`:
+with no `Authorization`, an empty one or `Basic …` it is the missing credential's 401. Measured
+against the live Drive, Gmail, Sheets, Docs and Slides APIs on 2026-10-11, and the revision read on
+2026-10-14.
 
 **A `HEAD` on Drive or Gmail is the `GET` with the body left off**, status for status, and declares
 a `content-length` only on a download's 200, where it is the length of the bytes the `GET` serves;

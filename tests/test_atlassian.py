@@ -4348,6 +4348,12 @@ def test_jira_unserved_sorts_every_operation_no_route_serves():
         ("/atlassian/wiki/rest/api/nopesuchroute?a=1", "application/json", "json", "?a=1"),
         ("/atlassian/wiki/rest/api/nopesuchroute?a=1", "*/*", "xml", "?a=1"),
         ("/atlassian/wiki/rest/api/nopesuchroute?a=1", "application/xml", "xml", "?a=1"),
+        (
+            "/atlassian/wiki/rest/api/nopesuchroute?a=1",
+            "application/xml;q=0.5;x=1, application/json",
+            "json",
+            "?a=1",
+        ),
         ("/atlassian/wiki/rest/api/nopesuchroute?a=1", None, "xml", "?a=1"),
         # a trailing slash is kept and an interior run collapsed, as in Jira's `detail`
         ("/atlassian/wiki/rest/api/nopesuchroute/", "application/json", "json", "nopesuchroute/"),
@@ -5712,6 +5718,8 @@ _ACCEPT_ROWS = [
     ("GET", _INFO, "none", "*/json", None, 406, _EMPTY_HTML, b"", {}),
     ("GET", _INFO, "none", "application/json;q=2", None, 406, _EMPTY_HTML, b"", {}),
     ("GET", _INFO, "none", "application/json;q=1e0", None, 200, _JIRA_JSON, None, {}),
+    ("GET", _INFO, "none", "application/json;q=\"0.5'", None, 406, _EMPTY_HTML, b"", {}),
+    ("GET", _INFO, "none", "application/json;q=10.51", None, 406, _EMPTY_HTML, b"", {}),
     ("GET", _INFO, "none", "application/json;charset=bogus", None, 406, _EMPTY_HTML, b"", {}),
     ("GET", _INFO, "none", "application/json;charset=base64", None, 406, _EMPTY_HTML, b"", {}),
     ("GET", _INFO, "none", "application/json,,", None, 200, _JIRA_JSON, None, {}),
@@ -5897,6 +5905,8 @@ _ACCEPT_ROWS = [
             (_INFO, "none", _Q2),
             (_INFO, "none", "application/json;Q=abc"),
             (_INFO, "none", "*/*;Q=2"),
+            (_INFO, "none", "application/*;Q=2"),
+            (_INFO, "none", "application/*+json;Q=2"),
             (_INFO, "none", "application/json;q=0.5;Q=2"),
             ("/atlassian/rest/api/3/issue/{issue[key]}/comment?orderBy=bogus", "admin", _Q2),
             ("/atlassian/rest/api/3/search/jql?jql=project%3D{project}", "admin", _Q2),
@@ -5909,6 +5919,11 @@ _ACCEPT_ROWS = [
     + ({"allow": "GET, HEAD, POST, PUT, DELETE, OPTIONS, TRACE", "www-authenticate": _PRESENT},),
     ("GET", _INFO, "none", "application/json;Q=0.5;q=0.5", None, 200, _JIRA_JSON, None, {}),
     ("GET", _INFO, "none", "text/html;Q=2, application/json", None, 200, _JIRA_JSON, None, {}),
+    ("GET", _INFO, "none", "text/json;Q=2, application/json", None, 200, _JIRA_JSON, None, {}),
+    ("OPTIONS", _INFO, "admin", _Q2, None, 200, errors_atlassian.JIRA_OPTIONS_MEDIA_TYPE, b"")
+    + ({"allow": "GET,HEAD,OPTIONS"},),
+    # and not on another source's path
+    ("GET", "/health", "none", _Q2, None, 200, _JSON, None, {}),
     ("GET", _ISSUE_NOPE, "none", _Q2, None, 404, _JIRA_JSON, None, {}),
     ("GET", _SEARCH, "admin", _Q2, None, 400, _JIRA_JSON, None, {}),
     ("POST", _INFO, "none", _Q2, None, 405, _PROBLEM, None, {}),
@@ -5923,6 +5938,11 @@ _ACCEPT_ROWS = [
     ("DELETE", _SPACES, "admin", _Q2, None, 405, _TOMCAT, "page", {"allow": "GET, POST"}),
     ("POST", _ATTACH, "admin", _Q2, ("text/plain", b"x"), 415, _TOMCAT, "page")
     + ({"accept": "multipart/form-data"},),
+    ("POST", _ATTACH, "none", _Q2, ("multipart/form-data; boundary=x", b"x"), 403, _TOMCAT)
+    + ("page", {"accept": None}),
+    ("PUT", "/atlassian/wiki/rest/api/content/1/state", "none", _Q2, ("text/plain", b"x"), 415)
+    + (_TOMCAT, "page", {"accept": "application/json"}),
+    ("GET", _SPACES, "admin", "application/json;Q=2;Charset=bogus", None, 400, None, b"", {}),
     ("OPTIONS", _SPACES, "admin", _Q2, None, 403, _TOMCAT, "page", {}),
     ("GET", f"{_SPACES}/NOPESUCH", "admin", _Q2, None, 404, errors_atlassian.HTML_MEDIA_TYPE)
     + (errors_atlassian.HTML_NOT_FOUND.encode(), {}),
@@ -6036,6 +6056,12 @@ _JIRA_401 = [
     ("OPTIONS", 'application/json;q="0.5"', 401, "application/json;charset=UTF-8", _LINE, {}),
     ("OPTIONS", "application/json;q=2;q=0.5", 401, "application/json;charset=UTF-8", _LINE, {}),
     ("OPTIONS", "text/htm, application/json", 401, "text/htm;charset=UTF-8", _LINE, {}),
+    ("OPTIONS", 'application/json;x="a;b"', 401, 'application/json;x="a;b";charset=UTF-8', _LINE)
+    + ({},),
+    ("OPTIONS", "text/plain;x=0.1, application/json;q=0.5", 401, "text/plain;x=0.1;charset=UTF-8")
+    + (_LINE, {}),
+    ("OPTIONS", "application/json;charset=UnicodeBig", 401, "application/json;charset=UnicodeBig")
+    + (_UTF16_LINE, {}),
     # a `q` named in another case, in the type
     *(
         ("OPTIONS", accept, 401, media_type, _UTF16_LINE if "utf-16" in accept else _LINE, {})

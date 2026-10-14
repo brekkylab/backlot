@@ -149,16 +149,19 @@ runs out is refused, 403, with `used` pinned at `limit` across the five headers,
 version check, the 401 a route that needs a credential answers a caller without one, and routing
 alike, for a caller with no credential (measured against api.github.com 2026-09-17 and 2026-09-22)
 and for a token (2026-09-23) alike; a bearer that does not resolve still gets its own 401, window
-spent or not (2026-09-23). The refused request is not itself counted, which is why `used` holds at
-`limit` rather than climbing past it. The body differs by caller: two members (`message`,
-`documentation_url`) for a caller with no credential, three (`status` besides) for a token, each
-with its own `documentation_url`. `BACKLOT_GITHUB_ENFORCE_RATE_LIMITS` turns the refusal off (see
+spent or not (2026-09-23), when a space follows its scheme: after a tab it is counted in the window
+real shares among the `Authorization` values it cannot parse, and refused once that window is spent
+(2026-10-14). The refused request is not itself counted, which is why `used` holds at `limit` rather
+than climbing past it. The body differs by caller: two members (`message`, `documentation_url`) for
+a caller with no credential, three (`status` besides) for a token, each with its own
+`documentation_url`. `BACKLOT_GITHUB_ENFORCE_RATE_LIMITS` turns the refusal off (see
 [configuration](configuration.md#github)). `GET /rate_limit` reports the same windows, does not
 count, and is never refused — the one route a client reads its way out of a spent window with;
 `/rate_limit/` asked with no `Authorization` header is a plain-text `404 Not Found` that carries
 none of the five and counts nowhere, spent window or not (2026-09-23). Two answers carry none of the
-five and count nowhere, as real's do not: a credential that does not resolve, and a path no route
-matches asked by a caller that sent one (measured 2026-09-10 and 2026-09-21).
+five and count nowhere, as real's do not: a credential that does not resolve with a space after its
+scheme, and a path no route matches asked by a caller that sent one (measured 2026-09-10 and
+2026-09-21).
 
 An issue body and a pull body are the two distinct field sets real serves — a pull carries `_links`
 and its `*_url` siblings and none of the issue-only fields, `pull_request` included. A repository

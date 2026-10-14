@@ -9,8 +9,10 @@ request is the anonymous caller's, who sees no bucket (``_auth``). A method this
 serve, and a GET or a HEAD naming a selector it cannot take, is refused before the bucket and
 whether or not a credential is sent, as real refuses them, but after a signature that was sent and
 does not verify (``_method_refusal``, ``_read_refusal``); a write resolves the credential and the
-bucket first. Responses are S3 XML (namespace ``http://s3.amazonaws.com/doc/2006-03-01/``) or raw
-object bytes; errors use the S3 ``<Error>`` envelope.
+bucket first. The ``?annotation`` reads refuse an unsigned caller and an unverified V2 key or
+signature ahead of the bucket and of a HEAD's selector refusal (``_sigv4_only_refusal``). Responses
+are S3 XML (namespace ``http://s3.amazonaws.com/doc/2006-03-01/``) or raw object bytes; errors use
+the S3 ``<Error>`` envelope.
 
 S3 dispatches on the query string: ``?acl``, ``?versioning``, ``?tagging`` and the rest each select
 a different operation at the same path. Every one of a bucket's is answered, as real answers a
@@ -734,10 +736,12 @@ def _signature_refusal(request: Request) -> auth.SigV4Refusal | None:
     ``None`` as well when no credential is sent: that is an anonymous caller's request, on real and
     here (``backlot.auth.resolve_sigv4``), and real gives it the method and selector refusals a
     signed request gets, where a signature that fails and an access key AWS does not know are each
-    refused first. Measured 2026-09-29 against `s3.us-east-1.amazonaws.com`: twelve selector
-    refusals across a GET and a HEAD at a bucket and at a key, each sent signed, unsigned, signed
-    over a bad secret and with an unknown key, and ten method refusals at a bucket, a key and the
-    service root, which the bad secret and the unknown key each turned into their 403.
+    refused first, but for the `?annotation` reads, which turn an unsigned request and a V2 key or
+    signature away themselves (``_sigv4_only_refusal``). Measured 2026-09-29 against
+    `s3.us-east-1.amazonaws.com`: twelve selector refusals across a GET and a HEAD at a bucket and
+    at a key, each sent signed, unsigned, signed over a bad secret and with an unknown key, and ten
+    method refusals at a bucket, a key and the service root, which the bad secret and the unknown
+    key each turned into their 403.
     """
     return auth.resolve_sigv4(request)[1]
 
@@ -790,7 +794,7 @@ def _read_refusal(
     at a bucket and at a key, on a GET and a HEAD, and in a bucket that does not exist, with the 400
     whether each was signed, unsigned, signed over a bad secret or sent with an unknown key
     (2026-09-29). So is a bucket's `partNumber` (``_bucket_selected``). Then ``first``, what the
-    caller refuses before the credential, in the order ``head_bucket``, ``bucket_get`` and
+    caller refuses before ``_auth``, in the order ``head_bucket``, ``bucket_get`` and
     ``_object_parse`` build it, and after it one selector is refused on a HEAD whatever it is
     (``_head_refusal``) and on a GET when the GET cannot take it (``refused``, the type its 405
     names), once a signature that was sent verifies (``_signature_refusal``).
@@ -856,8 +860,21 @@ def _key_selected(q) -> list[str]:
     too (`?partNumber=1&tagging` is "partNumber, tagging", same date); alone it is GetObject's
     (``_part_refusal``), and beside `uploadId` UploadPart.
 
+    `annotation` is read from its first value, as ``_first`` reads it, and names the operation
+    only when that value is empty: `?annotation=x` is GetObject, so an `annotationName` beside it is
+    ignored rather than refused as it is on its own (the check reads ``q``, not ``selected``), a
+    `max-annotation-results` is not parsed, a second selector is that selector's operation alone,
+    and a version id, a part number and a response override are read as GetObject reads them;
+    `?annotation=x&annotation=` is GetObject where `?annotation=&annotation=x` is the listing. No
+    other selector picks its operation by its value: `?acl=x`, `?tagging=x`, `?attributes=x`,
+    `?torrent=x`, `?uploads=x`, `?legal-hold=x` and `?retention=x` at a key and `?acl=x`,
+    `?versioning=x` and `?location=x` at a bucket each got the selector's own answer (us-east-1,
+    2026-10-14).
+
     An `OPTIONS` at a key's path reads them the same way (``_cors_preflight``)."""
     selected = _selected(q, _OBJECT_READ_SELECTORS)
+    if "annotation" in selected and _first(q, "annotation") != "":
+        selected.remove("annotation")
     if "annotationName" in q and "annotation" not in q:
         selected = sorted([*selected, "annotationName"])
     if "partNumber" in q and selected and selected != ["uploadId"]:
@@ -2168,19 +2185,21 @@ def _part_refusal(request: Request, part: str) -> Response | None:
 
 
 def _object_parse(request: Request, selected: list[str], head: bool) -> Response | None:
-    """What a GET at a key refuses before the credential and the bucket, in the order real refused
-    them, unsigned, over a bad secret and in a bucket nobody owns (measured 2026-09-29, 2026-09-30
-    and 2026-10-13): `annotationName` without `annotation`, "Unexpected query string parameter"
-    under `ResourceType`; an `x-amz-object-attributes` naming an attribute there is none of, read as
-    ``_attribute_names`` reads it and naming the first such name; on a GET ListObjectAnnotations'
+    """What a GET at a key refuses before the bucket, and before the credential but for its last
+    step, in the order real refused them, unsigned, over a bad secret and in a bucket nobody owns
+    (measured 2026-09-29, 2026-09-30, 2026-10-13 and 2026-10-14): `annotationName` without
+    `annotation`, "Unexpected query string parameter" under `ResourceType`; an
+    `x-amz-object-attributes` naming an attribute there is none of, read as ``_attribute_names``
+    reads it and naming the first such name; on a GET ListObjectAnnotations'
     `max-annotation-results`, parsed as `max-keys` is and then held to 1 to 1000, naming it as sent,
     and ListParts' own integers, where `max-parts=-1` is left to the upload; then a `response-`
-    parameter and a valued `website` (``_response_override_refusal``, ``_website_refusal``); then
-    a `versionId`, `null` included, beside a selector whose operation takes none
+    parameter and a valued `website` (``_response_override_refusal``, ``_website_refusal``); then a
+    `versionId`, `null` included, beside a selector whose operation takes none
     (``_KEY_VERSIONLESS``), "This operation does not accept a version-id.", and an empty
-    `versionId`, "Version id cannot be the empty string". A HEAD is refused each of the others as
-    its status alone, where `?annotation&max-annotation-results=abc` and `?uploadId=x&max-parts=abc`
-    are the selector's 405."""
+    `versionId`, "Version id cannot be the empty string"; then an annotation operation sent unsigned
+    or with Signature Version 2 (``_sigv4_only_refusal``). A HEAD is refused each of the others as
+    its status alone, where `?uploadId=x&max-parts=abc` is the selector's 405, and so is
+    `?annotation&max-annotation-results=abc` signed with SigV4."""
     q = request.query_params
     if selected == ["annotationName"]:
         return _argument_error("Unexpected query string parameter", "ResourceType", selected[0])
@@ -2215,7 +2234,41 @@ def _object_parse(request: Request, selected: list[str], head: bool) -> Response
         return _argument_error(_NO_VERSION_ID, "versionId", version)
     if version == "":
         return _argument_error("Version id cannot be the empty string", "versionId", "")
+    if selected == ["annotation"]:
+        return _sigv4_only_refusal(request)
     return None
+
+
+_SIGV4_ONLY = (
+    "The authorization mechanism you have provided is not supported. "
+    "Please use Signature Version 4."
+)
+
+
+def _sigv4_only_refusal(request: Request) -> Response | None:
+    """Real's 400 for ListObjectAnnotations and GetObjectAnnotation (``?annotation`` as
+    ``_key_selected`` reads it, with or without an ``annotationName``) sent unsigned or signed with
+    Signature Version 2, or ``None``.
+
+    Unsigned is what ``backlot.auth.resolve_sigv4`` reads as no credential, an empty `Authorization`
+    and the two lone query parameters it names among them, and Signature Version 2 is the header's
+    or the query's. Real refused each of those at an object, the unsigned request and the V2 header
+    in a bucket that does not exist too, and a HEAD unsigned or with a V2 header with its status
+    alone; a V2 header or query with an access key AWS does not know and one whose signature does
+    not verify got the 400 as well, so real checks neither first (us-east-1, 2026-10-13 and
+    2026-10-14). A V2 credential real refuses for its own shape is refused as that instead, which is
+    everything ``backlot.auth.resolve_sigv4`` checks before ``backlot.auth._verify_v2`` reads the
+    key; of those, `Authorization: AWS` with no space, `AWS garbage`, a query `Signature` without
+    `Expires` or past it, a V2 header with no date or a skewed one, and a V2 header beside a
+    presigned query were each that refusal on real, as was `Bearer x`, which is neither unsigned nor
+    V2."""
+    caller, refusal = auth.resolve_sigv4(request)
+    v2 = auth.signed_with_v2(request)
+    if refusal is None:
+        refused = v2 or caller.is_anonymous
+    else:
+        refused = v2 and refusal.code in ("InvalidAccessKeyId", "SignatureDoesNotMatch")
+    return _error("InvalidRequest", _SIGV4_ONLY) if refused else None
 
 
 def _attribute_names(sent: str | None) -> list[str]:

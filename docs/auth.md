@@ -64,7 +64,8 @@ sees least. Nothing about the request changes but the identity.
 
 | Service | Header |
 |---|---|
-| Slack, Gmail, Google Drive/Docs/Sheets/Slides, Notion, HubSpot, Fireflies | `Authorization: Bearer <token>` |
+| Slack, Notion, HubSpot, Fireflies | `Authorization: Bearer <token>` |
+| Gmail, Google Drive/Docs/Sheets/Slides | `Authorization: Bearer <token>`, or `OAuth <token>` |
 | GitHub | `Authorization: Bearer <token>`, or the legacy `token <token>` |
 | Jira, Confluence | HTTP Basic with the token as the **password**, or a plain `Bearer` |
 | Linear | A **bare** `Authorization: <token>`, or `Bearer` |
@@ -114,7 +115,10 @@ curl -s "localhost:8000/drive/v3/files?fields=files(id,name)" \
   -H "Authorization: Bearer usr-29b84da5703116c2a832"
 ```
 
-`me` works as the mailbox id, resolving to whoever the token is.
+How the header is read, spelling by spelling, is in
+[supported-sources.md](supported-sources.md#google-drive-docs-sheets-slides--drivev3-docsv1-sheetsv4-slidesv1).
+`me` works as the mailbox id, in any case, resolving to whoever the token is; a user's token reads
+no other mailbox, and the admin token reads any.
 
 #### A client carrying a config, not a token — `POST /oauth2/token`
 
@@ -274,7 +278,8 @@ refused credential get is in [supported-sources.md](supported-sources.md#amazon-
 **Signature Version 2 is verified too**, in the header and in the query, since real S3 still
 verifies it; botocore signs that way with `Config(signature_version="s3")`, though its signature for
 a bucket's own operations is the mismatch real answers it with. The two refuse differently and each
-refuses as real does.
+refuses as real does. Reading an object's `?annotation` takes SigV4 or SigV4a, as on real
+([supported-sources.md](supported-sources.md#amazon-s3--s3)).
 
 **So is SigV4a** (`AWS4-ECDSA-P256-SHA256`), in the header and in the query, with the key botocore's
 CRT signer derives from the same secret: install `awscrt` and pass

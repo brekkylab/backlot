@@ -546,10 +546,11 @@ def resolve_sigv4(request: Request) -> tuple[Caller | None, SigV4Refusal | None]
     Returns ``(caller, None)`` on a valid signature, ``(ANONYMOUS, None)`` for a request carrying
     no credential at all, and ``(None, refusal)`` otherwise. Real S3 reads an unsigned request as
     an anonymous caller's rather than refusing it, and so does this: what an anonymous caller can
-    see is decided where every caller's is, and it can see nothing. A V4 presigned request is one
-    carrying `X-Amz-Algorithm` and a V2 one a request carrying `Signature`; an `X-Amz-Signature`
-    without the first and an `AWSAccessKeyId` without the second are unsigned on real (a public
-    bucket's listing answered the one and a bucket's own owner was refused the other as anonymous).
+    see is decided where every caller's is, and it can see nothing. The `?annotation` reads refuse
+    it instead (``backlot.routers.s3._sigv4_only_refusal``). A V4 presigned request is one carrying
+    `X-Amz-Algorithm` and a V2 one a request carrying `Signature`; an `X-Amz-Signature` without the
+    first and an `AWSAccessKeyId` without the second are unsigned on real (a public bucket's listing
+    answered the one and a bucket's own owner was refused the other as anonymous).
 
     Each refusal is real's own code, message and members, and they come in real's order: measured
     2026-09-29 against `s3.us-east-1.amazonaws.com`, one fault at a time and, where two could meet,

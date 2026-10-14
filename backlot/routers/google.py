@@ -20,7 +20,9 @@ from contextvars import ContextVar
 from email.parser import BytesParser
 from email.utils import formataddr, getaddresses
 from http import HTTPStatus
+from pathlib import Path
 from typing import NamedTuple
+from urllib.parse import unquote
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, Response
@@ -48,8 +50,12 @@ from backlot.pagination import decode_cursor_or_none, next_page_token
 def _system_parameters(request: Request) -> None:
     """`gerr.validate_system_parameters`, with `callback` left alone on a Drive download: real
     answers an uncallable name there with its own 503, and a batch part with a 302, rather than
-    refusing the name (see `gerr.refuse_download` and `_drive_batch_redirect`)."""
-    gerr.validate_system_parameters(request, callback=not _drive_download_request(request))
+    refusing the name (see `gerr.refuse_download` and `_drive_batch_redirect`). Whether the request
+    is a download is left on ``request.state`` for `gerr.head_content_length`, which is asked once
+    the route has answered."""
+    download = _drive_download_request(request)
+    request.state.google_download = download
+    gerr.validate_system_parameters(request, callback=not download)
 
 
 router = APIRouter(tags=["google"], dependencies=[Depends(_system_parameters)])
@@ -183,13 +189,21 @@ def _batch_sub_response(r, base: str) -> str:
     request's base URL. The download redirect (:func:`gerr.download_redirect`), the 302 whose
     `Location` is under `base`'s `/download`, carries real's three headers, measured 2026-10-04 in
     this order: `Content-Length: 0`, though its error body follows, `Content-Type` and `Location`.
-    Any other part carries `Content-Type` alone, so the `Location` of a redirect a route builds from
-    the host the parts are dispatched to, which nothing answers, is not passed on."""
+    A part whose answer carries a `WWW-Authenticate`, a 401, passes it on ahead of `Content-Type`,
+    where real's 401 parts put it on 2026-10-13, on Drive's batch and on Sheets', for a missing
+    credential and for a bad one. Real's 200, 404 and 401 parts end their headers with a
+    `Content-Length` too, and its 200s and 404s carry `Cache-Control`, `Date` and `Expires` ahead of
+    `Content-Type`, in an order that changes from part to part, measured on Drive's batch on
+    2026-10-13; this server sends none of those four on them. Any other header stays behind, so the
+    `Location` of a redirect a route builds from the host the parts are dispatched to, which nothing
+    answers, is not passed on."""
     location = r.headers.get("location", "")
     redirect = r.status_code == 302 and location.startswith(f"{base}download/")
     lines = [f"HTTP/1.1 {r.status_code} {_batch_reason(r.status_code)}"]
     if redirect:
         lines.append("Content-Length: 0")
+    if "www-authenticate" in r.headers:
+        lines.append(f"WWW-Authenticate: {r.headers['www-authenticate']}")
     lines.append(f"Content-Type: {r.headers.get('content-type', 'application/json')}")
     if redirect:
         lines.append(f"Location: {location}")
@@ -257,49 +271,143 @@ async def batch(request: Request, api: str = "", version: str = "") -> Response:
     return Response(content=body, media_type=f'multipart/mixed; boundary="{_BATCH_BOUNDARY}"')
 
 
+# The schemes real reads a token under, spelt exactly so, and what ends the token after one.
+_SCHEMES = ("Bearer", "OAuth")
+_TOKEN_END = re.compile(r"[ \t,]")
+
+
+def _credential(request: Request) -> tuple[bool, str | None]:
+    """Whether real Google reads ``Authorization`` as a credential, and the token it names, which is
+    ``None`` for a credential that names none.
+
+    The scheme is `Bearer` or `OAuth` in that case, and one space after it starts the token, which
+    runs to the next space, tab or comma once any of those in front of it are passed. A token that
+    starts with `"` runs to the next `"` instead, or to the end without one, and loses the spaces,
+    tabs and commas at its two ends but none between; what follows the closing `"` is passed over,
+    and `""` names no token. A scheme with something other than a space after it, and one whose
+    space leads to nothing but those three, is a credential that names no token; a scheme with
+    nothing but spaces and tabs after it, a scheme in another case and anything else are no
+    credential at all. Measured on 2026-10-11 against Drive (`files.list` and `about`), Sheets,
+    Docs, Slides and Gmail, with a token that resolves and with `nope`, a quoted token only on
+    2026-10-13, and every spelling ``tests/test_google.py::_CREDENTIAL_ROWS`` lists replayed on
+    Gmail's `labels.get` and Drive's `files.list` on 2026-10-13.
+
+    A Drive download and a batch part read the header this way too (`_require_download_bearer`,
+    `_drive_batch_redirect`)."""
+    value = request.headers.get("authorization") or ""
+    for scheme in _SCHEMES:
+        if value.startswith(scheme):
+            rest = value[len(scheme) :]
+            if not rest.strip():
+                return False, None
+            if not rest.startswith(" "):
+                return True, None
+            token = rest.lstrip(" \t,")
+            if token.startswith('"'):
+                quoted = token[1:].split('"', 1)[0]
+                return True, quoted.strip(" \t,") if quoted else None
+            return True, _TOKEN_END.split(token, maxsplit=1)[0] or None
+    return False, None
+
+
+_ESCAPED_SLASH = re.compile(r"%2F", re.I)
+
+
+def _operation_path(request: Request) -> str:
+    """The path real chooses a Google operation by: the path as sent with an escaped `/` kept inside
+    its segment, every other escape decoded, and the trailing slashes dropped. Measured 2026-10-13
+    on Drive with no credential: `files/abc%2Fpermissions` is `files.get`'s 403, and a `POST` to
+    `files/abc%2Fcopy` is the front end's HTML 404 whatever the credential, no operation being a
+    `POST` on a file. The routes match the decoded path, so a credential that resolves reaches the
+    route that path names."""
+    raw = request.scope.get("raw_path")
+    if not raw:
+        return request.scope["path"]
+    return unquote(_ESCAPED_SLASH.sub("%252F", raw.decode("latin-1"))).rstrip("/")
+
+
 def _require(request: Request, *, download: bool = False) -> Caller:
     """The caller, or the error real Google gives — NOT the shared ``auth.require_bearer``, because
-    Google's answer is not one status. Measured: a present-but-invalid bearer is 401 UNAUTHENTICATED
-    everywhere, while NO Authorization header at all is 403 PERMISSION_DENIED on a Drive or Sheets
-    GET (they accept API keys, so an anonymous GET is a caller with no established identity) and
-    401 on the OAuth-only Gmail/Docs/Slides and on a POST to any family.
+    Google's answer is not one status. A credential that does not resolve is 401 UNAUTHENTICATED
+    everywhere (:func:`gerr.bad_token`), while no credential at all is a 403 or a 401 by operation
+    (:func:`gerr.no_credentials`). What is a credential is `_credential`'s to say.
 
     ``download`` asks for a byte-stream read's answer instead: measured 2026-10-04 on
     `files.export` and 2026-10-05 on `files.get?alt=media`, a missing credential there names the
     missing API key (:func:`gerr.missing_api_key`) instead of the anonymous GET's unregistered
-    caller, and real puts it AFTER the download's own parameters — which is why the handlers
-    resolve a download late."""
-    caller = auth.resolve_bearer(request)
+    caller, a header that is no credential is :func:`gerr.download_credential_refused`, and real
+    puts both AFTER the download's own parameters — which is why the handlers resolve a download
+    late."""
+    present, token = _credential(request)
+    if not present:
+        if download and "authorization" in request.headers:
+            raise gerr.download_credential_refused()
+        if download:
+            raise gerr.missing_api_key()
+        raise gerr.no_credentials(_operation_path(request), request.method)
+    caller = auth.acl(request).resolve(token) if token is not None else None
     if caller is None:
-        if not request.headers.get("authorization"):
-            if download:
-                raise gerr.missing_api_key()
-            raise gerr.no_credentials(request.url.path, request.method)
-        raise gerr.bad_token()
+        raise gerr.bad_token(named=token is not None)
     return caller
 
 
-def _sends_a_bearer_token(request: Request) -> bool:
-    """Whether ``Authorization`` is `Bearer`, spelt exactly so, and a token: the one header a Drive
-    download treats as a credential ahead of its own refusals, on its own
-    (`_require_download_bearer`) and as a batch part (`_drive_batch_redirect`). Narrower than
-    ``auth.bearer_token``, which `_require` reads a credential with and which also takes `bearer`,
-    `BEARER` and `token`."""
-    scheme, _, token = (request.headers.get("authorization") or "").partition(" ")
-    return scheme == "Bearer" and bool(token.strip())
-
-
 def _require_download_bearer(request: Request) -> None:
-    """The 401 a Drive download answers ahead of its own refusals, for a `Bearer` token
-    (`_sends_a_bearer_token`) that does not resolve.
+    """The 401 a Drive download answers ahead of its own refusals, for a credential (`_credential`)
+    that does not resolve.
 
     Measured 2026-10-07 and 2026-10-08 on `files.get?alt=media` and `files.export` beside
     `callback=a b`: `Bearer nope` answers the 401, where `bearer nope`, `BEARER nope`,
     `token nope`, a bare `Bearer`, `bearer`, `nope` and `Basic YWJjOmRlZg==` each answer the
-    callback's 503. Every other value is left to :func:`gerr.refuse_download`, and without a
+    callback's 503; on 2026-10-11 `OAuth nope`, `Bearer nope x`, `Bearer<t>` and `Bearer<TAB>nope`
+    answered the 401 too. Every other value is left to :func:`gerr.refuse_download`, and without a
     `callback` is `_require`'s to answer."""
-    if _sends_a_bearer_token(request) and auth.resolve_bearer(request) is None:
-        raise gerr.bad_token()
+    if _credential(request)[0]:
+        _require(request)
+
+
+# The baselines `backlot diff` keeps for Google's two sources, read without importing
+# ``backlot.fidelity``, whose ``__init__`` loads the comparison modules.
+_BASELINES = Path(__file__).resolve().parent.parent / "fidelity" / "baseline"
+# Where the paths the editor APIs' own documents spell from the version on are mounted here, as
+# `backlot.fidelity.comparisons.GOOGLE_DISCOVERY` strips them.
+_EDITOR_MOUNTS = (("/v4/", "/sheets"), ("/v1/documents", "/docs"), ("/v1/presentations", "/slides"))
+
+
+def _published_not_served() -> tuple[tuple[str, re.Pattern[str]], ...]:
+    """The two Google baselines' `missing_operation` rows as (method, path pattern), each at the
+    path Backlot mounts it on and each `{}` one path segment."""
+    operations = []
+    for source in ("gmail", "google_drive"):
+        rows = json.loads((_BASELINES / f"{source}.json").read_text())["acknowledged"]
+        for row in rows:
+            if row["kind"] != "missing_operation":
+                continue
+            method, path = row["path"].split(" ", 1)
+            mount = next((m for spelled, m in _EDITOR_MOUNTS if path.startswith(spelled)), "")
+            pattern = "[^/]+".join(re.escape(part) for part in (mount + path).split("{}"))
+            operations.append((method, re.compile(pattern)))
+    return tuple(operations)
+
+
+_PUBLISHED_NOT_SERVED = _published_not_served()
+
+
+def refuse_an_unserved_operation(request: Request) -> None:
+    """Raise what real answers ahead of an operation in `_PUBLISHED_NOT_SERVED`, which is what a
+    served route answers ahead of its own work: `$.xgafv`, then a `callback` on a GET, then the
+    credential, by `_require`'s rule and the operation's own anonymous answer
+    (:func:`gerr.no_credentials`). A caller that passes all three gets the router's 404 or 405, as
+    Backlot has no operation to run.
+
+    Measured 2026-10-11 on eight of the operations beside an unknown `$.xgafv`, `$.xgafv=1`, a
+    callable `callback` and an uncallable one, with a trailing slash and as a `HEAD`: each refused
+    as a served route of the same method does. The operation is chosen on
+    :func:`_operation_path`."""
+    path = _operation_path(request)
+    if not any(m == request.method and p.fullmatch(path) for m, p in _PUBLISHED_NOT_SERVED):
+        return
+    gerr.validate_system_parameters(request)
+    _require(request)
 
 
 def _b64url(text: str) -> str:
@@ -309,9 +417,47 @@ def _b64url(text: str) -> str:
 # ================================ Gmail =========================================
 
 
+def _is_me(user_id: str) -> bool:
+    """Whether `userId` is the caller's own alias, in any case: `ME` and `Me` read the caller's
+    mailbox as `me` does, measured 2026-10-11."""
+    return user_id.lower() == "me"
+
+
+def _mailbox_caller(request: Request, user_id: str) -> Caller:
+    """The caller, as `_require` gives it, refused by :func:`_refuse_another_mailbox`."""
+    caller = _require(request)
+    _refuse_another_mailbox(caller, user_id)
+    return caller
+
+
+def _refuse_another_mailbox(caller: Caller, user_id: str) -> None:
+    """Refuse a user's token a `userId` that names a mailbox not its own.
+
+    A user's token reads its own mailbox only, named `me` (:func:`_is_me`) or by its own address in
+    any case. A `userId` with no `@`, or nothing on one side of it, is :func:`gerr.invalid_user_id`
+    and any other is :func:`gerr.delegation_denied`. Real draws that line more narrowly: on
+    2026-10-12 `a@b`, `a@b.c`, `a@b@c`, `a@x.com.`, `a@b_c.com`, a local part holding a space, a
+    tab, `"`, `,` or `;`, and a literal `+`, which real reads as a space, were each the invalid id,
+    where `a%2Bb@x.com`, `a@1.2` and `.a@x.com` were addresses; here those are the delegation
+    refusal.
+
+    Measured 2026-10-11 and 2026-10-12 on every Gmail route served here: the refusal comes after
+    `$.xgafv`, the credential and a `maxResults` the proto layer cannot read as a uint32
+    (:func:`_gmail_max_results`), and ahead of an unparseable message id or attachment token, a
+    missing message or label, a `maxResults` of 0 and a page token that does not parse. The admin
+    token stands for a domain-wide-delegated service account and reads any mailbox; real's answer
+    to one was not measured, since only a domain's administrator can grant the delegation."""
+    if caller.email is None or _is_me(user_id) or user_id.lower() == caller.email.lower():
+        return
+    local, at, domain = user_id.partition("@")
+    if not (local and at and domain):
+        raise gerr.invalid_user_id()
+    raise gerr.delegation_denied(caller.email)
+
+
 def _mailbox_email(caller: Caller, user_id: str) -> str | None:
     """Resolve the mailbox owner email; None means 'all mailboxes' (admin, 'me')."""
-    if user_id == "me":
+    if _is_me(user_id) or caller.email is not None:
         return caller.email  # None for admin
     return user_id if "@" in user_id else None
 
@@ -327,7 +473,7 @@ def _mailbox_container(conn, caller: Caller, user_id: str) -> str | None:
     None = all mailboxes (admin ``me``). A concrete address (``me`` for a user, or an explicit
     email) resolves to the WHOLE mailbox — received and sent — rather than to the messages that
     address happened to author; ``store.mailbox_for`` is what knows how the corpus spelled it."""
-    email = caller.email if user_id == "me" else (user_id if "@" in user_id else None)
+    email = _mailbox_email(caller, user_id)
     return store.mailbox_for(conn, email) if email else None
 
 
@@ -356,7 +502,7 @@ def _mailbox_totals(conn, caller: Caller, user_id: str, ids) -> tuple[int, int]:
 @router.get("/gmail/v1/users/{user_id}/profile")
 async def gmail_profile(user_id: str, request: Request):
     conn = auth.conn(request)
-    caller = _require(request)
+    caller = _mailbox_caller(request, user_id)
     # A concrete mailbox (``me`` -> caller.email, or an explicit address) if we have one;
     # otherwise the admin/service identity — never echo the raw ``me`` path segment.
     email = _mailbox_email(caller, user_id) or caller.email or _service_email(request)
@@ -423,14 +569,14 @@ def _label_obj(lid: str, counts: tuple[int, int] | None = None) -> dict:
 
 @router.get("/gmail/v1/users/{user_id}/labels")
 async def gmail_labels(user_id: str, request: Request):
-    _require(request)
+    _mailbox_caller(request, user_id)
     return {"labels": [_label_obj(lid) for lid in _SYSTEM_LABELS]}
 
 
 @router.get("/gmail/v1/users/{user_id}/labels/{label_id}")
 async def gmail_label_get(user_id: str, label_id: str, request: Request):
     conn = auth.conn(request)
-    caller = _require(request)
+    caller = _mailbox_caller(request, user_id)
     if label_id not in _SYSTEM_LABELS:
         raise gerr.not_found_entity()
     ids = auth.visible_ids(request, caller)
@@ -642,9 +788,16 @@ def _by_thread(rows) -> list:
     return out
 
 
-def _gmail_page(request: Request, listing: str) -> tuple[int, int]:
-    """The page size and offset `messages.list` and `threads.list` serve, refused in the order real
-    refuses them on each.
+def _gmail_max_results(request: Request) -> list[int]:
+    """Every `maxResults` the request sends, each read as Gmail's proto layer reads it, a uint32
+    (:func:`_gmail_uint32`). Where that refusal stands is :func:`_refuse_another_mailbox`'s to say.
+    What the method makes of the values is :func:`_gmail_page`'s."""
+    return _typed_query(request, {"maxResults": _gmail_uint32})["maxResults"]
+
+
+def _gmail_page(request: Request, listing: str, sizes: list[int]) -> tuple[int, int]:
+    """The page size and offset `messages.list` and `threads.list` serve from the `maxResults`
+    values in ``sizes``, refused in the order real refuses them on each.
 
     Measured on gmail.googleapis.com on 2026-10-07 with a Workspace user's `gmail.readonly` token,
     one request per row; `threads.list` answered every row with the same status and error, on
@@ -660,13 +813,12 @@ def _gmail_page(request: Request, listing: str) -> tuple[int, int]:
     is 500". With no `maxResults`, the page is the default size capped at 500. A sent value is also
     capped at the deployment's `max_page_size`.
 
-    The uint32 refusal comes first on both listings. After it `messages.list` refuses a `pageToken`
-    that does not parse (:func:`_gmail_page_token`) before a `maxResults` out of range, and
-    `threads.list` the range before the token: measured on 2026-10-09 with `maxResults` of `0` and
-    `2147483648` beside a token that does not parse, each request sent four times with the same
-    answer.
+    The uint32 refusal (:func:`_gmail_max_results`) comes first on both listings. After it
+    `messages.list` refuses a `pageToken` that does not parse (:func:`_gmail_page_token`) before a
+    `maxResults` out of range, and `threads.list` the range before the token: measured on 2026-10-09
+    with `maxResults` of `0` and `2147483648` beside a token that does not parse, each request sent
+    four times with the same answer.
     """
-    sizes = _typed_query(request, {"maxResults": _gmail_uint32})["maxResults"]
     offset = _gmail_page_token(request) if listing == "messages" else None
     if not sizes:
         limit = min(get_settings().default_page_size, 500)
@@ -720,9 +872,11 @@ def _gmail_ids(row) -> tuple[str, str]:
 async def gmail_messages_list(user_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
+    sizes = _gmail_max_results(request)
+    _refuse_another_mailbox(caller, user_id)
     ids = auth.visible_ids(request, caller)
     mailbox = _mailbox_container(conn, caller, user_id)  # None = all mailboxes
-    limit, offset = _gmail_page(request, "messages")
+    limit, offset = _gmail_page(request, "messages", sizes)
     q = request.query_params.get("q", "") or ""
     if q.strip():  # search: filter the ACL-visible set by the query, then paginate
         matched = _gmail_query(conn, mailbox, ids, q)
@@ -752,7 +906,7 @@ async def gmail_messages_list(user_id: str, request: Request):
 )
 async def gmail_messages_get(user_id: str, msg_id: str, request: Request):
     conn = auth.conn(request)
-    caller = _require(request)
+    caller = _mailbox_caller(request, user_id)
     ids = auth.visible_ids(request, caller)
     row = _gmail_doc(conn, ids, msg_id)
     if row is None:
@@ -780,7 +934,7 @@ def _byte_len(text: str) -> int:
 )
 async def gmail_attachment(user_id: str, msg_id: str, att_id: str, request: Request):
     conn = auth.conn(request)
-    caller = _require(request)
+    caller = _mailbox_caller(request, user_id)
     ids = auth.visible_ids(request, caller)
     # The path's message id plays no part in the answer, in real Gmail or here: an attachment id
     # is served under the message it belongs to, under another message's id, under a well-formed
@@ -822,13 +976,15 @@ def _attachment(rows, att_id: str) -> tuple[str, int, dict] | None:
 async def gmail_threads_list(user_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
+    sizes = _gmail_max_results(request)
+    _refuse_another_mailbox(caller, user_id)
     ids = auth.visible_ids(request, caller)
     # The MAILBOX's threads, like messages.list and like real Gmail — not the threads the caller
     # happens to have written in. Scoping by author served a mailbox owner none of the mail they
     # received, and `q` was already scoping by container, so the two halves of this one listing
     # disagreed about what a thread list is.
     mailbox = _mailbox_container(conn, caller, user_id)
-    limit, offset = _gmail_page(request, "threads")
+    limit, offset = _gmail_page(request, "threads", sizes)
     q = request.query_params.get("q", "") or ""
     if q.strip():
         # A search returns the THREADS its matches are in: Gmail lists a thread whose match is in a
@@ -862,7 +1018,7 @@ async def gmail_threads_list(user_id: str, request: Request):
 )
 async def gmail_thread_get(user_id: str, thread_id: str, request: Request):
     conn = auth.conn(request)
-    caller = _require(request)
+    caller = _mailbox_caller(request, user_id)
     ids = auth.visible_ids(request, caller)
     thread_key = _gmail_resolve(thread_id)
     msgs = store.gmail_thread(conn, thread_key, visible_ids=ids)
@@ -2394,9 +2550,10 @@ async def drive_files_export(file_id: str, request: Request):
 
     A byte-stream read layers real's three download refusals before those, measured 2026-10-04,
     2026-10-05 and 2026-10-07: a `Bearer` that does not resolve is its 401, a `callback` is the 503
-    an uncallable name answers and the shape every later error takes, and a missing credential is
-    named only after `mimeType` (`gerr.missing_api_key`). An export asking for `alt=json` is none of
-    that -- it is an ordinary read, which `_drive_download` decides.
+    an uncallable name answers and the shape every later error takes, and no credential is refused
+    only after `mimeType` (`gerr.missing_api_key` with no `Authorization`,
+    `gerr.download_credential_refused` with one that is no credential). An export asking for
+    `alt=json` is none of that -- it is an ordinary read, which `_drive_download` decides.
 
     The export's `Content-Type` is the `mimeType` as sent and nothing more, measured 2026-09-30 on
     eleven formats of a spreadsheet and a document under five `Accept` values each (none, `*/*`,
@@ -4572,13 +4729,15 @@ def _drive_batch_redirect(request: Request) -> None:
     `/download`.
 
     Measured 2026-10-04 on `files.get` with `alt=media` and on `files.export`: the redirect comes
-    after `$.xgafv` and after a credential the part carries, a bad one being the 401, while a part
-    with no credential at all is redirected. Only `Bearer` and a token is a credential there:
-    measured 2026-10-05, `Basic YWJjOmRlZg==`, `bearer nope`, a bare `Bearer` and `nope` are each
-    redirected, though each is the 401 on a download sent on its own. The redirect comes ahead of
-    everything else measured beside it: a file that does not exist, `supportsAllDrives=NOPE`,
-    `fields=bogus`, an absent or empty `mimeType`, a Docs file read with `alt=media`, and a
-    `callback`, which neither wraps the redirect (`cb`) nor refuses it (`a b`).
+    after `$.xgafv` and after a credential the part carries (`_credential`), a bad one being the
+    401, while a part with no credential at all is redirected: measured 2026-10-05,
+    `Basic YWJjOmRlZg==`, `bearer nope`, a bare `Bearer` and `nope` are each redirected, though each
+    is :func:`gerr.download_credential_refused` on a download sent on its own, and on 2026-10-11
+    `OAuth nope`, `Bearer nope x`, `Bearer<t>`, `Bearer<TAB>nope` and `Bearer ,nope` were each the
+    401 in a part. The redirect comes ahead of everything else measured beside it: a file that does
+    not exist, `supportsAllDrives=NOPE`, `fields=bogus`, an absent or empty `mimeType`, a Docs file
+    read with `alt=media`, and a `callback`, which neither wraps the redirect (`cb`) nor refuses it
+    (`a b`).
 
     `Location` is the request's path under `/download`, as sent but for its escapes: measured
     2026-10-05 on `files/a%XXb` for each byte 0x20-0x7E, real decodes an escape of an ASCII letter,
@@ -4589,7 +4748,7 @@ def _drive_batch_redirect(request: Request) -> None:
     `Foo` does not, and a name the batch repeats is carried every time. The path and the query are
     read from the request's raw bytes, not its decoded URL, in which `%23` would start a
     fragment."""
-    if _sends_a_bearer_token(request):
+    if _credential(request)[0]:
         _require(request)
     outer = _BATCH_OUTER.get()
     path = _batch_escapes(request.scope["raw_path"].decode("latin-1"), "-._~")

@@ -29,7 +29,7 @@ from typing import NamedTuple
 from urllib.parse import unquote
 from xml.sax.saxutils import escape
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 
 PREFIX = "/atlassian"
 WIKI = f"{PREFIX}/wiki"
@@ -781,6 +781,18 @@ def reconcile_issues_null() -> AtlassianError:
     )
 
 
+def reconcile_issues_too_many() -> AtlassianError:
+    """Jira's 400 for more than 50 `reconcileIssues`, measured 2026-10-12 on both GET and POST."""
+    return AtlassianError(
+        400,
+        {
+            "errorMessages": ["The max number of issues to reconcile is 50."],
+            "errors": {},
+        },
+        media_type=JIRA_JSON_MEDIA_TYPE,
+    )
+
+
 def max_results_out_of_range() -> AtlassianError:
     """Jira's 400 for `search/jql`'s `maxResults` outside 1-5000, on both methods and both
     placements — the query string and the POST body. Measured 2026-09-18 against Jira Cloud:
@@ -1289,9 +1301,9 @@ CONFLUENCE_SEARCH_OPTIONS_ALLOW = "OPTIONS,HEAD,GET"
 _CONFLUENCE_HEAD_NO_LENGTH = "/wiki/rest/api/search"
 
 
-def head_content_length(path: str, status_code: int) -> bool:
-    """Whether a `HEAD` at ``path`` declares the length of the body its `GET` would have carried,
-    as real does.
+def head_content_length(request: Request, status_code: int) -> bool:
+    """Whether real Jira or Confluence puts a `content-length` on a `HEAD` to this request's path
+    that answers ``status_code``.
 
     Measured with `curl -I` beside each `GET` the same minute. Confluence, 2026-09-22: every 200 but
     `search` declares it, to the byte (`space` 1103, `content` 1536, `content/{id}` 3909,
@@ -1301,6 +1313,7 @@ def head_content_length(path: str, status_code: int) -> bool:
     credential with (:data:`JIRA_UNAUTHENTICATED`), which declares its 53 bytes, and the `HEAD`
     beside it declares the same (`myself`, 2026-09-30).
     """
+    path = request.url.path
     if not is_confluence(path):
         return status_code == 401
     if _instance(path) == _CONFLUENCE_HEAD_NO_LENGTH:

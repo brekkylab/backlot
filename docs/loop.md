@@ -170,6 +170,27 @@ Everything the loop does on GitHub — commits, pull requests, comments, reactio
 settings, not here. The loop still tells its pull requests from everyone
 else's by branch, `claude/` and nothing else, and leaves every other branch alone.
 
+## The debloat routine
+
+A second routine makes Backlot smaller without changing it, following
+[`.claude/skills/backlot-debloat/SKILL.md`](../.claude/skills/backlot-debloat/SKILL.md). Each run
+takes one area — a vendor, the store, the importer, the docs — and removes one kind of excess from
+it: duplicated code, prose said twice, or tests whose facts other tests already assert.
+[`scripts/invariance.py`](../scripts/invariance.py) proves nothing changed: for code, every response
+the suite receives is byte-identical before and after; for tests, no line of `backlot/` stops
+running and every removed test's fact fails some remaining test under a mutation; for prose, the
+Python is the same tree and every removed sentence is still said somewhere. The
+[`invariance-reviewer`](../.claude/agents/invariance-reviewer.md) re-runs that proof and the
+`prose-reviewer` reads the rest. Bugs it meets are filed, never fixed.
+
+Its pull requests are on `claude/debloat-` branches and labelled `debloat`; at most two are open at
+once, and it leaves alone any file a pull request in review touches. Reviewing one is the same as
+reviewing the loop's, and `hold` stops it the same way.
+
+**Prompt**: `Run /backlot-debloat. The skill has the full procedure; follow it.` **Schedule**: once a
+week. **Environment**: `backlot-loop`; no vendor credential is used. `/backlot-debloat <area>
+[prose|code|tests]` in a local checkout rehearses one area without writing to GitHub.
+
 ## Rehearsing a change to the loop
 
 `/backlot-loop <issue-number>` in a local checkout with the vendor credentials in the environment runs the

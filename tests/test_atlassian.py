@@ -5309,9 +5309,10 @@ _JSON_TYPE = "application/json"
         + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
         ("DELETE", "/wiki/rest/api/relation/1/from/user/a/to/content/2", None, None, 403)
         + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
-        # each operation the three service lists in ``backlot.routers.atlassian`` name, with no
-        # credential (2026-10-14): the nineteen GETs and the JAX-RS writes but the two that run, the
-        # not-permitted 403, and the Spring writes that check a type, the 415 for `text/plain`
+        # each operation the four lists in ``backlot.routers.atlassian`` name, with no credential
+        # (2026-10-14): the nineteen GETs and the JAX-RS writes but the two that run, the
+        # not-permitted 403, the Spring writes that check a type, the 415 for `text/plain`, and the
+        # GETs real serves outside the document, the Stackless 403
         *(
             ("GET", f"/wiki/rest/{path}", None, None, 403)
             + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,)
@@ -5384,16 +5385,29 @@ _JSON_TYPE = "application/json"
                 ("PUT", "/wiki/rest/api/user/1/property/1"),
             )
         ),
+        *(
+            ("GET", f"/wiki/rest/api/{path}", None, None, 403)
+            + (errors_atlassian.CONFLUENCE_FORBIDDEN_BODY,)
+            for path in (
+                "content/1/child",
+                "content/1/history",
+                "content/1/property",
+                "content/1/version",
+                "space/ENG/content",
+                "space/ENG/property",
+            )
+        ),
     ],
 )
 def test_confluence_answers_a_published_operation_before_it_runs(
     client, method, vendor_path, authorization, ctype, status, body
 ):
     """With no credential real refuses each published operation before it runs, in the order and
-    shape ``_published_answer``, ``_CONFLUENCE_CONSUMES``, ``_CONFLUENCE_JAXRS_WRITES`` and
-    ``_CONFLUENCE_NOT_PERMITTED_GETS`` in ``backlot.routers.atlassian`` carry the measurement for. A
-    415's ``body`` is the reason Spring gives; the 401 is asserted by status alone, its body being
-    JSON here where real's is Tomcat's page."""
+    shape ``_published_answer``, ``_CONFLUENCE_CONSUMES``, ``_CONFLUENCE_JAXRS_WRITES``,
+    ``_CONFLUENCE_NOT_PERMITTED_GETS`` and ``_CONFLUENCE_OUTSIDE_THE_DOCUMENT`` in
+    ``backlot.routers.atlassian`` carry the measurement for. A 415's ``body`` is the reason Spring
+    gives; the 401 is asserted by status alone, its body being JSON here where real's is Tomcat's
+    page."""
     headers = {} if ctype is None else {"Content-Type": ctype}
     if authorization is not None:
         headers["Authorization"] = authorization

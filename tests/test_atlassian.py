@@ -5753,6 +5753,35 @@ _ACCEPT_ROWS = [
     ("GET", _CQL, "none", "*/*+json", None, 403, _JSON, None, {}),
     ("GET", _CQL, "none", "foo, application/json", None, 403, _JSON, None, {}),
     ("GET", _CQL, "none", "foo, *.*", None, 406, None, b"", {}),
+    # the JAX-RS 404 of a path no resource claims fails to be written under a header Jersey cannot
+    # parse, and a JAX-RS write parses `Accept` between Tomcat's reading of the body's type and the
+    # 415 (2026-10-14)
+    *(
+        ("GET", "/atlassian/wiki/rest/api/nopesuchroute", "none", accept, None, 500, None, b"")
+        + ({"cache-control": None},)
+        for accept in (
+            "application/json;q=2",
+            "application/json,,text/html",
+            "application/json;foo",
+        )
+    ),
+    ("GET", "/atlassian/wiki/rest/api/nope/deeper", "admin", "application/json;q=2", None, 500)
+    + (None, b"", {}),
+    ("POST", "/atlassian/wiki/rest/api/template", "none", "application/json;q=2")
+    + (("text/plain", b"x"), 400, "text/plain", _unparsed("application/json;q=2"), {}),
+    ("POST", "/atlassian/wiki/rest/api/content/archive", "none", "application/json;q=2")
+    + (("text/plain", b"x"), 400, "text/plain", _unparsed("application/json;q=2"), {}),
+    ("POST", "/atlassian/wiki/rest/api/template", "none", "application/json;q=2", ("foo", b"x"))
+    + (400, _TOMCAT, "page", {}),
+    # an operation that answers in other types than JSON (``_CONFLUENCE_PRODUCES``)
+    ("GET", "/atlassian/wiki/rest/api/audit/export", "none", _JSON, None, 406, None, b"", {}),
+    ("GET", "/atlassian/wiki/rest/api/audit/export", "none", "application/octet-stream", None)
+    + (406, None, b"", {}),
+    *(
+        ("GET", "/atlassian/wiki/rest/api/audit/export", "none", accept, None, 403, _JSON)
+        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY, {})
+        for accept in ("application/zip", "text/csv", "*/*")
+    ),
     ("GET", _CQL, "admin", "application/json;charset=utf-7", None, 200, _JSON, None, {}),
     ("GET", _CQL, "none", "application/json,", None, 403, _JSON, None, {}),
     ("GET", _CQL, "none", "*;q=0.5", None, 403, _JSON, None, {}),

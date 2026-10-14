@@ -3095,6 +3095,17 @@ def _confluence_refusal(request: Request, vendor_path: str) -> Response | None:
     )
 
 
+#: The Confluence operations that answer in types other than JSON, and which: `audit/export`, whose
+#: `Accept` of `application/zip` or `text/csv` reached the caller's refusal with no credential on
+#: 2026-10-14 where `application/json`, `text/html` and `application/octet-stream` drew the empty
+#: 406. None of the other 136 operations the baseline lists or
+#: :data:`_CONFLUENCE_OUTSIDE_THE_DOCUMENT` names drew a 406 for `application/json` that day.
+_CONFLUENCE_PRODUCES = tuple(
+    (method, pattern, ("application/zip", "text/csv"))
+    for method, pattern in _operations(["GET /wiki/rest/api/audit/export"])
+)
+
+
 def _confluence_jaxrs_media_refusal(request: Request, vendor_path: str) -> Response | None:
     """What a Confluence JAX-RS write (:data:`_CONFLUENCE_JAXRS_WRITES`) answers a `Content-Type`
     it will not read, or None: Tomcat's 400 page, or an empty 415 with no `content-type` where the
@@ -3155,17 +3166,31 @@ def _published_answer(request: Request, vendor_path: str) -> Response | None:
                 refused = errors_atlassian.refuse_a_confluence_media_type(request.headers, consumes)
                 if refused is not None:
                     raise refused
+        accept = request.headers.get("accept")
         jaxrs = _confluence_jaxrs_media_refusal(request, vendor_path)
-        if jaxrs is not None:
+        # Jersey parses `Accept` after Tomcat reads the body's type and before it matches it: a
+        # header it cannot parse is its 400 ahead of the empty 415 (2026-10-14)
+        if jaxrs is not None and not (
+            jaxrs.status_code == 415 and errors_atlassian.jaxrs_cannot_parse(accept)
+        ):
             return jaxrs
         if not _is(_CONFLUENCE_REFUSED_BY_ACCEPT, method, vendor_path):
+            produces = next(
+                (
+                    made
+                    for verb, pattern, made in _CONFLUENCE_PRODUCES
+                    if verb == method and pattern.fullmatch(vendor_path)
+                ),
+                errors_atlassian.JSON_ONLY,
+            )
             _refuse_the_accept(
                 request,
                 errors_atlassian.not_acceptable(
                     request.url.path,
-                    request.headers.get("accept"),
+                    accept,
                     jaxrs=_is(_CONFLUENCE_NOT_PERMITTED, method, vendor_path)
                     or _is(_CONFLUENCE_RUN_ANONYMOUSLY, method, vendor_path),
+                    produces=produces,
                 ),
             )
         return _confluence_refusal(request, vendor_path)
@@ -3317,6 +3342,11 @@ def _confluence_not_found(request: Request) -> Response:
             status_code=404,
             media_type=errors_atlassian.HTML_MEDIA_TYPE,
         )
+    if errors_atlassian.jaxrs_cannot_parse(request.headers.get("accept")):
+        # Jersey fails to write its 404 under an `Accept` it cannot parse: an empty 500 with no
+        # `content-type`, measured 2026-10-14 on `nopesuchroute` and `nope/deeper` with `q=2`, a
+        # blank member and `;foo`, with a credential and without one
+        return Response(b"", status_code=500)
     url = f"{_site(request)}{vendor_path}"
     if request.url.query:
         url = f"{url}?{request.url.query}"

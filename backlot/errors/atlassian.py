@@ -814,6 +814,11 @@ def _jaxrs_accept(accept: str | None) -> tuple[list[tuple[str, str, float]], boo
     return ranges, passed_over, False
 
 
+def jaxrs_cannot_parse(accept: str | None) -> bool:
+    """Whether Confluence's JAX-RS services cannot parse ``accept`` (:func:`_jaxrs_accept`)."""
+    return _jaxrs_accept(accept)[2]
+
+
 def jaxrs_picks_json(accept: str | None) -> bool:
     """Whether a Confluence JAX-RS 404 (:func:`jaxrs_not_found`) is JSON rather than XML.
 
@@ -956,10 +961,10 @@ def not_acceptable(
     An unreadable `Accept` is refused as well, its body left out (:func:`rendered`).
     """
     if is_confluence(path):
-        if jaxrs and _jaxrs_accept(accept)[2]:
+        if jaxrs and jaxrs_cannot_parse(accept):
             message = f'The HTTP header field "Accept" with value "{accept}" could not be parsed.'
             return AtlassianError(400, message.encode(), headers={"Content-Type": "text/plain"})
-        if accepts(accept, reader="jaxrs" if jaxrs else "spring"):
+        if accepts(accept, reader="jaxrs" if jaxrs else "spring", produces=produces):
             return None
         if jaxrs:
             return AtlassianError(406, b"")

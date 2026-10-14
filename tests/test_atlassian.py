@@ -12,7 +12,7 @@ import json
 import re
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import quote, unquote
+from urllib.parse import quote, unquote, urlsplit
 
 import pytest
 import yaml
@@ -1801,6 +1801,21 @@ def test_jira_role_declares_its_id_as_the_integer_the_document_does(client):
     op = client.app.openapi()["paths"]["/atlassian/rest/api/3/project/{key}/role/{role_id}"]["get"]
     (role_id,) = [p for p in op["parameters"] if p["name"] == "role_id"]
     assert role_id["schema"]["type"] == "integer"
+
+
+def test_jira_role_list_links_the_role_its_read_answers(client, admin_h):
+    """The list names one role, and its link is the id (``backlot.routers.atlassian._JIRA_ROLE``)
+    the role read answers 200 for, under that name and with the project group's members as its
+    actors. A function of its own because it follows a link the list emits."""
+    key = synth.jira_project_key("payments")
+    listed = client.get(f"/atlassian/rest/api/3/project/{key}/role", headers=admin_h).json()
+    assert list(listed) == ["Users"]
+    path = urlsplit(listed["Users"]).path
+    assert path == f"/rest/api/3/project/{key}/role/10002"
+    role = client.get(f"/atlassian{path}", headers=admin_h).json()
+    assert (role["id"], role["name"]) == (10002, "Users")
+    assert role["actors"]
+    assert {actor["type"] for actor in role["actors"]} == {"atlassian-user-role-actor"}
 
 
 # --- how a query parameter is READ: conversion, range, repetition -------------------------

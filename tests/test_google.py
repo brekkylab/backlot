@@ -8731,3 +8731,56 @@ def test_gmail_size_estimate_matches_raw_bytes_in_every_format(tmp_path, title, 
             thread = c.get(f"/gmail/v1/users/me/threads/{tid}?format={fmt}", headers=h)
             assert thread.status_code == 200
             assert thread.json()["messages"][0]["sizeEstimate"] == size
+
+
+@pytest.mark.parametrize("surface", ["messages", "threads"])
+@pytest.mark.parametrize(
+    "query, expected",
+    [
+        ("cc:lena", ["plan"]),
+        ("cc:LENA@ACME.COM", ["plan"]),
+        ('cc:"lena@acme.com" rollout', ["plan"]),
+        ("bcc:ava", ["lunch"]),
+        ("cc:acme.com", ["plan"]),
+        ("cc:lena bcc:ava", []),
+        ("cc:nobody", []),
+        ("bcc:me", ["lunch"]),
+        ("cc:me", ["plan"]),
+    ],
+)
+def test_gmail_cc_bcc_searches_address_headers(tmp_path, surface, query, expected):
+    # The maintainer measurement recorded beside _gmail_op_match covers cc/bcc
+    # address searches, including partial addresses, rather than body-text tokens.
+    records = [
+        {"doc_id": "plan", "title": "rollout plan", "cc": "lena@acme.com, ava@acme.com"},
+        {"doc_id": "lunch", "title": "lunch", "bcc": "ava@acme.com"},
+        {"doc_id": "decoy", "title": "cc lena bcc ava", "content": "lena ava"},
+    ]
+    settings = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "gmail",
+                "mailbox": "ava",
+                "author_email": "bob@acme.com",
+                "to": "ava@acme.com",
+                "content": "body",
+                "visibility": "public",
+                "created": "2026-03-01T09:00:00Z",
+                "readers": ["ava@acme.com"],
+                **r,
+            }
+            for r in records
+        ],
+    )
+    token = tok(yaml.safe_load(settings.tokens_path.read_text()), "ava@acme.com")
+    with client_for(settings, reload=True) as c:
+        response = c.get(
+            f"/gmail/v1/users/me/{surface}",
+            headers={"Authorization": f"Bearer {token}"},
+            params={"q": query},
+        )
+    assert response.status_code == 200
+    assert {r["id"] for r in response.json().get(surface, [])} == {
+        served_id("gmail", doc_id) for doc_id in expected
+    }

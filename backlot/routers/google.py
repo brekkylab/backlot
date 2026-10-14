@@ -447,6 +447,8 @@ _GMAIL_OP = re.compile(r'(\w+):("[^"]*"|\S+)')
 _GMAIL_KEYS = {
     "from",
     "to",
+    "cc",
+    "bcc",
     "subject",
     "after",
     "before",
@@ -459,7 +461,7 @@ _GMAIL_KEYS = {
 
 
 def _parse_gmail_q(q: str) -> tuple[str, dict]:
-    """Split a Gmail search `q` into (free_text, operators). Honors from:/to:/subject:/
+    """Split a Gmail search `q` into (free_text, operators). Honors from:/to:/cc:/bcc:/subject:/
     after:/before:/newer_than:/older_than:/label:/in:/has: — the rest is free text matched
     full-text."""
     ops: dict[str, list[str]] = {}
@@ -529,6 +531,12 @@ def _gmail_op_match(row, ops: dict) -> bool:
     for v in ops.get("to", []):
         if v.lower() not in (row["to_addr"] or "").lower():
             return False
+    # The maintainer measured Gmail on 2026-10-09: cc/bcc match header addresses,
+    # including partial addresses, just as to does. Missing headers cannot match.
+    for key in ("cc", "bcc"):
+        for v in ops.get(key, []):
+            if v.lower() not in (row[key] or "").lower():
+                return False
     for v in ops.get("subject", []):
         if v.lower() not in (row["title"] or "").lower():
             return False
@@ -556,10 +564,14 @@ def _gmail_op_match(row, ops: dict) -> bool:
     return True
 
 
-def _gmail_query(conn, mailbox, ids, q: str) -> list:
+def _gmail_query(conn, mailbox, ids, q: str, caller_email: str | None = None) -> list:
     """Full ACL+mailbox-filtered match set for a Gmail `q` (FTS-ranked when free text is
     present; otherwise the mailbox listing). The caller paginates the returned rows."""
     free, ops = _parse_gmail_q(q)
+    if caller_email:
+        for key in ("cc", "bcc"):
+            if key in ops:
+                ops[key] = [caller_email if v.lower() == "me" else v for v in ops[key]]
     ops = _resolve_relative_dates(ops)  # newer_than:/older_than: -> absolute after:/before: bounds
     if free:
         # Honor a fully "quoted" free-text term as a phrase (Gmail's quote semantics): match the
@@ -729,7 +741,7 @@ async def gmail_messages_list(user_id: str, request: Request):
     limit, offset = _gmail_page(request, "messages")
     q = request.query_params.get("q", "") or ""
     if q.strip():  # search: filter the ACL-visible set by the query, then paginate
-        matched = _gmail_query(conn, mailbox, ids, q)
+        matched = _gmail_query(conn, mailbox, ids, q, caller.email or _service_email(request))
         total = len(matched)
         rows = matched[offset : offset + limit]
     else:
@@ -837,7 +849,9 @@ async def gmail_threads_list(user_id: str, request: Request):
     if q.strip():
         # A search returns the THREADS its matches are in: Gmail lists a thread whose match is in a
         # reply, and lists it once even when several of its messages match.
-        matched = _by_thread(_gmail_query(conn, mailbox, ids, q))
+        matched = _by_thread(
+            _gmail_query(conn, mailbox, ids, q, caller.email or _service_email(request))
+        )
         total = len(matched)
         rows = matched[offset : offset + limit]
     else:

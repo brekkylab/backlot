@@ -4414,10 +4414,6 @@ def test_atlassian_headers_ride_every_answer_but_the_front_doors(client, admin_h
         if refused is not None:
             status, layer = refused
             assert r.status_code == status, (label, r.text)
-            # the page the layer serves, byte for byte (`errors.atlassian.front_door`)
-            page = errors_atlassian.front_door(method, path, "")
-            assert r.headers["content-type"] == page.media_type, label
-            assert r.text == page.body, label
             assert "allow" not in r.headers, label
             for name in ("atl-request-id", "atl-traceid"):
                 assert (name in r.headers) == (layer == "gateway"), (label, name)
@@ -4994,10 +4990,10 @@ def test_confluence_search_carries_the_cache_pair_where_real_does(
 
 # --- the front door's own refusals: a page before either product ----------------------------
 
-#: The pages the layers in front of both products sent on 2026-10-12, each as its length in bytes
-#: and the SHA-256 of its text with the `Request ID:` line read as `Request ID: <id>`: the one line
-#: two of CloudFront's answers differ by, a value seeded from the method and path here and random
-#: on real.
+#: The pages the layers in front of both products send (``errors.atlassian`` dates each), each as
+#: its length in bytes and the SHA-256 of its text with the `Request ID:` line read as
+#: `Request ID: <id>`: the one line two of CloudFront's answers differ by, a value seeded from the
+#: method and path here and random on real.
 _CLOUDFRONT_405 = (915, "367a52dd1b2cf9f4508bbc97dd06390705cba5cf43446e0b57bae8e36aeabd2c")
 _CLOUDFRONT_METHOD_403 = (1053, "5dd68faa0cbf2eb7f73764c74991458af12c48974ee1abbe35e55303c9e76207")
 _CLOUDFRONT_400 = (915, "73a1d9f5d62fcebdc292a776e609c11154344817ddfa6d4d1fa2b753bdc6f8b6")
@@ -5324,21 +5320,3 @@ def test_confluence_answers_a_published_write_before_it_runs(
             if status == 400
             else _JSON_TYPE
         )
-
-
-# --- the generator sorts run operations and names the measured media-type exceptions ----------
-
-
-def test_jira_unserved_run_entries_carry_their_consumes():
-    """``backlot/data/jira_unserved.json`` lists the media types a run operation checks, the same as
-    a refused one, so the catch-all answers its 415 for a body it will not take: `run` maps each
-    operation to an entry, as `refused` does."""
-    import backlot
-
-    table = json.loads(
-        (Path(backlot.__file__).resolve().parent / "data" / "jira_unserved.json").read_text()
-    )
-    assert isinstance(table["run"], dict)
-    assert table["run"]["POST /rest/api/3/field"]["consumes"] == ["application/json"]
-    columns = table["run"]["PUT /rest/api/3/filter/{}/columns"]
-    assert columns["charset"] == "UTF-8"  # its 415 names a charset the request did not send

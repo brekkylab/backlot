@@ -699,9 +699,8 @@ async def answer_at_the_atlassian_front_door(request: Request, call_next):
     Registered after the slash rewrite, the Connect-token refusal, the `HEAD` rewrite and the
     Seraph header, so it runs ahead of each of them: a `HEAD` arrives here as a `HEAD` (real
     declares each page's length on one and sends no body), and none of the other three runs for a
-    request this refuses, as none of them runs on real. The path is read as it arrived, from
-    `raw_path`, where an encoded slash and `%00` are still distinguishable from the characters they
-    decode to. Which layer answered is left on the scope for
+    request this refuses, as none of them runs on real. Whose headers the answer carries
+    (``errors.atlassian.FrontDoor``) is left on the scope for
     ``backlot.routers.atlassian.vendor_headers``.
     """
     # `request.url.path` only decides ownership and seeds the raw-path fallback; the pages echo no

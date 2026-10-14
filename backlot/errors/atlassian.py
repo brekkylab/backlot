@@ -1142,8 +1142,9 @@ def waf_blocks(raw_path: str, raw_query: str) -> bool:
 
 
 class FrontDoor(NamedTuple):
-    """An answer a layer in front of the application gives, and which layer: `cdn` adds no header
-    of its own, `cdn edge` adds the edge's two, and `gateway` its two ids beside those (see
+    """An answer a layer in front of the application gives. ``layer`` names whose headers it
+    carries, not which layer answered: `cdn` adds no header of its own, `cdn edge` adds the edge's
+    two, and `gateway` its two ids beside those, which Confluence's Tomcat 400 carries too (see
     ``backlot.routers.atlassian.vendor_headers``)."""
 
     status: int

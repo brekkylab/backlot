@@ -2839,6 +2839,50 @@ def _linear_identifiers(client, authorization):
     return r.status_code, r.json()
 
 
+def test_an_unassigned_issue_branch_name_starts_with_the_callers_handle(tmp_path):
+    """An issue with no assignee takes the caller's email local part as its branch prefix.
+    An assigned issue keeps the assignee's local part in front of the same slug."""
+    records = [
+        {
+            "source_type": "linear",
+            "doc_id": "assigned",
+            "team": "engineering",
+            "title": "Rotate the signing keys",
+            "identifier": "ENG-1",
+            "content": "Keys expire in March.",
+            "state": "Todo",
+            "author_email": "mia@acme.com",
+            "assignee": "raj@acme.com",
+            "created": "2026-02-01T09:00:00Z",
+        },
+        {
+            "source_type": "linear",
+            "doc_id": "unassigned",
+            "team": "engineering",
+            "title": "Rotate the signing keys",
+            "identifier": "ENG-2",
+            "content": "Keys expire in March.",
+            "state": "Todo",
+            "author_email": "mia@acme.com",
+            "created": "2026-02-01T09:00:00Z",
+        },
+    ]
+    with corpus_client(tmp_path, records) as (client, _settings):
+        users = client.get("/_meta/users").json()["users"]
+        token = next(u["token"] for u in users if u["email"] == "mia@acme.com")
+        body = gql(
+            client,
+            "{ issues { nodes { identifier branchName } } }",
+            {"Authorization": token},
+        ).json()
+        assert "errors" not in body, body.get("errors")
+        got = {n["identifier"]: n["branchName"] for n in body["data"]["issues"]["nodes"]}
+        assert got == {
+            "ENG-1": "raj/eng-1-rotate-the-signing-keys",
+            "ENG-2": "mia/eng-2-rotate-the-signing-keys",
+        }
+
+
 def test_an_issue_with_no_recorded_edit_is_filtered_on_the_updatedAt_it_serves(tmp_path):
     """`Issue.updatedAt` is non-null in Linear; Backlot serves an issue with no recorded edit at its
     creation time (`COALESCE(updated_ts, created_ts)`), and the sorts already read that expression.

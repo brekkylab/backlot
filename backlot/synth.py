@@ -804,7 +804,8 @@ def linear_state_color(name: str) -> str:
 
 def linear_branch_name(identifier: str, title: str, assignee_email: str | None = None) -> str:
     """Linear's suggested git branch: ``<user>/<identifier>-<slugified title>``, lowercased and
-    truncated the way the product does. With no assignee Linear drops the user segment."""
+    truncated the way the product does. The user segment is that address's local part; with no
+    address the segment is omitted."""
     slug = re.sub(r"-+", "-", re.sub(r"[^a-z0-9]+", "-", (title or "").lower())).strip("-")[:40]
     slug = slug.rstrip("-")
     stem = "-".join(p for p in ((identifier or "").lower(), slug) if p)

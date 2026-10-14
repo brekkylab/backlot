@@ -5301,6 +5301,8 @@ _JSON_TYPE = "application/json"
         ("POST", "/wiki/rest/api/contentbody/convert/async/1", None, "application/json;x", 400)
         + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
         ("POST", "/wiki/rest/api/contentbody/convert/async/1", None, _JSON_TYPE, 404, None),
+        ("POST", "/wiki/rest/api/contentbody/convert/async/bulk/tasks", None, "text/plain", 415)
+        + (b"",),
         ("PUT", "/wiki/rest/api/settings/lookandfeel", None, "text/plain", 403)
         + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
         ("PUT", "/wiki/rest/api/settings/lookandfeel", None, "foo", 400)

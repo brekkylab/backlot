@@ -61,6 +61,8 @@ all = ["backlot[dev,official-sdk,mcp,llamaindex,mirage,fsspec]"]
 dev = [
     "pytest>=8.0",
     "pytest-xdist>=3.6",
+    # scripts/invariance.py records coverage to hold a test-only change to the lines it executed.
+    "pytest-cov>=6",
     # starlette 1.6's TestClient wants httpx2; the httpx the tests also call directly is a core
     # dependency.
     "httpx2",

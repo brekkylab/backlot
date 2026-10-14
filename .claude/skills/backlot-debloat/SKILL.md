@@ -27,10 +27,14 @@ sentence, with no signature and no session link.
    filed as an issue (step 7) and left as it is.
 2. **One kind per pull request.** Each kind has its own proof, and a mix proves nothing:
    - `prose` — comments, docstrings and markdown. Proof: `invariance.py prose` says every Python
-     file parses to the same tree without docstrings, and the docs tests pass.
+     file parses to the same tree without docstrings, the docs tests pass, and the said-once map
+     accounts for every removed fact.
    - `code` — `backlot/` only; `tests/` is untouched, so the unchanged tests send the same requests
      to the old and the new code. Proof: `invariance.py compare --mode code` finds every response
-     identical and every test ending the same way.
+     identical and every test ending the same way. That proof sees only what the tests reach, so
+     every line a `code` cut changes or removes must have run in the base recording (`invariance.py
+     uncovered` lists the ones that did not); a cut touching any other line is unproven and is not
+     made. A new helper's docstring belongs to the `code` cut that adds the helper.
    - `tests` — `tests/` only; `backlot/` is untouched. Proof: `invariance.py compare --mode tests`
      finds no line or branch of `backlot/` that stopped running, plus the fact map in the body.
 3. **Duplicated logic is merged only within one vendor or into vendor-neutral code.** Two vendors'
@@ -39,14 +43,17 @@ sentence, with no signature and no session link.
    `backlot/errors/__init__.py`, `backlot/synth.py`, `tests/_helpers.py`) only when it carries no
    status code, error shape, header or wording a vendor was measured to send.
 4. **Copies that differ stay apart.** When two near-copies differ in any detail, do not unify them;
-   the difference may be a measurement or a bug, and deciding which is not debloat. File it.
+   the difference may be a measurement or a bug, and deciding which is not debloat. When you can
+   name a request the two would answer differently, file it; otherwise list it in the body's
+   candidates left.
 5. **It gets smaller.** Net lines go down. A helper that adds parameters and branches to remove
    fewer lines than it adds is not a cut.
-6. **Dead code needs proof before it goes:** it is not a public name (`backlot/__init__.py`, or a
-   module `examples/` or the docs import), and nothing reaches it — for a name, no read anywhere in
-   the repository by name or by string (`git grep -n '<name>'`, including `examples/`, `docs/`,
-   `scripts/`); for a function body or branch, no line of it executed in a recording (`invariance.py
-   uncovered`).
+6. **Dead code is code no request can reach, shown from the code.** Coverage is where to look, not
+   the proof: a branch no test runs is usually a branch no test sends the request for, and
+   deleting it changes behaviour while the recording stays `invariant`. Remove a name only when it
+   is not public (`backlot/__init__.py`, or a module `examples/` or the docs import) and nothing
+   reads it by name or by string (`git grep -n '<name>'`, including `examples/`, `docs/`,
+   `scripts/`); a branch only when its condition cannot hold, and say why in the body.
 7. **A test is removed or merged for one of four reasons only**, named in the body for each fact it
    asserted (a test that asserted two facts may have two reasons):
    - *subset*: another test asserts the same fact on the same state — the same corpus or fixture, and
@@ -64,10 +71,10 @@ sentence, with no signature and no session link.
    in the one a reader looking the fact up would open — the reference entry for that endpoint or
    setting over an overview. A rewording that saves no line is not a cut. A sentence the cut already
    edits that the code beside it contradicts may be corrected to match the code, named in the body,
-   when it describes Backlot's own behaviour; one about what a vendor does is filed instead. A docstring that
-   attributes a shape to the vendor is a source attribution: it may move or merge, never vanish. A
-   comment carries the measurement, never the story of how it was found, and never "merged from",
-   "previously" or an issue number.
+   when it describes Backlot's own behaviour; one about what a vendor does is filed instead. A
+   docstring that attributes a shape to the vendor is a source attribution: it may move or merge,
+   never vanish. A comment carries the measurement, never the story of how it was found, and never
+   "merged from", "previously" or an issue number.
 9. **Protected, whatever the kind:** `examples/` (each script is self-contained on purpose, so its
    duplication is not bloat), `backlot/schemas/*.schema.json`, `backlot/data/`, the generated blocks
    of `docs/supported-sources.md` and `skills/backlot/SKILL.md`, the fidelity baseline, `AGENTS.md`,
@@ -75,8 +82,9 @@ sentence, with no signature and no session link.
    parametrized case that proves which principal may read something — a scoped token refused or
    answered, an admin token answered — is never removed. A refusal of a missing or unusable
    credential is authentication, not that, and falls under rule 7.
-10. **Small enough to review in one sitting**: at most 800 changed lines (added plus removed), in as
-    few commits as tell the story. Stop at a coherent boundary rather than at the limit.
+10. **Worth a review, and small enough for one sitting.** At most 800 changed lines (added plus
+    removed), stopping at a coherent boundary rather than at the limit. At least 30 lines net or one
+    test removed; below that, the cuts go in the summary as candidates and no pull request is opened.
 11. **Nothing worth doing is a result.** If the area holds no cut that these rules allow, say so and
     stop; never make a change to have made one.
 
@@ -115,15 +123,22 @@ and exit code). Say in the body which you ran.
 
 `$0` set (`/backlot-debloat hubspot`, or `/backlot-debloat hubspot tests` to fix the kind) means
 rehearsal on that area. You read GitHub freely and write to it never: no issue, label, comment,
-push or pull request. Skip the survey's choice of area, but leave the closed files alone as a live
-run would, so the rehearsal makes only cuts a live run could, and list them with the pull requests
-that close them in your summary.
+push or pull request. Skip the survey's choice of area, but leave the closed files (step 1) alone as
+a live run would, so the rehearsal makes only cuts a live run could, and list them with the pull
+requests that close them in your summary.
 
-Work on a local branch `claude/rehearsal-debloat-<area>-<MMDDHHMM>`
-cut from the HEAD of the branch you started on, which is the base for every proof and for the
-reviewers. End by printing the pull request title and body you would have opened, the issues you
-would have filed, and each reviewer's last verdict, then `git checkout` the branch you started on,
-leaving the rehearsal branch in place.
+The branch is `claude/rehearsal-debloat-<area>-<MMDDHHMM>`, cut from the HEAD of the branch you
+started on, which is the base for every proof and for the reviewers. End by printing the pull
+request title and body you would have opened, the issues you would have filed, and each reviewer's
+last verdict, then `git checkout` the branch you started on, leaving the rehearsal branch in place.
+
+## Working notes
+
+- Shell state does not survive between commands. When step 2 sets `BASE` and `REC`, print them and
+  spell their values out in every later command.
+- In zsh, `$BASE:t` is a path modifier: write `"$BASE":tests/…` when you mean a revision and a path.
+- `pyproject.toml` already passes `-q` to pytest; adding another hides the summary line with the
+  pass count. Run `uv run pytest <files>` as it is.
 
 ## 1. Survey
 
@@ -139,26 +154,53 @@ are already open, do nothing else: a maintainer has enough to read.
 
 Otherwise pick the area. A file is closed while a pull request in review — open, not a draft, not
 labelled `hold` — touches it, since a cut there would conflict with work a maintainer is about to
-merge; the run leaves closed files alone and works the rest of its area. The closed files:
+merge; the run leaves closed files alone and works the rest of its area. Each closed file, with the
+pull requests that close it:
 
 ```bash
-gh pr list -R brekkylab/backlot --state open --json isDraft,labels,files --limit 100 \
-  --jq '[.[] | select(.isDraft | not) | select([.labels[].name] | index("hold") | not) | .files[].path] | unique[]'
+gh pr list -R brekkylab/backlot --state open --json number,isDraft,labels,files --limit 100 \
+  --jq '[.[] | select(.isDraft | not) | select([.labels[].name] | index("hold") | not) | {n: .number, f: .files[].path}] | group_by(.f)[] | "\(.[0].f) \(map(.n))"'
 ```
 
 An area whose every file is closed is skipped. Of the rest, take the one whose last debloat pull
-request (its branch is `claude/debloat-<area>-<kind>`) is oldest, an area never debloated counting
+request (its branch is `claude/debloat-<area>-<MMDD>`) is oldest, an area never debloated counting
 as oldest of all; among those, the one with the most lines. A `routine-fire-payload` naming an area
 means that area; if every file of it is closed, say which pull requests close it and stop.
 
-## 2. Read the area and list candidates
+## 2. Branch and start the recordings
 
-Read the area's files whole. Then list what the rules allow, by kind:
+Live: `git fetch origin main`, then `git checkout -b claude/debloat-<area>-<MMDD> origin/main`.
+Rehearsal: `git checkout -b claude/rehearsal-debloat-<area>-<MMDDHHMM>` from where you are. Then fix
+the base and a scratch directory once for the whole run, and print both:
+
+```bash
+BASE=$(git rev-parse HEAD); REC=$(mktemp -d /tmp/debloat-XXXXXX); echo "BASE=$BASE REC=$REC"
+```
+
+Unless the kind is already known to be `prose`, record the base now, in the background, while you
+read: twice, since a `code` cut needs the second as calibration, from a worktree with its own
+environment and the script from your branch. Each recording takes two to three minutes.
+
+```bash
+git worktree add $REC/tree $BASE && cd $REC/tree && uv sync --all-extras -q \
+  && uv run python <your working tree>/scripts/invariance.py record $REC/base \
+  && uv run python <your working tree>/scripts/invariance.py record $REC/base2
+```
+
+Creating the branch at the commit you are on and returning to the starting branch at the end are the
+only checkouts in the working tree you run in; never check out another commit there, since the
+skill and the reviewers are read from it.
+
+## 3. Read the area and choose the cut
+
+Read the area's code files whole. Of its test files, read what the kind needs: all of them for
+`tests`; for `code`, the private names they import or reach into
+(`grep -nE "from backlot\.[a-z_.]+ import|[a-z_]+\._[a-z]" <files>`), which a `code` cut must keep.
+Then list what the rules allow, by kind:
 
 - **code**: functions and blocks repeated within the area or with a neutral module; helpers in two
-  places doing the same thing; branches no recording ever enters that rule 6 lets go; constants and
-  tables spelled twice. Check repeats by text first (`grep -n "def _<name>"` across `backlot/`), then
-  by reading.
+  places doing the same thing; names nothing reads (rule 6); constants and tables spelled twice.
+  Check repeats by text first (`grep -n "def _<name>"` across `backlot/`), then by reading.
 - **prose**: the same fact in two comments, a comment that restates the line below it, a docstring
   longer than its function with nothing measured in it, a doc paragraph that a generated table or
   another doc already carries, a comment narrating history (rule 8). For each paragraph, grep its
@@ -167,38 +209,25 @@ Read the area's files whole. Then list what the rules allow, by kind:
   same branch with the same answer shape, setup rebuilt test after test, helpers repeated across
   test files (`grep -hoE '^def _[a-z_]+' tests/*.py | sort | uniq -c | sort -rn`).
 
+When the base recording is done, run `uv run python scripts/invariance.py uncovered $REC/base <the
+area's code paths>`. A `code` cut stays off every line it lists (rule 2). Each listed line is also
+residue for step 7: reachable code no test sends the request for, or a test that claims more than
+it reaches.
+
 A test candidate is settled by the step-5 comparison, not by reading alone: a line only it executed
 shows up there as lost coverage, and that test is not a *subset*.
 
-For `code` and `tests`, once the base is recorded (step 5 can start now, in the background), run `invariance.py uncovered
-<base recording> <the area's code paths>`. A line no test executes is either dead code (rule 6) or a
-test that claims more than it reaches; the second is residue for step 7, not a cut.
-
-Among the kinds the survey left open, pick by a quick estimate of which holds the largest cut,
-without working the others out in full, or take the kind the rehearsal named. Write the candidate list down; the body carries what you
-left for a later run.
-
-## 3. Branch
-
-Live: `git fetch origin main`, then `git checkout -b claude/debloat-<area>-<kind> origin/main`.
-Rehearsal: `git checkout -b claude/rehearsal-debloat-<area>-<MMDDHHMM>` from where you are. Then fix the base and a scratch directory once for the whole run:
-
-```bash
-BASE=$(git rev-parse HEAD)
-REC=$(mktemp -d /tmp/debloat-XXXXXX)   # code and tests only
-```
-
-Creating the branch at the commit you are on and returning to the starting branch at the end are the
-only checkouts in the working tree you run in; never check out another commit there, since the
-skill and the reviewers are read from it. The base runs in a worktree of its own (step 5).
+Among the kinds with open files, pick by a quick estimate of which holds the largest cut, without
+working the others out in full, or take the kind the rehearsal named. If no kind reaches rule 10's
+floor, list the candidates and stop. Write the candidate list down; the body carries what you left
+for a later run.
 
 ## 4. Cut
 
-Make the cut one candidate at a time, running the area's test files after each
-(`uv run pytest <files>`, which prints its pass count; for `prose`, `tests/test_docs.py
-tests/test_skills.py`, once per few candidates): a failure is a
-behaviour you missed, so undo that candidate rather than adjusting a test to it. Commit titles are
-single declarative sentences describing the new state, with no trailers (AGENTS.md).
+Make the cut one candidate at a time, running the area's test files after each (`uv run pytest
+<files>`; for `prose`, `tests/test_docs.py tests/test_skills.py`, once per few candidates): a
+failure is a behaviour you missed, so undo that candidate rather than adjusting a test to it. Commit
+titles are single declarative sentences describing the new state, with no trailers (AGENTS.md).
 
 `uv run ruff check . && uv run ruff format --check .` and `uv run python scripts/prose_check.py`
 must pass; the latter reads only Python, so its silence says nothing about markdown. If a docstring
@@ -208,42 +237,30 @@ that run.
 
 ## 5. Prove
 
-`prose` needs no recording; skip to its line below. For `code` and `tests`, record the base in a
-throwaway worktree, with its own environment, using the script from your branch:
-
-```bash
-git worktree add $REC/tree $BASE
-(cd $REC/tree && uv sync --all-extras -q && uv run python "$OLDPWD/scripts/invariance.py" record $REC/base)
-uv run python scripts/invariance.py record $REC/head
-```
-
-A recording takes one to two minutes; start the base one in the background as soon as the branch
-exists. `record` refuses a directory that is not empty, so a second head recording after a fix goes
-to a new name (`$REC/head2`).
-
-Then by kind:
+For `code` and `tests`, record the head from your working tree:
+`uv run python scripts/invariance.py record $REC/head`. `record` refuses a directory that is not
+empty, so a second head recording after a fix goes to a new name (`$REC/head2`). Then by kind:
 
 - `prose`: `uv run python scripts/invariance.py prose $BASE`, and `uv run pytest tests/test_docs.py tests/test_skills.py`.
   Neither sees a fact disappear from prose, and for a markdown-only cut `prose` prints `invariant`
   over zero files, so the said-once map is the proof: for every sentence or comment removed, where
   the same fact is still stated (file and line at the head), or that it restated the code beside it.
   A removed fact with no row is a fact lost: put it back.
-- `code`: record the base a second time to `$REC/base2`, then
-  `uv run python scripts/invariance.py compare $REC/base $REC/head --mode code --calibration $REC/base2`.
+- `code`: `uv run python scripts/invariance.py compare $REC/base $REC/head --mode code --calibration $REC/base2`.
 - `tests`: `uv run python scripts/invariance.py compare $REC/base $REC/head --mode tests`.
 
 It must print `invariant`. A difference is a behaviour the cut changed: find which candidate, undo
-it, and prove again. Never widen the comparison to make it pass. Keep `$REC` until the reviewers pass,
-since a fix is proved against the same base recording, then `git worktree remove --force $REC/tree`
-and `rm -rf $REC`.
+it, and prove again. Never widen the comparison to make it pass. Keep `$REC` until the reviewers
+pass, since a fix is proved against the same base recording, then `git worktree remove --force
+$REC/tree` and `rm -rf $REC`.
 
 For `tests`, also write the fact map: for every test removed or merged, the reason (rule 7) and the
 test and assertion that now carry each fact it asserted. Coverage cannot see a lost assertion, so
 prove each row: make a one-line change to `backlot/` that the removed test fails on at the base, then
 run the carrier's file at the head (and the whole suite if that passes). Something must fail. Copy
-the file to `/tmp` before the change and restore it from the copy, never with `git checkout --`. A
-row with no failing head test is a fact you were about to lose: put the test back, or fold its
-assertion into the carrier.
+the file to `/tmp` before the change and restore it from the copy, never with `git checkout --`, and
+never while a recording is running. A row with no failing head test is a fact you were about to
+lose: put the test back, or fold its assertion into the carrier.
 
 ## 6. Measure
 
@@ -254,10 +271,15 @@ two lines `compare` prints, which give each run's outcome counts and wall time; 
 
 ## 7. File the residue
 
-Every bug, divergence or differing near-copy you met (rules 1 and 4) becomes its own issue now: the
-fidelity-gap template with the `fidelity` label when it is about what a vendor serves, otherwise a
-plain issue with `bug`. First line `Found while debloating <area>`. Search open issues for it first
-and comment there instead if one exists. Never add `agent`.
+Search open issues first and comment there instead when one already covers it. Never add `agent`.
+The first line of each is `Found while debloating <area>`.
+
+- A bug, a divergence, or a near-copy pair with a request the two answer differently (rules 1 and
+  4): its own issue — the fidelity-gap template with `fidelity` when it is about what a vendor
+  serves, otherwise a plain issue with `bug`.
+- The lines `uncovered` listed that a request can reach: one issue for the area, titled
+  `<area>: branches no test reaches`, no label, listing each branch with the request that would
+  reach it. These are where a later fix has no test to lean on.
 
 ## 8. Open the pull request and review
 
@@ -284,9 +306,9 @@ followed by the title and body you would have sent):
 - `subagent_type: prose-reviewer`
 
 If the Agent tool's list of agent types does not include `invariance-reviewer` (a session started
-before the file existed does not), then
-dispatch `subagent_type: general-purpose` with the prompt `Your instructions are
-.claude/agents/invariance-reviewer.md; follow them as your system prompt.` followed by the line above.
+before the file existed does not), dispatch `subagent_type: general-purpose` with the prompt `Your
+instructions are .claude/agents/invariance-reviewer.md; follow them as your system prompt.` followed
+by the line above.
 
 Treat findings as the loop's step 9 does: reproduce, then fix or rebut with evidence, prove again
 after any fix, and dispatch again in fresh contexts until both pass on the same commit. A finding
@@ -303,5 +325,5 @@ was cut in lines and tests, the proof's result, the issues filed, the pull reque
 
 ## Budget
 
-One run, one pull request. If the survey or step 2 finds nothing the rules allow, say so in one line
+One run, one pull request. If the survey or step 3 finds nothing the rules allow, say so in one line
 and stop.

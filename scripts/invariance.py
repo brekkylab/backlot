@@ -26,7 +26,8 @@ writes three things under OUT:
 Two runs of one commit differ: S3 signatures and rate-limit counters follow the clock, the Jira
 array-conversion error carries a Java identity hash, and a generated service-account key is random.
 ``--calibration`` takes a second recording of the base and stops comparing what differs between
-the two: a header's value everywhere, any other value only in the exchange it differed in.
+the two: a header's value everywhere, any other value (the length included) only in the exchange
+it differed in.
 
 ``prose`` answers for a change to comments, docstrings and markdown: each Python file that differs
 from BASE_REF parses to the same tree once docstrings are dropped.
@@ -256,7 +257,9 @@ def _noise(base: dict, calibration: dict) -> tuple[set[str], dict]:
         old, new = _view(record), _view(calibration[key])
         for part in set(old) | set(new):
             if old.get(part) != new.get(part):
-                if _header(part):
+                # A header's value varies with the clock wherever it varies at all, except the length,
+                # which follows the body and varies only where the body does.
+                if _header(part) and not part.endswith(" content-length"):
                     names.add(_header(part))
                 else:
                     parts.setdefault(key, set()).add(part)

@@ -60,9 +60,13 @@ recordings when you are done (`git worktree remove --force`).
    must carry no vendor-specific behaviour — no status code, error shape, header or wording that one
    vendor measured. Shared vendor behaviour is a `block`: the next fix to one vendor would move the
    other.
-5. **Removed code was dead.** A removed name is not exported from `backlot/__init__.py` or any module
-   `examples/` or the docs import, and nothing reaches it by string (`getattr`, a route table, an
-   entry point). Grep for the name; a hit is a `block`.
+5. **The proof covers the cut, and removed code was dead** (`code` kind). Run `uv run python
+   scripts/invariance.py uncovered /tmp/inv-rec/base <each changed file>`: a line the diff changes or
+   removes that the base recording never ran is outside what the proof sees, and is a `block`. A
+   removed name is not exported from `backlot/__init__.py` or any module `examples/` or the docs
+   import, and nothing reaches it by string (`getattr`, a route table, an entry point); grep for it,
+   and a hit is a `block`. A removed branch needs the body's reason its condition cannot hold, and
+   you check that reason against the code.
 6. **Every removed fact survives** (`tests` kind). The body maps each removed or merged test to the
    test that now asserts what it asserted. Open each surviving test and find the assertion; a fact
    asserted before and nowhere after is a `block` even when coverage held, because coverage proves a

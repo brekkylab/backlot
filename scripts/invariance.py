@@ -5,6 +5,7 @@
     python scripts/invariance.py compare BASE HEAD --mode code|tests [--calibration BASE2]
     python scripts/invariance.py prose BASE_REF     # Python changed only in comments and docstrings
     python scripts/invariance.py uncovered OUT PATH...   # lines of PATH no test executed in OUT
+    python scripts/invariance.py similar PATH...    # functions in PATH alike to one anywhere else
 
 ``record`` runs the suite in the current directory with this file loaded as a pytest plugin, and
 writes three things under OUT:
@@ -400,6 +401,48 @@ def _uncovered(run: Path, paths: list[str]) -> int:
     return 0
 
 
+def _functions(root: Path) -> list[tuple[str, int, str, str]]:
+    """Every function under ``root`` that is not a test, as (file, line, name, body without
+    docstring), skipping bodies under three lines: those repeat by accident."""
+    found = []
+    for path in sorted([root] if root.is_file() else root.rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if node.name.startswith("test_"):
+                continue
+            body = node.body
+            if isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+                body = body[1:]
+            source = "\n".join(ast.unparse(statement) for statement in body)
+            if source.count("\n") >= 2:
+                found.append((str(path), node.lineno, node.name, source))
+    return found
+
+
+def _similar(paths: list[str], threshold: float) -> int:
+    from difflib import SequenceMatcher
+
+    targets = [f for p in paths for f in _functions(Path(p))]
+    pool = _functions(Path("backlot")) + _functions(Path("tests"))
+    seen = set()
+    for file, line, name, source in targets:
+        for other_file, other_line, other_name, other in pool:
+            pair = frozenset({(file, line), (other_file, other_line)})
+            if len(pair) == 1 or pair in seen:
+                continue
+            matcher = SequenceMatcher(None, source, other, autojunk=False)
+            if matcher.real_quick_ratio() < threshold or matcher.quick_ratio() < threshold:
+                continue
+            ratio = matcher.ratio()
+            if ratio >= threshold:
+                seen.add(pair)
+                print(
+                    f"{ratio:.2f} {file}:{line} {name}  ~  {other_file}:{other_line} {other_name}"
+                )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -421,6 +464,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     unc.add_argument("run", type=Path)
     unc.add_argument("paths", nargs="+")
+    sim = sub.add_parser("similar", help="list functions in PATH alike to one anywhere else")
+    sim.add_argument("paths", nargs="+")
+    sim.add_argument("--threshold", type=float, default=0.8)
     prose = sub.add_parser("prose", help="check Python changed only in comments and docstrings")
     prose.add_argument("base_ref")
     args = parser.parse_args(argv)
@@ -428,6 +474,8 @@ def main(argv: list[str] | None = None) -> int:
         return _record(args.out, args.pytest_args)
     if args.command == "uncovered":
         return _uncovered(args.run, args.paths)
+    if args.command == "similar":
+        return _similar(args.paths, args.threshold)
     if args.command == "prose":
         return _prose(args.base_ref)
     return _compare(args.base, args.head, args.mode, args.calibration, args.limit)

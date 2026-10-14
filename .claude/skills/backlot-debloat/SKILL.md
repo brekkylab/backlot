@@ -107,7 +107,7 @@ sentence, with no signature and no session link.
 | `auth` | `backlot/auth.py`, `backlot/acl.py`, `backlot/oauth.py`, `backlot/routers/oauth.py` | `tests/test_auth.py`, `tests/test_acl.py` |
 | `surface` | `backlot/main.py`, `backlot/server.py`, `backlot/cli.py`, `backlot/config.py`, `backlot/openapi.py`, `backlot/mcp.py`, `backlot/integrations/` | `tests/test_server.py`, `tests/test_cli.py`, `tests/test_openapi.py`, `tests/test_mcp.py`, `tests/test_integrations.py`, `tests/test_llamaindex.py`, `tests/test_sdk.py`, `tests/test_cross_vendor.py` |
 | `fidelity` | `backlot/fidelity/` | `tests/test_fidelity.py` |
-| `shared-tests` | — | `tests/conftest.py`, `tests/_helpers.py`, and helpers repeated across test files |
+| `shared-tests` (`tests` only) | — | `tests/conftest.py`, `tests/_helpers.py`; a helper repeated across test files moves into `tests/_helpers.py`, so that cut needs it open |
 | `docs` (`prose` only) | — | `README.md`, `docs/*.md` except the generated `docs/supported-sources.md` |
 
 A cut may reach outside the area's files when it removes a duplicate whose other copy is in the
@@ -123,9 +123,10 @@ and exit code). Say in the body which you ran.
 
 `$0` set (`/backlot-debloat hubspot`, or `/backlot-debloat hubspot tests` to fix the kind) means
 rehearsal on that area. You read GitHub freely and write to it never: no issue, label, comment,
-push or pull request. Skip the survey's choice of area, but leave the closed files (step 1) alone as
-a live run would, so the rehearsal makes only cuts a live run could, and list them with the pull
-requests that close them in your summary.
+push or pull request. Skip the survey's choice of area, but find the closed files (step 1) first and
+leave them alone as a live run would, so the rehearsal makes only cuts a live run could; list them
+with the pull requests that close them in your summary. If every file of the area is closed, or
+every file of the kind named, say so and stop before step 2.
 
 The branch is `claude/rehearsal-debloat-<area>-<MMDDHHMM>`, cut from the HEAD of the branch you
 started on, which is the base for every proof and for the reviewers. End by printing the pull
@@ -159,8 +160,10 @@ pull requests that close it:
 
 ```bash
 gh pr list -R brekkylab/backlot --state open --json number,isDraft,labels,files --limit 100 \
-  --jq '[.[] | select(.isDraft | not) | select([.labels[].name] | index("hold") | not) | {n: .number, f: .files[].path}] | group_by(.f)[] | "\(.[0].f) \(map(.n))"'
+  --jq '[.[] | select(.isDraft | not) | select([.labels[].name] | index("hold") | not) | {n: .number, f: .files[].path}] | group_by(.f)[] | "\(first.f) \(map(.n))"'
 ```
+
+Pipe it through `grep` for an area's paths to see which of its files are closed.
 
 An area whose every file is closed is skipped. Of the rest, take the one whose last debloat pull
 request (its branch is `claude/debloat-<area>-<MMDD>`) is oldest, an area never debloated counting
@@ -177,15 +180,21 @@ the base and a scratch directory once for the whole run, and print both:
 BASE=$(git rev-parse HEAD); REC=$(mktemp -d /tmp/debloat-XXXXXX); echo "BASE=$BASE REC=$REC"
 ```
 
-Unless the kind is already known to be `prose`, record the base now, in the background, while you
-read: twice, since a `code` cut needs the second as calibration, from a worktree with its own
-environment and the script from your branch. Each recording takes two to three minutes.
+Unless the kind is known to be `prose`, record the base now, in the background, while you read,
+from a worktree with its own environment and the script from your branch; record it a second time
+unless the kind is known to be `tests`, since a `code` cut needs the second as calibration. Each
+recording takes two to three minutes.
 
 ```bash
-git worktree add $REC/tree $BASE && cd $REC/tree && uv sync --all-extras -q \
-  && uv run python <your working tree>/scripts/invariance.py record $REC/base \
-  && uv run python <your working tree>/scripts/invariance.py record $REC/base2
+git worktree add $REC/tree $BASE && cd $REC/tree && uv sync --all-extras -q && {
+  uv run python <your working tree>/scripts/invariance.py record $REC/base
+  uv run python <your working tree>/scripts/invariance.py record $REC/base2
+}
 ```
+
+`record` exits non-zero when any test fails, so the two are not chained with `&&`. A test that fails
+at the base fails at the head too and the proof still compares; name it in the summary, and file it
+if no issue has it.
 
 Creating the branch at the commit you are on and returning to the starting branch at the end are the
 only checkouts in the working tree you run in; never check out another commit there, since the
@@ -198,19 +207,22 @@ Read the area's code files whole. Of its test files, read what the kind needs: a
 (`grep -nE "from backlot\.[a-z_.]+ import|[a-z_]+\._[a-z]" <files>`), which a `code` cut must keep.
 Then list what the rules allow, by kind:
 
+Start with `uv run python scripts/invariance.py similar <the area's files>`, which lists every
+function in them whose body is at least 80% alike to one anywhere in `backlot/` or `tests/`; a pair
+across two vendors is rule 3's to judge, not a cut by default. Then:
+
 - **code**: functions and blocks repeated within the area or with a neutral module; helpers in two
   places doing the same thing; names nothing reads (rule 6); constants and tables spelled twice.
-  Check repeats by text first (`grep -n "def _<name>"` across `backlot/`), then by reading.
 - **prose**: the same fact in two comments, a comment that restates the line below it, a docstring
   longer than its function with nothing measured in it, a doc paragraph that a generated table or
   another doc already carries, a comment narrating history (rule 8). For each paragraph, grep its
   rarest three or four words across `*.md` and `backlot/`; a second hit is a candidate.
 - **tests**: tests whose assertions are a subset of another's, parametrized cases that land in the
   same branch with the same answer shape, setup rebuilt test after test, helpers repeated across
-  test files (`grep -hoE '^def _[a-z_]+' tests/*.py | sort | uniq -c | sort -rn`).
+  test files.
 
-When the base recording is done, run `uv run python scripts/invariance.py uncovered $REC/base <the
-area's code paths>`. A `code` cut stays off every line it lists (rule 2). Each listed line is also
+When the base recording is done and the area has code paths, run `uv run python
+scripts/invariance.py uncovered $REC/base <the area's code paths>`. A `code` cut stays off every line it lists (rule 2). Each listed line is also
 residue for step 7: reachable code no test sends the request for, or a test that claims more than
 it reaches.
 

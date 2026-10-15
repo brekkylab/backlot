@@ -1828,6 +1828,9 @@ def _unconverted(role_id: str) -> str:
         ("POST", "99999", "ava", "{}", 401, _NOT_ADMIN),
         ("PUT", "99999", "ava", "{}", 401, _NOT_ADMIN),
         ("DELETE", "99999", "ava", None, 401, _NOT_ADMIN),
+        # an `Accept` that admits no JSON is the 406, ahead of the id's 400 and of the 401
+        ("GET", "10002", "ava-html", None, 406, None),
+        ("GET", "abc", "ava-html", None, 406, None),
     ],
 )
 def test_jira_reads_a_role_id_as_a_long_before_the_project(
@@ -1841,6 +1844,7 @@ def test_jira_reads_a_role_id_as_a_long_before_the_project(
     headers = {
         "admin": dict(admin_h),
         "ava": {"Authorization": f"Bearer {tokens['ava@acme.com']}"},
+        "ava-html": {"Authorization": f"Bearer {tokens['ava@acme.com']}", "Accept": "text/html"},
         "none": {},
     }[caller]
     if body is not None:
@@ -1856,6 +1860,8 @@ def test_jira_reads_a_role_id_as_a_long_before_the_project(
             assert r.json()["instance"] == f"/rest/api/3/project/{key}/role/{role_id}"
     elif status == 200:
         assert r.json()["id"] == answer
+    elif status == 406:
+        assert r.headers["content-type"] == errors_atlassian.PROBLEM_JSON
     elif answer is not None:
         assert r.headers["content-type"] == "application/json;charset=UTF-8"
         assert r.content == answer

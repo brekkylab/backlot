@@ -144,7 +144,7 @@
     },
     "branchName": {
       "type": "string",
-      "description": "Suggested git branch. Default: Linear's own derivation, <assignee>/<identifier>-<title slug>."
+      "description": "Suggested git branch. Default: Linear's own derivation, <user>/<identifier>-<title slug>, where <user> is the assignee's email local part, or the caller's when no one is assigned."
     },
     "dueDate": {
       "type": "string",

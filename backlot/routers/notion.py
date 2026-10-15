@@ -101,6 +101,14 @@ class NotionList(_NLoose):
 
 
 _P_PAGINATE = [qp("start_cursor"), qp("page_size", "integer")]
+_P_FILTER_PROPERTIES = qp(
+    "filter_properties",
+    description=(
+        "A property id or name; repeat the parameter to list several. A page inside a database "
+        "comes back with only the listed properties (none when the value is unknown or empty); a "
+        "page outside a database keeps its title whatever is listed."
+    ),
+)
 _P_COMMENTS = [qp("block_id", required=True), *_P_PAGINATE]
 
 
@@ -469,6 +477,19 @@ def _page_obj(conn, row) -> dict:
     }
 
 
+def _filter_properties(page: dict, keep: list[str]) -> dict:
+    """Narrow a database row's ``properties`` to those whose id or name is in ``keep``. Measured
+    against api.notion.com (2022-06-28) on 2026-10-15: a page outside a database keeps its title
+    whatever is listed, and a request that names no ``filter_properties`` leaves every row whole."""
+    if not keep or page["parent"]["type"] != "database_id":
+        return page
+    wanted = set(keep)
+    page["properties"] = {
+        k: v for k, v in page["properties"].items() if k in wanted or v["id"] in wanted
+    }
+    return page
+
+
 def _schema_props(row) -> dict:
     """A Notion database property *schema* (on a database / data source)."""
     schema = json.loads(row["properties"]) if row["properties"] else {}
@@ -678,7 +699,11 @@ async def query_database(database_id: str, request: Request):
 # --------------------------------------------------------------------------- search
 
 
-@router.post("/search", response_model=NotionList, openapi_extra={**_B_SEARCH, **_params()})
+@router.post(
+    "/search",
+    response_model=NotionList,
+    openapi_extra={**_B_SEARCH, **_params(_P_FILTER_PROPERTIES)},
+)
 async def search(request: Request):
     caller = auth.resolve_bearer(request)
     if (refusal := _refusal(request, caller)) is not None:
@@ -720,10 +745,11 @@ async def search(request: Request):
             continue
         picked.append(r)
     window = picked[offset : offset + limit]
+    keep = request.query_params.getlist("filter_properties")
     results = [
         _database_obj(conn, r, _version(request))
         if r["subtype"] == "database"
-        else _page_obj(conn, r)
+        else _filter_properties(_page_obj(conn, r), keep)
         for r in window
     ]
     return _list_obj(results, offset, len(window), len(picked), "page_or_database")

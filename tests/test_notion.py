@@ -516,6 +516,33 @@ def test_notion_search_filter_database_only(client, notion_h):
     assert any(r["id"] == synth.notion_id("nt-tasks-db") for r in s["results"])
 
 
+@pytest.mark.parametrize(
+    "query, row_keys",
+    [
+        ("", {"title", "Status", "Priority"}),
+        ("?filter_properties=Status", {"Status"}),
+        ("?filter_properties=title", {"title"}),
+        ("?filter_properties=Status&filter_properties=Priority", {"Status", "Priority"}),
+        ("?filter_properties=nope", set()),
+        ("?filter_properties=", set()),
+    ],
+)
+def test_notion_search_filter_properties_keeps_only_the_named_row_properties(
+    client, notion_h, query, row_keys
+):
+    # The measurement is on `_filter_properties`; a database of Name, Tags and Count was the
+    # real side, so a row outside a database is the workspace page and keeps its title.
+    results = client.post(
+        f"/notion/v1/search{query}",
+        json={"query": "", "filter": {"property": "object", "value": "page"}},
+        headers=notion_h,
+    ).json()["results"]
+    row = next(r for r in results if r["id"] == synth.notion_id("nt-task-1"))
+    assert set(row["properties"]) == row_keys
+    outside = next(r for r in results if r["parent"]["type"] == "workspace")
+    assert "title" in outside["properties"]
+
+
 def test_notion_users(client, notion_h):
     me = client.get("/notion/v1/users/me", headers=notion_h).json()
     assert me["object"] == "user" and me["type"] == "bot"

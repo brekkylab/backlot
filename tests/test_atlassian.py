@@ -6233,6 +6233,7 @@ _ACCEPT_ROWS = [
             ("GET", _CQL, "admin", "\xa0, application/json", None, 160),
             ("GET", _CQL, "admin", 'application/json;x="\xa0", \x85', None, 133),
             ("GET", _CQL, "admin", 'application/json;x="\\"\xa0", \x85', None, 133),
+            ("GET", _CQL, "admin", 'application/json;x="a"\xa0', None, 160),
             (
                 "OPTIONS",
                 "/atlassian/wiki/rest/api/search",

@@ -432,6 +432,23 @@ def negative_not_allowed(name: str) -> AtlassianError:
     )
 
 
+def label_prefixes_not_converted(parts: list[str]) -> AtlassianError:
+    """`label`'s refusal of a `prefix` it cannot convert, naming every element it read
+    (``backlot.routers.atlassian._refuse_a_label_prefix`` says which). The body carries the `data`
+    object :func:`start_too_large` describes."""
+    return AtlassianError(
+        400,
+        {
+            "statusCode": 400,
+            "data": {"authorized": True, "valid": True, "errors": [], "successful": True},
+            "message": (
+                "com.atlassian.confluence.api.service.exceptions.api.BadRequestException: "
+                f"Could not convert label prefixes :[{', '.join(parts)}]"
+            ),
+        },
+    )
+
+
 def zero_limit_not_allowed() -> AtlassianError:
     """`label`'s refusal of `?limit=0`, which no other Confluence listing shares.
 

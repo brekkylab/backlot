@@ -174,14 +174,20 @@ def test_github_cursor_link_header_pages_a_listing_real_pages_by_cursor():
 
 
 def test_github_code_search_link_header_keeps_first_and_last_on_every_page():
-    """The five positions :func:`pagination.github_code_search_link_header` was measured at, which
-    are the four rules it does not share with a listing plus the one it does."""
+    """The five positions :func:`pagination.github_code_search_link_header` was measured at, and
+    the query every rel writes at page 5."""
 
     def h(page, total=45, per_page=5):
         return pg.github_code_search_link_header("http://x", {"q": "def"}, page, per_page, total)
 
     assert list(_pages(h(1)).items()) == [("next", 2), ("first", 1), ("last", 9)]
     assert list(_pages(h(5)).items()) == [("next", 6), ("prev", 4), ("first", 1), ("last", 9)]
+    assert re.findall(r"\?([^>]*)>", h(5)) == [
+        "q=def&page=6&per_page=5",
+        "q=def&page=4&per_page=5",
+        "q=def&page=1&per_page=5",
+        "q=def&page=9&per_page=5",
+    ]
     assert list(_pages(h(9)).items()) == [("prev", 8), ("first", 1), ("last", 9)]
     assert list(_pages(h(99)).items()) == [("prev", 98), ("first", 1), ("last", 9)]
     assert h(1, per_page=100) is None

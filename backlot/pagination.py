@@ -354,6 +354,10 @@ def github_code_search_link_header(
     * a space in `q` is percent-encoded in every rel, whichever way the request spelt it: on
       2026-10-13 `?q=repo:psf/requests+def+language:python` linked
       `q=repo%3Apsf%2Frequests%20def%20language%3Apython`.
+    * the query is written `q`, then `page`, then `per_page`, on every rel and whatever order the
+      request sent them in: on 2026-10-14 each of the six orders of `q=repo:psf/requests+def`,
+      `per_page=5` and `page=2` linked next as `q=repo%3Apsf%2Frequests%20def&page=3&per_page=5`,
+      with prev, first and last differing only in the page number.
 
     `/search/issues` shares none of that and pages by :func:`github_link_header`. A result set that
     fits one page carries no header, which is the one rule all three surfaces share.
@@ -370,7 +374,7 @@ def github_code_search_link_header(
         return None
 
     def link(p: int) -> str:
-        return _page_url(url_no_query, {**params, "per_page": per_page, "page": p}, quote_via=quote)
+        return _page_url(url_no_query, {**params, "page": p, "per_page": per_page}, quote_via=quote)
 
     parts = []
     if page < last_page:

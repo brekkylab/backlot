@@ -209,25 +209,30 @@ def test_atlassian_lists_only_the_containers_the_caller_can_open(tmp_path):
         # A write at a served route's path looks its key up as the caller sees it: ava's `DELETE` on
         # the issue she cannot open is its 404, on the one she can the 405 Backlot answers a write
         # real would run, and the admin's the 405 on both; a project role's write looks the project
-        # up the same way and then refuses her the 401 for not administering it
-        # (``backlot.routers.atlassian._published_answer``).
+        # up the same way, by its key or its id, and then refuses her the 401 for not administering
+        # it (``backlot.routers.atlassian._published_answer``), as the role's read does.
         admin = {"Authorization": f"Bearer {tokens['admin']}"}
         projects = {name: synth.jira_project_key(name) for name in ("payments", "secrets")}
+        ids = {name: synth.github_user_id(name) for name in ("payments", "secrets")}
         found = c.get(
             "/atlassian/rest/api/3/search/jql",
             params={"jql": f"project in ({', '.join(projects.values())})", "fields": "summary"},
             headers=admin,
         ).json()["issues"]
         issues = {i["fields"]["summary"]: i["key"] for i in found}
-        for path, ava_status in (
-            (f"issue/{issues['Gateway 502s']}", 405),
-            (f"issue/{issues['Rotation']}", 404),
-            (f"project/{projects['payments']}/role/10002", 401),
-            (f"project/{projects['secrets']}/role/10002", 404),
+        for method, path, ava_status, admin_status in (
+            ("DELETE", f"issue/{issues['Gateway 502s']}", 405, 405),
+            ("DELETE", f"issue/{issues['Rotation']}", 404, 405),
+            ("DELETE", f"project/{projects['payments']}/role/10002", 401, 405),
+            ("DELETE", f"project/{projects['secrets']}/role/10002", 404, 405),
+            ("DELETE", f"project/{ids['payments']}/role/10002", 401, 405),
+            ("DELETE", f"project/{ids['secrets']}/role/10002", 404, 405),
+            ("GET", f"project/{ids['payments']}/role/10002", 401, 200),
+            ("GET", f"project/{ids['secrets']}/role/10002", 404, 200),
         ):
-            for headers, status in ((ava, ava_status), (admin, 405)):
-                r = c.request("DELETE", f"/atlassian/rest/api/3/{path}", headers=headers)
-                assert r.status_code == status, (path, r.text)
+            for headers, status in ((ava, ava_status), (admin, admin_status)):
+                r = c.request(method, f"/atlassian/rest/api/3/{path}", headers=headers)
+                assert r.status_code == status, (method, path, r.text)
 
 
 @pytest.mark.parametrize("headers", UNRESOLVABLE)

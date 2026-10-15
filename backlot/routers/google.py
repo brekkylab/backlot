@@ -378,7 +378,9 @@ def _published_not_served() -> tuple[tuple[str, re.Pattern[str]], ...]:
     path Backlot mounts it on and each `{}` one path segment."""
     operations = []
     for source in ("gmail", "google_drive"):
-        rows = json.loads((_BASELINES / f"{source}.json").read_text())["acknowledged"]
+        rows = json.loads((_BASELINES / f"{source}.json").read_text(encoding="utf-8"))[
+            "acknowledged"
+        ]
         for row in rows:
             if row["kind"] != "missing_operation":
                 continue

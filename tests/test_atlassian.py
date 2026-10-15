@@ -208,8 +208,9 @@ def test_atlassian_lists_only_the_containers_the_caller_can_open(tmp_path):
 
         # A write at a served route's path looks its key up as the caller sees it: ava's `DELETE` on
         # the issue she cannot open is its 404, on the one she can the 405 Backlot answers a write
-        # real would run, and the admin's the 405 on both; a project role's write does the same by
-        # project (``backlot.routers.atlassian._published_answer``).
+        # real would run, and the admin's the 405 on both; a project role's write looks the project
+        # up the same way and then refuses her the 401 for not administering it
+        # (``backlot.routers.atlassian._published_answer``).
         admin = {"Authorization": f"Bearer {tokens['admin']}"}
         projects = {name: synth.jira_project_key(name) for name in ("payments", "secrets")}
         found = c.get(
@@ -218,13 +219,13 @@ def test_atlassian_lists_only_the_containers_the_caller_can_open(tmp_path):
             headers=admin,
         ).json()["issues"]
         issues = {i["fields"]["summary"]: i["key"] for i in found}
-        for path, ava_sees in (
-            (f"issue/{issues['Gateway 502s']}", True),
-            (f"issue/{issues['Rotation']}", False),
-            (f"project/{projects['payments']}/role/10002", True),
-            (f"project/{projects['secrets']}/role/10002", False),
+        for path, ava_status in (
+            (f"issue/{issues['Gateway 502s']}", 405),
+            (f"issue/{issues['Rotation']}", 404),
+            (f"project/{projects['payments']}/role/10002", 401),
+            (f"project/{projects['secrets']}/role/10002", 404),
         ):
-            for headers, status in ((ava, 405 if ava_sees else 404), (admin, 405)):
+            for headers, status in ((ava, ava_status), (admin, 405)):
                 r = c.request("DELETE", f"/atlassian/rest/api/3/{path}", headers=headers)
                 assert r.status_code == status, (path, r.text)
 
@@ -234,6 +235,7 @@ def test_atlassian_lists_only_the_containers_the_caller_can_open(tmp_path):
     "segment,kind",
     [
         pytest.param(synth.jira_project_key("payments"), "key", id="corpus-key"),
+        pytest.param(str(synth.github_user_id("payments")), "id", id="corpus-id"),
         pytest.param("NOSUCHKEY", "key", id="no-such-key"),
         pytest.param("1", "id", id="one-digit"),
         pytest.param("999999999999999999", "id", id="eighteen-digits"),
@@ -248,8 +250,9 @@ def test_jira_404s_a_project_role_an_anonymous_caller_cannot_see(client, headers
     two refusals it gives is decided by the project: on the site where the key names a project
     anonymous can see it is 401 ("You cannot edit the configuration of this project."), and on the
     site where it names nothing it is 404. Anonymous sees no Backlot project, so it is always the
-    404 here — the corpus's own project key gets the answer a key naming nothing would. The 404
-    calls the segment an id or a key by the rule `_require_project` records."""
+    404 here — the corpus's own project, by its key or its id, gets the answer a segment naming
+    nothing would. The 404 calls the segment an id or a key by the rule `_require_project`
+    records."""
     for path in (
         f"/rest/api/3/project/{segment}/role",
         f"/rest/api/3/project/{segment}/role/10002",
@@ -1697,6 +1700,7 @@ def test_jira_comment_paging_is_declared_so_a_client_can_discover_it(paged):
 # --- a project role's id: a `long` path variable, read before the project ---------------------
 
 _MISSING_ID = "Required path variable 'id' is not present."
+_NOT_ADMIN = b'{"errorMessages":["You cannot edit the configuration of this project."],"errors":{}}'
 _NO_SUCH_ROLE = b'{"errorMessages":[],"errors":{}}'
 
 
@@ -1781,16 +1785,32 @@ def _unconverted(role_id: str) -> str:
         ("POST", "abc", "admin", "{}", 400, _unconverted("abc")),
         ("PUT", "abc", "none", None, 415, "Content-Type 'null' is not supported."),
         ("DELETE", "-0x1", "none", None, 404, None),
+        # a caller who sees the project and does not administer it: the same 400s, then the 401
+        # whatever role the id names, on the reads and the writes alike
+        ("GET", "abc", "ava", None, 400, _unconverted("abc")),
+        ("GET", "%20", "ava", None, 400, _MISSING_ID),
+        ("POST", "abc", "ava", "{}", 400, _unconverted("abc")),
+        ("GET", "10002", "ava", None, 401, _NOT_ADMIN),
+        ("GET", "-1", "ava", None, 401, _NOT_ADMIN),
+        ("GET", "99999", "ava", None, 401, _NOT_ADMIN),
+        ("POST", "99999", "ava", "{}", 401, _NOT_ADMIN),
+        ("PUT", "99999", "ava", "{}", 401, _NOT_ADMIN),
+        ("DELETE", "99999", "ava", None, 401, _NOT_ADMIN),
     ],
 )
 def test_jira_reads_a_role_id_as_a_long_before_the_project(
-    client, admin_h, method, role_id, caller, body, status, answer
+    client, admin_h, tokens, method, role_id, caller, body, status, answer
 ):
     """Each row as ``backlot.routers.atlassian._role_id`` reads the id, which real answered the same
     with and without a credential; the project is one the anonymous caller cannot see and the admin
-    can, and an id the project has no role for is ``errors.atlassian.no_such_role``."""
+    and ava can, ava does not administer it (``errors.atlassian.not_a_project_admin``), and an id
+    the project has no role for is ``errors.atlassian.no_such_role``."""
     key = synth.jira_project_key("payments")
-    headers = dict(admin_h) if caller == "admin" else {}
+    headers = {
+        "admin": dict(admin_h),
+        "ava": {"Authorization": f"Bearer {tokens['ava@acme.com']}"},
+        "none": {},
+    }[caller]
     if body is not None:
         headers["Content-Type"] = "application/json"
     r = client.request(
@@ -1807,6 +1827,8 @@ def test_jira_reads_a_role_id_as_a_long_before_the_project(
     elif answer is not None:
         assert r.headers["content-type"] == "application/json;charset=UTF-8"
         assert r.content == answer
+        realm = 'OAuth realm="http%3A%2F%2Ftestserver"' if status == 401 else None
+        assert r.headers.get("www-authenticate") == realm
     else:
         assert r.json()["errorMessages"] == [f"No project could be found with key '{key}'."]
 
@@ -1820,17 +1842,28 @@ def test_jira_role_declares_its_id_as_the_integer_the_document_does(client):
 
 
 def test_jira_role_list_links_the_role_its_read_answers(client, admin_h):
-    """The list names one role, and its link is the id (``backlot.routers.atlassian._JIRA_ROLE``)
-    the role read answers 200 for, under that name and with the project group's members as its
-    actors. A function of its own because it follows a link the list emits."""
+    """The list names one role and links it by the project's id
+    (``backlot.routers.atlassian._jira_project_id``) and the role id
+    (``backlot.routers.atlassian._JIRA_ROLE``) the role read answers 200 for, in the shape
+    ``backlot.routers.atlassian.jira_project_role`` gives and with the project group's members as
+    its actors. A function of its own because it follows a link the list emits."""
     key = synth.jira_project_key("payments")
+    projects = client.get("/atlassian/rest/api/3/project/search", headers=admin_h).json()
+    (project_id,) = [p["id"] for p in projects["values"] if p["key"] == key]
     listed = client.get(f"/atlassian/rest/api/3/project/{key}/role", headers=admin_h).json()
     assert list(listed) == ["Users"]
     path = urlsplit(listed["Users"]).path
-    assert path == f"/rest/api/3/project/{key}/role/10002"
+    assert path == f"/rest/api/3/project/{project_id}/role/10002"
     role = client.get(f"/atlassian{path}", headers=admin_h).json()
+    assert list(role) == ["self", "name", "id", "description", "actors", "scope"]
+    assert role["self"] == listed["Users"]
     assert (role["id"], role["name"]) == (10002, "Users")
-    assert role["actors"]
+    assert role["description"]
+    assert role["scope"] == {"type": "PROJECT", "project": {"id": project_id}}
+    assert [actor["id"] for actor in role["actors"]] == list(
+        range(10000, 10000 + len(role["actors"]))
+    )
+    assert len(role["actors"]) > 1
     assert {actor["type"] for actor in role["actors"]} == {"atlassian-user-role-actor"}
 
 

@@ -1248,6 +1248,21 @@ def no_such_role() -> AtlassianError:
     return AtlassianError(404, {"errorMessages": [], "errors": {}}, media_type=JIRA_JSON_MEDIA_TYPE)
 
 
+def not_a_project_admin(realm: str) -> AtlassianError:
+    """Jira's 401 for a project role operation by a caller who does not administer the project: the
+    message in :func:`_jira_envelope`, 84 bytes on `application/json;charset=UTF-8`, with
+    `WWW-Authenticate: OAuth realm="<realm>"` and no `X-Frame-Options`. ``realm`` is the site,
+    percent-encoded. Measured on Jira Cloud 2026-10-15 with a credential that browses the project
+    and does not administer it, on its role list, on role ids that name a role, that name none and
+    `-1`, and on `POST`, `PUT` and `DELETE` of a role, by the project's key and by its id."""
+    return AtlassianError(
+        401,
+        _jira_envelope("You cannot edit the configuration of this project."),
+        media_type=JIRA_JSON_MEDIA_TYPE,
+        headers={"WWW-Authenticate": f'OAuth realm="{realm}"'},
+    )
+
+
 def no_endpoint(path: str, method: str) -> AtlassianError:
     """Jira's 404 for a path it mounts no endpoint at, in the RFC 7807 shape its other refusals use.
 

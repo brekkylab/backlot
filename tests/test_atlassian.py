@@ -1846,7 +1846,8 @@ def test_jira_role_list_links_the_role_its_read_answers(client, admin_h):
     (``backlot.routers.atlassian._jira_project_id``) and the role id
     (``backlot.routers.atlassian._JIRA_ROLE``) the role read answers 200 for, in the shape
     ``backlot.routers.atlassian.jira_project_role`` gives and with the project group's members as
-    its actors. A function of its own because it follows a link the list emits."""
+    its actors; an id no project has is the project's 404. A function of its own because it follows
+    a link the list emits."""
     key = synth.jira_project_key("payments")
     projects = client.get("/atlassian/rest/api/3/project/search", headers=admin_h).json()
     (project_id,) = [p["id"] for p in projects["values"] if p["key"] == key]
@@ -1860,11 +1861,16 @@ def test_jira_role_list_links_the_role_its_read_answers(client, admin_h):
     assert (role["id"], role["name"]) == (10002, "Users")
     assert role["description"]
     assert role["scope"] == {"type": "PROJECT", "project": {"id": project_id}}
-    assert [actor["id"] for actor in role["actors"]] == list(
-        range(10000, 10000 + len(role["actors"]))
+    actors = role["actors"]
+    assert [actor["id"] for actor in actors] == list(range(10000, 10000 + len(actors)))
+    assert len(actors) > 1
+    assert {actor["type"] for actor in actors} == {"atlassian-user-role-actor"}
+    other = str(int(project_id) + 1)
+    r = client.get(f"/atlassian/rest/api/3/project/{other}/role", headers=admin_h)
+    assert (r.status_code, r.json()["errorMessages"]) == (
+        404,
+        [f"No project could be found with id '{other}'."],
     )
-    assert len(role["actors"]) > 1
-    assert {actor["type"] for actor in role["actors"]} == {"atlassian-user-role-actor"}
 
 
 # --- how a query parameter is READ: conversion, range, repetition -------------------------

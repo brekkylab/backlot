@@ -576,8 +576,7 @@ async def jira_project_role(
     container = _require_project_admin(request, conn, key)
     if role != _JIRA_ROLE:
         raise errors_atlassian.no_such_role()
-    c = store.get_container(conn, "jira", container)
-    members = store.group_members(conn, c["group_id"]) if c and c["group_id"] else []
+    members = store.group_members(conn, store.get_container(conn, "jira", container)["group_id"])
     actors = [
         {
             "id": 10000 + n,

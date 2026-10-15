@@ -524,6 +524,34 @@ def _resolve_relative_dates(ops: dict) -> dict:
     return ops
 
 
+# What `_gmail_address_match` reads: a word is a run of letters and digits in any script, and a
+# value shaped like one address is compared with each address the header holds.
+_GMAIL_ADDRESS_WORD = re.compile(r"[^\W_]+")
+_GMAIL_ONE_ADDRESS = re.compile(r"[^@\s]+@[^@\s]+")
+_GMAIL_ADDRESS = re.compile(r"[\w.+'-]+@[\w-]+(?:\.[\w-]+)+")
+
+
+def _gmail_address_match(header: str | None, value: str) -> bool:
+    """Whether a `Cc` or `Bcc` header answers a `cc:` or `bcc:` value as Gmail answers it, in any
+    case. A value shaped like one address matches an address in the header exactly: `lena@acme.com`
+    does, `lena@acme` names no address and matches nothing. Any other value matches when its words
+    come one after another among the header's words, display names included: `lena`, `acme`,
+    `acme.com`, `@acme.com` and `lena@` match `Lena Park <lena@acme.com>`, and so does `park`,
+    where `len`, `ena`, `par` and `com.acme` do not.
+
+    The maintainer measured a Workspace mailbox of 580 messages on 2026-10-14: 62 searches on `cc:`, `bcc:`,
+    `to:` and `from:`, compared with the headers of every message, of which 61 match this rule; the
+    other, `cc:<a local part>+x`, reads `+x` as a search term of its own."""
+    header = (header or "").lower()
+    value = value.lower()
+    if _GMAIL_ONE_ADDRESS.fullmatch(value):
+        return value in _GMAIL_ADDRESS.findall(header)
+    words, have = _GMAIL_ADDRESS_WORD.findall(value), _GMAIL_ADDRESS_WORD.findall(header)
+    if not words:
+        return False
+    return any(have[i : i + len(words)] == words for i in range(len(have) - len(words) + 1))
+
+
 def _gmail_op_match(row, ops: dict) -> bool:
     for v in ops.get("from", []):
         if v.lower() not in (row["author_email"] or "").lower():
@@ -531,11 +559,9 @@ def _gmail_op_match(row, ops: dict) -> bool:
     for v in ops.get("to", []):
         if v.lower() not in (row["to_addr"] or "").lower():
             return False
-    # The maintainer measured Gmail on 2026-10-09: cc/bcc match header addresses,
-    # including partial addresses, just as to does. Missing headers cannot match.
     for key in ("cc", "bcc"):
         for v in ops.get(key, []):
-            if v.lower() not in (row[key] or "").lower():
+            if not _gmail_address_match(row[key], v):
                 return False
     for v in ops.get("subject", []):
         if v.lower() not in (row["title"] or "").lower():

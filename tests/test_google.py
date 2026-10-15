@@ -8746,14 +8746,31 @@ def test_gmail_size_estimate_matches_raw_bytes_in_every_format(tmp_path, title, 
         ("cc:nobody", []),
         ("bcc:me", ["lunch"]),
         ("cc:me", ["plan"]),
+        # a word, never part of one, and an address only whole
+        ("cc:len", []),
+        ("cc:ena", []),
+        ("cc:acme", ["plan"]),
+        ("cc:com", ["plan"]),
+        ("cc:com.acme", []),
+        ("cc:@acme.com", ["plan"]),
+        ("cc:lena@", ["plan"]),
+        ("cc:lena@acme", []),
+        ("cc:park", ["plan"]),
+        ("cc:par", []),
+        ('cc:"lena park"', ["plan"]),
+        ("bcc:\uc5d0\ubc14", ["lunch"]),
     ],
 )
 def test_gmail_cc_bcc_searches_address_headers(tmp_path, surface, query, expected):
-    # The maintainer measurement recorded beside _gmail_op_match covers cc/bcc
-    # address searches, including partial addresses, rather than body-text tokens.
+    """The rule `_gmail_address_match` records, on both listings: a message whose body or subject
+    names the address is not a match."""
     records = [
-        {"doc_id": "plan", "title": "rollout plan", "cc": "lena@acme.com, ava@acme.com"},
-        {"doc_id": "lunch", "title": "lunch", "bcc": "ava@acme.com"},
+        {
+            "doc_id": "plan",
+            "title": "rollout plan",
+            "cc": "Lena Park <lena@acme.com>, ava@acme.com",
+        },
+        {"doc_id": "lunch", "title": "lunch", "bcc": "\uc5d0\ubc14 <ava@acme.com>"},
         {"doc_id": "decoy", "title": "cc lena bcc ava", "content": "lena ava"},
     ]
     settings = tiny_corpus(
@@ -8784,3 +8801,13 @@ def test_gmail_cc_bcc_searches_address_headers(tmp_path, surface, query, expecte
     assert {r["id"] for r in response.json().get(surface, [])} == {
         served_id("gmail", doc_id) for doc_id in expected
     }
+
+
+@pytest.mark.parametrize("header", [None, "", "Lena Park <lena@acme.com>"])
+@pytest.mark.parametrize("value", [".", "@", "_"])
+def test_gmail_address_match_requires_search_words(header, value):
+    # A tokenless value cannot find a word sequence, including in a missing header.
+    # This is a local matcher invariant, not a measurement of Gmail query parsing.
+    from backlot.routers.google import _gmail_address_match
+
+    assert not _gmail_address_match(header, value)

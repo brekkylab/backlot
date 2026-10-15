@@ -3,7 +3,7 @@
   "endpoints": [
     "https://api.linear.app/graphql"
   ],
-  "measured": "2026-10-14",
+  "measured": "2026-10-15",
   "root": {
     "query": "Query"
   },
@@ -7036,6 +7036,13 @@
         },
         "ledInitiativeCount": {
           "status": "implemented"
+        },
+        "loops": {
+          "status": "missing",
+          "type": "WorkflowDefinitionConnection!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Backlot's Linear schema carries no `WorkflowDefinition` type, and `Favorite.workflowDefinition` is also a recorded gap. Measured against api.linear.app on 2026-10-15, `teams(first:1){nodes{loops(first:2){nodes{id} pageInfo{hasNextPage}}}}` answers an empty page, `{\"nodes\":[],\"pageInfo\":{\"hasNextPage\":false}}` in the workspace measured, and the corpus carries no workflow-definition records to serve."
         },
         "markedAsDuplicateWorkflowState": {
           "status": "implemented"

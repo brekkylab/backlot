@@ -298,17 +298,19 @@ are the GraphQL POSTs at `/fireflies/graphql` and `/linear/graphql`, which their
 covers — introspection, not a path map, so there is no mount to say so. Walking `app.routes`
 instead was ruled out for `gen_docs.py`, and the same reasoning holds here.
 
-Served, not declared: a `HEAD` under `/github`, `/atlassian`, `/notion`, `/health` or `/_meta` is
-answered as the `GET` with the body left off
+Served, not declared: a `HEAD` under `/github`, `/atlassian`, `/notion`, `/drive/v3`, `/gmail/v1`,
+`/health` or `/_meta` is answered as the `GET` with the body left off
 (`backlot.main.answer_head_as_the_get_without_its_body`), and no `head` operation is written for it,
-because real's own description declares none either. Real GitHub, both Atlassian products and Notion
-answer a `HEAD` that way on every route measured, so what can diverge here is whether the method is
-served, not whether it is documented. But a path diff reads methods off the two documents, and
-neither mentions this one, so nothing here would catch it going away. The middleware's prefix tuple
-is the record of which vendors it covers; a vendor joins it once its own `HEAD` is measured. What
-the `HEAD` declares about the body's length is a second such gap: which Atlassian answers declare
-it is `backlot.errors.atlassian.head_content_length`'s to say, and `tests/test_atlassian.py` is the
-record.
+because real's own description declares none either. Each vendor prefix among those answers a
+`HEAD` that way on every route measured, so what can diverge here is whether the method is served,
+not whether it is documented. But a path diff reads methods off the two documents, and neither
+mentions this one, so nothing here would catch it going away. The middleware's prefix tuple is the
+record of which vendors it covers; a vendor joins it once its own `HEAD` is measured. On the three
+Google editor families a `HEAD` is their host's empty `text/html` 400 instead
+(`backlot.errors.google.head_refusal`). What the `HEAD` declares about the body's length is a second
+such gap: which Atlassian and Google answers declare it is
+`backlot.errors.atlassian.head_content_length`'s and `backlot.errors.google.head_content_length`'s
+to say, and `tests/test_atlassian.py` and `tests/test_google.py` are the record.
 
 An `OPTIONS` is a third. Jira answers a caller it can name 200 with the methods that route takes,
 and Confluence answers a JSON, wildcard or absent `Accept` with a 404 on every route but `search`,

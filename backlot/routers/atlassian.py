@@ -836,19 +836,26 @@ async def jira_issue_comments(key: str, request: Request):
 @router.get("/rest/api/3/issueLinkType")
 async def jira_link_types(request: Request):
     # No credential check: real Jira answers this to an anonymous caller (measured 2026-09-04).
-    return {
+    # The four default names, IDs and self links were measured on one Jira Cloud tenant
+    # on 2026-10-09; this mirrors that default set, not tenant-customized link types.
+    site = _site(request)
+    types = {
         "issueLinkTypes": [
             {"id": "10000", "name": "Blocks", "inward": "is blocked by", "outward": "blocks"},
-            {"id": "10001", "name": "Relates", "inward": "relates to", "outward": "relates to"},
+            {"id": "10001", "name": "Cloners", "inward": "is cloned by", "outward": "clones"},
             {
                 "id": "10002",
                 "name": "Duplicate",
                 "inward": "is duplicated by",
                 "outward": "duplicates",
             },
-            {"id": "10003", "name": "Cloners", "inward": "is cloned by", "outward": "clones"},
+            {"id": "10003", "name": "Relates", "inward": "relates to", "outward": "relates to"},
         ]
     }
+
+    for item in types["issueLinkTypes"]:
+        item["self"] = f"{site}/rest/api/3/issueLinkType/{item['id']}"
+    return types
 
 
 # The standard system fields, used by clients (e.g. mcp-atlassian) for field/epic discovery.

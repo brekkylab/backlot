@@ -4947,3 +4947,26 @@ def test_confluence_search_carries_the_cache_pair_where_real_does(
         assert r.headers["expires"] == "Thu, 01 Jan 1970 00:00:00 GMT"
     else:
         assert "cache-control" not in r.headers and "expires" not in r.headers
+
+
+@pytest.mark.parametrize("headers", [{}, FAILED_PAIR, {"Host": "jira.example.test"}])
+def test_jira_link_types_match_measured_metadata(client, headers):
+    """The default four types and self links measured beside `jira_link_types`."""
+    response = client.get("/atlassian/rest/api/3/issueLinkType", headers=headers)
+    assert response.status_code == 200
+    types = response.json()["issueLinkTypes"]
+    assert [(item["id"], item["name"]) for item in types] == [
+        ("10000", "Blocks"),
+        ("10001", "Cloners"),
+        ("10002", "Duplicate"),
+        ("10003", "Relates"),
+    ]
+    for item in types:
+        assert set(item) == {"id", "name", "inward", "outward", "self"}
+        assert (
+            item["self"]
+            == "http://"
+            + headers.get("Host", "testserver")
+            + "/rest/api/3/issueLinkType/"
+            + item["id"]
+        )

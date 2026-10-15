@@ -8985,35 +8985,46 @@ def test_gmail_size_estimate_matches_raw_bytes_in_every_format(tmp_path, title, 
 
 @pytest.mark.parametrize("surface", ["messages", "threads"])
 @pytest.mark.parametrize(
-    "query, expected",
+    "caller, query, expected",
     [
-        ("cc:lena", ["plan"]),
-        ("cc:LENA@ACME.COM", ["plan"]),
-        ('cc:"lena@acme.com" rollout', ["plan"]),
-        ("bcc:ava", ["lunch"]),
-        ("cc:acme.com", ["plan"]),
-        ("cc:lena bcc:ava", []),
-        ("cc:nobody", []),
-        ("bcc:me", ["lunch"]),
-        ("cc:me", ["plan"]),
+        ("ava", "cc:lena", ["plan"]),
+        ("ava", "cc:LENA", ["plan"]),
+        ("ava", "cc:LENA@ACME.COM", ["plan"]),
+        ("ava", 'cc:"lena@acme.com" rollout', ["plan"]),
+        ("ava", "bcc:ava", ["lunch"]),
+        ("ava", "cc:acme.com", ["plan"]),
+        ("ava", "cc:lena bcc:ava", []),
+        ("ava", "cc:nobody", []),
+        ("ava", "bcc:me", ["lunch"]),
+        ("ava", "cc:me", ["plan"]),
+        ("admin", "cc:me", []),
         # a word, never part of one, and an address only whole
-        ("cc:len", []),
-        ("cc:ena", []),
-        ("cc:acme", ["plan"]),
-        ("cc:com", ["plan"]),
-        ("cc:com.acme", []),
-        ("cc:@acme.com", ["plan"]),
-        ("cc:lena@", ["plan"]),
-        ("cc:lena@acme", []),
-        ("cc:park", ["plan"]),
-        ("cc:par", []),
-        ('cc:"lena park"', ["plan"]),
-        ("bcc:\uc5d0\ubc14", ["lunch"]),
+        ("ava", "cc:len", []),
+        ("ava", "cc:ena", []),
+        ("ava", "cc:acme", ["plan"]),
+        ("ava", "cc:com", ["plan"]),
+        ("ava", "cc:com.acme", []),
+        ("ava", "cc:@acme.com", ["plan"]),
+        ("ava", "cc:lena@", ["plan"]),
+        ("ava", "cc:lena@acme", []),
+        ("ava", "cc:park", ["plan"]),
+        ("ava", "cc:par", []),
+        ("ava", 'cc:"lena park"', ["plan"]),
+        ("ava", "bcc:\uc5d0\ubc14", ["lunch"]),
+        ("ava", "cc:ops_team", ["standup"]),
+        ("ava", "cc:ops", []),
+        ("ava", "cc:_", []),
+        ("ava", "cc:&", []),
+        # no word at all: the operator is ignored
+        ("ava", "cc:.", ["plan", "lunch", "decoy", "standup"]),
+        ("ava", "cc:@", ["plan", "lunch", "decoy", "standup"]),
+        ("ava", 'bcc:""', ["plan", "lunch", "decoy", "standup"]),
     ],
 )
-def test_gmail_cc_bcc_searches_address_headers(tmp_path, surface, query, expected):
+def test_gmail_cc_bcc_searches_address_headers(tmp_path, surface, caller, query, expected):
     """The rule `_gmail_address_match` records, on both listings: a message whose body or subject
-    names the address is not a match."""
+    names the address is not a match. `me` is the caller's address, and for the admin token, which
+    has no mailbox of its own, the address `_service_email` gives."""
     records = [
         {
             "doc_id": "plan",
@@ -9022,6 +9033,7 @@ def test_gmail_cc_bcc_searches_address_headers(tmp_path, surface, query, expecte
         },
         {"doc_id": "lunch", "title": "lunch", "bcc": "\uc5d0\ubc14 <ava@acme.com>"},
         {"doc_id": "decoy", "title": "cc lena bcc ava", "content": "lena ava"},
+        {"doc_id": "standup", "title": "standup", "cc": "ops_team@corp.example, me@corp.example"},
     ]
     settings = tiny_corpus(
         tmp_path,
@@ -9040,7 +9052,8 @@ def test_gmail_cc_bcc_searches_address_headers(tmp_path, surface, query, expecte
             for r in records
         ],
     )
-    token = tok(yaml.safe_load(settings.tokens_path.read_text()), "ava@acme.com")
+    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    token = tokens["admin_token"] if caller == "admin" else tok(tokens, "ava@acme.com")
     with client_for(settings, reload=True) as c:
         response = c.get(
             f"/gmail/v1/users/me/{surface}",
@@ -9051,13 +9064,3 @@ def test_gmail_cc_bcc_searches_address_headers(tmp_path, surface, query, expecte
     assert {r["id"] for r in response.json().get(surface, [])} == {
         served_id("gmail", doc_id) for doc_id in expected
     }
-
-
-@pytest.mark.parametrize("header", [None, "", "Lena Park <lena@acme.com>"])
-@pytest.mark.parametrize("value", [".", "@", "_"])
-def test_gmail_address_match_requires_search_words(header, value):
-    # A tokenless value cannot find a word sequence, including in a missing header.
-    # This is a local matcher invariant, not a measurement of Gmail query parsing.
-    from backlot.routers.google import _gmail_address_match
-
-    assert not _gmail_address_match(header, value)

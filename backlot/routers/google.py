@@ -666,9 +666,9 @@ def _resolve_relative_dates(ops: dict) -> dict:
     return ops
 
 
-# What `_gmail_address_match` reads: a word is a run of letters and digits in any script, and a
-# value shaped like one address is compared with each address the header holds.
-_GMAIL_ADDRESS_WORD = re.compile(r"[^\W_]+")
+# What `_gmail_address_match` reads: a word is a run of letters, digits, `_` and `&` in any
+# script, and a value shaped like one address is compared with each address the header holds.
+_GMAIL_ADDRESS_WORD = re.compile(r"[\w&]+")
 _GMAIL_ONE_ADDRESS = re.compile(r"[^@\s]+@[^@\s]+")
 _GMAIL_ADDRESS = re.compile(r"[\w.+'-]+@[\w-]+(?:\.[\w-]+)+")
 
@@ -679,18 +679,22 @@ def _gmail_address_match(header: str | None, value: str) -> bool:
     does, `lena@acme` names no address and matches nothing. Any other value matches when its words
     come one after another among the header's words, display names included: `lena`, `acme`,
     `acme.com`, `@acme.com` and `lena@` match `Lena Park <lena@acme.com>`, and so does `park`,
-    where `len`, `ena`, `par` and `com.acme` do not.
+    where `len`, `ena`, `par` and `com.acme` do not. `_` joins the characters around it into one
+    word, so `ops` does not match `ops_team@corp.example`, and `&` counts as a word character too,
+    where the rest of ASCII punctuation does not. A value with no word in it, such as `.`, `@` or
+    `""`, is ignored and matches every message, a message without the header included.
 
-    The maintainer measured a Workspace mailbox of 580 messages on 2026-10-14: 62 searches on `cc:`, `bcc:`,
-    `to:` and `from:`, compared with the headers of every message, of which 61 match this rule; the
-    other, `cc:<a local part>+x`, reads `+x` as a search term of its own."""
+    Measured on a Workspace mailbox of 595 messages on 2026-10-15: 113 searches on `cc:` and
+    `bcc:`, compared with the headers of every message, all match this rule, and of the 32 ASCII
+    punctuation marks sent alone as a `cc:` value, `_` and `&` match nothing and the other 30 match
+    every message. On 2026-10-14, `cc:<a local part>+x` read `+x` as a search term of its own."""
     header = (header or "").lower()
     value = value.lower()
     if _GMAIL_ONE_ADDRESS.fullmatch(value):
         return value in _GMAIL_ADDRESS.findall(header)
     words, have = _GMAIL_ADDRESS_WORD.findall(value), _GMAIL_ADDRESS_WORD.findall(header)
     if not words:
-        return False
+        return True
     return any(have[i : i + len(words)] == words for i in range(len(have) - len(words) + 1))
 
 

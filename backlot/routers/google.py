@@ -2724,9 +2724,11 @@ def _editor_doc(request: Request, file_id: str, *, expect: str):
 
 # `documents.get`'s two enums, names in number order. Measured 2026-10-09: `suggestionsViewMode`
 # reads `0` through `3`, `+1` and `01` (the value numbered 1) and a name in any ASCII case, and
-# refuses `4`, `-1`, `1.0`, a padded `" 1"`, empty and `NOPE`. `commentsViewMode` reads its four
-# names and refuses empty and `NOPE`. `includeTabsContent` is the boolean `_sheets_bool_value`
-# reads. A value that cannot be read is a 400 before the document is looked up.
+# refuses `4`, `-1`, `1.0`, a padded `" 1"`, empty and `NOPE`. `commentsViewMode` reads the same
+# way (2026-10-14: `3`, `+1` and `comments_view_mode_omitted` read, `4` and `-1` refused).
+# `includeTabsContent` is the boolean `_sheets_bool_value` reads (2026-10-14: `no`, `n`, `y`, `T`
+# and `F` read, `on`, `off`, `2` and `tru` refused). A value that cannot be read is a 400 before
+# the document is looked up.
 _DOCS_VIEW = "type.googleapis.com/google.apps.docs.v1"
 _DOCS_SUGGESTIONS_VIEW = protojson.Enum(
     f"{_DOCS_VIEW}.SuggestionsViewMode",
@@ -2753,7 +2755,8 @@ async def docs_get(document_id: str, request: Request):
     """The document as Docs structural elements: one ``paragraph`` per line of the stored text."""
     # The credential, then the typed values, then the lookup -- `_typed_query` records the order.
     _require(request)
-    # Validated and then unused: a value that is read does not change this body.
+    # Validated and then unused: the body is the same whatever a value that is read selects, where
+    # real's changes with it.
     _typed_query(
         request,
         {

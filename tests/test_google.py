@@ -4644,22 +4644,39 @@ def _docs_query_rows():
     ]
     rows += [
         ([("includeTabsContent", value)], None)
-        for value in ("true", "TRUE", "True", "1", "t", "yes", "false", "0", "f")
+        for value in ("true", "TRUE", "True", "1", "t", "yes", "false", "0", "f", "no", "n", "y")
     ]
     rows += [
         (
             [("includeTabsContent", value)],
             _docs_invalid("include_tabs_content", "TYPE_BOOL", value),
         )
-        for value in ("", "NOPE", " true")
+        for value in ("", "NOPE", " true", "on", "off", "2")
     ]
-    rows += [([("commentsViewMode", name)], None) for name in comments]
+    # Real reads a comments view only beside the tabs content, and `COMMENTS_VIEW_MODE_INCLUDED`
+    # only beside inline suggestions; without them it refuses the combination after the lookup.
+    tabs = [("includeTabsContent", "true")]
+    rows += [([("commentsViewMode", name), *tabs], None) for name in comments[:3]]
+    rows += [
+        ([("commentsViewMode", value), *tabs], None)
+        for value in ("2", "+1", "comments_view_mode_omitted")
+    ]
+    rows += [
+        (
+            [
+                ("commentsViewMode", comments[3]),
+                *tabs,
+                ("suggestionsViewMode", "SUGGESTIONS_INLINE"),
+            ],
+            None,
+        )
+    ]
     rows += [
         (
             [("commentsViewMode", value)],
             _docs_invalid("comments_view_mode", _DOCS_COMMENTS, value),
         )
-        for value in ("", "NOPE")
+        for value in ("", "NOPE", "4", "-1")
     ]
     return rows
 
@@ -4707,7 +4724,7 @@ def test_documents_get_reads_a_query_value_real_reads_and_refuses_one_it_cannot(
 ):
     """The spellings `docs_get` records. A repeat holding a refused value is that value's 400
     whichever end it is at; two values that are read are served. At `$.xgafv=1` the refusal's
-    `errors` entry is `reason: invalid` and carries no `domain`."""
+    `errors` entry is the one `backlot.errors.google.invalid_field_value` records."""
     headers = {"Authorization": f"Bearer {tokens_yaml['admin_token']}"}
     r = client.get(f"/docs/v1/documents/{document_id}?{urlencode(query)}", headers=headers)
     if refusal is None:
@@ -4996,6 +5013,12 @@ def test_editor_apis_distinguish_hidden_type_permission_and_missing(tmp_path):
         (f"/docs/v1/documents/{own_doc}", 200, None),
         (f"/sheets/v4/spreadsheets/{sheet}", 403, permission),
         (f"/docs/v1/documents/{doc}", 403, permission),
+        (
+            f"/docs/v1/documents/{doc}?suggestionsViewMode=NOPE",
+            400,
+            {"error": _docs_invalid("suggestions_view_mode", _DOCS_SUGGESTIONS, "NOPE")},
+        ),
+        (f"/docs/v1/documents/{own_doc}?suggestionsViewMode=SUGGESTIONS_INLINE", 200, None),
         (f"/sheets/v4/spreadsheets/{xlsx}", 400, office),
         (f"/docs/v1/documents/{docx}", 400, office),
         (f"/sheets/v4/spreadsheets/{pdf}", 400, invalid),

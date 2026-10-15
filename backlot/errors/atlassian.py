@@ -24,13 +24,17 @@ import codecs
 import hashlib
 import html
 import json
+import math
 import re
+import struct
 from pathlib import Path
 from typing import NamedTuple
 from urllib.parse import unquote
 from xml.sax.saxutils import escape
 
 from fastapi import HTTPException, Request, Response
+
+from backlot import java_timsort
 
 PREFIX = "/atlassian"
 WIKI = f"{PREFIX}/wiki"
@@ -546,34 +550,85 @@ def _split_parameters(text: str) -> list[str]:
     return parameters
 
 
-def _parse_media_type(value: str, *, charset_in_any_case: bool = True) -> str | None:
-    """``value`` as Spring's `MimeTypeUtils.parseMimeType` reads it, `type/subtype;name=value`, or
-    None where it cannot read it; the type is split off at the first `;`, the parameters at every
-    `;` outside double quotes. A parameter named `charset` must name a charset Java knows
-    (:func:`_java_charset`), and so must one named so in another case where ``charset_in_any_case``:
-    Jira refuses `Charset=bogus`, where Confluence's Spring services read it as no charset at all
-    (an `Accept`, 2026-10-13)."""
+def _spring_parameters(listed: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """The parameters Spring's `MimeType` keeps of those ``listed``: first one per name as sent,
+    with its last value where the name first stood (a `LinkedHashMap`), then one per name in any
+    case, under the spelling put last and with its value (a `LinkedCaseInsensitiveMap`), so
+    `q=0.5;Q=2;q=0.5` keeps `Q=2`."""
+    as_sent: dict[str, str] = {}
+    for name, value in listed:
+        as_sent[name] = value
+    kept: dict[str, str] = {}
+    spelled: dict[str, str] = {}
+    for name, value in as_sent.items():
+        before = spelled.get(name.lower())
+        if before is not None and before != name:
+            del kept[before]
+        spelled[name.lower()] = name
+        kept[name] = value
+    return list(kept.items())
+
+
+def _spring_media_type(
+    value: str, *, charset_in_any_case: bool
+) -> tuple[str, str, list[tuple[str, str]]] | None:
+    """``value`` as Spring's `MediaType.parseMediaType` reads it, `(type, subtype, parameters)` with
+    the parameters it keeps (:func:`_spring_parameters`), or None where it cannot read it: the type
+    is split off at the first `;`, the parameters at every `;` outside double quotes. Measured as
+    an `Accept` member and as a `Content-Type` alike.
+
+    Java's `String.trim` takes off only what is at or below a space, so U+0085 or U+00A0 beside a
+    type or a parameter is not a token: U+00A0 in front of `application/json` or after
+    `application/json;q=0.5` was a 406 on `serverInfo` and `space`, 2026-10-16. A charset is one
+    Java's registry names (:func:`_java_charset`). Confluence's Spring services look up a `charset`
+    named so in that case only, the last value of it as sent (`charset=bogus;charset=utf-8` is read,
+    and `charset=bogus;Charset=utf-8` is not); Jira, ``charset_in_any_case``, looks up the `charset`
+    kept, in any case (`Charset=bogus;charset=utf-8` and `charset=bogus;Charset=utf-8` are read,
+    `charset=utf-8;Charset=bogus` is not), 2026-10-16. A `q` is checked where it is kept as `q` and
+    must be one :func:`_spring_quality` reads: `q=2;q=0.5` is read and `q=0.5;q=2` is not
+    (2026-10-13), and `q=Infinity;Q=0.5` is read, where the `Q` is what is kept (both products,
+    2026-10-16).
+    """
     full, _, rest = value.partition(";")
-    full = full.strip()
+    full = full.strip(_JAVA_TRIMMED)
     if full == "*":
         full = "*/*"
     kind, _, subtype = full.partition("/")
     if not (_TOKEN.fullmatch(kind) and _TOKEN.fullmatch(subtype)) or (kind == "*" != subtype):
         return None
-    parsed = f"{kind.lower()}/{subtype.lower()}"
+    listed = []
     for parameter in _split_parameters(rest):
-        name, eq, given = parameter.strip().partition("=")
-        if not eq:
-            continue
-        name, given = name.strip(), given.strip()
+        name, eq, given = parameter.strip(_JAVA_TRIMMED).partition("=")
+        if eq:
+            listed.append((name.strip(_JAVA_TRIMMED), given.strip(_JAVA_TRIMMED)))
+    as_sent = dict(listed)
+    for name, given in as_sent.items():
         is_quoted = len(given) >= 2 and given[0] == given[-1] and given[0] in "\"'"
-        if not _TOKEN.fullmatch(name) or not (is_quoted or _TOKEN.fullmatch(given)):
+        if not (_TOKEN.fullmatch(name) and given):
             return None
-        is_charset = name == "charset" or (charset_in_any_case and name.lower() == "charset")
-        if is_charset and not _java_charset(given[1:-1] if is_quoted else given):
+        if not (is_quoted or name == "charset" or _TOKEN.fullmatch(given)):
             return None
-        parsed += f";{name}={given}"
-    return parsed
+        if name == "charset" and not charset_in_any_case and not _java_charset(_unquoted(given)):
+            return None
+    parameters = _spring_parameters(listed)
+    for name, given in parameters:
+        if name == "q" and not _spring_quality(given):
+            return None
+        is_charset = charset_in_any_case and name.lower() == "charset"
+        if is_charset and not _java_charset(_unquoted(given)):
+            return None
+    return kind.lower(), subtype.lower(), parameters
+
+
+def _parse_media_type(value: str, *, charset_in_any_case: bool = True) -> str | None:
+    """``value`` as Spring reads it (:func:`_spring_media_type`), `type/subtype;name=value` with
+    the parameters it keeps, or None where it cannot read it: `application/xml;x=1;X=2` is
+    `application/xml;X=2` in the 415 of each product, 2026-10-16."""
+    parsed = _spring_media_type(value, charset_in_any_case=charset_in_any_case)
+    if parsed is None:
+        return None
+    kind, subtype, parameters = parsed
+    return f"{kind}/{subtype}" + "".join(f";{name}={given}" for name, given in parameters)
 
 
 def _takes(consumes: tuple[str, ...], media_type: str) -> bool:
@@ -704,7 +759,8 @@ def refuse_a_confluence_media_type(headers, consumes: tuple[str, ...]) -> Atlass
 #: The one `Accept` holding a member Jira cannot read that it reads all the same, as
 #: `application/json`, byte for byte but for trailing whitespace: measured 2026-10-13 on
 #: `serverInfo` and its 401, where the same value respelled (upper-cased, `q=0.90`, `Q=0.9`, a space
-#: after a separator, its members reordered, `text/plain` in front) was unreadable.
+#: after a separator, its members reordered, `text/plain` in front) was unreadable, and so was it
+#: with U+00A0 in front of it or after it or U+0085 after it (2026-10-16).
 _JIRA_READS_AS_JSON = "application/json,*.*;q=0.9"
 #: What Java's `Double.parseDouble` reads once it has trimmed the text: a decimal or hexadecimal
 #: floating literal, `NaN` or `Infinity`, signed or not, with an optional `f`, `F`, `d` or `D`.
@@ -742,37 +798,53 @@ def _spring_quality(value: str) -> bool:
     return quality is not None and 0 <= quality <= 1
 
 
+#: The characters Java's `Character.isWhitespace` is true of in a header's range: a member made of
+#: them alone is blank to Spring (`StringUtils.hasText`), where U+0085 and U+00A0 are not.
+_JAVA_WHITESPACE = "\t\n\x0b\x0c\r\x1c\x1d\x1e\x1f "
+
+
+def _spring_members(accept: str) -> list[str]:
+    """``accept``'s members as Spring's `MimeTypeUtils.tokenize` splits them, at each comma outside
+    double quotes, a backslash taking the character after it, with a blank one dropped."""
+    members, start, quoted, i = [], 0, False, 0
+    while i < len(accept):
+        if accept[i] == '"':
+            quoted = not quoted
+        elif accept[i] == "," and not quoted:
+            members.append(accept[start:i])
+            start = i + 1
+        elif accept[i] == "\\":
+            i += 1
+        i += 1
+    members.append(accept[start:])
+    return [member for member in members if member.strip(_JAVA_WHITESPACE)]
+
+
 def _accept(
     accept: str | None, *, reader: str = "jira"
 ) -> tuple[list[tuple[str, str, list[tuple[str, str]]]], bool]:
     """The media ranges ``accept`` lists, each `(type, subtype, parameters)` as Jira or, where
-    ``reader`` is `spring`, Confluence's Spring services read one (:func:`_parse_media_type`), and
+    ``reader`` is `spring`, Confluence's Spring services read one (:func:`_spring_media_type`), and
     whether a member they cannot read was among them.
 
-    Members are split at commas and a blank one is dropped, so an empty header lists nothing, as an
-    absent one does: the two answered alike on every route measured 2026-10-13, and a blank member
-    beside others (`,application/json`, `application/json,,`) was passed over on Jira and on
-    Confluence's Spring services. A parameter repeated under one name keeps its last value, so
-    `q=2;q=0.5` is read and `q=0.5;q=2` is not, and that `q` must be one :func:`_spring_quality`
-    reads (2026-10-13). A `q` named in another case (`Q=2`) is not checked here; it is read as the
-    members are sorted (:func:`spring_cannot_sort`) and checked as an answer is written
-    (:func:`quality_spring_cannot_copy`). Jira cannot read a header of more than fifty members,
-    the limit of the sort :func:`spring_cannot_sort` names, where Confluence's Spring services read
-    51 (2026-10-14).
+    Members are split at commas outside double quotes (:func:`_spring_members`), so
+    `application/json;x="a,b", text/plain` is two (2026-10-16), and a blank one is dropped, so an
+    empty header lists nothing, as an absent one does: the two answered alike on every route
+    measured 2026-10-13, and a blank member beside others (`,application/json`,
+    `application/json,,`) was passed over on Jira and on Confluence's Spring services. A `q` named
+    in another case (`Q=2`) is not checked here; it is read as the members are sorted
+    (:func:`spring_cannot_sort`) and checked as an answer is written
+    (:func:`quality_spring_cannot_copy`). Jira cannot read a header of more than fifty members, its
+    sort's limit, where Confluence's Spring services read 51 (2026-10-14).
     """
-    members = [member.strip() for member in (accept or "").split(",") if member.strip()]
+    members = _spring_members(accept or "")
     ranges, unread = [], reader == "jira" and len(members) > _JIRA_MOST_MEMBERS
     for member in members:
-        parsed = _parse_media_type(member, charset_in_any_case=reader == "jira")
-        parameters = (
-            [tuple(p.split("=", 1)) for p in _split_parameters(parsed)[1:]] if parsed else []
-        )
-        checked = [value for name, value in parameters if name == "q"][-1:]
-        if parsed is None or not all(_spring_quality(value) for value in checked):
+        parsed = _spring_media_type(member, charset_in_any_case=reader == "jira")
+        if parsed is None:
             unread = True
             continue
-        kind, subtype = parsed.split(";", 1)[0].split("/")
-        ranges.append((kind, subtype, parameters))
+        ranges.append(parsed)
     return ranges, unread
 
 
@@ -785,9 +857,9 @@ class _UnreadQuality(Exception):
 
 
 def _sort_quality(parameters: list[tuple[str, str]]) -> float:
-    """A member's `q` as Spring's `MediaType.getQualityValue` reads it as it sorts: the last value
-    named so in any case, unquoted, 1 where there is none."""
-    value = next((v for n, v in reversed(parameters) if n.lower() == "q"), None)
+    """A member's `q` as Spring's `MediaType.getQualityValue` reads it as it sorts: the one kept
+    (:func:`_spring_parameters`) in any case, unquoted, 1 where there is none."""
+    value = next((v for n, v in parameters if n.lower() == "q"), None)
     if value is None:
         return 1.0
     quality = _java_double(_unquoted(value))
@@ -796,11 +868,31 @@ def _sort_quality(parameters: list[tuple[str, str]]) -> float:
     return quality
 
 
+def _double_bits(value: float) -> int:
+    """Java's `Double.doubleToLongBits`: one bit pattern for every NaN."""
+    return (
+        0x7FF8000000000000
+        if math.isnan(value)
+        else struct.unpack(">q", struct.pack(">d", value))[0]
+    )
+
+
+def _double_compare(d1: float, d2: float) -> int:
+    """Java's `Double.compare`: NaN above every value and equal to itself, `-0.0` below `0.0`."""
+    if d1 < d2:
+        return -1
+    if d1 > d2:
+        return 1
+    bits1, bits2 = _double_bits(d1), _double_bits(d2)
+    return (bits1 > bits2) - (bits1 < bits2)
+
+
 def _sorted_alike(m1, m2) -> int:
     """Spring 5's `MediaType.SPECIFICITY_COMPARATOR` then `QUALITY_VALUE_COMPARATOR` on two
     `(type, subtype, parameters)`: the wildcard type, then the wildcard subtype (`*` or `*+…`),
-    and only between two of the same type and subtype the `q` and then the parameters' count; a
-    tie there, or two types or subtypes that differ, is decided by `q` alone."""
+    and only between two of the same type and subtype the `q` and then how many parameters each
+    keeps; a tie there, or two types or subtypes that differ, is decided by `q` alone, each `q`
+    compared as `Double.compare` compares them (:func:`_double_compare`)."""
 
     def wild(member, index):
         return member[index] == "*" or (index == 1 and member[1].startswith("*+"))
@@ -811,60 +903,25 @@ def _sorted_alike(m1, m2) -> int:
         if m1[index] != m2[index]:
             break
     else:
-        q1, q2 = _sort_quality(m1[2]), _sort_quality(m2[2])
-        if q1 != q2:
-            return 1 if q2 > q1 else -1
+        by_quality = _double_compare(_sort_quality(m2[2]), _sort_quality(m1[2]))
+        if by_quality:
+            return by_quality
         return (len(m2[2]) > len(m1[2])) - (len(m2[2]) < len(m1[2]))
-    q1, q2 = _sort_quality(m1[2]), _sort_quality(m2[2])
-    return (q2 > q1) - (q2 < q1)
-
-
-def _java_list_sort(items: list, compare) -> list:
-    """Java's `List.sort` on fewer than 32 items, TimSort's run scan and then its binary insertion,
-    so that ``compare`` meets the pairs Java's does."""
-    items = list(items)
-    if len(items) < 2:
-        return items
-    run = 2
-    if compare(items[1], items[0]) < 0:
-        while run < len(items) and compare(items[run], items[run - 1]) < 0:
-            run += 1
-        items[:run] = items[:run][::-1]
-    else:
-        while run < len(items) and compare(items[run], items[run - 1]) >= 0:
-            run += 1
-    for start in range(run, len(items)):
-        pivot, left, right = items[start], 0, start
-        while left < right:
-            middle = (left + right) // 2
-            if compare(pivot, items[middle]) < 0:
-                right = middle
-            else:
-                left = middle + 1
-        items[left + 1 : start + 1] = items[left:start]
-        items[left] = pivot
-    return items
+    return _double_compare(_sort_quality(m2[2]), _sort_quality(m1[2]))
 
 
 def spring_cannot_sort(accept: str | None, *, reader: str = "jira") -> bool:
-    """Whether Spring fails as it sorts ``accept``'s members, which it does before it picks a
-    handler: a `q` named in another case (`Q=abc`, `Q="abc"`) that :func:`_java_double` cannot
-    read, on a member Spring compares by `q`, in a header of two members or more that it can read.
+    """Whether Spring fails as it sorts ``accept``'s members, before it picks a handler: a `q` kept
+    in another case (`Q=abc`) that :func:`_java_double` cannot read, on a member the sort compares
+    by `q`, in a header of two members or more it can read; or, on Confluence's Spring services, a
+    comparison that breaks the sort (:class:`backlot.java_timsort.ContractViolation`).
 
-    Which sort each product runs is read off its answers; Atlassian does not say. Jira's match
-    Spring Framework 6.1, whose `HeaderContentNegotiationStrategy` sorts with
-    `MimeTypeUtils.sortBySpecificity`: a bubble sort whose every comparison
-    (`MediaType.isMoreSpecific`) reads both members' `q` first, so any such member fails it, and
-    which refuses more than fifty members. Confluence's Spring services' match Spring Framework 5.3,
-    whose strategy sorts with `MediaType.sortBySpecificityAndQuality`, Java's `List.sort` under
-    `SPECIFICITY_COMPARATOR` then `QUALITY_VALUE_COMPARATOR` (:func:`_sorted_alike` over
-    :func:`_java_list_sort`), where a wildcard beside a concrete type is ordered without its `q`
-    being read: `*/*;Q=abc, application/json` sorts, `text/plain;Q=abc, application/json` and
-    `*/*;Q=abc, */*` do not. Read against those classes in spring-framework at `v6.1.14` and
-    `v5.3.39`, and measured on 2026-10-14 with fourteen headers on each of `serverInfo` and `space`
-    and nine on Jira's `OPTIONS`; `Q=NaN` and `Q=Infinity` read, and so does a lone member, which is
-    not compared. What each answer then becomes is
-    ``backlot.routers.atlassian.spring_sort_failure``.
+    Which sort runs is read off the answers; Atlassian does not say. Jira's are the sort
+    spring-framework runs at `v6.1.14`, which compares every member by `q`; Confluence's Spring
+    services' the one it runs at `v5.3.39`, :func:`_sorted_alike` under
+    :func:`backlot.java_timsort.java_list_sort`. Measured 2026-10-14 with fourteen headers on each
+    of `serverInfo` and `space` and nine on Jira's `OPTIONS`, and 2026-10-16 with ten more on
+    `space`. What each answer then becomes is ``backlot.routers.atlassian.spring_sort_failure``.
     """
     ranges, unread = _accept(accept, reader=reader)
     if unread or len(ranges) < 2:
@@ -874,8 +931,8 @@ def spring_cannot_sort(accept: str | None, *, reader: str = "jira") -> bool:
             for _, _, parameters in ranges:
                 _sort_quality(parameters)
         else:
-            _java_list_sort(ranges, _sorted_alike)
-    except _UnreadQuality:
+            java_timsort.java_list_sort(ranges, _sorted_alike)
+    except (_UnreadQuality, java_timsort.ContractViolation):
         return True
     return False
 
@@ -896,7 +953,84 @@ def _jersey_quality(value: str) -> bool:
 def _jaxrs_member(member: str) -> tuple[str, str, list[tuple[str, str]]] | None:
     """One member of an `Accept` as :func:`jersey_media_type` reads it, `*` as `*/*`."""
     head, sep, rest = member.partition(";")
-    return jersey_media_type(("*/*" if head.strip() == "*" else head) + sep + rest)
+    return jersey_media_type(("*/*" if head.strip(" \t") == "*" else head) + sep + rest)
+
+
+def _jaxrs_members(accept: str) -> list[str]:
+    """``accept``'s members as Jersey reads them, split at each comma outside a quoted string, in
+    which a backslash takes the character after it."""
+    members, start, quoted, i = [], 0, False, 0
+    while i < len(accept):
+        if accept[i] == '"':
+            quoted = not quoted
+        elif accept[i] == "\\" and quoted:
+            i += 1
+        elif accept[i] == "," and not quoted:
+            members.append(accept[start:i])
+            start = i + 1
+        i += 1
+    members.append(accept[start:])
+    return members
+
+
+def _jaxrs_grammar(member: str) -> bool:
+    """Whether ``member`` is one Jersey's grammar takes, its `q` aside: a type and subtype, `*`, or
+    a token it passes over, then its parameters (:func:`_jaxrs_accept`)."""
+    head, _, rest = member.strip(" \t").partition(";")
+    if head.strip(" \t") != "*" and "/" not in head:
+        return bool(_JERSEY_TOKEN.fullmatch(head.strip(" \t"))) and (
+            _jersey_parameters(";" + rest, 0) is not None
+        )
+    return _jaxrs_member(member.strip(" \t")) is not None
+
+
+def jaxrs_out_of_bounds(accept: str | None) -> int | None:
+    """The character Jersey fails on as it reads ``accept``, or None: the first one past ASCII
+    outside a quoted string, where nothing it read before it was already wrong.
+
+    Jersey throws as it reaches such a character, naming its code against a length of 128. U+00A0 in
+    front of `application/json`, after `application/json;x=1` or `application/json;foo`, or as a
+    member after `foo` was a 500 naming its code (`Index 160 out of bounds for length 128`), where
+    inside a quoted value it was read, and after `application/json;foo, ` or
+    `application/json;q=2, ` it drew the 400 of the member before it; measured 2026-10-16 on
+    `search` with a credential and without one, on its `OPTIONS`, on `audit` and on `POST template`.
+    """
+    members = _jaxrs_members(accept or "")
+    for index, member in enumerate(members):
+        if not member.strip(" \t") and index < len(members) - 1:
+            return None
+        quoted, i, at = False, 0, None
+        while i < len(member):
+            if member[i] == '"':
+                quoted = not quoted
+            elif member[i] == "\\" and quoted:
+                i += 1
+            elif not quoted and ord(member[i]) > 127:
+                at = i
+                break
+            i += 1
+        if at is None:
+            if _jaxrs_accept(member)[2]:
+                return None
+            continue
+        before = member[:at]
+        if not before.strip(" \t") or any(
+            _jaxrs_grammar(before + rest) for rest in ("x", "/x", "x/x", "=x", "x=x", ";x=x")
+        ):
+            return ord(member[at])
+        return None
+    return None
+
+
+def jaxrs_out_of_bounds_refusal(accept: str | None) -> AtlassianError | None:
+    """Jersey's 500 for an `Accept` it fails on (:func:`jaxrs_out_of_bounds`), or None: a
+    `statusCode` and `message` naming the character's code, under `application/json`."""
+    code = jaxrs_out_of_bounds(accept)
+    if code is None:
+        return None
+    message = f"java.lang.ArrayIndexOutOfBoundsException: Index {code} out of bounds for length 128"
+    body = json.dumps({"statusCode": 500, "message": message}, separators=(",", ":"))
+    return AtlassianError(500, body.encode(), headers={"Content-Type": "application/json"})
 
 
 def _jaxrs_accept(accept: str | None) -> tuple[list[tuple[str, str, float]], bool, bool]:
@@ -913,18 +1047,18 @@ def _jaxrs_accept(accept: str | None) -> tuple[list[tuple[str, str, float]], boo
     unquoted and the last of several is the one read (`q="0.5"` and `q=2;q=0.5` are read); a
     `charset` is not read at all.
     """
-    members = (accept or "").split(",")
+    members = _jaxrs_members(accept or "")
     ranges, passed_over = [], False
     for index, member in enumerate(members):
-        member = member.strip()
+        member = member.strip(" \t")
         if not member:
             if index < len(members) - 1:
                 return [], passed_over, True
             continue
         head, _, rest = member.partition(";")
-        if head.strip() != "*" and "/" not in head:
+        if head.strip(" \t") != "*" and "/" not in head:
             if (
-                not _JERSEY_TOKEN.fullmatch(head.strip())
+                not _JERSEY_TOKEN.fullmatch(head.strip(" \t"))
                 or _jersey_parameters(";" + rest, 0) is None
             ):
                 return [], passed_over, True
@@ -955,8 +1089,8 @@ def jaxrs_picks_json(accept: str | None) -> bool:
     `APPLICATION/XML, application/json`, `application/jsonx`, `*/*` and `application/*` are XML.
     """
     candidates = []
-    for index, member in enumerate((accept or "").split(",")):
-        parsed = _jaxrs_member(member.strip())
+    for index, member in enumerate(_jaxrs_members(accept or "")):
+        parsed = _jaxrs_member(member.strip(" \t"))
         if parsed is None:
             continue
         kind, subtype, parameters = parsed
@@ -1008,7 +1142,7 @@ def accepts(
             return None
         ranges = [(kind, subtype, []) for kind, subtype, _ in found]
     else:
-        if reader == "jira" and (accept or "").strip() == _JIRA_READS_AS_JSON:
+        if reader == "jira" and (accept or "").strip(" \t") == _JIRA_READS_AS_JSON:
             accept = "application/json"
         ranges, unread = _accept(accept, reader=reader)
         if unread:
@@ -1086,6 +1220,9 @@ def not_acceptable(
     """
     if is_confluence(path):
         if jaxrs and jaxrs_cannot_parse(accept):
+            out_of_bounds = jaxrs_out_of_bounds_refusal(accept)
+            if out_of_bounds is not None:
+                return out_of_bounds
             message = f'The HTTP header field "Accept" with value "{accept}" could not be parsed.'
             return AtlassianError(400, message.encode(), headers={"Content-Type": "text/plain"})
         if accepts(accept, reader="jaxrs" if jaxrs else "spring", produces=produces):
@@ -1267,7 +1404,7 @@ def jira_unauthenticated(
       methods, and on the others Jira's 500 page with no `Allow`
     """
     body = JIRA_UNAUTHENTICATED.encode()
-    if (accept or "").strip() == _JIRA_READS_AS_JSON:
+    if (accept or "").strip(" \t") == _JIRA_READS_AS_JSON:
         accept = "application/json"
     _, unread = _accept(accept)
     options = method == "OPTIONS"
@@ -1275,7 +1412,9 @@ def jira_unauthenticated(
         return 401, HTML_MEDIA_TYPE, b"", {"Allow": _JIRA_UNREAD_ALLOW} if options else {}
     if (accept or "").find("text/html") > 0:
         return 401, HTML_MEDIA_TYPE, body, {"X-Frame-Options": "SAMEORIGIN"}
-    named = [m for m in (accept or "").split(",") if m.split(";", 1)[0].strip() not in ("", "*")]
+    named = [
+        m for m in _spring_members(accept or "") if m.split(";", 1)[0].strip(_JAVA_TRIMMED) != "*"
+    ]
     ranges, _ = _accept(",".join(named))
     if not ranges:
         return 401, "text/plain;charset=UTF-8", body, {}

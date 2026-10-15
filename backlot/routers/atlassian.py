@@ -3398,7 +3398,7 @@ def _confluence_not_found(request: Request) -> Response:
     if errors_atlassian.jaxrs_cannot_parse(request.headers.get("accept")):
         # Jersey fails to write its 404 under an `Accept` it cannot parse: an empty 500 with no
         # `content-type`, measured 2026-10-14 on `nopesuchroute` and `nope/deeper` with `q=2`, a
-        # blank member and `;foo`, with a credential and without one
+        # blank member and `;foo`, with a credential and without one, and 2026-10-16 with U+00A0
         return Response(b"", status_code=500)
     url = f"{_site(request)}{vendor_path}"
     if request.url.query:
@@ -3465,7 +3465,7 @@ def _search_options(request: Request) -> Response:
     accept = request.headers.get("accept")
     # the decoded path picks the product only; the 400 echoes the header, not the path
     unparsed = errors_atlassian.not_acceptable(request.url.path, accept, jaxrs=True)
-    if unparsed is not None and unparsed.status_code == 400:
+    if unparsed is not None and unparsed.status_code in (400, 500):
         raise unparsed
     if accept is None:
         media_type = "application/vnd.sun.wadl+xml"

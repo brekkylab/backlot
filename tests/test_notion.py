@@ -569,6 +569,13 @@ def test_notion_search_filter_properties_keeps_only_the_named_row_properties(
             'The value of "filter_properties" in query parameters must be a string or list of '
             "strings",
         )
+        # behind the credential and the version
+        anon = {"Notion-Version": notion_h["Notion-Version"]}
+        r = client.post(f"/notion/v1/search{query}", json=body, headers=anon)
+        assert (r.status_code, r.json()["code"]) == (401, "unauthorized")
+        unversioned = {"Authorization": notion_h["Authorization"]}
+        r = client.post(f"/notion/v1/search{query}", json=body, headers=unversioned)
+        assert (r.status_code, r.json()["code"]) == (400, "missing_version")
         return
     # A row outside a database is the workspace page and keeps its title.
     results = r.json()["results"]

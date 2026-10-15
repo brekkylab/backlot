@@ -701,7 +701,11 @@ async def search(request: Request):
     conn = auth.conn(request)
     visible = auth.visible_ids(request, caller)
     query = body.get("query", "")
-    want = body.get("filter", {}).get("value")  # 'page' | 'database' | None
+    want = body.get("filter", {}).get("value")  # 'page' | 'database' | 'data_source' | None
+    # A `data_source` filter keeps the database rows, served as databases before 2025-09-03 and as
+    # their data sources from it: real answered it with the three databases under 2022-06-28 and
+    # with their three data sources under 2025-09-03 and 2026-03-11 (2026-10-14).
+    as_data_sources = want == "data_source" and _data_sources_model(_version(request))
     offset = pagination.decode_cursor(body.get("start_cursor"))
     limit = _page_size(body.get("page_size"))
     # Over-fetch so object-type filtering still fills a page; cap keeps it bounded. An empty query
@@ -714,18 +718,21 @@ async def search(request: Request):
     picked = []
     for r in rows:
         is_db = r["subtype"] == "database"
-        if want == "database" and not is_db:
+        if want in ("database", "data_source") and not is_db:
             continue
         if want == "page" and is_db:
             continue
         picked.append(r)
     window = picked[offset : offset + limit]
-    results = [
-        _database_obj(conn, r, _version(request))
-        if r["subtype"] == "database"
-        else _page_obj(conn, r)
-        for r in window
-    ]
+    if as_data_sources:
+        results = [_data_source_obj(conn, r) for r in window]
+    else:
+        results = [
+            _database_obj(conn, r, _version(request))
+            if r["subtype"] == "database"
+            else _page_obj(conn, r)
+            for r in window
+        ]
     return _list_obj(results, offset, len(window), len(picked), "page_or_database")
 
 

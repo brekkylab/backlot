@@ -4232,7 +4232,7 @@
       "severity": "gap",
       "path": "Team.loops",
       "detail": "vendor serves loops: WorkflowDefinitionConnection!; Backlot does not",
-      "note": "Backlot's Linear schema carries no `WorkflowDefinition` type, and `Favorite.workflowDefinition` is already a recorded gap. Measured against api.linear.app on 2026-10-15, `teams(first:1){nodes{loops(first:2){nodes{id} pageInfo{hasNextPage}}}}` answers an empty page, `{\"nodes\":[],\"pageInfo\":{\"hasNextPage\":false}}`, because the workspace holds no workflow definitions, so there is no corpus data to serve."
+      "note": "Backlot's Linear schema carries no `WorkflowDefinition` type, and `Favorite.workflowDefinition` is also a recorded gap. Measured against api.linear.app on 2026-10-15, `teams(first:1){nodes{loops(first:2){nodes{id} pageInfo{hasNextPage}}}}` answers an empty page, `{\"nodes\":[],\"pageInfo\":{\"hasNextPage\":false}}`, because the workspace holds no workflow definitions, so there is no corpus data to serve."
     },
     {
       "kind": "missing_field",

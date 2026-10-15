@@ -440,31 +440,64 @@ def rate_limit_caller(request: Request) -> tuple[str, bool]:
     with them read 23, 24, 25 at another, both at `limit: 60` (measured against api.github.com
     2026-09-21).
 
-    A bearer that does not resolve is keyed with the address here but never counted — see
-    :func:`refused_a_credential`. Callers that draw real's line themselves check `request.headers`
-    for the
-    presence of `Authorization` directly instead of asking `auth.bearer_token`, which is `None` for
-    a scheme it does not parse — see `refuse_a_trailing_slash_on_github`."""
+    A `Bearer` or `token` followed by a tab rather than a space is counted in that same window,
+    though it is answered as Bad credentials: `Digest x` and then `Bearer<TAB>nope` on
+    `/repos/psf/requests` read `used` 4 and 5, while the address's anonymous window stayed at 8
+    (2026-10-14). A bearer that does not resolve after a space is keyed with the address here but
+    never counted — see :func:`refused_without_a_window`. Callers that draw real's line themselves
+    check `request.headers` for the presence of `Authorization` directly instead of asking
+    `auth.bearer_token`, which is `None` for a scheme it does not parse — see
+    `refuse_a_trailing_slash_on_github`."""
     token = auth.bearer_token(request)
     if token is not None and auth.resolve_bearer(request) is not None:
         return f"token:{token}", True
     host = request.client.host if request.client is not None else "anonymous"
-    if token is None and "authorization" in request.headers:
+    if "authorization" in request.headers and (token is None or not _scheme_then_space(request)):
         return f"unparseable:{host}", False
     return f"host:{host}", False
+
+
+def _scheme_then_space(request: Request) -> bool:
+    """Whether the `Authorization` is `Bearer` or `token`, in any case, followed by a space: the
+    spelling real refuses with no `x-ratelimit-*` when the token does not resolve, where a tab
+    after the scheme (`Bearer<TAB>nope`, `Bearer<TAB> nope`) is counted as an unparseable one
+    (:func:`rate_limit_caller`)."""
+    scheme, space, _ = (request.headers.get("authorization") or "").partition(" ")
+    return bool(space) and scheme.lower() in ("bearer", "token")
 
 
 def refused_a_credential(request: Request) -> bool:
     """Whether a credential arrived and did not resolve — real's "Bad credentials" 401.
 
-    `Bearer` and `token` alike are refused with none of the five `x-ratelimit-*` headers and no
-    version echo, on `/repos/psf/requests` and on `/rate_limit`, and the address's `core` window
-    read `used: 13` before three of them and after — where an anonymous 401 on `/user/repos`
-    carries all five, counts, and echoes (measured against api.github.com 2026-09-21). A path no
-    route matches is answered the same way for a wider set of callers, see
+    `Bearer` and `token` separated from the token by a space are refused with none of the five
+    `x-ratelimit-*` headers and no version echo, on `/repos/psf/requests` and on `/rate_limit`, and
+    the address's `core` window read `used: 13` before three of them and after — where an anonymous
+    401 on `/user/repos` carries all five, counts, and echoes (measured against api.github.com
+    2026-09-21). A path no route matches is answered the same way for a wider set of callers, see
     ``backlot.main._some_github_route_matches``.
+
+    A tab after the scheme is still "Bad credentials" (`auth.bearer_token` accepts it) and still
+    carries no version echo: on 2026-10-14 `Bearer<TAB>nope` on `/rate_limit` and
+    `/repos/psf/requests`, with and without `X-GitHub-Api-Version: 2022-11-28`, and on
+    `/user/repos` with it, answered no `x-github-api-version-selected`. Which of these 401s carry
+    the five is :func:`refused_without_a_window`'s.
     """
     return auth.bearer_token(request) is not None and auth.resolve_bearer(request) is None
+
+
+def refused_without_a_window(request: Request) -> bool:
+    """Whether :func:`refused_a_credential` holds with a space after the scheme: the 401 real counts
+    in no window and answers with none of the five `x-ratelimit-*` headers.
+
+    After a tab, the same 401 carries the five of the window it is counted in, the unparseable one:
+    measured against api.github.com 2026-10-14 on `GET /rate_limit`, `Bearer<TAB>nope` and
+    `token<TAB>nope` each answered 401 with `limit: 60`, `remaining: 60`, `used: 0`,
+    `resource: core` and a `reset` an hour after `Date`, while `Bearer nope` and `token nope`
+    answered the same 401 with none of the five. Once that window was spent, `Bearer<TAB>nope` and
+    `token<TAB>nope` on `/repos/psf/requests` and `Bearer<TAB>nope` on `/user/repos` were its 403,
+    as `Digest x` was, where `Bearer nope` was still the 401.
+    """
+    return refused_a_credential(request) and _scheme_then_space(request)
 
 
 def rate_limit_headers(request: Request, status_code: int) -> dict[str, str]:

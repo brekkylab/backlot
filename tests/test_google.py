@@ -9247,7 +9247,7 @@ def test_gmail_cc_bcc_searches_address_headers(tmp_path, surface, caller, query,
             for r in records
         ],
     )
-    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    tokens = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
     token = tokens["admin_token"] if caller == "admin" else tok(tokens, "ava@acme.com")
     with client_for(settings, reload=True) as c:
         response = c.get(

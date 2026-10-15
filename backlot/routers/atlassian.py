@@ -3558,12 +3558,12 @@ def vendor_headers(request: Request, status_code: int) -> dict[str, str]:
     Both products: the two ids and :data:`_EDGE`. Jira adds `x-arequestid`, `timing-allow-origin`
     and a `cache-control`, its API's or the web app's page by page, and once a credential resolves
     the caller's own account id, with the rate-limit four where a route answers or an `OPTIONS` asks
-    at its path. The gateway's own refusals (the Connect-token 403 and a `PATCH`) carry the two ids
-    and :data:`_EDGE` and nothing else; the CDN's carry :data:`_EDGE` on its 403 and nothing on its
-    405 or its 400. Confluence: the millisecond clock it stamps every answer with, the deprecation
-    trio where the v1 services send it, and the search's `cache-control` and `expires`. Measured on
-    Atlassian Cloud 2026-09-22 and 2026-09-30, the search's pair 2026-10-07; what is deliberately
-    not here is in `backlot.main.report_atlassian_headers`.
+    at its path. An answer given in front of the application carries what
+    ``errors.atlassian.FrontDoor`` names for its layer, and the gateway's Connect-token 403 what
+    that names for the gateway. Confluence: the millisecond clock it stamps every answer with, the
+    deprecation trio where the v1 services send it, and the search's `cache-control` and `expires`.
+    Measured on Atlassian Cloud 2026-09-22 and 2026-09-30, the search's pair 2026-10-07; what is
+    deliberately not here is in `backlot.main.report_atlassian_headers`.
     """
     path = request.url.path
     layer = request.scope.get("atlassian_front_door")

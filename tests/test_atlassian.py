@@ -4282,9 +4282,9 @@ def test_jira_checks_the_media_type_an_operation_takes_before_anything_else(
     """Pins the 415 ``errors.atlassian.refuse_a_media_type`` describes, on the operations
     ``backlot/data/jira_unserved.json`` says check one. Each row's control is the same URL
     answering past the check: the 401 a caller with no credential gets, the 404 an operation no
-    route serves gives a caller whose credential resolves, or, on one real runs for this caller, what
-    no route here answers it: the 405 of a method a route at the path does not take, or the 404 of
-    a path none serves."""
+    route serves gives a caller whose credential resolves, or, on one real runs for this caller,
+    what no route here answers it: the 405 of a method a route at the path does not take, or the
+    404 of a path none serves."""
     headers = dict(admin_h if credential == "admin" else _CREDENTIALS[credential])
     if content_type is not None:
         headers["Content-Type"] = content_type
@@ -5352,7 +5352,7 @@ _JSON_TYPE = "application/json"
         + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
         ("POST", "/wiki/rest/api/template", None, "application/json;x=1 ;y", 400)
         + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
-        # only a space or a tab is trimmed from the value's ends
+        # the value's ends, as ``backlot.errors.atlassian.jersey_media_type`` trims them
         ("POST", "/wiki/rest/api/template", None, "application/json\xa0", 400)
         + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
         ("POST", "/wiki/rest/api/template", None, "\x85application/json", 400)

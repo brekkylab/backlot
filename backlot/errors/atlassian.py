@@ -650,7 +650,8 @@ def jersey_media_type(value: str) -> tuple[str, str] | None:
     parameter with no `=` (`;x`), with nothing after its `=` (`;x=`), with whitespace beside the `=`
     (`;charset =utf-8`) or with an unterminated quote makes the header unreadable, and so does an
     empty header, a comma or anything after the subtype but a parameter. A charset is not looked
-    up (`charset=nope` is read).
+    up (`charset=nope` is read). A space or a tab at either end is trimmed, where U+00A0 or U+0085
+    there leaves the value unreadable (2026-10-16, each after the type and before it).
     """
     text = value.strip(" \t")
     head = re.match(r"([^/;\s]+)/([^;\s]+)[ \t]*", text)

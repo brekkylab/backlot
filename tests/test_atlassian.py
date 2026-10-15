@@ -6175,6 +6175,8 @@ _ACCEPT_ROWS = [
     + (_EMPTY_HTML, b"", {}),
     ("GET", _SPACES, "none", "foo, application/json", None, 406, None, b"", {}),
     ("GET", _INFO, "none", "\xa0application/json", None, 406, _EMPTY_HTML, b"", {}),
+    ("GET", _INFO, "none", "application/json;x@y=1", None, 406, _EMPTY_HTML, b"", {}),
+    ("GET", _INFO, "none", "application/json;=1", None, 406, _EMPTY_HTML, b"", {}),
     ("GET", _INFO, "none", "application/json,*.*;q=0.9\xa0", None, 406, _EMPTY_HTML, b"", {}),
     ("GET", _INFO, "none", "application/json;charset=utf-8;Charset=bogus", None, 406)
     + (_EMPTY_HTML, b"", {}),
@@ -6182,6 +6184,8 @@ _ACCEPT_ROWS = [
     + ({},),
     ("GET", _SPACES, "none", "application/json;q=2", None, 406, None, b"", {}),
     ("GET", _SPACES, "admin", "\xa0application/json", None, 406, None, b"", {}),
+    ("GET", _SPACES, "admin", "application/json;x@y=1", None, 406, None, b"", {}),
+    ("GET", _SPACES, "admin", "application/json;=1", None, 406, None, b"", {}),
     ("GET", _SPACES, "admin", "application/json;charset=bogus;Charset=utf-8", None, 406, None, b"")
     + ({},),
     ("GET", _SPACES, "admin", 'text/plain;q="abc";Q=0.5, application/json', None, 200, _JSON, None)
@@ -6219,6 +6223,10 @@ _ACCEPT_ROWS = [
             ("GET", _CQL, "admin", "foo, \xa0", None),
             ("GET", _CQL, "admin", "\x80application/json", None),
             ("GET", _CQL, "admin", "application/json, \x85\xa0", None),
+            ("GET", _CQL, "admin", "foo;\xa0", None),
+            ("GET", _CQL, "admin", "*\xa0", None),
+            ("GET", _CQL, "admin", "\xa0*", None),
+            ("GET", _CQL, "admin", "*;\xa0", None),
             ("OPTIONS", "/atlassian/wiki/rest/api/search", "admin", "\xa0application/json", None),
             ("GET", "/atlassian/wiki/rest/api/audit", "none", "\xa0application/json", None),
             ("POST", "/atlassian/wiki/rest/api/template", "none", "\xa0application/json")
@@ -6227,8 +6235,19 @@ _ACCEPT_ROWS = [
     ),
     *(
         ("GET", _CQL, "admin", accept, None, 400, "text/plain", _unparsed(accept), {})
-        for accept in ("application/json;foo, \xa0", "application/json;q=2, \xa0")
+        for accept in (
+            "application/json;foo, \xa0",
+            "application/json;q=2, \xa0",
+            "ap@p\xa0lication/json",
+            "foo@\xa0",
+            "application/json, ,\xa0",
+            'application/json;x="\xa0", application/json;foo',
+            'application/json;x="\\"\xa0", application/json;foo',
+        )
     ),
+    ("GET", _CQL, "admin", 'application/json;x="a\\",b", text/plain', None, 200, _JSON, None, {}),
+    ("GET", f"{_SPACES}/MFS/nope", "none", "\xa0application/json", None, 404)
+    + (errors_atlassian.HTML_MEDIA_TYPE, errors_atlassian.HTML_NOT_FOUND.encode(), {}),
     ("GET", "/atlassian/wiki/rest/api/nopesuchroute", "none", "\xa0application/json", None, 500)
     + (None, b"", {"cache-control": None}),
     # Jersey under a header it cannot parse: the 404's 500, and a write's 400 ahead of its 415
@@ -6549,6 +6568,8 @@ _ACCEPT_ROWS = [
             (_SORTED_34, 400),
             (_BREAKS_THE_SORT_33, 500),
             (_READS_THE_Q_33, 500),
+            ("text/*;Q=abc, text/html;Q=-2, application/json;Q=-1", 400),
+            ("application/json;Q=-2, text/plain;Q=-1, text/*;Q=abc", 500),
         )
     ),
     ("GET", "/atlassian/wiki/rest/api/audit", "none", _SORT_FAILS, None, 400, "text/plain")

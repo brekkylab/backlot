@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import base64
 from typing import Annotated
-from urllib.parse import quote
+from urllib.parse import quote, quote_plus
 
 from fastapi import Query
 from pydantic import BeforeValidator
@@ -232,9 +232,16 @@ def clamp_page(
     return p, pp
 
 
-def _page_url(url_no_query: str, params: dict) -> str:
-    """One page url in a `Link` header, `<…>`-wrapped with its query percent-encoded."""
-    q = "&".join(f"{k}={quote(str(v), safe='')}" for k, v in params.items())
+def _page_url(url_no_query: str, params: dict, *, quote_via=quote_plus) -> str:
+    """One page url in a `Link` header, `<…>`-wrapped with its query form-encoded.
+
+    A space is `+` and everything else outside the unreserved set is percent-encoded, as real
+    writes it whichever way the request spelt the space: measured on api.github.com on 2026-10-13,
+    `search/issues?q=repo:psf/requests%20is:issue` links `q=repo%3Apsf%2Frequests+is%3Aissue`, and
+    `issues?labels=Needs%20Info` links `labels=Needs+Info`. ``quote_via`` lets
+    :func:`github_code_search_link_header` write the space otherwise.
+    """
+    q = "&".join(f"{k}={quote_via(str(v), safe='')}" for k, v in params.items())
     return f"<{url_no_query}?{q}>"
 
 
@@ -283,9 +290,9 @@ def github_link_header(
     The rels come in one fixed order whichever of them a page has — prev, next, last, first — which
     is the order real emits across all four of those pages.
 
-    Values are percent-encoded because a param value is arbitrary text — a search `q` carries
-    spaces and colons — and a URI cannot hold them raw. A client that follows the link has to
-    arrive at the query it was paging, not at a truncated one.
+    Values are encoded as :func:`_page_url` writes them, because a param value is arbitrary text —
+    a search `q` carries spaces and colons — and a URI cannot hold them raw. A client that follows
+    the link has to arrive at the query it was paging, not at a truncated one.
     """
     last_page = max(1, (total + per_page - 1) // per_page)
     if max_page is not None:
@@ -344,6 +351,13 @@ def github_code_search_link_header(
       spelt: no `per_page` in the query links `per_page=30`, `?per_page=500` on 1,808 hits links
       `per_page=100` (its cap) and `?per_page=0` links `per_page=30`, where a listing omits an
       unsent size and echoes a sent one verbatim. This cell it shares with the cursor listing.
+    * a space in `q` is percent-encoded in every rel, whichever way the request spelt it: on
+      2026-10-13 `?q=repo:psf/requests+def+language:python` linked
+      `q=repo%3Apsf%2Frequests%20def%20language%3Apython`.
+    * the query is written `q`, then `page`, then `per_page`, on every rel and whatever order the
+      request sent them in: on 2026-10-14 each of the six orders of `q=repo:psf/requests+def`,
+      `per_page=5` and `page=2` linked next as `q=repo%3Apsf%2Frequests%20def&page=3&per_page=5`,
+      with prev, first and last differing only in the page number.
 
     `/search/issues` shares none of that and pages by :func:`github_link_header`. A result set that
     fits one page carries no header, which is the one rule all three surfaces share.
@@ -360,7 +374,7 @@ def github_code_search_link_header(
         return None
 
     def link(p: int) -> str:
-        return _page_url(url_no_query, {**params, "per_page": per_page, "page": p})
+        return _page_url(url_no_query, {**params, "page": p, "per_page": per_page}, quote_via=quote)
 
     parts = []
     if page < last_page:

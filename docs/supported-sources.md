@@ -149,16 +149,19 @@ runs out is refused, 403, with `used` pinned at `limit` across the five headers,
 version check, the 401 a route that needs a credential answers a caller without one, and routing
 alike, for a caller with no credential (measured against api.github.com 2026-09-17 and 2026-09-22)
 and for a token (2026-09-23) alike; a bearer that does not resolve still gets its own 401, window
-spent or not (2026-09-23). The refused request is not itself counted, which is why `used` holds at
-`limit` rather than climbing past it. The body differs by caller: two members (`message`,
-`documentation_url`) for a caller with no credential, three (`status` besides) for a token, each
-with its own `documentation_url`. `BACKLOT_GITHUB_ENFORCE_RATE_LIMITS` turns the refusal off (see
+spent or not (2026-09-23), when a space follows its scheme: after a tab it is counted in the window
+real shares among the `Authorization` values it cannot parse, and refused once that window is spent
+(2026-10-14). The refused request is not itself counted, which is why `used` holds at `limit` rather
+than climbing past it. The body differs by caller: two members (`message`, `documentation_url`) for
+a caller with no credential, three (`status` besides) for a token, each with its own
+`documentation_url`. `BACKLOT_GITHUB_ENFORCE_RATE_LIMITS` turns the refusal off (see
 [configuration](configuration.md#github)). `GET /rate_limit` reports the same windows, does not
 count, and is never refused — the one route a client reads its way out of a spent window with;
 `/rate_limit/` asked with no `Authorization` header is a plain-text `404 Not Found` that carries
 none of the five and counts nowhere, spent window or not (2026-09-23). Two answers carry none of the
-five and count nowhere, as real's do not: a credential that does not resolve, and a path no route
-matches asked by a caller that sent one (measured 2026-09-10 and 2026-09-21).
+five and count nowhere, as real's do not: a credential that does not resolve with a space after its
+scheme, and a path no route matches asked by a caller that sent one (measured 2026-09-10 and
+2026-09-21).
 
 An issue body and a pull body are the two distinct field sets real serves — a pull carries `_links`
 and its `*_url` siblings and none of the issue-only fields, `pull_request` included. A repository
@@ -585,8 +588,10 @@ sub-resources are ignored there, as on real. A `versionId` at a bucket's path is
 and on the writes that refuse it there, and at a key's beside a selector whose operation takes none,
 a `?website` with a value real's 400 at either path, and an `annotationName` at a key without the
 `annotation` it belongs to real's 400, which most of real's front ends answer a GET with and a few
-answer as if it were absent. Two sub-resources at once are `InvalidArgument`, as on real S3, and an
-unknown query key is ignored, as on real S3.
+answer as if it were absent. An `annotation` with a value, `?annotation=x`, is GetObject, as on
+real, the one sub-resource a value turns into another operation; the rest of the query is read
+without it, an `annotationName` beside it ignored. Two sub-resources at once are `InvalidArgument`,
+as on real S3, and an unknown query key is ignored, as on real S3.
 
 A method no operation above serves answers what real answers: the 405 that names the method and
 whether the resource is a `BUCKET`, an `OBJECT` or the `SERVICE`, the 400 an `OPTIONS` without an
@@ -627,7 +632,12 @@ sub-resource, the conflict of two and the parameter refusals before the bucket. 
 sent and does not verify is refused ahead of each 405, with real's members naming the string this
 server signed and, for SigV4 and SigV4a, the canonical request it signed it over, and after the
 conflict and the parameter refusals, as on real. Each other credential refusal is real's own code
-and message too.
+and message too. The two annotation reads, a GET of `?annotation` at a key without or with an
+`annotationName` (ListObjectAnnotations, GetObjectAnnotation) and a HEAD of either, are the
+exception to the unsigned answer and to Signature Version 2: they take SigV4 or SigV4a alone, and
+one sent unsigned or with Signature Version 2 is real's 400 `InvalidRequest` asking for Signature
+Version 4, after the conflict of two, the parameter refusals before the bucket and a V2 credential's
+own shape, and ahead of the bucket, of the 405 a signed HEAD gets and of a V2 key or signature.
 
 ### Slack — `/slack/api`
 

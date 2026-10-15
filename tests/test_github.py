@@ -2974,6 +2974,25 @@ def test_github_a_page_url_omits_a_page_size_the_caller_did_not_send(
 
 
 @pytest.mark.parametrize(
+    "qs",
+    [
+        "q=extension:md&per_page=2&page=1",
+        "q=extension:md&page=1&per_page=2",
+        "per_page=2&q=extension:md",
+    ],
+)
+def test_github_code_search_page_links_write_page_before_per_page(gh_client, gh_admin_h, qs):
+    """Each order the request sends its parameters in links the same url, in the order
+    :func:`backlot.pagination.github_code_search_link_header` records."""
+    c, _ = gh_client
+    r = c.get(f"/github/search/code?{qs}", headers=gh_admin_h)
+    assert r.status_code == 200
+    rels = _link_rels(r.headers["Link"])
+    assert rels["next"].split("?", 1)[1] == "q=extension%3Amd&page=2&per_page=2"
+    assert rels["first"].split("?", 1)[1] == "q=extension%3Amd&page=1&per_page=2"
+
+
+@pytest.mark.parametrize(
     "path, q, page_one",
     [
         ("/github/search/code", "extension:md", {"next", "first", "last"}),
@@ -5672,6 +5691,23 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
         # window — the address's, where it would have landed, stays put
         assert not any(n.startswith("x-ratelimit-") for n in refused.headers)
         assert "x-github-api-version-selected" not in refused.headers
+        for spelling in ("bearer nope", "TOKEN nope"):
+            other = c.get("/github/rate_limit", headers={"Authorization": spelling})
+            assert other.status_code == 401
+            assert not any(n.startswith("x-ratelimit-") for n in other.headers), spelling
+        # after a tab rather than a space, the same 401 carries the five of a window it has not
+        # used, and still no echo
+        for spelling in ("Bearer\tnope", "token\tnope", "Bearer\t nope"):
+            tab = c.get("/github/rate_limit", headers={"Authorization": spelling})
+            assert (tab.status_code, tab.json()) == (401, refused.json()), spelling
+            assert "x-github-api-version-selected" not in tab.headers, spelling
+            limits = _ratelimit(tab)
+            assert [limits[k] for k in ("limit", "remaining", "used", "resource")] == [
+                "60",
+                "60",
+                "0",
+                "core",
+            ], spelling
         assert c.get("/github/rate_limit").json()["resources"]["core"]["used"] == 2
 
         # a search endpoint's name carries `search` past the route it serves; an empty rest and a
@@ -5710,6 +5746,10 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
         assert (first["limit"], second["limit"]) == ("60", "60")
         assert int(second["used"]) == int(first["used"]) + 1
         assert int(first["used"]) < address  # its own window, not the address's
+        # and so is a bearer after a tab, though it is refused as Bad credentials
+        tab = c.get("/github/user/repos", headers={"Authorization": "Bearer\tnope"})
+        assert tab.json()["message"] == "Bad credentials"
+        assert int(_ratelimit(tab)["used"]) == int(second["used"]) + 1
         assert int(_ratelimit(c.get("/github/user/repos"))["used"]) == address + 1
 
         # a minute on, the two search windows are new ones where `core`'s is the one it was
@@ -5842,7 +5882,15 @@ def test_github_rate_limit_refuses_an_anonymous_caller_too_and_the_switch_turns_
             assert rate_limit_slash.text == "404 Not Found"
             assert not any(n.startswith("x-ratelimit-") for n in rate_limit_slash.headers)
 
-        # a bearer that does not resolve is its own 401 on the spent window, not the refusal
+        # a bearer after a tab is counted in the unparseable window instead, so it is that window's
+        # refusal once two `Digest x` have spent it (see `refused_without_a_window`)
+        for _ in range(2):
+            digest = c.get("/github/user/repos", headers={"Authorization": "Digest x"})
+            assert digest.status_code == 401
+        tab_spent = c.get("/github/user/repos", headers={"Authorization": "Bearer\tnope"})
+        assert (tab_spent.status_code, tab_spent.json()) == (403, refused.json())
+
+        # `Bearer nope` is its own 401 on both spent windows, not the refusal
         bad_bearer = c.get("/github/user/repos", headers={"Authorization": "Bearer nope"})
         assert bad_bearer.status_code == 401
         assert not any(n.startswith("x-ratelimit-") for n in bad_bearer.headers)

@@ -287,7 +287,10 @@ def test_jira_refuses_a_bearer_it_cannot_read_as_a_connect_token(client):
     # And it is refused ahead of the route: serverInfo needs no credential and still answers 403,
     # which is why the check is not in the caller helper. The tokens are spellings
     # ``backlot.auth.atlassian_bearer_token`` reads.
-    for token in ("usr-nope", "a\tb", "a,b", "a.b", "\tusr-nope", "\t\tusr-nope", "\x85a", "\xa0a"):
+    for token in (
+        *("usr-nope", "a\tb", "a,b", "a.b", "\tusr-nope", "\t\tusr-nope"),
+        *("\x85a", "\xa0a", "\x85", "\xa0", "\xa0\xa0"),
+    ):
         info = client.get(
             "/atlassian/rest/api/3/serverInfo",
             headers={"Authorization": f"Bearer {token}".encode("latin-1")},
@@ -331,13 +334,20 @@ def test_jira_answers_a_jwt_shaped_bearer_with_the_403_too(client):
         "Bearer \t usr-nope",
         "Bearer a  b",
         "Bearer a b c",
+        # the header's ends, as ``backlot.auth.atlassian_bearer_token`` trims them
+        "Bearer \t",
+        "\x85Bearer usr-nope",
+        "\xa0Bearer usr-nope",
     ],
 )
 def test_jira_reads_an_unrecognised_scheme_as_no_credential(client, header):
     """The 403 above is for a credential the site READ. A spelling it does not read is not a
     credential at all, and the request is the anonymous one — which is how each spelling was told
     apart on the real sites in the first place (403 = read, 200 = not read)."""
-    r = client.get("/atlassian/rest/api/3/project/search", headers={"Authorization": header})
+    r = client.get(
+        "/atlassian/rest/api/3/project/search",
+        headers={"Authorization": header.encode("latin-1")},
+    )
     assert r.status_code == 200 and r.json()["values"] == []
 
 
@@ -4134,6 +4144,7 @@ _REMOVE_TEMPLATE = "/atlassian/rest/api/3/project-template/remove-template"
 _SERVICE_REGISTRY = "/atlassian/rest/atlassian-connect/1/service-registry?serviceIds=1"
 _COLUMNS = "/atlassian/rest/api/2/settings/columns"
 _FILTER_COLUMNS = "/atlassian/rest/api/3/filter/999/columns"
+_FIELD = "/atlassian/rest/api/3/field"
 _PREFERENCES = "/atlassian/rest/api/3/mypreferences"
 _AGENTS = "/atlassian/rest/api/3/agents/bulk/invoke/batch"
 _POLICIES = "/atlassian/rest/api/3/policies/project/NOPE/policies"
@@ -4238,6 +4249,9 @@ _JSON = "application/json"
             "text/plain;charset=ISO-8859-1",
             "application/json, application/yaml, application/*+json",
         ),
+        # one that takes JSON alone
+        ("POST", _FIELD, "none", "text/plain", "x", 415, "text/plain", _JSON),
+        ("POST", _FIELD, "none", _JSON, "{}", 405, None, None),
     ],
 )
 def test_jira_checks_the_media_type_an_operation_takes_before_anything_else(
@@ -4245,8 +4259,9 @@ def test_jira_checks_the_media_type_an_operation_takes_before_anything_else(
 ):
     """Pins the 415 ``errors.atlassian.refuse_a_media_type`` describes, on the operations
     ``backlot/data/jira_unserved.json`` says check one. Each row's control is the same URL
-    answering past the check: the 401 a caller with no credential gets, or the 404 an operation no
-    route serves gives a caller whose credential resolves."""
+    answering past the check: the 401 a caller with no credential gets, the 404 an operation no
+    route serves gives a caller whose credential resolves, or the 405 of a method no route here
+    takes where a route serves the path."""
     headers = dict(admin_h if credential == "admin" else _CREDENTIALS[credential])
     if content_type is not None:
         headers["Content-Type"] = content_type
@@ -5399,15 +5414,15 @@ _JSON_TYPE = "application/json"
         ),
     ],
 )
-def test_confluence_answers_a_published_operation_before_it_runs(
+def test_confluence_answers_an_operation_before_it_runs(
     client, method, vendor_path, authorization, ctype, status, body
 ):
-    """With no credential real refuses each published operation before it runs, in the order and
-    shape ``_published_answer``, ``_CONFLUENCE_CONSUMES``, ``_CONFLUENCE_JAXRS_WRITES``,
-    ``_CONFLUENCE_NOT_PERMITTED_GETS`` and ``_CONFLUENCE_OUTSIDE_THE_DOCUMENT`` in
-    ``backlot.routers.atlassian`` carry the measurement for. A 415's ``body`` is the reason Spring
-    gives; the 401 is asserted by status alone, its body being JSON here where real's is Tomcat's
-    page."""
+    """With no credential real refuses each operation these rows name, published or served outside
+    the document, before it runs, in the order and shape ``_published_answer``,
+    ``_CONFLUENCE_CONSUMES``, ``_CONFLUENCE_JAXRS_WRITES``, ``_CONFLUENCE_NOT_PERMITTED_GETS`` and
+    ``_CONFLUENCE_OUTSIDE_THE_DOCUMENT`` in ``backlot.routers.atlassian`` carry the measurement for.
+    A 415's ``body`` is the reason Spring gives; the 401 is asserted by status alone, its body being
+    JSON here where real's is Tomcat's page."""
     headers = {} if ctype is None else {"Content-Type": ctype}
     if authorization is not None:
         headers["Authorization"] = authorization

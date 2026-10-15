@@ -584,7 +584,9 @@ def _spring_media_type(
     named so in that case only, the last value of it as sent (`charset=bogus;charset=utf-8` is read,
     and `charset=bogus;Charset=utf-8` is not); Jira, ``charset_in_any_case``, looks up the `charset`
     kept, in any case (`Charset=bogus;charset=utf-8` and `charset=bogus;Charset=utf-8` are read,
-    `charset=utf-8;Charset=bogus` is not), 2026-10-16. A `q` is checked where it is kept as `q` and
+    `charset=utf-8;Charset=bogus` is not), and reads a charset's name only as a token or quoted
+    (`charset=ISO_8859-1:1987`, a name Java gives ISO-8859-1, is not read and
+    `charset="ISO_8859-1:1987"` is), 2026-10-16. A `q` is checked where it is kept as `q` and
     must be one :func:`_spring_quality` reads: `q=2;q=0.5` is read and `q=0.5;q=2` is not
     (2026-10-13), and `q=Infinity;Q=0.5` is read, where the `Q` is what is kept (both products,
     2026-10-16).
@@ -606,7 +608,8 @@ def _spring_media_type(
         is_quoted = len(given) >= 2 and given[0] == given[-1] and given[0] in "\"'"
         if not (_TOKEN.fullmatch(name) and given):
             return None
-        if not (is_quoted or name == "charset" or _TOKEN.fullmatch(given)):
+        spring_charset = name == "charset" and not charset_in_any_case
+        if not (is_quoted or spring_charset or _TOKEN.fullmatch(given)):
             return None
         if name == "charset" and not charset_in_any_case and not _java_charset(_unquoted(given)):
             return None

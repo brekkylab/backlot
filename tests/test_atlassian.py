@@ -6178,6 +6178,8 @@ _ACCEPT_ROWS = [
     ("GET", _INFO, "none", "application/json,*.*;q=0.9\xa0", None, 406, _EMPTY_HTML, b"", {}),
     ("GET", _INFO, "none", "application/json;charset=utf-8;Charset=bogus", None, 406)
     + (_EMPTY_HTML, b"", {}),
+    ("GET", _INFO, "none", "application/json;charset=ISO_8859-1:1987", None, 406, _EMPTY_HTML, b"")
+    + ({},),
     ("GET", _SPACES, "none", "application/json;q=2", None, 406, None, b"", {}),
     ("GET", _SPACES, "admin", "\xa0application/json", None, 406, None, b"", {}),
     ("GET", _SPACES, "admin", "application/json;charset=bogus;Charset=utf-8", None, 406, None, b"")
@@ -6685,6 +6687,10 @@ _JIRA_401 = [
             ('application/json;x="a,b", text/plain', 'application/json;x="a,b";charset=UTF-8'),
             ("application/json;Charset=bogus;charset=utf-8", "application/json;charset=utf-8"),
             ("application/json;charset=bogus;Charset=utf-8", "application/json;charset=utf-8"),
+            (
+                'application/json;charset="ISO_8859-1:1987"',
+                "application/json;charset=ISO_8859-1:1987",
+            ),
         )
     ),
     ("OPTIONS", "text/plain;q=1;q=0.1, application/json", 401, "application/json;charset=UTF-8")

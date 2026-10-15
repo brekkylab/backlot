@@ -1347,13 +1347,13 @@ def test_confluence_body_and_version(tmp_path):
     assert page["metadata"]["labels"]["results"][0]["name"] == "eng"
 
 
-def test_confluence_restrictions_has_update(tmp_path):
-    # restrictions/byOperation must return BOTH read and update operations
+def test_confluence_restrictions_answers_both_operations_in_real_shape(tmp_path):
+    # restrictions/byOperation must return BOTH read and update operations, with real's links
     import asyncio
     import types
 
     from backlot.acl import Acl
-    from backlot.routers.atlassian import confluence_restrictions
+    from backlot.routers.atlassian import _site, confluence_restrictions
 
     s = tiny_corpus(
         tmp_path,
@@ -1386,9 +1386,15 @@ def test_confluence_restrictions_has_update(tmp_path):
         "app": app,
         "headers": [(b"authorization", f"Bearer {s.admin_token}".encode())],
     }
-    result = asyncio.run(confluence_restrictions(cid, Request(scope)))
-    assert "read" in result and "update" in result
+    request = Request(scope)
+    result = asyncio.run(confluence_restrictions(cid, request))
     assert result["read"]["restrictions"]["user"]["results"]  # the private doc's author
+    path = f"{_site(request)}/wiki/rest/api/content/{cid}/restriction/byOperation"
+    assert list(result) == ["read", "update", "_links"]
+    assert result["_links"] == {"self": path, "base": f"{_site(request)}/wiki", "context": "/wiki"}
+    for op in ("read", "update"):
+        assert list(result[op]) == ["operation", "restrictions", "_expandable", "_links"]
+        assert result[op]["_links"] == {"self": f"{path}/{op}"}
 
 
 @pytest.mark.parametrize("route", ["child/page", "child/attachment", "restriction/byOperation"])
@@ -2203,6 +2209,45 @@ def test_confluence_label_serves_one_of_two_labels_and_a_next(client, admin_h):
     page = client.get(f"{api}/content/{holder}/label?limit=1&start=0", headers=admin_h).json()
     assert page["size"] == 1 and page["limit"] == 1
     assert page["_links"]["next"].endswith("next=true&limit=1&start=1")
+
+
+@pytest.mark.parametrize(
+    "query, refused",
+    [
+        *[(f"prefix={p}", None) for p in ("global", "my", "team", "system", "", "%20global")],
+        *[(f"prefix={p}", None) for p in ("%09global", "global,my", "my,team,system,global")],
+        ("prefix=bogus", ["bogus"]),
+        ("prefix=GLOBAL", ["GLOBAL"]),
+        ("prefix=%20bogus", ["bogus"]),
+        ("prefix=%20", [""]),
+        ("prefix=global,bogus", ["global", "bogus"]),
+        ("prefix=global%20,%20bogus", ["global", "bogus"]),
+        ("prefix=global,", ["global", ""]),
+        ("prefix=global&prefix=bogus", ["global", "bogus"]),
+        ("prefix=bogus&prefix=global", ["bogus", "global"]),
+        ("prefix=&prefix=bogus", ["", "bogus"]),
+        # where the refusal sits among the others, as the comment in `confluence_labels` records
+        ("prefix=bogus&limit=0", ["bogus"]),
+        ("prefix=bogus&limit=-1&start=-1", ["bogus"]),
+        ("prefix=bogus&limit=abc", "limit=abc"),
+        ("prefix=bogus&start=abc", "start=abc"),
+    ],
+)
+def test_confluence_label_reads_its_prefix_as_real_does(client, admin_h, query, refused):
+    """Real's answers to `content/{id}/label?prefix=…`, the rule `_refuse_a_label_prefix`
+    records: ``refused`` is the elements the 400 names, ``None`` a 200, or a query whose answer this
+    one is."""
+    api = "/atlassian/wiki/rest/api"
+    cid = client.get(f"{api}/content?limit=1", headers=admin_h).json()["results"][0]["id"]
+    r = client.get(f"{api}/content/{cid}/label?{query}", headers=admin_h)
+    if refused is None:
+        assert r.status_code == 200, r.text
+    elif isinstance(refused, str):
+        twin = client.get(f"{api}/content/{cid}/label?{refused}", headers=admin_h)
+        assert (r.status_code, r.json()) == (400, twin.json())
+    else:
+        want = errors_atlassian.label_prefixes_not_converted(refused)
+        assert (r.status_code, r.json()) == (400, want.body)
 
 
 # (query, start, limit, prev) for a page holding no attachment, which every corpus page is

@@ -2839,6 +2839,60 @@ def _linear_identifiers(client, authorization):
     return r.status_code, r.json()
 
 
+@pytest.mark.parametrize(
+    "caller, unassigned",
+    [
+        ("mia@acme.com", "mia/eng-2-rotate-the-signing-keys"),
+        # the admin token has no address, so there is no user segment
+        ("admin", "eng-2-rotate-the-signing-keys"),
+    ],
+)
+def test_an_unassigned_issue_branch_name_starts_with_the_callers_handle(
+    tmp_path, caller, unassigned
+):
+    """An issue with no assignee takes the caller's email local part as its branch prefix.
+    An assigned issue keeps the assignee's local part in front of the same slug."""
+    records = [
+        {
+            "source_type": "linear",
+            "doc_id": "assigned",
+            "team": "engineering",
+            "title": "Rotate the signing keys",
+            "identifier": "ENG-1",
+            "content": "Keys expire in March.",
+            "state": "Todo",
+            "author_email": "mia@acme.com",
+            "assignee": "raj@acme.com",
+            "created": "2026-02-01T09:00:00Z",
+        },
+        {
+            "source_type": "linear",
+            "doc_id": "unassigned",
+            "team": "engineering",
+            "title": "Rotate the signing keys",
+            "identifier": "ENG-2",
+            "content": "Keys expire in March.",
+            "state": "Todo",
+            "author_email": "mia@acme.com",
+            "created": "2026-02-01T09:00:00Z",
+        },
+    ]
+    with corpus_client(tmp_path, records) as (client, settings):
+        users = client.get("/_meta/users").json()["users"]
+        if caller == "admin":
+            token = settings.admin_token
+        else:
+            token = next(u["token"] for u in users if u["email"] == caller)
+        body = gql(
+            client,
+            "{ issues { nodes { identifier branchName } } }",
+            {"Authorization": token},
+        ).json()
+        assert "errors" not in body, body.get("errors")
+        got = {n["identifier"]: n["branchName"] for n in body["data"]["issues"]["nodes"]}
+        assert got == {"ENG-1": "raj/eng-1-rotate-the-signing-keys", "ENG-2": unassigned}
+
+
 def test_an_issue_with_no_recorded_edit_is_filtered_on_the_updatedAt_it_serves(tmp_path):
     """`Issue.updatedAt` is non-null in Linear; Backlot serves an issue with no recorded edit at its
     creation time (`COALESCE(updated_ts, created_ts)`), and the sorts already read that expression.

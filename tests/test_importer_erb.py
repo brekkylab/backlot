@@ -2055,6 +2055,7 @@ def test_linear_unassigned_is_not_turned_into_a_person():
     unassigned issue, and minting a user called "unassigned" would pollute the roster."""
     _conn_, row, _c = _load_linear({**LINEAR_RAW, "assignee": "unassigned"})
     assert row["assignee_email"] is None and row["assignee_display"] is None
+    assert row["branch_name"] is None
 
 
 def test_linear_synthesizes_an_identifier_when_the_key_is_missing():

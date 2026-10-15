@@ -8,11 +8,11 @@ next March.
 This package is the same measurement, run on a schedule and checked in. Pick a source out of
 ``COMPARISONS``, call ``measure`` on it, read the ``Measurement``'s findings as ``Finding`` objects
 graded ``BREAKING`` or ``GAP``, and acknowledge what you accept through ``Baseline`` — so a run
-reports only what is new, and accepting one is a file change that goes through review. The
-baseline file is the surface the source was measured as, with each accepted finding written onto
-the element it names, so an installed copy can also name every vendor operation offline: each is
-an ``OperationEntry``, ``IMPLEMENTED``, ``MISSING``, ``EXTRA`` or ``REFUSED``. ``FidelityError``
-separates the one case that is not a finding at all: the vendor could not be asked.
+reports only what is new, and accepting one is a file change that goes through review. A baseline
+also names offline every operation a published document or the S3 model declares, and every root
+query field of a GraphQL schema, as ``Baseline.operations``: each an ``OperationEntry`` that is
+``IMPLEMENTED``, ``MISSING``, ``EXTRA`` or ``REFUSED``. ``FidelityError`` separates the one case
+that is not a finding at all: the vendor could not be asked.
 
 That is the whole public surface. The submodules are not part of it: each exposes a ``measure``
 of its own that loads both sides for its kind of source, and re-exporting the steps in between — a

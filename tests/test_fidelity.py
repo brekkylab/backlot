@@ -68,7 +68,12 @@ def _diff(backlot_sdl: str, vendor_sdl: str = VENDOR) -> list[Finding]:
 @pytest.mark.parametrize(
     "kind,severity,path,backlot_sdl",
     [
-        ("extra_field", BREAKING, "Transcript.titel", VENDOR.replace("title:", "titel:")),
+        (
+            "extra_field",
+            BREAKING,
+            "Transcript.titel",
+            VENDOR.replace("title:", "titel(short: Boolean):"),
+        ),
         ("type_mismatch", BREAKING, "Transcript.duration", VENDOR.replace("Float", "Int")),
         (
             "extra_arg",
@@ -82,7 +87,26 @@ def _diff(backlot_sdl: str, vendor_sdl: str = VENDOR) -> list[Finding]:
             "Query.transcripts(limit)",
             VENDOR.replace("limit: Int", "limit: String"),
         ),
-        ("extra_type", BREAKING, "Invented", VENDOR + "\ntype Invented { id: ID! }"),
+        (
+            "extra_type",
+            BREAKING,
+            "Invented",
+            VENDOR + "\ntype Invented { id(full: Boolean): ID! }\nenum Mood { CALM }",
+        ),
+        (
+            "kind_mismatch",
+            BREAKING,
+            "Origin",
+            VENDOR.replace("union Origin = Meeting | Upload", "type Origin { id: ID! }"),
+        ),
+        (
+            "extra_arg",
+            BREAKING,
+            "Source.id(raw)",
+            VENDOR.replace(
+                "interface Source { id: ID! }", "interface Source { id(raw: Boolean): ID! }"
+            ),
+        ),
         (
             "extra_enum_value",
             BREAKING,
@@ -119,6 +143,17 @@ def test_each_divergence_is_found_and_classified(kind, severity, path, backlot_s
     # Each is written onto the type, field, argument, value or member it names, and read back.
     _, back = SchemaSurface.from_json(measured.surface.to_json(found))
     assert sorted(f.key for f in back) == sorted(f.key for f in found)
+    with pytest.raises(ValueError, match="naming no element"):
+        measured.surface.to_json([*found, Finding("missing_field", GAP, "Nowhere.field", "")])
+    # And what the measurement records Backlot serving is every element Backlot declares, a type
+    # of another kind on the vendor's side counted whole.
+    ours = build_schema(backlot_sdl)
+    whole = {f.path for f in found if f.kind == "kind_mismatch"}
+    declared = {p for p in schema_surface(ours, ours).elements() if p.split(".")[0] not in whole}
+    served = {p for p, s in measured.surface.elements().items() if s in (IMPLEMENTED, EXTRA)}
+    assert served == declared | whole
+    # A vendor type is kept only where the vendor's member has one: no enum value or union member.
+    assert '"type": "None"' not in json.dumps(measured.surface.to_json(found))
 
 
 def test_identical_schemas_report_nothing_and_breaking_sorts_first():
@@ -166,6 +201,7 @@ def test_a_baseline_silences_what_it_holds_and_surfaces_what_is_new(tmp_path):
     regressed = _diff(VENDOR.replace("Float", "Int"))
     assert [f.kind for f in baseline.unacknowledged(regressed)] == ["type_mismatch"]
     assert [f.path for f in baseline.resolved([])] == ["Transcript.title"]
+    assert baseline.resolved(known) == []
 
 
 def test_rewriting_a_baseline_keeps_its_notes_and_takes_the_new_identity(tmp_path):
@@ -280,18 +316,22 @@ def test_a_finding_two_documents_both_declare_is_recorded_once(monkeypatch, regi
     one of those paths would print and count twice.
 
     The operations they pair join the same way, one entry per operation, and a document whose
-    mount serves one outranks a document that only declares it, finding and all."""
+    mount serves one outranks a document that only declares it, finding and all; between two that
+    both serve it, or both only declare it, the first document's entry stands."""
     shared = _finding("missing_operation", "GET /rest/forge/1/app/properties")
 
     def fake(spec, *, timeout=120.0, **kw):
         own = spec.mount[0]
         unserved = [_finding("missing_operation", "GET /both")] if own == "/a" else []
+        invented = _finding("extra_operation", f"GET {own}/mine", BREAKING)
         return Measurement(
-            [shared, _finding("missing_operation", f"GET {own}/own"), *unserved],
+            [shared, _finding("missing_operation", f"GET {own}/own"), *unserved, invented],
             OperationSurface(
                 (
-                    OperationEntry(shared.path, MISSING, "forge-props"),
+                    OperationEntry(shared.path, MISSING, f"forge-props{own}"),
                     OperationEntry("GET /both", IMPLEMENTED if own == "/b" else MISSING, "both"),
+                    OperationEntry("GET /served", IMPLEMENTED, f"served{own}"),
+                    OperationEntry(invented.path, EXTRA),
                 )
             ),
         )
@@ -308,13 +348,18 @@ def test_a_finding_two_documents_both_declare_is_recorded_once(monkeypatch, regi
     found = measured.findings
     assert len(found) == len({f.key for f in found}), [f.path for f in found]
     assert sorted(f.path for f in found) == [
+        "GET /a/mine",
         "GET /a/own",
+        "GET /b/mine",
         "GET /b/own",
         "GET /rest/forge/1/app/properties",
     ]
     assert measured.surface.operations == (
+        OperationEntry("GET /a/mine", EXTRA),
+        OperationEntry("GET /b/mine", EXTRA),
         OperationEntry("GET /both", IMPLEMENTED, "both"),
-        OperationEntry("GET /rest/forge/1/app/properties", MISSING, "forge-props"),
+        OperationEntry("GET /rest/forge/1/app/properties", MISSING, "forge-props/a"),
+        OperationEntry("GET /served", IMPLEMENTED, "served/a"),
     )
 
 
@@ -477,12 +522,16 @@ def test_a_google_document_is_read_once_for_both_the_contracts_it_carries(monkey
         # to say and reading it off the memoized document is what the assertion below proves.
         batch_mount=("/batch/{api}/{version}",),
     )
-    found = c.measure().findings
+    measured = c.measure()
+    found = measured.findings
     assert fetched == [URL]
     assert [(f.kind, f.path) for f in found if "batch" in f.kind] == [
         ("extra_batch_route", "/batch/{}/{}"),
         ("missing_batch_path", "gmail:v1 batch"),
     ]
+    # The batch contract joins the operations' surface, so those two have elements to sit on.
+    _, back = OperationSurface.from_json(measured.surface.to_json(found))
+    assert sorted(f.key for f in back) == sorted(f.key for f in found)
 
 
 def test_specs_sharing_an_index_read_it_once_per_run(monkeypatch):
@@ -554,10 +603,48 @@ def test_every_comparison_is_registered_once_as_the_class_its_registry_implies()
             assert isinstance(comparison, expected), f"{name} is a {type(comparison).__name__}"
 
 
-def test_every_comparison_ships_a_baseline():
-    """Shipped so an installed copy can be compared without the repository."""
-    for name in COMPARISONS:
-        assert Baseline.load(baseline_path(name)).source == name
+def test_every_comparison_ships_a_baseline(tmp_path):
+    """Shipped so an installed copy can be compared without the repository, and in the form a run
+    writes it. A run against the vendor reads only the findings in the file, never an operation's
+    status or id, and the routers that refuse an operation Backlot does not serve read only the
+    operations recorded `missing` — so a hand edit to either goes unseen unless it is held here."""
+    for name, comparison in COMPARISONS.items():
+        baseline = Baseline.load(baseline_path(name))
+        assert baseline.source == name
+        assert baseline.endpoints == comparison.endpoints, name
+        # Written back from what it loaded, it is the same file: a spelling `--update-baseline`
+        # writes differently from the shipped one would churn the next run's diff.
+        out = tmp_path / f"{name}.json"
+        acknowledged = baseline.acknowledged.values()
+        baseline.write(out, acknowledged, measured=baseline.measured, surface=baseline.surface)
+        assert out.read_text() == baseline_path(name).read_text(), name
+
+        entries = baseline.operations
+        names = [e.operation for e in entries]
+        assert names == sorted(set(names)), f"{name}: one entry per operation, in order"
+        surface = baseline.surface
+        if isinstance(surface, SchemaSurface):
+            statuses = set(surface.elements().values())
+        else:
+            statuses = {e.status for e in entries}
+            if surface.batch is not None:
+                statuses |= {d.status for d in surface.batch.documents}
+                statuses |= {r.status for r in surface.batch.routes}
+        allowed = {IMPLEMENTED, MISSING, EXTRA}
+        if isinstance(comparison, comparisons.ProbeComparison):
+            allowed.add(REFUSED)
+        assert statuses <= allowed, f"{name}: status {statuses - allowed}"
+        # An operation's finding agrees with its status: one Backlot does not serve is `missing`.
+        status = {e.operation: e.status for e in entries}
+        for f in baseline.acknowledged.values():
+            want = {"missing_operation": MISSING, "extra_operation": EXTRA}.get(f.kind)
+            assert want in (None, status.get(f.path)), f"{name}: {f.key} on {status.get(f.path)}"
+        named_by_path = any(s.named_by_path for s in getattr(comparison, "specs", ()))
+        for e in entries:
+            if named_by_path:
+                assert e.id == e.operation.partition(" /")[2], f"{name}: id {e}"
+            else:
+                assert bool(e.id) == (e.status != EXTRA), f"{name}: id {e}"
 
 
 def test_every_mount_selects_something_backlot_serves():
@@ -651,32 +738,37 @@ def test_no_uncompared_declaration_outlives_its_route():
 
 
 def test_every_served_element_is_one_its_baseline_records_served():
-    """With no network: a route, a parameter or a GraphQL member added without rewriting the
-    baseline leaves the element recorded `missing`, which a run against the vendor reports as
-    "acknowledged but no longer diverging". The served surface is read off the app and the SDL, and
-    has to be exactly what the shipped file records Backlot serving. S3's is what a running server
-    answers, which is not readable offline."""
+    """With no network: the operations and GraphQL elements read off the app and the SDL are exactly
+    the ones the shipped file records Backlot serving, and no served parameter is recorded
+    `missing`. One the vendor has, added without rewriting the baseline, stays recorded `missing`,
+    which a run against the vendor reports as "acknowledged but no longer diverging".
+
+    S3's served surface is what a running Backlot answers, and that server runs here: only
+    botocore's model is fetched over the network, and botocore ships a copy. The operations that
+    copy lacks go unchecked."""
     from backlot.main import app
 
     spec = app.openapi()
     for name, comparison in COMPARISONS.items():
         baseline = Baseline.load(baseline_path(name))
         assert baseline.operations, f"{name}: the baseline names no operations"
+        rerun = f"{name}: rerun `backlot diff -s {name} --update-baseline`"
         if isinstance(comparison, comparisons.ProbeComparison):
             continue
-        rerun = f"{name}: rerun `backlot diff -s {name} --update-baseline`"
         if isinstance(comparison, comparisons.GraphQLComparison):
             sdl = backlot_schema(name)
+            mine = schema_surface(sdl, sdl)
             # A type of another kind on the vendor's side is compared as a whole, so the file
             # records none of its members.
             whole = {f.path for f in baseline.acknowledged.values() if f.kind == "kind_mismatch"}
-            served = {
-                p for p in schema_surface(sdl, sdl).elements() if p.split(".")[0] not in whole
-            } | whole
+            served = {p for p in mine.elements() if p.split(".")[0] not in whole} | whole
             recorded = baseline.surface.elements()
             assert {p for p, status in recorded.items() if status in (IMPLEMENTED, EXTRA)} == (
                 served
             ), rerun
+            assert baseline.surface.query == mine.query, rerun
+            kinds = {n: t.kind for n, t in baseline.surface.types.items()}
+            assert kinds == {n: t.kind for n, t in mine.types.items()}, rerun
             continue
         served_ops = {
             str(op): op
@@ -688,6 +780,25 @@ def test_every_served_element_is_one_its_baseline_records_served():
         served_params = {f"{o}?{p}" for o, op in served_ops.items() for p in op.params}
         missing = {f.path for f in baseline.acknowledged.values() if f.kind == "missing_param"}
         assert not served_params & missing, rerun
+        extra = {f.path for f in baseline.acknowledged.values() if f.kind == "extra_param"}
+        assert extra <= served_params, rerun
+        assert {p.rpartition("?")[0] for p in missing | extra} <= set(served_ops), rerun
+        batch = baseline.surface.batch
+        routes = {r.route for r in (batch.routes if batch else ()) if r.status != MISSING}
+        assert routes == {"/" + operations.canonical(r) for r in _batch_routes(comparison)}, rerun
+
+    pytest.importorskip("botocore")
+    from botocore.loaders import Loader
+
+    import backlot
+
+    model = Loader().load_service_model("s3", "service-2")
+    with backlot.serve() as server:
+        measured = PROBE["s3"].run(server.base_url, model, 20.0)
+    recorded = {e.operation: e for e in Baseline.load(baseline_path("s3")).operations}
+    assert measured.surface.operations
+    for e in measured.surface.operations:
+        assert recorded.get(e.operation) == e, "s3: rerun `backlot diff -s s3 --update-baseline`"
 
 
 def test_every_acknowledged_breaking_divergence_carries_its_reasoning():
@@ -771,6 +882,7 @@ AN_OPENAPI_DOC = {
                 "operationId": "conversations_list",
                 "parameters": [{"name": "limit", "in": "query"}, {"$ref": "#/x/cursor"}],
             },
+            "post": {},
             "parameters": [{"name": "token", "in": "query"}],
         }
     },
@@ -797,6 +909,7 @@ def test_an_openapi_document_follows_refs_and_keeps_path_level_parameters():
     found = openapi_diff.from_openapi(AN_OPENAPI_DOC)
     assert found[("get", "conversations.list")].params == frozenset({"limit", "cursor", "token"})
     assert found[("get", "conversations.list")].id == "conversations_list"
+    assert found[("post", "conversations.list")].id == ""
 
 
 def test_a_placeholders_name_is_not_a_divergence():
@@ -836,7 +949,7 @@ def test_the_mount_comes_off_only_where_the_vendor_does_not_repeat_it():
     assert mounted("confluence") == {"wiki/rest/api/space"}
 
 
-def test_operation_divergences_are_classified_like_schema_ones():
+def test_operation_divergences_are_classified_paired_and_written_like_schema_ones():
     served = operations.from_backlot(
         {"paths": {"/x/a": {"get": {"parameters": [{"name": "n", "in": "query"}]}}}}, ["/x"], "/x"
     )
@@ -848,8 +961,8 @@ def test_operation_divergences_are_classified_like_schema_ones():
     assert by_kind == {"extra_param": BREAKING, "missing_param": GAP, "missing_operation": GAP}
 
     # The operations pair the same way: each is on both sides, the vendor's only or Backlot's only,
-    # named as the vendor's document names it, and a served route the document does not describe
-    # has no name -- unless the vendor names an operation by its path, as Slack names
+    # named as the vendor's document names it, and a served route with no path item in the
+    # document has no name -- unless the vendor names an operation by its path, as Slack names
     # `conversations.list`.
     served[("post", "a")] = operations.Operation("post", "a", frozenset())
     surface = operations.inventory(served, vendor)
@@ -886,6 +999,20 @@ def test_operation_divergences_are_classified_like_schema_ones():
     read, back = OperationSurface.from_json(written)
     assert read == surface
     assert {(f.kind, f.path) for f in back} == {(f.kind, f.path) for f in findings}
+
+    # An element holds one finding and a finding names one element, and an operation is one entry,
+    # so writing refuses a second finding on an element or one no element carries, and reading
+    # refuses an operation listed twice, rather than dropping any of them.
+    with pytest.raises(ValueError, match="two findings name one element"):
+        surface.to_json([*findings, Finding("extra_operation", BREAKING, "GET /b", "")])
+    with pytest.raises(ValueError, match="naming no element"):
+        surface.to_json([*findings, Finding("missing_operation", GAP, "GET /c", "")])
+    with pytest.raises(ValueError, match="naming no element"):
+        surface.to_json([Finding("extra_batch_route", BREAKING, "/batch", "")])
+    with pytest.raises(ValueError, match="listed twice"):
+        OperationSurface.from_json(
+            {"operations": [*written["operations"], written["operations"][1]]}
+        )
 
 
 GOOGLE_BATCH_MOUNT = ("/batch", "/batch/{api}/{version}")
@@ -992,6 +1119,16 @@ def test_batch_path_divergences_name_the_document_and_the_route(declared, spelle
     # Every one is written onto the document or the route it names, and read back off it.
     _, back = OperationSurface.from_json(measured.surface.to_json(measured.findings))
     assert sorted(f.key for f in back) == sorted(f.key for f in measured.findings)
+    stray = Finding("extra_batch_route", BREAKING, "/nowhere", "")
+    with pytest.raises(ValueError, match="naming no element"):
+        measured.surface.to_json([*measured.findings, stray])
+    # And each element has the status its finding gives it, `implemented` where none names it.
+    kinds = {f.path: f.kind for f in measured.findings}
+    status = {"missing_batch_path": MISSING, "extra_batch_api": EXTRA, "extra_batch_route": EXTRA}
+    elements = [(d.path, d.status) for d in measured.surface.batch.documents]
+    elements += [(r.route, r.status) for r in measured.surface.batch.routes]
+    for path, got in elements:
+        assert got == status.get(kinds.get(path), IMPLEMENTED), path
 
 
 CATALOG = {
@@ -1037,9 +1174,15 @@ S3_MODEL = {
             "http": {"method": "GET", "requestUri": "/"},
             "staticContextParams": {"UseS3ExpressControlEndpoint": {"value": True}},
         },
-        "PutBucketAcl": {"http": {"method": "PUT", "requestUri": "/{Bucket}?acl"}},
+        # The flag sits on bucket operations too: botocore sends PutBucketAcl to the control
+        # endpoint for a directory bucket (`--x-s3`) and to the S3 endpoint for any other.
+        "PutBucketAcl": {
+            "http": {"method": "PUT", "requestUri": "/{Bucket}?acl"},
+            "staticContextParams": {"UseS3ExpressControlEndpoint": {"value": True}},
+        },
         "WriteGetObjectResponse": {
-            "http": {"method": "POST", "requestUri": "/WriteGetObjectResponse"}
+            "http": {"method": "POST", "requestUri": "/WriteGetObjectResponse"},
+            "staticContextParams": {"UseObjectLambdaEndpoint": {"value": True}},
         },
         "ListParts": {
             "http": {"method": "GET", "requestUri": "/{Bucket}/{Key+}"},
@@ -1067,10 +1210,13 @@ def test_the_s3_model_yields_its_operations_keyed_by_what_selects_them():
     found = {o.name: o for o in s3_probe.operations(S3_MODEL)}
     # A write is asked too, as one Backlot must refuse.
     assert found["GetBucketAcl"].reads and not found["PutBucketAcl"].reads
-    # The one path naming a word of its own rather than a bucket or a key is asked at that word.
+    assert s3_probe.S3Operation("HeadObject", "HEAD", "object", "").reads
+    # The one path naming a word of its own rather than a bucket or a key is named by that word.
     assert str(found["WriteGetObjectResponse"]) == (
         "WriteGetObjectResponse: POST /WriteGetObjectResponse"
     )
+    # Every other is named by the bucket, the object or the service root it is asked at.
+    assert str(found["GetBucketAcl"]) == "GetBucketAcl: GET /{bucket}?acl"
     assert (found["GetBucketAcl"].target, found["GetBucketAcl"].query) == ("bucket", "acl")
     assert found["GetObjectTagging"].target == "object"
     assert found["ListBuckets"].query == ""
@@ -1109,8 +1255,9 @@ def _s3_error(code: str) -> str:
                 "GetObjectTagging": (MISSING, "missing_operation", GAP),
                 "PutBucketAcl": (IMPLEMENTED, "answered_write", BREAKING),
                 "ListBuckets": (IMPLEMENTED, None),
-                # Its `GET /` at the S3 endpoint is ListBuckets; it is served elsewhere.
+                # Each is served only at another endpoint, and not asked.
                 "ListDirectoryBuckets": (MISSING, "missing_operation", GAP),
+                "WriteGetObjectResponse": (MISSING, "missing_operation", GAP),
             },
         ),
         # The error real gives an operation is its answer, as real's `NoSuchCORSConfiguration` is
@@ -1139,11 +1286,24 @@ def _s3_error(code: str) -> str:
                 "PutBucketAcl": (REFUSED, None),
             },
         ),
+        # `NotImplemented` is the refusal only under an error status.
+        (
+            {"tagging": (200, _s3_error("NotImplemented"))},
+            {"GetObjectTagging": (IMPLEMENTED, None)},
+        ),
     ],
-    ids=["another-operations-body", "a-vendors-own-error", "an-error-real-does-not-give"],
+    ids=[
+        "another-operations-body",
+        "a-vendors-own-error",
+        "an-error-real-does-not-give",
+        "a-success-naming-the-refusal",
+    ],
 )
 def test_an_operation_is_judged_by_what_the_server_answers_it_with(monkeypatch, answers, expected):
+    asked = set()
+
     def fake(method, url, headers=None, timeout=None):
+        asked.add((method, url))
         for selector, (status, text) in answers.items():
             if f"?{selector}" in url:
                 return httpx.Response(status, text=text)
@@ -1153,6 +1313,9 @@ def test_an_operation_is_judged_by_what_the_server_answers_it_with(monkeypatch, 
     measured = s3_probe.probe(
         "http://x", "ak", "sk", s3_probe.operations(S3_MODEL), bucket="b", key="k"
     )
+    # Each is asked at its bucket or its object, and one served only at another endpoint is not.
+    assert {("GET", "http://x/s3/b?acl"), ("GET", "http://x/s3/b/k?tagging")} <= asked
+    assert not {m for m, u in asked if m == "POST"}
     found = {f.path.split(":")[0]: f for f in measured.findings}
     statuses = {e.id: e.status for e in measured.surface.operations}
     for operation, (status, *finding) in expected.items():
@@ -1258,6 +1421,7 @@ def test_update_baseline_records_gaps_and_leaves_breaking_findings_live(_vendor,
     the file can say which vendor operation a query asked for without asking the vendor."""
     _vendor(_both().replace("origin: Origin", "meetings: String"))
     args = ["diff", "-s", "fireflies", "--baseline-dir", str(tmp_path)]
+    assert Baseline.empty("fireflies").operations is None  # no run has written one yet
     assert cli.main([*args, "--update-baseline"]) == 1
     path = tmp_path / "fireflies.json"
     baseline = Baseline.load(path)
@@ -1270,6 +1434,7 @@ def test_update_baseline_records_gaps_and_leaves_breaking_findings_live(_vendor,
         OperationEntry("Query.origin", EXTRA),
         OperationEntry("Query.transcripts", IMPLEMENTED, "transcripts"),
     )
+    assert SchemaSurface("Query", {}).operations == ()  # a file that lost its root type
     # The breaking finding is measured and left unaccepted: the element is there, bare.
     assert json.loads(path.read_text())["types"]["Transcript"]["fields"]["duration"] == {
         "status": IMPLEMENTED
@@ -1277,8 +1442,63 @@ def test_update_baseline_records_gaps_and_leaves_breaking_findings_live(_vendor,
     assert "type_mismatch" in capsys.readouterr().err
 
 
-def test_a_breaking_finding_acknowledged_by_hand_survives_a_rewrite(_vendor, tmp_path):
-    """No flag acknowledges one; a hand edit does, and a rewrite must not undo it."""
+@pytest.mark.parametrize(
+    "written, refused",
+    [
+        # The list a file held before its findings were written onto elements.
+        (
+            {"acknowledged": [{"kind": "missing_field", "severity": GAP, "path": "Query.x"}]},
+            "under `acknowledged`",
+        ),
+        # A note put on the type rather than on the field it is about.
+        (
+            {
+                "types": {
+                    "Transcript": {"type_kind": "OBJECT", "status": "implemented", "note": "x"}
+                }
+            },
+            "no `kind`",
+        ),
+        # A breaking acknowledgement spelled in another case.
+        (
+            {
+                "types": {
+                    "Transcript": {
+                        "type_kind": "OBJECT",
+                        "status": "implemented",
+                        "kind": "extra_type",
+                        "severity": "BREAKING",
+                    }
+                }
+            },
+            "`severity` is",
+        ),
+    ],
+    ids=["the-list-format", "a-note-with-no-kind", "a-severity-in-another-case"],
+)
+def test_a_baseline_the_command_cannot_read_is_refused_not_emptied(
+    written, refused, _vendor, tmp_path, capsys
+):
+    """Read as written, each holds a note or an acknowledgement the loader would not see, and
+    `--update-baseline` would rewrite the file without it and say nothing. Exit 3, as for a
+    credential: the file is this repository's to fix."""
+    _vendor()
+    path = tmp_path / "fireflies.json"
+    raw = {"source": "fireflies", "root": {"query": "Query"}, **written}
+    path.write_text(json.dumps(raw))
+    before = path.read_text()
+    with pytest.raises(ValueError, match=refused):
+        Baseline.load(path)
+    args = ["diff", "-s", "fireflies", "--baseline-dir", str(tmp_path), "--update-baseline"]
+    assert cli.main(args) == 3
+    assert "the baseline cannot be used" in capsys.readouterr().err
+    assert path.read_text() == before
+
+
+@pytest.mark.parametrize("typed", [BREAKING, GAP])
+def test_a_breaking_finding_acknowledged_by_hand_survives_a_rewrite(typed, _vendor, tmp_path):
+    """No flag acknowledges one; a hand edit does, and a rewrite must not undo it. Whether it is
+    breaking is the measurement's to say, so a hand edit typing it a gap is kept whole too."""
     _vendor(VENDOR.replace("Float", "Int"))
     args = ["diff", "-s", "fireflies", "--baseline-dir", str(tmp_path)]
     path = tmp_path / "fireflies.json"
@@ -1290,26 +1510,29 @@ def test_a_breaking_finding_acknowledged_by_hand_survives_a_rewrite(_vendor, tmp
     edited = json.loads(path.read_text())
     edited["types"]["Transcript"]["fields"]["duration"] |= {
         "kind": "type_mismatch",
-        "severity": BREAKING,
+        "severity": typed,
         "detail": "vendor: Int, Backlot: Float",
         "note": "deliberate",
     }
     path.write_text(json.dumps(edited))
     assert cli.main(args) == 0
-    assert cli.main([*args, "--update-baseline"]) == 0
-    assert duration()["note"] == "deliberate"
 
     # The vendor moves again. The note was written about `vendor: Int`, and it says nothing about a
     # vendor now serving String, so the acknowledgement stops covering what is reported — going on
     # silencing it is the drift in March this command exists to catch. The entry stays in the file
-    # exactly as written, because deleting a reviewer's reasoning is not what a rewrite does.
+    # as written, because deleting a reviewer's reasoning is not what a rewrite does.
     _vendor(VENDOR.replace("Float", "String"))
     assert cli.main(args) == 1
     assert cli.main([*args, "--update-baseline"]) == 1
-    assert (duration()["detail"], duration()["note"]) == (
-        "vendor: Int, Backlot: Float",
-        "deliberate",
-    )
+    kept = duration()
+    assert (kept["detail"], kept["note"]) == ("vendor: Int, Backlot: Float", "deliberate")
+    assert kept["severity"] == BREAKING
+
+    # And with the vendor back where the note was written, the rewrite keeps it acknowledged.
+    _vendor(VENDOR.replace("Float", "Int"))
+    assert cli.main(args) == 0
+    assert cli.main([*args, "--update-baseline"]) == 0
+    assert duration()["note"] == "deliberate"
 
 
 @pytest.mark.parametrize(

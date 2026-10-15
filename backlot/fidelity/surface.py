@@ -19,10 +19,9 @@ from typing import Any, Iterable, Mapping
 
 from backlot.fidelity.findings import BREAKING, GAP, Finding
 
-# Both sides have it; only the vendor has it; only Backlot has it; Backlot routes it only to refuse
-# it, as it does every S3 write.
+# Both sides have it; the vendor has it and Backlot does not serve it; only Backlot has it; Backlot
+# answers it only with an error, as it does every S3 write.
 IMPLEMENTED, MISSING, EXTRA, REFUSED = "implemented", "missing", "extra", "refused"
-_SERVED = (IMPLEMENTED, EXTRA)
 
 _PARAM_KINDS = ("missing_param", "extra_param")
 _BATCH_KINDS = ("missing_batch_path", "extra_batch_api", "extra_batch_route")
@@ -45,18 +44,19 @@ def _accepted(f: Finding | None) -> dict[str, str]:
 
 
 def _read(raw: Mapping[str, Any], path: str) -> list[Finding]:
-    """The finding an element carries, if it carries one."""
+    """The finding an element carries, if it carries one.
+
+    Refuses what a hand edit gets wrong and a rewrite would otherwise lose without a word: a note
+    or a detail on an element with no ``kind``, and a ``severity`` other than the two."""
     if "kind" not in raw:
+        if stray := [k for k in ("severity", "detail", "note") if k in raw]:
+            raise ValueError(f"{path} carries {', '.join(stray)} with no `kind`: not a finding")
         return []
-    return [
-        Finding(
-            raw["kind"],
-            raw.get("severity", GAP),
-            path,
-            raw.get("detail", ""),
-            raw.get("note", ""),
+    if raw.get("severity") not in (BREAKING, GAP):
+        raise ValueError(
+            f"{path}: `severity` is {BREAKING!r} or {GAP!r}, not {raw.get('severity')!r}"
         )
-    ]
+    return [Finding(raw["kind"], raw["severity"], path, raw.get("detail", ""), raw.get("note", ""))]
 
 
 def _by_path(findings: Iterable[Finding]) -> dict[str, Finding]:
@@ -86,7 +86,8 @@ class OperationEntry:
     ``operation`` is spelled as a finding's ``path`` is — ``GET /repos/{}/{}/commits``,
     ``Query.issues`` — so the finding about an operation and the operation name the same string.
     ``id`` is what the vendor calls it (``repos/list-commits``, ``gmail.users.messages.list``),
-    empty for a served route the vendor's document does not describe.
+    empty for a served route with no path item in the vendor's document, unless the vendor names
+    an operation by its path (see ``operations.inventory``).
     """
 
     operation: str
@@ -169,7 +170,8 @@ class OperationSurface:
 
         Two documents of one source can declare the same operation (see
         ``comparisons._one_report``), and only one of them may be the document whose mount serves
-        it, so a served entry wins over a ``missing`` one for the same operation."""
+        it, so a served entry wins over a ``missing`` one for the same operation; between two that
+        both serve it, or both only declare it, the first document's entry stands."""
         seen: dict[str, OperationEntry] = {}
         batch = None
         for part in parts:
@@ -210,7 +212,11 @@ class OperationSurface:
     def from_json(cls, raw: Mapping[str, Any]) -> tuple["OperationSurface", list[Finding]]:
         findings: list[Finding] = []
         entries = []
+        seen: set[str] = set()
         for e in raw["operations"]:
+            if e["operation"] in seen:
+                raise ValueError(f"{e['operation']} is listed twice: an operation is one entry")
+            seen.add(e["operation"])
             entries.append(OperationEntry(e["operation"], e["status"], e.get("id", "")))
             findings += _read(e, e["operation"])
             for name, p in (e.get("params") or {}).items():
@@ -249,8 +255,9 @@ class TypeNode:
 
 @dataclass(frozen=True)
 class SchemaSurface:
-    """The types Backlot declares, each with every field, argument, value and member either side
-    has under it.
+    """The types Backlot declares, each with every field, value and member either side has under
+    it, and every argument either side has on a field Backlot serves. A type the vendor declares as
+    another kind lists no members.
 
     The vendor's types Backlot does not declare are not listed, as no finding names them: a
     vendor type matters where a type Backlot does declare reaches it, and there it shows as the

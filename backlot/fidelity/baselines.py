@@ -1,9 +1,5 @@
 """What a baseline remembers: the surface a source was last measured as, and which findings about
-it have already been read and accepted.
-
-The file is the surface itself — see ``backlot.fidelity.surface`` — with each accepted finding
-written onto the element it names, so a source's operations and its acknowledgements are one list
-rather than two that can disagree.
+it have already been read and accepted. How the file spells both is ``backlot.fidelity.surface``.
 """
 
 from __future__ import annotations
@@ -67,8 +63,17 @@ class Baseline:
 
     @classmethod
     def load(cls, path: Path) -> "Baseline":
-        raw = json.loads(path.read_text())
+        raw = json.loads(path.read_text(encoding="utf-8"))
         surface, findings = surface_from_json(raw)
+        if surface is None and "acknowledged" in raw:
+            # Read as a surface, such a file holds no findings, and the next `--update-baseline`
+            # would rewrite it without its notes and print nothing about them.
+            raise ValueError(
+                f"{path} lists its accepted findings under `acknowledged` rather than on the "
+                f"elements they name, so none of them would be read: rerun `backlot diff -s "
+                f"{raw.get('source', '<source>')} --update-baseline` against a copy in the surface "
+                "format, then move each note onto the element it names"
+            )
         return cls(
             source=raw["source"],
             endpoints=_endpoints(raw.get("endpoints", ())),
@@ -83,10 +88,11 @@ class Baseline:
         """Rewrite the file as ``surface``, acknowledging exactly ``findings`` on the elements they
         name and keeping existing notes.
 
-        A ``breaking`` entry is kept whole rather than refreshed. Its note was written about the
-        detail beside it — ``vendor: Int, Backlot: Float`` — so refreshing the detail alone would
-        leave prose explaining a divergence that is no longer the one recorded, and it would do it
-        under a flag that is documented never to acknowledge a breaking finding.
+        An entry for a ``breaking`` finding is kept whole rather than refreshed. Its note was written
+        about the detail beside it — ``vendor: Int, Backlot: Float`` — so refreshing the detail
+        alone would leave prose explaining a divergence that is no longer the one recorded, and it
+        would do it under a flag that is documented never to acknowledge a breaking finding. Which
+        findings are breaking is the measurement's to say, not the file's.
         """
         kept = []
         for f in findings:
@@ -94,7 +100,11 @@ class Baseline:
             if known is None:
                 kept.append(f)
             else:
-                kept.append(known if known.severity == BREAKING else replace(f, note=known.note))
+                kept.append(
+                    replace(known, severity=BREAKING)
+                    if f.severity == BREAKING
+                    else replace(f, note=known.note)
+                )
         doc = {
             "source": self.source,
             "endpoints": list(self.endpoints),
@@ -102,7 +112,7 @@ class Baseline:
             **surface.to_json(kept),
         }
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(doc, indent=2) + "\n")
+        path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8", newline="\n")
 
     def identified_as(self, source: str, endpoints: tuple[str, ...]) -> "Baseline":
         """The same acknowledgements, relabelled for the comparison actually being run.

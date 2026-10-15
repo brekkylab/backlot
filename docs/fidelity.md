@@ -121,9 +121,10 @@ themselves, so a path-and-parameter diff pairs every S3 operation with the same 
 clean match every time — a green check that means nothing.
 
 So S3 is compared by asking a running server instead. Backlot starts on a free port, every
-operation botocore declares is sent to it signed, and the answer is classified. A write is
-`refused` when it is answered with any error, which is what it is owed where data enters only
-through `backlot import`, and `answered_write`, breaking, when it is not. A read is:
+operation botocore declares for the S3 endpoint is sent to it signed, and the answer is classified.
+A write is `refused` when it is answered with any error, which is what it is owed where data enters
+only through `backlot import`, and `answered_write`, breaking, when it is not. An operation is
+`implemented` unless it is `refused` or a case below makes it `missing`. A read is:
 
 - **refused with `NotImplemented`** — the honest answer for an operation Backlot does not serve. A
   `gap`, and the operation is `missing`.
@@ -136,11 +137,13 @@ through `backlot import`, and `answered_write`, breaking, when it is not. A read
 - **answered with the body the same path returns when nothing selects an operation** — Backlot
   neither implements the operation nor refuses it, so the caller parses another operation's body
   under a 200, with no error and no log line. `silent_fallthrough`, and breaking, and the
-  operation is `missing`.
+  operation is `missing`. Only an operation a query string selects is compared: a bare form such as
+  ListObjects is that body.
 
-ListDirectoryBuckets is not asked. The model sends it only to the S3 Express control endpoint,
-signed for `s3express`, and its `GET /` at the S3 endpoint is ListBuckets, so it is `missing` and a
-`gap`.
+Two operations are not asked, because the model sends each only to another endpoint, which Backlot
+does not serve: ListDirectoryBuckets to the S3 Express control endpoint, signed for `s3express`,
+where its `GET /` at the S3 endpoint is ListBuckets, and WriteGetObjectResponse to the S3 Object
+Lambda endpoint, signed for `s3-object-lambda`. Each is `missing`, and a `gap`.
 
 "The same body" is the status, the XML root element and the set of direct child elements. The
 children are what keep the two listings apart: `?list-type=2` and a bare bucket GET are both
@@ -198,27 +201,31 @@ credential applying to a sub-request that carries none — is behaviour, and is 
 `backlot/fidelity/baseline/<source>.json` is the surface a source was last measured as, with the
 divergences already read and accepted written onto the elements they name, so a run reports what
 is **new**. Without it the first Fireflies run lists fourteen root fields Backlot never claimed to
-serve, and the first Linear run lists seven hundred and eighty-two — by the third run nobody reads
-the output. The baselines ship inside the package, so an installed copy can be compared against its
-vendor, and can name the operation a request asked for, without the repository or the network.
+serve, and the first Linear run lists nearly eight hundred divergences — by the third run nobody
+reads the output. The baselines ship inside the package, so an installed copy can be compared
+against its vendor without the repository, and can name offline the operation, or root query
+field, a request asked for.
 
 The surface takes the shape of the contract:
 
 - **A published document or the S3 model** — `operations`, one entry per operation either side
   has. `status` is `implemented` (both sides), `missing` (the vendor has it and Backlot does not
-  serve it), `extra` (Backlot's only) or, for S3, `refused` (every write). `id` is the vendor's own name for it: the
-  `operationId` for an OpenAPI document, the method `id` for a Discovery document, the botocore
-  operation for S3, and the method name for Slack, which names `conversations.list` by its path
-  under either verb. A served route its document does not describe carries no `id`. A parameter
-  appears only where it diverges, under `params` of its operation. A Google source adds `batch`:
-  what each document declares as its `batchPath`, and which of Backlot's batch routes answer it.
-- **A GraphQL schema** — `types`, every type Backlot declares with every field, argument, enum
-  value and union member either side has under it, each with a `status`, and `type` where only the
-  vendor has the member. The vendor's types Backlot does not declare are not listed. `root.query`
-  names the type whose fields are the operations.
+  serve it), `extra` (Backlot's only) or, for S3, `refused` (a write answered with an error). `id`
+  is the vendor's own name for it: the `operationId` for an OpenAPI document, the method `id` for a
+  Discovery document, the botocore operation for S3, and the method name for Slack, which is the
+  path under either verb (`conversations.list`), served routes the document omits included.
+  Elsewhere a served route with no path item in its document carries no `id`. A parameter appears
+  only where it diverges, under `params` of its operation. A Google source adds `batch`: each
+  document's declared `batchPath` with whether a route answers it, and each of Backlot's batch
+  routes with whether a document selects it.
+- **A GraphQL schema** — `types`, every type Backlot declares with every field, enum value and
+  union member either side has under it, and every argument either side has on a field Backlot
+  serves, each with a `status`, and `type` where only the vendor has the member. A type the vendor
+  declares as another kind lists no members. The vendor's types Backlot does not declare are not
+  listed. `root.query` names the type whose fields are the operations.
 
 ```json
-{ "operation": "GET /gmail/v1/users/{}/messages", "id": "gmail.users.messages.list", "status": "implemented" }
+{ "operation": "GET /repos/{}/{}", "id": "repos/get", "status": "implemented" }
 ```
 
 Accepting a divergence is a file change, so it goes through review like any other.
@@ -251,20 +258,31 @@ shape is not being matched, added to the element — so what a reviewer sees in 
 reasoning rather than a flag on a command nobody kept. One added that way survives later rewrites:
 `--update-baseline` rewrites the file, it does not re-litigate it.
 
+The element is the one the finding's `path` names. `Transcript.duration` is
+`types.Transcript.fields.duration`; an argument, `Query.transcripts(limit)`, is under that field's
+`args`; an enum value or a union member is under its type's `values` or `members`. An operation is
+the `operations` entry whose `operation` is the path, and `GET /x?name` is `params.name` in it.
+`severity` is `breaking` or `gap`, in lower case, and the command refuses a file carrying any other,
+or a `note` or `detail` on an element with no `kind`, rather than drop it. The `detail` is compared
+character for character, so copy it from `--json` (`.new[].detail`): the terminal form wraps a long
+one across lines.
+
 It stops covering a shape that moves, though. A `gap` is acknowledged by what it names — the vendor
 has surface Backlot does not, and the vendor restating it at a new type does not change what was
 accepted — so its `detail` is not kept. A `breaking` entry is acknowledged by what it names **and**
 by its `detail`, because there the detail *is* the contradiction: an entry reading
 `vendor: Int, Backlot: Float` says nothing about a vendor now serving `String`, and going on
 silencing it is exactly the March drift this command exists to catch. Such an entry is reported
-again, and left in the file exactly as written — the note is the record of the reasoning, and a
-rewrite does not delete it — until someone reads the new shape and rewrites it by hand.
+again, and left in the file as written — the note is the record of the reasoning, and a rewrite
+does not delete it — until someone reads the new shape and rewrites it by hand.
 
 A run also reports **resolved** entries: an acknowledged divergence the vendor no longer has. The
 baseline has gone stale, which is its own kind of drift. Where Backlot is what changed — a route,
 a parameter or a field added while the file still records it `missing` — `tests/test_fidelity.py`
 reads the served surface off the app and the SDL with no network and fails until the file is
-rewritten.
+rewritten. Rewrite it with `--update-baseline`. By hand, delete the element's `kind`, `severity`,
+`detail` and `note`, and the element itself only where neither side has it any more: an element
+Backlot serves stays in the file, and deleting it fails that test.
 
 ## In CI
 

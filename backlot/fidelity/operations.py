@@ -13,7 +13,7 @@ would bury the operations that genuinely do not line up.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
 from backlot.fidelity.findings import BREAKING, GAP, Finding
@@ -33,9 +33,8 @@ class Operation:
     method: str
     path: str
     params: frozenset[str]
-    # What the vendor's document calls the operation; empty on Backlot's side. Not part of
-    # equality: two documents naming one operation differently are still one operation.
-    id: str = field(default="", compare=False)
+    # What the vendor's document calls the operation; empty on Backlot's side.
+    id: str = ""
 
     @property
     def key(self) -> tuple[str, str]:
@@ -155,7 +154,7 @@ def inventory(
     ``conversations.list`` is one method, which its document declares under one verb (its
     ``operationId`` spells it ``conversations_list``) and its server answers under both. There the
     id is the path, served routes the document omits included; everywhere else it is only what the
-    document declares, so a served route the document does not describe has none.
+    document declares, so a served route with no path item in the document has none.
     """
     out = []
     for key in sorted(set(backlot) | set(real)):

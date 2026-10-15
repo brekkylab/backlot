@@ -133,7 +133,7 @@ _P_EXPAND = {"parameters": [qp("expand")]}
 # returns each comment's body as HTML, which Backlot does not produce — and `qp` exists only for
 # parameters Backlot honours, because advertising one it ignores makes a client ask for data that
 # never arrives. The gap stays where it is legible: `backlot diff --source jira` reports it, and
-# the baseline acknowledges it as "the vendor accepts it; Backlot does not".
+# the baseline records it as a `missing_param` under that operation's `params`.
 _P_JIRA_COMMENTS = {
     "parameters": [qp("startAt", "integer"), qp("maxResults", "integer"), qp("orderBy")]
 }
@@ -2689,9 +2689,9 @@ def _operations(rows) -> tuple[tuple[str, re.Pattern[str]], ...]:
 
 def _published_not_served(source: str) -> tuple[tuple[str, re.Pattern[str]], ...]:
     """The operations the vendor publishes and no route here serves: the baseline's ``missing``
-    operations, read off the file the way ``backlot.routers.notion`` reads its own,
-    so an operation the vendor adds reaches :func:`unmatched_path` once the baseline acknowledges
-    it; a route added here wins over :func:`unmatched_path` whatever the file says."""
+    operations, read off the file the way ``backlot.routers.notion`` reads its own, so an operation
+    the vendor adds reaches :func:`unmatched_path` once the baseline acknowledges it; a route added
+    here wins over :func:`unmatched_path` whatever the file says."""
     baseline = _PACKAGE / "fidelity" / "baseline" / f"{source}.json"
     entries = json.loads(baseline.read_text())["operations"]
     return _operations(e["operation"] for e in entries if e["status"] == "missing")
@@ -2743,9 +2743,9 @@ _CONFLUENCE_NOT_PERMITTED = _operations(
     )
 )
 _CONFLUENCE_CONNECT_MODULES = "/wiki/rest/atlassian-connect/1/app/module/dynamic"
-#: Confluence operations real serves that its document does not publish, so the baseline has no row
-#: for them: each refused a caller with no credential the way the published ones do, and answered
-#: 200 with one, on 2026-09-30.
+#: Confluence operations real serves that its document does not publish, so the baseline has no
+#: entry for them: each refused a caller with no credential the way the published ones do, and
+#: answered 200 with one, on 2026-09-30.
 _CONFLUENCE_OUTSIDE_THE_DOCUMENT = _operations(
     f"GET /wiki/rest/api/{path}"
     for path in (
@@ -2808,7 +2808,7 @@ def _confluence_refusal(request: Request, vendor_path: str) -> Response | None:
     operation but the services named in :data:`_CONFLUENCE_NOT_PERMITTED`, and on writes too:
     `DELETE` on a content id's label and `POST` on its copy, each naming nothing, answered it with
     no credential on 2026-09-30. A caller whose credential resolves gets what an unserved path
-    gets, the gap the baseline row acknowledges.
+    gets, the gap the baseline entry acknowledges.
     """
     if _is(_CONFLUENCE_RUN_ANONYMOUSLY, request.method, vendor_path):
         return None

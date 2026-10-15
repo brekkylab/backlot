@@ -10,7 +10,8 @@ and reports a clean match every time — a green check that means nothing, which
 checking at all.
 
 What can be asked instead is what the server actually answers, and every operation the model
-declares is asked. A write must be refused with an error, since data enters Backlot only through
+sends to the S3 endpoint is asked; one it sends only to another endpoint is recorded ``missing``
+unasked. A write must be refused with an error, since data enters Backlot only through
 ``backlot import``, and is recorded ``refused``. A read Backlot does not implement should be
 refused with ``NotImplemented`` and is recorded ``missing``; one it does implement may answer
 with an error, the 404 real gives a bucket with no CORS configuration for one, and that is its
@@ -27,9 +28,9 @@ set is what separates the two listings: ``?list-type=2`` and a bare bucket GET a
 ``200 <ListBucketResult>``, but the V2 form carries ``KeyCount`` where the V1 one carries
 ``Marker``, so ListObjectsV2 is told apart from the fallthrough by what it answers rather than by
 being exempted from the question. ListObjects is the bare form itself, so it carries no selector
-and is asked only whether it is answered. An operation that really is answered by the catch-all matches on all three —
-``?session`` still does, and is acknowledged in the baseline, because real S3 answers the listing
-there too.
+and is asked only whether it is answered. An operation that really is answered by the catch-all
+matches on all three — ``?session`` still does, and is acknowledged in the baseline, because real S3
+answers the listing there too.
 """
 
 from __future__ import annotations
@@ -61,10 +62,10 @@ _ROOT = re.compile(r"<\??[a-zA-Z]*[^>]*>\s*<([A-Za-z][\w.-]*)")
 # change the depth the walk above is counting.
 _TAG = re.compile(r"<(/?)([A-Za-z][\w.-]*)(?:\s[^>]*?)?(?<!/)>")
 _EMPTY_SHA = hashlib.sha256(b"").hexdigest()
-# What real answers with an error for each operation this probe asks, sent as ``probe`` sends it:
+# What real answers with an error for each read this probe asks, sent as ``probe`` sends it:
 # signed, the query string the selector alone, no other header, at a bucket nobody configured and
 # at an object in it. Measured 2026-09-30 against `s3.us-east-1.amazonaws.com` on a bucket this
-# account created for it: real answered the other 28 of the model's 44 operations that carry a
+# account created for it: real answered the other 28 of the model's 44 reads that carry a
 # selector with a 200.
 REAL_ERRORS = {
     "GetBucketCors": (404, "NoSuchCORSConfiguration"),
@@ -107,11 +108,14 @@ class S3Operation:
     # The path where it names no bucket or key but a word of its own: WriteGetObjectResponse's
     # `/WriteGetObjectResponse` is the one the model declares.
     literal: str = ""
-    # Served only at the S3 Express control endpoint: an operation naming no bucket that the model
-    # sends there (`UseS3ExpressControlEndpoint`). ListDirectoryBuckets is the one; botocore 1.40.61
-    # sends it to `s3express-control.us-east-1.amazonaws.com` signed for `s3express`, where the
-    # same `GET /` signed for `s3` at the S3 endpoint is ListBuckets (2026-10-14).
-    control_only: bool = False
+    # The endpoint other than S3's that the model sends it to, and only there. Captured from
+    # botocore 1.40.61 before sending (2026-10-15): ListDirectoryBuckets goes to
+    # `s3express-control.us-east-1.amazonaws.com` signed for `s3express`, where the same `GET /`
+    # at the S3 endpoint is ListBuckets; WriteGetObjectResponse to
+    # `<RequestRoute>.s3-object-lambda.us-east-1.amazonaws.com` signed for `s3-object-lambda`. A
+    # bucket operation flagged for the S3 Express control endpoint goes there only for a directory
+    # bucket, and to the S3 endpoint for any other.
+    elsewhere: str = ""
 
     @property
     def reads(self) -> bool:
@@ -127,10 +131,24 @@ class S3Operation:
         return f"{self.name}: {request}"
 
 
+def _elsewhere(op: Mapping[str, Any], target: str) -> str:
+    """The endpoint other than S3's an operation is sent to and only there, or ``""``."""
+    flags = {
+        name
+        for name, param in (op.get("staticContextParams") or {}).items()
+        if isinstance(param, dict) and param.get("value") is True
+    }
+    if "UseObjectLambdaEndpoint" in flags:
+        return "the S3 Object Lambda endpoint"
+    if "UseS3ExpressControlEndpoint" in flags and target == "service":
+        return "the S3 Express control endpoint"
+    return ""
+
+
 def _required_query_member(shapes: Mapping[str, Any], op: Mapping[str, Any]) -> str:
     """The querystring member that selects an operation whose ``requestUri`` carries no ``?``.
 
-    ListParts is the case, and the only one: botocore gives it the same ``/{Bucket}/{Key+}`` as
+    ListParts is the read among them: botocore gives it the same ``/{Bucket}/{Key+}`` as
     GetObject and selects it with a REQUIRED ``uploadId`` in the querystring. Read from the URI
     alone it comes out bare, and a bare form is never compared with the fallthrough — while the
     server answers it with the object body, which is the silent fallthrough this module exists to
@@ -167,9 +185,7 @@ def operations(model: Mapping[str, Any]) -> list[S3Operation]:
         else:
             target = "service"
         literal = path if re.sub(r"\{[^}]*\}", "", path).strip("/") else ""
-        control = (op.get("staticContextParams") or {}).get("UseS3ExpressControlEndpoint") or {}
-        control_only = target == "service" and control.get("value") is True
-        out.append(S3Operation(name, method, target, query, literal, control_only))
+        out.append(S3Operation(name, method, target, query, literal, _elsewhere(op, target)))
     return sorted(out, key=lambda o: (o.target, o.query, o.name))
 
 
@@ -239,7 +255,8 @@ def probe(
     key: str,
     timeout: float = 20.0,
 ) -> Measurement:
-    """Ask a running Backlot every operation S3 declares, and classify what comes back."""
+    """Ask a running Backlot each of ``ops`` sent to the S3 endpoint, and classify what comes back;
+    one sent only to another endpoint is recorded ``missing`` without being asked."""
     targets = {"service": "/", "bucket": f"/{bucket}", "object": f"/{bucket}/{key}"}
 
     def call(method: str, path: str, query: str) -> httpx.Response:
@@ -262,21 +279,20 @@ def probe(
     out: list[Finding] = []
     entries: list[OperationEntry] = []
     for op in ops:
-        if op.control_only:
-            # Not asked: Backlot serves the S3 endpoint, and the request this would send there is
-            # another operation's.
+        if op.elsewhere:
+            # Not asked: Backlot serves the S3 endpoint, and what this would send there is another
+            # operation's request.
             entries.append(OperationEntry(str(op), MISSING, op.name))
             out.append(
                 Finding(
                     "missing_operation",
                     GAP,
                     str(op),
-                    f"{op.name} is served only at the S3 Express control endpoint, which Backlot "
-                    "does not serve",
+                    f"{op.name} is served only at {op.elsewhere}, which Backlot does not serve",
                 )
             )
             continue
-        response = call(op.method, op.literal or targets[op.target], op.query)
+        response = call(op.method, targets[op.target], op.query)
         answer = _shape(response)
         code = _CODE.search(response.text)
         refused = (answer[0], code.group(1) if code else "")
@@ -337,7 +353,7 @@ def probe(
 
 
 def run(base_url: str, model: Mapping[str, Any], timeout: float = 20.0) -> Measurement:
-    """Probe a running Backlot for every operation S3 declares.
+    """Probe a running Backlot for every operation S3 declares at the S3 endpoint.
 
     This is what ``ProbeComparison.run`` points at, and it holds everything S3-specific: which
     credentials the probe signs with, and which bucket and object it aims at. The dispatcher knows

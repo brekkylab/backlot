@@ -257,18 +257,20 @@ def test_jira_404s_a_project_role_an_anonymous_caller_cannot_see(client, headers
         assert r.json()["errorMessages"] == [f"No project could be found with {kind} '{segment}'."]
 
 
-def _sent_as(client, path: str, authorization: bytes):
-    """GET ``path`` with these `Authorization` bytes as sent. The TestClient re-encodes a header's
-    bytes above 0x7F as UTF-8 (`\\x85` reaches the app as `\\xc2\\x85`), where httpx's own
-    `ASGITransport` hands the app what it was given, over the app the fixture started."""
+def _sent_as(client, method: str, path: str, headers: dict[str, str], content=None):
+    """``method`` on ``path`` with each header's latin-1 bytes as sent. The TestClient re-encodes a
+    header's bytes above 0x7F as UTF-8 (`\\x85` reaches the app as `\\xc2\\x85`), where httpx's
+    own `ASGITransport` hands the app what it was given, over the app the fixture started."""
     import asyncio
 
     import httpx
 
+    raw = {name: value.encode("latin-1") for name, value in headers.items()}
+
     async def send():
         transport = httpx.ASGITransport(app=client.app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
-            return await c.get(path, headers={"Authorization": authorization})
+            return await c.request(method, path, headers=raw, content=content)
 
     return asyncio.run(send())
 
@@ -308,7 +310,7 @@ def test_jira_refuses_a_bearer_it_cannot_read_as_a_connect_token(client):
         *("\x85a", "\xa0a", "\x85", "\xa0", "\xa0\xa0"),
     ):
         info = _sent_as(
-            client, "/atlassian/rest/api/3/serverInfo", f"Bearer {token}".encode("latin-1")
+            client, "GET", "/atlassian/rest/api/3/serverInfo", {"Authorization": f"Bearer {token}"}
         )
         assert info.status_code == 403 and info.json() == {
             "error": errors_atlassian.CONNECT_TOKEN_UNREADABLE
@@ -359,7 +361,7 @@ def test_jira_reads_an_unrecognised_scheme_as_no_credential(client, header):
     """The 403 above is for a credential the site READ. A spelling it does not read is not a
     credential at all, and the request is the anonymous one — which is how each spelling was told
     apart on the real sites in the first place (403 = read, 200 = not read)."""
-    r = _sent_as(client, "/atlassian/rest/api/3/project/search", header.encode("latin-1"))
+    r = _sent_as(client, "GET", "/atlassian/rest/api/3/project/search", {"Authorization": header})
     assert r.status_code == 200 and r.json()["values"] == []
 
 
@@ -5332,6 +5334,13 @@ _JSON_TYPE = "application/json"
         + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
         ("POST", "/wiki/rest/api/template", None, "application/json;x=1 ;y", 400)
         + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
+        # only a space or a tab is trimmed from the value's ends
+        ("POST", "/wiki/rest/api/template", None, "application/json\xa0", 400)
+        + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
+        ("POST", "/wiki/rest/api/template", None, "\x85application/json", 400)
+        + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
+        ("POST", "/wiki/rest/api/template", None, "application/json\t", 403)
+        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
         # the two that ran: a type Jersey cannot read is its 400 too, JSON reaches the operation,
         # which real runs and Backlot does not serve
         ("POST", "/wiki/rest/api/contentbody/convert/async/1", None, "application/json;x", 400)
@@ -5433,6 +5442,8 @@ _JSON_TYPE = "application/json"
                 "space/ENG/property",
             )
         ),
+        # an `OPTIONS` asks for no operation and is refused by none of these
+        ("OPTIONS", "/wiki/rest/api/content/1/label", None, None, 404, None),
     ],
 )
 def test_confluence_answers_an_operation_before_it_runs(
@@ -5443,12 +5454,13 @@ def test_confluence_answers_an_operation_before_it_runs(
     ``_CONFLUENCE_CONSUMES``, ``_CONFLUENCE_JAXRS_WRITES``, ``_CONFLUENCE_NOT_PERMITTED_GETS`` and
     ``_CONFLUENCE_OUTSIDE_THE_DOCUMENT`` in ``backlot.routers.atlassian`` carry the measurement for.
     A 415's ``body`` is the reason Spring gives; the 401 is asserted by status alone, its body being
-    JSON here where real's is Tomcat's page."""
+    JSON here where real's is Tomcat's page. An `OPTIONS` at a published write's path is the 404
+    real answers it, not a refusal."""
     headers = {} if ctype is None else {"Content-Type": ctype}
     if authorization is not None:
         headers["Authorization"] = authorization
-    r = client.request(
-        method, f"/atlassian{vendor_path}", content=b"x" if ctype else None, headers=headers
+    r = _sent_as(
+        client, method, f"/atlassian{vendor_path}", headers, content=b"x" if ctype else None
     )
     assert r.status_code == status, r.text
     if isinstance(body, str):

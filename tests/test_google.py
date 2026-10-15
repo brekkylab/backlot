@@ -8981,3 +8981,86 @@ def test_gmail_size_estimate_matches_raw_bytes_in_every_format(tmp_path, title, 
             thread = c.get(f"/gmail/v1/users/me/threads/{tid}?format={fmt}", headers=h)
             assert thread.status_code == 200
             assert thread.json()["messages"][0]["sizeEstimate"] == size
+
+
+@pytest.mark.parametrize("surface", ["messages", "threads"])
+@pytest.mark.parametrize(
+    "caller, query, expected",
+    [
+        ("ava", "cc:lena", ["plan"]),
+        ("ava", "cc:LENA", ["plan"]),
+        ("ava", "cc:LENA@ACME.COM", ["plan"]),
+        ("ava", 'cc:"lena@acme.com" rollout', ["plan"]),
+        ("ava", "bcc:ava", ["lunch"]),
+        ("ava", "cc:acme.com", ["plan"]),
+        ("ava", "cc:lena bcc:ava", []),
+        ("ava", "cc:nobody", []),
+        ("ava", "bcc:me", ["lunch"]),
+        ("ava", "cc:me", ["plan"]),
+        ("admin", "cc:me", []),
+        # a word, never part of one, and an address only whole
+        ("ava", "cc:len", []),
+        ("ava", "cc:ena", []),
+        ("ava", "cc:acme", ["plan"]),
+        ("ava", "cc:com", ["plan"]),
+        ("ava", "cc:com.acme", []),
+        ("ava", "cc:@acme.com", ["plan"]),
+        ("ava", "cc:lena@", ["plan"]),
+        ("ava", "cc:lena@acme", []),
+        ("ava", "cc:park", ["plan"]),
+        ("ava", "cc:par", []),
+        ("ava", 'cc:"lena park"', ["plan"]),
+        ("ava", "bcc:\uc5d0\ubc14", ["lunch"]),
+        ("ava", "cc:ops_team", ["standup"]),
+        ("ava", "cc:ops", []),
+        ("ava", "cc:_", []),
+        ("ava", "cc:&", []),
+        # no word at all: the operator is ignored
+        ("ava", "cc:.", ["plan", "lunch", "decoy", "standup"]),
+        ("ava", "cc:@", ["plan", "lunch", "decoy", "standup"]),
+        ("ava", 'bcc:""', ["plan", "lunch", "decoy", "standup"]),
+    ],
+)
+def test_gmail_cc_bcc_searches_address_headers(tmp_path, surface, caller, query, expected):
+    """The rule `_gmail_address_match` records, on both listings: a message whose body or subject
+    names the address is not a match. `me` is the caller's address, and for the admin token, which
+    has no mailbox of its own, the address `_service_email` gives."""
+    records = [
+        {
+            "doc_id": "plan",
+            "title": "rollout plan",
+            "cc": "Lena Park <lena@acme.com>, ava@acme.com",
+        },
+        {"doc_id": "lunch", "title": "lunch", "bcc": "\uc5d0\ubc14 <ava@acme.com>"},
+        {"doc_id": "decoy", "title": "cc lena bcc ava", "content": "lena ava"},
+        {"doc_id": "standup", "title": "standup", "cc": "ops_team@corp.example, me@corp.example"},
+    ]
+    settings = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "gmail",
+                "mailbox": "ava",
+                "author_email": "bob@acme.com",
+                "to": "ava@acme.com",
+                "content": "body",
+                "visibility": "public",
+                "created": "2026-03-01T09:00:00Z",
+                "readers": ["ava@acme.com"],
+                **r,
+            }
+            for r in records
+        ],
+    )
+    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    token = tokens["admin_token"] if caller == "admin" else tok(tokens, "ava@acme.com")
+    with client_for(settings, reload=True) as c:
+        response = c.get(
+            f"/gmail/v1/users/me/{surface}",
+            headers={"Authorization": f"Bearer {token}"},
+            params={"q": query},
+        )
+    assert response.status_code == 200
+    assert {r["id"] for r in response.json().get(surface, [])} == {
+        served_id("gmail", doc_id) for doc_id in expected
+    }

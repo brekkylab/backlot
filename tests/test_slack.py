@@ -73,9 +73,9 @@ def test_slack_users_info_resolves_author(client, admin_h, ro_conn):
 #   curl -H "Authorization: Bearer xoxb-not-a-real-token" .../conversations.list -> invalid_auth
 #   curl                                                  .../conversations.list -> not_authed
 # A merely UNKNOWN token answers the same as a malformed one, so the only thing that decides it is
-# whether a credential was presented — and Slack recognises exactly three ways to present one: an
-# `Authorization: Bearer` header, a `token` query param, or a `token` form field. Every row is a
-# live answer, including the ones that read as though they should go the other way.
+# whether a credential was presented, which `slack._caller_or_error` decides. The `token` query
+# parameter is the case `test_slack_reads_the_token_where_real_reads_it` pins. Every row is a live
+# answer, including the ones that read as though they should go the other way.
 @pytest.mark.parametrize(
     "kwargs, error",
     [
@@ -139,9 +139,11 @@ def test_slack_refuses_a_valid_token_under_an_unrecognised_scheme(client, tokens
     assert ok["ok"] is True
 
 
-def test_slack_auth_error_split_is_uniform_across_methods(client):
-    """The split is decided once, so no method is left answering the old single error."""
+def test_slack_auth_error_split_is_uniform_across_methods(client, tokens_yaml):
+    """The split is decided once, so no method is left answering the old single error. A token in
+    the query string is refused on each of them too."""
     bogus = {"Authorization": "Bearer xoxb-not-a-real-token"}
+    in_query = {"token": tokens_yaml["admin_token"]}
     for path in (
         "conversations.list",
         "conversations.info",
@@ -159,6 +161,76 @@ def test_slack_auth_error_split_is_uniform_across_methods(client):
         assert client.post(f"/slack/api/{path}", headers=bogus).json()["error"] == (
             "invalid_auth"
         ), path
+        assert client.get(f"/slack/api/{path}", params=in_query).json() == {
+            "ok": False,
+            "error": "invalid_auth",
+        }, path
+
+
+_AVA = synth.slack_user_id("ava@acme.com")
+
+
+@pytest.mark.parametrize(
+    "method,query,authorization,form,answer",
+    [
+        # the `token` query parameter, its last value read: a non-empty one is refused whatever
+        # else the request carries
+        ("get", "token={admin}", None, None, "invalid_auth"),
+        ("post", "token={admin}", None, None, "invalid_auth"),
+        ("post", "token={admin}", None, "x=1", "invalid_auth"),
+        ("get", "token=%20", None, None, "invalid_auth"),
+        ("get", "token={admin}", "Bearer {admin}", None, "invalid_auth"),
+        ("get", "token={bogus}", "Bearer {admin}", None, "invalid_auth"),
+        ("get", "token={admin}", "Bearer {bogus}", None, "invalid_auth"),
+        ("post", "token={bogus}", None, "token={admin}", "invalid_auth"),
+        ("get", "token=&token={admin}", None, None, "invalid_auth"),
+        ("get", "token={admin}&token=", None, None, "not_authed"),
+        # an empty one, with and without a token elsewhere
+        ("get", "token=", "Bearer {admin}", None, "invalid_auth"),
+        ("get", "token", "Bearer {admin}", None, "invalid_auth"),
+        ("post", "token=", None, "token={admin}", "invalid_auth"),
+        ("get", "token=", None, None, "not_authed"),
+        ("post", "token=", None, "token=", "not_authed"),
+        ("get", "token=", "bearer {admin}", None, "not_authed"),
+        ("get", "TOKEN={admin}", "Bearer {admin}", None, "USERVICE0"),
+        # the `token` form field, its last value read, ahead of the bearer header
+        ("post", "", "Bearer {bogus}", "token={admin}", "USERVICE0"),
+        ("post", "", "Bearer {admin}", "token={ava}", _AVA),
+        ("post", "", "Bearer {ava}", "token={admin}", "USERVICE0"),
+        ("post", "", "Bearer {admin}", "token={bogus}", "invalid_auth"),
+        ("post", "", "Bearer {admin}", "token=", "USERVICE0"),
+        ("post", "", "Bearer {admin}", "token=%20", "invalid_auth"),
+        ("post", "", None, "token={ava}&token={bogus}", "invalid_auth"),
+        ("post", "", None, "token={bogus}&token={ava}", _AVA),
+        ("post", "", None, "token={ava}&token=", "not_authed"),
+        ("post", "", None, "token={admin}", "USERVICE0"),
+        ("post", "", None, "token=", "not_authed"),
+        ("post", "", "Bearer {ava}", None, _AVA),
+    ],
+)
+def test_slack_reads_the_token_where_real_reads_it(
+    client, tokens_yaml, tokens, method, query, authorization, form, answer
+):
+    """Real's answers to `auth.test` for where a request carries its token, the rules
+    `auth.slack_token` and `auth.slack_query_token_refused` record: ``answer`` is the `user_id` a
+    served request names, or the error a refused one answers. The rows with a person's token in
+    one place and the admin's in the other tell the form field's order from the header's."""
+    t = {
+        "admin": tokens_yaml["admin_token"],
+        "ava": tokens["ava@acme.com"],
+        "bogus": "xoxb-not-a-real-token",
+    }
+    headers = {} if authorization is None else {"Authorization": authorization.format(**t)}
+    body = {}
+    if form is not None:
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
+        body["content"] = form.format(**t)
+    url = f"/slack/api/auth.test?{query.format(**t)}"
+    j = getattr(client, method)(url, headers=headers, **body).json()
+    if answer in ("invalid_auth", "not_authed"):
+        assert j == {"ok": False, "error": answer}
+    else:
+        assert j["ok"] is True and j["user_id"] == answer
 
 
 def test_slack_auth_test_identifies_the_caller(client, admin_h, tokens):

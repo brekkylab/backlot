@@ -4929,10 +4929,9 @@ _REFUSAL_ROWS_UNIT = [
 ]
 # fmt: on
 
-# When the table above was signed. A row stops being the request it stands for once a run has
-# taken long enough to reach it: a query's `X-Amz-Expires` of 300 seconds runs out, and a header's
-# date drifts further from the server's clock than `backlot.sigv4.is_skewed` allows. So each row is
-# answered on the server's clock as it read at this moment.
+# When the table above was signed. A row lapses when a query's `X-Amz-Expires` of 300 seconds runs
+# out or a header's date drifts further from the server's clock than `backlot.sigv4.is_skewed`
+# allows, so each row is answered on the server's clock as it read at this moment.
 _REFUSAL_ROWS_SIGNED_AT = datetime.now(timezone.utc)
 
 
@@ -4955,8 +4954,7 @@ def test_a_credential_real_refuses_is_refused_with_reals_code_and_message(
     """Each row is real's answer to that request, measured 2026-09-29 against us-east-1
     (``backlot.auth.resolve_sigv4`` has the order), and the members real named where the row names
     them. Each carries the payload hash boto3 sends, and a row that sends none names it as
-    ``None``. The server reads its clock as it read when the rows were signed
-    (`_REFUSAL_ROWS_SIGNED_AT`)."""
+    ``None``."""
     monkeypatch.setattr(auth, "datetime", _ClockAtSigning)
     sent = {"host": "backlot", "x-amz-content-sha256": "UNSIGNED-PAYLOAD", **headers}
     caller, err = auth.resolve_sigv4(

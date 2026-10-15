@@ -211,25 +211,31 @@ def test_atlassian_lists_only_the_containers_the_caller_can_open(tmp_path):
 
         # A write at a served route's path looks its key up as the caller sees it: ava's `DELETE` on
         # the issue she cannot open is its 404, on the one she can the 405 Backlot answers a write
-        # real would run, and the admin's the 405 on both; a project role's write does the same by
-        # project (``backlot.routers.atlassian._published_answer``).
+        # real would run, and the admin's the 405 on both; a project role's write looks the project
+        # up the same way, by its key or its id, and then refuses her the 401 for not administering
+        # it (``backlot.routers.atlassian._published_answer``), as the role's read does.
         admin = {"Authorization": f"Bearer {tokens['admin']}"}
         projects = {name: synth.jira_project_key(name) for name in ("payments", "secrets")}
+        ids = {name: synth.github_user_id(name) for name in ("payments", "secrets")}
         found = c.get(
             "/atlassian/rest/api/3/search/jql",
             params={"jql": f"project in ({', '.join(projects.values())})", "fields": "summary"},
             headers=admin,
         ).json()["issues"]
         issues = {i["fields"]["summary"]: i["key"] for i in found}
-        for path, ava_sees in (
-            (f"issue/{issues['Gateway 502s']}", True),
-            (f"issue/{issues['Rotation']}", False),
-            (f"project/{projects['payments']}/role/10002", True),
-            (f"project/{projects['secrets']}/role/10002", False),
+        for method, path, ava_status, admin_status in (
+            ("DELETE", f"issue/{issues['Gateway 502s']}", 405, 405),
+            ("DELETE", f"issue/{issues['Rotation']}", 404, 405),
+            ("DELETE", f"project/{projects['payments']}/role/10002", 401, 405),
+            ("DELETE", f"project/{projects['secrets']}/role/10002", 404, 405),
+            ("DELETE", f"project/{ids['payments']}/role/10002", 401, 405),
+            ("DELETE", f"project/{ids['secrets']}/role/10002", 404, 405),
+            ("GET", f"project/{ids['payments']}/role/10002", 401, 200),
+            ("GET", f"project/{ids['secrets']}/role/10002", 404, 200),
         ):
-            for headers, status in ((ava, 405 if ava_sees else 404), (admin, 405)):
-                r = c.request("DELETE", f"/atlassian/rest/api/3/{path}", headers=headers)
-                assert r.status_code == status, (path, r.text)
+            for headers, status in ((ava, ava_status), (admin, admin_status)):
+                r = c.request(method, f"/atlassian/rest/api/3/{path}", headers=headers)
+                assert r.status_code == status, (method, path, r.text)
 
 
 @pytest.mark.parametrize("headers", UNRESOLVABLE)
@@ -237,6 +243,7 @@ def test_atlassian_lists_only_the_containers_the_caller_can_open(tmp_path):
     "segment,kind",
     [
         pytest.param(synth.jira_project_key("payments"), "key", id="corpus-key"),
+        pytest.param(str(synth.github_user_id("payments")), "id", id="corpus-id"),
         pytest.param("NOSUCHKEY", "key", id="no-such-key"),
         pytest.param("1", "id", id="one-digit"),
         pytest.param("999999999999999999", "id", id="eighteen-digits"),
@@ -251,8 +258,9 @@ def test_jira_404s_a_project_role_an_anonymous_caller_cannot_see(client, headers
     two refusals it gives is decided by the project: on the site where the key names a project
     anonymous can see it is 401 ("You cannot edit the configuration of this project."), and on the
     site where it names nothing it is 404. Anonymous sees no Backlot project, so it is always the
-    404 here — the corpus's own project key gets the answer a key naming nothing would. The 404
-    calls the segment an id or a key by the rule `_require_project` records."""
+    404 here — the corpus's own project, by its key or its id, gets the answer a segment naming
+    nothing would. The 404 calls the segment an id or a key by the rule `_require_project`
+    records."""
     for path in (
         f"/rest/api/3/project/{segment}/role",
         f"/rest/api/3/project/{segment}/role/10002",
@@ -263,6 +271,24 @@ def test_jira_404s_a_project_role_an_anonymous_caller_cannot_see(client, headers
             "errorMessages": [f"No project could be found with {kind} '{segment}'."],
             "errors": {},
         }, path
+
+
+def _sent_as(client, method: str, path: str, headers: dict[str, str], content=None):
+    """``method`` on ``path`` with each header's latin-1 bytes as sent. The TestClient re-encodes a
+    header's bytes above 0x7F as UTF-8 (`\\x85` reaches the app as `\\xc2\\x85`), where httpx's
+    own `ASGITransport` hands the app what it was given, over the app the fixture started."""
+    import asyncio
+
+    import httpx
+
+    raw = {name: value.encode("latin-1") for name, value in headers.items()}
+
+    async def send():
+        transport = httpx.ASGITransport(app=client.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
+            return await c.request(method, path, headers=raw, content=content)
+
+    return asyncio.run(send())
 
 
 def test_jira_refuses_a_bearer_it_cannot_read_as_a_connect_token(client):
@@ -296,10 +322,12 @@ def test_jira_refuses_a_bearer_it_cannot_read_as_a_connect_token(client):
     # And it is refused ahead of the route: serverInfo needs no credential and still answers 403,
     # which is why the check is not in the caller helper. The tokens are spellings
     # ``backlot.auth.atlassian_bearer_token`` reads.
-    for token in ("usr-nope", "a\tb", "a,b", "a.b", "\tusr-nope", "\t\tusr-nope", "\x85a", "\xa0a"):
-        info = client.get(
-            "/atlassian/rest/api/3/serverInfo",
-            headers={"Authorization": f"Bearer {token}".encode("latin-1")},
+    for token in (
+        *("usr-nope", "a\tb", "a,b", "a.b", "\tusr-nope", "\t\tusr-nope"),
+        *("\x85a", "\xa0a", "\x85", "\xa0", "\xa0\xa0"),
+    ):
+        info = _sent_as(
+            client, "GET", "/atlassian/rest/api/3/serverInfo", {"Authorization": f"Bearer {token}"}
         )
         assert info.status_code == 403 and info.json() == {
             "error": errors_atlassian.CONNECT_TOKEN_UNREADABLE
@@ -340,13 +368,17 @@ def test_jira_answers_a_jwt_shaped_bearer_with_the_403_too(client):
         "Bearer \t usr-nope",
         "Bearer a  b",
         "Bearer a b c",
+        # the header's ends, as ``backlot.auth.atlassian_bearer_token`` trims them
+        "Bearer \t",
+        "\x85Bearer usr-nope",
+        "\xa0Bearer usr-nope",
     ],
 )
 def test_jira_reads_an_unrecognised_scheme_as_no_credential(client, header):
     """The 403 above is for a credential the site READ. A spelling it does not read is not a
     credential at all, and the request is the anonymous one — which is how each spelling was told
     apart on the real sites in the first place (403 = read, 200 = not read)."""
-    r = client.get("/atlassian/rest/api/3/project/search", headers={"Authorization": header})
+    r = _sent_as(client, "GET", "/atlassian/rest/api/3/project/search", {"Authorization": header})
     assert r.status_code == 200 and r.json()["values"] == []
 
 
@@ -1700,6 +1732,7 @@ def test_jira_comment_paging_is_declared_so_a_client_can_discover_it(paged):
 # --- a project role's id: a `long` path variable, read before the project ---------------------
 
 _MISSING_ID = "Required path variable 'id' is not present."
+_NOT_ADMIN = b'{"errorMessages":["You cannot edit the configuration of this project."],"errors":{}}'
 _NO_SUCH_ROLE = b'{"errorMessages":[],"errors":{}}'
 
 
@@ -1784,16 +1817,32 @@ def _unconverted(role_id: str) -> str:
         ("POST", "abc", "admin", "{}", 400, _unconverted("abc")),
         ("PUT", "abc", "none", None, 415, "Content-Type 'null' is not supported."),
         ("DELETE", "-0x1", "none", None, 404, None),
+        # a caller who sees the project and does not administer it: the same 400s, then the 401
+        # whatever role the id names, on the reads and the writes alike
+        ("GET", "abc", "ava", None, 400, _unconverted("abc")),
+        ("GET", "%20", "ava", None, 400, _MISSING_ID),
+        ("POST", "abc", "ava", "{}", 400, _unconverted("abc")),
+        ("GET", "10002", "ava", None, 401, _NOT_ADMIN),
+        ("GET", "-1", "ava", None, 401, _NOT_ADMIN),
+        ("GET", "99999", "ava", None, 401, _NOT_ADMIN),
+        ("POST", "99999", "ava", "{}", 401, _NOT_ADMIN),
+        ("PUT", "99999", "ava", "{}", 401, _NOT_ADMIN),
+        ("DELETE", "99999", "ava", None, 401, _NOT_ADMIN),
     ],
 )
 def test_jira_reads_a_role_id_as_a_long_before_the_project(
-    client, admin_h, method, role_id, caller, body, status, answer
+    client, admin_h, tokens, method, role_id, caller, body, status, answer
 ):
     """Each row as ``backlot.routers.atlassian._role_id`` reads the id, which real answered the same
     with and without a credential; the project is one the anonymous caller cannot see and the admin
-    can, and an id the project has no role for is ``errors.atlassian.no_such_role``."""
+    and ava can, ava does not administer it (``errors.atlassian.not_a_project_admin``), and an id
+    the project has no role for is ``errors.atlassian.no_such_role``."""
     key = synth.jira_project_key("payments")
-    headers = dict(admin_h) if caller == "admin" else {}
+    headers = {
+        "admin": dict(admin_h),
+        "ava": {"Authorization": f"Bearer {tokens['ava@acme.com']}"},
+        "none": {},
+    }[caller]
     if body is not None:
         headers["Content-Type"] = "application/json"
     r = client.request(
@@ -1810,6 +1859,8 @@ def test_jira_reads_a_role_id_as_a_long_before_the_project(
     elif answer is not None:
         assert r.headers["content-type"] == "application/json;charset=UTF-8"
         assert r.content == answer
+        realm = 'OAuth realm="http%3A%2F%2Ftestserver"' if status == 401 else None
+        assert r.headers.get("www-authenticate") == realm
     else:
         assert r.json()["errorMessages"] == [f"No project could be found with key '{key}'."]
 
@@ -1823,18 +1874,35 @@ def test_jira_role_declares_its_id_as_the_integer_the_document_does(client):
 
 
 def test_jira_role_list_links_the_role_its_read_answers(client, admin_h):
-    """The list names one role, and its link is the id (``backlot.routers.atlassian._JIRA_ROLE``)
-    the role read answers 200 for, under that name and with the project group's members as its
-    actors. A function of its own because it follows a link the list emits."""
+    """The list names one role and links it by the project's id
+    (``backlot.routers.atlassian._jira_project_id``) and the role id
+    (``backlot.routers.atlassian._JIRA_ROLE``) the role read answers 200 for, in the shape
+    ``backlot.routers.atlassian.jira_project_role`` gives and with the project group's members as
+    its actors; an id no project has is the project's 404. A function of its own because it follows
+    a link the list emits."""
     key = synth.jira_project_key("payments")
+    projects = client.get("/atlassian/rest/api/3/project/search", headers=admin_h).json()
+    (project_id,) = [p["id"] for p in projects["values"] if p["key"] == key]
     listed = client.get(f"/atlassian/rest/api/3/project/{key}/role", headers=admin_h).json()
     assert list(listed) == ["Users"]
     path = urlsplit(listed["Users"]).path
-    assert path == f"/rest/api/3/project/{key}/role/10002"
+    assert path == f"/rest/api/3/project/{project_id}/role/10002"
     role = client.get(f"/atlassian{path}", headers=admin_h).json()
+    assert list(role) == ["self", "name", "id", "description", "actors", "scope"]
+    assert role["self"] == listed["Users"]
     assert (role["id"], role["name"]) == (10002, "Users")
-    assert role["actors"]
-    assert {actor["type"] for actor in role["actors"]} == {"atlassian-user-role-actor"}
+    assert role["description"]
+    assert role["scope"] == {"type": "PROJECT", "project": {"id": project_id}}
+    actors = role["actors"]
+    assert [actor["id"] for actor in actors] == list(range(10000, 10000 + len(actors)))
+    assert len(actors) > 1
+    assert {actor["type"] for actor in actors} == {"atlassian-user-role-actor"}
+    other = str(int(project_id) + 1)
+    r = client.get(f"/atlassian/rest/api/3/project/{other}/role", headers=admin_h)
+    assert (r.status_code, r.json()["errorMessages"]) == (
+        404,
+        [f"No project could be found with id '{other}'."],
+    )
 
 
 # --- how a query parameter is READ: conversion, range, repetition -------------------------
@@ -4318,6 +4386,9 @@ _REMOVE_TEMPLATE = "/atlassian/rest/api/3/project-template/remove-template"
 _SERVICE_REGISTRY = "/atlassian/rest/atlassian-connect/1/service-registry?serviceIds=1"
 _COLUMNS = "/atlassian/rest/api/2/settings/columns"
 _FILTER_COLUMNS = "/atlassian/rest/api/3/filter/999/columns"
+_FIELD = "/atlassian/rest/api/3/field"
+_ATTACHMENTS = "/atlassian/rest/api/3/issue/NOPE-999999/attachments"
+_AVATAR = "/atlassian/rest/api/3/issuetype/999/avatar2"
 _PREFERENCES = "/atlassian/rest/api/3/mypreferences"
 _JSON_OR_TEXT = "application/json, text/plain"
 _AGENTS = "/atlassian/rest/api/3/agents/bulk/invoke/batch"
@@ -4446,6 +4517,15 @@ _JSON = "application/json"
             "text/plain;charset=ISO-8859-1",
             "application/json, application/yaml, application/*+json",
         ),
+        # its body is optional, so one with none is not checked
+        ("PUT", _FILTER_COLUMNS, "none", None, None, 404, None, None),
+        # one that takes JSON alone, one multipart alone, and one `*/*`
+        ("POST", _FIELD, "none", "text/plain", "x", 415, "text/plain", _JSON),
+        ("POST", _FIELD, "none", _JSON, "{}", 405, None, None),
+        ("POST", _ATTACHMENTS, "none", "text/plain", "x", 415, "text/plain", "multipart/form-data"),
+        ("POST", _ATTACHMENTS, "none", "multipart/form-data; boundary=x", "--x--", 404, None, None),
+        ("POST", _AVATAR, "none", "foo", "x", 415, _UNREAD, "*/*"),
+        ("POST", _AVATAR, "none", "image/png", "x", 404, None, None),
     ],
 )
 def test_jira_checks_the_media_type_an_operation_takes_before_anything_else(
@@ -4453,8 +4533,10 @@ def test_jira_checks_the_media_type_an_operation_takes_before_anything_else(
 ):
     """Pins the 415 ``errors.atlassian.refuse_a_media_type`` describes, on the operations
     ``backlot/data/jira_unserved.json`` says check one. Each row's control is the same URL
-    answering past the check: the 401 a caller with no credential gets, or the 404 an operation no
-    route serves gives a caller whose credential resolves."""
+    answering past the check: the 401 a caller with no credential gets, the 404 an operation no
+    route serves gives a caller whose credential resolves, or, on one real runs for this caller,
+    what no route here answers it: the 405 of a method a route at the path does not take, or the
+    404 of a path none serves."""
     headers = dict(admin_h if credential == "admin" else _CREDENTIALS[credential])
     if content_type is not None:
         headers["Content-Type"] = content_type.encode("latin-1")
@@ -5380,6 +5462,24 @@ def test_atlassian_front_door_answers_before_either_product(
     assert hashlib.sha256(normalised.encode()).hexdigest() == digest
 
 
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("TRACE", "/github/user"),
+        ("PROPFIND", "/notion/v1/users"),
+        ("GET", "/slack/api/auth.test%00"),
+        ("PATCH", "/s3/"),
+    ],
+)
+def test_atlassian_front_door_answers_under_atlassian_alone(client, admin_h, method, path):
+    """A request another vendor's mount takes that the front door would refuse under `/atlassian`
+    gets no page of CloudFront's or the gateway's: the middleware
+    (``backlot.main.answer_at_the_atlassian_front_door``) passes any path it does not own."""
+    r = _spelled(client, method).request("GET", path, headers=admin_h)
+    for layer in ("CloudFront", "nginx", "openresty"):
+        assert layer not in r.text, (layer, r.status_code)
+
+
 # --- a write on a served path: the operation's own answer, not a 405 -------------------------
 
 
@@ -5560,6 +5660,13 @@ _JSON_TYPE = "application/json"
         + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
         ("POST", "/wiki/rest/api/template", None, "application/json;x=1 ;y", 400)
         + (errors_atlassian.tomcat_page(400).encode(),),
+        # the value's ends, as ``backlot.errors.atlassian.jersey_media_type`` trims them
+        ("POST", "/wiki/rest/api/template", None, "application/json\xa0", 400)
+        + (errors_atlassian.tomcat_page(400).encode(),),
+        ("POST", "/wiki/rest/api/template", None, "\x85application/json", 400)
+        + (errors_atlassian.tomcat_page(400).encode(),),
+        ("POST", "/wiki/rest/api/template", None, "application/json\t", 403)
+        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
         # the two that ran: a type Jersey cannot read is its 400 too, JSON reaches the operation,
         # which real runs and Backlot does not serve
         ("POST", "/wiki/rest/api/contentbody/convert/async/1", None, "application/json;x", 400)
@@ -5661,22 +5768,25 @@ _JSON_TYPE = "application/json"
                 "space/ENG/property",
             )
         ),
+        # an `OPTIONS` asks for no operation and is refused by none of these
+        ("OPTIONS", "/wiki/rest/api/content/1/label", None, None, 404, None),
     ],
 )
-def test_confluence_answers_a_published_operation_before_it_runs(
+def test_confluence_answers_an_operation_before_it_runs(
     client, method, vendor_path, authorization, ctype, status, body
 ):
-    """With no credential real refuses each published operation before it runs, in the order and
-    shape ``_published_answer``, ``_CONFLUENCE_CONSUMES``, ``_CONFLUENCE_JAXRS_WRITES``,
-    ``_CONFLUENCE_NOT_PERMITTED_GETS`` and ``_CONFLUENCE_OUTSIDE_THE_DOCUMENT`` in
-    ``backlot.routers.atlassian`` carry the measurement for. A 415's ``body`` is the reason Spring
-    gives; the 401 is asserted by status alone, its body being JSON here where real's is Tomcat's
-    page."""
+    """With no credential real refuses each operation these rows name, published or served outside
+    the document, before it runs, in the order and shape ``_published_answer``,
+    ``_CONFLUENCE_CONSUMES``, ``_CONFLUENCE_JAXRS_WRITES``, ``_CONFLUENCE_NOT_PERMITTED_GETS`` and
+    ``_CONFLUENCE_OUTSIDE_THE_DOCUMENT`` in ``backlot.routers.atlassian`` carry the measurement for.
+    A 415's ``body`` is the reason Spring gives; the 401 is asserted by status alone, its body being
+    JSON here where real's is Tomcat's page. An `OPTIONS` at a published write's path is the 404
+    real answers it, not a refusal."""
     headers = {} if ctype is None else {"Content-Type": ctype}
     if authorization is not None:
         headers["Authorization"] = authorization
-    r = client.request(
-        method, f"/atlassian{vendor_path}", content=b"x" if ctype else None, headers=headers
+    r = _sent_as(
+        client, method, f"/atlassian{vendor_path}", headers, content=b"x" if ctype else None
     )
     assert r.status_code == status, r.text
     if isinstance(body, str):
@@ -5907,8 +6017,8 @@ def _unparsed(accept: str) -> bytes:
 
 
 def _send_as_latin1(client, request):
-    """``request`` sent to ``client``'s app with each header value's bytes as they are, as real was
-    sent them: the TestClient encodes a byte past ASCII again, as UTF-8."""
+    """``request``, built by the TestClient with its default headers, sent with each header value's
+    bytes as they are, which :func:`_sent_as` says why the TestClient does not."""
     if all(value.isascii() for value in request.headers.values()):
         return client.send(request)
 

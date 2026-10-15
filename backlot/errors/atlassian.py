@@ -1492,7 +1492,8 @@ def jersey_media_type(value: str) -> tuple[str, str, list[tuple[str, str]]] | No
     parameter with no `=` (`;x`), with nothing after its `=` (`;x=`), with whitespace beside the `=`
     (`;charset =utf-8`) or with an unterminated quote makes the header unreadable, and so does an
     empty header, a comma or anything after the subtype but a parameter. A charset is not looked
-    up (`charset=nope` is read).
+    up (`charset=nope` is read). A space or a tab at either end is trimmed, where U+00A0 or U+0085
+    there leaves the value unreadable (2026-10-16, each after the type and before it).
     """
     text = value.strip(" \t")
     head = re.match(r"([^/;\s]+)/([^;\s]+)[ \t]*", text)
@@ -2050,7 +2051,7 @@ class FrontDoor(NamedTuple):
     """An answer a layer in front of the application gives. ``layer`` names whose headers it
     carries, not which layer answered: `cdn` adds no header of its own, `cdn edge` adds the edge's
     two, and `gateway` its two ids beside those, which Confluence's Tomcat 400 carries too
-    (measured 2026-10-14; see ``backlot.routers.atlassian.vendor_headers``)."""
+    (measured 2026-10-14)."""
 
     status: int
     layer: str
@@ -2130,6 +2131,21 @@ def no_such_role() -> AtlassianError:
     read the project's roles, for `-1`, `-0x1`, `11` and a `1` on either side of an em space, each
     read as ``backlot.routers.atlassian._java_long`` reads it."""
     return AtlassianError(404, {"errorMessages": [], "errors": {}}, media_type=JIRA_JSON_MEDIA_TYPE)
+
+
+def not_a_project_admin(realm: str) -> AtlassianError:
+    """Jira's 401 for a project role operation by a caller who does not administer the project: the
+    message in :func:`_jira_envelope`, 84 bytes on `application/json;charset=UTF-8`, with
+    `WWW-Authenticate: OAuth realm="<realm>"` and no `X-Frame-Options`. ``realm`` is the site,
+    percent-encoded. Measured on Jira Cloud 2026-10-15 with a credential that browses the project
+    and does not administer it, on its role list, on role ids that name a role, that name none and
+    `-1`, and on `POST`, `PUT` and `DELETE` of a role, by the project's key and by its id."""
+    return AtlassianError(
+        401,
+        _jira_envelope("You cannot edit the configuration of this project."),
+        media_type=JIRA_JSON_MEDIA_TYPE,
+        headers={"WWW-Authenticate": f'OAuth realm="{realm}"'},
+    )
 
 
 def no_endpoint(path: str, method: str) -> AtlassianError:

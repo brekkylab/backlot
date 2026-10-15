@@ -5384,6 +5384,24 @@ def test_atlassian_front_door_answers_before_either_product(
     assert hashlib.sha256(normalised.encode()).hexdigest() == digest
 
 
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("TRACE", "/github/user"),
+        ("PROPFIND", "/notion/v1/users"),
+        ("GET", "/slack/api/auth.test%00"),
+        ("PATCH", "/s3/"),
+    ],
+)
+def test_atlassian_front_door_answers_under_atlassian_alone(client, admin_h, method, path):
+    """A request another vendor's mount takes that the front door would refuse under `/atlassian`
+    gets no page of CloudFront's or the gateway's: the middleware
+    (``backlot.main.answer_at_the_atlassian_front_door``) passes any path it does not own."""
+    r = _spelled(client, method).request("GET", path, headers=admin_h)
+    for layer in ("CloudFront", "nginx", "openresty"):
+        assert layer not in r.text, (layer, r.status_code)
+
+
 # --- a write on a served path: the operation's own answer, not a 405 -------------------------
 
 

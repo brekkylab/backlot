@@ -525,17 +525,40 @@ def test_notion_search_filter_database_only(client, notion_h):
         ("?filter_properties=Status&filter_properties=Priority", {"Status", "Priority"}),
         ("?filter_properties=nope", set()),
         ("?filter_properties=", set()),
+        ("?filter_properties[]=Status", {"Status"}),
+        ("?filter_properties%5B%5D=Status", {"Status"}),
+        ("?filter_properties[20]=Status&filter_properties=Priority", {"Status", "Priority"}),
+        ("?filter_properties=Status&filter_properties[x]=Priority", {"Status"}),
+        ("?filter_properties=Status&filter_properties[0][x]=Priority", {"Status"}),
+        ("?filter_properties[0][x]=Status", set()),
+        ("?filter_properties[0]=Status&filter_properties[0]=Priority", set()),
+        ("?filter_properties[x]=Status", None),
+        ("?filter_properties[21]=Status", None),
+        ("?filter_properties[01]=Status", None),
+        ("?filter_properties[]=Status&filter_properties[x]=Priority", None),
+        ("?filter_properties[x]=Status&filter_properties=Priority", None),
     ],
 )
 def test_notion_search_filter_properties_keeps_only_the_named_row_properties(
     client, notion_h, query, row_keys
 ):
-    # A row outside a database is the workspace page and keeps its title.
-    results = client.post(
+    """``row_keys`` of ``None`` is real's 400, answered ahead of the body's own error."""
+    body = {"query": "", "filter": {"property": "object", "value": "page"}}
+    r = client.post(
         f"/notion/v1/search{query}",
-        json={"query": "", "filter": {"property": "object", "value": "page"}},
+        json=body if row_keys is not None else {**body, "query": 5},
         headers=notion_h,
-    ).json()["results"]
+    )
+    if row_keys is None:
+        assert (r.status_code, r.json()["code"], r.json()["message"]) == (
+            400,
+            "validation_error",
+            'The value of "filter_properties" in query parameters must be a string or list of '
+            "strings",
+        )
+        return
+    # A row outside a database is the workspace page and keeps its title.
+    results = r.json()["results"]
     row = next(r for r in results if r["id"] == synth.notion_id("nt-task-1"))
     assert set(row["properties"]) == row_keys
     outside = next(r for r in results if r["parent"]["type"] == "workspace")

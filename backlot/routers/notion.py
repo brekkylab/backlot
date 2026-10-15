@@ -104,9 +104,10 @@ _P_PAGINATE = [qp("start_cursor"), qp("page_size", "integer")]
 _P_FILTER_PROPERTIES = qp(
     "filter_properties",
     description=(
-        "A property id or name; repeat the parameter to list several. A page inside a database "
-        "comes back with only the listed properties (none when the value is unknown or empty); a "
-        "page outside a database keeps its title whatever is listed."
+        "A property id or name; repeat the parameter, or spell it `filter_properties[]` or "
+        "`filter_properties[0]`, to list several. A page inside a database comes back with only "
+        "the listed properties (none when the value is unknown or empty); a page outside a "
+        "database keeps its title whatever is listed."
     ),
 )
 _P_COMMENTS = [qp("block_id", required=True), *_P_PAGINATE]
@@ -477,10 +478,50 @@ def _page_obj(conn, row) -> dict:
     }
 
 
-def _filter_properties(page: dict, keep: list[str]) -> dict:
-    """Narrow a database row's ``properties`` to those whose id or name is in ``keep``; measured
-    against api.notion.com (2022-06-28) on 2026-10-15."""
-    if not keep or page["parent"]["type"] != "database_id":
+_FILTER_PROPERTIES_KEY = re.compile(r"filter_properties((?:\[[^\[\]]*\])*)")
+_BRACKET = re.compile(r"\[([^\[\]]*)\]")
+
+
+def _filter_properties_keep(request: Request) -> list[str] | None | JSONResponse:
+    """The ``filter_properties`` names, ``None`` when the parameter is absent, or the 400 real
+    answers. Measured against api.notion.com (2022-06-28 and 2025-09-03) on 2026-10-15, which reads
+    the query string the way Node's ``qs`` does: the bare key, ``[]`` and an index from 0 to 20
+    all add to one list; any other single bracket (``[x]``, ``[21]``, ``[01]``) is a 400 unless the
+    bare key came first, and then lists nothing; a deeper bracket (``[0][x]``) or an index given
+    twice lists nothing. A bare ``[][]=Tags`` kept ``Tags`` on real and keeps nothing here."""
+    keep: list[str] = []
+    slots: dict[str, list[str]] = {}
+    first = refused = None
+    for key, value in request.query_params.multi_items():
+        if (m := _FILTER_PROPERTIES_KEY.fullmatch(key)) is None:
+            continue
+        brackets = _BRACKET.findall(m[1])
+        first = brackets if first is None else first
+        if brackets in ([], [""]):
+            keep.append(value)
+        elif len(brackets) > 1:
+            continue
+        elif (i := brackets[0]).isascii() and i.isdigit() and str(int(i)) == i and int(i) <= 20:
+            slots.setdefault(i, []).append(value)
+        else:
+            refused = first != []
+    if first is None:
+        return None
+    if refused:
+        return _error(
+            request,
+            400,
+            "validation_error",
+            'The value of "filter_properties" in query parameters must be a string or list of '
+            "strings",
+        )
+    return keep + [values[0] for values in slots.values() if len(values) == 1]
+
+
+def _filter_properties(page: dict, keep: list[str] | None) -> dict:
+    """Narrow ``properties`` to those whose id or name is in ``keep``; ``None`` leaves the page
+    as it is."""
+    if keep is None:
         return page
     wanted = set(keep)
     page["properties"] = {
@@ -707,6 +748,9 @@ async def search(request: Request):
     caller = auth.resolve_bearer(request)
     if (refusal := _refusal(request, caller)) is not None:
         return refusal
+    # Answered after the credential and the version and before the body, measured 2026-10-15.
+    if isinstance(keep := _filter_properties_keep(request), JSONResponse):
+        return keep
     body = await json_body(request)
     # Measured against api.notion.com on 2026-10-01 and 2026-10-04: once the credential and the
     # version clear, a `query` that is present must be a string and a `filter` that is present an
@@ -744,11 +788,12 @@ async def search(request: Request):
             continue
         picked.append(r)
     window = picked[offset : offset + limit]
-    keep = request.query_params.getlist("filter_properties")
+    # A database row is narrowed under every Notion-Version, its parent typed `database_id` or
+    # `data_source_id`; a page outside a database keeps its title whatever is listed.
     results = [
         _database_obj(conn, r, _version(request))
         if r["subtype"] == "database"
-        else _filter_properties(_page_obj(conn, r), keep)
+        else _filter_properties(_page_obj(conn, r), keep if r["parent_id"] else None)
         for r in window
     ]
     return _list_obj(results, offset, len(window), len(picked), "page_or_database")

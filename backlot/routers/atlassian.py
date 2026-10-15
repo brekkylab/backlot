@@ -20,7 +20,7 @@ import time
 from collections.abc import Callable
 from html import escape
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, unquote_plus
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
@@ -2583,11 +2583,19 @@ def _confluence_carried(
 
     ``own`` names what the route writes into its links itself, so it is not carried as well.
     """
+    # The supplied Confluence measurement on 2026-10-12 carries `expand` with a bare comma
+    # or an escaped comma exactly as sent. Other parameter normalization stays unchanged.
+    raw_expand = iter(
+        part.partition("=")[2]
+        for part in request.scope["query_string"].decode("latin-1").split("&")
+        if unquote_plus(part.partition("=")[0]) == "expand"
+    )
     front, lead, trail = [], [], []
     for name, value in request.query_params.multi_items():
         if name in ("limit", "start", "next", "prev", *own):
             continue
-        pair = f"{name}={quote(str(value), safe='')}"
+        carried = next(raw_expand) if name == "expand" else quote(str(value), safe="")
+        pair = f"{name}={carried}"
         (front if name in head else lead if name in first else trail).append(pair)
     return (
         "&".join(front) + "&" if front else "",

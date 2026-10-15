@@ -4947,3 +4947,20 @@ def test_confluence_search_carries_the_cache_pair_where_real_does(
         assert r.headers["expires"] == "Thu, 01 Jan 1970 00:00:00 GMT"
     else:
         assert "cache-control" not in r.headers and "expires" not in r.headers
+
+
+@pytest.mark.parametrize(
+    "route,expand", [("content", "version,space"), ("space", "description,homepage")]
+)
+@pytest.mark.parametrize("encoded", [False, True])
+def test_confluence_links_keep_expand_as_sent(client, admin_h, route, expand, encoded):
+    """Bare and escaped commas are carried literally in the supplied Confluence measurement."""
+    sent = expand.replace(",", "%2C") if encoded else expand
+    path = f"/atlassian/wiki/rest/api/{route}?expand={sent}&limit=1"
+    response = client.get(path, headers=admin_h)
+    assert response.status_code == 200
+    links = response.json()["_links"]
+    assert links["next"] == f"/rest/api/{route}?next=true&expand={sent}&limit=1&start=1"
+    assert links["self"].endswith(f"/rest/api/{route}?expand={sent}")
+    second = client.get("/atlassian/wiki" + links["next"], headers=admin_h).json()["_links"]
+    assert second["prev"] == f"/rest/api/{route}?expand={sent}&prev=true&limit=1&start=0"

@@ -589,6 +589,8 @@ _GMAIL_OP = re.compile(r'(\w+):("[^"]*"|\S+)')
 _GMAIL_KEYS = {
     "from",
     "to",
+    "cc",
+    "bcc",
     "subject",
     "after",
     "before",
@@ -601,7 +603,7 @@ _GMAIL_KEYS = {
 
 
 def _parse_gmail_q(q: str) -> tuple[str, dict]:
-    """Split a Gmail search `q` into (free_text, operators). Honors from:/to:/subject:/
+    """Split a Gmail search `q` into (free_text, operators). Honors from:/to:/cc:/bcc:/subject:/
     after:/before:/newer_than:/older_than:/label:/in:/has: — the rest is free text matched
     full-text."""
     ops: dict[str, list[str]] = {}
@@ -664,6 +666,38 @@ def _resolve_relative_dates(ops: dict) -> dict:
     return ops
 
 
+# What `_gmail_address_match` reads: a word is a run of letters, digits, `_` and `&` in any
+# script, and a value shaped like one address is compared with each address the header holds.
+_GMAIL_ADDRESS_WORD = re.compile(r"[\w&]+")
+_GMAIL_ONE_ADDRESS = re.compile(r"[^@\s]+@[^@\s]+")
+_GMAIL_ADDRESS = re.compile(r"[\w.+'-]+@[\w-]+(?:\.[\w-]+)+")
+
+
+def _gmail_address_match(header: str | None, value: str) -> bool:
+    """Whether a `Cc` or `Bcc` header answers a `cc:` or `bcc:` value as Gmail answers it, in any
+    case. A value shaped like one address matches an address in the header exactly: `lena@acme.com`
+    does, `lena@acme` names no address and matches nothing. Any other value matches when its words
+    come one after another among the header's words, display names included: `lena`, `acme`,
+    `acme.com`, `@acme.com` and `lena@` match `Lena Park <lena@acme.com>`, and so does `park`,
+    where `len`, `ena`, `par` and `com.acme` do not. `_` joins the characters around it into one
+    word, so `ops` does not match `ops_team@corp.example`, and `&` counts as a word character too,
+    where the rest of ASCII punctuation does not. A value with no word in it, such as `.`, `@` or
+    `""`, is ignored and matches every message, a message without the header included.
+
+    Measured on a Workspace mailbox of 595 messages on 2026-10-15: 113 searches on `cc:` and
+    `bcc:`, compared with the headers of every message, all match this rule, and of the 32 ASCII
+    punctuation marks sent alone as a `cc:` value, `_` and `&` match nothing and the other 30 match
+    every message. On 2026-10-14, `cc:<a local part>+x` read `+x` as a search term of its own."""
+    header = (header or "").lower()
+    value = value.lower()
+    if _GMAIL_ONE_ADDRESS.fullmatch(value):
+        return value in _GMAIL_ADDRESS.findall(header)
+    words, have = _GMAIL_ADDRESS_WORD.findall(value), _GMAIL_ADDRESS_WORD.findall(header)
+    if not words:
+        return True
+    return any(have[i : i + len(words)] == words for i in range(len(have) - len(words) + 1))
+
+
 def _gmail_op_match(row, ops: dict) -> bool:
     for v in ops.get("from", []):
         if v.lower() not in (row["author_email"] or "").lower():
@@ -671,6 +705,10 @@ def _gmail_op_match(row, ops: dict) -> bool:
     for v in ops.get("to", []):
         if v.lower() not in (row["to_addr"] or "").lower():
             return False
+    for key in ("cc", "bcc"):
+        for v in ops.get(key, []):
+            if not _gmail_address_match(row[key], v):
+                return False
     for v in ops.get("subject", []):
         if v.lower() not in (row["title"] or "").lower():
             return False
@@ -698,10 +736,14 @@ def _gmail_op_match(row, ops: dict) -> bool:
     return True
 
 
-def _gmail_query(conn, mailbox, ids, q: str) -> list:
+def _gmail_query(conn, mailbox, ids, q: str, caller_email: str | None = None) -> list:
     """Full ACL+mailbox-filtered match set for a Gmail `q` (FTS-ranked when free text is
     present; otherwise the mailbox listing). The caller paginates the returned rows."""
     free, ops = _parse_gmail_q(q)
+    if caller_email:
+        for key in ("cc", "bcc"):
+            if key in ops:
+                ops[key] = [caller_email if v.lower() == "me" else v for v in ops[key]]
     ops = _resolve_relative_dates(ops)  # newer_than:/older_than: -> absolute after:/before: bounds
     if free:
         # Honor a fully "quoted" free-text term as a phrase (Gmail's quote semantics): match the
@@ -879,7 +921,7 @@ async def gmail_messages_list(user_id: str, request: Request):
     limit, offset = _gmail_page(request, "messages", sizes)
     q = request.query_params.get("q", "") or ""
     if q.strip():  # search: filter the ACL-visible set by the query, then paginate
-        matched = _gmail_query(conn, mailbox, ids, q)
+        matched = _gmail_query(conn, mailbox, ids, q, caller.email or _service_email(request))
         total = len(matched)
         rows = matched[offset : offset + limit]
     else:
@@ -989,7 +1031,9 @@ async def gmail_threads_list(user_id: str, request: Request):
     if q.strip():
         # A search returns the THREADS its matches are in: Gmail lists a thread whose match is in a
         # reply, and lists it once even when several of its messages match.
-        matched = _by_thread(_gmail_query(conn, mailbox, ids, q))
+        matched = _by_thread(
+            _gmail_query(conn, mailbox, ids, q, caller.email or _service_email(request))
+        )
         total = len(matched)
         rows = matched[offset : offset + limit]
     else:
@@ -2722,9 +2766,53 @@ def _editor_doc(request: Request, file_id: str, *, expect: str):
     raise gerr.invalid_argument(EDITOR_INVALID_ARG)
 
 
+# `documents.get`'s two enums, names in number order. Measured 2026-10-09: `suggestionsViewMode`
+# reads `0` through `3`, `+1` and `01` (the value numbered 1) and a name in any ASCII case, and
+# refuses `4`, `-1`, `1.0`, a padded `" 1"`, empty and `NOPE`. `commentsViewMode` reads the same
+# way (2026-10-14: `3`, `+1` and `comments_view_mode_omitted` read, `4` and `-1` refused).
+# `includeTabsContent` is the boolean `_sheets_bool_value` reads (2026-10-14: `no`, `n`, `y`, `T`
+# and `F` read, `on`, `off`, `2` and `tru` refused). A value that cannot be read is a 400 before
+# the document is looked up.
+_DOCS_VIEW = "type.googleapis.com/google.apps.docs.v1"
+_DOCS_SUGGESTIONS_VIEW = protojson.Enum(
+    f"{_DOCS_VIEW}.SuggestionsViewMode",
+    (
+        "DEFAULT_FOR_CURRENT_ACCESS",
+        "SUGGESTIONS_INLINE",
+        "PREVIEW_SUGGESTIONS_ACCEPTED",
+        "PREVIEW_WITHOUT_SUGGESTIONS",
+    ),
+)
+_DOCS_COMMENTS_VIEW = protojson.Enum(
+    f"{_DOCS_VIEW}.CommentsViewMode",
+    (
+        "COMMENTS_VIEW_MODE_UNSPECIFIED",
+        "COMMENTS_VIEW_MODE_DEFAULT_FOR_CURRENT_ACCESS",
+        "COMMENTS_VIEW_MODE_OMITTED",
+        "COMMENTS_VIEW_MODE_INCLUDED",
+    ),
+)
+
+
 @router.get("/docs/v1/documents/{document_id}")
 async def docs_get(document_id: str, request: Request):
     """The document as Docs structural elements: one ``paragraph`` per line of the stored text."""
+    # The credential, then the typed values, then the lookup -- `_typed_query` records the order.
+    _require(request)
+    # Validated and then unused: the body is the same whatever a value that is read selects, where
+    # real's changes with it.
+    _typed_query(
+        request,
+        {
+            "suggestionsViewMode": lambda raw: _sheets_enum_value(
+                raw, "suggestions_view_mode", _DOCS_SUGGESTIONS_VIEW
+            ),
+            "includeTabsContent": lambda raw: _sheets_bool_value(raw, "include_tabs_content"),
+            "commentsViewMode": lambda raw: _sheets_enum_value(
+                raw, "comments_view_mode", _DOCS_COMMENTS_VIEW
+            ),
+        },
+    )
     row = _editor_doc(request, document_id, expect="document")
     content = [{"sectionBreak": {"sectionStyle": {}}}]
     for line in (row["content"] or "").split("\n"):

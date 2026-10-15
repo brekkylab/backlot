@@ -782,8 +782,12 @@ def _issue(row, info) -> dict:
         # issue's markdown description is.
         "description": row["content"],
         "url": synth.linear_url(identifier, title, _org(info)),
+        # Measured 2026-10-09: an unassigned issue's branch prefix is the caller's email
+        # local part.
         "branchName": row["branch_name"]
-        or synth.linear_branch_name(identifier, title, row["assignee_email"]),
+        or synth.linear_branch_name(
+            identifier, title, row["assignee_email"] or _ctx(info).get("caller_email")
+        ),
         "priority": float(row["priority"] if row["priority"] is not None else 0),
         "priorityLabel": synth.linear_priority_label(row["priority"]),
         "estimate": float(row["estimate"]) if row["estimate"] is not None else None,

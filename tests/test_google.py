@@ -4593,6 +4593,192 @@ def test_docs_get_returns_paragraph_text(base, admin_h):
     assert "Logo usage" in text  # SAMPLE "Brand guidelines v3"
 
 
+_DOCS_SUGGESTIONS = "type.googleapis.com/google.apps.docs.v1.SuggestionsViewMode"
+_DOCS_COMMENTS = "type.googleapis.com/google.apps.docs.v1.CommentsViewMode"
+
+
+def _docs_invalid(field, typ, value):
+    message = f"Invalid value at '{field}' ({typ}), \"{value}\""
+    return {
+        "code": 400,
+        "message": message,
+        "status": "INVALID_ARGUMENT",
+        "details": [
+            {
+                "@type": "type.googleapis.com/google.rpc.BadRequest",
+                "fieldViolations": [{"field": field, "description": message}],
+            }
+        ],
+    }
+
+
+def _docs_query_rows():
+    """Each spelling `docs_get` records, as ``(query pairs, refusal or None)``."""
+    suggestions = (
+        "DEFAULT_FOR_CURRENT_ACCESS",
+        "SUGGESTIONS_INLINE",
+        "PREVIEW_SUGGESTIONS_ACCEPTED",
+        "PREVIEW_WITHOUT_SUGGESTIONS",
+        "suggestions_inline",
+        "Suggestions_Inline",
+        "0",
+        "1",
+        "2",
+        "3",
+        "+1",
+        "01",
+    )
+    comments = (
+        "COMMENTS_VIEW_MODE_UNSPECIFIED",
+        "COMMENTS_VIEW_MODE_DEFAULT_FOR_CURRENT_ACCESS",
+        "COMMENTS_VIEW_MODE_OMITTED",
+        "COMMENTS_VIEW_MODE_INCLUDED",
+    )
+    rows = [([("suggestionsViewMode", name)], None) for name in suggestions]
+    rows += [
+        (
+            [("suggestionsViewMode", value)],
+            _docs_invalid("suggestions_view_mode", _DOCS_SUGGESTIONS, value),
+        )
+        for value in ("4", "-1", "1.0", " 1", "", "NOPE")
+    ]
+    rows += [
+        ([("includeTabsContent", value)], None)
+        for value in ("true", "TRUE", "True", "1", "t", "yes", "false", "0", "f", "no", "n", "y")
+    ]
+    rows += [
+        (
+            [("includeTabsContent", value)],
+            _docs_invalid("include_tabs_content", "TYPE_BOOL", value),
+        )
+        for value in ("", "NOPE", " true", "on", "off", "2")
+    ]
+    # Real reads a comments view only beside the tabs content, and `COMMENTS_VIEW_MODE_INCLUDED`
+    # only beside inline suggestions; without them it refuses the combination after the lookup.
+    tabs = [("includeTabsContent", "true")]
+    rows += [([("commentsViewMode", name), *tabs], None) for name in comments[:3]]
+    rows += [
+        ([("commentsViewMode", value), *tabs], None)
+        for value in ("2", "+1", "comments_view_mode_omitted")
+    ]
+    rows += [
+        (
+            [
+                ("commentsViewMode", comments[3]),
+                *tabs,
+                ("suggestionsViewMode", "SUGGESTIONS_INLINE"),
+            ],
+            None,
+        )
+    ]
+    rows += [
+        (
+            [("commentsViewMode", value)],
+            _docs_invalid("comments_view_mode", _DOCS_COMMENTS, value),
+        )
+        for value in ("", "NOPE", "4", "-1")
+    ]
+    return rows
+
+
+_DOCS_GET_VALUES = _docs_query_rows() + [
+    (
+        [("suggestionsViewMode", "NOPE"), ("suggestionsViewMode", "SUGGESTIONS_INLINE")],
+        _docs_invalid("suggestions_view_mode", _DOCS_SUGGESTIONS, "NOPE"),
+    ),
+    (
+        [("suggestionsViewMode", "SUGGESTIONS_INLINE"), ("suggestionsViewMode", "NOPE")],
+        _docs_invalid("suggestions_view_mode", _DOCS_SUGGESTIONS, "NOPE"),
+    ),
+    (
+        [
+            ("suggestionsViewMode", "DEFAULT_FOR_CURRENT_ACCESS"),
+            ("suggestionsViewMode", "PREVIEW_WITHOUT_SUGGESTIONS"),
+        ],
+        None,
+    ),
+    (
+        [("includeTabsContent", "NOPE"), ("includeTabsContent", "true")],
+        _docs_invalid("include_tabs_content", "TYPE_BOOL", "NOPE"),
+    ),
+    (
+        [("includeTabsContent", "false"), ("includeTabsContent", "NOPE")],
+        _docs_invalid("include_tabs_content", "TYPE_BOOL", "NOPE"),
+    ),
+    ([("includeTabsContent", "true"), ("includeTabsContent", "false")], None),
+]
+
+
+@pytest.fixture(scope="module")
+def document_id(client, tokens_yaml):
+    headers = {"Authorization": f"Bearer {tokens_yaml['admin_token']}"}
+    files = client.get("/drive/v3/files", headers=headers, params={"pageSize": 1000}).json()[
+        "files"
+    ]
+    return next(f["id"] for f in files if f["mimeType"] == "application/vnd.google-apps.document")
+
+
+@pytest.mark.parametrize("query, refusal", _DOCS_GET_VALUES)
+def test_documents_get_reads_a_query_value_real_reads_and_refuses_one_it_cannot(
+    client, tokens_yaml, document_id, query, refusal
+):
+    """The spellings `docs_get` records. A repeat holding a refused value is that value's 400
+    whichever end it is at; two values that are read are served. At `$.xgafv=1` the refusal's
+    `errors` entry is the one `backlot.errors.google.invalid_field_value` records."""
+    headers = {"Authorization": f"Bearer {tokens_yaml['admin_token']}"}
+    r = client.get(f"/docs/v1/documents/{document_id}?{urlencode(query)}", headers=headers)
+    if refusal is None:
+        assert r.status_code == 200, r.text
+        assert r.json()["documentId"] == document_id
+        return
+    assert r.status_code == 400, r.text
+    assert r.json()["error"] == refusal
+    verbose = client.get(
+        f"/docs/v1/documents/{document_id}?{urlencode([*query, ('$.xgafv', '1')])}",
+        headers=headers,
+    )
+    assert verbose.json()["error"] == {
+        **refusal,
+        "errors": [{"message": refusal["message"], "reason": "invalid"}],
+    }
+
+
+@pytest.mark.parametrize(
+    "query, who, target, status, needle",
+    [
+        ("suggestionsViewMode=NOPE", "none", "doc", 401, "UNAUTHENTICATED"),
+        ("suggestionsViewMode=NOPE", "bad", "doc", 401, "UNAUTHENTICATED"),
+        ("suggestionsViewMode=NOPE&$.xgafv=3", "none", "doc", 400, "$.xgafv"),
+        ("suggestionsViewMode=NOPE&$.xgafv=3", "bad", "doc", 400, "$.xgafv"),
+        ("suggestionsViewMode=NOPE&$.xgafv=3", "admin", "doc", 400, "$.xgafv"),
+        ("suggestionsViewMode=NOPE", "admin", "missing", 400, "suggestions_view_mode"),
+        ("includeTabsContent=NOPE", "admin", "missing", 400, "include_tabs_content"),
+        ("commentsViewMode=NOPE", "admin", "missing", 400, "comments_view_mode"),
+    ],
+)
+def test_documents_get_answers_a_bad_query_after_the_credential_and_before_the_lookup(
+    client, tokens_yaml, document_id, query, who, target, status, needle
+):
+    """A bad token or none is the 401, and `$.xgafv=3` is that parameter's 400, ahead of a value
+    `docs_get` cannot read. On an id that does not exist the same value is the 400, where the
+    request without it is the 404."""
+    headers = {
+        "none": {},
+        "bad": BAD_TOKEN,
+        "admin": {"Authorization": f"Bearer {tokens_yaml['admin_token']}"},
+    }[who]
+    document = document_id if target == "doc" else "nosuchfile000"
+    r = client.get(f"/docs/v1/documents/{document}?{query}", headers=headers)
+    assert r.status_code == status, r.text
+    assert needle in r.text
+    if needle != "suggestions_view_mode":
+        assert "suggestions_view_mode" not in r.text
+    if status == 401:
+        assert r.content == client.get(f"/docs/v1/documents/{document}", headers=headers).content
+    if target == "missing":
+        assert client.get(f"/docs/v1/documents/{document}", headers=headers).status_code == 404
+
+
 def test_sheets_get_withholds_grid_data_by_default(base, admin_h):
     """Measured: a plain `spreadsheets.get` returns `sheets[i].properties` and NO `data` — on a real
     workbook that is 4 KB against 5.7 MB with `includeGridData=true`. Volunteering the full grid on
@@ -4827,6 +5013,12 @@ def test_editor_apis_distinguish_hidden_type_permission_and_missing(tmp_path):
         (f"/docs/v1/documents/{own_doc}", 200, None),
         (f"/sheets/v4/spreadsheets/{sheet}", 403, permission),
         (f"/docs/v1/documents/{doc}", 403, permission),
+        (
+            f"/docs/v1/documents/{doc}?suggestionsViewMode=NOPE",
+            400,
+            {"error": _docs_invalid("suggestions_view_mode", _DOCS_SUGGESTIONS, "NOPE")},
+        ),
+        (f"/docs/v1/documents/{own_doc}?suggestionsViewMode=SUGGESTIONS_INLINE", 200, None),
         (f"/sheets/v4/spreadsheets/{xlsx}", 400, office),
         (f"/docs/v1/documents/{docx}", 400, office),
         (f"/sheets/v4/spreadsheets/{pdf}", 400, invalid),
@@ -8981,3 +9173,86 @@ def test_gmail_size_estimate_matches_raw_bytes_in_every_format(tmp_path, title, 
             thread = c.get(f"/gmail/v1/users/me/threads/{tid}?format={fmt}", headers=h)
             assert thread.status_code == 200
             assert thread.json()["messages"][0]["sizeEstimate"] == size
+
+
+@pytest.mark.parametrize("surface", ["messages", "threads"])
+@pytest.mark.parametrize(
+    "caller, query, expected",
+    [
+        ("ava", "cc:lena", ["plan"]),
+        ("ava", "cc:LENA", ["plan"]),
+        ("ava", "cc:LENA@ACME.COM", ["plan"]),
+        ("ava", 'cc:"lena@acme.com" rollout', ["plan"]),
+        ("ava", "bcc:ava", ["lunch"]),
+        ("ava", "cc:acme.com", ["plan"]),
+        ("ava", "cc:lena bcc:ava", []),
+        ("ava", "cc:nobody", []),
+        ("ava", "bcc:me", ["lunch"]),
+        ("ava", "cc:me", ["plan"]),
+        ("admin", "cc:me", []),
+        # a word, never part of one, and an address only whole
+        ("ava", "cc:len", []),
+        ("ava", "cc:ena", []),
+        ("ava", "cc:acme", ["plan"]),
+        ("ava", "cc:com", ["plan"]),
+        ("ava", "cc:com.acme", []),
+        ("ava", "cc:@acme.com", ["plan"]),
+        ("ava", "cc:lena@", ["plan"]),
+        ("ava", "cc:lena@acme", []),
+        ("ava", "cc:park", ["plan"]),
+        ("ava", "cc:par", []),
+        ("ava", 'cc:"lena park"', ["plan"]),
+        ("ava", "bcc:\uc5d0\ubc14", ["lunch"]),
+        ("ava", "cc:ops_team", ["standup"]),
+        ("ava", "cc:ops", []),
+        ("ava", "cc:_", []),
+        ("ava", "cc:&", []),
+        # no word at all: the operator is ignored
+        ("ava", "cc:.", ["plan", "lunch", "decoy", "standup"]),
+        ("ava", "cc:@", ["plan", "lunch", "decoy", "standup"]),
+        ("ava", 'bcc:""', ["plan", "lunch", "decoy", "standup"]),
+    ],
+)
+def test_gmail_cc_bcc_searches_address_headers(tmp_path, surface, caller, query, expected):
+    """The rule `_gmail_address_match` records, on both listings: a message whose body or subject
+    names the address is not a match. `me` is the caller's address, and for the admin token, which
+    has no mailbox of its own, the address `_service_email` gives."""
+    records = [
+        {
+            "doc_id": "plan",
+            "title": "rollout plan",
+            "cc": "Lena Park <lena@acme.com>, ava@acme.com",
+        },
+        {"doc_id": "lunch", "title": "lunch", "bcc": "\uc5d0\ubc14 <ava@acme.com>"},
+        {"doc_id": "decoy", "title": "cc lena bcc ava", "content": "lena ava"},
+        {"doc_id": "standup", "title": "standup", "cc": "ops_team@corp.example, me@corp.example"},
+    ]
+    settings = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "gmail",
+                "mailbox": "ava",
+                "author_email": "bob@acme.com",
+                "to": "ava@acme.com",
+                "content": "body",
+                "visibility": "public",
+                "created": "2026-03-01T09:00:00Z",
+                "readers": ["ava@acme.com"],
+                **r,
+            }
+            for r in records
+        ],
+    )
+    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    token = tokens["admin_token"] if caller == "admin" else tok(tokens, "ava@acme.com")
+    with client_for(settings, reload=True) as c:
+        response = c.get(
+            f"/gmail/v1/users/me/{surface}",
+            headers={"Authorization": f"Bearer {token}"},
+            params={"q": query},
+        )
+    assert response.status_code == 200
+    assert {r["id"] for r in response.json().get(surface, [])} == {
+        served_id("gmail", doc_id) for doc_id in expected
+    }

@@ -5926,10 +5926,9 @@ def _send_as_latin1(client, request):
     return asyncio.run(send())
 
 
-def _out_of_bounds(accept: str) -> bytes:
-    """The 500 a Confluence JAX-RS service answers an `Accept` it fails on, naming the code of its
-    first character past ASCII."""
-    code = next(ord(ch) for ch in accept if ord(ch) > 127)
+def _out_of_bounds(code: int) -> bytes:
+    """The 500 a Confluence JAX-RS service answers an `Accept` it fails on, naming the ``code`` of
+    the character it fails on."""
     message = f"java.lang.ArrayIndexOutOfBoundsException: Index {code} out of bounds for length 128"
     return f'{{"statusCode":500,"message":"{message}"}}'.encode()
 
@@ -6186,6 +6185,9 @@ _ACCEPT_ROWS = [
     ("GET", _SPACES, "admin", "\xa0application/json", None, 406, None, b"", {}),
     ("GET", _SPACES, "admin", "application/json;x@y=1", None, 406, None, b"", {}),
     ("GET", _SPACES, "admin", "application/json;=1", None, 406, None, b"", {}),
+    ("GET", _SPACES, "admin", "application/json;x=a@b", None, 406, None, b"", {}),
+    ("GET", _SPACES, "admin", "text/plain;charset=ISO_8859-1:1987, application/json", None, 200)
+    + (_JSON, None, {}),
     ("GET", _SPACES, "admin", "application/json;charset=bogus;Charset=utf-8", None, 406, None, b"")
     + ({},),
     ("GET", _SPACES, "admin", 'text/plain;q="abc";Q=0.5, application/json', None, 200, _JSON, None)
@@ -6213,24 +6215,35 @@ _ACCEPT_ROWS = [
     ("GET", _CQL, "none", "foo, *.*", None, 406, None, b"", {}),
     ("GET", _CQL, "admin", 'application/json;x="a,b", text/plain', None, 200, _JSON, None, {}),
     ("GET", _CQL, "admin", 'application/json;x="\xa0"', None, 200, _JSON, None, {}),
-    # a character past ASCII outside a quoted string (``errors.atlassian.jaxrs_out_of_bounds``)
+    # a character past ASCII outside a quoted string (``errors.atlassian.jaxrs_out_of_bounds``),
+    # the code of the one Jersey fails on
     *(
-        (method, path, credential, accept, sent, 500, _JSON, _out_of_bounds(accept), {})
-        for method, path, credential, accept, sent in (
-            ("GET", _CQL, "admin", "\xa0application/json", None),
-            ("GET", _CQL, "none", "\xa0application/json", None),
-            ("GET", _CQL, "admin", "application/json;foo\xa0", None),
-            ("GET", _CQL, "admin", "foo, \xa0", None),
-            ("GET", _CQL, "admin", "\x80application/json", None),
-            ("GET", _CQL, "admin", "application/json, \x85\xa0", None),
-            ("GET", _CQL, "admin", "foo;\xa0", None),
-            ("GET", _CQL, "admin", "*\xa0", None),
-            ("GET", _CQL, "admin", "\xa0*", None),
-            ("GET", _CQL, "admin", "*;\xa0", None),
-            ("OPTIONS", "/atlassian/wiki/rest/api/search", "admin", "\xa0application/json", None),
-            ("GET", "/atlassian/wiki/rest/api/audit", "none", "\xa0application/json", None),
+        (method, path, credential, accept, sent, 500, _JSON, _out_of_bounds(code), {})
+        for method, path, credential, accept, sent, code in (
+            ("GET", _CQL, "admin", "\xa0application/json", None, 160),
+            ("GET", _CQL, "none", "\xa0application/json", None, 160),
+            ("GET", _CQL, "admin", "application/json;foo\xa0", None, 160),
+            ("GET", _CQL, "admin", "foo, \xa0", None, 160),
+            ("GET", _CQL, "admin", "\x80application/json", None, 128),
+            ("GET", _CQL, "admin", "application/json, \x85\xa0", None, 133),
+            ("GET", _CQL, "admin", "foo;\xa0", None, 160),
+            ("GET", _CQL, "admin", "*\xa0", None, 160),
+            ("GET", _CQL, "admin", "\xa0*", None, 160),
+            ("GET", _CQL, "admin", "*;\xa0", None, 160),
+            ("GET", _CQL, "admin", "\xa0, application/json", None, 160),
+            ("GET", _CQL, "admin", 'application/json;x="\xa0", \x85', None, 133),
+            ("GET", _CQL, "admin", 'application/json;x="\\"\xa0", \x85', None, 133),
+            (
+                "OPTIONS",
+                "/atlassian/wiki/rest/api/search",
+                "admin",
+                "\xa0application/json",
+                None,
+                160,
+            ),
+            ("GET", "/atlassian/wiki/rest/api/audit", "none", "\xa0application/json", None, 160),
             ("POST", "/atlassian/wiki/rest/api/template", "none", "\xa0application/json")
-            + (("text/plain", b"x"),),
+            + (("text/plain", b"x"), 160),
         )
     ),
     *(
@@ -6239,7 +6252,9 @@ _ACCEPT_ROWS = [
             "application/json;foo, \xa0",
             "application/json;q=2, \xa0",
             "ap@p\xa0lication/json",
+            "ap@p\xa0, \xa0",
             "foo@\xa0",
+            "foo;@\xa0",
             "application/json, ,\xa0",
             'application/json;x="\xa0", application/json;foo',
             'application/json;x="\\"\xa0", application/json;foo',
@@ -6250,6 +6265,8 @@ _ACCEPT_ROWS = [
     + (errors_atlassian.HTML_MEDIA_TYPE, errors_atlassian.HTML_NOT_FOUND.encode(), {}),
     ("GET", "/atlassian/wiki/rest/api/nopesuchroute", "none", "\xa0application/json", None, 500)
     + (None, b"", {"cache-control": None}),
+    ("GET", "/atlassian/wiki/rest/api/nopesuchroute", "none", None, None, 404, "application/xml")
+    + (None, {}),
     # Jersey under a header it cannot parse: the 404's 500, and a write's 400 ahead of its 415
     # (``backlot.routers.atlassian._confluence_not_found``, ``_published_answer``)
     *(
@@ -6570,6 +6587,7 @@ _ACCEPT_ROWS = [
             (_READS_THE_Q_33, 500),
             ("text/*;Q=abc, text/html;Q=-2, application/json;Q=-1", 400),
             ("application/json;Q=-2, text/plain;Q=-1, text/*;Q=abc", 500),
+            ("application/json;Q=-1, text/*;Q=-2, text/html;Q=abc", 500),
         )
     ),
     ("GET", "/atlassian/wiki/rest/api/audit", "none", _SORT_FAILS, None, 400, "text/plain")
@@ -6706,6 +6724,10 @@ _JIRA_401 = [
             ("application/json;q=Infinity;Q=0.5", "application/json;Q=0.5;charset=UTF-8"),
             ('text/plain;q="abc";Q=0.5, application/json', "application/json;charset=UTF-8"),
             ('application/json;x="a,b", text/plain', 'application/json;x="a,b";charset=UTF-8'),
+            (
+                'application/json;x="a\\",b", text/plain',
+                'application/json;x="a\\",b";charset=UTF-8',
+            ),
             ("application/json;Charset=bogus;charset=utf-8", "application/json;charset=utf-8"),
             ("application/json;charset=bogus;Charset=utf-8", "application/json;charset=utf-8"),
             (

@@ -335,15 +335,10 @@ def _query_credential(request: Request, *, gated: bool) -> tuple[bool, str | Non
     three names from its own query where it carries that name and from the batch's where it does
     not, so a part's values for a name stand in for the batch's rather than join them.
 
-    Measured 2026-10-13 on Drive's `files.list` and Gmail's `profile`, each name alone, each pair in
-    both orders and `access_token` beside each kind of header, with the rows
-    ``tests/test_google.py`` keeps in `_QUERY_CREDENTIAL_ROWS`, and in `_BATCH_ROWS` for a batch. On
-    2026-10-14 real answered every row of `_QUERY_CREDENTIAL_ROWS`, a quoted token beside the query
-    among them, as recorded, on Gmail's `labels.get` and Drive's `files.list`, and Drive's batch
-    combined a part's names with the batch's as the `_BATCH_ROWS` rows that mix them record. The two
-    prefixes are what a byte sweep found, 282 values with each of the 94 visible ASCII characters
-    (0x21 to 0x7E) after ya29 and after 1 and before a slash, and real read a JWT, an API key and a
-    token of Backlot's shape as no credential.
+    Measured on Drive and Gmail on 2026-10-13 and 2026-10-14, with the rows ``tests/test_google.py``
+    keeps in `_QUERY_CREDENTIAL_ROWS`, and in `_BATCH_ROWS` for a batch. The two prefixes are what a
+    byte sweep found, 282 values with each of the 94 visible ASCII characters (0x21 to 0x7E) after
+    ya29 and after 1 and before a slash.
     """
     query = request.query_params
     outer = _BATCH_OUTER.get()
@@ -2837,10 +2832,10 @@ def _sheets_grid(content: str | None) -> list[list[str]]:
 #
 # `key` is NOT here: it is an alternative way to authenticate, and honouring it means a second
 # credential path through `backlot.auth` rather than a parameter this module can read. Nor are
-# `access_token` and `oauth_token`, which `_credential` reads and the router declares for every
-# family (`backlot.openapi.google_system_parameters`). `uploadType` is not here either -- measured,
-# the real API REFUSES it on a read ("Cannot bind query parameter"), so the baseline's "the vendor
-# accepts it" is not what the vendor does.
+# `access_token` and `oauth_token`, which `_credential` reads and
+# `backlot.openapi.google_system_parameters` declares for every family. `uploadType` is not here
+# either -- measured, the real API REFUSES it on a read ("Cannot bind query parameter"), so the
+# baseline's "the vendor accepts it" is not what the vendor does.
 _P_SHEETS_STD = [
     qp("fields"),
     qp("prettyPrint", "boolean"),

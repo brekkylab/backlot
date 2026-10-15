@@ -224,8 +224,7 @@ def google_system_parameters(spec: dict) -> dict:
     method takes them; Backlot honours `$.xgafv` the same way — validated once for the router and
     read once by the envelope — so it is declared once here rather than on each of the
     twenty-one family routes, where a route added later would forget it and the fidelity diff would
-    report the gap again. The declaration is the document's own: ``V1 error format.``, an enum of
-    ``1`` and ``2``. The batch endpoint is not a family path and gets nothing.
+    report the gap again. The batch endpoint is not a family path and gets nothing.
 
     Not `callback`, though real's document declares it beside these and Backlot validates it for the
     router too (``errors.google.validate_system_parameters``). `callback` is honoured on a Google

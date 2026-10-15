@@ -633,10 +633,8 @@ def token_in_query() -> GoogleError:
     runs ahead of this). The names are :func:`names_a_query_token`'s; a name that only resembles one
     is left to the download's other refusals.
 
-    Measured 2026-10-13 on `files.export`; ``tests/test_google.py::_DOWNLOAD_QUERY_TOKEN_ROWS``
-    holds the cases. `files.get?alt=media` answered it with an empty value and inside a batch; sent
-    on its own with a non-empty value it answered Google's automated-queries page that day, which
-    later turned up for the empty value as well, so the batch's answer stands for it.
+    Measured 2026-10-13 on `files.export`, and on `files.get?alt=media` with an empty value and
+    inside a batch; ``tests/test_google.py::_DOWNLOAD_QUERY_TOKEN_ROWS`` holds the cases.
     """
     return invalid_argument(QUERY_TOKEN_MESSAGE)
 

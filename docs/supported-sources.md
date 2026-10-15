@@ -296,12 +296,13 @@ key rather than the unregistered caller, and only after the download's `mimeType
 typed-parameter checks, so the order a byte-stream read answers in is `$.xgafv`, a credential that
 does not resolve, a token named in the query, the `callback`, the parameters, then that 403, or a
 401 of the download server's own for a header that is no credential. Inside a batch a download is a
-302 instead (the `/batch` row above). A SUCCESS body is wrapped and indented on the `/sheets/v4`
-routes only; the other four families honour `callback` on their errors and not yet on their 200s.
-Measured against the live Sheets, Docs, Drive, Gmail and Slides APIs on 2026-09-15, 2026-09-16 and
-2026-09-17: the wrap, the indent and the charset first, the suppression across the four non-Sheets
-families next, and the escape set and the case-insensitive `alt` last; the download refusals on
-2026-10-04, 2026-10-05, 2026-10-07 and 2026-10-08, and a token named in the query on 2026-10-13.
+302 instead where neither its query nor the batch's names a token (the `/batch` row above). A
+SUCCESS body is wrapped and indented on the `/sheets/v4` routes only; the other four families honour
+`callback` on their errors and not yet on their 200s. Measured against the live Sheets, Docs, Drive,
+Gmail and Slides APIs on 2026-09-15, 2026-09-16 and 2026-09-17: the wrap, the indent and the charset
+first, the suppression across the four non-Sheets families next, and the escape set and the
+case-insensitive `alt` last; the download refusals on 2026-10-04, 2026-10-05, 2026-10-07 and
+2026-10-08, and a token named in the query on 2026-10-13.
 
 **A repeated query parameter is read from the end real reads it from**, which is the first for some
 parameters and the last for others. The first repeat decides `fields`, `q`, `pageSize`, `pageToken`
@@ -395,13 +396,13 @@ header, or one that is no credential, a token Backlot issues (`usr-…`, or the 
 `admin-service-token`) alone in the query is no credential, on the real APIs as here
 (`backlot.routers.google._query_credential`). Inside a batch a part reads each of those names from
 its own query where it carries it and from the batch's where it does not. `access_token` and
-`oauth_token` are declared on every Google route, as real's discovery documents declare them;
-`bearer_token` is read but not declared, as they do not declare it. A byte-stream read refuses any
-of those names, in any case, with real's 400 `OAuth token was passed in the query parameter…`, after
-the 401 a token read from the query answers when it does not resolve; the unserved revision read
-with `alt=media` and an empty `access_token` is the missing credential's 401 instead. Measured
-against the live Drive and Gmail APIs on 2026-10-13, and the batch's names beside a part's and the
-revision read on 2026-10-14.
+`oauth_token` are declared on every Drive, Gmail, Docs, Sheets and Slides operation, as real's
+discovery documents declare them; `bearer_token` is read but not declared, as they do not declare
+it. A byte-stream read refuses any of those names, in any case, with real's 400
+`OAuth token was passed in the query parameter…`, after the 401 a token read from the query answers
+when it does not resolve; the unserved revision read with `alt=media` and an empty `access_token` is
+the missing credential's 401 instead. Measured against the live Drive and Gmail APIs on 2026-10-13,
+and the batch's names beside a part's and the revision read on 2026-10-14.
 
 **A `HEAD` on Drive or Gmail is the `GET` with the body left off**, status for status, and declares
 a `content-length` only on a download's 200, where it is the length of the bytes the `GET` serves;

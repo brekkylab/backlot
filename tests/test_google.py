@@ -2477,11 +2477,9 @@ def test_every_google_operation_declares_the_system_parameters_and_reads_them(cl
     assert missing == [] and batch == [] and unchecked == []
 
 
-def test_no_google_baseline_acknowledges_the_system_parameters_any_more():
-    """The `missing_param` entries for `$.xgafv` (13 in `google_drive`, 8 in `gmail`) and for
-    `access_token` and `oauth_token` (26 and 16) were the shape of this gap in the fidelity
-    baseline; declaring the parameters is what removes them, and a run of
-    `backlot diff --source <source> --update-baseline` against the live documents did."""
+def test_no_google_baseline_acknowledges_a_system_parameter():
+    """No `google_drive` or `gmail` baseline entry is a `missing_param` for `$.xgafv`,
+    `access_token` or `oauth_token`: `openapi.google_system_parameters` declares all three."""
     from backlot.fidelity import baseline_path
 
     for source in ("google_drive", "gmail"):
@@ -4699,7 +4697,7 @@ def test_drive_about_appears_in_the_openapi_spec(client):
     """The OpenAPI→MCP bridge builds its tools from the spec, so a route the spec omits is a route
     no generated client can reach."""
     op = client.get("/openapi.json").json()["paths"][ABOUT]["get"]
-    # The system parameters beside the route's own, declared on every Google operation at once
+    # The system parameters beside the route's own, declared on every family operation at once
     # (see test_every_google_operation_declares_the_system_parameters_and_reads_them).
     assert {p["name"] for p in op["parameters"]} == {
         "fields",

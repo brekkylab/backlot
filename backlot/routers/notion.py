@@ -478,9 +478,8 @@ def _page_obj(conn, row) -> dict:
 
 
 def _filter_properties(page: dict, keep: list[str]) -> dict:
-    """Narrow a database row's ``properties`` to those whose id or name is in ``keep``. Measured
-    against api.notion.com (2022-06-28) on 2026-10-15: a page outside a database keeps its title
-    whatever is listed, and a request that names no ``filter_properties`` leaves every row whole."""
+    """Narrow a database row's ``properties`` to those whose id or name is in ``keep``; measured
+    against api.notion.com (2022-06-28) on 2026-10-15."""
     if not keep or page["parent"]["type"] != "database_id":
         return page
     wanted = set(keep)

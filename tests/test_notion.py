@@ -530,8 +530,7 @@ def test_notion_search_filter_database_only(client, notion_h):
 def test_notion_search_filter_properties_keeps_only_the_named_row_properties(
     client, notion_h, query, row_keys
 ):
-    # The measurement is on `_filter_properties`; a database of Name, Tags and Count was the
-    # real side, so a row outside a database is the workspace page and keeps its title.
+    # A row outside a database is the workspace page and keeps its title.
     results = client.post(
         f"/notion/v1/search{query}",
         json={"query": "", "filter": {"property": "object", "value": "page"}},

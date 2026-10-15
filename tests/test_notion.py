@@ -97,6 +97,28 @@ def test_notion_every_refusal_names_itself_by_a_request_id(client, notion_h):
         assert uuid.UUID(body["request_id"]).version == 4, path
 
 
+def test_notion_every_json_answer_names_its_utf8_charset(client, notion_h):
+    """Pins the measurement recorded by ``errors.notion.JSON_MEDIA_TYPE``: JSON answers declare
+    `application/json; charset=utf-8` on a 200, the credential 401, the URL 400 and a page's 404,
+    and a HEAD carries the same type as its GET."""
+    responses = [
+        client.get("/notion/v1/users/me", headers=notion_h),
+        client.get(
+            "/notion/v1/users/me",
+            headers={"Notion-Version": DATA_SOURCES_VERSION},
+        ),
+        client.get("/notion/v1/nonexistent_thing/xyz", headers=notion_h),
+        client.get("/notion/v1/pages/00000000000000000000000000000000", headers=notion_h),
+        client.head("/notion/v1/users/me", headers=notion_h),
+    ]
+    assert [response.status_code for response in responses] == [200, 401, 400, 404, 200]
+    assert {response.headers["content-type"] for response in responses} == {
+        "application/json; charset=utf-8"
+    }
+    # a path of Backlot's own beside the mount is not Notion's
+    assert client.get("/notionx", headers=notion_h).headers["content-type"] == "application/json"
+
+
 def test_notion_the_same_request_gets_the_same_id_and_another_a_different_one(client, notion_h):
     """Pins the divergence ``backlot.routers.notion._request_id`` states: one request answers one
     id, and another request a different one."""

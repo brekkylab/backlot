@@ -759,7 +759,8 @@ async def vendor_json_media_type(request: Request, call_next):
     Real GitHub answers `application/json; charset=utf-8` on every JSON response but code search's
     (see ``backlot.errors.github.json_media_type``), and Jira `application/json;charset=UTF-8` on
     every `application/json` body but its gateway's 403
-    (``backlot.errors.atlassian.json_media_type``); FastAPI's ``JSONResponse`` answers
+    (``backlot.errors.atlassian.json_media_type``), while Notion names the UTF-8 charset on every
+    JSON answer (``backlot.errors.notion.json_media_type``); FastAPI's ``JSONResponse`` answers
     `application/json`. A middleware rather than a ``default_response_class`` on the router, because
     FastAPI writes a response class's media type into the OpenAPI document as the content key, and
     real's own spec says `application/json` there: the charset is a fact about the wire, not about

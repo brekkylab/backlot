@@ -257,6 +257,22 @@ def test_jira_404s_a_project_role_an_anonymous_caller_cannot_see(client, headers
         assert r.json()["errorMessages"] == [f"No project could be found with {kind} '{segment}'."]
 
 
+def _sent_as(client, path: str, authorization: bytes):
+    """GET ``path`` with these `Authorization` bytes as sent. The TestClient re-encodes a header's
+    bytes above 0x7F as UTF-8 (`\\x85` reaches the app as `\\xc2\\x85`), where httpx's own
+    `ASGITransport` hands the app what it was given, over the app the fixture started."""
+    import asyncio
+
+    import httpx
+
+    async def send():
+        transport = httpx.ASGITransport(app=client.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
+            return await c.get(path, headers={"Authorization": authorization})
+
+    return asyncio.run(send())
+
+
 def test_jira_refuses_a_bearer_it_cannot_read_as_a_connect_token(client):
     """A bearer is not the Basic pair: Jira does not go anonymous for one it cannot resolve, it
     refuses with 403 and a body that is neither API's envelope. A Backlot token is an opaque
@@ -291,9 +307,8 @@ def test_jira_refuses_a_bearer_it_cannot_read_as_a_connect_token(client):
         *("usr-nope", "a\tb", "a,b", "a.b", "\tusr-nope", "\t\tusr-nope"),
         *("\x85a", "\xa0a", "\x85", "\xa0", "\xa0\xa0"),
     ):
-        info = client.get(
-            "/atlassian/rest/api/3/serverInfo",
-            headers={"Authorization": f"Bearer {token}".encode("latin-1")},
+        info = _sent_as(
+            client, "/atlassian/rest/api/3/serverInfo", f"Bearer {token}".encode("latin-1")
         )
         assert info.status_code == 403 and info.json() == {
             "error": errors_atlassian.CONNECT_TOKEN_UNREADABLE
@@ -344,10 +359,7 @@ def test_jira_reads_an_unrecognised_scheme_as_no_credential(client, header):
     """The 403 above is for a credential the site READ. A spelling it does not read is not a
     credential at all, and the request is the anonymous one — which is how each spelling was told
     apart on the real sites in the first place (403 = read, 200 = not read)."""
-    r = client.get(
-        "/atlassian/rest/api/3/project/search",
-        headers={"Authorization": header.encode("latin-1")},
-    )
+    r = _sent_as(client, "/atlassian/rest/api/3/project/search", header.encode("latin-1"))
     assert r.status_code == 200 and r.json()["values"] == []
 
 

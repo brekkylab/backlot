@@ -20,7 +20,7 @@ import time
 from collections.abc import Callable
 from html import escape
 from pathlib import Path
-from urllib.parse import quote, unquote_plus
+from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
@@ -2582,21 +2582,19 @@ def _confluence_carried(
     it was sent in beside `expand` (measured 2026-10-12).
 
     ``own`` names what the route writes into its links itself, so it is not carried as well.
+
+    Each parameter is carried as the request spelt it, name and value, from the raw query string.
+    Measured on `content` and `space` on 2026-10-15: a bare or escaped comma, a lower-case `%2c`,
+    `+`, `%7E`, `~`, `;` and an escaped name (`%65xpand`) came back as sent, a name sent without
+    `=` came back with one, and an empty part or name was dropped. The names compared here are the
+    spelt ones too: `l%69mit=1` is read as `limit` and still carried.
     """
-    # The supplied Confluence measurement on 2026-10-12 carries `expand` with a bare comma
-    # or an escaped comma exactly as sent. Other parameter normalization stays unchanged.
-    raw_expand = iter(
-        part.partition("=")[2]
-        for part in request.scope["query_string"].decode("latin-1").split("&")
-        if unquote_plus(part.partition("=")[0]) == "expand"
-    )
     front, lead, trail = [], [], []
-    for name, value in request.query_params.multi_items():
-        if name in ("limit", "start", "next", "prev", *own):
+    for part in request.scope["query_string"].decode("latin-1").split("&"):
+        name, _, value = part.partition("=")
+        if not name or name in ("limit", "start", "next", "prev", *own):
             continue
-        carried = next(raw_expand) if name == "expand" else quote(str(value), safe="")
-        pair = f"{name}={carried}"
-        (front if name in head else lead if name in first else trail).append(pair)
+        (front if name in head else lead if name in first else trail).append(f"{name}={value}")
     return (
         "&".join(front) + "&" if front else "",
         "&".join(lead) + "&" if lead else "",

@@ -115,6 +115,8 @@ def test_notion_every_json_answer_names_its_utf8_charset(client, notion_h):
     assert {response.headers["content-type"] for response in responses} == {
         "application/json; charset=utf-8"
     }
+    # a path of Backlot's own beside the mount is not Notion's
+    assert client.get("/notionx", headers=notion_h).headers["content-type"] == "application/json"
 
 
 def test_notion_the_same_request_gets_the_same_id_and_another_a_different_one(client, notion_h):

@@ -6060,6 +6060,7 @@ def _MEMBERS(count: int) -> str:
 
 
 _OOPS_MEDIA = "text/html;charset=utf-8"
+_LABELS = "/atlassian/wiki/rest/api/content/{content}/label"
 
 
 def _unparsed(accept: str) -> bytes:
@@ -6214,6 +6215,8 @@ _ACCEPT_ROWS = [
     + (None, {}),
     ("GET", f"{_SPACES}?limit=x", "admin", _HTML, None, 406, _TOMCAT, "page", {}),
     ("GET", f"{_SPACES}?limit=x", "admin", _JSON, None, 400, _JSON, None, {}),
+    ("GET", f"{_LABELS}?prefix=bogus", "admin", _HTML, None, 406, _TOMCAT, "page", {}),
+    ("GET", f"{_LABELS}?prefix=bogus", "admin", _JSON, None, 400, _JSON, None, {}),
     ("GET", f"{_SPACES}/NOPESUCH", "admin", _HTML, None, 406, _TOMCAT, "page")
     + ({"deprecation": None},),
     *(

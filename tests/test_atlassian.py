@@ -1347,13 +1347,13 @@ def test_confluence_body_and_version(tmp_path):
     assert page["metadata"]["labels"]["results"][0]["name"] == "eng"
 
 
-def test_confluence_restrictions_has_update(tmp_path):
-    # restrictions/byOperation must return BOTH read and update operations
+def test_confluence_restrictions_answers_both_operations_in_real_shape(tmp_path):
+    # restrictions/byOperation must return BOTH read and update operations, with real's links
     import asyncio
     import types
 
     from backlot.acl import Acl
-    from backlot.routers.atlassian import confluence_restrictions
+    from backlot.routers.atlassian import _site, confluence_restrictions
 
     s = tiny_corpus(
         tmp_path,
@@ -1386,9 +1386,15 @@ def test_confluence_restrictions_has_update(tmp_path):
         "app": app,
         "headers": [(b"authorization", f"Bearer {s.admin_token}".encode())],
     }
-    result = asyncio.run(confluence_restrictions(cid, Request(scope)))
-    assert "read" in result and "update" in result
+    request = Request(scope)
+    result = asyncio.run(confluence_restrictions(cid, request))
     assert result["read"]["restrictions"]["user"]["results"]  # the private doc's author
+    path = f"{_site(request)}/wiki/rest/api/content/{cid}/restriction/byOperation"
+    assert list(result) == ["read", "update", "_links"]
+    assert result["_links"] == {"self": path, "base": f"{_site(request)}/wiki", "context": "/wiki"}
+    for op in ("read", "update"):
+        assert list(result[op]) == ["operation", "restrictions", "_expandable", "_links"]
+        assert result[op]["_links"] == {"self": f"{path}/{op}"}
 
 
 @pytest.mark.parametrize("route", ["child/page", "child/attachment", "restriction/byOperation"])

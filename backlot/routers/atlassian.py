@@ -1928,8 +1928,12 @@ async def confluence_restrictions(content_id: int, request: Request):
     if store.get_document(conn, "confluence", content_id, visible_ids=ids) is None:
         raise HTTPException(status_code=404, detail="No content found with id")
     emails = store.doc_member_emails(conn, "confluence", content_id)
-    users = [] if emails is None else [_conf_user(e, _site(request)) for e in sorted(emails)]
+    site = _site(request)
+    users = [] if emails is None else [_conf_user(e, site) for e in sorted(emails)]
+    path = f"{site}/wiki/rest/api/content/{content_id}/restriction/byOperation"
 
+    # Real's members in real's order (Confluence Cloud, 2026-10-09 and 2026-10-14): each operation
+    # links to itself under this path, and the answer ends with the links a listing carries.
     def _op(name):
         return {
             "operation": name,
@@ -1938,9 +1942,14 @@ async def confluence_restrictions(content_id: int, request: Request):
                 "group": {"results": [], "start": 0, "limit": 200, "size": 0},
             },
             "_expandable": {"content": f"/rest/api/content/{content_id}"},
+            "_links": {"self": f"{path}/{name}"},
         }
 
-    return {"read": _op("read"), "update": _op("update")}
+    return {
+        "read": _op("read"),
+        "update": _op("update"),
+        "_links": {"self": path, "base": f"{site}/wiki", "context": "/wiki"},
+    }
 
 
 def _conf_user(email: str, site: str) -> dict:

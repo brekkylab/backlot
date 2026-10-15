@@ -4157,6 +4157,8 @@ _SERVICE_REGISTRY = "/atlassian/rest/atlassian-connect/1/service-registry?servic
 _COLUMNS = "/atlassian/rest/api/2/settings/columns"
 _FILTER_COLUMNS = "/atlassian/rest/api/3/filter/999/columns"
 _FIELD = "/atlassian/rest/api/3/field"
+_ATTACHMENTS = "/atlassian/rest/api/3/issue/NOPE-999999/attachments"
+_AVATAR = "/atlassian/rest/api/3/issuetype/999/avatar2"
 _PREFERENCES = "/atlassian/rest/api/3/mypreferences"
 _AGENTS = "/atlassian/rest/api/3/agents/bulk/invoke/batch"
 _POLICIES = "/atlassian/rest/api/3/policies/project/NOPE/policies"
@@ -4261,9 +4263,15 @@ _JSON = "application/json"
             "text/plain;charset=ISO-8859-1",
             "application/json, application/yaml, application/*+json",
         ),
-        # one that takes JSON alone
+        # its body is optional, so one with none is not checked
+        ("PUT", _FILTER_COLUMNS, "none", None, None, 404, None, None),
+        # one that takes JSON alone, one multipart alone, and one `*/*`
         ("POST", _FIELD, "none", "text/plain", "x", 415, "text/plain", _JSON),
         ("POST", _FIELD, "none", _JSON, "{}", 405, None, None),
+        ("POST", _ATTACHMENTS, "none", "text/plain", "x", 415, "text/plain", "multipart/form-data"),
+        ("POST", _ATTACHMENTS, "none", "multipart/form-data; boundary=x", "--x--", 404, None, None),
+        ("POST", _AVATAR, "none", "foo", "x", 415, _UNREAD, "*/*"),
+        ("POST", _AVATAR, "none", "image/png", "x", 404, None, None),
     ],
 )
 def test_jira_checks_the_media_type_an_operation_takes_before_anything_else(
@@ -4272,8 +4280,9 @@ def test_jira_checks_the_media_type_an_operation_takes_before_anything_else(
     """Pins the 415 ``errors.atlassian.refuse_a_media_type`` describes, on the operations
     ``backlot/data/jira_unserved.json`` says check one. Each row's control is the same URL
     answering past the check: the 401 a caller with no credential gets, the 404 an operation no
-    route serves gives a caller whose credential resolves, or the 405 of a method no route here
-    takes where a route serves the path."""
+    route serves gives a caller whose credential resolves, or, on one real runs for this caller, what
+    no route here answers it: the 405 of a method a route at the path does not take, or the 404 of
+    a path none serves."""
     headers = dict(admin_h if credential == "admin" else _CREDENTIALS[credential])
     if content_type is not None:
         headers["Content-Type"] = content_type

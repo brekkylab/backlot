@@ -506,14 +506,27 @@ def test_notion_search_reads_query_and_filter_by_their_types_like_real(
         assert payload["request_id"] == r.headers["x-notion-request-id"]
 
 
-def test_notion_search_filter_database_only(client, notion_h):
+@pytest.mark.parametrize(
+    "version, value, kind, served_id",
+    [
+        ("2025-09-03", "data_source", "data_source", synth.notion_data_source_id("nt-tasks-db")),
+        ("2026-03-11", "data_source", "data_source", synth.notion_data_source_id("nt-tasks-db")),
+        ("2022-06-28", "data_source", "database", synth.notion_id("nt-tasks-db")),
+        ("2022-06-28", "database", "database", synth.notion_id("nt-tasks-db")),
+    ],
+)
+def test_notion_search_filter_keeps_the_databases_in_the_versions_shape(
+    client, admin_h, version, value, kind, served_id
+):
+    """The `data_source` and `database` filters at each version, as the comment in `search`
+    records."""
     s = client.post(
         "/notion/v1/search",
-        json={"query": "", "filter": {"property": "object", "value": "database"}},
-        headers=notion_h,
+        json={"query": "", "filter": {"property": "object", "value": value}},
+        headers={**admin_h, "Notion-Version": version},
     ).json()
-    assert s["results"] and all(r["object"] == "database" for r in s["results"])
-    assert any(r["id"] == synth.notion_id("nt-tasks-db") for r in s["results"])
+    assert {r["object"] for r in s["results"]} == {kind}
+    assert served_id in {r["id"] for r in s["results"]}
 
 
 def test_notion_users(client, notion_h):

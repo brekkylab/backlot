@@ -148,6 +148,11 @@ def _elsewhere(op: Mapping[str, Any], target: str) -> str:
 def _required_query_member(shapes: Mapping[str, Any], op: Mapping[str, Any]) -> str:
     """The querystring member that selects an operation whose ``requestUri`` carries no ``?``.
 
+    Five operations come through here, and the first of their required members alone is sent.
+    UploadPart and UploadPartCopy require both ``partNumber`` and ``uploadId``, so they go out as
+    ``PUT ?partNumber``, which Backlot answers as PutObject, and CopyObject, whose one required
+    member is a header, goes out as PutObject's request itself: each is refused, as PutObject is.
+
     ListParts is the read among them: botocore gives it the same ``/{Bucket}/{Key+}`` as
     GetObject and selects it with a REQUIRED ``uploadId`` in the querystring. Read from the URI
     alone it comes out bare, and a bare form is never compared with the fallthrough — while the

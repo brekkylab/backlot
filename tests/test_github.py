@@ -2605,10 +2605,10 @@ def test_github_a_wrong_method_is_not_dressed_as_a_measured_answer(gh_client, gh
 #: (method, path, whether it is refused, the status a caller it does not refuse gets). The first
 #: eight are in `backlot.routers.github._PUBLISHED_NOT_SERVED`, the eighth as the `/orgs/{}` path
 #: `/organizations/{id}` is rewritten to; the next two are baseline rows that `_ROUTED_AS` and
-#: `_NOT_ROUTED` keep out of it; `/zen%23` is no operation, though `request.url.path` ends at its
-#: `#`, and `…/issues%3Fsince` none, though a `missing_param` row of the baseline spells its path
-#: that way; the next is a method GitHub does not publish on a path whose `PATCH` it does, which
-#: real answered `Bearer nope` with its 404; and `/zen` outside `/github` is no GitHub request.
+#: `_NOT_ROUTED` keep out of it; the two after them are no operation, though a parsed URL ends the
+#: first at its decoded `#` and a `missing_param` row of the baseline spells the second's path; the
+#: next is a method GitHub does not publish on a path whose `PATCH` it does, which real answered a
+#: bad bearer with its 404; and the last is no GitHub request at all.
 _UNSERVED_ROWS = [
     ("PATCH", "/github/repos/{org}/codebase", True, 405),
     ("DELETE", "/github/repos/{org}/codebase", True, 405),
@@ -2633,12 +2633,12 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
 ):
     """Each refused row answers what :func:`backlot.routers.github.refuse_an_unserved_operation`
     records of real: the credential's 401 with no header, with or without a version, and for each
-    `Authorization` that carries no credential, then with `Bearer nope`, then the version's 400,
-    counted, ahead of the router's own 404 or 405 for the admin token and of the 401 for a `Basic`
-    value that names no token, each carrying the version echo. A row not refused is the router's
-    answer for any caller. Real was measured on each row under `/github` with `Bearer nope`,
-    `Digest x` and `Bearer<TAB>nope`, on each refused row with each header below, and with no header
-    on the first six.
+    header that carries no credential, then for a token that does not resolve, then the version's
+    400, counted, ahead of the router's answer to the admin token and of the refusal of a `Basic`
+    value that names no token, each carrying the version echo. A row not refused is the
+    router's answer for any caller. Real was measured on each row but the last with a bad bearer, an
+    unknown scheme and a bearer after a tab, on each refused row with each header below, and with no
+    header on the first six.
     """
     c, _ = gh_client
     url = path.format(org=gh_org)
@@ -6005,10 +6005,8 @@ def test_github_rate_limit_refuses_an_anonymous_caller_too_and_the_switch_turns_
         assert bad_bearer.status_code == 401
         assert not any(n.startswith("x-ratelimit-") for n in bad_bearer.headers)
 
-        # a header the gate treats specially — one real reads as no credential — still gets the
-        # ordinary 404 for a path real does not route, not this refusal: the gate needs a path
-        # real routes OR no `Authorization` header at all (see `_github_routes`), and `Basic ...`
-        # on an unmatched path satisfies neither.
+        # a header real reads as no credential, on a path off real's routes, gets that path's
+        # ordinary 404 rather than this refusal (see `_github_routes`)
         basic_unmatched = c.get(
             "/github/nonexistent-zz", headers={"Authorization": "Basic Zm9vOmJhcg=="}
         )

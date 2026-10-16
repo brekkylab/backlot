@@ -7,7 +7,8 @@ GitHub's routers read the list from here to answer such an operation the way the
 ahead of running one, so an operation the vendor adds gets that answer once the baseline
 acknowledges it.
 
-Read without importing ``backlot.fidelity``, whose ``__init__`` loads the comparison modules.
+It reads the file itself: importing ``backlot.fidelity`` would load the comparison modules, which
+its ``__init__`` imports.
 """
 
 from __future__ import annotations

@@ -186,7 +186,7 @@ def test_atlassian_bearer_token_takes_only_the_spelling_the_real_site_reads(head
         ("Basic\t ,!!!!", ""),
         ("Basic\t!!,!!", ""),
         ("Basic\t!!!!,", ""),
-        # a space and a tab are the only whitespace trimmed
+        # a no-break space, NEL or 0x1F beside the token is part of it
         ("Bearer \xa0", "\xa0"),
         ("Bearer \x85", "\x85"),
         ("Bearer {t}\xa0", "{t}\xa0"),
@@ -221,7 +221,7 @@ def test_atlassian_bearer_token_takes_only_the_spelling_the_real_site_reads(head
         ("Basic b64({t}:x-oauth-basic:)", None),
         ("Basic b64({t}: )", None),
         ("Basic\tb64({t}:x)", None),
-        # a value after a tab that does not decode, in a header with no comma
+        # no base64 after a tab, and no comma anywhere
         ("Basic\t!!!!", None),
         ("Basic\ta", None),
         ("Basic\tabcd=", None),

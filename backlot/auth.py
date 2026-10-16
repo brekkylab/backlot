@@ -89,11 +89,11 @@ def github_credential(request: Request) -> str | None:
     So real splits the scheme off at the first space, tab or comma, reads the password of a `Basic`
     value that decodes, or its user when there is no colon or the password is empty or
     `x-oauth-basic`, and serves one that names no token as no credential at all, as it does an
-    unknown scheme. A `Basic` value that does not decode is no credential either after a tab in a
-    header with no comma (:func:`github_scheme_then_a_tab`). A space and a tab are the only
-    whitespace it trims: ``Bearer <NBSP>``, ``Bearer <t><NBSP>``, ``Bearer <NBSP><t>``,
-    ``Bearer <t><NEL>``, ``Bearer <t><0x1F>``, ``Basic <NBSP>`` and base64, and the base64 of
-    ``x:<t>`` followed by a no-break space were each the 401 (2026-10-16).
+    unknown scheme. A `Basic` value that does not decode is no credential either where
+    :func:`github_scheme_then_a_tab` holds. A space and a tab are the only whitespace it trims:
+    ``Bearer <NBSP>``, ``Bearer <t><NBSP>``, ``Bearer <NBSP><t>``, ``Bearer <t><NEL>``,
+    ``Bearer <t><0x1F>``, ``Basic <NBSP>`` and base64, and the base64 of ``x:<t>`` followed by a
+    no-break space were each the 401 (2026-10-16).
     """
     scheme, rest = github_scheme(request)
     if scheme in ("bearer", "token"):
@@ -116,10 +116,8 @@ def github_scheme(request: Request) -> tuple[str, str]:
 
 def github_scheme_then_a_tab(request: Request) -> bool:
     """Whether a tab follows the scheme :func:`github_scheme` splits off, in a header that holds no
-    comma. Real reads such a header apart from the others: a `Basic` value in it that does not
-    decode is no credential (:func:`github_credential`'s table), and a `Bearer` or `token` in it
-    that does not resolve is refused counted in a window
-    (``backlot.routers.github.refused_without_a_window``)."""
+    comma: the spelling real reads apart from the rest, whose rows are in
+    :func:`github_credential`'s table."""
     header = _authorization(request) or ""
     return github_scheme(request)[1].startswith("\t") and "," not in header
 

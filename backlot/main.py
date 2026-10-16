@@ -271,9 +271,7 @@ async def echo_github_api_version(request: Request, call_next):
     neither does `/rate_limit` asked with no `Authorization` header (see
     ``github.honours_api_version``). Nor does a 404 for a path real does not route, whatever the
     caller's credential — see ``_github_routes`` — nor real's "Bad credentials" 401
-    (``github.refused_a_credential``), nor the 401 an operation no route here serves gets with no
-    `Authorization` header or one that carries no credential
-    (``github.refused_an_unserved_operation``).
+    (``github.refused_a_credential``), nor the 401s ``github.refused_an_unserved_operation`` names.
     """
     response = await call_next(request)
     if (
@@ -325,9 +323,9 @@ async def report_github_rate_limit(request: Request, call_next):
     with the rest of the GET's headers. A path outside `/github` gets nothing: the other vendors'
     rate-limit answers are not measured. A 404 for a path real does not route gets them only for a
     request that carried no `Authorization` header at all — see ``_github_routes`` — and a
-    credential that did not resolve gets them on no path at all, unless a tab follows its scheme in
-    a header with no comma (``github.refused_without_a_window``); the refusal check shares that same
-    gate, so neither is ever refused by it. Of the 401s an operation no route here serves gets for
+    credential that did not resolve gets them on no path at all but those
+    ``github.refused_without_a_window`` leaves out; the refusal check shares that same gate, so
+    neither is ever refused by it. Of the 401s an operation no route here serves gets for
     its credential, the ones ``github.refused_an_unserved_operation_uncounted`` names get none
     either and count nothing.
     """

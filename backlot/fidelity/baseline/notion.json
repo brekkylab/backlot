@@ -3,7 +3,7 @@
   "endpoints": [
     "https://developers.notion.com/openapi.json"
   ],
-  "measured": "2026-10-14",
+  "measured": "2026-10-16",
   "operations": [
     {
       "operation": "DELETE /v1/agents/{}",

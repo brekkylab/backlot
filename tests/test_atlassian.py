@@ -4676,6 +4676,9 @@ def test_jira_unserved_sorts_every_operation_no_route_serves():
                 ("application/*, application/json;q=0.5", "xml"),
                 ("*/*, application/json;q=0.5", "xml"),
                 ("*/json", "xml"),
+                # a `Q` Spring would fail to copy, where Jersey reads the last `q` (2026-10-16)
+                ("application/json;q=0.5;Q=2;q=0.5", "json"),
+                ("*/*;q=0.5;Q=2;q=0.5", "xml"),
             )
         ),
     ],

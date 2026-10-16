@@ -231,26 +231,32 @@ def atlassian_bearer_token(request: Request) -> str | None:
         Bearer <t>      read            bearer <t>      not read
         ' Bearer <t>'   read            BEARER <t>      not read
         Bearer <t>' '   read            token <t>       not read
-                                        OAuth <t>       not read
+        Bearer a<TAB>b  read            OAuth <t>       not read
                                         Bearer  <t>     not read
                                         Bearer<TAB><t>  not read
                                         Bearer<t>       not read
                                         Bearer          not read
+                                        Bearer a b      not read
 
-    The scheme is case-sensitive and separated from the token by exactly one space. Sharing
-    :func:`bearer_token` would authenticate five of those spellings — every "not read" row above
-    but ``OAuth <t>``, ``Bearer<t>`` and the bare ``Bearer`` — so a client sending
-    ``Authorization: token <t>`` would pass every test here and read nothing in production. Slack
-    refuses a different set: it takes the double space this refuses.
-
-    The leading ``strip`` is what serves the ``Bearer <t>' '`` row, so the token needs no second
-    one: nothing with trailing whitespace survives to reach it.
+    The scheme is case-sensitive and separated from the token by exactly one space, and the token
+    holds no space of its own: the `Bearer a b` row above was served anonymously on Jira Cloud on
+    2026-10-12, where a tab, a comma or a dot in the token was read and then refused. Any other byte
+    is the token's own wherever it stands, a tab, U+0085 and U+00A0 among them, and only a space or
+    a tab is trimmed from either end of the header, where Python's ``str.strip`` would take U+0085
+    and U+00A0 too. Measured on Jira Cloud on 2026-10-16 with each latin-1 byte but CR, LF and NUL
+    in four places: alone after `Bearer `, after `Bearer <t>`, before `Bearer <t>` and between
+    `Bearer ` and `<t>`; the control characters but the tab never reach this, the server in front
+    answering them with a 400 on real and here. Sharing :func:`bearer_token` would authenticate six
+    of those spellings — every "not read" row above but ``OAuth <t>``, ``Bearer<t>`` and the bare
+    ``Bearer`` — so a client sending ``Authorization: token <t>`` would pass every test here and
+    read nothing in production. Slack refuses a different set: it takes the double space this
+    refuses.
     """
-    hdr = (_authorization(request) or "").strip()
+    hdr = (_authorization(request) or "").strip(" \t")
     if not hdr.startswith("Bearer "):
         return None
     rest = hdr[len("Bearer ") :]
-    if not rest or rest[0].isspace():
+    if " " in rest:
         return None
     return rest
 

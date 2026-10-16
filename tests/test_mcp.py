@@ -1253,7 +1253,7 @@ def test_backlot_mcp_starts_a_server_when_none_answers(tmp_path):
 
     errlog = tmp_path / "stderr.txt"
     params = _mcp_params(
-        "--source", "slack", env={**os.environ, "BACKLOT_DATA_DIR": str(tmp_path / "data")}
+        "--source", "slack", env=python_child_env(BACKLOT_DATA_DIR=str(tmp_path / "data"))
     )
 
     async def _list_channels():

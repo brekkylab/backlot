@@ -9703,3 +9703,55 @@ def test_gmail_empty_address_tokens_preserve_quoted_subjects(tmp_path, surface, 
     assert {item["id"] for item in r.json().get(surface, [])} == {
         served_id("gmail", doc_id) for doc_id in expected
     }
+
+
+@pytest.mark.parametrize("surface", ["messages", "threads"])
+@pytest.mark.parametrize(
+    "query, expected",
+    [
+        ("from:no-reply", {"joined", "hyphen"}),
+        ("from:noreply", {"joined"}),
+        ("from:jt-snowball", {"domain"}),
+        ("from:jtsnowball", {"domain"}),
+        ("from:no-repl", set()),
+        ("from:noreplyx", set()),
+        ("from:no-reply@bank.example", {"hyphen"}),
+        ("from:no-reply@shop.example", set()),
+        ("to:no-reply", {"hyphen"}),
+        ("to:noreply", {"joined"}),
+    ],
+)
+def test_gmail_hyphenated_from_search(tmp_path, surface, query, expected):
+    """The partial `from:` reading recorded in `_gmail_address_match` also finds hyphens joined;
+    the reverse
+    does not hold. Full addresses and recipient searches retain their existing matching."""
+    records = [
+        {"doc_id": "joined", "author_email": "noreply@shop.example"},
+        {"doc_id": "hyphen", "author_email": "no-reply@bank.example"},
+        {"doc_id": "domain", "author_email": "news@jtsnowball.com"},
+    ]
+    settings = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "gmail",
+                "mailbox": "ava",
+                "title": "Notice",
+                "content": "body",
+                "to": r["author_email"],
+                "readers": ["ava@acme.com"],
+                "visibility": "public",
+                "created": "2026-03-01T09:00:00Z",
+                **r,
+            }
+            for r in records
+        ],
+    )
+    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    headers = {"Authorization": f"Bearer {tok(tokens, 'ava@acme.com')}"}
+    with client_for(settings, reload=True) as c:
+        r = c.get(f"/gmail/v1/users/me/{surface}", headers=headers, params={"q": query})
+    assert r.status_code == 200
+    assert {x["id"] for x in r.json().get(surface, [])} == {
+        served_id("gmail", doc_id) for doc_id in expected
+    }

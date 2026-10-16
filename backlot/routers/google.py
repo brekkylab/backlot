@@ -784,7 +784,7 @@ _GMAIL_ONE_ADDRESS = re.compile(r"[^@\s]+@[^@\s]+")
 _GMAIL_ADDRESS = re.compile(r"[\w.+'-]+@[\w-]+(?:\.[\w-]+)+")
 
 
-def _gmail_address_match(header: str | None, value: str) -> bool:
+def _gmail_address_match(header: str | None, value: str, *, join_hyphens: bool = False) -> bool:
     """Whether an address header answers an address search value as Gmail answers it, in any case.
     A value shaped like one address matches an address in the header exactly: `lena@acme.com`
     does, `lena@acme` names no address and matches nothing. Any other value matches when its words
@@ -811,14 +811,24 @@ def _gmail_address_match(header: str | None, value: str) -> bool:
     words, have = _GMAIL_ADDRESS_WORD.findall(value), _GMAIL_ADDRESS_WORD.findall(header)
     if not words:
         return True
-    return any(have[i : i + len(words)] == words for i in range(len(have) - len(words) + 1))
+    alternatives = [words]
+    if join_hyphens and "-" in value:
+        # Measured 2026-10-16: `from:no-reply` finds both the `no` `reply` words and
+        # `noreply`, and `from:jt-snowball` finds `jtsnowball.com`; the reverse does not hold.
+        # Only `from:` was measured, and complete addresses keep the exact match above.
+        alternatives.append(_GMAIL_ADDRESS_WORD.findall(value.replace("-", "")))
+    return any(
+        have[i : i + len(option)] == option
+        for option in alternatives
+        for i in range(len(have) - len(option) + 1)
+    )
 
 
 def _gmail_op_match(row, ops: dict) -> bool:
     if _GMAIL_NOTHING in ops:
         return False
     for v in ops.get("from", []):
-        if not _gmail_address_match(row["author_email"], v):
+        if not _gmail_address_match(row["author_email"], v, join_hyphens=True):
             return False
     for v in ops.get("to", []):
         if not any(_gmail_address_match(row[k], v) for k in ("to_addr", "cc", "bcc")):

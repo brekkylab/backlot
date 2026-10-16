@@ -24,7 +24,7 @@ import sys
 from enum import Enum
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated, NoReturn, Optional
 
 import typer
 
@@ -115,6 +115,16 @@ def _credentials(pairs: "list[str] | None") -> dict[str, str]:
             )
         out[name.strip()] = value
     return out
+
+
+def _baseline_unusable(e: Exception) -> NoReturn:
+    """Exit 3, as for a missing credential: the file is this repository's to fix, and exit 2 would
+    leave the schedule green. A key the file lacks is named as one."""
+    what = f"it has no {e} key" if isinstance(e, KeyError) else e
+    typer.echo(
+        typer.style(f"📄 the baseline cannot be used: {what}", fg="red", bold=True), err=True
+    )
+    raise typer.Exit(3) from e
 
 
 def _today() -> str:
@@ -703,7 +713,7 @@ def diff(
 ) -> None:
     """Compare the schema Backlot serves against the vendor's own, in both directions.
 
-    Fidelity is measured, never assumed — and until this command a measurement only happened when someone went looking. Run on a schedule, it is what notices the vendor changing something in March. Divergences already read and accepted live in `backlot/fidelity/baseline/<source>.json`, so a run reports what is NEW; accepting one is a file change that goes through review. Exits 1 when anything is unacknowledged, 2 when the vendor's contract could not be read at all — a vendor outage is not a fidelity finding — and 3 when a credential this source declares is not set anywhere, which is a configuration problem rather than either.
+    Fidelity is measured, never assumed — and until this command a measurement only happened when someone went looking. Run on a schedule, it is what notices the vendor changing something in March. Divergences already read and accepted live in `backlot/fidelity/baseline/<source>.json`, so a run reports what is NEW; accepting one is a file change that goes through review. Exits 1 when anything is unacknowledged, 2 when the vendor's contract could not be read at all — a vendor outage is not a fidelity finding — and 3 when a credential this source declares is not set anywhere or the baseline file cannot be read or written, which is a configuration problem rather than either.
     """  # noqa: E501 — see the note on `serve`: a paragraph must be one source line.
     from backlot.fidelity import (
         BREAKING,
@@ -711,7 +721,7 @@ def diff(
         CredentialsMissing,
         FidelityError,
         baseline_path,
-        divergences,
+        measure,
     )
     from backlot.fidelity import COMPARISONS as _SOURCES
 
@@ -722,7 +732,7 @@ def diff(
         )
     spec = _SOURCES[source]
     try:
-        findings = divergences(spec, _credentials(credential))
+        measured = measure(spec, _credentials(credential))
     except CredentialsMissing as e:
         # Exit 3, not 2: a credential nobody set is this repository's misconfiguration, and
         # answering it like a vendor outage leaves the source uncompared with the run green.
@@ -734,12 +744,16 @@ def diff(
         typer.echo(f"could not read the vendor's schema: {e}", err=True)
         raise typer.Exit(2) from e
 
+    findings = measured.findings
     path = (baseline_dir / f"{source}.json") if baseline_dir else baseline_path(source)
-    baseline = (
-        Baseline.load(path).identified_as(source, spec.endpoints)
-        if path.exists()
-        else Baseline.empty(source, spec.endpoints)
-    )
+    try:
+        baseline = (
+            Baseline.load(path).identified_as(source, spec.endpoints)
+            if path.exists()
+            else Baseline.empty(source, spec.endpoints)
+        )
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
+        _baseline_unusable(e)
     stale = baseline.resolved(findings)
     fresh = baseline.unacknowledged(findings)
     breaking = [f for f in fresh if f.severity == BREAKING]
@@ -754,7 +768,10 @@ def diff(
         # again: dropping it would delete the note, which is the record of the reasoning, so it
         # stays in the file and stays reported until someone rewrites it by hand.
         kept = [f for f in findings if f not in breaking or f.key in baseline.acknowledged]
-        baseline.write(path, kept, measured=_today())
+        try:
+            baseline.write(path, kept, measured=_today(), surface=measured.surface)
+        except (OSError, ValueError) as e:
+            _baseline_unusable(e)
         if as_json:
             _emit_json(
                 source,
@@ -779,8 +796,9 @@ def diff(
                     "red",
                 )
                 typer.echo(
-                    f"\n   Fix them, or add an entry to {path.name} by hand with a note saying why "
-                    f"the vendor's shape is not being matched.",
+                    f"\n   Fix them, or acknowledge one by hand in {path.name}: on the element its "
+                    f"path names, add its `kind`, `severity`, `detail` and a `note` saying why the "
+                    f"vendor's shape is not being matched.",
                     err=True,
                 )
         if breaking:
@@ -811,7 +829,8 @@ def diff(
         typer.echo("")
         typer.echo(
             typer.style(
-                f"🧹 acknowledged but no longer diverging ({len(stale)}) — drop from the baseline",
+                f"🧹 acknowledged but no longer diverging ({len(stale)}) — rerun with "
+                "--update-baseline",
                 fg="yellow",
                 bold=True,
             )

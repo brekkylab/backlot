@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, ConfigDict
 
-from backlot import auth, store, synth
+from backlot import auth, published, store, synth
 from backlot.acl import Caller
 from backlot.config import get_settings
 from backlot.pagination import (
@@ -90,16 +90,22 @@ def _require(request: Request) -> Caller:
     and at `/user`). A client that branches on which — retry versus re-authenticate — reads one
     answer for both otherwise.
 
-    Header PRESENT but not a scheme this API takes is the second case, not the first: real ignores
-    an `Authorization` it cannot parse and serves the request anonymously (measured: `Basic …` and a
-    scheme-less value both answer 200 on a public repo), so the caller reaches an auth-required
-    route with no credential rather than with a rejected one. Backlot serves no document
-    anonymously, which is why that lands here as the missing-credential 401 rather than as a public
-    read (`/rate_limit`, which serves none, is the exception — see :func:`_validate_path_owner`).
+    A header real serves as no credential is the second case, not the first: real ignores an
+    `Authorization` it does not read as one and serves the request anonymously (measured: a `Basic`
+    value that names no token and a scheme-less value both answer 200 on a public repo; which values
+    those are is :func:`backlot.auth.github_credential`'s table), so the caller reaches an
+    auth-required route with no credential rather than with a rejected one. Backlot serves no
+    document anonymously, which is why that lands here as the missing-credential 401 rather than as
+    a public read (`/rate_limit`, which serves none, is the exception — see
+    :func:`_validate_path_owner`).
     """
-    if auth.bearer_token(request) is None:
+    token = auth.github_credential(request)
+    if token is None:
         raise HTTPException(status_code=401, detail="Requires authentication")
-    return auth.require_bearer(request, "Bad credentials")
+    caller = auth.acl(request).resolve(token)
+    if caller is None:
+        raise HTTPException(status_code=401, detail="Bad credentials")
+    return caller
 
 
 async def _validate_bad_credential(request: Request) -> None:
@@ -115,8 +121,8 @@ async def _validate_bad_credential(request: Request) -> None:
     :func:`_validate_path_owner` answers the missing-credential case in its own place, after the
     version check.
     """
-    if auth.bearer_token(request) is not None:
-        auth.require_bearer(request, "Bad credentials")
+    if refused_a_credential(request):
+        raise HTTPException(status_code=401, detail="Bad credentials")
 
 
 def _org(request: Request) -> str:
@@ -164,7 +170,7 @@ def honours_api_version(request: Request) -> bool:
 
     `/rate_limit` reads it only from a request that carries an `Authorization` header: with none, a
     pinned `2026-03-10` is still `resources` AND `rate` with no echo and a pinned `1999-01-01` is a
-    200 rather than the version's 400, where a token and an unparseable `Basic` alike get
+    200 rather than the version's 400, where a token and a `Basic` value naming no token alike get
     `resources` alone with the echo and the 400. The route is the whole of the exception — that
     same `1999-01-01` with no credential is a 400 on `/repos/psf/requests`, `/users/psf` and
     `/user/repos` (measured against api.github.com 2026-09-21, on cache-busted urls).
@@ -293,6 +299,121 @@ async def _canonical_path_repo(request: Request) -> None:
     spelled = store.container_spelling(auth.conn(request), "github", repo)
     if spelled is not None:
         request.path_params["repo"] = spelled
+
+
+#: The baseline's operations api.github.com does not route as a `{}` for any one segment would:
+#: `{archive_format}` routes `zip`, where the other three values sent, `tar` among them, were the
+#: 404, and `POST …/releases/{}/assets` routes nothing.
+_ROUTED_AS = {
+    "GET /repos/{}/{}/actions/artifacts/{}/{}": "GET /repos/{}/{}/actions/artifacts/{}/zip"
+}
+_NOT_ROUTED = frozenset({"POST /repos/{}/{}/releases/{}/assets"})
+#: The GitHub baseline's ``missing`` operations (``backlot.published``), read as those two say.
+#: One under `/organizations/{}` is matched at `/orgs/{}`, the path ``backlot.main``'s
+#: `resolve_github_id_paths` hands on for it; real answered each of the 13 under both with "Bad
+#: credentials" for `Bearer nope` (2026-10-14).
+_PUBLISHED_NOT_SERVED = published.operations(
+    _ROUTED_AS.get(op, op).replace(" /organizations/", " /orgs/", 1)
+    for op in published.missing_operations("github")
+    if op not in _NOT_ROUTED
+)
+
+
+async def refuse_an_unserved_operation(request: Request) -> None:
+    """Refuse a request whose method and path are an operation of :data:`_PUBLISHED_NOT_SERVED` as
+    real refuses it before running it: no `Authorization` header, or one that carries no
+    credential (:func:`_a_header_without_a_credential`), then a credential that does not resolve,
+    then a version real does not have, then a `Basic` value that names no token. A request none of
+    those refuse goes on to the router's own 404 or 405, an operation Backlot cannot run.
+
+    Measured against api.github.com on 2026-10-14, one cache-busted request each. With
+    `Bearer nope`, every operation the baseline lists answered "Bad credentials", but the
+    spellings :data:`_NOT_ROUTED` and :data:`_ROUTED_AS` leave out, with each `{}` past the owner
+    and the repository sent as `1` and again as `x`. With no `Authorization` header, 31 of a sample
+    of 42 answered "Requires authentication", and the four of them sent pinned to `1999-01-01` were
+    the 401 rather than the version's 400: `PATCH /repos/{owner}/{repo}`, `POST /user/gpg_keys`,
+    `GET /user/packages` and `GET /gists/starred`. Ten of the 42 real answered without asking for a
+    credential, 200, 404 or 422 (`GET /zen`, `GET /users/{username}/repos` and `POST /markdown`
+    among them), and the remaining one, `POST …/releases/{}/assets`, was the 404 :data:`_NOT_ROUTED`
+    keeps out; here no credential is :func:`_require`'s 401 on those ten too, as it is on every
+    served route but `/rate_limit`.
+
+    Of the 31, only `DELETE /installation/token` carried the version echo, and only a `GET` or a
+    `POST` carried the five `x-ratelimit-*` and counted: `PATCH`, `PUT` and `DELETE` were refused
+    with neither and moved no window, but `DELETE /installation/token`, which carried the five at
+    `used: 0`. Here none carries the echo and the methods split as real's did; ``backlot.main``
+    asks :func:`refused_an_unserved_operation` for the echo and
+    :func:`refused_an_unserved_operation_uncounted` for the headers. With a token, real's answers to
+    `GET /user/packages` and `GET /gists/starred` carried the echo, and so does the router's 404 or
+    405 here.
+
+    An `Authorization` header that carries no credential is the same 401 with neither, whatever the
+    method and ahead of the version: measured on 2026-10-16 on the 43 operations of a sample of 51
+    that asked for a credential, `Digest x`, `nope`, `Bearer<TAB>nope` and `Basic<TAB>!!!!` were
+    each "Requires authentication" with none of the five and no echo, and so was a bearer that
+    resolves after a tab, on the 18 `GET`s among them, which served it after a space. On the
+    eight operations the tests send, each pinned to `1999-01-01`, so was an empty `Authorization`.
+
+    A `Basic` value that names no token is the caller a served route serves with no credential: on
+    those eight, `Basic Zm9vOmJhcg==` was each operation's own answer to that caller, carrying the
+    echo and the five, on every method (2026-10-16). That answer was "Requires authentication" on
+    `GET /user/packages` and `DELETE /user/keys/1`, and on the other six a 400, a 403, a 404 or the
+    401 "You must be logged in to do that.". Pinned to `1999-01-01`, `GET /user/packages`,
+    `DELETE /user/keys/1`, `POST /user/gpg_keys` and `GET /gists/starred` were the version's 400,
+    counted. Here it is :func:`_require`'s 401 after the version, carrying both.
+    """
+    if not is_an_unserved_operation(request.method, request.scope["path"]):
+        return
+    if "authorization" not in request.headers:
+        request.state.github_unserved_refusal = (
+            "uncounted" if request.method in _UNCOUNTED_METHODS else "counted"
+        )
+        raise HTTPException(status_code=401, detail="Requires authentication")
+    if _a_header_without_a_credential(request):
+        request.state.github_unserved_refusal = "uncounted"
+        raise HTTPException(status_code=401, detail="Requires authentication")
+    await _validate_bad_credential(request)
+    await _validate_api_version(request)
+    _require(request)
+
+
+#: The methods whose 401 for no credential at all, on an operation of :data:`_PUBLISHED_NOT_SERVED`,
+#: carries none of the five `x-ratelimit-*` (see :func:`refuse_an_unserved_operation`).
+_UNCOUNTED_METHODS = frozenset({"PATCH", "PUT", "DELETE"})
+
+
+def _a_header_without_a_credential(request: Request) -> bool:
+    """Whether the request carries an `Authorization` header that real reads no credential from on
+    an operation of :data:`_PUBLISHED_NOT_SERVED`: one ``auth.github_scheme_then_a_tab`` holds for,
+    whatever it names, or one ``auth.github_credential`` reads as no credential, but a `Basic`
+    value."""
+    if "authorization" not in request.headers:
+        return False
+    if auth.github_scheme_then_a_tab(request):
+        return True
+    scheme, _ = auth.github_scheme(request)
+    return auth.github_credential(request) is None and scheme != "basic"
+
+
+def is_an_unserved_operation(method: str, path: str) -> bool:
+    """Whether ``method`` on the `/github` ``path`` is in :data:`_PUBLISHED_NOT_SERVED`. The path is
+    the scope's, decoded but whole: ``request.url.path`` ends at a decoded `#` or `?`, which would
+    take `/zen%23` for `/zen`, where real answered `GET /zen%23` and `POST …/forks%23` with the 404
+    on 2026-10-14."""
+    return published.includes(_PUBLISHED_NOT_SERVED, method, path.removeprefix("/github"))
+
+
+def refused_an_unserved_operation(request: Request) -> bool:
+    """Whether :func:`refuse_an_unserved_operation` refused this request with no credential: no
+    `Authorization` header, or one that carries none."""
+    return getattr(request.state, "github_unserved_refusal", None) is not None
+
+
+def refused_an_unserved_operation_uncounted(request: Request) -> bool:
+    """Whether :func:`refuse_an_unserved_operation` refused this request with a 401 that real counts
+    nowhere and sends without the five headers: for a header that carries no credential, on any
+    method, and for no header on a method in :data:`_UNCOUNTED_METHODS`."""
+    return getattr(request.state, "github_unserved_refusal", None) == "uncounted"
 
 
 # --- rate limits ----------------------------------------------------------------
@@ -433,37 +554,30 @@ def rate_limit_caller(request: Request) -> tuple[str, bool]:
     with no credential (the docs' 60 an hour "for unauthenticated requests", `limit: 60` on every
     anonymous answer measured).
 
-    An `Authorization` real cannot parse is served rather than refused, and counted apart from the
-    bare-anonymous requests from the same address, in ONE window shared by every such value: on
-    `/repos/psf/requests`, alternating `Basic`, `Digest` and scheme-less values real had not seen
-    before ran one counter 10 through 15 at one `reset`, while the bare anonymous calls interleaved
-    with them read 23, 24, 25 at another, both at `limit: 60` (measured against api.github.com
-    2026-09-21).
+    An `Authorization` real reads as no credential (see :func:`backlot.auth.github_credential`) is
+    served rather than refused, and counted apart from the bare-anonymous requests from the same
+    address, in ONE window shared by every such value: on `/repos/psf/requests`, alternating
+    `Basic`, `Digest` and scheme-less values real had not seen before ran one counter 10 through 15
+    at one `reset`, while the bare anonymous calls interleaved with them read 23, 24, 25 at another,
+    both at `limit: 60` (measured against api.github.com 2026-09-21).
 
-    A `Bearer` or `token` followed by a tab rather than a space is counted in that same window,
-    though it is answered as Bad credentials: `Digest x` and then `Bearer<TAB>nope` on
-    `/repos/psf/requests` read `used` 4 and 5, while the address's anonymous window stayed at 8
-    (2026-10-14). A bearer that does not resolve after a space is keyed with the address here but
-    never counted — see :func:`refused_without_a_window`. Callers that draw real's line themselves
-    check `request.headers` for the presence of `Authorization` directly instead of asking
-    `auth.bearer_token`, which is `None` for a scheme it does not parse — see
-    `refuse_a_trailing_slash_on_github`."""
-    token = auth.bearer_token(request)
-    if token is not None and auth.resolve_bearer(request) is not None:
+    Either bearer scheme followed by a tab rather than a space (``auth.github_scheme_then_a_tab``)
+    is counted in that same window, though it is answered as Bad credentials: an unknown scheme and
+    then a bad bearer after a tab, on `/repos/psf/requests`, read `used` 4 and 5, while the
+    address's anonymous window stayed at 8 (2026-10-14). Any other credential that does not resolve
+    is keyed with the address here but never counted — see :func:`refused_without_a_window`. Callers
+    that draw real's line themselves check `request.headers` for the presence of `Authorization`
+    directly instead of asking `auth.github_credential`, which is `None` for a header real serves as
+    anonymous — see `refuse_a_trailing_slash_on_github`."""
+    token = auth.github_credential(request)
+    if token is not None and auth.acl(request).resolve(token) is not None:
         return f"token:{token}", True
     host = request.client.host if request.client is not None else "anonymous"
-    if "authorization" in request.headers and (token is None or not _scheme_then_space(request)):
+    if "authorization" in request.headers and (
+        token is None or auth.github_scheme_then_a_tab(request)
+    ):
         return f"unparseable:{host}", False
     return f"host:{host}", False
-
-
-def _scheme_then_space(request: Request) -> bool:
-    """Whether the `Authorization` is `Bearer` or `token`, in any case, followed by a space: the
-    spelling real refuses with no `x-ratelimit-*` when the token does not resolve, where a tab
-    after the scheme (`Bearer<TAB>nope`, `Bearer<TAB> nope`) is counted as an unparseable one
-    (:func:`rate_limit_caller`)."""
-    scheme, space, _ = (request.headers.get("authorization") or "").partition(" ")
-    return bool(space) and scheme.lower() in ("bearer", "token")
 
 
 def refused_a_credential(request: Request) -> bool:
@@ -473,31 +587,36 @@ def refused_a_credential(request: Request) -> bool:
     `x-ratelimit-*` headers and no version echo, on `/repos/psf/requests` and on `/rate_limit`, and
     the address's `core` window read `used: 13` before three of them and after — where an anonymous
     401 on `/user/repos` carries all five, counts, and echoes (measured against api.github.com
-    2026-09-21). A path no route matches is answered the same way for a wider set of callers, see
-    ``backlot.main._some_github_route_matches``.
+    2026-09-21). A path real does not route is answered the same way for a wider set of callers,
+    see ``backlot.main._github_routes``.
 
-    A tab after the scheme is still "Bad credentials" (`auth.bearer_token` accepts it) and still
-    carries no version echo: on 2026-10-14 `Bearer<TAB>nope` on `/rate_limit` and
-    `/repos/psf/requests`, with and without `X-GitHub-Api-Version: 2022-11-28`, and on
-    `/user/repos` with it, answered no `x-github-api-version-selected`. Which of these 401s carry
-    the five is :func:`refused_without_a_window`'s.
+    A tab after the scheme is still "Bad credentials" and still carries no version echo: on
+    2026-10-14 a bearer that does not resolve after a tab answered no
+    `x-github-api-version-selected` on `/rate_limit` and `/repos/psf/requests`, with and without
+    `X-GitHub-Api-Version: 2022-11-28`, and on `/user/repos` with it. Which of these 401s carry the
+    five is
+    :func:`refused_without_a_window`'s.
     """
-    return auth.bearer_token(request) is not None and auth.resolve_bearer(request) is None
+    token = auth.github_credential(request)
+    return token is not None and auth.acl(request).resolve(token) is None
 
 
 def refused_without_a_window(request: Request) -> bool:
-    """Whether :func:`refused_a_credential` holds with a space after the scheme: the 401 real counts
-    in no window and answers with none of the five `x-ratelimit-*` headers.
+    """Whether :func:`refused_a_credential` holds and ``backlot.auth.github_scheme_then_a_tab``
+    does not: the 401 real counts in no window and answers with none of the five headers, as each
+    scheme with nothing after it and a value after `Basic` that does not decode were (2026-10-14),
+    and so were `Bearer<TAB>,nope`, `token<TAB>,nope`, `Bearer<TAB>no,pe` and `Bearer<TAB>nope,`
+    (2026-10-16), all on the rate-limit route.
 
-    After a tab, the same 401 carries the five of the window it is counted in, the unparseable one:
-    measured against api.github.com 2026-10-14 on `GET /rate_limit`, `Bearer<TAB>nope` and
-    `token<TAB>nope` each answered 401 with `limit: 60`, `remaining: 60`, `used: 0`,
-    `resource: core` and a `reset` an hour after `Date`, while `Bearer nope` and `token nope`
-    answered the same 401 with none of the five. Once that window was spent, `Bearer<TAB>nope` and
-    `token<TAB>nope` on `/repos/psf/requests` and `Bearer<TAB>nope` on `/user/repos` were its 403,
-    as `Digest x` was, where `Bearer nope` was still the 401.
+    Where that helper holds, the same 401 carries the five of the window it is counted in, the
+    unparseable one: measured against api.github.com 2026-10-14 on `GET /rate_limit`,
+    `Bearer<TAB>nope` and `token<TAB>nope` each answered 401 with `limit: 60`, `remaining: 60`,
+    `used: 0`, `resource: core` and a `reset` an hour after `Date`, while the same two after a space
+    answered the same 401 with none of the five. Once that window was spent, the two after a tab on
+    a public repository, and the first on `/user/repos`, were its 403, as an unknown scheme was,
+    where the bearer after a space was still the 401.
     """
-    return refused_a_credential(request) and _scheme_then_space(request)
+    return refused_a_credential(request) and not auth.github_scheme_then_a_tab(request)
 
 
 def rate_limit_headers(request: Request, status_code: int) -> dict[str, str]:
@@ -561,7 +680,7 @@ def _rate_limit_exceeded_message(request: Request, authenticated: bool) -> str:
             f"API rate limit exceeded for {host}. (But here's the good news: Authenticated "
             "requests get a higher rate limit. Check out the documentation for more details.)"
         )
-    caller = auth.resolve_bearer(request)
+    caller = auth.acl(request).resolve(auth.github_credential(request))
     email = caller.email if caller is not None and caller.email is not None else "admin"
     return f"API rate limit exceeded for user ID {synth.github_user_id(email)}."
 

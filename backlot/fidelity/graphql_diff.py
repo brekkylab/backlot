@@ -44,6 +44,15 @@ from graphql import (
 import backlot.graphql
 from backlot.fidelity.errors import FidelityError
 from backlot.fidelity.findings import BREAKING, GAP, Finding
+from backlot.fidelity.surface import (
+    EXTRA,
+    IMPLEMENTED,
+    MISSING,
+    Measurement,
+    Member,
+    SchemaSurface,
+    TypeNode,
+)
 
 
 def _comparable(schema: GraphQLSchema) -> dict[str, object]:
@@ -221,6 +230,81 @@ def diff_schemas(backlot: GraphQLSchema, real: GraphQLSchema) -> list[Finding]:
     return sorted(out, key=lambda f: (f.severity != BREAKING, f.path, f.kind))
 
 
+def _kind(t: object) -> str:
+    """A named type's kind, spelled as introspection spells it."""
+    for test, name in (
+        (is_object_type, "OBJECT"),
+        (is_interface_type, "INTERFACE"),
+        (is_input_object_type, "INPUT_OBJECT"),
+        (is_union_type, "UNION"),
+        (is_enum_type, "ENUM"),
+    ):
+        if test(t):
+            return name
+    return "SCALAR"
+
+
+def _members(ours: Mapping[str, object], theirs: Mapping[str, object]) -> dict[str, Member]:
+    """Each name either side has, with which side has it and, where only the vendor does, the
+    vendor's type for it."""
+    out = {}
+    for name in sorted(set(ours) | set(theirs)):
+        if name not in ours:
+            vendor_type = getattr(theirs[name], "type", None)
+            out[name] = Member(MISSING, "" if vendor_type is None else str(vendor_type))
+        else:
+            out[name] = Member(IMPLEMENTED if name in theirs else EXTRA)
+    return out
+
+
+def _own(members: Mapping[str, object]) -> dict[str, Member]:
+    """Backlot's members of something the vendor has no counterpart of, each with its own args."""
+    return {
+        name: Member(EXTRA, args=_own(getattr(m, "args", {}) or {}))
+        for name, m in sorted(members.items())
+    }
+
+
+def schema_surface(backlot: GraphQLSchema, real: GraphQLSchema) -> SchemaSurface:
+    """Every type Backlot declares, with every member either side has under it.
+
+    Walked the way :func:`diff_schemas` walks, so each finding it reports names an element here: a
+    type the vendor lacks lists Backlot's own members, a type of another kind on the vendor's side
+    lists none, and arguments are compared on the fields both sides have.
+    """
+    backlot_types, real_types = _comparable(backlot), _comparable(real)
+    types: dict[str, TypeNode] = {}
+    for name in sorted(backlot_types):
+        ours, theirs = backlot_types[name], real_types.get(name)
+        kind = _kind(ours)
+        if theirs is None:
+            types[name] = TypeNode(
+                kind,
+                EXTRA,
+                fields=_own(_fields(ours)),
+                values=_own(getattr(ours, "values", {}) or {}),
+                members=_own({t.name: t for t in getattr(ours, "types", ())}),
+            )
+        elif kind != _kind(theirs):
+            types[name] = TypeNode(kind, IMPLEMENTED)
+        elif kind == "ENUM":
+            types[name] = TypeNode(kind, IMPLEMENTED, values=_members(ours.values, theirs.values))
+        elif kind == "UNION":
+            members = _members({t.name: t for t in ours.types}, {t.name: t for t in theirs.types})
+            types[name] = TypeNode(kind, IMPLEMENTED, members=members)
+        else:
+            ours_f, theirs_f = _fields(ours), _fields(theirs)
+            fields = _members(ours_f, theirs_f)
+            for f, m in fields.items():
+                if m.status == IMPLEMENTED and kind in ("OBJECT", "INTERFACE"):
+                    args = _members(ours_f[f].args or {}, theirs_f[f].args or {})
+                    fields[f] = Member(IMPLEMENTED, args=args)
+                elif m.status == EXTRA:
+                    fields[f] = Member(EXTRA, args=_own(getattr(ours_f[f], "args", {}) or {}))
+            types[name] = TypeNode(kind, IMPLEMENTED, fields=fields)
+    return SchemaSurface(backlot.query_type.name, types)
+
+
 # --------------------------------------------------------------------------- loading
 
 
@@ -285,18 +369,19 @@ def real_schema(endpoint: str, authorization: str, *, timeout: float = 60.0) -> 
         raise FidelityError(f"{endpoint} answered no usable introspection result: {e}") from e
 
 
-def divergences(
+def measure(
     source: GraphQLTarget,
     credentials: Mapping[str, str] | None = None,
     *,
     timeout: float = 60.0,
-) -> list[Finding]:
-    """This module's entry point: load both schemas for a source and compare them.
+) -> Measurement:
+    """This module's entry point: load both schemas for a source, compare them and lay out every
+    type Backlot declares.
 
     ``credentials`` arrive already resolved — the registry does that once for every kind, so a
     credential a source does not declare is refused there rather than ignored here.
     """
     authorization = source.authorization(credentials or {})
-    return diff_schemas(
-        backlot_schema(source.name), real_schema(source.endpoint, authorization, timeout=timeout)
-    )
+    ours = backlot_schema(source.name)
+    theirs = real_schema(source.endpoint, authorization, timeout=timeout)
+    return Measurement(diff_schemas(ours, theirs), schema_surface(ours, theirs))

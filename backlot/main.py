@@ -171,13 +171,13 @@ async def _http_exception_handler(request: Request, exc: StarletteHTTPException)
     if body is None:
         body = {"detail": exc.detail}
     # A vendor may decide how the body reaches the wire as well as what is in it — Google's errors
-    # are indented to the byte and a `callback` on a GET answers one at 200 as a script. Asking the
-    # envelope keeps that where the rest of that vendor's error shape lives, and leaves Atlassian
-    # and GitHub with exactly the JSONResponse they had. Measured 2026-09-15, that is right for
-    # both and for different reasons: Jira and Confluence ignore `callback` outright, on an error
-    # and on a success, while GitHub honours it through an envelope of its own — `/**/cb({"meta":
-    # …, "data": …})` under `application/javascript; charset=utf-8`, with the status inside `meta`
-    # and an unparseable name refused UNWRAPPED — which is a shape to build, not one to share.
+    # are indented to the byte and a `callback` on a GET answers one at 200 as a script, and an
+    # Atlassian refusal takes the shape `Accept` asks for (``errors.atlassian.rendered``).
+    # Asking the envelope keeps that where the rest of that vendor's error shape lives, and leaves
+    # GitHub with FastAPI's `JSONResponse`. GitHub honours `callback` through an envelope of its
+    # own — `/**/cb({"meta": …, "data": …})` under `application/javascript; charset=utf-8`, with
+    # the status inside `meta` and an unparseable name refused UNWRAPPED — which is a shape to
+    # build, not one to share.
     rendered = errors.rendered(request, exc.status_code, body, headers)
     if rendered is not None:
         return rendered
@@ -203,12 +203,19 @@ async def _validation_exception_handler(request: Request, exc: RequestValidation
 
 
 def _some_github_route_matches(scope: Scope) -> bool:
-    """Whether some mounted route matches this scope's path, whatever the method.
+    """Whether some mounted route matches this scope's path, whatever the method."""
+    return any(route.matches(scope)[0] is not Match.NONE for route in app.router.routes)
 
-    A 404 for a path no route matches at all carries no version echo, and carries the five
-    `x-ratelimit-*` headers only for a request that sent no `Authorization` header at all — the
-    same line `refuse_a_trailing_slash_on_github` draws for the trailing-slash spelling of such a
-    path, which real draws for every spelling. Measured against api.github.com 2026-09-21:
+
+def _github_routes(scope: Scope) -> bool:
+    """Whether real routes this scope: some mounted route matches its path, whatever the method
+    (:func:`_some_github_route_matches`), or its method and path are an operation GitHub publishes
+    and no route here serves (``backlot.routers.github.is_an_unserved_operation``).
+
+    A 404 for a path real does not route carries no version echo, and carries the five
+    `x-ratelimit-*` headers only for a request that sent no `Authorization` header at all — the same
+    line `refuse_a_trailing_slash_on_github` draws for the trailing-slash spelling of such a path,
+    which real draws for every spelling. Measured against api.github.com 2026-09-21:
     `/repos/psf/requests/<unmatched>`, its trailing-slash spelling and a top-level `/<unmatched>`
     all answered 404 with no echo, where `/repos/psf/requests/issues/<missing>` — a route that DOES
     match, on a resource that does not exist — carried both for either caller. With no
@@ -216,9 +223,36 @@ def _some_github_route_matches(scope: Scope) -> bool:
     Every header value carried none of them and moved no window: a valid token (whose `used` read 0
     before three of them and 0 after), a bad bearer, `Basic Zm9vOmJhcg==` and a scheme-less value —
     so what real reads here is that a credential arrived, not that one resolved, where the same
-    unparseable `Basic` on a route that matches is served and counted.
+    `Basic` value, which names no token, on a route that matches is served and counted.
     """
-    return any(route.matches(scope)[0] is not Match.NONE for route in app.router.routes)
+    return _some_github_route_matches(scope) or github.is_an_unserved_operation(
+        scope["method"], scope["path"]
+    )
+
+
+def _a_github_route_serves(scope: Scope) -> bool:
+    """Whether a GitHub route serves this scope's method and path. Asked of
+    ``backlot.routers.github.router``, which holds the GitHub routes and nothing else."""
+    return any(route.matches(scope)[0] is Match.FULL for route in github.router.routes)
+
+
+@app.middleware("http")
+async def refuse_an_unserved_github_operation(request: Request, call_next):
+    """An operation GitHub publishes that no route here serves under the request's method is
+    refused as a served route refuses before it runs, ahead of the router's 404 or 405
+    (``backlot.routers.github.refuse_an_unserved_operation``).
+
+    Registered before the other GitHub middlewares, which makes it the innermost of them: it reads
+    the path ``resolve_github_id_paths`` rewrote and a `HEAD` as the GET it is rewritten to, and
+    its refusal leaves through the version echo and the rate-limit headers as a served route's 401
+    does.
+    """
+    if request.scope["path"].startswith("/github/") and not _a_github_route_serves(request.scope):
+        try:
+            await github.refuse_an_unserved_operation(request)
+        except StarletteHTTPException as exc:
+            return await _http_exception_handler(request, exc)
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -235,16 +269,17 @@ async def echo_github_api_version(request: Request, call_next):
     ``selected_api_version``, the same call the router's 400 is raised from. Code search gets no
     echo either, whatever it pinned: real's code search backend does not read the header, and
     neither does `/rate_limit` asked with no `Authorization` header (see
-    ``github.honours_api_version``). Nor does a 404 for a path no route matches at all, whatever
-    the caller's credential — see ``_some_github_route_matches`` — nor real's "Bad credentials"
-    401 (``github.refused_a_credential``).
+    ``github.honours_api_version``). Nor does a 404 for a path real does not route, whatever the
+    caller's credential — see ``_github_routes`` — nor real's "Bad credentials" 401
+    (``github.refused_a_credential``), nor the 401s ``github.refused_an_unserved_operation`` names.
     """
     response = await call_next(request)
     if (
         request.url.path.startswith("/github")
         and github.honours_api_version(request)
-        and _some_github_route_matches(request.scope)
+        and _github_routes(request.scope)
         and not github.refused_a_credential(request)
+        and not github.refused_an_unserved_operation(request)
     ):
         version = github.selected_api_version(request)
         if version is not None:
@@ -286,23 +321,25 @@ async def report_github_rate_limit(request: Request, call_next):
     so a `HEAD` runs through here as the GET it is rewritten to and counts once, as it does on real
     (`remaining` 46 → 45 across one `HEAD`, measured 2026-09-09), and the head copies the five
     with the rest of the GET's headers. A path outside `/github` gets nothing: the other vendors'
-    rate-limit answers are not measured. A 404 for a path no route matches at all gets them only
-    for a request that carried no `Authorization` header at all — see ``_some_github_route_matches``
-    — and a credential that did not resolve, with a space after its scheme, gets them on no path at
-    all (``github.refused_without_a_window``); the refusal check shares that same gate, so neither
-    is ever refused by it.
+    rate-limit answers are not measured. A 404 for a path real does not route gets them only for a
+    request that carried no `Authorization` header at all — see ``_github_routes`` — and a
+    credential that did not resolve gets them on no path at all but those
+    ``github.refused_without_a_window`` leaves out; the refusal check shares that same gate, so
+    neither is ever refused by it. Of the 401s an operation no route here serves gets for
+    its credential, the ones ``github.refused_an_unserved_operation_uncounted`` names get none
+    either and count nothing.
     """
     gated = (
         request.url.path.startswith("/github")
         and not github.refused_without_a_window(request)
-        and (_some_github_route_matches(request.scope) or "authorization" not in request.headers)
+        and (_github_routes(request.scope) or "authorization" not in request.headers)
     )
     if gated:
         refusal = github.rate_limit_refusal(request)
         if refusal is not None:
             return refusal
     response = await call_next(request)
-    if gated:
+    if gated and not github.refused_an_unserved_operation_uncounted(request):
         for name, value in github.rate_limit_headers(request, response.status_code).items():
             response.headers[name] = value
     return response
@@ -351,8 +388,8 @@ async def refuse_a_trailing_slash_on_github(request: Request, call_next):
     address, ahead of and independent of routing, where a credential's window only starts once a
     route is reached (anonymous `/repos/psf/requests/` answered `used` 45, 46 then 47 across a pair
     of bad-bearer 404s that carried no headers and moved no window between them, measured
-    2026-09-17) — see `_some_github_route_matches` for the unparseable-credential and matched-route
-    cases, which draw the same line.
+    2026-09-17) — see `_github_routes` for a header real reads as no credential and
+    for a matched route, which draw the same line.
 
     `redirect_slashes` is a setting of the whole app's `Router`, shared by every vendor mounted
     here, and the vendors measured answer a trailing slash each their own way (Notion, Atlassian and
@@ -555,18 +592,20 @@ async def refuse_a_bearer_jira_cannot_read(request: Request, call_next):
     sites on 2026-09-04.
 
     The body is spelled the way real spells it, a space after the colon (fifteen of them on
-    2026-09-30), and this runs inside :func:`answer_head_as_the_get_without_its_body`: a `HEAD` is
-    refused as its GET is and so carries no `content-length`, as real's did on `serverInfo` and on
-    `nopesuchroute` the same day. An `OPTIONS` is not refused here: real answers one with an
-    unreadable bearer as it answers one with none (``backlot.routers.atlassian._options_answer``).
+    2026-09-30), or is the XML for the `Accept` values ``errors.atlassian.connect_token_answer``
+    names, and this runs inside :func:`answer_head_as_the_get_without_its_body`: a
+    `HEAD` is refused as its GET is and so carries no `content-length`, as real's did on
+    `serverInfo` and on `nopesuchroute` the same day. An `OPTIONS` is not refused here: real answers
+    one with an unreadable bearer as it answers one with none
+    (``backlot.routers.atlassian._options_answer``).
     """
     if (
         request.method != "OPTIONS"
         and request.url.path.startswith("/atlassian/rest/")
         and auth.atlassian_bearer_unreadable(request)
     ):
-        body = json.dumps(errors.atlassian.connect_token_body())
-        return Response(body, status_code=403, media_type="application/json")
+        media_type, body = errors.atlassian.connect_token_answer(request.headers.get("accept"))
+        return Response(body, status_code=403, media_type=media_type)
     return await call_next(request)
 
 
@@ -607,6 +646,38 @@ _HEAD_IS_THE_GET_WITHOUT_ITS_BODY = (
     "/health",
     "/_meta",
 )
+
+
+@app.middleware("http")
+async def answer_an_atlassian_write_that_fails(request: Request, call_next):
+    """Answer as real does where a Spring service could not sort `Accept`'s members
+    (``errors.atlassian.spring_cannot_sort``) or could not write its answer under it
+    (``errors.atlassian.quality_spring_cannot_copy``); what each answer becomes is
+    ``backlot.routers.atlassian.spring_sort_failure``'s and ``spring_write_failure``'s.
+
+    Middleware because what Spring would have answered decides what replaces it: this reads the
+    answer the route or the refusal gave and replaces it. Registered before the `HEAD` rewrite
+    below, so it reads a `HEAD`'s answer as its GET's, and the front door and the headers are put on
+    what it gives as on any answer.
+    """
+    path = request.url.path  # picks the product only
+    if not errors.atlassian.owns(path):
+        return await call_next(request)
+    reader = "spring" if errors.atlassian.is_confluence(path) else "jira"
+    accept = request.headers.get("accept")
+    if errors.atlassian.spring_cannot_sort(accept, reader=reader):
+        answer = atlassian.spring_sort_failure
+    elif errors.atlassian.quality_spring_cannot_copy(accept, reader=reader):
+        answer = atlassian.spring_write_failure
+    else:
+        return await call_next(request)
+    response = await call_next(request)
+    body = b"".join([chunk async for chunk in response.body_iterator])
+    failed = answer(request, response.status_code, response.headers, body)
+    if failed is None:
+        failed = Response(body, status_code=response.status_code)
+        failed.raw_headers = response.raw_headers
+    return failed
 
 
 @app.middleware("http")

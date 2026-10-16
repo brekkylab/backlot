@@ -405,8 +405,52 @@ def _reachable_projects(conn, ids) -> list:
     return [r for r in rows if store.has_visible_document(conn, "jira", r["name"], ids)]
 
 
+# The fields `project/search` sorts by, in the order its 400 names them (Jira Cloud, 2026-10-16).
+_JIRA_PROJECT_ORDER_FIELDS = (
+    "name",
+    "key",
+    "owner",
+    "category",
+    "issueCount",
+    "lastIssueUpdatedTime",
+    "archivedDate",
+    "deletedDate",
+)
+_JIRA_PROJECT_ORDER_FOLDED = frozenset(name.casefold() for name in _JIRA_PROJECT_ORDER_FIELDS)
+
+
+def _jira_project_order(raw: str) -> None:
+    """Jira's 400 when ``project/search`` ``orderBy`` names no field it sorts by.
+
+    One leading ``+`` or ``-`` is stripped, whitespace around it is ignored and the field is
+    matched case-insensitively, the reading :func:`_jira_order_desc` gives a comment's ``orderBy``.
+    An empty value is accepted. The 400 names the value as sent.
+    """
+    field = raw.strip()
+    if field[:1] in ("+", "-"):
+        field = field[1:].strip()
+    if field == "" or field.casefold() in _JIRA_PROJECT_ORDER_FOLDED:
+        return
+    allowed = ", ".join(_JIRA_PROJECT_ORDER_FIELDS)
+    raise errors_atlassian.AtlassianError(
+        400,
+        {
+            "errorMessages": [
+                f"The field to order by should be one of [{allowed}]. Instead, it was: {raw}."
+            ],
+            "errors": {},
+        },
+    )
+
+
 @router.get("/rest/api/3/project/search")
 async def jira_project_search(request: Request):
+    # Read for the refusal above. The sort itself is not served, so `orderBy` stays undeclared:
+    # `qp` is for a parameter Backlot honours, and advertising this one would offer a client an
+    # order the listing never applies. `backlot diff --source jira` keeps the gap.
+    raw_order = _str_param(request, "orderBy")
+    if raw_order is not None:
+        _jira_project_order(raw_order)
     conn = auth.conn(request)
     caller = _jira_caller(request)
     ids = auth.visible_ids(request, caller)

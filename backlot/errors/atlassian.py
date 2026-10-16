@@ -96,6 +96,33 @@ CONFLUENCE_NOT_PERMITTED_BODY = json.dumps(
 ).encode()
 
 
+#: The characters besides ASCII letters and digits whose escape real decodes in the path a refusal
+#: echoes. Measured on Jira Cloud, 2026-10-10, with `GET /rest/api/3/nope%XXx` for every byte from
+#: `%01` to `%7F`: these come back decoded, and every other escape comes back as sent with its hex
+#: in upper case (`%3c` as `%3C`, `%c3%a9` as `%C3%A9`), decoded one layer only (`%2541` stays
+#: `%2541`). The conversion 400, the 405 and Confluence's `null for uri:` 404 echo the same way.
+_ECHO_DECODES = "!$&'()*+,-./:=@_~"
+_ESCAPE = re.compile(r"%([0-9A-Fa-f]{2})")
+
+
+def echoed_spelling(raw_path: str) -> str:
+    """The path as Jira and Confluence echo it in a refusal, from the path as it arrived.
+
+    A run of slashes is one, and a trailing slash is kept (see
+    ``backlot.main.normalise_the_slashes_in_an_atlassian_path``). Each escape is decoded or kept
+    as :data:`_ECHO_DECODES` says, in one pass, so an escape a decoded `%25` would form is not read
+    again.
+    """
+
+    def one(match: re.Match[str]) -> str:
+        char = chr(int(match.group(1), 16))
+        if char.isascii() and (char.isalnum() or char in _ECHO_DECODES):
+            return char
+        return "%" + match.group(1).upper()
+
+    return _ESCAPE.sub(one, re.sub("/{2,}", "/", raw_path))
+
+
 def owns(path: str) -> bool:
     """Whether ``path`` is under the Atlassian mount. The segment has to END there: `/atlassianx`
     is a path of Backlot's own, and answering it in this envelope -- or with the headers

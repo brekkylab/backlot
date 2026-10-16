@@ -530,8 +530,10 @@ async def normalise_the_slashes_in_an_atlassian_path(request: Request, call_next
     What the request ECHOES is not normalised the same way, which is why the path is kept: real
     collapses an interior run in `detail`, `instance` and Confluence's `null for uri:` message
     (`/api/3//nope` comes back `/api/3/nope`) but leaves a trailing slash in all three
-    (`/nopesuchroute/` comes back `/nopesuchroute/`). The collapsed spelling is stashed on the
-    scope for ``backlot.routers.atlassian._echoed_path`` to read.
+    (`/nopesuchroute/` comes back `/nopesuchroute/`). Nor are its escapes: real echoes the path as
+    it arrived, decoding only some of them (``errors.atlassian.echoed_spelling``), where routing
+    reads the decoded path. That spelling is built from `raw_path` before the rewrite below
+    replaces it, and stashed on the scope for ``backlot.routers.atlassian._echoed_path`` to read.
 
     Ahead of routing, because the answer for a path no route matches is a route of its own
     (`atlassian.unmatched_router`), which would otherwise claim every slashed spelling of a served
@@ -547,7 +549,10 @@ async def normalise_the_slashes_in_an_atlassian_path(request: Request, call_next
         # arrived. It keeps its slash and reaches the catch-all like any other unserved path.
         if routed == errors.atlassian.PREFIX:
             routed = collapsed
-        request.scope["atlassian_echo_path"] = collapsed
+        raw = request.scope.get("raw_path") or path.encode()
+        request.scope["atlassian_echo_path"] = errors.atlassian.echoed_spelling(
+            raw.decode("latin-1")
+        )
         if routed != path:
             request.scope["path"] = routed
             request.scope["raw_path"] = routed.encode()

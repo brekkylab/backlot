@@ -149,14 +149,17 @@ a token that does not resolve is the 401 "Bad credentials", as on a served route
 `Authorization` header is the 401 "Requires authentication", as is one that carries no credential,
 which is any value after a tab in a header with no comma and any scheme but `Bearer`, `token` and
 `Basic`, each ahead of an unsupported version's 400, where the served `/user/repos` checks the
-version before a missing credential. A token that resolves reaches the 404 or 405 of an operation
-Backlot cannot run. The operations are the GitHub baseline's `missing_operation` rows, but
-`POST …/releases/{id}/assets`, which api.github.com does not route, and with
-`artifacts/{id}/{archive_format}` taken as `zip`. `Authorization` is read as real reads it: `Bearer`
-or `token` with nothing after it, and a `Basic` value that is not base64, are credentials that do
-not resolve, though that `Basic` value is no credential after a tab in a header with no comma; a
-`Basic` value whose base64 holds a token as its password, or as its user beside an empty password or
-`x-oauth-basic`, is that token; and one that holds none is no credential at all.
+version before a missing credential. A token that resolves, and a `Basic` value that names no
+token, are checked for the version first; the token then reaches the 404 or 405 of an operation
+Backlot cannot run, and the `Basic` value is the 401 a served route gives a caller with no
+credential, with the version echo and the five `x-ratelimit-*`. The operations are the GitHub
+baseline's `missing_operation` rows, but `POST …/releases/{id}/assets`, which api.github.com does
+not route, and with `artifacts/{id}/{archive_format}` taken as `zip`. `Authorization` is read as
+real reads it: `Bearer` or `token` with nothing after it, and a `Basic` value that is not base64,
+are credentials that do not resolve, though that `Basic` value is no credential after a tab in a
+header with no comma; a `Basic` value whose base64 holds a token as its password, or as its user
+beside an empty password or `x-oauth-basic`, is that token; and one that holds none is no credential
+at all.
 
 **Every response carries the five `x-ratelimit-*` headers** real puts on every answer, the errors
 included: `limit` at real's numbers (60 an hour for a caller with no credential, 5000 for a token,

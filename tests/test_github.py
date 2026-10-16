@@ -2606,21 +2606,24 @@ def test_github_a_wrong_method_is_not_dressed_as_a_measured_answer(gh_client, gh
 #: eight are in `backlot.routers.github._PUBLISHED_NOT_SERVED`, the eighth as the `/orgs/{}` path
 #: `/organizations/{id}` is rewritten to; the next two are baseline rows that `_ROUTED_AS` and
 #: `_NOT_ROUTED` keep out of it; `/zen%23` is no operation, though `request.url.path` ends at its
-#: `#`; and the last is a method GitHub does not publish on a path whose `PATCH` it does, which real
-#: answered `Bearer nope` with its 404.
+#: `#`, and `…/issues%3Fsince` none, though a `missing_param` row of the baseline spells its path
+#: that way; the next is a method GitHub does not publish on a path whose `PATCH` it does, which
+#: real answered `Bearer nope` with its 404; and `/zen` outside `/github` is no GitHub request.
 _UNSERVED_ROWS = [
-    ("PATCH", "/repos/{org}/codebase", True, 405),
-    ("DELETE", "/repos/{org}/codebase", True, 405),
-    ("POST", "/repos/{org}/codebase/forks", True, 404),
-    ("GET", "/user/packages", True, 404),
-    ("DELETE", "/user/keys/1", True, 404),
-    ("PUT", "/teams/1/repos/{org}/codebase", True, 404),
-    ("GET", "/repos/{org}/codebase/actions/artifacts/1/zip", True, 404),
-    ("GET", "/organizations/1/settings/billing/usage", True, 404),
-    ("GET", "/repos/{org}/codebase/actions/artifacts/1/tar", False, 404),
-    ("POST", "/repos/{org}/codebase/releases/1/assets", False, 404),
-    ("GET", "/zen%23", False, 404),
-    ("PUT", "/orgs/{org}", False, 405),
+    ("PATCH", "/github/repos/{org}/codebase", True, 405),
+    ("DELETE", "/github/repos/{org}/codebase", True, 405),
+    ("POST", "/github/repos/{org}/codebase/forks", True, 404),
+    ("GET", "/github/user/packages", True, 404),
+    ("DELETE", "/github/user/keys/1", True, 404),
+    ("PUT", "/github/teams/1/repos/{org}/codebase", True, 404),
+    ("GET", "/github/repos/{org}/codebase/actions/artifacts/1/zip", True, 404),
+    ("GET", "/github/organizations/1/settings/billing/usage", True, 404),
+    ("GET", "/github/repos/{org}/codebase/actions/artifacts/1/tar", False, 404),
+    ("POST", "/github/repos/{org}/codebase/releases/1/assets", False, 404),
+    ("GET", "/github/zen%23", False, 404),
+    ("GET", "/github/repos/{org}/codebase/issues%3Fsince", False, 404),
+    ("PUT", "/github/orgs/{org}", False, 405),
+    ("GET", "/zen", False, 404),
 ]
 
 
@@ -2630,15 +2633,15 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
 ):
     """Each refused row answers what :func:`backlot.routers.github.refuse_an_unserved_operation`
     records of real: the credential's 401 with no header, with or without a version, and for each
-    `Authorization` that carries no credential, then with `Bearer nope`, then the router's own 404
-    or 405 for the admin token, carrying the version echo as real's answer to a token did on
-    `GET /user/packages`, and the version's 400 ahead of it, counted. A row not refused is the
-    router's answer for any caller. Real was measured on each row with `Bearer nope`, `Digest x` and
-    `Bearer<TAB>nope`, on each refused row with each header below, and with no header on the first
-    six.
+    `Authorization` that carries no credential, then with `Bearer nope`, then the version's 400,
+    counted, ahead of the router's own 404 or 405 for the admin token and of the 401 for a `Basic`
+    value that names no token, each carrying the version echo. A row not refused is the router's
+    answer for any caller. Real was measured on each row under `/github` with `Bearer nope`,
+    `Digest x` and `Bearer<TAB>nope`, on each refused row with each header below, and with no header
+    on the first six.
     """
     c, _ = gh_client
-    url = "/github" + path.format(org=gh_org)
+    url = path.format(org=gh_org)
     bad_version = {"X-GitHub-Api-Version": "1999-01-01"}
     tab_admin = "Bearer\t" + gh_admin_h["Authorization"].split(" ", 1)[1]
     if not refused:
@@ -2665,12 +2668,15 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
         assert any(name.startswith("x-ratelimit-") for name in r.headers) == counted, headers
     bad = c.request(method, url, headers={"Authorization": "Bearer nope", **bad_version})
     assert (bad.status_code, bad.json()["message"]) == (401, "Bad credentials")
-    admin = c.request(method, url, headers=gh_admin_h)
-    assert admin.status_code == status
-    assert admin.headers["x-github-api-version-selected"] == "2022-11-28"
-    unversioned = c.request(method, url, headers={**gh_admin_h, **bad_version})
-    assert (unversioned.status_code, unversioned.json()["message"]) == (400, "Bad Request")
-    assert any(name.startswith("x-ratelimit-") for name in unversioned.headers)
+    basic = {"Authorization": "Basic Zm9vOmJhcg=="}
+    for headers, answered in ((gh_admin_h, status), (basic, 401)):
+        r = c.request(method, url, headers=headers)
+        assert r.status_code == answered, headers
+        assert r.headers["x-github-api-version-selected"] == "2022-11-28", headers
+        assert any(name.startswith("x-ratelimit-") for name in r.headers), headers
+        unversioned = c.request(method, url, headers={**headers, **bad_version})
+        assert (unversioned.status_code, unversioned.json()["message"]) == (400, "Bad Request")
+        assert any(name.startswith("x-ratelimit-") for name in unversioned.headers), headers
 
 
 def test_github_a_head_is_the_get_with_the_body_left_off(gh_client, gh_admin_h, gh_org):

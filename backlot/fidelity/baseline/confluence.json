@@ -3,891 +3,1021 @@
   "endpoints": [
     "https://developer.atlassian.com/cloud/confluence/swagger.v3.json"
   ],
-  "measured": "2026-10-06",
-  "acknowledged": [
+  "measured": "2026-10-14",
+  "operations": [
     {
+      "operation": "DELETE /wiki/rest/api/content/{}/label",
+      "id": "removeLabelFromContentUsingQueryParameter",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "DELETE /wiki/rest/api/content/{}/label/{}",
+      "id": "removeLabelFromContent",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "DELETE /wiki/rest/api/content/{}/pageTree",
+      "id": "deletePageTree",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "DELETE /wiki/rest/api/content/{}/restriction",
+      "id": "deleteRestrictions",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "DELETE /wiki/rest/api/content/{}/restriction/byOperation/{}/byGroupId/{}",
+      "id": "removeGroupFromContentRestriction",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "DELETE /wiki/rest/api/content/{}/restriction/byOperation/{}/user",
+      "id": "removeUserFromContentRestriction",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "DELETE /wiki/rest/api/content/{}/state",
+      "id": "removeContentState",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "DELETE /wiki/rest/api/content/{}/version/{}",
+      "id": "deleteContentVersion",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "DELETE /wiki/rest/api/group/by-id",
+      "id": "removeGroupById",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "DELETE /wiki/rest/api/group/userByGroupId",
+      "id": "removeMemberFromGroupByGroupId",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "DELETE /wiki/rest/api/relation/{}/from/{}/{}/to/{}/{}",
+      "id": "deleteRelationship",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "DELETE /wiki/rest/api/settings/lookandfeel/custom",
+      "id": "resetLookAndFeelSettings",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "DELETE /wiki/rest/api/space/{}",
+      "id": "deleteSpace",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "DELETE /wiki/rest/api/space/{}/label",
+      "id": "deleteLabelFromSpace",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "DELETE /wiki/rest/api/space/{}/permission/{}",
+      "id": "removePermission",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "DELETE /wiki/rest/api/space/{}/theme",
+      "id": "resetSpaceTheme",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "DELETE /wiki/rest/api/template/{}",
+      "id": "removeTemplate",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "DELETE /wiki/rest/api/user/watch/content/{}",
+      "id": "removeContentWatcher",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "DELETE /wiki/rest/api/user/watch/label/{}",
+      "id": "removeLabelWatcher",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "DELETE /wiki/rest/api/user/watch/space/{}",
+      "id": "removeSpaceWatch",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "DELETE /wiki/rest/api/user/{}/property/{}",
+      "id": "deleteUserProperty",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "DELETE /wiki/rest/atlassian-connect/1/app/module/dynamic",
+      "id": "removeModules",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /wiki/rest/api/analytics/content/{}/viewers",
+      "id": "getViewers",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /wiki/rest/api/analytics/content/{}/views",
+      "id": "getViews",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /wiki/rest/api/audit",
+      "id": "getAuditRecords",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /wiki/rest/api/audit/export",
+      "id": "exportAuditRecords",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /wiki/rest/api/audit/retention",
+      "id": "getRetentionPeriod",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /wiki/rest/api/audit/since",
+      "id": "getAuditRecordsForTimePeriod",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /wiki/rest/api/content",
+      "status": "extra",
       "kind": "extra_operation",
       "severity": "breaking",
-      "path": "GET /wiki/rest/api/content",
       "detail": "the vendor's spec declares no such operation",
       "note": "Atlassian's published v1 document no longer describes the content and space reads Backlot serves; it still describes 65 reads and the writes. These v1 reads are deprecated in favour of Confluence REST v2, not documented as removed. Read off the document on 2026-09-01; not measured against a live site."
     },
     {
+      "operation": "GET /wiki/rest/api/content-states",
+      "id": "getCustomContentStates",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /wiki/rest/api/content/search",
+      "id": "searchContentByCQL",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /wiki/rest/api/content/{}",
+      "status": "extra",
       "kind": "extra_operation",
       "severity": "breaking",
-      "path": "GET /wiki/rest/api/content/{}",
       "detail": "the vendor's spec declares no such operation",
       "note": "Atlassian's published v1 document no longer describes the content and space reads Backlot serves; it still describes 65 reads and the writes. These v1 reads are deprecated in favour of Confluence REST v2, not documented as removed. Read off the document on 2026-09-01; not measured against a live site."
     },
     {
+      "operation": "GET /wiki/rest/api/content/{}/child/attachment",
+      "status": "extra",
       "kind": "extra_operation",
       "severity": "breaking",
-      "path": "GET /wiki/rest/api/content/{}/child/attachment",
       "detail": "the vendor's spec declares no such operation",
       "note": "Atlassian's published v1 document does not describe this read, though it describes the writes on the same path. Measured against a live site on 2026-10-10, a page holding no attachment answers 200 with `results`, `start`, `limit` (50 by default), `size` and `_links`, which is the page Backlot serves for every page."
     },
     {
+      "operation": "GET /wiki/rest/api/content/{}/child/attachment/{}/download",
+      "id": "downloadAttatchment",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /wiki/rest/api/content/{}/child/comment",
+      "status": "extra",
       "kind": "extra_operation",
       "severity": "breaking",
-      "path": "GET /wiki/rest/api/content/{}/child/comment",
       "detail": "the vendor's spec declares no such operation",
       "note": "Atlassian's published v1 document no longer describes the content and space reads Backlot serves; it still describes 65 reads and the writes. These v1 reads are deprecated in favour of Confluence REST v2, not documented as removed. Read off the document on 2026-09-01; not measured against a live site."
     },
     {
+      "operation": "GET /wiki/rest/api/content/{}/child/page",
+      "status": "extra",
       "kind": "extra_operation",
       "severity": "breaking",
-      "path": "GET /wiki/rest/api/content/{}/child/page",
       "detail": "the vendor's spec declares no such operation",
       "note": "Atlassian's published v1 document no longer describes the content and space reads Backlot serves; it still describes 65 reads and the writes. These v1 reads are deprecated in favour of Confluence REST v2, not documented as removed. Read off the document on 2026-09-01; not measured against a live site."
     },
     {
+      "operation": "GET /wiki/rest/api/content/{}/descendant",
+      "id": "getContentDescendants",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /wiki/rest/api/content/{}/descendant/{}",
+      "id": "getDescendantsOfType",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /wiki/rest/api/content/{}/history/{}/macro/id/{}",
+      "id": "getMacroBodyByMacroId",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /wiki/rest/api/content/{}/history/{}/macro/id/{}/convert/async/{}",
+      "id": "getAndAsyncConvertMacroBodyByMacroId",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /wiki/rest/api/content/{}/history/{}/macro/id/{}/convert/{}",
+      "id": "getAndConvertMacroBodyByMacroId",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /wiki/rest/api/content/{}/label",
+      "status": "extra",
       "kind": "extra_operation",
       "severity": "breaking",
-      "path": "GET /wiki/rest/api/content/{}/label",
       "detail": "the vendor's spec declares no such operation",
       "note": "Atlassian's published v1 document no longer describes the content and space reads Backlot serves; it still describes 65 reads and the writes. These v1 reads are deprecated in favour of Confluence REST v2, not documented as removed. Read off the document on 2026-09-01; not measured against a live site."
     },
     {
+      "operation": "GET /wiki/rest/api/content/{}/notification/child-created",
+      "id": "getWatchesForPage",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /wiki/rest/api/content/{}/notification/created",
+      "id": "getWatchesForSpace",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /wiki/rest/api/content/{}/restriction",
+      "id": "getRestrictions",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /wiki/rest/api/content/{}/restriction/byOperation",
+      "id": "getRestrictionsByOperation",
+      "status": "implemented",
+      "params": {
+        "expand": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      }
+    },
+    {
+      "operation": "GET /wiki/rest/api/content/{}/restriction/byOperation/{}",
+      "id": "getRestrictionsForOperation",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /wiki/rest/api/content/{}/restriction/byOperation/{}/byGroupId/{}",
+      "id": "getIndividualGroupRestrictionStatusByGroupId",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /wiki/rest/api/content/{}/restriction/byOperation/{}/user",
+      "id": "getContentRestrictionStatusForUser",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /wiki/rest/api/content/{}/state",
+      "id": "getContentState",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /wiki/rest/api/content/{}/state/available",
+      "id": "getAvailableContentStates",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /wiki/rest/api/contentbody/convert/async/bulk/tasks",
+      "id": "bulkAsyncConvertContentBodyResponse",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /wiki/rest/api/contentbody/convert/async/{}",
+      "id": "asyncConvertContentBodyResponse",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /wiki/rest/api/group",
+      "id": "getGroups",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /wiki/rest/api/group/by-id",
+      "id": "getGroupByGroupId",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /wiki/rest/api/group/picker",
+      "id": "searchGroups",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /wiki/rest/api/group/{}/membersByGroupId",
+      "id": "getGroupMembersByGroupId",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /wiki/rest/api/label",
+      "id": "getAllLabelContent",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /wiki/rest/api/longtask",
+      "id": "getTasks",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /wiki/rest/api/longtask/{}",
+      "id": "getTask",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /wiki/rest/api/relation/{}/from/{}/{}/to/{}",
+      "id": "findTargetFromSource",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /wiki/rest/api/relation/{}/from/{}/{}/to/{}/{}",
+      "id": "getRelationship",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /wiki/rest/api/relation/{}/to/{}/{}/from/{}",
+      "id": "findSourcesForTarget",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /wiki/rest/api/search",
+      "id": "searchByCQL",
+      "status": "implemented",
+      "params": {
+        "_": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "cqlcontext": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "excerpt": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "excludeCurrentSpaces": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "expand": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "includeArchivedSpaces": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "next": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "prev": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "sitePermissionTypeFilter": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      }
+    },
+    {
+      "operation": "GET /wiki/rest/api/search/user",
+      "id": "searchUser",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /wiki/rest/api/settings/lookandfeel",
+      "id": "getLookAndFeelSettings",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /wiki/rest/api/settings/systemInfo",
+      "id": "getSystemInfo",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /wiki/rest/api/settings/theme",
+      "id": "getThemes",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /wiki/rest/api/settings/theme/selected",
+      "id": "getGlobalTheme",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /wiki/rest/api/settings/theme/{}",
+      "id": "getTheme",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /wiki/rest/api/space",
+      "status": "extra",
       "kind": "extra_operation",
       "severity": "breaking",
-      "path": "GET /wiki/rest/api/space",
       "detail": "the vendor's spec declares no such operation",
       "note": "Atlassian's published v1 document no longer describes the content and space reads Backlot serves; it still describes 65 reads and the writes. These v1 reads are deprecated in favour of Confluence REST v2, not documented as removed. Read off the document on 2026-09-01; not measured against a live site."
     },
     {
+      "operation": "GET /wiki/rest/api/space/{}",
+      "status": "extra",
       "kind": "extra_operation",
       "severity": "breaking",
-      "path": "GET /wiki/rest/api/space/{}",
       "detail": "the vendor's spec declares no such operation",
       "note": "Atlassian's published v1 document no longer describes the content and space reads Backlot serves; it still describes 65 reads and the writes. These v1 reads are deprecated in favour of Confluence REST v2, not documented as removed. Read off the document on 2026-09-01; not measured against a live site."
     },
     {
+      "operation": "GET /wiki/rest/api/space/{}/label",
+      "id": "getLabelsForSpace",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /wiki/rest/api/content/{}/label",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "GET /wiki/rest/api/space/{}/settings",
+      "id": "getSpaceSettings",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /wiki/rest/api/content/{}/label/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "GET /wiki/rest/api/space/{}/state",
+      "id": "getSpaceContentStates",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /wiki/rest/api/content/{}/pageTree",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "GET /wiki/rest/api/space/{}/state/content",
+      "id": "getContentsWithState",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /wiki/rest/api/content/{}/restriction",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "GET /wiki/rest/api/space/{}/state/settings",
+      "id": "getContentStateSettings",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /wiki/rest/api/content/{}/restriction/byOperation/{}/byGroupId/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "GET /wiki/rest/api/space/{}/theme",
+      "id": "getSpaceTheme",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /wiki/rest/api/content/{}/restriction/byOperation/{}/user",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "GET /wiki/rest/api/space/{}/watch",
+      "id": "getWatchersForSpace",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /wiki/rest/api/content/{}/state",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "GET /wiki/rest/api/template/blueprint",
+      "id": "getBlueprintTemplates",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /wiki/rest/api/content/{}/version/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "GET /wiki/rest/api/template/page",
+      "id": "getContentTemplates",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /wiki/rest/api/group/by-id",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "GET /wiki/rest/api/template/{}",
+      "id": "getContentTemplate",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /wiki/rest/api/group/userByGroupId",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "GET /wiki/rest/api/user",
+      "id": "getUser",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /wiki/rest/api/relation/{}/from/{}/{}/to/{}/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "GET /wiki/rest/api/user/anonymous",
+      "id": "getAnonymousUser",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /wiki/rest/api/settings/lookandfeel/custom",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "GET /wiki/rest/api/user/bulk",
+      "id": "getBulkUserLookup",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /wiki/rest/api/space/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "GET /wiki/rest/api/user/current",
+      "id": "getCurrentUser",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /wiki/rest/api/space/{}/label",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "GET /wiki/rest/api/user/email",
+      "id": "getPrivacyUnsafeUserEmail",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /wiki/rest/api/space/{}/permission/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "GET /wiki/rest/api/user/email/bulk",
+      "id": "getPrivacyUnsafeUserEmailBulk",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /wiki/rest/api/space/{}/theme",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "GET /wiki/rest/api/user/memberof",
+      "id": "getGroupMembershipsForUser",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /wiki/rest/api/template/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "GET /wiki/rest/api/user/watch/content/{}",
+      "id": "getContentWatchStatus",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /wiki/rest/api/user/watch/content/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "GET /wiki/rest/api/user/watch/label/{}",
+      "id": "isWatchingLabel",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /wiki/rest/api/user/watch/label/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "GET /wiki/rest/api/user/watch/space/{}",
+      "id": "isWatchingSpace",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /wiki/rest/api/user/watch/space/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "GET /wiki/rest/api/user/{}/property",
+      "id": "getUserProperties",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /wiki/rest/api/user/{}/property/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "GET /wiki/rest/api/user/{}/property/{}",
+      "id": "getUserProperty",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /wiki/rest/atlassian-connect/1/app/module/dynamic",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "GET /wiki/rest/atlassian-connect/1/app/module/dynamic",
+      "id": "getModules",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/analytics/content/{}/viewers",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /wiki/rest/api/audit",
+      "id": "createAuditRecord",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/analytics/content/{}/views",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /wiki/rest/api/content/archive",
+      "id": "archivePages",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/audit",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /wiki/rest/api/content/blueprint/instance/{}",
+      "id": "publishLegacyDraft",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/audit/export",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /wiki/rest/api/content/{}/child/attachment",
+      "id": "createAttachment",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/audit/retention",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /wiki/rest/api/content/{}/child/attachment/{}/data",
+      "id": "updateAttachmentData",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/audit/since",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /wiki/rest/api/content/{}/copy",
+      "id": "copyPage",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/content-states",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /wiki/rest/api/content/{}/label",
+      "id": "addLabelsToContent",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/content/search",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /wiki/rest/api/content/{}/pagehierarchy/copy",
+      "id": "copyPageHierarchy",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/content/{}/child/attachment/{}/download",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /wiki/rest/api/content/{}/permission/check",
+      "id": "checkContentPermission",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/content/{}/descendant",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /wiki/rest/api/content/{}/restriction",
+      "id": "addRestrictions",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/content/{}/descendant/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /wiki/rest/api/content/{}/version",
+      "id": "restoreContentVersion",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/content/{}/history/{}/macro/id/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /wiki/rest/api/contentbody/convert/async/bulk/tasks",
+      "id": "bulkAsyncConvertContentBodyRequest",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/content/{}/history/{}/macro/id/{}/convert/async/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /wiki/rest/api/contentbody/convert/async/{}",
+      "id": "asyncConvertContentBodyRequest",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/content/{}/history/{}/macro/id/{}/convert/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /wiki/rest/api/group",
+      "id": "createGroup",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/content/{}/notification/child-created",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /wiki/rest/api/group/userByGroupId",
+      "id": "addUserToGroupByGroupId",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/content/{}/notification/created",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /wiki/rest/api/settings/lookandfeel/custom",
+      "id": "updateLookAndFeelSettings",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/content/{}/restriction",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /wiki/rest/api/space",
+      "id": "createSpace",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/content/{}/restriction/byOperation/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /wiki/rest/api/space/_private",
+      "id": "createPrivateSpace",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/content/{}/restriction/byOperation/{}/byGroupId/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /wiki/rest/api/space/{}/label",
+      "id": "addLabelsToSpace",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/content/{}/restriction/byOperation/{}/user",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/content/{}/restriction/byOperation?expand",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/content/{}/state",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/content/{}/state/available",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/contentbody/convert/async/bulk/tasks",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/contentbody/convert/async/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/group",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/group/by-id",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/group/picker",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/group/{}/membersByGroupId",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/label",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/longtask",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/longtask/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/relation/{}/from/{}/{}/to/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/relation/{}/from/{}/{}/to/{}/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/relation/{}/to/{}/{}/from/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/search/user",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/search?_",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/search?cqlcontext",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/search?excerpt",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/search?excludeCurrentSpaces",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/search?expand",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/search?includeArchivedSpaces",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/search?next",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/search?prev",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/search?sitePermissionTypeFilter",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/settings/lookandfeel",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/settings/systemInfo",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/settings/theme",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/settings/theme/selected",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/settings/theme/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/space/{}/label",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/space/{}/settings",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/space/{}/state",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/space/{}/state/content",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/space/{}/state/settings",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/space/{}/theme",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/space/{}/watch",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/template/blueprint",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/template/page",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/template/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/user",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/user/anonymous",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/user/bulk",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/user/current",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/user/email",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/user/email/bulk",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/user/memberof",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/user/watch/content/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/user/watch/label/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/user/watch/space/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/user/{}/property",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/api/user/{}/property/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /wiki/rest/atlassian-connect/1/app/module/dynamic",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /wiki/rest/api/audit",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /wiki/rest/api/content/archive",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /wiki/rest/api/content/blueprint/instance/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /wiki/rest/api/content/{}/child/attachment",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /wiki/rest/api/content/{}/child/attachment/{}/data",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /wiki/rest/api/content/{}/copy",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /wiki/rest/api/content/{}/label",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /wiki/rest/api/content/{}/pagehierarchy/copy",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /wiki/rest/api/content/{}/permission/check",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /wiki/rest/api/content/{}/restriction",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /wiki/rest/api/content/{}/version",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /wiki/rest/api/contentbody/convert/async/bulk/tasks",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /wiki/rest/api/contentbody/convert/async/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /wiki/rest/api/group",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /wiki/rest/api/group/userByGroupId",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /wiki/rest/api/settings/lookandfeel/custom",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /wiki/rest/api/space",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /wiki/rest/api/space/_private",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /wiki/rest/api/space/{}/label",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
+      "operation": "POST /wiki/rest/api/space/{}/permission",
+      "id": "addPermissionToSpace",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /wiki/rest/api/space/{}/permission",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /wiki/rest/api/space/{}/permission/custom-content",
+      "id": "addCustomContentPermissions",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /wiki/rest/api/space/{}/permission/custom-content",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /wiki/rest/api/template",
+      "id": "createContentTemplate",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /wiki/rest/api/template",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /wiki/rest/api/user/watch/content/{}",
+      "id": "addContentWatcher",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /wiki/rest/api/user/watch/content/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /wiki/rest/api/user/watch/label/{}",
+      "id": "addLabelWatcher",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /wiki/rest/api/user/watch/label/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /wiki/rest/api/user/watch/space/{}",
+      "id": "addSpaceWatcher",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /wiki/rest/api/user/watch/space/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /wiki/rest/api/user/{}/property/{}",
+      "id": "createUserProperty",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /wiki/rest/api/user/{}/property/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /wiki/rest/atlassian-connect/1/app/module/dynamic",
+      "id": "registerModules",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /wiki/rest/atlassian-connect/1/app/module/dynamic",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "PUT /wiki/rest/api/audit/retention",
+      "id": "setRetentionPeriod",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PUT /wiki/rest/api/audit/retention",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "PUT /wiki/rest/api/content/blueprint/instance/{}",
+      "id": "publishSharedDraft",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PUT /wiki/rest/api/content/blueprint/instance/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "PUT /wiki/rest/api/content/{}/child/attachment",
+      "id": "createOrUpdateAttachments",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PUT /wiki/rest/api/content/{}/child/attachment",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "PUT /wiki/rest/api/content/{}/child/attachment/{}",
+      "id": "updateAttachmentProperties",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PUT /wiki/rest/api/content/{}/child/attachment/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "PUT /wiki/rest/api/content/{}/move/{}/{}",
+      "id": "movePage",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PUT /wiki/rest/api/content/{}/move/{}/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "PUT /wiki/rest/api/content/{}/restriction",
+      "id": "updateRestrictions",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PUT /wiki/rest/api/content/{}/restriction",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "PUT /wiki/rest/api/content/{}/restriction/byOperation/{}/byGroupId/{}",
+      "id": "addGroupToContentRestrictionByGroupId",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PUT /wiki/rest/api/content/{}/restriction/byOperation/{}/byGroupId/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "PUT /wiki/rest/api/content/{}/restriction/byOperation/{}/user",
+      "id": "addUserToContentRestriction",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PUT /wiki/rest/api/content/{}/restriction/byOperation/{}/user",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "PUT /wiki/rest/api/content/{}/state",
+      "id": "setContentState",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PUT /wiki/rest/api/content/{}/state",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "PUT /wiki/rest/api/relation/{}/from/{}/{}/to/{}/{}",
+      "id": "createRelationship",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PUT /wiki/rest/api/relation/{}/from/{}/{}/to/{}/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "PUT /wiki/rest/api/settings/lookandfeel",
+      "id": "updateLookAndFeel",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PUT /wiki/rest/api/settings/lookandfeel",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "PUT /wiki/rest/api/space/{}",
+      "id": "updateSpace",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PUT /wiki/rest/api/space/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "PUT /wiki/rest/api/space/{}/settings",
+      "id": "updateSpaceSettings",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PUT /wiki/rest/api/space/{}/settings",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "PUT /wiki/rest/api/space/{}/theme",
+      "id": "setSpaceTheme",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PUT /wiki/rest/api/space/{}/theme",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "PUT /wiki/rest/api/template",
+      "id": "updateContentTemplate",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PUT /wiki/rest/api/template",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "PUT /wiki/rest/api/user/{}/property/{}",
+      "id": "updateUserProperty",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PUT /wiki/rest/api/user/{}/property/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     }
   ]
 }

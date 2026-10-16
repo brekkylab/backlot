@@ -2537,12 +2537,12 @@ def test_every_google_operation_declares_the_system_parameters_and_reads_them(cl
 def test_no_google_baseline_acknowledges_a_system_parameter():
     """No `google_drive` or `gmail` baseline entry is a `missing_param` for `$.xgafv`,
     `access_token` or `oauth_token`: `openapi.google_system_parameters` declares all three."""
-    from backlot.fidelity import baseline_path
+    from backlot.fidelity import Baseline, baseline_path
 
     for source in ("google_drive", "gmail"):
-        acknowledged = json.loads(baseline_path(source).read_text())["acknowledged"]
+        acknowledged = Baseline.load(baseline_path(source)).acknowledged.values()
         for name in ("$.xgafv", "access_token", "oauth_token"):
-            assert not [e["path"] for e in acknowledged if e["path"].endswith(f"?{name}")], (
+            assert not [f.path for f in acknowledged if f.path.endswith(f"?{name}")], (
                 source,
                 name,
             )
@@ -2571,7 +2571,7 @@ _NO_CREDENTIAL_ROWS = [
     ("GET", "/slides/v1/presentations/x", 401, 404),
     ("GET", "/gmail/v1/users/me/profile", 401, 200),
     ("GET", "/gmail/v1/users/me/labels", 401, 200),
-    # the baselines' `missing_operation` rows
+    # the baselines' `missing` operations
     ("GET", "/drive/v3/changes/startPageToken", 401, 404),
     ("GET", "/drive/v3/files/generateIds", 401, 404),
     ("GET", "/drive/v3/files/trash", 403, 404),

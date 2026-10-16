@@ -220,18 +220,16 @@ def _seconds(n):
     integer form at all — `json.loads` accepts both as bare literals, so a corpus can
     hand them over and `int()` raises rather than returning anything. And a finite
     second outside `datetime`'s year 1..9999 cannot be rendered: the servers date a row
-    through `datetime.fromtimestamp`, so milliseconds written where seconds belong
+    through `synth.utc_datetime`, so milliseconds written where seconds belong
     imports clean and then raises at SERVE time, well after the import said it worked.
     Asked of the same function the servers use rather than against a hardcoded bound."""
-    from datetime import datetime, timezone
-
     try:
         sec = int(n)
     except (ValueError, OverflowError):  # nan, inf
         return None
     try:
-        datetime.fromtimestamp(sec, tz=timezone.utc)
-    except (ValueError, OverflowError, OSError):
+        synth.utc_datetime(sec)
+    except OverflowError:
         return None
     return sec
 
@@ -270,13 +268,21 @@ def _epoch(v):
         return None
     if isinstance(v, (int, float)):
         return _seconds(v)
-    from datetime import datetime
+    from datetime import datetime, timezone
 
     s = str(v).strip().replace("Z", "+00:00")
     try:
-        return int(datetime.fromisoformat(s).timestamp())
+        written = datetime.fromisoformat(s)
     except ValueError:
         pass
+    else:
+        # Read as UTC, as the ERB importer reads one; `timestamp()` reads a naive time in the
+        # importing machine's zone through the platform's C library: on 2026-10-13
+        # `1969-12-31T00:00:00` came out as -118800 on a macOS set to UTC+9 and raised OSError
+        # [Errno 22] on Windows 11 (Python 3.14.0), and -86400 with `+00:00` on both.
+        if written.tzinfo is None:
+            written = written.replace(tzinfo=timezone.utc)
+        return int(written.timestamp())
     # Epoch seconds written as a string — `"1770746760"`, or the `<sec>.<frac>` a Slack
     # ts takes, which is the form an `edited.ts` next door is already in. ISO is tried
     # first, so an 8-digit basic-format date stays a date rather than becoming a second.

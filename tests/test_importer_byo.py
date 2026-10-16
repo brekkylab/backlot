@@ -5,7 +5,6 @@ import hashlib
 import io
 import json
 import sqlite3
-import sys
 from pathlib import Path
 
 import pytest
@@ -18,21 +17,6 @@ from backlot.importer import byo
 from backlot.importer.byo import load
 from backlot.routers.slack import _message
 from tests._helpers import complete, served_id
-
-# An importer behaviour that fails this test on Windows, marked strict so that once it passes
-# there it reports XPASS and fails until the mark is removed; the `windows` mark beside it keeps
-# the test in the Windows workflow's pull-request run after that. Measured on Windows 11 with
-# Python 3.14.0 on 2026-10-13.
-#
-# `_seconds` accepts a second only if `datetime.fromtimestamp(sec, tz=timezone.utc)` renders it,
-# and on Windows that raises OSError [Errno 22] for -86400 and for -2208988800 (-1 still
-# renders), so a pre-1970 time like those is refused as unreadable there.
-_PRE_1970_IS_UNREADABLE_ON_WINDOWS = pytest.mark.xfail(
-    sys.platform == "win32",
-    raises=AssertionError,
-    strict=True,
-    reason="datetime.fromtimestamp cannot render a pre-1970 second on Windows",
-)
 
 
 def _write(tmp_path, records, name="corpus.jsonl", *, raw=False):
@@ -872,7 +856,6 @@ def test_byo_reply_clock_refuses_unservable_numbers(tmp_path, bad):
 
 
 @pytest.mark.windows
-@_PRE_1970_IS_UNREADABLE_ON_WINDOWS
 def test_byo_epoch_handles_every_number_without_raising(tmp_path):
     """`_epoch` answers None rather than raising, for every shape a corpus can put in a
     time field. `json.loads` accepts bare `Infinity` and `NaN`, so these arrive as floats
@@ -888,6 +871,36 @@ def test_byo_epoch_handles_every_number_without_raising(tmp_path):
     assert _epoch(0) == 0 and _epoch("0") == 0
     assert _epoch("-86400") == -86400
     assert _epoch("1770746760") == 1770746760
+
+
+@pytest.mark.windows
+@pytest.mark.parametrize(
+    "written, second",
+    [
+        ("1969-12-31T00:00:00", -86400),  # no offset: UTC, wherever the import runs
+        ("2026-05-01T00:00:00", 1777593600),
+        ("20260501", 1777593600),  # a basic-format date, no time
+        ("2026-05-01T09:00:00+09:00", 1777593600),  # an offset is the offset written
+        ("2026-05-01T00:00:00Z", 1777593600),
+    ],
+)
+def test_byo_an_iso_time_reads_the_same_whatever_the_machines_zone(written, second, monkeypatch):
+    """An ISO time is the same second on every machine: one with no offset is UTC, one with an
+    offset is that offset. Read under a UTC+9 zone where the platform can switch it
+    (`backlot.importer.byo._epoch` has the measurement)."""
+    import time
+
+    from backlot.importer.byo import _epoch
+
+    if hasattr(time, "tzset"):
+        monkeypatch.setenv("TZ", "Asia/Seoul")
+        time.tzset()
+    try:
+        assert _epoch(written) == second
+    finally:
+        monkeypatch.undo()
+        if hasattr(time, "tzset"):
+            time.tzset()
 
 
 def test_byo_epoch_seconds_as_a_string(tmp_path):

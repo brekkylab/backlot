@@ -634,7 +634,10 @@ async def gmail_label_get(user_id: str, label_id: str, request: Request):
     return _label_obj(label_id, (messages, threads) if label_id == _GMAIL_DEFAULT_LABEL else (0, 0))
 
 
-_GMAIL_OP = re.compile(r'(\w+):("[^"]*"|\S*)')
+# The lookbehinds are the four `_GMAIL_ADDRESS_KEYS`; their comment says why.
+_GMAIL_OP = re.compile(
+    r'(\w+):(?:(?:(?<=\bfrom:)|(?<=\bto:)|(?<=\bcc:)|(?<=\bbcc:))\s*)?("[^"]*"|\S*)', re.IGNORECASE
+)
 # operators we honor; anything else stays as free text
 _GMAIL_KEYS = {
     "from",
@@ -658,9 +661,14 @@ _GMAIL_KEYS = {
 # `before:X`, for each value X tried, read as a date or not. An empty `newer:` is the search term
 # `newer`, as an empty `after:` is `after`, and `_GMAIL_OP` leaves both in the free text.
 _GMAIL_KEY_ALIASES = {"newer": "after", "older": "before"}
-# A Gmail search ignores an empty-valued address operator (from:/to:/cc:/bcc:) rather than
-# searching it as free text. In the supplied gmail.googleapis.com measurement on 2026-10-14,
-# `to:`, `from:`, or `bcc:` without a value served the whole mailbox, exactly as with no `q`.
+# The address operators. A Gmail search ignores one with no value rather than searching it as free
+# text, and reads the word after whitespace as its value. Measured on a Workspace mailbox: `to:`,
+# `from:` and `bcc:` with no value answered every message, as no `q` does (2026-10-14), and so did
+# `cc:`, `from:""` and `to:""` (2026-10-16). On 2026-10-16, `from: <word>`, `bcc: <word>`,
+# `to:<tab><word>`, `From: <word>` and `TO: <word>` answered the ids the operator answers with no
+# whitespace, and `to: from: bcc:` answered nothing. `has: attachment` and `newer_than: 7d` answered
+# nothing where `has:attachment` and `newer_than:7d` answered 160 and 36 messages, so `_GMAIL_OP`
+# reads across whitespace for these four alone.
 _GMAIL_ADDRESS_KEYS = {"from", "to", "cc", "bcc"}
 
 
@@ -750,11 +758,15 @@ def _gmail_address_match(header: str | None, value: str) -> bool:
     where the rest of ASCII punctuation does not. A value with no word in it, such as `.`, `@` or
     `""`, is ignored and matches every message, a message without the header included.
 
-    Supplied measurements on a Workspace mailbox of 580 messages on 2026-10-14 for `from:` and
-    `to:` (whole-word
-    matching, `me` caller resolution, and `to:` matching across To, Cc and Bcc) and 595 messages on
-    2026-10-15 for `cc:` and `bcc:`. On 2026-10-14, `cc:<a local part>+x` read `+x` as a search term
-    of its own."""
+    Measured on a Workspace mailbox of 595 messages on 2026-10-15: 113 searches on `cc:` and
+    `bcc:`, compared with the headers of every message, all match this rule, and of the 32 ASCII
+    punctuation marks sent alone as a `cc:` value, `_` and `&` match nothing and the other 30 match
+    every message. On the same mailbox at 601 messages on 2026-10-16, 122 of 124 `from:` and `to:`
+    searches built from its own addresses, local parts, domains and display-name words match this
+    rule over `From`, and over `To`, `Cc` and `Bcc` together; `to:me` counts the four messages
+    where the caller is in `Bcc` alone. The other two are a hyphenated value, which real also reads
+    joined (`no-reply` finds `noreply@` as well as `no-reply@`), and part of a Korean display
+    name. On 2026-10-14, `cc:<a local part>+x` read `+x` as a search term of its own."""
     header = (header or "").lower()
     value = value.lower()
     if _GMAIL_ONE_ADDRESS.fullmatch(value):

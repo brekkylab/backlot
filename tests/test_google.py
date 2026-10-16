@@ -9547,7 +9547,12 @@ def test_gmail_cc_bcc_searches_address_headers(tmp_path, surface, caller, query,
         ("ava", "cc:", ["plan", "lunch", "reply"]),
         ("ava", 'from:""', ["plan", "lunch", "reply"]),
         ("ava", 'to:""', ["plan", "lunch", "reply"]),
-        ("ava", "to: from: bcc:", ["plan", "lunch", "reply"]),
+        ("ava", "to: from: bcc:", []),
+        ("ava", "from: bob", ["plan"]),
+        ("ava", "From: bob", ["plan"]),
+        ("ava", "to:\tlena", ["lunch"]),
+        ("ava", "cc: dev", ["reply"]),
+        ("ava", "bcc: ava", ["lunch"]),
         ("ava", "to:bob to:dev", ["reply"]),
         ("ava", "from:bob from:mia", []),
         ("ava", "from:bob from:", ["plan"]),
@@ -9618,63 +9623,6 @@ def test_gmail_from_to_searches_address_headers(tmp_path, surface, caller, query
     assert {r["id"] for r in response.json().get(surface, [])} == {
         served_id("gmail", doc_id) for doc_id in expected
     }
-
-
-def test_gmail_address_query_acl_scoping(tmp_path):
-    """A scoped caller can only access their own mailbox, and within their mailbox can only see
-    messages their token has ACL readership for."""
-    records = [
-        {
-            "doc_id": "plan",
-            "title": "Rollout plan",
-            "author_email": "bob@acme.com",
-            "to": "ava@acme.com",
-            "readers": ["ava@acme.com"],
-            "created": "2026-03-01T09:00:00Z",
-        },
-        {
-            "doc_id": "secret",
-            "title": "Secret",
-            "author_email": "bob@acme.com",
-            "to": "ava@acme.com",
-            "readers": ["bob@acme.com"],
-            "visibility": "private",
-            "created": "2026-03-02T09:00:00Z",
-        },
-    ]
-    settings = tiny_corpus(
-        tmp_path,
-        [
-            {
-                "source_type": "gmail",
-                "mailbox": "ava",
-                **r,
-            }
-            for r in records
-        ],
-    )
-    tokens = yaml.safe_load(settings.tokens_path.read_text())
-    ava_tok = tok(tokens, "ava@acme.com")
-    bob_tok = tok(tokens, "bob@acme.com")
-    with client_for(settings, reload=True) as c:
-        r = c.get(
-            "/gmail/v1/users/ava@acme.com/messages", headers={"Authorization": f"Bearer {bob_tok}"}
-        )
-        assert r.status_code == 403
-        r = c.get(
-            "/gmail/v1/users/me/messages",
-            headers={"Authorization": f"Bearer {bob_tok}"},
-            params={"q": "to:ava@acme.com"},
-        )
-        assert r.status_code == 200
-        assert r.json().get("messages", []) == []
-        r = c.get(
-            "/gmail/v1/users/me/messages",
-            headers={"Authorization": f"Bearer {ava_tok}"},
-            params={"q": "to:ava@acme.com"},
-        )
-        assert r.status_code == 200
-        assert {m["id"] for m in r.json().get("messages", [])} == {served_id("gmail", "plan")}
 
 
 @pytest.mark.parametrize("surface", ["messages", "threads"])

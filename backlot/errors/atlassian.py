@@ -523,7 +523,7 @@ _TOKEN = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
 
 
 def _load_java_charsets() -> dict[str, str]:
-    table = json.loads((_PACKAGE / "data" / "java_charsets.json").read_text())
+    table = json.loads((_PACKAGE / "data" / "java_charsets.json").read_text(encoding="utf-8"))
     return {
         spelling.lower(): name
         for name, aliases in table["charsets"].items()

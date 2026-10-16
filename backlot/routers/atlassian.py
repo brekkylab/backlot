@@ -17,12 +17,14 @@ import hashlib
 import json
 import re
 import time
+import unicodedata
 from collections.abc import Callable
 from html import escape
 from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi import Path as PathParameter
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict
 from starlette.routing import Match
@@ -215,13 +217,17 @@ def _jira_caller(request: Request) -> Caller:
     return auth.atlassian_caller(request)
 
 
-def _confluence_caller(request: Request) -> Caller:
+def _confluence_caller(request: Request, *, not_permitted: bool = False) -> Caller:
     """The caller for a Confluence read, refusing where Jira would go anonymous.
 
-    Confluence rejects the request outright, and which refusal depends on the credential rather
-    than on the route: a pair it read and rejected, and a request carrying none, are its 403; a
-    Basic value it could not read is a 401 naming the site's OAuth realm. Measured on both sites
-    on 2026-09-04, every route and every credential shape (see ``auth.basic_credential_kind``).
+    Confluence rejects the request outright: a pair it read and rejected, and a request carrying
+    none, are a 403 (which one is the route's, below); a Basic value it could not read is a 401
+    naming the site's OAuth realm on every route. Measured on both sites on 2026-09-04, every route
+    and every credential shape (see ``auth.basic_credential_kind``).
+
+    ``not_permitted`` picks the other anonymous 403, the one `search` gives
+    (``errors.atlassian.CONFLUENCE_NOT_PERMITTED_BODY``), where every other served route gives the
+    Stackless 403; measured on Confluence Cloud 2026-09-30 and 2026-10-12.
     """
     caller = auth.atlassian_caller(request)
     if not caller.is_anonymous:
@@ -232,6 +238,12 @@ def _confluence_caller(request: Request) -> Caller:
             status_code=401,
             detail=errors_atlassian.CONFLUENCE_UNAUTHORIZED,
             headers={"WWW-Authenticate": f'OAuth realm="{realm}"'},
+        )
+    if not_permitted:
+        raise errors_atlassian.AtlassianError(
+            403,
+            json.loads(errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY),
+            media_type="application/json",
         )
     raise HTTPException(status_code=403, detail=errors_atlassian.CONFLUENCE_FORBIDDEN)
 
@@ -417,25 +429,32 @@ async def jira_project_search(request: Request):
     return {"values": values, "maxResults": 50, "startAt": 0, "total": len(values), "isLast": True}
 
 
+def _jira_project_id(container: str) -> str:
+    """A project's id: the one `project/search` lists and an issue's `fields.project.id` carries."""
+    return str(synth.github_user_id(container))
+
+
 def _require_project(request: Request, conn, key: str) -> str:
-    """The container behind a project key the caller can reach, or Jira's own 404 for it.
+    """The container behind a project key or id the caller can reach, or Jira's own 404 for it.
 
-    A role read is where Jira keeps refusing a caller it will not show a project to, and which
-    refusal it gives is decided by the project rather than by the credential: anonymously, a key
-    naming a project the caller may see draws 401 ("You cannot edit the configuration of this
-    project.") and a key naming nothing draws the 404 below. Measured on
-    ecosystem.atlassian.net, whose `AA` is public, and brekkylab.atlassian.net, which has no such
-    key, on 2026-09-04. An unreachable project is reported as an absent one, the way
-    `issue/{key}` reports an issue the caller cannot see.
+    An unreachable project is reported as an absent one, the way `issue/{key}` reports an issue
+    the caller cannot see.
 
-    The 404 calls the segment an `id` when it is one to eighteen ASCII digits with no leading zero,
-    and a `key` otherwise. Measured against Jira Cloud on 2026-10-14, with and without a credential,
-    on `role` and `role/10002`: `1`, `10002` and `999999999999999999` are ids; `0`, `007`, `-1`,
-    `1000000000000000000` (nineteen digits, still a Java `long`) and `1２` (a full-width `２`) are
-    keys.
+    The segment is an `id` when it is one to eighteen ASCII digits with no leading zero, and a
+    `key` otherwise; the 404 calls it by that word, and an id finds the project
+    (:func:`_jira_project_id`) as its key does. Measured against Jira Cloud on 2026-10-14, with and
+    without a credential, on `role` and `role/10002`: `1`, `10002` and `999999999999999999` are
+    ids; `0`, `007`, `-1`, `1000000000000000000` (nineteen digits, still a Java `long`) and `1２` (a
+    full-width `２`) are keys. A credentialled caller got the same answer from a project's id as from
+    its key, on `role`, `role/10002` and `POST role/99999`, on 2026-10-14 and 2026-10-15.
     """
     ids = auth.visible_ids(request, _jira_caller(request))
-    container = _jira_container_for_key(conn, key, request)
+    kind = "id" if re.fullmatch(r"[1-9][0-9]{0,17}", key) else "key"
+    if kind == "id":
+        rows = store.list_containers(conn, "jira")
+        container = next((r["name"] for r in rows if _jira_project_id(r["name"]) == key), None)
+    else:
+        container = _jira_container_for_key(conn, key, request)
     # The `ids is None` short-circuit mirrors `github._repo_visible`, where it is load-bearing: a
     # `subtype: repo` record creates a container holding no document, and the admin keeps the repo
     # as soon as that record exists. No Jira record can do that — `project` is required on every
@@ -444,34 +463,141 @@ def _require_project(request: Request, conn, key: str) -> str:
         ids is None or store.has_visible_document(conn, "jira", container, ids)
     ):
         return container
-    kind = "id" if re.fullmatch(r"[1-9][0-9]{0,17}", key) else "key"
     raise HTTPException(status_code=404, detail=f"No project could be found with {kind} '{key}'.")
+
+
+def _require_project_admin(request: Request, conn, key: str) -> str:
+    """:func:`_require_project`, then the 401 ``errors.atlassian.not_a_project_admin`` describes,
+    for every caller but the admin.
+
+    The 401 comes after the role id's 400 (:func:`_role_id`) and the project's 404, and ahead of
+    whatever the role id names: on 2026-10-15 real gave the 400 for `abc`, `0xİ` and a blank id
+    ahead of it. Anonymous sees no project here, so it always gets the 404. Where anonymous can see
+    the project, real's 401 lists a second message after the one ``not_a_project_admin`` carries,
+    `You are not authorized to perform this operation.  Please log in.`, 152 bytes in all: a Jira
+    Cloud site whose project `AA` is public answered it on `role` and `role/10002` by the key and by
+    the id, and on `role/99999` by the key, on 2026-10-16.
+    """
+    container = _require_project(request, conn, key)
+    if not _jira_caller(request).is_admin:
+        raise errors_atlassian.not_a_project_admin(quote(_site(request), safe=""))
+    return container
+
+
+#: The id of the one role a project has here.
+_JIRA_ROLE = 10002
+
+#: The one role's description, this server's own: the vendor's document gives "A project role that
+#: represents developers in a project" for its `Developers`, and a site's roles are its own.
+_JIRA_ROLE_DESCRIPTION = "A project role that represents users in a project"
+
+
+def _jira_role_link(request: Request, container: str) -> str:
+    """The one role's `self`, by the project's id where the vendor's document shows its key, however
+    the request names the project. Measured with an administrator's credential for a project keyed
+    `SCRUM`: real's role list linked `…/project/10000/role/10005` on 2026-10-14, and its read of
+    `project/SCRUM/role/10005` gave that same `self` on 2026-10-16."""
+    return f"{_site(request)}/rest/api/3/project/{_jira_project_id(container)}/role/{_JIRA_ROLE}"
 
 
 @router.get("/rest/api/3/project/{key}/role")
 async def jira_project_roles(key: str, request: Request):
-    _require_project(request, auth.conn(request), key)
-    return {"Users": f"{_site(request)}/rest/api/3/project/{key}/role/10002"}
+    container = _require_project_admin(request, auth.conn(request), key)
+    return {"Users": _jira_role_link(request, container)}
+
+
+def _java_digit(ch: str, radix: int) -> int | None:
+    """``ch`` as Java's `Character.digit` reads it in ``radix``: a decimal digit of any script in
+    the Basic Multilingual Plane (`١`, `１`), and in hexadecimal `a` to `f` in either case,
+    full-width ones included (`Ａ`); a character past U+FFFF is two `char`s to Java, neither of them
+    a digit."""
+    if ord(ch) > 0xFFFF:
+        return None
+    decimal = unicodedata.decimal(ch, None)
+    if decimal is not None:
+        return decimal
+    for first in ("a", "A", "\uff41", "\uff21"):
+        if radix == 16 and ord(first) <= ord(ch) <= ord(first) + 5:
+            return ord(ch) - ord(first) + 10
+    return None
+
+
+def _java_long(raw: str) -> int | None:
+    """``raw`` as Spring reads a `long` path variable, or None where it cannot: whitespace removed
+    (``errors.atlassian.strip_java_whitespace``), then hexadecimal after `0x`, `0X` or `#` with an
+    optional `-` in front, otherwise decimal with an optional sign, each digit as
+    :func:`_java_digit` reads it, within a `long`. Measured on `project/{key}/role/{id}` 2026-10-13:
+    `-%231`, `0x１` and a 1 behind 4400 zeros read, `+0x1` and `0x-1` do not."""
+    text = errors_atlassian.strip_java_whitespace(raw)
+    negative = text.startswith("-")
+    rest = text[1:] if negative else text
+    if rest.startswith(("0x", "0X", "#")):
+        radix, digits = 16, rest[1:] if rest.startswith("#") else rest[2:]
+    else:
+        radix, digits = 10, (text[1:] if text.startswith(("+", "-")) else text)
+    if not digits:
+        return None
+    value = 0
+    for ch in digits:
+        digit = _java_digit(ch, radix)
+        if digit is None:
+            return None
+        value = value * radix + digit
+        if value > 2**63:
+            return None
+    value = -value if negative else value
+    return value if -(2**63) <= value < 2**63 else None
+
+
+def _role_id(request: Request, raw: str) -> int:
+    """A project role's id as real reads it (:func:`_java_long`), or the 400 it answers: one naming
+    the variable as missing where removing the whitespace leaves nothing
+    (``errors.atlassian.missing_path_variable``) and one naming the value it could not convert
+    otherwise. Real answers either ahead of the project's 404 and, on a write, behind its 415, for
+    every caller (2026-10-13)."""
+    if errors_atlassian.strip_java_whitespace(raw) == "":
+        raise errors_atlassian.missing_path_variable(_echoed_path(request), "id")
+    role = _java_long(raw)
+    if role is None:
+        raise errors_atlassian.integer_conversion_failure(_echoed_path(request), "id", [raw])
+    return role
 
 
 @router.get("/rest/api/3/project/{key}/role/{role_id}")
-async def jira_project_role(key: str, role_id: int, request: Request):
+async def jira_project_role(
+    key: str, request: Request, role_id: str = PathParameter(json_schema_extra={"type": "integer"})
+):
+    """One project role, its id read as :func:`_role_id` reads it; the schema still declares the
+    integer the vendor's document does. An id other than :data:`_JIRA_ROLE` names no role of the
+    project (``errors.atlassian.no_such_role``).
+
+    The role carries the six members real's did for an administrator on 2026-10-14: `self`
+    (:func:`_jira_role_link`), `name`, `id`, `description`, `actors` and a `scope` naming the
+    project by its id alone. An actor's `id` counts up from 10000, as real's user actors' did
+    (10000, 10002, …); here it is the member's place in the role."""
+    role = _role_id(request, role_id)
     conn = auth.conn(request)
-    container = _require_project(request, conn, key)
-    actors = []
-    if container:
-        c = store.get_container(conn, "jira", container)
-        if c and c["group_id"]:
-            for m in store.group_members(conn, c["group_id"]):
-                actors.append(
-                    {
-                        "id": synth.github_user_id(m["email"]),
-                        "displayName": m["display_name"],
-                        "type": "atlassian-user-role-actor",
-                        "actorUser": {"accountId": synth.atlassian_account_id(m["email"])},
-                    }
-                )
-    return {"id": role_id, "name": "Users", "actors": actors}
+    container = _require_project_admin(request, conn, key)
+    if role != _JIRA_ROLE:
+        raise errors_atlassian.no_such_role()
+    members = store.group_members(conn, store.get_container(conn, "jira", container)["group_id"])
+    actors = [
+        {
+            "id": 10000 + n,
+            "displayName": m["display_name"],
+            "type": "atlassian-user-role-actor",
+            "actorUser": {"accountId": synth.atlassian_account_id(m["email"])},
+        }
+        for n, m in enumerate(members)
+    ]
+    return {
+        "self": _jira_role_link(request, container),
+        "name": "Users",
+        "id": role,
+        "description": _JIRA_ROLE_DESCRIPTION,
+        "actors": actors,
+        "scope": {"type": "PROJECT", "project": {"id": _jira_project_id(container)}},
+    }
 
 
 # The `SearchAndReconcileRequestBean` fields real's POST form accepts, measured 2026-09-18 against
@@ -1573,7 +1699,7 @@ async def confluence_cql_search(request: Request):
     where this server answers the space's pages and blogposts. A CQL holding none of the four names
     only fields this route does not read, and answers no row."""
     conn = auth.conn(request)
-    caller = _confluence_caller(request)
+    caller = _confluence_caller(request, not_permitted=True)
     ids = auth.visible_ids(request, caller)
     # Not `_confluence_page_params`: see `_cql_page_param`.
     limit = _cql_page_param(request, "limit", 25)
@@ -2739,9 +2865,9 @@ _JIRA_OPERATIONS = tuple(
 )
 #: The operations at a served route's path whose own lookup real runs next: an issue's `PUT` and
 #: `DELETE` and its comments' `POST` reach :func:`_require_issue`, and a project role's three writes
-#: reach :func:`_require_project`, so a key naming nothing the caller sees is that resource's 404.
-#: Measured on Jira Cloud 2026-10-12 (the issue's under `/rest/api/2` 2026-09-30), credentialled and
-#: not.
+#: reach :func:`_require_project_admin`, so a key naming nothing the caller sees is that resource's
+#: 404. Measured on Jira Cloud 2026-10-12 (the issue's under `/rest/api/2` 2026-09-30),
+#: credentialled and not.
 _JIRA_ISSUE_WRITES = frozenset(
     f"{method} /rest/api/{version}/issue/{{}}{tail}"
     for version in ("2", "3")
@@ -3012,7 +3138,8 @@ def _published_answer(request: Request, vendor_path: str) -> Response | None:
     where the operation will not run anonymously, and any `OPTIONS` on one
     (:func:`_jira_unauthenticated`), each measured 2026-09-30; where the operation runs and is one
     of :data:`_JIRA_ISSUE_WRITES` or :data:`_JIRA_ROLE_WRITES`, its lookup of a key that names
-    nothing the caller can see is its 404. The operation is the one :func:`_jira_operation` names.
+    nothing the caller can see is its 404, and a role write's is followed by the 401
+    :func:`_require_project_admin` gives. The operation is the one :func:`_jira_operation` names.
 
     Confluence answers a Basic value it cannot read with Tomcat's 401 first, then checks the media
     type where the operation does (:data:`_CONFLUENCE_CONSUMES`, and its JAX-RS writes their own
@@ -3045,6 +3172,8 @@ def _published_answer(request: Request, vendor_path: str) -> Response | None:
     refused = _jira_media_refusal(request, operation)
     if refused is not None:
         raise refused
+    if operation in _JIRA_ROLE_WRITES:
+        _role_id(request, vendor_path.split("/")[7])
     if auth.atlassian_caller(request).is_anonymous and (
         operation in _JIRA_UNSERVED["refused"]
         or (method == "OPTIONS" and _is(_JIRA_PUBLISHED, None, vendor_path))
@@ -3053,7 +3182,7 @@ def _published_answer(request: Request, vendor_path: str) -> Response | None:
     if operation in _JIRA_ISSUE_WRITES:
         _require_issue(request, auth.conn(request), vendor_path.split("/")[5])
     elif operation in _JIRA_ROLE_WRITES:
-        _require_project(request, auth.conn(request), vendor_path.split("/")[5])
+        _require_project_admin(request, auth.conn(request), vendor_path.split("/")[5])
     return None
 
 

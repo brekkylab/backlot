@@ -441,7 +441,7 @@ than there being a set per type.
 | `field` | |
 | `issueLinkType` | |
 | `project/search` | |
-| `project/{key}/role[/{id}]` | |
+| `project/{key}/role[/{id}]` | `{key}` is the key or the id `project/search` lists. Admin token only: any other caller who sees the project gets 401 `You cannot edit the configuration of this project.` |
 | `serverInfo` | |
 
 `search/jql`, `issue/{key}`, `issue/{key}/comment`, `field` and `serverInfo` are served under

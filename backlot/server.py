@@ -133,12 +133,10 @@ def _interpreter(env: dict[str, str]) -> tuple[str, dict[str, str]]:
     On Windows a venv's ``python.exe`` is a launcher that starts the base interpreter as its child,
     so the process `subprocess.Popen` returns is not the one serving: `_terminate` stops and reaps
     the launcher while the interpreter holding ``db.sqlite`` and ``server.log`` open may still be
-    running, and the scratch directory cannot be removed yet. Measured 2026-10-13 under Python
-    3.14.0 on Windows 11, renaming ``db.sqlite`` right after `_terminate` returned was refused in 16
-    of 20 runs. Started the way ``multiprocessing`` starts its children on Windows, on the base
-    interpreter with ``__PYVENV_LAUNCHER__`` naming the venv's ``python.exe``, the server still ran
-    from the venv and the same rename was refused in 0 of 20. Anywhere else this is
-    ``sys.executable`` and ``env`` as given."""
+    running. Measured 2026-10-13 under Python 3.14.0 on Windows 11, renaming ``db.sqlite`` right
+    after `_terminate` returned was refused in 16 of 20 runs; started the way ``multiprocessing``
+    starts its children on Windows, on the base interpreter with ``__PYVENV_LAUNCHER__`` naming the
+    venv's ``python.exe``, the same rename was refused in 0 of 20."""
     base = getattr(sys, "_base_executable", sys.executable)
     if sys.platform == "win32" and os.path.normcase(base) != os.path.normcase(sys.executable):
         return base, {**env, "__PYVENV_LAUNCHER__": sys.executable}
@@ -279,13 +277,12 @@ def serve(
         # UTF-8, and a Python before 3.15 writes a redirected stream in the platform's encoding
         # (cp1252 on a Western Windows) unless told otherwise.
         env = {**os.environ, "BACKLOT_DATA_DIR": str(data_dir), "PYTHONIOENCODING": "utf-8"}
-        # Read with the SAME env + cwd the subprocess below inherits, so this resolves to whatever
-        # token the server will actually enforce: what the server's environment adds to this one
-        # (the two keys above, and in a venv on Windows `_interpreter`'s __PYVENV_LAUNCHER__) does
-        # not set admin_token, while a caller's BACKLOT_ADMIN_TOKEN env var or a .env in their cwd
-        # both change it (Settings declares env_file=".env"). The returned Server.token must track
-        # that: otherwise a caller's first authenticated call fails with HTTP 200 / {"ok": false}
-        # (Slack fidelity), which reads as the caller's own mistake.
+        # Read with the cwd and environment the server gets, minus keys that do not set admin_token
+        # (the two above, and `_interpreter`'s `__PYVENV_LAUNCHER__` in a venv on Windows), so this
+        # is the token the server enforces. A caller's BACKLOT_ADMIN_TOKEN or a .env in their cwd
+        # changes it (Settings declares env_file=".env"). `Server.token` must track that, or the
+        # caller's first authenticated call fails with HTTP 200 / {"ok": false}, which reads as
+        # their own mistake.
         token = Settings().admin_token
         if data_dir == Path(scratch):
             # `-m backlot` rather than the `backlot` script: same CLI, but resolved through THIS

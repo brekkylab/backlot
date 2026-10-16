@@ -10,7 +10,7 @@
     python scripts/invariance.py mutate FILE OLD NEW -- PYTEST_ARGS...   # does a test catch OLD -> NEW?
 
 ``record`` runs the suite in the current directory with this file loaded as a pytest plugin, and
-writes three things under OUT:
+writes under OUT:
 
 - ``traffic/``: every request a test sends through a ``TestClient`` and the full response it gets
   (status, headers, body), keyed by the test's node id and the request's position within it.
@@ -21,7 +21,8 @@ writes three things under OUT:
 ``compare`` answers for a change that must not alter behaviour:
 
 - ``--mode code``: the change touches ``backlot/`` and leaves ``tests/`` alone, so both runs send
-  the same requests. Every response must be byte-identical and every test must end the same way.
+  the same requests. Every response must match part by part — status, each header, each JSON leaf
+  and the key order of each object — and every test must end the same way.
 - ``--mode tests``: the change touches ``tests/`` and leaves ``backlot/`` alone, so the code is the
   same and only the tests differ. Every line and branch of ``backlot/`` the base run executed must
   still be executed, and every test still present must end the same way.
@@ -29,14 +30,16 @@ writes three things under OUT:
 Two runs of one commit differ: S3 signatures and rate-limit counters follow the clock, the Jira
 array-conversion error carries a Java identity hash, and a generated service-account key is random.
 ``--calibration`` takes a second recording of the base and stops comparing what differs between
-the two: a header's value everywhere, any other value (the length included) only in the exchange
-it differed in.
+the two: a header's digits everywhere (its whole value when more than digits differ), any other
+value (the length included) only in the exchange it differed in.
 
 ``prose`` answers for a change to comments, docstrings and markdown: each Python file that differs
-from BASE_REF parses to the same tree once docstrings are dropped.
+from BASE_REF parses to the same tree once docstrings are dropped, except a route's or a CLI
+command's, which Backlot serves.
 
-Requests the official SDKs and MCP servers send to a ``uvicorn`` subprocess are not recorded; the
-tests that send them are still held by their outcomes.
+Requests a test sends to a ``uvicorn`` subprocess (``live_server``, ``backlot.serve``: the official
+SDKs, the MCP servers and most of the S3 tables) are not recorded; those tests are held by their
+outcomes, and the subprocess's lines by coverage, which ``pyproject.toml`` has follow it.
 
 The plugin refuses to record when ``backlot`` is imported from anywhere but the checkout being
 recorded, so a base run in a worktree that shares another checkout's virtualenv cannot silently
@@ -50,6 +53,7 @@ import ast
 import base64
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -83,8 +87,8 @@ def pytest_configure(config):
     worker = os.environ.get("PYTEST_XDIST_WORKER", "main")
     (_out / "traffic").mkdir(parents=True, exist_ok=True)
     (_out / "outcomes").mkdir(parents=True, exist_ok=True)
-    _traffic_fh = open(_out / "traffic" / f"{worker}.jsonl", "w")  # noqa: SIM115
-    _outcome_fh = open(_out / "outcomes" / f"{worker}.jsonl", "w")  # noqa: SIM115
+    _traffic_fh = open(_out / "traffic" / f"{worker}.jsonl", "w", encoding="utf-8")  # noqa: SIM115
+    _outcome_fh = open(_out / "outcomes" / f"{worker}.jsonl", "w", encoding="utf-8")  # noqa: SIM115
     _patch_transport()
 
 
@@ -177,7 +181,7 @@ def _record(out: Path, pytest_args: list[str]) -> int:
     start = time.monotonic()
     code = subprocess.call(cmd, env=env)
     meta = {"exit": code, "seconds": round(time.monotonic() - start), **_counts_of(out)}
-    (out / "meta.json").write_text(json.dumps(meta))
+    (out / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
     return code
 
 
@@ -188,18 +192,19 @@ def _counts_of(run: Path) -> dict[str, int]:
 def _read(directory: Path) -> list[dict]:
     rows = []
     for path in sorted(directory.glob("*.jsonl")):
-        rows.extend(json.loads(line) for line in path.read_text().splitlines())
+        rows.extend(json.loads(line) for line in path.read_text(encoding="utf-8").splitlines())
     return rows
 
 
 def _outcomes(run: Path) -> dict[str, str]:
-    """Each test outcome: the first phase that did not pass, else its call phase."""
+    """Each test's outcome: the first phase that did not pass, else its call phase. Rows arrive as
+    setup, call, teardown, so a teardown failure overrides a passing call."""
     result: dict[str, str] = {}
     for row in _read(run / "outcomes"):
-        if row["when"] != "call":
-            result.setdefault(row["test"], f"{row['when']} {row['outcome']}")
-        elif row["test"] not in result:
-            result[row["test"]] = row["outcome"]
+        if row["when"] == "call":
+            result.setdefault(row["test"], row["outcome"])
+        elif result.get(row["test"], "passed") == "passed":
+            result[row["test"]] = f"{row['when']} {row['outcome']}"
     return result
 
 
@@ -208,10 +213,13 @@ def _traffic(run: Path) -> dict[tuple[str, int], dict]:
 
 
 def _leaves(value, path="$"):
-    if isinstance(value, dict):
+    """Each leaf of a JSON value with its path, plus each object's key order; an empty object or
+    list is a leaf of its own."""
+    if isinstance(value, dict) and value:
+        yield f"{path} keys", list(value)
         for k, v in value.items():
             yield from _leaves(v, f"{path}.{k}")
-    elif isinstance(value, list):
+    elif isinstance(value, list) and value:
         for i, v in enumerate(value):
             yield from _leaves(v, f"{path}[{i}]")
     else:
@@ -250,9 +258,15 @@ def _header(part: str) -> str | None:
     return f"{words[0]} {words[3]}" if len(words) == 4 and words[1] == "header" else None
 
 
-def _noise(base: dict, calibration: dict) -> tuple[set[str], dict]:
-    """What differs between two runs of one commit: header names anywhere, other parts per request."""
-    names: set[str] = set()
+def _digitless(value) -> str:
+    return re.sub(r"\d+", "#", str(value))
+
+
+def _noise(base: dict, calibration: dict) -> tuple[dict[str, bool], dict]:
+    """What differs between two runs of one commit. Headers by name, everywhere: True when only
+    their digits differ (a clock, a counter), False when more does (a signature). Other parts per
+    exchange."""
+    names: dict[str, bool] = {}
     parts: dict[tuple[str, int], set[str]] = {}
     for key, record in base.items():
         if key not in calibration:
@@ -260,25 +274,33 @@ def _noise(base: dict, calibration: dict) -> tuple[set[str], dict]:
         old, new = _view(record), _view(calibration[key])
         for part in set(old) | set(new):
             if old.get(part) != new.get(part):
-                # A header's value varies with the clock wherever it varies at all, except the length,
-                # which follows the body and varies only where the body does.
+                # A header's value varies with the clock wherever it varies at all, except the
+                # length, which follows the body and varies only where the body does.
                 if _header(part) and not part.endswith(" content-length"):
-                    names.add(_header(part))
+                    digits = _digitless(old.get(part)) == _digitless(new.get(part))
+                    names[_header(part)] = names.get(_header(part), True) and digits
                 else:
                     parts.setdefault(key, set()).add(part)
     return names, parts
 
 
-def _masked(view: dict, names: set[str], parts: set[str]) -> dict:
-    return {
-        part: "<varies>" if _header(part) in names else value
-        for part, value in view.items()
-        if part not in parts
-    }
+def _masked(view: dict, names: dict[str, bool], parts: set[str]) -> dict:
+    # A body that varies varies in length too, though two runs can land on the same length.
+    varying = {p.split(" ")[0] for p in parts if p.split(" ")[1:2] == ["body"]}
+    masked = {}
+    for part, value in view.items():
+        if part in parts or (part.endswith(" content-length") and part.split(" ", 1)[0] in varying):
+            continue
+        digits_only = names.get(_header(part))
+        if digits_only is None:
+            masked[part] = value
+        else:
+            masked[part] = _digitless(value) if digits_only else "<varies>"
+    return masked
 
 
 def _coverage(run: Path) -> dict[str, tuple[set, set]]:
-    data = json.loads((run / "coverage.json").read_text())["files"]
+    data = json.loads((run / "coverage.json").read_text(encoding="utf-8"))["files"]
     return {
         name: (set(f["executed_lines"]), {tuple(b) for b in f.get("executed_branches", [])})
         for name, f in data.items()
@@ -301,17 +323,21 @@ def _compare(base: Path, head: Path, mode: str, calibration: Path | None, limit:
         elif after[test] != "passed":
             problems.append(f"test {test} is new and {after[test]}")
     for name, run in (("base", base), ("head", head)):
-        meta = json.loads((run / "meta.json").read_text()) if (run / "meta.json").exists() else {}
+        meta_file = run / "meta.json"
+        meta = json.loads(meta_file.read_text(encoding="utf-8")) if meta_file.exists() else {}
         counts = ", ".join(f"{n} {k}" for k, n in sorted(_counts_of(run).items()))
         print(f"{name}: {counts}" + (f" in {meta['seconds']}s" if "seconds" in meta else ""))
 
     if mode == "code":
         b, h = _traffic(base), _traffic(head)
-        names, parts = _noise(b, _traffic(calibration)) if calibration else (set(), {})
+        names, parts = _noise(b, _traffic(calibration)) if calibration else ({}, {})
+        digits = sorted(n for n, d in names.items() if d)
+        whole = sorted(n for n, d in names.items() if not d)
         print(
             f"traffic: {len(b)} responses on the base, {len(h)} on the head; ignored as varying "
-            f"between two base runs: the values of {sorted(names) or 'no headers'}, and "
-            f"{sum(map(len, parts.values()))} other values in {len(parts)} exchanges"
+            f"between two base runs: the digits of {digits or 'no headers'}, the values of "
+            f"{whole or 'no headers'}, and {sum(map(len, parts.values()))} other values in "
+            f"{len(parts)} exchanges"
         )
         shown = 0
         for key in sorted(set(b) | set(h)):
@@ -353,12 +379,22 @@ def _compare(base: Path, head: Path, mode: str, calibration: Path | None, limit:
     return 1 if problems else 0
 
 
+# A route's docstring is its description in /openapi.json, which the MCP bridge serves as the
+# tool's description; a typer command's is its --help.
+_SERVED = {"get", "post", "put", "patch", "delete", "head", "options", "api_route", "command"}
+
+
 def _code_tree(source: str) -> str:
     tree = ast.parse(source)
     for node in ast.walk(tree):
         body = getattr(node, "body", None)
+        served = any(
+            isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute) and d.func.attr in _SERVED
+            for d in getattr(node, "decorator_list", [])
+        )
         if (
             isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+            and not served
             and body
             and isinstance(body[0], ast.Expr)
             and isinstance(body[0].value, ast.Constant)
@@ -383,19 +419,21 @@ def _prose(base_ref: str) -> int:
     ).stdout.split()
     problems = list(untracked)
     for name in changed:
-        old = subprocess.run(["git", "show", f"{base_ref}:{name}"], capture_output=True, text=True)
-        new = Path(name).read_text() if Path(name).exists() else None
+        old = subprocess.run(
+            ["git", "show", f"{base_ref}:{name}"], capture_output=True, text=True, encoding="utf-8"
+        )
+        new = Path(name).read_text(encoding="utf-8") if Path(name).exists() else None
         if old.returncode or new is None or _code_tree(old.stdout) != _code_tree(new):
             problems.append(name)
     print(f"{len(changed)} Python files changed, {len(untracked)} added")
     for name in problems:
-        print(f"{name}: changed beyond its comments and docstrings")
+        print(f"{name}: changed beyond its comments and unserved docstrings")
     print("invariant" if not problems else f"{len(problems)} differences")
     return 1 if problems else 0
 
 
 def _uncovered(run: Path, paths: list[str]) -> int:
-    files = json.loads((run / "coverage.json").read_text())["files"]
+    files = json.loads((run / "coverage.json").read_text(encoding="utf-8"))["files"]
     for name, data in sorted(files.items()):
         if any(name == p or name.startswith(p.rstrip("/") + "/") for p in paths):
             missing = data["missing_lines"]
@@ -403,12 +441,20 @@ def _uncovered(run: Path, paths: list[str]) -> int:
     return 0
 
 
+def _python_files(paths: list[Path]) -> list[Path]:
+    """The ``.py`` files among ``paths`` and under the directories among them."""
+    found = []
+    for path in paths:
+        found += [path] if path.is_file() else sorted(path.rglob("*.py"))
+    return [f for f in found if f.suffix == ".py"]
+
+
 def _functions(root: Path) -> list[tuple[str, int, str, str]]:
     """Every function under ``root`` that is not a test, as (file, line, name, body without
     docstring), skipping bodies under three lines: those repeat by accident."""
     found = []
-    for path in sorted([root] if root.is_file() else root.rglob("*.py")):
-        for node in ast.walk(ast.parse(path.read_text())):
+    for path in _python_files([root]):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             if node.name.startswith("test_"):
@@ -447,9 +493,8 @@ def _similar(paths: list[str], threshold: float) -> int:
 
 def _verbose(paths: list[str], minimum: int) -> int:
     blocks = []
-    files = [f for p in map(Path, paths) for f in ([p] if p.is_file() else sorted(p.rglob("*.py")))]
-    for path in files:
-        source = path.read_text()
+    for path in _python_files([Path(p) for p in paths]):
+        source = path.read_text(encoding="utf-8")
         lines = source.splitlines()
         for node in ast.walk(ast.parse(source)):
             body = getattr(node, "body", None)
@@ -479,17 +524,35 @@ def _verbose(paths: list[str], minimum: int) -> int:
 
 def _mutate(file: Path, old: str, new: str, pytest_args: list[str]) -> int:
     """Replace the one occurrence of ``old`` in ``file`` with ``new``, run pytest, and put the file
-    back from memory whatever happens. Exits 0 when some test fails, which is what a mutation is for."""
-    original = file.read_text()
-    if original.count(old) != 1:
-        sys.exit(f"mutate: {old!r} occurs {original.count(old)} times in {file}, not once")
-    file.write_text(original.replace(old, new))
-    try:
-        code = subprocess.call([sys.executable, "-m", "pytest", "-x", *pytest_args])
-    finally:
-        file.write_text(original)
-    print("caught" if code else "missed")
-    return 0 if code else 1
+    back byte for byte, on SIGTERM too. Exits 0 when a test fails, which is what a mutation is for,
+    1 when every test passes, and 2 when none ran to a verdict: none selected, or one errored."""
+    import signal
+    import tempfile
+    from xml.etree import ElementTree
+
+    original, before, after = file.read_bytes(), old.encode(), new.encode()
+    if original.count(before) != 1:
+        sys.exit(f"mutate: {old!r} occurs {original.count(before)} times in {file}, not once")
+    previous = signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+    file.write_bytes(original.replace(before, after))
+    with tempfile.TemporaryDirectory() as scratch:
+        report = Path(scratch) / "junit.xml"
+        try:
+            code = subprocess.call(
+                [sys.executable, "-m", "pytest", "-x", f"--junitxml={report}", *pytest_args]
+            )
+        finally:
+            file.write_bytes(original)
+            signal.signal(signal.SIGTERM, previous)
+        suite = next(ElementTree.parse(report).iter("testsuite")) if report.exists() else None
+    tally = {}
+    if suite is not None:
+        tally = {k: int(suite.get(k, 0)) for k in ("tests", "failures", "errors")}
+    if not tally.get("tests") or tally["errors"]:
+        print(f"no verdict: pytest exited {code} with {tally or 'no report'}")
+        return 2
+    print("caught" if tally["failures"] else "missed")
+    return 0 if tally["failures"] else 1
 
 
 def main(argv: list[str] | None = None) -> int:

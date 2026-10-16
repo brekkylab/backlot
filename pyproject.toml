@@ -191,6 +191,12 @@ extend-select = [
     "S612",  # logging.config.listen
 ]
 
+[tool.coverage.run]
+# Follow the uvicorn subprocess `live_server` and `backlot.serve` start, which most of the S3 and SDK
+# tests talk to; `backlot.serve` stops it with SIGTERM, which coverage saves nothing on unless told.
+patch = ["subprocess"]
+sigterm = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # loadfile, not the default: several modules share a module-scoped corpus.

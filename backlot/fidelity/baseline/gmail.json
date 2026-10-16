@@ -3,841 +3,847 @@
   "endpoints": [
     "https://gmail.googleapis.com/$discovery/rest?version=v1"
   ],
-  "measured": "2026-10-14",
-  "acknowledged": [
+  "measured": "2026-10-16",
+  "operations": [
     {
+      "operation": "DELETE /gmail/v1/users/{}/drafts/{}",
+      "id": "gmail.users.drafts.delete",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /gmail/v1/users/{}/drafts/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "DELETE /gmail/v1/users/{}/labels/{}",
+      "id": "gmail.users.labels.delete",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /gmail/v1/users/{}/labels/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "DELETE /gmail/v1/users/{}/messages/{}",
+      "id": "gmail.users.messages.delete",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /gmail/v1/users/{}/messages/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "DELETE /gmail/v1/users/{}/settings/cse/identities/{}",
+      "id": "gmail.users.settings.cse.identities.delete",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /gmail/v1/users/{}/settings/cse/identities/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "DELETE /gmail/v1/users/{}/settings/delegates/{}",
+      "id": "gmail.users.settings.delegates.delete",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /gmail/v1/users/{}/settings/delegates/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "DELETE /gmail/v1/users/{}/settings/filters/{}",
+      "id": "gmail.users.settings.filters.delete",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /gmail/v1/users/{}/settings/filters/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "DELETE /gmail/v1/users/{}/settings/forwardingAddresses/{}",
+      "id": "gmail.users.settings.forwardingAddresses.delete",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /gmail/v1/users/{}/settings/forwardingAddresses/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "DELETE /gmail/v1/users/{}/settings/sendAs/{}",
+      "id": "gmail.users.settings.sendAs.delete",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /gmail/v1/users/{}/settings/sendAs/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "DELETE /gmail/v1/users/{}/settings/sendAs/{}/smimeInfo/{}",
+      "id": "gmail.users.settings.sendAs.smimeInfo.delete",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /gmail/v1/users/{}/settings/sendAs/{}/smimeInfo/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /gmail/v1/users/{}/threads/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/drafts",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/drafts/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/history",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/labels/{}?alt",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/labels/{}?callback",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/labels/{}?fields",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/labels/{}?key",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/labels/{}?prettyPrint",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/labels/{}?quotaUser",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/labels/{}?uploadType",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/labels/{}?upload_protocol",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/labels?alt",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/labels?callback",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/labels?fields",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/labels?key",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/labels?prettyPrint",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/labels?quotaUser",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/labels?uploadType",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/labels?upload_protocol",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/messages/{}/attachments/{}?alt",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/messages/{}/attachments/{}?callback",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/messages/{}/attachments/{}?fields",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/messages/{}/attachments/{}?key",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/messages/{}/attachments/{}?prettyPrint",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/messages/{}/attachments/{}?quotaUser",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/messages/{}/attachments/{}?uploadType",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/messages/{}/attachments/{}?upload_protocol",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/messages/{}?alt",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/messages/{}?callback",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/messages/{}?fields",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/messages/{}?key",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/messages/{}?prettyPrint",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/messages/{}?quotaUser",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/messages/{}?uploadType",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/messages/{}?upload_protocol",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/messages?alt",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/messages?callback",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/messages?fields",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/messages?includeSpamTrash",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/messages?key",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/messages?labelIds",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/messages?prettyPrint",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/messages?quotaUser",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/messages?uploadType",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/messages?upload_protocol",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/profile?alt",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/profile?callback",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/profile?fields",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/profile?key",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/profile?prettyPrint",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/profile?quotaUser",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/profile?uploadType",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/profile?upload_protocol",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/settings/autoForwarding",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/settings/cse/identities",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/settings/cse/identities/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/settings/cse/keypairs",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/settings/cse/keypairs/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/settings/delegates",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/settings/delegates/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/settings/filters",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/settings/filters/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/settings/forwardingAddresses",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/settings/forwardingAddresses/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/settings/imap",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/settings/language",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/settings/pop",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/settings/sendAs",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/settings/sendAs/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/settings/sendAs/{}/smimeInfo",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/settings/sendAs/{}/smimeInfo/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/settings/vacation",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/threads/{}?alt",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/threads/{}?callback",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/threads/{}?fields",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/threads/{}?key",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/threads/{}?prettyPrint",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/threads/{}?quotaUser",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/threads/{}?uploadType",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/threads/{}?upload_protocol",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/threads?alt",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/threads?callback",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/threads?fields",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/threads?includeSpamTrash",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/threads?key",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/threads?labelIds",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/threads?prettyPrint",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/threads?quotaUser",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/threads?uploadType",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /gmail/v1/users/{}/threads?upload_protocol",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PATCH /gmail/v1/users/{}/labels/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PATCH /gmail/v1/users/{}/settings/cse/identities/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PATCH /gmail/v1/users/{}/settings/sendAs/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /gmail/v1/users/{}/drafts",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /gmail/v1/users/{}/drafts/send",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /gmail/v1/users/{}/labels",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /gmail/v1/users/{}/messages",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /gmail/v1/users/{}/messages/batchDelete",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /gmail/v1/users/{}/messages/batchModify",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /gmail/v1/users/{}/messages/import",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /gmail/v1/users/{}/messages/send",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /gmail/v1/users/{}/messages/{}/modify",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /gmail/v1/users/{}/messages/{}/trash",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /gmail/v1/users/{}/messages/{}/untrash",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /gmail/v1/users/{}/settings/cse/identities",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /gmail/v1/users/{}/settings/cse/keypairs",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /gmail/v1/users/{}/settings/cse/keypairs/{}:disable",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /gmail/v1/users/{}/settings/cse/keypairs/{}:enable",
-      "detail": "the vendor serves it; Backlot does not"
+      "operation": "DELETE /gmail/v1/users/{}/threads/{}",
+      "id": "gmail.users.threads.delete",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
     },
     {
+      "operation": "GET /gmail/v1/users/{}/drafts",
+      "id": "gmail.users.drafts.list",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /gmail/v1/users/{}/settings/cse/keypairs/{}:obliterate",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /gmail/v1/users/{}/drafts/{}",
+      "id": "gmail.users.drafts.get",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /gmail/v1/users/{}/history",
+      "id": "gmail.users.history.list",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /gmail/v1/users/{}/labels",
+      "id": "gmail.users.labels.list",
+      "status": "implemented",
+      "params": {
+        "alt": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "callback": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "fields": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "key": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "prettyPrint": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "quotaUser": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "uploadType": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "upload_protocol": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      }
+    },
+    {
+      "operation": "GET /gmail/v1/users/{}/labels/{}",
+      "id": "gmail.users.labels.get",
+      "status": "implemented",
+      "params": {
+        "alt": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "callback": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "fields": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "key": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "prettyPrint": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "quotaUser": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "uploadType": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "upload_protocol": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      }
+    },
+    {
+      "operation": "GET /gmail/v1/users/{}/messages",
+      "id": "gmail.users.messages.list",
+      "status": "implemented",
+      "params": {
+        "alt": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "callback": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "fields": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "includeSpamTrash": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "key": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "labelIds": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "prettyPrint": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "quotaUser": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "uploadType": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "upload_protocol": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      }
+    },
+    {
+      "operation": "GET /gmail/v1/users/{}/messages/{}",
+      "id": "gmail.users.messages.get",
+      "status": "implemented",
+      "params": {
+        "alt": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "callback": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "fields": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "key": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "prettyPrint": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "quotaUser": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "uploadType": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "upload_protocol": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      }
+    },
+    {
+      "operation": "GET /gmail/v1/users/{}/messages/{}/attachments/{}",
+      "id": "gmail.users.messages.attachments.get",
+      "status": "implemented",
+      "params": {
+        "alt": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "callback": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "fields": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "key": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "prettyPrint": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "quotaUser": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "uploadType": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "upload_protocol": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      }
+    },
+    {
+      "operation": "GET /gmail/v1/users/{}/profile",
+      "id": "gmail.users.getProfile",
+      "status": "implemented",
+      "params": {
+        "alt": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "callback": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "fields": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "key": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "prettyPrint": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "quotaUser": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "uploadType": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "upload_protocol": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      }
+    },
+    {
+      "operation": "GET /gmail/v1/users/{}/settings/autoForwarding",
+      "id": "gmail.users.settings.getAutoForwarding",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /gmail/v1/users/{}/settings/cse/identities",
+      "id": "gmail.users.settings.cse.identities.list",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /gmail/v1/users/{}/settings/cse/identities/{}",
+      "id": "gmail.users.settings.cse.identities.get",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /gmail/v1/users/{}/settings/cse/keypairs",
+      "id": "gmail.users.settings.cse.keypairs.list",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /gmail/v1/users/{}/settings/cse/keypairs/{}",
+      "id": "gmail.users.settings.cse.keypairs.get",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /gmail/v1/users/{}/settings/delegates",
+      "id": "gmail.users.settings.delegates.list",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /gmail/v1/users/{}/settings/delegates/{}",
+      "id": "gmail.users.settings.delegates.get",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /gmail/v1/users/{}/settings/filters",
+      "id": "gmail.users.settings.filters.list",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /gmail/v1/users/{}/settings/filters/{}",
+      "id": "gmail.users.settings.filters.get",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /gmail/v1/users/{}/settings/forwardingAddresses",
+      "id": "gmail.users.settings.forwardingAddresses.list",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /gmail/v1/users/{}/settings/forwardingAddresses/{}",
+      "id": "gmail.users.settings.forwardingAddresses.get",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /gmail/v1/users/{}/settings/imap",
+      "id": "gmail.users.settings.getImap",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /gmail/v1/users/{}/settings/language",
+      "id": "gmail.users.settings.getLanguage",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /gmail/v1/users/{}/settings/pop",
+      "id": "gmail.users.settings.getPop",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /gmail/v1/users/{}/settings/sendAs",
+      "id": "gmail.users.settings.sendAs.list",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /gmail/v1/users/{}/settings/sendAs/{}",
+      "id": "gmail.users.settings.sendAs.get",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /gmail/v1/users/{}/settings/sendAs/{}/smimeInfo",
+      "id": "gmail.users.settings.sendAs.smimeInfo.list",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /gmail/v1/users/{}/settings/sendAs/{}/smimeInfo/{}",
+      "id": "gmail.users.settings.sendAs.smimeInfo.get",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /gmail/v1/users/{}/settings/vacation",
+      "id": "gmail.users.settings.getVacation",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /gmail/v1/users/{}/threads",
+      "id": "gmail.users.threads.list",
+      "status": "implemented",
+      "params": {
+        "alt": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "callback": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "fields": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "includeSpamTrash": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "key": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "labelIds": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "prettyPrint": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "quotaUser": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "uploadType": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "upload_protocol": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      }
+    },
+    {
+      "operation": "GET /gmail/v1/users/{}/threads/{}",
+      "id": "gmail.users.threads.get",
+      "status": "implemented",
+      "params": {
+        "alt": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "callback": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "fields": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "key": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "prettyPrint": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "quotaUser": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "uploadType": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "upload_protocol": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      }
+    },
+    {
+      "operation": "PATCH /gmail/v1/users/{}/labels/{}",
+      "id": "gmail.users.labels.patch",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "PATCH /gmail/v1/users/{}/settings/cse/identities/{}",
+      "id": "gmail.users.settings.cse.identities.patch",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "PATCH /gmail/v1/users/{}/settings/sendAs/{}",
+      "id": "gmail.users.settings.sendAs.patch",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /gmail/v1/users/{}/drafts",
+      "id": "gmail.users.drafts.create",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /gmail/v1/users/{}/drafts/send",
+      "id": "gmail.users.drafts.send",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /gmail/v1/users/{}/labels",
+      "id": "gmail.users.labels.create",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /gmail/v1/users/{}/messages",
+      "id": "gmail.users.messages.insert",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /gmail/v1/users/{}/messages/batchDelete",
+      "id": "gmail.users.messages.batchDelete",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /gmail/v1/users/{}/messages/batchModify",
+      "id": "gmail.users.messages.batchModify",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /gmail/v1/users/{}/messages/import",
+      "id": "gmail.users.messages.import",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /gmail/v1/users/{}/messages/send",
+      "id": "gmail.users.messages.send",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /gmail/v1/users/{}/messages/{}/modify",
+      "id": "gmail.users.messages.modify",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /gmail/v1/users/{}/messages/{}/trash",
+      "id": "gmail.users.messages.trash",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /gmail/v1/users/{}/messages/{}/untrash",
+      "id": "gmail.users.messages.untrash",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /gmail/v1/users/{}/settings/cse/identities",
+      "id": "gmail.users.settings.cse.identities.create",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /gmail/v1/users/{}/settings/cse/keypairs",
+      "id": "gmail.users.settings.cse.keypairs.create",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /gmail/v1/users/{}/settings/cse/keypairs/{}:disable",
+      "id": "gmail.users.settings.cse.keypairs.disable",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /gmail/v1/users/{}/settings/cse/keypairs/{}:enable",
+      "id": "gmail.users.settings.cse.keypairs.enable",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /gmail/v1/users/{}/settings/cse/keypairs/{}:obliterate",
+      "id": "gmail.users.settings.cse.keypairs.obliterate",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
     },
     {
+      "operation": "POST /gmail/v1/users/{}/settings/delegates",
+      "id": "gmail.users.settings.delegates.create",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /gmail/v1/users/{}/settings/delegates",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /gmail/v1/users/{}/settings/filters",
+      "id": "gmail.users.settings.filters.create",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /gmail/v1/users/{}/settings/filters",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /gmail/v1/users/{}/settings/forwardingAddresses",
+      "id": "gmail.users.settings.forwardingAddresses.create",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /gmail/v1/users/{}/settings/forwardingAddresses",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /gmail/v1/users/{}/settings/sendAs",
+      "id": "gmail.users.settings.sendAs.create",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /gmail/v1/users/{}/settings/sendAs",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /gmail/v1/users/{}/settings/sendAs/{}/smimeInfo",
+      "id": "gmail.users.settings.sendAs.smimeInfo.insert",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /gmail/v1/users/{}/settings/sendAs/{}/smimeInfo",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /gmail/v1/users/{}/settings/sendAs/{}/smimeInfo/{}/setDefault",
+      "id": "gmail.users.settings.sendAs.smimeInfo.setDefault",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /gmail/v1/users/{}/settings/sendAs/{}/smimeInfo/{}/setDefault",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /gmail/v1/users/{}/settings/sendAs/{}/verify",
+      "id": "gmail.users.settings.sendAs.verify",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /gmail/v1/users/{}/settings/sendAs/{}/verify",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /gmail/v1/users/{}/stop",
+      "id": "gmail.users.stop",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /gmail/v1/users/{}/stop",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /gmail/v1/users/{}/threads/{}/modify",
+      "id": "gmail.users.threads.modify",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /gmail/v1/users/{}/threads/{}/modify",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /gmail/v1/users/{}/threads/{}/trash",
+      "id": "gmail.users.threads.trash",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /gmail/v1/users/{}/threads/{}/trash",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /gmail/v1/users/{}/threads/{}/untrash",
+      "id": "gmail.users.threads.untrash",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /gmail/v1/users/{}/threads/{}/untrash",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /gmail/v1/users/{}/watch",
+      "id": "gmail.users.watch",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /gmail/v1/users/{}/watch",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "PUT /gmail/v1/users/{}/drafts/{}",
+      "id": "gmail.users.drafts.update",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PUT /gmail/v1/users/{}/drafts/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "PUT /gmail/v1/users/{}/labels/{}",
+      "id": "gmail.users.labels.update",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PUT /gmail/v1/users/{}/labels/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "PUT /gmail/v1/users/{}/settings/autoForwarding",
+      "id": "gmail.users.settings.updateAutoForwarding",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PUT /gmail/v1/users/{}/settings/autoForwarding",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "PUT /gmail/v1/users/{}/settings/imap",
+      "id": "gmail.users.settings.updateImap",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PUT /gmail/v1/users/{}/settings/imap",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "PUT /gmail/v1/users/{}/settings/language",
+      "id": "gmail.users.settings.updateLanguage",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PUT /gmail/v1/users/{}/settings/language",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "PUT /gmail/v1/users/{}/settings/pop",
+      "id": "gmail.users.settings.updatePop",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PUT /gmail/v1/users/{}/settings/pop",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "PUT /gmail/v1/users/{}/settings/sendAs/{}",
+      "id": "gmail.users.settings.sendAs.update",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PUT /gmail/v1/users/{}/settings/sendAs/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "PUT /gmail/v1/users/{}/settings/vacation",
+      "id": "gmail.users.settings.updateVacation",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PUT /gmail/v1/users/{}/settings/vacation",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     }
-  ]
+  ],
+  "batch": {
+    "documents": [
+      {
+        "document": "gmail:v1",
+        "declared": "batch",
+        "status": "implemented"
+      }
+    ],
+    "routes": [
+      {
+        "route": "/batch",
+        "status": "implemented"
+      }
+    ]
+  }
 }

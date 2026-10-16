@@ -424,17 +424,17 @@ _EDITOR_MOUNTS = (("/v4/", "/sheets"), ("/v1/documents", "/docs"), ("/v1/present
 
 
 def _published_not_served() -> tuple[tuple[str, re.Pattern[str]], ...]:
-    """The two Google baselines' `missing_operation` rows as (method, path pattern), each at the
+    """The two Google baselines' `missing` operations as (method, path pattern), each at the
     path Backlot mounts it on and each `{}` one path segment."""
     operations = []
     for source in ("gmail", "google_drive"):
-        rows = json.loads((_BASELINES / f"{source}.json").read_text(encoding="utf-8"))[
-            "acknowledged"
+        entries = json.loads((_BASELINES / f"{source}.json").read_text(encoding="utf-8"))[
+            "operations"
         ]
-        for row in rows:
-            if row["kind"] != "missing_operation":
+        for e in entries:
+            if e["status"] != "missing":
                 continue
-            method, path = row["path"].split(" ", 1)
+            method, path = e["operation"].split(" ", 1)
             mount = next((m for spelled, m in _EDITOR_MOUNTS if path.startswith(spelled)), "")
             pattern = "[^/]+".join(re.escape(part) for part in (mount + path).split("{}"))
             operations.append((method, re.compile(pattern)))

@@ -6,7 +6,7 @@
     "https://www.googleapis.com/discovery/v1/apis/sheets/v4/rest",
     "https://www.googleapis.com/discovery/v1/apis/slides/v1/rest"
   ],
-  "measured": "2026-10-08",
+  "measured": "2026-10-14",
   "acknowledged": [
     {
       "kind": "missing_operation",
@@ -59,12 +59,6 @@
     {
       "kind": "missing_param",
       "severity": "gap",
-      "path": "GET /drive/v3/about?access_token",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
       "path": "GET /drive/v3/about?alt",
       "detail": "the vendor accepts it; Backlot does not"
     },
@@ -78,12 +72,6 @@
       "kind": "missing_param",
       "severity": "gap",
       "path": "GET /drive/v3/about?key",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/about?oauth_token",
       "detail": "the vendor accepts it; Backlot does not"
     },
     {
@@ -143,12 +131,6 @@
     {
       "kind": "missing_param",
       "severity": "gap",
-      "path": "GET /drive/v3/drives?access_token",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
       "path": "GET /drive/v3/drives?alt",
       "detail": "the vendor accepts it; Backlot does not"
     },
@@ -168,12 +150,6 @@
       "kind": "missing_param",
       "severity": "gap",
       "path": "GET /drive/v3/drives?key",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/drives?oauth_token",
       "detail": "the vendor accepts it; Backlot does not"
     },
     {
@@ -287,12 +263,6 @@
     {
       "kind": "missing_param",
       "severity": "gap",
-      "path": "GET /drive/v3/files/{}/export?access_token",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
       "path": "GET /drive/v3/files/{}/export?alt",
       "detail": "the vendor accepts it; Backlot does not"
     },
@@ -312,12 +282,6 @@
       "kind": "missing_param",
       "severity": "gap",
       "path": "GET /drive/v3/files/{}/export?key",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}/export?oauth_token",
       "detail": "the vendor accepts it; Backlot does not"
     },
     {
@@ -359,12 +323,6 @@
     {
       "kind": "missing_param",
       "severity": "gap",
-      "path": "GET /drive/v3/files/{}/permissions?access_token",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
       "path": "GET /drive/v3/files/{}/permissions?alt",
       "detail": "the vendor accepts it; Backlot does not"
     },
@@ -390,12 +348,6 @@
       "kind": "missing_param",
       "severity": "gap",
       "path": "GET /drive/v3/files/{}/permissions?key",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}/permissions?oauth_token",
       "detail": "the vendor accepts it; Backlot does not"
     },
     {
@@ -455,12 +407,6 @@
     {
       "kind": "missing_param",
       "severity": "gap",
-      "path": "GET /drive/v3/files/{}?access_token",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
       "path": "GET /drive/v3/files/{}?acknowledgeAbuse",
       "detail": "the vendor accepts it; Backlot does not"
     },
@@ -486,12 +432,6 @@
       "kind": "missing_param",
       "severity": "gap",
       "path": "GET /drive/v3/files/{}?key",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}?oauth_token",
       "detail": "the vendor accepts it; Backlot does not"
     },
     {
@@ -528,12 +468,6 @@
       "kind": "missing_param",
       "severity": "gap",
       "path": "GET /drive/v3/files/{}?upload_protocol",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files?access_token",
       "detail": "the vendor accepts it; Backlot does not"
     },
     {
@@ -594,12 +528,6 @@
       "kind": "missing_param",
       "severity": "gap",
       "path": "GET /drive/v3/files?key",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files?oauth_token",
       "detail": "the vendor accepts it; Backlot does not"
     },
     {
@@ -671,12 +599,6 @@
     {
       "kind": "missing_param",
       "severity": "gap",
-      "path": "GET /v1/documents/{}?access_token",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
       "path": "GET /v1/documents/{}?alt",
       "detail": "the vendor accepts it; Backlot does not"
     },
@@ -709,12 +631,6 @@
       "kind": "missing_param",
       "severity": "gap",
       "path": "GET /v1/documents/{}?key",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /v1/documents/{}?oauth_token",
       "detail": "the vendor accepts it; Backlot does not"
     },
     {
@@ -762,12 +678,6 @@
     {
       "kind": "missing_param",
       "severity": "gap",
-      "path": "GET /v1/presentations/{}?access_token",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
       "path": "GET /v1/presentations/{}?alt",
       "detail": "the vendor accepts it; Backlot does not"
     },
@@ -794,12 +704,6 @@
       "kind": "missing_param",
       "severity": "gap",
       "path": "GET /v1/presentations/{}?key",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /v1/presentations/{}?oauth_token",
       "detail": "the vendor accepts it; Backlot does not"
     },
     {
@@ -835,19 +739,7 @@
     {
       "kind": "missing_param",
       "severity": "gap",
-      "path": "GET /v4/spreadsheets/{}/values/{}?access_token",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
       "path": "GET /v4/spreadsheets/{}/values/{}?key",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /v4/spreadsheets/{}/values/{}?oauth_token",
       "detail": "the vendor accepts it; Backlot does not"
     },
     {
@@ -859,31 +751,13 @@
     {
       "kind": "missing_param",
       "severity": "gap",
-      "path": "GET /v4/spreadsheets/{}/values:batchGet?access_token",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
       "path": "GET /v4/spreadsheets/{}/values:batchGet?key",
       "detail": "the vendor accepts it; Backlot does not"
     },
     {
       "kind": "missing_param",
       "severity": "gap",
-      "path": "GET /v4/spreadsheets/{}/values:batchGet?oauth_token",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
       "path": "GET /v4/spreadsheets/{}/values:batchGet?uploadType",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /v4/spreadsheets/{}?access_token",
       "detail": "the vendor accepts it; Backlot does not"
     },
     {
@@ -897,12 +771,6 @@
       "kind": "missing_param",
       "severity": "gap",
       "path": "GET /v4/spreadsheets/{}?key",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /v4/spreadsheets/{}?oauth_token",
       "detail": "the vendor accepts it; Backlot does not"
     },
     {
@@ -1148,19 +1016,7 @@
     {
       "kind": "missing_param",
       "severity": "gap",
-      "path": "POST /v4/spreadsheets/{}/values:batchGetByDataFilter?access_token",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
       "path": "POST /v4/spreadsheets/{}/values:batchGetByDataFilter?key",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "POST /v4/spreadsheets/{}/values:batchGetByDataFilter?oauth_token",
       "detail": "the vendor accepts it; Backlot does not"
     },
     {
@@ -1190,19 +1046,7 @@
     {
       "kind": "missing_param",
       "severity": "gap",
-      "path": "POST /v4/spreadsheets/{}:getByDataFilter?access_token",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
       "path": "POST /v4/spreadsheets/{}:getByDataFilter?key",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "POST /v4/spreadsheets/{}:getByDataFilter?oauth_token",
       "detail": "the vendor accepts it; Backlot does not"
     },
     {

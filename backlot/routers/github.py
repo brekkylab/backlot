@@ -308,8 +308,8 @@ _ROUTED_AS = {
     "GET /repos/{}/{}/actions/artifacts/{}/{}": "GET /repos/{}/{}/actions/artifacts/{}/zip"
 }
 _NOT_ROUTED = frozenset({"POST /repos/{}/{}/releases/{}/assets"})
-#: The GitHub baseline's ``missing_operation`` rows (``backlot.published``), read as those two say.
-#: A row under `/organizations/{}` is matched at `/orgs/{}`, the path ``backlot.main``'s
+#: The GitHub baseline's ``missing`` operations (``backlot.published``), read as those two say.
+#: One under `/organizations/{}` is matched at `/orgs/{}`, the path ``backlot.main``'s
 #: `resolve_github_id_paths` hands on for it; real answered each of the 13 under both with "Bad
 #: credentials" for `Bearer nope` (2026-10-14).
 _PUBLISHED_NOT_SERVED = published.operations(

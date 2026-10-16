@@ -152,7 +152,7 @@ ahead of an unsupported version's 400, where the served `/user/repos` checks the
 missing credential. A token that resolves, and a `Basic` value that names no token, are checked for
 the version first; the token then reaches the 404 or 405 of an operation Backlot cannot run, and the
 `Basic` value is the 401 a served route gives a caller with no credential, with the version echo and
-the five `x-ratelimit-*`. The operations are the GitHub baseline's `missing_operation` rows, but
+the five `x-ratelimit-*`. The operations are those the GitHub baseline marks `missing`, but
 `POST …/releases/{id}/assets`, which api.github.com does not route, and with
 `artifacts/{id}/{archive_format}` taken as `zip`. `Authorization` is read as real reads it, a space
 and a tab the only whitespace in it, and a tab right after the scheme sets the header apart unless a

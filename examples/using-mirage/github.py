@@ -168,9 +168,11 @@ def main_fuse(resource) -> None:
                 rel = os.path.relpath(first_file, mnt)
                 print(f"\n$ head -c 200 {rel}")
                 print(
-                    "  " + open(first_file).read(200).replace("\n", " ")
+                    "  " + open(first_file, encoding="utf-8").read(200).replace("\n", " ")
                 )  # a genuine open() via FUSE
-            count = subprocess.run(["grep", "-rc", "BUG", mnt], capture_output=True, text=True)
+            count = subprocess.run(
+                ["grep", "-rc", "BUG", mnt], capture_output=True, text=True, encoding="utf-8"
+            )
             print(
                 f"\n$ grep -rc BUG {mnt}   # a separate process reads the mount → {count.stdout.strip()}"
             )

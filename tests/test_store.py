@@ -402,7 +402,7 @@ def test_no_blanket_replace_writes_a_table_with_a_non_pk_unique_index(tmp_path):
     assert "fireflies_users" in standalone_guarded  # sanity: the guard reaches this table at all
 
     backlot_src = "\n".join(
-        p.read_text() for p in Path(store.__file__).resolve().parent.rglob("*.py")
+        p.read_text(encoding="utf-8") for p in Path(store.__file__).resolve().parent.rglob("*.py")
     )
     for t in sorted(standalone_guarded):
         assert f"INSERT OR REPLACE INTO {t}" not in backlot_src, (
@@ -2123,10 +2123,10 @@ def test_linear_entities_are_rebuilt_whole_so_an_append_is_resolvable(tmp_path):
 
     settings = Settings(data_dir=tmp_path)
     first = tmp_path / "a.jsonl"
-    first.write_text(json.dumps(issue("l1", "alpha")) + "\n")
+    first.write_text(json.dumps(issue("l1", "alpha")) + "\n", encoding="utf-8")
     load(first, settings, reset=True)
     second = tmp_path / "b.jsonl"
-    second.write_text(json.dumps(issue("l2", "beta")) + "\n")
+    second.write_text(json.dumps(issue("l2", "beta")) + "\n", encoding="utf-8")
     load(second, settings, reset=False)
 
     conn = store.connect_ro(settings.db_path)
@@ -2151,7 +2151,7 @@ def test_linear_entities_are_rebuilt_whole_so_an_append_is_resolvable(tmp_path):
     # which refuses one) and nothing is left carrying `alpha`. Appending to the table instead of
     # rebuilding it would leave `alpha` answering for an entity that exists nowhere.
     third = tmp_path / "c.jsonl"
-    third.write_text(json.dumps(issue("l1", "gamma")) + "\n")
+    third.write_text(json.dumps(issue("l1", "gamma")) + "\n", encoding="utf-8")
     load(third, settings, reset=False)
     conn = store.connect_ro(settings.db_path)
     try:

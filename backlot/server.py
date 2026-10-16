@@ -127,15 +127,34 @@ def _dialable(host: str) -> str:
     return f"[{host}]" if ":" in host else host
 
 
+def _interpreter(env: dict[str, str]) -> tuple[str, dict[str, str]]:
+    """The interpreter `serve` runs its server on, and the environment to run it in.
+
+    On Windows a venv's ``python.exe`` is a launcher that starts the base interpreter as its child,
+    so the process `subprocess.Popen` returns is not the one serving: `_terminate` stops and reaps
+    the launcher while the interpreter holding ``db.sqlite`` and ``server.log`` open may still be
+    running. Measured 2026-10-13 under Python 3.14.0 on Windows 11, renaming ``db.sqlite`` right
+    after `_terminate` returned was refused in 16 of 20 runs; started the way ``multiprocessing``
+    starts its children on Windows, on the base interpreter with ``__PYVENV_LAUNCHER__`` naming the
+    venv's ``python.exe``, the same rename was refused in 0 of 20."""
+    base = getattr(sys, "_base_executable", sys.executable)
+    if sys.platform == "win32" and os.path.normcase(base) != os.path.normcase(sys.executable):
+        return base, {**env, "__PYVENV_LAUNCHER__": sys.executable}
+    return sys.executable, env
+
+
 def _terminate(proc: subprocess.Popen, timeout: float = 10) -> None:
-    """Stop ``proc`` and reap it. A bare ``kill()`` can still leave a zombie if nothing calls
-    ``wait()`` afterward — this always does, even on the SIGTERM-ignoring fallback path."""
+    """Stop ``proc``, reap it, and close the pipe to its stdin if it has one. A bare ``kill()`` can
+    still leave a zombie if nothing calls ``wait()`` afterward — this always does, even on the
+    SIGTERM-ignoring fallback path."""
     proc.terminate()
     try:
         proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.wait()
+    if proc.stdin is not None:
+        proc.stdin.close()
 
 
 # Every server `serve()` has started and not yet stopped. Between `Popen` returning and the context
@@ -144,6 +163,20 @@ def _terminate(proc: subprocess.Popen, timeout: float = 10) -> None:
 # exactly where a client that gives up on a slow start sends its signal. `stop_children` is the
 # way out of that window; the normal path stays the context manager's own `finally`.
 _CHILDREN: list[subprocess.Popen] = []
+
+
+def _close_server_pipes_in_a_fork() -> None:
+    """In a child forked from this process, close its copy of each server's stdin pipe. The servers
+    are this process's: a copy the child kept would hold each one up after this process ended,
+    until the child ended too (measured on macOS on 2026-10-13, with a child of
+    ``multiprocessing``'s "fork" start method still sleeping)."""
+    for proc in _CHILDREN:
+        if proc.stdin is not None:
+            proc.stdin.close()
+
+
+if hasattr(os, "register_at_fork"):  # POSIX; on Windows a child cannot inherit the pipe's handle
+    os.register_at_fork(after_in_child=_close_server_pipes_in_a_fork)
 
 
 def stop_children() -> None:
@@ -256,14 +289,17 @@ def serve(
                 corpus = HELLO_CORPUS
             else:
                 corpus = data_dir / "corpus.jsonl"
-                corpus.write_text("\n".join(json.dumps(r) for r in records))
-        env = {**os.environ, "BACKLOT_DATA_DIR": str(data_dir)}
-        # Read with the SAME env + cwd the subprocess below inherits (only BACKLOT_DATA_DIR
-        # differs, and that doesn't affect admin_token), so this resolves to whatever token the
-        # server will actually enforce — a caller's BACKLOT_ADMIN_TOKEN env var or a .env in
-        # their cwd both change it (Settings declares env_file=".env"), and the returned
-        # Server.token must track that: otherwise a caller's first authenticated call fails
-        # with HTTP 200 / {"ok": false} (Slack fidelity), which reads as the caller's own mistake.
+                corpus.write_text("\n".join(json.dumps(r) for r in records), encoding="utf-8")
+        # PYTHONIOENCODING: the child's stdout and stderr land in the log file read below as
+        # UTF-8, and a Python before 3.15 writes a redirected stream in the platform's encoding
+        # (cp1252 on a Western Windows) unless told otherwise.
+        env = {**os.environ, "BACKLOT_DATA_DIR": str(data_dir), "PYTHONIOENCODING": "utf-8"}
+        # Read with the cwd and environment the server gets, minus keys that do not set admin_token
+        # (the two above, and `_interpreter`'s `__PYVENV_LAUNCHER__` in a venv on Windows), so this
+        # is the token the server enforces. A caller's BACKLOT_ADMIN_TOKEN or a .env in their cwd
+        # changes it (Settings declares env_file=".env"). `Server.token` must track that, or the
+        # caller's first authenticated call fails with HTTP 200 / {"ok": false}, which reads as
+        # their own mistake.
         token = Settings().admin_token
         if data_dir == Path(scratch):
             # `-m backlot` rather than the `backlot` script: same CLI, but resolved through THIS
@@ -282,10 +318,11 @@ def serve(
         # deadlock the child, and we only need the contents if uvicorn dies before serving.
         # In the scratch dir, not the data dir: a caller's own data dir is theirs to keep clean.
         log_path = Path(scratch) / "server.log"
+        python, server_env = _interpreter(env)
         with open(log_path, "wb") as log_f:
             proc = subprocess.Popen(
                 [
-                    sys.executable,
+                    python,
                     "-m",
                     "backlot",
                     "serve",
@@ -295,11 +332,17 @@ def serve(
                     str(port),
                     "--log-level",
                     "warning",
+                    "--exit-on-stdin-close",
                 ],
-                env=env,
-                # The server reads nothing from stdin, and must not inherit the caller's: when
-                # the caller is `backlot mcp`, that is the MCP protocol pipe.
-                stdin=subprocess.DEVNULL,
+                env=server_env,
+                # A pipe of this process's own rather than the caller's stdin, which under
+                # `backlot mcp` is the MCP protocol pipe. Nothing is written to it: its write end
+                # closes when this process ends, however it ends (a child forked from it closes its
+                # copy, `_close_server_pipes_in_a_fork`), and `--exit-on-stdin-close` stops the
+                # server at that end of file: its port closed within a second of the holding
+                # process ending on SIGTERM, SIGHUP or SIGKILL on macOS, or by `TerminateProcess` on
+                # Windows 11 (measured 2026-10-13).
+                stdin=subprocess.PIPE,
                 stdout=log_f,
                 stderr=subprocess.STDOUT,
             )
@@ -307,7 +350,7 @@ def serve(
         try:
             for _ in range(_LOCAL_HEALTH_ATTEMPTS):
                 if proc.poll() is not None:
-                    tail = log_path.read_text(errors="replace")[-4000:]
+                    tail = log_path.read_text(encoding="utf-8", errors="replace")[-4000:]
                     raise RuntimeError(
                         f"Backlot exited with code {proc.returncode} before becoming ready on "
                         f"{base}:\n{tail}"

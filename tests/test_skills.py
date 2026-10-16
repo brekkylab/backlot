@@ -41,14 +41,16 @@ def _gen_docs():
     the generator by construction, which reads as a second opinion and is not one — it would pass
     on exactly the headings the generator gets wrong.
     """
-    spec = importlib.util.spec_from_file_location("gen_docs", REPO / "scripts" / "gen_docs.py")
+    spec = importlib.util.spec_from_file_location(
+        "scripts.gen_docs", REPO / "scripts" / "gen_docs.py"
+    )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
 def _frontmatter(md: Path) -> dict:
-    match = _FRONTMATTER_RE.match(md.read_text())
+    match = _FRONTMATTER_RE.match(md.read_text(encoding="utf-8"))
     assert match, f"{md.relative_to(REPO)} has no YAML frontmatter block"
     return yaml.safe_load(match.group(1))
 
@@ -59,7 +61,7 @@ def _skill_markdown() -> list[Path]:
 
 def _anchors(md: Path) -> set[str]:
     anchor = _gen_docs()._anchor
-    return {anchor(h) for h in _HEADING_RE.findall(md.read_text())}
+    return {anchor(h) for h in _HEADING_RE.findall(md.read_text(encoding="utf-8"))}
 
 
 # Every source_type, spelled the way a human names the service. Derived from the schema keys rather
@@ -92,7 +94,7 @@ def test_skill_link_anchors_resolve():
     """A `#anchor` into docs/ must name a heading that is still there."""
     broken = []
     for md in _skill_markdown():
-        for lineno, line in enumerate(md.read_text().splitlines(), start=1):
+        for lineno, line in enumerate(md.read_text(encoding="utf-8").splitlines(), start=1):
             for target in _LINK_RE.findall(line):
                 if "#" not in target or target.startswith(("http://", "https://", "mailto:")):
                     continue
@@ -144,14 +146,14 @@ def test_every_manifest_points_at_the_real_skill(manifest, locate, expected):
     """Each harness's manifest must resolve to the one skill this repo actually holds."""
     path = REPO / manifest
     assert path.exists(), f"{manifest} is missing"
-    root = (REPO / locate(json.loads(path.read_text()))).resolve()
+    root = (REPO / locate(json.loads(path.read_text(encoding="utf-8")))).resolve()
     assert (root / expected).exists(), f"{manifest} points at {root}, which holds no {expected}"
 
 
 def test_claude_plugin_manifest_names_the_plugin():
     """The catalog entry and the plugin definition have to agree on the name."""
-    catalog = json.loads((REPO / ".claude-plugin" / "marketplace.json").read_text())
-    plugin = json.loads((REPO / ".claude-plugin" / "plugin.json").read_text())
+    catalog = json.loads((REPO / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
+    plugin = json.loads((REPO / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
     assert plugin["name"] in {p["name"] for p in catalog["plugins"]}
 
 
@@ -162,8 +164,8 @@ def test_the_two_plugin_manifests_agree_on_version():
     count in a checkout, which is not a version a plugin catalog can show — so they are written by
     hand, and the realistic failure is bumping one and forgetting the other.
     """
-    claude = json.loads((REPO / ".claude-plugin" / "plugin.json").read_text())
-    codex = json.loads((REPO / ".codex-plugin" / "plugin.json").read_text())
+    claude = json.loads((REPO / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+    codex = json.loads((REPO / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
     assert claude["version"] == codex["version"]
 
 
@@ -194,7 +196,11 @@ def test_every_backlot_endpoint_the_skill_names_is_mounted():
     from backlot.main import app
 
     served = {_path_shape(p) for p in app.openapi()["paths"]}
-    missing = {p for md in _skill_markdown() for p in _OWN_ENDPOINT_RE.findall(md.read_text())}
+    missing = {
+        p
+        for md in _skill_markdown()
+        for p in _OWN_ENDPOINT_RE.findall(md.read_text(encoding="utf-8"))
+    }
     missing = {p for p in missing if _path_shape(p) not in served}
     assert not missing, f"endpoints the skill names but the app does not serve: {sorted(missing)}"
 
@@ -205,7 +211,7 @@ def test_every_backlot_attribute_the_skill_names_exists():
 
     names = set()
     for md in _skill_markdown():
-        names.update(re.findall(r"\bbacklot\.(\w+)", md.read_text()))
+        names.update(re.findall(r"\bbacklot\.(\w+)", md.read_text(encoding="utf-8")))
     missing = sorted(n for n in names if not hasattr(backlot, n))
     assert not missing, f"attributes the skill names but `backlot` does not export: {missing}"
 
@@ -251,7 +257,7 @@ def test_the_routing_table_names_every_openapi_slice_key_and_no_others():
     that repeats it can only agree with it. Comparing the sets catches both ways it can go wrong —
     a key invented here, and a served key the derivation quietly drops to `—`.
     """
-    rows = re.findall(r"^\| `(\w+)` \|.*\| (`\w+`|—) \|$", SKILL.read_text(), re.M)
+    rows = re.findall(r"^\| `(\w+)` \|.*\| (`\w+`|—) \|$", SKILL.read_text(encoding="utf-8"), re.M)
     assert rows, "the generated routing table has no rows — did its shape change?"
 
     named = {cell.strip("`") for _, cell in rows if cell != "—"}

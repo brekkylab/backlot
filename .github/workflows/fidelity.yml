@@ -91,10 +91,11 @@ jobs:
           echo "::warning::${{ matrix.source }}'s contract could not be read; no comparison ran."
           cat report.txt
 
-      # Exit 3 is a credential nobody set. Red, because it is this repository's misconfiguration:
-      # warned about and left green, the two sources whose contract is introspection would go
-      # uncompared night after night while the run said nothing was wrong.
-      - name: Fail on a credential this repository has not set
+      # Exit 3 is a credential nobody set, or a baseline file the command cannot use. Red, because
+      # either is this repository's misconfiguration: warned about and left green, the two sources
+      # whose contract is introspection would go uncompared night after night while the run said
+      # nothing was wrong.
+      - name: Fail on a credential or a baseline this repository has not set up
         if: steps.diff.outputs.status == '3'
         run: |
           cat report.txt

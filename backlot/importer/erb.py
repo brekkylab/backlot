@@ -518,7 +518,7 @@ class Principals:
 
     @classmethod
     def from_directory(cls, employee_yaml, org_domain: str) -> "Principals":
-        data = yaml.safe_load(open(employee_yaml).read())
+        data = yaml.safe_load(Path(employee_yaml).read_text(encoding="utf-8"))
         emps = []
         for dept, people in (data.get("departments") or {}).items():
             for p in people or []:
@@ -726,7 +726,8 @@ class Principals:
                     "users": users,
                 },
                 sort_keys=False,
-            )
+            ),
+            encoding="utf-8",
         )
 
     def write_roster(self, path, settings) -> None:
@@ -758,7 +759,8 @@ class Principals:
                 },
                 sort_keys=False,
                 allow_unicode=True,
-            )
+            ),
+            encoding="utf-8",
         )
 
 
@@ -853,6 +855,16 @@ def derive_title_content(raw: dict) -> tuple[str, str]:
     return title, "\n\n".join(p for p in parts if p).strip()
 
 
+def _read_json(path: Path):
+    """``path``'s JSON, or None when the file cannot be read as JSON: an OSError, bytes that are not
+    UTF-8, text that is not JSON or holds an integer past Python's 4300-digit limit (each a
+    ValueError), or nesting too deep to parse (a RecursionError)."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, RecursionError, OSError):
+        return None
+
+
 def iter_records(
     sources_dir: Path, sources: tuple[str, ...] = SUPPORTED
 ) -> Iterator[tuple[str, str, dict]]:
@@ -861,9 +873,8 @@ def iter_records(
         if not base.is_dir():
             continue
         for path in sorted(base.rglob("*.json")):
-            try:
-                raw = json.loads(path.read_text())
-            except (json.JSONDecodeError, OSError):
+            raw = _read_json(path)
+            if raw is None:
                 continue
             dsid = raw.get("dataset_doc_uuid")
             if dsid:
@@ -972,7 +983,8 @@ def fetch_generated_data(settings, *, ref: str = "main") -> Path:
             indent=1,
             sort_keys=True,
         )
-        + "\n"
+        + "\n",
+        encoding="utf-8",
     )
     return out
 
@@ -983,10 +995,7 @@ def read_snapshot(gen_dir) -> dict | None:
     path = Path(gen_dir) / SNAPSHOT_FILE
     if not path.exists():
         return None
-    try:
-        return json.loads(path.read_text())
-    except (json.JSONDecodeError, OSError):
-        return None
+    return _read_json(path)
 
 
 def parse_gmail_thread(messages: list[str]) -> list[dict]:
@@ -2631,7 +2640,7 @@ class _ByoWriter:
         self._open: dict[str, tuple] = {}  # source -> (path, fh, records_written)
         self._plain = None
         if shard_records is None:
-            self._plain = open(self.out_dir / "corpus.jsonl", "w")
+            self._plain = open(self.out_dir / "corpus.jsonl", "w", encoding="utf-8")
 
     def write(self, src: str, rec: dict) -> None:
         line = json.dumps(rec, ensure_ascii=False) + "\n"
@@ -2701,7 +2710,7 @@ class _ByoWriter:
             # would describe a whole the converted layer is only part of.
             manifest["layers"] = {"converted": layer}
         (self.out_dir / "manifest.json").write_text(
-            json.dumps(manifest, indent=1, sort_keys=True) + "\n"
+            json.dumps(manifest, indent=1, sort_keys=True) + "\n", encoding="utf-8"
         )
 
 
@@ -2764,7 +2773,7 @@ def export_byo(settings, gen_dir, out_dir, *, shard_records=None) -> dict:
 
 
 def parse_employees(path: Path) -> list[dict]:
-    data = yaml.safe_load(path.read_text())
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
     employees: list[dict] = []
     for dept, people in data.get("departments", {}).items():
         for p in people or []:

@@ -54,7 +54,7 @@ STRINGS = {tokenize.STRING} | (
 
 def git(root: Path, *args: str) -> str:
     return subprocess.run(
-        ["git", *args], cwd=root, capture_output=True, text=True, check=True
+        ["git", *args], cwd=root, capture_output=True, text=True, check=True, encoding="utf-8"
     ).stdout
 
 

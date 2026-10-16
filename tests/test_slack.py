@@ -1886,7 +1886,7 @@ def test_slack_has_2fa_answers_an_admin_caller_or_the_callers_own_member_and_onl
     # `reload=True`: resolving a speaker's id builds `app.state._slack_uid_map` once, and the
     # module-level app carries whichever corpus built it first.
     with client_for(settings, reload=True) as client:
-        tokens = yaml.safe_load(settings.tokens_path.read_text())
+        tokens = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
         admin_h = {"Authorization": f"Bearer {tokens['admin_token']}"}
         ava_h = {"Authorization": f"Bearer {tok(tokens, 'ava@acme.com')}"}
         ava_uid, bo_uid = synth.slack_user_id("ava@acme.com"), synth.slack_user_id("bo@acme.com")
@@ -1953,7 +1953,7 @@ def test_slack_deactivation_changes_every_slack_answer_about_a_member_and_nothin
     conn.close()
 
     with client_for(settings) as client:
-        tokens = yaml.safe_load(settings.tokens_path.read_text())
+        tokens = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
         admin_h = {"Authorization": f"Bearer {tokens['admin_token']}"}
         ava_h = {"Authorization": f"Bearer {tok(tokens, 'ava@acme.com')}"}
         bo_h = {"Authorization": f"Bearer {tok(tokens, 'bo@acme.com')}"}

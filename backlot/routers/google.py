@@ -424,15 +424,17 @@ _EDITOR_MOUNTS = (("/v4/", "/sheets"), ("/v1/documents", "/docs"), ("/v1/present
 
 
 def _published_not_served() -> tuple[tuple[str, re.Pattern[str]], ...]:
-    """The two Google baselines' `missing_operation` rows as (method, path pattern), each at the
+    """The two Google baselines' `missing` operations as (method, path pattern), each at the
     path Backlot mounts it on and each `{}` one path segment."""
     operations = []
     for source in ("gmail", "google_drive"):
-        rows = json.loads((_BASELINES / f"{source}.json").read_text())["acknowledged"]
-        for row in rows:
-            if row["kind"] != "missing_operation":
+        entries = json.loads((_BASELINES / f"{source}.json").read_text(encoding="utf-8"))[
+            "operations"
+        ]
+        for e in entries:
+            if e["status"] != "missing":
                 continue
-            method, path = row["path"].split(" ", 1)
+            method, path = e["operation"].split(" ", 1)
             mount = next((m for spelled, m in _EDITOR_MOUNTS if path.startswith(spelled)), "")
             pattern = "[^/]+".join(re.escape(part) for part in (mount + path).split("{}"))
             operations.append((method, re.compile(pattern)))
@@ -2889,14 +2891,20 @@ async def docs_get(document_id: str, request: Request):
         content.append(
             {"paragraph": {"elements": [{"textRun": {"content": line + "\n", "textStyle": {}}}]}}
         )
+    # Real's order for an untabbed read (docs.googleapis.com, 2026-10-16, twelve Docs, six owned by
+    # a Workspace member and six by a consumer account), the same under each `suggestionsViewMode`,
+    # `includeTabsContent=false` and a `fields` mask naming the members in another order
+    # (`documentId,title`, `revisionId,body,title`). Real also serves `headers` and `footers` after
+    # `body`, `lists` after `namedStyles` and `inlineObjects` before `documentId` when a Doc has
+    # them; this server serves none of the four.
     return {
-        "documentId": document_id,
         "title": row["title"],
-        "revisionId": synth._digest(document_id)[:24],
-        "suggestionsViewMode": "SUGGESTIONS_INLINE",
         "body": {"content": content},
         "documentStyle": {},
         "namedStyles": {"styles": []},
+        "revisionId": synth._digest(document_id)[:24],
+        "suggestionsViewMode": "SUGGESTIONS_INLINE",
+        "documentId": document_id,
         # Last, where real serves it. Real's value for a read that asks for no comments, whatever
         # `suggestionsViewMode` and `includeTabsContent` select (measured 2026-10-09 and
         # 2026-10-15); `commentsViewMode=COMMENTS_VIEW_MODE_INCLUDED` beside the tabs and inline

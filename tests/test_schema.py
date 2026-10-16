@@ -410,7 +410,9 @@ def test_replies_only_on_slack():
 
 def test_load_corpus_rejects_invalid_record(tmp_path):
     bad = tmp_path / "bad.jsonl"
-    bad.write_text(json.dumps({"source_type": "confluence", "content": "c"}))  # no title
+    bad.write_text(
+        json.dumps({"source_type": "confluence", "content": "c"}), encoding="utf-8"
+    )  # no title
     with pytest.raises(SystemExit):
         load(bad, Settings(data_dir=tmp_path))
 
@@ -625,7 +627,8 @@ def test_linear_byo_round_trip_serves_what_it_loaded(tmp_path):
                 ],
             }
         )
-        + "\n"
+        + "\n",
+        encoding="utf-8",
     )
     assert validate_file(corpus) == []
     settings = Settings(data_dir=tmp_path)
@@ -672,7 +675,8 @@ def test_linear_synthesized_identifier_is_resolvable(tmp_path):
                 author_email="ava@acme.com",
             )
         )
-        + "\n"
+        + "\n",
+        encoding="utf-8",
     )
     settings = Settings(data_dir=tmp_path)
     load(corpus, settings)
@@ -719,7 +723,9 @@ def test_fireflies_record_with_neither_sentences_nor_content_is_rejected(tmp_pat
     ]
 
     corpus = tmp_path / "c.jsonl"
-    corpus.write_text(json.dumps({"source_type": "fireflies", "title": "Empty"}) + "\n")
+    corpus.write_text(
+        json.dumps({"source_type": "fireflies", "title": "Empty"}) + "\n", encoding="utf-8"
+    )
     with pytest.raises(SystemExit) as e:
         load(corpus, Settings(data_dir=tmp_path))
     assert "'content' is a required property" in str(e.value)
@@ -1093,7 +1099,7 @@ def test_the_typescript_examples_corpus_would_load():
     from tests.conftest import REPO_ROOT
 
     path = REPO_ROOT / "examples/using-official-sdk/linear/index.ts"
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     assert "const CORPUS = [" in text, f"{path.name}: no CORPUS literal -- fix this extractor"
     body = text[text.index("const CORPUS = [") + len("const CORPUS = ") :]
     depth = 0
@@ -1123,7 +1129,7 @@ def test_every_record_the_docs_show_would_load():
         "examples/bring-your-own-corpus/README.md",
         "backlot/schemas/README.md",
     ):
-        for line in (REPO_ROOT / rel).read_text().split("\n"):
+        for line in (REPO_ROOT / rel).read_text(encoding="utf-8").split("\n"):
             text = line.strip()
             if text.startswith('{"source_type"') and text.endswith("}"):
                 shown.setdefault(rel, []).append(json.loads(text))
@@ -1215,7 +1221,7 @@ def _inline_corpora():
 
     out = []
     for path in sorted((REPO_ROOT / "examples").rglob("*.py")):
-        tree = ast.parse(path.read_text())
+        tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Assign):
                 continue
@@ -1292,7 +1298,11 @@ def _example_corpus():
 def _example_records():
     import json
 
-    return [json.loads(line) for line in _example_corpus().read_text().split("\n") if line.strip()]
+    return [
+        json.loads(line)
+        for line in _example_corpus().read_text(encoding="utf-8").split("\n")
+        if line.strip()
+    ]
 
 
 def test_example_corpus_is_valid():

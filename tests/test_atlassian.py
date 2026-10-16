@@ -6,6 +6,7 @@ or call the response builder directly.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -14,12 +15,14 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote, unquote, urlsplit
 
+import httpx
 import pytest
 import yaml
 from starlette.requests import Request
 
 from backlot import store, synth
 from backlot.errors import atlassian as errors_atlassian
+from backlot.routers import atlassian as routers_atlassian
 from tests._helpers import (
     bare_request,
     client_for,
@@ -1850,6 +1853,9 @@ def _unconverted(role_id: str) -> str:
         ("POST", "99999", "ava", "{}", 401, _NOT_ADMIN),
         ("PUT", "99999", "ava", "{}", 401, _NOT_ADMIN),
         ("DELETE", "99999", "ava", None, 401, _NOT_ADMIN),
+        # an `Accept` that admits no JSON is the 406, ahead of the id's 400 and of the 401
+        ("GET", "10002", "ava-html", None, 406, None),
+        ("GET", "abc", "ava-html", None, 406, None),
     ],
 )
 def test_jira_reads_a_role_id_as_a_long_before_the_project(
@@ -1863,6 +1869,7 @@ def test_jira_reads_a_role_id_as_a_long_before_the_project(
     headers = {
         "admin": dict(admin_h),
         "ava": {"Authorization": f"Bearer {tokens['ava@acme.com']}"},
+        "ava-html": {"Authorization": f"Bearer {tokens['ava@acme.com']}", "Accept": "text/html"},
         "none": {},
     }[caller]
     if body is not None:
@@ -1878,6 +1885,8 @@ def test_jira_reads_a_role_id_as_a_long_before_the_project(
             assert r.json()["instance"] == f"/rest/api/3/project/{key}/role/{role_id}"
     elif status == 200:
         assert r.json()["id"] == answer
+    elif status == 406:
+        assert r.headers["content-type"] == errors_atlassian.PROBLEM_JSON
     elif answer is not None:
         assert r.headers["content-type"] == "application/json;charset=UTF-8"
         assert r.content == answer
@@ -4332,6 +4341,20 @@ def test_jira_answers_an_options_with_the_vendors_methods(client, admin_h, path,
         ("/atlassian/wiki/rest/api/space/{space}", "*/*", 404, "application/json"),
         ("/atlassian/wiki/rest/api/content", "*/*", 404, "application/json"),
         ("/atlassian/wiki/rest/api/space/NOPESUCH", "*/*", 404, "application/json"),
+        # what the other values draw (``errors.atlassian.confluence_options``)
+        ("/atlassian/wiki/rest/api/space", None, 404, "application/json"),
+        ("/atlassian/wiki/rest/api/space", "*", 404, "application/json"),
+        ("/atlassian/wiki/rest/api/space", "application/hal+json", 404, "application/hal+json"),
+        ("/atlassian/wiki/rest/api/space", "text/html", 403, errors_atlassian.TOMCAT_MEDIA_TYPE),
+        (
+            "/atlassian/wiki/rest/api/space",
+            "application/xml",
+            403,
+            errors_atlassian.TOMCAT_MEDIA_TYPE,
+        ),
+        ("/atlassian/wiki/rest/api/content", "text/plain", 403, errors_atlassian.TOMCAT_MEDIA_TYPE),
+        ("/atlassian/wiki/rest/api/space", "foo", 404, None),
+        ("/atlassian/wiki/rest/api/space", "application/json,*.*;q=0.9", 404, None),
         ("/atlassian/wiki/rest/api/search", "*/*", 200, "application/xml"),
         ("/atlassian/wiki/rest/api/search", "application/xml", 200, "application/xml"),
         ("/atlassian/wiki/rest/api/search", None, 200, "application/vnd.sun.wadl+xml"),
@@ -4342,10 +4365,10 @@ def test_jira_answers_an_options_with_the_vendors_methods(client, admin_h, path,
 def test_confluence_answers_an_options_by_route_and_accept(
     client, admin_h, keys, path, accept, status, media_type
 ):
-    """Pins the Confluence half of ``backlot.routers.atlassian._options_answer``:
-    ``errors.atlassian.CONFLUENCE_OPTIONS_NOT_FOUND`` on each route but `search`, and on `search`
-    what ``backlot.routers.atlassian._search_options`` answers each `Accept`, its three methods
-    every time. The WADL is real's, with this server's origin in its two URLs."""
+    """Pins the Confluence half of ``backlot.routers.atlassian._options_answer``: on each route but
+    `search` what ``errors.atlassian.confluence_options`` answers each `Accept`, and on `search`
+    what ``backlot.routers.atlassian._search_options`` answers it, its three methods every time.
+    The WADL is real's, with this server's origin in its two URLs."""
     request = client.build_request("OPTIONS", path.format(**keys), headers=admin_h)
     if accept is None:
         del request.headers["accept"]
@@ -4353,8 +4376,17 @@ def test_confluence_answers_an_options_by_route_and_accept(
         request.headers["accept"] = accept
     r = client.send(request)
     assert r.status_code == status, r.text
+    if status == 403:
+        assert r.headers["content-type"] == media_type
+        assert r.text == errors_atlassian.tomcat_page(403) and len(r.content) == 431
+        return
+    if status == 404 and media_type is None:
+        assert r.content == b"" and "content-type" not in r.headers
+        assert r.headers["allow"] == "GET, HEAD, POST, PUT, DELETE, TRACE, OPTIONS, PATCH"
+        return
     if status == 404:
-        assert r.json() == errors_atlassian.CONFLUENCE_OPTIONS_NOT_FOUND
+        assert r.headers["content-type"] == media_type
+        assert json.loads(r.content) == errors_atlassian.CONFLUENCE_OPTIONS_NOT_FOUND
         return
     assert r.headers["allow"] == errors_atlassian.CONFLUENCE_SEARCH_OPTIONS_ALLOW
     if status == 204:
@@ -4484,6 +4516,7 @@ _FIELD = "/atlassian/rest/api/3/field"
 _ATTACHMENTS = "/atlassian/rest/api/3/issue/NOPE-999999/attachments"
 _AVATAR = "/atlassian/rest/api/3/issuetype/999/avatar2"
 _PREFERENCES = "/atlassian/rest/api/3/mypreferences"
+_JSON_OR_TEXT = "application/json, text/plain"
 _AGENTS = "/atlassian/rest/api/3/agents/bulk/invoke/batch"
 _POLICIES = "/atlassian/rest/api/3/policies/project/NOPE/policies"
 #: a `Content-Type` Spring cannot read, which the 415 names no type for
@@ -4519,6 +4552,10 @@ _JSON = "application/json"
         ("PUT", _BANNER, "none", "application/json;charset=latin1", "{}", 401, None, None),
         ("PUT", _BANNER, "none", 'application/json;charset="utf-8"', "{}", 401, None, None),
         ("PUT", _BANNER, "none", "application/json;x", "{}", 401, None, None),
+        # a charset Java does not name is no charset, whatever its case, and one it names is read
+        ("PUT", _BANNER, "none", "application/json;charset=u8", "{}", 415, _UNREAD, _JSON),
+        ("PUT", _BANNER, "none", "application/json;Charset=u8", "{}", 415, _UNREAD, _JSON),
+        ("PUT", _BANNER, "none", "application/json;charset=x-MacRoman", "{}", 401, None, None),
         # the same check on the bulk agent invocation, a POST
         ("POST", _AGENTS, "none", "text/plain", "x", 415, "text/plain", _JSON),
         ("POST", _AGENTS, "admin", "text/plain", "x", 415, "text/plain", _JSON),
@@ -4578,6 +4615,25 @@ _JSON = "application/json"
             "application/json, text/plain",
         ),
         ("PUT", _PREFERENCES, "none", "text/plain", "x", 401, None, None),
+        # the parameters kept (``errors.atlassian._spring_media_type``)
+        *(
+            ("PUT", _PREFERENCES, "none", content_type, "x", status, named, accept)
+            for content_type, status, named, accept in (
+                ("application/xml;x=1;X=2", 415, "application/xml;X=2", _JSON_OR_TEXT),
+                ("application/xml;q=1;Q=2", 415, "application/xml;Q=2", _JSON_OR_TEXT),
+                (
+                    "application/xml;charset=bogus;Charset=utf-8",
+                    415,
+                    "application/xml;Charset=utf-8",
+                )
+                + (_JSON_OR_TEXT,),
+                ("application/json;charset=nope;charset=utf-8", 401, None, None),
+                ("application/json;Charset=nope;charset=utf-8", 401, None, None),
+                ("application/json;charset=utf-8;Charset=nope", 415, _UNREAD, _JSON_OR_TEXT),
+                ("application/json;q=2", 415, _UNREAD, _JSON_OR_TEXT),
+                ("application/json\xa0", 415, _UNREAD, _JSON_OR_TEXT),
+            )
+        ),
         # one whose 415 adds a charset the request did not send, and keeps one it did
         # (`DOCUMENTED_OTHERWISE` in ``scripts/gen_jira_unserved.py``)
         ("PUT", _FILTER_COLUMNS, "none", "text/plain", "x", 415)
@@ -4609,8 +4665,8 @@ def test_jira_checks_the_media_type_an_operation_takes_before_anything_else(
     404 of a path none serves."""
     headers = dict(admin_h if credential == "admin" else _CREDENTIALS[credential])
     if content_type is not None:
-        headers["Content-Type"] = content_type
-    r = client.request(method, path, headers=headers, content=body)
+        headers["Content-Type"] = content_type.encode("latin-1")
+    r = _send_as_latin1(client, client.build_request(method, path, headers=headers, content=body))
     assert r.status_code == status, r.text
     if status != 415:
         assert "accept" not in r.headers
@@ -4661,6 +4717,12 @@ def test_jira_unserved_sorts_every_operation_no_route_serves(monkeypatch):
         ("/atlassian/wiki/rest/api/nopesuchroute?a=1", "application/json", "json", "?a=1"),
         ("/atlassian/wiki/rest/api/nopesuchroute?a=1", "*/*", "xml", "?a=1"),
         ("/atlassian/wiki/rest/api/nopesuchroute?a=1", "application/xml", "xml", "?a=1"),
+        (
+            "/atlassian/wiki/rest/api/nopesuchroute?a=1",
+            "application/xml;q=0.5;x=1, application/json",
+            "json",
+            "?a=1",
+        ),
         ("/atlassian/wiki/rest/api/nopesuchroute?a=1", None, "xml", "?a=1"),
         # a trailing slash is kept and an interior run collapsed, as in Jira's `detail`
         ("/atlassian/wiki/rest/api/nopesuchroute/", "application/json", "json", "nopesuchroute/"),
@@ -4673,6 +4735,31 @@ def test_jira_unserved_sorts_every_operation_no_route_serves(monkeypatch):
         # what ``errors.atlassian.jaxrs_not_found`` escapes in the XML; the JSON escapes neither
         ("/atlassian/wiki/rest/api/nope&x'quote", None, "xml", "nope&amp;x'quote"),
         ("/atlassian/wiki/rest/api/nope&x'quote", "application/json", "json", "nope&x'quote"),
+        # the name is read whatever its case
+        ("/atlassian/wiki/rest/api/nopesuchroute", "APPLICATION/JSON", "json", "nopesuchroute"),
+        # by `q`, `q=0` among them, then the more specific, then the first listed, XML before JSON
+        *(
+            ("/atlassian/wiki/rest/api/nopesuchroute", accept, shape, "nopesuchroute")
+            for accept, shape in (
+                ("application/json;q=0", "json"),
+                ("application/xml;q=0, application/json", "json"),
+                ("application/json;q=0.5, application/xml", "xml"),
+                ("application/xml, application/json", "xml"),
+                ("APPLICATION/XML, application/json", "xml"),
+                ("application/*, application/json", "json"),
+                ("application/*", "xml"),
+                ("text/xml, application/json", "json"),
+                ("foo, application/json", "json"),
+                ("application/jsonx", "xml"),
+                ("application/json-patch+json", "xml"),
+                ("application/*, application/json;q=0.5", "xml"),
+                ("*/*, application/json;q=0.5", "xml"),
+                ("*/json", "xml"),
+                # a `Q` Spring would fail to copy, where Jersey reads the last `q`
+                ("application/json;q=0.5;Q=2;q=0.5", "json"),
+                ("*/*;q=0.5;Q=2;q=0.5", "xml"),
+            )
+        ),
     ],
 )
 def test_confluence_answers_an_unclaimed_segment_in_the_shape_accept_asks_for(
@@ -5576,6 +5663,7 @@ def test_jira_runs_a_write_on_a_served_path_where_a_route_takes_only_get(
 
 
 _SPRING_415 = "org.springframework.web.HttpMediaTypeNotSupportedException: "
+_OUT_OF_RANGE = 'Invalid quality value "{}": should be between 0.0 and 1.0'
 _JSON_TYPE = "application/json"
 
 
@@ -5600,6 +5688,70 @@ _JSON_TYPE = "application/json"
         ),
         ("POST", "/wiki/rest/api/content/abc123/child/attachment", None, "foo", 415)
         + ("Invalid mime type \"foo\": does not contain '/'",),
+        # the parameters kept (``errors.atlassian._spring_media_type``)
+        *(
+            ("POST", "/wiki/rest/api/content/abc123/child/attachment", None, ctype, 415, named)
+            for ctype, named in (
+                ("application/json;charset=nope;charset=utf-8", "'application/json;charset=utf-8'"),
+                ("application/json;Charset=nope;charset=utf-8", "'application/json;charset=utf-8'"),
+                ("application/json;charset=utf-8;Charset=nope", "'application/json;Charset=nope'"),
+                ("application/xml;x=1;X=2", "'application/xml;X=2'"),
+                ("application/xml;Q=2", "'application/xml;Q=2'"),
+                ("application/xml;q=2;Q=0.5", "'application/xml;Q=0.5'"),
+                ("application/xml;q=1d", "'application/xml;q=1d'"),
+                ("application/xml;q=-0", "'application/xml;q=-0'"),
+            )
+        ),
+        # a `q` Spring cannot read, the one thing wrong with the type: why, in Spring's words and
+        # Java's (``errors.atlassian._spring_quality_reason``)
+        *(
+            ("POST", "/wiki/rest/api/space/abc123/permission", None, ctype, 415)
+            + (f'Invalid media type "{ctype}": {reason}',)
+            for ctype, reason in (
+                ("application/json;q=2", _OUT_OF_RANGE.format("2")),
+                ('application/xml;q="2"', _OUT_OF_RANGE.format("2")),
+                ('application/xml;q=" 2"', _OUT_OF_RANGE.format(" 2")),
+                ("application/xml;q=NaN", _OUT_OF_RANGE.format("NaN")),
+                ("application/xml;q=0x1.8p0", _OUT_OF_RANGE.format("0x1.8p0")),
+                ("application/xml;Q=0.5;q=2", _OUT_OF_RANGE.format("2")),
+                ("application/xml;Charset=bogus;q=2", _OUT_OF_RANGE.format("2")),
+                ("application/xml;charset=ISO_8859-1:1987;q=2", _OUT_OF_RANGE.format("2")),
+                ("application/xml;q=abc", 'For input string: "abc"'),
+                ('application/xml;q="abc "', 'For input string: "abc"'),
+                ("application/xml;q=-", 'For input string: "-"'),
+                ("application/xml;q=0x1.8", 'For input string: "0x1.8"'),
+                ("application/xml;q=1.2e3.4", 'For input string: "1.2e3.4"'),
+                ("application/xml;q=1.2.3", "multiple points"),
+                ("application/xml;q=.5.5", "multiple points"),
+                ("application/xml;q=-..", "multiple points"),
+                ('application/xml;q=""', "empty String"),
+            )
+        ),
+        (
+            "POST",
+            "/wiki/rest/api/content/abc123/child/attachment",
+            None,
+            "multipart/form-data;boundary=x;q=2",
+            415,
+            'Invalid media type "multipart/form-data;boundary=x;q=2": ' + _OUT_OF_RANGE.format("2"),
+        ),
+        # a charset Java does not name, in the case Spring checks, and one named in another case
+        (
+            "POST",
+            "/wiki/rest/api/content/abc123/child/attachment",
+            None,
+            "multipart/form-data; boundary=x; charset=u8",
+            415,
+            "'multipart/form-data; boundary=x; charset=u8'",
+        ),
+        (
+            "POST",
+            "/wiki/rest/api/content/abc123/child/attachment",
+            None,
+            "multipart/form-data; boundary=x; Charset=bogus",
+            403,
+            errors_atlassian.CONFLUENCE_FORBIDDEN_BODY,
+        ),
         (
             "POST",
             "/wiki/rest/api/content/abc123/child/attachment",
@@ -5635,7 +5787,7 @@ _JSON_TYPE = "application/json"
         ("POST", "/wiki/rest/api/content/archive", None, "text/plain", 415, b""),
         ("POST", "/wiki/rest/api/template", None, "application/xml", 415, b""),
         ("POST", "/wiki/rest/api/content/archive", None, "foo", 400)
-        + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
+        + (errors_atlassian.tomcat_page(400).encode(),),
         # Jersey's own reading of a type: a wildcard JSON matches is JSON, a charset is not looked
         # up and an empty parameter is skipped, and a parameter with no name, no `=`, an empty value
         # or space beside the `=` is unreadable
@@ -5656,49 +5808,49 @@ _JSON_TYPE = "application/json"
         ("POST", "/wiki/rest/api/template", None, 'application/json;x="a\\"b"', 403)
         + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
         ("POST", "/wiki/rest/api/template", None, "a@b/json", 400)
-        + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
+        + (errors_atlassian.tomcat_page(400).encode(),),
         ("POST", "/wiki/rest/api/template", None, "application/json;=x", 400)
-        + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
+        + (errors_atlassian.tomcat_page(400).encode(),),
         ("POST", "/wiki/rest/api/template", None, "application/json;x", 400)
-        + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
+        + (errors_atlassian.tomcat_page(400).encode(),),
         ("POST", "/wiki/rest/api/template", None, "application/json;x=", 400)
-        + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
+        + (errors_atlassian.tomcat_page(400).encode(),),
         ("POST", "/wiki/rest/api/template", None, "application/json;charset =utf-8", 400)
-        + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
+        + (errors_atlassian.tomcat_page(400).encode(),),
         ("POST", "/wiki/rest/api/template", None, "application/json;charset= utf-8", 400)
-        + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
+        + (errors_atlassian.tomcat_page(400).encode(),),
         ("DELETE", "/wiki/rest/api/user/watch/space/NOPESUCHZZ", None, "", 400)
-        + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
+        + (errors_atlassian.tomcat_page(400).encode(),),
         ("POST", "/wiki/rest/api/template", None, 'application/json;x="a', 400)
-        + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
+        + (errors_atlassian.tomcat_page(400).encode(),),
         ("POST", "/wiki/rest/api/template", None, "application/json/x", 400)
-        + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
+        + (errors_atlassian.tomcat_page(400).encode(),),
         ("POST", "/wiki/rest/api/template", None, "a/b c", 400)
-        + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
+        + (errors_atlassian.tomcat_page(400).encode(),),
         ("POST", "/wiki/rest/api/template", None, "application/json;x?y", 400)
-        + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
+        + (errors_atlassian.tomcat_page(400).encode(),),
         ("POST", "/wiki/rest/api/template", None, "application/json;x=1 ;y=2", 403)
         + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
         ("POST", "/wiki/rest/api/template", None, "application/json;x=1 ;y", 400)
-        + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
+        + (errors_atlassian.tomcat_page(400).encode(),),
         # the value's ends, as ``backlot.errors.atlassian.jersey_media_type`` trims them
         ("POST", "/wiki/rest/api/template", None, "application/json\xa0", 400)
-        + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
+        + (errors_atlassian.tomcat_page(400).encode(),),
         ("POST", "/wiki/rest/api/template", None, "\x85application/json", 400)
-        + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
+        + (errors_atlassian.tomcat_page(400).encode(),),
         ("POST", "/wiki/rest/api/template", None, "application/json\t", 403)
         + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
         # the two that ran: a type Jersey cannot read is its 400 too, JSON reaches the operation,
         # which real runs and Backlot does not serve
         ("POST", "/wiki/rest/api/contentbody/convert/async/1", None, "application/json;x", 400)
-        + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
+        + (errors_atlassian.tomcat_page(400).encode(),),
         ("POST", "/wiki/rest/api/contentbody/convert/async/1", None, _JSON_TYPE, 404, None),
         ("POST", "/wiki/rest/api/contentbody/convert/async/bulk/tasks", None, "text/plain", 415)
         + (b"",),
         ("PUT", "/wiki/rest/api/settings/lookandfeel", None, "text/plain", 403)
         + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
         ("PUT", "/wiki/rest/api/settings/lookandfeel", None, "foo", 400)
-        + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
+        + (errors_atlassian.tomcat_page(400).encode(),),
         ("DELETE", "/wiki/rest/api/relation/1/from/user/a/to/content/2", None, None, 403)
         + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
         # each operation the four lists in ``backlot.routers.atlassian`` name, with no credential:
@@ -5826,3 +5978,1334 @@ def test_confluence_answers_an_operation_before_it_runs(
             if status == 400
             else _JSON_TYPE
         )
+
+
+# --- what `Accept` asks for: the 406, and the shapes a refusal takes from it --------------------
+
+_HTML = "text/html"
+_JSON = "application/json"
+_PROBLEM = errors_atlassian.PROBLEM_JSON
+_JIRA_JSON = errors_atlassian.JIRA_JSON_MEDIA_TYPE
+_TOMCAT = errors_atlassian.TOMCAT_MEDIA_TYPE
+_UNREAD_BESIDE_JSON = "application/json,*.*;q=0.9"
+_BROWSER = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+_INFO = "/atlassian/rest/api/3/serverInfo"
+_SEARCH = "/atlassian/rest/api/3/search/jql"
+_ISSUE_NOPE = "/atlassian/rest/api/3/issue/NOPE-1"
+_SPACES = "/atlassian/wiki/rest/api/space"
+_ATTACH = "/atlassian/wiki/rest/api/content/1/child/attachment"
+_LABEL = "/atlassian/wiki/rest/api/space/NOPESUCH/label"
+_CQL = "/atlassian/wiki/rest/api/search?cql=type%3Dpage"
+_LICENSE = "/atlassian/rest/api/3/license/approximateLicenseCount"
+#: Tomcat's page by status (``errors.atlassian.tomcat_page``): as long as real's was, and the title
+#: real's carried in its `<title>` and its `<h1>`.
+_TOMCAT_PAGES = {
+    400: (435, "HTTP Status 400 – Bad Request"),
+    403: (431, "HTTP Status 403 – Forbidden"),
+    405: (449, "HTTP Status 405 – Method Not Allowed"),
+    406: (441, "HTTP Status 406 – Not Acceptable"),
+    415: (457, "HTTP Status 415 – Unsupported Media Type"),
+}
+_PRESENT = ...
+
+_EMPTY_HTML = errors_atlassian.HTML_MEDIA_TYPE
+_COLUMNS_PRODUCE = (
+    "application/json;charset=UTF-8, application/json, application/*+json, application/yaml, "
+    "application/xml, text/xml, application/*+xml"
+)
+
+
+#: Jira's 500 page as real sent it, its length and the SHA-256 of its text with the log reference
+#: and the trace id read as `<log>` and `<trace>` (``errors.atlassian.jira_oops_page``).
+_JIRA_OOPS = (1703, "8f3cc6f7eac5d1b3d98f513cfc5094be6465a48d66717d8b409787c6c7a8d114")
+_Q2 = "application/json;Q=2"
+#: Two members, one with a `q` Spring cannot read as it sorts them
+_SORT_FAILS = "application/json;Q=abc, text/plain"
+#: Headers of more than 31 members, where Java's `List.sort` merges runs (``backlot.java_timsort``):
+#: two that Confluence's Spring services sort without reading their `Q=abc`, one whose comparisons
+#: break the sort's contract, one whose `Q=abc` they read, and one with no `Q` whose comparisons
+#: break the contract because `application/*+json` sorts as a wildcard subtype, each picked by
+#: running Spring's own sort in a JVM
+_SORTED_33 = ", ".join(
+    (
+        "application/xml;q=0.9",
+        "application/json",
+        "application/xml;q=0",
+        "application/xml;q=0",
+        "text/plain;q=0.9",
+        "application/json;q=0",
+        "text/*",
+        "application/json;q=0.5",
+        "text/*;q=0.1",
+        "application/xml;q=0",
+        "image/png;q=0.1",
+        "*/*;q=0.5",
+        "application/xml;q=0.5",
+        "*/*;q=0",
+        "application/xml;q=0",
+        "application/*;q=0.9",
+        "text/*;q=0.9",
+        "application/*;q=0.1",
+        "text/*;q=1",
+        "*/*",
+        "image/png;q=0",
+        "*/*;q=0.9",
+        "application/xml;q=0",
+        "application/*;Q=abc",
+        "text/plain;q=0.1",
+        "text/*;q=0.5",
+        "*/*;q=0",
+        "application/xml;q=0.9",
+        "text/plain;q=1",
+        "text/*;q=0.9",
+        "text/html",
+        "application/xml;q=1",
+        "application/json;q=0.9",
+    )
+)
+_SORTED_34 = ", ".join(
+    (
+        "text/*;q=0.9",
+        "text/html;q=0",
+        "application/*;q=0.1",
+        "text/*;q=1",
+        "image/png;q=0.9",
+        "application/json;q=0.1",
+        "*/*;q=0.1",
+        "application/xml;q=0.1",
+        "text/*;q=1",
+        "text/*;q=0.5",
+        "application/xml;q=0.9",
+        "application/xml;q=0",
+        "text/plain;q=1",
+        "application/*;q=1",
+        "text/plain;q=0",
+        "image/png;q=0.9",
+        "text/html;q=0.1",
+        "application/xml;q=0",
+        "image/png;q=0.9",
+        "text/html;q=1",
+        "*/*;q=0.5",
+        "application/json;q=0.5",
+        "*/*",
+        "application/xml",
+        "*/*;q=0.9",
+        "text/html;q=0.1",
+        "image/png;q=0.1",
+        "application/*;q=1",
+        "image/png;q=0.5",
+        "text/plain;q=0.9",
+        "application/*;q=0.5",
+        "application/xml;q=0.5",
+        "application/*;Q=abc",
+        "image/png;q=1",
+    )
+)
+_BREAKS_THE_SORT_33 = ", ".join(
+    (
+        "application/xml;q=0.5",
+        "text/plain",
+        "image/png;q=0.9",
+        "text/*;q=0",
+        "application/xml;q=1",
+        "text/plain;q=0",
+        "application/json;q=0.1",
+        "text/plain;q=0.1",
+        "text/html;q=1",
+        "text/*;q=0",
+        "application/json;q=0",
+        "image/png;q=1",
+        "image/png;q=0",
+        "image/png;q=1",
+        "application/json;q=0.9",
+        "application/json;q=0.1",
+        "application/json;q=0.9",
+        "*/*;Q=abc",
+        "application/json;q=0",
+        "text/plain;q=1",
+        "application/*;q=1",
+        "text/*;q=0.1",
+        "text/plain;q=0",
+        "text/*;q=0",
+        "image/png;q=0",
+        "application/*;q=1",
+        "application/*;q=0.1",
+        "application/*",
+        "application/json",
+        "application/xml;q=0.1",
+        "text/*",
+        "text/*;q=0.5",
+        "text/plain;q=1",
+    )
+)
+_READS_THE_Q_33 = ", ".join(
+    (
+        "application/*;q=0.9",
+        "application/json;Q=abc",
+        "*/*;q=1",
+        "text/*;q=0",
+        "image/png;q=0",
+        "text/plain;q=0.9",
+        "text/plain;q=0.9",
+        "text/*;q=1",
+        "image/png;q=1",
+        "text/*;q=0.1",
+        "text/html;q=1",
+        "image/png;q=0.9",
+        "*/*;q=0",
+        "*/*;q=1",
+        "application/json;q=0.5",
+        "text/html;q=0.9",
+        "application/xml",
+        "text/*;q=0.1",
+        "application/xml;q=1",
+        "text/html;q=0.1",
+        "application/xml;q=0.5",
+        "text/plain",
+        "text/*;q=0.1",
+        "application/json;q=0.9",
+        "application/*;q=0.1",
+        "text/*;q=0.9",
+        "application/*;q=0.9",
+        "text/plain;q=0.1",
+        "application/json;q=0.1",
+        "*/*;q=0",
+        "application/*;q=0.1",
+        "application/json;q=0.5",
+        "application/*;q=0.5",
+    )
+)
+_WILD_SUFFIX_32 = ", ".join(
+    (
+        "text/plain;q=0",
+        "application/json",
+        "application/xml;q=0.5",
+        "text/plain;q=0.9",
+        "application/json;q=0.5",
+        "application/json",
+        "application/*+json",
+        "text/plain;q=0",
+        "application/*+json",
+        "application/xml;q=0.9",
+        "application/*+json",
+        "application/*+json",
+        "application/json;q=0.9",
+        "application/*;q=0",
+        "text/plain",
+        "application/json;q=0",
+        "application/*+json;q=0.5",
+        "application/*+json;q=0.5",
+        "application/xml",
+        "application/*+json;q=0",
+        "application/xml",
+        "*/*;q=0.9",
+        "application/json",
+        "application/*+json;q=0.5",
+        "text/plain;q=0",
+        "text/plain",
+        "application/json;q=0",
+        "text/plain",
+        "application/*;q=0",
+        "text/plain;q=0",
+        "application/*+json",
+        "text/plain",
+    )
+)
+
+
+def _MEMBERS(count: int) -> str:
+    """An `Accept` of ``count`` members, the last `application/json`."""
+    return ", ".join([*(f"a/b{i}" for i in range(count - 1)), "application/json"])
+
+
+_OOPS_MEDIA = "text/html;charset=utf-8"
+_LABELS = "/atlassian/wiki/rest/api/content/{content}/label"
+
+
+def _unparsed(accept: str) -> bytes:
+    """The 400 a Confluence JAX-RS service answers an `Accept` it cannot parse with."""
+    return f'The HTTP header field "Accept" with value "{accept}" could not be parsed.'.encode()
+
+
+def _send_as_latin1(client, request):
+    """``request``, built by the TestClient with its default headers, sent with each header value's
+    bytes as they are, which :func:`_sent_as` says why the TestClient does not."""
+    if all(value.isascii() for value in request.headers.values()):
+        return client.send(request)
+
+    async def send():
+        transport = httpx.ASGITransport(app=client.app)
+        async with httpx.AsyncClient(transport=transport) as raw:
+            again = raw.build_request(
+                request.method,
+                str(request.url),
+                headers=request.headers.raw,
+                content=request.read(),
+            )
+            return await raw.send(again)
+
+    return asyncio.run(send())
+
+
+def _out_of_bounds(code: int) -> bytes:
+    """The 500 a Confluence JAX-RS service answers an `Accept` it fails on, naming the ``code`` of
+    the character it fails on."""
+    message = f"java.lang.ArrayIndexOutOfBoundsException: Index {code} out of bounds for length 128"
+    return f'{{"statusCode":500,"message":"{message}"}}'.encode()
+
+
+_ACCEPT_ROWS = [
+    # (method, path, credential, Accept, (content-type, body) sent, status, content-type answered,
+    # body: bytes, a shape below, or None to leave it unread, and headers: a value, `_PRESENT`, or
+    # None for absent)
+    #
+    # -- Jira: a served route, the 406 and the values that pass it
+    (
+        "GET",
+        _INFO,
+        "none",
+        _HTML,
+        None,
+        406,
+        _PROBLEM,
+        b'{"type":"about:blank","title":"Not Acceptable","status":406,"detail":"Acceptable '
+        b'representations: [application/json].","instance":"/rest/api/3/serverInfo"}',
+        {"accept": "application/json", "x-ratelimit-limit": None},
+    ),
+    ("GET", _INFO, "none", _JSON, None, 200, _JIRA_JSON, None, {"accept": None}),
+    ("GET", _INFO, "none", "TEXT/HTML", None, 406, _PROBLEM, "problem", {}),
+    ("GET", _INFO, "none", "text/xml", None, 406, _PROBLEM, "problem", {}),
+    ("GET", _INFO, "none", "application/problem+json", None, 406, _PROBLEM, "problem", {}),
+    ("GET", _INFO, "none", "text/*", None, 406, _PROBLEM, "problem", {}),
+    ("GET", _INFO, "none", "image/*", None, 406, _PROBLEM, "problem", {}),
+    ("GET", _INFO, "none", "application/*", None, 200, _JIRA_JSON, None, {}),
+    ("GET", "/atlassian/rest/api/2/serverInfo", "none", _HTML, None, 406, _PROBLEM, "problem", {}),
+    ("GET", _INFO, "none", None, None, 200, _JIRA_JSON, None, {}),
+    ("GET", _INFO, "none", "", None, 200, _JIRA_JSON, None, {}),
+    ("GET", _INFO, "none", "*", None, 200, _JIRA_JSON, None, {}),
+    ("GET", _INFO, "none", "*/*;q=0", None, 200, _JIRA_JSON, None, {}),
+    ("GET", _INFO, "none", "application/*+json", None, 200, _JIRA_JSON, None, {}),
+    ("GET", _INFO, "none", "application/json;q=0, text/html", None, 200, _JIRA_JSON, None, {}),
+    ("GET", _INFO, "none", _BROWSER, None, 200, _JIRA_JSON, None, {}),
+    ("GET", _INFO, "none", _UNREAD_BESIDE_JSON, None, 200, _JIRA_JSON, None, {}),
+    ("GET", _INFO, "none", 'application/json;q="0.5"', None, 200, _JIRA_JSON, None, {}),
+    ("GET", _INFO, "none", "application/json;q=0.5f", None, 200, _JIRA_JSON, None, {}),
+    ("GET", _INFO, "none", "application/json;q=0.5;q=2", None, 406, _EMPTY_HTML, b"", {}),
+    ("GET", _INFO, "none", "application/json;charset=u8", None, 406, _EMPTY_HTML, b"", {}),
+    ("GET", _INFO, "none", "application/json;charset=undefined", None, 406, _EMPTY_HTML, b"", {}),
+    ("GET", _INFO, "none", "application/json;Charset=bogus", None, 406, _EMPTY_HTML, b"", {}),
+    # `foo` and `*.*`: the 406 with no body and its `Accept` kept
+    (
+        "GET",
+        _INFO,
+        "none",
+        "foo",
+        None,
+        406,
+        errors_atlassian.HTML_MEDIA_TYPE,
+        b"",
+        {"accept": "application/json"},
+    ),
+    ("GET", _INFO, "none", "*.*", None, 406, errors_atlassian.HTML_MEDIA_TYPE, b"", {}),
+    # a caller whose credential resolves gets its account id and no quota on the 406
+    ("GET", _INFO, "admin", _HTML, None, 406, _PROBLEM, "problem")
+    + ({"x-aaccountid": _PRESENT, "x-ratelimit-limit": None},),
+    ("GET", _INFO, "admin", _JSON, None, 200, _JIRA_JSON, None, {"x-ratelimit-limit": _PRESENT}),
+    ("HEAD", _INFO, "none", _HTML, None, 406, _PROBLEM, b"", {"content-length": None}),
+    # -- Jira: what comes before the 406, and what comes after it
+    ("GET", _INFO, "unreadable-bearer", _HTML, None, 403, _JSON, None, {}),
+    ("DELETE", _INFO, "none", _HTML, None, 405, _PROBLEM, None, {"allow": "GET"}),
+    ("DELETE", _INFO, "none", "foo", None, 405, errors_atlassian.HTML_MEDIA_TYPE, b"", {}),
+    ("POST", _SEARCH, "admin", _HTML, ("text/plain", b"x"), 415, _PROBLEM, None, {}),
+    (
+        "POST",
+        _SEARCH,
+        "admin",
+        "foo",
+        ("text/plain", b"x"),
+        415,
+        "text/html;charset=UTF-8",
+        b"",
+        {},
+    ),
+    ("POST", _SEARCH, "admin", _HTML, (_JSON, b""), 406, _PROBLEM, "problem", {}),
+    ("POST", _SEARCH, "admin", _JSON, (_JSON, b""), 400, _JIRA_JSON, None, {}),
+    ("GET", _ISSUE_NOPE, "admin", _HTML, None, 406, _PROBLEM, "problem", {}),
+    ("GET", _ISSUE_NOPE, "admin", _JSON, None, 404, _JIRA_JSON, None, {}),
+    ("GET", "/atlassian/rest/api/3/issue/NOPE-1/comment?startAt=x", "none", _HTML, None, 406)
+    + (_PROBLEM, None, {}),
+    ("GET", "/atlassian/rest/api/3/issue/NOPE-1/comment?startAt=x", "none", _JSON, None, 400)
+    + (_PROBLEM, None, {}),
+    ("GET", "/atlassian/rest/api/3/nopesuchroute", "none", _HTML, None, 404, _PROBLEM, None, {}),
+    ("GET", "/atlassian/rest/api/3/nopesuchroute", "none", "foo", None, 404)
+    + (errors_atlassian.HTML_MEDIA_TYPE, b"", {}),
+    # -- Jira: a published operation with no route of its own (``_published_answer``)
+    ("GET", "/atlassian/rest/api/3/myself", "none", _HTML, None, 406, _PROBLEM, "problem")
+    + ({"www-authenticate": None},),
+    ("GET", "/atlassian/rest/api/3/myself", "none", _JSON, None, 401)
+    + ("application/json;charset=UTF-8", None, {"www-authenticate": _PRESENT}),
+    ("PUT", _ISSUE_NOPE, "none", _HTML, (_JSON, b"{}"), 406, _PROBLEM, "problem", {}),
+    ("PUT", _ISSUE_NOPE, "none", _JSON, (_JSON, b"{}"), 404, _JIRA_JSON, None, {}),
+    ("PUT", _ISSUE_NOPE, "none", _HTML, None, 415, _PROBLEM, None, {"accept": "application/json"}),
+    ("POST", "/atlassian/rest/api/3/issue", "none", _HTML, ("text/plain", b"x"), 415, _PROBLEM)
+    + (None, {}),
+    ("POST", "/atlassian/rest/api/3/issue", "none", _HTML, None, 406, _PROBLEM, "problem", {}),
+    ("GET", "/atlassian/rest/api/3/mypreferences", "none", "text/plain", None, 401)
+    + ("text/plain;charset=UTF-8", None, {}),
+    ("GET", "/atlassian/rest/api/3/mypreferences", "none", _HTML, None, 406, _PROBLEM)
+    + ("problem, text/plain", {"accept": "application/json, text/plain"}),
+    ("GET", "/atlassian/rest/api/2/mypreferences", "none", _HTML, None, 406, _PROBLEM)
+    + ("problem, text/plain", {}),
+    ("GET", "/atlassian/rest/api/3/license/approximateLicenseCount", "none", _HTML, None, 401)
+    + ("text/html;charset=UTF-8", None, {}),
+    ("OPTIONS", _INFO, "none", _HTML, None, 401, "text/html;charset=UTF-8", None, {}),
+    # -- Confluence: a Spring route's 406 in each of its shapes, and the values that pass it
+    ("GET", _SPACES, "none", _HTML, None, 406, _TOMCAT, "page", {"content-language": "en"}),
+    ("GET", _SPACES, "none", "application/problem+json", None, 406)
+    + ("application/problem+json", "errors", {}),
+    ("GET", _SPACES, "none", "application/hal+json", None, 406)
+    + ("application/hal+json", "errors", {}),
+    ("GET", _SPACES, "none", "foo", None, 406, None, b"", {}),
+    ("GET", _SPACES, "none", _UNREAD_BESIDE_JSON, None, 406, None, b"", {}),
+    ("GET", _SPACES, "none", "application/*+json", None, 403, _JSON, None, {}),
+    ("GET", _SPACES, "none", None, None, 403, _JSON, None, {}),
+    ("GET", _SPACES, "unparseable-basic", _HTML, None, 401, _JSON, None)
+    + ({"deprecation": None, "warning": None},),
+    ("GET", f"{_SPACES}/{{space}}/permission", "unparseable-basic", _HTML, None, 401, _JSON)
+    + (None, {}),
+    ("GET", f"{_SPACES}?limit=x", "admin", _HTML, None, 406, _TOMCAT, "page", {}),
+    ("GET", f"{_SPACES}?limit=x", "admin", _JSON, None, 400, _JSON, None, {}),
+    ("GET", f"{_LABELS}?prefix=bogus", "admin", _HTML, None, 406, _TOMCAT, "page", {}),
+    ("GET", f"{_LABELS}?prefix=bogus", "admin", _JSON, None, 400, _JSON, None, {}),
+    ("GET", f"{_SPACES}/NOPESUCH", "admin", _HTML, None, 406, _TOMCAT, "page")
+    + ({"deprecation": None},),
+    *(
+        ("GET", _SPACES, "admin", accept, None, 200, _JSON, None, {})
+        for accept in (
+            'application/json;q="0.5"',
+            "application/json;q=2;q=0.5",
+            "application/json;Charset=bogus",
+            "application/json;charset=UTF-8;Charset=bogus",
+        )
+    ),
+    *(
+        ("GET", _SPACES, "admin", accept, None, 406, None, b"", {})
+        for accept in (
+            "application/json;q=0.5;q=2",
+            "application/json;charset=bogus;Charset=UTF-8",
+            "application/json;charset=u8",
+            "application/json;charset=undefined",
+        )
+    ),
+    ("GET", f"{_SPACES}/NOPESUCH", "admin", _JSON, None, 404, _JSON, None)
+    + ({"deprecation": _PRESENT},),
+    ("HEAD", _SPACES, "none", _HTML, None, 406, _TOMCAT, b"", {"content-length": "441"}),
+    # -- Confluence: a JAX-RS service's 406, and the ones the catch-all answers
+    ("GET", _CQL, "none", _HTML, None, 406, None, b"", {"expires": None}),
+    ("GET", _CQL, "none", _UNREAD_BESIDE_JSON, None, 403, _JSON, None, {"expires": _PRESENT}),
+    ("GET", "/atlassian/wiki/rest/api/audit", "none", _HTML, None, 406, None, b"", {}),
+    ("GET", "/atlassian/wiki/rest/api/audit", "none", _JSON, None, 403, _JSON, None, {}),
+    ("GET", "/atlassian/wiki/rest/api/contentbody/convert/async/1", "none", _HTML, None, 406)
+    + (None, b"", {}),
+    ("GET", "/atlassian/wiki/rest/api/content/1/history", "none", _HTML, None, 406, _TOMCAT)
+    + ("page", {}),
+    ("PUT", "/atlassian/wiki/rest/api/content/1", "none", _HTML, (_JSON, b"{}"), 406, _TOMCAT)
+    + ("page", {}),
+    ("PUT", "/atlassian/wiki/rest/api/content/1", "none", _JSON, (_JSON, b"{}"), 403, _JSON)
+    + (errors_atlassian.CONFLUENCE_FORBIDDEN_BODY, {}),
+    ("POST", "/atlassian/wiki/rest/api/content", "none", _JSON, ("text/plain", b"x"), 403, _JSON)
+    + (errors_atlassian.CONFLUENCE_FORBIDDEN_BODY, {}),
+    ("DELETE", "/atlassian/wiki/rest/api/content/1", "none", _JSON, None, 403, _JSON)
+    + (errors_atlassian.CONFLUENCE_FORBIDDEN_BODY, {}),
+    # the one operation whose anonymous refusal takes the shape `Accept` asks for in its place
+    ("GET", _LABEL, "none", _HTML, None, 403, _TOMCAT, "page", {}),
+    (
+        "GET",
+        _LABEL,
+        "none",
+        _JSON,
+        None,
+        403,
+        _JSON,
+        errors_atlassian.CONFLUENCE_FORBIDDEN_BODY,
+        {},
+    ),
+    ("GET", _LABEL, "none", "application/problem+json", None, 403, "application/problem+json")
+    + (errors_atlassian.CONFLUENCE_FORBIDDEN_BODY, {}),
+    ("GET", _LABEL, "none", "foo", None, 403, None, b"", {}),
+    # -- Confluence: a 405 and a 415 in the shape `Accept` asks for
+    ("DELETE", _SPACES, "none", _HTML, None, 405, _TOMCAT, "page", {"allow": "GET, POST"}),
+    ("DELETE", _SPACES, "none", _JSON, None, 405, _JSON, None, {"allow": None}),
+    ("DELETE", _SPACES, "none", "application/problem+json", None, 405)
+    + ("application/problem+json", None, {"allow": None}),
+    ("DELETE", _SPACES, "none", "foo", None, 405, None, b"", {"allow": None}),
+    ("GET", f"{_SPACES}/{{space}}/permission", "admin", _HTML, None, 405, _TOMCAT, "page")
+    + ({"allow": "POST"},),
+    # each route's `Allow` on the page (``errors.atlassian._CONFLUENCE_ALLOW``)
+    ("POST", f"{_SPACES}/{{space}}", "none", _HTML, None, 405, _TOMCAT, "page")
+    + ({"allow": "PUT, DELETE, GET"},),
+    ("DELETE", "/atlassian/wiki/rest/api/content", "none", _HTML, None, 405, _TOMCAT, "page")
+    + ({"allow": "GET, POST"},),
+    ("POST", "/atlassian/wiki/rest/api/content/1", "none", _HTML, None, 405, _TOMCAT, "page")
+    + ({"allow": "DELETE, GET, PUT"},),
+    ("PUT", "/atlassian/wiki/rest/api/content/1/child/page", "none", _HTML, None, 405, _TOMCAT)
+    + ("page", {"allow": "GET"}),
+    ("PUT", "/atlassian/wiki/rest/api/content/1/child/comment", "none", _HTML, None, 405, _TOMCAT)
+    + ("page", {"allow": "GET"}),
+    ("DELETE", _ATTACH, "none", _HTML, None, 405, _TOMCAT, "page", {"allow": "GET, POST, PUT"}),
+    ("PUT", "/atlassian/wiki/rest/api/content/1/label", "none", _HTML, None, 405, _TOMCAT, "page")
+    + ({"allow": "GET, POST, DELETE"},),
+    ("POST", "/atlassian/wiki/rest/api/content/1/restriction/byOperation", "none", _HTML, None)
+    + (405, _TOMCAT, "page", {"allow": "GET"}),
+    ("POST", _ATTACH, "none", _HTML, ("text/plain", b"x"), 415, _TOMCAT, "page")
+    + ({"accept": "multipart/form-data"},),
+    ("POST", _ATTACH, "none", _JSON, ("text/plain", b"x"), 415, _JSON, None, {"accept": None}),
+    ("POST", _ATTACH, "none", "application/hal+json", ("text/plain", b"x"), 415)
+    + ("application/hal+json", None, {"accept": None}),
+    ("POST", _ATTACH, "none", "foo", ("text/plain", b"x"), 415, None, b"", {"accept": None}),
+    # `search`'s own 405, which no Accept changes
+    ("POST", "/atlassian/wiki/rest/api/search", "none", _JSON, None, 405, None, b"")
+    + ({"allow": "HEAD,GET,OPTIONS"},),
+    ("POST", "/atlassian/wiki/rest/api/search", "none", _HTML, None, 405, None, b"")
+    + ({"allow": "HEAD,GET,OPTIONS"},),
+    # -- a member Jira or a Spring service cannot read (``errors.atlassian.accepts``)
+    ("GET", _INFO, "none", "foo, application/json", None, 406, _EMPTY_HTML, b"", {}),
+    ("GET", _INFO, "none", "foo, application/json;Q=2", None, 406, _EMPTY_HTML, b"", {}),
+    ("GET", _INFO, "none", "application/json, foo", None, 406, _EMPTY_HTML, b"", {}),
+    ("GET", _INFO, "none", "application/json,*.*", None, 406, _EMPTY_HTML, b"", {}),
+    ("GET", _INFO, "none", "*/json", None, 406, _EMPTY_HTML, b"", {}),
+    ("GET", _INFO, "none", "application/json;q=2", None, 406, _EMPTY_HTML, b"", {}),
+    ("GET", _INFO, "none", "application/json;q=1e0", None, 200, _JIRA_JSON, None, {}),
+    ("GET", _INFO, "none", "application/json;q=\"0.5'", None, 406, _EMPTY_HTML, b"", {}),
+    ("GET", _INFO, "none", "application/json;q=10.51", None, 406, _EMPTY_HTML, b"", {}),
+    ("GET", _INFO, "none", "application/json;charset=bogus", None, 406, _EMPTY_HTML, b"", {}),
+    ("GET", _INFO, "none", "application/json;charset=base64", None, 406, _EMPTY_HTML, b"", {}),
+    ("GET", _INFO, "none", "application/json,,", None, 200, _JIRA_JSON, None, {}),
+    ("GET", "/atlassian/rest/api/3/issue/{issue[key]}", "admin", "application/json;q=2", None, 406)
+    + (_EMPTY_HTML, b"", {}),
+    (
+        "GET",
+        "/atlassian/rest/api/3/issue/{issue[key]}",
+        "admin",
+        _JSON,
+        None,
+        200,
+        _JIRA_JSON,
+        None,
+        {},
+    ),
+    ("GET", "/atlassian/rest/api/3/myself", "none", "application/json;charset=base64", None, 406)
+    + (_EMPTY_HTML, b"", {}),
+    ("GET", _SPACES, "none", "foo, application/json", None, 406, None, b"", {}),
+    ("GET", _INFO, "none", "\xa0application/json", None, 406, _EMPTY_HTML, b"", {}),
+    ("GET", _INFO, "none", "application/json;x@y=1", None, 406, _EMPTY_HTML, b"", {}),
+    ("GET", _INFO, "none", "application/json;=1", None, 406, _EMPTY_HTML, b"", {}),
+    ("GET", _INFO, "none", "application/json,*.*;q=0.9\xa0", None, 406, _EMPTY_HTML, b"", {}),
+    ("GET", _INFO, "none", "application/json;charset=utf-8;Charset=bogus", None, 406)
+    + (_EMPTY_HTML, b"", {}),
+    ("GET", _INFO, "none", "application/json;charset=ISO_8859-1:1987", None, 406, _EMPTY_HTML, b"")
+    + ({},),
+    ("GET", _SPACES, "none", "application/json;q=2", None, 406, None, b"", {}),
+    ("GET", _SPACES, "admin", "\xa0application/json", None, 406, None, b"", {}),
+    ("GET", _SPACES, "admin", "application/json;x@y=1", None, 406, None, b"", {}),
+    ("GET", _SPACES, "admin", "application/json;=1", None, 406, None, b"", {}),
+    ("GET", _SPACES, "admin", "application/json;x=a@b", None, 406, None, b"", {}),
+    ("GET", _SPACES, "admin", "text/plain;charset=ISO_8859-1:1987, application/json", None, 200)
+    + (_JSON, None, {}),
+    ("GET", _SPACES, "admin", "application/json;charset=bogus;Charset=utf-8", None, 406, None, b"")
+    + ({},),
+    ("GET", _SPACES, "admin", 'text/plain;q="abc";Q=0.5, application/json', None, 200, _JSON, None)
+    + ({},),
+    ("GET", _SPACES, "none", "*/json", None, 406, None, b"", {}),
+    ("GET", _SPACES, "none", "application/json,,", None, 403, _JSON, None, {}),
+    (
+        "GET",
+        "/atlassian/wiki/rest/api/content/{content}",
+        "admin",
+        "application/json;charset=utf-7",
+        None,
+        406,
+        None,
+        b"",
+        {},
+    ),
+    ("GET", "/atlassian/wiki/rest/api/content/{content}", "admin", _JSON, None, 200, _JSON, None)
+    + ({},),
+    # -- Confluence's JAX-RS services read it their own way (``errors.atlassian._jaxrs_accept``)
+    ("GET", _CQL, "admin", "application/*+json", None, 406, None, b"", {}),
+    ("GET", _CQL, "admin", "*/json", None, 200, _JSON, None, {}),
+    # no `Accept` and an empty one admit JSON there as anywhere
+    ("GET", _CQL, "admin", None, None, 200, _JSON, None, {}),
+    ("GET", _CQL, "admin", "", None, 200, _JSON, None, {}),
+    ("GET", _CQL, "none", "", None, 403, _JSON, None, {}),
+    ("GET", _CQL, "none", "*/*+json", None, 403, _JSON, None, {}),
+    ("GET", _CQL, "none", "foo, application/json", None, 403, _JSON, None, {}),
+    ("GET", _CQL, "none", "foo, *.*", None, 406, None, b"", {}),
+    ("GET", _CQL, "admin", 'application/json;x="a,b", text/plain', None, 200, _JSON, None, {}),
+    ("GET", _CQL, "admin", 'application/json;x="\xa0"', None, 200, _JSON, None, {}),
+    # a character past ASCII outside a quoted string (``errors.atlassian.jaxrs_out_of_bounds``),
+    # the code of the one Jersey fails on
+    *(
+        (method, path, credential, accept, sent, 500, _JSON, _out_of_bounds(code), {})
+        for method, path, credential, accept, sent, code in (
+            ("GET", _CQL, "admin", "\xa0application/json", None, 160),
+            ("GET", _CQL, "none", "\xa0application/json", None, 160),
+            ("GET", _CQL, "admin", "application/json;foo\xa0", None, 160),
+            ("GET", _CQL, "admin", "foo, \xa0", None, 160),
+            ("GET", _CQL, "admin", "\x80application/json", None, 128),
+            ("GET", _CQL, "admin", "application/json, \x85\xa0", None, 133),
+            ("GET", _CQL, "admin", "foo;\xa0", None, 160),
+            ("GET", _CQL, "admin", "*\xa0", None, 160),
+            ("GET", _CQL, "admin", "\xa0*", None, 160),
+            ("GET", _CQL, "admin", "*;\xa0", None, 160),
+            ("GET", _CQL, "admin", "\xa0, application/json", None, 160),
+            ("GET", _CQL, "admin", 'application/json;x="\xa0", \x85', None, 133),
+            ("GET", _CQL, "admin", 'application/json;x="\\"\xa0", \x85', None, 133),
+            ("GET", _CQL, "admin", 'application/json;x="a"\xa0', None, 160),
+            (
+                "OPTIONS",
+                "/atlassian/wiki/rest/api/search",
+                "admin",
+                "\xa0application/json",
+                None,
+                160,
+            ),
+            ("GET", "/atlassian/wiki/rest/api/audit", "none", "\xa0application/json", None, 160),
+            ("POST", "/atlassian/wiki/rest/api/template", "none", "\xa0application/json")
+            + (("text/plain", b"x"), 160),
+        )
+    ),
+    *(
+        ("GET", _CQL, "admin", accept, None, 400, "text/plain", _unparsed(accept), {})
+        for accept in (
+            "application/json;foo, \xa0",
+            "application/json;q=2, \xa0",
+            "ap@p\xa0lication/json",
+            "ap@p\xa0, \xa0",
+            "foo@\xa0",
+            "foo;@\xa0",
+            "application/json, ,\xa0",
+            'application/json;x="\xa0", application/json;foo',
+            'application/json;x="\\"\xa0", application/json;foo',
+        )
+    ),
+    ("GET", _CQL, "admin", 'application/json;x="a\\",b", text/plain', None, 200, _JSON, None, {}),
+    ("GET", f"{_SPACES}/MFS/nope", "none", "\xa0application/json", None, 404)
+    + (errors_atlassian.HTML_MEDIA_TYPE, errors_atlassian.HTML_NOT_FOUND.encode(), {}),
+    ("GET", "/atlassian/wiki/rest/api/nopesuchroute", "none", "\xa0application/json", None, 500)
+    + (None, b"", {"cache-control": None}),
+    ("GET", "/atlassian/wiki/rest/api/nopesuchroute", "none", None, None, 404, "application/xml")
+    + (None, {}),
+    # Jersey under a header it cannot parse: the 404's 500, and a write's 400 ahead of its 415
+    # (``backlot.routers.atlassian._confluence_not_found``, ``_published_answer``)
+    *(
+        ("GET", "/atlassian/wiki/rest/api/nopesuchroute", "none", accept, None, 500, None, b"")
+        + ({"cache-control": None},)
+        for accept in (
+            "application/json;q=2",
+            "application/json,,text/html",
+            "application/json;foo",
+        )
+    ),
+    ("GET", "/atlassian/wiki/rest/api/nope/deeper", "admin", "application/json;q=2", None, 500)
+    + (None, b"", {}),
+    ("POST", "/atlassian/wiki/rest/api/template", "none", "application/json;q=2")
+    + (("text/plain", b"x"), 400, "text/plain", _unparsed("application/json;q=2"), {}),
+    ("POST", "/atlassian/wiki/rest/api/content/archive", "none", "application/json;q=2")
+    + (("text/plain", b"x"), 400, "text/plain", _unparsed("application/json;q=2"), {}),
+    ("POST", "/atlassian/wiki/rest/api/template", "none", "application/json;q=2", ("foo", b"x"))
+    + (400, _TOMCAT, "page", {}),
+    # an operation that answers in other types than JSON (``_CONFLUENCE_PRODUCES``)
+    ("GET", "/atlassian/wiki/rest/api/audit/export", "none", _JSON, None, 406, None, b"", {}),
+    ("GET", "/atlassian/wiki/rest/api/audit/export", "none", "application/octet-stream", None)
+    + (406, None, b"", {}),
+    *(
+        ("GET", "/atlassian/wiki/rest/api/audit/export", "none", accept, None, 403, _JSON)
+        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY, {})
+        for accept in ("application/zip", "text/csv", "*/*")
+    ),
+    ("GET", _CQL, "admin", "application/json;charset=utf-7", None, 200, _JSON, None, {}),
+    ("GET", _CQL, "none", "application/json,", None, 403, _JSON, None, {}),
+    ("GET", _CQL, "none", "*;q=0.5", None, 403, _JSON, None, {}),
+    ("GET", _CQL, "none", "application/json;q=.5", None, 403, _JSON, None, {}),
+    (
+        "GET",
+        _CQL,
+        "none",
+        "application/json,,",
+        None,
+        400,
+        "text/plain",
+        _unparsed("application/json,,"),
+    )
+    + ({"expires": None},),
+    (
+        "GET",
+        _CQL,
+        "admin",
+        ",application/json",
+        None,
+        400,
+        "text/plain",
+        _unparsed(",application/json"),
+    )
+    + ({"cache-control": None},),
+    ("GET", _CQL, "admin", "application/json;q=2", None, 400, "text/plain")
+    + (_unparsed("application/json;q=2"), {}),
+    *(
+        ("GET", _CQL, "admin", accept, None, 400, "text/plain", _unparsed(accept), {})
+        for accept in (
+            "application/json;foo",
+            "application/json;q= 0.5",
+            "application/json;q=0.5;q=2",
+            "application/json;Q=2",
+            "application/json;q=1.0000",
+            "application/json;q=1.5",
+            "application/json;q=1.01",
+            "application/json;q=0.5f",
+            "foo;x, application/json",
+        )
+    ),
+    *(
+        ("GET", _CQL, "admin", accept, None, 200, _JSON, None, {})
+        for accept in (
+            'application/json;q="0.5"',
+            "application/json;q=2;q=0.5",
+            "application/json; q=0.5",
+        )
+    ),
+    ("DELETE", "/atlassian/wiki/rest/api/template/1", "none", '"0.5"', None, 400, "text/plain")
+    + (_unparsed('"0.5"'), {}),
+    ("HEAD", _CQL, "none", _HTML, None, 406, None, b"", {"content-length": None}),
+    (
+        "GET",
+        "/atlassian/wiki/rest/api/audit",
+        "none",
+        "application/*+json",
+        None,
+        406,
+        None,
+        b"",
+        {},
+    ),
+    ("GET", "/atlassian/wiki/rest/api/audit", "none", "*/json", None, 403, _JSON, None, {}),
+    # a JAX-RS write: its 415 before the 406, its 406 with no body, and the refusal past both
+    ("POST", "/atlassian/wiki/rest/api/template", "none", _HTML, ("text/plain", b"x"), 415, None)
+    + (b"", {}),
+    (
+        "POST",
+        "/atlassian/wiki/rest/api/template",
+        "none",
+        _HTML,
+        (_JSON, b"{}"),
+        406,
+        None,
+        b"",
+        {},
+    ),
+    ("POST", "/atlassian/wiki/rest/api/template", "none", _JSON, (_JSON, b"{}"), 403, _JSON)
+    + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY, {}),
+    # `space/{key}/label`'s writes answer as its GET does
+    ("POST", _LABEL, "none", _HTML, (_JSON, b"{}"), 403, _TOMCAT, "page", {}),
+    ("DELETE", _LABEL, "none", _HTML, None, 403, _TOMCAT, "page", {}),
+    # -- a Jira write that checks no `Accept` (its entry's ``accept``), beside one that does
+    ("DELETE", "/atlassian/rest/api/3/projectCategory/1", "none", _HTML, None, 401, _EMPTY_HTML)
+    + (None, {}),
+    ("PUT", "/atlassian/rest/api/3/plans/plan/1", "none", _HTML)
+    + (("application/json-patch+json", b"{}"), 401, _EMPTY_HTML, None, {}),
+    (
+        "DELETE",
+        "/atlassian/rest/api/3/screens/1",
+        "none",
+        _HTML,
+        None,
+        406,
+        _PROBLEM,
+        "problem",
+        {},
+    ),
+    # a write whose 406 names more than JSON (its entry's ``produces``)
+    ("PUT", "/atlassian/rest/api/3/mypreferences", "none", _HTML, (_JSON, b"{}"), 406, _PROBLEM)
+    + ("problem, text/plain", {"accept": "application/json, text/plain"}),
+    ("DELETE", "/atlassian/rest/api/3/filter/1/columns", "none", _HTML, None, 406, _PROBLEM, None)
+    + ({"accept": _COLUMNS_PRODUCE},),
+    ("DELETE", "/atlassian/rest/api/2/filter/1/columns", "none", _HTML, None, 406, _PROBLEM, None)
+    + ({"accept": _COLUMNS_PRODUCE},),
+    # -- a `q` named in another case that Spring cannot read
+    # (``backlot.routers.atlassian.spring_write_failure``), on Jira
+    *(
+        ("GET", path, credential, accept, None, 500, _OOPS_MEDIA, "oops", {})
+        for path, credential, accept in (
+            (_INFO, "none", _Q2),
+            (_INFO, "none", "application/json;Q=abc"),
+            (_INFO, "none", "*/*;Q=2"),
+            (_INFO, "none", "application/*;Q=2"),
+            (_INFO, "none", "application/*+json;Q=2"),
+            (_INFO, "none", "application/json;q=0.5;Q=2"),
+            (_INFO, "admin", "application/json;q=0.5;Q=2;q=0.5"),
+            ("/atlassian/rest/api/3/issue/{issue[key]}/comment?orderBy=bogus", "admin", _Q2),
+            ("/atlassian/rest/api/3/search/jql?jql=project%3D{project}", "admin", _Q2),
+        )
+    ),
+    ("GET", "/atlassian/rest/api/3/myself", "none", _Q2, None, 500, _OOPS_MEDIA, "oops")
+    + ({"www-authenticate": _PRESENT},),
+    ("GET", "/atlassian/rest/api/3/myself", "none", "application/json;q=0.5;Q=2;q=0.5", None)
+    + (500, _OOPS_MEDIA, "oops", {"www-authenticate": _PRESENT}),
+    ("HEAD", _INFO, "none", _Q2, None, 500, _OOPS_MEDIA, b"", {"content-length": "1703"}),
+    ("OPTIONS", _INFO, "none", _Q2, None, 500, _OOPS_MEDIA, b"")
+    + ({"allow": "GET, HEAD, POST, PUT, DELETE, OPTIONS, TRACE", "www-authenticate": _PRESENT},),
+    ("GET", _INFO, "none", "application/json;Q=0.5;q=0.5", None, 200, _JIRA_JSON, None, {}),
+    ("GET", _INFO, "none", "text/html;Q=2, application/json", None, 200, _JIRA_JSON, None, {}),
+    ("GET", _INFO, "none", "text/json;Q=2, application/json", None, 200, _JIRA_JSON, None, {}),
+    ("OPTIONS", _INFO, "admin", _Q2, None, 200, errors_atlassian.JIRA_OPTIONS_MEDIA_TYPE, b"")
+    + ({"allow": "GET,HEAD,OPTIONS"},),
+    # and not on another source's path
+    ("GET", "/health", "none", _Q2, None, 200, _JSON, None, {}),
+    ("GET", _ISSUE_NOPE, "none", _Q2, None, 404, _JIRA_JSON, None, {}),
+    ("GET", _SEARCH, "admin", _Q2, None, 400, _JIRA_JSON, None, {}),
+    ("POST", _INFO, "none", _Q2, None, 405, _PROBLEM, None, {}),
+    # and on Confluence
+    ("GET", _SPACES, "admin", _Q2, None, 400, None, b"", {"content-length": "0"}),
+    ("HEAD", _SPACES, "admin", _Q2, None, 400, None, b"", {"content-length": None}),
+    ("GET", "/atlassian/wiki/rest/api/content/{content}", "admin", _Q2, None, 400, None, b"", {}),
+    ("GET", _SPACES, "none", _Q2, None, 403, _TOMCAT, "page", {}),
+    ("GET", f"{_SPACES}?limit=abc", "admin", _Q2, None, 400, _TOMCAT, "page", {}),
+    ("GET", f"{_SPACES}?limit=-1", "admin", _Q2, None, 400, None, b"", {}),
+    ("GET", "/atlassian/wiki/rest/api/content?type=bogus", "admin", _Q2, None, 501, None, b"", {}),
+    ("DELETE", _SPACES, "admin", _Q2, None, 405, _TOMCAT, "page", {"allow": "GET, POST"}),
+    ("POST", _ATTACH, "admin", _Q2, ("text/plain", b"x"), 415, _TOMCAT, "page")
+    + ({"accept": "multipart/form-data"},),
+    ("POST", _ATTACH, "none", _Q2, ("multipart/form-data; boundary=x", b"x"), 403, _TOMCAT)
+    + ("page", {"accept": None}),
+    ("PUT", "/atlassian/wiki/rest/api/content/1/state", "none", _Q2, ("text/plain", b"x"), 415)
+    + (_TOMCAT, "page", {"accept": "application/json"}),
+    ("GET", _SPACES, "admin", "application/json;Q=2;Charset=bogus", None, 400, None, b"", {}),
+    ("GET", _SPACES, "admin", "application/json;q=0.5;Q=2;q=0.5", None, 400, None, b"", {}),
+    ("OPTIONS", _SPACES, "admin", _Q2, None, 403, _TOMCAT, "page", {}),
+    ("GET", f"{_SPACES}/NOPESUCH", "admin", _Q2, None, 404, errors_atlassian.HTML_MEDIA_TYPE)
+    + (errors_atlassian.HTML_NOT_FOUND.encode(), {}),
+    ("GET", "/atlassian/wiki/rest/api/nopesuchroute", "admin", _Q2, None, 500, None, b"", {}),
+    # Jersey writes its own 404, an `OPTIONS` of it too, under a `Q` Spring would fail to copy
+    (
+        "OPTIONS",
+        "/atlassian/wiki/rest/api/nopesuchroute",
+        "admin",
+        "application/json;q=0.5;Q=2;q=0.5",
+    )
+    + (None, 404, errors_atlassian.JAXRS_JSON_MEDIA_TYPE, None, {}),
+    ("OPTIONS", "/atlassian/wiki/rest/api/nopesuchroute", "admin", _Q2, None, 500, None, b"", {}),
+    # the product's page, which Spring does not write either
+    *(
+        (
+            method,
+            f"{_SPACES}/{{space}}/nope",
+            "admin",
+            accept,
+            None,
+            404,
+            errors_atlassian.HTML_MEDIA_TYPE,
+        )
+        + (errors_atlassian.HTML_NOT_FOUND.encode(), {})
+        for method in ("GET", "OPTIONS")
+        for accept in (_Q2, "application/json;q=0.5;Q=2;q=0.5")
+    ),
+    # the service layer's own 404, and a JSON member that copies its `q` beside one Spring skips
+    ("GET", "/atlassian/wiki/rest/api/content/999999999", "admin", _Q2, None, 404, None, b"", {}),
+    ("GET", _SPACES, "admin", "application/xml;Q=2, application/json", None, 200, _JSON, None, {}),
+    # a `charset` Spring finds no quotes around, the one at its start being unmatched
+    ("GET", _SPACES, "admin", 'application/json;charset="utf-8x', None, 406, None, b"", {}),
+    # a credential that resolves gets what an unserved path gets on `space/{key}/label`, where
+    # real runs it; the 403 in `Accept`'s shape is the anonymous caller's alone
+    (
+        "GET",
+        f"{_SPACES}/{{space}}/label",
+        "admin",
+        None,
+        None,
+        404,
+        errors_atlassian.HTML_MEDIA_TYPE,
+    )
+    + (errors_atlassian.HTML_NOT_FOUND.encode(), {}),
+    # Confluence answers a bearer it cannot read with its own 403, stamped as its answers are
+    ("GET", _SPACES, "unreadable-bearer", None, None, 403, _JSON, None)
+    + ({"x-confluence-request-time": _PRESENT},),
+    ("GET", _SPACES, "admin", "text/html;Q=2", None, 406, _TOMCAT, "page", {}),
+    ("HEAD", f"{_SPACES}/NOPESUCH", "admin", _Q2, None, 404, errors_atlassian.HTML_MEDIA_TYPE, b"")
+    + ({"content-length": None},),
+    ("OPTIONS", _CQL, "admin", _Q2, None, 400, "text/plain", _unparsed(_Q2), {}),
+    ("GET", _SPACES, "unparseable-basic", _Q2, None, 401, _JSON, None, {}),
+    ("OPTIONS", "/atlassian/wiki/rest/api/nope<script>", "admin", _Q2, None, 403, "text/html", None)
+    + ({"content-length": "919"},),
+    ("GET", _CQL, "admin", 'application/json;x="a;b"', None, 200, _JSON, None, {}),
+    # -- an `Accept` Spring fails to sort (``errors.atlassian.spring_cannot_sort``,
+    # ``backlot.routers.atlassian.spring_sort_failure``)
+    *(
+        (
+            method,
+            path,
+            credential,
+            accept,
+            sent,
+            500,
+            _OOPS_MEDIA,
+            "oops",
+            {"www-authenticate": None},
+        )
+        for method, path, credential, accept, sent in (
+            ("GET", _INFO, "none", _SORT_FAILS, None),
+            ("GET", _INFO, "none", "text/plain;Q=abc, application/json", None),
+            ("GET", _INFO, "none", "text/plain;Q=abc, text/html;q=0.5", None),
+            ("GET", _INFO, "none", "*;Q=abc, application/json", None),
+            ("GET", _INFO, "none", "application/json, application/json;Q=abc", None),
+            ("GET", _INFO, "none", 'application/json;Q="abc", text/plain', None),
+            ("GET", "/atlassian/rest/api/3/myself", "none", _SORT_FAILS, None),
+            ("GET", "/atlassian/rest/api/3/myself", "admin", _SORT_FAILS, None),
+            ("GET", "/atlassian/rest/api/3/nopesuchroute", "none", _SORT_FAILS, None),
+            ("GET", _ISSUE_NOPE, "none", _SORT_FAILS, None),
+            ("POST", _INFO, "none", _SORT_FAILS, None),
+            ("PUT", "/atlassian/rest/api/3/announcementBanner", "none", _SORT_FAILS)
+            + (("text/plain", b"x"),),
+            ("GET", _LICENSE, "none", _SORT_FAILS, None),
+        )
+    ),
+    ("HEAD", _INFO, "none", _SORT_FAILS, None, 500, _OOPS_MEDIA, b"", {"content-length": "1703"}),
+    *(
+        ("OPTIONS", _INFO, credential, accept, None, 500, _OOPS_MEDIA, b"")
+        + ({"allow": "GET, HEAD, POST, PUT, DELETE, OPTIONS, TRACE", "www-authenticate": None},)
+        for credential, accept in (
+            ("none", _SORT_FAILS),
+            ("admin", _SORT_FAILS),
+            ("unreadable-bearer", _SORT_FAILS),
+            ("none", "*;Q=abc, application/json"),
+            ("none", "text/plain, text/html, application/json;Q=abc"),
+        )
+    ),
+    # a header Spring sorts: a lone member, `NaN`, a hexadecimal `q`
+    ("GET", "/atlassian/rest/api/3/myself", "none", "application/json;Q=abc", None, 500)
+    + (_OOPS_MEDIA, "oops", {"www-authenticate": _PRESENT}),
+    ("GET", "/atlassian/rest/api/3/myself", "none", "application/json;Q=abc,", None, 500)
+    + (_OOPS_MEDIA, "oops", {"www-authenticate": _PRESENT}),
+    ("OPTIONS", _INFO, "none", "application/json;Q=NaN, text/plain", None, 500, _OOPS_MEDIA, b"")
+    + ({"www-authenticate": _PRESENT},),
+    ("OPTIONS", _INFO, "none", "application/json;Q=0x1p-1, text/plain", None, 401)
+    + ("text/plain;charset=UTF-8", errors_atlassian.JIRA_UNAUTHENTICATED.encode(), {}),
+    ("OPTIONS", _INFO, "none", "application/json;Q=0X1p-1, text/plain", None, 401)
+    + ("text/plain;charset=UTF-8", errors_atlassian.JIRA_UNAUTHENTICATED.encode(), {}),
+    ("GET", _INFO, "none", "foo, application/json;Q=abc, text/plain", None, 406, _EMPTY_HTML, b"")
+    + ({},),
+    ("GET", _INFO, "none", "application/json;q=-1", None, 406, _EMPTY_HTML, b"", {}),
+    # the member limit (``errors.atlassian._accept``)
+    ("GET", _INFO, "none", _MEMBERS(51), None, 406, _EMPTY_HTML, b"", {}),
+    ("GET", _INFO, "none", _MEMBERS(50), None, 200, _JIRA_JSON, None, {}),
+    ("OPTIONS", _INFO, "none", _MEMBERS(51), None, 401, _EMPTY_HTML, b"")
+    + ({"allow": "GET, HEAD, POST, PUT, DELETE, OPTIONS, TRACE, PATCH"},),
+    ("GET", _SPACES, "admin", _MEMBERS(51), None, 200, _JSON, None, {}),
+    # and on Confluence, by its own sort (``errors.atlassian.spring_cannot_sort``)
+    *(
+        (method, path, credential, accept, None, 500, None, b"", {})
+        for method, path, credential, accept in (
+            ("GET", _SPACES, "admin", _SORT_FAILS),
+            ("GET", _SPACES, "none", _SORT_FAILS),
+            ("GET", _SPACES, "admin", "text/plain;Q=abc, application/json"),
+            ("GET", _SPACES, "admin", "*/*;Q=abc, */*"),
+            ("GET", _SPACES, "admin", "a/b, text/plain;Q=abc, application/json"),
+            ("GET", f"{_SPACES}/NOPESUCH", "admin", _SORT_FAILS),
+            ("DELETE", _SPACES, "admin", _SORT_FAILS),
+            ("OPTIONS", _SPACES, "admin", _SORT_FAILS),
+            ("GET", "/atlassian/wiki/rest/api/nopesuchroute", "none", _SORT_FAILS),
+        )
+    ),
+    ("GET", f"{_SPACES}?limit=abc", "admin", _SORT_FAILS, None, 500, None, b"", {}),
+    # three and four members, where which pairs Java's sort compares decides it
+    *(
+        ("GET", _SPACES, "admin", accept, None, 500, None, b"", {})
+        for accept in (
+            "application/json, application/json, application/json;Q=abc",
+            "application/json;Q=abc, */*, application/json",
+            "text/plain;Q=abc, application/*+json",
+        )
+    ),
+    *(
+        ("GET", _SPACES, "admin", accept, None, 400, None, b"", {})
+        for accept in (
+            "*;Q=abc, application/json",
+            "application/json, */*;Q=abc",
+            "application/json;Q=abc, application/*",
+            "*/*;Q=abc, text/*",
+            "application/json, */*;Q=abc, application/json",
+            "application/json, text/plain, application/json, application/*;Q=abc",
+            "application/*;Q=abc, application/json;q=0.5, application/json, text/plain",
+            "application/json, application/*;Q=abc, application/json;q=0.5, text/plain",
+        )
+    ),
+    # the comparisons ``errors.atlassian._sorted_alike`` makes, and past 31 members the sort
+    # ``backlot.java_timsort`` runs
+    *(
+        ("GET", _SPACES, "admin", accept, None, status, None, b"", {})
+        for accept, status in (
+            ("text/plain;Q=abc, text/*;Q=-0, application/json;q=0", 500),
+            ("application/*;Q=abc, application/json, text/plain;Q=NaN", 400),
+            ("application/json;Q=abc, application/*, text/plain;Q=NaN", 500),
+            ("text/plain, application/json;Q=NaN, application/*;Q=abc", 500),
+            (
+                "application/json;x=1, application/json;x=1;x=2, application/*;Q=abc, text/html;Q=2",
+                500,
+            ),
+            (
+                "application/json;x=1, application/json;x=1;X=2, application/*;Q=abc, text/html;Q=2",
+                500,
+            ),
+            (_SORTED_33, 400),
+            (_SORTED_34, 400),
+            (_BREAKS_THE_SORT_33, 500),
+            (_READS_THE_Q_33, 500),
+            (_WILD_SUFFIX_32, 500),
+            ("text/*;Q=abc, text/html;Q=-2, application/json;Q=-1", 400),
+            ("application/json;Q=-2, text/plain;Q=-1, text/*;Q=abc", 500),
+            ("application/json;Q=-1, text/*;Q=-2, text/html;Q=abc", 500),
+        )
+    ),
+    ("GET", "/atlassian/wiki/rest/api/audit", "none", _SORT_FAILS, None, 400, "text/plain")
+    + (_unparsed(_SORT_FAILS), {}),
+    ("GET", _SPACES, "unparseable-basic", _SORT_FAILS, None, 401, _JSON, None, {}),
+]
+
+_ACCEPT_CREDENTIALS = {
+    "none": {},
+    "unreadable-bearer": {"Authorization": "Bearer nope"},
+    "unparseable-basic": {"Authorization": "Basic !!!"},
+}
+
+
+def _accept_body(shape, status: int, vendor_path: str) -> bytes:
+    """The body a row of :data:`_ACCEPT_ROWS` names by its shape."""
+    if shape == "page":
+        return errors_atlassian.tomcat_page(status).encode()
+    if shape == "errors":
+        return json.dumps(
+            {
+                "errors": [
+                    {
+                        "status": 406,
+                        "code": "NOT_ACCEPTABLE",
+                        "title": errors_atlassian.CONFLUENCE_NOT_ACCEPTABLE,
+                    }
+                ]
+            },
+            separators=(",", ":"),
+        ).encode()
+    named = "application/json" + (", text/plain" if shape == "problem, text/plain" else "")
+    return json.dumps(
+        {
+            "type": "about:blank",
+            "title": "Not Acceptable",
+            "status": 406,
+            "detail": f"Acceptable representations: [{named}].",
+            "instance": vendor_path,
+        },
+        separators=(",", ":"),
+    ).encode()
+
+
+#: Jira's 401 under each `Accept` (``errors.atlassian.jira_unauthenticated``), on
+#: `OPTIONS serverInfo` and, for the `GET` rows, `GET myself` with no credential: (method, Accept,
+#: status, content-type, the body as ``_LINE``, ``_UTF16_LINE`` or none, headers beside the realm).
+_LINE = errors_atlassian.JIRA_UNAUTHENTICATED.encode()
+_UTF16_LINE = b"\xfe\xff" + errors_atlassian.JIRA_UNAUTHENTICATED.encode("utf-16-be")
+_UTF32_LINE = errors_atlassian.JIRA_UNAUTHENTICATED.encode("utf-32-be")
+_UNREAD_ALLOW = {"allow": "GET, HEAD, POST, PUT, DELETE, OPTIONS, TRACE, PATCH"}
+_JIRA_401 = [
+    ("OPTIONS", None, 401, "text/plain;charset=UTF-8", _LINE, {"x-frame-options": None}),
+    ("OPTIONS", "", 401, "text/plain;charset=UTF-8", _LINE, {}),
+    ("OPTIONS", "*", 401, "text/plain;charset=UTF-8", _LINE, {}),
+    ("OPTIONS", "*;q=0.5", 401, "text/plain;charset=UTF-8", _LINE, {}),
+    ("OPTIONS", "*, application/json", 401, "application/json;charset=UTF-8", _LINE, {}),
+    ("OPTIONS", "application/json, *", 401, "application/json;charset=UTF-8", _LINE, {}),
+    ("OPTIONS", "text/plain, *", 401, "text/plain;charset=UTF-8", _LINE, {}),
+    ("OPTIONS", "*/*", 401, "text/html;charset=UTF-8", _LINE, {"x-frame-options": "SAMEORIGIN"}),
+    ("OPTIONS", "*/*;q=0", 401, "text/html;charset=UTF-8", _LINE, {}),
+    ("OPTIONS", "application/json, */*;q=0.1", 401, "text/html;charset=UTF-8", _LINE, {}),
+    ("OPTIONS", _BROWSER, 401, "text/html;charset=UTF-8", _LINE, {}),
+    ("OPTIONS", "text/html", 401, "text/html;charset=UTF-8", _LINE, {"x-frame-options": _PRESENT}),
+    ("OPTIONS", "TEXT/HTML", 401, "text/html;charset=UTF-8", _LINE, {}),
+    ("OPTIONS", _JSON, 401, "application/json;charset=UTF-8", _LINE, {"x-frame-options": None}),
+    ("OPTIONS", "APPLICATION/JSON", 401, "application/json;charset=UTF-8", _LINE, {}),
+    ("OPTIONS", "application/*", 401, "application/json;charset=UTF-8", _LINE, {}),
+    ("OPTIONS", "application/json;q=0", 401, "application/json;charset=UTF-8", _LINE, {}),
+    ("OPTIONS", "application/json;q=1e0", 401, "application/json;charset=UTF-8", _LINE, {}),
+    ("OPTIONS", "application/json,", 401, "application/json;charset=UTF-8", _LINE, {}),
+    ("OPTIONS", "application/json;charset=utf-8", 401, "application/json;charset=utf-8", _LINE, {}),
+    ("OPTIONS", 'application/json;charset="utf-8"', 401, "application/json;charset=utf-8", _LINE)
+    + ({},),
+    ("OPTIONS", "application/json;charset=ISO-8859-1", 401)
+    + ("application/json;charset=ISO-8859-1", _LINE, {}),
+    ("OPTIONS", "application/json, text/plain", 401, "application/json;charset=UTF-8", _LINE, {}),
+    ("OPTIONS", "text/plain, application/json", 401, "text/plain;charset=UTF-8", _LINE, {}),
+    ("OPTIONS", "application/json;q=0.5, text/plain", 401, "text/plain;charset=UTF-8", _LINE, {}),
+    ("OPTIONS", "application/json, image/*", 401, "application/json;charset=UTF-8", _LINE, {}),
+    ("OPTIONS", _UNREAD_BESIDE_JSON, 401, "application/json;charset=UTF-8", _LINE, {}),
+    ("OPTIONS", "text/plain", 401, "text/plain;charset=UTF-8", _LINE, {}),
+    ("OPTIONS", "text/*", 401, "text/plain;charset=UTF-8", _LINE, {}),
+    ("OPTIONS", "text/xml", 401, "text/xml;charset=UTF-8", _LINE, {}),
+    ("OPTIONS", "application/xml", 401, "application/xml;charset=UTF-8", _LINE, {}),
+    ("OPTIONS", "application/hal+json", 401, "application/hal+json;charset=UTF-8", _LINE, {}),
+    ("OPTIONS", "foo/bar", 401, "foo/bar;charset=UTF-8", _LINE, {}),
+    ("OPTIONS", "image/png", 401, "image/png;charset=UTF-8", _LINE, {}),
+    ("OPTIONS", "text/plain;charset=utf-16", 401, "text/plain;charset=utf-16", _UTF16_LINE, {}),
+    ("OPTIONS", "application/json;charset=utf16", 401, "application/json;charset=utf16")
+    + (_UTF16_LINE, {}),
+    ("OPTIONS", "application/json;charset=utf-32", 401, "application/json;charset=utf-32")
+    + (_UTF32_LINE, {}),
+    ("OPTIONS", "application/json;charset=x-MacRoman", 401)
+    + ("application/json;charset=x-MacRoman", _LINE, {}),
+    ("OPTIONS", "application/*+json;charset=utf-16", 401, "application/json;charset=UTF-8", _LINE)
+    + ({},),
+    ("OPTIONS", "application/*+json;q=0.5, text/plain", 401, "text/plain;charset=UTF-8", _LINE)
+    + ({},),
+    ("OPTIONS", "application/json;level=1", 401, "application/json;level=1;charset=UTF-8", _LINE)
+    + ({},),
+    ("OPTIONS", "text/plain;x=y", 401, "text/plain;x=y;charset=UTF-8", _LINE, {}),
+    ("OPTIONS", "application/json;q=0.5", 401, "application/json;charset=UTF-8", _LINE, {}),
+    ("OPTIONS", 'application/json;q="0.5"', 401, "application/json;charset=UTF-8", _LINE, {}),
+    ("OPTIONS", "application/json;q=2;q=0.5", 401, "application/json;charset=UTF-8", _LINE, {}),
+    ("OPTIONS", "text/htm, application/json", 401, "text/htm;charset=UTF-8", _LINE, {}),
+    ("OPTIONS", 'application/json;x="a;b"', 401, 'application/json;x="a;b";charset=UTF-8', _LINE)
+    + ({},),
+    ("OPTIONS", "text/plain;x=0.1, application/json;q=0.5", 401, "text/plain;x=0.1;charset=UTF-8")
+    + (_LINE, {}),
+    ("OPTIONS", "application/json;charset=UnicodeBig", 401, "application/json;charset=UnicodeBig")
+    + (_UTF16_LINE, {}),
+    # a `q` named in another case, in the type
+    *(
+        ("OPTIONS", accept, 401, media_type, _UTF16_LINE if "utf-16" in accept else _LINE, {})
+        for accept, media_type in (
+            ("application/json;Q=0.5", "application/json;Q=0.5;charset=UTF-8"),
+            ("application/json;level=1;Q=0.5", "application/json;level=1;Q=0.5;charset=UTF-8"),
+            ("application/hal+json;Q=0.5", "application/hal+json;Q=0.5;charset=UTF-8"),
+            ("application/json;q=0.5;Q=0.5", "application/json;Q=0.5;charset=UTF-8"),
+            ("application/json;charset=utf-16;Q=0.5", "application/json;q=0.5;charset=utf-16"),
+            ("text/plain;Q=0.5;x=y", "text/plain;q=0.5;x=y;charset=UTF-8"),
+            ("application/xml;Q=0.5", "application/xml;q=0.5;charset=UTF-8"),
+            ("application/json;charset=utf-8;level=1", "application/json;level=1;charset=utf-8"),
+            ("application/json;level=1;q=0.5", "application/json;level=1;charset=UTF-8"),
+        )
+    ),
+    ("OPTIONS", "text/plain;q=0.1;q=1, application/json", 401, "text/plain;charset=UTF-8", _LINE)
+    + ({},),
+    # the parameters kept, and members split outside quotes (``errors.atlassian._accept``)
+    *(
+        ("GET", accept, 401, media_type, _LINE, {})
+        for accept, media_type in (
+            ("application/json;q=Infinity;Q=0.5", "application/json;Q=0.5;charset=UTF-8"),
+            ('text/plain;q="abc";Q=0.5, application/json', "application/json;charset=UTF-8"),
+            ('application/json;x="a,b", text/plain', 'application/json;x="a,b";charset=UTF-8'),
+            (
+                'application/json;x="a\\",b", text/plain',
+                'application/json;x="a\\",b";charset=UTF-8',
+            ),
+            ("application/json;Charset=bogus;charset=utf-8", "application/json;charset=utf-8"),
+            ("application/json;charset=bogus;Charset=utf-8", "application/json;charset=utf-8"),
+            (
+                'application/json;charset="ISO_8859-1:1987"',
+                "application/json;charset=ISO_8859-1:1987",
+            ),
+        )
+    ),
+    ("OPTIONS", "text/plain;q=1;q=0.1, application/json", 401, "application/json;charset=UTF-8")
+    + (_LINE, {}),
+    # `text/html` first found past the header's start is the page's type, ahead of the `q` order
+    ("OPTIONS", "application/json, text/html", 401, "text/html;charset=UTF-8", _LINE)
+    + ({"x-frame-options": "SAMEORIGIN"},),
+    ("OPTIONS", "application/json, text/html;charset=utf-16", 401, "text/html;charset=UTF-8")
+    + (_LINE, {}),
+    ("OPTIONS", "image/*, text/html", 401, "text/html;charset=UTF-8", _LINE, {}),
+    ("OPTIONS", "text/html;q=0.1, application/json, text/html", 401)
+    + ("application/json;charset=UTF-8", _LINE, {"x-frame-options": None}),
+    ("OPTIONS", "application/json,TEXT/HTML", 401, "application/json;charset=UTF-8", _LINE, {}),
+    ("OPTIONS", "application/json, foo, text/html", 401, _EMPTY_HTML, b"", _UNREAD_ALLOW),
+    (
+        "OPTIONS",
+        "image/*",
+        500,
+        "text/html;charset=utf-8",
+        b"",
+        {"allow": "GET, HEAD, POST, PUT, DELETE, OPTIONS, TRACE"},
+    ),
+    ("OPTIONS", "audio/*", 500, "text/html;charset=utf-8", b"", {}),
+    # a member Jira cannot read
+    ("OPTIONS", "foo", 401, _EMPTY_HTML, b"", {**_UNREAD_ALLOW, "x-frame-options": None}),
+    ("OPTIONS", "*.*", 401, _EMPTY_HTML, b"", {}),
+    ("OPTIONS", "*/json", 401, _EMPTY_HTML, b"", {}),
+    ("OPTIONS", "foo, application/json", 401, _EMPTY_HTML, b"", _UNREAD_ALLOW),
+    ("OPTIONS", "application/json, foo", 401, _EMPTY_HTML, b"", _UNREAD_ALLOW),
+    ("OPTIONS", "application/json,*.*", 401, _EMPTY_HTML, b"", _UNREAD_ALLOW),
+    ("OPTIONS", "application/json;q=2", 401, _EMPTY_HTML, b"", _UNREAD_ALLOW),
+    ("OPTIONS", "text/html;q=abc, application/json", 401, _EMPTY_HTML, b"", _UNREAD_ALLOW),
+    ("OPTIONS", "application/json;charset=bogus", 401, _EMPTY_HTML, b"", _UNREAD_ALLOW),
+    ("OPTIONS", "application/json;charset=base64", 401, _EMPTY_HTML, b"", _UNREAD_ALLOW),
+    ("OPTIONS", "application/json;charset=rot13", 401, _EMPTY_HTML, b"", _UNREAD_ALLOW),
+    ("OPTIONS", "application/json;charset=u8", 401, _EMPTY_HTML, b"", _UNREAD_ALLOW),
+    ("OPTIONS", "application/json;Charset=bogus", 401, _EMPTY_HTML, b"", _UNREAD_ALLOW),
+    ("OPTIONS", "\xa0application/json", 401, _EMPTY_HTML, b"", _UNREAD_ALLOW),
+    ("OPTIONS", "application/json,*.*;q=0.9\xa0", 401, _EMPTY_HTML, b"", _UNREAD_ALLOW),
+    # a GET whose `Accept` admits JSON passes the 406 and reaches the same choice
+    ("GET", "text/plain, application/json", 401, "text/plain;charset=UTF-8", _LINE, {}),
+    ("GET", "application/json, */*;q=0.1", 401, "text/html;charset=UTF-8", _LINE, {}),
+    ("GET", "application/json, text/html", 401, "text/html;charset=UTF-8", _LINE, {}),
+]
+#: The gateway's Connect-token 403 under each `Accept` (``errors.atlassian.connect_token_answer``),
+#: the headers and the route-independence being
+#: :func:`test_jira_refuses_a_bearer_it_cannot_read_as_a_connect_token`'s.
+_CONNECT_XML = b"<error>Failed to parse Connect Session Auth Token</error>"
+_CONNECT_JSON = b'{"error": "Failed to parse Connect Session Auth Token"}'
+_CONNECT = [
+    (None, False),
+    ("application/xml", True),
+    ("APPLICATION/XML", True),
+    ("application/xml;q=0", True),
+    (_BROWSER, True),
+    ("text/xml", False),
+    ("application/json, application/xml", False),
+    (_HTML, False),
+    ("foo", False),
+    # each found anywhere in the header, JSON over XML wherever the two stand
+    ("xapplication/xml", True),
+    ("APPLICATION/XMLX", True),
+    ("text/html;x=application/xml", True),
+    ("*/*, application/xml", True),
+    ("\x85application/xml", True),
+    ("application/xml\xa0", True),
+    ("application/xml, application/json", False),
+    ("application/xml, xapplication/jsonx", False),
+    ("application/json;x=application/xml", False),
+    ("Application/Json, application/xml", False),
+    ("application/xhtml+xml", False),
+    ("application/x-xml", False),
+]
+_ACCEPT_ROWS += [
+    *(
+        (
+            method,
+            _INFO if method == "OPTIONS" else "/atlassian/rest/api/3/myself",
+            "none",
+            accept,
+            None,
+            status,
+            media_type,
+            body,
+            {"www-authenticate": 'OAuth realm="http%3A%2F%2Ftestserver"', **headers},
+        )
+        for method, accept, status, media_type, body, headers in _JIRA_401
+    ),
+    *(
+        (
+            "GET",
+            _INFO,
+            "unreadable-bearer",
+            accept,
+            None,
+            403,
+            "application/xml" if xml else _JSON,
+            _CONNECT_XML if xml else _CONNECT_JSON,
+            {},
+        )
+        for accept, xml in _CONNECT
+    ),
+    # the gateway's Connect-token 403 comes before Spring sorts `Accept`
+    ("GET", _INFO, "unreadable-bearer", _SORT_FAILS, None, 403, _JSON, _CONNECT_JSON, {}),
+    # the same choice on an operation that asks no 406, where a `GET` and a `HEAD` reach the two
+    # answers that differ by method: neither carries `Allow`, and the wildcard's 500 is the page
+    ("GET", _LICENSE, "none", "foo", None, 401, _EMPTY_HTML, b"")
+    + ({"allow": None, "www-authenticate": _PRESENT},),
+    ("HEAD", _LICENSE, "none", "*.*", None, 401, _EMPTY_HTML, b"", {"allow": None}),
+    # a `Q=2` beside a member Jira cannot read fails nothing there either
+    ("GET", _LICENSE, "none", "foo, application/json;Q=2", None, 401, _EMPTY_HTML, b"", {}),
+    ("GET", _LICENSE, "none", "image/*", None, 500, _OOPS_MEDIA, "oops")
+    + ({"allow": None, "www-authenticate": _PRESENT},),
+]
+
+
+@pytest.mark.parametrize(
+    "method,path,credential,accept,sent,status,media_type,body,headers", _ACCEPT_ROWS
+)
+def test_atlassian_answers_an_accept_where_and_as_real_does(
+    client, admin_h, keys, method, path, credential, accept, sent, status, media_type, body, headers
+):
+    """Pins the 406 (``errors.atlassian.not_acceptable``) where each product answers it, the
+    refusals that come before it and after it
+    (``backlot.routers.atlassian._checked_before_the_route`` and
+    ``backlot.routers.atlassian._published_answer``), and the shape a refusal takes from
+    `Accept` (``errors.atlassian.rendered``, ``errors.atlassian.confluence_refusal``)."""
+    path = path.format(**keys)
+    sent_headers = dict(admin_h if credential == "admin" else _ACCEPT_CREDENTIALS[credential])
+    if accept is not None:
+        sent_headers["accept"] = accept.encode("latin-1")
+    request = client.build_request(
+        method, path, headers=sent_headers, content=None if sent is None else sent[1]
+    )
+    if accept is None:
+        del request.headers["accept"]
+    if sent is not None:
+        request.headers["content-type"] = sent[0]
+    r = _send_as_latin1(client, request)
+    assert r.status_code == status, r.text
+    assert r.headers.get("content-type") == media_type
+    if body == "oops":
+        trace = r.headers["atl-traceid"]
+        assert f"TraceId: <strong>{trace}</strong>" in r.text
+        page = re.sub(
+            r"Log reference: <strong>[0-9a-f-]{36}</strong>",
+            "Log reference: <strong><log></strong>",
+            r.text,
+        )
+        page = page.replace(f"<strong>{trace}</strong>", "<strong><trace></strong>")
+        assert (len(r.content), hashlib.sha256(page.encode()).hexdigest()) == _JIRA_OOPS
+        body = None
+    if isinstance(body, str):
+        body = _accept_body(body, status, path.split("?")[0][len("/atlassian") :])
+        if status in _TOMCAT_PAGES and media_type == _TOMCAT:
+            length, title = _TOMCAT_PAGES[status]
+            assert len(body) == length
+            head = f'<!doctype html><html lang="en"><head><title>{title}</title>'
+            assert body.startswith(head.encode())
+            assert body.endswith(f"<body><h1>{title}</h1></body></html>".encode())
+    if body is not None:
+        assert r.content == body
+    for name, value in headers.items():
+        if value is None:
+            assert name not in r.headers, name
+        elif value is _PRESENT:
+            assert name in r.headers, name
+        else:
+            assert r.headers[name] == value, name
+
+
+def _accept_unchecked() -> list[str]:
+    """The operations whose entry says ``"accept": "unchecked"``."""
+    return sorted(
+        op
+        for group in ("refused", "run")
+        for op, entry in routers_atlassian._JIRA_UNSERVED[group].items()
+        if entry.get("accept") == "unchecked"
+    )
+
+
+@pytest.mark.parametrize("operation", _accept_unchecked())
+def test_jira_operations_that_answer_an_accept_with_no_406(client, operation):
+    """Pins each entry `ACCEPT_UNCHECKED` in ``scripts/gen_jira_unserved.py`` marks: none answers
+    `Accept: text/html` with the 406, with a body of a type it takes. The refused ones answer their
+    401 under that type; the avatar views, which real runs, get what any operation real runs gets
+    here."""
+    entry = routers_atlassian._JIRA_ENTRIES[operation]
+    method, template = operation.split(" ", 1)
+    headers = {"Accept": _HTML}
+    content = None
+    if entry.get("consumes") and entry.get("body") != "optional":
+        headers["Content-Type"], content = entry["consumes"][0], b"{}"
+    r = client.request(
+        method, f"/atlassian{template.replace('{}', '1')}", headers=headers, content=content
+    )
+    assert r.status_code != 406, r.text
+    if operation in routers_atlassian._JIRA_UNSERVED["refused"]:
+        assert r.status_code == 401
+        assert r.headers["content-type"] == "text/html;charset=UTF-8"

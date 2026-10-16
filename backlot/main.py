@@ -171,13 +171,13 @@ async def _http_exception_handler(request: Request, exc: StarletteHTTPException)
     if body is None:
         body = {"detail": exc.detail}
     # A vendor may decide how the body reaches the wire as well as what is in it — Google's errors
-    # are indented to the byte and a `callback` on a GET answers one at 200 as a script. Asking the
-    # envelope keeps that where the rest of that vendor's error shape lives, and leaves Atlassian
-    # and GitHub with exactly the JSONResponse they had. Measured 2026-09-15, that is right for
-    # both and for different reasons: Jira and Confluence ignore `callback` outright, on an error
-    # and on a success, while GitHub honours it through an envelope of its own — `/**/cb({"meta":
-    # …, "data": …})` under `application/javascript; charset=utf-8`, with the status inside `meta`
-    # and an unparseable name refused UNWRAPPED — which is a shape to build, not one to share.
+    # are indented to the byte and a `callback` on a GET answers one at 200 as a script, and an
+    # Atlassian refusal takes the shape `Accept` asks for (``errors.atlassian.rendered``).
+    # Asking the envelope keeps that where the rest of that vendor's error shape lives, and leaves
+    # GitHub with FastAPI's `JSONResponse`. GitHub honours `callback` through an envelope of its
+    # own — `/**/cb({"meta": …, "data": …})` under `application/javascript; charset=utf-8`, with
+    # the status inside `meta` and an unparseable name refused UNWRAPPED — which is a shape to
+    # build, not one to share.
     rendered = errors.rendered(request, exc.status_code, body, headers)
     if rendered is not None:
         return rendered
@@ -592,18 +592,20 @@ async def refuse_a_bearer_jira_cannot_read(request: Request, call_next):
     sites on 2026-09-04.
 
     The body is spelled the way real spells it, a space after the colon (fifteen of them on
-    2026-09-30), and this runs inside :func:`answer_head_as_the_get_without_its_body`: a `HEAD` is
-    refused as its GET is and so carries no `content-length`, as real's did on `serverInfo` and on
-    `nopesuchroute` the same day. An `OPTIONS` is not refused here: real answers one with an
-    unreadable bearer as it answers one with none (``backlot.routers.atlassian._options_answer``).
+    2026-09-30), or is the XML for the `Accept` values ``errors.atlassian.connect_token_answer``
+    names, and this runs inside :func:`answer_head_as_the_get_without_its_body`: a
+    `HEAD` is refused as its GET is and so carries no `content-length`, as real's did on
+    `serverInfo` and on `nopesuchroute` the same day. An `OPTIONS` is not refused here: real answers
+    one with an unreadable bearer as it answers one with none
+    (``backlot.routers.atlassian._options_answer``).
     """
     if (
         request.method != "OPTIONS"
         and request.url.path.startswith("/atlassian/rest/")
         and auth.atlassian_bearer_unreadable(request)
     ):
-        body = json.dumps(errors.atlassian.connect_token_body())
-        return Response(body, status_code=403, media_type="application/json")
+        media_type, body = errors.atlassian.connect_token_answer(request.headers.get("accept"))
+        return Response(body, status_code=403, media_type=media_type)
     return await call_next(request)
 
 
@@ -644,6 +646,38 @@ _HEAD_IS_THE_GET_WITHOUT_ITS_BODY = (
     "/health",
     "/_meta",
 )
+
+
+@app.middleware("http")
+async def answer_an_atlassian_write_that_fails(request: Request, call_next):
+    """Answer as real does where a Spring service could not sort `Accept`'s members
+    (``errors.atlassian.spring_cannot_sort``) or could not write its answer under it
+    (``errors.atlassian.quality_spring_cannot_copy``); what each answer becomes is
+    ``backlot.routers.atlassian.spring_sort_failure``'s and ``spring_write_failure``'s.
+
+    Middleware because what Spring would have answered decides what replaces it: this reads the
+    answer the route or the refusal gave and replaces it. Registered before the `HEAD` rewrite
+    below, so it reads a `HEAD`'s answer as its GET's, and the front door and the headers are put on
+    what it gives as on any answer.
+    """
+    path = request.url.path  # picks the product only
+    if not errors.atlassian.owns(path):
+        return await call_next(request)
+    reader = "spring" if errors.atlassian.is_confluence(path) else "jira"
+    accept = request.headers.get("accept")
+    if errors.atlassian.spring_cannot_sort(accept, reader=reader):
+        answer = atlassian.spring_sort_failure
+    elif errors.atlassian.quality_spring_cannot_copy(accept, reader=reader):
+        answer = atlassian.spring_write_failure
+    else:
+        return await call_next(request)
+    response = await call_next(request)
+    body = b"".join([chunk async for chunk in response.body_iterator])
+    failed = answer(request, response.status_code, response.headers, body)
+    if failed is None:
+        failed = Response(body, status_code=response.status_code)
+        failed.raw_headers = response.raw_headers
+    return failed
 
 
 @app.middleware("http")

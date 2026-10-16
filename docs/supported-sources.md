@@ -619,6 +619,10 @@ exception to the unsigned answer and to Signature Version 2: they take SigV4 or 
 one sent unsigned or with Signature Version 2 is real's 400 `InvalidRequest` asking for Signature
 Version 4, after the conflict of two, the parameter refusals before the bucket and a V2 credential's
 own shape, and ahead of the bucket, of the 405 a signed HEAD gets and of a V2 key or signature.
+The same credential check applies to `PUT`, `POST`, `DELETE` and `PATCH` of `?annotation` at a
+key, with or without `annotationName`, after a selector conflict and before body or checksum
+checks. These methods read the first `annotation` value as a GET does: a nonempty value selects
+the ordinary object operation. They do not parse the listing's `max-annotation-results`.
 
 ### Slack — `/slack/api`
 

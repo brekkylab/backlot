@@ -547,8 +547,9 @@ async def refuse_a_bearer_jira_cannot_read(request: Request, call_next):
     """Refuse a Jira read whose bearer the real gateway would not read, before the route runs.
 
     Unlike the Basic pair, which Jira serves anonymously, an unreadable bearer is refused — and
-    refused ahead of everything, so `serverInfo` and `field` answer it too even though neither
-    needs a credential. That is why this short-circuits rather than living in
+    refused ahead of every route, behind only the front door
+    (:func:`answer_at_the_atlassian_front_door`), so `serverInfo` and `field` answer it too even
+    though neither needs a credential. That is why this short-circuits rather than living in
     ``atlassian._jira_caller``. Confluence is not here: it answers its own 403 for any credential
     that fails, which ``atlassian._confluence_caller`` already gives. Measured on two Jira Cloud
     sites on 2026-09-04.
@@ -687,6 +688,41 @@ async def report_failed_jira_login(request: Request, call_next):
         if auth.atlassian_caller(request).is_anonymous:
             response.headers["X-Seraph-LoginReason"] = "AUTHENTICATED_FAILED"
     return response
+
+
+@app.middleware("http")
+async def answer_at_the_atlassian_front_door(request: Request, call_next):
+    """Answer an `/atlassian` request the way a layer in front of Jira and Confluence does, where
+    one answers it: the CDN, its firewall, the gateway and Confluence's Tomcat, each with its own
+    page (which, and in what order, is ``errors.atlassian.front_door``).
+
+    Registered after the slash rewrite, the Connect-token refusal, the `HEAD` rewrite and the
+    Seraph header, so it runs ahead of each of them: a `HEAD` arrives here as a `HEAD` (real
+    declares each page's length on one and sends no body), and none of the other three runs for a
+    request this refuses, as none of them runs on real. Whose headers the answer carries
+    (``errors.atlassian.FrontDoor``) is left on the scope for
+    ``backlot.routers.atlassian.vendor_headers``.
+    """
+    # `request.url.path` only decides ownership and seeds the raw-path fallback; the pages echo no
+    # path verbatim (the CloudFront id is a hash of it, the rest are static), so the decoded form is
+    # safe here where `front_door` itself reads `raw_path`
+    if not errors.atlassian.owns(request.url.path):
+        return await call_next(request)
+    raw_path = request.scope.get("raw_path") or request.url.path.encode()
+    answer = errors.atlassian.front_door(
+        request.method,
+        raw_path.decode("latin-1"),
+        request.scope.get("query_string", b"").decode("latin-1"),
+    )
+    if answer is None:
+        return await call_next(request)
+    request.scope["atlassian_front_door"] = answer.layer
+    body = answer.body.encode()
+    headers = {"Content-Type": answer.media_type, **answer.headers}
+    if request.method == "HEAD":
+        headers["Content-Length"] = str(len(body))
+        body = b""
+    return Response(body, status_code=answer.status, headers=headers)
 
 
 @app.middleware("http")

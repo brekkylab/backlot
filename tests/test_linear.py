@@ -371,7 +371,7 @@ def test_linear_the_hand_written_examples_query_still_validates(client, admin_h)
 
     from tests.conftest import REPO_ROOT
 
-    text = (REPO_ROOT / "examples/using-llamaindex-readers/linear.py").read_text()
+    text = (REPO_ROOT / "examples/using-llamaindex-readers/linear.py").read_text(encoding="utf-8")
     document = re.search(r'^QUERY = """(.*?)"""', text, re.S | re.M)
     assert document, "no QUERY literal found -- fix this extractor, not the assertion"
 

@@ -43,13 +43,12 @@ import hashlib
 import json
 import re
 import uuid
-from pathlib import Path
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
-from backlot import auth, pagination, store, synth
+from backlot import auth, pagination, published, store, synth
 from backlot.openapi import qp
 from backlot.routers import json_body
 
@@ -947,26 +946,9 @@ async def list_comments(request: Request):
 # --------------------------------------------------------------------------- misc
 
 
-# The baseline `backlot diff --source notion` keeps, the file ``backlot.fidelity.baseline_path``
-# names; read here without importing that package, whose ``__init__`` loads the comparison modules.
-_BASELINE = Path(__file__).resolve().parent.parent / "fidelity" / "baseline" / "notion.json"
-
-
-def _published_operations_not_served() -> tuple[tuple[str, re.Pattern[str]], ...]:
-    """The operations Notion publishes and no route here serves, as (method, path pattern): the
-    baseline's ``missing`` operations, each ``{}`` one path segment. Read off that file rather
-    than listed here, so an operation Notion adds reaches ``unmatched_path`` once the baseline
-    acknowledges it; a route added here wins over ``unmatched_path`` whatever the file says."""
-    operations = []
-    for e in json.loads(_BASELINE.read_text())["operations"]:
-        if e["status"] == "missing":
-            method, path = e["operation"].split(" ", 1)
-            pattern = "[^/]+".join(re.escape(part) for part in path.split("{}"))
-            operations.append((method, re.compile(pattern)))
-    return tuple(operations)
-
-
-_PUBLISHED_NOT_SERVED = _published_operations_not_served()
+# The operations Notion publishes and no route here serves (see ``backlot.published``); a route
+# added here wins over ``unmatched_path`` whatever the baseline says.
+_PUBLISHED_NOT_SERVED = published.not_served("notion")
 # The three operations Notion's document puts behind `basicAuth` rather than the `bearerAuth`
 # every other operation inherits (read 2026-09-28): its OAuth client endpoints.
 _CLIENT_AUTH_OPERATIONS = frozenset(
@@ -1005,12 +987,12 @@ async def unmatched_path(request: Request, rest: str) -> JSONResponse:
     so the URL is the first thing that API checks.
 
     A published operation exists for that check whether or not Backlot serves it. On 2026-09-28
-    each of the 53 the baseline lists as ``missing_operation`` (see
-    :func:`_published_operations_not_served`) answered the format's 401 with no header and the
-    token's 401 with `Bearer nope`, the two a served route answers, apart from the three OAuth
-    client endpoints and their own refusal (see :func:`_invalid_client`). A request that clears
-    the credential and the version on one of the other fifty gets the URL's 400 here, as
-    Backlot has no operation to run: that is the gap each of those operations acknowledges.
+    each of the 53 the baseline lists as ``missing_operation`` (see ``backlot.published``) answered
+    the format's 401 with no header and the token's 401 with `Bearer nope`, the two a served route
+    answers, apart from the three OAuth client endpoints and their own refusal (see
+    :func:`_invalid_client`). A request that clears the credential and the version on one of the
+    other fifty gets the URL's 400 here, as Backlot has no operation to run: that is the gap each of
+    those operations acknowledges.
 
     The method is part of the URL that check reads: `GET /v1/search` and `GET /v1/pages`, both POST
     routes, `DELETE`, `PUT`, `PATCH` and `OPTIONS` on `/v1/users/me`, a GET route, and `PUT` on
@@ -1035,7 +1017,7 @@ async def unmatched_path(request: Request, rest: str) -> JSONResponse:
     path under `/notion` where its slash redirect fires, since this route matches every other.
     """
     path = request.url.path.removeprefix("/notion")
-    if any(m == request.method and p.fullmatch(path) for m, p in _PUBLISHED_NOT_SERVED):
+    if published.includes(_PUBLISHED_NOT_SERVED, request.method, path):
         if (request.method, path) in _CLIENT_AUTH_OPERATIONS:
             return _invalid_client(request)
         if (refusal := _refusal(request, auth.resolve_bearer(request))) is not None:

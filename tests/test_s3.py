@@ -674,7 +674,8 @@ def test_s3_a_request_in_a_bucket_the_caller_cannot_see_is_nosuchbucket(live_ser
     first, so both answer the two callers alike."""
     base_url, settings = live_server
     tokens = {
-        u["email"]: u["token"] for u in yaml.safe_load(settings.tokens_path.read_text())["users"]
+        u["email"]: u["token"]
+        for u in yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))["users"]
     }
     scoped_token = tokens["ava@acme.com"]
     for method, path, admin_status, *extra in (
@@ -1150,14 +1151,16 @@ def big_bucket_settings(tmp_path_factory):
     data_dir = tmp_path_factory.mktemp("s3_big")
     settings = Settings(data_dir=data_dir)
     corpus = data_dir / "_big_corpus.jsonl"
-    corpus.write_text("\n".join(json.dumps(complete(**r)) for r in _s3_big_corpus()))
+    corpus.write_text(
+        "\n".join(json.dumps(complete(**r)) for r in _s3_big_corpus()), encoding="utf-8"
+    )
     load(corpus, settings)
     return settings
 
 
 @pytest.fixture(scope="module")
 def big_bucket_tokens(big_bucket_settings):
-    data = yaml.safe_load(big_bucket_settings.tokens_path.read_text())
+    data = yaml.safe_load(big_bucket_settings.tokens_path.read_text(encoding="utf-8"))
     return {u["email"]: u["token"] for u in data["users"]}
 
 
@@ -3843,7 +3846,8 @@ def test_a_continuation_token_is_refused_after_the_bucket_lookup_not_before_it(l
     """
     base_url, settings = live_server
     tokens = {
-        u["email"]: u["token"] for u in yaml.safe_load(settings.tokens_path.read_text())["users"]
+        u["email"]: u["token"]
+        for u in yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))["users"]
     }
     for value in ("garbage", ""):
         path = f"/s3/people-vault?list-type=2&continuation-token={value}"
@@ -3903,7 +3907,8 @@ def test_list_multipart_uploads_on_a_bucket_the_caller_cannot_see_is_no_such_buc
     group-visible object, so an engineer is told it does not exist, as the listing tells them."""
     base_url, settings = live_server
     tokens = {
-        u["email"]: u["token"] for u in yaml.safe_load(settings.tokens_path.read_text())["users"]
+        u["email"]: u["token"]
+        for u in yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))["users"]
     }
     assert _get_xml(base_url, "/s3/people-vault?uploads", settings.admin_token).tag == (
         f"{NS}ListMultipartUploadsResult"
@@ -4667,7 +4672,8 @@ def test_acl_resolve_access_key(tmp_path):
                 "admin_token": "admin-service-token",
                 "users": [{"email": "ava@acme.com", "name": "Ava", "token": TOKEN}],
             }
-        )
+        ),
+        encoding="utf-8",
     )
     acl = Acl.load(tokens, "admin-service-token", "acme")
     caller, secret = acl.resolve_access_key(AK)
@@ -6214,7 +6220,8 @@ def test_signature_version_2_is_served_as_real_serves_it(live_server):
     assert "<ListBucketResult" in v2_query("/s3/eng-artifacts").text
     assert v2_query("/s3/eng-artifacts", expires=10 * 365 * 86400).status_code == 200
     tokens = {
-        u["email"]: u["token"] for u in yaml.safe_load(settings.tokens_path.read_text())["users"]
+        u["email"]: u["token"]
+        for u in yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))["users"]
     }
     ava = Credentials(
         synth.s3_access_key_id(tokens["ava@acme.com"]),

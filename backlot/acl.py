@@ -64,7 +64,7 @@ class Acl:
     def load(cls, tokens_path: Path, admin_token: str, org_name: str) -> "Acl":
         token_to_email: dict[str, str] = {}
         if tokens_path.exists():
-            data = yaml.safe_load(tokens_path.read_text()) or {}
+            data = yaml.safe_load(tokens_path.read_text(encoding="utf-8")) or {}
             for entry in data.get("users", []):
                 if entry.get("token") and entry.get("email"):
                     token_to_email[entry["token"]] = entry["email"]

@@ -13,7 +13,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 BASE_EPOCH = 1_672_531_200  # 2023-01-01T00:00:00Z
 TIME_RANGE = 63_072_000  # ~2 years
@@ -46,24 +46,37 @@ def epoch(seed: str, base: int = BASE_EPOCH, span: int = TIME_RANGE) -> int:
     return base + (hnum(seed, 0, 8) % span)
 
 
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+def utc_datetime(ts: float) -> datetime:
+    """``ts`` unix seconds as an aware UTC datetime.
+
+    ``datetime.fromtimestamp`` asks the platform's C library, and on Windows that raised OSError
+    [Errno 22] for -86400 and for -2208988800 while it rendered -1 (Windows 11, Python 3.14.0,
+    2026-10-13); the epoch plus a ``timedelta`` rendered all three there, as it does on Linux and
+    macOS. Outside ``datetime``'s years 1 to 9999 it raises OverflowError."""
+    return _EPOCH + timedelta(seconds=ts)
+
+
 def rfc3339(ts: int) -> str:
     """e.g. 2024-04-05T17:00:00Z (Drive / GitHub / Confluence)."""
-    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return utc_datetime(ts).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def rfc3339_millis(ts: int) -> str:
     """e.g. 2024-04-05T17:00:00.000Z (Confluence version.when)."""
-    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    return utc_datetime(ts).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 
 def jira_datetime(ts: int) -> str:
     """e.g. 2024-04-05T17:00:00.000+0000 (Jira)."""
-    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000+0000")
+    return utc_datetime(ts).strftime("%Y-%m-%dT%H:%M:%S.000+0000")
 
 
 def rfc2822(ts: int) -> str:
     """e.g. Fri, 05 Apr 2024 17:00:00 +0000 (Gmail Date header)."""
-    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%a, %d %b %Y %H:%M:%S +0000")
+    return utc_datetime(ts).strftime("%a, %d %b %Y %H:%M:%S +0000")
 
 
 # --- per-vendor identifiers -----------------------------------------------------
@@ -1148,4 +1161,4 @@ def s3_iso(ts: int) -> str:
 
 def s3_http_date(ts: int) -> str:
     """The Last-Modified response header, RFC 1123: Fri, 05 Apr 2024 17:00:00 GMT."""
-    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")
+    return utc_datetime(ts).strftime("%a, %d %b %Y %H:%M:%S GMT")

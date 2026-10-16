@@ -187,9 +187,9 @@ def _baseline(tmp_path, measured, note=""):
         path, measured.findings, measured="2026-09-01", surface=measured.surface
     )
     if note:
-        raw = json.loads(path.read_text())
+        raw = json.loads(path.read_text(encoding="utf-8"))
         raw["types"]["Transcript"]["fields"]["title"]["note"] = note
-        path.write_text(json.dumps(raw))
+        path.write_text(json.dumps(raw), encoding="utf-8")
     return Baseline.load(path)
 
 
@@ -212,7 +212,7 @@ def test_rewriting_a_baseline_keeps_its_notes_and_takes_the_new_identity(tmp_pat
     baseline.identified_as("renamed", ("https://new.invalid",)).write(
         path, measured.findings, measured="2026-10", surface=measured.surface
     )
-    written = json.loads(path.read_text())
+    written = json.loads(path.read_text(encoding="utf-8"))
     assert written["source"] == "renamed"
     assert written["endpoints"] == ["https://new.invalid"]
     assert written["types"]["Transcript"]["fields"]["title"] == {
@@ -433,7 +433,8 @@ def test_a_baseline_refuses_one_endpoint_passed_unwrapped(tmp_path):
     path.write_text(
         json.dumps(
             {"source": "s", "endpoints": "https://one.invalid", "measured": "", "operations": []}
-        )
+        ),
+        encoding="utf-8",
     )
     with pytest.raises(TypeError, match="tuple of URLs"):
         Baseline.load(path)
@@ -443,7 +444,7 @@ def test_a_baseline_refuses_one_endpoint_passed_unwrapped(tmp_path):
         raw = {"source": "s", "measured": "", "operations": []}
         if endpoints is not None:
             raw["endpoints"] = endpoints
-        path.write_text(json.dumps(raw))
+        path.write_text(json.dumps(raw), encoding="utf-8")
         assert Baseline.load(path).endpoints == want
 
 
@@ -452,7 +453,7 @@ def test_a_baseline_round_trips_every_endpoint_it_names(tmp_path):
     ends = ("https://a.invalid", "https://b.invalid")
     Baseline.empty("s", ends).write(p, [], measured="2026-01-01", surface=OperationSurface(()))
     assert Baseline.load(p).endpoints == ends
-    assert json.loads(p.read_text())["endpoints"] == list(ends)
+    assert json.loads(p.read_text(encoding="utf-8"))["endpoints"] == list(ends)
 
 
 def test_a_google_source_is_compared_against_every_api_it_is_served_through():
@@ -617,7 +618,9 @@ def test_every_comparison_ships_a_baseline(tmp_path):
         out = tmp_path / f"{name}.json"
         acknowledged = baseline.acknowledged.values()
         baseline.write(out, acknowledged, measured=baseline.measured, surface=baseline.surface)
-        assert out.read_text() == baseline_path(name).read_text(), name
+        assert out.read_text(encoding="utf-8") == baseline_path(name).read_text(encoding="utf-8"), (
+            name
+        )
 
         entries = baseline.operations
         names = [e.operation for e in entries]
@@ -841,7 +844,7 @@ def test_the_package_exports_exactly_what_the_command_needs():
     assert all(hasattr(package, name) for name in surface)
     imported = {
         alias.name
-        for node in ast.walk(ast.parse(Path(cli.__file__).read_text()))
+        for node in ast.walk(ast.parse(Path(cli.__file__).read_text(encoding="utf-8")))
         if isinstance(node, ast.ImportFrom) and node.module == "backlot.fidelity"
         for alias in node.names
     }
@@ -1458,18 +1461,18 @@ def test_update_baseline_records_gaps_and_leaves_breaking_findings_live(
     )
     assert SchemaSurface("Query", {}).operations == ()  # a file that lost its root type
     # The breaking finding is measured and left unaccepted: the element is there, bare.
-    assert json.loads(path.read_text())["types"]["Transcript"]["fields"]["duration"] == {
-        "status": IMPLEMENTED
-    }
+    assert json.loads(path.read_text(encoding="utf-8"))["types"]["Transcript"]["fields"][
+        "duration"
+    ] == {"status": IMPLEMENTED}
     assert "type_mismatch" in capsys.readouterr().err
 
     # A measurement with a finding no element of its surface carries cannot be written: exit 3,
     # and the file is left as it was.
-    before = path.read_text()
+    before = path.read_text(encoding="utf-8")
     lost = Measurement([Finding("missing_field", GAP, "Nowhere.x", "")], SchemaSurface("Query", {}))
     monkeypatch.setattr("backlot.fidelity.measure", lambda *a, **k: lost)
     assert cli.main([*args, "--update-baseline"]) == 3
-    assert path.read_text() == before
+    assert path.read_text(encoding="utf-8") == before
 
     # Nor can a file the command cannot open or cannot write.
     def denied(*a, **k):
@@ -1563,8 +1566,8 @@ def test_a_baseline_the_command_cannot_read_is_refused_not_emptied(
     _vendor()
     path = tmp_path / "fireflies.json"
     raw = {"source": "fireflies", "root": {"query": "Query"}, **written}
-    path.write_text(json.dumps(raw))
-    before = path.read_text()
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    before = path.read_text(encoding="utf-8")
     with pytest.raises((ValueError, KeyError, TypeError, AttributeError), match=refused):
         Baseline.load(path)
     args = ["diff", "-s", "fireflies", "--baseline-dir", str(tmp_path), "--update-baseline"]
@@ -1572,7 +1575,7 @@ def test_a_baseline_the_command_cannot_read_is_refused_not_emptied(
     err = capsys.readouterr().err
     assert "the baseline cannot be used" in err
     assert ("it has no" in err) == (refused == "type_kind")
-    assert path.read_text() == before
+    assert path.read_text(encoding="utf-8") == before
 
 
 @pytest.mark.parametrize("typed", [BREAKING, GAP])
@@ -1585,16 +1588,18 @@ def test_a_breaking_finding_acknowledged_by_hand_survives_a_rewrite(typed, _vend
     assert cli.main([*args, "--update-baseline"]) == 1
 
     def duration():
-        return json.loads(path.read_text())["types"]["Transcript"]["fields"]["duration"]
+        return json.loads(path.read_text(encoding="utf-8"))["types"]["Transcript"]["fields"][
+            "duration"
+        ]
 
-    edited = json.loads(path.read_text())
+    edited = json.loads(path.read_text(encoding="utf-8"))
     edited["types"]["Transcript"]["fields"]["duration"] |= {
         "kind": "type_mismatch",
         "severity": typed,
         "detail": "vendor: Int, Backlot: Float",
         "note": "deliberate",
     }
-    path.write_text(json.dumps(edited))
+    path.write_text(json.dumps(edited), encoding="utf-8")
     assert cli.main(args) == 0
 
     # The vendor moves again. The note was written about `vendor: Int`, and it says nothing about a

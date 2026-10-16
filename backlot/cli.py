@@ -342,14 +342,11 @@ def _stop_at_stdin_eof() -> None:
     uvicorn answers that SIGTERM with its graceful shutdown: measured on 2026-10-13 on macOS and on
     Windows 11, logging at `info`, the log ended with "Application shutdown complete." and
     "Finished server process". An end of file that comes before uvicorn has installed its handlers
-    meets SIGTERM's default instead, which on macOS ended the process before it logged a line. A
-    daemon thread waits, reading and dropping anything written, while serving goes on.
+    meets SIGTERM's default instead, which on macOS ended the process before it logged a line.
 
-    It reads the file descriptor, not ``sys.stdin.buffer``: a buffered read holds the stream's lock
-    while it waits, and an exit that finalizes the interpreter with stdin still open (a startup
-    uvicorn refuses, or SIGINT alone) then cannot close ``sys.stdin``. Reading the buffer, such an
-    exit aborts with "Fatal Python error: _enter_buffered_busy" and code -6 where uvicorn's is 3,
-    or 0 after SIGINT (macOS, 2026-10-13)."""
+    It reads the descriptor: a ``sys.stdin.buffer`` read holds the stream's lock, and an exit that
+    finalizes the interpreter with stdin open then aborts with "Fatal Python error" (macOS,
+    2026-10-13)."""
     import signal
     import threading
 

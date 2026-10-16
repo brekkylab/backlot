@@ -339,10 +339,9 @@ def serve(
                 # `backlot mcp` is the MCP protocol pipe. Nothing is written to it: its write end
                 # closes when this process ends, however it ends (a child forked from it closes its
                 # copy, `_close_server_pipes_in_a_fork`), and `--exit-on-stdin-close` stops the
-                # server at that end of file. A server given `DEVNULL` instead goes on answering
-                # once the process holding `serve()` ends on SIGTERM, SIGHUP or SIGKILL on macOS,
-                # or by `TerminateProcess` on Windows 11 (measured 2026-10-13); on this pipe its
-                # port closed within a second of each.
+                # server at that end of file: its port closed within a second of the holding
+                # process ending on SIGTERM, SIGHUP or SIGKILL on macOS, or by `TerminateProcess` on
+                # Windows 11 (measured 2026-10-13).
                 stdin=subprocess.PIPE,
                 stdout=log_f,
                 stderr=subprocess.STDOUT,

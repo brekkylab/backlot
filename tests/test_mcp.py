@@ -994,10 +994,8 @@ def _running(pid: int) -> bool:
 @POSIX_SIGNALS
 @pytest.mark.parametrize("signame", ["SIGTERM", "SIGINT", "SIGHUP"])
 def test_backlot_mcp_exits_on_a_signal_with_stdin_still_open(live_server, signame):
-    """A supervisor that signals its child and waits must not hang. With stdin held open, each
-    terminating signal ends the process with the conventional 128+N — SIGTERM alone used to leave
-    it alive until stdin closed, because the stdio reader thread is non-daemon; SIGINT never ended
-    it; SIGHUP ended it by default disposition without unwinding."""
+    """A supervisor that signals its child and waits must not hang: with stdin held open, each
+    terminating signal ends the process with the conventional 128+N."""
     base, _ = live_server
     sig = getattr(signal, signame)
     proc = _initialised_mcp("--source", "slack", "--url", base)
@@ -1032,9 +1030,8 @@ mcp.run(["slack"], url=sys.argv[2])
 def test_backlot_mcp_exits_when_the_signal_lands_on_another_thread(live_server, signame):
     """A Python-level handler runs on the main thread only, once that thread is back in the
     interpreter — and the main thread here is the event loop, asleep in select with nothing to wake
-    it. When the kernel hands the signal to another thread, that never happens: measured, the
-    process stayed alive indefinitely, which is what the intermittent CI timeouts were. The exit
-    must not depend on which thread the signal reaches."""
+    it. When the kernel hands the signal to another thread, that never happens, so the exit must not
+    depend on which thread the signal reaches."""
     base, _ = live_server
     sig = getattr(signal, signame)
     proc = subprocess.Popen(
@@ -1068,7 +1065,7 @@ def test_backlot_mcp_takes_its_server_down_when_it_is_ended(tmp_path, end, code)
     """The server `attach` starts goes with the process when a supervisor ends it, not only when
     stdin closes. SIGHUP is the signal whose default disposition would have ended this process
     instantly with the server left listening. SIGKILL, and `terminate()` on Windows, run nothing in
-    this process, and the server goes through the stdin pipe it was started on."""
+    this process (the comment on `serve()`'s stdin pipe says how the server still goes)."""
     if backlot_mcp.is_backlot(backlot_mcp.DEFAULT_URL):
         pytest.skip(
             f"a Backlot server is already on {backlot_mcp.DEFAULT_URL}; free it to run this"
@@ -1130,9 +1127,9 @@ mcp.run(["slack"])
 
 @pytest.mark.windows
 def test_backlot_mcp_takes_down_a_server_it_spawned_but_had_not_yet_yielded(tmp_path):
-    """A signal between `serve()`'s Popen and its yield must still end the server. `_started`
-    is not set until the yield, and a client that gives up on a slow start signals exactly then —
-    the handler used to go straight to `os._exit`, leaving the uvicorn child alive on its port."""
+    """Ending `backlot mcp` between `serve()`'s Popen and its yield must still end the server:
+    `_started` is not set until the yield, and a client that gives up on a slow start ends it
+    exactly then."""
     if backlot_mcp.is_backlot(backlot_mcp.DEFAULT_URL):
         pytest.skip(
             f"a Backlot server is already on {backlot_mcp.DEFAULT_URL}; free it to run this"

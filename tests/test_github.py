@@ -5751,8 +5751,24 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
         # listed in real's order for a caller with no credential, which is not the token's order
         assert list(resources) == ["code_search", "core", "search"]
         assert list(status.json()["resources"]) == ["core", "search", "code_search"]
-        # a bearer with no token is one too, not the request with no header above
-        for value in ("Bearer nope", "Bearer", "bearer nope", "TOKEN nope"):
+        # a credential with no token is one too, not the request with no header above, and so is a
+        # tab after the scheme in a header that holds a comma
+        for value in (
+            "Bearer nope",
+            "Bearer",
+            "bearer nope",
+            "TOKEN nope",
+            "Bearer,",
+            "Bearer ,nope",
+            "token,nope",
+            "Basic",
+            "Basic,",
+            "Basic !!!!",
+            "Bearer \tnope",
+            "Bearer\t,nope",
+            "Bearer\tno,pe",
+            "Basic\t!!,!!",
+        ):
             refused = c.get("/github/rate_limit", headers={"Authorization": value})
             assert refused.status_code == 401
             assert refused.json() == {
@@ -5815,10 +5831,14 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
         assert (first["limit"], second["limit"]) == ("60", "60")
         assert int(second["used"]) == int(first["used"]) + 1
         assert int(first["used"]) < address  # its own window, not the address's
-        # and so is a bearer after a tab, though it is refused as Bad credentials
+        # and so is a bearer after a tab, though it is refused as Bad credentials, and a `Basic`
+        # value after a tab that does not decode
         tab = c.get("/github/user/repos", headers={"Authorization": "Bearer\tnope"})
         assert tab.json()["message"] == "Bad credentials"
         assert int(_ratelimit(tab)["used"]) == int(second["used"]) + 1
+        basic_tab = c.get("/github/user/repos", headers={"Authorization": "Basic\t!!!!"})
+        assert basic_tab.json()["message"] == "Requires authentication"
+        assert int(_ratelimit(basic_tab)["used"]) == int(_ratelimit(tab)["used"]) + 1
         assert int(_ratelimit(c.get("/github/user/repos"))["used"]) == address + 1
 
         # a minute on, the two search windows are new ones where `core`'s is the one it was

@@ -9,6 +9,7 @@ authenticates the email and the token as a pair.
 from __future__ import annotations
 
 import base64
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -178,11 +179,20 @@ def test_atlassian_bearer_token_takes_only_the_spelling_the_real_site_reads(head
         ("Basic ab\tcd", ""),
         ("Basic abcd ab", ""),
         ("Basic {t}", ""),
-        # a token inside a `Basic` value, on either side of the colon
+        ("Basic\t,!!!!", ""),
+        ("Basic\t ,!!!!", ""),
+        ("Basic\t!!,!!", ""),
+        ("Basic\t!!!!,", ""),
+        # a token inside a `Basic` value: its password, or its user beside no password or
+        # `x-oauth-basic`, after a space or a tab
         ("Basic b64(x:{t})", "{t}"),
+        ("Basic b64(nope:{t})", "{t}"),
         ("Basic b64({t}:x-oauth-basic)", "{t}"),
         ("Basic b64({t}:)", "{t}"),
         ("Basic b64({t})", "{t}"),
+        ("Basic\tb64(x:{t})", "{t}"),
+        ("Basic\t b64(x:{t})", "{t}"),
+        ("Basic\tb64({t}:x-oauth-basic)", "{t}"),
         # served as no credential at all
         ("Basic abcd", None),
         ("Basic Zm9vOmJhcg==", None),
@@ -193,6 +203,18 @@ def test_atlassian_bearer_token_takes_only_the_spelling_the_real_site_reads(head
         ("Basic a b c d", None),
         ("basic abcd", None),
         ("Basic\tZm9v", None),
+        ("Basic b64({t}:x)", None),
+        ("Basic b64({t}:nope)", None),
+        ("Basic b64({t}:X-OAUTH-BASIC)", None),
+        ("Basic b64({t}:x-oauth-basic:)", None),
+        ("Basic b64({t}: )", None),
+        ("Basic\tb64({t}:x)", None),
+        # a value after a tab that does not decode, in a header with no comma
+        ("Basic\t!!!!", None),
+        ("Basic\ta", None),
+        ("Basic\tabcd=", None),
+        ("Basic\t\t!!!!", None),
+        ("BASIC\t!!!!", None),
         ("nope", None),
         ("Digest nope", None),
         ("OAuth", None),
@@ -210,9 +232,11 @@ def test_github_credential_reads_the_header_as_real_does(acl, tokens, header, to
     what the router resolves, so one that is empty or holds a comma never names a caller."""
     t = tokens["ava@acme.com"]
     if header is not None:
-        header = header.replace("{t}", t)
-        if header.startswith("Basic b64("):
-            header = "Basic " + base64.b64encode(header[len("Basic b64(") : -1].encode()).decode()
+        header = re.sub(
+            r"b64\(([^)]*)\)",
+            lambda m: base64.b64encode(m[1].encode()).decode(),
+            header.replace("{t}", t),
+        )
     expected = token.replace("{t}", t) if token else token
     assert auth.github_credential(_request(header, app=_app(acl))) == expected
 

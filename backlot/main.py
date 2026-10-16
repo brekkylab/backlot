@@ -329,10 +329,11 @@ async def report_github_rate_limit(request: Request, call_next):
     with the rest of the GET's headers. A path outside `/github` gets nothing: the other vendors'
     rate-limit answers are not measured. A 404 for a path real does not route gets them only for a
     request that carried no `Authorization` header at all — see ``_github_routes`` — and a
-    credential that did not resolve, with no tab after its scheme, gets them on no path at all
-    (``github.refused_without_a_window``); the refusal check shares that same gate, so neither is
-    ever refused by it. Of the 401s an operation no route here serves gets for its credential, one
-    whose method is in ``_UNCOUNTED_REFUSALS`` gets none either and counts nothing.
+    credential that did not resolve gets them on no path at all, unless a tab follows its scheme in
+    a header with no comma (``github.refused_without_a_window``); the refusal check shares that same
+    gate, so neither is ever refused by it. Of the 401s an operation no route here serves gets for
+    its credential, one whose method is in ``_UNCOUNTED_REFUSALS`` gets none either and counts
+    nothing.
     """
     gated = (
         request.url.path.startswith("/github")

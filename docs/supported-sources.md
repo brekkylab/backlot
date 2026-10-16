@@ -152,8 +152,10 @@ resolves reaches the 404 or 405 of an operation Backlot cannot run. The operatio
 baseline's `missing_operation` rows, but `POST …/releases/{id}/assets`, which api.github.com does
 not route, and with `artifacts/{id}/{archive_format}` taken as `zip`. `Authorization` is read as
 real reads it: `Bearer` or `token` with nothing after it, and a `Basic` value that is not base64,
-are credentials that do not resolve; a `Basic` value whose base64 holds a token, before or after
-its colon, is that token; and one that holds none is no credential at all.
+are credentials that do not resolve, though that `Basic` value is no credential after a tab in a
+header with no comma; a `Basic` value whose base64 holds a token as its password, or as its user
+beside an empty password or `x-oauth-basic`, is that token; and one that holds none is no credential
+at all.
 
 **Every response carries the five `x-ratelimit-*` headers** real puts on every answer, the errors
 included: `limit` at real's numbers (60 an hour for a caller with no credential, 5000 for a token,
@@ -164,20 +166,20 @@ runs out is refused, 403, with `used` pinned at `limit` across the five headers,
 version check, the 401 a route that needs a credential answers a caller without one, and routing
 alike, for a caller with no credential (measured against api.github.com 2026-09-17 and 2026-09-22)
 and for a token (2026-09-23) alike; a bearer that does not resolve still gets its own 401, window
-spent or not (2026-09-23), when a space follows its scheme: after a tab it is counted in the window
-real shares among the `Authorization` values it cannot parse, and refused once that window is spent
-(2026-10-14). The refused request is not itself counted, which is why `used` holds at `limit` rather
-than climbing past it. The body differs by caller: two members (`message`, `documentation_url`) for
-a caller with no credential, three (`status` besides) for a token, each with its own
-`documentation_url`. `BACKLOT_GITHUB_ENFORCE_RATE_LIMITS` turns the refusal off (see
-[configuration](configuration.md#github)). `GET /rate_limit` reports the same windows, does not
-count, and is never refused — the one route a client reads its way out of a spent window with;
+spent or not (2026-09-23), when a space follows its scheme: after a tab, in a header with no comma,
+it is counted in the window real shares among the `Authorization` values it cannot parse, and
+refused once that window is spent (2026-10-14). The refused request is not itself counted, which is
+why `used` holds at `limit` rather than climbing past it. The body differs by caller: two members
+(`message`, `documentation_url`) for a caller with no credential, three (`status` besides) for a
+token, each with its own `documentation_url`. `BACKLOT_GITHUB_ENFORCE_RATE_LIMITS` turns the refusal
+off (see [configuration](configuration.md#github)). `GET /rate_limit` reports the same windows, does
+not count, and is never refused — the one route a client reads its way out of a spent window with;
 `/rate_limit/` asked with no `Authorization` header is a plain-text `404 Not Found` that carries
 none of the five and counts nowhere, spent window or not (2026-09-23). Three answers carry none of
 the five and count nowhere, as real's do not: a credential that does not resolve, unless a tab
-follows its scheme, a path real does not route asked by a caller that sent one, and the 401 for no
-credential on the `PATCH`, `PUT` or `DELETE` of an operation Backlot does not serve (measured
-2026-09-10, 2026-09-21 and 2026-10-14).
+follows its scheme in a header with no comma, a path real does not route asked by a caller that sent
+one, and the 401 for no credential on the `PATCH`, `PUT` or `DELETE` of an operation Backlot does
+not serve (measured 2026-09-10, 2026-09-21 and 2026-10-14).
 
 An issue body and a pull body are the two distinct field sets real serves — a pull carries `_links`
 and its `*_url` siblings and none of the issue-only fields, `pull_request` included. A repository

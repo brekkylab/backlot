@@ -514,13 +514,13 @@ def rate_limit_caller(request: Request) -> tuple[str, bool]:
     at one `reset`, while the bare anonymous calls interleaved with them read 23, 24, 25 at another,
     both at `limit: 60` (measured against api.github.com 2026-09-21).
 
-    A `Bearer` or `token` followed by a tab rather than a space is counted in that same window,
-    though it is answered as Bad credentials: `Digest x` and then `Bearer<TAB>nope` on
-    `/repos/psf/requests` read `used` 4 and 5, while the address's anonymous window stayed at 8
-    (2026-10-14). Any other credential that does not resolve is keyed with the address here but
-    never counted — see :func:`refused_without_a_window`. Callers that draw real's line themselves
-    check `request.headers` for the presence of `Authorization` directly instead of asking
-    `auth.github_credential`, which is `None` for a header real serves as anonymous — see
+    A `Bearer` or `token` followed by a tab rather than a space, in a header with no comma, is
+    counted in that same window, though it is answered as Bad credentials: `Digest x` and then
+    `Bearer<TAB>nope` on `/repos/psf/requests` read `used` 4 and 5, while the address's anonymous
+    window stayed at 8 (2026-10-14). Any other credential that does not resolve is keyed with the
+    address here but never counted — see :func:`refused_without_a_window`. Callers that draw real's
+    line themselves check `request.headers` for the presence of `Authorization` directly instead of
+    asking `auth.github_credential`, which is `None` for a header real serves as anonymous — see
     `refuse_a_trailing_slash_on_github`."""
     token = auth.github_credential(request)
     if token is not None and auth.acl(request).resolve(token) is not None:
@@ -554,18 +554,20 @@ def refused_a_credential(request: Request) -> bool:
 
 
 def refused_without_a_window(request: Request) -> bool:
-    """Whether :func:`refused_a_credential` holds with no tab after the scheme
-    (``backlot.auth.github_scheme_then_a_tab``): the 401 real counts in no window and answers with
-    none of the five `x-ratelimit-*` headers, as `Bearer`, `token` or `Basic` with nothing after it
-    and a `Basic` value that does not decode were on `/rate_limit` (2026-10-14).
+    """Whether :func:`refused_a_credential` holds unless a tab follows the scheme in a header with
+    no comma (``backlot.auth.github_scheme_then_a_tab``): the 401 real counts in no window and
+    answers with none of the five `x-ratelimit-*` headers, as `Bearer`, `token` or `Basic` with
+    nothing after it and a `Basic` value that does not decode were on `/rate_limit` (2026-10-14),
+    and so were `Bearer<TAB>,nope`, `token<TAB>,nope`, `Bearer<TAB>no,pe` and `Bearer<TAB>nope,`
+    (2026-10-16).
 
-    After a tab, the same 401 carries the five of the window it is counted in, the unparseable one:
-    measured against api.github.com 2026-10-14 on `GET /rate_limit`, `Bearer<TAB>nope` and
-    `token<TAB>nope` each answered 401 with `limit: 60`, `remaining: 60`, `used: 0`,
-    `resource: core` and a `reset` an hour after `Date`, while `Bearer nope` and `token nope`
-    answered the same 401 with none of the five. Once that window was spent, `Bearer<TAB>nope` and
-    `token<TAB>nope` on `/repos/psf/requests` and `Bearer<TAB>nope` on `/user/repos` were its 403,
-    as `Digest x` was, where `Bearer nope` was still the 401.
+    After a tab, in a header with no comma, the same 401 carries the five of the window it is
+    counted in, the unparseable one: measured against api.github.com 2026-10-14 on
+    `GET /rate_limit`, `Bearer<TAB>nope` and `token<TAB>nope` each answered 401 with `limit: 60`,
+    `remaining: 60`, `used: 0`, `resource: core` and a `reset` an hour after `Date`, while
+    `Bearer nope` and `token nope` answered the same 401 with none of the five. Once that window was
+    spent, `Bearer<TAB>nope` and `token<TAB>nope` on `/repos/psf/requests` and `Bearer<TAB>nope` on
+    `/user/repos` were its 403, as `Digest x` was, where `Bearer nope` was still the 401.
     """
     return refused_a_credential(request) and not auth.github_scheme_then_a_tab(request)
 

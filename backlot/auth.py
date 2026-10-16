@@ -55,31 +55,40 @@ _GITHUB_BASE64 = re.compile(r"(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z
 
 def github_credential(request: Request) -> str | None:
     """The credential a GitHub request carries, read the way api.github.com reads ``Authorization``:
-    ``None`` for a request it serves as anonymous, and otherwise the token to resolve, which is
-    ``""`` for a credential it refuses with no token to look up.
+    ``None`` for a request it serves as anonymous, and otherwise the string to resolve as a token:
+    what follows `Bearer` or `token`, so ``","`` for ``Bearer,``; the token a `Basic` value names;
+    or ``""`` for a `Basic` value refused with no token to look up.
 
-    Measured on `GET /rate_limit` on 2026-10-14, each value on a URL of its own, where an anonymous
-    caller is served 200 and a credential that does not resolve is the 401 "Bad credentials"::
+    Measured on `GET /rate_limit` on 2026-10-14 and 2026-10-16, each value on a URL of its own,
+    where an anonymous caller is served 200 and a credential that does not resolve is the 401 "Bad
+    credentials"::
 
         Bearer or token, in any case, alone or followed by a space,      401
           a tab or a comma and then anything
         Basic, in any case, alone, followed by a comma, or followed       401
           by a value that is not base64 once its spaces are dropped:
           a, abcde, ====, Zm9vOmJhcg, -_-_, a=bc, abcd=, !!!!, ab<TAB>cd
+        Basic, a tab, and a value that is not base64, in a header         200
+          with no comma: <TAB>!!!!, <TAB>a, <TAB>abcd=, <TAB><TAB>!!!!
+        Basic, a tab, and a comma anywhere after it: <TAB>,!!!!,          401
+          <TAB> ,!!!!, <TAB>!!,!!, <TAB>!!!!,
         Basic followed by base64 that names no token: abcd,               200
-          Zm9vOmJhcg==, +/+/, ab==, abc=, ab cd, a b c d
+          Zm9vOmJhcg==, +/+/, ab==, abc=, ab cd, a b c d, <TAB>Zm9v
         any other first word, or none: nope, Digest, OAuth, Bear,         200
           Bearerx, bearer:, Bearer=
 
     And with a token that resolves: ``Bearer <t>``, ``bearer <t>``, ``token <t>``, a second space
-    or a tab before it are its 200, and so is ``Basic`` with the base64 of ``x:<t>``,
-    ``<t>:x-oauth-basic``, ``<t>:`` or ``<t>``; ``Bearer,<t>``, ``Bearer ,<t>``, ``Bearer <t> x``,
-    ``Bearer <t>,`` and ``Basic <t>`` are the 401; ``<t>`` alone is served as anonymous.
+    or a tab before it are its 200, and so is ``Basic``, then a space or a tab, then the base64 of
+    ``x:<t>``, ``nope:<t>``, ``<t>:x-oauth-basic``, ``<t>:`` or ``<t>``; ``Bearer,<t>``,
+    ``Bearer ,<t>``, ``Bearer <t> x``, ``Bearer <t>,`` and ``Basic <t>`` are the 401; ``<t>`` alone
+    is served as anonymous, and so is ``Basic`` with the base64 of ``<t>:x``, ``<t>:nope``,
+    ``<t>:X-OAUTH-BASIC``, ``<t>:x-oauth-basic:`` or ``<t>: ``.
 
-    So real splits the scheme off at the first space, tab or comma, reads a token from either side
-    of the colon in a `Basic` value that decodes, and serves one that names no token as no
-    credential at all, as it does an unknown scheme. :func:`bearer_token` reads a scheme with
-    nothing after it, a comma after one and every `Basic` value as no header.
+    So real splits the scheme off at the first space, tab or comma, reads the password of a `Basic`
+    value that decodes, or its user when there is no colon or the password is empty or
+    `x-oauth-basic`, and serves one that names no token as no credential at all, as it does an
+    unknown scheme. A `Basic` value that does not decode is no credential either after a tab in a
+    header with no comma (:func:`github_scheme_then_a_tab`).
     """
     scheme, rest = _github_scheme(request)
     if scheme in ("bearer", "token"):
@@ -87,9 +96,10 @@ def github_credential(request: Request) -> str | None:
     if scheme == "basic":
         value = rest.lstrip(" \t").replace(" ", "")
         if not value or not _GITHUB_BASE64.fullmatch(value):
-            return ""
+            return None if github_scheme_then_a_tab(request) else ""
         user, _, password = base64.b64decode(value).decode("utf-8", "replace").partition(":")
-        return next((t for t in (password, user) if acl(request).resolve(t) is not None), None)
+        token = user if password in ("", "x-oauth-basic") else password
+        return token if acl(request).resolve(token) is not None else None
     return None
 
 
@@ -102,8 +112,12 @@ def _github_scheme(request: Request) -> tuple[str, str]:
 
 def github_scheme_then_a_tab(request: Request) -> bool:
     """Whether a tab follows the `Authorization`'s scheme, split as :func:`github_credential` splits
-    it."""
-    return _github_scheme(request)[1].startswith("\t")
+    it, in a header that holds no comma. Real reads such a header apart from the others: a `Basic`
+    value in it that does not decode is no credential (:func:`github_credential`'s table), and a
+    `Bearer` or `token` in it that does not resolve is refused counted in a window
+    (``backlot.routers.github.refused_without_a_window``)."""
+    header = _authorization(request) or ""
+    return _github_scheme(request)[1].startswith("\t") and "," not in header
 
 
 def api_key_token(request: Request) -> str | None:

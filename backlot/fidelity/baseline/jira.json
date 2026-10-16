@@ -4333,10 +4333,6 @@
           "kind": "missing_param",
           "severity": "gap"
         },
-        "maxResults": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
         "orderBy": {
           "kind": "missing_param",
           "severity": "gap"
@@ -4350,10 +4346,6 @@
           "severity": "gap"
         },
         "query": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
-        "startAt": {
           "kind": "missing_param",
           "severity": "gap"
         },

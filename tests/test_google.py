@@ -1954,6 +1954,9 @@ _DRIVE_CHECK_ROWS = [
     ("/drive/v3/files/{pdf}/export", "mimeType=text/plain", "admin", (403, "fileNotExportable", None, None)),
     # the empty value is present, so in the order `drive_files_export` records it meets the 403
     ("/drive/v3/files/{pdf}/export", "mimeType=", "admin", (403, "fileNotExportable", None, None)),
+    # a folder is synthesized rather than stored, and is refused as the PDF is, not as a file that
+    # does not exist
+    ("/drive/v3/files/{folder}/export", "mimeType=text/plain", "admin", (403, "fileNotExportable", None, "Export only supports Docs Editors files.")),
     ("/drive/v3/files/{doc}", "alt=media", "admin", (403, "fileNotDownloadable", "alt", None)),
     # the shared-drive items need a companion flag, which the same spelling turns on
     ("/drive/v3/files", "includeItemsFromAllDrives=true", "admin", _SHARED_DRIVES),
@@ -2050,6 +2053,7 @@ def test_drive_answers_each_check_with_reals_status_and_reason(
     ids = {
         "doc": doc,
         "pdf": _drive_find(client, admin_h, "Whitepaper")["id"],
+        "folder": _drive_ids(client, admin_h, q=f"mimeType='{FOLDER_MIME}'")[0],
         "hidden": _drive_find(client, admin_h, "Q1 Revenue Model")["id"],
         "nope": "nosuchfile000",
         "issued": issued.json()["nextPageToken"],
@@ -2066,6 +2070,59 @@ def test_drive_answers_each_check_with_reals_status_and_reason(
     assert (e["errors"][0].get("reason"), e["errors"][0].get("location")) == (reason, location)
     if message is not None:
         assert (e["message"], "status" in e) == (message, False)
+
+
+def test_drive_export_of_a_folder_the_caller_cannot_see_is_the_404(tmp_path):
+    """The two answers the folder branch of `drive_files_export` records, for each caller: `Private`
+    holds only a file mia cannot read, so it is the folder she cannot see."""
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "google_drive",
+                "doc_id": "gd-open",
+                "folder": "Shared",
+                "title": "Open",
+                "content": "body",
+                "author_email": "mia@acme.com",
+                "visibility": "public",
+            },
+            {
+                "source_type": "google_drive",
+                "doc_id": "gd-shut",
+                "folder": "Private",
+                "title": "Shut",
+                "content": "body",
+                "author_email": "ava@acme.com",
+                "readers": ["ava@acme.com"],
+            },
+        ],
+    )
+    tokens = yaml.safe_load(s.tokens_path.read_text(encoding="utf-8"))
+    h = {"admin": {"Authorization": f"Bearer {s.admin_token}"}}
+    for name in ("ava", "mia"):
+        h[name] = {"Authorization": f"Bearer {tok(tokens, f'{name}@acme.com')}"}
+    with client_for(s, reload=True) as c:
+        q = {"q": f"mimeType='{FOLDER_MIME}'", "fields": "files(id,name)"}
+        listed = c.get("/drive/v3/files", headers=h["admin"], params=q).json()["files"]
+        folder = {f["name"]: f["id"] for f in listed}
+        folder["nope"] = "nosuchfile000"
+        for caller, name, status, reason in [
+            ("admin", "Private", 403, "fileNotExportable"),
+            ("ava", "Private", 403, "fileNotExportable"),
+            ("mia", "Private", 404, "notFound"),
+            ("mia", "Shared", 403, "fileNotExportable"),
+            ("mia", "nope", 404, "notFound"),
+        ]:
+            r = c.get(
+                f"/drive/v3/files/{folder[name]}/export",
+                headers=h[caller],
+                params={"mimeType": "text/plain"},
+            )
+            assert (r.status_code, _gerr(r)["errors"][0]["reason"]) == (status, reason), (
+                caller,
+                name,
+            )
 
 
 @pytest.mark.parametrize(
@@ -4782,6 +4839,19 @@ def test_docs_get_returns_paragraph_text(base, admin_h):
         for e in el["paragraph"]["elements"]
     )
     assert "Logo usage" in text  # SAMPLE "Brand guidelines v3"
+
+
+@pytest.mark.parametrize(
+    "params",
+    [{}, {"suggestionsViewMode": "PREVIEW_WITHOUT_SUGGESTIONS"}, {"includeTabsContent": "true"}],
+    ids=["plain", "preview-without-suggestions", "tabs-content"],
+)
+def test_docs_get_serves_comments_view_mode(base, admin_h, params):
+    """A document read carries `commentsViewMode` as its last member, with the value real serves."""
+    fid, _ = _drive_by_mime(base, admin_h, "application/vnd.google-apps.document")
+    r = httpx.get(f"{base}/docs/v1/documents/{fid}", headers=admin_h, params=params)
+    assert r.status_code == 200
+    assert list(r.json().items())[-1] == ("commentsViewMode", "COMMENTS_VIEW_MODE_OMITTED")
 
 
 _DOCS_SUGGESTIONS = "type.googleapis.com/google.apps.docs.v1.SuggestionsViewMode"

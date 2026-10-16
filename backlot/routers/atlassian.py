@@ -2587,7 +2587,9 @@ def _confluence_carried(
     Measured on `content` and `space` on 2026-10-15: a bare or escaped comma, a lower-case `%2c`,
     `+`, `%7E`, `~`, `;` and an escaped name (`%65xpand`) came back as sent, a name sent without
     `=` came back with one, and an empty part or name was dropped. The names compared here are the
-    spelt ones too: `l%69mit=1` is read as `limit` and still carried.
+    spelt ones too, as real's are: `l%69mit=1` is read as `limit` and still carried, and
+    `%65xpand` and `sp%61ceKey`, read as `expand` and `spaceKey`, land where other names do
+    (measured 2026-10-16).
     """
     front, lead, trail = [], [], []
     for part in request.scope["query_string"].decode("latin-1").split("&"):

@@ -2235,10 +2235,8 @@ _CARRIED_ROWS = [
 def test_confluence_a_carried_parameter_is_spelt_and_placed_as_measured(
     client, admin_h, request_path, which, link, self_path
 ):
-    """Each parameter spelt as it was sent, and placed: `expand` leads `limit`/`start`, `spaceKey`
-    leads the marker and `expand` on `space`, and a name real does not read trails `start`: the
-    placement :func:`backlot.routers.atlassian._confluence_carried` chose, since real's own for the
-    last is no rule a client can rely on."""
+    """Each row's links as :func:`backlot.routers.atlassian._confluence_carried` spells and places
+    their parameters."""
     api = "/atlassian/wiki/rest/api"
     links = client.get(api + request_path.format(**_SPACE_KEYS), headers=admin_h).json()["_links"]
     assert links[which] == link.format(**_SPACE_KEYS)

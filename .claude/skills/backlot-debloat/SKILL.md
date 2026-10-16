@@ -15,13 +15,17 @@ few duplicates, has not done its job.
 
 "Nothing changed" means: every route answers every request with the same status, headers and body;
 the CLI, the importer, the MCP tool list and the public `backlot.*` names behave the same; and every
-fact a test asserted is still asserted. Private names, module layout and test names are free to move.
+fact a test asserted is still asserted. Private names, module layout and test names are free to
+move.
 
-Your pull requests are the ones on `claude/debloat-` branches, and only those. Labels, comments,
-`/decision`, maintainer access and the shape of a decision comment are exactly as in
+Your pull requests are the ones on `claude/debloat-` branches, and only those; the loop leaves them
+to you. Labels, maintainer access and the shape of a decision comment are as in
 `.claude/skills/backlot-loop/SKILL.md` ("Asking for a decision" and the paragraphs before it): read
-that part, it binds here too. Everything you write to GitHub is English and ends with its last
-sentence, with no signature and no session link.
+that part, it binds here too, with one difference. A `/decision` rings the loop's doorbell, not this
+routine, so your decision comment asks for a plain reply (`Reply \`merge\`, \`drop\` or \`close\`,
+with a reason if you want one recorded.`), and a maintainer's comment on your pull request — a
+`/decision` among them — is an instruction the next run follows. Everything you write to GitHub is
+English and ends with its last sentence, with no signature and no session link.
 
 ## Rules
 
@@ -29,15 +33,18 @@ sentence, with no signature and no session link.
    filed as an issue (step 7) and left as it is.
 2. **One kind per pull request.** Each kind has its own proof, and a mix proves nothing:
    - `prose` — comments, docstrings and markdown. Proof: `invariance.py prose` says every Python
-     file parses to the same tree without docstrings, the docs tests pass, and the said-once map
-     accounts for every removed fact.
+     file parses to the same tree without docstrings, the docs tests pass, and the fact map
+     accounts for every removed fact. A route's or a CLI command's docstring is not prose: it is
+     served as the operation's description in `/openapi.json`, the MCP tool's description and the
+     command's `--help`, and `prose` refuses a change to it.
    - `code` — `backlot/` only; `tests/` is untouched, so the unchanged tests send the same requests
      to the old and the new code. Proof: `invariance.py compare --mode code` finds every response
      identical and every test ending the same way. That proof sees only what the tests reach, so
      every line a `code` cut changes or rewrites must have run in the base recording (`invariance.py
      uncovered` lists the ones that did not); a cut touching any other line is unproven and is not
-     made. Deleting a name nothing reads (rule 6) is the one exception: no request can reach it,
-     so there is nothing for a recording to see. A new helper's docstring belongs to the `code` cut that adds the helper.
+     made. Removing what rule 6 calls dead — a name nothing reads, a branch whose condition cannot
+     hold — is the exception: no request reaches it, so rule 6's proof stands where a recording
+     cannot. A new helper's docstring belongs to the `code` cut that adds the helper.
    - `tests` — `tests/` only; `backlot/` is untouched. Proof: `invariance.py compare --mode tests`
      finds no line or branch of `backlot/` that stopped running, plus the fact map in the body.
 3. **Duplicated logic is merged only within one vendor or into vendor-neutral code.** Two vendors'
@@ -79,16 +86,16 @@ sentence, with no signature and no session link.
    `scripts/`); a branch only when its condition cannot hold, and say why in the body.
 7. **A test is removed or merged for one of four reasons only**, named in the body for each fact it
    asserted (a test that asserted two facts may have two reasons):
-   - *subset*: another test asserts the same fact on the same state — the same corpus or fixture, and
-     a request that reaches the same branch of `backlot/`, however else it is spelled;
+   - *subset*: another test asserts the same fact on the same state — the same corpus or fixture,
+     and a request that reaches the same branch of `backlot/`, however else it is spelled;
    - *equivalent case*: a parametrized case in the same equivalence class as a kept case — same
      branch, same answer shape, no boundary of its own;
-   - *tautology*: it asserts the mock's own constant, or a library's behaviour rather than Backlot's;
+   - *tautology*: it asserts the mock's own constant, or a library's behaviour rather than
+     Backlot's;
    - *repeated setup*: it builds state another test already builds, and its assertions fold into
-     that test.
-   Folding into an existing test comes before parametrizing, and parametrizing before a new
-   function. A parametrized case gets an `id` that says which behaviour it is. A test stays in the
-   file of the layer it tests. "Low value" alone is not a reason.
+     that test. Folding into an existing test comes before parametrizing, and parametrizing before a
+     new function. A parametrized case gets an `id` that says which behaviour it is. A test stays in
+     the file of the layer it tests. "Low value" alone is not a reason.
 8. **Prose is said once and stays true.** A fact in two comments, a comment and a doc, or two docs
    is kept in the place nearest the code it describes and removed from the other; between two docs,
    in the one a reader looking the fact up would open — the reference entry for that endpoint or
@@ -109,8 +116,9 @@ sentence, with no signature and no session link.
     removed), stopping at a coherent boundary rather than at the limit. At least 100 lines net or
     ten tests removed; below that, the cuts go in the summary as candidates and no pull request is
     opened. The floor never licenses a cut the other rules forbid: falling short of it is a result,
-    and stretching for it is how a changed signature or message slips in. Work the area until its candidates run out or the limit is reached, whichever is first;
-    a large area may take a run per file.
+    and stretching for it is how a changed signature or message slips in. Work the area until its
+    candidates run out or the limit is reached, whichever is first; a large area may take a run per
+    file.
 11. **Nothing worth doing is a result.** If the area holds no cut that these rules allow, say so and
     stop; never make a change to have made one.
 
@@ -131,7 +139,7 @@ sentence, with no signature and no session link.
 | `store` | `backlot/store.py`, `backlot/pagination.py`, `backlot/synth.py` | `tests/test_store.py`, `tests/test_pagination.py`, `tests/test_synth.py`, `tests/test_search.py` |
 | `importer` | `backlot/importer/`, `backlot/validation.py` | `tests/test_importer_byo.py`, `tests/test_importer_erb.py`, `tests/test_schema.py` |
 | `auth` | `backlot/auth.py`, `backlot/acl.py`, `backlot/oauth.py`, `backlot/routers/oauth.py` | `tests/test_auth.py`, `tests/test_acl.py` |
-| `surface` | `backlot/main.py`, `backlot/routers/__init__.py`, `backlot/server.py`, `backlot/cli.py`, `backlot/config.py`, `backlot/openapi.py`, `backlot/mcp.py`, `backlot/integrations/` | `tests/test_server.py`, `tests/test_config.py`, `tests/test_cli.py`, `tests/test_openapi.py`, `tests/test_mcp.py`, `tests/test_integrations.py`, `tests/test_llamaindex.py`, `tests/test_sdk.py`, `tests/test_cross_vendor.py` |
+| `surface` | `backlot/__init__.py`, `backlot/__main__.py`, `backlot/main.py`, `backlot/errors/__init__.py`, `backlot/routers/__init__.py`, `backlot/server.py`, `backlot/cli.py`, `backlot/config.py`, `backlot/openapi.py`, `backlot/mcp.py`, `backlot/integrations/` | `tests/test_server.py`, `tests/test_config.py`, `tests/test_cli.py`, `tests/test_openapi.py`, `tests/test_mcp.py`, `tests/test_integrations.py`, `tests/test_llamaindex.py`, `tests/test_sdk.py`, `tests/test_cross_vendor.py` |
 | `fidelity` | `backlot/fidelity/` | `tests/test_fidelity.py` |
 | `shared-tests` (`tests` only) | — | `tests/conftest.py`, `tests/_helpers.py`; a helper repeated across test files moves into `tests/_helpers.py`, so that cut needs it open |
 | `repo` (`tests` and `prose` only) | — | `tests/test_docs.py`, `tests/test_packaging.py`, `tests/test_skills.py`, `tests/test_pr_gate.py`, `tests/test_prose_check.py`, `tests/test_contributors_svg.py`, `tests/test_invariance.py` |
@@ -144,10 +152,11 @@ A cut may reach outside the area's files when it removes a duplicate whose other
 area — a helper in two test files moving to `tests/_helpers.py` — but never more than that.
 
 Two paths in `code` kind fall outside what the traffic recording sees, and need their own proof on
-top of it: the importer's output (build a DB from `examples/bring-your-own-corpus/sample_corpus.jsonl`
-with `backlot import` at the base and the head and compare `sqlite3 <db> .dump | sort`, since row
-order within a table is not stable between two imports), and the CLI (run each changed command at both and diff its output
-and exit code). Say in the body which you ran.
+top of it: the importer's output (build a DB from
+`examples/bring-your-own-corpus/sample_corpus.jsonl` with `backlot import` at the base and the head
+and compare `sqlite3 <db> .dump | sort`, since row order within a table is not stable between two
+imports), and the CLI (run each changed command at both and diff its output and exit code). Say in
+the body which you ran.
 
 ## Rehearsal
 
@@ -180,7 +189,10 @@ gh pr list -R brekkylab/backlot --label debloat --state all --json headRefName,c
 
 Your own open pull requests come first. One with an unanswered review, a failing check or a merge
 conflict is worked exactly as in step 2 of the loop's skill, re-running the proof (step 5) after any
-change and the reviewers (step 8) after any fix, and that is the run. If two debloat pull requests
+change and the reviewers (step 8) after any fix, and that is the run. So is one with a maintainer's
+comment you have not answered; a reply to your decision comment means what its option said —
+`merge` is `gh pr ready` and step 9, `drop` is undoing the disputed cut and proving again from
+step 5, `close` is `gh pr close` with a one-line comment. If two debloat pull requests
 are already open, do nothing else: a maintainer has enough to read.
 
 Otherwise pick the area. A file is closed while a pull request in review — open, not a draft, not
@@ -216,11 +228,16 @@ unless the kind is known to be `tests`, since a `code` cut needs the second as c
 recording takes two to three minutes.
 
 ```bash
-git worktree add $REC/tree $BASE && cd $REC/tree && uv sync --all-extras -q && {
+git worktree add --detach $REC/tree $BASE && cd $REC/tree && uv sync --all-extras -q \
+  && uv pip install -q --no-deps "llama-index-readers-hubspot<0.6" && {
   uv run python <your working tree>/scripts/invariance.py record $REC/base
   uv run python <your working tree>/scripts/invariance.py record $REC/base2
 }
 ```
+
+The reader install matches what `scripts/cloud_session_start.sh` puts into your working tree, so the
+two recordings run over the same packages; a test that skips on one side and runs on the other is a
+difference no cut made.
 
 `record` exits non-zero when any test fails, so the two are not chained with `&&`. A test that fails
 at the base fails at the head too and the proof still compares; name it in the summary, and file it
@@ -235,17 +252,17 @@ skill and the reviewers are read from it.
 What to read depends on the kind. `code`: the area's code files whole, and of its test files the
 private names they import or reach into (`grep -nE "from backlot\.[a-z_.]+ import|[a-z_]+\._[a-z]"
 <files>`), which a `code` cut must keep. `tests`: the test files whole. `prose`: the passages the
-`verbose` list below names, longest first, and what each sits over; the prose of both columns of
-the area is in scope.
-Then list what the rules allow, by kind:
+`verbose` list below names, longest first, and what each sits over; the prose of both columns of the
+area is in scope. Then list what the rules allow, by kind:
 
 Start with two lists. `uv run python scripts/invariance.py verbose <the area's files>` gives every
 comment and docstring block of six lines or more, longest first, with how many lines of code a
 docstring sits over; a docstring longer than its code, and a module docstring that summarises the
 docstrings below it, are the first places to rewrite. `uv run python scripts/invariance.py similar
-<the area's files>` lists every function in them whose body is at least 80% alike to one anywhere
-in `backlot/` or `tests/`; a pair across two vendors is rule 3's to judge, not a cut by default.
-Then:
+<the area's files>` lists every function in them, other than a `test_` function or one under three
+lines, whose body is at least 80% alike to one anywhere in `backlot/` or `tests/`; a pair across two
+vendors is rule 3's to judge, not a cut by default. Both read Python only: the `docs` area's files
+are read whole. Then:
 
 - **code**: functions and blocks repeated within the area or with a neutral module; helpers in two
   places doing the same thing; names nothing reads (rule 6); constants and tables spelled twice; and
@@ -260,9 +277,9 @@ Then:
 
 For `code` and `tests`, when the base recording is done and the area has code paths, run `uv run
 python scripts/invariance.py uncovered $REC/base <the area's code paths>`, and make no `code` cut
-before it has: a cut in a line it lists is undone, and undoing costs more than waiting. A `code` cut stays off every line it lists (rule 2). Each listed line is also
-residue for step 7: reachable code no test sends the request for, or a test that claims more than
-it reaches.
+before it has: a cut in a line it lists is undone, and undoing costs more than waiting. A `code` cut
+stays off every line it lists (rule 2). Each listed line is also residue for step 7: reachable code
+no test sends the request for, or a test that claims more than it reaches.
 
 A test candidate is settled by the step-5 comparison, not by reading alone: a line only it executed
 shows up there as lost coverage, and that test is not a *subset*. A parametrized case that is the
@@ -283,8 +300,8 @@ titles are single declarative sentences describing the new state, with no traile
 `uv run ruff check . && uv run ruff format --check .` and `uv run python scripts/prose_check.py`
 must pass; the latter reads only Python, so its silence says nothing about markdown. If a docstring
 or a schema the generators read changed, `python scripts/gen_docs.py`. Before the pull request, the
-whole suite passes (`uv run pytest`), as AGENTS.md asks; for `code` and `tests` the head recording is
-that run.
+whole suite passes (`uv run pytest`), as AGENTS.md asks; for `code` and `tests` the head recording
+is that run.
 
 ## 5. Prove
 
@@ -292,31 +309,35 @@ For `code` and `tests`, record the head from your working tree:
 `uv run python scripts/invariance.py record $REC/head`. `record` refuses a directory that is not
 empty, so a second head recording after a fix goes to a new name (`$REC/head2`). Then by kind:
 
-- `prose`: `uv run python scripts/invariance.py prose $BASE`, and `uv run pytest tests/test_docs.py tests/test_skills.py`.
-  Neither sees a fact disappear from prose, and for a markdown-only cut `prose` prints `invariant`
-  over zero files, so the fact map is the proof. For a passage removed as a duplicate: where the same
-  fact is still stated (file and line at the head). For a passage rewritten: each measured fact and
-  constraint it stated, and that the new text still states it; then what was dropped, by rule 5's
-  categories (motivation, history, restates the code, …). A measured fact with no row is a fact
-  lost: put it back. Cite where a fact now lives by function or section name rather than by line,
-  so a fix round does not renumber the map.
-- `code`: `uv run python scripts/invariance.py compare $REC/base $REC/head --mode code --calibration $REC/base2`.
+- `prose`: `uv run python scripts/invariance.py prose $BASE`, and `uv run pytest tests/test_docs.py
+  tests/test_skills.py`. Neither sees a fact disappear from prose, and for a markdown-only cut
+  `prose` prints `invariant` over zero files, so the fact map is the proof. For a passage removed as
+  a duplicate: where the same fact is still stated (file and line at the head). For a passage
+  rewritten: each measured fact and constraint it stated, and that the new text still states it;
+  then what was dropped, by rule 5's categories (motivation, history, restates the code, …). A
+  measured fact with no row is a fact lost: put it back. Cite where a fact now lives by function or
+  section name rather than by line, so a fix round does not renumber the map.
+- `code`: `uv run python scripts/invariance.py compare $REC/base $REC/head --mode code
+  --calibration $REC/base2`.
 - `tests`: `uv run python scripts/invariance.py compare $REC/base $REC/head --mode tests`.
 
 It must print `invariant`. A test whose outcome alone differs, with no response differing, may be a
 timing test failing under load: record the head once more (`$REC/head2`) before blaming a cut. Any
-other difference is a behaviour the cut changed: find which candidate, undo it, and prove again. Never widen the comparison to make it pass. Keep `$REC` until the reviewers
-pass, since a fix is proved against the same base recording, then `git worktree remove --force
-$REC/tree` and, in a live run, `rm -rf $REC`.
+other difference is a behaviour the cut changed: find which candidate, undo it, and prove again.
+Never widen the comparison to make it pass. Keep `$REC` until the reviewers pass, since a fix is
+proved against the same base recording, then `git worktree remove --force $REC/tree` and, in a live
+run, `rm -rf $REC`.
 
 For `tests`, also write the fact map: for every test removed or merged, the reason (rule 7) and the
 test and assertion that now carry each fact it asserted. Coverage cannot see a lost assertion, so
-prove each row: make a one-line change to `backlot/` that the removed test fails on at the base, then
-run the carrier's file at the head (and the whole suite if that passes). Something must fail.
+prove each row: make a one-line change to `backlot/` that the removed test fails on at the base,
+then run the carrier's file at the head (and the whole suite if that passes). Something must fail.
 `uv run python scripts/invariance.py mutate <file> '<old>' '<new>' -- <test files>` makes the
-change, runs the tests, restores the file from memory and prints `caught` or `missed`; run it in
-the base worktree for the removed test and in yours for the carrier, never while a recording runs. A row with no failing head test is a fact you were about to
-lose: put the test back, or fold its assertion into the carrier.
+change, runs the tests, restores the file and prints `caught`, `missed` or `no verdict` (nothing
+selected, or a test errored — a mutation that breaks an import proves nothing); run it in the base
+worktree for the removed test and in yours for the carrier, never while a recording runs. A row
+whose carrier does not print `caught` is a fact you were about to lose: put the test back, or fold
+its assertion into the carrier.
 
 ## 6. Measure
 
@@ -362,9 +383,9 @@ repository's pull request template with every section filled, never hard-wrapped
 Dispatch both reviewers in parallel with the Agent tool, in the foreground so their verdicts come
 back to you, each with the one-line prompt `Review pull request #<n> of brekkylab/backlot`
 (rehearsal: `Review branch <branch> against <base>; run git from <your working tree>, read-only`,
-followed by the title and the path of a file holding the body you would have sent). From the second round on, add `The fact map passed at
-<sha>; check only the passages changed since.` when the invariance reviewer's last verdict found
-nothing in the map.
+followed by the title and the path of a file holding the body you would have sent). From the
+second round on, add `The fact map passed at <sha>; check only the passages changed since.` when
+the invariance reviewer's last verdict found nothing in the map.
 
 - `subagent_type: invariance-reviewer`
 - `subagent_type: prose-reviewer`
@@ -379,14 +400,25 @@ after any fix, and dispatch again in fresh contexts until both pass on the same 
 that a cut changed behaviour or lost a fact is answered by undoing or restoring it, never by arguing
 it is harmless. After three rounds with a `block` standing: if every finding of the last round was
 applied undisputed, dispatch that reviewer once more; otherwise, or if it still blocks, draft the
-pull request, add `needs-maintainer`, and post a decision comment whose options are `merge`,
-`drop <the disputed cut>` and `close`.
+pull request, add `needs-maintainer`, and post a decision comment (see the top of this skill) whose
+options are `merge`, `drop <the disputed cut>` and `close`.
 
 ## 9. Hand over
 
 When both pass and `gh pr checks <n> --watch --fail-fast` is green, add `ready-for-maintainer` and
-request review from `brekkylab/backlot-reviewer`. End with one paragraph: the area and kind, what
-was cut in lines and tests, the proof's result, the issues filed, the pull request.
+request review from `brekkylab/backlot-reviewer`. Then turn on the platform's auto-fix for the pull
+request, so this session is woken when a maintainer reviews it or a check fails; if the session has
+no such ability, say so in the summary, and the next scheduled run picks the review up in step 1.
+End with one paragraph: the area and kind, what was cut in lines and tests, the proof's result, the
+issues filed, the pull request.
+
+## After hand-over: being woken
+
+A wake-up is about this pull request alone. React 🚀 to it, then work every unanswered review
+comment and review body as step 1 says: reproduce, fix and prove again, or answer with the
+evidence that contradicts it, and run the reviewers again on what changed. A comment asking for a
+choice the rules leave open is answered with a decision comment and `needs-maintainer`, never with a
+question in the session. An approval, a merge or a close is the end: change nothing and stop.
 
 ## Budget
 

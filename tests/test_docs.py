@@ -314,6 +314,20 @@ _LOOP_FILES = (
         ),
     ),
     (
+        ".claude/agents/invariance-reviewer.md",
+        ("---\nname: invariance-reviewer\n", "description:", "disallowedTools:"),
+    ),
+    (
+        ".claude/skills/backlot-debloat/SKILL.md",
+        (
+            "---\nname: backlot-debloat\n",
+            "description:",
+            "allowed-tools:",
+            "## Rehearsal",
+            "scripts/invariance.py",
+        ),
+    ),
+    (
         ".github/workflows/loop-doorbell.yml",
         (
             "issues:",

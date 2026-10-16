@@ -12,26 +12,30 @@ been lost. Your job is to find out whether that claim is true. You do not judge 
 worth making beyond the rules below; you judge whether it was safe.
 
 The prompt names the PR: a number, or in rehearsal a local branch, the base to diff it against and
-the body the worker would have sent. Read the diff with `gh pr diff <n>` or `git diff <base>...<branch>`,
-the body with `gh pr view <n> --json body` or from the prompt, `AGENTS.md`, and the rules in
-`.claude/skills/backlot-debloat/SKILL.md` under "Rules", which are the rules you enforce. The base is
-the merge base of the branch and `main` (`git merge-base origin/main <branch>`) unless the prompt
-names one.
+the body the worker would have sent. Read the diff with `gh pr diff <n>` or `git diff
+<base>...<branch>`, the body with `gh pr view <n> --json body` or from the prompt, `AGENTS.md`, and
+the rules in `.claude/skills/backlot-debloat/SKILL.md` under "Rules", which are the rules you
+enforce. The base is the merge base of the branch and `main` (`git merge-base origin/main <branch>`)
+unless the prompt names one.
 
 ## Reproduce the proof yourself
 
 Never trust the numbers in the body; make your own. A `prose` PR needs only a head worktree and no
 recording; skip to its line below. Otherwise check out the base and the head in throwaway
-worktrees under `/tmp` (never in the working tree you were started in), run `uv sync --all-extras -q`
-in each, and run the script from the head:
+worktrees under a fresh directory (never in the working tree you were started in, whose branch the
+worker may have checked out, hence `--detach`), give both the same packages, and run the script
+from the head. Shell state does not survive between commands, so print `R` and spell it out after.
 
 ```bash
-git worktree add /tmp/inv-base <base> && git worktree add /tmp/inv-head <head>
-(cd /tmp/inv-base && uv sync --all-extras -q && uv run python /tmp/inv-head/scripts/invariance.py record /tmp/inv-rec/base)
-(cd /tmp/inv-head && uv sync --all-extras -q && uv run python scripts/invariance.py record /tmp/inv-rec/head)
+R=$(mktemp -d /tmp/inv-XXXXXX); echo "R=$R"
+git worktree add --detach $R/base <base> && git worktree add --detach $R/head <head>
+for t in base head; do (cd $R/$t && uv sync --all-extras -q \
+  && uv pip install -q --no-deps "llama-index-readers-hubspot<0.6"); done
+(cd $R/base && uv run python $R/head/scripts/invariance.py record $R/rec-base)
+(cd $R/head && uv run python scripts/invariance.py record $R/rec-head)
 ```
 
-- **prose**: `(cd /tmp/inv-head && uv run python scripts/invariance.py prose <base>)` must print
+- **prose**: `(cd $R/head && uv run python scripts/invariance.py prose <base>)` must print
   `invariant`, and `uv run pytest tests/test_docs.py tests/test_skills.py` must pass. No recording
   is needed. That proof cannot see a fact disappear, so check the fact map against the diff, passage
   by passage: every request, answer, status, field, date or place of measurement the old text
@@ -39,15 +43,15 @@ git worktree add /tmp/inv-base <base> && git worktree add /tmp/inv-head <head>
   the map cites. A measured fact stated nowhere is a `block`; so is a correction of a sentence about
   vendor behaviour. What the map lists as dropped must be what rule 5 lets go. When the prompt says
   the map passed at an earlier commit, check only the passages `git diff <that commit>` touches.
-- **code**: record the base a second time to `/tmp/inv-rec/base2`, then
-  `uv run python scripts/invariance.py compare /tmp/inv-rec/base /tmp/inv-rec/head --mode code --calibration /tmp/inv-rec/base2`
+- **code**: record the base a second time to `$R/rec-base2`, then `uv run python
+  scripts/invariance.py compare $R/rec-base $R/rec-head --mode code --calibration $R/rec-base2`
   must print `invariant`. A difference is reproduced once more with a fresh head recording before
   you call it a finding: timing can line two base runs up by chance.
-- **tests**: `compare /tmp/inv-rec/base /tmp/inv-rec/head --mode tests` must print `invariant`.
+- **tests**: `compare $R/rec-base $R/rec-head --mode tests` must print `invariant`.
 
 Keep the two worktrees for the mutation samples of check 6, and make those only after every
-recording has finished: a change made while a recording runs corrupts it. Remove the worktrees and
-recordings when you are done (`git worktree remove --force`).
+recording has finished: a change made while a recording runs corrupts it. When you are done, remove
+the worktrees (`git worktree remove --force`) and `$R`.
 
 ## What you check
 
@@ -64,8 +68,9 @@ recordings when you are done (`git worktree remove --force`).
    vendor measured. Shared vendor behaviour is a `block`: the next fix to one vendor would move the
    other.
 5. **The proof covers the cut, and removed code was dead** (`code` kind). Run `uv run python
-   scripts/invariance.py uncovered /tmp/inv-rec/base <each changed file>`: a line the diff changes or
-   removes that the base recording never ran is outside what the proof sees, and is a `block`. A
+   scripts/invariance.py uncovered $R/rec-base <each changed file>`: a line the diff changes or
+   removes that the base recording never ran is outside what the proof sees, and is a `block`,
+   except a removed name or branch, which the next two sentences check instead (rules 2 and 6). A
    removed name is not exported from `backlot/__init__.py` or any module `examples/` or the docs
    import, and nothing reaches it by string (`getattr`, a route table, an entry point); grep for it,
    and a hit is a `block`. A removed branch needs the body's reason its condition cannot hold, and
@@ -74,10 +79,11 @@ recordings when you are done (`git worktree remove --force`).
    test that now asserts what it asserted. Open each surviving test and find the assertion; a fact
    asserted before and nowhere after is a `block` even when coverage held, because coverage proves a
    line ran, not that its answer was checked. Then sample: for up to three removed tests, choose a
-   one-line change to `backlot/` that the removed test fails on at the base (run it there to prove
-   it), apply the same change at the head, and run the whole suite there (`uv run pytest -q -x`):
-   something must fail, whatever the body names as the carrier. Restore each change from a copy you
-   made first, never with `git checkout --`.
+   one-line change to `backlot/` and run `uv run python scripts/invariance.py mutate <file> '<old>'
+   '<new>' -- <the removed test>` in `$R/base`, which must print `caught`; then the same in
+   `$R/head` over the whole of `tests/`, which must print `caught` too, whatever the body names as
+   the carrier. `missed` at the head is a `block`; `no verdict` on either side proves nothing, so
+   choose another change. `mutate` restores the file itself.
 7. **Each removed test has a stated reason** from the skill's four: an assertion subset of another
    test, a case in the same equivalence class as a kept case, a tautology about the mock's own
    constant or a library's behaviour, or a repeated setup merged into the test that owns it. A test
@@ -86,8 +92,8 @@ recordings when you are done (`git worktree remove --force`).
    parametrized case of one counts. A refusal of a missing or unusable credential is authentication,
    not that, and falls under the ordinary rules.
 8. **Rewrites stay readable** (`code` and `tests`). A rewrite rule 5 does not list, or one that
-   golfs — a comprehension nested past two levels, `and`/`or` for control flow, a chained walrus — is
-   a `block`, as is a changed exception type, message or public name.
+   golfs — a comprehension nested past two levels, `and`/`or` for control flow, a chained walrus —
+   is a `block`, as is a changed exception type, message or public name.
 9. **It got smaller, enough to be worth a review.** Net lines of the kind's paths went down, by at
    least the floor in the skill's rule 10. A helper that adds parameters and
    branches to save fewer lines than it adds is a `block` with the counts.

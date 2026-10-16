@@ -27,7 +27,7 @@ def _write(tmp_path, records, name="corpus.jsonl", *, raw=False):
             complete(**r) if isinstance(r, dict) and "source_type" in r else r for r in records
         ]
     p = tmp_path / name
-    p.write_text("\n".join(json.dumps(r) for r in records))
+    p.write_text("\n".join(json.dumps(r) for r in records), encoding="utf-8")
     return p
 
 
@@ -142,7 +142,8 @@ def test_byo_load_and_acl(tmp_path):
     conn = store.connect_ro(settings.db_path)
     acl = Acl.load(settings.tokens_path, settings.admin_token, settings.org_name)
     tokens = {
-        u["email"]: u["token"] for u in yaml.safe_load(settings.tokens_path.read_text())["users"]
+        u["email"]: u["token"]
+        for u in yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))["users"]
     }
 
     def visible_titles(token, source):
@@ -189,7 +190,8 @@ def test_byo_readers_and_defaults(tmp_path):
     acl = Acl.load(settings.tokens_path, settings.admin_token, settings.org_name)
     assert acl.org_name == "a"  # Acl.load picks up the derived org from tokens.yaml
     tokens = {
-        u["email"]: u["token"] for u in yaml.safe_load(settings.tokens_path.read_text())["users"]
+        u["email"]: u["token"]
+        for u in yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))["users"]
     }
 
     # explicit readers: ava can see the deck doc; a stranger cannot
@@ -679,6 +681,7 @@ def test_byo_slack_edited_user_must_be_the_messages_own_author(tmp_path, on):
         load(corpus, Settings(data_dir=tmp_path))
 
 
+@pytest.mark.windows
 def test_byo_a_speaker_outside_a_private_channels_readers_is_refused(tmp_path):
     """A channel's members are the people who have spoken in it and what a caller may read is the
     ACL, so a corpus that puts a speaker outside a private channel's grantees states two things
@@ -719,6 +722,7 @@ def test_byo_a_speaker_outside_a_private_channels_readers_is_refused(tmp_path):
     load(nobody, Settings(data_dir=tmp_path))
 
 
+@pytest.mark.windows
 def test_byo_record_level_clocks_refuse_an_unreadable_value(tmp_path):
     """The asymmetry a reply's refusal created: a root's own `created` took the
     synthesized `epoch(doc_id)` for a typo without a word, so a record whose author
@@ -851,6 +855,7 @@ def test_byo_reply_clock_refuses_unservable_numbers(tmp_path, bad):
         load(corpus, Settings(data_dir=tmp_path))
 
 
+@pytest.mark.windows
 def test_byo_epoch_handles_every_number_without_raising(tmp_path):
     """`_epoch` answers None rather than raising, for every shape a corpus can put in a
     time field. `json.loads` accepts bare `Infinity` and `NaN`, so these arrive as floats
@@ -866,6 +871,36 @@ def test_byo_epoch_handles_every_number_without_raising(tmp_path):
     assert _epoch(0) == 0 and _epoch("0") == 0
     assert _epoch("-86400") == -86400
     assert _epoch("1770746760") == 1770746760
+
+
+@pytest.mark.windows
+@pytest.mark.parametrize(
+    "written, second",
+    [
+        ("1969-12-31T00:00:00", -86400),  # no offset: UTC, wherever the import runs
+        ("2026-05-01T00:00:00", 1777593600),
+        ("20260501", 1777593600),  # a basic-format date, no time
+        ("2026-05-01T09:00:00+09:00", 1777593600),  # an offset is the offset written
+        ("2026-05-01T00:00:00Z", 1777593600),
+    ],
+)
+def test_byo_an_iso_time_reads_the_same_whatever_the_machines_zone(written, second, monkeypatch):
+    """An ISO time is the same second on every machine: one with no offset is UTC, one with an
+    offset is that offset. Read under a UTC+9 zone where the platform can switch it
+    (`backlot.importer.byo._epoch` has the measurement)."""
+    import time
+
+    from backlot.importer.byo import _epoch
+
+    if hasattr(time, "tzset"):
+        monkeypatch.setenv("TZ", "Asia/Seoul")
+        time.tzset()
+    try:
+        assert _epoch(written) == second
+    finally:
+        monkeypatch.undo()
+        if hasattr(time, "tzset"):
+            time.tzset()
 
 
 def test_byo_epoch_seconds_as_a_string(tmp_path):
@@ -1013,7 +1048,7 @@ def test_s3_byo_load(tmp_path):
         },
     ]
     corpus = tmp_path / "s3.jsonl"
-    corpus.write_text("\n".join(json.dumps(complete(**r)) for r in records))
+    corpus.write_text("\n".join(json.dumps(complete(**r)) for r in records), encoding="utf-8")
     settings = Settings(data_dir=tmp_path)
     res = load(corpus, settings)
     assert res["counts"]["s3"] == 3
@@ -1050,7 +1085,8 @@ def test_github_file_byo_load(tmp_path, monkeypatch):
                     "author_email": "a@acme.com",
                 }
             )
-        )
+        ),
+        encoding="utf-8",
     )
     byo.load(p, s, reset=True)
     conn = store.connect_ro(s.db_path)
@@ -1072,14 +1108,17 @@ def test_github_file_byo_requires_path(tmp_path):
 def test_s3_byo_rejects_missing_key(tmp_path):
     corpus = tmp_path / "bad.jsonl"
     # As written: the missing `key` is the refusal under test.
-    corpus.write_text(json.dumps(complete("s3", _omit={"key"}, bucket="b", title="t", content="c")))
+    corpus.write_text(
+        json.dumps(complete("s3", _omit={"key"}, bucket="b", title="t", content="c")),
+        encoding="utf-8",
+    )
     with pytest.raises(SystemExit):
         load(corpus, Settings(data_dir=tmp_path))
 
 
 def _corpus(tmp_path, name, lines):
     p = tmp_path / name
-    p.write_text("\n".join(json.dumps(complete(**x)) for x in lines))
+    p.write_text("\n".join(json.dumps(complete(**x)) for x in lines), encoding="utf-8")
     return p
 
 
@@ -1229,10 +1268,13 @@ def test_append_preserves_prior_roster_and_org(tmp_path, monkeypatch):
         ],
     )
     byo.load(a, s, reset=True)
-    prev_users = {u["email"] for u in yaml.safe_load(s.tokens_path.read_text())["users"]}
-    prev_org = yaml.safe_load(s.tokens_path.read_text())["org"]
+    prev_users = {
+        u["email"] for u in yaml.safe_load(s.tokens_path.read_text(encoding="utf-8"))["users"]
+    }
+    prev_org = yaml.safe_load(s.tokens_path.read_text(encoding="utf-8"))["org"]
     ann_token = {
-        u["email"]: u["token"] for u in yaml.safe_load(s.tokens_path.read_text())["users"]
+        u["email"]: u["token"]
+        for u in yaml.safe_load(s.tokens_path.read_text(encoding="utf-8"))["users"]
     }["ann@acme.com"]
 
     # b has both a group-scoped doc (redwoodinference author, for the roster union check) and
@@ -1264,7 +1306,7 @@ def test_append_preserves_prior_roster_and_org(tmp_path, monkeypatch):
         ],
     )
     byo.load(b, s, reset=False)
-    tok = yaml.safe_load(s.tokens_path.read_text())
+    tok = yaml.safe_load(s.tokens_path.read_text(encoding="utf-8"))
     now_users = {u["email"] for u in tok["users"]}
     assert "ann@acme.com" in now_users and "bob@redwoodinference.com" in now_users  # union
     assert prev_users <= now_users
@@ -1866,7 +1908,7 @@ def test_byo_provided_tracker_ids_are_stored_and_served(tmp_path):
     finally:
         conn.close()
 
-    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    tokens = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
     hdr = {
         "Authorization": "Bearer "
         + next(u["token"] for u in tokens["users"] if u["email"] == "ava@acme.com")
@@ -1902,7 +1944,7 @@ def test_byo_provided_key_prefix_is_the_project_key(tmp_path):
             }
         ],
     )
-    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    tokens = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
     hdr = {
         "Authorization": "Bearer "
         + next(u["token"] for u in tokens["users"] if u["email"] == "ava@acme.com")
@@ -1942,7 +1984,7 @@ def test_byo_one_provided_key_sets_the_prefix_for_its_keyless_siblings(tmp_path)
 
     # 'j-aaa' sorts before 'j-zzz': the keyless row is the one the index reaches first.
     settings = build_corpus(tmp_path, [issue("j-aaa"), {**issue("j-zzz"), "key": "PAY-7"}])
-    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    tokens = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
     hdr = {
         "Authorization": "Bearer "
         + next(u["token"] for u in tokens["users"] if u["email"] == "ava@acme.com")
@@ -2000,7 +2042,7 @@ def test_byo_colliding_provided_id_claims_the_spelling_and_the_other_row_moves(t
             },
         ],
     )
-    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    tokens = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
     hdr = {
         "Authorization": "Bearer "
         + next(u["token"] for u in tokens["users"] if u["email"] == "ava@acme.com")
@@ -2074,7 +2116,7 @@ def test_byo_a_provided_number_wins_whichever_doc_id_sorts_first(tmp_path):
     finally:
         conn.close()
 
-    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    tokens = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
     hdr = {
         "Authorization": "Bearer "
         + next(u["token"] for u in tokens["users"] if u["email"] == "ava@acme.com")
@@ -2111,7 +2153,8 @@ def test_byo_roster_is_the_closed_principal_set(tmp_path):
                     {"name": "Zoe Newperson", "email": "zoe.newperson@redwoodinference.com"},
                 ],
             }
-        )
+        ),
+        encoding="utf-8",
     )
     corpus = _write(
         tmp_path,
@@ -2139,7 +2182,7 @@ def test_byo_roster_is_the_closed_principal_set(tmp_path):
     settings = Settings(data_dir=tmp_path)
     load(corpus, settings, roster=roster)
 
-    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    tokens = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
     assert tokens["org"] == "redwood" and tokens["org_domain"] == "redwoodinference.com"
     assert [u["email"] for u in tokens["users"]] == ["ava.chen@redwoodinference.com"]
 
@@ -2202,7 +2245,8 @@ def test_byo_roster_person_may_hold_many_groups(tmp_path):
                     }
                 ],
             }
-        )
+        ),
+        encoding="utf-8",
     )
     corpus = _write(
         tmp_path,
@@ -2241,7 +2285,7 @@ def test_byo_roster_person_may_hold_many_groups(tmp_path):
             "comp-hr-investigations",
         }
         # the extra memberships change who a group-scoped clause admits, nothing about tokens
-        tokens = yaml.safe_load(settings.tokens_path.read_text())
+        tokens = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
         assert {u["email"] for u in tokens["users"]} == {
             "ava.chen@redwoodinference.com",
             "bo.ryu@redwoodinference.com",
@@ -2281,7 +2325,8 @@ def test_byo_roster_duplicate_entries_union_their_groups(tmp_path):
                     }
                 ],
             }
-        )
+        ),
+        encoding="utf-8",
     )
     parsed = load_roster(roster)
     bo = parsed["users"]["bo@redwoodinference.com"]
@@ -2324,7 +2369,8 @@ def test_byo_roster_deactivated_is_a_boolean_that_unions_or_is_refused(tmp_path)
                     "Security": [{"name": "Cy Ito", "email": "cy@redwoodinference.com"}],
                 },
             }
-        )
+        ),
+        encoding="utf-8",
     )
     users = load_roster(roster)["users"]
     assert users["ava@redwoodinference.com"]["deactivated"] is False
@@ -2342,7 +2388,8 @@ def test_byo_roster_deactivated_is_a_boolean_that_unions_or_is_refused(tmp_path)
                     ]
                 }
             }
-        )
+        ),
+        encoding="utf-8",
     )
     with pytest.raises(SystemExit, match="is not a boolean"):
         load_roster(roster)
@@ -2371,7 +2418,8 @@ def test_byo_roster_deactivated_reaches_the_db_tokens_yaml_and_the_membership_ch
                     ]
                 },
             }
-        )
+        ),
+        encoding="utf-8",
     )
     corpus = _write(
         tmp_path,
@@ -2388,7 +2436,7 @@ def test_byo_roster_deactivated_reaches_the_db_tokens_yaml_and_the_membership_ch
     settings = Settings(data_dir=tmp_path)
     load(corpus, settings, roster=deactivated_roster)
 
-    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    tokens = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
     assert {u["email"] for u in tokens["users"]} == {
         "ava.chen@redwoodinference.com",
         "cy.ito@redwoodinference.com",
@@ -2416,7 +2464,8 @@ def test_byo_roster_deactivated_reaches_the_db_tokens_yaml_and_the_membership_ch
                     ]
                 },
             }
-        )
+        ),
+        encoding="utf-8",
     )
     load(corpus, settings, roster=active_roster, reset=False)
     conn = store.connect_ro(settings.db_path)
@@ -2471,7 +2520,8 @@ def test_byo_roster_departments_alone_is_an_employee_directory(tmp_path):
                     ]
                 }
             }
-        )
+        ),
+        encoding="utf-8",
     )
     corpus = _write(
         tmp_path,
@@ -2526,7 +2576,7 @@ def test_byo_jsonl_records_split_only_on_newline(tmp_path):
         encoding="utf-8",
     )
     # guards the test itself: without a character splitlines() breaks on, it proves nothing
-    assert len(corpus.read_text().splitlines()) == 3
+    assert len(corpus.read_text(encoding="utf-8").splitlines()) == 3
 
     from backlot.validation import validate_file
 
@@ -2668,7 +2718,8 @@ def _shard_artifact(tmp_path):
                 "shard_records": 1,
                 "sources": sources,
             }
-        )
+        ),
+        encoding="utf-8",
     )
     return out
 
@@ -2717,19 +2768,22 @@ def test_verify_manifest_checks_the_roster_too(tmp_path):
                 "org_domain": "acme.com",
                 "departments": {"eng": [{"email": "ava@acme.com"}]},
             }
-        )
+        ),
+        encoding="utf-8",
     )
     mf = out / "manifest.json"
-    manifest = json.loads(mf.read_text())
+    manifest = json.loads(mf.read_text(encoding="utf-8"))
     manifest["roster"] = {
         "path": "roster.yaml",
         "bytes": roster.stat().st_size,
         "sha256": hashlib.sha256(roster.read_bytes()).hexdigest(),
     }
-    mf.write_text(json.dumps(manifest))
+    mf.write_text(json.dumps(manifest), encoding="utf-8")
     assert byo.verify_manifest(out) == []
 
-    roster.write_text(roster.read_text() + "\n# swapped for another org's\n")
+    roster.write_text(
+        roster.read_text(encoding="utf-8") + "\n# swapped for another org's\n", encoding="utf-8"
+    )
     problems = byo.verify_manifest(out)
     assert any("roster.yaml" in p for p in problems), problems
 
@@ -2794,10 +2848,10 @@ def test_a_manifest_naming_a_shard_outside_the_artifact_is_refused(tmp_path):
     """The artifact is downloaded, so its manifest is untrusted input."""
     out = _shard_artifact(tmp_path)
     mf = out / "manifest.json"
-    manifest = json.loads(mf.read_text())
+    manifest = json.loads(mf.read_text(encoding="utf-8"))
     src = sorted(manifest["sources"])[0]
     manifest["sources"][src]["shards"][0]["path"] = "../escaped.jsonl.gz"
-    mf.write_text(json.dumps(manifest))
+    mf.write_text(json.dumps(manifest), encoding="utf-8")
     with pytest.raises(SystemExit) as e:
         list(byo.corpus_records(out))
     assert "outside" in str(e.value)
@@ -2836,7 +2890,8 @@ def test_two_sources_may_share_a_doc_id(tmp_path):
                 ),
             ]
         )
-        + "\n"
+        + "\n",
+        encoding="utf-8",
     )
     data = tmp_path / "data"
     data.mkdir()
@@ -2936,7 +2991,8 @@ def test_append_accumulates_source_documents(tmp_path):
                     "author_email": "ava@acme.com",
                 }
             )
-        )
+        ),
+        encoding="utf-8",
     )
     second = tmp_path / "b.jsonl"
     second.write_text(
@@ -2953,7 +3009,8 @@ def test_append_accumulates_source_documents(tmp_path):
                     "author_email": "ava@acme.com",
                 }
             )
-        )
+        ),
+        encoding="utf-8",
     )
     load(first, settings)
     load(second, settings, reset=False)
@@ -3006,7 +3063,9 @@ def test_a_stated_listing_must_hold_the_base_of_every_open_pull(tmp_path):
     from backlot.importer.byo import load
 
     corpus = tmp_path / "bad.jsonl"
-    corpus.write_text("\n".join(json.dumps(r) for r in _repo_and_open_pull("develop")))
+    corpus.write_text(
+        "\n".join(json.dumps(r) for r in _repo_and_open_pull("develop")), encoding="utf-8"
+    )
     with pytest.raises(SystemExit) as excinfo:
         load(corpus, Settings(data_dir=tmp_path))
     assert "develop" in str(excinfo.value)
@@ -3014,13 +3073,13 @@ def test_a_stated_listing_must_hold_the_base_of_every_open_pull(tmp_path):
     # a base the listing DOES hold loads, and so does a closed pull's — only an open pull's base
     # has to still exist
     ok = tmp_path / "ok.jsonl"
-    ok.write_text("\n".join(json.dumps(r) for r in _repo_and_open_pull("main")))
+    ok.write_text("\n".join(json.dumps(r) for r in _repo_and_open_pull("main")), encoding="utf-8")
     assert load(ok, Settings(data_dir=tmp_path / "ok-dir")) is not None or True
 
     closed = _repo_and_open_pull("develop")
     closed[1] = {**closed[1], "state": "closed"}
     shut = tmp_path / "closed.jsonl"
-    shut.write_text("\n".join(json.dumps(r) for r in closed))
+    shut.write_text("\n".join(json.dumps(r) for r in closed), encoding="utf-8")
     load(shut, Settings(data_dir=tmp_path / "closed-dir"))
 
 
@@ -3061,15 +3120,15 @@ def test_the_base_check_reads_the_default_branch_of_the_listing_it_checks(tmp_pa
 
     # as one corpus
     whole = tmp_path / "whole.jsonl"
-    whole.write_text("\n".join(json.dumps(r) for r in (repo_record, pull)))
+    whole.write_text("\n".join(json.dumps(r) for r in (repo_record, pull)), encoding="utf-8")
     load(whole, Settings(data_dir=tmp_path / "whole-dir"))
 
     # and split across an append, which must reach the same verdict
     settings = Settings(data_dir=tmp_path / "split-dir")
     first = tmp_path / "a.jsonl"
-    first.write_text(json.dumps(repo_record))
+    first.write_text(json.dumps(repo_record), encoding="utf-8")
     second = tmp_path / "b.jsonl"
-    second.write_text(json.dumps(pull))
+    second.write_text(json.dumps(pull), encoding="utf-8")
     load(first, settings)
     load(second, settings, reset=False)
     conn = store.connect_ro(settings.db_path)
@@ -3087,7 +3146,9 @@ def test_a_dry_run_reports_the_base_a_stated_listing_omits(tmp_path, capsys):
     from backlot.importer import byo
 
     corpus = tmp_path / "bad.jsonl"
-    corpus.write_text("\n".join(json.dumps(r) for r in _repo_and_open_pull("develop")))
+    corpus.write_text(
+        "\n".join(json.dumps(r) for r in _repo_and_open_pull("develop")), encoding="utf-8"
+    )
     assert byo.run(corpus, dry_run=True) == 1
     assert "develop" in capsys.readouterr().err
 
@@ -3121,7 +3182,8 @@ def test_a_repo_record_carrying_document_fields_is_refused(tmp_path):
                 "visibility": "private",
                 "number": 7,
             }
-        )
+        ),
+        encoding="utf-8",
     )
     with pytest.raises(SystemExit) as excinfo:
         load(corpus, settings)
@@ -3169,7 +3231,8 @@ def test_append_keeps_the_refs_an_earlier_shard_stated(tmp_path):
                     author_email="ava@acme.com",
                 ),
             )
-        )
+        ),
+        encoding="utf-8",
     )
     second = tmp_path / "b.jsonl"
     second.write_text(
@@ -3183,7 +3246,8 @@ def test_append_keeps_the_refs_an_earlier_shard_stated(tmp_path):
                 content="b",
                 author_email="ava@acme.com",
             )
-        )
+        ),
+        encoding="utf-8",
     )
     load(first, settings)
     load(second, settings, reset=False)
@@ -3294,7 +3358,8 @@ def test_byo_roster_a_list_under_the_singular_group_key_is_read_not_crashed(tmp_
                     {"name": "B", "email": "b@x.com", "group": "engineering"},
                 ]
             }
-        )
+        ),
+        encoding="utf-8",
     )
     users = load_roster(roster)["users"]
     assert set(users["a@x.com"]["groups"]) == {"engineering", "security"}
@@ -3322,7 +3387,8 @@ def test_byo_roster_group_and_groups_read_the_same_in_every_shape(tmp_path):
                     ]
                 }
             }
-        )
+        ),
+        encoding="utf-8",
     )
     users = load_roster(roster)["users"]
     # A department entry's `group:` is an extra membership, whichever shape states it.
@@ -3597,7 +3663,7 @@ def test_byo_a_displaced_jira_key_moves_and_stays_reachable(tmp_path):
             },
         ],
     )
-    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    tokens = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
     hdr = {
         "Authorization": "Bearer "
         + next(u["token"] for u in tokens["users"] if u["email"] == "ava@acme.com")
@@ -3741,7 +3807,8 @@ def test_byo_a_tracker_id_claim_survives_append(tmp_path):
                     }
                 )
             )
-            + "\n"
+            + "\n",
+            encoding="utf-8",
         )
         return p
 
@@ -3779,7 +3846,8 @@ def test_byo_a_tracker_id_claim_survives_append(tmp_path):
                     }
                 )
             )
-            + "\n"
+            + "\n",
+            encoding="utf-8",
         )
         load(gh, settings, reset=False)
 
@@ -3818,7 +3886,7 @@ def test_byo_a_pull_requests_reviews_link_to_the_number_the_index_resolved(tmp_p
             },
         ],
     )
-    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    tokens = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
     hdr = {
         "Authorization": "Bearer "
         + next(u["token"] for u in tokens["users"] if u["email"] == "ava@acme.com")
@@ -3871,10 +3939,10 @@ def test_byo_two_projects_cannot_share_a_provided_key_prefix(tmp_path):
     # And across runs: the first shard's claim is seeded from the DB, not remembered.
     settings = Settings(data_dir=tmp_path)
     first = tmp_path / "a.jsonl"
-    first.write_text(json.dumps(rec("j-a", "payments", "PAY-1")))
+    first.write_text(json.dumps(rec("j-a", "payments", "PAY-1")), encoding="utf-8")
     load(first, settings, reset=True)
     second = tmp_path / "b.jsonl"
-    second.write_text(json.dumps(rec("j-b", "billing", "PAY-2")))
+    second.write_text(json.dumps(rec("j-b", "billing", "PAY-2")), encoding="utf-8")
     with pytest.raises(SystemExit) as e:
         load(second, settings, reset=False)
     assert "PAY" in str(e.value) and "payments" in str(e.value)
@@ -3966,7 +4034,7 @@ def _linear_rec(did, team="payments-platform", identifier=None):
 
 def _linear_shard(tmp_path, name, recs):
     p = tmp_path / name
-    p.write_text("".join(json.dumps(complete(**r)) + "\n" for r in recs))
+    p.write_text("".join(json.dumps(complete(**r)) + "\n" for r in recs), encoding="utf-8")
     return p
 
 
@@ -4288,10 +4356,10 @@ def test_byo_one_project_cannot_provide_two_key_prefixes(tmp_path):
     # Across runs too, through the seeded maps.
     settings = Settings(data_dir=tmp_path)
     first = tmp_path / "a.jsonl"
-    first.write_text(json.dumps(rec("j-a", "BILL-2")))
+    first.write_text(json.dumps(rec("j-a", "BILL-2")), encoding="utf-8")
     load(first, settings, reset=True)
     second = tmp_path / "b.jsonl"
-    second.write_text(json.dumps(rec("j-b", "PAY-1")))
+    second.write_text(json.dumps(rec("j-b", "PAY-1")), encoding="utf-8")
     with pytest.raises(SystemExit) as e:
         load(second, settings, reset=False)
     assert "BILL" in str(e.value) and "PAY-1" in str(e.value)
@@ -4429,7 +4497,8 @@ def test_byo_a_stated_id_already_held_by_an_earlier_import_is_refused(tmp_path):
                     }
                 )
             )
-            + "\n"
+            + "\n",
+            encoding="utf-8",
         )
         return p
 
@@ -4513,7 +4582,9 @@ def test_byo_a_derived_number_no_longer_moves_across_append(tmp_path):
 
     settings = Settings(data_dir=tmp_path)
     shard1 = tmp_path / "s1.jsonl"
-    shard1.write_text("\n".join(json.dumps(rec(d)) for d in ("gh-000000", "gh-054074")))
+    shard1.write_text(
+        "\n".join(json.dumps(rec(d)) for d in ("gh-000000", "gh-054074")), encoding="utf-8"
+    )
     load(shard1, settings, reset=True)
 
     conn = store.connect_ro(settings.db_path)
@@ -4526,7 +4597,7 @@ def test_byo_a_derived_number_no_longer_moves_across_append(tmp_path):
     shard2 = tmp_path / "s2.jsonl"
     # A number no existing row holds, so the append is a pure addition.
     fresh = max(before.values()) + 1
-    shard2.write_text(json.dumps(rec("gh-014031", number=fresh)))
+    shard2.write_text(json.dumps(rec("gh-014031", number=fresh)), encoding="utf-8")
     load(shard2, settings, reset=False)
 
     conn = store.connect_ro(settings.db_path)
@@ -4564,7 +4635,8 @@ def test_byo_a_provider_appended_in_a_later_batch_does_not_abort_the_import(tmp_
                     "author_email": "ava@acme.com",
                 }
             )
-        )
+        ),
+        encoding="utf-8",
     )
     settings = Settings(data_dir=tmp_path)
     load(shard1, settings, reset=True)
@@ -4587,7 +4659,8 @@ def test_byo_a_provider_appended_in_a_later_batch_does_not_abort_the_import(tmp_
                     "number": stolen,
                 }
             )
-        )
+        ),
+        encoding="utf-8",
     )
     # An appended row claiming a number an existing row already serves is refused rather than
     # displacing it: the product imports a dataset once and serves it read-only, so blocking a rare
@@ -4629,7 +4702,8 @@ def test_byo_a_jira_provider_appended_in_a_later_batch_is_refused(tmp_path):
                     "author_email": "ava@acme.com",
                 }
             )
-        )
+        ),
+        encoding="utf-8",
     )
     settings = Settings(data_dir=tmp_path)
     load(shard1, settings, reset=True)
@@ -4654,7 +4728,8 @@ def test_byo_a_jira_provider_appended_in_a_later_batch_is_refused(tmp_path):
                     "key": f"PAY-{stolen}",
                 }
             )
-        )
+        ),
+        encoding="utf-8",
     )
     # Same trade as github's: with ONE `key` column there is no provided-vs-served distinction to
     # arbitrate, so an appended row claiming a key an existing row already serves is refused rather
@@ -4675,6 +4750,7 @@ def test_byo_a_jira_provider_appended_in_a_later_batch_is_refused(tmp_path):
     assert served == {"v": before}
 
 
+@pytest.mark.windows
 def test_byo_a_notion_parent_must_name_an_imported_page(tmp_path):
     """notion was the one hierarchy source that stored a parent without checking it: its id is a
     pure hash, which answers for a page that does not exist as readily as for one that does, so the
@@ -4715,10 +4791,14 @@ def test_byo_a_notion_parent_must_name_an_imported_page(tmp_path):
     conn.close()
 
 
-def test_byo_a_failed_fresh_import_leaves_the_previous_corpus_in_place(tmp_path):
-    """A fresh load replaces a corpus, and it did so by deleting the old DB before reading a single
-    record — so a typo left an operator with no corpus at all: an empty schema-only DB and a
-    tokens.yaml still describing the one that was gone. An --append is already all-or-nothing."""
+@pytest.mark.windows
+def test_byo_a_failed_fresh_import_leaves_the_previous_corpus_in_place(tmp_path, monkeypatch):
+    """A fresh load replaces a corpus, and a refused one leaves the previous corpus in place
+    (`load_records` says why).
+
+    Every connection the refused load opened is closed by the time it raises (`_load_records` says
+    why); off Windows the corpus is put back either way, so the test asserts the closed connections
+    directly."""
     settings = Settings(data_dir=tmp_path)
     good = {
         "source_type": "jira",
@@ -4730,8 +4810,16 @@ def test_byo_a_failed_fresh_import_leaves_the_previous_corpus_in_place(tmp_path)
     }
     load(_write(tmp_path, [good]), settings)
     before = _dump_tables(settings.db_path)
-    tokens_before = settings.tokens_path.read_text()
+    tokens_before = settings.tokens_path.read_text(encoding="utf-8")
+    opened = []
+    connect_rw = store.connect_rw
 
+    def recording_connect_rw(*args, **kwargs):
+        conn = connect_rw(*args, **kwargs)
+        opened.append(conn)
+        return conn
+
+    monkeypatch.setattr(store, "connect_rw", recording_connect_rw)
     with pytest.raises(SystemExit):
         load(
             _write(
@@ -4744,8 +4832,12 @@ def test_byo_a_failed_fresh_import_leaves_the_previous_corpus_in_place(tmp_path)
             ),
             settings,
         )
+    assert opened
+    for conn in opened:
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            conn.execute("SELECT 1")
     assert _dump_tables(settings.db_path) == before
-    assert settings.tokens_path.read_text() == tokens_before
+    assert settings.tokens_path.read_text(encoding="utf-8") == tokens_before
     assert not list(tmp_path.glob("*.replaced"))  # and no debris beside it
 
 
@@ -4817,7 +4909,8 @@ def test_byo_two_snapshots_of_one_file_both_load(tmp_path):
                 _gh_file("gh-old", "src/a.py", content="v1\n", created="2025-01-01T00:00:00+00:00"),
                 _gh_file("gh-new", "src/a.py", content="v2\n", created="2025-06-01T00:00:00+00:00"),
             ]
-        )
+        ),
+        encoding="utf-8",
     )
     load(corpus, settings)
     conn = store.connect_ro(settings.db_path)
@@ -4855,7 +4948,8 @@ def test_byo_two_file_rows_at_one_instant_are_refused_naming_the_path(tmp_path):
                     number=4321,
                 ),
             ]
-        )
+        ),
+        encoding="utf-8",
     )
     with pytest.raises(SystemExit) as exc:
         load(corpus, settings)
@@ -4892,7 +4986,8 @@ def test_byo_two_file_rows_sharing_a_ref_are_told_to_change_the_ref(tmp_path):
                     ref="pr-9",
                 ),
             ]
-        )
+        ),
+        encoding="utf-8",
     )
     with pytest.raises(SystemExit) as exc:
         load(corpus, settings)
@@ -4923,7 +5018,8 @@ def test_byo_a_ref_on_a_row_that_is_not_a_file_is_refused(tmp_path):
                     "ref": "pr-11",
                 }
             )
-        )
+        ),
+        encoding="utf-8",
     )
     with pytest.raises(SystemExit) as exc:
         load(corpus, settings)
@@ -4955,7 +5051,8 @@ def test_byo_a_stated_ref_separates_two_snapshots_sharing_an_instant(tmp_path):
                     ref="pr-12",
                 ),
             ]
-        )
+        ),
+        encoding="utf-8",
     )
     load(corpus, settings)
     conn = store.connect_ro(settings.db_path)
@@ -4993,7 +5090,8 @@ def test_byo_a_github_file_is_appendable_and_keeps_its_number(tmp_path):
                 ),
                 _gh_file("gh-a", "src/a.py"),
             ]
-        )
+        ),
+        encoding="utf-8",
     )
     load(first, settings)
     conn = store.connect_ro(settings.db_path)
@@ -5004,7 +5102,8 @@ def test_byo_a_github_file_is_appendable_and_keeps_its_number(tmp_path):
     second.write_text(
         "\n".join(
             json.dumps(r) for r in [_gh_file("gh-b", "src/b.py"), _gh_file("gh-a", "src/a.py")]
-        )
+        ),
+        encoding="utf-8",
     )
     load(second, settings, reset=False)
     conn = store.connect_ro(settings.db_path)
@@ -5521,7 +5620,7 @@ def _load_with_map(tmp_path, records, name="c.jsonl", reset=True, settings=None)
     settings = settings or Settings(data_dir=tmp_path)
     out = tmp_path / f"{name}.idmap.json"
     load(_write(tmp_path, records, name), settings, reset=reset, id_map=out)
-    return settings, json.loads(out.read_text())
+    return settings, json.loads(out.read_text(encoding="utf-8"))
 
 
 def test_every_document_lands_in_the_id_map_under_its_served_key(tmp_path):
@@ -5608,7 +5707,7 @@ def test_an_unwritable_id_map_is_refused_before_the_load_starts(tmp_path, reset)
     settings = Settings(data_dir=tmp_path)
     load(_write(tmp_path, _ID_MAP_CORPUS, "one.jsonl"), settings)
     before = _dump_tables(settings.db_path)
-    tokens_before = settings.tokens_path.read_text()
+    tokens_before = settings.tokens_path.read_text(encoding="utf-8")
 
     more = [
         {
@@ -5630,9 +5729,10 @@ def test_an_unwritable_id_map_is_refused_before_the_load_starts(tmp_path, reset)
 
     # Nothing moved: not the rows, and not the tokens that describe whose rows they are.
     assert _dump_tables(settings.db_path) == before
-    assert settings.tokens_path.read_text() == tokens_before
+    assert settings.tokens_path.read_text(encoding="utf-8") == tokens_before
 
 
+@pytest.mark.windows
 def test_a_refused_load_leaves_no_id_map_behind(tmp_path):
     """The up-front check opens the destination for append, which is the only way to learn that an
     existing file cannot be written — and which creates one when there was none. A load that fails
@@ -5650,13 +5750,13 @@ def test_a_refused_load_leaves_no_id_map_behind(tmp_path):
 
     # One that was already there is not this check's to delete, so it keeps its contents until a
     # load actually succeeds and overwrites them.
-    dest.write_text("stale\n")
+    dest.write_text("stale\n", encoding="utf-8")
     with pytest.raises(SystemExit, match="source_type must be one of"):
         load(_write(tmp_path, bad, "again.jsonl", raw=True), settings, id_map=dest)
-    assert dest.read_text() == "stale\n"
+    assert dest.read_text(encoding="utf-8") == "stale\n"
 
     load(_write(tmp_path, _ID_MAP_CORPUS, "good.jsonl"), settings, id_map=dest)
-    assert json.loads(dest.read_text())["format"] == "backlot-id-map/1"
+    assert json.loads(dest.read_text(encoding="utf-8"))["format"] == "backlot-id-map/1"
 
 
 def test_an_id_map_that_fails_at_the_last_moment_keeps_the_import(tmp_path, monkeypatch):
@@ -5743,7 +5843,9 @@ def test_two_records_that_settle_on_one_row_still_share_a_dataset_id(tmp_path):
     rows = conn.execute("SELECT title, key FROM jira_issues").fetchall()
     assert [r["title"] for r in rows] == ["two"]
     key = rows[0]["key"]
-    assert json.loads(out.read_text())["documents"]["jira"] == {"same": {"key": key}}
+    assert json.loads(out.read_text(encoding="utf-8"))["documents"]["jira"] == {
+        "same": {"key": key}
+    }
 
 
 # --- google_drive: a spreadsheet that states a real grid ------------------------

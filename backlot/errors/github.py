@@ -201,12 +201,12 @@ def http_body(path: str, exc, query=None) -> dict | None:
     against measured responses; only the shape around it was FastAPI's.
 
     A 405 is the exception, and keeps FastAPI's ``detail``. Every route here declares GET, so a
-    wrong method is refused by Starlette with ``http.HTTPStatus(405).phrase`` — a string no
-    measurement attributes to real, which answers a wrong method per endpoint rather than
-    uniformly (an unauthenticated ``POST /repos/{owner}/{repo}`` is its 401 Requires
-    authentication; an authenticated ``POST`` to `/search/code` or `/search/issues` is its 404 Not
-    Found, measured 2026-09-07). Dressing Starlette's phrase in real's envelope would read as
-    measured.
+    wrong method that reaches the router is refused by Starlette with
+    ``http.HTTPStatus(405).phrase`` — a string no measurement attributes to real, which answers a
+    wrong method per endpoint rather than uniformly (an unauthenticated
+    ``POST /repos/{owner}/{repo}`` is its 401 Requires authentication; an authenticated ``POST`` to
+    `/search/code` or `/search/issues` is its 404 Not Found, measured 2026-09-07). Dressing
+    Starlette's phrase in real's envelope would read as measured.
     """
     body = getattr(exc, "github_body", None)
     if isinstance(body, dict):

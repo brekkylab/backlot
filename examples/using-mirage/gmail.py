@@ -116,9 +116,14 @@ def main_fuse(resource) -> None:
             )
             path = f"{mnt}/{label}/{day}/{msg}"
             print(f"\n$ head -c 200 {label}/{day}/{msg}")
-            print("  " + open(path).read(200).replace("\n", " "))  # a genuine open() via FUSE
+            print(
+                "  " + open(path, encoding="utf-8").read(200).replace("\n", " ")
+            )  # a genuine open() via FUSE
             hit = subprocess.run(
-                ["grep", "-o", '"subject":"[^"]*"', path], capture_output=True, text=True
+                ["grep", "-o", '"subject":"[^"]*"', path],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
             )
             print(
                 f"\n$ grep -o '\"subject\":…' <that file>   # external tool reads the mount\n  {hit.stdout.strip()}"

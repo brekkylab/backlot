@@ -295,6 +295,25 @@ def test_gmail_relative_date_query_not_zeroed(db):
     assert len(_gmail_query(db, None, None, "older_than:3650000d")) == 0
 
 
+def test_gmail_newer_older_are_after_before(db):
+    """The cases the comment on `_GMAIL_KEY_ALIASES` measures, with a value and empty."""
+    from backlot.routers.google import _gmail_query, _parse_gmail_q
+
+    free, ops = _parse_gmail_q("quarterly newer:2026/03/02 older:2026/03/04")
+    assert free == "quarterly"
+    assert ops == {"after": ["2026/03/02"], "before": ["2026/03/04"]}
+    assert _parse_gmail_q("newer:") == ("newer:", {})
+    assert _parse_gmail_q("older:") == ("older:", {})
+    total = len(_gmail_query(db, None, None, ""))
+    for alias, op in (("newer", "after"), ("older", "before")):
+        for day in ("1970/01/02", "2999/01/01"):
+            got = _gmail_query(db, None, None, f"{alias}:{day}")
+            want = _gmail_query(db, None, None, f"{op}:{day}")
+            assert [r["id"] for r in got] == [r["id"] for r in want]
+    # Not zeroed: the far-past `newer:` keeps the whole mailbox.
+    assert len(_gmail_query(db, None, None, "newer:1970/01/02")) == total
+
+
 def test_github_search_q_parse():
     """One parser, a qualifier vocabulary per endpoint: a key the endpoint does not honor stays
     free text, so the FTS still gets a chance at it."""

@@ -3424,14 +3424,13 @@ def _load_records(
     roster: Path | None,
     want_id_map: bool = False,
 ) -> tuple[dict, str | None]:
-    """The load itself, on a connection closed however it ends. See :func:`load_records`, which is
-    this plus the replace-safely dance.
+    """Runs :func:`_load_records_into` on a connection it closes however the load ends;
+    :func:`load_records` is this plus the replace-safely dance.
 
-    Closed on a raise as well, before `load_records` unlinks the half-built DB to put the previous
-    one back: Windows refuses to unlink a file an open handle holds, and an unclosed connection
-    lives as long as the traceback of the exception that left it. Unlinking ``db.sqlite`` with a
-    connection to it still open raised PermissionError [WinError 32] on Windows 11 (2026-10-13,
-    Python 3.14.0)."""
+    The close on a raise comes before `load_records` unlinks the half-built DB to put the previous
+    one back: an unclosed connection lives as long as the traceback of the exception that left it,
+    and unlinking ``db.sqlite`` with a connection to it still open raised PermissionError
+    [WinError 32] on Windows 11 (2026-10-13, Python 3.14.0)."""
     conn = store.connect_rw(settings.db_path)
     try:
         return _load_records_into(conn, records_factory, settings, reset, roster, want_id_map)

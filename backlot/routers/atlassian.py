@@ -472,8 +472,11 @@ def _require_project_admin(request: Request, conn, key: str) -> str:
 
     The 401 comes after the role id's 400 (:func:`_role_id`) and the project's 404, and ahead of
     whatever the role id names: on 2026-10-15 real gave the 400 for `abc`, `0xİ` and a blank id
-    ahead of it. Anonymous sees no project here, so it always gets the 404; on a Jira Cloud site
-    whose project `AA` is public, an anonymous role read was a 401 with this message on 2026-09-04.
+    ahead of it. Anonymous sees no project here, so it always gets the 404. Where anonymous can see
+    the project, real's 401 lists a second message after the one ``not_a_project_admin`` carries,
+    `You are not authorized to perform this operation.  Please log in.`, 152 bytes in all: a Jira
+    Cloud site whose project `AA` is public answered it on `role` and `role/10002` by the key and by
+    the id, and on `role/99999` by the key, on 2026-10-16.
     """
     container = _require_project(request, conn, key)
     if not _jira_caller(request).is_admin:
@@ -490,9 +493,10 @@ _JIRA_ROLE_DESCRIPTION = "A project role that represents users in a project"
 
 
 def _jira_role_link(request: Request, container: str) -> str:
-    """The one role's `self`, by the project's id where the vendor's document shows its key: real's
-    role list linked `…/project/10000/role/10005` for a project keyed `SCRUM`, measured with an
-    administrator's credential on 2026-10-14."""
+    """The one role's `self`, by the project's id where the vendor's document shows its key, however
+    the request names the project. Measured with an administrator's credential for a project keyed
+    `SCRUM`: real's role list linked `…/project/10000/role/10005` on 2026-10-14, and its read of
+    `project/SCRUM/role/10005` gave that same `self` on 2026-10-16."""
     return f"{_site(request)}/rest/api/3/project/{_jira_project_id(container)}/role/{_JIRA_ROLE}"
 
 

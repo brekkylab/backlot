@@ -2335,7 +2335,7 @@ _OBJECT_ORDER_ROWS = [
 # fmt: on
 
 
-def _unsigned_or_v2(base_url, path, token, where):
+def _unsigned_or_v2(base_url, path, token, where, *, method="GET"):
     """``(url, headers)`` for a request sent unsigned (`unsigned`, `unsigned-absent`), with an
     empty `Authorization` (`empty`), with Signature Version 2 in the header over the string real
     signs (`sigv2`), over a bad secret (`sigv2-tampered`), with an access key no token holds
@@ -2359,7 +2359,7 @@ def _unsigned_or_v2(base_url, path, token, where):
     raw_path, _, query = path.partition("?")
     if where == "sigv2-query":
         expires = str(int(time.time()) + 600)
-        signature = sigv2.sign(secret, sigv2.string_to_sign("GET", {}, expires, raw_path, query))
+        signature = sigv2.sign(secret, sigv2.string_to_sign(method, {}, expires, raw_path, query))
         return (
             f"{url}&AWSAccessKeyId={key}&Expires={expires}&Signature={quote(signature, safe='')}",
             {},
@@ -2368,7 +2368,7 @@ def _unsigned_or_v2(base_url, path, token, where):
     signing = "x" * 40 if where == "sigv2-tampered" else secret
     key = _UNKNOWN if where == "sigv2-unknown-key" else key
     signature = sigv2.sign(
-        signing, sigv2.string_to_sign("GET", {"date": date}, date, raw_path, query)
+        signing, sigv2.string_to_sign(method, {"date": date}, date, raw_path, query)
     )
     return url, {"date": date, "authorization": f"AWS {key}:{signature}"}
 
@@ -2406,6 +2406,183 @@ def test_an_objects_subresource_refusals_sit_where_real_puts_them(
     assert r.status_code == status
     assert f"<Code>{code}</Code>" in r.text and fragment in r.text
     assert "x-amz-server-side-encryption" not in r.headers
+
+
+@pytest.mark.parametrize("method", ["PUT", "POST", "DELETE", "PATCH"])
+@pytest.mark.parametrize("path", [OBJECT_PATH, "/s3/no-such-bucket/k.txt"])
+@pytest.mark.parametrize(
+    "query, credential",
+    [
+        (query, credential)
+        for query in ("annotation", "annotation&annotationName=x", "annotation&annotationName=")
+        for credential in (
+            "unsigned",
+            "empty",
+            "sigv2",
+            "sigv2-query",
+            "sigv2-tampered",
+            "sigv2-unknown-key",
+            "sigv4",
+            "sigv4-tampered",
+            "bearer",
+            "no-space",
+        )
+        # Signed with SigV4, an `annotationName` reaches the annotation's own operation on real,
+        # which this server does not serve.
+        if credential != "sigv4" or query == "annotation"
+    ],
+)
+def test_annotation_writes_require_signature_version_4(
+    live_server, method, path, query, credential
+):
+    """The annotation credential check in ``object_method_refusal`` precedes the bucket and
+    V2 key/signature verification; V4 and malformed credentials retain their own answers."""
+    import httpx
+
+    base_url, settings = live_server
+    path = f"{path}?{query}"
+    if credential.startswith("sigv4"):
+        url, headers = _sign_get(
+            base_url,
+            path,
+            settings.admin_token,
+            method=method,
+            tamper=credential == "sigv4-tampered",
+        )
+    else:
+        url, headers = _unsigned_or_v2(
+            base_url, path, settings.admin_token, credential, method=method
+        )
+    response = httpx.request(method, url, headers=headers)
+    fields = {node.tag: node.text for node in ET.fromstring(response.text)}
+    fields.pop("RequestId")
+    fields.pop("HostId")
+    assert response.headers["content-type"] == "application/xml"
+    if credential == "sigv4-tampered":
+        assert response.status_code == 403
+        assert fields["Code"] == "SignatureDoesNotMatch"
+    else:
+        status = 400
+        expected = {
+            "Code": "InvalidRequest",
+            "Message": "The authorization mechanism you have provided is not supported. "
+            "Please use Signature Version 4.",
+        }
+        if credential == "sigv4":
+            status = 405
+            expected = {
+                "Code": "MethodNotAllowed",
+                "Message": "The specified method is not allowed against this resource.",
+                "Method": method,
+                "ResourceType": "OBJECT_ANNOTATIONS",
+            }
+        elif credential in ("bearer", "no-space"):
+            expected = {
+                "Code": "InvalidArgument",
+                "Message": "Unsupported Authorization Type"
+                if credential == "bearer"
+                else "Authorization header is invalid -- one and only one ' ' (space) required",
+                "ArgumentName": "Authorization",
+                "ArgumentValue": headers["Authorization"],
+            }
+        assert response.status_code == status
+        assert fields == expected
+    assert response.headers.get("allow") == ("GET" if credential == "sigv4" else None)
+
+
+@pytest.mark.parametrize("method", ["PUT", "POST", "DELETE", "PATCH"])
+@pytest.mark.parametrize("credential", ["no-date", "expired"])
+def test_annotation_writes_keep_a_malformed_v2_credentials_refusal(live_server, method, credential):
+    """The V2 shape refusals measured in ``object_method_refusal`` precede its V4 requirement."""
+    import httpx
+
+    base_url, _ = live_server
+    url = f"{base_url}{OBJECT_PATH}?annotation"
+    headers = {}
+    if credential == "no-date":
+        headers["Authorization"] = f"AWS {_UNKNOWN}:bad"
+        message = "AWS authentication requires a valid Date or x-amz-date header"
+    else:
+        url += f"&AWSAccessKeyId={_UNKNOWN}&Expires=1&Signature=bad"
+        message = "Request has expired"
+    response = httpx.request(method, url, headers=headers)
+    fields = {node.tag: node.text for node in ET.fromstring(response.text)}
+    assert response.status_code == 403
+    assert fields["Code"] == "AccessDenied"
+    assert fields["Message"] == message
+
+
+@pytest.mark.parametrize("method", ["PUT", "POST", "DELETE", "PATCH"])
+@pytest.mark.parametrize("credential", ["unsigned", "sigv2-tampered", "bearer"])
+@pytest.mark.parametrize(
+    "query, names",
+    [
+        ("annotation&acl", "acl, annotation"),
+        ("annotation&website=x", "annotation, website"),
+        ("annotation=&annotation=x&acl", "acl, annotation"),
+        ("annotation&max-annotation-results=abc", None),
+        ("annotation=&annotation=x", None),
+    ],
+)
+def test_annotation_write_conflicts_precede_credentials_and_body_checks(
+    live_server, method, credential, query, names
+):
+    """``object_method_refusal`` records the conflict ahead of the credential and body checks;
+    the first annotation value selects it, and a write does not parse the listing's limit."""
+    import httpx
+
+    base_url, settings = live_server
+    url, headers = _unsigned_or_v2(
+        base_url, f"{OBJECT_PATH}?{query}", settings.admin_token, credential, method=method
+    )
+    headers["Content-MD5"] = "garbage"
+    response = httpx.request(method, url, headers=headers, content=b"<x/>")
+    fields = {node.tag: node.text for node in ET.fromstring(response.text)}
+    fields.pop("RequestId")
+    fields.pop("HostId")
+    expected = {
+        "Code": "InvalidRequest",
+        "Message": "The authorization mechanism you have provided is not supported. "
+        "Please use Signature Version 4.",
+    }
+    if names is not None:
+        expected = {
+            "Code": "InvalidArgument",
+            "Message": f"Conflicting query string parameters: {names}",
+            "ArgumentName": "ResourceType",
+            "ArgumentValue": names.split(", ")[0],
+        }
+    elif credential == "bearer":
+        expected = {
+            "Code": "InvalidArgument",
+            "Message": "Unsupported Authorization Type",
+            "ArgumentName": "Authorization",
+            "ArgumentValue": "Bearer x",
+        }
+    assert response.status_code == 400
+    assert fields == expected
+    assert "allow" not in response.headers
+
+
+@pytest.mark.parametrize("method", ["PUT", "POST", "DELETE", "PATCH"])
+@pytest.mark.parametrize(
+    "query", ["annotation=x", "annotation=x&annotation=", "annotation=x&annotationName=y"]
+)
+def test_a_valued_annotation_on_a_write_is_the_object_operation(live_server, method, query):
+    """A valued first annotation parameter follows the object path, as measured beside the
+    annotation credential checks in ``object_method_refusal``."""
+    import httpx
+
+    base_url, _ = live_server
+    response = httpx.request(method, f"{base_url}/s3/no-such-bucket/k.txt?{query}")
+    fields = {node.tag: node.text for node in ET.fromstring(response.text)}
+    if method in ("PUT", "DELETE"):
+        assert response.status_code == 404
+        assert fields["Code"] == "NoSuchBucket"
+    else:
+        assert response.status_code == 405
+        assert fields["Code"] == "MethodNotAllowed"
+        assert fields["ResourceType"] == "OBJECT"
 
 
 _FULL_RANGE = f"bytes 0-{len(OBJECT_TEXT) - 1}/{len(OBJECT_TEXT)}"

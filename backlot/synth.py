@@ -50,7 +50,7 @@ _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
 def utc_datetime(ts: float) -> datetime:
-    """``ts`` unix seconds as an aware UTC datetime, counted from the epoch with ``timedelta``.
+    """``ts`` unix seconds as an aware UTC datetime.
 
     ``datetime.fromtimestamp`` asks the platform's C library, and on Windows that raised OSError
     [Errno 22] for -86400 and for -2208988800 while it rendered -1 (Windows 11, Python 3.14.0,

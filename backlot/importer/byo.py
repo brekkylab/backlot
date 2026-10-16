@@ -276,8 +276,8 @@ def _epoch(v):
     except ValueError:
         pass
     else:
-        # No offset means UTC, as the ERB importer reads one. `timestamp()` reads a naive time in
-        # the importing machine's zone through the platform's C library: on 2026-10-13
+        # Read as UTC, as the ERB importer reads one; `timestamp()` reads a naive time in the
+        # importing machine's zone through the platform's C library: on 2026-10-13
         # `1969-12-31T00:00:00` came out as -118800 on a macOS set to UTC+9 and raised OSError
         # [Errno 22] on Windows 11 (Python 3.14.0), and -86400 with `+00:00` on both.
         if written.tzinfo is None:

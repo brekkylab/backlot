@@ -43,8 +43,8 @@ def test_channel_id_stable_per_name():
 
 
 class _WindowsDatetime(datetime.datetime):
-    """`datetime` with Windows' `fromtimestamp`: -1 renders and a second below it raises
-    OSError [Errno 22] (`backlot.synth.utc_datetime` has the measurement)."""
+    """`datetime` with a `fromtimestamp` that raises OSError [Errno 22] below -1, as Windows did for
+    -86400 and -2208988800 (`backlot.synth.utc_datetime` has the measurement)."""
 
     @classmethod
     def fromtimestamp(cls, t, tz=None):

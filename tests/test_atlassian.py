@@ -6287,7 +6287,8 @@ _ACCEPT_ROWS = [
     ("GET", _SPACES, "none", _UNREAD_BESIDE_JSON, None, 406, None, b"", {}),
     ("GET", _SPACES, "none", "application/*+json", None, 403, _JSON, None, {}),
     ("GET", _SPACES, "none", None, None, 403, _JSON, None, {}),
-    ("GET", _SPACES, "unparseable-basic", _HTML, None, 401, _JSON, None, {}),
+    ("GET", _SPACES, "unparseable-basic", _HTML, None, 401, _JSON, None)
+    + ({"deprecation": None, "warning": None},),
     ("GET", f"{_SPACES}/{{space}}/permission", "unparseable-basic", _HTML, None, 401, _JSON)
     + (None, {}),
     ("GET", f"{_SPACES}?limit=x", "admin", _HTML, None, 406, _TOMCAT, "page", {}),
@@ -6748,6 +6749,7 @@ _ACCEPT_ROWS = [
         for credential, accept in (
             ("none", _SORT_FAILS),
             ("admin", _SORT_FAILS),
+            ("unreadable-bearer", _SORT_FAILS),
             ("none", "*;Q=abc, application/json"),
             ("none", "text/plain, text/html, application/json;Q=abc"),
         )

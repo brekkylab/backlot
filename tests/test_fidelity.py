@@ -618,7 +618,9 @@ def test_every_comparison_ships_a_baseline(tmp_path):
         out = tmp_path / f"{name}.json"
         acknowledged = baseline.acknowledged.values()
         baseline.write(out, acknowledged, measured=baseline.measured, surface=baseline.surface)
-        assert out.read_text() == baseline_path(name).read_text(), name
+        assert out.read_text(encoding="utf-8") == baseline_path(name).read_text(encoding="utf-8"), (
+            name
+        )
 
         entries = baseline.operations
         names = [e.operation for e in entries]
@@ -1466,11 +1468,11 @@ def test_update_baseline_records_gaps_and_leaves_breaking_findings_live(
 
     # A measurement with a finding no element of its surface carries cannot be written: exit 3,
     # and the file is left as it was.
-    before = path.read_text()
+    before = path.read_text(encoding="utf-8")
     lost = Measurement([Finding("missing_field", GAP, "Nowhere.x", "")], SchemaSurface("Query", {}))
     monkeypatch.setattr("backlot.fidelity.measure", lambda *a, **k: lost)
     assert cli.main([*args, "--update-baseline"]) == 3
-    assert path.read_text() == before
+    assert path.read_text(encoding="utf-8") == before
 
     # Nor can a file the command cannot open or cannot write.
     def denied(*a, **k):
@@ -1564,8 +1566,8 @@ def test_a_baseline_the_command_cannot_read_is_refused_not_emptied(
     _vendor()
     path = tmp_path / "fireflies.json"
     raw = {"source": "fireflies", "root": {"query": "Query"}, **written}
-    path.write_text(json.dumps(raw))
-    before = path.read_text()
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    before = path.read_text(encoding="utf-8")
     with pytest.raises((ValueError, KeyError, TypeError, AttributeError), match=refused):
         Baseline.load(path)
     args = ["diff", "-s", "fireflies", "--baseline-dir", str(tmp_path), "--update-baseline"]
@@ -1573,7 +1575,7 @@ def test_a_baseline_the_command_cannot_read_is_refused_not_emptied(
     err = capsys.readouterr().err
     assert "the baseline cannot be used" in err
     assert ("it has no" in err) == (refused == "type_kind")
-    assert path.read_text() == before
+    assert path.read_text(encoding="utf-8") == before
 
 
 @pytest.mark.parametrize("typed", [BREAKING, GAP])

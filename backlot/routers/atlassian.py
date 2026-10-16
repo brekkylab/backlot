@@ -498,8 +498,15 @@ def _jira_project_order(raw: str) -> None:
     )
 
 
-@router.get("/rest/api/3/project/search")
+@router.get(
+    "/rest/api/3/project/search",
+    openapi_extra={"parameters": [qp("startAt", "integer"), qp("maxResults", "integer")]},
+)
 async def jira_project_search(request: Request):
+    # Jira Cloud, measured 2026-10-16: integer conversion precedes orderBy;
+    # startAt is a long floored at zero, and maxResults is clamped to 1..100.
+    start = max(0, _int_param(request, "startAt", 0, width=JAVA_LONG))
+    limit = min(100, max(1, _int_param(request, "maxResults", 50)))
     # Read for the refusal above. The sort itself is not served, so `orderBy` stays undeclared:
     # `qp` is for a parameter Backlot honours, and advertising this one would offer a client an
     # order the listing never applies. `backlot diff --source jira` keeps the gap.
@@ -525,7 +532,15 @@ async def jira_project_search(request: Request):
                 "self": f"{_site(request)}/rest/api/3/project/{key}",
             }
         )
-    return {"values": values, "maxResults": 50, "startAt": 0, "total": len(values), "isLast": True}
+    total = len(values)
+    page = values[start : start + limit]
+    return {
+        "values": page,
+        "maxResults": limit,
+        "startAt": start,
+        "total": total,
+        "isLast": start + len(page) >= total,
+    }
 
 
 def _jira_project_id(container: str) -> str:

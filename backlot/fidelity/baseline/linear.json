@@ -3,7 +3,7 @@
   "endpoints": [
     "https://api.linear.app/graphql"
   ],
-  "measured": "2026-10-15",
+  "measured": "2026-10-16",
   "root": {
     "query": "Query"
   },
@@ -2349,6 +2349,13 @@
           "type": "AgentSessionConnection!",
           "kind": "missing_field",
           "severity": "gap"
+        },
+        "aiAnalysis": {
+          "status": "missing",
+          "type": "JSONObject",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Linear's schema describes it as `[Internal]` AI-generated analyses of the issue, keyed by feature, null if no analysis has run. Measured against api.linear.app on 2026-10-16, `issues(first:50){nodes{identifier aiAnalysis}}` answers `null` on all eight issues of the workspace measured, and the corpus carries no AI analyses to serve."
         },
         "aiPromptProgresses": {
           "status": "missing",

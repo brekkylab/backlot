@@ -4676,7 +4676,7 @@ def test_jira_unserved_sorts_every_operation_no_route_serves():
                 ("application/*, application/json;q=0.5", "xml"),
                 ("*/*, application/json;q=0.5", "xml"),
                 ("*/json", "xml"),
-                # a `Q` Spring would fail to copy, where Jersey reads the last `q` (2026-10-16)
+                # a `Q` Spring would fail to copy, where Jersey reads the last `q`
                 ("application/json;q=0.5;Q=2;q=0.5", "json"),
                 ("*/*;q=0.5;Q=2;q=0.5", "xml"),
             )
@@ -6455,7 +6455,7 @@ _ACCEPT_ROWS = [
     # -- Confluence's JAX-RS services read it their own way (``errors.atlassian._jaxrs_accept``)
     ("GET", _CQL, "admin", "application/*+json", None, 406, None, b"", {}),
     ("GET", _CQL, "admin", "*/json", None, 200, _JSON, None, {}),
-    # no `Accept` and an empty one admit JSON there as anywhere (2026-10-16)
+    # no `Accept` and an empty one admit JSON there as anywhere
     ("GET", _CQL, "admin", None, None, 200, _JSON, None, {}),
     ("GET", _CQL, "admin", "", None, 200, _JSON, None, {}),
     ("GET", _CQL, "none", "", None, 403, _JSON, None, {}),

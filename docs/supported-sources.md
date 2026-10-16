@@ -467,14 +467,14 @@ A JSON body is `application/json;charset=UTF-8` — no space after the semicolon
 as real's is on every route and status measured, except where real answers a different type
 altogether: the RFC 7807 refusals (a type-conversion 400, the 405, the 415) are
 `application/problem+json;charset=UTF-8`, and the gateway's 403 for a bearer it cannot read as a
-Connect token is the bare `application/json`, or XML where `Accept` holds `application/xml` and not
-`application/json`, each anywhere in it and in any case. An `Accept` admitting no JSON draws a 406
-in that RFC 7807 shape, behind a 405 and a 415 and ahead of the 401, a bad parameter's 400 and
-whatever the route answers, on every operation but the ones `backlot/data/jira_unserved.json` marks,
-and one with any member Jira cannot read draws it with no body; the 401 takes its media type from
-`Accept`. A `q` named in another case (`Q=2`) that is no quality fails an answer as it is written: a
-route's answer, the 401 and the `orderBy` refusal are Jira's 500 page, its other refusals as they
-were.
+Connect token is the bare `application/json`, or XML for an `Accept` that names `application/xml`
+and nowhere names `application/json`, matched as text in any case. An `Accept` admitting no JSON
+draws a 406 in that RFC 7807 shape, behind a 405 and a 415 and ahead of the 401, a bad parameter's
+400 and whatever the route answers, on every operation but the ones
+`backlot/data/jira_unserved.json` marks, and one with any member Jira cannot read draws it with no
+body; the 401 takes its media type from `Accept`. A `q` named in another case (`Q=2`) that is no
+quality fails an answer as it is written: a route's answer, the 401 and the `orderBy` refusal are
+Jira's 500 page, its other refusals as they were.
 
 A trailing slash is not part of a path on either product, and a run of slashes inside one is a
 single slash — both spellings answer what the canonical one answers, though a refusal echoes the

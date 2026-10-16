@@ -90,6 +90,26 @@ def test_jira_serves_its_field_metadata_to_an_anonymous_caller(client, path):
     assert client.get(f"/atlassian{path}", headers=FAILED_PAIR).status_code == 200
 
 
+@pytest.mark.parametrize("host", [None, "jira.example.test"])
+def test_jira_link_types_match_measured_metadata(client, admin_h, host):
+    """The default four types and self links measured beside `jira_link_types`, members in real's
+    order, for a caller whose credential resolves."""
+    headers = {**admin_h, "Host": host} if host else admin_h
+    response = client.get("/atlassian/rest/api/3/issueLinkType", headers=headers)
+    assert response.status_code == 200
+    base = f"http://{host or 'testserver'}/rest/api/3/issueLinkType"
+    types = response.json()["issueLinkTypes"]
+    assert [list(item.items()) for item in types] == [
+        [("id", i), ("name", n), ("inward", a), ("outward", b), ("self", f"{base}/{i}")]
+        for i, n, a, b in [
+            ("10000", "Blocks", "is blocked by", "blocks"),
+            ("10001", "Cloners", "is cloned by", "clones"),
+            ("10002", "Duplicate", "is duplicated by", "duplicates"),
+            ("10003", "Relates", "relates to", "relates to"),
+        ]
+    ]
+
+
 def test_atlassian_lists_only_the_containers_the_caller_can_open(tmp_path):
     """The anonymous listing is empty because a project is listed when the caller can see an issue
     in it, and that rule is not anonymous-only: a scoped caller who can open nothing in a project
@@ -2431,8 +2451,8 @@ _CARRIED_ROWS = [
     (
         "/space?expand=description&spaceKey={po},{hb}&limit=1",
         "next",
-        "/rest/api/space?spaceKey={po}%2C{hb}&next=true&expand=description&limit=1&start=1",
-        "/space?spaceKey={po}%2C{hb}&expand=description",
+        "/rest/api/space?spaceKey={po},{hb}&next=true&expand=description&limit=1&start=1",
+        "/space?spaceKey={po},{hb}&expand=description",
     ),
     (
         "/space?spaceKey={po}&spaceKey={hb}&expand=description&limit=1&start=1",
@@ -2440,17 +2460,69 @@ _CARRIED_ROWS = [
         "/rest/api/space?spaceKey={po}&spaceKey={hb}&expand=description&prev=true&limit=1&start=0",
         "/space?spaceKey={po}&spaceKey={hb}&expand=description",
     ),
+    (
+        "/content?expand=version,space&limit=1",
+        "next",
+        "/rest/api/content?next=true&expand=version,space&limit=1&start=1",
+        "/content?expand=version,space",
+    ),
+    (
+        "/content?expand=version%2cspace&limit=1",
+        "next",
+        "/rest/api/content?next=true&expand=version%2cspace&limit=1&start=1",
+        "/content?expand=version%2cspace",
+    ),
+    (
+        "/space?expand=version%2Cspace&limit=1&start=1",
+        "prev",
+        "/rest/api/space?expand=version%2Cspace&prev=true&limit=1&start=0",
+        "/space?expand=version%2Cspace",
+    ),
+    (
+        "/content?limit=1&bogus=a+b,%7E~;&flag&&=x",
+        "next",
+        "/rest/api/content?next=true&limit=1&start=1&bogus=a+b,%7E~;&flag=",
+        "/content?bogus=a+b,%7E~;&flag=",
+    ),
+    (
+        "/space?l%69mit=1",
+        "next",
+        "/rest/api/space?next=true&limit=1&start=1&l%69mit=1",
+        "/space?l%69mit=1",
+    ),
+    (
+        "/space?limit=1&next=true&start=1",
+        "prev",
+        "/rest/api/space?prev=true&limit=1&start=0",
+        "/space",
+    ),
+    (
+        "/space?limit=1&start=1&prev=x",
+        "prev",
+        "/rest/api/space?prev=true&limit=1&start=0",
+        "/space",
+    ),
+    (
+        "/content?%65xpand=version,space&limit=1",
+        "next",
+        "/rest/api/content?next=true&limit=1&start=1&%65xpand=version,space",
+        "/content?%65xpand=version,space",
+    ),
+    (
+        "/content?limit=1&bogus=a=b",
+        "next",
+        "/rest/api/content?next=true&limit=1&start=1&bogus=a=b",
+        "/content?bogus=a=b",
+    ),
 ]
 
 
 @pytest.mark.parametrize("request_path, which, link, self_path", _CARRIED_ROWS)
-def test_confluence_a_carried_parameter_sits_where_it_was_measured(
+def test_confluence_a_carried_parameter_is_spelt_and_placed_as_measured(
     client, admin_h, request_path, which, link, self_path
 ):
-    """`expand` leads `limit`/`start`, `spaceKey` leads the marker and `expand` on `space`, and a
-    name real does not read trails `start`: the placement
-    :func:`backlot.routers.atlassian._confluence_carried` chose, since real's own for the last is
-    no rule a client can rely on."""
+    """Each row's links as :func:`backlot.routers.atlassian._confluence_carried` spells and places
+    their parameters."""
     api = "/atlassian/wiki/rest/api"
     links = client.get(api + request_path.format(**_SPACE_KEYS), headers=admin_h).json()["_links"]
     assert links[which] == link.format(**_SPACE_KEYS)
@@ -4558,22 +4630,29 @@ def test_jira_checks_the_media_type_an_operation_takes_before_anything_else(
     }
 
 
-def test_jira_unserved_sorts_every_operation_no_route_serves():
-    """``backlot/data/jira_unserved.json`` sorts each `missing_operation` row of the Jira baseline
-    into `refused` or `run` and holds nothing else, so a row the file has lost, or one the baseline
+def test_jira_unserved_sorts_every_operation_no_route_serves(monkeypatch):
+    """``backlot/data/jira_unserved.json`` sorts each `missing` operation of the Jira baseline
+    into `refused` or `run` and holds nothing else, so one the file has lost, or one the baseline
     has gained or dropped since the file was written, fails here: the reminder to rerun
-    ``scripts/gen_jira_unserved.py``. A route added for one of them drops it from the baseline, and
-    the file would otherwise refuse a served operation's path for a method no route takes. Which
-    list a row belongs in is read off Jira's documents, which that script's `--check` compares on
-    the schedule in `.github/workflows/fidelity.yml`."""
+    ``scripts/gen_jira_unserved.py``. A route added for one of them is `implemented` in the baseline
+    and the file would otherwise refuse a served operation's path for a method no route takes. Which
+    list an operation belongs in is read off Jira's documents, which that script's `--check`
+    compares on the schedule in `.github/workflows/fidelity.yml`."""
+    import runpy
+
     import backlot
     from backlot.fidelity.comparisons import baseline_path
 
-    rows = json.loads(baseline_path("jira").read_text())["acknowledged"]
-    unserved = [row["path"] for row in rows if row["kind"] == "missing_operation"]
+    entries = json.loads(baseline_path("jira").read_text())["operations"]
+    unserved = [e["operation"] for e in entries if e["status"] == "missing"]
     table = Path(backlot.__file__).resolve().parent / "data" / "jira_unserved.json"
     content = json.loads(table.read_text())
     assert sorted([*content["refused"], *content["run"]]) == sorted(unserved)
+    # And the script reads the same operations off the baseline: given documents declaring
+    # nothing, it refuses every one of them.
+    monkeypatch.setattr("backlot.fidelity.fetch.fetch_json", lambda url, **kw: {"paths": {}})
+    script = runpy.run_path(str(table.parents[2] / "scripts" / "gen_jira_unserved.py"))
+    assert sorted(script["build"]()["refused"]) == sorted(unserved)
 
 
 @pytest.mark.parametrize(

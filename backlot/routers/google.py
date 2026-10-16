@@ -424,15 +424,15 @@ _EDITOR_MOUNTS = (("/v4/", "/sheets"), ("/v1/documents", "/docs"), ("/v1/present
 
 
 def _published_not_served() -> tuple[tuple[str, re.Pattern[str]], ...]:
-    """The two Google baselines' `missing_operation` rows as (method, path pattern), each at the
+    """The two Google baselines' `missing` operations as (method, path pattern), each at the
     path Backlot mounts it on and each `{}` one path segment."""
     operations = []
     for source in ("gmail", "google_drive"):
-        rows = json.loads((_BASELINES / f"{source}.json").read_text())["acknowledged"]
-        for row in rows:
-            if row["kind"] != "missing_operation":
+        entries = json.loads((_BASELINES / f"{source}.json").read_text())["operations"]
+        for e in entries:
+            if e["status"] != "missing":
                 continue
-            method, path = row["path"].split(" ", 1)
+            method, path = e["operation"].split(" ", 1)
             mount = next((m for spelled, m in _EDITOR_MOUNTS if path.startswith(spelled)), "")
             pattern = "[^/]+".join(re.escape(part) for part in (mount + path).split("{}"))
             operations.append((method, re.compile(pattern)))
@@ -649,18 +649,27 @@ _GMAIL_KEYS = {
     "has",
     "newer_than",
     "older_than",
+    "newer",
+    "older",
 }
+# Real reads `newer:` as `after:` and `older:` as `before:`, so each is folded into the operator
+# it is another name for. Measured on a Workspace mailbox on 2026-10-15: messages.list and
+# threads.list answered `newer:X` with the ids `after:X` answers, and `older:X` with those of
+# `before:X`, for each value X tried, read as a date or not. An empty `newer:` is the search term
+# `newer`, as an empty `after:` is `after`, and `_GMAIL_OP` leaves both in the free text.
+_GMAIL_KEY_ALIASES = {"newer": "after", "older": "before"}
 
 
 def _parse_gmail_q(q: str) -> tuple[str, dict]:
     """Split a Gmail search `q` into (free_text, operators). Honors from:/to:/cc:/bcc:/subject:/
-    after:/before:/newer_than:/older_than:/label:/in:/has: — the rest is free text matched
-    full-text."""
+    after:/before:/newer:/older:/newer_than:/older_than:/label:/in:/has: — the rest is free text
+    matched full-text."""
     ops: dict[str, list[str]] = {}
 
     def _take(m):
         key = m.group(1).lower()
         if key in _GMAIL_KEYS:
+            key = _GMAIL_KEY_ALIASES.get(key, key)
             ops.setdefault(key, []).append(m.group(2).strip('"'))
             return " "
         return m.group(0)
@@ -2672,6 +2681,12 @@ async def drive_files_export(file_id: str, request: Request):
     ids = auth.visible_ids(request, caller)
     row = store.gdrive_by_id(conn, file_id, visible_ids=ids)
     if row is None:
+        # A folder is synthesized rather than stored, so the lookup misses it. Measured 2026-10-09
+        # and 2026-10-15: real refuses the export of a folder the caller can see with the 403 a PDF
+        # gets, and of one it cannot see with the 404 an id that names nothing gets.
+        name = _drive_folder_name_by_id(conn, file_id)
+        if name is not None and store.drive_folder_has_visible(conn, name, ids):
+            raise gerr.not_exportable()
         raise gerr.not_found_file(file_id)
     native = _native(row)
     if native is None or native[2] is None:  # binary or folder — not exportable
@@ -2877,6 +2892,11 @@ async def docs_get(document_id: str, request: Request):
         "body": {"content": content},
         "documentStyle": {},
         "namedStyles": {"styles": []},
+        # Last, where real serves it. Real's value for a read that asks for no comments, whatever
+        # `suggestionsViewMode` and `includeTabsContent` select (measured 2026-10-09 and
+        # 2026-10-15); `commentsViewMode=COMMENTS_VIEW_MODE_INCLUDED` beside the tabs and inline
+        # suggestions is answered `COMMENTS_VIEW_MODE_INCLUDED` there and this value here.
+        "commentsViewMode": "COMMENTS_VIEW_MODE_OMITTED",
     }
 
 

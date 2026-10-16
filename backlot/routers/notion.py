@@ -992,7 +992,7 @@ async def unmatched_path(request: Request, rest: str) -> JSONResponse:
     answers, apart from the three OAuth client endpoints and their own refusal (see
     :func:`_invalid_client`). A request that clears the credential and the version on one of the
     other fifty gets the URL's 400 here, as Backlot has no operation to run: that is the gap each of
-    those rows acknowledges.
+    those operations acknowledges.
 
     The method is part of the URL that check reads: `GET /v1/search` and `GET /v1/pages`, both POST
     routes, `DELETE`, `PUT`, `PATCH` and `OPTIONS` on `/v1/users/me`, a GET route, and `PUT` on

@@ -135,7 +135,7 @@ _P_EXPAND = {"parameters": [qp("expand")]}
 # returns each comment's body as HTML, which Backlot does not produce — and `qp` exists only for
 # parameters Backlot honours, because advertising one it ignores makes a client ask for data that
 # never arrives. The gap stays where it is legible: `backlot diff --source jira` reports it, and
-# the baseline acknowledges it as "the vendor accepts it; Backlot does not".
+# the baseline records it as a `missing_param` under that operation's `params`.
 _P_JIRA_COMMENTS = {
     "parameters": [qp("startAt", "integer"), qp("maxResults", "integer"), qp("orderBy")]
 }
@@ -960,19 +960,26 @@ async def jira_issue_comments(key: str, request: Request):
 @router.get("/rest/api/3/issueLinkType")
 async def jira_link_types(request: Request):
     # No credential check: real Jira answers this to an anonymous caller (measured 2026-09-04).
-    return {
+    # The four default names, IDs and self links were measured on one Jira Cloud tenant
+    # on 2026-10-09; this mirrors that default set, not tenant-customized link types.
+    site = _site(request)
+    types = {
         "issueLinkTypes": [
             {"id": "10000", "name": "Blocks", "inward": "is blocked by", "outward": "blocks"},
-            {"id": "10001", "name": "Relates", "inward": "relates to", "outward": "relates to"},
+            {"id": "10001", "name": "Cloners", "inward": "is cloned by", "outward": "clones"},
             {
                 "id": "10002",
                 "name": "Duplicate",
                 "inward": "is duplicated by",
                 "outward": "duplicates",
             },
-            {"id": "10003", "name": "Cloners", "inward": "is cloned by", "outward": "clones"},
+            {"id": "10003", "name": "Relates", "inward": "relates to", "outward": "relates to"},
         ]
     }
+
+    for item in types["issueLinkTypes"]:
+        item["self"] = f"{site}/rest/api/3/issueLinkType/{item['id']}"
+    return types
 
 
 # The standard system fields, used by clients (e.g. mcp-atlassian) for field/epic discovery.
@@ -2738,13 +2745,21 @@ def _confluence_carried(
     it was sent in beside `expand` (measured 2026-10-12).
 
     ``own`` names what the route writes into its links itself, so it is not carried as well.
+
+    Each parameter is carried as the request spelt it, name and value, from the raw query string.
+    Measured on `content` and `space` on 2026-10-15: a bare or escaped comma, a lower-case `%2c`,
+    `+`, `%7E`, `~`, `;` and an escaped name (`%65xpand`) came back as sent, a name sent without
+    `=` came back with one, and an empty part or name was dropped. The names compared here are the
+    spelt ones too, as real's are: `l%69mit=1` is read as `limit` and still carried, and
+    `%65xpand` and `sp%61ceKey`, read as `expand` and `spaceKey`, land where other names do
+    (measured 2026-10-16).
     """
     front, lead, trail = [], [], []
-    for name, value in request.query_params.multi_items():
-        if name in ("limit", "start", "next", "prev", *own):
+    for part in request.scope["query_string"].decode("latin-1").split("&"):
+        name, _, value = part.partition("=")
+        if not name or name in ("limit", "start", "next", "prev", *own):
             continue
-        pair = f"{name}={quote(str(value), safe='')}"
-        (front if name in head else lead if name in first else trail).append(pair)
+        (front if name in head else lead if name in first else trail).append(f"{name}={value}")
     return (
         "&".join(front) + "&" if front else "",
         "&".join(lead) + "&" if lead else "",
@@ -2843,13 +2858,13 @@ def _operations(rows) -> tuple[tuple[str, re.Pattern[str]], ...]:
 
 
 def _published_not_served(source: str) -> tuple[tuple[str, re.Pattern[str]], ...]:
-    """The operations the vendor publishes and no route here serves: the baseline's
-    ``missing_operation`` rows, read off the file as ``backlot.published`` reads them,
-    so an operation the vendor adds reaches :func:`unmatched_path` once the baseline acknowledges
-    it; a route added here wins over :func:`unmatched_path` whatever the file says."""
+    """The operations the vendor publishes and no route here serves: the baseline's ``missing``
+    operations, read off the file as ``backlot.published`` reads them, so an operation the vendor
+    adds reaches :func:`unmatched_path` once the baseline acknowledges it; a route added here wins
+    over :func:`unmatched_path` whatever the file says."""
     baseline = _PACKAGE / "fidelity" / "baseline" / f"{source}.json"
-    rows = json.loads(baseline.read_text())["acknowledged"]
-    return _operations(row["path"] for row in rows if row["kind"] == "missing_operation")
+    entries = json.loads(baseline.read_text())["operations"]
+    return _operations(e["operation"] for e in entries if e["status"] == "missing")
 
 
 _JIRA_PUBLISHED = _published_not_served("jira")
@@ -2971,9 +2986,9 @@ _CONFLUENCE_NOT_PERMITTED = _operations(
     ]
 )
 _CONFLUENCE_CONNECT_MODULES = "/wiki/rest/atlassian-connect/1/app/module/dynamic"
-#: Confluence operations real serves that its document does not publish, so the baseline has no row
-#: for them: each refused a caller with no credential the way the published ones do, and answered
-#: 200 with one, on 2026-09-30.
+#: Confluence operations real serves that its document does not publish, so the baseline has no
+#: entry for them: each refused a caller with no credential the way the published ones do, and
+#: answered 200 with one, on 2026-09-30.
 _CONFLUENCE_OUTSIDE_THE_DOCUMENT = _operations(
     f"GET /wiki/rest/api/{path}"
     for path in (
@@ -3081,7 +3096,7 @@ def _confluence_refusal(request: Request, vendor_path: str) -> Response | None:
     operation but the services named in :data:`_CONFLUENCE_NOT_PERMITTED`, and on writes too:
     `DELETE` on a content id's label and `POST` on its copy, each naming nothing, answered it with
     no credential on 2026-09-30. A caller whose credential resolves gets what an unserved path
-    gets, the gap the baseline row acknowledges.
+    gets, the gap the baseline entry acknowledges.
     """
     if _is(_CONFLUENCE_RUN_ANONYMOUSLY, request.method, vendor_path):
         return None
@@ -3131,7 +3146,7 @@ def _confluence_jaxrs_media_refusal(request: Request, vendor_path: str) -> Respo
 def _published_answer(request: Request, vendor_path: str) -> Response | None:
     """What real answers before an operation it publishes at ``vendor_path`` and no route here
     serves runs for this caller, or None where it would run, which is where Backlot has nothing to
-    give but the gap the baseline's `missing_operation` row acknowledges.
+    give but the gap the baseline's `missing` operation acknowledges.
 
     Jira checks the request's media type where the operation does, for any caller the gateway lets
     through (:func:`_jira_media_refusal`), then refuses a caller with no credential it resolves

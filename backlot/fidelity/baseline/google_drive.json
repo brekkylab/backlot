@@ -6,1060 +6,1063 @@
     "https://www.googleapis.com/discovery/v1/apis/sheets/v4/rest",
     "https://www.googleapis.com/discovery/v1/apis/slides/v1/rest"
   ],
-  "measured": "2026-10-14",
-  "acknowledged": [
+  "measured": "2026-10-16",
+  "operations": [
     {
+      "operation": "DELETE /drive/v3/drives/{}",
+      "id": "drive.drives.delete",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /drive/v3/drives/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "DELETE /drive/v3/files/trash",
+      "id": "drive.files.emptyTrash",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /drive/v3/files/trash",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "DELETE /drive/v3/files/{}",
+      "id": "drive.files.delete",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /drive/v3/files/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "DELETE /drive/v3/files/{}/comments/{}",
+      "id": "drive.comments.delete",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /drive/v3/files/{}/comments/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "DELETE /drive/v3/files/{}/comments/{}/replies/{}",
+      "id": "drive.replies.delete",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /drive/v3/files/{}/comments/{}/replies/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "DELETE /drive/v3/files/{}/permissions/{}",
+      "id": "drive.permissions.delete",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /drive/v3/files/{}/permissions/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "DELETE /drive/v3/files/{}/revisions/{}",
+      "id": "drive.revisions.delete",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /drive/v3/files/{}/revisions/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "DELETE /drive/v3/teamdrives/{}",
+      "id": "drive.teamdrives.delete",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /drive/v3/teamdrives/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/about?alt",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/about?callback",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/about?key",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/about?prettyPrint",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/about?quotaUser",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/about?uploadType",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/about?upload_protocol",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /drive/v3/apps",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /drive/v3/apps/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /drive/v3/changes",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /drive/v3/changes/startPageToken",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /drive/v3/drives/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/drives?alt",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/drives?callback",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/drives?fields",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/drives?key",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/drives?pageSize",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/drives?pageToken",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/drives?prettyPrint",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/drives?q",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/drives?quotaUser",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/drives?uploadType",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/drives?upload_protocol",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/drives?useDomainAdminAccess",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/generateCseToken",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/generateIds",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}/accessproposals",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}/accessproposals/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}/approvals",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}/approvals/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}/comments",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}/comments/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}/comments/{}/replies",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}/comments/{}/replies/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}/export?alt",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}/export?callback",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}/export?fields",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}/export?key",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}/export?prettyPrint",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}/export?quotaUser",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}/export?uploadType",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}/export?upload_protocol",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}/listLabels",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}/permissions/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}/permissions?alt",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}/permissions?callback",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}/permissions?fields",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}/permissions?includePermissionsForView",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}/permissions?key",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}/permissions?prettyPrint",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}/permissions?quotaUser",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}/permissions?supportsAllDrives",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}/permissions?supportsTeamDrives",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}/permissions?uploadType",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}/permissions?upload_protocol",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}/permissions?useDomainAdminAccess",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}/revisions",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}/revisions/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}?acknowledgeAbuse",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}?callback",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}?includeLabels",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}?includePermissionsForView",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}?key",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}?prettyPrint",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}?quotaUser",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}?supportsAllDrives",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}?supportsTeamDrives",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}?uploadType",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files/{}?upload_protocol",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files?alt",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files?callback",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files?corpora",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files?corpus",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files?driveId",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files?includeItemsFromAllDrives",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files?includeLabels",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files?includePermissionsForView",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files?includeTeamDriveItems",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files?key",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files?prettyPrint",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files?quotaUser",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files?spaces",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files?supportsAllDrives",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files?supportsTeamDrives",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files?teamDriveId",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files?uploadType",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /drive/v3/files?upload_protocol",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /drive/v3/operations/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /drive/v3/teamdrives",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /drive/v3/teamdrives/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /v1/documents/{}?alt",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /v1/documents/{}?callback",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /v1/documents/{}?commentsViewMode",
-      "detail": "the vendor accepts it; Backlot does not",
-      "note": "One family with `GET /v1/presentations/{}?commentsViewMode` and `GET /v4/spreadsheets/{}?commentsViewMode`, all three marked Developer Preview. Google's own description (Docs): \"The comments view mode to apply to the document. This allows viewing the document with comments omitted or included. If one is not specified, COMMENTS_VIEW_MODE_OMITTED is used.\" Backlot declares it on none of the three and answers the four enum values, `BOGUS` and the empty value with the bytes it answers without the parameter. Measured against the three hosts on 2026-09-29 with a user token: Sheets and Slides answer each of the four enum values 200, and `comments_view_mode_omitted` in lower case as well, and refuse `BOGUS` and the empty value with 400 `Invalid value at 'comments_view_mode' (type.googleapis.com/google.apps.sheets.v4.CommentsViewMode), \"BOGUS\"` (`google.apps.slides.v1` on Slides). Docs refuses those two the same way under `google.apps.docs.v1` and answers `COMMENTS_VIEW_MODE_UNSPECIFIED` 200, but refuses the other three with 400 `Comments view mode may only be specified if tabs content is also requested.` unless `includeTabsContent=true` or a `fields` mask naming `tabs` comes with them. With tabs requested, `COMMENTS_VIEW_MODE_INCLUDED` is refused with `Comments may only be explicitly included if inline suggestions are also explicitly requested.` until `suggestionsViewMode=SUGGESTIONS_INLINE` joins it, and `COMMENTS_VIEW_MODE_DEFAULT_FOR_CURRENT_ACCESS` beside `suggestionsViewMode=PREVIEW_WITHOUT_SUGGESTIONS` with `Comments may not be requested when previewing suggestions.` Those two Docs parameters are gaps in this file as well: this server reads neither, so the rules that tie them to this one have nothing to act on."
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /v1/documents/{}?fields",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /v1/documents/{}?includeTabsContent",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /v1/documents/{}?key",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /v1/documents/{}?prettyPrint",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /v1/documents/{}?quotaUser",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /v1/documents/{}?suggestionsViewMode",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /v1/documents/{}?uploadType",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /v1/documents/{}?upload_protocol",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /v1/presentations/{}/pages/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /v1/presentations/{}/pages/{}/thumbnail",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /v1/presentations/{}?alt",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /v1/presentations/{}?callback",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /v1/presentations/{}?commentsViewMode",
-      "detail": "the vendor accepts it; Backlot does not",
-      "note": "Same family as `GET /v1/documents/{}?commentsViewMode`, whose note carries the measurement on all three hosts."
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /v1/presentations/{}?fields",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /v1/presentations/{}?key",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /v1/presentations/{}?prettyPrint",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /v1/presentations/{}?quotaUser",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /v1/presentations/{}?uploadType",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /v1/presentations/{}?upload_protocol",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /v4/spreadsheets/{}/developerMetadata/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /v4/spreadsheets/{}/values/{}?key",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /v4/spreadsheets/{}/values/{}?uploadType",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /v4/spreadsheets/{}/values:batchGet?key",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /v4/spreadsheets/{}/values:batchGet?uploadType",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /v4/spreadsheets/{}?commentsViewMode",
-      "detail": "the vendor accepts it; Backlot does not",
-      "note": "Same family as `GET /v1/documents/{}?commentsViewMode`, whose note carries the measurement on all three hosts."
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /v4/spreadsheets/{}?key",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /v4/spreadsheets/{}?uploadType",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PATCH /drive/v3/drives/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PATCH /drive/v3/files/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PATCH /drive/v3/files/{}/comments/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PATCH /drive/v3/files/{}/comments/{}/replies/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PATCH /drive/v3/files/{}/permissions/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PATCH /drive/v3/files/{}/revisions/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PATCH /drive/v3/teamdrives/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /drive/v3/changes/watch",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /drive/v3/channels/stop",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /drive/v3/drives",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /drive/v3/drives/{}/hide",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /drive/v3/drives/{}/unhide",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /drive/v3/files",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /drive/v3/files/{}/accessproposals/{}:resolve",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /drive/v3/files/{}/approvals/{}:approve",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /drive/v3/files/{}/approvals/{}:cancel",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /drive/v3/files/{}/approvals/{}:comment",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /drive/v3/files/{}/approvals/{}:decline",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /drive/v3/files/{}/approvals/{}:reassign",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /drive/v3/files/{}/approvals:start",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /drive/v3/files/{}/comments",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /drive/v3/files/{}/comments/{}/replies",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /drive/v3/files/{}/copy",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /drive/v3/files/{}/download",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /drive/v3/files/{}/modifyLabels",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /drive/v3/files/{}/permissions",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /drive/v3/files/{}/watch",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /drive/v3/teamdrives",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /v1/documents",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /v1/documents/{}:batchUpdate",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /v1/presentations",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /v1/presentations/{}:batchUpdate",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /v4/spreadsheets",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /v4/spreadsheets/{}/developerMetadata:search",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /v4/spreadsheets/{}/sheets/{}:copyTo",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /v4/spreadsheets/{}/values/{}:append",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /v4/spreadsheets/{}/values/{}:clear",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /v4/spreadsheets/{}/values:batchClear",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /v4/spreadsheets/{}/values:batchClearByDataFilter",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "POST /v4/spreadsheets/{}/values:batchGetByDataFilter?key",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "POST /v4/spreadsheets/{}/values:batchGetByDataFilter?uploadType",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /v4/spreadsheets/{}/values:batchUpdate",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /v4/spreadsheets/{}/values:batchUpdateByDataFilter",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /v4/spreadsheets/{}:batchUpdate",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "POST /v4/spreadsheets/{}:getByDataFilter?key",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "POST /v4/spreadsheets/{}:getByDataFilter?uploadType",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PUT /v4/spreadsheets/{}/values/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /drive/v3/about",
+      "id": "drive.about.get",
+      "status": "implemented",
+      "params": {
+        "alt": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "callback": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "key": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "prettyPrint": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "quotaUser": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "uploadType": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "upload_protocol": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      }
+    },
+    {
+      "operation": "GET /drive/v3/apps",
+      "id": "drive.apps.list",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /drive/v3/apps/{}",
+      "id": "drive.apps.get",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /drive/v3/changes",
+      "id": "drive.changes.list",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /drive/v3/changes/startPageToken",
+      "id": "drive.changes.getStartPageToken",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /drive/v3/drives",
+      "id": "drive.drives.list",
+      "status": "implemented",
+      "params": {
+        "alt": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "callback": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "fields": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "key": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "pageSize": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "pageToken": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "prettyPrint": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "q": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "quotaUser": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "uploadType": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "upload_protocol": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "useDomainAdminAccess": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      }
+    },
+    {
+      "operation": "GET /drive/v3/drives/{}",
+      "id": "drive.drives.get",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /drive/v3/files",
+      "id": "drive.files.list",
+      "status": "implemented",
+      "params": {
+        "alt": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "callback": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "corpora": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "corpus": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "driveId": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "includeItemsFromAllDrives": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "includeLabels": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "includePermissionsForView": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "includeTeamDriveItems": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "key": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "prettyPrint": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "quotaUser": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "spaces": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "supportsAllDrives": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "supportsTeamDrives": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "teamDriveId": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "uploadType": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "upload_protocol": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      }
+    },
+    {
+      "operation": "GET /drive/v3/files/generateCseToken",
+      "id": "drive.files.generateCseToken",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /drive/v3/files/generateIds",
+      "id": "drive.files.generateIds",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /drive/v3/files/{}",
+      "id": "drive.files.get",
+      "status": "implemented",
+      "params": {
+        "acknowledgeAbuse": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "callback": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "includeLabels": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "includePermissionsForView": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "key": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "prettyPrint": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "quotaUser": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "supportsAllDrives": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "supportsTeamDrives": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "uploadType": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "upload_protocol": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      }
+    },
+    {
+      "operation": "GET /drive/v3/files/{}/accessproposals",
+      "id": "drive.accessproposals.list",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /drive/v3/files/{}/accessproposals/{}",
+      "id": "drive.accessproposals.get",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /drive/v3/files/{}/approvals",
+      "id": "drive.approvals.list",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /drive/v3/files/{}/approvals/{}",
+      "id": "drive.approvals.get",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /drive/v3/files/{}/comments",
+      "id": "drive.comments.list",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /drive/v3/files/{}/comments/{}",
+      "id": "drive.comments.get",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /drive/v3/files/{}/comments/{}/replies",
+      "id": "drive.replies.list",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /drive/v3/files/{}/comments/{}/replies/{}",
+      "id": "drive.replies.get",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /drive/v3/files/{}/export",
+      "id": "drive.files.export",
+      "status": "implemented",
+      "params": {
+        "alt": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "callback": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "fields": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "key": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "prettyPrint": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "quotaUser": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "uploadType": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "upload_protocol": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      }
+    },
+    {
+      "operation": "GET /drive/v3/files/{}/listLabels",
+      "id": "drive.files.listLabels",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /drive/v3/files/{}/permissions",
+      "id": "drive.permissions.list",
+      "status": "implemented",
+      "params": {
+        "alt": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "callback": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "fields": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "includePermissionsForView": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "key": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "prettyPrint": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "quotaUser": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "supportsAllDrives": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "supportsTeamDrives": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "uploadType": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "upload_protocol": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "useDomainAdminAccess": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      }
+    },
+    {
+      "operation": "GET /drive/v3/files/{}/permissions/{}",
+      "id": "drive.permissions.get",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /drive/v3/files/{}/revisions",
+      "id": "drive.revisions.list",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /drive/v3/files/{}/revisions/{}",
+      "id": "drive.revisions.get",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /drive/v3/operations/{}",
+      "id": "drive.operations.get",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /drive/v3/teamdrives",
+      "id": "drive.teamdrives.list",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /drive/v3/teamdrives/{}",
+      "id": "drive.teamdrives.get",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /v1/documents/{}",
+      "id": "docs.documents.get",
+      "status": "implemented",
+      "params": {
+        "alt": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "callback": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "commentsViewMode": {
+          "kind": "missing_param",
+          "severity": "gap",
+          "note": "One family with `GET /v1/presentations/{}?commentsViewMode` and `GET /v4/spreadsheets/{}?commentsViewMode`, all three marked Developer Preview. Google's own description (Docs): \"The comments view mode to apply to the document. This allows viewing the document with comments omitted or included. If one is not specified, COMMENTS_VIEW_MODE_OMITTED is used.\" Backlot declares it on none of the three and answers the four enum values, `BOGUS` and the empty value with the bytes it answers without the parameter. Measured against the three hosts on 2026-09-29 with a user token: Sheets and Slides answer each of the four enum values 200, and `comments_view_mode_omitted` in lower case as well, and refuse `BOGUS` and the empty value with 400 `Invalid value at 'comments_view_mode' (type.googleapis.com/google.apps.sheets.v4.CommentsViewMode), \"BOGUS\"` (`google.apps.slides.v1` on Slides). Docs refuses those two the same way under `google.apps.docs.v1` and answers `COMMENTS_VIEW_MODE_UNSPECIFIED` 200, but refuses the other three with 400 `Comments view mode may only be specified if tabs content is also requested.` unless `includeTabsContent=true` or a `fields` mask naming `tabs` comes with them. With tabs requested, `COMMENTS_VIEW_MODE_INCLUDED` is refused with `Comments may only be explicitly included if inline suggestions are also explicitly requested.` until `suggestionsViewMode=SUGGESTIONS_INLINE` joins it, and `COMMENTS_VIEW_MODE_DEFAULT_FOR_CURRENT_ACCESS` beside `suggestionsViewMode=PREVIEW_WITHOUT_SUGGESTIONS` with `Comments may not be requested when previewing suggestions.` Those two Docs parameters are gaps in this file as well: this server reads neither, so the rules that tie them to this one have nothing to act on."
+        },
+        "fields": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "includeTabsContent": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "key": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "prettyPrint": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "quotaUser": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "suggestionsViewMode": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "uploadType": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "upload_protocol": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      }
+    },
+    {
+      "operation": "GET /v1/presentations/{}",
+      "id": "slides.presentations.get",
+      "status": "implemented",
+      "params": {
+        "alt": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "callback": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "commentsViewMode": {
+          "kind": "missing_param",
+          "severity": "gap",
+          "note": "Same family as `GET /v1/documents/{}?commentsViewMode`, whose note carries the measurement on all three hosts."
+        },
+        "fields": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "key": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "prettyPrint": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "quotaUser": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "uploadType": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "upload_protocol": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      }
+    },
+    {
+      "operation": "GET /v1/presentations/{}/pages/{}",
+      "id": "slides.presentations.pages.get",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /v1/presentations/{}/pages/{}/thumbnail",
+      "id": "slides.presentations.pages.getThumbnail",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /v4/spreadsheets/{}",
+      "id": "sheets.spreadsheets.get",
+      "status": "implemented",
+      "params": {
+        "commentsViewMode": {
+          "kind": "missing_param",
+          "severity": "gap",
+          "note": "Same family as `GET /v1/documents/{}?commentsViewMode`, whose note carries the measurement on all three hosts."
+        },
+        "key": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "uploadType": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      }
+    },
+    {
+      "operation": "GET /v4/spreadsheets/{}/developerMetadata/{}",
+      "id": "sheets.spreadsheets.developerMetadata.get",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /v4/spreadsheets/{}/values/{}",
+      "id": "sheets.spreadsheets.values.get",
+      "status": "implemented",
+      "params": {
+        "key": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "uploadType": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      }
+    },
+    {
+      "operation": "GET /v4/spreadsheets/{}/values:batchGet",
+      "id": "sheets.spreadsheets.values.batchGet",
+      "status": "implemented",
+      "params": {
+        "key": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "uploadType": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      }
+    },
+    {
+      "operation": "PATCH /drive/v3/drives/{}",
+      "id": "drive.drives.update",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "PATCH /drive/v3/files/{}",
+      "id": "drive.files.update",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "PATCH /drive/v3/files/{}/comments/{}",
+      "id": "drive.comments.update",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "PATCH /drive/v3/files/{}/comments/{}/replies/{}",
+      "id": "drive.replies.update",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "PATCH /drive/v3/files/{}/permissions/{}",
+      "id": "drive.permissions.update",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "PATCH /drive/v3/files/{}/revisions/{}",
+      "id": "drive.revisions.update",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "PATCH /drive/v3/teamdrives/{}",
+      "id": "drive.teamdrives.update",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /drive/v3/changes/watch",
+      "id": "drive.changes.watch",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /drive/v3/channels/stop",
+      "id": "drive.channels.stop",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /drive/v3/drives",
+      "id": "drive.drives.create",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /drive/v3/drives/{}/hide",
+      "id": "drive.drives.hide",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /drive/v3/drives/{}/unhide",
+      "id": "drive.drives.unhide",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /drive/v3/files",
+      "id": "drive.files.create",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /drive/v3/files/{}/accessproposals/{}:resolve",
+      "id": "drive.accessproposals.resolve",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /drive/v3/files/{}/approvals/{}:approve",
+      "id": "drive.approvals.approve",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /drive/v3/files/{}/approvals/{}:cancel",
+      "id": "drive.approvals.cancel",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /drive/v3/files/{}/approvals/{}:comment",
+      "id": "drive.approvals.comment",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /drive/v3/files/{}/approvals/{}:decline",
+      "id": "drive.approvals.decline",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /drive/v3/files/{}/approvals/{}:reassign",
+      "id": "drive.approvals.reassign",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /drive/v3/files/{}/approvals:start",
+      "id": "drive.approvals.start",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /drive/v3/files/{}/comments",
+      "id": "drive.comments.create",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /drive/v3/files/{}/comments/{}/replies",
+      "id": "drive.replies.create",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /drive/v3/files/{}/copy",
+      "id": "drive.files.copy",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /drive/v3/files/{}/download",
+      "id": "drive.files.download",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /drive/v3/files/{}/modifyLabels",
+      "id": "drive.files.modifyLabels",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /drive/v3/files/{}/permissions",
+      "id": "drive.permissions.create",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /drive/v3/files/{}/watch",
+      "id": "drive.files.watch",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /drive/v3/teamdrives",
+      "id": "drive.teamdrives.create",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /v1/documents",
+      "id": "docs.documents.create",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /v1/documents/{}:batchUpdate",
+      "id": "docs.documents.batchUpdate",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /v1/presentations",
+      "id": "slides.presentations.create",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /v1/presentations/{}:batchUpdate",
+      "id": "slides.presentations.batchUpdate",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /v4/spreadsheets",
+      "id": "sheets.spreadsheets.create",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /v4/spreadsheets/{}/developerMetadata:search",
+      "id": "sheets.spreadsheets.developerMetadata.search",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /v4/spreadsheets/{}/sheets/{}:copyTo",
+      "id": "sheets.spreadsheets.sheets.copyTo",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /v4/spreadsheets/{}/values/{}:append",
+      "id": "sheets.spreadsheets.values.append",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /v4/spreadsheets/{}/values/{}:clear",
+      "id": "sheets.spreadsheets.values.clear",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /v4/spreadsheets/{}/values:batchClear",
+      "id": "sheets.spreadsheets.values.batchClear",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /v4/spreadsheets/{}/values:batchClearByDataFilter",
+      "id": "sheets.spreadsheets.values.batchClearByDataFilter",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /v4/spreadsheets/{}/values:batchGetByDataFilter",
+      "id": "sheets.spreadsheets.values.batchGetByDataFilter",
+      "status": "implemented",
+      "params": {
+        "key": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "uploadType": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      }
+    },
+    {
+      "operation": "POST /v4/spreadsheets/{}/values:batchUpdate",
+      "id": "sheets.spreadsheets.values.batchUpdate",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /v4/spreadsheets/{}/values:batchUpdateByDataFilter",
+      "id": "sheets.spreadsheets.values.batchUpdateByDataFilter",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /v4/spreadsheets/{}:batchUpdate",
+      "id": "sheets.spreadsheets.batchUpdate",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /v4/spreadsheets/{}:getByDataFilter",
+      "id": "sheets.spreadsheets.getByDataFilter",
+      "status": "implemented",
+      "params": {
+        "key": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "uploadType": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      }
+    },
+    {
+      "operation": "PUT /v4/spreadsheets/{}/values/{}",
+      "id": "sheets.spreadsheets.values.update",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
     }
-  ]
+  ],
+  "batch": {
+    "documents": [
+      {
+        "document": "docs:v1",
+        "declared": "batch",
+        "status": "implemented"
+      },
+      {
+        "document": "drive:v3",
+        "declared": "batch/drive/v3",
+        "status": "implemented"
+      },
+      {
+        "document": "sheets:v4",
+        "declared": "batch",
+        "status": "implemented"
+      },
+      {
+        "document": "slides:v1",
+        "declared": "batch",
+        "status": "implemented"
+      }
+    ],
+    "routes": [
+      {
+        "route": "/batch",
+        "status": "implemented"
+      },
+      {
+        "route": "/batch/{}/{}",
+        "status": "implemented"
+      }
+    ]
+  }
 }

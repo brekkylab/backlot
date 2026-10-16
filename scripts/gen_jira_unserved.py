@@ -147,8 +147,8 @@ def build() -> dict:
                     security[key] = operation.get("security", default)
                     body = operation.get("requestBody")
                     content[key] = None if body is None else list(body.get("content", {}))
-    baseline = json.loads(baseline_path("jira").read_text())["acknowledged"]
-    unserved = sorted(r["path"] for r in baseline if r["kind"] == "missing_operation")
+    baseline = json.loads(baseline_path("jira").read_text())["operations"]
+    unserved = sorted(e["operation"] for e in baseline if e["status"] == "missing")
     refused, run = {}, {}
     for key in unserved:
         requirements = security.get(key)

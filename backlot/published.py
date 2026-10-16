@@ -37,8 +37,8 @@ def operations(rows: Iterable[str]) -> Operations:
 def missing_operations(source: str) -> list[str]:
     """The ``missing_operation`` rows of ``source``'s baseline, each ``METHOD /path``."""
     baseline = _BASELINES / f"{source}.json"
-    rows = json.loads(baseline.read_text(encoding="utf-8"))["acknowledged"]
-    return [row["path"] for row in rows if row["kind"] == "missing_operation"]
+    entries = json.loads(baseline.read_text(encoding="utf-8"))["operations"]
+    return [e["operation"] for e in entries if e["status"] == "missing"]
 
 
 def not_served(source: str) -> Operations:

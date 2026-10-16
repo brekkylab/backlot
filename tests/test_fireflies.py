@@ -361,7 +361,7 @@ def test_fireflies_the_hand_written_examples_queries_still_validate(client, admi
 
     from tests.conftest import REPO_ROOT
 
-    text = (REPO_ROOT / "examples/using-official-sdk/fireflies.py").read_text()
+    text = (REPO_ROOT / "examples/using-official-sdk/fireflies.py").read_text(encoding="utf-8")
     documents = {
         name: body
         for name, body in re.findall(r'^([A-Z_]+) = """(.*?)"""', text, re.S | re.M)
@@ -751,5 +751,5 @@ def test_fireflies_users_is_the_workspace_roster_not_every_named_person(tmp_path
 def _roster_emails(settings):
     import yaml
 
-    data = yaml.safe_load(settings.tokens_path.read_text()) or {}
+    data = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8")) or {}
     return [u["email"] for u in data.get("users", [])]

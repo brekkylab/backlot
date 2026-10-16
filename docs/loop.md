@@ -168,7 +168,32 @@ Everything the loop does on GitHub — commits, pull requests, comments, reactio
 `brekkybot`, the machine user connected to the loop account. A pull request it hands over asks the
 `brekkylab/backlot-reviewer` team for review; who is on that team is decided in the organisation's
 settings, not here. The loop still tells its pull requests from everyone
-else's by branch, `claude/` and nothing else, and leaves every other branch alone.
+else's by branch, `claude/` and nothing else, and leaves every other branch alone, `claude/debloat-`
+included: those are the debloat routine's.
+
+## The debloat routine
+
+A second routine makes Backlot smaller without changing it, following
+[`.claude/skills/backlot-debloat/SKILL.md`](../.claude/skills/backlot-debloat/SKILL.md). Each run
+takes one area — a vendor, the store, the importer, the docs — and removes one kind of excess from
+it: code, prose or tests that repeat each other or say at length what can be said briefly.
+[`scripts/invariance.py`](../scripts/invariance.py) proves nothing changed: for code, every response
+the suite receives in process is the same before and after, apart from what differs between two
+recordings of the base; for tests, no line of `backlot/` stops running and every removed test's fact
+fails some remaining test under a mutation; for prose, the Python is the same tree and every
+measured fact a cut removed or rewrote is still stated somewhere. The
+[`invariance-reviewer`](../.claude/agents/invariance-reviewer.md) re-runs that proof and the
+`prose-reviewer` reads the rest. Bugs it meets are filed, never fixed.
+
+Its pull requests are on `claude/debloat-` branches and labelled `debloat`; at most two are open at
+once, and it leaves alone any file a pull request in review touches. A review on one wakes the run
+that handed it over, as on the loop's, and `hold` stops it the same way. When it asks for a choice,
+answer with a plain reply: a `/decision` rings the loop, which leaves debloat pull requests alone,
+and the next debloat run reads either.
+
+**Prompt**: `Run /backlot-debloat. The skill has the full procedure; follow it.` **Schedule**: once a
+week. **Environment**: `backlot-loop`; no vendor credential is used. `/backlot-debloat <area>
+[prose|code|tests]` in a local checkout rehearses one area without writing to GitHub.
 
 ## Rehearsing a change to the loop
 

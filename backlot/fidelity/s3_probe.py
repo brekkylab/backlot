@@ -9,8 +9,11 @@ query string themselves, so a path-and-parameter diff pairs every S3 operation w
 and reports a clean match every time — a green check that means nothing, which is worse than not
 checking at all.
 
-What can be asked instead is what the server actually answers. An operation Backlot does not
-implement should be REFUSED, which it does with ``NotImplemented``; one it does implement may answer
+What can be asked instead is what the server actually answers, and every operation the model
+sends to the S3 endpoint is asked; one it sends only to another endpoint is recorded ``missing``
+unasked. A write must be refused with an error, since data enters Backlot only through
+``backlot import``, and is recorded ``refused``. A read Backlot does not implement should be
+refused with ``NotImplemented`` and is recorded ``missing``; one it does implement may answer
 with an error, the 404 real gives a bucket with no CORS configuration for one, and that is its
 answer only when it is the error real gives that operation (``REAL_ERRORS``); any other error is one
 real does not give, and is reported. The failure this looks for above all is answering an operation
@@ -25,9 +28,9 @@ set is what separates the two listings: ``?list-type=2`` and a bare bucket GET a
 ``200 <ListBucketResult>``, but the V2 form carries ``KeyCount`` where the V1 one carries
 ``Marker``, so ListObjectsV2 is told apart from the fallthrough by what it answers rather than by
 being exempted from the question. ListObjects is the bare form itself, so it carries no selector
-and is never asked. An operation that really is answered by the catch-all matches on all three —
-``?session`` still does, and is acknowledged in the baseline, because real S3 answers the listing
-there too.
+and is asked only whether it is answered. An operation that really is answered by the catch-all
+matches on all three — ``?session`` still does, and is acknowledged in the baseline, because real S3
+answers the listing there too.
 """
 
 from __future__ import annotations
@@ -45,16 +48,24 @@ from backlot import sigv4
 from backlot.fidelity.errors import FidelityError
 from backlot.fidelity.fetch import fetch_json
 from backlot.fidelity.findings import BREAKING, GAP, Finding
+from backlot.fidelity.surface import (
+    IMPLEMENTED,
+    MISSING,
+    REFUSED,
+    Measurement,
+    OperationEntry,
+    OperationSurface,
+)
 
 _ROOT = re.compile(r"<\??[a-zA-Z]*[^>]*>\s*<([A-Za-z][\w.-]*)")
 # Element opens and closes, self-closing ones skipped: they open and close at once, so they never
 # change the depth the walk above is counting.
 _TAG = re.compile(r"<(/?)([A-Za-z][\w.-]*)(?:\s[^>]*?)?(?<!/)>")
 _EMPTY_SHA = hashlib.sha256(b"").hexdigest()
-# What real answers with an error for each operation this probe asks, sent as ``probe`` sends it:
+# What real answers with an error for each read this probe asks, sent as ``probe`` sends it:
 # signed, the query string the selector alone, no other header, at a bucket nobody configured and
 # at an object in it. Measured 2026-09-30 against `s3.us-east-1.amazonaws.com` on a bucket this
-# account created for it: real answered the other 28 of the model's 44 operations that carry a
+# account created for it: real answered the other 28 of the model's 44 reads that carry a
 # selector with a 200.
 REAL_ERRORS = {
     "GetBucketCors": (404, "NoSuchCORSConfiguration"),
@@ -83,7 +94,7 @@ class ProbeTarget(Protocol):
 
     spec_url: str
 
-    def run(self, base_url: str, model: Mapping[str, Any], timeout: float) -> list[Finding]: ...
+    def run(self, base_url: str, model: Mapping[str, Any], timeout: float) -> Measurement: ...
 
 
 @dataclass(frozen=True)
@@ -94,23 +105,60 @@ class S3Operation:
     method: str
     target: str  # "service" | "bucket" | "object"
     query: str
+    # The path where it names no bucket or key but a word of its own: WriteGetObjectResponse's
+    # `/WriteGetObjectResponse` is the one the model declares.
+    literal: str = ""
+    # The endpoint other than S3's that the model sends it to, and only there. Captured from
+    # botocore 1.40.61 before sending (2026-10-15): ListDirectoryBuckets goes to
+    # `s3express-control.us-east-1.amazonaws.com` signed for `s3express`, where the same `GET /`
+    # at the S3 endpoint is ListBuckets; WriteGetObjectResponse to
+    # `<RequestRoute>.s3-object-lambda.us-east-1.amazonaws.com` signed for `s3-object-lambda`. A
+    # bucket operation flagged for the S3 Express control endpoint goes there only for a directory
+    # bucket, and to the S3 endpoint for any other.
+    elsewhere: str = ""
+
+    @property
+    def reads(self) -> bool:
+        return self.method in ("GET", "HEAD")
 
     def __str__(self) -> str:
         # The operation's own name leads, because a query literal does NOT identify one:
         # GetBucketAnalyticsConfiguration and ListBucketAnalyticsConfigurations are both
         # `?analytics`, and a baseline keyed on the request alone would silence whichever it saw
         # second.
-        request = f"{self.method} /{{{self.target}}}" + (f"?{self.query}" if self.query else "")
+        where = self.literal or f"/{{{self.target}}}"
+        request = f"{self.method} {where}" + (f"?{self.query}" if self.query else "")
         return f"{self.name}: {request}"
+
+
+def _elsewhere(op: Mapping[str, Any], target: str) -> str:
+    """The endpoint other than S3's an operation is sent to and only there, or ``""``."""
+    flags = {
+        name
+        for name, param in (op.get("staticContextParams") or {}).items()
+        if isinstance(param, dict) and param.get("value") is True
+    }
+    if "UseObjectLambdaEndpoint" in flags:
+        return "the S3 Object Lambda endpoint"
+    if "UseS3ExpressControlEndpoint" in flags and target == "service":
+        return "the S3 Express control endpoint"
+    return ""
 
 
 def _required_query_member(shapes: Mapping[str, Any], op: Mapping[str, Any]) -> str:
     """The querystring member that selects an operation whose ``requestUri`` carries no ``?``.
 
-    ListParts is the case, and the only one: botocore gives it the same ``/{Bucket}/{Key+}`` as
+    Five operations get a member here, the first of their required ones in name order, and that
+    member alone is sent. UploadPart and UploadPartCopy require ``uploadId`` as well, so they go out
+    as ``PUT ?partNumber``, which Backlot answers as PutObject. CopyObject gets none, as the member
+    that selects it is a header, so it goes out as PutObject's request itself. Each is refused, as
+    PutObject is.
+
+    ListParts is the read among them: botocore gives it the same ``/{Bucket}/{Key+}`` as
     GetObject and selects it with a REQUIRED ``uploadId`` in the querystring. Read from the URI
-    alone it comes out bare, is skipped as "the bare form", and never asked — while the server
-    answers it with the object body, which is the silent fallthrough this module exists to catch.
+    alone it comes out bare, and a bare form is never compared with the fallthrough — while the
+    server answers it with the object body, which is the silent fallthrough this module exists to
+    catch.
 
     Required only. GetObject's ``versionId`` and ListObjects' ``prefix`` are optional refinements
     of the bare operation, not a different operation, and treating them as selectors would ask the
@@ -127,18 +175,12 @@ def _required_query_member(shapes: Mapping[str, Any], op: Mapping[str, Any]) -> 
 
 
 def operations(model: Mapping[str, Any]) -> list[S3Operation]:
-    """The read operations a botocore S3 service model declares.
-
-    Writes are not probed: Backlot serves reads, and a write it refuses is the correct answer
-    rather than a divergence worth listing ninety times.
-    """
+    """Every operation a botocore S3 service model declares, reads and writes."""
     shapes = model.get("shapes") or {}
     out = []
     for name, op in (model.get("operations") or {}).items():
         http = op.get("http") or {}
         method = (http.get("method") or "").upper()
-        if method not in ("GET", "HEAD"):
-            continue
         uri = http.get("requestUri") or "/"
         path, _, query = urlsplit(uri).path, *uri.partition("?")[1:]
         query = query or _required_query_member(shapes, op)
@@ -148,7 +190,8 @@ def operations(model: Mapping[str, Any]) -> list[S3Operation]:
             target = "bucket"
         else:
             target = "service"
-        out.append(S3Operation(name, method, target, query))
+        literal = path if re.sub(r"\{[^}]*\}", "", path).strip("/") else ""
+        out.append(S3Operation(name, method, target, query, literal, _elsewhere(op, target)))
     return sorted(out, key=lambda o: (o.target, o.query, o.name))
 
 
@@ -217,8 +260,9 @@ def probe(
     bucket: str,
     key: str,
     timeout: float = 20.0,
-) -> list[Finding]:
-    """Ask a running Backlot every read operation S3 declares, and classify what comes back."""
+) -> Measurement:
+    """Ask a running Backlot each of ``ops`` sent to the S3 endpoint, and classify what comes back;
+    one sent only to another endpoint is recorded ``missing`` without being asked."""
     targets = {"service": "/", "bucket": f"/{bucket}", "object": f"/{bucket}/{key}"}
 
     def call(method: str, path: str, query: str) -> httpx.Response:
@@ -239,14 +283,41 @@ def probe(
     fallthrough = {t: _shape(call("GET", p, "")) for t, p in targets.items()}
 
     out: list[Finding] = []
+    entries: list[OperationEntry] = []
     for op in ops:
-        if not op.query:  # the bare form IS the fallthrough; nothing to tell apart
+        if op.elsewhere:
+            # Not asked: Backlot serves the S3 endpoint, and what this would send there is another
+            # operation's request.
+            entries.append(OperationEntry(str(op), MISSING, op.name))
+            out.append(
+                Finding(
+                    "missing_operation",
+                    GAP,
+                    str(op),
+                    f"{op.name} is served only at {op.elsewhere}, which Backlot does not serve",
+                )
+            )
             continue
-        response = call(op.method, targets[op.target], op.query)
+        response = call(op.method, op.literal or targets[op.target], op.query)
         answer = _shape(response)
         code = _CODE.search(response.text)
         refused = (answer[0], code.group(1) if code else "")
-        if answer[0] >= 400 and refused[1] == "NotImplemented":
+        status = IMPLEMENTED
+        if not op.reads:
+            if answer[0] >= 400:
+                status = REFUSED
+            else:
+                out.append(
+                    Finding(
+                        "answered_write",
+                        BREAKING,
+                        str(op),
+                        f"{op.name} is answered {answer[0]}, and Backlot serves no write: data "
+                        "enters through `backlot import`, never through the vendor's API",
+                    )
+                )
+        elif answer[0] >= 400 and refused[1] == "NotImplemented":
+            status = MISSING
             out.append(
                 Finding(
                     "missing_operation",
@@ -267,7 +338,9 @@ def probe(
                     + (f"answers {real[0]} {real[1]}" if real else "answers it without an error"),
                 )
             )
-        elif answer == fallthrough[op.target]:
+        # The bare form IS the fallthrough, so only an operation a query selects is told apart.
+        elif op.query and answer == fallthrough[op.target]:
+            status = MISSING
             out.append(
                 Finding(
                     "silent_fallthrough",
@@ -278,15 +351,19 @@ def probe(
                     f"refuses it, so a caller parses another operation's body",
                 )
             )
-    return sorted(out, key=lambda f: (f.severity != BREAKING, f.path, f.kind))
+        entries.append(OperationEntry(str(op), status, op.name))
+    return Measurement(
+        sorted(out, key=lambda f: (f.severity != BREAKING, f.path, f.kind)),
+        OperationSurface(tuple(sorted(entries, key=lambda e: e.operation))),
+    )
 
 
-def run(base_url: str, model: Mapping[str, Any], timeout: float = 20.0) -> list[Finding]:
-    """Probe a running Backlot for every read operation S3 declares.
+def run(base_url: str, model: Mapping[str, Any], timeout: float = 20.0) -> Measurement:
+    """Probe a running Backlot for every operation S3 declares at the S3 endpoint.
 
     This is what ``ProbeComparison.run`` points at, and it holds everything S3-specific: which
     credentials the probe signs with, and which bucket and object it aims at. The dispatcher knows
-    only that a probe source fetches a vendor model, gets a server, and returns findings — so a
+    only that a probe source fetches a vendor model, gets a server, and returns a measurement — so a
     second probe source is a new module and one more entry in the registry, with nothing to change
     here or there.
     """
@@ -326,7 +403,7 @@ def run(base_url: str, model: Mapping[str, Any], timeout: float = 20.0) -> list[
     )
 
 
-def divergences(source: "ProbeTarget", *, timeout: float = 120.0) -> list[Finding]:
+def measure(source: "ProbeTarget", *, timeout: float = 120.0) -> Measurement:
     """This module's entry point: fetch the vendor model, start a server, and ask it.
 
     Fetching the model and starting the server happen here, which means they are shared by every

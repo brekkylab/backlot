@@ -94,9 +94,7 @@ def _millis(ts) -> float | None:
 def _iso(ts) -> str | None:
     if ts is None:
         return None
-    return (
-        _dt.datetime.fromtimestamp(int(ts), tz=_dt.timezone.utc).isoformat().replace("+00:00", "Z")
-    )
+    return synth.utc_datetime(int(ts)).isoformat().replace("+00:00", "Z")
 
 
 def _display_name(email: str | None) -> str | None:

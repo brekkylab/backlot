@@ -403,8 +403,8 @@ def test_the_server_runs_on_the_interpreter_that_holds_its_files(
         seen.append((argv[0], kwargs["env"]))
         raise Started
 
-    # Nothing is served, so the import only records the environment it is handed; a real run of it
-    # would reach the fake above as well.
+    # `subprocess.run` starts its process through `subprocess.Popen`, so the import is faked too: a
+    # real one would reach the `Popen` fake first.
     monkeypatch.setattr(server_mod.subprocess, "run", run)
     monkeypatch.setattr(server_mod.subprocess, "Popen", Popen)
     with pytest.raises(Started), backlot.serve():

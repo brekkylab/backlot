@@ -200,16 +200,13 @@ filterwarnings = [
     "ignore:Duplicate Operation ID:UserWarning",
     # llama-index reads a pydantic field API pydantic itself deprecated; nothing here to change.
     "ignore:Call to deprecated function \\(or staticmethod\\) extra_info:DeprecationWarning",
-    # A text file opened without encoding= fails the test that opened it — in this package, the
-    # tests and the scripts, not in a dependency. Every file Backlot ships, writes and reads back
-    # is UTF-8, and such an open takes the locale's code page instead (cp1252 on windows-latest,
-    # where the bundled Slack schema then fails to decode before any command runs). Python emits
-    # the warning only under PYTHONWARNDEFAULTENCODING=1 (or -X warn_default_encoding), which CI
-    # sets; ruff's PLW1514, run on its own in CI, refuses the calls whose receiver it can type.
+    # An open without encoding= (a text file, or a subprocess pipe in text mode) in backlot, tests
+    # or scripts fails the test that reaches it; one in a dependency stays a warning. Python emits
+    # the warning only under PYTHONWARNDEFAULTENCODING=1, which CI sets.
     "error::EncodingWarning:backlot|tests|scripts",
 ]
 markers = [
-    "windows: a test the Windows workflow runs on every pull request it runs on, for a failure Windows had",
+    "windows: a test the Windows workflow runs on every pull request it runs on",
 ]
 
 [tool.setuptools_scm]

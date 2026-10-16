@@ -7,11 +7,7 @@
 # PYTHONUTF8 unset, and it is too slow to run on every commit (on 2026-10-13 its pull-request run
 # took 5 minutes 25 seconds on windows-latest, and each Linux test job under 4). So it runs on a
 # pull request only once a maintainer adds the `windows` label, for a change to how Backlot opens
-# files, spawns processes or reads paths, and then on each push to it; and on `main` once a day, as
-# the whole suite of a `dev` and `mcp` install, rather than after every merge. A pull request's run
-# runs the README's first command, the test files that read and write Backlot's own files, and the
-# tests marked `windows` or xfail: a strict xfail that starts to pass fails until its mark is
-# removed, and the `windows` mark keeps the test in this run after that. A step before the tests
+# files, spawns processes or reads paths, and then on each push to it. A step before the tests
 # refuses a runner whose locale, or Python's UTF-8 mode, is UTF-8, where every step after it would
 # pass without proving anything; for the same reason Python is pinned below 3.15, where UTF-8 mode
 # becomes the default (PEP 686).

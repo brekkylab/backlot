@@ -7,6 +7,7 @@ or call the response builder directly.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import re
 from datetime import datetime
@@ -203,6 +204,28 @@ def test_atlassian_lists_only_the_containers_the_caller_can_open(tmp_path):
         readers = space["permissions"][0]["subjects"]["user"]["results"]
         assert [u["email"] for u in readers] == ["bob@acme.com"]
 
+        # A write at a served route's path looks its key up as the caller sees it: ava's `DELETE` on
+        # the issue she cannot open is its 404, on the one she can the 405 Backlot answers a write
+        # real would run, and the admin's the 405 on both; a project role's write does the same by
+        # project (``backlot.routers.atlassian._published_answer``).
+        admin = {"Authorization": f"Bearer {tokens['admin']}"}
+        projects = {name: synth.jira_project_key(name) for name in ("payments", "secrets")}
+        found = c.get(
+            "/atlassian/rest/api/3/search/jql",
+            params={"jql": f"project in ({', '.join(projects.values())})", "fields": "summary"},
+            headers=admin,
+        ).json()["issues"]
+        issues = {i["fields"]["summary"]: i["key"] for i in found}
+        for path, ava_sees in (
+            (f"issue/{issues['Gateway 502s']}", True),
+            (f"issue/{issues['Rotation']}", False),
+            (f"project/{projects['payments']}/role/10002", True),
+            (f"project/{projects['secrets']}/role/10002", False),
+        ):
+            for headers, status in ((ava, 405 if ava_sees else 404), (admin, 405)):
+                r = c.request("DELETE", f"/atlassian/rest/api/3/{path}", headers=headers)
+                assert r.status_code == status, (path, r.text)
+
 
 @pytest.mark.parametrize("headers", UNRESOLVABLE)
 @pytest.mark.parametrize(
@@ -234,6 +257,24 @@ def test_jira_404s_a_project_role_an_anonymous_caller_cannot_see(client, headers
         assert r.json()["errorMessages"] == [f"No project could be found with {kind} '{segment}'."]
 
 
+def _sent_as(client, method: str, path: str, headers: dict[str, str], content=None):
+    """``method`` on ``path`` with each header's latin-1 bytes as sent. The TestClient re-encodes a
+    header's bytes above 0x7F as UTF-8 (`\\x85` reaches the app as `\\xc2\\x85`), where httpx's
+    own `ASGITransport` hands the app what it was given, over the app the fixture started."""
+    import asyncio
+
+    import httpx
+
+    raw = {name: value.encode("latin-1") for name, value in headers.items()}
+
+    async def send():
+        transport = httpx.ASGITransport(app=client.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
+            return await c.request(method, path, headers=raw, content=content)
+
+    return asyncio.run(send())
+
+
 def test_jira_refuses_a_bearer_it_cannot_read_as_a_connect_token(client):
     """A bearer is not the Basic pair: Jira does not go anonymous for one it cannot resolve, it
     refuses with 403 and a body that is neither API's envelope. A Backlot token is an opaque
@@ -262,13 +303,18 @@ def test_jira_refuses_a_bearer_it_cannot_read_as_a_connect_token(client):
     ):
         assert absent not in r.headers, absent
     # And it is refused ahead of the route: serverInfo needs no credential and still answers 403,
-    # which is why the check is not in the caller helper.
-    info = client.get(
-        "/atlassian/rest/api/3/serverInfo", headers={"Authorization": "Bearer usr-nope"}
-    )
-    assert info.status_code == 403 and info.json() == {
-        "error": errors_atlassian.CONNECT_TOKEN_UNREADABLE
-    }
+    # which is why the check is not in the caller helper. The tokens are spellings
+    # ``backlot.auth.atlassian_bearer_token`` reads.
+    for token in (
+        *("usr-nope", "a\tb", "a,b", "a.b", "\tusr-nope", "\t\tusr-nope"),
+        *("\x85a", "\xa0a", "\x85", "\xa0", "\xa0\xa0"),
+    ):
+        info = _sent_as(
+            client, "GET", "/atlassian/rest/api/3/serverInfo", {"Authorization": f"Bearer {token}"}
+        )
+        assert info.status_code == 403 and info.json() == {
+            "error": errors_atlassian.CONNECT_TOKEN_UNREADABLE
+        }, token
 
 
 def test_jira_answers_a_jwt_shaped_bearer_with_the_403_too(client):
@@ -300,13 +346,22 @@ def test_jira_answers_a_jwt_shaped_bearer_with_the_403_too(client):
         "Bearer  usr-nope",
         "Bearer\tusr-nope",
         "Bearer",
+        # a space in the token, which the gateway does not read past
+        "Bearer a b",
+        "Bearer \t usr-nope",
+        "Bearer a  b",
+        "Bearer a b c",
+        # the header's ends, as ``backlot.auth.atlassian_bearer_token`` trims them
+        "Bearer \t",
+        "\x85Bearer usr-nope",
+        "\xa0Bearer usr-nope",
     ],
 )
 def test_jira_reads_an_unrecognised_scheme_as_no_credential(client, header):
     """The 403 above is for a credential the site READ. A spelling it does not read is not a
     credential at all, and the request is the anonymous one — which is how each spelling was told
     apart on the real sites in the first place (403 = read, 200 = not read)."""
-    r = client.get("/atlassian/rest/api/3/project/search", headers={"Authorization": header})
+    r = _sent_as(client, "GET", "/atlassian/rest/api/3/project/search", {"Authorization": header})
     assert r.status_code == 200 and r.json()["values"] == []
 
 
@@ -4147,6 +4202,10 @@ _UI = "/atlassian/rest/api/3/uiModifications/1"
 _REMOVE_TEMPLATE = "/atlassian/rest/api/3/project-template/remove-template"
 _SERVICE_REGISTRY = "/atlassian/rest/atlassian-connect/1/service-registry?serviceIds=1"
 _COLUMNS = "/atlassian/rest/api/2/settings/columns"
+_FILTER_COLUMNS = "/atlassian/rest/api/3/filter/999/columns"
+_FIELD = "/atlassian/rest/api/3/field"
+_ATTACHMENTS = "/atlassian/rest/api/3/issue/NOPE-999999/attachments"
+_AVATAR = "/atlassian/rest/api/3/issuetype/999/avatar2"
 _PREFERENCES = "/atlassian/rest/api/3/mypreferences"
 _AGENTS = "/atlassian/rest/api/3/agents/bulk/invoke/batch"
 _POLICIES = "/atlassian/rest/api/3/policies/project/NOPE/policies"
@@ -4242,6 +4301,24 @@ _JSON = "application/json"
             "application/json, text/plain",
         ),
         ("PUT", _PREFERENCES, "none", "text/plain", "x", 401, None, None),
+        # one whose 415 adds a charset the request did not send, and keeps one it did
+        # (`DOCUMENTED_OTHERWISE` in ``scripts/gen_jira_unserved.py``)
+        ("PUT", _FILTER_COLUMNS, "none", "text/plain", "x", 415)
+        + ("text/plain;charset=UTF-8", "application/json, application/yaml, application/*+json"),
+        ("PUT", _FILTER_COLUMNS, "none", "text/plain;charset=ISO-8859-1", "x", 415)
+        + (
+            "text/plain;charset=ISO-8859-1",
+            "application/json, application/yaml, application/*+json",
+        ),
+        # its body is optional, so one with none is not checked
+        ("PUT", _FILTER_COLUMNS, "none", None, None, 404, None, None),
+        # one that takes JSON alone, one multipart alone, and one `*/*`
+        ("POST", _FIELD, "none", "text/plain", "x", 415, "text/plain", _JSON),
+        ("POST", _FIELD, "none", _JSON, "{}", 405, None, None),
+        ("POST", _ATTACHMENTS, "none", "text/plain", "x", 415, "text/plain", "multipart/form-data"),
+        ("POST", _ATTACHMENTS, "none", "multipart/form-data; boundary=x", "--x--", 404, None, None),
+        ("POST", _AVATAR, "none", "foo", "x", 415, _UNREAD, "*/*"),
+        ("POST", _AVATAR, "none", "image/png", "x", 404, None, None),
     ],
 )
 def test_jira_checks_the_media_type_an_operation_takes_before_anything_else(
@@ -4249,8 +4326,10 @@ def test_jira_checks_the_media_type_an_operation_takes_before_anything_else(
 ):
     """Pins the 415 ``errors.atlassian.refuse_a_media_type`` describes, on the operations
     ``backlot/data/jira_unserved.json`` says check one. Each row's control is the same URL
-    answering past the check: the 401 a caller with no credential gets, or the 404 an operation no
-    route serves gives a caller whose credential resolves."""
+    answering past the check: the 401 a caller with no credential gets, the 404 an operation no
+    route serves gives a caller whose credential resolves, or, on one real runs for this caller,
+    what no route here answers it: the 405 of a method a route at the path does not take, or the
+    404 of a path none serves."""
     headers = dict(admin_h if credential == "admin" else _CREDENTIALS[credential])
     if content_type is not None:
         headers["Content-Type"] = content_type
@@ -4992,3 +5071,474 @@ def test_confluence_search_carries_the_cache_pair_where_real_does(
         assert r.headers["expires"] == "Thu, 01 Jan 1970 00:00:00 GMT"
     else:
         assert "cache-control" not in r.headers and "expires" not in r.headers
+
+
+# --- the front door's own refusals: a page before either product ----------------------------
+
+#: The pages the layers in front of both products send (``errors.atlassian`` dates each), each as
+#: its length in bytes and the SHA-256 of its text with the `Request ID:` line read as
+#: `Request ID: <id>`: the one line two of CloudFront's answers differ by, a value seeded from the
+#: method and path here and random on real.
+_CLOUDFRONT_405 = (915, "367a52dd1b2cf9f4508bbc97dd06390705cba5cf43446e0b57bae8e36aeabd2c")
+_CLOUDFRONT_METHOD_403 = (1053, "5dd68faa0cbf2eb7f73764c74991458af12c48974ee1abbe35e55303c9e76207")
+_CLOUDFRONT_400 = (915, "73a1d9f5d62fcebdc292a776e609c11154344817ddfa6d4d1fa2b753bdc6f8b6")
+_CLOUDFRONT_BLOCKED = (919, "9d105cf52ff43a5280d20ee1f0fdfac202ef44d9d70b25857d2a7b6ad3a59e45")
+_NGINX_400 = (150, "487ad0d2cf075f4328a1adf57ef428759ad4e2c873a8ebd2ad9653990829c9cf")
+_OPENRESTY_405 = (154, "4a327e30d348f9975e50913c72d1bdb067f31f726722326c17c6af8d7f04b3a6")
+_TOMCAT_400 = (435, "141d0eee920f04eae74509434b49e8c473014166b90ec31e6f03596a782bf89f")
+_EDGE_PAGE = "text/html"
+_TOMCAT_PAGE = "text/html;charset=utf-8"
+
+
+@pytest.mark.parametrize(
+    "method,vendor_path,status,page,media_type",
+    [
+        # the CDN: `TRACE` is its 405, a method spelled as the 403's rule spells one its 403, any
+        # other its 400, and a `%00` or a broken escape its 400 ahead of the method and the firewall
+        ("TRACE", "/rest/api/3/serverInfo", 405, _CLOUDFRONT_405, _EDGE_PAGE),
+        ("PROPFIND", "/rest/api/3/serverInfo", 403, _CLOUDFRONT_METHOD_403, _EDGE_PAGE),
+        ("MKACTIVITY", "/rest/api/3/serverInfo", 400, _CLOUDFRONT_400, _EDGE_PAGE),
+        ("GET", "/rest/api/3/nope%00", 400, _CLOUDFRONT_400, _EDGE_PAGE),
+        ("TRACE", "/rest/api/3/nope%00", 400, _CLOUDFRONT_400, _EDGE_PAGE),
+        ("PATCH", "/rest/api/3/nope%00", 400, _CLOUDFRONT_400, _EDGE_PAGE),
+        ("GET", "/rest/api/3/nope%zz", 400, _CLOUDFRONT_400, _EDGE_PAGE),
+        ("GET", "/rest/api/3/serverInfo%2", 400, _CLOUDFRONT_400, _EDGE_PAGE),
+        ("GET", "/wiki/rest/api/space/%", 400, _CLOUDFRONT_400, _EDGE_PAGE),
+        ("GET", "/rest/api/3/nope%%41", 400, _CLOUDFRONT_400, _EDGE_PAGE),
+        ("GET", "/rest/api/3/nope%u005c", 400, _CLOUDFRONT_400, _EDGE_PAGE),
+        ("TRACE", "/rest/api/3/nope%zz", 400, _CLOUDFRONT_400, _EDGE_PAGE),
+        ("PROPFIND", "/rest/api/3/nope%zz", 400, _CLOUDFRONT_400, _EDGE_PAGE),
+        ("GET", "/rest/api/3/nope<script>%zz", 400, _CLOUDFRONT_400, _EDGE_PAGE),
+        # its firewall (`errors.atlassian.waf_blocks`): a tag, and a step up a directory
+        ("GET", "/rest/api/3/nope<script>", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+        ("GET", "/wiki/rest/api/nope%3Cscript%3E", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+        ("GET", "/wiki/rest/api/space/A<script>", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+        ("GET", "/rest/api/3/nope%253Cscript%253E", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+        ("GET", "/rest/api/3/nope&lt;script&gt;", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+        ("GET", "/rest/api/3/nope</script>", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+        ("GET", "/rest/api/3/nope<svg>", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+        ("GET", "/rest/api/3/nope<svgx>", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+        ("GET", "/rest/api/3/nope<xslt>", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+        ("GET", "/rest/api/3/nope<!doctypex>", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+        ("GET", "/rest/api/3/nope<!ENTITY>", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+        ("GET", "/rest/api/3/nope..%2F..%2Fetc%2Fpasswd", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+        ("GET", "/rest/api/3/nope..%5Cy", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+        ("GET", "/rest/api/3/nope/..;/x", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+        ("GET", "/rest/api/3/nope/..%3B/x", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+        ("GET", "/rest/api/3/nope/..;;;;/x", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+        ("GET", "/rest/api/3/nope/..;%3B/x", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+        ("GET", "/rest/api/3/serverInfo?x=..%2Fy", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+        ("GET", "/rest/api/3/serverInfo?x=..%5C", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+        ("GET", "/rest/api/3/serverInfo?x=..%5C&y=1", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+        ("GET", "/rest/api/3/serverInfo?x=..%5C%5Cy", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+        ("GET", "/rest/api/3/serverInfo?x=..%5C%2Fy", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+        # the method's refusal before the firewall's, the firewall's before the gateway's `PATCH`
+        ("PROPFIND", "/rest/api/3/nope<script>", 403, _CLOUDFRONT_METHOD_403, _EDGE_PAGE),
+        ("PATCH", "/rest/api/3/nope<script>", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+        # the gateway's `PATCH`, which picks the product with each run of slashes read as one and
+        # comes before Tomcat
+        ("PATCH", "/rest/api/3/serverInfo", 400, _NGINX_400, _EDGE_PAGE),
+        ("PATCH", "/wiki/rest/api/space", 405, _OPENRESTY_405, _EDGE_PAGE),
+        ("PATCH", "/wiki", 405, _OPENRESTY_405, _EDGE_PAGE),
+        ("PATCH", "//wiki/rest/api/space", 405, _OPENRESTY_405, _EDGE_PAGE),
+        ("PATCH", "/wiki/rest/api/space/NO%2FSUCH", 405, _OPENRESTY_405, _EDGE_PAGE),
+        # Confluence's Tomcat: an encoded slash or backslash anywhere under `/wiki/` but `spaces/`
+        ("GET", "/wiki/rest/api/space/NO%2FSUCH", 400, _TOMCAT_400, _TOMCAT_PAGE),
+        ("POST", "/wiki/rest/api/space/NO%2FSUCH", 400, _TOMCAT_400, _TOMCAT_PAGE),
+        ("GET", "/wiki/rest/api/space/NO%2fSUCH", 400, _TOMCAT_400, _TOMCAT_PAGE),
+        ("GET", "/wiki/rest/api/space/NO%5CSUCH", 400, _TOMCAT_400, _TOMCAT_PAGE),
+        ("GET", "//wiki/rest/api/space/NO%2FSUCH", 400, _TOMCAT_400, _TOMCAT_PAGE),
+        ("GET", "/wiki/rest/api/nope%2Fthing", 400, _TOMCAT_400, _TOMCAT_PAGE),
+        ("GET", "/wiki/rest/api/space%2F", 400, _TOMCAT_400, _TOMCAT_PAGE),
+        ("GET", "/wiki/display/A%2FB", 400, _TOMCAT_400, _TOMCAT_PAGE),
+        # a `HEAD` is the page's status and length with no body
+        ("HEAD", "/rest/api/3/nope<script>", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+        ("HEAD", "/wiki/rest/api/space/NO%2FSUCH", 400, _TOMCAT_400, _TOMCAT_PAGE),
+        # what none of them refuses reaches the product: a tag the firewall does not name, a
+        # closing tag but `script`'s, a name short of `!doctype`, a `..;` inside a segment or with
+        # no `/` after it, a tag in the query, a `..\` there that neither a `\` nor a `/` nor the
+        # end of the value follows, a step in a parameter's name, a broken escape in the query,
+        # Jira's decoded slash and the web app's `spaces/` in any case
+        ("GET", "/rest/api/3/nope<img>", 404, None, errors_atlassian.PROBLEM_JSON),
+        ("GET", "/rest/api/3/nopeA..;/x", 404, None, errors_atlassian.PROBLEM_JSON),
+        ("GET", "/rest/api/3/nope/..;a/x", 404, None, errors_atlassian.PROBLEM_JSON),
+        ("GET", "/rest/api/3/nope</style>", 404, None, errors_atlassian.PROBLEM_JSON),
+        ("GET", "/rest/api/3/nope<!doctyp>", 404, None, errors_atlassian.PROBLEM_JSON),
+        ("GET", "/rest/api/3/nope<!ELEMENT>", 404, None, errors_atlassian.PROBLEM_JSON),
+        (
+            "GET",
+            "/rest/api/3/serverInfo?q=<script>",
+            200,
+            None,
+            errors_atlassian.JIRA_JSON_MEDIA_TYPE,
+        ),
+        (
+            "GET",
+            "/rest/api/3/serverInfo?x=..%5Cy",
+            200,
+            None,
+            errors_atlassian.JIRA_JSON_MEDIA_TYPE,
+        ),
+        ("GET", "/rest/api/3/serverInfo?x=..%3B", 200, None, errors_atlassian.JIRA_JSON_MEDIA_TYPE),
+        (
+            "GET",
+            "/rest/api/3/serverInfo?x=..%5C.",
+            200,
+            None,
+            errors_atlassian.JIRA_JSON_MEDIA_TYPE,
+        ),
+        ("GET", "/rest/api/3/serverInfo?..%2F=1", 200, None, errors_atlassian.JIRA_JSON_MEDIA_TYPE),
+        ("GET", "/rest/api/3/serverInfo?x=%zz", 200, None, errors_atlassian.JIRA_JSON_MEDIA_TYPE),
+        ("GET", "/rest/api/3/issue/A%2FB", 404, None, errors_atlassian.PROBLEM_JSON),
+        # the web app answers `spaces/` itself (real's single-page app at 200, which is not copied)
+        ("GET", "/wiki/spaces/NO%2FSUCH", 404, None, "text/html;charset=UTF-8"),
+        ("GET", "/wiki/SPACES/NO%2FSUCH", 404, None, "text/html;charset=UTF-8"),
+    ],
+)
+def test_atlassian_front_door_answers_before_either_product(
+    client, admin_h, method, vendor_path, status, page, media_type
+):
+    """Each refusal is the page real sent, held here as its length and digest, with the headers real
+    sent beside it (``errors.atlassian.FrontDoor``); which layer gives it and in what order is
+    ``errors.atlassian.front_door``'s, which carries the measurement. The rows with no page reach
+    the product. The credential does not change which layer answers, so an admin request is enough
+    to show a served route does not reach its handler."""
+    path, _, query = vendor_path.partition("?")
+    answer = errors_atlassian.front_door(method, f"/atlassian{path}", query)
+    r = _spelled(client, method).request("GET", f"/atlassian{vendor_path}", headers=admin_h)
+    assert r.status_code == status, r.text
+    assert r.headers["content-type"] == media_type
+    if page is None:
+        assert answer is None
+        return
+    length, digest = page
+    assert "allow" not in r.headers
+    assert ("content-language" in r.headers) == (media_type == _TOMCAT_PAGE)
+    for name in ("atl-request-id", "atl-traceid"):
+        assert (name in r.headers) == (page in (_NGINX_400, _OPENRESTY_405, _TOMCAT_400)), name
+    for name in ("x-content-type-options", "x-xss-protection"):
+        assert (name in r.headers) == (page not in (_CLOUDFRONT_405, _CLOUDFRONT_400)), name
+    if method == "HEAD":
+        assert r.content == b"" and r.headers["content-length"] == str(length)
+        return
+    assert len(r.content) == length
+    assert re.search(r"Request ID: [A-Za-z0-9_-]{54}==\n", r.text) or "Request ID" not in r.text
+    normalised = re.sub(r"Request ID: \S+", "Request ID: <id>", r.text)
+    assert hashlib.sha256(normalised.encode()).hexdigest() == digest
+
+
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("TRACE", "/github/user"),
+        ("PROPFIND", "/notion/v1/users"),
+        ("GET", "/slack/api/auth.test%00"),
+        ("PATCH", "/s3/"),
+    ],
+)
+def test_atlassian_front_door_answers_under_atlassian_alone(client, admin_h, method, path):
+    """A request another vendor's mount takes that the front door would refuse under `/atlassian`
+    gets no page of CloudFront's or the gateway's: the middleware
+    (``backlot.main.answer_at_the_atlassian_front_door``) passes any path it does not own."""
+    r = _spelled(client, method).request("GET", path, headers=admin_h)
+    for layer in ("CloudFront", "nginx", "openresty"):
+        assert layer not in r.text, (layer, r.status_code)
+
+
+# --- a write on a served path: the operation's own answer, not a 405 -------------------------
+
+
+@pytest.mark.parametrize(
+    "method,vendor_path,body,status",
+    [
+        # an issue write is the issue's 404, and with no body the 415 the operation's media-type
+        # check gives first; a route here takes only GET, so the method reaches `unmatched_path`
+        ("DELETE", "/rest/api/3/issue/NOPE-999999", "{}", 404),
+        ("DELETE", "/rest/api/2/issue/NOPE-999999", "{}", 404),
+        ("PUT", "/rest/api/3/issue/NOPE-999999", "{}", 404),
+        ("PUT", "/rest/api/3/issue/NOPE-999999", None, 415),
+        ("POST", "/rest/api/3/issue/NOPE-999999/comment", "{}", 404),
+        ("POST", "/rest/api/3/issue/NOPE-999999/comment", None, 415),
+        # a project role write at a key that names nothing is the project's 404
+        ("POST", "/rest/api/3/project/NOPESUCHZZ/role/999", "{}", 404),
+        ("PUT", "/rest/api/3/project/NOPESUCHZZ/role/999", None, 415),
+        ("PUT", "/rest/api/3/project/NOPESUCHZZ/role/999", "{}", 404),
+        ("DELETE", "/rest/api/3/project/NOPESUCHZZ/role/999", None, 404),
+        # `issue/archive`'s own write, which real runs (a 400) and Backlot does not
+        ("PUT", "/rest/api/3/issue/archive", "{}", 405),
+    ],
+)
+def test_jira_runs_a_write_on_a_served_path_where_a_route_takes_only_get(
+    client, method, vendor_path, body, status
+):
+    """The same path's `GET` is served (the `test_admin_*` crawls exercise it); the write differs
+    only by method and reaches the operation real reaches (``_JIRA_ISSUE_WRITES``,
+    ``_JIRA_ROLE_WRITES`` and ``_jira_operation`` in ``backlot.routers.atlassian`` carry the
+    measurement). A method no operation is published for is the 405
+    ``errors.atlassian.method_not_allowed`` answers, which
+    `test_jira_refuses_a_wrong_method_as_rfc_7807_naming_the_methods_it_takes` pins. No
+    credential."""
+    kwargs = {"content": body, "headers": {"Content-Type": "application/json"}} if body else {}
+    r = client.request(method, f"/atlassian{vendor_path}", **kwargs)
+    assert r.status_code == status, r.text
+    if status == 415:
+        assert r.headers["content-type"] == errors_atlassian.PROBLEM_JSON
+        assert r.json()["detail"] == "Content-Type 'null' is not supported."
+    elif status == 405:
+        assert r.headers["content-type"] == errors_atlassian.PROBLEM_JSON
+        assert r.json()["detail"] == f"Method '{method}' is not supported."
+    else:
+        assert "errors" in r.json()  # Backlot's envelope; real's two members are a separate gap
+
+
+_SPRING_415 = "org.springframework.web.HttpMediaTypeNotSupportedException: "
+_JSON_TYPE = "application/json"
+
+
+@pytest.mark.parametrize(
+    "method,vendor_path,authorization,ctype,status,body",
+    [
+        # a Spring write that checks its `Content-Type` first: its 415, naming the type as read,
+        # then the caller's refusal for the type it takes
+        ("POST", "/wiki/rest/api/content/abc123/child/attachment", None, None, 415, "''"),
+        ("POST", "/wiki/rest/api/content/abc123/child/attachment", None, "", 415, "''"),
+        ("POST", "/wiki/rest/api/content/abc123/child/attachment", None, "text/plain", 415)
+        + ("'text/plain'",),
+        ("POST", "/wiki/rest/api/content/abc123/child/attachment", None, "APPLICATION/JSON", 415)
+        + ("'application/json'",),
+        (
+            "POST",
+            "/wiki/rest/api/content/abc123/child/attachment",
+            None,
+            "TEXT/Plain;Charset=UTF-8;X=Y",
+            415,
+            "'text/plain;Charset=UTF-8;X=Y'",
+        ),
+        ("POST", "/wiki/rest/api/content/abc123/child/attachment", None, "foo", 415)
+        + ("Invalid mime type \"foo\": does not contain '/'",),
+        (
+            "POST",
+            "/wiki/rest/api/content/abc123/child/attachment",
+            None,
+            "multipart/form-data; boundary=x",
+            403,
+            errors_atlassian.CONFLUENCE_FORBIDDEN_BODY,
+        ),
+        ("POST", "/wiki/rest/api/content/abc123/child/attachment/1/data", None, _JSON_TYPE, 415)
+        + ("'application/json'",),
+        ("PUT", "/wiki/rest/api/content/abc123/state", None, None, 415, "''"),
+        ("PUT", "/wiki/rest/api/content/abc123/state", None, "text/plain", 415, "'text/plain'"),
+        ("PUT", "/wiki/rest/api/content/abc123/state", None, _JSON_TYPE, 403)
+        + (errors_atlassian.CONFLUENCE_FORBIDDEN_BODY,),
+        ("PUT", "/wiki/rest/api/space/abc123/theme", None, "text/plain", 415, "'text/plain'"),
+        ("POST", "/wiki/rest/api/space/abc123/permission", None, "text/plain", 415, "'text/plain'"),
+        ("POST", "/wiki/rest/api/space/abc123/permission", None, _JSON_TYPE, 403)
+        + (errors_atlassian.CONFLUENCE_FORBIDDEN_BODY,),
+        # Tomcat's 401 for a Basic value it cannot read comes before the 415
+        ("POST", "/wiki/rest/api/content/abc123/child/attachment", "Basic !!!", _JSON_TYPE, 401)
+        + (None,),
+        # a Spring write that checks nothing first refuses the caller with or without a body
+        ("DELETE", "/wiki/rest/api/space/abc123", None, None, 403)
+        + (errors_atlassian.CONFLUENCE_FORBIDDEN_BODY,),
+        ("POST", "/wiki/rest/api/content/abc123/label", None, _JSON_TYPE, 403)
+        + (errors_atlassian.CONFLUENCE_FORBIDDEN_BODY,),
+        # a JAX-RS write: Tomcat's page for a type it cannot read, an empty 415 for one other than
+        # JSON (but `settings/lookandfeel`'s), and the not-permitted refusal for JSON or none
+        ("POST", "/wiki/rest/api/content/archive", None, None, 403)
+        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+        ("POST", "/wiki/rest/api/content/archive", None, _JSON_TYPE, 403)
+        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+        ("POST", "/wiki/rest/api/content/archive", None, "text/plain", 415, b""),
+        ("POST", "/wiki/rest/api/template", None, "application/xml", 415, b""),
+        ("POST", "/wiki/rest/api/content/archive", None, "foo", 400)
+        + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
+        # Jersey's own reading of a type: a wildcard JSON matches is JSON, a charset is not looked
+        # up and an empty parameter is skipped, and a parameter with no name, no `=`, an empty value
+        # or space beside the `=` is unreadable
+        ("POST", "/wiki/rest/api/template", None, "*/*", 403)
+        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+        ("POST", "/wiki/rest/api/template", None, "application/*", 403)
+        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+        ("POST", "/wiki/rest/api/template", None, "*/json", 403)
+        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+        ("POST", "/wiki/rest/api/template", None, "application/json;charset=nope", 403)
+        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+        ("POST", "/wiki/rest/api/template", None, 'application/json; ;x="a;b"', 403)
+        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+        ("POST", "/wiki/rest/api/template", None, "text/*", 415, b""),
+        ("POST", "/wiki/rest/api/template", None, "application/*+json", 415, b""),
+        ("POST", "/wiki/rest/api/template", None, "application/json;;", 403)
+        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+        ("POST", "/wiki/rest/api/template", None, 'application/json;x="a\\"b"', 403)
+        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+        ("POST", "/wiki/rest/api/template", None, "a@b/json", 400)
+        + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
+        ("POST", "/wiki/rest/api/template", None, "application/json;=x", 400)
+        + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
+        ("POST", "/wiki/rest/api/template", None, "application/json;x", 400)
+        + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
+        ("POST", "/wiki/rest/api/template", None, "application/json;x=", 400)
+        + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
+        ("POST", "/wiki/rest/api/template", None, "application/json;charset =utf-8", 400)
+        + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
+        ("POST", "/wiki/rest/api/template", None, "application/json;charset= utf-8", 400)
+        + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
+        ("DELETE", "/wiki/rest/api/user/watch/space/NOPESUCHZZ", None, "", 400)
+        + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
+        ("POST", "/wiki/rest/api/template", None, 'application/json;x="a', 400)
+        + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
+        ("POST", "/wiki/rest/api/template", None, "application/json/x", 400)
+        + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
+        ("POST", "/wiki/rest/api/template", None, "a/b c", 400)
+        + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
+        ("POST", "/wiki/rest/api/template", None, "application/json;x?y", 400)
+        + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
+        ("POST", "/wiki/rest/api/template", None, "application/json;x=1 ;y=2", 403)
+        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+        ("POST", "/wiki/rest/api/template", None, "application/json;x=1 ;y", 400)
+        + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
+        # the value's ends, as ``backlot.errors.atlassian.jersey_media_type`` trims them
+        ("POST", "/wiki/rest/api/template", None, "application/json\xa0", 400)
+        + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
+        ("POST", "/wiki/rest/api/template", None, "\x85application/json", 400)
+        + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
+        ("POST", "/wiki/rest/api/template", None, "application/json\t", 403)
+        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+        # the two that ran: a type Jersey cannot read is its 400 too, JSON reaches the operation,
+        # which real runs and Backlot does not serve
+        ("POST", "/wiki/rest/api/contentbody/convert/async/1", None, "application/json;x", 400)
+        + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
+        ("POST", "/wiki/rest/api/contentbody/convert/async/1", None, _JSON_TYPE, 404, None),
+        ("POST", "/wiki/rest/api/contentbody/convert/async/bulk/tasks", None, "text/plain", 415)
+        + (b"",),
+        ("PUT", "/wiki/rest/api/settings/lookandfeel", None, "text/plain", 403)
+        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+        ("PUT", "/wiki/rest/api/settings/lookandfeel", None, "foo", 400)
+        + (errors_atlassian.TOMCAT_BAD_REQUEST.encode(),),
+        ("DELETE", "/wiki/rest/api/relation/1/from/user/a/to/content/2", None, None, 403)
+        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+        # each operation the four lists in ``backlot.routers.atlassian`` name, with no credential:
+        # the nineteen GETs and the JAX-RS writes but the two that run, the not-permitted 403, the
+        # Spring writes that check a type, the 415 for `text/plain`, and the GETs real serves
+        # outside the document, the Stackless 403
+        *(
+            ("GET", f"/wiki/rest/{path}", None, None, 403)
+            + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,)
+            for path in (
+                "api/audit",
+                "api/audit/export",
+                "api/audit/retention",
+                "api/audit/since",
+                "api/content-states",
+                "api/longtask",
+                "api/longtask/1",
+                "api/relation/1/from/1/1/to/1",
+                "api/relation/1/from/1/1/to/1/1",
+                "api/relation/1/to/1/1/from/1",
+                "api/search/user",
+                "api/settings/lookandfeel",
+                "api/template/blueprint",
+                "api/template/page",
+                "api/template/1",
+                "api/user/watch/content/1",
+                "api/user/watch/label/1",
+                "api/user/watch/space/1",
+                "atlassian-connect/1/app/module/dynamic",
+            )
+        ),
+        *(
+            (method, path, None, None, 403, errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY)
+            for method, path in (
+                ("POST", "/wiki/rest/api/audit"),
+                ("PUT", "/wiki/rest/api/audit/retention"),
+                ("POST", "/wiki/rest/api/content/archive"),
+                ("POST", "/wiki/rest/api/content/blueprint/instance/1"),
+                ("PUT", "/wiki/rest/api/content/blueprint/instance/1"),
+                ("PUT", "/wiki/rest/api/relation/1/from/1/1/to/1/1"),
+                ("DELETE", "/wiki/rest/api/relation/1/from/1/1/to/1/1"),
+                ("PUT", "/wiki/rest/api/settings/lookandfeel"),
+                ("POST", "/wiki/rest/api/settings/lookandfeel/custom"),
+                ("DELETE", "/wiki/rest/api/settings/lookandfeel/custom"),
+                ("POST", "/wiki/rest/api/template"),
+                ("PUT", "/wiki/rest/api/template"),
+                ("DELETE", "/wiki/rest/api/template/1"),
+                ("POST", "/wiki/rest/api/user/watch/content/1"),
+                ("DELETE", "/wiki/rest/api/user/watch/content/1"),
+                ("POST", "/wiki/rest/api/user/watch/label/1"),
+                ("DELETE", "/wiki/rest/api/user/watch/label/1"),
+                ("POST", "/wiki/rest/api/user/watch/space/1"),
+                ("DELETE", "/wiki/rest/api/user/watch/space/1"),
+                ("POST", "/wiki/rest/atlassian-connect/1/app/module/dynamic"),
+                ("DELETE", "/wiki/rest/atlassian-connect/1/app/module/dynamic"),
+            )
+        ),
+        *(
+            (method, path, None, "text/plain", 415, "'text/plain'")
+            for method, path in (
+                ("POST", "/wiki/rest/api/content/1/child/attachment"),
+                ("PUT", "/wiki/rest/api/content/1/child/attachment"),
+                ("POST", "/wiki/rest/api/content/1/child/attachment/1/data"),
+                ("POST", "/wiki/rest/api/content/1/pagehierarchy/copy"),
+                ("POST", "/wiki/rest/api/content/1/permission/check"),
+                ("POST", "/wiki/rest/api/content/1/restriction"),
+                ("PUT", "/wiki/rest/api/content/1/restriction"),
+                ("PUT", "/wiki/rest/api/content/1/state"),
+                ("POST", "/wiki/rest/api/content/1/version"),
+                ("POST", "/wiki/rest/api/group"),
+                ("POST", "/wiki/rest/api/group/userByGroupId"),
+                ("POST", "/wiki/rest/api/space/1/permission"),
+                ("POST", "/wiki/rest/api/space/1/permission/custom-content"),
+                ("PUT", "/wiki/rest/api/space/1/theme"),
+                ("POST", "/wiki/rest/api/user/1/property/1"),
+                ("PUT", "/wiki/rest/api/user/1/property/1"),
+            )
+        ),
+        *(
+            ("GET", f"/wiki/rest/api/{path}", None, None, 403)
+            + (errors_atlassian.CONFLUENCE_FORBIDDEN_BODY,)
+            for path in (
+                "content/1/child",
+                "content/1/history",
+                "content/1/property",
+                "content/1/version",
+                "space/ENG/content",
+                "space/ENG/property",
+            )
+        ),
+        # an `OPTIONS` asks for no operation and is refused by none of these
+        ("OPTIONS", "/wiki/rest/api/content/1/label", None, None, 404, None),
+    ],
+)
+def test_confluence_answers_an_operation_before_it_runs(
+    client, method, vendor_path, authorization, ctype, status, body
+):
+    """With no credential real refuses each operation these rows name, published or served outside
+    the document, before it runs, in the order and shape ``_published_answer``,
+    ``_CONFLUENCE_CONSUMES``, ``_CONFLUENCE_JAXRS_WRITES``, ``_CONFLUENCE_NOT_PERMITTED_GETS`` and
+    ``_CONFLUENCE_OUTSIDE_THE_DOCUMENT`` in ``backlot.routers.atlassian`` carry the measurement for.
+    A 415's ``body`` is the reason Spring gives; the 401 is asserted by status alone, its body being
+    JSON here where real's is Tomcat's page. An `OPTIONS` at a published write's path is the 404
+    real answers it, not a refusal."""
+    headers = {} if ctype is None else {"Content-Type": ctype}
+    if authorization is not None:
+        headers["Authorization"] = authorization
+    r = _sent_as(
+        client, method, f"/atlassian{vendor_path}", headers, content=b"x" if ctype else None
+    )
+    assert r.status_code == status, r.text
+    if isinstance(body, str):
+        reason = body if body.startswith("Invalid") else f"Content type {body} not supported"
+        assert r.json() == {
+            "errors": [
+                {"status": 415, "code": "UNSUPPORTED_MEDIA_TYPE", "title": _SPRING_415 + reason}
+            ]
+        }
+    elif body is not None:
+        assert r.content == body
+        assert r.headers.get("content-type") == (
+            None
+            if body == b""
+            else errors_atlassian.TOMCAT_MEDIA_TYPE
+            if status == 400
+            else _JSON_TYPE
+        )

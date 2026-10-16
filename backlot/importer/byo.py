@@ -3424,7 +3424,29 @@ def _load_records(
     roster: Path | None,
     want_id_map: bool = False,
 ) -> tuple[dict, str | None]:
-    """The load itself. See :func:`load_records`, which is this plus the replace-safely dance.
+    """Runs :func:`_load_records_into` on a connection it closes however the load ends;
+    :func:`load_records` is this plus the replace-safely dance.
+
+    The close on a raise comes before `load_records` unlinks the half-built DB to put the previous
+    one back: an unclosed connection lives as long as the traceback of the exception that left it,
+    and unlinking ``db.sqlite`` with a connection to it still open raised PermissionError
+    [WinError 32] on Windows 11 (2026-10-13, Python 3.14.0)."""
+    conn = store.connect_rw(settings.db_path)
+    try:
+        return _load_records_into(conn, records_factory, settings, reset, roster, want_id_map)
+    finally:
+        conn.close()
+
+
+def _load_records_into(
+    conn,
+    records_factory,
+    settings: Settings,
+    reset: bool,
+    roster: Path | None,
+    want_id_map: bool,
+) -> tuple[dict, str | None]:
+    """The load on ``conn``, which :func:`_load_records` opens and closes.
 
     ``records_factory`` returns a FRESH iterator of ``(where, record)`` pairs and may be called
     twice — the org has to be inferred from every author's address before the first grant is
@@ -3434,7 +3456,6 @@ def _load_records(
     bug there should name the record rather than surface as a constraint violation three layers
     down.
     """
-    conn = store.connect_rw(settings.db_path)
 
     # infer the org from the corpus (dominant email domain) before building any grants,
     # since public docs are granted to the org principal — see _infer_org. Read in its own pass,
@@ -3638,7 +3659,6 @@ def _load_records(
     # Built while the loader and the connection are still alive; WRITTEN by `load_records`, once
     # the load can no longer be rolled back.
     manifest = _id_map_manifest(loader, conn) if want_id_map else None
-    conn.close()
     return {
         "counts": counts,
         "users": len(users),

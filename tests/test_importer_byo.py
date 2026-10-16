@@ -19,21 +19,11 @@ from backlot.importer.byo import load
 from backlot.routers.slack import _message
 from tests._helpers import complete, served_id
 
-# Two importer behaviours that fail these tests on Windows, each marked strict so a test that
-# starts to pass there reports XPASS and fails until its mark is removed; the `windows` mark beside
-# it keeps the test in the Windows workflow's pull-request run after that. Measured on Windows 11
-# with Python 3.14.0 on 2026-10-13.
+# An importer behaviour that fails this test on Windows, marked strict so that once it passes
+# there it reports XPASS and fails until the mark is removed; the `windows` mark beside it keeps
+# the test in the Windows workflow's pull-request run after that. Measured on Windows 11 with
+# Python 3.14.0 on 2026-10-13.
 #
-# A refused fresh load puts the previous DB back by unlinking the half-built one, and
-# `_load_records` leaves its sqlite connection open when it raises, so on Windows the unlink is
-# refused with WinError 32 (a file another handle holds). Closing that connection before the
-# unlink makes the five tests below pass there.
-_REFUSED_LOAD_LEAVES_ITS_DB_OPEN_ON_WINDOWS = pytest.mark.xfail(
-    sys.platform == "win32",
-    raises=PermissionError,
-    strict=True,
-    reason="a refused load's sqlite connection is still open when the previous DB is restored",
-)
 # `_seconds` accepts a second only if `datetime.fromtimestamp(sec, tz=timezone.utc)` renders it,
 # and on Windows that raises OSError [Errno 22] for -86400 and for -2208988800 (-1 still
 # renders), so a pre-1970 time like those is refused as unreadable there.
@@ -708,7 +698,6 @@ def test_byo_slack_edited_user_must_be_the_messages_own_author(tmp_path, on):
 
 
 @pytest.mark.windows
-@_REFUSED_LOAD_LEAVES_ITS_DB_OPEN_ON_WINDOWS
 def test_byo_a_speaker_outside_a_private_channels_readers_is_refused(tmp_path):
     """A channel's members are the people who have spoken in it and what a caller may read is the
     ACL, so a corpus that puts a speaker outside a private channel's grantees states two things
@@ -750,7 +739,6 @@ def test_byo_a_speaker_outside_a_private_channels_readers_is_refused(tmp_path):
 
 
 @pytest.mark.windows
-@_REFUSED_LOAD_LEAVES_ITS_DB_OPEN_ON_WINDOWS
 def test_byo_record_level_clocks_refuse_an_unreadable_value(tmp_path):
     """The asymmetry a reply's refusal created: a root's own `created` took the
     synthesized `epoch(doc_id)` for a typo without a word, so a record whose author
@@ -4750,7 +4738,6 @@ def test_byo_a_jira_provider_appended_in_a_later_batch_is_refused(tmp_path):
 
 
 @pytest.mark.windows
-@_REFUSED_LOAD_LEAVES_ITS_DB_OPEN_ON_WINDOWS
 def test_byo_a_notion_parent_must_name_an_imported_page(tmp_path):
     """notion was the one hierarchy source that stored a parent without checking it: its id is a
     pure hash, which answers for a page that does not exist as readily as for one that does, so the
@@ -4792,10 +4779,13 @@ def test_byo_a_notion_parent_must_name_an_imported_page(tmp_path):
 
 
 @pytest.mark.windows
-@_REFUSED_LOAD_LEAVES_ITS_DB_OPEN_ON_WINDOWS
-def test_byo_a_failed_fresh_import_leaves_the_previous_corpus_in_place(tmp_path):
+def test_byo_a_failed_fresh_import_leaves_the_previous_corpus_in_place(tmp_path, monkeypatch):
     """A fresh load replaces a corpus, and a refused one leaves the previous corpus in place
-    (`load_records` says why)."""
+    (`load_records` says why).
+
+    Every connection the refused load opened is closed by the time it raises (`_load_records` says
+    why); off Windows the corpus is put back either way, so the test asserts the closed connections
+    directly."""
     settings = Settings(data_dir=tmp_path)
     good = {
         "source_type": "jira",
@@ -4808,7 +4798,15 @@ def test_byo_a_failed_fresh_import_leaves_the_previous_corpus_in_place(tmp_path)
     load(_write(tmp_path, [good]), settings)
     before = _dump_tables(settings.db_path)
     tokens_before = settings.tokens_path.read_text(encoding="utf-8")
+    opened = []
+    connect_rw = store.connect_rw
 
+    def recording_connect_rw(*args, **kwargs):
+        conn = connect_rw(*args, **kwargs)
+        opened.append(conn)
+        return conn
+
+    monkeypatch.setattr(store, "connect_rw", recording_connect_rw)
     with pytest.raises(SystemExit):
         load(
             _write(
@@ -4821,6 +4819,10 @@ def test_byo_a_failed_fresh_import_leaves_the_previous_corpus_in_place(tmp_path)
             ),
             settings,
         )
+    assert opened
+    for conn in opened:
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            conn.execute("SELECT 1")
     assert _dump_tables(settings.db_path) == before
     assert settings.tokens_path.read_text(encoding="utf-8") == tokens_before
     assert not list(tmp_path.glob("*.replaced"))  # and no debris beside it
@@ -5718,7 +5720,6 @@ def test_an_unwritable_id_map_is_refused_before_the_load_starts(tmp_path, reset)
 
 
 @pytest.mark.windows
-@_REFUSED_LOAD_LEAVES_ITS_DB_OPEN_ON_WINDOWS
 def test_a_refused_load_leaves_no_id_map_behind(tmp_path):
     """The up-front check opens the destination for append, which is the only way to learn that an
     existing file cannot be written — and which creates one when there was none. A load that fails

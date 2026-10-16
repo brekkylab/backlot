@@ -3369,10 +3369,10 @@ def spring_write_failure(request: Request, status: int, headers, body: bytes) ->
     `OPTIONS` is Tomcat's 403 page. What :func:`_confluence_not_found` answers is not Spring's to
     write, an `OPTIONS` included: the product's page stands under `Q=2` and under
     `application/json;q=0.5;Q=2;q=0.5`, and so does the JAX-RS 404 under that second header, which
-    Jersey reads (JSON, and XML under `*/*;q=0.5;Q=2;q=0.5`), where under `Q=2`, which Jersey cannot
-    read, it is the empty 500 that function gives (2026-10-16). `search` reads the `q` itself
-    (``errors.atlassian._jaxrs_accept``), and the 401 for a Basic value Confluence cannot read is
-    Tomcat's page either way.
+    Jersey reads (JSON, and XML under `*/*;q=0.5;Q=2;q=0.5`), where under `application/json;Q=2`,
+    which Jersey cannot read, it is the empty 500 that function gives (2026-10-16). `search` reads
+    the `q` itself (``errors.atlassian._jaxrs_accept``), and the 401 for a Basic value Confluence
+    cannot read is Tomcat's page either way.
     """
     media_type = headers.get("content-type") or ""
     is_json = media_type.startswith("application/json")

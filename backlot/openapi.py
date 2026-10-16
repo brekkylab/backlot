@@ -22,6 +22,7 @@ spec surgery. HEAD goes first, before anything is renamed (:func:`drop_head_oper
 
 from __future__ import annotations
 
+import copy
 import re
 import warnings
 
@@ -206,24 +207,37 @@ def jira_search_placement(spec: dict) -> dict:
     return spec
 
 
+# The system parameters :func:`google_system_parameters` declares, each with the description and
+# schema real's discovery documents give it.
+_GOOGLE_SYSTEM_PARAMETERS = (
+    (gerr.XGAFV, "V1 error format.", {"type": "string", "enum": list(gerr.XGAFV_VALUES)}),
+    ("access_token", "OAuth access token.", {"type": "string"}),
+    ("oauth_token", "OAuth 2.0 token for the current user.", {"type": "string"}),
+)
+
+
 def google_system_parameters(spec: dict) -> dict:
-    """``spec`` with `$.xgafv` declared on every Google-family operation, in place.
+    """``spec`` with `$.xgafv`, `access_token` and `oauth_token` declared on every Google-family
+    operation, in place.
 
     Google declares its system parameters once per discovery document, at the top level, and every
     method takes them; Backlot honours `$.xgafv` the same way — validated once for the router and
     read once by the envelope — so it is declared once here rather than on each of the
     twenty-one family routes, where a route added later would forget it and the fidelity diff would
-    report the gap again. The declaration is the document's own: ``V1 error format.``, an enum of
-    ``1`` and ``2``. The batch endpoint is not a family path and gets nothing.
+    report the gap again. The batch endpoint is not a family path and gets nothing.
 
-    `$.xgafv` alone, though real's document declares `callback` beside it and Backlot validates that
-    one for the router too (``errors.google.validate_system_parameters``). `callback` is honoured on
-    a Google error answered to a GET — a POST ignores it outright, as real's POSTs do, and a Drive
-    download neither wraps nor refuses through it but answers it with real's own 503
+    Not `callback`, though real's document declares it beside these and Backlot validates it for the
+    router too (``errors.google.validate_system_parameters``). `callback` is honoured on a Google
+    error answered to a GET — a POST ignores it outright, as real's POSTs do, and a Drive download
+    neither wraps nor refuses through it but answers it with real's own 503
     (``routers.google._system_parameters``) — and on a SUCCESS only under ``/sheets/v4``, which is
     where :func:`qp` declares it. The two Sheets POST routes share that declaration and ignore the
     parameter exactly as real's do, so it promises a caller no more there than the vendor's own
-    document does."""
+    document does.
+
+    `access_token` and `oauth_token` are read on every family route as a credential
+    (``routers.google._query_credential``), so they are declared the same way. `bearer_token` is
+    read too, but real's documents do not declare it, and neither does this."""
     for path, item in spec.get("paths", {}).items():
         if gerr.family(path) is None:
             continue
@@ -231,19 +245,20 @@ def google_system_parameters(spec: dict) -> dict:
             if method not in _METHODS:
                 continue
             params = op.setdefault("parameters", [])
-            # FastAPI caches the document and hands the same dict back by identity, so a second
-            # call would append a second copy of the parameter.
-            if any(p.get("name") == gerr.XGAFV and p.get("in") == "query" for p in params):
-                continue
-            params.append(
-                {
-                    "name": gerr.XGAFV,
-                    "in": "query",
-                    "required": False,
-                    "description": "V1 error format.",
-                    "schema": {"type": "string", "enum": list(gerr.XGAFV_VALUES)},
-                }
-            )
+            for name, description, schema in _GOOGLE_SYSTEM_PARAMETERS:
+                # FastAPI caches the document and hands the same dict back by identity, so a second
+                # call would append a second copy of the parameter.
+                if any(p.get("name") == name and p.get("in") == "query" for p in params):
+                    continue
+                params.append(
+                    {
+                        "name": name,
+                        "in": "query",
+                        "required": False,
+                        "description": description,
+                        "schema": copy.deepcopy(schema),
+                    }
+                )
     return spec
 
 

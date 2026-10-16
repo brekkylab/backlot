@@ -277,20 +277,28 @@ _TOKEN_END = re.compile(r"[ \t,]")
 
 
 def _credential(request: Request) -> tuple[bool, str | None]:
-    """Whether real Google reads ``Authorization`` as a credential, and the token it names, which is
-    ``None`` for a credential that names none.
+    """Whether real Google reads a credential off the request, and the token it names, which is
+    ``None`` for a credential that names none. ``Authorization`` is read first, and the query only
+    where the header leaves it a say (`_query_credential`).
 
     The scheme is `Bearer` or `OAuth` in that case, and one space after it starts the token, which
     runs to the next space, tab or comma once any of those in front of it are passed. A token that
     starts with `"` runs to the next `"` instead, or to the end without one, and loses the spaces,
     tabs and commas at its two ends but none between; what follows the closing `"` is passed over,
     and `""` names no token. A scheme with something other than a space after it, and one whose
-    space leads to nothing but those three, is a credential that names no token; a scheme with
-    nothing but spaces and tabs after it, a scheme in another case and anything else are no
-    credential at all. Measured on 2026-10-11 against Drive (`files.list` and `about`), Sheets,
+    space leads to nothing but those three, is a credential whose header names no token; a scheme
+    with nothing but spaces and tabs after it is no credential at all, the query's included, and a
+    scheme in another case and anything else are no credential in the header, which leaves the query
+    to decide (below). Measured on 2026-10-11 against Drive (`files.list` and `about`), Sheets,
     Docs, Slides and Gmail, with a token that resolves and with `nope`, a quoted token only on
     2026-10-13, and every spelling ``tests/test_google.py::_CREDENTIAL_ROWS`` lists replayed on
     Gmail's `labels.get` and Drive's `files.list` on 2026-10-13.
+
+    The query is read where there is no header, where the header is no credential but for a bare
+    `Bearer` or `OAuth`, which keeps the query out too, and where it is a scheme with no space after
+    it (`Bearer<t>`, `Bearer<TAB><t>`, `Bearers <t>`, `OAuth2 <t>`), which reads the query without
+    the gate `_query_credential` sets on a value, and is a credential that names no token where
+    the query names none.
 
     A Drive download and a batch part read the header this way too (`_require_download_bearer`,
     `_drive_batch_redirect`)."""
@@ -301,13 +309,55 @@ def _credential(request: Request) -> tuple[bool, str | None]:
             if not rest.strip():
                 return False, None
             if not rest.startswith(" "):
-                return True, None
+                return _query_credential(request, gated=False) or (True, None)
             token = rest.lstrip(" \t,")
             if token.startswith('"'):
                 quoted = token[1:].split('"', 1)[0]
                 return True, quoted.strip(" \t,") if quoted else None
             return True, _TOKEN_END.split(token, maxsplit=1)[0] or None
-    return False, None
+    return _query_credential(request, gated=True) or (False, None)
+
+
+# The prefixes a query value needs for real's front end to read it as a token, behind no header or
+# one that is no credential (`_credential` says which header lifts the gate).
+_QUERY_TOKEN_PREFIXES = ("ya29.", "1/")
+
+
+def _query_credential(request: Request, *, gated: bool) -> tuple[bool, str | None] | None:
+    """The credential the query names, as whether there is one and the token it names, or ``None``
+    where the query names none.
+
+    Three names carry a token, ``gerr.QUERY_TOKENS``, spelt exactly so. Taken in that order, the
+    first the query carries is the gate and the last is the token, wherever each stands in the
+    query. ``gated``, the gate's first value has to start `ya29.` or `1/` once decoded, or the query
+    names no credential. Past the gate the token's value is resolved as it stands; an empty one, or
+    a token whose name the query repeats, names no token. Inside a batch a part reads each of the
+    three names from its own query where it carries that name and from the batch's where it does
+    not, so a part's values for a name stand in for the batch's rather than join them.
+
+    Measured on Drive and Gmail on 2026-10-13 and 2026-10-14, with the rows ``tests/test_google.py``
+    keeps in `_QUERY_CREDENTIAL_ROWS`, and in `_BATCH_ROWS` for a batch. The two prefixes are what a
+    byte sweep found, 282 values with each of the 94 visible ASCII characters (0x21 to 0x7E) after
+    ya29 and after 1 and before a slash.
+    """
+    query = request.query_params
+    outer = _BATCH_OUTER.get()
+    if outer is not None:
+        batch = QueryParams(outer.query)
+        query = QueryParams(
+            [
+                (name, value)
+                for name in gerr.QUERY_TOKENS
+                for value in (query if name in query else batch).getlist(name)
+            ]
+        )
+    named = [name for name in gerr.QUERY_TOKENS if name in query]
+    if not named:
+        return None
+    if gated and not query.getlist(named[0])[0].startswith(_QUERY_TOKEN_PREFIXES):
+        return None
+    values = query.getlist(named[-1])
+    return True, (values[0] or None) if len(values) == 1 else None
 
 
 _ESCAPED_SLASH = re.compile(r"%2F", re.I)
@@ -2868,11 +2918,12 @@ def _sheets_grid(content: str | None) -> list[list[str]]:
 #                    response -- Backlot enforces no quota, so there is nothing for it to select
 #   upload_protocol  accepted and ignored on a read
 #
-# `key`, `access_token` and `oauth_token` are NOT here: each is an alternative way to authenticate,
-# and honouring one means a second credential path through `backlot.auth` rather than a parameter
-# this module can read. `uploadType` is not here either -- measured, the real API REFUSES it on a
-# read ("Cannot bind query parameter"), so the baseline's "the vendor accepts it" is not what the
-# vendor does.
+# `key` is NOT here: it is an alternative way to authenticate, and honouring it means a second
+# credential path through `backlot.auth` rather than a parameter this module can read. Nor are
+# `access_token` and `oauth_token`, which `_credential` reads and
+# `backlot.openapi.google_system_parameters` declares for every family. `uploadType` is not here
+# either -- measured, the real API REFUSES it on a read ("Cannot bind query parameter"), so the
+# baseline's "the vendor accepts it" is not what the vendor does.
 _P_SHEETS_STD = [
     qp("fields"),
     qp("prettyPrint", "boolean"),
@@ -4822,10 +4873,11 @@ def _drive_batch_redirect(request: Request) -> None:
     `Basic YWJjOmRlZg==`, `bearer nope`, a bare `Bearer` and `nope` are each redirected, though each
     is :func:`gerr.download_credential_refused` on a download sent on its own, and on 2026-10-11
     `OAuth nope`, `Bearer nope x`, `Bearer<t>`, `Bearer<TAB>nope` and `Bearer ,nope` were each the
-    401 in a part. The redirect comes ahead of everything else measured beside it: a file that does
-    not exist, `supportsAllDrives=NOPE`, `fields=bogus`, an absent or empty `mimeType`, a Docs file
-    read with `alt=media`, and a `callback`, which neither wraps the redirect (`cb`) nor refuses it
-    (`a b`).
+    401 in a part. A token named in the part's query or in the batch's is
+    :func:`gerr.token_in_query` instead of the redirect, after that 401, measured 2026-10-13. The
+    redirect comes ahead of everything else measured beside it: a file that does not exist,
+    `supportsAllDrives=NOPE`, `fields=bogus`, an absent or empty `mimeType`, a Docs file read with
+    `alt=media`, and a `callback`, which neither wraps the redirect (`cb`) nor refuses it (`a b`).
 
     `Location` is the request's path under `/download`, as sent but for its escapes: measured
     2026-10-05 on `files/a%XXb` for each byte 0x20-0x7E, real decodes an escape of an ASCII letter,
@@ -4839,6 +4891,10 @@ def _drive_batch_redirect(request: Request) -> None:
     if _credential(request)[0]:
         _require(request)
     outer = _BATCH_OUTER.get()
+    if gerr.names_a_query_token(request.query_params) or gerr.names_a_query_token(
+        QueryParams(outer.query)
+    ):
+        raise gerr.token_in_query()
     path = _batch_escapes(request.scope["raw_path"].decode("latin-1"), "-._~")
     pairs = _batch_query_pairs(request.scope["query_string"].decode("latin-1"))
     named = {name for name, _ in pairs}

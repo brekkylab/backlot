@@ -87,6 +87,26 @@ def test_jira_serves_its_field_metadata_to_an_anonymous_caller(client, path):
     assert client.get(f"/atlassian{path}", headers=FAILED_PAIR).status_code == 200
 
 
+@pytest.mark.parametrize("host", [None, "jira.example.test"])
+def test_jira_link_types_match_measured_metadata(client, admin_h, host):
+    """The default four types and self links measured beside `jira_link_types`, members in real's
+    order, for a caller whose credential resolves."""
+    headers = {**admin_h, "Host": host} if host else admin_h
+    response = client.get("/atlassian/rest/api/3/issueLinkType", headers=headers)
+    assert response.status_code == 200
+    base = f"http://{host or 'testserver'}/rest/api/3/issueLinkType"
+    types = response.json()["issueLinkTypes"]
+    assert [list(item.items()) for item in types] == [
+        [("id", i), ("name", n), ("inward", a), ("outward", b), ("self", f"{base}/{i}")]
+        for i, n, a, b in [
+            ("10000", "Blocks", "is blocked by", "blocks"),
+            ("10001", "Cloners", "is cloned by", "clones"),
+            ("10002", "Duplicate", "is duplicated by", "duplicates"),
+            ("10003", "Relates", "relates to", "relates to"),
+        ]
+    ]
+
+
 def test_atlassian_lists_only_the_containers_the_caller_can_open(tmp_path):
     """The anonymous listing is empty because a project is listed when the caller can see an issue
     in it, and that rule is not anonymous-only: a scoped caller who can open nothing in a project
@@ -4947,23 +4967,3 @@ def test_confluence_search_carries_the_cache_pair_where_real_does(
         assert r.headers["expires"] == "Thu, 01 Jan 1970 00:00:00 GMT"
     else:
         assert "cache-control" not in r.headers and "expires" not in r.headers
-
-
-@pytest.mark.parametrize("host", [None, "jira.example.test"])
-def test_jira_link_types_match_measured_metadata(client, admin_h, host):
-    """The default four types and self links measured beside `jira_link_types`, members in real's
-    order, for a caller whose credential resolves."""
-    headers = {**admin_h, "Host": host} if host else admin_h
-    response = client.get("/atlassian/rest/api/3/issueLinkType", headers=headers)
-    assert response.status_code == 200
-    base = f"http://{host or 'testserver'}/rest/api/3/issueLinkType"
-    types = response.json()["issueLinkTypes"]
-    assert [list(item.items()) for item in types] == [
-        [("id", i), ("name", n), ("inward", a), ("outward", b), ("self", f"{base}/{i}")]
-        for i, n, a, b in [
-            ("10000", "Blocks", "is blocked by", "blocks"),
-            ("10001", "Cloners", "is cloned by", "clones"),
-            ("10002", "Duplicate", "is duplicated by", "duplicates"),
-            ("10003", "Relates", "relates to", "relates to"),
-        ]
-    ]

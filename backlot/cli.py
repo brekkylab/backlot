@@ -281,8 +281,8 @@ def serve(
         ),
     ] = None,
     data_dir: DataDir = None,
-    # Only `serve()` passes this, for the stdin pipe it starts the server on; it is not an option to
-    # type, so `--help` leaves it out.
+    # `serve()` passes this, for the stdin pipe it starts the server on, and nothing else in Backlot
+    # does; it is not an option to type, so `--help` leaves it out.
     exit_on_stdin_close: Annotated[
         bool,
         typer.Option(

@@ -2098,7 +2098,7 @@ def test_drive_export_of_a_folder_the_caller_cannot_see_is_the_404(tmp_path):
             },
         ],
     )
-    tokens = yaml.safe_load(s.tokens_path.read_text())
+    tokens = yaml.safe_load(s.tokens_path.read_text(encoding="utf-8"))
     h = {"admin": {"Authorization": f"Bearer {s.admin_token}"}}
     for name in ("ava", "mia"):
         h[name] = {"Authorization": f"Bearer {tok(tokens, f'{name}@acme.com')}"}

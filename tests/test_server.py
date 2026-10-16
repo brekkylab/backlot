@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import ntpath
+import os
+import posixpath
 import socket
 import subprocess
 import sys
@@ -284,6 +287,56 @@ def test_served_subprocesses_do_not_inherit_stdin(monkeypatch):
         assert s.base_url
     assert seen and all(stdin is subprocess.DEVNULL for _, stdin in seen), seen
     assert {kind for kind, _ in seen} == {"Popen", "run"}, seen
+
+
+@pytest.mark.parametrize(
+    "platform, path, executable, base, starts_on_base",
+    [
+        # a venv on Windows: its python.exe is a launcher
+        ("win32", ntpath, r"C:\venv\Scripts\python.exe", r"C:\Python\python.exe", True),
+        # the venv's own python.exe by Windows' rules, in another case and with forward slashes
+        ("win32", ntpath, r"C:\venv\Scripts\python.exe", "c:/VENV/scripts/PYTHON.EXE", False),
+        # no venv: the base interpreter is sys.executable itself
+        ("win32", ntpath, r"C:\Python\python.exe", r"C:\Python\python.exe", False),
+        # a venv elsewhere: its python is no launcher
+        ("linux", posixpath, "/venv/bin/python", "/usr/bin/python3", False),
+    ],
+)
+def test_the_server_runs_on_the_interpreter_that_holds_its_files(
+    platform, path, executable, base, starts_on_base, monkeypatch
+):
+    """Per row, the interpreter the server starts on and the environment it gets: the base
+    interpreter, and the built environment plus the launcher variable, only in a venv on Windows
+    (`backlot.server._interpreter` says why). Asserted on the call that starts it, which is all a
+    run off Windows can see, with the platform, both paths and the path rules swapped on that
+    module's own view of `sys` and `os`."""
+    import backlot.server as server_mod
+
+    view = SimpleNamespace(platform=platform, executable=executable, _base_executable=base)
+    monkeypatch.setattr(server_mod, "sys", view)
+    monkeypatch.setattr(server_mod, "os", SimpleNamespace(path=path, environ=os.environ))
+    built, seen = [], []
+
+    class Started(Exception):
+        pass
+
+    def run(argv, **kwargs):
+        built.append(kwargs["env"])
+
+    def Popen(argv, **kwargs):
+        seen.append((argv[0], kwargs["env"]))
+        raise Started
+
+    # `subprocess.run` starts its process through `subprocess.Popen`, so the import is faked too: a
+    # real one would reach the `Popen` fake first.
+    monkeypatch.setattr(server_mod.subprocess, "run", run)
+    monkeypatch.setattr(server_mod.subprocess, "Popen", Popen)
+    with pytest.raises(Started), backlot.serve():
+        pass
+    if starts_on_base:
+        assert seen == [(base, {**built[0], "__PYVENV_LAUNCHER__": executable})]
+    else:
+        assert seen == [(executable, built[0])]
 
 
 def test_serve_data_dir_serves_an_existing_build_as_it_stands(tmp_path):

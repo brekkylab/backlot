@@ -127,6 +127,22 @@ def _dialable(host: str) -> str:
     return f"[{host}]" if ":" in host else host
 
 
+def _interpreter(env: dict[str, str]) -> tuple[str, dict[str, str]]:
+    """The interpreter `serve` runs its server on, and the environment to run it in.
+
+    On Windows a venv's ``python.exe`` is a launcher that starts the base interpreter as its child,
+    so the process `subprocess.Popen` returns is not the one serving: `_terminate` stops and reaps
+    the launcher while the interpreter holding ``db.sqlite`` and ``server.log`` open may still be
+    running. Measured 2026-10-13 under Python 3.14.0 on Windows 11, renaming ``db.sqlite`` right
+    after `_terminate` returned was refused in 16 of 20 runs; started the way ``multiprocessing``
+    starts its children on Windows, on the base interpreter with ``__PYVENV_LAUNCHER__`` naming the
+    venv's ``python.exe``, the same rename was refused in 0 of 20."""
+    base = getattr(sys, "_base_executable", sys.executable)
+    if sys.platform == "win32" and os.path.normcase(base) != os.path.normcase(sys.executable):
+        return base, {**env, "__PYVENV_LAUNCHER__": sys.executable}
+    return sys.executable, env
+
+
 def _terminate(proc: subprocess.Popen, timeout: float = 10) -> None:
     """Stop ``proc`` and reap it. A bare ``kill()`` can still leave a zombie if nothing calls
     ``wait()`` afterward — this always does, even on the SIGTERM-ignoring fallback path."""
@@ -262,10 +278,11 @@ def serve(
         # (cp1252 on a Western Windows) unless told otherwise.
         env = {**os.environ, "BACKLOT_DATA_DIR": str(data_dir), "PYTHONIOENCODING": "utf-8"}
         # Read with the cwd and environment the server gets, minus keys that do not set admin_token
-        # (the two above), so this is the token the server enforces. A caller's BACKLOT_ADMIN_TOKEN
-        # or a .env in their cwd changes it (Settings declares env_file=".env"). `Server.token`
-        # must track that, or the caller's first authenticated call fails with HTTP 200 /
-        # {"ok": false}, which reads as their own mistake.
+        # (the two above, and `_interpreter`'s `__PYVENV_LAUNCHER__` in a venv on Windows), so this
+        # is the token the server enforces. A caller's BACKLOT_ADMIN_TOKEN or a .env in their cwd
+        # changes it (Settings declares env_file=".env"). `Server.token` must track that, or the
+        # caller's first authenticated call fails with HTTP 200 / {"ok": false}, which reads as
+        # their own mistake.
         token = Settings().admin_token
         if data_dir == Path(scratch):
             # `-m backlot` rather than the `backlot` script: same CLI, but resolved through THIS
@@ -284,10 +301,11 @@ def serve(
         # deadlock the child, and we only need the contents if uvicorn dies before serving.
         # In the scratch dir, not the data dir: a caller's own data dir is theirs to keep clean.
         log_path = Path(scratch) / "server.log"
+        python, server_env = _interpreter(env)
         with open(log_path, "wb") as log_f:
             proc = subprocess.Popen(
                 [
-                    sys.executable,
+                    python,
                     "-m",
                     "backlot",
                     "serve",
@@ -298,7 +316,7 @@ def serve(
                     "--log-level",
                     "warning",
                 ],
-                env=env,
+                env=server_env,
                 # The server reads nothing from stdin, and must not inherit the caller's: when
                 # the caller is `backlot mcp`, that is the MCP protocol pipe.
                 stdin=subprocess.DEVNULL,

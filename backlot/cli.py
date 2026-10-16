@@ -281,9 +281,15 @@ def serve(
         ),
     ] = None,
     data_dir: DataDir = None,
+    # Only `serve()` passes this, for the stdin pipe it starts the server on; it is not an option to
+    # type, so `--help` leaves it out.
     exit_on_stdin_close: Annotated[
         bool,
-        typer.Option("--exit-on-stdin-close", help="stop serving once stdin reaches end of file"),
+        typer.Option(
+            "--exit-on-stdin-close",
+            hidden=True,
+            help="stop serving once stdin reaches end of file",
+        ),
     ] = False,
 ) -> None:
     """Serve Backlot APIs over the corpus in the data dir.

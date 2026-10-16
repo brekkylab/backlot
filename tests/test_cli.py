@@ -587,6 +587,16 @@ def test_version_reports_the_installed_distribution(capsys):
     assert plain(capsys.readouterr().out) == f"backlot {version('backlot')}"
 
 
+def test_serve_help_leaves_out_the_option_only_serve_passes(capsys):
+    """`backlot serve --help` lists the options a person types and leaves out the hidden one (its
+    comment in `backlot/cli.py` says why); `test_serve_stops_at_stdin_eof_only_when_asked` passes
+    it and requires that it still works."""
+    assert cli.main(["serve", "--help"]) == 0
+    out = plain(capsys.readouterr().out)
+    assert "--data-dir" in out and "--log-level" in out, out
+    assert "exit-on-stdin" not in out, out
+
+
 def test_help_shows_every_command(capsys):
     assert cli.main(["--help"]) == 0
     out = plain(capsys.readouterr().out)

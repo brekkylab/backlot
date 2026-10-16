@@ -229,11 +229,7 @@ def client_for(settings: Settings, *, reload: bool = True):
 
 
 def python_child_env(**extra: str) -> dict[str, str]:
-    """The environment for a Python child process whose output a test reads as UTF-8.
-
-    Redirected to a pipe or a file, a Python before 3.15 writes stdout and stderr in the platform's
-    encoding unless told otherwise, so on Windows a non-ASCII message from the child would reach the
-    test as a decode error instead of the message."""
+    """The environment for a Python child process whose output a test reads as UTF-8."""
     return {**os.environ, "PYTHONIOENCODING": "utf-8", **extra}
 
 

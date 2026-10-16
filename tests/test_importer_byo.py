@@ -4794,9 +4794,8 @@ def test_byo_a_notion_parent_must_name_an_imported_page(tmp_path):
 @pytest.mark.windows
 @_REFUSED_LOAD_LEAVES_ITS_DB_OPEN_ON_WINDOWS
 def test_byo_a_failed_fresh_import_leaves_the_previous_corpus_in_place(tmp_path):
-    """A fresh load replaces a corpus, and it did so by deleting the old DB before reading a single
-    record — so a typo left an operator with no corpus at all: an empty schema-only DB and a
-    tokens.yaml still describing the one that was gone. An --append is already all-or-nothing."""
+    """A fresh load replaces a corpus, and a refused one leaves the previous corpus in place
+    (`load_records` says why)."""
     settings = Settings(data_dir=tmp_path)
     good = {
         "source_type": "jira",

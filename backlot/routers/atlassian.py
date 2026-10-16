@@ -461,27 +461,37 @@ _JIRA_PROJECT_ORDER_FIELDS = (
     "archivedDate",
     "deletedDate",
 )
-_JIRA_PROJECT_ORDER_FOLDED = frozenset(name.casefold() for name in _JIRA_PROJECT_ORDER_FIELDS)
+_JIRA_PROJECT_ORDER_LOWER = frozenset(name.lower() for name in _JIRA_PROJECT_ORDER_FIELDS)
+# The four characters past ASCII that Java's `equalsIgnoreCase` takes for an ASCII letter.
+_JAVA_ASCII_CASE_ALIASES = str.maketrans(
+    {"\u0130": "i", "\u0131": "i", "\u017f": "s", "\u212a": "k"}
+)
 
 
 def _jira_project_order(raw: str) -> None:
     """Jira's 400 when ``project/search`` ``orderBy`` names no field it sorts by.
 
-    One leading ``+`` or ``-`` is stripped, whitespace around it is ignored and the field is
-    matched case-insensitively, the reading :func:`_jira_order_desc` gives a comment's ``orderBy``.
-    An empty value is accepted. The 400 names the value as sent.
+    Measured against Jira Cloud on 2026-10-16. Only an empty value is read as no `orderBy`. What
+    Java's `String.trim` removes (:data:`_JAVA_TRIMMED`) comes off both ends, then one leading
+    ``+`` or ``-``, then the trim again: `%01key` and `-%09key` are 200, `%C2%A0key` and
+    `%E2%80%83key` are the 400. The field is compared the way `equalsIgnoreCase` compares, so
+    `ıssueCount`, `İssueCount` and `iſsueCount` are 200 and `ißueCount` is the 400. The 400 names
+    what is left, which a value holding only a sign or whitespace leaves empty: `-bogus` is named
+    `bogus`, `--key` `-key`, and `-` or `%20` the empty string.
     """
-    field = raw.strip()
+    if raw == "":
+        return
+    field = raw.strip(_JAVA_TRIMMED)
     if field[:1] in ("+", "-"):
-        field = field[1:].strip()
-    if field == "" or field.casefold() in _JIRA_PROJECT_ORDER_FOLDED:
+        field = field[1:].strip(_JAVA_TRIMMED)
+    if field.translate(_JAVA_ASCII_CASE_ALIASES).lower() in _JIRA_PROJECT_ORDER_LOWER:
         return
     allowed = ", ".join(_JIRA_PROJECT_ORDER_FIELDS)
     raise errors_atlassian.AtlassianError(
         400,
         {
             "errorMessages": [
-                f"The field to order by should be one of [{allowed}]. Instead, it was: {raw}."
+                f"The field to order by should be one of [{allowed}]. Instead, it was: {field}."
             ],
             "errors": {},
         },

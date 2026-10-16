@@ -263,11 +263,24 @@ def test_atlassian_lists_only_the_containers_the_caller_can_open(tmp_path):
     [
         ("bogus", "bogus"),
         ("key,name", "key,name"),
+        ("-bogus", "bogus"),
+        ("--key", "-key"),
+        ("\t-bogus ", "bogus"),
+        ("-", ""),
+        (" ", ""),
+        ("\xa0key", "\xa0key"),
+        ("-\xa0key", "\xa0key"),
+        ("i\xdfueCount", "i\xdfueCount"),
         ("key", None),
         ("-key", None),
         ("+name", None),
         ("KEY", None),
         (" key", None),
+        ("\x01key", None),
+        ("- \tkey", None),
+        ("\u0131ssueCount", None),
+        ("\u0130ssueCount", None),
+        ("i\u017fsueCount", None),
         ("", None),
     ],
 )
@@ -275,8 +288,8 @@ def test_jira_project_search_refuses_an_order_by_naming_no_field(
     client, admin_h, order_by, refused
 ):
     """`project/search` refuses an `orderBy` naming no field it sorts by, with the body
-    `_jira_project_order` records, and answers the listing for a field, a leading sigil, another
-    case, a leading space and an empty value."""
+    `_jira_project_order` records, and answers the listing for each spelling it reads as a field
+    and for an empty value."""
     listing = client.get("/atlassian/rest/api/3/project/search", headers=admin_h)
     r = client.get(
         "/atlassian/rest/api/3/project/search",

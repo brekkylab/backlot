@@ -256,11 +256,10 @@ def test_atlassian_lists_only_the_containers_the_caller_can_open(tmp_path):
 def test_jira_404s_a_project_role_an_anonymous_caller_cannot_see(client, headers, segment, kind):
     """A role read is the one Jira route that keeps refusing an anonymous caller, and which of the
     two refusals it gives is decided by the project: on the site where the key names a project
-    anonymous can see it is 401 ("You cannot edit the configuration of this project."), and on the
-    site where it names nothing it is 404. Anonymous sees no Backlot project, so it is always the
-    404 here — the corpus's own project, by its key or its id, gets the answer a segment naming
-    nothing would. The 404 calls the segment an id or a key by the rule `_require_project`
-    records."""
+    anonymous can see it is 401, and on the site where it names nothing it is 404. Anonymous sees no
+    Backlot project, so it is always the 404 here — the corpus's own project, by its key or its id,
+    gets the answer a segment naming nothing would. The 404 calls the segment an id or a key by the
+    rule `_require_project` records."""
     for path in (
         f"/rest/api/3/project/{segment}/role",
         f"/rest/api/3/project/{segment}/role/10002",
@@ -1890,8 +1889,9 @@ def test_jira_role_list_links_the_role_its_read_answers(client, admin_h):
     (``backlot.routers.atlassian._jira_project_id``) and the role id
     (``backlot.routers.atlassian._JIRA_ROLE``) the role read answers 200 for, in the shape
     ``backlot.routers.atlassian.jira_project_role`` gives and with the project group's members as
-    its actors; an id no project has is the project's 404. A function of its own because it follows
-    a link the list emits."""
+    its actors. The read by the project's key answers the same body, its `self` the link by id. An
+    id no project has is the project's 404. A function of its own because it follows a link the
+    list emits."""
     key = synth.jira_project_key("payments")
     projects = client.get("/atlassian/rest/api/3/project/search", headers=admin_h).json()
     (project_id,) = [p["id"] for p in projects["values"] if p["key"] == key]
@@ -1909,6 +1909,9 @@ def test_jira_role_list_links_the_role_its_read_answers(client, admin_h):
     assert [actor["id"] for actor in actors] == list(range(10000, 10000 + len(actors)))
     assert len(actors) > 1
     assert {actor["type"] for actor in actors} == {"atlassian-user-role-actor"}
+    by_key = client.get(f"/atlassian/rest/api/3/project/{key}/role/10002", headers=admin_h).json()
+    assert by_key["self"] == listed["Users"]
+    assert by_key == role
     other = str(int(project_id) + 1)
     r = client.get(f"/atlassian/rest/api/3/project/{other}/role", headers=admin_h)
     assert (r.status_code, r.json()["errorMessages"]) == (

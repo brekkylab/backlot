@@ -331,6 +331,57 @@ def test_hubspot_an_object_type_id_is_a_spelling_of_its_type(client, admin_h, as
     ]
 
 
+def test_hubspot_0_18_0_72_0_64_are_their_types(tmp_path):
+    """The three pairings the comment above `_TYPE_IDS` records, over a corpus holding one quote
+    template."""
+    from tests._helpers import client_for
+
+    records = [
+        {
+            "source_type": "hubspot",
+            "doc_id": "hs-quote-template",
+            "object_type": "quote_templates",
+            "title": "Standard",
+            "content": "Standard template.",
+            "author_email": "rep@acme.com",
+            "created": "2026-03-01T09:00:00Z",
+            "properties": {"hs_name": "Standard"},
+        },
+    ]
+    settings = tiny_corpus(tmp_path, records)
+    with client_for(settings, reload=True) as c:
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        rid = served_id("hubspot", "hs-quote-template")
+        for asked, named, label in (
+            ("0-18", "communications", "0-18 (COMMUNICATION)"),
+            ("0-72", "deal_splits", "0-72 (DEAL_SPLIT)"),
+            ("0-64", "quote_templates", "0-64 (QUOTE_TEMPLATE)"),
+        ):
+            listed = c.get(f"/hubspot/crm/v3/objects/{asked}", headers=h)
+            assert listed.status_code == 200, (asked, listed.json())
+            by_name = c.get(f"/hubspot/crm/v3/objects/{named}", headers=h)
+            assert listed.json()["results"] == by_name.json()["results"], asked
+            searched = c.post(f"/hubspot/crm/v3/objects/{asked}/search", headers=h, json={})
+            assert searched.status_code == 200, asked
+            assert searched.json()["total"] == (1 if asked == "0-64" else 0), asked
+            archived = c.get(
+                f"/hubspot/crm/v3/objects/{asked}", headers=h, params={"archived": "true"}
+            )
+            assert archived.status_code == 400, asked
+            assert archived.json()["message"] == (
+                f"Paging through deleted objects is not yet supported for object type {label}"
+            )
+        assert c.get(f"/hubspot/crm/v3/objects/0-64/{rid}", headers=h).json()["id"] == rid
+        read = c.post(
+            "/hubspot/crm/v3/objects/0-64/batch/read", headers=h, json={"inputs": [{"id": rid}]}
+        )
+        assert read.status_code == 200
+        assert [r["id"] for r in read.json()["results"]] == [rid]
+        for to in ("contacts", "0-18"):
+            linked = c.get(f"/hubspot/crm/v4/objects/0-64/{rid}/associations/{to}", headers=h)
+            assert (linked.status_code, linked.json()) == (200, {"results": []}), to
+
+
 def test_hubspot_one_type_stated_both_ways_is_one_type(tmp_path):
     """A portal has ONE `deals` type, so no HubSpot response can show a record under
     `/objects/deal/{id}` that `/objects/deal` never lists. Resolving to the first spelling that

@@ -9517,3 +9517,196 @@ def test_gmail_cc_bcc_searches_address_headers(tmp_path, surface, caller, query,
     assert {r["id"] for r in response.json().get(surface, [])} == {
         served_id("gmail", doc_id) for doc_id in expected
     }
+
+
+@pytest.mark.parametrize("surface", ["messages", "threads"])
+@pytest.mark.parametrize(
+    "caller, query, expected",
+    [
+        ("ava", "to:ava@acme.com", ["plan", "lunch"]),
+        ("ava", "to:me", ["plan", "lunch"]),
+        ("ava", "to:av", []),
+        ("ava", "from:bo", []),
+        ("ava", "from:me", ["reply"]),
+        ("ava", "from:", ["plan", "lunch", "reply"]),
+        ("ava", "to:dev@acme.com", ["reply"]),
+        ("ava", "to:dev", ["reply"]),
+        ("ava", "to:lena@acme.com", ["lunch"]),
+        ("ava", "to:lena", ["lunch"]),
+        ("ava", "to:bob@acme.com", ["reply"]),
+        ("ava", "to:bob", ["reply"]),
+        ("ava", "from:bob@acme.com", ["plan"]),
+        ("ava", "from:bob", ["plan"]),
+        ("ava", "from:acme.com", ["plan", "lunch", "reply"]),
+        ("ava", "from:acm", []),
+        ("ava", "to:acme.com", ["plan", "lunch", "reply"]),
+        ("ava", "to:acm", []),
+        ("ava", "to:le", []),
+        ("ava", "to:", ["plan", "lunch", "reply"]),
+        ("ava", "bcc:", ["plan", "lunch", "reply"]),
+        ("ava", "cc:", ["plan", "lunch", "reply"]),
+        ("ava", 'from:""', ["plan", "lunch", "reply"]),
+        ("ava", 'to:""', ["plan", "lunch", "reply"]),
+        ("ava", "to: from: bcc:", ["plan", "lunch", "reply"]),
+        ("ava", "to:bob to:dev", ["reply"]),
+        ("ava", "from:bob from:mia", []),
+        ("ava", "from:bob from:", ["plan"]),
+        ("ava", 'to:ava to:""', ["plan", "lunch"]),
+        ("admin", "from:me", []),
+        ("admin", "to:me", []),
+        ("admin", "from:ava@acme.com", ["reply"]),
+        ("admin", "to:ava@acme.com", ["plan", "lunch"]),
+        ("admin", "from:", ["plan", "lunch", "reply"]),
+    ],
+)
+def test_gmail_from_to_searches_address_headers(tmp_path, surface, caller, query, expected):
+    """A `from:` search matches author email, and `to:` matches any recipient header (To, Cc, or
+    Bcc) as whole words or address. `me` resolves to the caller's address, and for admin callers,
+    the address `_service_email` gives. Empty address operators are ignored."""
+    records = [
+        {
+            "doc_id": "plan",
+            "title": "Rollout plan",
+            "content": "attached",
+            "author_email": "bob@acme.com",
+            "to": "ava@acme.com",
+            "readers": ["ava@acme.com"],
+            "created": "2026-03-01T09:00:00Z",
+        },
+        {
+            "doc_id": "lunch",
+            "title": "Lunch",
+            "content": "Friday?",
+            "author_email": "mia@acme.com",
+            "to": "lena@acme.com",
+            "bcc": "ava@acme.com",
+            "readers": ["ava@acme.com"],
+            "created": "2026-03-02T09:00:00Z",
+        },
+        {
+            "doc_id": "reply",
+            "title": "Re: Rollout plan",
+            "content": "ok",
+            "author_email": "ava@acme.com",
+            "to": "bob@acme.com",
+            "cc": "dev@acme.com",
+            "readers": ["ava@acme.com"],
+            "created": "2026-03-03T09:00:00Z",
+        },
+    ]
+    settings = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "gmail",
+                "mailbox": "ava",
+                "visibility": "public",
+                **r,
+            }
+            for r in records
+        ],
+    )
+    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    token = tokens["admin_token"] if caller == "admin" else tok(tokens, f"{caller}@acme.com")
+    with client_for(settings, reload=True) as c:
+        response = c.get(
+            f"/gmail/v1/users/me/{surface}",
+            headers={"Authorization": f"Bearer {token}"},
+            params={"q": query},
+        )
+    assert response.status_code == 200
+    assert {r["id"] for r in response.json().get(surface, [])} == {
+        served_id("gmail", doc_id) for doc_id in expected
+    }
+
+
+def test_gmail_address_query_acl_scoping(tmp_path):
+    """A scoped caller can only access their own mailbox, and within their mailbox can only see
+    messages their token has ACL readership for."""
+    records = [
+        {
+            "doc_id": "plan",
+            "title": "Rollout plan",
+            "author_email": "bob@acme.com",
+            "to": "ava@acme.com",
+            "readers": ["ava@acme.com"],
+            "created": "2026-03-01T09:00:00Z",
+        },
+        {
+            "doc_id": "secret",
+            "title": "Secret",
+            "author_email": "bob@acme.com",
+            "to": "ava@acme.com",
+            "readers": ["bob@acme.com"],
+            "visibility": "private",
+            "created": "2026-03-02T09:00:00Z",
+        },
+    ]
+    settings = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "gmail",
+                "mailbox": "ava",
+                **r,
+            }
+            for r in records
+        ],
+    )
+    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    ava_tok = tok(tokens, "ava@acme.com")
+    bob_tok = tok(tokens, "bob@acme.com")
+    with client_for(settings, reload=True) as c:
+        r = c.get(
+            "/gmail/v1/users/ava@acme.com/messages", headers={"Authorization": f"Bearer {bob_tok}"}
+        )
+        assert r.status_code == 403
+        r = c.get(
+            "/gmail/v1/users/me/messages",
+            headers={"Authorization": f"Bearer {bob_tok}"},
+            params={"q": "to:ava@acme.com"},
+        )
+        assert r.status_code == 200
+        assert r.json().get("messages", []) == []
+        r = c.get(
+            "/gmail/v1/users/me/messages",
+            headers={"Authorization": f"Bearer {ava_tok}"},
+            params={"q": "to:ava@acme.com"},
+        )
+        assert r.status_code == 200
+        assert {m["id"] for m in r.json().get("messages", [])} == {served_id("gmail", "plan")}
+
+
+@pytest.mark.parametrize("surface", ["messages", "threads"])
+@pytest.mark.parametrize(
+    "query, expected", [('subject:"from: foo"', ["literal"]), ('subject:""', ["literal", "other"])]
+)
+def test_gmail_empty_address_tokens_preserve_quoted_subjects(tmp_path, surface, query, expected):
+    """Ignoring an empty address operator must not edit a quoted value or change empty subjects."""
+    settings = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "gmail",
+                "doc_id": doc_id,
+                "mailbox": "ava",
+                "title": title,
+                "content": "body",
+                "author_email": "ava@acme.com",
+                "readers": ["ava@acme.com"],
+                "created": "2026-03-01T09:00:00Z",
+            }
+            for doc_id, title in [("literal", "from: foo"), ("other", "foo")]
+        ],
+    )
+    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    with client_for(settings, reload=True) as c:
+        r = c.get(
+            f"/gmail/v1/users/me/{surface}",
+            headers={"Authorization": f"Bearer {tok(tokens, 'ava@acme.com')}"},
+            params={"q": query},
+        )
+    assert r.status_code == 200
+    assert {item["id"] for item in r.json().get(surface, [])} == {
+        served_id("gmail", doc_id) for doc_id in expected
+    }

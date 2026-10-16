@@ -20,7 +20,10 @@ from backlot import auth
 
 
 def _request(authorization: str | None = None, app=None) -> Request:
-    headers = [(b"authorization", authorization.encode())] if authorization is not None else []
+    # one byte per character, as a server hands on a header's bytes up to 0xFF
+    headers = []
+    if authorization is not None:
+        headers.append((b"authorization", authorization.encode("latin-1")))
     return Request(
         {
             "type": "http",
@@ -183,6 +186,15 @@ def test_atlassian_bearer_token_takes_only_the_spelling_the_real_site_reads(head
         ("Basic\t ,!!!!", ""),
         ("Basic\t!!,!!", ""),
         ("Basic\t!!!!,", ""),
+        # a space and a tab are the only whitespace trimmed
+        ("Bearer \xa0", "\xa0"),
+        ("Bearer \x85", "\x85"),
+        ("Bearer {t}\xa0", "{t}\xa0"),
+        ("Bearer \xa0{t}", "\xa0{t}"),
+        ("Bearer {t}\x85", "{t}\x85"),
+        ("Bearer {t}\x1f", "{t}\x1f"),
+        ("Basic \xa0b64(x:{t})", ""),
+        ("Basic b64(x:{t})\xa0", ""),
         # a token inside a `Basic` value: its password, or its user beside no password or
         # `x-oauth-basic`, after a space or a tab
         ("Basic b64(x:{t})", "{t}"),
@@ -215,6 +227,13 @@ def test_atlassian_bearer_token_takes_only_the_spelling_the_real_site_reads(head
         ("Basic\tabcd=", None),
         ("Basic\t\t!!!!", None),
         ("BASIC\t!!!!", None),
+        # a no-break space or NEL is no separator
+        ("Bearer\xa0nope", None),
+        ("Bearer\x85nope", None),
+        ("Bearer\xa0", None),
+        ("Bearer\x85", None),
+        ("\xa0Bearer {t}", None),
+        ("Basic\xa0b64(x:{t})", None),
         ("nope", None),
         ("Digest nope", None),
         ("OAuth", None),

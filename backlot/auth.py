@@ -76,6 +76,8 @@ def github_credential(request: Request) -> str | None:
           Zm9vOmJhcg==, +/+/, ab==, abc=, ab cd, a b c d, <TAB>Zm9v
         any other first word, or none: nope, Digest, OAuth, Bear,         200
           Bearerx, bearer:, Bearer=
+        a no-break space or NEL in place of a space: Bearer<NBSP>nope,    200
+          Bearer<NEL>, <NBSP>Bearer <t>, Basic<NBSP> and base64
 
     And with a token that resolves: ``Bearer <t>``, ``bearer <t>``, ``token <t>``, a second space
     or a tab before it are its 200, and so is ``Basic``, then a space or a tab, then the base64 of
@@ -88,11 +90,14 @@ def github_credential(request: Request) -> str | None:
     value that decodes, or its user when there is no colon or the password is empty or
     `x-oauth-basic`, and serves one that names no token as no credential at all, as it does an
     unknown scheme. A `Basic` value that does not decode is no credential either after a tab in a
-    header with no comma (:func:`github_scheme_then_a_tab`).
+    header with no comma (:func:`github_scheme_then_a_tab`). A space and a tab are the only
+    whitespace it trims: ``Bearer <NBSP>``, ``Bearer <t><NBSP>``, ``Bearer <NBSP><t>``,
+    ``Bearer <t><NEL>``, ``Bearer <t><0x1F>``, ``Basic <NBSP>`` and base64, and the base64 of
+    ``x:<t>`` followed by a no-break space were each the 401 (2026-10-16).
     """
     scheme, rest = github_scheme(request)
     if scheme in ("bearer", "token"):
-        return rest.strip()
+        return rest.strip(" \t")
     if scheme == "basic":
         value = rest.lstrip(" \t").replace(" ", "")
         if not value or not _GITHUB_BASE64.fullmatch(value):
@@ -105,7 +110,7 @@ def github_credential(request: Request) -> str | None:
 
 def github_scheme(request: Request) -> tuple[str, str]:
     """The `Authorization` value split by :data:`_GITHUB_SCHEME`, the scheme in lower case."""
-    scheme, rest = _GITHUB_SCHEME.fullmatch((_authorization(request) or "").strip()).groups()
+    scheme, rest = _GITHUB_SCHEME.fullmatch((_authorization(request) or "").strip(" \t")).groups()
     return scheme.lower(), rest
 
 

@@ -24,7 +24,7 @@ import sys
 from enum import Enum
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated, NoReturn, Optional
 
 import typer
 
@@ -115,6 +115,16 @@ def _credentials(pairs: "list[str] | None") -> dict[str, str]:
             )
         out[name.strip()] = value
     return out
+
+
+def _baseline_unusable(e: Exception) -> NoReturn:
+    """Exit 3, as for a missing credential: the file is this repository's to fix, and exit 2 would
+    leave the schedule green. A key the file lacks is named as one."""
+    what = f"it has no {e} key" if isinstance(e, KeyError) else e
+    typer.echo(
+        typer.style(f"📄 the baseline cannot be used: {what}", fg="red", bold=True), err=True
+    )
+    raise typer.Exit(3) from e
 
 
 def _today() -> str:
@@ -281,6 +291,16 @@ def serve(
         ),
     ] = None,
     data_dir: DataDir = None,
+    # `serve()` passes this, for the stdin pipe it starts the server on, and nothing else in Backlot
+    # does; it is not an option to type, so `--help` leaves it out.
+    exit_on_stdin_close: Annotated[
+        bool,
+        typer.Option(
+            "--exit-on-stdin-close",
+            hidden=True,
+            help="stop serving once stdin reaches end of file",
+        ),
+    ] = False,
 ) -> None:
     """Serve Backlot APIs over the corpus in the data dir.
 
@@ -308,6 +328,8 @@ def serve(
         )
         raise typer.Exit(2)
 
+    if exit_on_stdin_close:
+        _stop_at_stdin_eof()
     import uvicorn
 
     # The app is passed as an import STRING because that is what --reload requires.
@@ -322,6 +344,30 @@ def serve(
         proxy_headers=proxy_headers,
         forwarded_allow_ips=forwarded_allow_ips,
     )
+
+
+def _stop_at_stdin_eof() -> None:
+    """Send this process SIGTERM once its stdin reaches end of file.
+
+    uvicorn answers that SIGTERM with its graceful shutdown: measured on 2026-10-13 on macOS and on
+    Windows 11, logging at `info`, the log ended with "Application shutdown complete." and
+    "Finished server process". An end of file that comes before uvicorn has installed its handlers
+    meets SIGTERM's default instead, which on macOS ended the process before it logged a line.
+
+    It reads the descriptor: a ``sys.stdin.buffer`` read holds the stream's lock, and an exit that
+    finalizes the interpreter with stdin open then aborts with "Fatal Python error" (macOS,
+    2026-10-13)."""
+    import signal
+    import threading
+
+    fd = sys.stdin.fileno()
+
+    def wait() -> None:
+        while os.read(fd, 65536):
+            pass
+        signal.raise_signal(signal.SIGTERM)
+
+    threading.Thread(target=wait, name="backlot-stdin-eof", daemon=True).start()
 
 
 # --------------------------------------------------------------------------- import
@@ -588,7 +634,7 @@ def status(data_dir: DataDir = None) -> None:
     if settings.tokens_path.exists():
         import yaml
 
-        data = yaml.safe_load(settings.tokens_path.read_text()) or {}
+        data = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8")) or {}
         users = data.get("users") or {}
         typer.echo(
             f"tokens:   {len(users)} in {settings.tokens_path.name}, org {data.get('org', '?')}"
@@ -703,7 +749,7 @@ def diff(
 ) -> None:
     """Compare the schema Backlot serves against the vendor's own, in both directions.
 
-    Fidelity is measured, never assumed — and until this command a measurement only happened when someone went looking. Run on a schedule, it is what notices the vendor changing something in March. Divergences already read and accepted live in `backlot/fidelity/baseline/<source>.json`, so a run reports what is NEW; accepting one is a file change that goes through review. Exits 1 when anything is unacknowledged, 2 when the vendor's contract could not be read at all — a vendor outage is not a fidelity finding — and 3 when a credential this source declares is not set anywhere, which is a configuration problem rather than either.
+    Fidelity is measured, never assumed — and until this command a measurement only happened when someone went looking. Run on a schedule, it is what notices the vendor changing something in March. Divergences already read and accepted live in `backlot/fidelity/baseline/<source>.json`, so a run reports what is NEW; accepting one is a file change that goes through review. Exits 1 when anything is unacknowledged, 2 when the vendor's contract could not be read at all — a vendor outage is not a fidelity finding — and 3 when a credential this source declares is not set anywhere or the baseline file cannot be read or written, which is a configuration problem rather than either.
     """  # noqa: E501 — see the note on `serve`: a paragraph must be one source line.
     from backlot.fidelity import (
         BREAKING,
@@ -711,7 +757,7 @@ def diff(
         CredentialsMissing,
         FidelityError,
         baseline_path,
-        divergences,
+        measure,
     )
     from backlot.fidelity import COMPARISONS as _SOURCES
 
@@ -722,7 +768,7 @@ def diff(
         )
     spec = _SOURCES[source]
     try:
-        findings = divergences(spec, _credentials(credential))
+        measured = measure(spec, _credentials(credential))
     except CredentialsMissing as e:
         # Exit 3, not 2: a credential nobody set is this repository's misconfiguration, and
         # answering it like a vendor outage leaves the source uncompared with the run green.
@@ -734,12 +780,16 @@ def diff(
         typer.echo(f"could not read the vendor's schema: {e}", err=True)
         raise typer.Exit(2) from e
 
+    findings = measured.findings
     path = (baseline_dir / f"{source}.json") if baseline_dir else baseline_path(source)
-    baseline = (
-        Baseline.load(path).identified_as(source, spec.endpoints)
-        if path.exists()
-        else Baseline.empty(source, spec.endpoints)
-    )
+    try:
+        baseline = (
+            Baseline.load(path).identified_as(source, spec.endpoints)
+            if path.exists()
+            else Baseline.empty(source, spec.endpoints)
+        )
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
+        _baseline_unusable(e)
     stale = baseline.resolved(findings)
     fresh = baseline.unacknowledged(findings)
     breaking = [f for f in fresh if f.severity == BREAKING]
@@ -754,7 +804,10 @@ def diff(
         # again: dropping it would delete the note, which is the record of the reasoning, so it
         # stays in the file and stays reported until someone rewrites it by hand.
         kept = [f for f in findings if f not in breaking or f.key in baseline.acknowledged]
-        baseline.write(path, kept, measured=_today())
+        try:
+            baseline.write(path, kept, measured=_today(), surface=measured.surface)
+        except (OSError, ValueError) as e:
+            _baseline_unusable(e)
         if as_json:
             _emit_json(
                 source,
@@ -779,8 +832,9 @@ def diff(
                     "red",
                 )
                 typer.echo(
-                    f"\n   Fix them, or add an entry to {path.name} by hand with a note saying why "
-                    f"the vendor's shape is not being matched.",
+                    f"\n   Fix them, or acknowledge one by hand in {path.name}: on the element its "
+                    f"path names, add its `kind`, `severity`, `detail` and a `note` saying why the "
+                    f"vendor's shape is not being matched.",
                     err=True,
                 )
         if breaking:
@@ -811,7 +865,8 @@ def diff(
         typer.echo("")
         typer.echo(
             typer.style(
-                f"🧹 acknowledged but no longer diverging ({len(stale)}) — drop from the baseline",
+                f"🧹 acknowledged but no longer diverging ({len(stale)}) — rerun with "
+                "--update-baseline",
                 fg="yellow",
                 bold=True,
             )

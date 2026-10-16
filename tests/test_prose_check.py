@@ -15,9 +15,11 @@ REPO = Path(__file__).resolve().parent.parent
 
 
 def _check():
-    """`scripts/prose_check.py` as a module, since `scripts/` is not a package."""
+    """`scripts/prose_check.py` as a module, since `scripts/` is not a package. Named under
+    `scripts` so that pyproject.toml's EncodingWarning filter, which goes by module name, reaches
+    it."""
     spec = importlib.util.spec_from_file_location(
-        "prose_check", REPO / "scripts" / "prose_check.py"
+        "scripts.prose_check", REPO / "scripts" / "prose_check.py"
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -224,28 +226,32 @@ def test_the_command_reads_the_change_from_its_merge_base(tmp_path, monkeypatch,
     a = tmp_path / "a.py"
 
     def git(*args):
-        return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout
+        return subprocess.run(
+            ["git", *args], check=True, capture_output=True, text=True, encoding="utf-8"
+        ).stdout
 
     git("init", "-q")
     git("config", "diff.noprefix", "true")
     git("config", "diff.external", "false")
-    a.write_text("# Measured on 2026-10-05 (#90012).\n")
+    a.write_text("# Measured on 2026-10-05 (#90012).\n", encoding="utf-8")
     git("add", "a.py")
     git("commit", "-q", "-m", "fork point")
     git("checkout", "-q", "-b", "upstream")
-    a.write_text("")
+    a.write_text("", encoding="utf-8")
     git("commit", "-q", "-am", "upstream drops the line")
     git("checkout", "-q", "-")
-    a.write_text(a.read_text() + "# Committed (#90015).\n")
+    a.write_text(a.read_text(encoding="utf-8") + "# Committed (#90015).\n", encoding="utf-8")
     git("commit", "-q", "-am", "change")
-    a.write_text(a.read_text() + "# Read first (#90013).\n")
-    (tmp_path / "odd,name.py").write_text("x = 1  # see #90014\n")
+    a.write_text(a.read_text(encoding="utf-8") + "# Read first (#90013).\n", encoding="utf-8")
+    (tmp_path / "odd,name.py").write_text("x = 1  # see #90014\n", encoding="utf-8")
     (tmp_path / "backlot").mkdir()
     (tmp_path / "backlot" / "x.py").write_text(
-        'V = "2022-11-28"\n# Measured on 2026-10-05 under 2022-11-28: 400.\n'
+        'V = "2022-11-28"\n# Measured on 2026-10-05 under 2022-11-28: 400.\n', encoding="utf-8"
     )
     (tmp_path / "tests").mkdir()
-    (tmp_path / "tests" / "test_x.py").write_text("# 2026-10-05, under 2022-11-28: 400.\n")
+    (tmp_path / "tests" / "test_x.py").write_text(
+        "# 2026-10-05, under 2022-11-28: 400.\n", encoding="utf-8"
+    )
     summary = tmp_path / "summary.md"
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
     found = [
@@ -266,6 +272,6 @@ def test_the_command_reads_the_change_from_its_merge_base(tmp_path, monkeypatch,
     assert capsys.readouterr().out == "".join(
         f"::warning file={p.replace(',', '%2C')},line={n},title=prose::{m}\n" for p, n, m in found
     )
-    assert summary.read_text() == "### Prose checks\n\n" + "".join(
+    assert summary.read_text(encoding="utf-8") == "### Prose checks\n\n" + "".join(
         f"- `{p}:{n}`: {m}\n" for p, n, m in found
     )

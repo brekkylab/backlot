@@ -169,7 +169,7 @@ def test_a_message_with_no_recipient_serves_no_to_header(tmp_path, mailbox):
             ),
         ],
     )
-    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    tokens = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
     ava = next(u["token"] for u in tokens["users"] if u["email"] == "ava@acme.com")
     # A second client over a different DB in this module, so the app is re-imported: the
     # lifespan writes its connection onto module-level state (see `client_for`).
@@ -446,7 +446,7 @@ def attachment_acl(tmp_path):
     """Two of ava's messages with one attachment each, and a message of mia's with none. Yields the
     client, a header per caller, and each attachment id by the doc it belongs to."""
     settings = tiny_corpus(tmp_path, _ATTACHMENT_ACL)
-    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    tokens = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
     h = {"admin": {"Authorization": f"Bearer {settings.admin_token}"}}
     for name in ("ava", "mia"):
         h[name] = {"Authorization": f"Bearer {tok(tokens, f'{name}@acme.com')}"}
@@ -2098,7 +2098,7 @@ def test_drive_export_of_a_folder_the_caller_cannot_see_is_the_404(tmp_path):
             },
         ],
     )
-    tokens = yaml.safe_load(s.tokens_path.read_text())
+    tokens = yaml.safe_load(s.tokens_path.read_text(encoding="utf-8"))
     h = {"admin": {"Authorization": f"Bearer {s.admin_token}"}}
     for name in ("ava", "mia"):
         h[name] = {"Authorization": f"Bearer {tok(tokens, f'{name}@acme.com')}"}
@@ -2537,12 +2537,12 @@ def test_every_google_operation_declares_the_system_parameters_and_reads_them(cl
 def test_no_google_baseline_acknowledges_a_system_parameter():
     """No `google_drive` or `gmail` baseline entry is a `missing_param` for `$.xgafv`,
     `access_token` or `oauth_token`: `openapi.google_system_parameters` declares all three."""
-    from backlot.fidelity import baseline_path
+    from backlot.fidelity import Baseline, baseline_path
 
     for source in ("google_drive", "gmail"):
-        acknowledged = json.loads(baseline_path(source).read_text())["acknowledged"]
+        acknowledged = Baseline.load(baseline_path(source)).acknowledged.values()
         for name in ("$.xgafv", "access_token", "oauth_token"):
-            assert not [e["path"] for e in acknowledged if e["path"].endswith(f"?{name}")], (
+            assert not [f.path for f in acknowledged if f.path.endswith(f"?{name}")], (
                 source,
                 name,
             )
@@ -2571,7 +2571,7 @@ _NO_CREDENTIAL_ROWS = [
     ("GET", "/slides/v1/presentations/x", 401, 404),
     ("GET", "/gmail/v1/users/me/profile", 401, 200),
     ("GET", "/gmail/v1/users/me/labels", 401, 200),
-    # the baselines' `missing_operation` rows
+    # the baselines' `missing` operations
     ("GET", "/drive/v3/changes/startPageToken", 401, 404),
     ("GET", "/drive/v3/files/generateIds", 401, 404),
     ("GET", "/drive/v3/files/trash", 403, 404),
@@ -5268,7 +5268,7 @@ def test_editor_apis_distinguish_hidden_type_permission_and_missing(tmp_path):
         for kind in ("spreadsheet", "document")
     ]
     settings = tiny_corpus(tmp_path, records)
-    token_data = yaml.safe_load(settings.tokens_path.read_text())
+    token_data = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
     tokens = {u["email"]: u["token"] for u in token_data["users"]}
     outsider = {"Authorization": f"Bearer {tokens['mia@acme.com']}"}
     sheet, doc, deck, pdf, xlsx, docx = (served_id("google_drive", f"hidden-{k}") for k in hidden)
@@ -5963,7 +5963,7 @@ def test_sheets_values_get_enforces_the_acl(base, live_server, sheet_id):
 
     tokens = {
         u["email"]: u["token"]
-        for u in yaml.safe_load(live_server[1].tokens_path.read_text())["users"]
+        for u in yaml.safe_load(live_server[1].tokens_path.read_text(encoding="utf-8"))["users"]
     }
     outsider = {"Authorization": f"Bearer {tokens['mia@acme.com']}"}  # marketing, not finance
     admin_h = {"Authorization": f"Bearer {live_server[1].admin_token}"}
@@ -6866,7 +6866,7 @@ def test_drive_q_me_is_the_caller(tmp_path):
     with corpus_client(tmp_path, _Q_RECORDS) as (client, settings):
         tokens = {
             u["email"]: u["token"]
-            for u in yaml.safe_load(settings.tokens_path.read_text())["users"]
+            for u in yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))["users"]
         }
         mia = {"Authorization": f"Bearer {tokens['mia@x.com']}"}
         files = "mimeType != 'application/vnd.google-apps.folder'"
@@ -7714,7 +7714,7 @@ def gc(grid_settings):
 
 @pytest.fixture(scope="module")
 def gh(grid_settings):
-    data = yaml.safe_load(grid_settings.tokens_path.read_text())
+    data = yaml.safe_load(grid_settings.tokens_path.read_text(encoding="utf-8"))
     return {"Authorization": f"Bearer {data['admin_token']}"}
 
 
@@ -9434,7 +9434,10 @@ def test_gmail_size_estimate_matches_raw_bytes_in_every_format(tmp_path, title, 
         ],
     )
     with client_for(s) as c:
-        h = {"Authorization": "Bearer " + yaml.safe_load(s.tokens_path.read_text())["admin_token"]}
+        h = {
+            "Authorization": "Bearer "
+            + yaml.safe_load(s.tokens_path.read_text(encoding="utf-8"))["admin_token"]
+        }
         mid = c.get("/gmail/v1/users/me/messages", headers=h).json()["messages"][0]["id"]
         path = "/gmail/v1/users/me/messages/" + mid
         raw = c.get(path + "?format=raw", headers=h).json()
@@ -9519,7 +9522,7 @@ def test_gmail_cc_bcc_searches_address_headers(tmp_path, surface, caller, query,
             for r in records
         ],
     )
-    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    tokens = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
     token = tokens["admin_token"] if caller == "admin" else tok(tokens, "ava@acme.com")
     with client_for(settings, reload=True) as c:
         response = c.get(

@@ -143,6 +143,7 @@ def main_fuse(resources: dict) -> None:
                 ["grep", "-rl", "Q1", *(f"{mnt}/{b}" for b in backends)],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
             )
             seen = set()  # one hit per backend (a message can appear under many labels)
             for h in hits.stdout.splitlines():

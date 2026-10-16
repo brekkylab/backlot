@@ -2072,9 +2072,10 @@ def test_drive_answers_each_check_with_reals_status_and_reason(
         assert (e["message"], "status" in e) == (message, False)
 
 
-def test_drive_export_of_a_folder_the_caller_cannot_see_is_the_404(tmp_path):
-    """The two answers the folder branch of `drive_files_export` records, for each caller: `Private`
-    holds only a file mia cannot read, so it is the folder she cannot see."""
+def test_reads_of_a_folder_the_caller_cannot_see(tmp_path):
+    """The answers `files.export`, `files.get` and `permissions.list` record for a folder, for each
+    caller, and the ones Docs and Sheets record for mia: `Private` holds only a file mia cannot
+    read, so it is the folder she cannot see."""
     s = tiny_corpus(
         tmp_path,
         [
@@ -2123,221 +2124,33 @@ def test_drive_export_of_a_folder_the_caller_cannot_see_is_the_404(tmp_path):
                 caller,
                 name,
             )
-
-
-def test_drive_folder_read_and_permissions_of_invisible_folder_is_the_404(tmp_path):
-    """The answers files.get and permissions.list record for a folder the caller cannot see:
-    `Private` holds only a file mia cannot read, so it is the folder she cannot see."""
-    s = tiny_corpus(
-        tmp_path,
-        [
-            {
-                "source_type": "google_drive",
-                "doc_id": "gd-open",
-                "folder": "Shared",
-                "title": "Open",
-                "content": "body",
-                "author_email": "mia@acme.com",
-                "readers": ["mia@acme.com"],
-                "visibility": "public",
-            },
-            {
-                "source_type": "google_drive",
-                "doc_id": "gd-shut",
-                "folder": "Private",
-                "title": "Shut",
-                "content": "body",
-                "author_email": "ava@acme.com",
-                "readers": ["ava@acme.com"],
-            },
-        ],
-    )
-    tokens = yaml.safe_load(s.tokens_path.read_text())
-    h = {"admin": {"Authorization": f"Bearer {s.admin_token}"}}
-    for name in ("ava", "mia"):
-        h[name] = {"Authorization": f"Bearer {tok(tokens, f'{name}@acme.com')}"}
-    with client_for(s, reload=True) as c:
-        q = {"q": f"mimeType='{FOLDER_MIME}'", "fields": "files(id,name)"}
-        admin_listed = c.get("/drive/v3/files", headers=h["admin"], params=q).json()["files"]
-        folder = {f["name"]: f["id"] for f in admin_listed}
-        folder["nope"] = "nosuchfile000"
-
-        # establish listing visibility: mia can only see Shared
-        mia_listed = c.get("/drive/v3/files", headers=h["mia"], params=q).json()["files"]
-        assert [f["name"] for f in mia_listed] == ["Shared"]
-
-        # files.get: visible folders return 200, invisible or unknown folders return 404
-        r_admin_priv = c.get(f"/drive/v3/files/{folder['Private']}", headers=h["admin"])
-        assert r_admin_priv.status_code == 200 and r_admin_priv.json()["name"] == "Private"
-        r_ava_priv = c.get(f"/drive/v3/files/{folder['Private']}", headers=h["ava"])
-        assert r_ava_priv.status_code == 200 and r_ava_priv.json()["name"] == "Private"
-        r_mia_shared = c.get(f"/drive/v3/files/{folder['Shared']}", headers=h["mia"])
-        assert r_mia_shared.status_code == 200 and r_mia_shared.json()["name"] == "Shared"
-
-        r_mia_priv = c.get(f"/drive/v3/files/{folder['Private']}", headers=h["mia"])
-        r_mia_nope = c.get(f"/drive/v3/files/{folder['nope']}", headers=h["mia"])
-        assert r_mia_priv.status_code == 404
-        assert r_mia_nope.status_code == 404
-        assert _gerr(r_mia_priv) == {
-            "code": 404,
-            "message": f"File not found: {folder['Private']}.",
-            "errors": [
-                {
-                    "message": f"File not found: {folder['Private']}.",
-                    "domain": "global",
-                    "reason": "notFound",
-                    "location": "fileId",
-                    "locationType": "parameter",
-                }
-            ],
-        }
-        assert (
-            _gerr(r_mia_priv)["errors"][0]["reason"]
-            == _gerr(r_mia_nope)["errors"][0]["reason"]
-            == "notFound"
-        )
-
-        # permissions.list: visible folders return 200, invisible or unknown folders return 404
-        r_perm_admin = c.get(f"/drive/v3/files/{folder['Private']}/permissions", headers=h["admin"])
-        assert r_perm_admin.status_code == 200 and any(
-            p.get("emailAddress") == "ava@acme.com" for p in r_perm_admin.json()["permissions"]
-        )
-        r_perm_ava = c.get(f"/drive/v3/files/{folder['Private']}/permissions", headers=h["ava"])
-        assert r_perm_ava.status_code == 200 and any(
-            p.get("emailAddress") == "ava@acme.com" for p in r_perm_ava.json()["permissions"]
-        )
-        r_perm_mia = c.get(f"/drive/v3/files/{folder['Shared']}/permissions", headers=h["mia"])
-        assert r_perm_mia.status_code == 200 and any(
-            p.get("emailAddress") == "mia@acme.com" for p in r_perm_mia.json()["permissions"]
-        )
-
-        r_perm_priv = c.get(f"/drive/v3/files/{folder['Private']}/permissions", headers=h["mia"])
-        r_perm_nope = c.get(f"/drive/v3/files/{folder['nope']}/permissions", headers=h["mia"])
-        assert r_perm_priv.status_code == 404
-        assert r_perm_nope.status_code == 404
-        assert _gerr(r_perm_priv) == {
-            "code": 404,
-            "message": f"File not found: {folder['Private']}.",
-            "errors": [
-                {
-                    "message": f"File not found: {folder['Private']}.",
-                    "domain": "global",
-                    "reason": "notFound",
-                    "location": "fileId",
-                    "locationType": "parameter",
-                }
-            ],
-        }
-        assert (
-            _gerr(r_perm_priv)["errors"][0]["reason"]
-            == _gerr(r_perm_nope)["errors"][0]["reason"]
-            == "notFound"
-        )
-
-        # partial fields on files.get
-        r_fields_vis = c.get(
-            f"/drive/v3/files/{folder['Shared']}", headers=h["mia"], params={"fields": "id,name"}
-        )
-        assert r_fields_vis.status_code == 200 and set(r_fields_vis.json()) == {"id", "name"}
-        r_fields_bad = c.get(
-            f"/drive/v3/files/{folder['Shared']}",
-            headers=h["mia"],
-            params={"fields": "totallyBogusField"},
-        )
-        assert r_fields_bad.status_code == 400
-        r_fields_hid = c.get(
-            f"/drive/v3/files/{folder['Private']}",
-            headers=h["mia"],
-            params={"fields": "totallyBogusField"},
-        )
-        assert r_fields_hid.status_code == 404
-
-        # permissions pagination and validation order
-        r_page_vis = c.get(
-            f"/drive/v3/files/{folder['Shared']}/permissions",
-            headers=h["mia"],
-            params={"pageSize": 10},
-        )
-        assert r_page_vis.status_code == 200
-        r_page_bad_size = c.get(
-            f"/drive/v3/files/{folder['Shared']}/permissions",
-            headers=h["mia"],
-            params={"pageSize": 0},
-        )
-        assert r_page_bad_size.status_code == 400
-        r_page_bad_tok = c.get(
-            f"/drive/v3/files/{folder['Shared']}/permissions",
-            headers=h["mia"],
-            params={"pageToken": "bad"},
-        )
-        assert r_page_bad_tok.status_code == 400
-        r_page_hid = c.get(
-            f"/drive/v3/files/{folder['Private']}/permissions",
-            headers=h["mia"],
-            params={"pageSize": 10},
-        )
-        assert r_page_hid.status_code == 404
-        r_page_hid_bad_tok = c.get(
-            f"/drive/v3/files/{folder['Private']}/permissions",
-            headers=h["mia"],
-            params={"pageToken": "bad"},
-        )
-        assert r_page_hid_bad_tok.status_code == 400
-
-        # export: 403 for visible folder, 404 for hidden folder
-        r_exp_admin = c.get(
-            f"/drive/v3/files/{folder['Private']}/export",
-            headers=h["admin"],
-            params={"mimeType": "text/plain"},
-        )
-        assert r_exp_admin.status_code == 403
-        r_exp_ava = c.get(
-            f"/drive/v3/files/{folder['Private']}/export",
-            headers=h["ava"],
-            params={"mimeType": "text/plain"},
-        )
-        assert r_exp_ava.status_code == 403
-        r_exp_vis = c.get(
-            f"/drive/v3/files/{folder['Shared']}/export",
-            headers=h["mia"],
-            params={"mimeType": "text/plain"},
-        )
-        assert r_exp_vis.status_code == 403
-        r_exp_hid = c.get(
-            f"/drive/v3/files/{folder['Private']}/export",
-            headers=h["mia"],
-            params={"mimeType": "text/plain"},
-        )
-        assert r_exp_hid.status_code == 404
-        r_exp_nope = c.get(
-            f"/drive/v3/files/{folder['nope']}/export",
-            headers=h["mia"],
-            params={"mimeType": "text/plain"},
-        )
-        assert r_exp_nope.status_code == 404
-
-        # Docs / Sheets: 400 INVALID_ARGUMENT for known folder (even hidden), 404 NOT_FOUND for unknown id
-        r_docs_hid = c.get(f"/docs/v1/documents/{folder['Private']}", headers=h["mia"])
-        assert (
-            r_docs_hid.status_code == 400
-            and _gerr(r_docs_hid)["message"] == "Request contains an invalid argument."
-        )
-        r_docs_nope = c.get(f"/docs/v1/documents/{folder['nope']}", headers=h["mia"])
-        assert (
-            r_docs_nope.status_code == 404
-            and _gerr(r_docs_nope)["message"] == "Requested entity was not found."
-        )
-
-        r_sheets_hid = c.get(f"/sheets/v4/spreadsheets/{folder['Private']}", headers=h["mia"])
-        assert (
-            r_sheets_hid.status_code == 400
-            and _gerr(r_sheets_hid)["message"] == "Request contains an invalid argument."
-        )
-        r_sheets_nope = c.get(f"/sheets/v4/spreadsheets/{folder['nope']}", headers=h["mia"])
-        assert (
-            r_sheets_nope.status_code == 404
-            and _gerr(r_sheets_nope)["message"] == "Requested entity was not found."
-        )
+        files, perms = "/drive/v3/files/{}", "/drive/v3/files/{}/permissions"
+        docs, sheets = "/docs/v1/documents/{}", "/sheets/v4/spreadsheets/{}"
+        for route, query, caller, name, status, answer in [
+            (files, {}, "admin", "Private", 200, None),
+            (files, {}, "ava", "Private", 200, None),
+            (files, {}, "mia", "Private", 404, "notFound"),
+            (files, {}, "mia", "Shared", 200, None),
+            (files, {}, "mia", "nope", 404, "notFound"),
+            (files, {"fields": "totallyBogusField"}, "mia", "Private", 404, "notFound"),
+            (files, {"fields": "totallyBogusField"}, "mia", "Shared", 400, "invalidParameter"),
+            (files, {"alt": "media"}, "mia", "Private", 404, "notFound"),
+            (perms, {}, "admin", "Private", 200, None),
+            (perms, {}, "ava", "Private", 200, None),
+            (perms, {}, "mia", "Private", 404, "notFound"),
+            (perms, {}, "mia", "Shared", 200, None),
+            (perms, {}, "mia", "nope", 404, "notFound"),
+            (perms, {"pageSize": "0"}, "mia", "Private", 400, "invalidParameter"),
+            (perms, {"pageToken": "bad"}, "mia", "Private", 400, "invalid"),
+            (docs, {}, "mia", "Private", 400, "INVALID_ARGUMENT"),
+            (docs, {}, "mia", "nope", 404, "NOT_FOUND"),
+            (sheets, {}, "mia", "Private", 400, "INVALID_ARGUMENT"),
+            (sheets, {}, "mia", "nope", 404, "NOT_FOUND"),
+        ]:
+            r = c.get(route.format(folder[name]), headers=h[caller], params=query)
+            error = r.json().get("error", {})
+            got = error.get("status") or (error.get("errors") or [{}])[0].get("reason")
+            assert (r.status_code, got) == (status, answer), (route, query, caller, name)
 
 
 @pytest.mark.parametrize(

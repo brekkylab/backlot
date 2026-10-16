@@ -9,10 +9,10 @@ request is the anonymous caller's, who sees no bucket (``_auth``). A method this
 serve, and a GET or a HEAD naming a selector it cannot take, is refused before the bucket and
 whether or not a credential is sent, as real refuses them, but after a signature that was sent and
 does not verify (``_method_refusal``, ``_read_refusal``); a write resolves the credential and the
-bucket first. The ``?annotation`` reads refuse an unsigned caller and an unverified V2 key or
-signature ahead of the bucket and of a HEAD's selector refusal (``_sigv4_only_refusal``). Responses
-are S3 XML (namespace ``http://s3.amazonaws.com/doc/2006-03-01/``) or raw object bytes; errors use
-the S3 ``<Error>`` envelope.
+bucket first. The ``?annotation`` operations refuse an unsigned caller and an unverified V2 key or
+signature ahead of the bucket and of the method's selector refusal (``_sigv4_only_refusal``).
+Responses are S3 XML (namespace ``http://s3.amazonaws.com/doc/2006-03-01/``) or raw object bytes;
+errors use the S3 ``<Error>`` envelope.
 
 S3 dispatches on the query string: ``?acl``, ``?versioning``, ``?tagging`` and the rest each select
 a different operation at the same path. Every one of a bucket's is answered, as real answers a
@@ -2248,7 +2248,8 @@ _SIGV4_ONLY = (
 def _sigv4_only_refusal(request: Request) -> Response | None:
     """Real's 400 for ListObjectAnnotations and GetObjectAnnotation (``?annotation`` as
     ``_key_selected`` reads it, with or without an ``annotationName``) sent unsigned or signed with
-    Signature Version 2, or ``None``.
+    Signature Version 2, or ``None``. The write methods apply the same check
+    (``object_method_refusal``).
 
     Unsigned is what ``backlot.auth.resolve_sigv4`` reads as no credential, an empty `Authorization`
     and the two lone query parameters it names among them, and Signature Version 2 is the header's
@@ -3224,7 +3225,18 @@ async def bucket_method_refusal(request: Request, bucket: str) -> Response:
 )
 async def object_method_refusal(request: Request, bucket: str, key: str) -> Response:
     """Without a selector a key path takes `PUT` and `DELETE` on real, both writes, and refuses
-    `PATCH` and `POST` with the 405 that names `OBJECT`; with one, the selector decides."""
+    `PATCH` and `POST` with the 405 that names `OBJECT`; with one, the selector decides.
+
+    An empty first `annotation` value selects the annotation operation, as on a GET; a valued
+    first one is the object's own operation. On `PUT`, `POST`, `DELETE` and `PATCH`, real refuses
+    an unsigned or V2 annotation credential with ``_sigv4_only_refusal``'s 400, after a selector
+    conflict and before the bucket, body or `Content-MD5` checks. A write does not parse
+    `max-annotation-results`. Measured 2026-10-14 against s3.amazonaws.com (us-east-1), path-style,
+    at `noaa-ghcn-pds/readme.txt` and a key in a bucket nobody owns: unsigned, with an empty body
+    and with `<x/>` and a bad `Content-MD5`, without and with `annotationName`; a V2 header with
+    an unknown key and a V2 query got the same 400 at the public object. There, a bearer header,
+    a V2 header lacking its date and an expired V2 query kept their credential refusals; beside
+    `acl` each was the conflict, as was `annotation&website=x` unsigned at both paths."""
     method = request.method
     if method == "OPTIONS":
         selected = _key_selected(request.query_params)
@@ -3235,6 +3247,14 @@ async def object_method_refusal(request: Request, bucket: str, key: str) -> Resp
         return _cors_preflight(request, _CORS_DISABLED)
     q = request.query_params
     selected = _selected(q, frozenset(_OBJECT_PATH_WRITE_SELECTORS))
+    if "annotation" in selected and _first(q, "annotation") != "":
+        selected.remove("annotation")
+    if "annotation" in selected:
+        if len(selected) > 1:
+            return _conflict(selected)
+        refused = _sigv4_only_refusal(request)
+        if refused is not None:
+            return refused
     if selected == ["uploadId"] and "partNumber" in q:
         selected = ["PART"]
     refused = _website_refusal(q)

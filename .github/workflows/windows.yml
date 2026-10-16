@@ -8,13 +8,13 @@
 # took 5 minutes 25 seconds on windows-latest, and each Linux test job under 4). So it runs on a
 # pull request only once a maintainer adds the `windows` label, for a change to how Backlot opens
 # files, spawns processes or reads paths, and then on each push to it; and on `main` once a day, as
-# the whole suite of a `dev` install, rather than after every merge. A pull request's run, which
-# installs the `mcp` extra as well, runs the README's first command, the test files that read and
-# write Backlot's own files, and the tests marked `windows` or xfail: a strict xfail that starts to
-# pass fails until its mark is removed, and the `windows` mark keeps the test in this run after
-# that. A step before the tests refuses a runner whose locale, or Python's UTF-8 mode, is UTF-8,
-# where every step after it would pass without proving anything; for the same reason Python is
-# pinned below 3.15, where UTF-8 mode becomes the default (PEP 686).
+# the whole suite of a `dev` and `mcp` install, rather than after every merge. A pull request's run
+# runs the README's first command, the test files that read and write Backlot's own files, and the
+# tests marked `windows` or xfail: a strict xfail that starts to pass fails until its mark is
+# removed, and the `windows` mark keeps the test in this run after that. A step before the tests
+# refuses a runner whose locale, or Python's UTF-8 mode, is UTF-8, where every step after it would
+# pass without proving anything; for the same reason Python is pinned below 3.15, where UTF-8 mode
+# becomes the default (PEP 686).
 name: Windows
 
 on:
@@ -52,12 +52,7 @@ jobs:
         with:
           enable-cache: true
       - name: Install
-        # A pull request's run adds the `mcp` extra, which the `backlot mcp` tests marked `windows`
-        # need; without it all of tests/test_mcp.py skips.
-        run: >-
-          uv sync --extra dev
-          ${{ github.event_name == 'pull_request' && '--extra mcp' || '' }}
-          --locked --python 3.14
+        run: uv sync --extra dev --extra mcp --locked --python 3.14
       - name: The locale is not UTF-8
         run: >
           uv run --no-sync python -c "import locale, sys; e = locale.getencoding();

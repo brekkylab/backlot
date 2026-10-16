@@ -99,10 +99,10 @@ encoding is the locale's code page (cp1252 on `windows-latest`) rather than UTF-
 workflow (`.github/workflows/windows.yml`), slower than the rest and so not run on every commit: on
 a pull request once a maintainer adds the `windows` label, where it runs the README's first command,
 the test files that read and write Backlot's own files and the tests marked `windows` or xfail, and
-on `main` once a day as the whole suite of a `dev` install. A test that fails on Windows for a
-known, deterministic reason is marked `xfail(strict=True)` there and `windows`, so the pull request
-that fixes it removes the first mark and that run keeps the test. Every file Backlot ships, writes
-and reads back is UTF-8, so a text file (and a text-mode subprocess pipe, with
+on `main` once a day as the whole suite of a `dev` and `mcp` install. A test that fails on Windows
+for a known, deterministic reason is marked `xfail(strict=True)` there and `windows`, so the pull
+request that fixes it removes the first mark and that run keeps the test. Every file Backlot ships,
+writes and reads back is UTF-8, so a text file (and a text-mode subprocess pipe, with
 `PYTHONIOENCODING=utf-8` for a Python child) is always opened with `encoding="utf-8"`, and both ruff
 (`PLW1514`) and the suite run as CI runs it, under `PYTHONWARNDEFAULTENCODING=1` (an
 `EncodingWarning` is then an error), refuse one opened without it.

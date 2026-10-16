@@ -6,7 +6,7 @@
     "https://www.googleapis.com/discovery/v1/apis/sheets/v4/rest",
     "https://www.googleapis.com/discovery/v1/apis/slides/v1/rest"
   ],
-  "measured": "2026-10-14",
+  "measured": "2026-10-16",
   "operations": [
     {
       "operation": "DELETE /drive/v3/drives/{}",
@@ -69,10 +69,6 @@
       "id": "drive.about.get",
       "status": "implemented",
       "params": {
-        "access_token": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
         "alt": {
           "kind": "missing_param",
           "severity": "gap"
@@ -82,10 +78,6 @@
           "severity": "gap"
         },
         "key": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
-        "oauth_token": {
           "kind": "missing_param",
           "severity": "gap"
         },
@@ -140,10 +132,6 @@
       "id": "drive.drives.list",
       "status": "implemented",
       "params": {
-        "access_token": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
         "alt": {
           "kind": "missing_param",
           "severity": "gap"
@@ -157,10 +145,6 @@
           "severity": "gap"
         },
         "key": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
-        "oauth_token": {
           "kind": "missing_param",
           "severity": "gap"
         },
@@ -210,10 +194,6 @@
       "id": "drive.files.list",
       "status": "implemented",
       "params": {
-        "access_token": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
         "alt": {
           "kind": "missing_param",
           "severity": "gap"
@@ -251,10 +231,6 @@
           "severity": "gap"
         },
         "key": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
-        "oauth_token": {
           "kind": "missing_param",
           "severity": "gap"
         },
@@ -311,10 +287,6 @@
       "id": "drive.files.get",
       "status": "implemented",
       "params": {
-        "access_token": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
         "acknowledgeAbuse": {
           "kind": "missing_param",
           "severity": "gap"
@@ -332,10 +304,6 @@
           "severity": "gap"
         },
         "key": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
-        "oauth_token": {
           "kind": "missing_param",
           "severity": "gap"
         },
@@ -426,10 +394,6 @@
       "id": "drive.files.export",
       "status": "implemented",
       "params": {
-        "access_token": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
         "alt": {
           "kind": "missing_param",
           "severity": "gap"
@@ -443,10 +407,6 @@
           "severity": "gap"
         },
         "key": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
-        "oauth_token": {
           "kind": "missing_param",
           "severity": "gap"
         },
@@ -480,10 +440,6 @@
       "id": "drive.permissions.list",
       "status": "implemented",
       "params": {
-        "access_token": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
         "alt": {
           "kind": "missing_param",
           "severity": "gap"
@@ -501,10 +457,6 @@
           "severity": "gap"
         },
         "key": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
-        "oauth_token": {
           "kind": "missing_param",
           "severity": "gap"
         },
@@ -585,10 +537,6 @@
       "id": "docs.documents.get",
       "status": "implemented",
       "params": {
-        "access_token": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
         "alt": {
           "kind": "missing_param",
           "severity": "gap"
@@ -611,10 +559,6 @@
           "severity": "gap"
         },
         "key": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
-        "oauth_token": {
           "kind": "missing_param",
           "severity": "gap"
         },
@@ -645,10 +589,6 @@
       "id": "slides.presentations.get",
       "status": "implemented",
       "params": {
-        "access_token": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
         "alt": {
           "kind": "missing_param",
           "severity": "gap"
@@ -667,10 +607,6 @@
           "severity": "gap"
         },
         "key": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
-        "oauth_token": {
           "kind": "missing_param",
           "severity": "gap"
         },
@@ -711,20 +647,12 @@
       "id": "sheets.spreadsheets.get",
       "status": "implemented",
       "params": {
-        "access_token": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
         "commentsViewMode": {
           "kind": "missing_param",
           "severity": "gap",
           "note": "Same family as `GET /v1/documents/{}?commentsViewMode`, whose note carries the measurement on all three hosts."
         },
         "key": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
-        "oauth_token": {
           "kind": "missing_param",
           "severity": "gap"
         },
@@ -746,15 +674,7 @@
       "id": "sheets.spreadsheets.values.get",
       "status": "implemented",
       "params": {
-        "access_token": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
         "key": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
-        "oauth_token": {
           "kind": "missing_param",
           "severity": "gap"
         },
@@ -769,15 +689,7 @@
       "id": "sheets.spreadsheets.values.batchGet",
       "status": "implemented",
       "params": {
-        "access_token": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
         "key": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
-        "oauth_token": {
           "kind": "missing_param",
           "severity": "gap"
         },
@@ -1065,15 +977,7 @@
       "id": "sheets.spreadsheets.values.batchGetByDataFilter",
       "status": "implemented",
       "params": {
-        "access_token": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
         "key": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
-        "oauth_token": {
           "kind": "missing_param",
           "severity": "gap"
         },
@@ -1109,15 +1013,7 @@
       "id": "sheets.spreadsheets.getByDataFilter",
       "status": "implemented",
       "params": {
-        "access_token": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
         "key": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
-        "oauth_token": {
           "kind": "missing_param",
           "severity": "gap"
         },

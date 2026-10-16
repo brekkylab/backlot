@@ -95,6 +95,14 @@ UNREGISTERED_CALLER_MESSAGE = (
     "API Key or other form of API consumer identity to call this API."
 )
 MISSING_API_KEY_MESSAGE = "The request is missing a valid API key."
+QUERY_TOKEN_MESSAGE = (
+    "OAuth token was passed in the query parameter. Please send it in Authorization header instead."
+)
+
+# The query parameters real reads an OAuth token from, in the order its front end ranks them
+# (``routers.google._query_credential``). A byte-stream read refuses any of them
+# (:func:`token_in_query`).
+QUERY_TOKENS = ("access_token", "bearer_token", "oauth_token")
 
 
 def family(path: str) -> str | None:
@@ -585,8 +593,9 @@ def invalid_user_id() -> GoogleError:
 
 
 def refuse_download(request: Request) -> None:
-    """The one refusal a byte-stream read makes before it reads its parameters: a `callback` that
-    cannot be called is real's 503 `Backend Error`.
+    """The two refusals a byte-stream read makes before it reads its parameters: a token named in
+    the query (:func:`token_in_query`), then a `callback` that cannot be called, which is real's 503
+    `Backend Error`.
 
     A `callback` on a download is not JSONP. Measured 2026-10-07 on `files.get?alt=media` and
     `files.export`, against a PDF and a Doc: a name a script can call is ignored when the download
@@ -601,12 +610,33 @@ def refuse_download(request: Request) -> None:
     reaches here. A credential that does not resolve (``routers.google._credential``) answers its
     own 401 ahead of this, which is where real puts it.
     """
+    if names_a_query_token(request.query_params):
+        raise token_in_query()
     callback = first_repeat(request.query_params, CALLBACK) or ""
     if not callback:
         return
     request.state.google_download_live = True
     if not callable_jsonp_name(callback):
         raise backend_error()
+
+
+def names_a_query_token(query: Mapping[str, str]) -> bool:
+    """Whether ``query`` names one of the `QUERY_TOKENS` in any case, which is what
+    :func:`token_in_query` refuses."""
+    return any(name.lower() in QUERY_TOKENS for name in query)
+
+
+def token_in_query() -> GoogleError:
+    """A byte-stream read whose query names an OAuth token: 400 under `badRequest`, beside a header
+    credential that resolves as beside none, and whatever the value but one the query is read as a
+    token that does not resolve, which answers that token's 401 first (the route's credential check
+    runs ahead of this). The names are :func:`names_a_query_token`'s; a name that only resembles one
+    is left to the download's other refusals.
+
+    Measured 2026-10-13 on `files.export`, and on `files.get?alt=media` with an empty value and
+    inside a batch; ``tests/test_google.py::_DOWNLOAD_QUERY_TOKEN_ROWS`` holds the cases.
+    """
+    return invalid_argument(QUERY_TOKEN_MESSAGE)
 
 
 def download_credential_refused() -> GoogleError:
@@ -638,9 +668,10 @@ def missing_api_key() -> GoogleError:
 
     Real answers it last of the refusals a download makes, which is why the route raises it after
     the download's parameters rather than at the top. Measured 2026-10-07, the order a byte-stream
-    read answers in is: `$.xgafv` 400, a credential that does not resolve 401, `callback` 503, a
-    mistyped parameter or an absent `mimeType` 400, this 403 (or, for a header that is no
-    credential, :func:`download_credential_refused`), then the lookup."""
+    read answers in is: `$.xgafv` 400, a credential that does not resolve 401, a token named in the
+    query 400 (:func:`token_in_query`, 2026-10-13), `callback` 503, a mistyped parameter or an
+    absent `mimeType` 400, this 403 (or, for a header that is no credential,
+    :func:`download_credential_refused`), then the lookup."""
     return GoogleError(403, MISSING_API_KEY_MESSAGE, reason="forbidden")
 
 

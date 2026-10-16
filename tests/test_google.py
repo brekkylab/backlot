@@ -9747,7 +9747,7 @@ def test_gmail_hyphenated_from_search(tmp_path, surface, query, expected):
             for r in records
         ],
     )
-    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    tokens = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
     headers = {"Authorization": f"Bearer {tok(tokens, 'ava@acme.com')}"}
     with client_for(settings, reload=True) as c:
         r = c.get(f"/gmail/v1/users/me/{surface}", headers=headers, params={"q": query})

@@ -758,7 +758,7 @@ def refuse_a_confluence_media_type(headers, consumes: tuple[str, ...]) -> Atlass
     media_type = _parse_media_type(value, charset_in_any_case=False) if value else None
     if media_type is not None and _takes(consumes, media_type):
         return None
-    quality = _spring_quality_reason(value) if media_type is None else None
+    quality = _spring_quality_reason(value)
     if value and "/" not in value:
         reason = f"Invalid mime type \"{value}\": does not contain '/'"
     elif quality is not None:
@@ -843,9 +843,10 @@ def _spring_quality_reason(value: str) -> str | None:
     `Invalid quality value "<q>": should be between 0.0 and 1.0` for a number outside 0 to 1, and
     the message :func:`_java_number_format` gives for one Java cannot read. Measured on
     Confluence's 415 on 2026-10-16: `q=2`, `q="2"` (as `2`), `q=" 2"` (as ` 2`), `q=NaN`,
-    `q=0x1.8p0` and `Q=0.5;q=2` are the first; `q=abc`, `q=1.2.3` and `q=""` the second. This is
-    None for an empty `q=` and for an unknown charset beside a bad `q`, where real's reason is the
-    `Invalid mime type` one the empty value or the charset draws."""
+    `q=0x1.8p0` and `Q=0.5;q=2` are the first; `q=abc`, `q=1.2.3` and `q=""` the second. A
+    `charset` Confluence reads or leaves alone keeps the `q` the reason (`charset=ISO_8859-1:1987`,
+    `Charset=bogus`). This is None for an empty `q=` and for an unknown `charset` beside a bad `q`,
+    where real's reason is the `Invalid mime type` one the empty value or the charset draws."""
     parsed = _spring_media_type(value, charset_in_any_case=False, check_q=False)
     if parsed is None:
         return None

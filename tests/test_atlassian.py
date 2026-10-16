@@ -5581,6 +5581,7 @@ def test_jira_runs_a_write_on_a_served_path_where_a_route_takes_only_get(
 
 
 _SPRING_415 = "org.springframework.web.HttpMediaTypeNotSupportedException: "
+_OUT_OF_RANGE = 'Invalid quality value "{}": should be between 0.0 and 1.0'
 _JSON_TYPE = "application/json"
 
 
@@ -5625,37 +5626,22 @@ _JSON_TYPE = "application/json"
             ("POST", "/wiki/rest/api/space/abc123/permission", None, ctype, 415)
             + (f'Invalid media type "{ctype}": {reason}',)
             for ctype, reason in (
-                (
-                    "application/json;q=2",
-                    'Invalid quality value "2": should be between 0.0 and 1.0',
-                ),
-                (
-                    'application/xml;q="2"',
-                    'Invalid quality value "2": should be between 0.0 and 1.0',
-                ),
-                (
-                    'application/xml;q=" 2"',
-                    'Invalid quality value " 2": should be between 0.0 and 1.0',
-                ),
-                (
-                    "application/xml;q=NaN",
-                    'Invalid quality value "NaN": should be between 0.0 and 1.0',
-                ),
-                (
-                    "application/xml;q=0x1.8p0",
-                    'Invalid quality value "0x1.8p0": should be between 0.0 and 1.0',
-                ),
-                (
-                    "application/xml;Q=0.5;q=2",
-                    'Invalid quality value "2": should be between 0.0 and 1.0',
-                ),
+                ("application/json;q=2", _OUT_OF_RANGE.format("2")),
+                ('application/xml;q="2"', _OUT_OF_RANGE.format("2")),
+                ('application/xml;q=" 2"', _OUT_OF_RANGE.format(" 2")),
+                ("application/xml;q=NaN", _OUT_OF_RANGE.format("NaN")),
+                ("application/xml;q=0x1.8p0", _OUT_OF_RANGE.format("0x1.8p0")),
+                ("application/xml;Q=0.5;q=2", _OUT_OF_RANGE.format("2")),
+                ("application/xml;Charset=bogus;q=2", _OUT_OF_RANGE.format("2")),
+                ("application/xml;charset=ISO_8859-1:1987;q=2", _OUT_OF_RANGE.format("2")),
                 ("application/xml;q=abc", 'For input string: "abc"'),
                 ('application/xml;q="abc "', 'For input string: "abc"'),
                 ("application/xml;q=-", 'For input string: "-"'),
                 ("application/xml;q=0x1.8", 'For input string: "0x1.8"'),
-                ("application/xml;q=1.2.3", "multiple points"),
-                ("application/xml;q=-..", "multiple points"),
                 ("application/xml;q=1.2e3.4", 'For input string: "1.2e3.4"'),
+                ("application/xml;q=1.2.3", "multiple points"),
+                ("application/xml;q=.5.5", "multiple points"),
+                ("application/xml;q=-..", "multiple points"),
                 ('application/xml;q=""', "empty String"),
             )
         ),
@@ -5665,8 +5651,7 @@ _JSON_TYPE = "application/json"
             None,
             "multipart/form-data;boundary=x;q=2",
             415,
-            'Invalid media type "multipart/form-data;boundary=x;q=2": Invalid quality value "2": '
-            "should be between 0.0 and 1.0",
+            'Invalid media type "multipart/form-data;boundary=x;q=2": ' + _OUT_OF_RANGE.format("2"),
         ),
         # a charset Java does not name, in the case Spring checks, and one named in another case
         (

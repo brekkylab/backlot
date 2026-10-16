@@ -520,7 +520,7 @@ A URL Notion does not publish is `invalid_request_url` at 400, which the real AP
 reads the credential or the version. The method is part of that URL: a `GET` on a route that
 answers `POST` is the same 400 rather than a 405, with `TRACE` the exception real refuses at the
 front door with Cloudflare's own 405 page. An operation Notion publishes and Backlot does not serve
-(`PATCH pages/{id}`, `POST comments` and the other `missing_operation` rows in
+(`PATCH pages/{id}`, `POST comments` and the other `missing` operations in
 `backlot/fidelity/baseline/notion.json`) answers the credential's 401 as a served route does, and
 a request that clears the credential and the version gets the 400, as there is no operation to run.
 The three OAuth client endpoints among them, `POST oauth/token`, `oauth/introspect` and

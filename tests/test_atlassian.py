@@ -4630,22 +4630,29 @@ def test_jira_checks_the_media_type_an_operation_takes_before_anything_else(
     }
 
 
-def test_jira_unserved_sorts_every_operation_no_route_serves():
-    """``backlot/data/jira_unserved.json`` sorts each `missing_operation` row of the Jira baseline
-    into `refused` or `run` and holds nothing else, so a row the file has lost, or one the baseline
+def test_jira_unserved_sorts_every_operation_no_route_serves(monkeypatch):
+    """``backlot/data/jira_unserved.json`` sorts each `missing` operation of the Jira baseline
+    into `refused` or `run` and holds nothing else, so one the file has lost, or one the baseline
     has gained or dropped since the file was written, fails here: the reminder to rerun
-    ``scripts/gen_jira_unserved.py``. A route added for one of them drops it from the baseline, and
-    the file would otherwise refuse a served operation's path for a method no route takes. Which
-    list a row belongs in is read off Jira's documents, which that script's `--check` compares on
-    the schedule in `.github/workflows/fidelity.yml`."""
+    ``scripts/gen_jira_unserved.py``. A route added for one of them is `implemented` in the baseline
+    and the file would otherwise refuse a served operation's path for a method no route takes. Which
+    list an operation belongs in is read off Jira's documents, which that script's `--check`
+    compares on the schedule in `.github/workflows/fidelity.yml`."""
+    import runpy
+
     import backlot
     from backlot.fidelity.comparisons import baseline_path
 
-    rows = json.loads(baseline_path("jira").read_text(encoding="utf-8"))["acknowledged"]
-    unserved = [row["path"] for row in rows if row["kind"] == "missing_operation"]
+    entries = json.loads(baseline_path("jira").read_text(encoding="utf-8"))["operations"]
+    unserved = [e["operation"] for e in entries if e["status"] == "missing"]
     table = Path(backlot.__file__).resolve().parent / "data" / "jira_unserved.json"
     content = json.loads(table.read_text(encoding="utf-8"))
     assert sorted([*content["refused"], *content["run"]]) == sorted(unserved)
+    # And the script reads the same operations off the baseline: given documents declaring
+    # nothing, it refuses every one of them.
+    monkeypatch.setattr("backlot.fidelity.fetch.fetch_json", lambda url, **kw: {"paths": {}})
+    script = runpy.run_path(str(table.parents[2] / "scripts" / "gen_jira_unserved.py"))
+    assert sorted(script["build"]()["refused"]) == sorted(unserved)
 
 
 @pytest.mark.parametrize(

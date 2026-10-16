@@ -3,347 +3,456 @@
   "endpoints": [
     "https://developers.notion.com/openapi.json"
   ],
-  "measured": "2026-09-16",
-  "acknowledged": [
+  "measured": "2026-10-16",
+  "operations": [
     {
+      "operation": "DELETE /v1/agents/{}",
+      "id": "delete-agent",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "DELETE /v1/blocks/{}",
+      "id": "delete-a-block",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "DELETE /v1/comments/{}",
+      "id": "delete-a-comment",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "DELETE /v1/views/{}",
+      "id": "delete-view",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "DELETE /v1/views/{}/queries/{}",
+      "id": "delete-view-query",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /v1/agents/{}",
+      "id": "get-agent",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /v1/agents/{}/insights",
+      "id": "get-agent-insights",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /v1/ai/plugins",
+      "id": "list-skills-plugins",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "Lists the workspace's installed AI plugins. Read live on 2026-09-16: 200, one entry for the connected workspace's plugin, no corpus record of an installed plugin to draw the list from."
+    },
+    {
+      "operation": "GET /v1/ai/plugins/{}",
+      "id": "get-plugin-directory",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "Returns plugin metadata plus a freshly signed, hour-limited S3 URL to the plugin's package. Read live on 2026-09-16: 200 with a signed download link; a fixed corpus has nothing to sign against."
+    },
+    {
+      "operation": "GET /v1/ai/skills/{}",
+      "id": "get-skill-directory",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "Reads a workspace AI-skills directory entry by id. Read live on 2026-09-16: 404 directory_not_found for an id not shared with the connected workspace, 400 validation_error for a non-UUID id \u2014 a per-workspace install state the corpus does not represent."
+    },
+    {
+      "operation": "GET /v1/async_tasks/{}",
+      "id": "retrieve-async-task",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /v1/blocks/{}",
+      "id": "retrieve-a-block",
+      "status": "implemented"
+    },
+    {
+      "operation": "GET /v1/blocks/{}/children",
+      "id": "get-block-children",
+      "status": "implemented"
+    },
+    {
+      "operation": "GET /v1/comments",
+      "id": "list-comments",
+      "status": "implemented"
+    },
+    {
+      "operation": "GET /v1/comments/{}",
+      "id": "retrieve-comment",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /v1/custom_emojis",
+      "id": "list-custom-emojis",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /v1/data_sources/{}",
+      "id": "retrieve-a-data-source",
+      "status": "implemented"
+    },
+    {
+      "operation": "GET /v1/data_sources/{}/templates",
+      "id": "list-data-source-templates",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /v1/databases/{}",
+      "id": "retrieve-database",
+      "status": "implemented"
+    },
+    {
+      "operation": "GET /v1/file_uploads",
+      "id": "list-file-uploads",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /v1/file_uploads/{}",
+      "id": "retrieve-file-upload",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /v1/pages/{}",
+      "id": "retrieve-a-page",
+      "status": "implemented",
+      "params": {
+        "filter_properties": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      }
+    },
+    {
+      "operation": "GET /v1/pages/{}/markdown",
+      "id": "retrieve-page-markdown",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /v1/pages/{}/properties/{}",
+      "id": "retrieve-a-page-property",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /v1/sessions/{}",
+      "id": "retrieve-session",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /v1/users",
+      "id": "get-users",
+      "status": "implemented"
+    },
+    {
+      "operation": "GET /v1/users/me",
+      "id": "get-self",
+      "status": "implemented"
+    },
+    {
+      "operation": "GET /v1/users/{}",
+      "id": "get-user",
+      "status": "implemented"
+    },
+    {
+      "operation": "GET /v1/views",
+      "id": "list-views",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /v1/views/{}",
+      "id": "retrieve-a-view",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /v1/views/{}/queries/{}",
+      "id": "get-view-query-results",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "PATCH /v1/agents/{}/credit_limit",
+      "id": "update-agent-credit-limit",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "PATCH /v1/agents/{}/status",
+      "id": "update-agent-status",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "PATCH /v1/blocks/{}",
+      "id": "update-a-block",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "PATCH /v1/blocks/{}/children",
+      "id": "patch-block-children",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "PATCH /v1/comments/{}",
+      "id": "update-a-comment",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "PATCH /v1/data_sources/{}",
+      "id": "update-a-data-source",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "PATCH /v1/databases/{}",
+      "id": "update-database",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "PATCH /v1/pages/{}",
+      "id": "patch-page",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "PATCH /v1/pages/{}/markdown",
+      "id": "update-page-markdown",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "PATCH /v1/views/{}",
+      "id": "update-a-view",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /v1/agents/batch",
+      "id": "agent-batch",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /v1/agents/query",
+      "id": "query-agents",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /v1/blocks/meeting_notes",
+      "id": "create-meeting-note",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /v1/blocks/meeting_notes/query",
+      "id": "query-meeting-notes",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /v1/comments",
+      "id": "create-a-comment",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /v1/data_sources",
+      "id": "create-a-database",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /v1/data_sources/{}/query",
+      "id": "post-database-query",
+      "status": "implemented",
+      "params": {
+        "filter_properties": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      }
+    },
+    {
+      "operation": "POST /v1/databases",
+      "id": "create-database",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /v1/databases/{}/query",
+      "status": "extra",
       "kind": "extra_operation",
       "severity": "breaking",
-      "path": "POST /v1/databases/{}/query",
       "detail": "the vendor's spec declares no such operation",
       "note": "Notion's current document describes `data_sources/{id}/query`, which replaced this path, and it publishes one document rather than one per version. The path is still live on the real API under a version older than 2025-09-03 -- the deprecation note on the vendor's own page for it reads \"This page describes the API for versions up to and including 2022-06-28\" -- and that is when Backlot serves it: a request under 2025-09-03 or later is refused here with `invalid_request_url`, the way the real API refuses it. Read off the document on 2026-09-01, versions re-read on 2026-09-15."
     },
     {
+      "operation": "POST /v1/file_uploads",
+      "id": "create-file",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /v1/agents/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /v1/file_uploads/{}/complete",
+      "id": "complete-file-upload",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /v1/blocks/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /v1/file_uploads/{}/send",
+      "id": "upload-file",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /v1/comments/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /v1/oauth/introspect",
+      "id": "introspect-token",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /v1/views/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /v1/oauth/revoke",
+      "id": "revoke-token",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /v1/views/{}/queries/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /v1/oauth/token",
+      "id": "create-a-token",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /v1/agents/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /v1/pages",
+      "id": "post-page",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /v1/agents/{}/insights",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /v1/pages/{}/move",
+      "id": "move-page",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /v1/ai/plugins",
-      "detail": "the vendor serves it; Backlot does not",
-      "note": "Lists the workspace's installed AI plugins. Read live on 2026-09-16: 200, one entry for the connected workspace's plugin, no corpus record of an installed plugin to draw the list from."
+      "severity": "gap"
     },
     {
+      "operation": "POST /v1/search",
+      "id": "post-search",
+      "status": "implemented"
+    },
+    {
+      "operation": "POST /v1/sessions",
+      "id": "update-session",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /v1/ai/plugins/{}",
-      "detail": "the vendor serves it; Backlot does not",
-      "note": "Returns plugin metadata plus a freshly signed, hour-limited S3 URL to the plugin's package. Read live on 2026-09-16: 200 with a signed download link; a fixed corpus has nothing to sign against."
+      "severity": "gap"
     },
     {
+      "operation": "POST /v1/sessions/query",
+      "id": "query-sessions",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /v1/ai/skills/{}",
-      "detail": "the vendor serves it; Backlot does not",
-      "note": "Reads a workspace AI-skills directory entry by id. Read live on 2026-09-16: 404 directory_not_found for an id not shared with the connected workspace, 400 validation_error for a non-UUID id — a per-workspace install state the corpus does not represent."
+      "severity": "gap"
     },
     {
+      "operation": "POST /v1/sessions/{}/cancel",
+      "id": "cancel-session",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /v1/async_tasks/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /v1/sessions/{}/events/query",
+      "id": "query-session-events",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /v1/comments/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /v1/views",
+      "id": "create-view",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /v1/custom_emojis",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /v1/views/{}/queries",
+      "id": "create-view-query",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /v1/data_sources/{}/templates",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /v1/file_uploads",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /v1/file_uploads/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /v1/pages/{}/markdown",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /v1/pages/{}/properties/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /v1/pages/{}?filter_properties",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /v1/sessions/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /v1/views",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /v1/views/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /v1/views/{}/queries/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PATCH /v1/agents/{}/credit_limit",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PATCH /v1/agents/{}/status",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PATCH /v1/blocks/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PATCH /v1/blocks/{}/children",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PATCH /v1/comments/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PATCH /v1/data_sources/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PATCH /v1/databases/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PATCH /v1/pages/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PATCH /v1/pages/{}/markdown",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PATCH /v1/views/{}",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /v1/agents/batch",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /v1/agents/query",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /v1/blocks/meeting_notes",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /v1/blocks/meeting_notes/query",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /v1/comments",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /v1/data_sources",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "POST /v1/data_sources/{}/query?filter_properties",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /v1/databases",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /v1/file_uploads",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /v1/file_uploads/{}/complete",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /v1/file_uploads/{}/send",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /v1/oauth/introspect",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /v1/oauth/revoke",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /v1/oauth/token",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /v1/pages",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /v1/pages/{}/move",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /v1/sessions",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /v1/sessions/query",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /v1/sessions/{}/cancel",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /v1/sessions/{}/events/query",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /v1/views",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /v1/views/{}/queries",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     }
   ]
 }

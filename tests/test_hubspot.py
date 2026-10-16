@@ -804,6 +804,18 @@ def test_hubspot_search_every_operator(client, admin_h):
     }
 
 
+def test_hubspot_search_string_filters_ignore_value_case(client, admin_h):
+    """String filter values are case-insensitive, measured against api.hubapi.com on 2026-10-09."""
+    f = lambda **kw: _hs_filter(client, admin_h, **kw)  # noqa: E731
+    others = {"Borealis Clinics", "Stealth Health Co"}
+
+    assert f(propertyName="name", operator="EQ", value="acme health") == {"Acme Health"}
+    assert f(propertyName="name", operator="EQ", value="ACME HEALTH") == {"Acme Health"}
+    assert f(propertyName="name", operator="NEQ", value="ACME HEALTH") == others
+    assert f(propertyName="name", operator="IN", values=["acme health"]) == {"Acme Health"}
+    assert f(propertyName="name", operator="NOT_IN", values=["ACME HEALTH"]) == others
+
+
 @pytest.mark.parametrize(
     "prop, value, want",
     [

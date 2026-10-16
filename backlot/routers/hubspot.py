@@ -881,11 +881,12 @@ def _match_one(prop, f: dict) -> bool:
     cands = _values_of(prop)
 
     if op in ("EQ", "NEQ"):
-        hit = any(c == str(target) for c in cands)
+        target_lower = str(target).lower()
+        hit = any(c.lower() == target_lower for c in cands)
         return hit if op == "EQ" else not hit
     if op in ("IN", "NOT_IN"):
-        wanted = {str(v) for v in (f.get("values") or [])}
-        hit = any(c in wanted for c in cands)
+        wanted = {str(v).lower() for v in (f.get("values") or [])}
+        hit = any(c.lower() in wanted for c in cands)
         return hit if op == "IN" else not hit
     if op in ("CONTAINS_TOKEN", "NOT_CONTAINS_TOKEN"):
         pats = _token_patterns(str(target or ""))

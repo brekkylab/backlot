@@ -555,8 +555,8 @@ async def refuse_a_bearer_jira_cannot_read(request: Request, call_next):
     sites on 2026-09-04.
 
     The body is spelled the way real spells it, a space after the colon (fifteen of them on
-    2026-09-30), or is the XML ``errors.atlassian.connect_token_answer`` names for an `Accept` that
-    asks for XML first, and this runs inside :func:`answer_head_as_the_get_without_its_body`: a
+    2026-09-30), or is the XML for the `Accept` values ``errors.atlassian.connect_token_answer``
+    names, and this runs inside :func:`answer_head_as_the_get_without_its_body`: a
     `HEAD` is refused as its GET is and so carries no `content-length`, as real's did on
     `serverInfo` and on `nopesuchroute` the same day. An `OPTIONS` is not refused here: real answers
     one with an unreadable bearer as it answers one with none

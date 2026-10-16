@@ -1516,21 +1516,21 @@ def jira_unauthenticated(
 
 
 def connect_token_answer(accept: str | None) -> tuple[str, bytes]:
-    """``(content-type, body)`` for the gateway's Connect-token 403: XML where the first member of
-    ``accept`` that names `application/json` or `application/xml`, read whatever its case and
-    parameters, names XML, and the JSON otherwise.
+    """``(content-type, body)`` for the gateway's Connect-token 403: XML where ``accept`` holds
+    `application/xml` and not `application/json`, each found anywhere in it and in any case, and
+    the JSON otherwise.
 
-    Measured 2026-10-13 on `serverInfo` with no `Accept` and twenty-eight values: `application/xml`,
-    `APPLICATION/XML`, `application/xml;q=0` and a browser's, which names `application/xml` ahead
-    of its `*/*`, are the 57 bytes of `<error>…</error>` under `application/xml`, and `text/xml`,
-    `application/json, application/xml`, `text/html`, `*/*` and the rest the JSON.
+    The XML is the 57 bytes of `<error>…</error>` under `application/xml`. Measured 2026-10-16 on
+    `serverInfo` with 55 values and on an issue with four: `application/xml`, `APPLICATION/XMLX`,
+    `xapplication/xml`, `text/html;x=application/xml`, `*/*, application/xml`, a browser's and
+    `application/xml` with U+0085 or U+00A0 beside it are the XML, and
+    `application/xml, application/json`, `application/xml, xapplication/jsonx`,
+    `application/json;x=application/xml`, `Application/Json, application/xml`, `text/xml`,
+    `application/xhtml+xml` and `application/x-xml` the JSON.
     """
-    for member in (accept or "").split(","):
-        named = member.split(";", 1)[0].strip().lower()
-        if named == "application/xml":
-            return "application/xml", f"<error>{CONNECT_TOKEN_UNREADABLE}</error>".encode()
-        if named == "application/json":
-            break
+    named = (accept or "").lower()
+    if "application/xml" in named and "application/json" not in named:
+        return "application/xml", f"<error>{CONNECT_TOKEN_UNREADABLE}</error>".encode()
     return "application/json", json.dumps(connect_token_body()).encode()
 
 

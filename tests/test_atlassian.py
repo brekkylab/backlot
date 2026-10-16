@@ -6998,6 +6998,19 @@ _CONNECT = [
     ("application/json, application/xml", False),
     (_HTML, False),
     ("foo", False),
+    # each found anywhere in the header, JSON over XML wherever the two stand
+    ("xapplication/xml", True),
+    ("APPLICATION/XMLX", True),
+    ("text/html;x=application/xml", True),
+    ("*/*, application/xml", True),
+    ("\x85application/xml", True),
+    ("application/xml\xa0", True),
+    ("application/xml, application/json", False),
+    ("application/xml, xapplication/jsonx", False),
+    ("application/json;x=application/xml", False),
+    ("Application/Json, application/xml", False),
+    ("application/xhtml+xml", False),
+    ("application/x-xml", False),
 ]
 _ACCEPT_ROWS += [
     *(

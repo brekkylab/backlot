@@ -342,7 +342,8 @@ async def refuse_an_unserved_operation(request: Request) -> None:
     `POST` carried the five `x-ratelimit-*` and counted: `PATCH`, `PUT` and `DELETE` were refused
     with neither and moved no window, but `DELETE /installation/token`, which carried the five at
     `used: 0`. Here none carries the echo and the methods split as real's did; ``backlot.main``
-    asks :func:`refused_an_unserved_operation` to answer that way. With a token, real's answers to
+    asks :func:`refused_an_unserved_operation` for the echo and
+    :func:`refused_an_unserved_operation_uncounted` for the headers. With a token, real's answers to
     `GET /user/packages` and `GET /gists/starred` carried the echo, and so does the router's 404 or
     405 here.
 

@@ -3351,12 +3351,13 @@ def spring_write_failure(request: Request, status: int, headers, body: bytes) ->
     (the `errors` list of a 405 or a 415, a `org.springframework` exception, the anonymous 403) is
     Tomcat's page for its status, as an `Accept` taking no JSON draws it, or the product's HTML
     404 page for a 404; a refusal the API's own service layer raised is its status with no body; an
-    `OPTIONS` is Tomcat's 403 page. The JAX-RS 404 of a path no route serves is Jersey's, which
-    Spring does not write: it stands under `application/json;q=0.5;Q=2;q=0.5`, a header Jersey
-    reads, in JSON and under `*/*;q=0.5;Q=2;q=0.5` in XML (2026-10-16), and under `Q=2`, which
-    Jersey cannot read, it is already the 500 :func:`_confluence_not_found` gives. `search` reads
-    the `q` itself (``errors.atlassian._jaxrs_accept``), and the 401 for a Basic value Confluence
-    cannot read is Tomcat's page either way.
+    `OPTIONS` is Tomcat's 403 page. What :func:`_confluence_not_found` answers is not Spring's to
+    write, an `OPTIONS` included: the product's page stands under `Q=2` and under
+    `application/json;q=0.5;Q=2;q=0.5`, and so does the JAX-RS 404 under that second header, which
+    Jersey reads (JSON, and XML under `*/*;q=0.5;Q=2;q=0.5`), where under `Q=2`, which Jersey cannot
+    read, it is the empty 500 that function gives (2026-10-16). `search` reads the `q` itself
+    (``errors.atlassian._jaxrs_accept``), and the 401 for a Basic value Confluence cannot read is
+    Tomcat's page either way.
     """
     media_type = headers.get("content-type") or ""
     is_json = media_type.startswith("application/json")
@@ -3375,10 +3376,10 @@ def spring_write_failure(request: Request, status: int, headers, body: bytes) ->
     vendor_path = _vendor_path(request.url.path)
     if vendor_path.startswith("/wiki/rest/api/search"):
         return None
+    if request.scope.get("atlassian_outside_spring"):
+        return None
     if request.method == "OPTIONS":
         return errors_atlassian.confluence_refusal(403, b"", "text/html")
-    if status == 404 and b"null for uri:" in body:
-        return None
     if not is_json or status == 401:
         return None
     if 200 <= status < 300:
@@ -3471,7 +3472,9 @@ def _confluence_serves_html(vendor_path: str) -> bool:
 
 
 def _confluence_not_found(request: Request) -> Response:
-    """Confluence's answer for a path it serves nothing at: the page, or JAX-RS's own 404."""
+    """Confluence's answer for a path it serves nothing at: the page, or JAX-RS's own 404. Neither
+    is Spring's to write, which the request is marked with for :func:`spring_write_failure`."""
+    request.scope["atlassian_outside_spring"] = True
     vendor_path = _vendor_path(_echoed_path(request))
     if _confluence_serves_html(vendor_path):
         return Response(

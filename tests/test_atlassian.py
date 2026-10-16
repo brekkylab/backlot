@@ -6706,6 +6706,50 @@ _ACCEPT_ROWS = [
     ("GET", f"{_SPACES}/NOPESUCH", "admin", _Q2, None, 404, errors_atlassian.HTML_MEDIA_TYPE)
     + (errors_atlassian.HTML_NOT_FOUND.encode(), {}),
     ("GET", "/atlassian/wiki/rest/api/nopesuchroute", "admin", _Q2, None, 500, None, b"", {}),
+    # Jersey writes its own 404, an `OPTIONS` of it too, under a `Q` Spring would fail to copy
+    (
+        "OPTIONS",
+        "/atlassian/wiki/rest/api/nopesuchroute",
+        "admin",
+        "application/json;q=0.5;Q=2;q=0.5",
+    )
+    + (None, 404, errors_atlassian.JAXRS_JSON_MEDIA_TYPE, None, {}),
+    ("OPTIONS", "/atlassian/wiki/rest/api/nopesuchroute", "admin", _Q2, None, 500, None, b"", {}),
+    # the product's page, which Spring does not write either
+    *(
+        (
+            method,
+            f"{_SPACES}/{{space}}/nope",
+            "admin",
+            accept,
+            None,
+            404,
+            errors_atlassian.HTML_MEDIA_TYPE,
+        )
+        + (errors_atlassian.HTML_NOT_FOUND.encode(), {})
+        for method in ("GET", "OPTIONS")
+        for accept in (_Q2, "application/json;q=0.5;Q=2;q=0.5")
+    ),
+    # the service layer's own 404, and a JSON member that copies its `q` beside one Spring skips
+    ("GET", "/atlassian/wiki/rest/api/content/999999999", "admin", _Q2, None, 404, None, b"", {}),
+    ("GET", _SPACES, "admin", "application/xml;Q=2, application/json", None, 200, _JSON, None, {}),
+    # a `charset` Spring finds no quotes around, the one at its start being unmatched
+    ("GET", _SPACES, "admin", 'application/json;charset="utf-8x', None, 406, None, b"", {}),
+    # a credential that resolves gets what an unserved path gets on `space/{key}/label`, where
+    # real runs it; the 403 in `Accept`'s shape is the anonymous caller's alone
+    (
+        "GET",
+        f"{_SPACES}/{{space}}/label",
+        "admin",
+        None,
+        None,
+        404,
+        errors_atlassian.HTML_MEDIA_TYPE,
+    )
+    + (errors_atlassian.HTML_NOT_FOUND.encode(), {}),
+    # Confluence answers a bearer it cannot read with its own 403, stamped as its answers are
+    ("GET", _SPACES, "unreadable-bearer", None, None, 403, _JSON, None)
+    + ({"x-confluence-request-time": _PRESENT},),
     ("GET", _SPACES, "admin", "text/html;Q=2", None, 406, _TOMCAT, "page", {}),
     ("HEAD", f"{_SPACES}/NOPESUCH", "admin", _Q2, None, 404, errors_atlassian.HTML_MEDIA_TYPE, b"")
     + ({"content-length": None},),

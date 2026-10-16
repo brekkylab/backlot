@@ -108,8 +108,12 @@ def main_fuse(resource) -> None:
             )
             path = f"{mnt}/{folder}/{name}"
             print(f"\n$ head -c 200 {folder}/{name}")
-            print("  " + open(path).read(200).replace("\n", " "))  # a genuine open() via FUSE
-            count = subprocess.run(["grep", "-c", ".", path], capture_output=True, text=True)
+            print(
+                "  " + open(path, encoding="utf-8").read(200).replace("\n", " ")
+            )  # a genuine open() via FUSE
+            count = subprocess.run(
+                ["grep", "-c", ".", path], capture_output=True, text=True, encoding="utf-8"
+            )
             print(
                 f"\n$ grep -c . <that file>   # a separate process reads the mount → {count.stdout.strip()}"
             )

@@ -67,7 +67,11 @@ def from_sdl(module_file: str, name: str, resolvers, scalars=None) -> "Engine":
 
     Each vendor's resolver module keeps its SDL as a sibling file, so this is the one place that
     knows how the two are paired."""
-    return Engine((Path(module_file).parent / f"{name}.graphql").read_text(), resolvers, scalars)
+    return Engine(
+        (Path(module_file).parent / f"{name}.graphql").read_text(encoding="utf-8"),
+        resolvers,
+        scalars,
+    )
 
 
 class Engine:

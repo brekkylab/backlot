@@ -37,6 +37,10 @@ jobs:
         # that has not seen this version otherwise loses.
         run: uv tool install --with "mcp<2" "awslabs.aws-api-mcp-server@latest"
       - name: Unit tests
+        env:
+          # Makes a text file opened without encoding= an EncodingWarning, which pyproject.toml's
+          # filterwarnings turns into a failure of the test that opened it.
+          PYTHONWARNDEFAULTENCODING: "1"
         run: uv run --no-sync pytest -rs
 
       - name: Install the Linear example's dependencies
@@ -70,6 +74,11 @@ jobs:
         run: ruff format --check .
       - name: ruff check
         run: ruff check .
+      - name: ruff check --preview --select PLW1514
+        # A text-mode open() or Path.read_text()/write_text() without encoding=. A preview rule, so
+        # it runs on its own here: `lint.preview` in pyproject.toml would also switch the rules
+        # above to their preview behaviour, which a minor ruff release can move.
+        run: ruff check --preview --select PLW1514 .
       - name: Prose checks on the comments and docstrings a pull request adds
         if: github.event_name == 'pull_request'
         run: python scripts/prose_check.py --github HEAD^1

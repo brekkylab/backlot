@@ -173,7 +173,7 @@ def test_only_the_employee_directory_gets_a_token(tmp_path):
     shutil.copy(gen / "employee_directory.yaml", erb.employee_yaml(settings))
 
     erb.import_structured(settings, gen)
-    written = yaml.safe_load(settings.tokens_path.read_text())["users"]
+    written = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))["users"]
     directory = {e["email"] for e in erb.parse_employees(erb.employee_yaml(settings))}
     assert {u["email"] for u in written} == directory
     assert len(written) == len(directory)  # one row each, no duplicates
@@ -312,7 +312,7 @@ def test_write_tokens_is_directory_only(tmp_path):
         admin_token="admin-service-token",
     )
     p.write_tokens(st)
-    d = _yaml.safe_load(st.tokens_path.read_text())
+    d = _yaml.safe_load(st.tokens_path.read_text(encoding="utf-8"))
     emails = {u["email"] for u in d["users"]}
     assert emails == {"ava.chen@redwoodinference.com"}  # only the directory employee
     assert "maya.chen@redwoodinference.com" not in emails
@@ -358,7 +358,7 @@ def test_mint_does_not_clobber_directory_user(tmp_path):
     )
     p.write_tokens(st)
     assert "tomas.novak@redwoodinference.com" in {
-        u["email"] for u in _yaml.safe_load(st.tokens_path.read_text())["users"]
+        u["email"] for u in _yaml.safe_load(st.tokens_path.read_text(encoding="utf-8"))["users"]
     }
 
 
@@ -1660,7 +1660,8 @@ def test_synthesized_users_installed_after_load(tmp_path, monkeypatch):
                     ]
                 }
             }
-        )
+        ),
+        encoding="utf-8",
     )
     (gen / "sources" / "google_drive" / "d.json").write_text(
         json.dumps(
@@ -1676,7 +1677,8 @@ def test_synthesized_users_installed_after_load(tmp_path, monkeypatch):
                 "created_at": "2025-01-01",
                 "confidentiality": "restricted",
             }
-        )
+        ),
+        encoding="utf-8",
     )
     monkeypatch.setenv("BACKLOT_DATA_DIR", str(data))
     get_settings.cache_clear()
@@ -1716,10 +1718,11 @@ def test_import_structured_loads_hubspot_source_dir(tmp_path, monkeypatch):
                     ]
                 }
             }
-        )
+        ),
+        encoding="utf-8",
     )
     (gen / "sources" / "hubspot" / "company-acacia-loop-services.json").write_text(
-        json.dumps({**HS_RAW, "dataset_doc_uuid": "dsid_hs_e2e"})
+        json.dumps({**HS_RAW, "dataset_doc_uuid": "dsid_hs_e2e"}), encoding="utf-8"
     )
     monkeypatch.setenv("BACKLOT_DATA_DIR", str(data))
     get_settings.cache_clear()
@@ -1779,7 +1782,8 @@ def test_import_structured_persists_source_documents_including_excluded(tmp_path
                     ]
                 }
             }
-        )
+        ),
+        encoding="utf-8",
     )
     (gen / "sources" / "google_drive" / "real.json").write_text(
         json.dumps(
@@ -1792,7 +1796,8 @@ def test_import_structured_persists_source_documents_including_excluded(tmp_path
                 "owner": "Real Dev",
                 "created_at": "2025-01-01",
             }
-        )
+        ),
+        encoding="utf-8",
     )
     # Whitespace-only body -> empty after strip -> select_records drops it into `excluded` rather
     # than yielding it to the converter.
@@ -1807,7 +1812,8 @@ def test_import_structured_persists_source_documents_including_excluded(tmp_path
                 "owner": "Real Dev",
                 "created_at": "2025-01-01",
             }
-        )
+        ),
+        encoding="utf-8",
     )
     monkeypatch.setenv("BACKLOT_DATA_DIR", str(data))
     get_settings.cache_clear()
@@ -1832,9 +1838,9 @@ def _import_gen(tmp_path, monkeypatch, source: str, filename: str, raw: dict, em
     gen = tmp_path / "gen"
     (gen / "sources" / source).mkdir(parents=True)
     (gen / "employee_directory.yaml").write_text(
-        yaml.safe_dump({"departments": {"Team": employees}})
+        yaml.safe_dump({"departments": {"Team": employees}}), encoding="utf-8"
     )
-    (gen / "sources" / source / filename).write_text(json.dumps(raw))
+    (gen / "sources" / source / filename).write_text(json.dumps(raw), encoding="utf-8")
     monkeypatch.setenv("BACKLOT_DATA_DIR", str(data))
     get_settings.cache_clear()
     settings = get_settings()
@@ -2919,14 +2925,16 @@ def _write_generated_data(root: Path) -> Path:
     """Materialize an ERB ``generated_data/`` tree from RT_DOCS."""
     gen = root / "gen"
     (gen).mkdir(parents=True, exist_ok=True)
-    (gen / "employee_directory.yaml").write_text(yaml.safe_dump({"departments": RT_EMPLOYEES}))
+    (gen / "employee_directory.yaml").write_text(
+        yaml.safe_dump({"departments": RT_EMPLOYEES}), encoding="utf-8"
+    )
     for src, docs in RT_DOCS.items():
         d = gen / "sources" / src
         d.mkdir(parents=True, exist_ok=True)
         for name, raw in docs.items():
             # a name may carry a subdirectory — Fireflies' container IS the layout
             (d / name).parent.mkdir(parents=True, exist_ok=True)
-            (d / name).write_text(json.dumps(raw))
+            (d / name).write_text(json.dumps(raw), encoding="utf-8")
     return gen
 
 
@@ -3029,8 +3037,8 @@ def test_erb_to_byo_round_trip_writes_the_same_tokens(tmp_path):
     direct = _import_erb_directly(gen, tmp_path / "direct")
     viabyo = _import_via_byo(gen, tmp_path / "viabyo", tmp_path / "artifact")
 
-    ta = yaml.safe_load(direct.tokens_path.read_text())
-    tb = yaml.safe_load(viabyo.tokens_path.read_text())
+    ta = yaml.safe_load(direct.tokens_path.read_text(encoding="utf-8"))
+    tb = yaml.safe_load(viabyo.tokens_path.read_text(encoding="utf-8"))
     assert ta["org"] == tb["org"] and ta["org_domain"] == tb["org_domain"]
     key = lambda us: sorted((u["email"], u["name"], u["token"]) for u in us)  # noqa: E731
     assert key(ta["users"]) == key(tb["users"])
@@ -3265,7 +3273,7 @@ def test_export_byo_writes_a_roster_carrying_names_and_who_may_authenticate(tmp_
     settings = Settings(data_dir=tmp_path, org_name="redwood", org_domain="redwoodinference.com")
     out = tmp_path / "roster.yaml"
     P.write_roster(out, settings)
-    roster = yaml.safe_load(out.read_text())
+    roster = yaml.safe_load(out.read_text(encoding="utf-8"))
 
     assert roster["org"] == "redwood" and roster["org_domain"] == "redwoodinference.com"
     # the directory user keeps its accented name and sits under its group
@@ -3365,9 +3373,9 @@ def test_export_byo_converts_every_document_it_was_given(tmp_path):
     counts = erb.export_byo(settings, gen, out)
     assert counts == {src: len(docs) for src, docs in RT_DOCS.items()}
     # and the artifact holds at least one record per document (hubspot notes add more)
-    assert sum(1 for line in (out / "corpus.jsonl").read_text().split("\n") if line.strip()) >= sum(
-        counts.values()
-    )
+    assert sum(
+        1 for line in (out / "corpus.jsonl").read_text(encoding="utf-8").split("\n") if line.strip()
+    ) >= sum(counts.values())
 
 
 def test_grants_for_fallback_is_a_fallback_not_a_conjunction():
@@ -3418,7 +3426,7 @@ def test_export_byo_shards_are_verifiable_and_reproducible(tmp_path):
 
     out = tmp_path / "sharded"
     counts = erb.export_byo(settings, gen, out, shard_records=2)
-    manifest = _json.loads((out / "manifest.json").read_text())
+    manifest = _json.loads((out / "manifest.json").read_text(encoding="utf-8"))
 
     # every shard the manifest names exists, and its recorded size and digest match the file
     seen = 0
@@ -3428,7 +3436,9 @@ def test_export_byo_shards_are_verifiable_and_reproducible(tmp_path):
             p = out / shard["path"]
             assert p.exists() and p.stat().st_size == shard["bytes"]
             assert erb._sha256(p) == shard["sha256"]
-            lines = [x for x in _gzip.open(p, "rt").read().split("\n") if x.strip()]
+            lines = [
+                x for x in _gzip.open(p, "rt", encoding="utf-8").read().split("\n") if x.strip()
+            ]
             assert len(lines) == shard["records"] <= 2
             assert all(_json.loads(x)["source_type"] == src for x in lines)
             seen += len(lines)
@@ -3439,7 +3449,7 @@ def test_export_byo_shards_are_verifiable_and_reproducible(tmp_path):
     # a second conversion of the same input reproduces the same digests
     again = erb.export_byo(settings, gen, tmp_path / "sharded2", shard_records=2)
     assert again == counts
-    m2 = _json.loads((tmp_path / "sharded2" / "manifest.json").read_text())
+    m2 = _json.loads((tmp_path / "sharded2" / "manifest.json").read_text(encoding="utf-8"))
     assert [s["sha256"] for i in m2["sources"].values() for s in i["shards"]] == [
         s["sha256"] for i in manifest["sources"].values() for s in i["shards"]
     ]
@@ -3462,7 +3472,8 @@ def test_select_records_drops_a_document_with_no_content(tmp_path):
                 "content_field_names": ["messages"],
                 "dataset_doc_uuid": "dsid_empty_thread",
             }
-        )
+        ),
+        encoding="utf-8",
     )
     ids = {dsid for _src, dsid, _raw in erb.select_records(gen)}
     assert "dsid_empty_thread" not in ids
@@ -3485,7 +3496,8 @@ def _with_empty_thread(tmp_path, dsid="dsid_empty_thread"):
                 "content_field_names": ["messages"],
                 "dataset_doc_uuid": dsid,
             }
-        )
+        ),
+        encoding="utf-8",
     )
     return gen
 
@@ -3525,7 +3537,7 @@ def test_a_declared_exclusion_is_recorded_by_identity_and_the_layer_adds_up(tmp_
     out = tmp_path / "out"
     erb.export_byo(settings, gen, out, shard_records=2)
 
-    layer = json.loads((out / "manifest.json").read_text())["layers"]["converted"]
+    layer = json.loads((out / "manifest.json").read_text(encoding="utf-8"))["layers"]["converted"]
     assert layer["excluded"] == [
         {
             "source": "slack",
@@ -3537,6 +3549,37 @@ def test_a_declared_exclusion_is_recorded_by_identity_and_the_layer_adds_up(tmp_
     assert layer["source_documents"] == (
         layer["documents"] + len(layer["excluded"]) + len(layer["failed"])
     )
+
+
+@pytest.mark.parametrize(
+    "written",
+    [
+        pytest.param(b"{not json", id="not JSON"),
+        pytest.param(b'{"a": "\xff"}', id="not UTF-8"),
+        pytest.param(b'{"n": ' + b"1" * 4301 + b"}", id="an integer past 4300 digits"),
+        pytest.param(b"[" * 1_000_000, id="nested too deep"),
+        pytest.param(None, id="a directory"),
+    ],
+)
+def test_a_json_file_that_cannot_be_read_is_passed_over(tmp_path, written):
+    """A generated-data file that cannot be read as JSON is read as nothing, whatever the reason:
+    `read_snapshot` answers None for it, and `iter_records` walks on to the next record. ``None``
+    puts a directory where the file goes."""
+
+    def put(path):
+        if written is None:
+            path.mkdir()
+        else:
+            path.write_bytes(written)
+
+    put(tmp_path / erb.SNAPSHOT_FILE)
+    assert erb.read_snapshot(tmp_path) is None
+    source = tmp_path / "sources" / "slack"
+    source.mkdir(parents=True)
+    put(source / "a.json")
+    (source / "b.json").write_text(json.dumps({"dataset_doc_uuid": "dsid_b"}), encoding="utf-8")
+    read = [dsid for _, dsid, _ in erb.iter_records(tmp_path / "sources", ("slack",))]
+    assert read == ["dsid_b"]
 
 
 def test_the_snapshot_the_data_came_from_reaches_the_manifest(tmp_path, monkeypatch):
@@ -3551,14 +3594,17 @@ def test_the_snapshot_the_data_came_from_reaches_the_manifest(tmp_path, monkeypa
         "tarball_bytes": 1000142917,
     }
     assert erb.read_snapshot(gen) is None  # a hand-assembled tree records nothing
-    (gen / erb.SNAPSHOT_FILE).write_text(json.dumps(monkey))
+    (gen / erb.SNAPSHOT_FILE).write_text(json.dumps(monkey), encoding="utf-8")
     assert erb.read_snapshot(gen) == monkey
 
     settings = _settings_for(tmp_path, gen)
     out = tmp_path / "out"
     erb.export_byo(settings, gen, out, shard_records=2)
     assert (
-        json.loads((out / "manifest.json").read_text())["layers"]["converted"]["snapshot"] == monkey
+        json.loads((out / "manifest.json").read_text(encoding="utf-8"))["layers"]["converted"][
+            "snapshot"
+        ]
+        == monkey
     )
 
 
@@ -3581,7 +3627,9 @@ def test_round_trip_survives_two_documents_sharing_a_doc_id(tmp_path):
     one silently. Now the dataset's id is not identity — nothing is keyed on it — so two records
     are two documents, which is what they always were."""
     gen = _write_generated_data(tmp_path)
-    jira_first = json.loads(sorted((gen / "sources" / "jira").glob("*.json"))[0].read_text())
+    jira_first = json.loads(
+        sorted((gen / "sources" / "jira").glob("*.json"))[0].read_text(encoding="utf-8")
+    )
     dsid = jira_first["dataset_doc_uuid"]
     # `zz-` so it sorts last: iter_records walks the source in path order. The title lives in
     # whichever field `title_field_name` names, so that is the one to change.
@@ -3592,9 +3640,12 @@ def test_round_trip_survives_two_documents_sharing_a_doc_id(tmp_path):
                 jira_first["title_field_name"]: "Repeated id, later record",
                 "status": "Resolved",
             }
-        )
+        ),
+        encoding="utf-8",
     )
-    conf_first = json.loads(sorted((gen / "sources" / "confluence").glob("*.json"))[0].read_text())
+    conf_first = json.loads(
+        sorted((gen / "sources" / "confluence").glob("*.json"))[0].read_text(encoding="utf-8")
+    )
     (gen / "sources" / "confluence" / "zz-shared.json").write_text(
         json.dumps(
             {
@@ -3602,7 +3653,8 @@ def test_round_trip_survives_two_documents_sharing_a_doc_id(tmp_path):
                 "dataset_doc_uuid": dsid,
                 conf_first["title_field_name"]: "Same id, under confluence",
             }
-        )
+        ),
+        encoding="utf-8",
     )
 
     direct = _import_erb_directly(gen, tmp_path / "direct")

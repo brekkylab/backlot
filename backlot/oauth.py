@@ -71,7 +71,7 @@ def generate(settings, org: str | None = None) -> dict:
             "public_key_pem": public_pem,  # server-side only; never exposed via /_meta/credentials
         },
     }
-    settings.credentials_path.write_text(yaml.safe_dump(creds, sort_keys=False))
+    settings.credentials_path.write_text(yaml.safe_dump(creds, sort_keys=False), encoding="utf-8")
     return creds
 
 
@@ -86,7 +86,7 @@ class Oauth:
     def load(cls, path: Path) -> "Oauth | None":
         if not Path(path).exists():
             return None
-        data = yaml.safe_load(Path(path).read_text()) or {}
+        data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
         if not data.get("oauth_client"):
             return None
         return cls(data)
@@ -152,7 +152,7 @@ if __name__ == "__main__":
 
     s = get_settings()
     org = (
-        (yaml.safe_load(s.tokens_path.read_text()) or {}).get("org")
+        (yaml.safe_load(s.tokens_path.read_text(encoding="utf-8")) or {}).get("org")
         if s.tokens_path.exists()
         else None
     )

@@ -386,7 +386,8 @@ def test_linear_acl_scoped_by_token(live_server):
 
     base, settings = live_server
     tokens = {
-        u["email"]: u["token"] for u in yaml.safe_load(settings.tokens_path.read_text())["users"]
+        u["email"]: u["token"]
+        for u in yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))["users"]
     }
     real_requests = lb.requests
 

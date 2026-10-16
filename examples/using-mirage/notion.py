@@ -113,10 +113,10 @@ def main_fuse(resource) -> None:
                 page_json = f"{mnt}/pages/{pages[0]}/page.json"
                 print(f"\n$ head -c 200 pages/{pages[0]}/page.json")
                 print(
-                    "  " + open(page_json).read(200).replace("\n", " ")
+                    "  " + open(page_json, encoding="utf-8").read(200).replace("\n", " ")
                 )  # a genuine open() via FUSE
                 count = subprocess.run(
-                    ["grep", "-c", ".", page_json], capture_output=True, text=True
+                    ["grep", "-c", ".", page_json], capture_output=True, text=True, encoding="utf-8"
                 )
                 print(
                     f"\n$ grep -c . <that file>   # a separate process reads the mount → {count.stdout.strip()}"

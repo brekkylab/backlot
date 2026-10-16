@@ -45,6 +45,83 @@ def bearer_token(request: Request) -> str | None:
     return None
 
 
+# An `Authorization` value as api.github.com splits it: the scheme, then everything after it.
+_GITHUB_SCHEME = re.compile(r"([^ \t,]*)(.*)", re.DOTALL)
+# A `Basic` value api.github.com reads as base64: four-character groups, the last of which may be
+# two characters and `==` or three and `=`. Written out rather than left to `base64.b64decode`,
+# whose `validate=True` reads `abcd=` as base64 on Python 3.11 and refuses it from 3.12 on.
+_GITHUB_BASE64 = re.compile(r"(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?")
+
+
+def github_credential(request: Request) -> str | None:
+    """The credential a GitHub request carries, read the way api.github.com reads ``Authorization``:
+    ``None`` for a request it serves as anonymous, and otherwise the string to resolve as a token:
+    what follows `Bearer` or `token`, so ``","`` for ``Bearer,``; the token a `Basic` value names;
+    or ``""`` for a `Basic` value refused with no token to look up.
+
+    Measured on `GET /rate_limit` on 2026-10-14 and 2026-10-16, each value on a URL of its own,
+    where an anonymous caller is served 200 and a credential that does not resolve is the 401 "Bad
+    credentials"::
+
+        Bearer or token, in any case, alone or followed by a space,      401
+          a tab or a comma and then anything
+        Basic, in any case, alone, followed by a comma, or followed       401
+          by a value that is not base64 once its spaces are dropped:
+          a, abcde, ====, Zm9vOmJhcg, -_-_, a=bc, abcd=, !!!!, ab<TAB>cd
+        Basic, a tab, and a value that is not base64, in a header         200
+          with no comma: <TAB>!!!!, <TAB>a, <TAB>abcd=, <TAB><TAB>!!!!
+        Basic, a tab, and a comma anywhere after it: <TAB>,!!!!,          401
+          <TAB> ,!!!!, <TAB>!!,!!, <TAB>!!!!,
+        Basic followed by base64 that names no token: abcd,               200
+          Zm9vOmJhcg==, +/+/, ab==, abc=, ab cd, a b c d, <TAB>Zm9v
+        any other first word, or none: nope, Digest, OAuth, Bear,         200
+          Bearerx, bearer:, Bearer=
+        a no-break space or NEL in place of a space: Bearer<NBSP>nope,    200
+          Bearer<NEL>, <NBSP>Bearer <t>, Basic<NBSP> and base64
+
+    And with a token that resolves: ``Bearer <t>``, ``bearer <t>``, ``token <t>``, a second space
+    or a tab before it are its 200, and so is ``Basic``, then a space or a tab, then the base64 of
+    ``x:<t>``, ``nope:<t>``, ``<t>:x-oauth-basic``, ``<t>:`` or ``<t>``; ``Bearer,<t>``,
+    ``Bearer ,<t>``, ``Bearer <t> x``, ``Bearer <t>,`` and ``Basic <t>`` are the 401; ``<t>`` alone
+    is served as anonymous, and so is ``Basic`` with the base64 of ``<t>:x``, ``<t>:nope``,
+    ``<t>:X-OAUTH-BASIC``, ``<t>:x-oauth-basic:`` or ``<t>: ``.
+
+    So real splits the scheme off at the first space, tab or comma, reads the password of a `Basic`
+    value that decodes, or its user when there is no colon or the password is empty or
+    `x-oauth-basic`, and serves one that names no token as no credential at all, as it does an
+    unknown scheme. A `Basic` value that does not decode is no credential either where
+    :func:`github_scheme_then_a_tab` holds. A space and a tab are the only whitespace it trims:
+    ``Bearer <NBSP>``, ``Bearer <t><NBSP>``, ``Bearer <NBSP><t>``, ``Bearer <t><NEL>``,
+    ``Bearer <t><0x1F>``, ``Basic <NBSP>`` and base64, and the base64 of ``x:<t>`` followed by a
+    no-break space were each the 401 (2026-10-16).
+    """
+    scheme, rest = github_scheme(request)
+    if scheme in ("bearer", "token"):
+        return rest.strip(" \t")
+    if scheme == "basic":
+        value = rest.lstrip(" \t").replace(" ", "")
+        if not value or not _GITHUB_BASE64.fullmatch(value):
+            return None if github_scheme_then_a_tab(request) else ""
+        user, _, password = base64.b64decode(value).decode("utf-8", "replace").partition(":")
+        token = user if password in ("", "x-oauth-basic") else password
+        return token if acl(request).resolve(token) is not None else None
+    return None
+
+
+def github_scheme(request: Request) -> tuple[str, str]:
+    """The `Authorization` value split by :data:`_GITHUB_SCHEME`, the scheme in lower case."""
+    scheme, rest = _GITHUB_SCHEME.fullmatch((_authorization(request) or "").strip(" \t")).groups()
+    return scheme.lower(), rest
+
+
+def github_scheme_then_a_tab(request: Request) -> bool:
+    """Whether a tab follows the scheme :func:`github_scheme` splits off, in a header that holds no
+    comma: the spelling real reads apart from the rest, whose rows are in
+    :func:`github_credential`'s table."""
+    header = _authorization(request) or ""
+    return github_scheme(request)[1].startswith("\t") and "," not in header
+
+
 def api_key_token(request: Request) -> str | None:
     """Parse ``Authorization: <key>`` — with or without a ``Bearer`` prefix.
 
@@ -231,26 +308,32 @@ def atlassian_bearer_token(request: Request) -> str | None:
         Bearer <t>      read            bearer <t>      not read
         ' Bearer <t>'   read            BEARER <t>      not read
         Bearer <t>' '   read            token <t>       not read
-                                        OAuth <t>       not read
+        Bearer a<TAB>b  read            OAuth <t>       not read
                                         Bearer  <t>     not read
                                         Bearer<TAB><t>  not read
                                         Bearer<t>       not read
                                         Bearer          not read
+                                        Bearer a b      not read
 
-    The scheme is case-sensitive and separated from the token by exactly one space. Sharing
-    :func:`bearer_token` would authenticate five of those spellings — every "not read" row above
-    but ``OAuth <t>``, ``Bearer<t>`` and the bare ``Bearer`` — so a client sending
-    ``Authorization: token <t>`` would pass every test here and read nothing in production. Slack
-    refuses a different set: it takes the double space this refuses.
-
-    The leading ``strip`` is what serves the ``Bearer <t>' '`` row, so the token needs no second
-    one: nothing with trailing whitespace survives to reach it.
+    The scheme is case-sensitive and separated from the token by exactly one space, and the token
+    holds no space of its own: the `Bearer a b` row above was served anonymously on Jira Cloud on
+    2026-10-12, where a tab, a comma or a dot in the token was read and then refused. Any other byte
+    is the token's own wherever it stands, a tab, U+0085 and U+00A0 among them, and only a space or
+    a tab is trimmed from either end of the header, where Python's ``str.strip`` would take U+0085
+    and U+00A0 too. Measured on Jira Cloud on 2026-10-16 with each latin-1 byte but CR, LF and NUL
+    in four places: alone after `Bearer `, after `Bearer <t>`, before `Bearer <t>` and between
+    `Bearer ` and `<t>`; the control characters but the tab never reach this, the server in front
+    answering them with a 400 on real and here. Sharing :func:`bearer_token` would authenticate six
+    of those spellings — every "not read" row above but ``OAuth <t>``, ``Bearer<t>`` and the bare
+    ``Bearer`` — so a client sending ``Authorization: token <t>`` would pass every test here and
+    read nothing in production. Slack refuses a different set: it takes the double space this
+    refuses.
     """
-    hdr = (_authorization(request) or "").strip()
+    hdr = (_authorization(request) or "").strip(" \t")
     if not hdr.startswith("Bearer "):
         return None
     rest = hdr[len("Bearer ") :]
-    if not rest or rest[0].isspace():
+    if " " in rest:
         return None
     return rest
 

@@ -62,6 +62,8 @@ all = ["backlot[dev,official-sdk,mcp,llamaindex,mirage,fsspec]"]
 dev = [
     "pytest>=8.0",
     "pytest-xdist>=3.6",
+    # scripts/invariance.py records coverage to hold a test-only change to the lines it executed.
+    "pytest-cov>=6",
     # starlette 1.6's TestClient wants httpx2; the httpx the tests also call directly is a core
     # dependency.
     "httpx2",
@@ -190,6 +192,12 @@ extend-select = [
     "S612",  # logging.config.listen
 ]
 
+[tool.coverage.run]
+# Follow the uvicorn subprocess `live_server` and `backlot.serve` start, which most of the S3 and SDK
+# tests talk to; `backlot.serve` stops it with SIGTERM, which coverage saves nothing on unless told.
+patch = ["subprocess"]
+sigterm = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # loadfile, not the default: several modules share a module-scoped corpus.
@@ -201,6 +209,13 @@ filterwarnings = [
     "ignore:Duplicate Operation ID:UserWarning",
     # llama-index reads a pydantic field API pydantic itself deprecated; nothing here to change.
     "ignore:Call to deprecated function \\(or staticmethod\\) extra_info:DeprecationWarning",
+    # An open without encoding= (a text file, or a subprocess pipe in text mode) in backlot, tests
+    # or scripts fails the test that reaches it; one in a dependency stays a warning. Python emits
+    # the warning only under PYTHONWARNDEFAULTENCODING=1, which CI sets.
+    "error::EncodingWarning:backlot|tests|scripts",
+]
+markers = [
+    "windows: a test the Windows workflow runs on every pull request it runs on",
 ]
 
 [tool.setuptools_scm]

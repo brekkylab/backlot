@@ -12,7 +12,7 @@ mean a parser that understands neither well:
 
 A discovery document describes a second contract that is not an operation at all: the batch
 endpoint, named in the top-level ``batchPath``. Nothing under ``resources`` declares it, so the
-path diff has nothing to pair Backlot's batch routes with, and :func:`batch_divergences`
+path diff has nothing to pair Backlot's batch routes with, and :func:`batch_measure`
 compares the field instead. It reads per SOURCE rather than per document, because Backlot serves
 one batch route for several of them.
 
@@ -26,7 +26,23 @@ from typing import Any, Iterable, Mapping, Protocol
 from backlot.fidelity.errors import FidelityError
 from backlot.fidelity.fetch import fetch_json
 from backlot.fidelity.findings import BREAKING, GAP, Finding
-from backlot.fidelity.operations import Operation, canonical, diff_operations, from_backlot
+from backlot.fidelity.operations import (
+    Operation,
+    canonical,
+    diff_operations,
+    from_backlot,
+    inventory,
+)
+from backlot.fidelity.surface import (
+    EXTRA,
+    IMPLEMENTED,
+    MISSING,
+    BatchDocument,
+    BatchRoute,
+    BatchSurface,
+    Measurement,
+    OperationSurface,
+)
 
 
 def from_google_discovery(doc: Mapping[str, Any]) -> dict[tuple[str, str], Operation]:
@@ -60,6 +76,7 @@ def from_google_discovery(doc: Mapping[str, Any]) -> dict[tuple[str, str], Opera
                 method.get("httpMethod", "GET").lower(),
                 canonical(service_path + method["path"]),
                 frozenset(params | common),
+                method.get("id") or "",
             )
             ops[o.key] = o
         for child in (node.get("resources") or {}).values():
@@ -122,9 +139,9 @@ def answers(route: str, declared: str) -> bool:
     )
 
 
-def batch_divergences(
+def batch_measure(
     batch_mount: Iterable[str], documents: Iterable[tuple[str, Mapping[str, Any]]]
-) -> list[Finding]:
+) -> Measurement:
     """Backlot's batch routes against the ``batchPath`` each document declares.
 
     Per SOURCE, not per document, which is what separates this from the path diff. Measured
@@ -136,11 +153,13 @@ def batch_divergences(
     """
     routes = [canonical(route) for route in batch_mount]
     out: list[Finding] = []
+    declarations: list[BatchDocument] = []
     selected: set[str] = set()
     for url, doc in documents:
         who = document_id(doc, url)
         declared = batch_path(doc)
         if not declared:
+            declarations.append(BatchDocument(who, declared, EXTRA))
             out.append(
                 Finding(
                     "extra_batch_api",
@@ -152,6 +171,7 @@ def batch_divergences(
             )
             continue
         answering = [route for route in routes if answers(route, declared)]
+        declarations.append(BatchDocument(who, declared, IMPLEMENTED if answering else MISSING))
         if not answering:
             # The document AND the value: a gap is acknowledged by identity alone (see
             # `Baseline.unacknowledged`), so keyed on the document, an acknowledged move to one
@@ -179,18 +199,25 @@ def batch_divergences(
                     "batchPath the route answers",
                 )
             )
-    return sorted(out, key=lambda f: (f.severity != BREAKING, f.path, f.kind))
+    batch = BatchSurface(
+        tuple(sorted(declarations, key=lambda d: d.document)),
+        tuple(BatchRoute(f"/{r}", IMPLEMENTED if r in selected else EXTRA) for r in sorted(routes)),
+    )
+    return Measurement(
+        sorted(out, key=lambda f: (f.severity != BREAKING, f.path, f.kind)),
+        OperationSurface((), batch),
+    )
 
 
-def divergences(
+def measure(
     spec: SpecTarget, *, timeout: float = 120.0, seen: dict[str, dict] | None = None
-) -> list[Finding]:
-    """This module's entry point: load both contracts and compare them.
+) -> Measurement:
+    """This module's entry point: load both contracts, compare them and pair their operations.
 
     ONE document. A Google source is often served through several APIs at once — a Drive file is
     also read through Docs, Sheets and Slides — and each publishes its own discovery document with
     its own service path. Those are the caller's to concatenate, and ``seen`` is how that caller
-    hands the same documents to :func:`batch_divergences` without fetching them twice."""
+    hands the same documents to :func:`batch_measure` without fetching them twice."""
     from backlot.main import app
 
     if seen is None:
@@ -204,4 +231,4 @@ def divergences(
             f"{spec.spec_url} declared no operations; is it still a Discovery document?"
         )
     served = from_backlot(app.openapi(), spec.mount, spec.strip)
-    return diff_operations(served, vendor)
+    return Measurement(diff_operations(served, vendor), inventory(served, vendor))

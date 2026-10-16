@@ -5611,7 +5611,59 @@ _JSON_TYPE = "application/json"
                 ("application/json;charset=utf-8;Charset=nope", "'application/json;Charset=nope'"),
                 ("application/xml;x=1;X=2", "'application/xml;X=2'"),
                 ("application/xml;Q=2", "'application/xml;Q=2'"),
+                ("application/xml;q=2;Q=0.5", "'application/xml;Q=0.5'"),
+                ("application/xml;q=1d", "'application/xml;q=1d'"),
+                ("application/xml;q=-0", "'application/xml;q=-0'"),
             )
+        ),
+        # a `q` Spring cannot read, the one thing wrong with the type: why, in Spring's words and
+        # Java's (``errors.atlassian._spring_quality_reason``)
+        *(
+            ("POST", "/wiki/rest/api/space/abc123/permission", None, ctype, 415)
+            + (f'Invalid media type "{ctype}": {reason}',)
+            for ctype, reason in (
+                (
+                    "application/json;q=2",
+                    'Invalid quality value "2": should be between 0.0 and 1.0',
+                ),
+                (
+                    'application/xml;q="2"',
+                    'Invalid quality value "2": should be between 0.0 and 1.0',
+                ),
+                (
+                    'application/xml;q=" 2"',
+                    'Invalid quality value " 2": should be between 0.0 and 1.0',
+                ),
+                (
+                    "application/xml;q=NaN",
+                    'Invalid quality value "NaN": should be between 0.0 and 1.0',
+                ),
+                (
+                    "application/xml;q=0x1.8p0",
+                    'Invalid quality value "0x1.8p0": should be between 0.0 and 1.0',
+                ),
+                (
+                    "application/xml;Q=0.5;q=2",
+                    'Invalid quality value "2": should be between 0.0 and 1.0',
+                ),
+                ("application/xml;q=abc", 'For input string: "abc"'),
+                ('application/xml;q="abc "', 'For input string: "abc"'),
+                ("application/xml;q=-", 'For input string: "-"'),
+                ("application/xml;q=0x1.8", 'For input string: "0x1.8"'),
+                ("application/xml;q=1.2.3", "multiple points"),
+                ("application/xml;q=-..", "multiple points"),
+                ("application/xml;q=1.2e3.4", 'For input string: "1.2e3.4"'),
+                ('application/xml;q=""', "empty String"),
+            )
+        ),
+        (
+            "POST",
+            "/wiki/rest/api/content/abc123/child/attachment",
+            None,
+            "multipart/form-data;boundary=x;q=2",
+            415,
+            'Invalid media type "multipart/form-data;boundary=x;q=2": Invalid quality value "2": '
+            "should be between 0.0 and 1.0",
         ),
         # a charset Java does not name, in the case Spring checks, and one named in another case
         (

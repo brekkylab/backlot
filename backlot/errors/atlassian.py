@@ -587,7 +587,7 @@ def _spring_parameters(listed: list[tuple[str, str]]) -> list[tuple[str, str]]:
 
 
 def _spring_media_type(
-    value: str, *, charset_in_any_case: bool
+    value: str, *, charset_in_any_case: bool, check_q: bool = True
 ) -> tuple[str, str, list[tuple[str, str]]] | None:
     """``value`` as Spring's `MediaType.parseMediaType` reads it, `(type, subtype, parameters)` with
     the parameters it keeps (:func:`_spring_parameters`), or None where it cannot read it: the type
@@ -606,7 +606,7 @@ def _spring_media_type(
     `charset="ISO_8859-1:1987"` is), 2026-10-16. A `q` is checked where it is kept as `q` and
     must be one :func:`_spring_quality` reads: `q=2;q=0.5` is read and `q=0.5;q=2` is not
     (2026-10-13), and `q=Infinity;Q=0.5` is read, where the `Q` is what is kept (both products,
-    2026-10-16).
+    2026-10-16). ``check_q`` False leaves that `q` unchecked, for :func:`_spring_quality_reason`.
     """
     full, _, rest = value.partition(";")
     full = full.strip(_JAVA_TRIMMED)
@@ -632,7 +632,7 @@ def _spring_media_type(
             return None
     parameters = _spring_parameters(listed)
     for name, given in parameters:
-        if name == "q" and not _spring_quality(given):
+        if check_q and name == "q" and not _spring_quality(given):
             return None
         is_charset = charset_in_any_case and name.lower() == "charset"
         if is_charset and not _java_charset(_unquoted(given)):
@@ -746,9 +746,10 @@ def refuse_a_confluence_media_type(headers, consumes: tuple[str, ...]) -> Atlass
     `POST space/{key}/permission`: an absent or empty `Content-Type` is named `''`, a type is named
     as :func:`_parse_media_type` reads it (`APPLICATION/JSON` as `application/json`,
     `TEXT/Plain;Charset=UTF-8;X=Y` with its parameters kept), and a value with no `/` (`foo`) is
-    `Invalid mime type "foo": does not contain '/'`. A value Spring cannot read for another reason
-    is named as sent here, where real says why it could not read it
-    (`Invalid mime type "text/plain;charset=nope": unsupported charset 'nope'`,
+    `Invalid mime type "foo": does not contain '/'`. A value whose `q` is all Spring cannot read is
+    `Invalid media type "<value>": ` and the reason :func:`_spring_quality_reason` gives. A value
+    Spring cannot read for another reason is named as sent here, where real says why it could not
+    read it (`Invalid mime type "text/plain;charset=nope": unsupported charset 'nope'`,
     `Invalid mime type "text/": does not contain subtype after '/'`, 2026-10-13); the status and the
     code are the same. Only a parameter named `charset` in that case is a charset to it
     (`multipart/form-data; boundary=x; Charset=bogus` is read, 2026-10-13).
@@ -757,8 +758,11 @@ def refuse_a_confluence_media_type(headers, consumes: tuple[str, ...]) -> Atlass
     media_type = _parse_media_type(value, charset_in_any_case=False) if value else None
     if media_type is not None and _takes(consumes, media_type):
         return None
+    quality = _spring_quality_reason(value) if media_type is None else None
     if value and "/" not in value:
         reason = f"Invalid mime type \"{value}\": does not contain '/'"
+    elif quality is not None:
+        reason = f'Invalid media type "{value}": {quality}'
     else:
         reason = f"Content type '{media_type or value}' not supported"
     return AtlassianError(
@@ -803,6 +807,23 @@ def _java_double(text: str) -> float | None:
     return sign * (float.fromhex(body) if body[:2] in ("0x", "0X") else float(body))
 
 
+def _java_number_format(text: str) -> str:
+    """The message of the `NumberFormatException` `Double.parseDouble` throws for ``text``, one
+    :func:`_java_double` does not read: `empty String` for nothing once trimmed, `multiple points`
+    for a second `.` among the digits and points it reads first (after a sign, and unless the text
+    is `NaN`, `Infinity` or hexadecimal), and `For input string: "<text trimmed>"` otherwise.
+    Confluence's 415 gave each, `"abc "` trimmed to `abc`, on 2026-10-16; OpenJDK 26's message
+    keeps those spaces."""
+    text = text.strip(_JAVA_TRIMMED)
+    if not text:
+        return "empty String"
+    unsigned = text[1:] if text[0] in "+-" else text
+    if not unsigned.startswith(("N", "I", "0x", "0X")):
+        if re.match(r"[\d.]*", unsigned, re.ASCII).group().count(".") > 1:
+            return "multiple points"
+    return f'For input string: "{text}"'
+
+
 def _unquoted(value: str) -> str:
     """A parameter's value with the quotes around it removed, as Spring reads it."""
     quoted = len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'"
@@ -816,6 +837,27 @@ def _spring_quality(value: str) -> bool:
     on 2026-10-14."""
     quality = _java_double(_unquoted(value.strip()))
     return quality is not None and 0 <= quality <= 1
+
+
+def _spring_quality_reason(value: str) -> str | None:
+    """Why Spring 5.3's `MediaType.parseMediaType` refuses ``value`` where the `q` it keeps is all
+    it cannot read, or None where something else is: the `q` with its quotes off, then
+    `Invalid quality value "<q>": should be between 0.0 and 1.0` for a number outside 0 to 1, and
+    the message :func:`_java_number_format` gives for one Java cannot read. Measured on
+    Confluence's 415 on 2026-10-16: `q=2`, `q="2"` (as `2`), `q=" 2"` (as ` 2`), `q=NaN`,
+    `q=0x1.8p0` and `Q=0.5;q=2` are the first; `q=abc`, `q=1.2.3` and `q=""` the second. This is
+    None for an empty `q=` and for an unknown charset beside a bad `q`, where real's reason is the
+    `Invalid mime type` one the empty value or the charset draws."""
+    parsed = _spring_media_type(value, charset_in_any_case=False, check_q=False)
+    if parsed is None:
+        return None
+    kept = [given for name, given in parsed[2] if name == "q"]
+    if not kept or _spring_quality(kept[0]):
+        return None
+    quality = _unquoted(kept[0])
+    if _java_double(quality) is None:
+        return _java_number_format(quality)
+    return f'Invalid quality value "{quality}": should be between 0.0 and 1.0'
 
 
 #: The characters Java's `Character.isWhitespace` is true of in a header's range: a member made of

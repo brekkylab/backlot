@@ -9656,7 +9656,7 @@ def test_gmail_from_to_searches_address_headers(tmp_path, surface, caller, query
             for r in records
         ],
     )
-    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    tokens = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
     token = tokens["admin_token"] if caller == "admin" else tok(tokens, f"{caller}@acme.com")
     with client_for(settings, reload=True) as c:
         response = c.get(
@@ -9692,7 +9692,7 @@ def test_gmail_empty_address_tokens_preserve_quoted_subjects(tmp_path, surface, 
             for doc_id, title in [("literal", "from: foo"), ("other", "foo")]
         ],
     )
-    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    tokens = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
     with client_for(settings, reload=True) as c:
         r = c.get(
             f"/gmail/v1/users/me/{surface}",

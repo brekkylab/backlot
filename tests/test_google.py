@@ -2125,6 +2125,64 @@ def test_drive_export_of_a_folder_the_caller_cannot_see_is_the_404(tmp_path):
             )
 
 
+def test_drive_by_id_reads_of_a_folder_the_caller_cannot_see_are_the_404(tmp_path):
+    """`files.get` and `permissions.list` on a folder the caller can see no file in answer the same
+    `404 File not found` an id that names nothing gets, the measurement `drive_files_get` and
+    `drive_files_permissions` record — not the folder or its grants, and a folder missing from the
+    caller's own listing must not be readable by id either. `Private` holds only a file mia cannot
+    read, so it is the folder she cannot see; its author and the admin still read it, and a folder
+    she CAN see answers on both routes, so the gate is the folder's files and not the route."""
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "google_drive",
+                "doc_id": "gd-open",
+                "folder": "Shared",
+                "title": "Open",
+                "content": "body",
+                "author_email": "mia@acme.com",
+                "visibility": "public",
+            },
+            {
+                "source_type": "google_drive",
+                "doc_id": "gd-shut",
+                "folder": "Private",
+                "title": "Shut",
+                "content": "body",
+                "author_email": "ava@acme.com",
+                "readers": ["ava@acme.com"],
+            },
+        ],
+    )
+    tokens = yaml.safe_load(s.tokens_path.read_text())
+    h = {"admin": {"Authorization": f"Bearer {s.admin_token}"}}
+    for name in ("ava", "mia"):
+        h[name] = {"Authorization": f"Bearer {tok(tokens, f'{name}@acme.com')}"}
+    with client_for(s, reload=True) as c:
+        listed = c.get(
+            "/drive/v3/files",
+            headers=h["admin"],
+            params={"q": f"mimeType='{FOLDER_MIME}'", "fields": "files(id,name)"},
+        ).json()["files"]
+        folder = {f["name"]: f["id"] for f in listed}
+        folder["nope"] = "nosuchfile000"
+        for caller, name, status in [
+            ("admin", "Private", 200),
+            ("ava", "Private", 200),
+            ("mia", "Private", 404),
+            ("mia", "Shared", 200),
+            ("mia", "nope", 404),
+        ]:
+            for route in ("", "/permissions"):
+                r = c.get(f"/drive/v3/files/{folder[name]}{route}", headers=h[caller])
+                assert r.status_code == status, (caller, name, route, r.text)
+                if status == 404:
+                    e = _gerr(r)["errors"][0]
+                    assert e["reason"] == "notFound", (caller, name, route)
+                    assert e["message"] == f"File not found: {folder[name]}."
+
+
 @pytest.mark.parametrize(
     "path, query, body, good",
     [

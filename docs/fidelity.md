@@ -363,16 +363,21 @@ such gap: which Atlassian and Google answers declare it is
 to say, and `tests/test_atlassian.py` and `tests/test_google.py` are the record.
 
 An `OPTIONS` is a third. Jira answers a caller it can name 200 with the methods that route takes,
-and Confluence answers a JSON, wildcard or absent `Accept` with a 404 on every route but `search`,
-which answers by `Accept` too. No document here declares any of it — real's own description has no
-`options` operation and neither does Backlot's — so the two `Allow` tables in
-`backlot.errors.atlassian` and the tests beside them are what hold them.
+and Confluence answers a 404 or a 403 page by `Accept` on every route but `search`, which answers
+its own way (`backlot.errors.atlassian.confluence_options`). No document here declares any of it —
+real's own description has no `options` operation and neither does Backlot's — so the two `Allow`
+tables in `backlot.errors.atlassian` and the tests beside them are what hold them.
 
-The five `x-ratelimit-*` headers are the same kind of gap. Every `/github` answer carries them
-(`backlot.main.report_github_rate_limit`), as every answer real gives does, but the comparison reads
-parameters and operations off the two documents and never a response header; real's description
-declares three of the five, on `GET /rate_limit`'s 200 alone, and Backlot's document declares none.
-The tests are the record here (`tests/test_github.py`, the rate-limit test), not the baseline.
+What `Accept` does is a fourth. Both products refuse one that admits none of the types a route
+answers in with a 406 ahead of most of their other refusals, and send several refusals in the shape
+it asks for (`backlot.errors.atlassian.not_acceptable` and `rendered`). Neither description declares
+a 406, nor that a refusal's media type follows `Accept`, so `tests/test_atlassian.py` is the record.
+
+The five `x-ratelimit-*` headers are the same kind of gap. Every `/github` answer carries them but
+the ones `backlot.main.report_github_rate_limit` names, and the comparison reads parameters and
+operations off the two documents and never a response header; real's description declares three of
+the five, on `GET /rate_limit`'s 200 alone, and Backlot's document declares none. The tests are the
+record here (`tests/test_github.py`, the rate-limit test), not the baseline.
 
 The `Allow` on S3's sub-resource 405s is another. A `HEAD` carrying a sub-resource selector is 405
 on both sides, and real names the methods that sub-resource takes where Backlot names only `GET`,

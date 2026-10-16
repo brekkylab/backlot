@@ -32,6 +32,10 @@ say so: the one above for ``refused``, and for ``run`` one on Jira Cloud on 2026
 credential, which sent each of its 232 DELETEs, PUTs and POSTs once with no body and once with a
 `text/plain` one. How the check reads a `Content-Type` is
 ``backlot.errors.atlassian.refuse_a_media_type``'s.
+
+An entry's ``accept`` is ``"unchecked"`` where the operation answers an `Accept` admitting no JSON
+with no 406, and its ``produces`` names what its 406 names where that is more than JSON
+(``backlot.routers.atlassian._published_answer`` reads both); the names below say which.
 """
 
 from __future__ import annotations
@@ -118,17 +122,70 @@ DOCUMENTED_OTHERWISE = {
     op: ["application/json", "application/yaml", "application/*+json"]
     for op in _both("PUT /rest/api/{v}/filter/{}/columns", "PUT /rest/api/{v}/user/columns")
 }
+# Answered `Accept: text/html` with something other than the 406, with no credential and a body of
+# a type they take, measured 2026-10-13 on each of the 1197 operations above (528 GETs, 669
+# DELETEs, PUTs and POSTs): these 42 did, the license counts, the plans, two Connect paths and the
+# rest their 401 and the avatar views a 400 or the image, and `service-registry` its 415 first; the
+# other 1154 answered the 406.
+ACCEPT_UNCHECKED = _both(
+    "GET /rest/api/{v}/license/approximateLicenseCount",
+    "GET /rest/api/{v}/license/approximateLicenseCount/product/{}",
+    "GET /rest/api/{v}/universal_avatar/view/type/{}",
+    "GET /rest/api/{v}/universal_avatar/view/type/{}/avatar/{}",
+    "GET /rest/api/{v}/universal_avatar/view/type/{}/owner/{}",
+    "DELETE /rest/api/{v}/permissionscheme/{}",
+    "DELETE /rest/api/{v}/permissionscheme/{}/permission/{}",
+    "DELETE /rest/api/{v}/projectCategory/{}",
+    "POST /rest/api/{v}/task/{}/cancel",
+    "PUT /rest/api/{v}/project/{}/email",
+    "PUT /rest/api/{v}/plans/plan/{}",
+    "PUT /rest/api/{v}/plans/plan/{}/archive",
+    "PUT /rest/api/{v}/plans/plan/{}/trash",
+    *(
+        f"{method} /rest/api/{{v}}/plans/plan/{{}}/team/{kind}{tail}"
+        for kind in ("atlassian", "planonly")
+        for method, tail in (("POST", ""), ("PUT", "/{}"), ("DELETE", "/{}"))
+    ),
+) | {
+    "GET /rest/atlassian-connect/1/addons/{}/properties",
+    *(f"{m} /rest/atlassian-connect/1/app/module/dynamic" for m in ("GET", "POST", "DELETE")),
+}
+# What the 406 names where it is more than `[application/json]`, of those that answered it:
+# `mypreferences` `text/plain` beside JSON, letting `text/plain`, `TEXT/PLAIN` and `text/*` past it
+# to the 401, and `filter/{}/columns`'s `DELETE` seven types (2026-10-13).
+PRODUCES = {
+    **{
+        op: ["application/json", "text/plain"]
+        for op in _both(*(f"{m} /rest/api/{{v}}/mypreferences" for m in ("GET", "PUT", "DELETE")))
+    },
+    **{
+        op: [
+            "application/json;charset=UTF-8",
+            "application/json",
+            "application/*+json",
+            "application/yaml",
+            "application/xml",
+            "text/xml",
+            "application/*+xml",
+        ]
+        for op in _both("DELETE /rest/api/{v}/filter/{}/columns")
+    },
+}
 
 
 def _entry(key: str, content: list[str] | None) -> dict:
+    entry: dict = {}
     types = {**UNDOCUMENTED, **DOCUMENTED_OTHERWISE}.get(key, content)
-    if not types or key in UNCHECKED | CHECKED_PAST_THE_401:
-        return {}
-    entry: dict = {"consumes": sorted(types, key=lambda t: "*" in t)}
-    if key in BODY_OPTIONAL:
-        entry["body"] = "optional"
-    if key in DOCUMENTED_OTHERWISE:
-        entry["charset"] = "UTF-8"
+    if types and key not in UNCHECKED | CHECKED_PAST_THE_401:
+        entry["consumes"] = sorted(types, key=lambda t: "*" in t)
+        if key in BODY_OPTIONAL:
+            entry["body"] = "optional"
+        if key in DOCUMENTED_OTHERWISE:
+            entry["charset"] = "UTF-8"
+    if key in ACCEPT_UNCHECKED:
+        entry["accept"] = "unchecked"
+    if key in PRODUCES:
+        entry["produces"] = PRODUCES[key]
     return entry
 
 
@@ -160,6 +217,8 @@ def build() -> dict:
         | BODY_OPTIONAL
         | set(UNDOCUMENTED)
         | set(DOCUMENTED_OTHERWISE)
+        | ACCEPT_UNCHECKED
+        | set(PRODUCES)
     )
     if named - set(refused) - set(run):
         stale = sorted(named - set(refused) - set(run))

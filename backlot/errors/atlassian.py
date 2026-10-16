@@ -810,17 +810,15 @@ def _java_double(text: str) -> float | None:
 def _java_number_format(text: str) -> str:
     """The message of the `NumberFormatException` `Double.parseDouble` throws for ``text``, one
     :func:`_java_double` does not read: `empty String` for nothing once trimmed, `multiple points`
-    for a second `.` among the digits and points it reads first (after a sign, and unless the text
-    is `NaN`, `Infinity` or hexadecimal), and `For input string: "<text trimmed>"` otherwise.
-    Confluence's 415 gave each, `"abc "` trimmed to `abc`, on 2026-10-16; OpenJDK 26's message
-    keeps those spaces."""
+    for a second `.` in the digits and points that open it after an optional sign, and
+    `For input string: "<text trimmed>"` otherwise. Confluence's 415 gave each, `"abc "` trimmed to
+    `abc`, on 2026-10-16; OpenJDK 26's message keeps those spaces."""
     text = text.strip(_JAVA_TRIMMED)
     if not text:
         return "empty String"
     unsigned = text[1:] if text[0] in "+-" else text
-    if not unsigned.startswith(("N", "I", "0x", "0X")):
-        if re.match(r"[\d.]*", unsigned, re.ASCII).group().count(".") > 1:
-            return "multiple points"
+    if re.match(r"[0-9.]*", unsigned).group().count(".") > 1:
+        return "multiple points"
     return f'For input string: "{text}"'
 
 

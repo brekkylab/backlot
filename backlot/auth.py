@@ -104,17 +104,16 @@ def github_credential(request: Request) -> str | None:
 
 
 def github_scheme(request: Request) -> tuple[str, str]:
-    """The `Authorization` value split as api.github.com splits it: the scheme in lower case, then
-    everything after it."""
+    """The `Authorization` value split by :data:`_GITHUB_SCHEME`, the scheme in lower case."""
     scheme, rest = _GITHUB_SCHEME.fullmatch((_authorization(request) or "").strip()).groups()
     return scheme.lower(), rest
 
 
 def github_scheme_then_a_tab(request: Request) -> bool:
-    """Whether a tab follows the `Authorization`'s scheme, split as :func:`github_credential` splits
-    it, in a header that holds no comma. Real reads such a header apart from the others: a `Basic`
-    value in it that does not decode is no credential (:func:`github_credential`'s table), and a
-    `Bearer` or `token` in it that does not resolve is refused counted in a window
+    """Whether a tab follows the scheme :func:`github_scheme` splits off, in a header that holds no
+    comma. Real reads such a header apart from the others: a `Basic` value in it that does not
+    decode is no credential (:func:`github_credential`'s table), and a `Bearer` or `token` in it
+    that does not resolve is refused counted in a window
     (``backlot.routers.github.refused_without_a_window``)."""
     header = _authorization(request) or ""
     return github_scheme(request)[1].startswith("\t") and "," not in header

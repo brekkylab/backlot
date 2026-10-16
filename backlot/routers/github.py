@@ -92,11 +92,12 @@ def _require(request: Request) -> Caller:
 
     A header real serves as no credential is the second case, not the first: real ignores an
     `Authorization` it does not read as one and serves the request anonymously (measured: a `Basic`
-    value that decodes and a scheme-less value both answer 200 on a public repo; which values those
-    are is :func:`backlot.auth.github_credential`'s table), so the caller reaches an auth-required
-    route with no credential rather than with a rejected one. Backlot serves no document
-    anonymously, which is why that lands here as the missing-credential 401 rather than as a public
-    read (`/rate_limit`, which serves none, is the exception — see :func:`_validate_path_owner`).
+    value that names no token and a scheme-less value both answer 200 on a public repo; which values
+    those are is :func:`backlot.auth.github_credential`'s table), so the caller reaches an
+    auth-required route with no credential rather than with a rejected one. Backlot serves no
+    document anonymously, which is why that lands here as the missing-credential 401 rather than as
+    a public read (`/rate_limit`, which serves none, is the exception — see
+    :func:`_validate_path_owner`).
     """
     token = auth.github_credential(request)
     if token is None:
@@ -302,9 +303,7 @@ async def _canonical_path_repo(request: Request) -> None:
 
 #: The baseline's operations api.github.com does not route as a `{}` for any one segment would:
 #: `{archive_format}` routes `zip`, where `tar`, `1` and `x` were the 404, and
-#: `POST …/releases/{}/assets` routes nothing. The spellings these leave out answered `Bearer nope`
-#: with the 404 for a path no route matches, where the rest answered "Bad credentials" (see
-#: :func:`refuse_an_unserved_operation`).
+#: `POST …/releases/{}/assets` routes nothing.
 _ROUTED_AS = {
     "GET /repos/{}/{}/actions/artifacts/{}/{}": "GET /repos/{}/{}/actions/artifacts/{}/zip"
 }
@@ -333,12 +332,11 @@ async def refuse_an_unserved_operation(request: Request) -> None:
     and the repository sent as `1` and again as `x`. With no `Authorization` header, 31 of a sample
     of 42 answered "Requires authentication", and the four of them sent pinned to `1999-01-01` were
     the 401 rather than the version's 400: `PATCH /repos/{owner}/{repo}`, `POST /user/gpg_keys`,
-    `GET /user/packages` and `GET /gists/starred`. That is the other order from the served
-    `/user/repos`, whose version comes first (see :func:`_validate_api_version`). Ten of the 42
-    real answered without asking for a credential, 200, 404 or 422 (`GET /zen`,
-    `GET /users/{username}/repos` and `POST /markdown` among them), and the remaining one,
-    `POST …/releases/{}/assets`, was the 404 :data:`_NOT_ROUTED` keeps out; here no credential is
-    :func:`_require`'s 401 on those ten too, as it is on every served route but `/rate_limit`.
+    `GET /user/packages` and `GET /gists/starred`. Ten of the 42 real answered without asking for a
+    credential, 200, 404 or 422 (`GET /zen`, `GET /users/{username}/repos` and `POST /markdown`
+    among them), and the remaining one, `POST …/releases/{}/assets`, was the 404 :data:`_NOT_ROUTED`
+    keeps out; here no credential is :func:`_require`'s 401 on those ten too, as it is on every
+    served route but `/rate_limit`.
 
     Of the 31, only `DELETE /installation/token` carried the version echo, and only a `GET` or a
     `POST` carried the five `x-ratelimit-*` and counted: `PATCH`, `PUT` and `DELETE` were refused

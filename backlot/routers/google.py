@@ -2884,9 +2884,12 @@ async def docs_get(document_id: str, request: Request):
         content.append(
             {"paragraph": {"elements": [{"textRun": {"content": line + "\n", "textStyle": {}}}]}}
         )
-    # The supplied 2026-10-15 docs.googleapis.com measurement on four Docs (one Workspace, three
-    # consumer) puts these members in this order on a plain read; unpopulated content members
-    # (headers, lists, inlineObjects) are omitted where they fall.
+    # Real's order for an untabbed read (docs.googleapis.com, 2026-10-16, twelve Docs, six owned by
+    # a Workspace member and six by a consumer account), the same under each `suggestionsViewMode`,
+    # `includeTabsContent=false` and a `fields` mask naming the members in another order
+    # (`documentId,title`, `revisionId,body,title`). Real also serves `headers` and `footers` after
+    # `body`, `lists` after `namedStyles` and `inlineObjects` before `documentId` when a Doc has
+    # them; this server serves none of the four.
     return {
         "title": row["title"],
         "body": {"content": content},

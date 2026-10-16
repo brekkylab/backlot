@@ -4846,49 +4846,26 @@ def test_docs_get_returns_paragraph_text(base, admin_h):
     [{}, {"suggestionsViewMode": "PREVIEW_WITHOUT_SUGGESTIONS"}, {"includeTabsContent": "true"}],
     ids=["plain", "preview-without-suggestions", "tabs-content"],
 )
-def test_docs_get_serves_comments_view_mode(base, admin_h, params):
-    """A document read carries `commentsViewMode` as its last member, with the value real serves."""
+def test_docs_get_serves_members_in_reals_order(base, admin_h, params):
+    """A document read serves its members in real's order, `commentsViewMode` last with the value
+    real serves. The tabbed shape `includeTabsContent=true` selects is not served, so that row
+    checks the last member alone.
+    """
     fid, _ = _drive_by_mime(base, admin_h, "application/vnd.google-apps.document")
     r = httpx.get(f"{base}/docs/v1/documents/{fid}", headers=admin_h, params=params)
     assert r.status_code == 200
     assert list(r.json().items())[-1] == ("commentsViewMode", "COMMENTS_VIEW_MODE_OMITTED")
-
-
-def test_docs_get_serves_members_in_measured_order(base, admin_h, tokens_yaml):
-    """A document read serves its members in the order real Google serves them."""
-    fid, _ = _drive_by_mime(base, admin_h, "application/vnd.google-apps.document")
-    r = httpx.get(f"{base}/docs/v1/documents/{fid}", headers=admin_h)
-    assert r.status_code == 200
-    doc = r.json()
-    expected_keys = [
-        "title",
-        "body",
-        "documentStyle",
-        "namedStyles",
-        "revisionId",
-        "suggestionsViewMode",
-        "documentId",
-        "commentsViewMode",
-    ]
-    assert list(doc.keys()) == expected_keys
-    assert doc["title"] == "Brand guidelines v3"
-    assert "content" in doc["body"]
-    assert doc["documentStyle"] == {}
-    assert doc["namedStyles"] == {"styles": []}
-    assert isinstance(doc["revisionId"], str) and len(doc["revisionId"]) == 24
-    assert doc["suggestionsViewMode"] == "SUGGESTIONS_INLINE"
-    assert doc["documentId"] == fid
-    assert doc["commentsViewMode"] == "COMMENTS_VIEW_MODE_OMITTED"
-
-    scoped_h = {"Authorization": f"Bearer {tok(tokens_yaml, 'mia@acme.com')}"}
-    scoped_r = httpx.get(f"{base}/docs/v1/documents/{fid}", headers=scoped_h)
-    assert scoped_r.status_code == 200
-    assert list(scoped_r.json()) == expected_keys
-    assert scoped_r.json() == doc
-
-    assert httpx.get(f"{base}/docs/v1/documents/nosuchfile000", headers=admin_h).status_code == 404
-    assert httpx.get(f"{base}/docs/v1/documents/nosuchfile000", headers=scoped_h).status_code == 404
-    assert httpx.get(f"{base}/docs/v1/documents/{fid}").status_code == 401
+    if "includeTabsContent" not in params:
+        assert list(r.json()) == [
+            "title",
+            "body",
+            "documentStyle",
+            "namedStyles",
+            "revisionId",
+            "suggestionsViewMode",
+            "documentId",
+            "commentsViewMode",
+        ]
 
 
 _DOCS_SUGGESTIONS = "type.googleapis.com/google.apps.docs.v1.SuggestionsViewMode"

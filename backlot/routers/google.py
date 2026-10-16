@@ -2884,14 +2884,17 @@ async def docs_get(document_id: str, request: Request):
         content.append(
             {"paragraph": {"elements": [{"textRun": {"content": line + "\n", "textStyle": {}}}]}}
         )
+    # The supplied 2026-10-15 docs.googleapis.com measurement on four Docs (one Workspace, three
+    # consumer) puts these members in this order on a plain read; unpopulated content members
+    # (headers, lists, inlineObjects) are omitted where they fall.
     return {
-        "documentId": document_id,
         "title": row["title"],
-        "revisionId": synth._digest(document_id)[:24],
-        "suggestionsViewMode": "SUGGESTIONS_INLINE",
         "body": {"content": content},
         "documentStyle": {},
         "namedStyles": {"styles": []},
+        "revisionId": synth._digest(document_id)[:24],
+        "suggestionsViewMode": "SUGGESTIONS_INLINE",
+        "documentId": document_id,
         # Last, where real serves it. Real's value for a read that asks for no comments, whatever
         # `suggestionsViewMode` and `includeTabsContent` select (measured 2026-10-09 and
         # 2026-10-15); `commentsViewMode=COMMENTS_VIEW_MODE_INCLUDED` beside the tabs and inline

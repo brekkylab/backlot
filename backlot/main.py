@@ -309,11 +309,6 @@ async def answer_s3_with_request_ids(request: Request, call_next):
     return response
 
 
-# The methods whose refusal of an unserved operation real answers with no `x-ratelimit-*` and counts
-# against no window (see ``backlot.routers.github.refuse_an_unserved_operation``).
-_UNCOUNTED_REFUSALS = frozenset({"PATCH", "PUT", "DELETE"})
-
-
 @app.middleware("http")
 async def report_github_rate_limit(request: Request, call_next):
     """Refuse a `/github` request whose window is already spent, real's 403 (see
@@ -332,8 +327,8 @@ async def report_github_rate_limit(request: Request, call_next):
     credential that did not resolve gets them on no path at all, unless a tab follows its scheme in
     a header with no comma (``github.refused_without_a_window``); the refusal check shares that same
     gate, so neither is ever refused by it. Of the 401s an operation no route here serves gets for
-    its credential, one whose method is in ``_UNCOUNTED_REFUSALS`` gets none either and counts
-    nothing.
+    its credential, the ones ``github.refused_an_unserved_operation_uncounted`` names get none
+    either and count nothing.
     """
     gated = (
         request.url.path.startswith("/github")
@@ -345,9 +340,7 @@ async def report_github_rate_limit(request: Request, call_next):
         if refusal is not None:
             return refusal
     response = await call_next(request)
-    if gated and not (
-        github.refused_an_unserved_operation(request) and request.method in _UNCOUNTED_REFUSALS
-    ):
+    if gated and not github.refused_an_unserved_operation_uncounted(request):
         for name, value in github.rate_limit_headers(request, response.status_code).items():
             response.headers[name] = value
     return response

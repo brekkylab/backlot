@@ -2629,25 +2629,40 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
     gh_client, gh_admin_h, gh_org, method, path, refused, status
 ):
     """Each refused row answers what :func:`backlot.routers.github.refuse_an_unserved_operation`
-    records of real: the credential's 401 with no header, with or without a version, and with
-    `Bearer nope`, then the router's own 404 or 405 for the admin token, carrying the version echo
-    as real's answer to a token did on `GET /user/packages`, and the version's 400 ahead of it,
-    counted. A row not refused is the router's answer for any caller. Real was measured on each row
-    with `Bearer nope`, and with no header on the first six.
+    records of real: the credential's 401 with no header, with or without a version, and for each
+    `Authorization` that carries no credential, then with `Bearer nope`, then the router's own 404
+    or 405 for the admin token, carrying the version echo as real's answer to a token did on
+    `GET /user/packages`, and the version's 400 ahead of it, counted. A row not refused is the
+    router's answer for any caller. Real was measured on each row with `Bearer nope`, `Digest x` and
+    `Bearer<TAB>nope`, on each refused row with each header below, and with no header on the first
+    six.
     """
     c, _ = gh_client
     url = "/github" + path.format(org=gh_org)
     bad_version = {"X-GitHub-Api-Version": "1999-01-01"}
+    tab_admin = "Bearer\t" + gh_admin_h["Authorization"].split(" ", 1)[1]
     if not refused:
-        for headers in ({}, {"Authorization": "Bearer nope"}, gh_admin_h, bad_version):
+        for headers in (
+            {},
+            {"Authorization": "Bearer nope"},
+            {"Authorization": "Digest x"},
+            {"Authorization": "Bearer\tnope"},
+            gh_admin_h,
+            bad_version,
+        ):
             assert c.request(method, url, headers=headers).status_code == status, headers
         return
-    for headers in ({}, bad_version):
+    # (headers, whether the 401 carries the five `x-ratelimit-*`)
+    no_credential = [({}, method in ("GET", "POST")), (bad_version, method in ("GET", "POST"))]
+    no_credential += [
+        ({"Authorization": value, **bad_version}, False)
+        for value in ("Digest x", "nope", "", "Bearer\tnope", "Basic\t!!!!", tab_admin)
+    ]
+    for headers, counted in no_credential:
         r = c.request(method, url, headers=headers)
         assert (r.status_code, r.json()["message"]) == (401, "Requires authentication"), headers
-        assert "x-github-api-version-selected" not in r.headers
-        counted = any(name.startswith("x-ratelimit-") for name in r.headers)
-        assert counted == (method in ("GET", "POST"))
+        assert "x-github-api-version-selected" not in r.headers, headers
+        assert any(name.startswith("x-ratelimit-") for name in r.headers) == counted, headers
     bad = c.request(method, url, headers={"Authorization": "Bearer nope", **bad_version})
     assert (bad.status_code, bad.json()["message"]) == (401, "Bad credentials")
     admin = c.request(method, url, headers=gh_admin_h)

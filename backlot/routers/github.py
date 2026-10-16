@@ -322,9 +322,10 @@ _PUBLISHED_NOT_SERVED = published.operations(
 
 async def refuse_an_unserved_operation(request: Request) -> None:
     """Raise what real answers ahead of an operation it publishes and no route here serves, for a
-    request whose method and path are one: a credential that does not resolve, then no credential
-    at all, then a version real does not have. A request none of those refuse goes on to the
-    router's own 404 or 405, an operation Backlot cannot run.
+    request whose method and path are one: an `Authorization` header that carries no credential
+    (:func:`_a_header_without_a_credential`), then a credential that does not resolve, then no
+    credential at all, then a version real does not have. A request none of those refuse goes on to
+    the router's own 404 or 405, an operation Backlot cannot run.
 
     Measured against api.github.com on 2026-10-14, one cache-busted request each. With
     `Bearer nope`, every operation the baseline lists answered "Bad credentials", but the
@@ -346,14 +347,44 @@ async def refuse_an_unserved_operation(request: Request) -> None:
     asks :func:`refused_an_unserved_operation` to answer that way. With a token, real's answers to
     `GET /user/packages` and `GET /gists/starred` carried the echo, and so does the router's 404 or
     405 here.
+
+    An `Authorization` header that carries no credential is the same 401 with neither, whatever the
+    method and ahead of the version: measured on 2026-10-16 on the 43 operations of a sample of 51
+    that asked for a credential, `Digest x`, `nope`, `Bearer<TAB>nope` and `Basic<TAB>!!!!` were
+    each "Requires authentication" with none of the five and no echo, and so was `Bearer<TAB><t>`,
+    `<t>` a token that resolves, on the 18 `GET`s among them, where `Bearer <t>` was served. On the
+    eight operations the tests send, each pinned to `1999-01-01`, so was an empty `Authorization`.
     """
     if not is_an_unserved_operation(request.method, request.scope["path"]):
         return
-    request.state.github_unserved_refusal = True
+    if _a_header_without_a_credential(request):
+        request.state.github_unserved_refusal = "uncounted"
+        raise HTTPException(status_code=401, detail="Requires authentication")
+    request.state.github_unserved_refusal = (
+        "uncounted" if request.method in _UNCOUNTED_METHODS else "counted"
+    )
     await _validate_bad_credential(request)
     _require(request)
-    request.state.github_unserved_refusal = False
+    request.state.github_unserved_refusal = None
     await _validate_api_version(request)
+
+
+#: The methods whose 401 for no credential at all, on an operation of :data:`_PUBLISHED_NOT_SERVED`,
+#: carries none of the five `x-ratelimit-*` (see :func:`refuse_an_unserved_operation`).
+_UNCOUNTED_METHODS = frozenset({"PATCH", "PUT", "DELETE"})
+
+
+def _a_header_without_a_credential(request: Request) -> bool:
+    """Whether the request carries an `Authorization` header that real reads no credential from on
+    an operation of :data:`_PUBLISHED_NOT_SERVED`: a value after a tab in a header with no comma,
+    whatever it holds (``auth.github_scheme_then_a_tab``), or one ``auth.github_credential`` reads
+    as no credential, but a `Basic` value."""
+    if "authorization" not in request.headers:
+        return False
+    if auth.github_scheme_then_a_tab(request):
+        return True
+    scheme, _ = auth.github_scheme(request)
+    return auth.github_credential(request) is None and scheme != "basic"
 
 
 def is_an_unserved_operation(method: str, path: str) -> bool:
@@ -366,7 +397,15 @@ def is_an_unserved_operation(method: str, path: str) -> bool:
 
 def refused_an_unserved_operation(request: Request) -> bool:
     """Whether :func:`refuse_an_unserved_operation` refused this request's credential."""
-    return getattr(request.state, "github_unserved_refusal", False)
+    return getattr(request.state, "github_unserved_refusal", None) is not None
+
+
+def refused_an_unserved_operation_uncounted(request: Request) -> bool:
+    """Whether :func:`refuse_an_unserved_operation` refused this request with a 401 real answers
+    with none of the five `x-ratelimit-*` and counts nowhere: an `Authorization` that carries no
+    credential, on any method, and no credential at all on a method in
+    :data:`_UNCOUNTED_METHODS`."""
+    return getattr(request.state, "github_unserved_refusal", None) == "uncounted"
 
 
 # --- rate limits ----------------------------------------------------------------

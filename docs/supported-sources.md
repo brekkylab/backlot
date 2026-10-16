@@ -146,16 +146,17 @@ the header, so a pinned version there is served whatever it says and no response
 
 **An operation GitHub publishes and Backlot does not serve is refused for its credential first**:
 a token that does not resolve is the 401 "Bad credentials", as on a served route, and no
-`Authorization` header is the 401 "Requires authentication", each ahead of an unsupported version's
-400, where the served `/user/repos` checks the version before a missing credential. A token that
-resolves reaches the 404 or 405 of an operation Backlot cannot run. The operations are the GitHub
-baseline's `missing_operation` rows, but `POST …/releases/{id}/assets`, which api.github.com does
-not route, and with `artifacts/{id}/{archive_format}` taken as `zip`. `Authorization` is read as
-real reads it: `Bearer` or `token` with nothing after it, and a `Basic` value that is not base64,
-are credentials that do not resolve, though that `Basic` value is no credential after a tab in a
-header with no comma; a `Basic` value whose base64 holds a token as its password, or as its user
-beside an empty password or `x-oauth-basic`, is that token; and one that holds none is no credential
-at all.
+`Authorization` header is the 401 "Requires authentication", as is one that carries no credential,
+which is any value after a tab in a header with no comma and any scheme but `Bearer`, `token` and
+`Basic`, each ahead of an unsupported version's 400, where the served `/user/repos` checks the
+version before a missing credential. A token that resolves reaches the 404 or 405 of an operation
+Backlot cannot run. The operations are the GitHub baseline's `missing_operation` rows, but
+`POST …/releases/{id}/assets`, which api.github.com does not route, and with
+`artifacts/{id}/{archive_format}` taken as `zip`. `Authorization` is read as real reads it: `Bearer`
+or `token` with nothing after it, and a `Basic` value that is not base64, are credentials that do
+not resolve, though that `Basic` value is no credential after a tab in a header with no comma; a
+`Basic` value whose base64 holds a token as its password, or as its user beside an empty password or
+`x-oauth-basic`, is that token; and one that holds none is no credential at all.
 
 **Every response carries the five `x-ratelimit-*` headers** real puts on every answer, the errors
 included: `limit` at real's numbers (60 an hour for a caller with no credential, 5000 for a token,
@@ -175,11 +176,12 @@ token, each with its own `documentation_url`. `BACKLOT_GITHUB_ENFORCE_RATE_LIMIT
 off (see [configuration](configuration.md#github)). `GET /rate_limit` reports the same windows, does
 not count, and is never refused — the one route a client reads its way out of a spent window with;
 `/rate_limit/` asked with no `Authorization` header is a plain-text `404 Not Found` that carries
-none of the five and counts nowhere, spent window or not (2026-09-23). Three answers carry none of
+none of the five and counts nowhere, spent window or not (2026-09-23). Four answers carry none of
 the five and count nowhere, as real's do not: a credential that does not resolve, unless a tab
 follows its scheme in a header with no comma, a path real does not route asked by a caller that sent
-one, and the 401 for no credential on the `PATCH`, `PUT` or `DELETE` of an operation Backlot does
-not serve (measured 2026-09-10, 2026-09-21 and 2026-10-14).
+one, and, on an operation Backlot does not serve, the 401 for an `Authorization` that carries no
+credential and the 401 for none at all on a `PATCH`, `PUT` or `DELETE` (measured 2026-09-10,
+2026-09-21, 2026-10-14 and 2026-10-16).
 
 An issue body and a pull body are the two distinct field sets real serves — a pull carries `_links`
 and its `*_url` siblings and none of the issue-only fields, `pull_request` included. A repository

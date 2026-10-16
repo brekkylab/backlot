@@ -90,7 +90,7 @@ def github_credential(request: Request) -> str | None:
     unknown scheme. A `Basic` value that does not decode is no credential either after a tab in a
     header with no comma (:func:`github_scheme_then_a_tab`).
     """
-    scheme, rest = _github_scheme(request)
+    scheme, rest = github_scheme(request)
     if scheme in ("bearer", "token"):
         return rest.strip()
     if scheme == "basic":
@@ -103,7 +103,7 @@ def github_credential(request: Request) -> str | None:
     return None
 
 
-def _github_scheme(request: Request) -> tuple[str, str]:
+def github_scheme(request: Request) -> tuple[str, str]:
     """The `Authorization` value split as api.github.com splits it: the scheme in lower case, then
     everything after it."""
     scheme, rest = _GITHUB_SCHEME.fullmatch((_authorization(request) or "").strip()).groups()
@@ -117,7 +117,7 @@ def github_scheme_then_a_tab(request: Request) -> bool:
     `Bearer` or `token` in it that does not resolve is refused counted in a window
     (``backlot.routers.github.refused_without_a_window``)."""
     header = _authorization(request) or ""
-    return _github_scheme(request)[1].startswith("\t") and "," not in header
+    return github_scheme(request)[1].startswith("\t") and "," not in header
 
 
 def api_key_token(request: Request) -> str | None:

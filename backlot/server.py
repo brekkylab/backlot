@@ -133,12 +133,10 @@ def _interpreter(env: dict[str, str]) -> tuple[str, dict[str, str]]:
     On Windows a venv's ``python.exe`` is a launcher that starts the base interpreter as its child,
     so the process `subprocess.Popen` returns is not the one serving: `_terminate` stops and reaps
     the launcher while the interpreter holding ``db.sqlite`` and ``server.log`` open may still be
-    running, and the scratch directory cannot be removed yet. Measured 2026-10-13 under Python
-    3.14.0 on Windows 11, renaming ``db.sqlite`` right after `_terminate` returned was refused in 16
-    of 20 runs. Started the way ``multiprocessing`` starts its children on Windows, on the base
-    interpreter with ``__PYVENV_LAUNCHER__`` naming the venv's ``python.exe``, the server still ran
-    from the venv and the same rename was refused in 0 of 20. Anywhere else this is
-    ``sys.executable`` and ``env`` as given."""
+    running. Measured 2026-10-13 under Python 3.14.0 on Windows 11, renaming ``db.sqlite`` right
+    after `_terminate` returned was refused in 16 of 20 runs; started the way ``multiprocessing``
+    starts its children on Windows, on the base interpreter with ``__PYVENV_LAUNCHER__`` naming the
+    venv's ``python.exe``, the same rename was refused in 0 of 20."""
     base = getattr(sys, "_base_executable", sys.executable)
     if sys.platform == "win32" and os.path.normcase(base) != os.path.normcase(sys.executable):
         return base, {**env, "__PYVENV_LAUNCHER__": sys.executable}

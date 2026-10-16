@@ -450,8 +450,62 @@ def _reachable_projects(conn, ids) -> list:
     return [r for r in rows if store.has_visible_document(conn, "jira", r["name"], ids)]
 
 
+# The fields `project/search` sorts by, in the order its 400 names them (Jira Cloud, 2026-10-16).
+_JIRA_PROJECT_ORDER_FIELDS = (
+    "name",
+    "key",
+    "owner",
+    "category",
+    "issueCount",
+    "lastIssueUpdatedTime",
+    "archivedDate",
+    "deletedDate",
+)
+_JIRA_PROJECT_ORDER_LOWER = frozenset(name.lower() for name in _JIRA_PROJECT_ORDER_FIELDS)
+# The four characters past ASCII that Java's `equalsIgnoreCase` takes for an ASCII letter.
+_JAVA_ASCII_CASE_ALIASES = str.maketrans(
+    {"\u0130": "i", "\u0131": "i", "\u017f": "s", "\u212a": "k"}
+)
+
+
+def _jira_project_order(raw: str) -> None:
+    """Jira's 400 when ``project/search`` ``orderBy`` names no field it sorts by.
+
+    Measured against Jira Cloud on 2026-10-16. Only an empty value is read as no `orderBy`. What
+    Java's `String.trim` removes (:data:`_JAVA_TRIMMED`) comes off both ends, then one leading
+    ``+`` or ``-``, then the trim again: `%01key` and `-%09key` are 200, `%C2%A0key` and
+    `%E2%80%83key` are the 400. The field is compared the way `equalsIgnoreCase` compares, so
+    `ıssueCount`, `İssueCount` and `iſsueCount` are 200 and `ißueCount` is the 400. The 400 names
+    what is left, which a value holding only a sign or whitespace leaves empty: `-bogus` is named
+    `bogus`, `--key` `-key`, and `-` or `%20` the empty string.
+    """
+    if raw == "":
+        return
+    field = raw.strip(_JAVA_TRIMMED)
+    if field[:1] in ("+", "-"):
+        field = field[1:].strip(_JAVA_TRIMMED)
+    if field.translate(_JAVA_ASCII_CASE_ALIASES).lower() in _JIRA_PROJECT_ORDER_LOWER:
+        return
+    allowed = ", ".join(_JIRA_PROJECT_ORDER_FIELDS)
+    raise errors_atlassian.AtlassianError(
+        400,
+        {
+            "errorMessages": [
+                f"The field to order by should be one of [{allowed}]. Instead, it was: {field}."
+            ],
+            "errors": {},
+        },
+    )
+
+
 @router.get("/rest/api/3/project/search")
 async def jira_project_search(request: Request):
+    # Read for the refusal above. The sort itself is not served, so `orderBy` stays undeclared:
+    # `qp` is for a parameter Backlot honours, and advertising this one would offer a client an
+    # order the listing never applies. `backlot diff --source jira` keeps the gap.
+    raw_order = _str_param(request, "orderBy")
+    if raw_order is not None:
+        _jira_project_order(raw_order)
     conn = auth.conn(request)
     caller = _jira_caller(request)
     ids = auth.visible_ids(request, caller)

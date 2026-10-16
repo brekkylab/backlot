@@ -2072,9 +2072,10 @@ def test_drive_answers_each_check_with_reals_status_and_reason(
         assert (e["message"], "status" in e) == (message, False)
 
 
-def test_drive_export_of_a_folder_the_caller_cannot_see_is_the_404(tmp_path):
-    """The two answers the folder branch of `drive_files_export` records, for each caller: `Private`
-    holds only a file mia cannot read, so it is the folder she cannot see."""
+def test_reads_of_a_folder_the_caller_cannot_see(tmp_path):
+    """The answers `files.export`, `files.get` and `permissions.list` record for a folder, for each
+    caller, and the ones Docs and Sheets record for mia: `Private` holds only a file mia cannot
+    read, so it is the folder she cannot see."""
     s = tiny_corpus(
         tmp_path,
         [
@@ -2123,6 +2124,33 @@ def test_drive_export_of_a_folder_the_caller_cannot_see_is_the_404(tmp_path):
                 caller,
                 name,
             )
+        files, perms = "/drive/v3/files/{}", "/drive/v3/files/{}/permissions"
+        docs, sheets = "/docs/v1/documents/{}", "/sheets/v4/spreadsheets/{}"
+        for route, query, caller, name, status, answer in [
+            (files, {}, "admin", "Private", 200, None),
+            (files, {}, "ava", "Private", 200, None),
+            (files, {}, "mia", "Private", 404, "notFound"),
+            (files, {}, "mia", "Shared", 200, None),
+            (files, {}, "mia", "nope", 404, "notFound"),
+            (files, {"fields": "totallyBogusField"}, "mia", "Private", 404, "notFound"),
+            (files, {"fields": "totallyBogusField"}, "mia", "Shared", 400, "invalidParameter"),
+            (files, {"alt": "media"}, "mia", "Private", 404, "notFound"),
+            (perms, {}, "admin", "Private", 200, None),
+            (perms, {}, "ava", "Private", 200, None),
+            (perms, {}, "mia", "Private", 404, "notFound"),
+            (perms, {}, "mia", "Shared", 200, None),
+            (perms, {}, "mia", "nope", 404, "notFound"),
+            (perms, {"pageSize": "0"}, "mia", "Private", 400, "invalidParameter"),
+            (perms, {"pageToken": "bad"}, "mia", "Private", 400, "invalid"),
+            (docs, {}, "mia", "Private", 400, "INVALID_ARGUMENT"),
+            (docs, {}, "mia", "nope", 404, "NOT_FOUND"),
+            (sheets, {}, "mia", "Private", 400, "INVALID_ARGUMENT"),
+            (sheets, {}, "mia", "nope", 404, "NOT_FOUND"),
+        ]:
+            r = c.get(route.format(folder[name]), headers=h[caller], params=query)
+            error = r.json().get("error", {})
+            got = error.get("status") or (error.get("errors") or [{}])[0].get("reason")
+            assert (r.status_code, got) == (status, answer), (route, query, caller, name)
 
 
 @pytest.mark.parametrize(
@@ -4846,12 +4874,26 @@ def test_docs_get_returns_paragraph_text(base, admin_h):
     [{}, {"suggestionsViewMode": "PREVIEW_WITHOUT_SUGGESTIONS"}, {"includeTabsContent": "true"}],
     ids=["plain", "preview-without-suggestions", "tabs-content"],
 )
-def test_docs_get_serves_comments_view_mode(base, admin_h, params):
-    """A document read carries `commentsViewMode` as its last member, with the value real serves."""
+def test_docs_get_serves_members_in_reals_order(base, admin_h, params):
+    """A document read serves its members in real's order, `commentsViewMode` last with the value
+    real serves. The tabbed shape `includeTabsContent=true` selects is not served, so that row
+    checks the last member alone.
+    """
     fid, _ = _drive_by_mime(base, admin_h, "application/vnd.google-apps.document")
     r = httpx.get(f"{base}/docs/v1/documents/{fid}", headers=admin_h, params=params)
     assert r.status_code == 200
     assert list(r.json().items())[-1] == ("commentsViewMode", "COMMENTS_VIEW_MODE_OMITTED")
+    if "includeTabsContent" not in params:
+        assert list(r.json()) == [
+            "title",
+            "body",
+            "documentStyle",
+            "namedStyles",
+            "revisionId",
+            "suggestionsViewMode",
+            "documentId",
+            "commentsViewMode",
+        ]
 
 
 _DOCS_SUGGESTIONS = "type.googleapis.com/google.apps.docs.v1.SuggestionsViewMode"

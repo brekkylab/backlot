@@ -2643,8 +2643,11 @@ async def drive_files_get(file_id: str, request: Request):
     ids = auth.visible_ids(request, caller)
     row = store.gdrive_by_id(conn, file_id, visible_ids=ids)
     if row is None:
-        name = _drive_folder_name_by_id(conn, file_id)  # folders aren't stored as rows
-        if name is not None:
+        # Folders aren't stored as rows. Measured 2026-10-15 and 2026-10-16 with a Workspace
+        # member's token: real serves a folder the caller can see with 200, and answers one it
+        # cannot see with the 404 notFound an id that names nothing gets, `fields` mask or not.
+        name = _drive_folder_name_by_id(conn, file_id)
+        if name is not None and store.drive_folder_has_visible(conn, name, ids):
             keys = _drive_get_field_keys(gerr.first_repeat(request.query_params, "fields"))
             return _drive_project([_drive_folder_obj(conn, name, caller.email)], keys)[0]
         raise gerr.not_found_file(file_id)
@@ -2761,9 +2764,11 @@ async def drive_files_permissions(file_id: str, request: Request):
     if row is None:
         # A folder id is a first-class file id on real Drive — files.get answers for one, so
         # permissions.list has to as well. Folders aren't stored as rows, so their sharing comes
-        # from the grants on the files they hold.
+        # from the grants on the files they hold. Measured 2026-10-15 and 2026-10-16 with a
+        # Workspace member's token, real answers a folder the caller cannot see with the 404
+        # notFound an id that names nothing gets.
         name = _drive_folder_name_by_id(conn, file_id)
-        if name is None:
+        if name is None or not store.drive_folder_has_visible(conn, name, ids):
             raise gerr.not_found_file(file_id)
         permissions = _drive_permissions(conn, file_id, folder=name)
     else:
@@ -2906,14 +2911,20 @@ async def docs_get(document_id: str, request: Request):
         content.append(
             {"paragraph": {"elements": [{"textRun": {"content": line + "\n", "textStyle": {}}}]}}
         )
+    # Real's order for an untabbed read (docs.googleapis.com, 2026-10-16, twelve Docs, six owned by
+    # a Workspace member and six by a consumer account), the same under each `suggestionsViewMode`,
+    # `includeTabsContent=false` and a `fields` mask naming the members in another order
+    # (`documentId,title`, `revisionId,body,title`). Real also serves `headers` and `footers` after
+    # `body`, `lists` after `namedStyles` and `inlineObjects` before `documentId` when a Doc has
+    # them; this server serves none of the four.
     return {
-        "documentId": document_id,
         "title": row["title"],
-        "revisionId": synth._digest(document_id)[:24],
-        "suggestionsViewMode": "SUGGESTIONS_INLINE",
         "body": {"content": content},
         "documentStyle": {},
         "namedStyles": {"styles": []},
+        "revisionId": synth._digest(document_id)[:24],
+        "suggestionsViewMode": "SUGGESTIONS_INLINE",
+        "documentId": document_id,
         # Last, where real serves it. Real's value for a read that asks for no comments, whatever
         # `suggestionsViewMode` and `includeTabsContent` select (measured 2026-10-09 and
         # 2026-10-15); `commentsViewMode=COMMENTS_VIEW_MODE_INCLUDED` beside the tabs and inline

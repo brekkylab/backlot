@@ -2463,7 +2463,11 @@ def _byo_linear(dsid, raw, P):
         labels=_names(raw.get("labels")),
         project=raw.get("project"),
         cycle=raw.get("cycle"),
-        branchName=synth.linear_branch_name(identifier, title, assignee_email),
+        # An unassigned issue's branch name is the caller's (`_issue` derives it per request), so
+        # only an assigned one is fixed at import.
+        branchName=(
+            synth.linear_branch_name(identifier, title, assignee_email) if assignee_email else None
+        ),
         dueDate=_linear_date(raw.get("due_date")),
         assignee=assignee_email,
         assigneeName=(assignee_name or None),

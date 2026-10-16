@@ -752,7 +752,7 @@ def diff(
             if path.exists()
             else Baseline.empty(source, spec.endpoints)
         )
-    except (OSError, ValueError, KeyError, TypeError) as e:
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
         _baseline_unusable(e)
     stale = baseline.resolved(findings)
     fresh = baseline.unacknowledged(findings)

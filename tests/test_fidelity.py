@@ -1471,6 +1471,15 @@ def test_update_baseline_records_gaps_and_leaves_breaking_findings_live(
     assert cli.main([*args, "--update-baseline"]) == 3
     assert path.read_text() == before
 
+    # Nor can a file the command cannot open or cannot write.
+    def denied(*a, **k):
+        raise PermissionError(13, "Permission denied")
+
+    for step in ("load", "write"):
+        with monkeypatch.context() as m:
+            m.setattr(Baseline, step, denied)
+            assert cli.main([*args, "--update-baseline"]) == 3
+
 
 @pytest.mark.parametrize(
     "written, refused",
@@ -1528,8 +1537,10 @@ def test_update_baseline_records_gaps_and_leaves_breaking_findings_live(
             },
             "no `kind`",
         ),
-        # An element missing a key the loader reads.
+        # An element missing a key the loader reads, and keys of the wrong shape.
         ({"types": {"Transcript": {"status": "implemented"}}}, "type_kind"),
+        ({"endpoints": "https://api.fireflies.ai/graphql"}, "not one URL"),
+        ({"types": []}, "has no attribute"),
     ],
     ids=[
         "the-list-format",
@@ -1539,24 +1550,28 @@ def test_update_baseline_records_gaps_and_leaves_breaking_findings_live(
         "a-severity-with-no-kind",
         "a-detail-with-no-kind",
         "a-type-with-no-kind",
+        "endpoints-a-string",
+        "types-a-list",
     ],
 )
 def test_a_baseline_the_command_cannot_read_is_refused_not_emptied(
     written, refused, _vendor, tmp_path, capsys
 ):
-    """Read as written, each holds a note or an acknowledgement the loader would not see, or lacks a
-    key the loader reads, and `--update-baseline` would rewrite the file without it and say
-    nothing. Exit 3, as for a credential: the file is this repository's to fix."""
+    """Read as written, each holds a note or an acknowledgement the loader would not see, which
+    `--update-baseline` would drop without a word, or is shaped so the loader cannot read it.
+    Exit 3, as for a credential: the file is this repository's to fix."""
     _vendor()
     path = tmp_path / "fireflies.json"
     raw = {"source": "fireflies", "root": {"query": "Query"}, **written}
     path.write_text(json.dumps(raw))
     before = path.read_text()
-    with pytest.raises((ValueError, KeyError), match=refused):
+    with pytest.raises((ValueError, KeyError, TypeError, AttributeError), match=refused):
         Baseline.load(path)
     args = ["diff", "-s", "fireflies", "--baseline-dir", str(tmp_path), "--update-baseline"]
     assert cli.main(args) == 3
-    assert "the baseline cannot be used" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "the baseline cannot be used" in err
+    assert ("it has no" in err) == (refused == "type_kind")
     assert path.read_text() == before
 
 

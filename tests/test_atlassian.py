@@ -5941,8 +5941,9 @@ _Q2 = "application/json;Q=2"
 _SORT_FAILS = "application/json;Q=abc, text/plain"
 #: Headers of more than 31 members, where Java's `List.sort` merges runs (``backlot.java_timsort``):
 #: two that Confluence's Spring services sort without reading their `Q=abc`, one whose comparisons
-#: break the sort's contract, and one whose `Q=abc` they read, each picked by running Spring's own
-#: sort in a JVM
+#: break the sort's contract, one whose `Q=abc` they read, and one with no `Q` whose comparisons
+#: break the contract because `application/*+json` sorts as a wildcard subtype, each picked by
+#: running Spring's own sort in a JVM
 _SORTED_33 = ", ".join(
     (
         "application/xml;q=0.9",
@@ -6090,6 +6091,42 @@ _READS_THE_Q_33 = ", ".join(
         "application/*;q=0.1",
         "application/json;q=0.5",
         "application/*;q=0.5",
+    )
+)
+_WILD_SUFFIX_32 = ", ".join(
+    (
+        "text/plain;q=0",
+        "application/json",
+        "application/xml;q=0.5",
+        "text/plain;q=0.9",
+        "application/json;q=0.5",
+        "application/json",
+        "application/*+json",
+        "text/plain;q=0",
+        "application/*+json",
+        "application/xml;q=0.9",
+        "application/*+json",
+        "application/*+json",
+        "application/json;q=0.9",
+        "application/*;q=0",
+        "text/plain",
+        "application/json;q=0",
+        "application/*+json;q=0.5",
+        "application/*+json;q=0.5",
+        "application/xml",
+        "application/*+json;q=0",
+        "application/xml",
+        "*/*;q=0.9",
+        "application/json",
+        "application/*+json;q=0.5",
+        "text/plain;q=0",
+        "text/plain",
+        "application/json;q=0",
+        "text/plain",
+        "application/*;q=0",
+        "text/plain;q=0",
+        "application/*+json",
+        "text/plain",
     )
 )
 
@@ -6414,6 +6451,10 @@ _ACCEPT_ROWS = [
     # -- Confluence's JAX-RS services read it their own way (``errors.atlassian._jaxrs_accept``)
     ("GET", _CQL, "admin", "application/*+json", None, 406, None, b"", {}),
     ("GET", _CQL, "admin", "*/json", None, 200, _JSON, None, {}),
+    # no `Accept` and an empty one admit JSON there as anywhere (2026-10-16)
+    ("GET", _CQL, "admin", None, None, 200, _JSON, None, {}),
+    ("GET", _CQL, "admin", "", None, 200, _JSON, None, {}),
+    ("GET", _CQL, "none", "", None, 403, _JSON, None, {}),
     ("GET", _CQL, "none", "*/*+json", None, 403, _JSON, None, {}),
     ("GET", _CQL, "none", "foo, application/json", None, 403, _JSON, None, {}),
     ("GET", _CQL, "none", "foo, *.*", None, 406, None, b"", {}),
@@ -6790,6 +6831,7 @@ _ACCEPT_ROWS = [
             (_SORTED_34, 400),
             (_BREAKS_THE_SORT_33, 500),
             (_READS_THE_Q_33, 500),
+            (_WILD_SUFFIX_32, 500),
             ("text/*;Q=abc, text/html;Q=-2, application/json;Q=-1", 400),
             ("application/json;Q=-2, text/plain;Q=-1, text/*;Q=abc", 500),
             ("application/json;Q=-1, text/*;Q=-2, text/html;Q=abc", 500),

@@ -2,7 +2,7 @@
 #
 # On a schedule, never on a pull request. Drift is this project's bug, but it is never the bug of
 # whichever pull request happens to be open when a vendor ships a change — so a divergence opens an
-# issue rather than failing someone else's merge. Two sources need a credential a fork could not
+# issue rather than failing someone else's merge. Three sources need a credential a fork could not
 # read anyway.
 name: Fidelity
 
@@ -78,6 +78,10 @@ jobs:
         env:
           FIREFLIES_API_KEY: ${{ secrets.FIREFLIES_API_KEY }}
           LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          # Slack publishes no machine-readable description of its Web API, so what a response
+          # carries is asked of slack.com itself. A USER token, held by a workspace admin — see
+          # `SLACK_USER_TOKEN`'s Credential comment in `backlot/fidelity/comparisons.py`.
+          SLACK_USER_TOKEN: ${{ secrets.SLACK_USER_TOKEN }}
         run: |
           set +e
           backlot diff --source ${{ matrix.source }} 2>&1 | tee report.txt
@@ -91,9 +95,10 @@ jobs:
           echo "::warning::${{ matrix.source }}'s contract could not be read; no comparison ran."
           cat report.txt
 
-      # Exit 3 is a credential nobody set. Red, because it is this repository's misconfiguration:
-      # warned about and left green, the two sources whose contract is introspection would go
-      # uncompared night after night while the run said nothing was wrong.
+      # Exit 3 is a credential nobody set, or the wrong kind set (Slack's own token must be a
+      # workspace admin's). Red, because it is this repository's misconfiguration: warned about
+      # and left green, the three sources that need one would go uncompared night after night
+      # while the run said nothing was wrong.
       - name: Fail on a credential this repository has not set
         if: steps.diff.outputs.status == '3'
         run: |

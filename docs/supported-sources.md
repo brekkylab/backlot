@@ -55,23 +55,34 @@ A JSON body is the bare `application/json` on every Confluence route served. The
 is Jira's alone.
 
 A `HEAD` is the `GET` with the body left off, and declares the length that body would have had on
-every 200 but `search`'s. An `OPTIONS` is a 404 in the `errors` list the 405 uses, except on
-`search`, which answers by `Accept` as JAX-RS does: its WADL for `*/*`, `application/xml` or no
-`Accept` at all, and 204 for `application/json` or `text/html`, naming its three methods either way.
-A path no route serves is JAX-RS's own 404 — JSON when the caller asks for `application/json` by
-name, the `<status>` XML document otherwise — and a path below `space/` or `content/`, or anything
-under `/wiki` outside the API mount, is the product's HTML 404 page instead; a caller with no
-credential is sent from `/wiki/…` outside `/wiki/rest` to log in. An operation Confluence publishes
-that no route here serves answers a `Content-Type` it does not take with its 415 (or, from the
-JAX-RS services, with Tomcat's 400 for one they cannot read), whoever the caller is; past that it
-refuses a caller with no credential with a served route's 403, or from a few services with
-`Current user not permitted to use Confluence`, and a caller whose credential resolves gets the 404
-an unserved path gets, or at a served route's path its 405. Every answer Confluence itself gives
-carries `atl-request-id`, `atl-traceid` (the same value without its dashes),
+every 200 but `search`'s, and on the 406 but `search`'s. An `OPTIONS` is a 404 in the `errors` list
+the 405 uses where `Accept` admits JSON, under a `+json` type it names instead, and Tomcat's 403
+page where it names neither, except on `search`, which answers by `Accept` as JAX-RS does: its WADL
+for `*/*`, `application/xml` or no `Accept` at all, and 204 for `application/json` or `text/html`,
+naming its three methods either way. An `Accept` that admits no JSON is a 406, ahead of the
+anonymous 403 and of every route's own answer but `space/{key}/permission`'s 405 and
+`space/{key}/label`'s 403, which takes the 406's place in `Accept`'s shape: Tomcat's page, or
+the `errors` list under a `+json` type the header names, and no body at all on `search` and the
+other JAX-RS services; a 405 and a 415 take the same shapes, the page naming the methods or the
+types the route takes. Where any member of `Accept` cannot be read the 406 has no body, and the
+JAX-RS services, which pass a member with no `/` over, answer a header they cannot parse with a 400
+in its place. A `q` named in another case (`Q=2`) that is no quality fails an answer as it is
+written: a 200 is a 400 with no body, a refusal Spring raised is Tomcat's page and one the service
+raised its status with no body. A path no route serves is JAX-RS's own 404 — JSON where
+`application/json` is the first type `Accept` names that JSON or XML matches, ordered by `q` and
+then by how specific each is, the `<status>` XML document otherwise — and a path below `space/` or
+`content/`, or anything under `/wiki` outside the API mount, is the product's HTML 404 page instead;
+a caller with no credential is sent from `/wiki/…` outside `/wiki/rest` to log in. An operation
+Confluence publishes that no route here serves answers a `Content-Type` it does not take with its
+415 (or, from the JAX-RS services, with Tomcat's 400 for one they cannot read), whoever the caller
+is; past that it refuses a caller with no credential with a served route's 403, or from a few
+services with `Current user not permitted to use Confluence`, and a caller whose credential resolves
+gets the 404 an unserved path gets, or at a served route's path its 405. Every answer Confluence
+itself gives carries `atl-request-id`, `atl-traceid` (the same value without its dashes),
 `x-confluence-request-time`, `x-content-type-options` and `x-xss-protection`, what the content and
 space services' routes answer adds the three headers that say the v1 REST API is deprecated, and
-what `search` answers a `GET` or `HEAD`, but for a 401, adds the `cache-control` and 1970 `expires`
-that say not to cache it.
+what `search` answers a `GET` or `HEAD`, but for a 401 and a refusal of its `Accept`, adds the
+`cache-control` and 1970 `expires` that say not to cache it.
 
 ### Fireflies — `/fireflies/graphql`
 
@@ -138,10 +149,29 @@ there is the gateway's answer rather than that backend's, and carries the charse
 
 **`X-GitHub-Api-Version` is honoured too**, in both values real currently supports: `2026-03-10`
 drops `assignee` (issues and pulls) and `merge_commit_sha` (pulls), `2022-11-28` keeps them, an
-unpinned request gets `2022-11-28`, anything else is the real API's 400, and every response reports
-its choice in `X-GitHub-Api-Version-Selected`. `search/code` is the one route that does neither:
-real's code search backend does not read the header, so a pinned version there is served whatever
-it says and no response from it carries the `Selected` header (measured 2026-09-06).
+unpinned request gets `2022-11-28`, anything else is the real API's 400, and a response reports its
+choice in `X-GitHub-Api-Version-Selected` but on the answers `backlot.main.echo_github_api_version`
+names. `search/code` is the one route that does neither: real's code search backend does not read
+the header, so a pinned version there is served whatever it says and no response from it carries the
+`Selected` header (measured 2026-09-06).
+
+**An operation GitHub publishes and Backlot does not serve is refused for its credential first**: a
+token that does not resolve is "Bad credentials", as on a served route, and no
+`Authorization` header is the 401 "Requires authentication", as is one that carries no credential,
+which is a header a tab sets apart (below) and any scheme but `Bearer`, `token` and `Basic`, each
+ahead of an unsupported version's 400, where the served `/user/repos` checks the version before a
+missing credential. A token that resolves, and a `Basic` value that names no token, are checked for
+the version first; the token then reaches the 404 or 405 of an operation Backlot cannot run, and the
+`Basic` value is the 401 a served route gives a caller with no credential, with the version echo and
+the five `x-ratelimit-*`. The operations are those the GitHub baseline marks `missing`, but
+`POST …/releases/{id}/assets`, which api.github.com does not route, and with
+`artifacts/{id}/{archive_format}` taken as `zip`. `Authorization` is read as real reads it, a space
+and a tab the only whitespace in it, and a tab right after the scheme sets the header apart unless a
+comma follows anywhere in it: `Bearer` or `token` with nothing after it, and a `Basic` value that is
+not base64, are credentials that do not resolve, though that `Basic` value is no credential in a
+header a tab sets apart; a `Basic` value whose base64 holds a token as its password, or as its user
+beside an empty password or `x-oauth-basic`, is that token; and one that holds none is no credential
+at all.
 
 **Every response carries the five `x-ratelimit-*` headers** real puts on every answer, the errors
 included: `limit` at real's numbers (60 an hour for a caller with no credential, 5000 for a token,
@@ -152,19 +182,22 @@ runs out is refused, 403, with `used` pinned at `limit` across the five headers,
 version check, the 401 a route that needs a credential answers a caller without one, and routing
 alike, for a caller with no credential (measured against api.github.com 2026-09-17 and 2026-09-22)
 and for a token (2026-09-23) alike; a bearer that does not resolve still gets its own 401, window
-spent or not (2026-09-23), when a space follows its scheme: after a tab it is counted in the window
-real shares among the `Authorization` values it cannot parse, and refused once that window is spent
-(2026-10-14). The refused request is not itself counted, which is why `used` holds at `limit` rather
-than climbing past it. The body differs by caller: two members (`message`, `documentation_url`) for
-a caller with no credential, three (`status` besides) for a token, each with its own
-`documentation_url`. `BACKLOT_GITHUB_ENFORCE_RATE_LIMITS` turns the refusal off (see
+spent or not (2026-09-23), when a space follows its scheme: in a header a tab sets apart (see the
+paragraph above) it is counted in the window real shares among the `Authorization` values it cannot
+parse, and refused once that window is spent (2026-10-14). The refused request is not itself
+counted, which is why `used` holds at `limit` rather than climbing past it. The body differs by
+caller: two members (`message`, `documentation_url`) for a caller with no credential, three
+(`status` besides) for a token, each with its own `documentation_url`.
+`BACKLOT_GITHUB_ENFORCE_RATE_LIMITS` turns the refusal off (see
 [configuration](configuration.md#github)). `GET /rate_limit` reports the same windows, does not
 count, and is never refused — the one route a client reads its way out of a spent window with;
 `/rate_limit/` asked with no `Authorization` header is a plain-text `404 Not Found` that carries
-none of the five and counts nowhere, spent window or not (2026-09-23). Two answers carry none of the
-five and count nowhere, as real's do not: a credential that does not resolve with a space after its
-scheme, and a path no route matches asked by a caller that sent one (measured 2026-09-10 and
-2026-09-21).
+none of the five and counts nowhere, spent window or not (2026-09-23). Four answers carry none of
+the five and count nowhere, as real's do not: a credential that does not resolve, unless a tab sets
+its header apart, a path real does not route asked by a caller that sent one, and, on an operation
+Backlot does not serve, the 401 for an `Authorization` that carries no credential and the 401 for
+none at all on a `PATCH`, `PUT` or `DELETE` (measured 2026-09-10, 2026-09-21, 2026-10-14 and
+2026-10-16).
 
 An issue body and a pull body are the two distinct field sets real serves — a pull carries `_links`
 and its `*_url` siblings and none of the issue-only fields, `pull_request` included. A repository
@@ -452,11 +485,18 @@ responses. Numeric ids are assigned uniquely at import, including when keys hash
 stable across appended shards. Databases built before `jira_issues.numeric_id` was added must be
 re-imported; the startup schema check names the missing column.
 
-A JSON body is `application/json;charset=UTF-8` — no space after the semicolon, `UTF-8`
-upper-case — as real's is on every route and status measured, except where real answers a
-different type altogether: the RFC 7807 refusals (a type-conversion 400, the 405, the 415) are
+A JSON body is `application/json;charset=UTF-8` — no space after the semicolon, `UTF-8` upper-case —
+as real's is on every route and status measured, except where real answers a different type
+altogether: the RFC 7807 refusals (a type-conversion 400, the 405, the 415) are
 `application/problem+json;charset=UTF-8`, and the gateway's 403 for a bearer it cannot read as a
-Connect token is the bare `application/json`.
+Connect token is the bare `application/json`, or XML for an `Accept` that names `application/xml`
+and nowhere names `application/json`, matched as text in any case. An `Accept` admitting no JSON
+draws a 406 in that RFC 7807 shape, behind a 405 and a 415 and ahead of the 401, a bad parameter's
+400 and whatever the route answers, on every operation but the ones
+`backlot/data/jira_unserved.json` marks, and one with any member Jira cannot read draws it with no
+body; the 401 takes its media type from `Accept`. A `q` named in another case (`Q=2`) that is no
+quality fails an answer as it is written: a route's answer, the 401 and the `orderBy` refusal are
+Jira's 500 page, its other refusals as they were.
 
 A trailing slash is not part of a path on either product, and a run of slashes inside one is a
 single slash — both spellings answer what the canonical one answers, though a refusal echoes the
@@ -487,7 +527,7 @@ answers add `x-arequestid`, `cache-control` and `timing-allow-origin`, which the
 own `x-aaccountid`, and the burst quota's four (`ratelimit`, `ratelimit-policy`,
 `x-ratelimit-limit`, `x-ratelimit-remaining`) where a route answers or an `OPTIONS` asks at one,
 counted per method and route. An anonymous request carries none of those five, and the no-endpoint
-404, a 405 and an unserved operation's 415 carry the account id alone.
+404, a 405, a 406 and an unserved operation's 415 carry the account id alone.
 
 ### Linear — `/linear/graphql`
 
@@ -520,7 +560,7 @@ A URL Notion does not publish is `invalid_request_url` at 400, which the real AP
 reads the credential or the version. The method is part of that URL: a `GET` on a route that
 answers `POST` is the same 400 rather than a 405, with `TRACE` the exception real refuses at the
 front door with Cloudflare's own 405 page. An operation Notion publishes and Backlot does not serve
-(`PATCH pages/{id}`, `POST comments` and the other `missing_operation` rows in
+(`PATCH pages/{id}`, `POST comments` and the other `missing` operations in
 `backlot/fidelity/baseline/notion.json`) answers the credential's 401 as a served route does, and
 a request that clears the credential and the version gets the 400, as there is no operation to run.
 The three OAuth client endpoints among them, `POST oauth/token`, `oauth/introspect` and

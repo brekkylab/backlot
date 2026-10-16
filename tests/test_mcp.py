@@ -1073,7 +1073,7 @@ def test_backlot_mcp_takes_its_server_down_when_it_is_ended(tmp_path, end, code)
         pytest.skip(
             f"a Backlot server is already on {backlot_mcp.DEFAULT_URL}; free it to run this"
         )
-    env = {**os.environ, "BACKLOT_DATA_DIR": str(tmp_path / "data")}
+    env = python_child_env(BACKLOT_DATA_DIR=str(tmp_path / "data"))
     proc = _initialised_mcp("--source", "slack", env=env)
     try:
         if end == "terminate":
@@ -1137,7 +1137,7 @@ def test_backlot_mcp_takes_down_a_server_it_spawned_but_had_not_yet_yielded(tmp_
         pytest.skip(
             f"a Backlot server is already on {backlot_mcp.DEFAULT_URL}; free it to run this"
         )
-    env = {**os.environ, "BACKLOT_DATA_DIR": str(tmp_path / "data")}
+    env = python_child_env(BACKLOT_DATA_DIR=str(tmp_path / "data"))
     proc = subprocess.Popen(
         [sys.executable, "-c", _MCP_HELD_BEFORE_READY],
         stdin=subprocess.PIPE,

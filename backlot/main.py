@@ -329,14 +329,14 @@ async def report_github_rate_limit(request: Request, call_next):
     with the rest of the GET's headers. A path outside `/github` gets nothing: the other vendors'
     rate-limit answers are not measured. A 404 for a path real does not route gets them only for a
     request that carried no `Authorization` header at all — see ``_github_routes`` — and a
-    credential that did not resolve gets them on no path at all (``github.refused_a_credential``);
-    the refusal check shares that same gate, so neither is ever refused by it. Of the 401s an
-    operation no route here serves gets for its credential, one whose method is in
-    ``_UNCOUNTED_REFUSALS`` gets none either and counts nothing.
+    credential that did not resolve, with no tab after its scheme, gets them on no path at all
+    (``github.refused_without_a_window``); the refusal check shares that same gate, so neither is
+    ever refused by it. Of the 401s an operation no route here serves gets for its credential, one
+    whose method is in ``_UNCOUNTED_REFUSALS`` gets none either and counts nothing.
     """
     gated = (
         request.url.path.startswith("/github")
-        and not github.refused_a_credential(request)
+        and not github.refused_without_a_window(request)
         and (_github_routes(request.scope) or "authorization" not in request.headers)
     )
     if gated:
@@ -470,17 +470,28 @@ async def serve_a_slashed_notion_path_as_the_path_without_it(request: Request, c
     return await call_next(request)
 
 
-def _some_google_route_matches(scope: Scope) -> bool:
-    """Whether a Google route matches this scope's path, whatever the method. Asked of
-    ``backlot.routers.google.router``, which holds the Google routes and nothing else."""
-    return any(route.matches(scope)[0] is not Match.NONE for route in google.router.routes)
+def _google_route_match(scope: Scope) -> Match:
+    """How the best Google route matches this scope: in full, by its path alone (``PARTIAL``, the
+    router's 405), or not at all. Asked of ``backlot.routers.google.router``, which holds the Google
+    routes and nothing else."""
+    best = Match.NONE
+    for route in google.router.routes:
+        match = route.matches(scope)[0]
+        if match is Match.FULL:
+            return match
+        if match is Match.PARTIAL:
+            best = match
+    return best
 
 
 @app.middleware("http")
-async def serve_a_slashed_google_path_as_the_path_without_it(request: Request, call_next):
+async def route_a_google_path_the_way_google_does(request: Request, call_next):
     """Trailing slashes on a Google family path are not part of the path: real serves what the
     slash-free spelling serves, however many there are, refusals included. Measured 2026-10-11
-    against the five hosts, on the spellings ``tests/test_google.py::_SLASHED_ROWS`` lists.
+    against the five hosts, on the spellings ``tests/test_google.py::_SLASHED_ROWS`` lists. And an
+    operation Google publishes that no route here serves under the request's method is refused as a
+    served route refuses before it runs, ahead of the router's 404 or 405
+    (``backlot.routers.google.refuse_an_unserved_operation``).
 
     An escaped slash is not one of them — `values/A1%2F` is real's 400 `Unable to parse range: A1/`
     — so the slashes counted are the raw path's. Nor is a run of slashes inside a path:
@@ -500,11 +511,15 @@ async def serve_a_slashed_google_path_as_the_path_without_it(request: Request, c
         return await call_next(request)
     raw = request.scope.get("raw_path") or path.encode()
     slashes = len(raw) - len(raw.rstrip(b"/"))
-    routed = path[: len(path) - slashes]
-    scope = {**request.scope, "path": routed}
-    if not _some_google_route_matches(scope):
-        return await _http_exception_handler(request, StarletteHTTPException(status_code=404))
-    request.scope["path"] = routed
+    request.scope["path"] = path[: len(path) - slashes]
+    match = _google_route_match(request.scope)
+    if match is not Match.FULL:
+        try:
+            google.refuse_an_unserved_operation(request)
+        except StarletteHTTPException as exc:
+            return await _http_exception_handler(request, exc)
+        if match is Match.NONE:
+            return await _http_exception_handler(request, StarletteHTTPException(status_code=404))
     return await call_next(request)
 
 
@@ -576,8 +591,9 @@ async def refuse_a_bearer_jira_cannot_read(request: Request, call_next):
     """Refuse a Jira read whose bearer the real gateway would not read, before the route runs.
 
     Unlike the Basic pair, which Jira serves anonymously, an unreadable bearer is refused — and
-    refused ahead of everything, so `serverInfo` and `field` answer it too even though neither
-    needs a credential. That is why this short-circuits rather than living in
+    refused ahead of every route, behind only the front door
+    (:func:`answer_at_the_atlassian_front_door`), so `serverInfo` and `field` answer it too even
+    though neither needs a credential. That is why this short-circuits rather than living in
     ``atlassian._jira_caller``. Confluence is not here: it answers its own 403 for any credential
     that fails, which ``atlassian._confluence_caller`` already gives. Measured on two Jira Cloud
     sites on 2026-09-04.
@@ -716,6 +732,41 @@ async def report_failed_jira_login(request: Request, call_next):
         if auth.atlassian_caller(request).is_anonymous:
             response.headers["X-Seraph-LoginReason"] = "AUTHENTICATED_FAILED"
     return response
+
+
+@app.middleware("http")
+async def answer_at_the_atlassian_front_door(request: Request, call_next):
+    """Answer an `/atlassian` request the way a layer in front of Jira and Confluence does, where
+    one answers it: the CDN, its firewall, the gateway and Confluence's Tomcat, each with its own
+    page (which, and in what order, is ``errors.atlassian.front_door``).
+
+    Registered after the slash rewrite, the Connect-token refusal, the `HEAD` rewrite and the
+    Seraph header, so it runs ahead of each of them: a `HEAD` arrives here as a `HEAD` (real
+    declares each page's length on one and sends no body), and none of the other three runs for a
+    request this refuses, as none of them runs on real. Whose headers the answer carries
+    (``errors.atlassian.FrontDoor``) is left on the scope for
+    ``backlot.routers.atlassian.vendor_headers``.
+    """
+    # `request.url.path` only decides ownership and seeds the raw-path fallback; the pages echo no
+    # path verbatim (the CloudFront id is a hash of it, the rest are static), so the decoded form is
+    # safe here where `front_door` itself reads `raw_path`
+    if not errors.atlassian.owns(request.url.path):
+        return await call_next(request)
+    raw_path = request.scope.get("raw_path") or request.url.path.encode()
+    answer = errors.atlassian.front_door(
+        request.method,
+        raw_path.decode("latin-1"),
+        request.scope.get("query_string", b"").decode("latin-1"),
+    )
+    if answer is None:
+        return await call_next(request)
+    request.scope["atlassian_front_door"] = answer.layer
+    body = answer.body.encode()
+    headers = {"Content-Type": answer.media_type, **answer.headers}
+    if request.method == "HEAD":
+        headers["Content-Length"] = str(len(body))
+        body = b""
+    return Response(body, status_code=answer.status, headers=headers)
 
 
 @app.middleware("http")

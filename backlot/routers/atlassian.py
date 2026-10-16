@@ -312,6 +312,18 @@ def _resolve_jira_key(request: Request, conn, key: str, ids):
     return row
 
 
+def _require_issue(request: Request, conn, key: str):
+    """The issue behind ``key`` the caller can see, or Jira's 404 for it, which reports an issue the
+    caller cannot see as one that does not exist."""
+    row = _resolve_jira_key(request, conn, key, auth.visible_ids(request, _jira_caller(request)))
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Issue does not exist or you do not have permission to see it.",
+        )
+    return row
+
+
 @router.get(
     "/rest/api/2/serverInfo",
     response_model=JiraServerInfo,
@@ -415,6 +427,12 @@ def _require_project(request: Request, conn, key: str) -> str:
     ecosystem.atlassian.net, whose `AA` is public, and brekkylab.atlassian.net, which has no such
     key, on 2026-09-04. An unreachable project is reported as an absent one, the way
     `issue/{key}` reports an issue the caller cannot see.
+
+    The 404 calls the segment an `id` when it is one to eighteen ASCII digits with no leading zero,
+    and a `key` otherwise. Measured against Jira Cloud on 2026-10-14, with and without a credential,
+    on `role` and `role/10002`: `1`, `10002` and `999999999999999999` are ids; `0`, `007`, `-1`,
+    `1000000000000000000` (nineteen digits, still a Java `long`) and `1２` (a full-width `２`) are
+    keys.
     """
     ids = auth.visible_ids(request, _jira_caller(request))
     container = _jira_container_for_key(conn, key, request)
@@ -426,7 +444,8 @@ def _require_project(request: Request, conn, key: str) -> str:
         ids is None or store.has_visible_document(conn, "jira", container, ids)
     ):
         return container
-    raise HTTPException(status_code=404, detail=f"No project could be found with key '{key}'.")
+    kind = "id" if re.fullmatch(r"[1-9][0-9]{0,17}", key) else "key"
+    raise HTTPException(status_code=404, detail=f"No project could be found with {kind} '{key}'.")
 
 
 @router.get("/rest/api/3/project/{key}/role")
@@ -456,10 +475,11 @@ async def jira_project_role(key: str, role_id: int, request: Request):
 
 
 # The `SearchAndReconcileRequestBean` fields real's POST form accepts, measured 2026-09-18 against
-# Jira Cloud: `fields`, `fieldsByKeys`, `expand`, `properties` and `reconcileIssues` are all read
-# without a refusal, alongside the three Backlot itself acts on. Backlot implements
-# none of the five, the same gap `_P_EXPAND`'s comment notes for the comment read, but they must
-# stay off the unknown-property refusal below or that refusal would catch a client using them.
+# Jira Cloud (`failFast` 2026-10-12): `fields`, `fieldsByKeys`, `failFast`, `expand`, `properties`
+# and `reconcileIssues` are all read without a refusal, alongside the three Backlot itself acts on.
+# Backlot implements none of the six, the same gap `_P_EXPAND`'s comment notes for the comment
+# read, but they must stay off the unknown-property refusal below or that refusal would catch a
+# client using them.
 _JIRA_SEARCH_BODY_KEYS = frozenset(
     {
         "jql",
@@ -467,6 +487,7 @@ _JIRA_SEARCH_BODY_KEYS = frozenset(
         "nextPageToken",
         "fields",
         "fieldsByKeys",
+        "failFast",
         "expand",
         "properties",
         "reconcileIssues",
@@ -536,12 +557,13 @@ def _jira_search_max_results(value) -> int:
 _JIRA_BOOLEAN_TEXTS = frozenset({"", "null", "true", "True", "TRUE", "false", "False", "FALSE"})
 
 
-def _jira_fields_by_keys_ok(value) -> bool:
-    """Whether a `fieldsByKeys` binds to the bean's boolean, the way Jira Cloud bound it on
-    2026-10-10 and 2026-10-11. `null`, a boolean and any integer bind. A string binds when, trimmed
-    (see :data:`_JAVA_TRIMMED`), it is empty, `null`, or `true` or `false` in lower, title or upper
-    case: `" TRUE "`, `"False"`, `""` and `"null"` bind, where `"tRuE"`, `"NULL"`, `"1"`, `"yes"`
-    and a `true` behind a no-break space do not. A float, a list and an object do not bind.
+def _jira_bean_boolean_ok(value) -> bool:
+    """Whether a `fieldsByKeys` or a `failFast` binds to the bean's boolean. Jira Cloud bound
+    `fieldsByKeys` this way on 2026-10-10 and 2026-10-11, and the two alike, value for value, on
+    2026-10-13. `null`, a boolean and any integer bind. A string binds when, trimmed (see
+    :data:`_JAVA_TRIMMED`), it is empty, `null`, or `true` or `false` in lower, title or upper case:
+    `" TRUE "`, `"False"`, `""` and `"null"` bind, where `"tRuE"`, `"NULL"`, `"1"`, `"yes"` and a
+    `true` behind a no-break space do not. A float, a list and an object do not bind.
     """
     if value is None or isinstance(value, int):
         return True
@@ -623,15 +645,18 @@ async def jira_search(request: Request):
             # an object is a body-wide invalid-payload refusal (measured 2026-10-06; the lists of
             # scalars and the bare string 2026-10-09).
             raise errors_atlassian.body_not_read(errors_atlassian.BODY_NOT_AN_OBJECT)
-        # The four members Backlot does not act on still have their values bound by the bean
-        # (measured 2026-10-10 and 2026-10-11): `expand` takes a scalar, `properties` a list of
-        # scalars, `reconcileIssues` a list of what `_jira_reconcile_issue_ok` accepts, and
-        # `fieldsByKeys` what `_jira_fields_by_keys_ok` accepts. Anything else is the body-wide
-        # refusal, which real gives ahead of the 500s a null `properties` element and a null
-        # `reconcileIssues` draw further down.
+        # The other five members Backlot does not act on still have their values bound by the bean
+        # (measured 2026-10-10 and 2026-10-11, `failFast` 2026-10-13): `expand` takes a scalar,
+        # `properties` a list of scalars, `reconcileIssues` a list of what
+        # `_jira_reconcile_issue_ok` accepts, and `fieldsByKeys` and `failFast` what
+        # `_jira_bean_boolean_ok` accepts. Anything else is the body-wide refusal, which real gives
+        # ahead of the 500s a null `properties` element and a null `reconcileIssues` draw further
+        # down.
         if isinstance(body.get("expand"), (list, dict)):
             raise errors_atlassian.body_not_read(errors_atlassian.BODY_NOT_AN_OBJECT)
-        if not _jira_fields_by_keys_ok(body.get("fieldsByKeys")):
+        if not _jira_bean_boolean_ok(body.get("fieldsByKeys")):
+            raise errors_atlassian.body_not_read(errors_atlassian.BODY_NOT_AN_OBJECT)
+        if not _jira_bean_boolean_ok(body.get("failFast")):
             raise errors_atlassian.body_not_read(errors_atlassian.BODY_NOT_AN_OBJECT)
         raw_properties = body.get("properties")
         if raw_properties is not None and (
@@ -657,22 +682,30 @@ async def jira_search(request: Request):
             raise errors_atlassian.properties_null_element(raw_properties.index(None))
         token = raw_token
         reconcile_null = "reconcileIssues" in body and raw_reconcile is None
+        reconcile_count = len(raw_reconcile) if isinstance(raw_reconcile, list) else 0
     else:
         jql = _str_param(request, "jql") or ""
         max_results_sent = _jira_max_results_was_sent(request)
         limit = _int_param(request, "maxResults", default_size)
         # Each conversion is refused ahead of the page token, the range and the unbounded JQL:
-        # `maxResults` first, then `fieldsByKeys`, then `reconcileIssues`, whichever order the
-        # query sends them in (measured 2026-10-12).
+        # `maxResults` first, then `fieldsByKeys`, then `failFast`, then `reconcileIssues`,
+        # whichever order the query sends them in (measured 2026-10-12).
         _bool_param(request, "fieldsByKeys")
+        _bool_param(request, "failFast")
         _jira_long_list_param(request, "reconcileIssues")
         token = _str_param(request, "nextPageToken")
         reconcile_null = False
+        reconcile_count = len(request.query_params.getlist("reconcileIssues"))
     # An undecodable token is refused before the project clause is resolved (measured
     # 2026-09-16; see test_jira_search_refuses_a_page_token_it_cannot_decode).
     offset = decode_cursor_or_none(None if token is None else str(token))
     if offset is None:
         raise errors_atlassian.bad_page_token()
+    if reconcile_count > 50:
+        # Real counts every value it was sent, a blank one on GET and a null element on POST
+        # included, and answers this after the page token and ahead of the range and the unbounded
+        # JQL (measured 2026-10-12, the null elements 2026-10-13).
+        raise errors_atlassian.reconcile_issues_too_many()
     if max_results_sent and not (
         _JIRA_SEARCH_MAX_RESULTS_RANGE[0] <= limit <= _JIRA_SEARCH_MAX_RESULTS_RANGE[1]
     ):
@@ -718,14 +751,7 @@ async def jira_search(request: Request):
 @router.get("/rest/api/3/issue/{key}", response_model=JiraIssue, openapi_extra=_P_EXPAND)
 async def jira_get_issue(key: str, request: Request):
     conn = auth.conn(request)
-    caller = _jira_caller(request)
-    ids = auth.visible_ids(request, caller)
-    row = _resolve_jira_key(request, conn, key, ids)
-    if row is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Issue does not exist or you do not have permission to see it.",
-        )
+    row = _require_issue(request, conn, key)
     return _jira_issue(conn, request, row, expand=_str_param(request, "expand", ""))
 
 
@@ -781,14 +807,7 @@ async def jira_issue_comments(key: str, request: Request):
     desc = _jira_order_desc(raw_order) if raw_order is not None else None
 
     conn = auth.conn(request)
-    caller = _jira_caller(request)
-    ids = auth.visible_ids(request, caller)
-    row = _resolve_jira_key(request, conn, key, ids)
-    if row is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Issue does not exist or you do not have permission to see it.",
-        )
+    row = _require_issue(request, conn, key)
 
     cs = store.doc_comments(conn, "jira", row["key"])
     if desc is not None:
@@ -1525,11 +1544,8 @@ async def confluence_space_permission(key: str, request: Request):
     fact about the wire, and a `GET` operation on this path is a declaration the vendor's document
     does not make.
 
-    The refusal covers the `POST` as well, where real gets past the method check: a `POST` here
-    answers 415 with Spring's `UNSUPPORTED_MEDIA_TYPE` naming the absent content type (measured
-    2026-09-17, on a key naming no space). That is the acknowledged `missing_operation` for this
-    path showing on the wire, as an unserved write does on any path Backlot routes for a read, and
-    answering the 415 would mean serving the first step of the write itself.
+    A `POST` here is the published write, which ``_published_answer`` answers as real does before
+    it runs (its 415, then the caller's refusal, :data:`_CONFLUENCE_CONSUMES`).
 
     ``key`` is unused and declared because the path carries it: the refusal comes before any lookup
     on real, where `GET space/NOSUCHSPACE/permission` answers the same 405 as a key that names a
@@ -1843,6 +1859,27 @@ async def confluence_attachments(content_id: int, request: Request):
     }
 
 
+# The label prefixes real reads, in this case only (Confluence Cloud, 2026-10-14).
+_LABEL_PREFIXES = frozenset({"global", "my", "team", "system"})
+
+
+def _refuse_a_label_prefix(request: Request) -> None:
+    """Confluence's 400 for a `prefix` it cannot convert, measured on `content/{id}/label` on
+    2026-10-09 and 2026-10-14.
+
+    Every `prefix` value is read, each split at its commas and each element trimmed as Java's
+    `String.trim` trims (`%09global` is `global`); a single empty `prefix` is the parameter unsent.
+    Any element outside :data:`_LABEL_PREFIXES` is the refusal, which names every element in the
+    order sent: `?prefix=global&prefix=bogus` names `[global, bogus]`, `?prefix=global,` names
+    `[global, ]` and `?prefix=%20` names `[]`."""
+    values = request.query_params.getlist("prefix")
+    if values in ([], [""]):
+        return
+    parts = [part.strip(_JAVA_TRIMMED) for value in values for part in value.split(",")]
+    if not _LABEL_PREFIXES.issuperset(parts):
+        raise errors_atlassian.label_prefixes_not_converted(parts)
+
+
 @router.get("/wiki/rest/api/content/{content_id}/label", openapi_extra=_P_CONTENT_CHILD)
 async def confluence_labels(content_id: int, request: Request):
     conn = auth.conn(request)
@@ -1851,6 +1888,11 @@ async def confluence_labels(content_id: int, request: Request):
     row = store.get_document(conn, "confluence", content_id, visible_ids=ids)
     if row is None:
         raise HTTPException(status_code=404, detail="No content found with id")
+    # Real converts `limit` and `start` before it reads `prefix`, and refuses a negative or zero
+    # one after it (measured 2026-10-14).
+    _int_param(request, "limit", 200)
+    _int_param(request, "start", 0)
+    _refuse_a_label_prefix(request)
     limit, start = _confluence_page_params(request, default=200, cap=200, refuse_zero=True)
     labels = store.jcol(row, "labels")
     results = [
@@ -1881,8 +1923,12 @@ async def confluence_restrictions(content_id: int, request: Request):
     if store.get_document(conn, "confluence", content_id, visible_ids=ids) is None:
         raise HTTPException(status_code=404, detail="No content found with id")
     emails = store.doc_member_emails(conn, "confluence", content_id)
-    users = [] if emails is None else [_conf_user(e, _site(request)) for e in sorted(emails)]
+    site = _site(request)
+    users = [] if emails is None else [_conf_user(e, site) for e in sorted(emails)]
+    path = f"{site}/wiki/rest/api/content/{content_id}/restriction/byOperation"
 
+    # Real's members in real's order (Confluence Cloud, 2026-10-09 and 2026-10-14): each operation
+    # links to itself under this path, and the answer ends with the links a listing carries.
     def _op(name):
         return {
             "operation": name,
@@ -1891,9 +1937,14 @@ async def confluence_restrictions(content_id: int, request: Request):
                 "group": {"results": [], "start": 0, "limit": 200, "size": 0},
             },
             "_expandable": {"content": f"/rest/api/content/{content_id}"},
+            "_links": {"self": f"{path}/{name}"},
         }
 
-    return {"read": _op("read"), "update": _op("update")}
+    return {
+        "read": _op("read"),
+        "update": _op("update"),
+        "_links": {"self": path, "base": f"{site}/wiki", "context": "/wiki"},
+    }
 
 
 def _conf_user(email: str, site: str) -> dict:
@@ -2167,8 +2218,8 @@ _JIRA_QUERY_BOOLEANS = {
 
 
 def _bool_param(request: Request, name: str, default: bool | None = None) -> bool | None:
-    """One query parameter as a boolean, read the way Jira reads `search/jql`'s `fieldsByKeys`
-    (Jira Cloud, 2026-10-12).
+    """One query parameter as a boolean, read the way Jira reads `search/jql`'s `fieldsByKeys` and
+    `failFast` (Jira Cloud, 2026-10-12 and 2026-10-13).
 
     The first value is the one read. What Java's `String.trim` removes comes off it, every character
     up to U+0020 at either end (`%01true` is read), and no character past U+0020 does (`%C2%A0true`
@@ -2637,9 +2688,8 @@ def _refuse_negative_page_params(limit: int, start: int) -> None:
 #: sees (``errors.atlassian.SERVED_METHODS``) but `HEAD`, which
 #: ``backlot.main.answer_head_as_the_get_without_its_body`` turns into its GET before routing, so
 #: that none reaches a route. Every method outside `SERVED_METHODS` is left off because a layer in
-#: front of the application refuses it (see ``errors.atlassian.SERVED_METHODS``), so what answers
-#: one here is Starlette's 405, which ``errors.atlassian.method_not_allowed`` turns into that
-#: layer's answer.
+#: front of the application refuses it, which ``backlot.main.answer_at_the_atlassian_front_door``
+#: answers before routing (``errors.atlassian.front_door``).
 _UNMATCHED_METHODS = [m for m in errors_atlassian.SERVED_METHODS if m != "HEAD"]
 
 #: The Confluence resources whose unmatched sub-paths real answers with the product's HTML page
@@ -2678,48 +2728,121 @@ def _published_not_served(source: str) -> tuple[tuple[str, re.Pattern[str]], ...
 
 _JIRA_PUBLISHED = _published_not_served("jira")
 _CONFLUENCE_PUBLISHED = _published_not_served("confluence")
-#: What real answers before each Jira operation of those runs; ``scripts/gen_jira_unserved.py``
-#: writes the file from Jira's documents and says how that was measured.
-_JIRA_UNSERVED = json.loads((_PACKAGE / "data" / "jira_unserved.json").read_text())["refused"]
-#: The Jira operations that will not run for a caller with no credential they resolve.
-_JIRA_REFUSED = _operations(_JIRA_UNSERVED)
-#: Of those, the ones that check the request's media type first, for any caller the gateway lets
-#: through: (method, pattern, the types taken, whether the body is optional).
-_JIRA_CONSUMES = tuple(
-    (method, pattern, tuple(entry["consumes"]), entry.get("body") == "optional")
-    for (method, pattern), entry in zip(_JIRA_REFUSED, _JIRA_UNSERVED.values(), strict=True)
-    if "consumes" in entry
+#: What real answers before each Jira operation of those runs, operation by operation;
+#: ``scripts/gen_jira_unserved.py`` writes the file from Jira's documents and says how that was
+#: measured.
+_JIRA_UNSERVED = json.loads((_PACKAGE / "data" / "jira_unserved.json").read_text())
+_JIRA_ENTRIES = {**_JIRA_UNSERVED["refused"], **_JIRA_UNSERVED["run"]}
+_JIRA_OPERATIONS = tuple(
+    (row, method, pattern)
+    for row, (method, pattern) in zip(_JIRA_ENTRIES, _operations(_JIRA_ENTRIES), strict=True)
 )
+#: The operations at a served route's path whose own lookup real runs next: an issue's `PUT` and
+#: `DELETE` and its comments' `POST` reach :func:`_require_issue`, and a project role's three writes
+#: reach :func:`_require_project`, so a key naming nothing the caller sees is that resource's 404.
+#: Measured on Jira Cloud 2026-10-12 (the issue's under `/rest/api/2` 2026-09-30), credentialled and
+#: not.
+_JIRA_ISSUE_WRITES = frozenset(
+    f"{method} /rest/api/{version}/issue/{{}}{tail}"
+    for version in ("2", "3")
+    for method, tail in (("PUT", ""), ("DELETE", ""), ("POST", "/comment"))
+)
+_JIRA_ROLE_WRITES = frozenset(
+    f"{method} /rest/api/3/project/{{}}/role/{{}}" for method in ("POST", "PUT", "DELETE")
+)
+
+
+def _jira_operation(method: str, vendor_path: str) -> str | None:
+    """The operation of :data:`_JIRA_ENTRIES` a request names, or None.
+
+    Of the ones its method and path match, the one with the fewest placeholders: `PUT issue/archive`
+    is an operation of its own that `PUT issue/{}` also matches, and real answers it as itself (a
+    400 for an empty body, 2026-10-12, where the issue's would be its 404).
+    """
+    matches = [
+        row
+        for row, verb, pattern in _JIRA_OPERATIONS
+        if verb == method and pattern.fullmatch(vendor_path)
+    ]
+    return min(matches, key=lambda row: row.count("{}"), default=None)
+
+
+_CONFLUENCE_NOT_PERMITTED_GETS = (
+    "api/audit",
+    "api/audit/export",
+    "api/audit/retention",
+    "api/audit/since",
+    "api/content-states",
+    "api/longtask",
+    "api/longtask/{}",
+    "api/relation/{}/from/{}/{}/to/{}",
+    "api/relation/{}/from/{}/{}/to/{}/{}",
+    "api/relation/{}/to/{}/{}/from/{}",
+    "api/search/user",
+    "api/settings/lookandfeel",
+    "api/template/blueprint",
+    "api/template/page",
+    "api/template/{}",
+    "api/user/watch/content/{}",
+    "api/user/watch/label/{}",
+    "api/user/watch/space/{}",
+    "atlassian-connect/1/app/module/dynamic",
+)
+
+#: The Confluence writes its JAX-RS services answer, as opposed to its Spring ones: measured
+#: 2026-10-13 with no credential on each of the 65 writes the Confluence baseline lists as
+#: `missing_operation`, these 23 answered a JSON body or none with
+#: ``errors.atlassian.CONFLUENCE_NOT_PERMITTED_BODY`` (but the two that ran,
+#: :data:`_CONFLUENCE_RUN_ANONYMOUSLY`), another type with an empty 415 (but the three under
+#: `settings/lookandfeel`, :data:`_CONFLUENCE_JAXRS_UNTYPED`), and a `Content-Type` Jersey cannot
+#: read (`foo`) with Tomcat's 400 page, the two that ran included
+#: (``errors.atlassian.jaxrs_media_type_refusal`` has which values those are).
+_CONFLUENCE_JAXRS_WRITES = tuple(
+    f"{method} /wiki/rest/{path}"
+    for method, path in (
+        ("POST", "api/audit"),
+        ("PUT", "api/audit/retention"),
+        ("POST", "api/content/archive"),
+        ("POST", "api/content/blueprint/instance/{}"),
+        ("PUT", "api/content/blueprint/instance/{}"),
+        ("POST", "api/contentbody/convert/async/bulk/tasks"),
+        ("POST", "api/contentbody/convert/async/{}"),
+        ("PUT", "api/relation/{}/from/{}/{}/to/{}/{}"),
+        ("DELETE", "api/relation/{}/from/{}/{}/to/{}/{}"),
+        ("PUT", "api/settings/lookandfeel"),
+        ("POST", "api/settings/lookandfeel/custom"),
+        ("DELETE", "api/settings/lookandfeel/custom"),
+        ("POST", "api/template"),
+        ("PUT", "api/template"),
+        ("DELETE", "api/template/{}"),
+        *(
+            (method, f"api/user/watch/{kind}/{{}}")
+            for kind in ("content", "label", "space")
+            for method in ("POST", "DELETE")
+        ),
+        ("POST", "atlassian-connect/1/app/module/dynamic"),
+        ("DELETE", "atlassian-connect/1/app/module/dynamic"),
+    )
+)
+_CONFLUENCE_JAXRS = _operations(_CONFLUENCE_JAXRS_WRITES)
+_CONFLUENCE_JAXRS_UNTYPED = _operations(
+    row for row in _CONFLUENCE_JAXRS_WRITES if "/settings/lookandfeel" in row
+)
+#: The two of them that ran with no credential: `[]` at 200 and a 404 for an id naming nothing.
+_CONFLUENCE_JAXRS_RUN = tuple(row for row in _CONFLUENCE_JAXRS_WRITES if "/contentbody/" in row)
 
 #: The Confluence services whose refusal of a caller with no credential is
 #: ``errors.atlassian.CONFLUENCE_NOT_PERMITTED_BODY`` rather than the one every other operation
 #: gives. Measured 2026-09-30 with no credential on each of the 63 GETs the Confluence baseline
-#: lists as `missing_operation`: these nineteen answered that body, 42 the other, and two ran
-#: (:data:`_CONFLUENCE_RUN_ANONYMOUSLY`). No field of the vendor's document separates the two
-#: refusals, so the services are named.
+#: lists as `missing_operation`: these nineteen (:data:`_CONFLUENCE_NOT_PERMITTED_GETS`) answered
+#: that body, 42 the other, and two ran (:data:`_CONFLUENCE_RUN_ANONYMOUSLY`); and the JAX-RS
+#: writes (:data:`_CONFLUENCE_JAXRS_WRITES`) answered it too. No field of the vendor's document
+#: separates the two refusals, so the services are named.
 _CONFLUENCE_NOT_PERMITTED = _operations(
-    f"GET /wiki/rest/{path}"
-    for path in (
-        "api/audit",
-        "api/audit/export",
-        "api/audit/retention",
-        "api/audit/since",
-        "api/content-states",
-        "api/longtask",
-        "api/longtask/{}",
-        "api/relation/{}/from/{}/{}/to/{}",
-        "api/relation/{}/from/{}/{}/to/{}/{}",
-        "api/relation/{}/to/{}/{}/from/{}",
-        "api/search/user",
-        "api/settings/lookandfeel",
-        "api/template/blueprint",
-        "api/template/page",
-        "api/template/{}",
-        "api/user/watch/content/{}",
-        "api/user/watch/label/{}",
-        "api/user/watch/space/{}",
-        "atlassian-connect/1/app/module/dynamic",
-    )
+    [
+        *(f"GET /wiki/rest/{path}" for path in _CONFLUENCE_NOT_PERMITTED_GETS),
+        *(row for row in _CONFLUENCE_JAXRS_WRITES if row not in _CONFLUENCE_JAXRS_RUN),
+    ]
 )
 _CONFLUENCE_CONNECT_MODULES = "/wiki/rest/atlassian-connect/1/app/module/dynamic"
 #: Confluence operations real serves that its document does not publish, so the baseline has no row
@@ -2736,13 +2859,54 @@ _CONFLUENCE_OUTSIDE_THE_DOCUMENT = _operations(
         "space/{}/property",
     )
 )
-#: The two the same sweep found running with no credential: a 200 with `[]` and a 400 for an id
-#: that does not match the service's pattern.
+#: The two GETs the same sweep found running with no credential, a 200 with `[]` and a 400 for an
+#: id that does not match the service's pattern, and the two JAX-RS writes beside them.
 _CONFLUENCE_RUN_ANONYMOUSLY = _operations(
     (
         "GET /wiki/rest/api/contentbody/convert/async/bulk/tasks",
         "GET /wiki/rest/api/contentbody/convert/async/{}",
+        *_CONFLUENCE_JAXRS_RUN,
     )
+)
+#: The Confluence operations a Spring service checks the request's media type for ahead of the
+#: caller, whoever it is: (method, pattern, the types taken). With no credential, `Bearer nope` and
+#: a Basic pair it rejects, a body of another type, or none, is the 415 (``errors.atlassian`` names
+#: how it reads the type) and a body of that type the refusal :func:`_confluence_refusal` gives,
+#: measured 2026-10-12 on the attachment writes and `space/{key}/permission`, and 2026-10-13 on each
+#: of the 65 writes the baseline lists: these sixteen answered no body and a `text/plain` one with
+#: the 415, the JAX-RS ones (:data:`_CONFLUENCE_JAXRS_WRITES`) their own way, and the other 26 the
+#: caller's refusal either way.
+_CONFLUENCE_CONSUMES = tuple(
+    (method, pattern, consumes)
+    for rows, consumes in (
+        (
+            (
+                "POST /wiki/rest/api/content/{}/child/attachment",
+                "PUT /wiki/rest/api/content/{}/child/attachment",
+                "POST /wiki/rest/api/content/{}/child/attachment/{}/data",
+            ),
+            ("multipart/form-data",),
+        ),
+        (
+            (
+                "POST /wiki/rest/api/content/{}/pagehierarchy/copy",
+                "POST /wiki/rest/api/content/{}/permission/check",
+                "POST /wiki/rest/api/content/{}/restriction",
+                "PUT /wiki/rest/api/content/{}/restriction",
+                "PUT /wiki/rest/api/content/{}/state",
+                "POST /wiki/rest/api/content/{}/version",
+                "POST /wiki/rest/api/group",
+                "POST /wiki/rest/api/group/userByGroupId",
+                "POST /wiki/rest/api/space/{}/permission",
+                "POST /wiki/rest/api/space/{}/permission/custom-content",
+                "PUT /wiki/rest/api/space/{}/theme",
+                "POST /wiki/rest/api/user/{}/property/{}",
+                "PUT /wiki/rest/api/user/{}/property/{}",
+            ),
+            ("application/json",),
+        ),
+    )
+    for method, pattern in _operations(rows)
 )
 
 
@@ -2767,16 +2931,20 @@ def _jira_unauthenticated(request: Request) -> Response:
 
 
 def _jira_media_refusal(
-    request: Request, vendor_path: str
+    request: Request, operation: str | None
 ) -> errors_atlassian.AtlassianError | None:
-    """The 415 an operation :data:`_JIRA_CONSUMES` names answers for a `Content-Type` it does not
-    take (``errors.atlassian.refuse_a_media_type``), or None."""
-    for method, pattern, consumes, body_optional in _JIRA_CONSUMES:
-        if method == request.method and pattern.fullmatch(vendor_path):
-            return errors_atlassian.refuse_a_media_type(
-                _echoed_path(request), request.headers, consumes, body_optional=body_optional
-            )
-    return None
+    """The 415 ``operation`` answers for a `Content-Type` it does not take, where its entry says
+    what it takes (``errors.atlassian.refuse_a_media_type``), or None."""
+    entry = _JIRA_ENTRIES.get(operation) if operation is not None else None
+    if entry is None or "consumes" not in entry:
+        return None
+    return errors_atlassian.refuse_a_media_type(
+        _echoed_path(request),
+        request.headers,
+        tuple(entry["consumes"]),
+        body_optional=entry.get("body") == "optional",
+        charset=entry.get("charset"),
+    )
 
 
 def _confluence_refusal(request: Request, vendor_path: str) -> Response | None:
@@ -2811,6 +2979,82 @@ def _confluence_refusal(request: Request, vendor_path: str) -> Response | None:
     return Response(
         errors_atlassian.CONFLUENCE_FORBIDDEN_BODY, status_code=403, media_type="application/json"
     )
+
+
+def _confluence_jaxrs_media_refusal(request: Request, vendor_path: str) -> Response | None:
+    """What a Confluence JAX-RS write (:data:`_CONFLUENCE_JAXRS_WRITES`) answers a `Content-Type`
+    it will not read, or None: Tomcat's 400 page, or an empty 415 with no `content-type` where the
+    service checks the type (all but :data:`_CONFLUENCE_JAXRS_UNTYPED`), as
+    ``errors.atlassian.jaxrs_media_type_refusal`` decides."""
+    if not _is(_CONFLUENCE_JAXRS, request.method, vendor_path):
+        return None
+    status = errors_atlassian.jaxrs_media_type_refusal(
+        request.headers.get("content-type"),
+        checks_type=not _is(_CONFLUENCE_JAXRS_UNTYPED, request.method, vendor_path),
+    )
+    if status == 400:
+        return Response(
+            errors_atlassian.TOMCAT_BAD_REQUEST,
+            status_code=400,
+            media_type=errors_atlassian.TOMCAT_MEDIA_TYPE,
+            headers={"Content-Language": "en"},
+        )
+    return None if status is None else Response(status_code=status)
+
+
+def _published_answer(request: Request, vendor_path: str) -> Response | None:
+    """What real answers before an operation it publishes at ``vendor_path`` and no route here
+    serves runs for this caller, or None where it would run, which is where Backlot has nothing to
+    give but the gap the baseline's `missing_operation` row acknowledges.
+
+    Jira checks the request's media type where the operation does, for any caller the gateway lets
+    through (:func:`_jira_media_refusal`), then refuses a caller with no credential it resolves
+    where the operation will not run anonymously, and any `OPTIONS` on one
+    (:func:`_jira_unauthenticated`), each measured 2026-09-30; where the operation runs and is one
+    of :data:`_JIRA_ISSUE_WRITES` or :data:`_JIRA_ROLE_WRITES`, its lookup of a key that names
+    nothing the caller can see is its 404. The operation is the one :func:`_jira_operation` names.
+
+    Confluence answers a Basic value it cannot read with Tomcat's 401 first, then checks the media
+    type where the operation does (:data:`_CONFLUENCE_CONSUMES`, and its JAX-RS writes their own
+    way, :func:`_confluence_jaxrs_media_refusal`), then refuses a caller with no credential it
+    resolves on every operation but :data:`_CONFLUENCE_RUN_ANONYMOUSLY`
+    (:func:`_confluence_refusal`); the 401's place was measured 2026-10-12 with an undecodable value
+    and with one holding no colon, each with a body of a type the operation does not take.
+    """
+    method = request.method
+    # `request.url.path` here classifies the path by product and mount only; nothing echoes it (the
+    # refusals below carry no path, and `_echoed_path` reads the raw spelling where one does)
+    if errors_atlassian.is_confluence(request.url.path):
+        if method == "OPTIONS" or not (
+            _is(_CONFLUENCE_PUBLISHED, method, vendor_path)
+            or _is(_CONFLUENCE_OUTSIDE_THE_DOCUMENT, method, vendor_path)
+        ):
+            return None
+        if auth.basic_credential_kind(request) == auth.BASIC_UNPARSEABLE:
+            _confluence_caller(request)  # Tomcat's 401, ahead of the media-type check too
+        for verb, pattern, consumes in _CONFLUENCE_CONSUMES:
+            if verb == method and pattern.fullmatch(vendor_path):
+                refused = errors_atlassian.refuse_a_confluence_media_type(request.headers, consumes)
+                if refused is not None:
+                    raise refused
+        jaxrs = _confluence_jaxrs_media_refusal(request, vendor_path)
+        return jaxrs if jaxrs is not None else _confluence_refusal(request, vendor_path)
+    if not errors_atlassian.serves_the_jira_api(request.url.path):
+        return None
+    operation = _jira_operation(method, vendor_path)
+    refused = _jira_media_refusal(request, operation)
+    if refused is not None:
+        raise refused
+    if auth.atlassian_caller(request).is_anonymous and (
+        operation in _JIRA_UNSERVED["refused"]
+        or (method == "OPTIONS" and _is(_JIRA_PUBLISHED, None, vendor_path))
+    ):
+        return _jira_unauthenticated(request)
+    if operation in _JIRA_ISSUE_WRITES:
+        _require_issue(request, auth.conn(request), vendor_path.split("/")[5])
+    elif operation in _JIRA_ROLE_WRITES:
+        _require_project(request, auth.conn(request), vendor_path.split("/")[5])
+    return None
 
 
 def _vendor_path(path: str) -> str:
@@ -2992,33 +3236,25 @@ async def unmatched_path(request: Request, rest: str) -> Response:
     every method on every path it owns and so receives that request; `OPTIONS` is the exception,
     and :func:`_options_answer` is what real gives it.
 
-    Those are the answers where the vendor publishes nothing at the path. An operation it does
-    publish is looked at first, since real reaches it whether or not Backlot serves it: Jira checks
-    the request's media type where the operation does, for any caller the gateway lets through
-    (:func:`_jira_media_refusal`), then refuses a caller with no credential it resolves where the
-    operation will not run anonymously, and any `OPTIONS` on one (:func:`_jira_unauthenticated`),
-    and Confluence refuses such a caller on every one (:func:`_confluence_refusal`), each measured
-    2026-09-30. A caller the vendor would serve gets the answer above, which is the gap the
-    baseline's `missing_operation` row acknowledges. Outside both API mounts the site is its web app
+    Those are the answers where the vendor publishes nothing for the method at the path. An
+    operation it does publish is looked at first, at a served route's path as at any other, since
+    real reaches it whether or not Backlot serves it (:func:`_published_answer`); a caller it would
+    run for gets the answer above. Outside both API mounts the site is its web app
     (:func:`_site_surface`).
     """
-    if _some_atlassian_route_matches(request):
-        if request.method == "OPTIONS":
-            return _options_answer(request)
-        raise errors_atlassian.method_not_allowed(_echoed_path(request), request.method)
     path = request.url.path
     vendor_path = _vendor_path(path)
-    anonymous = auth.atlassian_caller(request).is_anonymous
+    served = _some_atlassian_route_matches(request)
+    if served and request.method == "OPTIONS":
+        return _options_answer(request)
+    published = _published_answer(request, vendor_path)
+    if published is not None:
+        return published
+    if served:
+        raise errors_atlassian.method_not_allowed(_echoed_path(request), request.method)
     if errors_atlassian.is_confluence(path):
-        if request.method != "OPTIONS" and (
-            _is(_CONFLUENCE_PUBLISHED, request.method, vendor_path)
-            or _is(_CONFLUENCE_OUTSIDE_THE_DOCUMENT, request.method, vendor_path)
-        ):
-            refused = _confluence_refusal(request, vendor_path)
-            if refused is not None:
-                return refused
         if (
-            anonymous
+            auth.atlassian_caller(request).is_anonymous
             and vendor_path.startswith("/wiki/")
             and not vendor_path.startswith("/wiki/rest")
         ):
@@ -3036,17 +3272,7 @@ async def unmatched_path(request: Request, rest: str) -> Response:
             )
         return _confluence_not_found(request)
     if errors_atlassian.serves_the_jira_api(path):
-        # An operation Jira publishes refuses this caller where it will not run anonymously, and so
-        # does any `OPTIONS` on one (see ``_JIRA_REFUSED``), after the media-type check; on a path
-        # Jira publishes nothing at, the URL is what answers.
-        refused = _jira_media_refusal(request, vendor_path)
-        if refused is not None:
-            raise refused
-        if anonymous and (
-            _is(_JIRA_REFUSED, request.method, vendor_path)
-            or (request.method == "OPTIONS" and _is(_JIRA_PUBLISHED, None, vendor_path))
-        ):
-            return _jira_unauthenticated(request)
+        # on a path Jira publishes nothing at, the URL is what answers
         raise errors_atlassian.no_endpoint(_echoed_path(request), request.method)
     return _site_surface(request)
 
@@ -3223,8 +3449,9 @@ def sends_deprecation(path: str, status_code: int) -> bool:
 
 
 #: What the edge puts on every answer that passes it, a gateway's own refusal included, and on the
-#: CDN's 403, where its 405 and its 400 carry neither (``errors.atlassian.SERVED_METHODS`` has
-#: those): on all 78 of 2026-09-22, and on the Connect-token 403 and a `PATCH` measured 2026-09-30.
+#: CDN's 403s, where its 405 and its 400 carry neither (``errors.atlassian.SERVED_METHODS`` has
+#: those): on all 78 of 2026-09-22, on the Connect-token 403 and a `PATCH` measured 2026-09-30,
+#: and on the firewall's 403 and Tomcat's 400 for an encoded slash measured 2026-10-12.
 _EDGE = {"x-content-type-options": "nosniff", "x-xss-protection": "1; mode=block"}
 
 
@@ -3241,21 +3468,21 @@ def vendor_headers(request: Request, status_code: int) -> dict[str, str]:
     Both products: the two ids and :data:`_EDGE`. Jira adds `x-arequestid`, `timing-allow-origin`
     and a `cache-control`, its API's or the web app's page by page, and once a credential resolves
     the caller's own account id, with the rate-limit four where a route answers or an `OPTIONS` asks
-    at its path. The gateway's own refusals (the Connect-token 403 and a `PATCH`) carry the two ids
-    and :data:`_EDGE` and nothing else; the CDN's carry :data:`_EDGE` on its 403 and nothing on its
-    405 or its 400. Confluence: the millisecond clock it stamps every answer with, the deprecation
-    trio where the v1 services send it, and the search's `cache-control` and `expires`. Measured on
-    Atlassian Cloud 2026-09-22 and 2026-09-30, the search's pair 2026-10-07; what is deliberately
-    not here is in `backlot.main.report_atlassian_headers`.
+    at its path. An answer given in front of the application carries what
+    ``errors.atlassian.FrontDoor`` names for its layer, and the gateway's Connect-token 403 what
+    that names for the gateway. Confluence: the millisecond clock it stamps every answer with, the
+    deprecation trio where the v1 services send it, and the search's `cache-control` and `expires`.
+    Measured on Atlassian Cloud 2026-09-22 and 2026-09-30, the search's pair 2026-10-07; what is
+    deliberately not here is in `backlot.main.report_atlassian_headers`.
     """
     path = request.url.path
-    if request.method not in errors_atlassian.SERVED_METHODS:
-        # A method refused in front of the application never reaches what stamps the rest; the
-        # measurement is on ``errors.atlassian.SERVED_METHODS``.
-        if request.method in errors_atlassian.GATEWAY_REFUSED:
+    layer = request.scope.get("atlassian_front_door")
+    if layer is not None:
+        # An answer given in front of the application never reaches what stamps the rest
+        # (``errors.atlassian.FrontDoor`` names what each layer adds).
+        if layer == "gateway":
             return _gateway_headers(request)
-        # the CDN's own: the edge's two on its 403, nothing on its 405 or its 400
-        return dict(_EDGE) if errors_atlassian.cdn_forbids(request.method) else {}
+        return dict(_EDGE) if layer == "cdn edge" else {}
     headers = {**request_ids(request), **_EDGE}
     if errors_atlassian.is_confluence(path):
         # The search's GET/HEAD 200, 400, 403 and 404 carry the pair; Tomcat's 401 does not.

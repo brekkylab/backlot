@@ -62,13 +62,16 @@ A path no route serves is JAX-RS's own 404 — JSON when the caller asks for `ap
 name, the `<status>` XML document otherwise — and a path below `space/` or `content/`, or anything
 under `/wiki` outside the API mount, is the product's HTML 404 page instead; a caller with no
 credential is sent from `/wiki/…` outside `/wiki/rest` to log in. An operation Confluence publishes
-that no route here serves refuses a caller with no credential with a served route's 403, or from a
-few services with `Current user not permitted to use Confluence`, and a caller whose credential
-resolves gets the 404 an unserved path gets. Every answer Confluence itself gives carries
-`atl-request-id`, `atl-traceid` (the same value without its dashes), `x-confluence-request-time`,
-`x-content-type-options` and `x-xss-protection`, what the content and space services' routes answer
-adds the three headers that say the v1 REST API is deprecated, and what `search` answers a `GET` or
-`HEAD`, but for a 401, adds the `cache-control` and 1970 `expires` that say not to cache it.
+that no route here serves answers a `Content-Type` it does not take with its 415 (or, from the
+JAX-RS services, with Tomcat's 400 for one they cannot read), whoever the caller is; past that it
+refuses a caller with no credential with a served route's 403, or from a few services with
+`Current user not permitted to use Confluence`, and a caller whose credential resolves gets the 404
+an unserved path gets, or at a served route's path its 405. Every answer Confluence itself gives
+carries `atl-request-id`, `atl-traceid` (the same value without its dashes),
+`x-confluence-request-time`, `x-content-type-options` and `x-xss-protection`, what the content and
+space services' routes answer adds the three headers that say the v1 REST API is deprecated, and
+what `search` answers a `GET` or `HEAD`, but for a 401, adds the `cache-control` and 1970 `expires`
+that say not to cache it.
 
 ### Fireflies — `/fireflies/graphql`
 
@@ -161,17 +164,20 @@ runs out is refused, 403, with `used` pinned at `limit` across the five headers,
 version check, the 401 a route that needs a credential answers a caller without one, and routing
 alike, for a caller with no credential (measured against api.github.com 2026-09-17 and 2026-09-22)
 and for a token (2026-09-23) alike; a bearer that does not resolve still gets its own 401, window
-spent or not (2026-09-23). The refused request is not itself counted, which is why `used` holds at
-`limit` rather than climbing past it. The body differs by caller: two members (`message`,
-`documentation_url`) for a caller with no credential, three (`status` besides) for a token, each
-with its own `documentation_url`. `BACKLOT_GITHUB_ENFORCE_RATE_LIMITS` turns the refusal off (see
+spent or not (2026-09-23), when a space follows its scheme: after a tab it is counted in the window
+real shares among the `Authorization` values it cannot parse, and refused once that window is spent
+(2026-10-14). The refused request is not itself counted, which is why `used` holds at `limit` rather
+than climbing past it. The body differs by caller: two members (`message`, `documentation_url`) for
+a caller with no credential, three (`status` besides) for a token, each with its own
+`documentation_url`. `BACKLOT_GITHUB_ENFORCE_RATE_LIMITS` turns the refusal off (see
 [configuration](configuration.md#github)). `GET /rate_limit` reports the same windows, does not
 count, and is never refused — the one route a client reads its way out of a spent window with;
 `/rate_limit/` asked with no `Authorization` header is a plain-text `404 Not Found` that carries
 none of the five and counts nowhere, spent window or not (2026-09-23). Three answers carry none of
-the five and count nowhere, as real's do not: a credential that does not resolve, a path real does
-not route asked by a caller that sent one, and the 401 for no credential on the `PATCH`, `PUT` or
-`DELETE` of an operation Backlot does not serve (measured 2026-09-10, 2026-09-21 and 2026-10-14).
+the five and count nowhere, as real's do not: a credential that does not resolve, unless a tab
+follows its scheme, a path real does not route asked by a caller that sent one, and the 401 for no
+credential on the `PATCH`, `PUT` or `DELETE` of an operation Backlot does not serve (measured
+2026-09-10, 2026-09-21 and 2026-10-14).
 
 An issue body and a pull body are the two distinct field sets real serves — a pull carries `_links`
 and its `*_url` siblings and none of the issue-only fields, `pull_request` included. A repository
@@ -205,8 +211,15 @@ Message and thread ids are Gmail-shaped — 16 lowercase hex under 2^63, sharing
 real API does — and map back to the corpus document; an id the real API could not parse is refused
 the same way. On both listings a `pageToken` that does not parse is real's 400 `Invalid pageToken`
 and an empty one is the first page, refused where each listing refuses it beside `maxResults`
-(`backlot.routers.google._gmail_page`). A `HEAD` and a trailing slash are answered as on Drive,
-in the section below.
+(`backlot.routers.google._gmail_page`). A credential, a `HEAD` and a trailing slash are answered as
+on Drive, in the section below. A user's token is held to its own mailbox, `me` in any case or its
+own address: another address is the 403 `Delegation denied for <the caller's own address>`, and a
+`userId` without text on both sides of an `@` the 403
+`Invalid user id specified in request/Delegation denied`, as on real, which also answers the second
+to some shapes with text on both sides (`a@b`, `a@b@c`;
+`backlot.routers.google._refuse_another_mailbox` lists those measured, and the refusals that come
+before both and after them). The admin token reads any mailbox. Measured against the live Gmail API
+on 2026-10-11 and 2026-10-12.
 
 ### Google Drive, Docs, Sheets, Slides — `/drive/v3` `/docs/v1` `/sheets/v4` `/slides/v1`
 
@@ -251,7 +264,7 @@ because that is where Google puts them.
 | Endpoint | Notes |
 |---|---|
 | `POST /oauth2/token` | Turns a Google-style client credential into a bearer token the rest of Backlot already understands. Two grants: `refresh_token`, where the refresh token *is* the user's token from `/_meta/users`, and a signed service-account JWT assertion, whose `sub` claim selects the impersonated user under domain-wide delegation. A bare service account with no `sub` resolves to the admin/service identity. Expiry is cosmetic — a re-refresh returns the same token, so a long crawl never breaks |
-| `POST /batch`, `POST /batch/{api}/{version}` | Google's `multipart/mixed` batch envelope: each part is an `application/http` sub-request, answered in order with its `Content-ID` preserved. The outer credential applies to any sub-request that does not carry its own, as real Google does. As in real's Drive batch, a Drive download (`files.export` with no `alt`, an empty one or `alt=media`, or `files.get` with `alt=media`) is a 302 to the same path under `/download`, which this server does not serve, after `$.xgafv` and after a `Bearer` credential the part carries (a part with none, on it or on the batch, is redirected too), and ahead of `callback` and the typed, lookup, `fields` and `mimeType` refusals; as in real's Sheets batch, a Sheets read is 501 `UNIMPLEMENTED` |
+| `POST /batch`, `POST /batch/{api}/{version}` | Google's `multipart/mixed` batch envelope: each part is an `application/http` sub-request, answered in order with its `Content-ID` preserved. The outer credential applies to any sub-request that does not carry its own, as real Google does. As in real's Drive batch, a Drive download (`files.export` with no `alt`, an empty one or `alt=media`, or `files.get` with `alt=media`) is a 302 to the same path under `/download`, which this server does not serve, after `$.xgafv` and after any credential on the part (a part with none, on it or on the batch, is redirected too), and ahead of `callback` and the typed, lookup, `fields` and `mimeType` refusals; as in real's Sheets batch, a Sheets read is 501 `UNIMPLEMENTED` |
 
 `/batch` is Google-shaped but not Google-scoped — sub-requests are dispatched against the whole
 app, so a batch may target any endpoint this server serves, not only Google Drive's.
@@ -268,8 +281,7 @@ array the entry follows the error: a typed value the proto layer refuses (an enu
 int32), an unknown member in a JSON body and a JSON body that is not an object are `reason: invalid`
 and carry no `domain`; under `domain: global`, a body the JSON parser refuses in its own words is
 `parseError`, an Office file read as a native document `failedPrecondition`, a data-filter read's
-500 `backendError` and everything else `badRequest`; and a missing credential — any anonymous POST,
-the two Sheets data-filter reads included, and a GET on Gmail, Docs and Slides — is the short
+500 `backendError` and everything else `badRequest`; and a missing credential is the short
 `Login Required.` at `location: Authorization`, which Gmail shows by default where the editor
 families show it only at `1`. Measured against the live Sheets, Docs and Drive APIs on 2026-09-12,
 against Slides and Gmail on 2026-09-14 through the errors a request with no Authorization header
@@ -297,14 +309,15 @@ answer into 503 `Backend Error` under `text/javascript; charset=UTF-8` with a bo
 (the `errors[]` entry inline and no trailing newline), while a name that cannot be called is that
 503 even where the download would have succeeded. A missing credential on one names the missing API
 key rather than the unregistered caller, and only after the download's `mimeType` and
-typed-parameter checks, so the order a byte-stream read answers in is `$.xgafv`, a `Bearer` token
-that does not resolve (that scheme, spelt exactly so), the `callback`, the parameters, then that
-403. Inside a batch a download is a 302 instead (the `/batch` row above). A SUCCESS body is wrapped
-and indented on the `/sheets/v4` routes only; the other four families honour `callback` on their
-errors and not yet on their 200s. Measured against the live Sheets, Docs, Drive, Gmail and Slides
-APIs on 2026-09-15, 2026-09-16 and 2026-09-17: the wrap, the indent and the charset first, the
-suppression across the four non-Sheets families next, and the escape set and the case-insensitive
-`alt` last; the download refusals on 2026-10-04, 2026-10-05, 2026-10-07 and 2026-10-08.
+typed-parameter checks, so the order a byte-stream read answers in is `$.xgafv`, a credential that
+does not resolve, the `callback`, the parameters, then that 403, or a 401 of the download server's
+own for a header that is no credential. Inside a batch a download is a 302 instead (the `/batch` row
+above). A SUCCESS body is wrapped and indented on the `/sheets/v4` routes only; the other four
+families honour `callback` on their errors and not yet on their 200s. Measured against the live
+Sheets, Docs, Drive, Gmail and Slides APIs on 2026-09-15, 2026-09-16 and 2026-09-17: the wrap, the
+indent and the charset first, the suppression across the four non-Sheets families next, and the
+escape set and the case-insensitive `alt` last; the download refusals on 2026-10-04, 2026-10-05,
+2026-10-07 and 2026-10-08.
 
 **A repeated query parameter is read from the end real reads it from**, which is the first for some
 parameters and the last for others. The first repeat decides `fields`, `q`, `pageSize`, `pageToken`
@@ -370,6 +383,23 @@ writes it: every value it cannot convert and every name the request message lack
 400, each named by its proto path where it has one. Measured against the live Sheets API on
 2026-10-04, and a non-ASCII letter's case on 2026-10-05.
 
+**A credential is `Bearer` or `OAuth`, spelt so, and a space before the token**, a token a space, a
+tab or a comma ends, or a closing `"` where it opens with one: `Bearer <t> x`, `Bearer <t>,x` and
+`Bearer "<t>"` are served, `Bearer<t>` is a bad token, and `bearer <t>`, `token <t>`, `Basic …` and
+a bare `Bearer` are no credential at all. With none, a request is answered by its operation rather
+than its family: an unregistered caller's 403 on an operation that takes API keys too (Drive's file
+and comment reads among them, and the three Sheets reads), a missing credential's 401 on the rest,
+and on a download the missing API key's 403 with no `Authorization` header, the download server's
+401 with one that is no credential. Each of the front end's 401s carries
+`WWW-Authenticate: Bearer realm="https://accounts.google.com/"`, with `error="invalid_token"` for a
+token that does not resolve, and the download server's names the realm without its trailing slash.
+An operation the two Google baselines acknowledge as `missing_operation` is refused the same way,
+after `$.xgafv` and `callback`, and a caller whose credential resolves gets the 404 or 405 its path
+gets. One of those operations, a revision read, is not answered as a download with `alt=media`:
+with no `Authorization`, an empty one or `Basic …` it is the missing credential's 401. Measured
+against the live Drive, Gmail, Sheets, Docs and Slides APIs on 2026-10-11, and the revision read on
+2026-10-14.
+
 **A `HEAD` on Drive or Gmail is the `GET` with the body left off**, status for status, and declares
 a `content-length` only on a download's 200, where it is the length of the bytes the `GET` serves;
 every other answer declares none, as real's chunked answers do. `callback` does not reach a `HEAD`
@@ -430,22 +460,27 @@ length but on Jira's 401 to an unauthenticated caller, which is where Jira parts
 `DELETE` on an issue among them, which Backlot does not serve — and a quota of its own; anyone else
 gets Jira's 401. A `PATCH` never reaches either product: the gateway answers 400 on Jira and 405 on
 Confluence. Nor does a method the CDN refuses itself: `TRACE` and `CONNECT` are its 405, and any
-other method it does not pass on is its 403 or 400 by how the method is spelled. A path no route
-serves is RFC 7807 at 404 with `No endpoint <METHOD> <path>.` where Jira publishes nothing at it; at
-an operation it publishes and no route here serves, a `Content-Type` the operation does not take is
-its 415 for any caller the gateway lets through, and after that a caller with no credential gets
-Jira's 401 `Client must be authenticated to access this resource.` where the operation will not run
-anonymously (`backlot/data/jira_unserved.json`), and otherwise that 404, the gap the baseline
-acknowledges. That is under `/atlassian/rest` only: outside the two API mounts the site is its web
-app, `/browse` at 200, the root a redirect to log in or to `/jira/for-you`, and Jira's own not-found
-page for the rest. Every answer past the CDN carries `atl-request-id`, `atl-traceid`,
-`x-content-type-options` and `x-xss-protection`, and Jira's own answers add `x-arequestid`,
-`cache-control` and `timing-allow-origin`, which the gateway's refusals (the Connect-token 403, a
-`PATCH`) do not carry; a caller whose credential resolves also gets its own `x-aaccountid`, and the
-burst quota's four (`ratelimit`, `ratelimit-policy`, `x-ratelimit-limit`, `x-ratelimit-remaining`)
-where a route answers or an `OPTIONS` asks at one, counted per method and route. An anonymous
-request carries none of those five, and the no-endpoint 404, a 405 and an unserved operation's 415
-carry the account id alone.
+other method it does not pass on is its 403 or 400 by how the method is spelled. Its firewall turns
+back a path that carries a script tag or a directory step with a 403, and the CDN one with a `%00`
+byte or a `%` that two hex digits do not follow with a 400, each its own page; an encoded slash or
+backslash under `/wiki/` (but `/wiki/spaces/`) is Confluence's own 400, where Jira takes it apart
+and routes what it decodes to. A path no route serves is RFC 7807 at 404 with
+`No endpoint <METHOD> <path>.` where Jira publishes nothing at it; at an operation it publishes and
+no route here serves — reached by a path with no route or by a method a served route does not take —
+a `Content-Type` the operation does not take is its 415 for any caller the gateway lets through, and
+after that a caller with no credential gets Jira's 401 where the operation will not run anonymously
+(`backlot/data/jira_unserved.json`); otherwise it is the operation's own answer, an issue's or a
+project's 404 for a key that names nothing, and the no-route 404, or on a served route's path its
+405, is the gap the baseline acknowledges. That is under `/atlassian/rest` only: outside the two API
+mounts the site is its web app, `/browse` at 200, the root a redirect to log in or to
+`/jira/for-you`, and Jira's own not-found page for the rest. Every answer past the CDN carries
+`atl-request-id`, `atl-traceid`, `x-content-type-options` and `x-xss-protection`, and Jira's own
+answers add `x-arequestid`, `cache-control` and `timing-allow-origin`, which the gateway's refusals
+(the Connect-token 403, a `PATCH`) do not carry; a caller whose credential resolves also gets its
+own `x-aaccountid`, and the burst quota's four (`ratelimit`, `ratelimit-policy`,
+`x-ratelimit-limit`, `x-ratelimit-remaining`) where a route answers or an `OPTIONS` asks at one,
+counted per method and route. An anonymous request carries none of those five, and the no-endpoint
+404, a 405 and an unserved operation's 415 carry the account id alone.
 
 ### Linear — `/linear/graphql`
 
@@ -555,8 +590,10 @@ sub-resources are ignored there, as on real. A `versionId` at a bucket's path is
 and on the writes that refuse it there, and at a key's beside a selector whose operation takes none,
 a `?website` with a value real's 400 at either path, and an `annotationName` at a key without the
 `annotation` it belongs to real's 400, which most of real's front ends answer a GET with and a few
-answer as if it were absent. Two sub-resources at once are `InvalidArgument`, as on real S3, and an
-unknown query key is ignored, as on real S3.
+answer as if it were absent. An `annotation` with a value, `?annotation=x`, is GetObject, as on
+real, the one sub-resource a value turns into another operation; the rest of the query is read
+without it, an `annotationName` beside it ignored. Two sub-resources at once are `InvalidArgument`,
+as on real S3, and an unknown query key is ignored, as on real S3.
 
 A method no operation above serves answers what real answers: the 405 that names the method and
 whether the resource is a `BUCKET`, an `OBJECT` or the `SERVICE`, the 400 an `OPTIONS` without an
@@ -597,7 +634,16 @@ sub-resource, the conflict of two and the parameter refusals before the bucket. 
 sent and does not verify is refused ahead of each 405, with real's members naming the string this
 server signed and, for SigV4 and SigV4a, the canonical request it signed it over, and after the
 conflict and the parameter refusals, as on real. Each other credential refusal is real's own code
-and message too.
+and message too. The two annotation reads, a GET of `?annotation` at a key without or with an
+`annotationName` (ListObjectAnnotations, GetObjectAnnotation) and a HEAD of either, are the
+exception to the unsigned answer and to Signature Version 2: they take SigV4 or SigV4a alone, and
+one sent unsigned or with Signature Version 2 is real's 400 `InvalidRequest` asking for Signature
+Version 4, after the conflict of two, the parameter refusals before the bucket and a V2 credential's
+own shape, and ahead of the bucket, of the 405 a signed HEAD gets and of a V2 key or signature.
+The same credential check applies to `PUT`, `POST`, `DELETE` and `PATCH` of `?annotation` at a
+key, with or without `annotationName`, after a selector conflict and before body or checksum
+checks. These methods read the first `annotation` value as a GET does: a nonempty value selects
+the ordinary object operation. They do not parse the listing's `max-annotation-results`.
 
 ### Slack — `/slack/api`
 

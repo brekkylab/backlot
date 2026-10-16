@@ -524,6 +524,7 @@ _OPTIONS_QUERY_ROWS = [
         for path in _OPTIONS_KEY_PATHS
         for query in (
             "acl",
+            "annotation=x&acl",
             "partNumber=1",
             "partNumber=abc",
             "partNumber=1&uploadId=u",
@@ -1858,8 +1859,9 @@ _OBJECT_SUBRESOURCE_ROWS = [
     ("legal-hold", {}, 400, "application/xml", _OBJECT_LOCK, 400, _OBJECT_LOCK),
     ("retention", {}, 400, "application/xml", _OBJECT_LOCK, 400, _OBJECT_LOCK),
     ("torrent", {}, 405, "application/xml", _TORRENT, 405, _TORRENT),
-    (
-        "annotation",
+    *[
+      (
+        query,
         {},
         200,
         None,
@@ -1868,7 +1870,9 @@ _OBJECT_SUBRESOURCE_ROWS = [
         404,
         _DECL
         + "<Error><Code>NoSuchKey</Code><Message>The specified key does not exist.</Message><Key>{missing}</Key><RequestId/><HostId/></Error>",
-    ),
+    )
+        for query in ("annotation", "annotation=&annotation=x")
+    ],
     (
         "annotation&annotation-prefix=x&max-annotation-results=5",
         {},
@@ -2115,12 +2119,15 @@ def _not_overridable(name, value):
 
 
 _FOO_REFUSED = _not_overridable("response-foo", "x")
+_SIGV4_ONLY = (400, "InvalidRequest", "Please use Signature Version 4.")
 
 # Where each of an object's refusals sits against the bucket and the credential, as real answered
-# (2026-09-29, us-east-1): at a key in a bucket that does not exist (`absent`), at the object over a
-# bad secret (`tampered`), at the object signed (`present`) and at a key the bucket does not hold
-# (`missing`), two refusals at once among them; the query, the headers, and the status, code and
-# message fragment.
+# (us-east-1, each rule's date in its docstring): at a key in a bucket that does not exist
+# (`absent`), at the object over a bad secret (`tampered`), at the object signed (`present`) and at
+# a key the bucket does not hold (`missing`), two refusals at once among them; the query, the
+# headers, and the status, code and message fragment. The first column's other values are
+# credentials ``_unsigned_or_v2`` sends, each to the object but `unsigned-absent`, which goes where
+# `absent` does.
 # fmt: off
 _OBJECT_ORDER_ROWS = [
     ("absent", "annotation&max-annotation-results=0", {}, *_ANNOTATION_COUNT_RANGE),
@@ -2277,6 +2284,8 @@ _OBJECT_ORDER_ROWS = [
     ("present", "response-foo=x&partNumber=abc", {}, *_FOO_REFUSED),
     ("present", "response-foo=x", {"If-Match": '"0000"'}, *_FOO_REFUSED),
     ("present", "response-foo=x", {"Range": "bytes=999-"}, *_FOO_REFUSED),
+    ("present", "response-foo=%ED%95%9C", {}, *_not_overridable("response-foo", "\ud55c")),
+    ("present", "response-foo=a%22b", {}, *_not_overridable("response-foo", 'a"b')),
     ("present", "response-foo=x&response-content-type=a%22b", {}, *_OPEN_QUOTE),
     ("present", "response-aaa=x&response-content-type=a%22b", {}, *_not_overridable("response-aaa", "x")),
     ("present", "response-content-language=%ED%95%9C&response-content-type=a%22b", {}, *_OPEN_QUOTE),
@@ -2288,8 +2297,80 @@ _OBJECT_ORDER_ROWS = [
     ("present", "attributes&versionId=", _attributes("garbage"), *_BAD_ATTRIBUTE),
     ("present", "uploadId=u&max-parts=abc&versionId=x", {},
      400, "InvalidArgument", "Provided max-parts not an integer or within integer range"),
+    ("present", "annotation=x&versionId=bogus", {}, 400, "InvalidArgument", _BAD_VERSION),
+    # Unsigned and Signature Version 2 annotation requests, after the refusals before them and ahead
+    # of a `versionId` with a value, a continuation token and the bucket; a credential refused for
+    # its shape is that refusal, and another operation, a valued `?annotation=x` among them, is not
+    # refused for being unsigned or V2 (``backlot.routers.s3._sigv4_only_refusal``).
+    ("unsigned", "annotation", {}, *_SIGV4_ONLY),
+    ("unsigned", "annotation&annotationName=x", {}, *_SIGV4_ONLY),
+    ("unsigned", "annotation&annotationName=", {}, *_SIGV4_ONLY),
+    ("unsigned-absent", "annotation", {}, *_SIGV4_ONLY),
+    ("empty", "annotation", {}, *_SIGV4_ONLY),
+    ("unsigned", "annotation&X-Amz-Signature=00", {}, *_SIGV4_ONLY),
+    ("unsigned", "annotation&AWSAccessKeyId=x", {}, *_SIGV4_ONLY),
+    ("sigv2", "annotation", {}, *_SIGV4_ONLY),
+    ("sigv2", "annotation&annotationName=x", {}, *_SIGV4_ONLY),
+    ("sigv2-tampered", "annotation", {}, *_SIGV4_ONLY),
+    ("sigv2-unknown-key", "annotation", {}, *_SIGV4_ONLY),
+    ("sigv2-query", "annotation", {}, *_SIGV4_ONLY),
+    ("unsigned", "annotation&max-annotation-results=abc", {}, *_ANNOTATION_COUNT_PARSE),
+    ("sigv2", "annotation&max-annotation-results=0", {}, *_ANNOTATION_COUNT_RANGE),
+    ("unsigned", "annotation&response-foo=x", {}, *_FOO_REFUSED),
+    ("sigv2", "annotation&response-content-type=a%22b", {}, *_OPEN_QUOTE),
+    ("unsigned", "annotation&versionId=", {}, *_VERSION_ID_EMPTY),
+    ("unsigned", "annotation&acl", {},
+     400, "InvalidArgument", "Conflicting query string parameters: acl, annotation"),
+    ("unsigned", "annotation&versionId=x", {}, *_SIGV4_ONLY),
+    ("unsigned", "annotation&continuation-token=garbage", {}, *_SIGV4_ONLY),
+    ("bearer", "annotation", {}, 400, "InvalidArgument", "Unsupported Authorization Type"),
+    ("no-space", "annotation", {}, 400, "InvalidArgument", "one and only one ' ' (space) required"),
+    ("sigv2-skewed", "annotation", {}, 403, "RequestTimeTooSkewed", "is too large"),
+    ("unsigned", "annotation&AWSAccessKeyId=x&Signature=y", {},
+     403, "AccessDenied", "Query-string authentication requires the Signature, Expires"),
+    ("unsigned-absent", "acl", {}, *_BUCKET_ABSENT),
+    ("unsigned-absent", "annotation=x", {}, *_BUCKET_ABSENT),
+    ("sigv2-tampered", "acl", {}, *_SIGNATURE_MISMATCH),
 ]
 # fmt: on
+
+
+def _unsigned_or_v2(base_url, path, token, where, *, method="GET"):
+    """``(url, headers)`` for a request sent unsigned (`unsigned`, `unsigned-absent`), with an
+    empty `Authorization` (`empty`), with Signature Version 2 in the header over the string real
+    signs (`sigv2`), over a bad secret (`sigv2-tampered`), with an access key no token holds
+    (`sigv2-unknown-key`) or dated two hours back (`sigv2-skewed`), in the query over the string
+    real signs (`sigv2-query`), or with a header refused for its shape (`bearer`, `no-space`)."""
+    import time
+    from email.utils import formatdate
+    from urllib.parse import quote
+
+    url = f"{base_url}{path}"
+    fixed = {
+        "empty": {"Authorization": ""},
+        "bearer": {"Authorization": "Bearer x"},
+        "no-space": {"Authorization": "AWS"},
+    }
+    if where in fixed:
+        return url, fixed[where]
+    if where.startswith("unsigned"):
+        return url, {}
+    key, secret = synth.s3_access_key_id(token), synth.s3_secret_access_key(token)
+    raw_path, _, query = path.partition("?")
+    if where == "sigv2-query":
+        expires = str(int(time.time()) + 600)
+        signature = sigv2.sign(secret, sigv2.string_to_sign(method, {}, expires, raw_path, query))
+        return (
+            f"{url}&AWSAccessKeyId={key}&Expires={expires}&Signature={quote(signature, safe='')}",
+            {},
+        )
+    date = formatdate(time.time() - (7200 if where == "sigv2-skewed" else 0), usegmt=True)
+    signing = "x" * 40 if where == "sigv2-tampered" else secret
+    key = _UNKNOWN if where == "sigv2-unknown-key" else key
+    signature = sigv2.sign(
+        signing, sigv2.string_to_sign(method, {"date": date}, date, raw_path, query)
+    )
+    return url, {"date": date, "authorization": f"AWS {key}:{signature}"}
 
 
 @pytest.mark.parametrize(
@@ -2303,23 +2384,205 @@ _OBJECT_ORDER_ROWS = [
 def test_an_objects_subresource_refusals_sit_where_real_puts_them(
     live_server, where, query, headers, status, code, fragment
 ):
-    """The parses before the bucket and the credential, the version and the header checks after
-    them and before the key, and the rest after the key, as in the table above, none of them
-    carrying the encryption header an object's own answer does."""
+    """The parses before the bucket and the credential, an annotation operation's refusal of an
+    unsigned or V2 credential after them, the version and the header checks after those and before
+    the key, and the rest after the key, as in the table above, none of them carrying the encryption
+    header an object's own answer does."""
     import httpx
 
     base_url, settings = live_server
     path = {
         "absent": "/s3/no-such-bucket/k.txt",
+        "unsigned-absent": "/s3/no-such-bucket/k.txt",
         "missing": "/s3/eng-artifacts/no/such.md",
     }.get(where, OBJECT_PATH) + (f"?{query}" if query else "")
-    url, signed = _sign_get(
-        base_url, path, settings.admin_token, tamper=where == "tampered", extra_headers=headers
-    )
+    if where in ("absent", "missing", "present", "tampered"):
+        url, signed = _sign_get(
+            base_url, path, settings.admin_token, tamper=where == "tampered", extra_headers=headers
+        )
+    else:
+        url, signed = _unsigned_or_v2(base_url, path, settings.admin_token, where)
     r = httpx.get(url, headers=signed)
     assert r.status_code == status
     assert f"<Code>{code}</Code>" in r.text and fragment in r.text
     assert "x-amz-server-side-encryption" not in r.headers
+
+
+@pytest.mark.parametrize("method", ["PUT", "POST", "DELETE", "PATCH"])
+@pytest.mark.parametrize("path", [OBJECT_PATH, "/s3/no-such-bucket/k.txt"])
+@pytest.mark.parametrize(
+    "query, credential",
+    [
+        (query, credential)
+        for query in ("annotation", "annotation&annotationName=x", "annotation&annotationName=")
+        for credential in (
+            "unsigned",
+            "empty",
+            "sigv2",
+            "sigv2-query",
+            "sigv2-tampered",
+            "sigv2-unknown-key",
+            "sigv4",
+            "sigv4-tampered",
+            "bearer",
+            "no-space",
+        )
+        # Signed with SigV4, an `annotationName` reaches the annotation's own operation on real,
+        # which this server does not serve.
+        if credential != "sigv4" or query == "annotation"
+    ],
+)
+def test_annotation_writes_require_signature_version_4(
+    live_server, method, path, query, credential
+):
+    """The annotation credential check in ``object_method_refusal`` precedes the bucket and
+    V2 key/signature verification; V4 and malformed credentials retain their own answers."""
+    import httpx
+
+    base_url, settings = live_server
+    path = f"{path}?{query}"
+    if credential.startswith("sigv4"):
+        url, headers = _sign_get(
+            base_url,
+            path,
+            settings.admin_token,
+            method=method,
+            tamper=credential == "sigv4-tampered",
+        )
+    else:
+        url, headers = _unsigned_or_v2(
+            base_url, path, settings.admin_token, credential, method=method
+        )
+    response = httpx.request(method, url, headers=headers)
+    fields = {node.tag: node.text for node in ET.fromstring(response.text)}
+    fields.pop("RequestId")
+    fields.pop("HostId")
+    assert response.headers["content-type"] == "application/xml"
+    if credential == "sigv4-tampered":
+        assert response.status_code == 403
+        assert fields["Code"] == "SignatureDoesNotMatch"
+    else:
+        status = 400
+        expected = {
+            "Code": "InvalidRequest",
+            "Message": "The authorization mechanism you have provided is not supported. "
+            "Please use Signature Version 4.",
+        }
+        if credential == "sigv4":
+            status = 405
+            expected = {
+                "Code": "MethodNotAllowed",
+                "Message": "The specified method is not allowed against this resource.",
+                "Method": method,
+                "ResourceType": "OBJECT_ANNOTATIONS",
+            }
+        elif credential in ("bearer", "no-space"):
+            expected = {
+                "Code": "InvalidArgument",
+                "Message": "Unsupported Authorization Type"
+                if credential == "bearer"
+                else "Authorization header is invalid -- one and only one ' ' (space) required",
+                "ArgumentName": "Authorization",
+                "ArgumentValue": headers["Authorization"],
+            }
+        assert response.status_code == status
+        assert fields == expected
+    assert response.headers.get("allow") == ("GET" if credential == "sigv4" else None)
+
+
+@pytest.mark.parametrize("method", ["PUT", "POST", "DELETE", "PATCH"])
+@pytest.mark.parametrize("credential", ["no-date", "expired"])
+def test_annotation_writes_keep_a_malformed_v2_credentials_refusal(live_server, method, credential):
+    """The V2 shape refusals measured in ``object_method_refusal`` precede its V4 requirement."""
+    import httpx
+
+    base_url, _ = live_server
+    url = f"{base_url}{OBJECT_PATH}?annotation"
+    headers = {}
+    if credential == "no-date":
+        headers["Authorization"] = f"AWS {_UNKNOWN}:bad"
+        message = "AWS authentication requires a valid Date or x-amz-date header"
+    else:
+        url += f"&AWSAccessKeyId={_UNKNOWN}&Expires=1&Signature=bad"
+        message = "Request has expired"
+    response = httpx.request(method, url, headers=headers)
+    fields = {node.tag: node.text for node in ET.fromstring(response.text)}
+    assert response.status_code == 403
+    assert fields["Code"] == "AccessDenied"
+    assert fields["Message"] == message
+
+
+@pytest.mark.parametrize("method", ["PUT", "POST", "DELETE", "PATCH"])
+@pytest.mark.parametrize("credential", ["unsigned", "sigv2-tampered", "bearer"])
+@pytest.mark.parametrize(
+    "query, names",
+    [
+        ("annotation&acl", "acl, annotation"),
+        ("annotation&website=x", "annotation, website"),
+        ("annotation=&annotation=x&acl", "acl, annotation"),
+        ("annotation&max-annotation-results=abc", None),
+        ("annotation=&annotation=x", None),
+    ],
+)
+def test_annotation_write_conflicts_precede_credentials_and_body_checks(
+    live_server, method, credential, query, names
+):
+    """``object_method_refusal`` records the conflict ahead of the credential and body checks;
+    the first annotation value selects it, and a write does not parse the listing's limit."""
+    import httpx
+
+    base_url, settings = live_server
+    url, headers = _unsigned_or_v2(
+        base_url, f"{OBJECT_PATH}?{query}", settings.admin_token, credential, method=method
+    )
+    headers["Content-MD5"] = "garbage"
+    response = httpx.request(method, url, headers=headers, content=b"<x/>")
+    fields = {node.tag: node.text for node in ET.fromstring(response.text)}
+    fields.pop("RequestId")
+    fields.pop("HostId")
+    expected = {
+        "Code": "InvalidRequest",
+        "Message": "The authorization mechanism you have provided is not supported. "
+        "Please use Signature Version 4.",
+    }
+    if names is not None:
+        expected = {
+            "Code": "InvalidArgument",
+            "Message": f"Conflicting query string parameters: {names}",
+            "ArgumentName": "ResourceType",
+            "ArgumentValue": names.split(", ")[0],
+        }
+    elif credential == "bearer":
+        expected = {
+            "Code": "InvalidArgument",
+            "Message": "Unsupported Authorization Type",
+            "ArgumentName": "Authorization",
+            "ArgumentValue": "Bearer x",
+        }
+    assert response.status_code == 400
+    assert fields == expected
+    assert "allow" not in response.headers
+
+
+@pytest.mark.parametrize("method", ["PUT", "POST", "DELETE", "PATCH"])
+@pytest.mark.parametrize(
+    "query", ["annotation=x", "annotation=x&annotation=", "annotation=x&annotationName=y"]
+)
+def test_a_valued_annotation_on_a_write_is_the_object_operation(live_server, method, query):
+    """A valued first annotation parameter follows the object path, as measured beside the
+    annotation credential checks in ``object_method_refusal``."""
+    import httpx
+
+    base_url, _ = live_server
+    response = httpx.request(method, f"{base_url}/s3/no-such-bucket/k.txt?{query}")
+    fields = {node.tag: node.text for node in ET.fromstring(response.text)}
+    if method in ("PUT", "DELETE"):
+        assert response.status_code == 404
+        assert fields["Code"] == "NoSuchBucket"
+    else:
+        assert response.status_code == 405
+        assert fields["Code"] == "MethodNotAllowed"
+        assert fields["ResourceType"] == "OBJECT"
 
 
 _FULL_RANGE = f"bytes 0-{len(OBJECT_TEXT) - 1}/{len(OBJECT_TEXT)}"
@@ -2342,6 +2605,15 @@ _OBJECT_ANSWER_ROWS = [
     ("", {"x-amz-checksum-mode": "ENABLED", "Range": "bytes=0-9"}, 206, _FIRST_TEN, False),
     ("", {"x-amz-content-sha256": "STREAMING-AWS4-HMAC-SHA256-PAYLOAD"}, 200, None, False),
     ("", {"x-amz-content-sha256": "0" * 64}, 200, None, False),
+    # A valued `annotation` is GetObject's, beside GetObject's own parameters
+    # (``backlot.routers.s3._key_selected``).
+    ("annotation=x", {}, 200, None, False),
+    ("annotation=%20", {}, 200, None, False),
+    ("annotation=x&annotation=", {}, 200, None, False),
+    ("annotation=x&annotationName=y", {}, 200, None, False),
+    ("annotation=x&max-annotation-results=abc", {}, 200, None, False),
+    ("annotation=x&versionId=null", {}, 200, None, False),
+    ("annotation=x&partNumber=1", {}, 206, _FULL_RANGE, False),
 ]
 
 
@@ -2403,6 +2675,7 @@ _RESPONSE_OVERRIDE_ROWS = [
         {"content-type": "text/csv", "cache-control": "no-cache"},
     ),
     ("response-content-type=text/csv", {"Range": "bytes=0-3"}, {"content-type": "text/csv"}),
+    ("annotation=x&response-content-type=text/csv", {}, {"content-type": "text/csv"}),
     ("Response-Content-Type=text/csv", {}, {}),
     # the first value of a repeated name
     ("response-content-type=a/b&response-content-type=c/d", {}, {"content-type": "a/b"}),
@@ -3272,6 +3545,14 @@ _HEAD_ROWS = [
     ("/s3/eng-artifacts?location&response-content-type=a%22b", "admin", {}, 400, None),
     (f"{OBJECT_PATH}?uploadId=u&max-parts=abc&response-content-type=a%22b", "admin", {}, 400, None),
     (f"{OBJECT_PATH}?uploadId=u&max-parts=abc", "admin", {}, 405, None),
+    # An annotation operation unsigned, ahead of the bucket and of the 405 a SigV4 HEAD gets
+    # (``backlot.routers.s3._sigv4_only_refusal``).
+    (f"{OBJECT_PATH}?annotation", None, {}, 400, None),
+    ("/s3/no-such-bucket/a.txt?annotation", None, {}, 400, None),
+    (f"{OBJECT_PATH}?annotation&max-annotation-results=abc", None, {}, 400, None),
+    (f"{OBJECT_PATH}?annotation", "admin", {}, 405, None),
+    (f"{OBJECT_PATH}?annotation=x", "admin", {}, 200, len(OBJECT_TEXT)),
+    (f"{OBJECT_PATH}?annotation=x&acl", "admin", {}, 405, None),
 ]
 # fmt: on
 
@@ -4743,9 +5024,8 @@ def _presign(
 ) -> str:
     """A presign's query with every parameter present: ``credential`` unless given, which is
     ``akid`` over a scope dated `date`'s day or ``scope_date``, with no region when the
-    ``algorithm`` is SigV4a's. The rows below are built when the module is imported, so the
-    default lifetime is an hour, long enough for a serial run to reach them unexpired; a row that
-    is to expire says so."""
+    ``algorithm`` is SigV4a's. The rows below are built when the module is imported, and answered
+    on the clock of that moment (`_REFUSAL_ROWS_SIGNED_AT`); a row that is to expire says so."""
     stamp = date[:8] if scope_date is None else scope_date
     if credential is None:
         regions = "" if algorithm == V4A else f"{region}/"
@@ -5188,6 +5468,19 @@ _REFUSAL_ROWS_UNIT = [
 ]
 # fmt: on
 
+# When the table above was signed. A row lapses when a query's `X-Amz-Expires` of 300 seconds runs
+# out or a header's date drifts further from the server's clock than `backlot.sigv4.is_skewed`
+# allows, so each row is answered on the server's clock as it read at this moment.
+_REFUSAL_ROWS_SIGNED_AT = datetime.now(timezone.utc)
+
+
+class _ClockAtSigning(datetime):
+    """`datetime` whose `now` is `_REFUSAL_ROWS_SIGNED_AT`."""
+
+    @classmethod
+    def now(cls, tz=None):
+        return _REFUSAL_ROWS_SIGNED_AT
+
 
 @pytest.mark.parametrize(
     "headers, query, code, message, members",
@@ -5195,12 +5488,13 @@ _REFUSAL_ROWS_UNIT = [
     ids=[r[0] for r in _REFUSAL_ROWS_UNIT],
 )
 def test_a_credential_real_refuses_is_refused_with_reals_code_and_message(
-    headers, query, code, message, members
+    headers, query, code, message, members, monkeypatch
 ):
     """Each row is real's answer to that request, measured 2026-09-29 against us-east-1
     (``backlot.auth.resolve_sigv4`` has the order), and the members real named where the row names
     them. Each carries the payload hash boto3 sends, and a row that sends none names it as
     ``None``."""
+    monkeypatch.setattr(auth, "datetime", _ClockAtSigning)
     sent = {"host": "backlot", "x-amz-content-sha256": "UNSIGNED-PAYLOAD", **headers}
     caller, err = auth.resolve_sigv4(
         _request(

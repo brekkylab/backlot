@@ -117,10 +117,13 @@ def _credentials(pairs: "list[str] | None") -> dict[str, str]:
     return out
 
 
-def _baseline_unusable(e: ValueError) -> NoReturn:
+def _baseline_unusable(e: Exception) -> NoReturn:
     """Exit 3, as for a missing credential: the file is this repository's to fix, and exit 2 would
-    leave the schedule green."""
-    typer.echo(typer.style(f"📄 the baseline cannot be used: {e}", fg="red", bold=True), err=True)
+    leave the schedule green. A key the file lacks is named as one."""
+    what = f"it has no {e} key" if isinstance(e, KeyError) else e
+    typer.echo(
+        typer.style(f"📄 the baseline cannot be used: {what}", fg="red", bold=True), err=True
+    )
     raise typer.Exit(3) from e
 
 
@@ -749,7 +752,7 @@ def diff(
             if path.exists()
             else Baseline.empty(source, spec.endpoints)
         )
-    except ValueError as e:
+    except (OSError, ValueError, KeyError, TypeError) as e:
         _baseline_unusable(e)
     stale = baseline.resolved(findings)
     fresh = baseline.unacknowledged(findings)
@@ -767,7 +770,7 @@ def diff(
         kept = [f for f in findings if f not in breaking or f.key in baseline.acknowledged]
         try:
             baseline.write(path, kept, measured=_today(), surface=measured.surface)
-        except ValueError as e:
+        except (OSError, ValueError) as e:
             _baseline_unusable(e)
         if as_json:
             _emit_json(
@@ -793,9 +796,9 @@ def diff(
                     "red",
                 )
                 typer.echo(
-                    f"\n   Fix them, or acknowledge one by hand in {path.name}: add its `kind`, "
-                    f"`severity`, `detail` and a `note` saying why the vendor's shape is not being "
-                    f"matched to the element its path names.",
+                    f"\n   Fix them, or acknowledge one by hand in {path.name}: on the element its "
+                    f"path names, add its `kind`, `severity`, `detail` and a `note` saying why the "
+                    f"vendor's shape is not being matched.",
                     err=True,
                 )
         if breaking:

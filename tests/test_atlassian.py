@@ -4235,8 +4235,8 @@ def test_jira_unserved_sorts_every_operation_no_route_serves(monkeypatch):
     has gained or dropped since the file was written, fails here: the reminder to rerun
     ``scripts/gen_jira_unserved.py``. A route added for one of them is `implemented` in the baseline
     and the file would otherwise refuse a served operation's path for a method no route takes. Which
-    list an operation belongs in is read off Jira's documents, which that script's `--check` compares on
-    the schedule in `.github/workflows/fidelity.yml`."""
+    list an operation belongs in is read off Jira's documents, which that script's `--check`
+    compares on the schedule in `.github/workflows/fidelity.yml`."""
     import runpy
 
     import backlot

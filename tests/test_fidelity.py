@@ -1188,6 +1188,16 @@ S3_MODEL = {
             "http": {"method": "GET", "requestUri": "/{Bucket}/{Key+}"},
             "input": {"shape": "ListPartsRequest"},
         },
+        # A flag set false, and one not spelled as an object, send it nowhere else.
+        "GetServiceFlaggedOff": {
+            "http": {"method": "GET", "requestUri": "/"},
+            "staticContextParams": {
+                "UseS3ExpressControlEndpoint": {"value": False},
+                "UseObjectLambdaEndpoint": True,
+            },
+        },
+        # A word of its own, sent to the S3 endpoint: asked at that word.
+        "GetWord": {"http": {"method": "GET", "requestUri": "/Word"}},
         "GetObject": {
             "http": {"method": "GET", "requestUri": "/{Bucket}/{Key+}"},
             "input": {"shape": "GetObjectRequest"},
@@ -1217,6 +1227,14 @@ def test_the_s3_model_yields_its_operations_keyed_by_what_selects_them():
     )
     # Every other is named by the bucket, the object or the service root it is asked at.
     assert str(found["GetBucketAcl"]) == "GetBucketAcl: GET /{bucket}?acl"
+    # An operation carrying both flags is sent where the Object Lambda one says.
+    both = {
+        "UseObjectLambdaEndpoint": {"value": True},
+        "UseS3ExpressControlEndpoint": {"value": True},
+    }
+    assert s3_probe._elsewhere({"staticContextParams": both}, "service") == (
+        "the S3 Object Lambda endpoint"
+    )
     assert (found["GetBucketAcl"].target, found["GetBucketAcl"].query) == ("bucket", "acl")
     assert found["GetObjectTagging"].target == "object"
     assert found["ListBuckets"].query == ""
@@ -1255,6 +1273,7 @@ def _s3_error(code: str) -> str:
                 "GetObjectTagging": (MISSING, "missing_operation", GAP),
                 "PutBucketAcl": (IMPLEMENTED, "answered_write", BREAKING),
                 "ListBuckets": (IMPLEMENTED, None),
+                "GetServiceFlaggedOff": (IMPLEMENTED, None),
                 # Each is served only at another endpoint, and not asked.
                 "ListDirectoryBuckets": (MISSING, "missing_operation", GAP),
                 "WriteGetObjectResponse": (MISSING, "missing_operation", GAP),
@@ -1315,6 +1334,7 @@ def test_an_operation_is_judged_by_what_the_server_answers_it_with(monkeypatch, 
     )
     # Each is asked at its bucket or its object, and one served only at another endpoint is not.
     assert {("GET", "http://x/s3/b?acl"), ("GET", "http://x/s3/b/k?tagging")} <= asked
+    assert ("GET", "http://x/s3/Word") in asked
     assert not {m for m, u in asked if m == "POST"}
     found = {f.path.split(":")[0]: f for f in measured.findings}
     statuses = {e.id: e.status for e in measured.surface.operations}
@@ -1413,7 +1433,9 @@ def _both(sdl=VENDOR):
     return sdl.replace("Float", "Int").replace("status: Status", "status: Status, summary: String")
 
 
-def test_update_baseline_records_gaps_and_leaves_breaking_findings_live(_vendor, tmp_path, capsys):
+def test_update_baseline_records_gaps_and_leaves_breaking_findings_live(
+    _vendor, tmp_path, capsys, monkeypatch
+):
     """Muting a breaking finding with the flag that records a deliberate gap is how an alarm stops
     being read; the gaps are still written, or the bug stays buried under them every run.
 
@@ -1441,13 +1463,29 @@ def test_update_baseline_records_gaps_and_leaves_breaking_findings_live(_vendor,
     }
     assert "type_mismatch" in capsys.readouterr().err
 
+    # A measurement with a finding no element of its surface carries cannot be written: exit 3,
+    # and the file is left as it was.
+    before = path.read_text()
+    lost = Measurement([Finding("missing_field", GAP, "Nowhere.x", "")], SchemaSurface("Query", {}))
+    monkeypatch.setattr("backlot.fidelity.measure", lambda *a, **k: lost)
+    assert cli.main([*args, "--update-baseline"]) == 3
+    assert path.read_text() == before
+
 
 @pytest.mark.parametrize(
     "written, refused",
     [
-        # The list a file held before its findings were written onto elements.
+        # The list a file held before its findings were written onto elements, alone or left
+        # beside a surface by a merge.
         (
             {"acknowledged": [{"kind": "missing_field", "severity": GAP, "path": "Query.x"}]},
+            "under `acknowledged`",
+        ),
+        (
+            {
+                "types": {},
+                "acknowledged": [{"kind": "missing_field", "severity": GAP, "path": "Query.x"}],
+            },
             "under `acknowledged`",
         ),
         # A note put on the type rather than on the field it is about.
@@ -1473,21 +1511,48 @@ def test_update_baseline_records_gaps_and_leaves_breaking_findings_live(_vendor,
             },
             "`severity` is",
         ),
+        # A severity, or a detail, put on the type with no `kind` beside it.
+        (
+            {
+                "types": {
+                    "Transcript": {"type_kind": "OBJECT", "status": "implemented", "severity": GAP}
+                }
+            },
+            "no `kind`",
+        ),
+        (
+            {
+                "types": {
+                    "Transcript": {"type_kind": "OBJECT", "status": "implemented", "detail": "x"}
+                }
+            },
+            "no `kind`",
+        ),
+        # An element missing a key the loader reads.
+        ({"types": {"Transcript": {"status": "implemented"}}}, "type_kind"),
     ],
-    ids=["the-list-format", "a-note-with-no-kind", "a-severity-in-another-case"],
+    ids=[
+        "the-list-format",
+        "the-list-beside-a-surface",
+        "a-note-with-no-kind",
+        "a-severity-in-another-case",
+        "a-severity-with-no-kind",
+        "a-detail-with-no-kind",
+        "a-type-with-no-kind",
+    ],
 )
 def test_a_baseline_the_command_cannot_read_is_refused_not_emptied(
     written, refused, _vendor, tmp_path, capsys
 ):
-    """Read as written, each holds a note or an acknowledgement the loader would not see, and
-    `--update-baseline` would rewrite the file without it and say nothing. Exit 3, as for a
-    credential: the file is this repository's to fix."""
+    """Read as written, each holds a note or an acknowledgement the loader would not see, or lacks a
+    key the loader reads, and `--update-baseline` would rewrite the file without it and say
+    nothing. Exit 3, as for a credential: the file is this repository's to fix."""
     _vendor()
     path = tmp_path / "fireflies.json"
     raw = {"source": "fireflies", "root": {"query": "Query"}, **written}
     path.write_text(json.dumps(raw))
     before = path.read_text()
-    with pytest.raises(ValueError, match=refused):
+    with pytest.raises((ValueError, KeyError), match=refused):
         Baseline.load(path)
     args = ["diff", "-s", "fireflies", "--baseline-dir", str(tmp_path), "--update-baseline"]
     assert cli.main(args) == 3

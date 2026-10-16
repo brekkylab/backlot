@@ -148,10 +148,11 @@ def _elsewhere(op: Mapping[str, Any], target: str) -> str:
 def _required_query_member(shapes: Mapping[str, Any], op: Mapping[str, Any]) -> str:
     """The querystring member that selects an operation whose ``requestUri`` carries no ``?``.
 
-    Five operations come through here, and the first of their required members alone is sent.
-    UploadPart and UploadPartCopy require both ``partNumber`` and ``uploadId``, so they go out as
-    ``PUT ?partNumber``, which Backlot answers as PutObject, and CopyObject, whose one required
-    member is a header, goes out as PutObject's request itself: each is refused, as PutObject is.
+    Five operations get a member here, the first of their required ones in name order, and that
+    member alone is sent. UploadPart and UploadPartCopy require ``uploadId`` as well, so they go out
+    as ``PUT ?partNumber``, which Backlot answers as PutObject. CopyObject gets none, as the member
+    that selects it is a header, so it goes out as PutObject's request itself. Each is refused, as
+    PutObject is.
 
     ListParts is the read among them: botocore gives it the same ``/{Bucket}/{Key+}`` as
     GetObject and selects it with a REQUIRED ``uploadId`` in the querystring. Read from the URI
@@ -297,7 +298,7 @@ def probe(
                 )
             )
             continue
-        response = call(op.method, targets[op.target], op.query)
+        response = call(op.method, op.literal or targets[op.target], op.query)
         answer = _shape(response)
         code = _CODE.search(response.text)
         refused = (answer[0], code.group(1) if code else "")

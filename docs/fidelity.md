@@ -279,10 +279,10 @@ does not delete it — until someone reads the new shape and rewrites it by hand
 A run also reports **resolved** entries: an acknowledged divergence the vendor no longer has. The
 baseline has gone stale, which is its own kind of drift. Where Backlot is what changed — a route,
 a parameter or a field added while the file still records it `missing` — `tests/test_fidelity.py`
-reads the served surface off the app and the SDL with no network and fails until the file is
-rewritten. Rewrite it with `--update-baseline`. By hand, delete the element's `kind`, `severity`,
-`detail` and `note`, and the element itself only where neither side has it any more: an element
-Backlot serves stays in the file, and deleting it fails that test.
+reads the served surface off the app and the SDL, and S3's off a local Backlot, with no vendor
+network, and fails until the file is rewritten. Rewrite it with `--update-baseline`. By hand, delete
+the element's `kind`, `severity`, `detail` and `note`, and the element itself only where neither
+side has it any more: an element Backlot serves stays in the file, and deleting it fails that test.
 
 ## In CI
 

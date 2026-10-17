@@ -1800,6 +1800,13 @@ def test_jira_comments_without_order_by_keep_the_order_the_corpus_states(paged):
         ("orderBy=CREATED", ["comment 7", "comment 6"]),
         ("orderBy=-Created", ["comment 1", "comment 2"]),
         ("orderBy=-%20created", ["comment 1", "comment 2"]),
+        # The trim is Java's `String.trim`, as dated in `backlot/routers/atlassian.py`'s
+        # `_jira_order_desc`: a character up to U+0020 at either end goes, and nothing past it.
+        # U+0001 is not whitespace Python's `str.strip()` would take off, so what the query sends
+        # here stays without that trim; U+000B is inside both trims, so both spellings answer 200.
+        ("orderBy=%01created", ["comment 7", "comment 6"]),
+        ("orderBy=created%01", ["comment 7", "comment 6"]),
+        ("orderBy=%0Bcreated", ["comment 7", "comment 6"]),
     ],
 )
 def test_jira_order_by_takes_the_spellings_the_real_api_takes(paged, query, want):
@@ -1814,11 +1821,25 @@ def test_jira_order_by_takes_the_spellings_the_real_api_takes(paged, query, want
     assert _bodies(d.json()) == want
 
 
-@pytest.mark.parametrize("query", ["orderBy=--created", "orderBy=%2B-created", "orderBy="])
+@pytest.mark.parametrize(
+    "query",
+    [
+        "orderBy=--created",
+        "orderBy=%2B-created",
+        "orderBy=",
+        "orderBy=%C2%A0created",
+        "orderBy=%E2%80%83created",
+    ],
+)
 def test_jira_refuses_the_spellings_the_real_api_refuses(paged, query):
     """Measured: exactly ONE sigil is stripped, so `--created` leaves `-created`, which is not a
     field — real Jira's own message echoes `-created`, not `--created`. An empty value is refused
-    for the same reason: the field is the empty string."""
+    for the same reason: the field is the empty string.
+
+    The no-break space and the em space are refused too: the trim is Java's `String.trim` (up to
+    U+0020), dated beside the comment read's `_jira_order_desc`, and a character past U+0020 that
+    Python's `str.strip()` counts as whitespace stays in the field, so the field it leaves is not
+    `created`."""
     client, h = paged
     r = client.get(f"/atlassian/rest/api/3/issue/PAY-7/comment?{query}", headers=h)
     assert r.status_code == 400, r.text

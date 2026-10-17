@@ -530,6 +530,37 @@ def test_notion_search_filter_keeps_the_databases_in_the_versions_shape(
 
 
 @pytest.mark.parametrize(
+    "version, kind, served_id",
+    [
+        ("2022-06-28", "database", synth.notion_id("nt-tasks-db")),
+        ("2025-09-03", "data_source", synth.notion_data_source_id("nt-tasks-db")),
+        ("2026-03-11", "data_source", synth.notion_data_source_id("nt-tasks-db")),
+    ],
+)
+def test_notion_unfiltered_search_lists_a_database_in_the_versions_shape(
+    client, admin_h, version, kind, served_id
+):
+    """An empty search lists each database in the shape the comment in ``search`` records: a
+    database before the data-sources cut, and that database's data source from the cut on, with
+    no database object beside the pages."""
+    s = client.post(
+        "/notion/v1/search", json={}, headers={**admin_h, "Notion-Version": version}
+    ).json()
+    assert any(r["object"] == "page" for r in s["results"])
+    non_pages = [r for r in s["results"] if r["object"] != "page"]
+    assert non_pages and {r["object"] for r in non_pages} == {kind}
+    assert served_id in {r["id"] for r in non_pages}
+    if kind == "data_source":
+        assert synth.notion_id("nt-tasks-db") not in {r["id"] for r in s["results"]}
+        got = next(r for r in non_pages if r["id"] == served_id)
+        fetched = client.get(
+            f"/notion/v1/data_sources/{served_id}",
+            headers={**admin_h, "Notion-Version": version},
+        ).json()
+        assert got == fetched
+
+
+@pytest.mark.parametrize(
     "query, row_keys",
     [
         ("", {"title", "Status", "Priority"}),

@@ -769,10 +769,14 @@ async def search(request: Request):
     visible = auth.visible_ids(request, caller)
     query = body.get("query", "")
     want = body.get("filter", {}).get("value")  # 'page' | 'database' | 'data_source' | None
+    version = _version(request)
     # A `data_source` filter keeps the database rows, served as databases before 2025-09-03 and as
     # their data sources from it: real answered it with the three databases under 2022-06-28 and
-    # with their three data sources under 2025-09-03 and 2026-03-11 (2026-10-14).
-    as_data_sources = want == "data_source" and _data_sources_model(_version(request))
+    # with their three data sources under 2025-09-03 and 2026-03-11 (2026-10-14). An unfiltered
+    # search does the same: `{}` lists page and database under 2022-06-28, and page and
+    # data_source (each database's data source, and no database) from 2025-09-03 on
+    # (api.notion.com, 2026-10-14).
+    render_data_source = _data_sources_model(version) and want in (None, "data_source")
     offset = pagination.decode_cursor(body.get("start_cursor"))
     limit = _page_size(body.get("page_size"))
     # Over-fetch so object-type filtering still fills a page; cap keeps it bounded. An empty query
@@ -793,15 +797,14 @@ async def search(request: Request):
     window = picked[offset : offset + limit]
     # A database row is narrowed under every Notion-Version, its parent typed `database_id` or
     # `data_source_id`; a page outside a database keeps its title whatever is listed.
-    if as_data_sources:
-        results = [_data_source_obj(conn, r) for r in window]
-    else:
-        results = [
-            _database_obj(conn, r, _version(request))
-            if r["subtype"] == "database"
-            else _filter_properties(_page_obj(conn, r), keep if r["parent_id"] else None)
-            for r in window
-        ]
+    results = [
+        _data_source_obj(conn, r)
+        if r["subtype"] == "database" and render_data_source
+        else _database_obj(conn, r, version)
+        if r["subtype"] == "database"
+        else _filter_properties(_page_obj(conn, r), keep if r["parent_id"] else None)
+        for r in window
+    ]
     return _list_obj(results, offset, len(window), len(picked), "page_or_database")
 
 

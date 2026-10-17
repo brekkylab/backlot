@@ -593,6 +593,84 @@ def test_slack_history_names_the_first_error_real_would(client, admin_h, params,
     assert r.json() == {"ok": False, "error": error}
 
 
+#: A window bound has to be named one µs either side of a message — the two spellings the window
+#: measurement in `_in_window`'s comment turns on.
+def _us_of(ts: str) -> int:
+    """A Slack ts as its total microseconds."""
+    seconds, micros = ts.split(".")
+    return int(seconds) * 1_000_000 + int(micros)
+
+
+def _ts_at(total_us: int) -> str:
+    """That total back in Slack's own `SSSSSSSSSS.MMMMMM` spelling."""
+    return f"{total_us // 1_000_000}.{total_us % 1_000_000:06d}"
+
+
+@pytest.mark.parametrize(
+    "oldest_us, latest_us, inclusive, expected",
+    [
+        # One bound on its own, at the middle message's own ts.
+        (0, None, None, "left out"),
+        (0, None, "true", "served"),
+        (0, None, "1", "served"),
+        (None, 0, None, "left out"),
+        (None, 0, "true", "served"),
+        # The same message's ts on both sides.
+        (0, 0, None, "empty"),
+        (0, 0, "true", "alone"),
+        # A microsecond either side of it, in both orders.
+        (-1, 1, None, "served"),
+        (1, -1, None, "empty"),
+    ],
+)
+def test_slack_history_leaves_out_a_message_at_either_bound(
+    paged_slack, oldest_us, latest_us, inclusive, expected
+):
+    """A message whose ts equals `latest` was served without `inclusive`, where real leaves it out
+    exactly as it does one at `oldest` — the window rows recorded in `_in_window`'s comment. Each
+    row names its bound in microseconds around the middle message's own ts, and `inclusive` is the
+    spelling real accepts (`true`, `1`)."""
+    client, admin_h = paged_slack
+    cid = next(
+        ch["id"]
+        for ch in client.get("/slack/api/conversations.list", headers=admin_h).json()["channels"]
+        if ch["name"] == "general"
+    )
+
+    def history(**bounds):
+        r = client.get(
+            "/slack/api/conversations.history",
+            headers=admin_h,
+            params={"channel": cid, "limit": 1000, **bounds},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["ok"] is True
+        return [m["ts"] for m in body["messages"]]
+
+    whole = history()
+    ts = whole[len(whole) // 2]
+    assert whole.count(ts) == 1  # a message of its own, so "alone" and "empty" mean something
+
+    bounds: dict[str, str] = {}
+    if oldest_us is not None:
+        bounds["oldest"] = _ts_at(_us_of(ts) + oldest_us)
+    if latest_us is not None:
+        bounds["latest"] = _ts_at(_us_of(ts) + latest_us)
+    if inclusive is not None:
+        bounds["inclusive"] = inclusive
+
+    page = history(**bounds)
+    if expected == "empty":
+        assert page == []
+    elif expected == "alone":
+        assert page == [ts]
+    elif expected == "served":
+        assert ts in page
+    else:
+        assert ts not in page
+
+
 @pytest.mark.parametrize(
     "params, echoed",
     [

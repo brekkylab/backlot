@@ -604,6 +604,15 @@ def _xml_listing_text(value: str) -> str:
     return _XML_CONTROL.sub(lambda m: f"&#x{ord(m[0]):x};", escape(value))
 
 
+def _xml_etag_text(value: str) -> str:
+    """``value`` as real writes an ETag in a listing: as ``escape`` writes it, and each `"` as
+    `&quot;`. At s3.amazonaws.com (us-east-1) on 2026-10-17, path-style and signed, every ETag of
+    ListObjects, ListObjectsV2 and ListObjectVersions came back as `<ETag>&quot;…&quot;</ETag>`,
+    where the bytes here held the quotes as they are. An XML parser reads the same digest either
+    way."""
+    return escape(value, {'"': "&quot;"})
+
+
 def _nul_refusal(q, names: tuple[str, ...]) -> Response | None:
     """Real's 400 for a NUL in the first of ``names`` that holds one, or None: `InvalidArgument`,
     ``_NUL_MESSAGE``, `ArgumentName` `prefix` for a prefix and `key-marker` for each marker,
@@ -1581,7 +1590,7 @@ def _list_objects(
         body.append(
             f"<Contents><Key>{_xml_listing_text(enc(val))}</Key>"
             f"<LastModified>{synth.s3_iso(ts)}</LastModified>"
-            f"<ETag>{escape(synth.s3_etag(r['key'], r['content']))}</ETag>"
+            f"<ETag>{_xml_etag_text(synth.s3_etag(r['key'], r['content']))}</ETag>"
             f"<Size>{len(r['content'].encode())}</Size>{owner}"
             f"<StorageClass>{escape(r['subtype'] or 'STANDARD')}</StorageClass></Contents>"
         )
@@ -1830,7 +1839,7 @@ def _list_object_versions(request: Request, conn, bucket: str, visible, max_keys
             f"<Version><Key>{_xml_listing_text(enc(val))}</Key><VersionId>null</VersionId>"
             f"<IsLatest>true</IsLatest>"
             f"<LastModified>{synth.s3_iso(r['updated_ts'] or r['created_ts'])}</LastModified>"
-            f"<ETag>{escape(synth.s3_etag(r['key'], r['content']))}</ETag>"
+            f"<ETag>{_xml_etag_text(synth.s3_etag(r['key'], r['content']))}</ETag>"
             f"<Size>{len(r['content'].encode())}</Size>{owner}"
             f"<StorageClass>{escape(r['subtype'] or 'STANDARD')}</StorageClass></Version>"
         )

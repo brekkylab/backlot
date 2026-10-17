@@ -2987,6 +2987,41 @@ def test_a_listing_writes_a_control_character_as_a_hexadecimal_reference(tmp_pat
         assert element in r.text, element
 
 
+@pytest.mark.parametrize("query", ["list-type=2", "", "versions"])
+def test_a_listing_writes_an_etags_quotes_as_a_character_reference(tmp_path, query):
+    """Each listing's `ETag` is real's `<ETag>&quot;…&quot;</ETag>`, the measurement
+    ``backlot.routers.s3._xml_etag_text`` records, where the bytes held the quotes as they are.
+    Through an XML parser the value is the same quoted digest either way."""
+    records = [
+        complete(
+            source_type="s3",
+            doc_id="s3-etag-quotes",
+            bucket="eng-artifacts",
+            group="engineering",
+            key="runbooks/oncall.md",
+            title="oncall",
+            content="x",
+            author_email="ava@acme.com",
+            author_groups=["engineering"],
+            visibility="public",
+        )
+    ]
+    tiny = tiny_corpus(tmp_path, records)
+    path = f"/s3/eng-artifacts?{query}" if query else "/s3/eng-artifacts"
+    with client_for(tiny, reload=True) as client:
+        r = _s3_get(client, path, tiny.admin_token)
+    assert r.status_code == 200, r.text
+    written = re.findall(r"<ETag>(.*?)</ETag>", r.text)
+    assert written, r.text
+    for value in written:
+        assert value.startswith("&quot;") and value.endswith("&quot;"), value
+    root = ET.fromstring(r.text)
+    parsed = {element.text for element in root.iter(f"{NS}ETag")}
+    assert parsed
+    for value in parsed:
+        assert value.startswith('"') and value.endswith('"'), (query, value)
+
+
 @pytest.mark.parametrize(
     "query, status",
     [

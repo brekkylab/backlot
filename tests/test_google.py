@@ -4591,6 +4591,41 @@ def test_drive_folder_permissions_resolve(client, admin_h):
     assert perms.status_code == 200 and perms.json()["permissions"]
 
 
+def test_drive_folder_can_download(client, admin_h, tmp_path):
+    """A folder's `capabilities.canDownload` is true, as real answers on every folder measured,
+    both for the folders Backlot synthesizes and for one the corpus states."""
+    folder = client.get(
+        "/drive/v3/files", headers=admin_h, params={"q": f"mimeType='{FOLDER_MIME}'", "pageSize": 1}
+    ).json()["files"][0]
+    got = client.get(
+        f"/drive/v3/files/{folder['id']}", headers=admin_h, params={"fields": "capabilities"}
+    )
+    assert got.json()["capabilities"]["canDownload"] is True
+
+    from tests._helpers import client_for, tiny_corpus
+
+    record = {
+        "source_type": "google_drive",
+        "doc_id": "stored-folder",
+        "title": "Figures",
+        "content": "Charts for the quarter.",
+        "subtype": "folder",
+        "author_email": "ava.chen@acme.com",
+        "visibility": "public",
+        "created": "2026-01-15T10:00:00Z",
+    }
+    settings = tiny_corpus(tmp_path, [record])
+    with client_for(settings, reload=True) as c:
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        files = c.get(
+            "/drive/v3/files",
+            headers=h,
+            params={"q": f"mimeType='{FOLDER_MIME}'", "fields": "files(name,capabilities)"},
+        ).json()["files"]
+        stored = [f for f in files if f["name"] == "Figures"]
+        assert stored and all(f["capabilities"]["canDownload"] is True for f in files)
+
+
 def test_drive_native_docs_report_size(client, admin_h):
     """Google populates `size` for binary content *and for Docs Editors files*; Backlot omitted
     it on native rows, which taught implementors something false about the API."""

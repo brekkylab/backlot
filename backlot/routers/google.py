@@ -2052,7 +2052,8 @@ def _drive_folder_obj(conn, name: str, me: str | None = None) -> dict:
         "webViewLink": f"https://drive.google.com/drive/folders/{fid}",
         "iconLink": "https://drive.google.com/icons/folder.png",
         "capabilities": {
-            "canDownload": False,
+            # `true` on every folder, as measured (see `_drive_file`).
+            "canDownload": True,
             "canListChildren": True,
             "canComment": False,
             "canEdit": False,
@@ -4796,7 +4797,9 @@ def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) ->
         "webViewLink": view,
         "iconLink": f"https://drive.google.com/icons/{(row['subtype'] or 'document')}.png",
         "capabilities": {
-            "canDownload": not is_folder,
+            # A folder answers `true` too, owned by the caller or not (five folders measured
+            # 2026-10-17), though `alt=media` on one is still refused.
+            "canDownload": True,
             "canListChildren": is_folder,
             "canComment": not is_folder,
             "canEdit": False,

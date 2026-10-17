@@ -263,7 +263,7 @@ def test_github_a_directory_readme_is_that_directorys_and_acl_scoped(tmp_path):
     with client_for(s, reload=True) as c:
         admin = {"Authorization": f"Bearer {s.admin_token}"}
         org = c.get("/_meta/users", headers=admin).json()["org"]
-        tokens = yaml.safe_load(s.tokens_path.read_text())["users"]
+        tokens = yaml.safe_load(s.tokens_path.read_text(encoding="utf-8"))["users"]
         outsider = next(u["token"] for u in tokens if u["email"] == "outsider@x.com")
         url = f"/github/repos/{org}/scoped/readme/docs"
         got = c.get(url, headers=admin).json()
@@ -330,7 +330,7 @@ def test_github_the_redirect_does_not_precede_the_repository(tmp_path):
     with client_for(s, reload=True) as c:
         admin = {"Authorization": f"Bearer {s.admin_token}"}
         org = c.get("/_meta/users", headers=admin).json()["org"]
-        tokens = yaml.safe_load(s.tokens_path.read_text())["users"]
+        tokens = yaml.safe_load(s.tokens_path.read_text(encoding="utf-8"))["users"]
         outsider = next(u["token"] for u in tokens if u["email"] == "outsider@x.com")
 
         def slash(owner_repo, headers):
@@ -550,7 +550,7 @@ def gh_labelled(tmp_path_factory):
         for i, (title, labels, kind, visibility) in enumerate(rows)
     ]
     with corpus_client(tmp_path_factory.mktemp("gh_labelled"), records) as (c, settings):
-        tokens = yaml.safe_load(settings.tokens_path.read_text())
+        tokens = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
         org = c.get("/_meta/users").json()["org"]
         yield (
             c,
@@ -1174,7 +1174,7 @@ def gh_org(gh_client):
 @pytest.fixture(scope="module")
 def gh_user_tokens(gh_client):
     _, settings = gh_client
-    data = yaml.safe_load(settings.tokens_path.read_text())
+    data = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
     return {"admin": data["admin_token"], **{u["email"]: u["token"] for u in data["users"]}}
 
 
@@ -2296,6 +2296,10 @@ def test_github_401_says_which_credential_failed(gh_client, gh_admin_h, gh_org):
     )
     assert bad_and_unversioned.status_code == 401
     assert bad_and_unversioned.json()["message"] == "Bad credentials"
+    # two copies of a token that resolves are a bad credential too
+    twice = c.get(url, headers=[("Authorization", gh_admin_h["Authorization"])] * 2)
+    assert (twice.status_code, twice.json()["message"]) == (401, "Bad credentials")
+    assert c.get(url, headers=gh_admin_h).status_code == 200
 
 
 def test_github_documentation_url_names_the_route_that_failed(gh_client, gh_admin_h, gh_org):
@@ -3787,7 +3791,7 @@ def test_github_a_container_only_repo_reaches_the_admin_and_no_scoped_caller(tmp
     settings = build_corpus(tmp_path, _GH_CONTAINER_ONLY_DOCS)
     with client_for(settings, reload=True) as c:
         org = c.get("/_meta/users").json()["org"]
-        tokens = yaml.safe_load(settings.tokens_path.read_text())
+        tokens = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
         admin = {"Authorization": f"Bearer {tokens['admin_token']}"}
         ava = {"Authorization": f"Bearer {tok(tokens, 'ava@acme.com')}"}
 
@@ -4466,14 +4470,15 @@ def test_github_pull_diff_reverse_applies_with_real_git(
         ).text
         dest = wt / e["path"]
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(raw)
-    (wt / "pr.diff").write_text(diff)
+        dest.write_text(raw, encoding="utf-8")
+    (wt / "pr.diff").write_text(diff, encoding="utf-8")
     r = subprocess.run(
         ["git", "apply", "--reverse", "--check", "-v", "pr.diff"],
         cwd=wt,
         capture_output=True,
         text=True,
         check=False,
+        encoding="utf-8",
     )
     assert r.returncode == 0, f"git rejected the diff:\n{r.stderr}\n---\n{diff}"
 
@@ -4592,14 +4597,15 @@ def test_github_diff_never_emits_a_file_header_with_no_body(tmp_path):
     wt = tmp_path / "wt"
     wt.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=wt, check=True)
-    (wt / "ok.txt").write_text("hello\n")
-    (wt / "pr.diff").write_text(diff)
+    (wt / "ok.txt").write_text("hello\n", encoding="utf-8")
+    (wt / "pr.diff").write_text(diff, encoding="utf-8")
     r = subprocess.run(
         ["git", "apply", "--reverse", "--check", "pr.diff"],
         cwd=wt,
         capture_output=True,
         text=True,
         check=False,
+        encoding="utf-8",
     )
     assert r.returncode == 0, r.stderr
 
@@ -5773,7 +5779,9 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
         assert list(resources) == ["code_search", "core", "search"]
         assert list(status.json()["resources"]) == ["core", "search", "code_search"]
         # a credential with no token is one too, not the request with no header above, and so is a
-        # tab after the scheme in a header that holds a comma
+        # tab after the scheme in a header that holds a comma, and more than one `Authorization`
+        admin = h["Authorization"]
+        admin_used = _ratelimit(c.get("/github/rate_limit", headers=h))["used"]
         for value in (
             "Bearer nope",
             "Bearer",
@@ -5789,8 +5797,14 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
             "Bearer\t,nope",
             "Bearer\tno,pe",
             "Basic\t!!,!!",
+            (admin, admin),
+            (admin, "Bearer nope"),
+            ("", admin),
+            ("Digest x", "Digest y"),
+            ("Bearer\tnope", admin),
         ):
-            refused = c.get("/github/rate_limit", headers={"Authorization": value})
+            values = value if isinstance(value, tuple) else (value,)
+            refused = c.get("/github/rate_limit", headers=[("Authorization", v) for v in values])
             assert refused.status_code == 401
             assert refused.json() == {
                 "message": "Bad credentials",
@@ -5815,6 +5829,7 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
                 "core",
             ], spelling
         assert c.get("/github/rate_limit").json()["resources"]["core"]["used"] == 2
+        assert _ratelimit(c.get("/github/rate_limit", headers=h))["used"] == admin_used
 
         # a search endpoint's name carries `search` past the route it serves; an empty rest and a
         # name real serves no endpoint for read `core`

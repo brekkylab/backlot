@@ -102,8 +102,12 @@ def main_fuse(resource) -> None:
             day = sorted(os.listdir(f"{mnt}/channels/{channel}"))[-1]  # most recent day
             chat = f"{mnt}/channels/{channel}/{day}/chat.jsonl"
             print(f"\n$ head -c 160 channels/{channel}/{day}/chat.jsonl")
-            print("  " + open(chat).read(160).replace("\n", " "))  # a genuine open() via FUSE
-            count = subprocess.run(["grep", "-c", ".", chat], capture_output=True, text=True)
+            print(
+                "  " + open(chat, encoding="utf-8").read(160).replace("\n", " ")
+            )  # a genuine open() via FUSE
+            count = subprocess.run(
+                ["grep", "-c", ".", chat], capture_output=True, text=True, encoding="utf-8"
+            )
             print(
                 f"\n$ grep -c . <that file>   # a separate process reads the mount → {count.stdout.strip()}"
             )

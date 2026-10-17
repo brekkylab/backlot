@@ -314,6 +314,76 @@ def test_gmail_newer_older_are_after_before(db):
     assert len(_gmail_query(db, None, None, "newer:1970/01/02")) == total
 
 
+def test_gmail_plus_ends_an_address_or_subject_value():
+    """How `_parse_gmail_q` reads a `+` in an operator's value and in free text, row by row as the
+    comment on `_GMAIL_PLUS_ENDS` records it."""
+    from backlot.routers.google import _GMAIL_NOTHING, _parse_gmail_q
+
+    assert _parse_gmail_q("cc:lena+update") == ("+update", {"cc": ["lena"]})
+    assert _parse_gmail_q("from:bob+update") == ("+update", {"from": ["bob"]})
+    assert _parse_gmail_q("to:ava+update") == ("+update", {"to": ["ava"]})
+    assert _parse_gmail_q("cc:+lena") == ("", {"cc": ["lena"]})
+    assert _parse_gmail_q("cc:lena +") == ("", {"cc": ["lena"]})
+    assert _parse_gmail_q("+") == ("", {})
+    for q in ("cc:lena+", "cc:lena++", "cc:lena+ the", "from:bob+   to:ava+"):
+        assert _GMAIL_NOTHING in _parse_gmail_q(q)[1], q
+    assert _parse_gmail_q("bcc:lena+news") == ("+news", {"bcc": ["lena"]})
+    assert _parse_gmail_q("subject:plan+rollout") == ("+rollout", {"subject": ["plan"]})
+    for q in ("bcc:lena+", "subject:c+", "update+", "+update+"):
+        assert _GMAIL_NOTHING in _parse_gmail_q(q)[1], q
+    assert _parse_gmail_q("cc:lena@acme.com+x") == ("", {"cc": ["lena@acme.com+x"]})
+    assert _parse_gmail_q("from:lena+news@acme.com") == ("", {"from": ["lena+news@acme.com"]})
+    assert _parse_gmail_q("cc:lena@acme.com++") == ("", {"cc": ["lena@acme.com"]})
+    assert _parse_gmail_q("cc:@acme.com+x") == ("+x", {"cc": ["@acme.com"]})
+    # A quoted value keeps its `+`, and so does `label:`.
+    assert _parse_gmail_q('cc:"lena+x"') == ("", {"cc": ["lena+x"]})
+    assert _parse_gmail_q("label:inbox+x") == ("", {"label": ["inbox+x"]})
+
+
+def test_gmail_plus_over_the_wire(tmp_path):
+    """The rows of the issue's reproduction, over a served mailbox of two messages."""
+    from tests._helpers import client_for, tiny_corpus
+
+    base = {"source_type": "gmail", "mailbox": "ava", "author_email": "bob@acme.com"}
+    records = [
+        {
+            **base,
+            "doc_id": "plan",
+            "title": "Rollout plan",
+            "content": "the rollout update",
+            "to": "ava@acme.com",
+            "cc": "Lena Park <lena@acme.com>",
+            "readers": ["ava@acme.com"],
+            "created": "2026-03-01T09:00:00Z",
+        },
+        {
+            **base,
+            "doc_id": "lunch",
+            "title": "Lunch",
+            "content": "Friday?",
+            "to": "ava@acme.com",
+            "cc": "lena@acme.com",
+            "readers": ["ava@acme.com"],
+            "created": "2026-03-02T09:00:00Z",
+        },
+    ]
+    settings = tiny_corpus(tmp_path, records)
+    with client_for(settings, reload=True) as c:
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+
+        def count(q):
+            r = c.get("/gmail/v1/users/ava@acme.com/messages", headers=h, params={"q": q})
+            return len(r.json().get("messages", []))
+
+        assert count("cc:lena") == 2
+        assert count("cc:lena+update") == count("cc:lena +update") == 1
+        assert count("from:bob+update") == count("from:bob +update") == 1
+        assert count("cc:lena+") == count("cc:lena++") == count("cc:lena+ the") == 0
+        assert count("cc:+lena") == count("cc:lena +") == 2
+        assert count("cc:lena@acme.com+update") == count("update+") == 0
+        assert count("cc:lena@acme.com+") == 2
+
+
 def test_github_search_q_parse():
     """One parser, a qualifier vocabulary per endpoint: a key the endpoint does not honor stays
     free text, so the FTS still gets a chance at it."""

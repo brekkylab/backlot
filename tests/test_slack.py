@@ -593,6 +593,81 @@ def test_slack_history_names_the_first_error_real_would(client, admin_h, params,
     assert r.json() == {"ok": False, "error": error}
 
 
+@pytest.mark.parametrize(
+    "params, echoed",
+    [
+        ({"oldest": "1700000000"}, {"oldest": "1700000000.000000"}),
+        ({"oldest": "1700000000.5"}, {"oldest": "1700000000.000005"}),
+        ({"oldest": "1700000000.1234567"}, {"oldest": "17000000001.234567"}),
+        ({"oldest": "1.1.1"}, {"oldest": "0000000001.000001"}),
+        ({"oldest": "a.1"}, {"oldest": "0000000000.000001"}),
+        ({"oldest": "abc123"}, {"oldest": "0000000123.000000"}),
+        ({"oldest": "1e999"}, {"oldest": "0000001999.000000"}),
+        ({"oldest": "1\u00b2"}, {"oldest": "0000000001.000000"}),
+        ({"oldest": "0.0000001"}, {"oldest": "0000000000.000001"}),
+        ({"oldest": "1.0000001"}, {"oldest": "0000000001.000001"}),
+        ({"oldest": "1.a"}, {"oldest": "0000000001.000000"}),
+        ({"oldest": "1.\u00b2"}, {"oldest": "0000000001.000000"}),
+        ({"oldest": "9" * 5000}, {"oldest": "9223372036854.775807"}),
+        ({"latest": "1700000000.5"}, {"latest": "1700000000.000005"}),
+        (
+            {"oldest": "1700000000", "latest": "1800000000"},
+            {"latest": "1800000000.000000", "oldest": "1700000000.000000"},
+        ),
+        ({"oldest": "0", "latest": "1800000000"}, {"latest": "1800000000.000000"}),
+        ({"oldest": "0"}, {}),
+        ({"latest": ""}, {}),
+        ({"oldest": "\u0661\u0662\u0663"}, "invalid_ts_oldest"),
+        ({"oldest": "\uff15"}, "invalid_ts_oldest"),
+        ({"oldest": "\u00b2"}, "invalid_ts_oldest"),
+        ({"oldest": "0.0"}, "invalid_ts_oldest"),
+        ({"oldest": "-0"}, "invalid_ts_oldest"),
+        ({"latest": "00"}, "invalid_ts_latest"),
+    ],
+)
+def test_slack_history_reads_and_echoes_a_timestamp(client, admin_h, params, echoed):
+    """`oldest` and `latest` as `_slack_ts` reads them, sent back right after `ok`, or the refusal
+    of one it cannot read."""
+    body = client.get(
+        "/slack/api/conversations.history",
+        headers=admin_h,
+        params={"channel": _a_channel_id(client, admin_h), **params},
+    ).json()
+    if isinstance(echoed, str):
+        assert body == {"ok": False, "error": echoed}
+        return
+    assert list(body.items())[: 1 + len(echoed)] == [("ok", True), *echoed.items()]
+    assert {"oldest", "latest"} & body.keys() == echoed.keys()
+
+
+@pytest.mark.parametrize(
+    "param, offset, inclusive, served",
+    [
+        ("oldest", 0, False, False),
+        ("oldest", 0, True, True),
+        ("oldest", -1, False, True),
+        ("oldest", 1, False, False),
+        ("latest", 0, True, True),
+        ("latest", 1, False, True),
+        ("latest", -1, False, False),
+    ],
+)
+def test_slack_history_bounds_a_message_to_the_microsecond(
+    client, admin_h, param, offset, inclusive, served
+):
+    """A message `offset` microseconds from a bound is served or not as real serves it."""
+    cid = _a_channel_id(client, admin_h)
+    history = "/slack/api/conversations.history"
+    ts = client.get(history, headers=admin_h, params={"channel": cid}).json()["messages"][0]["ts"]
+    seconds, micros = ts.split(".")
+    bound = int(seconds) * 1_000_000 + int(micros) + offset
+    params = {"channel": cid, param: f"{bound // 1_000_000}.{bound % 1_000_000:06d}"}
+    if inclusive:
+        params["inclusive"] = "true"
+    page = client.get(history, headers=admin_h, params=params).json()
+    assert (ts in [m["ts"] for m in page["messages"]]) is served
+
+
 def test_slack_members_are_the_channels_own_speakers(client, admin_h, tokens, ro_conn):
     """Every public channel reported the same membership — the entire roster — because the handler
     skipped membership for a public channel. Real Slack's membership differs per channel, and a
@@ -1886,7 +1961,7 @@ def test_slack_has_2fa_answers_an_admin_caller_or_the_callers_own_member_and_onl
     # `reload=True`: resolving a speaker's id builds `app.state._slack_uid_map` once, and the
     # module-level app carries whichever corpus built it first.
     with client_for(settings, reload=True) as client:
-        tokens = yaml.safe_load(settings.tokens_path.read_text())
+        tokens = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
         admin_h = {"Authorization": f"Bearer {tokens['admin_token']}"}
         ava_h = {"Authorization": f"Bearer {tok(tokens, 'ava@acme.com')}"}
         ava_uid, bo_uid = synth.slack_user_id("ava@acme.com"), synth.slack_user_id("bo@acme.com")
@@ -1953,7 +2028,7 @@ def test_slack_deactivation_changes_every_slack_answer_about_a_member_and_nothin
     conn.close()
 
     with client_for(settings) as client:
-        tokens = yaml.safe_load(settings.tokens_path.read_text())
+        tokens = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
         admin_h = {"Authorization": f"Bearer {tokens['admin_token']}"}
         ava_h = {"Authorization": f"Bearer {tok(tokens, 'ava@acme.com')}"}
         bo_h = {"Authorization": f"Bearer {tok(tokens, 'bo@acme.com')}"}

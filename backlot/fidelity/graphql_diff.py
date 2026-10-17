@@ -327,7 +327,7 @@ def backlot_schema(name: str) -> GraphQLSchema:
     sdl = Path(backlot.graphql.__file__).parent / f"{name}.graphql"
     if not sdl.is_file():
         raise FidelityError(f"no SDL for {name!r} at {sdl}")
-    return build_schema(sdl.read_text())
+    return build_schema(sdl.read_text(encoding="utf-8"))
 
 
 def real_schema(endpoint: str, authorization: str, *, timeout: float = 60.0) -> GraphQLSchema:

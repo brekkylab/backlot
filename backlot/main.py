@@ -49,7 +49,7 @@ async def lifespan(app: FastAPI):
     # Adopt the corpus-derived org a BYO import recorded, so the routers (which read these off
     # settings) agree with the ACL. A roster-built tokens.yaml has no org; the defaults then stand.
     if settings.tokens_path.exists():
-        data = yaml.safe_load(settings.tokens_path.read_text()) or {}
+        data = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8")) or {}
         if data.get("org"):
             settings.org_name = data["org"]
         if data.get("org_domain"):

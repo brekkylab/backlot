@@ -13,7 +13,7 @@ import json
 import re
 import time
 from collections.abc import Callable
-from email.utils import formatdate
+from email.utils import format_datetime
 from typing import NamedTuple
 from urllib.parse import quote, unquote_plus
 
@@ -4155,7 +4155,7 @@ def _pr_mbox(row, obj: dict, diff: str) -> str:
     return (
         f"From {head} Mon Sep 17 00:00:00 2001\n"
         f"From: {login} <{email_addr}>\n"
-        f"Date: {formatdate(ts, usegmt=True)}\n"
+        f"Date: {format_datetime(synth.utc_datetime(ts), usegmt=True)}\n"
         f"Subject: [PATCH] {obj['title']}\n\n"
         f"{body}\n---\n{diff}-- \n2.45.0\n"
     )

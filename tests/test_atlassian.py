@@ -164,7 +164,7 @@ def test_atlassian_lists_only_the_containers_the_caller_can_open(tmp_path):
 
         from backlot import synth
 
-        written = yaml.safe_load(settings.tokens_path.read_text())
+        written = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
         tokens = {u["email"]: u["token"] for u in written["users"]}
         tokens["admin"] = written["admin_token"]
 
@@ -258,33 +258,102 @@ def test_atlassian_lists_only_the_containers_the_caller_can_open(tmp_path):
                 assert r.status_code == status, (method, path, r.text)
 
 
-@pytest.mark.parametrize("headers", UNRESOLVABLE)
 @pytest.mark.parametrize(
-    "segment,kind",
+    "order_by, refused",
     [
-        pytest.param(synth.jira_project_key("payments"), "key", id="corpus-key"),
-        pytest.param(str(synth.github_user_id("payments")), "id", id="corpus-id"),
-        pytest.param("NOSUCHKEY", "key", id="no-such-key"),
-        pytest.param("1", "id", id="one-digit"),
-        pytest.param("999999999999999999", "id", id="eighteen-digits"),
-        pytest.param("1000000000000000000", "key", id="nineteen-digits"),
-        pytest.param("0", "key", id="zero"),
-        pytest.param("007", "key", id="leading-zero"),
-        pytest.param("1２", "key", id="full-width-digit"),
+        ("bogus", "bogus"),
+        ("key,name", "key,name"),
+        ("-bogus", "bogus"),
+        ("--key", "-key"),
+        ("\t-bogus ", "bogus"),
+        ("-", ""),
+        (" ", ""),
+        ("\xa0key", "\xa0key"),
+        ("-\xa0key", "\xa0key"),
+        ("i\xdfueCount", "i\xdfueCount"),
+        ("key", None),
+        ("-key", None),
+        ("+name", None),
+        ("KEY", None),
+        (" key", None),
+        ("\x01key", None),
+        ("- \tkey", None),
+        ("\u0131ssueCount", None),
+        ("\u0130ssueCount", None),
+        ("i\u017fsueCount", None),
+        ("", None),
     ],
 )
-def test_jira_404s_a_project_role_an_anonymous_caller_cannot_see(client, headers, segment, kind):
+def test_jira_project_search_refuses_an_order_by_naming_no_field(
+    client, admin_h, order_by, refused
+):
+    """`project/search` refuses an `orderBy` naming no field it sorts by, with the body
+    `_jira_project_order` records, and answers the listing for each spelling it reads as a field
+    and for an empty value."""
+    listing = client.get("/atlassian/rest/api/3/project/search", headers=admin_h)
+    r = client.get(
+        "/atlassian/rest/api/3/project/search",
+        params={"orderBy": order_by},
+        headers=admin_h,
+    )
+    if refused is None:
+        assert r.status_code == 200, r.text
+        assert r.json() == listing.json()
+        return
+    assert r.status_code == 400, r.text
+    assert r.json() == {
+        "errorMessages": [
+            "The field to order by should be one of [name, key, owner, category, issueCount, "
+            "lastIssueUpdatedTime, archivedDate, deletedDate]. Instead, it was: "
+            f"{refused}."
+        ],
+        "errors": {},
+    }
+
+
+@pytest.mark.parametrize("headers", [*UNRESOLVABLE, "admin"])
+@pytest.mark.parametrize(
+    "segment,kind,found",
+    [
+        pytest.param(synth.jira_project_key("payments"), "key", True, id="corpus-key"),
+        pytest.param(str(synth.github_user_id("payments")), "id", True, id="corpus-id"),
+        pytest.param("NOSUCHKEY", "key", False, id="no-such-key"),
+        pytest.param("1", "id", False, id="one-digit"),
+        pytest.param("999999999999999999", "id", False, id="eighteen-digits"),
+        pytest.param("1000000000000000000", "key", False, id="nineteen-digits"),
+        pytest.param("0", "key", False, id="zero"),
+        pytest.param("007", "key", False, id="leading-zero"),
+        pytest.param("1２", "key", False, id="full-width-digit"),
+        pytest.param(synth.jira_project_key("payments").lower(), "key", False, id="key-lower"),
+        pytest.param(
+            synth.jira_project_key("payments").capitalize(), "key", False, id="key-capitalised"
+        ),
+        pytest.param("payments", "key", False, id="project-name"),
+        pytest.param("PAYMENTS", "key", False, id="project-name-upper"),
+    ],
+)
+def test_jira_role_routes_find_a_project_by_its_key_as_written_or_its_id(
+    client, admin_h, headers, segment, kind, found
+):
     """A role read is the one Jira route that keeps refusing an anonymous caller, and which of the
     two refusals it gives is decided by the project: on the site where the key names a project
     anonymous can see it is 401, and on the site where it names nothing it is 404. Anonymous sees no
     Backlot project, so it is always the 404 here — the corpus's own project, by its key or its id,
-    gets the answer a segment naming nothing would. The 404 calls the segment an id or a key by the
-    rule `_require_project` records."""
+    gets the answer a segment naming nothing would. The admin is the control: it reads the role by
+    the project's key and its id, and gets the same 404 for every other segment. The 404 calls the
+    segment an id or a key by the rule `_require_project` records."""
+    if headers == "admin":
+        headers = admin_h
+    else:
+        found = False
     for path in (
         f"/rest/api/3/project/{segment}/role",
         f"/rest/api/3/project/{segment}/role/10002",
     ):
         r = client.get(f"/atlassian{path}", headers=headers)
+        if found:
+            assert r.status_code == 200, path
+            continue
         assert r.status_code == 404, path
         assert r.json() == {
             "errorMessages": [f"No project could be found with {kind} '{segment}'."],
@@ -808,7 +877,7 @@ def test_confluence_space_names_that_differ_only_in_case_stay_two_spaces(tmp_pat
     settings = tiny_corpus(tmp_path, corpus)
     wiki = "/atlassian/wiki/rest/api"
     with client_for(settings, reload=True) as c:
-        token = yaml.safe_load(settings.tokens_path.read_text())["admin_token"]
+        token = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))["admin_token"]
         admin = {"Authorization": f"Bearer {token}"}
         for sent, name, title in (
             ("Ops", "Ops", "Upper"),
@@ -1062,7 +1131,7 @@ def test_confluence_cql_search_with_no_tilde_selects_by_its_clauses(tmp_path):
         (["type=page", f"space={eng}"], {"Guide", "Shut"}, {"Guide"}),
     ]
     with client_for(settings, reload=True) as c:
-        written = yaml.safe_load(settings.tokens_path.read_text())
+        written = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
         tokens = {u["email"]: u["token"] for u in written["users"]}
         callers = {
             "admin": {"Authorization": f"Bearer {written['admin_token']}"},
@@ -1449,8 +1518,87 @@ def test_confluence_body_and_version(tmp_path):
     assert page["metadata"]["labels"]["results"][0]["name"] == "eng"
 
 
-def test_confluence_restrictions_answers_both_operations_in_real_shape(tmp_path):
-    # restrictions/byOperation must return BOTH read and update operations, with real's links
+def _members(node: dict) -> str:
+    """An answer's member names in order, nested down to each restriction list."""
+    return " ".join(
+        f"{k}{{{_members(v)}}}"
+        if isinstance(v, dict) and k not in ("user", "group", "_links")
+        else k
+        for k, v in node.items()
+    )
+
+
+_BOTH_LISTS = "restrictions{user group} _expandable{content} _links"
+_NO_LISTS = "_expandable{restrictions content} _links"
+
+
+@pytest.mark.parametrize(
+    "query, members",
+    [
+        ("", f"read{{operation {_BOTH_LISTS}}} update{{operation {_BOTH_LISTS}}} _links"),
+        ("expand=", f"read{{operation {_BOTH_LISTS}}} update{{operation {_BOTH_LISTS}}} _links"),
+        ("expand=read", f"read{{operation {_NO_LISTS}}} _expandable{{update}} _links"),
+        ("expand=update", f"update{{operation {_NO_LISTS}}} _expandable{{read}} _links"),
+        (
+            "expand=update,read",
+            f"read{{operation {_NO_LISTS}}} update{{operation {_NO_LISTS}}} _links",
+        ),
+        (
+            "expand=update&expand=read",
+            f"read{{operation {_NO_LISTS}}} update{{operation {_NO_LISTS}}} _links",
+        ),
+        ("expand=&expand=read", f"read{{operation {_NO_LISTS}}} _expandable{{update}} _links"),
+        ("expand=,read,,", f"read{{operation {_NO_LISTS}}} _expandable{{update}} _links"),
+        ("expand=read.bogus", f"read{{operation {_NO_LISTS}}} _expandable{{update}} _links"),
+        (
+            "expand=read..restrictions",
+            f"read{{operation {_NO_LISTS}}} _expandable{{update}} _links",
+        ),
+        (
+            "expand=read.restrictions.user",
+            "read{operation restrictions{user _expandable{group}} _expandable{content} _links}"
+            " _expandable{update} _links",
+        ),
+        (
+            "expand=read.restrictions.user.bogus",
+            "read{operation restrictions{user _expandable{group}} _expandable{content} _links}"
+            " _expandable{update} _links",
+        ),
+        (
+            "expand=update.restrictions.group",
+            "update{operation restrictions{group _expandable{user}} _expandable{content} _links}"
+            " _expandable{read} _links",
+        ),
+        (
+            "expand=read.restrictions",
+            "read{operation restrictions{_expandable{user group}} _expandable{content} _links}"
+            " _expandable{update} _links",
+        ),
+        (
+            "expand=read.restrictions.USER",
+            "read{operation restrictions{_expandable{user group}} _expandable{content} _links}"
+            " _expandable{update} _links",
+        ),
+        (
+            "expand=read.restrictions.group,read.restrictions.user",
+            f"read{{operation {_BOTH_LISTS}}} _expandable{{update}} _links",
+        ),
+        (
+            "expand=read.restrictions.user,update",
+            "read{operation restrictions{user _expandable{group}} _expandable{content} _links}"
+            f" update{{operation {_NO_LISTS}}} _links",
+        ),
+        ("expand=bogus", "_expandable{read update} _links"),
+        ("expand=READ", "_expandable{read update} _links"),
+        ("expand=%20read", "_expandable{read update} _links"),
+        ("expand=.read", "_expandable{read update} _links"),
+        ("expand=%20", "_expandable{read update} _links"),
+    ],
+)
+def test_confluence_restrictions_answer_what_expand_names_in_real_shape(tmp_path, query, members):
+    """Each row is real's answer to the same query, member names and order, as measured where
+    `_restriction_expansions` and the comment in `confluence_restrictions` say. Every operation
+    served links to itself, and the answer ends with real's links."""
     import asyncio
     import types
 
@@ -1484,19 +1632,20 @@ def test_confluence_restrictions_answers_both_operations_in_real_shape(tmp_path)
         "scheme": "http",
         "server": ("m", 80),
         "path": "/",
-        "query_string": b"",
+        "query_string": query.encode(),
         "app": app,
         "headers": [(b"authorization", f"Bearer {s.admin_token}".encode())],
     }
     request = Request(scope)
     result = asyncio.run(confluence_restrictions(cid, request))
-    assert result["read"]["restrictions"]["user"]["results"]  # the private doc's author
+    assert _members(result) == members
     path = f"{_site(request)}/wiki/rest/api/content/{cid}/restriction/byOperation"
-    assert list(result) == ["read", "update", "_links"]
     assert result["_links"] == {"self": path, "base": f"{_site(request)}/wiki", "context": "/wiki"}
     for op in ("read", "update"):
-        assert list(result[op]) == ["operation", "restrictions", "_expandable", "_links"]
-        assert result[op]["_links"] == {"self": f"{path}/{op}"}
+        if op in result:
+            assert result[op]["_links"] == {"self": f"{path}/{op}"}
+            if "user" in result[op].get("restrictions", {}):
+                assert result[op]["restrictions"]["user"]["results"]  # the private doc's author
 
 
 @pytest.mark.parametrize("route", ["child/page", "child/attachment", "restriction/byOperation"])
@@ -1558,7 +1707,7 @@ def paged(tmp_path_factory):
         ],
     )
     with client_for(settings, reload=True) as client:
-        tok = yaml.safe_load(settings.tokens_path.read_text())["admin_token"]
+        tok = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))["admin_token"]
         yield client, {"Authorization": f"Bearer {tok}"}
 
 
@@ -1718,7 +1867,7 @@ def test_jira_orders_comments_sharing_a_timestamp_by_seq(tmp_path):
         ],
     )
     with client_for(settings, reload=True) as client:
-        tok = yaml.safe_load(settings.tokens_path.read_text())["admin_token"]
+        tok = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))["admin_token"]
         h = {"Authorization": f"Bearer {tok}"}
         url = "/atlassian/rest/api/3/issue/PAY-9/comment"
         asc = client.get(url, headers=h, params={"orderBy": "created"}).json()
@@ -2651,7 +2800,7 @@ def searchable(tmp_path_factory):
         ],
     )
     with client_for(settings, reload=True) as client:
-        tok = yaml.safe_load(settings.tokens_path.read_text())["admin_token"]
+        tok = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))["admin_token"]
         yield client, {"Authorization": f"Bearer {tok}"}
 
 
@@ -2833,7 +2982,7 @@ def test_confluence_cql_cursor_finds_out_no_page_the_caller_cannot_see(tmp_path)
          "author_groups": ["people"], "visibility": "group"},
     ]  # fmt: skip
     settings = tiny_corpus(tmp_path, records)
-    users = yaml.safe_load(settings.tokens_path.read_text())
+    users = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
     with client_for(settings, reload=True) as client:
         admin_h = {"Authorization": f"Bearer {users['admin_token']}"}
         ava = next(u["token"] for u in users["users"] if u["email"] == "ava@acme.com")
@@ -4699,10 +4848,10 @@ def test_jira_unserved_sorts_every_operation_no_route_serves(monkeypatch):
     import backlot
     from backlot.fidelity.comparisons import baseline_path
 
-    entries = json.loads(baseline_path("jira").read_text())["operations"]
+    entries = json.loads(baseline_path("jira").read_text(encoding="utf-8"))["operations"]
     unserved = [e["operation"] for e in entries if e["status"] == "missing"]
     table = Path(backlot.__file__).resolve().parent / "data" / "jira_unserved.json"
-    content = json.loads(table.read_text())
+    content = json.loads(table.read_text(encoding="utf-8"))
     assert sorted([*content["refused"], *content["run"]]) == sorted(unserved)
     # And the script reads the same operations off the baseline: given documents declaring
     # nothing, it refuses every one of them.
@@ -5384,7 +5533,7 @@ def test_jira_issue_ids_that_hash_alike_each_read_back_their_own_issue(tmp_path,
         for key in keys
     ]
     settings = tiny_corpus(tmp_path, corpus)
-    admin = yaml.safe_load(settings.tokens_path.read_text())["admin_token"]
+    admin = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))["admin_token"]
     with client_for(settings, reload=True) as c:
         h = {"Authorization": f"Bearer {admin}"}
         path = f"/atlassian/rest/api/{version}/issue/"

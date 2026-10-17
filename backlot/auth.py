@@ -57,7 +57,8 @@ def github_credential(request: Request) -> str | None:
     """The credential a GitHub request carries, read the way api.github.com reads ``Authorization``:
     ``None`` for a request it serves as anonymous, and otherwise the string to resolve as a token:
     what follows `Bearer` or `token`, so ``","`` for ``Bearer,``; the token a `Basic` value names;
-    or ``""`` for a `Basic` value refused with no token to look up.
+    or ``""`` for a `Basic` value refused with no token to look up, and for a request carrying more
+    than one `Authorization`.
 
     Measured on `GET /rate_limit` on 2026-10-14 and 2026-10-16, each value on a URL of its own,
     where an anonymous caller is served 200 and a credential that does not resolve is the 401 "Bad
@@ -94,7 +95,19 @@ def github_credential(request: Request) -> str | None:
     ``Bearer <NBSP>``, ``Bearer <t><NBSP>``, ``Bearer <NBSP><t>``, ``Bearer <t><NEL>``,
     ``Bearer <t><0x1F>``, ``Basic <NBSP>`` and base64, and the base64 of ``x:<t>`` followed by a
     no-break space were each the 401 (2026-10-16).
+
+    More than one `Authorization` header is the 401 whatever each holds, with none of the five
+    `x-ratelimit-*`: on `/rate_limit` and `/search/issues`, ``Bearer <t>`` with a second copy, and
+    with ``Bearer nope``, ``Digest x`` or an empty value in either order; on `/rate_limit`,
+    ``token <t>`` with ``Bearer <t>``, ``Digest x`` with ``Digest y`` and three copies of ``Bearer
+    <t>``; on eight operations Backlot does not serve (`GET /zen`, `PATCH /user`, ...), two copies
+    of ``Bearer <t>``, ``Digest x`` with ``Digest y`` and ``Bearer<TAB>nope`` with ``Bearer <t>``.
+    Two copies of ``Bearer <t>`` answered no version echo on each of those routes and on `/user`,
+    `/user/repos` and `/repos/psf/requests`, and five of them moved neither the token's window nor
+    the address's (2026-10-17).
     """
+    if _repeated_authorization(request):
+        return ""
     scheme, rest = github_scheme(request)
     if scheme in ("bearer", "token"):
         return rest.strip(" \t")
@@ -115,11 +128,20 @@ def github_scheme(request: Request) -> tuple[str, str]:
 
 
 def github_scheme_then_a_tab(request: Request) -> bool:
-    """Whether a tab follows the scheme :func:`github_scheme` splits off, in a header that holds no
-    comma: the spelling real reads apart from the rest, whose rows are in
-    :func:`github_credential`'s table."""
+    """Whether a tab follows the scheme :func:`github_scheme` splits off, in the one `Authorization`
+    header a request carries, holding no comma: the spelling real reads apart from the rest, whose
+    rows are in :func:`github_credential`'s table."""
     header = _authorization(request) or ""
-    return github_scheme(request)[1].startswith("\t") and "," not in header
+    return (
+        github_scheme(request)[1].startswith("\t")
+        and "," not in header
+        and not _repeated_authorization(request)
+    )
+
+
+def _repeated_authorization(request: Request) -> bool:
+    """Whether the request carries more than one `Authorization` header."""
+    return len(request.headers.getlist("authorization")) > 1
 
 
 def api_key_token(request: Request) -> str | None:

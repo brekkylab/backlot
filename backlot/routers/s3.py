@@ -579,6 +579,46 @@ def request_ids(method: str, path: str, query: str) -> tuple[str, str]:
     return request_id, base64.b64encode(raw[10:]).decode("ascii")
 
 
+# The characters real S3 writes as a character reference wherever it echoes text in XML: U+0000
+# to U+001F but the tab, LF and CR. U+007F and every character above it are written as they are.
+_XML_CONTROL = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f]")
+_NUL_MESSAGE = "Value must be a sequence of Unicode characters and cannot include Null."
+
+
+def _xml_text(value: str) -> str:
+    """``value`` as real writes it in an error body, each character of ``_XML_CONTROL`` as a
+    decimal reference (`a&#1;b`, `&#0;`): so every byte from `%00` to `%7F` in `versionId=a%XXb`
+    at an object came back from s3.amazonaws.com (us-east-1) on 2026-10-13, and on 2026-10-17 so
+    did control characters in the `ArgumentValue` of `max-keys`, `encoding-type` and `partNumber`,
+    in NoSuchKey's `Key` on a GET, under `?acl` and under `?tagging`, in NoSuchUpload's
+    `UploadId`, and in the message and `ArgumentName` of an unknown `response-` name."""
+    return _XML_CONTROL.sub(lambda m: f"&#{ord(m[0])};", escape(value))
+
+
+def _xml_listing_text(value: str) -> str:
+    """``value`` as real writes it in a listing: as ``_xml_text`` does, but each reference in
+    lower-case hexadecimal (`c&#x1;`, `&#x0;`). Measured on the same dates in each echoed
+    parameter, `Prefix`, `Delimiter`, `StartAfter`, `Marker` and `KeyMarker`, and in what a
+    listing names itself, `Key`, `CommonPrefixes/Prefix`, `NextMarker` and `NextKeyMarker`, of
+    ListObjects, ListObjectsV2, ListObjectVersions and ListMultipartUploads."""
+    return _XML_CONTROL.sub(lambda m: f"&#x{ord(m[0]):x};", escape(value))
+
+
+def _nul_refusal(q, names: tuple[str, ...]) -> Response | None:
+    """Real's 400 for a NUL in the first of ``names`` that holds one, or None: `InvalidArgument`,
+    ``_NUL_MESSAGE``, `ArgumentName` `prefix` for a prefix and `key-marker` for each marker,
+    `start-after` and `marker` included, and the value as ``_xml_text`` writes it (`c&#0;`). A
+    prefix is named ahead of a marker sent before it. On both those dates, unsigned and signed, a
+    NUL in `delimiter`, and in ListMultipartUploads' `prefix`, was served."""
+    for name in names:
+        value = _first(q, name, None)
+        if value is not None and "\x00" in value:
+            return _argument_error(
+                _NUL_MESSAGE, "prefix" if name == "prefix" else "key-marker", value
+            )
+    return None
+
+
 def _error(
     code: str,
     message: str,
@@ -605,7 +645,7 @@ def _error(
     # bodies: `NoSuchBucket`, `NoSuchKey`, `InvalidArgument`, `MethodNotAllowed`, `BadRequest`,
     # `PreconditionFailed` and `AccessForbidden`).
     tail = f"<RequestId>{ids[0]}</RequestId><HostId>{ids[1]}</HostId>" if ids else ""
-    body = f"<Error><Code>{code}</Code><Message>{escape(message)}</Message>{extra}{tail}</Error>"
+    body = f"<Error><Code>{code}</Code><Message>{_xml_text(message)}</Message>{extra}{tail}</Error>"
     return _xml(body, status=_ERR_STATUS.get(code, 400), headers=headers, prolog=prolog)
 
 
@@ -613,12 +653,12 @@ def _no_such_bucket(bucket: str) -> Response:
     return _error(
         "NoSuchBucket",
         "The specified bucket does not exist",
-        f"<BucketName>{escape(bucket)}</BucketName>",
+        f"<BucketName>{_xml_text(bucket)}</BucketName>",
     )
 
 
 def _no_such_key(key: str) -> Response:
-    return _error("NoSuchKey", "The specified key does not exist.", f"<Key>{escape(key)}</Key>")
+    return _error("NoSuchKey", "The specified key does not exist.", f"<Key>{_xml_text(key)}</Key>")
 
 
 def _head(status: int, headers: dict | None = None) -> Response:
@@ -666,8 +706,8 @@ def _argument_error(message: str, name: str, value: str) -> Response:
         "InvalidArgument",
         message,
         extra=(
-            f"<ArgumentName>{escape(name)}</ArgumentName>"
-            f"<ArgumentValue>{escape(value)}</ArgumentValue>"
+            f"<ArgumentName>{_xml_text(name)}</ArgumentName>"
+            f"<ArgumentValue>{_xml_text(value)}</ArgumentValue>"
         ),
     )
 
@@ -679,7 +719,7 @@ def _argument_name(name: str) -> str:
     ``continuation-token`` refusal — the body is ``Code``, ``Message`` and ``ArgumentName`` alone,
     whatever was sent and for an empty value too (measured 2026-09-14 and 2026-09-17). The other
     ``InvalidArgument`` refusals here carry both (see ``_argument_error``)."""
-    return f"<ArgumentName>{escape(name)}</ArgumentName>"
+    return f"<ArgumentName>{_xml_text(name)}</ArgumentName>"
 
 
 def _conflict(selected: list[str]) -> Response:
@@ -698,7 +738,7 @@ def _refused_credential(refusal: auth.SigV4Refusal, head: bool = False) -> Respo
     """Real's answer for a credential it refuses, members and all; on a `HEAD`, its status alone."""
     if head:
         return _head(_ERR_STATUS[refusal.code])
-    members = "".join(f"<{name}>{escape(value)}</{name}>" for name, value in refusal.members)
+    members = "".join(f"<{name}>{_xml_text(value)}</{name}>" for name, value in refusal.members)
     return _error(refusal.code, refusal.message, members)
 
 
@@ -846,9 +886,10 @@ def _website_refusal(q) -> Response | None:
     return None
 
 
-def _key_selected(q) -> list[str]:
-    """The selectors a GET or a HEAD at a key's path carries, `annotationName` among them when no
-    `annotation` names the operation it belongs to: alone, real refused it at a key with "Unexpected
+def _key_selected(q, selectors: frozenset[str] | None = None) -> list[str]:
+    """The selectors out of ``selectors`` a request at a key's path carries, a GET's and a HEAD's
+    unless the caller passes its own, `annotationName` among them when no `annotation` names the
+    operation it belongs to: alone, real refused it at a key with "Unexpected
     query string parameter" under `ResourceType` on a GET and with the 400 on a HEAD, and beside
     another selector it is the conflict (`acl, annotationName`), before the credential and the
     bucket (measured 2026-09-29). Not every front end of real's refuses it on a GET: asked one
@@ -859,6 +900,12 @@ def _key_selected(q) -> list[str]:
     listing, as real leaves it. `partNumber` beside a selector other than `uploadId` is the conflict
     too (`?partNumber=1&tagging` is "partNumber, tagging", same date); alone it is GetObject's
     (``_part_refusal``), and beside `uploadId` UploadPart.
+
+    Beside an `annotation` that names the operation and another selector or a `partNumber`,
+    `annotationName` is among them too: `?annotation&annotationName=x&acl` is the conflict "acl,
+    annotation, annotationName" and `?annotation&partNumber=1&annotationName=x` "annotation,
+    annotationName, partNumber", on a GET and on each write, where `?annotation&annotationName=x`
+    alone is the annotation's own operation (2026-10-17).
 
     `annotation` is read from its first value, as ``_first`` reads it, and names the operation
     only when that value is empty: `?annotation=x` is GetObject, so an `annotationName` beside it is
@@ -872,10 +919,13 @@ def _key_selected(q) -> list[str]:
     2026-10-14).
 
     An `OPTIONS` at a key's path reads them the same way (``_cors_preflight``)."""
-    selected = _selected(q, _OBJECT_READ_SELECTORS)
+    selected = _selected(q, _OBJECT_READ_SELECTORS if selectors is None else selectors)
     if "annotation" in selected and _first(q, "annotation") != "":
         selected.remove("annotation")
-    if "annotationName" in q and "annotation" not in q:
+    if "annotationName" in q and (
+        "annotation" not in q
+        or ("annotation" in selected and (len(selected) > 1 or "partNumber" in q))
+    ):
         selected = sorted([*selected, "annotationName"])
     if "partNumber" in q and selected and selected != ["uploadId"]:
         selected = sorted([*selected, "partNumber"])
@@ -1126,7 +1176,11 @@ async def head_bucket(request: Request, bucket: str):
         return err
     if not _bucket_visible(auth.conn(request), bucket, visible):
         return _head(404)
-    err = _trailer_refusal(request, head=True) or _listing_checks(q, v2)[-1]
+    err = (
+        _trailer_refusal(request, head=True)
+        or _listing_checks(q, v2)[-1]
+        or _listing_nul_refusal(q, v2)
+    )
     if err is not None:
         return _head(err.status_code)
     return _head(
@@ -1218,6 +1272,13 @@ def _listing_parse(q, v2: bool) -> tuple[int, Response | None]:
         if _first(q, name, None) is not None:
             return max_keys, _error("InvalidArgument", message, extra=_argument_name(name))
     return max_keys, None
+
+
+def _listing_nul_refusal(q, v2: bool) -> Response | None:
+    """ListObjects' and ListObjectsV2's ``_nul_refusal``: `prefix`, then `start-after` on V2 or
+    `marker` on V1, after `encoding-type` and the continuation token and ahead of the `max-keys`
+    range (measured 2026-10-17; a HEAD gets its status alone)."""
+    return _nul_refusal(q, ("prefix", "start-after" if v2 else "marker"))
 
 
 def _listing_checks(q, v2: bool) -> tuple[str | None, str | None, tuple | None, Response | None]:
@@ -1443,7 +1504,7 @@ def _list_objects(
     encoding_type, continuation, decoded, err = _listing_checks(q, v2)
     if err is not None:
         return err
-    err = _range_refusal(max_keys, "maxKeys")
+    err = _listing_nul_refusal(q, v2) or _range_refusal(max_keys, "maxKeys")
     if err:
         return err
     enc = _url_encode if encoding_type is not None else (lambda v: v)
@@ -1487,26 +1548,26 @@ def _list_objects(
 
     body = [
         f'<ListBucketResult xmlns="{NS}"><Name>{escape(bucket)}</Name>',
-        f"<Prefix>{escape(enc(prefix))}</Prefix>",
+        f"<Prefix>{_xml_listing_text(enc(prefix))}</Prefix>",
     ]
     if v2:
         # Both echoes turn on whether the parameter was sent, not on whether it has a value: an
         # empty `start-after` is echoed as the empty element, and an empty token was refused above,
         # so `is None` is the only reading with an input behind it.
         if start_after is not None and continuation is None:
-            body.append(f"<StartAfter>{escape(enc(start_after))}</StartAfter>")
+            body.append(f"<StartAfter>{_xml_listing_text(enc(start_after))}</StartAfter>")
         if continuation is not None:
             body.append(f"<ContinuationToken>{escape(continuation)}</ContinuationToken>")
         if next_token:
             body.append(f"<NextContinuationToken>{next_token}</NextContinuationToken>")
         body.append(f"<KeyCount>{len(entries)}</KeyCount>")
     else:
-        body.append(f"<Marker>{escape(enc(marker))}</Marker>")
+        body.append(f"<Marker>{_xml_listing_text(enc(marker))}</Marker>")
         if next_marker is not None:
-            body.append(f"<NextMarker>{escape(enc(next_marker))}</NextMarker>")
+            body.append(f"<NextMarker>{_xml_listing_text(enc(next_marker))}</NextMarker>")
     body.append(f"<MaxKeys>{max_keys}</MaxKeys>")
     if delimiter:
-        body.append(f"<Delimiter>{escape(enc(delimiter))}</Delimiter>")
+        body.append(f"<Delimiter>{_xml_listing_text(enc(delimiter))}</Delimiter>")
     if encoding_type is not None:
         body.append(f"<EncodingType>{escape(encoding_type)}</EncodingType>")
     body.append(f"<IsTruncated>{'true' if is_truncated else 'false'}</IsTruncated>")
@@ -1518,14 +1579,16 @@ def _list_objects(
         r = by_key[val]
         ts = r["updated_ts"] or r["created_ts"]
         body.append(
-            f"<Contents><Key>{escape(enc(val))}</Key>"
+            f"<Contents><Key>{_xml_listing_text(enc(val))}</Key>"
             f"<LastModified>{synth.s3_iso(ts)}</LastModified>"
             f"<ETag>{escape(synth.s3_etag(r['key'], r['content']))}</ETag>"
             f"<Size>{len(r['content'].encode())}</Size>{owner}"
             f"<StorageClass>{escape(r['subtype'] or 'STANDARD')}</StorageClass></Contents>"
         )
     for val in [v for kind, v in entries if kind == "cp"]:
-        body.append(f"<CommonPrefixes><Prefix>{escape(enc(val))}</Prefix></CommonPrefixes>")
+        body.append(
+            f"<CommonPrefixes><Prefix>{_xml_listing_text(enc(val))}</Prefix></CommonPrefixes>"
+        )
     body.append("</ListBucketResult>")
     return _xml("".join(body))
 
@@ -1638,7 +1701,7 @@ def _list_multipart_uploads(request: Request, bucket: str, max_uploads: int) -> 
         return _argument_error(
             "Invalid Encoding Method specified in Request", "encoding-type", encoding_type
         )
-    err = _range_refusal(max_uploads, "max-uploads")
+    err = _range_refusal(max_uploads, "max-uploads") or _nul_refusal(q, ("key-marker",))
     if err:
         return err
     key_marker = _first(q, "key-marker")
@@ -1650,10 +1713,10 @@ def _list_multipart_uploads(request: Request, bucket: str, max_uploads: int) -> 
     enc = _url_encode if encoding_type is not None else (lambda v: v)
     body = [
         f'<ListMultipartUploadsResult xmlns="{NS}"><Bucket>{escape(bucket)}</Bucket>',
-        f"<KeyMarker>{escape(enc(key_marker))}</KeyMarker><UploadIdMarker></UploadIdMarker>",
+        f"<KeyMarker>{_xml_listing_text(enc(key_marker))}</KeyMarker><UploadIdMarker></UploadIdMarker>",
         "<NextKeyMarker></NextKeyMarker><NextUploadIdMarker></NextUploadIdMarker>",
-        f"<Delimiter>{escape(enc(delimiter))}</Delimiter>" if delimiter else "",
-        f"<Prefix>{escape(enc(prefix))}</Prefix>" if prefix else "",
+        f"<Delimiter>{_xml_listing_text(enc(delimiter))}</Delimiter>" if delimiter else "",
+        f"<Prefix>{_xml_listing_text(enc(prefix))}</Prefix>" if prefix else "",
         f"<MaxUploads>{min(max_uploads, _MAX_UPLOADS)}</MaxUploads>",
         f"<EncodingType>{escape(encoding_type)}</EncodingType>"
         if encoding_type is not None
@@ -1719,6 +1782,9 @@ def _list_object_versions(request: Request, conn, bucket: str, visible, max_keys
         return _error(
             "InvalidArgument", "max-keys cannot be negative", extra=_argument_name("max-keys")
         )
+    refused = _nul_refusal(q, ("prefix", "key-marker"))
+    if refused is not None:
+        return refused
     enc = _url_encode if encoding_type is not None else (lambda v: v)
     prefix = _first(q, "prefix")
     delimiter = _first(q, "delimiter", None)
@@ -1742,17 +1808,18 @@ def _list_object_versions(request: Request, conn, bucket: str, visible, max_keys
     )
     body = [
         f'<ListVersionsResult xmlns="{NS}"><Name>{escape(bucket)}</Name>',
-        f"<Prefix>{escape(enc(prefix))}</Prefix><KeyMarker>{escape(enc(key_marker))}</KeyMarker>",
+        f"<Prefix>{_xml_listing_text(enc(prefix))}</Prefix>"
+        f"<KeyMarker>{_xml_listing_text(enc(key_marker))}</KeyMarker>",
         f"<VersionIdMarker>{escape(marker or '')}</VersionIdMarker>",
     ]
     if is_truncated and entries:
         kind, last = entries[-1]
-        body.append(f"<NextKeyMarker>{escape(enc(last))}</NextKeyMarker>")
+        body.append(f"<NextKeyMarker>{_xml_listing_text(enc(last))}</NextKeyMarker>")
         if kind == "obj":
             body.append("<NextVersionIdMarker>null</NextVersionIdMarker>")
     body.append(f"<MaxKeys>{max_keys}</MaxKeys>")
     if delimiter is not None:
-        body.append(f"<Delimiter>{escape(enc(delimiter))}</Delimiter>")
+        body.append(f"<Delimiter>{_xml_listing_text(enc(delimiter))}</Delimiter>")
     if encoding_type is not None:
         body.append(f"<EncodingType>{escape(encoding_type)}</EncodingType>")
     body.append(f"<IsTruncated>{'true' if is_truncated else 'false'}</IsTruncated>")
@@ -1760,7 +1827,7 @@ def _list_object_versions(request: Request, conn, bucket: str, visible, max_keys
     for val in [v for kind, v in entries if kind == "obj"]:
         r = by_key[val]
         body.append(
-            f"<Version><Key>{escape(enc(val))}</Key><VersionId>null</VersionId>"
+            f"<Version><Key>{_xml_listing_text(enc(val))}</Key><VersionId>null</VersionId>"
             f"<IsLatest>true</IsLatest>"
             f"<LastModified>{synth.s3_iso(r['updated_ts'] or r['created_ts'])}</LastModified>"
             f"<ETag>{escape(synth.s3_etag(r['key'], r['content']))}</ETag>"
@@ -1768,7 +1835,9 @@ def _list_object_versions(request: Request, conn, bucket: str, visible, max_keys
             f"<StorageClass>{escape(r['subtype'] or 'STANDARD')}</StorageClass></Version>"
         )
     for val in [v for kind, v in entries if kind == "cp"]:
-        body.append(f"<CommonPrefixes><Prefix>{escape(enc(val))}</Prefix></CommonPrefixes>")
+        body.append(
+            f"<CommonPrefixes><Prefix>{_xml_listing_text(enc(val))}</Prefix></CommonPrefixes>"
+        )
     body.append("</ListVersionsResult>")
     return _xml("".join(body))
 
@@ -2002,7 +2071,7 @@ async def object_get(request: Request, bucket: str, key: str):
             "NoSuchUpload",
             "The specified upload does not exist. The upload ID may be invalid, or the upload may "
             "have been aborted or completed.",
-            f"<UploadId>{escape(_first(q, 'uploadId'))}</UploadId>",
+            f"<UploadId>{_xml_text(_first(q, 'uploadId'))}</UploadId>",
         )
     if selected == ["torrent"]:
         return _method_refusal(request, _OBJECT_WRITE_SELECTORS["torrent"][0])
@@ -2034,7 +2103,7 @@ async def object_get(request: Request, bucket: str, key: str):
         # A key's `?tagging` names what is missing with its bucket, the rest the key alone, and
         # `?attributes` sends no declaration; `versionId=null` of a key there is none of is the
         # version that is missing (measured 2026-09-29).
-        missing = escape(f"{bucket}/{key}" if selected == ["tagging"] else key)
+        missing = _xml_text(f"{bucket}/{key}" if selected == ["tagging"] else key)
         prolog = "" if selected == ["attributes"] else _DECLARATION + "\n"
         if version is not None:
             return _error(
@@ -3236,7 +3305,15 @@ async def object_method_refusal(request: Request, bucket: str, key: str) -> Resp
     and with `<x/>` and a bad `Content-MD5`, without and with `annotationName`; a V2 header with
     an unknown key and a V2 query got the same 400 at the public object. There, a bearer header,
     a V2 header lacking its date and an expired V2 query kept their credential refusals; beside
-    `acl` each was the conflict, as was `annotation&website=x` unsigned at both paths."""
+    `acl` each was the conflict, as was `annotation&website=x` unsigned at both paths.
+
+    A write reads its selectors as a GET does, through ``_key_selected``, and answers two of them
+    with the conflict ahead of a valued `website`: `acl&website=x` is "acl, website". Measured
+    2026-10-17 at the same two keys on `PUT`, `POST`, `DELETE` and `PATCH`: 17 queries naming
+    `annotationName` or `partNumber` answered the GET's 400 unsigned at both keys and signed with
+    Signature Version 4 at the public one, and nine of them, with `acl&website=x` and
+    `tagging&website=x`, did with a bearer header and with a V2 signature by an unknown key, a
+    garbage `Content-MD5` and a body."""
     method = request.method
     if method == "OPTIONS":
         selected = _key_selected(request.query_params)
@@ -3246,12 +3323,12 @@ async def object_method_refusal(request: Request, bucket: str, key: str) -> Resp
             return _argument_error("Unexpected query string parameter", "ResourceType", selected[0])
         return _cors_preflight(request, _CORS_DISABLED)
     q = request.query_params
-    selected = _selected(q, frozenset(_OBJECT_PATH_WRITE_SELECTORS))
-    if "annotation" in selected and _first(q, "annotation") != "":
-        selected.remove("annotation")
-    if "annotation" in selected:
-        if len(selected) > 1:
-            return _conflict(selected)
+    selected = _key_selected(q, frozenset(_OBJECT_PATH_WRITE_SELECTORS))
+    if len(selected) > 1:
+        return _conflict(selected)
+    if selected == ["annotationName"]:
+        return _argument_error("Unexpected query string parameter", "ResourceType", selected[0])
+    if selected == ["annotation"]:
         refused = _sigv4_only_refusal(request)
         if refused is not None:
             return refused

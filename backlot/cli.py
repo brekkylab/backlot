@@ -291,6 +291,16 @@ def serve(
         ),
     ] = None,
     data_dir: DataDir = None,
+    # `serve()` passes this, for the stdin pipe it starts the server on, and nothing else in Backlot
+    # does; it is not an option to type, so `--help` leaves it out.
+    exit_on_stdin_close: Annotated[
+        bool,
+        typer.Option(
+            "--exit-on-stdin-close",
+            hidden=True,
+            help="stop serving once stdin reaches end of file",
+        ),
+    ] = False,
 ) -> None:
     """Serve Backlot APIs over the corpus in the data dir.
 
@@ -318,6 +328,8 @@ def serve(
         )
         raise typer.Exit(2)
 
+    if exit_on_stdin_close:
+        _stop_at_stdin_eof()
     import uvicorn
 
     # The app is passed as an import STRING because that is what --reload requires.
@@ -332,6 +344,30 @@ def serve(
         proxy_headers=proxy_headers,
         forwarded_allow_ips=forwarded_allow_ips,
     )
+
+
+def _stop_at_stdin_eof() -> None:
+    """Send this process SIGTERM once its stdin reaches end of file.
+
+    uvicorn answers that SIGTERM with its graceful shutdown: measured on 2026-10-13 on macOS and on
+    Windows 11, logging at `info`, the log ended with "Application shutdown complete." and
+    "Finished server process". An end of file that comes before uvicorn has installed its handlers
+    meets SIGTERM's default instead, which on macOS ended the process before it logged a line.
+
+    It reads the descriptor: a ``sys.stdin.buffer`` read holds the stream's lock, and an exit that
+    finalizes the interpreter with stdin open then aborts with "Fatal Python error" (macOS,
+    2026-10-13)."""
+    import signal
+    import threading
+
+    fd = sys.stdin.fileno()
+
+    def wait() -> None:
+        while os.read(fd, 65536):
+            pass
+        signal.raise_signal(signal.SIGTERM)
+
+    threading.Thread(target=wait, name="backlot-stdin-eof", daemon=True).start()
 
 
 # --------------------------------------------------------------------------- import
@@ -598,7 +634,7 @@ def status(data_dir: DataDir = None) -> None:
     if settings.tokens_path.exists():
         import yaml
 
-        data = yaml.safe_load(settings.tokens_path.read_text()) or {}
+        data = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8")) or {}
         users = data.get("users") or {}
         typer.echo(
             f"tokens:   {len(users)} in {settings.tokens_path.name}, org {data.get('org', '?')}"

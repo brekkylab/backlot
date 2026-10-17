@@ -131,13 +131,14 @@ backlot import generated.jsonl --dry-run && backlot import generated.jsonl
   where it is an `{emoji: count}` map, and is NOT on slack: there an entry names its reactors by
   address and the router renders the ids and the count, so the shape is declared.
 - **Timestamps** — `created` is required of every DOCUMENT (a `subtype: "repo"` record states
-  a repository, not a document, and dates nothing) and takes epoch seconds or ISO 8601. So is a
-  child row's own second (`created_ts` on a comment, `created` on a slack reply or a gmail thread
-  message): a time nobody wrote is a time nobody can check, and the server sorts and filters on it.
-  `updated` is required only where the vendor always reports one (drive, notion) and optional
-  elsewhere, where an omitted one stays NULL rather than being invented. Slack `replies` are full
-  messages (`reactions`/`files`/`subtype`/`edited`, not just `content`); gmail's `to` is optional,
-  since RFC 5322 allows a message with no destination field and the API serves it that way.
+  a repository, not a document, and dates nothing) and takes epoch seconds or ISO 8601, where a time
+  with no offset is UTC. So is a child row's own second (`created_ts` on a comment, `created` on a
+  slack reply or a gmail thread message): a time nobody wrote is a time nobody can check, and the
+  server sorts and filters on it. `updated` is required only where the vendor always reports one
+  (drive, notion) and optional elsewhere, where an omitted one stays NULL rather than being
+  invented. Slack `replies` are full messages (`reactions`/`files`/`subtype`/`edited`, not just
+  `content`); gmail's `to` is optional, since RFC 5322 allows a message with no destination field
+  and the API serves it that way.
 - **Ids the corpus owns** (all optional): github `number`, jira `key`, confluence `content_id`,
   hubspot `record_id`, fireflies `transcript_id` — the spelling a document cites, stored and
   served verbatim so that citation is a working lookup. Each is unique within its scope — a number

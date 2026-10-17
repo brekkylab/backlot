@@ -450,8 +450,62 @@ def _reachable_projects(conn, ids) -> list:
     return [r for r in rows if store.has_visible_document(conn, "jira", r["name"], ids)]
 
 
+# The fields `project/search` sorts by, in the order its 400 names them (Jira Cloud, 2026-10-16).
+_JIRA_PROJECT_ORDER_FIELDS = (
+    "name",
+    "key",
+    "owner",
+    "category",
+    "issueCount",
+    "lastIssueUpdatedTime",
+    "archivedDate",
+    "deletedDate",
+)
+_JIRA_PROJECT_ORDER_LOWER = frozenset(name.lower() for name in _JIRA_PROJECT_ORDER_FIELDS)
+# The four characters past ASCII that Java's `equalsIgnoreCase` takes for an ASCII letter.
+_JAVA_ASCII_CASE_ALIASES = str.maketrans(
+    {"\u0130": "i", "\u0131": "i", "\u017f": "s", "\u212a": "k"}
+)
+
+
+def _jira_project_order(raw: str) -> None:
+    """Jira's 400 when ``project/search`` ``orderBy`` names no field it sorts by.
+
+    Measured against Jira Cloud on 2026-10-16. Only an empty value is read as no `orderBy`. What
+    Java's `String.trim` removes (:data:`_JAVA_TRIMMED`) comes off both ends, then one leading
+    ``+`` or ``-``, then the trim again: `%01key` and `-%09key` are 200, `%C2%A0key` and
+    `%E2%80%83key` are the 400. The field is compared the way `equalsIgnoreCase` compares, so
+    `ıssueCount`, `İssueCount` and `iſsueCount` are 200 and `ißueCount` is the 400. The 400 names
+    what is left, which a value holding only a sign or whitespace leaves empty: `-bogus` is named
+    `bogus`, `--key` `-key`, and `-` or `%20` the empty string.
+    """
+    if raw == "":
+        return
+    field = raw.strip(_JAVA_TRIMMED)
+    if field[:1] in ("+", "-"):
+        field = field[1:].strip(_JAVA_TRIMMED)
+    if field.translate(_JAVA_ASCII_CASE_ALIASES).lower() in _JIRA_PROJECT_ORDER_LOWER:
+        return
+    allowed = ", ".join(_JIRA_PROJECT_ORDER_FIELDS)
+    raise errors_atlassian.AtlassianError(
+        400,
+        {
+            "errorMessages": [
+                f"The field to order by should be one of [{allowed}]. Instead, it was: {field}."
+            ],
+            "errors": {},
+        },
+    )
+
+
 @router.get("/rest/api/3/project/search")
 async def jira_project_search(request: Request):
+    # Read for the refusal above. The sort itself is not served, so `orderBy` stays undeclared:
+    # `qp` is for a parameter Backlot honours, and advertising this one would offer a client an
+    # order the listing never applies. `backlot diff --source jira` keeps the gap.
+    raw_order = _str_param(request, "orderBy")
+    if raw_order is not None:
+        _jira_project_order(raw_order)
     conn = auth.conn(request)
     caller = _jira_caller(request)
     ids = auth.visible_ids(request, caller)
@@ -492,14 +546,18 @@ def _require_project(request: Request, conn, key: str) -> str:
     ids; `0`, `007`, `-1`, `1000000000000000000` (nineteen digits, still a Java `long`) and `1２` (a
     full-width `２`) are keys. A credentialled caller got the same answer from a project's id as from
     its key, on `role`, `role/10002` and `POST role/99999`, on 2026-10-14 and 2026-10-15.
+
+    A key is the project's own as written: on 2026-10-17 the key in lower case or with only its
+    first letter in upper case, and the project's name in either case, were each the 404 by key,
+    with and without a credential, on `role` and `role/10002`.
     """
     ids = auth.visible_ids(request, _jira_caller(request))
     kind = "id" if re.fullmatch(r"[1-9][0-9]{0,17}", key) else "key"
+    rows = store.list_containers(conn, "jira")
     if kind == "id":
-        rows = store.list_containers(conn, "jira")
         container = next((r["name"] for r in rows if _jira_project_id(r["name"]) == key), None)
     else:
-        container = _jira_container_for_key(conn, key, request)
+        container = next((r["name"] for r in rows if _project_key(conn, r["name"]) == key), None)
     # The `ids is None` short-circuit mirrors `github._repo_visible`, where it is load-bearing: a
     # `subtype: repo` record creates a container holding no document, and the admin keeps the repo
     # as soon as that record exists. No Jira record can do that — `project` is required on every
@@ -2105,25 +2163,70 @@ async def confluence_restrictions(content_id: int, request: Request):
     site = _site(request)
     users = [] if emails is None else [_conf_user(e, site) for e in sorted(emails)]
     path = f"{site}/wiki/rest/api/content/{content_id}/restriction/byOperation"
-
-    # Real's members in real's order (Confluence Cloud, 2026-10-09 and 2026-10-14): each operation
-    # links to itself under this path, and the answer ends with the links a listing carries.
-    def _op(name):
-        return {
-            "operation": name,
-            "restrictions": {
-                "user": {"results": users, "start": 0, "limit": 200, "size": len(users)},
-                "group": {"results": [], "start": 0, "limit": 200, "size": 0},
-            },
-            "_expandable": {"content": f"/rest/api/content/{content_id}"},
-            "_links": {"self": f"{path}/{name}"},
-        }
-
-    return {
-        "read": _op("read"),
-        "update": _op("update"),
-        "_links": {"self": path, "base": f"{site}/wiki", "context": "/wiki"},
+    content = f"/rest/api/content/{content_id}"
+    lists = {
+        "user": {"results": users, "start": 0, "limit": 200, "size": len(users)},
+        "group": {"results": [], "start": 0, "limit": 200, "size": 0},
     }
+    named = _restriction_expansions(request)
+
+    # Real's members in real's order (Confluence Cloud, 2026-10-09, 2026-10-14 and 2026-10-17):
+    # each operation links to itself under this path, and the answer ends with the links a listing
+    # carries. With no `expand`, both operations come with both lists. Once `expand` names
+    # something, an operation it does not name is listed under the answer's `_expandable`, read
+    # ahead of update whatever order `expand` names them in. A named operation comes with its
+    # `restrictions` only when `expand` names them, and then with the lists it names, user ahead of
+    # group, and the others under the `restrictions` object's own `_expandable`.
+    def _op(name):
+        op = {"operation": name}
+        paths = None if named is None else named[name]
+        if paths is None or any(p[:1] == ["restrictions"] for p in paths):
+            kinds = [
+                k
+                for k in lists
+                if paths is None or any(p[:2] == ["restrictions", k] for p in paths)
+            ]
+            op["restrictions"] = {k: lists[k] for k in kinds}
+            if unnamed := [k for k in lists if k not in kinds]:
+                op["restrictions"]["_expandable"] = dict.fromkeys(unnamed, "")
+            op["_expandable"] = {"content": content}
+        else:
+            op["_expandable"] = {"restrictions": "", "content": content}
+        op["_links"] = {"self": f"{path}/{name}"}
+        return op
+
+    answer = {name: _op(name) for name in _RESTRICTION_OPERATIONS if named is None or name in named}
+    if unnamed := [name for name in _RESTRICTION_OPERATIONS if name not in answer]:
+        answer["_expandable"] = dict.fromkeys(unnamed, "")
+    answer["_links"] = {"self": path, "base": f"{site}/wiki", "context": "/wiki"}
+    return answer
+
+
+#: The operations `restriction/byOperation` answers, in the order real lists them.
+_RESTRICTION_OPERATIONS = ("read", "update")
+
+
+def _restriction_expansions(request: Request) -> dict[str, list[list[str]]] | None:
+    """What `expand` names under each operation of `restriction/byOperation`: for each operation
+    it names, the dotted segments after the operation's name, one list per item; None when no
+    `expand` value holds an item, which real answers as it answers no `expand`.
+
+    Measured on Confluence Cloud, 2026-10-17: real joins repeated `expand` parameters, splits each
+    value at `,` and each item at `.`, skips empty items (`read,`, `,read`, `read,,update`), and
+    compares each segment as sent. `READ`, ` read`, `read ` and `.read` name no operation;
+    `read.restrictions.USER`, `read..restrictions` and `read.Restrictions.user` name no list; a
+    segment past the list (`read.restrictions.user.bogus`) is ignored. `expand=` answers as no
+    `expand` does, and `expand=%20` names nothing. `read.content` expands the page into the
+    operation, which is not modelled here: it answers as `read` does."""
+    items = [i for value in request.query_params.getlist("expand") for i in value.split(",") if i]
+    if not items:
+        return None
+    named: dict[str, list[list[str]]] = {}
+    for item in items:
+        operation, *rest = item.split(".")
+        if operation in _RESTRICTION_OPERATIONS:
+            named.setdefault(operation, []).append(rest)
+    return named
 
 
 def _conf_user(email: str, site: str) -> dict:
@@ -2917,7 +3020,7 @@ def _published_not_served(source: str) -> tuple[tuple[str, re.Pattern[str]], ...
     adds reaches :func:`unmatched_path` once the baseline acknowledges it; a route added here wins
     over :func:`unmatched_path` whatever the file says."""
     baseline = _PACKAGE / "fidelity" / "baseline" / f"{source}.json"
-    entries = json.loads(baseline.read_text())["operations"]
+    entries = json.loads(baseline.read_text(encoding="utf-8"))["operations"]
     return _operations(e["operation"] for e in entries if e["status"] == "missing")
 
 
@@ -2926,7 +3029,7 @@ _CONFLUENCE_PUBLISHED = _published_not_served("confluence")
 #: What real answers before each Jira operation of those runs, operation by operation;
 #: ``scripts/gen_jira_unserved.py`` writes the file from Jira's documents and says how that was
 #: measured.
-_JIRA_UNSERVED = json.loads((_PACKAGE / "data" / "jira_unserved.json").read_text())
+_JIRA_UNSERVED = json.loads((_PACKAGE / "data" / "jira_unserved.json").read_text(encoding="utf-8"))
 _JIRA_ENTRIES = {**_JIRA_UNSERVED["refused"], **_JIRA_UNSERVED["run"]}
 _JIRA_OPERATIONS = tuple(
     (row, method, pattern)
@@ -3550,7 +3653,7 @@ def _options_answer(request: Request) -> Response:
 
 
 #: The WADL Jersey writes for `search`, with the site where real's names its own; read once.
-_SEARCH_WADL = (_PACKAGE / "data" / "confluence_search_options.wadl").read_text()
+_SEARCH_WADL = (_PACKAGE / "data" / "confluence_search_options.wadl").read_text(encoding="utf-8")
 
 
 def _search_options(request: Request) -> Response:

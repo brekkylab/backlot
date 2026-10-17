@@ -204,7 +204,7 @@ def build() -> dict:
                     security[key] = operation.get("security", default)
                     body = operation.get("requestBody")
                     content[key] = None if body is None else list(body.get("content", {}))
-    baseline = json.loads(baseline_path("jira").read_text())["operations"]
+    baseline = json.loads(baseline_path("jira").read_text(encoding="utf-8"))["operations"]
     unserved = sorted(e["operation"] for e in baseline if e["status"] == "missing")
     refused, run = {}, {}
     for key in unserved:
@@ -249,11 +249,11 @@ def main() -> int:
         print(e, file=sys.stderr)
         return 2
     if args.check:
-        if not OUT.exists() or OUT.read_text() != text:
+        if not OUT.exists() or OUT.read_text(encoding="utf-8") != text:
             print(f"{OUT.relative_to(REPO)} is stale; run scripts/gen_jira_unserved.py")
             return 1
         return 0
-    OUT.write_text(text)
+    OUT.write_text(text, encoding="utf-8")
     table = json.loads(text)
     print(
         f"wrote {OUT.relative_to(REPO)}: {len(table['refused'])} refused, {len(table['run'])} run"

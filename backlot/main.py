@@ -533,7 +533,8 @@ async def normalise_the_slashes_in_an_atlassian_path(request: Request, call_next
     (`/nopesuchroute/` comes back `/nopesuchroute/`). Nor are its escapes: real echoes the path as
     it arrived, decoding only some of them (``errors.atlassian.echoed_spelling``), where routing
     reads the decoded path. That spelling is built from `raw_path` before the rewrite below
-    replaces it, and stashed on the scope for ``backlot.routers.atlassian._echoed_path`` to read.
+    replaces it, and stashed on the scope for ``backlot.routers.atlassian._echoed_path`` to read;
+    the decoded spelling is stashed beside it for ``_decoded_echo_path``.
 
     Ahead of routing, because the answer for a path no route matches is a route of its own
     (`atlassian.unmatched_router`), which would otherwise claim every slashed spelling of a served
@@ -553,6 +554,7 @@ async def normalise_the_slashes_in_an_atlassian_path(request: Request, call_next
         request.scope["atlassian_echo_path"] = errors.atlassian.echoed_spelling(
             raw.decode("latin-1")
         )
+        request.scope["atlassian_decoded_echo_path"] = collapsed
         if routed != path:
             request.scope["path"] = routed
             request.scope["raw_path"] = routed.encode()

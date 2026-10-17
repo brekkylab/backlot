@@ -3520,6 +3520,12 @@ def _echoed_path(request: Request) -> str:
     return request.scope.get("atlassian_echo_path", request.url.path)
 
 
+def _decoded_echo_path(request: Request) -> str:
+    """:func:`_echoed_path` with every escape decoded, which is what the Confluence login redirect
+    carries in `dest-url`: what real puts there for an escaped path is unmeasured."""
+    return request.scope.get("atlassian_decoded_echo_path", request.url.path)
+
+
 def _wants_json(request: Request) -> bool:
     """Whether Confluence's JAX-RS 404 is JSON (``errors.atlassian.jaxrs_picks_json``)."""
     return errors_atlassian.jaxrs_picks_json(request.headers.get("accept"))
@@ -3721,7 +3727,7 @@ async def unmatched_path(request: Request, rest: str) -> Response:
             # the web app, not an API: a caller with no credential is sent to log in (`/wiki/nope`,
             # measured 2026-09-30; with a credential it is the page below)
             asked = quote(
-                f"{_vendor_path(_echoed_path(request))}{'?' + request.url.query if request.url.query else ''}",
+                f"{_vendor_path(_decoded_echo_path(request))}{'?' + request.url.query if request.url.query else ''}",
                 safe="",
             )
             return Response(

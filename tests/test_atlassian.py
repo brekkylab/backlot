@@ -2041,6 +2041,7 @@ def test_jira_refuses_an_integer_parameter_it_cannot_convert(paged, param, value
         # escapes ``errors.atlassian.echoed_spelling`` keeps as sent, hex in upper case
         ("A%20B", "A%20B"),
         ("A%3FB", "A%3FB"),
+        ("A%23B", "A%23B"),
         ("A%3cB", "A%3CB"),
     ],
 )
@@ -4872,7 +4873,10 @@ def test_jira_unserved_sorts_every_operation_no_route_serves(monkeypatch):
         # the escapes ``errors.atlassian.echoed_spelling`` keeps and decodes, in `null for uri:`
         ("/atlassian/wiki/rest/api/nope%20x", "application/json", "json", "nope%20x"),
         ("/atlassian/wiki/rest/api/nope%3Fx", "application/json", "json", "nope%3Fx"),
+        ("/atlassian/wiki/rest/api/nope%23x", "application/json", "json", "nope%23x"),
         ("/atlassian/wiki/rest/api/nope%2Dx", "application/json", "json", "nope-x"),
+        # an escaped `?` beside a real query: the query is the one sent, after the path's escape
+        ("/atlassian/wiki/rest/api/nope%3Fx?_=1", "application/json", "json", "nope%3Fx?_=1"),
     ],
 )
 def test_confluence_answers_an_unclaimed_segment_in_the_shape_accept_asks_for(
@@ -5349,6 +5353,16 @@ _JIRA_PAGE = errors_atlassian.JIRA_SITE_HTML_MEDIA_TYPE
             302,
             None,
             "{site}/login?application=confluence&dest-url=%2Fwiki%2Fnope",
+            None,
+        ),
+        # an escape in the path reaches `dest-url` decoded, then quoted once
+        # (``backlot.routers.atlassian._decoded_echo_path``)
+        (
+            "/atlassian/wiki/nope%20x",
+            True,
+            302,
+            None,
+            "{site}/login?application=confluence&dest-url=%2Fwiki%2Fnope%20x",
             None,
         ),
         # Jira's own not-found page, its charset in lower case

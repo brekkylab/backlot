@@ -688,6 +688,69 @@ _GMAIL_PLUS_ENDS = {"from", "to", "cc", "bcc", "subject"}
 # The `ops` key of a value that ends in `+`: real answers such a search with nothing. No operator
 # can be named this, since `_GMAIL_OP` reads a name of at least one word character.
 _GMAIL_NOTHING = ""
+# How real reads the value of `after:` and `before:` (and so of `newer:` and `older:`), as
+# `_gmail_q_date` reads it. Measured on a Workspace mailbox, comparing the ids each query returned
+# with those of a date written `YYYY/MM/DD` (595 messages on 2026-10-15, 603 on 2026-10-17):
+#
+#   read as seconds   ASCII digits whose value is above 0 and at most `_GMAIL_SECONDS_MAX`,
+#                     leading zeros and all: `1`, `01`, `1790812800`, `01790812800`,
+#                     `253402300800`; `0`, `000`, `-1`, `+1790812800`, `1e9`, `9223372036854` and
+#                     `99999999999999999999` nothing
+#   read as a date    three runs of ASCII digits split by one `/` or one `-`, tried as year, month,
+#                     day, then month, day, year, then day, month, year, the first that is a date:
+#                     `10/1/2026` is 1 October, `01/10/2026` 10 January, `15/10/2026` 15 October;
+#                     a year above 0 and below 100 is in the 2000s (`26/10/05`, `9/30/26`), so
+#                     `10/05/26` is 26 May 2010; a first run of three digits or more is the year
+#                     (`026/10/05`, `02026/10/01`); a month or day may carry leading zeros
+#                     (`2026/010/01`, `2026/10/005`)
+#   either            after the trailing `/`, `.`, `,` and `:` are dropped (`2026/10/01//`,
+#                     `2026/10/01.`, `1790812800,`, `2026/10/01:`)
+#   nothing           anything else: `abc`, `2026/13/01`, `2026/02/30`, `2026.10.01`,
+#                     `2026-10-01T00:00`, `2026/10-01`, `"2026/10/01"`, `(2026/10/01)`, digits
+#                     that are not ASCII (`２０２６/１０/０１`), and a query holding one of them
+#                     beside a value real reads
+#
+# A `-` in front negates the operator when its value reads: `-after:2026/10/01` answered as
+# `before:2026/10/01`, and `-before:X` as `after:X`; `-after:abc`, `-after:0` and `-before:0`
+# answered every message. `after:-` is the search term `after`, as an empty `after:` is. Not
+# modelled here, each answered nothing: a year past 9999 (real read `10000/01/01` as a date after
+# every message), `00` (real read it), a count of seconds between `_GMAIL_SECONDS_MAX` and
+# `9223372036854`, and values real answered with ids no reading above gives (`2026/10`, `10/01`,
+# `2026/10/01x`, `1790812800.5`).
+_GMAIL_DATE_KEYS = {"after", "before"}
+# The largest count of seconds measured to read, 10000-01-01T00:00:00Z.
+_GMAIL_SECONDS_MAX = 253402300800
+_GMAIL_DATE = re.compile(r"([0-9]+)([/-])([0-9]+)\2([0-9]+)")
+_GMAIL_NEGATED_DATE = re.compile(r"(?<!\S)-(after|before|newer|older): *(\S+)", re.IGNORECASE)
+_GMAIL_NEGATION = {"after": "before", "before": "after", "newer": "older", "older": "newer"}
+
+
+def _gmail_q_date(v: str) -> str | None:
+    """The epoch seconds an `after:` or `before:` value in a search names, or None for a value real
+    answers with nothing (the reading the comment at `_GMAIL_DATE_KEYS` measures)."""
+    v = v.rstrip("/.,:")
+    if re.fullmatch(r"[0-9]+", v):
+        return str(int(v)) if 0 < int(v) <= _GMAIL_SECONDS_MAX else None
+    m = _GMAIL_DATE.fullmatch(v)
+    if m is None:
+        return None
+    a, b, c = m.group(1), m.group(3), m.group(4)
+    for y, mo, d in [(a, b, c)] if len(a) > 2 else [(a, b, c), (c, a, b), (c, b, a)]:
+        year = int(y) + 2000 if 0 < int(y) < 100 else int(y)
+        try:
+            day = datetime.datetime(year, int(mo), int(d), tzinfo=datetime.timezone.utc)
+        except ValueError:
+            continue
+        return str(int(day.timestamp()))
+    return None
+
+
+def _gmail_negated_date(m: re.Match) -> str:
+    """A negated date operator as the one it flips to, or nothing at all when its value does not
+    read (the comment at `_GMAIL_DATE_KEYS`)."""
+    if _gmail_q_date(m.group(2)) is None:
+        return " "
+    return f"{_GMAIL_NEGATION[m.group(1).lower()]}:{m.group(2)}"
 
 
 def _parse_gmail_q(q: str) -> tuple[str, dict]:
@@ -703,6 +766,12 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
             value = m.group(2)
             if not value and key not in _GMAIL_ADDRESS_KEYS:
                 return m.group(0)
+            if key in _GMAIL_DATE_KEYS:
+                if value == "-":
+                    return m.group(0)
+                read = _gmail_q_date(value)
+                ops.setdefault(_GMAIL_NOTHING if read is None else key, []).append(read or value)
+                return " "
             if key in _GMAIL_PLUS_ENDS and not value.startswith('"'):
                 value = value.lstrip("+")
                 if re.search(r"[^@]@", value):
@@ -719,6 +788,7 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
             return " "
         return m.group(0)
 
+    q = _GMAIL_NEGATED_DATE.sub(_gmail_negated_date, q)
     free = re.sub(r"\s+", " ", _GMAIL_OP.sub(_take, q)).strip()
     # A `+` standing alone is no search term, and a word ending in one matches nothing (the
     # measurement at `_GMAIL_PLUS_ENDS`).

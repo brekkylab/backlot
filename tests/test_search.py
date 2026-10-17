@@ -297,11 +297,11 @@ def test_gmail_relative_date_query_not_zeroed(db):
 
 def test_gmail_newer_older_are_after_before(db):
     """The cases the comment on `_GMAIL_KEY_ALIASES` measures, with a value and empty."""
-    from backlot.routers.google import _gmail_query, _parse_gmail_q
+    from backlot.routers.google import _gmail_q_date, _gmail_query, _parse_gmail_q
 
     free, ops = _parse_gmail_q("quarterly newer:2026/03/02 older:2026/03/04")
     assert free == "quarterly"
-    assert ops == {"after": ["2026/03/02"], "before": ["2026/03/04"]}
+    assert ops == {"after": [_gmail_q_date("2026/03/02")], "before": [_gmail_q_date("2026/03/04")]}
     assert _parse_gmail_q("newer:") == ("newer:", {})
     assert _parse_gmail_q("older:") == ("older:", {})
     total = len(_gmail_query(db, None, None, ""))
@@ -382,6 +382,103 @@ def test_gmail_plus_over_the_wire(tmp_path):
         assert count("cc:+lena") == count("cc:lena +") == 2
         assert count("cc:lena@acme.com+update") == count("update+") == 0
         assert count("cc:lena@acme.com+") == 2
+
+
+_OCT_1 = "1790812800"  # 2026-10-01T00:00:00Z
+
+
+@pytest.mark.parametrize(
+    "value, want",
+    [
+        *((v, _OCT_1) for v in ("2026/10/01", "2026-10-01", "2026/10/1", "2026-10-1")),
+        *((v, _OCT_1) for v in ("10/01/2026", "10/1/2026", "10-01-2026", "2026/10/01/")),
+        (_OCT_1, _OCT_1),
+        ("01/10/2026", "1768003200"),  # 10 January
+        ("1", "1"),
+        ("01", "1"),
+        ("01790812800", _OCT_1),
+        ("253402300800", "253402300800"),
+        *((v, _OCT_1) for v in ("2026/10/01//", "2026/10/01.", "1790812800,", "2026/10/01:")),
+        *((v, _OCT_1) for v in ("02026/10/01", "2026/010/01")),
+        ("15/10/2026", "1792022400"),  # 15 October
+        ("26/10/05", "1791158400"),
+        ("026/10/05", "1791158400"),
+        ("2026/10/005", "1791158400"),
+        ("9/30/26", "1790726400"),
+        ("10/05/26", "1274832000"),  # 26 May 2010
+        ("30/9/26", "1916611200"),
+        *(
+            (v, None)
+            for v in ("abc", "2026/13/01", "2026/02/30", "2026/10/32", "2026.10.01")
+            + ("2026-10-01T00:00", "0", "-1", '"2026/10/01"', "'2026/10/01'", "(2026/10/01)")
+            + ("000", "+1790812800", "1e9", "2026/10-01", "0010/05/2026", "00/01/2026")
+            + ("9223372036854", "99999999999999999999")
+            + ("\uff12\uff10\uff12\uff16/\uff11\uff10/\uff10\uff11",)
+        ),
+    ],
+)
+def test_gmail_after_before_value(value, want):
+    """Each value the comment on `_GMAIL_DATE_KEYS` measures, as `_gmail_q_date` reads it."""
+    from backlot.routers.google import _gmail_q_date
+
+    assert _gmail_q_date(value) == want
+
+
+def test_gmail_after_before_parse():
+    """A value real cannot read leaves nothing to match, beside a readable one too; a `-` negates
+    the operator, or drops it when its value does not read; `after:-` stays a search term."""
+    from backlot.routers.google import _GMAIL_NOTHING, _parse_gmail_q
+
+    for q in ("after:abc", "before:2026/02/30", "after:0", 'after:"2026/10/01"'):
+        assert _GMAIL_NOTHING in _parse_gmail_q(q)[1], q
+    assert _GMAIL_NOTHING in _parse_gmail_q("after:2026/10/01 after:abc")[1]
+    assert _parse_gmail_q("-after:2026/10/01") == ("", {"before": [_OCT_1]})
+    assert _parse_gmail_q("-after: 2026/10/01") == ("", {"before": [_OCT_1]})
+    assert _parse_gmail_q("-after:abc") == _parse_gmail_q("-before:0") == ("", {})
+    assert _parse_gmail_q("-before:2026/10/01") == ("", {"after": [_OCT_1]})
+    assert _parse_gmail_q("-newer:2026/10/01") == ("", {"before": [_OCT_1]})
+    assert _parse_gmail_q("after:-") == ("after:-", {})
+
+
+def test_gmail_after_before_over_the_wire(tmp_path):
+    """The issue's reproduction: three messages, around 1 October."""
+    from tests._helpers import client_for, tiny_corpus
+
+    records = [
+        {
+            "source_type": "gmail",
+            "doc_id": d,
+            "mailbox": "ava",
+            "title": t,
+            "content": "Status notes.",
+            "author_email": "bob@acme.com",
+            "to": "ava@acme.com",
+            "label_ids": ["INBOX"],
+            "readers": ["ava@acme.com"],
+            "created": c,
+        }
+        for d, t, c in [
+            ("sep", "September", "2026-09-15T09:00:00Z"),
+            ("oct1", "October 1", "2026-10-01T12:00:00Z"),
+            ("oct5", "October 5", "2026-10-05T09:00:00Z"),
+        ]
+    ]
+    settings = tiny_corpus(tmp_path, records)
+    with client_for(settings, reload=True) as c:
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+
+        def count(q):
+            r = c.get("/gmail/v1/users/ava@acme.com/messages", headers=h, params={"q": q})
+            return len(r.json().get("messages", []))
+
+        for q in ("after:2026/10/01", "after:10/01/2026", "after:10-01-2026", "after:2026/10/01/"):
+            assert count(q) == 2, q
+        for q in ("after:abc", "after:2026/13/01", "after:0", 'after:"2026/10/01"'):
+            assert count(q) == 0, q
+        assert count("after:2026/10/01 after:abc") == 0
+        assert count("-after:2026/10/01") == count("before:2026/10/01") == 1
+        assert count("-after:abc") == 3
+        assert count("before:99999999999999999999") == 0
 
 
 def test_github_search_q_parse():

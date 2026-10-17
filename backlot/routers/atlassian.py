@@ -546,14 +546,18 @@ def _require_project(request: Request, conn, key: str) -> str:
     ids; `0`, `007`, `-1`, `1000000000000000000` (nineteen digits, still a Java `long`) and `1２` (a
     full-width `２`) are keys. A credentialled caller got the same answer from a project's id as from
     its key, on `role`, `role/10002` and `POST role/99999`, on 2026-10-14 and 2026-10-15.
+
+    A key is the project's own as written: on 2026-10-17 the key in lower case or with only its
+    first letter in upper case, and the project's name in either case, were each the 404 by key,
+    with and without a credential, on `role` and `role/10002`.
     """
     ids = auth.visible_ids(request, _jira_caller(request))
     kind = "id" if re.fullmatch(r"[1-9][0-9]{0,17}", key) else "key"
+    rows = store.list_containers(conn, "jira")
     if kind == "id":
-        rows = store.list_containers(conn, "jira")
         container = next((r["name"] for r in rows if _jira_project_id(r["name"]) == key), None)
     else:
-        container = _jira_container_for_key(conn, key, request)
+        container = next((r["name"] for r in rows if _project_key(conn, r["name"]) == key), None)
     # The `ids is None` short-circuit mirrors `github._repo_visible`, where it is load-bearing: a
     # `subtype: repo` record creates a container holding no document, and the admin keeps the repo
     # as soon as that record exists. No Jira record can do that — `project` is required on every
@@ -2159,25 +2163,70 @@ async def confluence_restrictions(content_id: int, request: Request):
     site = _site(request)
     users = [] if emails is None else [_conf_user(e, site) for e in sorted(emails)]
     path = f"{site}/wiki/rest/api/content/{content_id}/restriction/byOperation"
-
-    # Real's members in real's order (Confluence Cloud, 2026-10-09 and 2026-10-14): each operation
-    # links to itself under this path, and the answer ends with the links a listing carries.
-    def _op(name):
-        return {
-            "operation": name,
-            "restrictions": {
-                "user": {"results": users, "start": 0, "limit": 200, "size": len(users)},
-                "group": {"results": [], "start": 0, "limit": 200, "size": 0},
-            },
-            "_expandable": {"content": f"/rest/api/content/{content_id}"},
-            "_links": {"self": f"{path}/{name}"},
-        }
-
-    return {
-        "read": _op("read"),
-        "update": _op("update"),
-        "_links": {"self": path, "base": f"{site}/wiki", "context": "/wiki"},
+    content = f"/rest/api/content/{content_id}"
+    lists = {
+        "user": {"results": users, "start": 0, "limit": 200, "size": len(users)},
+        "group": {"results": [], "start": 0, "limit": 200, "size": 0},
     }
+    named = _restriction_expansions(request)
+
+    # Real's members in real's order (Confluence Cloud, 2026-10-09, 2026-10-14 and 2026-10-17):
+    # each operation links to itself under this path, and the answer ends with the links a listing
+    # carries. With no `expand`, both operations come with both lists. Once `expand` names
+    # something, an operation it does not name is listed under the answer's `_expandable`, read
+    # ahead of update whatever order `expand` names them in. A named operation comes with its
+    # `restrictions` only when `expand` names them, and then with the lists it names, user ahead of
+    # group, and the others under the `restrictions` object's own `_expandable`.
+    def _op(name):
+        op = {"operation": name}
+        paths = None if named is None else named[name]
+        if paths is None or any(p[:1] == ["restrictions"] for p in paths):
+            kinds = [
+                k
+                for k in lists
+                if paths is None or any(p[:2] == ["restrictions", k] for p in paths)
+            ]
+            op["restrictions"] = {k: lists[k] for k in kinds}
+            if unnamed := [k for k in lists if k not in kinds]:
+                op["restrictions"]["_expandable"] = dict.fromkeys(unnamed, "")
+            op["_expandable"] = {"content": content}
+        else:
+            op["_expandable"] = {"restrictions": "", "content": content}
+        op["_links"] = {"self": f"{path}/{name}"}
+        return op
+
+    answer = {name: _op(name) for name in _RESTRICTION_OPERATIONS if named is None or name in named}
+    if unnamed := [name for name in _RESTRICTION_OPERATIONS if name not in answer]:
+        answer["_expandable"] = dict.fromkeys(unnamed, "")
+    answer["_links"] = {"self": path, "base": f"{site}/wiki", "context": "/wiki"}
+    return answer
+
+
+#: The operations `restriction/byOperation` answers, in the order real lists them.
+_RESTRICTION_OPERATIONS = ("read", "update")
+
+
+def _restriction_expansions(request: Request) -> dict[str, list[list[str]]] | None:
+    """What `expand` names under each operation of `restriction/byOperation`: for each operation
+    it names, the dotted segments after the operation's name, one list per item; None when no
+    `expand` value holds an item, which real answers as it answers no `expand`.
+
+    Measured on Confluence Cloud, 2026-10-17: real joins repeated `expand` parameters, splits each
+    value at `,` and each item at `.`, skips empty items (`read,`, `,read`, `read,,update`), and
+    compares each segment as sent. `READ`, ` read`, `read ` and `.read` name no operation;
+    `read.restrictions.USER`, `read..restrictions` and `read.Restrictions.user` name no list; a
+    segment past the list (`read.restrictions.user.bogus`) is ignored. `expand=` answers as no
+    `expand` does, and `expand=%20` names nothing. `read.content` expands the page into the
+    operation, which is not modelled here: it answers as `read` does."""
+    items = [i for value in request.query_params.getlist("expand") for i in value.split(",") if i]
+    if not items:
+        return None
+    named: dict[str, list[list[str]]] = {}
+    for item in items:
+        operation, *rest = item.split(".")
+        if operation in _RESTRICTION_OPERATIONS:
+            named.setdefault(operation, []).append(rest)
+    return named
 
 
 def _conf_user(email: str, site: str) -> dict:

@@ -3513,17 +3513,11 @@ def _echoed_path(request: Request) -> str:
     """The path a refusal names, which is not always the one that was routed.
 
     Real collapses an interior run of slashes in what it echoes and keeps a trailing one, where
-    routing ignores both (``backlot.main.normalise_the_slashes_in_an_atlassian_path``, which
-    stashes the collapsed spelling on the scope for this). Measured 2026-10-10 on Jira's 415,
-    conversion 400 and 405, each of which keeps the trailing slash in `instance`.
+    routing ignores both, and keeps some escapes as sent, where routing decodes every one
+    (``errors.atlassian.echoed_spelling``). Measured 2026-10-10 on Jira's 415, conversion 400 and
+    405, each of which keeps the trailing slash in `instance`.
     """
     return request.scope.get("atlassian_echo_path", request.url.path)
-
-
-def _decoded_echo_path(request: Request) -> str:
-    """:func:`_echoed_path` with every escape decoded, which is what the Confluence login redirect
-    carries in `dest-url`: what real puts there for an escaped path is unmeasured."""
-    return request.scope.get("atlassian_decoded_echo_path", request.url.path)
 
 
 def _wants_json(request: Request) -> bool:
@@ -3563,8 +3557,8 @@ def _confluence_not_found(request: Request) -> Response:
         # blank member and `;foo`, with a credential and without one, and 2026-10-16 with U+00A0
         return Response(b"", status_code=500)
     url = f"{_site(request)}{vendor_path}"
-    # the query as it arrived: `request.url` re-reads the decoded path, so an escaped `?` in the
-    # path would come back as a query the client never sent
+    # the query as it arrived, for the reason `normalise_the_slashes_in_an_atlassian_path` reads
+    # the path from the scope
     if query := request.scope.get("query_string", b"").decode("latin-1"):
         url = f"{url}?{query}"
     media_type, body = errors_atlassian.jaxrs_not_found(url, as_json=_wants_json(request))
@@ -3725,10 +3719,12 @@ async def unmatched_path(request: Request, rest: str) -> Response:
             and not vendor_path.startswith("/wiki/rest")
         ):
             # the web app, not an API: a caller with no credential is sent to log in (`/wiki/nope`,
-            # measured 2026-09-30; with a credential it is the page below)
+            # measured 2026-09-30; with a credential it is the page below), `dest-url` quoting the
+            # path as `null for uri:` spells it and the query as sent (`/wiki/nope%3Fx?a=1` gives
+            # `%2Fwiki%2Fnope%253Fx%3Fa%3D1`, 2026-10-17)
+            query = request.scope.get("query_string", b"").decode("latin-1")
             asked = quote(
-                f"{_vendor_path(_decoded_echo_path(request))}{'?' + request.url.query if request.url.query else ''}",
-                safe="",
+                f"{_vendor_path(_echoed_path(request))}{'?' + query if query else ''}", safe=""
             )
             return Response(
                 status_code=302,

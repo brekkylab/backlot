@@ -96,31 +96,35 @@ CONFLUENCE_NOT_PERMITTED_BODY = json.dumps(
 ).encode()
 
 
-#: The characters besides ASCII letters and digits whose escape real decodes in the path a refusal
-#: echoes. Measured on Jira Cloud, 2026-10-10, with `GET /rest/api/3/nope%XXx` for every byte from
-#: `%01` to `%7F`: these come back decoded, and every other escape comes back as sent with its hex
-#: in upper case (`%3c` as `%3C`, `%c3%a9` as `%C3%A9`), decoded one layer only (`%2541` stays
-#: `%2541`). The conversion 400, the 405 and Confluence's `null for uri:` 404 echo the same way.
-_ECHO_DECODES = "!$&'()*+,-./:=@_~"
+#: The characters besides ASCII letters and digits whose escape each product decodes in the path a
+#: refusal echoes, read off `GET …/nope%XXx` for every byte from `%01` to `%7F`. Jira's 404
+#: (2026-10-10 and 2026-10-17) decodes its set and echoes any other escape with its hex in upper
+#: case (`%3c` as `%3C`, `%c3%a9` as `%C3%A9`); its conversion 400 and 405 gave the same answer for
+#: the eighteen escapes tried on them (2026-10-17). Confluence's `null for uri:` 404 (2026-10-17)
+#: decodes RFC 3986's unreserved characters alone and echoes any other escape as it arrived (`%21`
+#: as `%21`, `%3c` as `%3c`). Both decode one layer only: `%2541` stays `%2541`. `%3B` and `%5C`,
+#: and Confluence's `%2F` and Jira's `%5B` and `%5D`, get another answer than an echo.
+_JIRA_ECHO_DECODES = "!$&'()*+,-./:=@_~"
+_CONFLUENCE_ECHO_DECODES = "-._~"
 _ESCAPE = re.compile(r"%([0-9A-Fa-f]{2})")
 
 
-def echoed_spelling(raw_path: str) -> str:
-    """The path as Jira and Confluence echo it in a refusal, from the path as it arrived.
+def echoed_spelling(raw_path: str, *, confluence: bool) -> str:
+    """The path as Jira or Confluence echoes it in a refusal, from the path as it arrived.
 
-    A run of slashes is one, and a trailing slash is kept (see
-    ``backlot.main.normalise_the_slashes_in_an_atlassian_path``). Each escape is decoded or kept
-    as :data:`_ECHO_DECODES` says, in one pass, so an escape a decoded `%25` would form is not read
-    again.
+    Each escape is decoded or kept as the product's set above says, in one pass, so an escape a
+    decoded `%25` would form is not read again. Then a run of slashes is one, a decoded `%2F` among
+    them (Jira's `nope%2F%2Fx` comes back `nope/x`, 2026-10-17), and a trailing slash is kept.
     """
+    decodes = _CONFLUENCE_ECHO_DECODES if confluence else _JIRA_ECHO_DECODES
 
     def one(match: re.Match[str]) -> str:
         char = chr(int(match.group(1), 16))
-        if char.isascii() and (char.isalnum() or char in _ECHO_DECODES):
+        if char.isascii() and (char.isalnum() or char in decodes):
             return char
-        return "%" + match.group(1).upper()
+        return match.group(0) if confluence else match.group(0).upper()
 
-    return _ESCAPE.sub(one, re.sub("/{2,}", "/", raw_path))
+    return re.sub("/{2,}", "/", _ESCAPE.sub(one, raw_path))
 
 
 def owns(path: str) -> bool:

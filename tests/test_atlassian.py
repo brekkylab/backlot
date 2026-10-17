@@ -2005,25 +2005,29 @@ def test_jira_role_list_links_the_role_its_read_answers(client, admin_h):
 # the path a refusal echoes, as `_echoed_path` gives it
 @pytest.mark.parametrize("slash", ["", "/"])
 @pytest.mark.parametrize(
-    "param,value",
+    "param,value,key",
     [
-        ("maxResults", "abc"),
-        ("startAt", "abc"),
-        ("maxResults", "1.5"),
+        ("maxResults", "abc", "PAY-7"),
+        ("startAt", "abc", "PAY-7"),
+        ("maxResults", "1.5", "PAY-7"),
         # where Python's own int() reads 10
-        ("maxResults", "1_0"),
+        ("maxResults", "1_0", "PAY-7"),
         # the width is per PARAMETER: `maxResults` is a Java int, `startAt` a Java long, and each
         # is refused just past its own boundary and answered 200 just inside it (below)
-        ("maxResults", "2147483648"),
-        ("maxResults", "-2147483649"),
-        ("maxResults", "9223372036854775807"),
-        ("startAt", "9223372036854775808"),
-        ("startAt", "-9223372036854775809"),
+        ("maxResults", "2147483648", "PAY-7"),
+        ("maxResults", "-2147483649", "PAY-7"),
+        ("maxResults", "9223372036854775807", "PAY-7"),
+        ("startAt", "9223372036854775808", "PAY-7"),
+        ("startAt", "-9223372036854775809", "PAY-7"),
+        # escapes in the key ``errors.atlassian.echoed_spelling`` keeps as sent
+        ("maxResults", "abc", "A%20B"),
+        ("maxResults", "abc", "A%3FB"),
+        ("maxResults", "abc", "A%23B"),
     ],
 )
-def test_jira_refuses_an_integer_parameter_it_cannot_convert(paged, param, value, slash):
+def test_jira_refuses_an_integer_parameter_it_cannot_convert(paged, param, value, key, slash):
     client, h = paged
-    r = client.get(f"/atlassian/rest/api/3/issue/PAY-7/comment{slash}?{param}={value}", headers=h)
+    r = client.get(f"/atlassian/rest/api/3/issue/{key}/comment{slash}?{param}={value}", headers=h)
     assert r.status_code == 400, r.text
     assert r.headers["content-type"] == "application/problem+json;charset=UTF-8"
     assert r.json() == {
@@ -2031,31 +2035,7 @@ def test_jira_refuses_an_integer_parameter_it_cannot_convert(paged, param, value
         "title": "Bad Request",
         "status": 400,
         "detail": f"Failed to convert '{param}' with value: '{value}'",
-        "instance": f"/rest/api/3/issue/PAY-7/comment{slash}",
-    }
-
-
-@pytest.mark.parametrize(
-    "key,echoed",
-    [
-        # escapes ``errors.atlassian.echoed_spelling`` keeps as sent, hex in upper case
-        ("A%20B", "A%20B"),
-        ("A%3FB", "A%3FB"),
-        ("A%23B", "A%23B"),
-        ("A%3cB", "A%3CB"),
-    ],
-)
-def test_jira_conversion_400_echoes_the_path_escapes_as_real_does(paged, key, echoed):
-    client, h = paged
-    r = client.get(f"/atlassian/rest/api/3/issue/{key}/comment?maxResults=abc", headers=h)
-    assert r.status_code == 400, r.text
-    assert r.headers["content-type"] == "application/problem+json;charset=UTF-8"
-    assert r.json() == {
-        "type": "about:blank",
-        "title": "Bad Request",
-        "status": 400,
-        "detail": "Failed to convert 'maxResults' with value: 'abc'",
-        "instance": f"/rest/api/3/issue/{echoed}/comment",
+        "instance": f"/rest/api/3/issue/{key}/comment{slash}",
     }
 
 
@@ -4015,6 +3995,8 @@ def test_confluence_refuses_a_wrong_method_with_springs_errors_list_and_no_allow
         ("post", "/rest/api/3/project/search", "GET, PUT, DELETE"),
         # an escape in the path, echoed as ``errors.atlassian.echoed_spelling`` spells it
         ("post", "/rest/api/3/issue/A%20B", "GET, PUT, DELETE"),
+        ("post", "/rest/api/3/issue/A%23B", "GET, PUT, DELETE"),
+        ("post", "/rest/api/3/issue/A%3FB", "GET, PUT, DELETE"),
     ],
 )
 def test_jira_refuses_a_wrong_method_as_rfc_7807_naming_the_methods_it_takes(
@@ -4030,22 +4012,6 @@ def test_jira_refuses_a_wrong_method_as_rfc_7807_naming_the_methods_it_takes(
         "status": 405,
         "detail": f"Method '{method.upper()}' is not supported.",
         "instance": f"{path}{slash}",
-    }
-
-
-def test_jira_echoes_an_escape_that_would_end_the_path_in_its_405(client, admin_h):
-    """`%23` is kept as sent in the 405's `instance` (``errors.atlassian.echoed_spelling``). No
-    slash variant: a decoded `#` hides a trailing slash from the slash rewrite, which changes the
-    status."""
-    r = client.post("/atlassian/rest/api/3/issue/A%23B", headers=admin_h)
-    assert r.status_code == 405, r.text
-    assert r.headers["allow"] == "GET, PUT, DELETE"
-    assert r.json() == {
-        "type": "about:blank",
-        "title": "Method Not Allowed",
-        "status": 405,
-        "detail": "Method 'POST' is not supported.",
-        "instance": "/rest/api/3/issue/A%23B",
     }
 
 
@@ -4528,11 +4494,14 @@ _NO_ENDPOINT_PATHS = [
         ("GET", "/atlassian/rest/api/3/nope%23x", "/rest/api/3/nope%23x"),
         ("GET", "/atlassian/rest/api/3/nope%09x", "/rest/api/3/nope%09x"),
         ("GET", "/atlassian/rest/api/3/nope%0Dx", "/rest/api/3/nope%0Dx"),
-        # and one it decodes
+        # and ones it decodes
         ("GET", "/atlassian/rest/api/3/nope%2dx", "/rest/api/3/nope-x"),
         ("GET", "/atlassian/rest/api/3/nope%7ex", "/rest/api/3/nope~x"),
-        # an escape beside the slash rules above
+        ("GET", "/atlassian/rest/api/3/nope%21x", "/rest/api/3/nope!x"),
+        ("GET", "/atlassian/rest/api/3/nope%41x", "/rest/api/3/nopeAx"),
+        # an escape beside the slash rules above, and a decoded `%2F` among them
         ("GET", "/atlassian/rest/api/3//nope%20x/", "/rest/api/3/nope%20x/"),
+        ("GET", "/atlassian/rest/api/3/nope%2F%2Fx", "/rest/api/3/nope/x"),
     ],
 )
 def test_jira_answers_a_path_it_mounts_nothing_at_as_rfc_7807(
@@ -4870,8 +4839,11 @@ def test_jira_unserved_sorts_every_operation_no_route_serves(monkeypatch):
                 ("*/*;q=0.5;Q=2;q=0.5", "xml"),
             )
         ),
-        # the escapes ``errors.atlassian.echoed_spelling`` keeps and decodes, in `null for uri:`
+        # the escapes ``errors.atlassian.echoed_spelling`` keeps and decodes, in `null for uri:`,
+        # by Confluence's own set
         ("/atlassian/wiki/rest/api/nope%20x", "application/json", "json", "nope%20x"),
+        ("/atlassian/wiki/rest/api/nope%21x", "application/json", "json", "nope%21x"),
+        ("/atlassian/wiki/rest/api/nope%3cx", "application/json", "json", "nope%3cx"),
         ("/atlassian/wiki/rest/api/nope%3Fx", "application/json", "json", "nope%3Fx"),
         ("/atlassian/wiki/rest/api/nope%23x", "application/json", "json", "nope%23x"),
         ("/atlassian/wiki/rest/api/nope%2Dx", "application/json", "json", "nope-x"),
@@ -5355,14 +5327,21 @@ _JIRA_PAGE = errors_atlassian.JIRA_SITE_HTML_MEDIA_TYPE
             "{site}/login?application=confluence&dest-url=%2Fwiki%2Fnope",
             None,
         ),
-        # an escape in the path reaches `dest-url` decoded, then quoted once
-        # (``backlot.routers.atlassian._decoded_echo_path``)
+        # an escape in the path, and an escaped `?` beside a query (``unmatched_path``)
         (
             "/atlassian/wiki/nope%20x",
             True,
             302,
             None,
-            "{site}/login?application=confluence&dest-url=%2Fwiki%2Fnope%20x",
+            "{site}/login?application=confluence&dest-url=%2Fwiki%2Fnope%2520x",
+            None,
+        ),
+        (
+            "/atlassian/wiki/nope%3Fx?a=1",
+            True,
+            302,
+            None,
+            "{site}/login?application=confluence&dest-url=%2Fwiki%2Fnope%253Fx%3Fa%3D1",
             None,
         ),
         # Jira's own not-found page, its charset in lower case

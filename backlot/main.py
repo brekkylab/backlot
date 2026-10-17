@@ -533,15 +533,17 @@ async def normalise_the_slashes_in_an_atlassian_path(request: Request, call_next
     (`/nopesuchroute/` comes back `/nopesuchroute/`). Nor are its escapes: real echoes the path as
     it arrived, decoding only some of them (``errors.atlassian.echoed_spelling``), where routing
     reads the decoded path. That spelling is built from `raw_path` before the rewrite below
-    replaces it, and stashed on the scope for ``backlot.routers.atlassian._echoed_path`` to read;
-    the decoded spelling is stashed beside it for ``_decoded_echo_path``.
+    replaces it, and stashed on the scope for ``backlot.routers.atlassian._echoed_path`` to read.
 
     Ahead of routing, because the answer for a path no route matches is a route of its own
     (`atlassian.unmatched_router`), which would otherwise claim every slashed spelling of a served
     one. GitHub's trailing slash is the opposite rule and has its own middleware above -- the two
     vendors are measured separately.
     """
-    path = request.url.path
+    # the decoded path as the server parsed it: `request.url` parses it again, so an escaped `?` or
+    # `#` would end it there and hide a trailing slash after it (`POST /rest/api/3/issue/A%23B/` is
+    # real's 405, 2026-10-17)
+    path = request.scope["path"]
     if path.startswith(f"{errors.atlassian.PREFIX}/"):
         collapsed = re.sub("/{2,}", "/", path)
         routed = collapsed.rstrip("/")
@@ -552,9 +554,8 @@ async def normalise_the_slashes_in_an_atlassian_path(request: Request, call_next
             routed = collapsed
         raw = request.scope.get("raw_path") or path.encode()
         request.scope["atlassian_echo_path"] = errors.atlassian.echoed_spelling(
-            raw.decode("latin-1")
+            raw.decode("latin-1"), confluence=errors.atlassian.is_confluence(path)
         )
-        request.scope["atlassian_decoded_echo_path"] = collapsed
         if routed != path:
             request.scope["path"] = routed
             request.scope["raw_path"] = routed.encode()

@@ -3520,6 +3520,12 @@ def _echoed_path(request: Request) -> str:
     return request.scope.get("atlassian_echo_path", request.url.path)
 
 
+def _decoded_echo_path(request: Request) -> str:
+    """:func:`_echoed_path` with every escape decoded, which is what the Confluence login redirect
+    carries in `dest-url`: what real puts there for an escaped path is unmeasured."""
+    return request.scope.get("atlassian_decoded_echo_path", request.url.path)
+
+
 def _wants_json(request: Request) -> bool:
     """Whether Confluence's JAX-RS 404 is JSON (``errors.atlassian.jaxrs_picks_json``)."""
     return errors_atlassian.jaxrs_picks_json(request.headers.get("accept"))
@@ -3557,8 +3563,10 @@ def _confluence_not_found(request: Request) -> Response:
         # blank member and `;foo`, with a credential and without one, and 2026-10-16 with U+00A0
         return Response(b"", status_code=500)
     url = f"{_site(request)}{vendor_path}"
-    if request.url.query:
-        url = f"{url}?{request.url.query}"
+    # the query as it arrived: `request.url` re-reads the decoded path, so an escaped `?` in the
+    # path would come back as a query the client never sent
+    if query := request.scope.get("query_string", b"").decode("latin-1"):
+        url = f"{url}?{query}"
     media_type, body = errors_atlassian.jaxrs_not_found(url, as_json=_wants_json(request))
     # JAX-RS's 404 says `no-transform` in both shapes and the page says nothing, measured 2026-09-30
     # with a credential and without one
@@ -3719,7 +3727,7 @@ async def unmatched_path(request: Request, rest: str) -> Response:
             # the web app, not an API: a caller with no credential is sent to log in (`/wiki/nope`,
             # measured 2026-09-30; with a credential it is the page below)
             asked = quote(
-                f"{_vendor_path(_echoed_path(request))}{'?' + request.url.query if request.url.query else ''}",
+                f"{_vendor_path(_decoded_echo_path(request))}{'?' + request.url.query if request.url.query else ''}",
                 safe="",
             )
             return Response(

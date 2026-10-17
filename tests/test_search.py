@@ -252,6 +252,23 @@ def test_gmail_q_parse_and_match():
     assert free == "quarterly" and ops["in"] == ["anywhere"]
 
 
+def test_gmail_operators_read_across_whitespace():
+    """subject:, label:, in:, after: and newer: read the word after a space as their value,
+    matching real Gmail. has:, newer_than: and older_than: do not (#778)."""
+    from backlot.routers.google import _parse_gmail_q
+
+    free, ops = _parse_gmail_q("subject: rollout")
+    assert free == "" and ops["subject"] == ["rollout"]
+    free, ops = _parse_gmail_q("label: inbox after: 2026/10/01")
+    assert free == "" and ops["label"] == ["inbox"] and ops["after"] == ["2026/10/01"]
+    free, ops = _parse_gmail_q("in: sent newer: 2026/10/01")
+    assert free == "" and ops["in"] == ["sent"] and ops["after"] == ["2026/10/01"]
+    # These do not read across the space
+    free, ops = _parse_gmail_q("has: attachment")
+    assert "attachment" in free and "has" not in ops
+    free, ops = _parse_gmail_q("newer_than: 7d")
+    assert "7d" in free and "newer_than" not in ops
+
 def test_gmail_folder_query_sees_the_label_a_message_is_served_under(db):
     """A message the corpus gives no labels is served `labelIds: ["INBOX"]`, so `in:inbox` and
     `label:inbox` have to find it — reading only the STATED labels answered "no such mail" about

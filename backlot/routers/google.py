@@ -722,6 +722,13 @@ _GMAIL_DATE_KEYS = {"after", "before"}
 _GMAIL_SECONDS_MAX = 253402300800
 _GMAIL_DATE = re.compile(r"([0-9]+)([/-])([0-9]+)\2([0-9]+)")
 _GMAIL_NEGATED_DATE = re.compile(r"(?<!\S)-(after|before|newer|older): *(\S+)", re.IGNORECASE)
+# A `-` in front of an address operator or in front of its value negates it. Measured on a
+# Workspace mailbox of 603 messages on 2026-10-17, comparing `messages.list` id sets: `-from:<word>`
+# and `from:-<word>` each answered the messages `from:<word>` does not, and so did `to:` and `cc:`,
+# for three words on each operator and for 15 hyphenated local parts sent as `from:-<local part>`.
+# `bcc:` was not measured. A negated value is stored under its key with a `-` in front.
+_GMAIL_NEGATABLE = {"from", "to", "cc"}
+_GMAIL_NEGATED_ADDRESS = re.compile(r"(?<!\S)-(from|to|cc):(?=\S)", re.IGNORECASE)
 _GMAIL_NEGATION = {"after": "before", "before": "after", "newer": "older", "older": "newer"}
 
 
@@ -772,6 +779,9 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
                 read = _gmail_q_date(value)
                 ops.setdefault(_GMAIL_NOTHING if read is None else key, []).append(read or value)
                 return " "
+            stored = key
+            if key in _GMAIL_NEGATABLE and value.startswith("-") and value != "-":
+                value, stored = value[1:], f"-{key}"
             if key in _GMAIL_PLUS_ENDS and not value.startswith('"'):
                 value = value.lstrip("+")
                 if re.search(r"[^@]@", value):
@@ -782,13 +792,14 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
                         ops.setdefault(_GMAIL_NOTHING, []).append(value)
                         return " "
                     if plus:
-                        ops.setdefault(key, []).append(value)
+                        ops.setdefault(stored, []).append(value)
                         return f" +{term} "
-            ops.setdefault(key, []).append(value.strip('"'))
+            ops.setdefault(stored, []).append(value.strip('"'))
             return " "
         return m.group(0)
 
     q = _GMAIL_NEGATED_DATE.sub(_gmail_negated_date, q)
+    q = _GMAIL_NEGATED_ADDRESS.sub(lambda m: f"{m.group(1)}:-", q)
     free = re.sub(r"\s+", " ", _GMAIL_OP.sub(_take, q)).strip()
     # A `+` standing alone is no search term, and a word ending in one matches nothing (the
     # measurement at `_GMAIL_PLUS_ENDS`).
@@ -897,6 +908,15 @@ def _gmail_op_match(row, ops: dict) -> bool:
         for v in ops.get(key, []):
             if not _gmail_address_match(row[key], v):
                 return False
+    for v in ops.get("-from", []):
+        if _gmail_address_match(row["author_email"], v):
+            return False
+    for v in ops.get("-to", []):
+        if any(_gmail_address_match(row[k], v) for k in ("to_addr", "cc", "bcc")):
+            return False
+    for v in ops.get("-cc", []):
+        if _gmail_address_match(row["cc"], v):
+            return False
     for v in ops.get("subject", []):
         if v.lower() not in (row["title"] or "").lower():
             return False
@@ -929,7 +949,7 @@ def _gmail_query(conn, mailbox, ids, q: str, caller_email: str | None = None) ->
     present; otherwise the mailbox listing). The caller paginates the returned rows."""
     free, ops = _parse_gmail_q(q)
     if caller_email:
-        for key in ("from", "to", "cc", "bcc"):
+        for key in ("from", "to", "cc", "bcc", "-from", "-to", "-cc"):
             if key in ops:
                 ops[key] = [caller_email if v.lower() == "me" else v for v in ops[key]]
     ops = _resolve_relative_dates(ops)  # newer_than:/older_than: -> absolute after:/before: bounds

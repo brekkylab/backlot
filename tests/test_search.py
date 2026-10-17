@@ -481,6 +481,50 @@ def test_gmail_after_before_over_the_wire(tmp_path):
         assert count("before:99999999999999999999") == 0
 
 
+def test_gmail_address_negation_parse():
+    """A `-` in front of `from:`, `to:` or `cc:`, or in front of the value, negates it; a hyphen
+    inside a value, and `bcc:`, which was not measured, are read as before."""
+    from backlot.routers.google import _parse_gmail_q
+
+    for q in ("-from:bob", "from:-bob", "From:-bob", "-FROM:bob"):
+        assert _parse_gmail_q(q) == ("", {"-from": ["bob"]}), q
+    assert _parse_gmail_q("-to:ava") == _parse_gmail_q("to:-ava") == ("", {"-to": ["ava"]})
+    assert _parse_gmail_q("-cc:lena") == _parse_gmail_q("cc:-lena") == ("", {"-cc": ["lena"]})
+    assert _parse_gmail_q("-cc:lena+update") == ("+update", {"-cc": ["lena"]})
+    assert _parse_gmail_q("from:mary-jane") == ("", {"from": ["mary-jane"]})
+    assert _parse_gmail_q("bcc:-lena") == ("", {"bcc": ["-lena"]})
+
+
+def test_gmail_address_negation_over_the_wire(tmp_path):
+    """The issue's reproduction: `-from:bob` and `from:-bob` answer the message not from bob."""
+    from tests._helpers import client_for, tiny_corpus
+
+    base = {"source_type": "gmail", "mailbox": "ava", "to": "ava@acme.com"}
+    records = [
+        {**base, "doc_id": "plan", "title": "Rollout plan", "content": "attached",
+         "author_email": "bob@acme.com", "readers": ["ava@acme.com"],
+         "created": "2026-03-01T09:00:00Z"},
+        {**base, "doc_id": "lunch", "title": "Lunch", "content": "Friday?",
+         "author_email": "mia@acme.com", "to": "team@acme.com", "cc": "bob@acme.com",
+         "readers": ["ava@acme.com"],
+         "created": "2026-03-02T09:00:00Z"},
+    ]  # fmt: skip
+    settings = tiny_corpus(tmp_path, records)
+    with client_for(settings, reload=True) as c:
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+
+        def ids(q):
+            r = c.get("/gmail/v1/users/ava@acme.com/messages", headers=h, params={"q": q})
+            return {m["id"] for m in r.json().get("messages", [])}
+
+        every = ids("")
+        for op, value in (("from", "bob"), ("to", "ava"), ("cc", "bob")):
+            matched = ids(f"{op}:{value}")
+            assert matched and matched != every, op
+            assert ids(f"-{op}:{value}") == ids(f"{op}:-{value}") == every - matched, op
+        assert ids("-from:bob from:mia") == ids("from:mia")
+
+
 def test_github_search_q_parse():
     """One parser, a qualifier vocabulary per endpoint: a key the endpoint does not honor stays
     free text, so the FTS still gets a chance at it."""

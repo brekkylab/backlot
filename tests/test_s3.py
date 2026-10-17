@@ -3601,6 +3601,50 @@ def test_s3_what_a_parameter_is_refused_for_comes_before_the_credential(live_ser
     assert (head.status_code, head.content) == ((405, b"") if "versions" in path else (400, b""))
 
 
+# A write at a key with a lone `partNumber`: a key of a bucket that exists and a key of one nobody
+# owns, and the `annotation` pair a valued `annotation` leaves out of the selectors
+# (``object_method_refusal``).
+_PART_WITHOUT_UPLOAD_PATHS = [
+    "/s3/eng-artifacts/docs/runbook.md?partNumber=1",
+    "/s3/no-such-bucket/readme.txt?partNumber=1",
+    "/s3/eng-artifacts/docs/runbook.md?annotation=v&annotationName=x&partNumber=1",
+]
+
+
+@pytest.mark.parametrize("path", _PART_WITHOUT_UPLOAD_PATHS)
+@pytest.mark.parametrize("method", ["PUT", "POST", "DELETE", "PATCH"])
+def test_s3_a_write_at_a_key_refuses_a_partnumber_without_an_uploadid(live_server, method, path):
+    """Real answered each of these with 400 ``InvalidArgument`` "This operation does not accept
+    partNumber without uploadId", naming `partNumber` in both `ArgumentName` and `ArgumentValue`
+    (``object_method_refusal`` records the measurement), at a key of a bucket and at a key of a
+    bucket nobody owns, and — the refusal being ahead of the credential and the bucket — the same
+    without a signature and over a spoilt one, on `PUT`, `POST`, `DELETE` and `PATCH` alike. A
+    `partNumber` beside `uploadId` is UploadPart, and a GET's is GetObject's part."""
+    import httpx
+
+    base_url, settings = live_server
+    signed = _signed(base_url, path, settings.admin_token, method=method)
+    assert signed.status_code == 400, path
+    assert "<Code>InvalidArgument</Code>" in signed.text, path
+    assert (
+        "<Message>This operation does not accept partNumber without uploadId</Message>"
+        in signed.text
+    ), path
+    assert (
+        "<ArgumentName>partNumber</ArgumentName><ArgumentValue>partNumber</ArgumentValue>"
+        in signed.text
+    ), path
+    tampered_url, tampered = _sign_get(
+        base_url, path, settings.admin_token, tamper=True, method=method
+    )
+    for other in (
+        httpx.request(method, f"{base_url}{path}"),
+        httpx.request(method, tampered_url, headers=tampered),
+    ):
+        assert other.status_code == signed.status_code, path
+        assert _without_request_ids(other.text) == _without_request_ids(signed.text), path
+
+
 @pytest.mark.parametrize(
     "path",
     [

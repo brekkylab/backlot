@@ -9703,3 +9703,53 @@ def test_gmail_empty_address_tokens_preserve_quoted_subjects(tmp_path, surface, 
     assert {item["id"] for item in r.json().get(surface, [])} == {
         served_id("gmail", doc_id) for doc_id in expected
     }
+
+
+@pytest.mark.parametrize("surface", ["messages", "threads"])
+@pytest.mark.parametrize(
+    "query, expected",
+    [
+        ("subject:", ["plan", "lunch", "after"]),
+        ("subject: ", ["plan", "lunch", "after"]),
+        ("label:", ["plan", "lunch", "after"]),
+        ("in:", ["plan", "lunch", "after"]),
+        ("after:", ["after"]),
+    ],
+)
+def test_gmail_an_empty_operator_is_dropped_or_the_term_it_spells(
+    tmp_path, surface, query, expected
+):
+    """A `subject:`, `label:` or `in:` with no value is no search term at all, as an empty address
+    operator is no constraint, where an empty `after:` or `before:` is the word it spells
+    (``_GMAIL_DROPPED_WHEN_EMPTY`` and ``_GMAIL_KEY_ALIASES`` record the measurements)."""
+    settings = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "gmail",
+                "doc_id": doc_id,
+                "mailbox": "ava",
+                "title": title,
+                "content": content,
+                "author_email": "ava@acme.com",
+                "readers": ["ava@acme.com"],
+                "created": "2026-03-01T09:00:00Z",
+            }
+            for doc_id, title, content in [
+                ("plan", "Rollout plan", "attached"),
+                ("lunch", "Lunch", "Friday?"),
+                ("after", "Later", "see after the meeting"),
+            ]
+        ],
+    )
+    tokens = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
+    with client_for(settings, reload=True) as c:
+        r = c.get(
+            f"/gmail/v1/users/me/{surface}",
+            headers={"Authorization": f"Bearer {tok(tokens, 'ava@acme.com')}"},
+            params={"q": query},
+        )
+    assert r.status_code == 200
+    assert {item["id"] for item in r.json().get(surface, [])} == {
+        served_id("gmail", doc_id) for doc_id in expected
+    }

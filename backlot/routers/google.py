@@ -672,6 +672,13 @@ _GMAIL_KEY_ALIASES = {"newer": "after", "older": "before"}
 # nothing where `has:attachment` and `newer_than:7d` answered 160 and 36 messages, so `_GMAIL_OP`
 # reads across whitespace for these four alone.
 _GMAIL_ADDRESS_KEYS = {"from", "to", "cc", "bcc"}
+# The operators whose no value is neither a constraint nor a search term: real answered every
+# message of the mailbox for a bare `subject:`, `label:` or `in:`, with and without the space after
+# the colon, as it answers a bare address operator. Measured on a Workspace mailbox on 2026-10-17,
+# comparing `messages.list` id sets over a mailbox of 603 messages: 603 of 603, the ids of no `q`,
+# for each of the three. A bare `after:`, `before:`, `newer:` or `older:` is instead the word it
+# spells, which is why these three are named rather than read as "any operator with no value".
+_GMAIL_DROPPED_WHEN_EMPTY = {"subject", "label", "in"}
 # The operators whose value a `+` ends. Measured on a Workspace mailbox on 2026-10-15:
 # `cc:<local>+<word>`, `from:<local>+update` and `to:<local>+update` answered the ids of the
 # operator with `+<word>` sent as a search term of its own; `cc:<local>+`, `cc:<local>++` and
@@ -765,6 +772,8 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
             key = _GMAIL_KEY_ALIASES.get(key, key)
             value = m.group(2)
             if not value and key not in _GMAIL_ADDRESS_KEYS:
+                if key in _GMAIL_DROPPED_WHEN_EMPTY:
+                    return " "
                 return m.group(0)
             if key in _GMAIL_DATE_KEYS:
                 if value == "-":

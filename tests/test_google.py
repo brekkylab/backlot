@@ -9717,14 +9717,17 @@ def test_gmail_empty_address_tokens_preserve_quoted_subjects(tmp_path, surface, 
         ("from:noreplyx", set()),
         ("from:no-reply@bank.example", {"hyphen"}),
         ("from:no-reply@shop.example", set()),
-        ("to:no-reply", {"hyphen"}),
+        ("to:no-reply", {"joined", "hyphen"}),
         ("to:noreply", {"joined"}),
+        ("cc:no-reply", {"joined", "hyphen"}),
+        ("bcc:no-reply", {"joined", "hyphen"}),
+        ("from:no--reply", {"hyphen"}),
+        ("from:jt-snowball.com", set()),
+        ("from:@jt-snowball", {"domain"}),
     ],
 )
-def test_gmail_hyphenated_from_search(tmp_path, surface, query, expected):
-    """The partial `from:` reading recorded in `_gmail_address_match` also finds hyphens joined;
-    the reverse
-    does not hold. Full addresses and recipient searches retain their existing matching."""
+def test_gmail_hyphenated_address_search(tmp_path, surface, query, expected):
+    """Each row is how `_gmail_address_match` reads a hyphenated value."""
     records = [
         {"doc_id": "joined", "author_email": "noreply@shop.example"},
         {"doc_id": "hyphen", "author_email": "no-reply@bank.example"},
@@ -9739,6 +9742,8 @@ def test_gmail_hyphenated_from_search(tmp_path, surface, query, expected):
                 "title": "Notice",
                 "content": "body",
                 "to": r["author_email"],
+                "cc": r["author_email"],
+                "bcc": r["author_email"],
                 "readers": ["ava@acme.com"],
                 "visibility": "public",
                 "created": "2026-03-01T09:00:00Z",

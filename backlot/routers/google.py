@@ -2700,8 +2700,6 @@ async def drive_files_get(file_id: str, request: Request):
         # raw download — real API errors on native Docs-editors types (use export)
         if _native(row) is not None:
             raise gerr.not_downloadable()
-            # fileNotDownloadable a Docs Editors file gets, not served as the folder's metadata.
-            # fileNotDownloadable a Docs Editors file gets, not served as the folder's metadata.
         mime = row["mime_type"] or "application/octet-stream"
         return Response(row["content"].encode("utf-8"), media_type=mime)
     # Same projection as files.list: a file resolved by id and the same file read out of a listing

@@ -2876,8 +2876,14 @@ def _editor_doc(request: Request, file_id: str, *, expect: str):
     # id from a stored file that this caller cannot see.
     row = store.gdrive_by_id(conn, file_id, visible_ids=None if type_before_acl else ids)
     if row is None:
-        # Folders are synthesized rather than stored, so they miss the lookup above. Real Google
-        # calls a folder an invalid argument, not a missing entity, so resolve it before giving up.
+        # Slides must distinguish a hidden presentation from a genuinely missing id.
+        # Keep hidden files of other types on the existing visibility-first path for now.
+        if expect == "presentation":
+            hidden_row = store.gdrive_by_id(conn, file_id, visible_ids=None)
+            if hidden_row is not None and (hidden_row["subtype"] or "document") == expect:
+                raise gerr.permission_denied()
+        # Folders are synthesized rather than stored, so they miss the lookup above.
+        # Real Google calls a folder an invalid argument, not a missing entity.
         if _drive_folder_name_by_id(conn, file_id) is not None:
             raise gerr.invalid_argument(EDITOR_INVALID_ARG)
         raise gerr.not_found_entity()

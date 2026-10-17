@@ -5263,13 +5263,13 @@ def test_editor_apis_reject_a_folder(base, admin_h):
 
 
 def test_editor_apis_distinguish_hidden_type_permission_and_missing(tmp_path):
-    """Sheets and Docs resolve a stored file's type before its visibility (`_editor_doc`). A hidden
-    file of the API's own type is permission-denied, another native type is not-found, an Office
-    file of the API's own family is a failed precondition, and a PDF or an Office file of the other
-    family is an invalid argument. Slides resolves visibility first, so a hidden presentation is
-    not-found there, as an id that does not exist is on Sheets and Docs. The files the scoped token
-    can see are served. At `$.xgafv=1` the 403's entry is ``forbidden`` and the Office 400's
-    ``failedPrecondition``."""
+    """Sheets and Docs resolve a stored file's type before its visibility, while
+    Slides distinguishes a hidden presentation from a genuinely missing id. A
+    hidden file of the API's own type is permission-denied, another native type is
+    not-found, an Office file of the API's own family is a failed precondition,
+    and a PDF or an Office file of the other family is an invalid argument. The
+    files the scoped token can see are served. At `$.xgafv=1` the 403's entry is
+    ``forbidden`` and the Office 400's ``failedPrecondition``."""
     hidden = ("spreadsheet", "document", "presentation", "pdf", "xlsx", "docx")
     records = [
         {
@@ -5330,7 +5330,8 @@ def test_editor_apis_distinguish_hidden_type_permission_and_missing(tmp_path):
         (f"/docs/v1/documents/{xlsx}", 400, invalid),
         (f"/sheets/v4/spreadsheets/{doc}", 404, not_found),
         (f"/docs/v1/documents/{sheet}", 404, not_found),
-        (f"/slides/v1/presentations/{deck}", 404, not_found),
+        (f"/slides/v1/presentations/{deck}", 403, permission),
+        ("/slides/v1/presentations/nosuchfile000", 404, not_found),
         ("/sheets/v4/spreadsheets/nosuchfile000", 404, not_found),
         ("/docs/v1/documents/nosuchfile000", 404, not_found),
     ]

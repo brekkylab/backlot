@@ -298,7 +298,11 @@ def test_jira_project_search_refuses_an_order_by_naming_no_field(
     )
     if refused is None:
         assert r.status_code == 200, r.text
-        assert r.json() == listing.json()
+        # Links carry each request's query; the project listing itself is unchanged.
+        unlinked = ("self", "nextPage")
+        assert {k: v for k, v in r.json().items() if k not in unlinked} == {
+            k: v for k, v in listing.json().items() if k not in unlinked
+        }
         return
     assert r.status_code == 400, r.text
     assert r.json() == {
@@ -353,13 +357,54 @@ def test_jira_project_search_pages(tmp_path, query, start, limit):
         response = client.get(url, params=query, headers=admin_h)
         assert response.status_code == 200, response.text
         page = full[start : start + limit]
-        assert response.json() == {
+        body = response.json()
+        last = start + len(page) >= len(full)
+        assert list(body) == ["self", *([] if last else ["nextPage"]), *_PAGE_MEMBERS]
+        assert {k: body[k] for k in _PAGE_MEMBERS} == {
             "values": page,
             "startAt": start,
             "maxResults": limit,
             "total": len(full),
-            "isLast": start + len(page) >= len(full),
+            "isLast": last,
         }
+        assert body["self"].endswith(f"/project/search?maxResults={limit}&startAt={start}")
+        if not last:
+            assert body["nextPage"].endswith(f"?maxResults={limit}&startAt={start + limit}")
+
+
+_PAGE_MEMBERS = ["maxResults", "startAt", "total", "isLast", "values"]
+
+
+@pytest.mark.parametrize(
+    "query, link",
+    [
+        ("maxResults=1&bogus=a%2Bb", "bogus=a%2Bb&maxResults=1&startAt=0"),
+        ("maxResults=1&bogus=a+b", "bogus=a+b&maxResults=1&startAt=0"),
+        ("maxResults=1&b%6Fgus=x", "b%6Fgus=x&maxResults=1&startAt=0"),
+        ("maxResults=1&bogus", "bogus=&maxResults=1&startAt=0"),
+        ("maxResults=1&bogus=1&bogus=2", "bogus=1&bogus=2&maxResults=1&startAt=0"),
+        ("maxResults=1&Zeta=1&alpha=2", "Zeta=1&maxResults=1&alpha=2&startAt=0"),
+        ("maxResults=1&keys=A&keys=B", "keys=A&keys=B&maxResults=1&startAt=0"),
+        ("maxResults=1&=x", "maxResults=1&x=&startAt=0"),
+        ("maxResults=1&startAt=0&startAt=5", "maxResults=1&startAt=0"),
+        ("startAt=%2B1&maxResults=1", "maxResults=1&startAt=1"),
+        # fifteen names spread over thirty-two buckets, twelve over sixteen
+        (
+            "maxResults=1&qmokc=1&qscln=1&qmlde=1&qklik=1&qatpo=1&qazyu=1&qzuet=1&quimu=1&qkiux=1&qdktb=1&qolft=1&qqlew=1&qbwqu=1",
+            "qmokc=1&qazyu=1&qdktb=1&quimu=1&qatpo=1&qzuet=1&qbwqu=1&qscln=1&qolft=1&qqlew=1&maxResults=1&qkiux=1&qmlde=1&qklik=1&startAt=0",
+        ),
+        (
+            "maxResults=1&qmokc=1&qscln=1&qmlde=1&qklik=1&qatpo=1&qazyu=1&qzuet=1&quimu=1&qkiux=1&qdktb=1",
+            "qmokc=1&qazyu=1&qdktb=1&quimu=1&qatpo=1&maxResults=1&qkiux=1&qmlde=1&qzuet=1&qscln=1&qklik=1&startAt=0",
+        ),
+    ],
+)
+def test_jira_project_search_links_itself_with_what_it_was_sent(client, admin_h, query, link):
+    """Each row is the query real's `self` carried for the same query, in the order
+    `_project_search_link` gives."""
+    r = client.get(f"/atlassian/rest/api/3/project/search?{query}", headers=admin_h)
+    assert r.status_code == 200, r.text
+    assert r.json()["self"].split("?", 1)[1] == link
 
 
 @pytest.mark.parametrize(

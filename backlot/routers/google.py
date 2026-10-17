@@ -852,6 +852,8 @@ def _resolve_relative_dates(ops: dict) -> dict:
 _GMAIL_ADDRESS_WORD = re.compile(r"[\w&]+")
 _GMAIL_ONE_ADDRESS = re.compile(r"[^@\s]+@[^@\s]+")
 _GMAIL_ADDRESS = re.compile(r"[\w.+'-]+@[\w-]+(?:\.[\w-]+)+")
+# What keeps a hyphenated value from being read joined as well (`_gmail_address_match`).
+_GMAIL_UNJOINED = re.compile(r"--|[\w&]\.[\w&]")
 
 
 def _gmail_address_match(header: str | None, value: str) -> bool:
@@ -863,7 +865,11 @@ def _gmail_address_match(header: str | None, value: str) -> bool:
     where `len`, `ena`, `par` and `com.acme` do not. `_` joins the characters around it into one
     word, so `ops` does not match `ops_team@corp.example`, and `&` counts as a word character too,
     where the rest of ASCII punctuation does not. A value with no word in it, such as `.`, `@` or
-    `""`, is ignored and matches every message, a message without the header included.
+    `""`, is ignored and matches every message, a message without the header included. A value
+    with a hyphen matches its words joined as well (`no-reply` finds `noreply@` beside
+    `no-reply@`, `jt-snowball` finds `@jtsnowball.com`) unless it holds `--` or a `.` between two
+    word characters (`jt-snowball.com` is its three words alone); a joined value does not find the
+    hyphenated spelling.
 
     Measured on a Workspace mailbox of 595 messages on 2026-10-15: 113 searches on `cc:` and
     `bcc:`, compared with the headers of every message, all match this rule, and of the 32 ASCII
@@ -871,9 +877,13 @@ def _gmail_address_match(header: str | None, value: str) -> bool:
     every message. On the same mailbox at 601 messages on 2026-10-16, 122 of 124 `from:` and `to:`
     searches built from its own addresses, local parts, domains and display-name words match this
     rule over `From`, and over `To`, `Cc` and `Bcc` together; `to:me` counts the four messages
-    where the caller is in `Bcc` alone. The other two are a hyphenated value, which real also reads
-    joined (`no-reply` finds `noreply@` as well as `no-reply@`), and part of a Korean display
-    name. On 2026-10-14, `cc:<a local part>+x` read `+x` as a search term of its own."""
+    where the caller is in `Bcc` alone. The other two are a hyphenated value, read joined as above,
+    and part of a Korean display name. At 603 messages on 2026-10-17, the 311 `from:`, `to:` and
+    `cc:` searches with a hyphen in them (a header's words split by one hyphen and by two, into two
+    and three parts, beside an `@` or a `.`, and each hyphenated local part whole and in pairs),
+    none quoted and none led by `-`, match this rule. Two forms it does not read: a quoted value
+    found its words alone, and a value led by `-` answered as the negation `-from:` does. On
+    2026-10-14, `cc:<a local part>+x` read `+x` as a search term of its own."""
     header = (header or "").lower()
     value = value.lower()
     if _GMAIL_ONE_ADDRESS.fullmatch(value):
@@ -881,7 +891,14 @@ def _gmail_address_match(header: str | None, value: str) -> bool:
     words, have = _GMAIL_ADDRESS_WORD.findall(value), _GMAIL_ADDRESS_WORD.findall(header)
     if not words:
         return True
-    return any(have[i : i + len(words)] == words for i in range(len(have) - len(words) + 1))
+    alternatives = [words]
+    if "-" in value and not _GMAIL_UNJOINED.search(value):
+        alternatives.append(_GMAIL_ADDRESS_WORD.findall(value.replace("-", "")))
+    return any(
+        have[i : i + len(option)] == option
+        for option in alternatives
+        for i in range(len(have) - len(option) + 1)
+    )
 
 
 def _gmail_op_match(row, ops: dict) -> bool:

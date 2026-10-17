@@ -2706,7 +2706,7 @@ async def drive_files_get(file_id: str, request: Request):
         return Response(row["content"].encode("utf-8"), media_type=mime)
     # Same projection as files.list: a file resolved by id and the same file read out of a listing
     # must come back identical, or caching/diffing behaves differently depending on which call
-            # produced the row.
+    # produced the row.
     keys = _drive_get_field_keys(gerr.first_repeat(request.query_params, "fields"))
     return _drive_project([_drive_file(conn, row, me=caller.email)], keys)[0]
 

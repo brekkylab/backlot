@@ -8,8 +8,7 @@ Auth is the ordinary bearer path (``Authorization: Bearer <api_key>``), which is
 vendor's own quickstart shows for all four of its raw-HTTP examples. Unlike Linear there is no
 bare-header variant to accommodate.
 
-Status codes follow the GraphQL-over-HTTP split the engine already draws, as
-:mod:`backlot.routers.linear` lays out.
+Status codes follow the GraphQL-over-HTTP split :class:`backlot.graphql.engine.Result` marks.
 
 A body Fireflies cannot read is refused ahead of anything about the credential: with no
 credential, and with ``Authorization: nope``, an empty body and a body that is not JSON drew

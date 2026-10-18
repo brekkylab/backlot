@@ -2135,6 +2135,9 @@ def test_reads_of_a_folder_the_caller_cannot_see(tmp_path):
             (files, {"fields": "totallyBogusField"}, "mia", "Private", 404, "notFound"),
             (files, {"fields": "totallyBogusField"}, "mia", "Shared", 400, "invalidParameter"),
             (files, {"alt": "media"}, "mia", "Private", 404, "notFound"),
+            (files, {"alt": "media"}, "mia", "Shared", 403, "fileNotDownloadable"),
+            (files, {"alt": "MEDIA"}, "mia", "Shared", 403, "fileNotDownloadable"),
+            (files, {"alt": "media"}, "admin", "Private", 403, "fileNotDownloadable"),
             (perms, {}, "admin", "Private", 200, None),
             (perms, {}, "ava", "Private", 200, None),
             (perms, {}, "mia", "Private", 404, "notFound"),
@@ -9701,5 +9704,62 @@ def test_gmail_empty_address_tokens_preserve_quoted_subjects(tmp_path, surface, 
         )
     assert r.status_code == 200
     assert {item["id"] for item in r.json().get(surface, [])} == {
+        served_id("gmail", doc_id) for doc_id in expected
+    }
+
+
+@pytest.mark.parametrize("surface", ["messages", "threads"])
+@pytest.mark.parametrize(
+    "query, expected",
+    [
+        ("from:no-reply", {"joined", "hyphen"}),
+        ("from:noreply", {"joined"}),
+        ("from:jt-snowball", {"domain"}),
+        ("from:jtsnowball", {"domain"}),
+        ("from:no-repl", set()),
+        ("from:noreplyx", set()),
+        ("from:no-reply@bank.example", {"hyphen"}),
+        ("from:no-reply@shop.example", set()),
+        ("to:no-reply", {"joined", "hyphen"}),
+        ("to:noreply", {"joined"}),
+        ("cc:no-reply", {"joined", "hyphen"}),
+        ("bcc:no-reply", {"joined", "hyphen"}),
+        ("from:no--reply", {"hyphen"}),
+        ("from:jt-snowball.com", set()),
+        ("from:@jt-snowball", {"domain"}),
+    ],
+)
+def test_gmail_hyphenated_address_search(tmp_path, surface, query, expected):
+    """Each row is how `_gmail_address_match` reads a hyphenated value."""
+    records = [
+        {"doc_id": "joined", "author_email": "noreply@shop.example"},
+        {"doc_id": "hyphen", "author_email": "no-reply@bank.example"},
+        {"doc_id": "domain", "author_email": "news@jtsnowball.com"},
+    ]
+    settings = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "gmail",
+                "mailbox": "ava",
+                "title": "Notice",
+                "content": "body",
+                "to": r["author_email"],
+                "cc": r["author_email"],
+                "bcc": r["author_email"],
+                "readers": ["ava@acme.com"],
+                "visibility": "public",
+                "created": "2026-03-01T09:00:00Z",
+                **r,
+            }
+            for r in records
+        ],
+    )
+    tokens = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
+    headers = {"Authorization": f"Bearer {tok(tokens, 'ava@acme.com')}"}
+    with client_for(settings, reload=True) as c:
+        r = c.get(f"/gmail/v1/users/me/{surface}", headers=headers, params={"q": query})
+    assert r.status_code == 200
+    assert {x["id"] for x in r.json().get(surface, [])} == {
         served_id("gmail", doc_id) for doc_id in expected
     }

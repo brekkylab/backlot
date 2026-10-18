@@ -46,6 +46,10 @@ class SlackConversationInfo(_SlackOk):
 
 
 class SlackHistory(_SlackOk):
+    # Real sends `latest` and then `oldest` right after `ok`, each only when it read one
+    # (slack.com/api, 2026-10-11 and 2026-10-16); the route leaves out the one not set.
+    latest: str | None = None
+    oldest: str | None = None
     messages: list[dict] = []
     has_more: bool = False
 
@@ -137,20 +141,34 @@ def _slack_types(request: Request):
     return want if want <= _SLACK_TYPES else None
 
 
-def _slack_ts(value: str | None) -> float | None | bool:
-    """A Slack timestamp argument as a float; ``False`` marks one that does not parse and one
-    ``float()`` reads as infinite or NaN, which no window can be built from. Measured against the
-    live API on 2026-10-10, ``inf``, ``-inf``, ``nan``, ``Infinity``, ``-Infinity`` and ``NaN`` each
-    answer the same ``invalid_ts_oldest``/``invalid_ts_latest`` a string that does not parse does. A
-    spelling with digits that ``float()`` overflows is not one of them: real reads ``1e999`` as 1999
-    and answers a window, where any non-finite reading is refused here."""
-    if value is None or value == "":
+# The largest timestamp real reads, 2^63-1 microseconds (`9223372036854.775807`).
+_SLACK_TS_MAX = 2**63 - 1
+
+
+def _slack_ts(value: str | None) -> str | None | bool:
+    """A Slack timestamp argument as real reads it, in the form real echoes it back
+    (`SSSSSSSSSS.MMMMMM`): ``None`` when it is absent, empty or exactly `0`, and ``False`` for one
+    real answers with ``invalid_ts_oldest``/``invalid_ts_latest``.
+
+    Measured against slack.com/api on 2026-10-11 and 2026-10-16; Slack does not document it, and
+    this is a fit to what was measured. The ASCII digits before the first `.`, anything else there
+    dropped, are seconds (`1e9` is 19, `abc123` is 123, `1²` is 1); the ASCII digits of the next
+    part are a whole number of microseconds written after the seconds, so `.5` is 5 µs and a seventh
+    digit moves into the seconds; a third part is ignored; and the result is capped at
+    :data:`_SLACK_TS_MAX` however many digits it has. A value that reads as zero is refused, one
+    with no ASCII digit included (`abc`, `inf`, `١٢٣`, `５`, `00`, `0.0`, `-0`), but `0` itself is
+    no bound.
+    """
+    if value is None or value in ("", "0"):
         return None
-    try:
-        ts = float(value)
-    except ValueError:
+    head, _, tail = value.partition(".")
+    seconds = "".join(c for c in head if c in "0123456789")
+    micros = "".join(c for c in tail.partition(".")[0] if c in "0123456789")
+    digits = (seconds + micros.lstrip("0").zfill(6)).lstrip("0")
+    total = min(int(digits[:20] or "0"), _SLACK_TS_MAX)
+    if not total:
         return False
-    return ts if math.isfinite(ts) else False
+    return f"{total // 1_000_000:010d}.{total % 1_000_000:06d}"
 
 
 def _caller_or_error(request: Request) -> tuple[Caller | None, dict | None]:
@@ -525,6 +543,8 @@ async def conversations_list(request: Request):
     limit, err = _limit(request)
     if err is not None:
         return err
+    if limit < 0:  # every item, as for no `limit` (see `_limit`)
+        limit = get_settings().default_page_size
     types = _slack_types(request)
     if types is None:
         return _err("invalid_types")
@@ -583,6 +603,7 @@ async def conversations_info(request: Request):
     "/conversations.history",
     methods=["GET", "POST"],
     response_model=SlackHistory,
+    response_model_exclude_unset=True,
     openapi_extra={"parameters": _P_HISTORY},
 )
 async def conversations_history(request: Request):
@@ -595,6 +616,8 @@ async def conversations_history(request: Request):
     limit, err = _limit(request)
     if err is not None:
         return err
+    if limit < 0:  # one message (see `_limit`)
+        limit = 1
     name = _channel_name(conn, _param(request, "channel") or "")
     ids = auth.visible_ids(request, caller)
     # A channel this caller cannot see is `channel_not_found`, exactly as in conversations.info —
@@ -630,23 +653,32 @@ async def conversations_history(request: Request):
     if lo is not None or hi is not None:  # time-bounded (e.g. a single day): filter, then paginate
         inclusive = _param(request, "inclusive") in ("1", "true", "True")
 
+        def _ts_to_us(ts_str: str) -> int:
+            """Convert a Slack ts string "SSSSSSSSSS.MMMMMM" to total microseconds."""
+            s, m = ts_str.split(".")
+            return int(s) * 1_000_000 + int(m)
+
         def _in_window(r) -> bool:
-            ts = float(r["ts"])
+            ts_us = _ts_to_us(r["ts"])
             # Slack: latest is inclusive; oldest is exclusive unless inclusive=true
-            if lo is not None and (ts < lo if inclusive else ts <= lo):
-                return False
-            if hi is not None and ts > hi:
-                return False
+            if lo is not None:
+                lo_us = _ts_to_us(lo)
+                if ts_us < lo_us if inclusive else ts_us <= lo_us:
+                    return False
+            if hi is not None:
+                hi_us = _ts_to_us(hi)
+                if ts_us > hi_us:
+                    return False
             return True
 
         # SQL-narrow by created_ts (±1s to cover the sub-second fraction in a public ts), then apply
-        # the exact float window in Python — so a day window scans the day, not the whole channel.
-        ts_lo = int(lo) - 1 if lo is not None else None
-        ts_hi = int(hi) + 1 if hi is not None else None
+        # the exact window in Python — so a day window scans the day, not the whole channel.
+        lo_sec = int(lo.split(".")[0]) - 1 if lo is not None else None
+        hi_sec = int(hi.split(".")[0]) + 1 if hi is not None else None
         matched = [
             r
             for r in store.list_slack_top_level(
-                conn, name, ids, limit=10**9, ts_lo=ts_lo, ts_hi=ts_hi
+                conn, name, ids, limit=10**9, ts_lo=lo_sec, ts_hi=hi_sec
             )
             if _in_window(r)
         ]
@@ -681,6 +713,8 @@ async def conversations_history(request: Request):
         # real API sends both keys on every call rather than omitting them.
         "channel_actions_ts": None,
         "channel_actions_count": 0,
+        **({"latest": hi} if hi is not None else {}),
+        **({"oldest": lo} if lo is not None else {}),
     }
     # Omitted entirely on a last page, which is what the live API does here — NOT served with an
     # empty cursor. conversations.list is the other way round (it carries `{"next_cursor": ""}`
@@ -781,6 +815,8 @@ async def conversations_members(request: Request):
     limit, err = _limit(request)
     if err is not None:
         return err
+    if limit < 0:  # every item, as for no `limit` (see `_limit`)
+        limit = get_settings().default_page_size
     name = _channel_name(conn, _param(request, "channel") or "")
     # Membership is derived from who has spoken in the channel, so this list is a projection of the
     # very messages the ACL withholds — behind the same `channel_not_found` conversations.info
@@ -815,6 +851,20 @@ async def users_list(request: Request):
     limit, err = _limit(request)
     if err is not None:
         return err
+    if limit < 0:  # see `_limit`
+        sent = _param(request, "cursor")
+        if decode_cursor_or_none(sent) is None:
+            return _err("invalid_cursor")
+        if limit < -1:
+            return _err("fatal_error")
+        if sent:
+            return _err("internal_error")
+        total = len(store.all_user_emails(conn))
+        return {
+            "ok": True,
+            "members": [],
+            "response_metadata": {"next_cursor": next_cursor(0, 1, total)},
+        }
     # The roster is the registered user principals — the employee directory plus internal mail/doc
     # authors. Slack transcript speakers are NOT added, and that is a limitation of the upstream
     # dataset rather than a modelling choice, so it is stated plainly here and in the README.
@@ -1350,13 +1400,21 @@ _SLACK_NUMBER = re.compile(r"-?(?:[0-9]+(?:[.][0-9]+)?|[.][0-9]+)(?:[eE]-?[0-9]+
 
 def _slack_number(key: str, raw: str) -> int | None:
     """The value of one numeric argument by the rule on `_SLACK_INTEGER`, or None where real
-    refuses it. A `limit` is its integer part (`1.5` is 1, `3.99999` is 3), and one too large for a
-    float (`1e400`) is zero, which `_limit` serves as no `limit`, as real served every item."""
+    refuses it. A `limit` is its integer part (`1.5` is 1, `3.99999` is 3, `-1.5` is -1), and one
+    too large for a float (`1e400`) is zero, which `_limit` serves as no `limit`, as real served
+    every item. An integer part at or past 2**63 wraps around 2**64, so `9223372036854775808` and
+    `1e19` are negative and `1e300` is zero, and one below -2**63 stays negative: the reading that
+    every row of the measurement on `_limit` agrees with."""
     if key == "limit":
         if not _SLACK_NUMBER.fullmatch(raw):
             return None
+        if _SLACK_INTEGER.fullmatch(raw) and -(2**63) <= int(raw) < 2**63:
+            return int(raw)
         x = float(raw)
-        return int(x) if math.isfinite(x) else 0
+        if not math.isfinite(x):
+            return 0
+        n = int(x)
+        return (n + 2**63) % 2**64 - 2**63 if n >= 2**63 else n
     if not _SLACK_INTEGER.fullmatch(raw):
         return None
     n = int(raw)
@@ -1402,7 +1460,16 @@ def _limit(request: Request) -> tuple[int, JSONResponse | None]:
     2026-10-11). A `limit` read as zero is read as no `limit` at all: on `conversations.list`,
     `users.list`, `conversations.members` and `conversations.history`, `0` (measured 2026-10-03
     and 2026-10-05) and `00` (2026-10-05) answered what the same request without `limit`
-    answers, every item and an empty `next_cursor`, on collections of 8 to 21."""
+    answers, every item and an empty `next_cursor`, on collections of 8 to 21.
+
+    A negative `limit` is returned as it is, for each method to serve as real does (measured
+    2026-10-12, one workspace of 21 members and 8 public channels, `-1` to `-1e19`):
+    `conversations.list` and `conversations.members` serve every item, as for no `limit`;
+    `conversations.history` serves one message; `users.list` serves no members and a cursor for
+    `-1`, and answers `fatal_error` for anything lower. On `users.list`, measured 2026-10-16 on the
+    same workspace, the cursor `-1` serves goes on from the second member, as the one `limit=1`
+    serves does; `-1` beside a cursor that decodes is `internal_error`; and a cursor that does not
+    decode is `invalid_cursor` ahead of the other two (`cursor=bogus&limit=-2`)."""
     default = get_settings().default_page_size
     values, err = _numbers(request, ("limit", default))
     return values["limit"] or default, err

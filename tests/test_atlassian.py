@@ -298,7 +298,11 @@ def test_jira_project_search_refuses_an_order_by_naming_no_field(
     )
     if refused is None:
         assert r.status_code == 200, r.text
-        assert r.json() == listing.json()
+        # the links carry the query as sent (`_project_search_link`), so they are left out
+        unlinked = ("self", "nextPage")
+        assert {k: v for k, v in r.json().items() if k not in unlinked} == {
+            k: v for k, v in listing.json().items() if k not in unlinked
+        }
         return
     assert r.status_code == 400, r.text
     assert r.json() == {
@@ -311,33 +315,169 @@ def test_jira_project_search_refuses_an_order_by_naming_no_field(
     }
 
 
-@pytest.mark.parametrize("headers", UNRESOLVABLE)
 @pytest.mark.parametrize(
-    "segment,kind",
+    "query, start, limit",
     [
-        pytest.param(synth.jira_project_key("payments"), "key", id="corpus-key"),
-        pytest.param(str(synth.github_user_id("payments")), "id", id="corpus-id"),
-        pytest.param("NOSUCHKEY", "key", id="no-such-key"),
-        pytest.param("1", "id", id="one-digit"),
-        pytest.param("999999999999999999", "id", id="eighteen-digits"),
-        pytest.param("1000000000000000000", "key", id="nineteen-digits"),
-        pytest.param("0", "key", id="zero"),
-        pytest.param("007", "key", id="leading-zero"),
-        pytest.param("1２", "key", id="full-width-digit"),
+        ({}, 0, 50),
+        ({"startAt": "1"}, 1, 50),
+        ({"startAt": "1", "maxResults": "1"}, 1, 1),
+        ({"startAt": "-1"}, 0, 50),
+        ({"startAt": "99999999999"}, 99999999999, 50),
+        ({"maxResults": "0"}, 0, 1),
+        ({"maxResults": "-1"}, 0, 1),
+        ({"maxResults": "1"}, 0, 1),
+        ({"maxResults": " 1"}, 0, 1),
+        ({"maxResults": "101"}, 0, 100),
+        ({"maxResults": "5000"}, 0, 100),
     ],
 )
-def test_jira_404s_a_project_role_an_anonymous_caller_cannot_see(client, headers, segment, kind):
+def test_jira_project_search_pages(tmp_path, query, start, limit):
+    """The project pagination measurement recorded in `jira_project_search` governs each page."""
+    settings = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "jira",
+                "doc_id": f"issue-{i}",
+                "project": name,
+                "key": f"{name.upper()}-1",
+                "title": name,
+                "content": "Issue",
+                "author_email": "a@x.com",
+                "visibility": "public",
+            }
+            for i, name in enumerate(("payments", "orders"))
+        ],
+    )
+    with client_for(settings, reload=True) as client:
+        admin_h = {"Authorization": f"Bearer {settings.admin_token}"}
+        url = "/atlassian/rest/api/3/project/search"
+        full = client.get(url, headers=admin_h).json()["values"]
+        assert len(full) > 1
+        response = client.get(url, params=query, headers=admin_h)
+        assert response.status_code == 200, response.text
+        page = full[start : start + limit]
+        body = response.json()
+        last = start + len(page) >= len(full)
+        assert list(body) == ["self", *([] if last else ["nextPage"]), *_PAGE_MEMBERS]
+        assert {k: body[k] for k in _PAGE_MEMBERS} == {
+            "values": page,
+            "startAt": start,
+            "maxResults": limit,
+            "total": len(full),
+            "isLast": last,
+        }
+        assert body["self"].endswith(f"/project/search?maxResults={limit}&startAt={start}")
+        if not last:
+            assert body["nextPage"].endswith(f"?maxResults={limit}&startAt={start + limit}")
+
+
+_PAGE_MEMBERS = ["maxResults", "startAt", "total", "isLast", "values"]
+
+
+@pytest.mark.parametrize(
+    "query, link",
+    [
+        ("maxResults=1&bogus=a%2Bb", "bogus=a%2Bb&maxResults=1&startAt=0"),
+        ("maxResults=1&bogus=a+b", "bogus=a+b&maxResults=1&startAt=0"),
+        ("maxResults=1&b%6Fgus=x", "b%6Fgus=x&maxResults=1&startAt=0"),
+        ("maxResults=1&bogus", "bogus=&maxResults=1&startAt=0"),
+        ("maxResults=1&bogus=1&bogus=2", "bogus=1&bogus=2&maxResults=1&startAt=0"),
+        ("maxResults=1&Zeta=1&alpha=2", "Zeta=1&maxResults=1&alpha=2&startAt=0"),
+        ("maxResults=1&keys=A&keys=B", "keys=A&keys=B&maxResults=1&startAt=0"),
+        ("maxResults=1&=x", "maxResults=1&x=&startAt=0"),
+        ("maxResults=1&startAt=0&startAt=5", "maxResults=1&startAt=0"),
+        ("startAt=%2B1&maxResults=1", "maxResults=1&startAt=1"),
+        # fifteen names spread over thirty-two buckets, twelve over sixteen
+        (
+            "maxResults=1&qmokc=1&qscln=1&qmlde=1&qklik=1&qatpo=1&qazyu=1&qzuet=1&quimu=1&qkiux=1&qdktb=1&qolft=1&qqlew=1&qbwqu=1",
+            "qmokc=1&qazyu=1&qdktb=1&quimu=1&qatpo=1&qzuet=1&qbwqu=1&qscln=1&qolft=1&qqlew=1&maxResults=1&qkiux=1&qmlde=1&qklik=1&startAt=0",
+        ),
+        (
+            "maxResults=1&qmokc=1&qscln=1&qmlde=1&qklik=1&qatpo=1&qazyu=1&qzuet=1&quimu=1&qkiux=1&qdktb=1",
+            "qmokc=1&qazyu=1&qdktb=1&quimu=1&qatpo=1&maxResults=1&qkiux=1&qmlde=1&qzuet=1&qscln=1&qklik=1&startAt=0",
+        ),
+    ],
+)
+def test_jira_project_search_links_itself_with_what_it_was_sent(client, admin_h, query, link):
+    """Each row is the query real's `self` carried for the same query, in the order
+    `_project_search_link` gives."""
+    r = client.get(f"/atlassian/rest/api/3/project/search?{query}", headers=admin_h)
+    assert r.status_code == 200, r.text
+    assert r.json()["self"].split("?", 1)[1] == link
+
+
+@pytest.mark.parametrize(
+    "query, name, value",
+    [
+        ([("startAt", "abc")], "startAt", "abc"),
+        ([("startAt", "1.5")], "startAt", "1.5"),
+        ([("maxResults", "abc")], "maxResults", "abc"),
+        ([("startAt", "abc"), ("orderBy", "bogus")], "startAt", "abc"),
+        ([("orderBy", "bogus"), ("startAt", "abc")], "startAt", "abc"),
+        ([("maxResults", "abc"), ("orderBy", "bogus")], "maxResults", "abc"),
+        ([("orderBy", "bogus"), ("maxResults", "abc")], "maxResults", "abc"),
+        ([("startAt", "abc"), ("maxResults", "xyz")], "startAt", "abc"),
+        ([("maxResults", "xyz"), ("startAt", "abc")], "startAt", "abc"),
+    ],
+)
+def test_jira_project_search_integer_conversion_precedes_order(client, admin_h, query, name, value):
+    """The measured integer refusal precedes orderBy validation in either URL order."""
+    response = client.get("/atlassian/rest/api/3/project/search", params=query, headers=admin_h)
+    assert response.status_code == 400, response.text
+    assert response.headers["content-type"] == "application/problem+json;charset=UTF-8"
+    assert response.json() == {
+        "type": "about:blank",
+        "title": "Bad Request",
+        "status": 400,
+        "detail": f"Failed to convert '{name}' with value: '{value}'",
+        "instance": "/rest/api/3/project/search",
+    }
+
+
+@pytest.mark.parametrize("headers", [*UNRESOLVABLE, "admin"])
+@pytest.mark.parametrize(
+    "segment,kind,found",
+    [
+        pytest.param(synth.jira_project_key("payments"), "key", True, id="corpus-key"),
+        pytest.param(str(synth.github_user_id("payments")), "id", True, id="corpus-id"),
+        pytest.param("NOSUCHKEY", "key", False, id="no-such-key"),
+        pytest.param("1", "id", False, id="one-digit"),
+        pytest.param("999999999999999999", "id", False, id="eighteen-digits"),
+        pytest.param("1000000000000000000", "key", False, id="nineteen-digits"),
+        pytest.param("0", "key", False, id="zero"),
+        pytest.param("007", "key", False, id="leading-zero"),
+        pytest.param("1２", "key", False, id="full-width-digit"),
+        pytest.param(synth.jira_project_key("payments").lower(), "key", False, id="key-lower"),
+        pytest.param(
+            synth.jira_project_key("payments").capitalize(), "key", False, id="key-capitalised"
+        ),
+        pytest.param("payments", "key", False, id="project-name"),
+        pytest.param("PAYMENTS", "key", False, id="project-name-upper"),
+    ],
+)
+def test_jira_role_routes_find_a_project_by_its_key_as_written_or_its_id(
+    client, admin_h, headers, segment, kind, found
+):
     """A role read is the one Jira route that keeps refusing an anonymous caller, and which of the
     two refusals it gives is decided by the project: on the site where the key names a project
     anonymous can see it is 401, and on the site where it names nothing it is 404. Anonymous sees no
     Backlot project, so it is always the 404 here — the corpus's own project, by its key or its id,
-    gets the answer a segment naming nothing would. The 404 calls the segment an id or a key by the
-    rule `_require_project` records."""
+    gets the answer a segment naming nothing would. The admin is the control: it reads the role by
+    the project's key and its id, and gets the same 404 for every other segment. The 404 calls the
+    segment an id or a key by the rule `_require_project` records."""
+    if headers == "admin":
+        headers = admin_h
+    else:
+        found = False
     for path in (
         f"/rest/api/3/project/{segment}/role",
         f"/rest/api/3/project/{segment}/role/10002",
     ):
         r = client.get(f"/atlassian{path}", headers=headers)
+        if found:
+            assert r.status_code == 200, path
+            continue
         assert r.status_code == 404, path
         assert r.json() == {
             "errorMessages": [f"No project could be found with {kind} '{segment}'."],
@@ -1502,8 +1642,87 @@ def test_confluence_body_and_version(tmp_path):
     assert page["metadata"]["labels"]["results"][0]["name"] == "eng"
 
 
-def test_confluence_restrictions_answers_both_operations_in_real_shape(tmp_path):
-    # restrictions/byOperation must return BOTH read and update operations, with real's links
+def _members(node: dict) -> str:
+    """An answer's member names in order, nested down to each restriction list."""
+    return " ".join(
+        f"{k}{{{_members(v)}}}"
+        if isinstance(v, dict) and k not in ("user", "group", "_links")
+        else k
+        for k, v in node.items()
+    )
+
+
+_BOTH_LISTS = "restrictions{user group} _expandable{content} _links"
+_NO_LISTS = "_expandable{restrictions content} _links"
+
+
+@pytest.mark.parametrize(
+    "query, members",
+    [
+        ("", f"read{{operation {_BOTH_LISTS}}} update{{operation {_BOTH_LISTS}}} _links"),
+        ("expand=", f"read{{operation {_BOTH_LISTS}}} update{{operation {_BOTH_LISTS}}} _links"),
+        ("expand=read", f"read{{operation {_NO_LISTS}}} _expandable{{update}} _links"),
+        ("expand=update", f"update{{operation {_NO_LISTS}}} _expandable{{read}} _links"),
+        (
+            "expand=update,read",
+            f"read{{operation {_NO_LISTS}}} update{{operation {_NO_LISTS}}} _links",
+        ),
+        (
+            "expand=update&expand=read",
+            f"read{{operation {_NO_LISTS}}} update{{operation {_NO_LISTS}}} _links",
+        ),
+        ("expand=&expand=read", f"read{{operation {_NO_LISTS}}} _expandable{{update}} _links"),
+        ("expand=,read,,", f"read{{operation {_NO_LISTS}}} _expandable{{update}} _links"),
+        ("expand=read.bogus", f"read{{operation {_NO_LISTS}}} _expandable{{update}} _links"),
+        (
+            "expand=read..restrictions",
+            f"read{{operation {_NO_LISTS}}} _expandable{{update}} _links",
+        ),
+        (
+            "expand=read.restrictions.user",
+            "read{operation restrictions{user _expandable{group}} _expandable{content} _links}"
+            " _expandable{update} _links",
+        ),
+        (
+            "expand=read.restrictions.user.bogus",
+            "read{operation restrictions{user _expandable{group}} _expandable{content} _links}"
+            " _expandable{update} _links",
+        ),
+        (
+            "expand=update.restrictions.group",
+            "update{operation restrictions{group _expandable{user}} _expandable{content} _links}"
+            " _expandable{read} _links",
+        ),
+        (
+            "expand=read.restrictions",
+            "read{operation restrictions{_expandable{user group}} _expandable{content} _links}"
+            " _expandable{update} _links",
+        ),
+        (
+            "expand=read.restrictions.USER",
+            "read{operation restrictions{_expandable{user group}} _expandable{content} _links}"
+            " _expandable{update} _links",
+        ),
+        (
+            "expand=read.restrictions.group,read.restrictions.user",
+            f"read{{operation {_BOTH_LISTS}}} _expandable{{update}} _links",
+        ),
+        (
+            "expand=read.restrictions.user,update",
+            "read{operation restrictions{user _expandable{group}} _expandable{content} _links}"
+            f" update{{operation {_NO_LISTS}}} _links",
+        ),
+        ("expand=bogus", "_expandable{read update} _links"),
+        ("expand=READ", "_expandable{read update} _links"),
+        ("expand=%20read", "_expandable{read update} _links"),
+        ("expand=.read", "_expandable{read update} _links"),
+        ("expand=%20", "_expandable{read update} _links"),
+    ],
+)
+def test_confluence_restrictions_answer_what_expand_names_in_real_shape(tmp_path, query, members):
+    """Each row is real's answer to the same query, member names and order, as measured where
+    `_restriction_expansions` and the comment in `confluence_restrictions` say. Every operation
+    served links to itself, and the answer ends with real's links."""
     import asyncio
     import types
 
@@ -1537,19 +1756,20 @@ def test_confluence_restrictions_answers_both_operations_in_real_shape(tmp_path)
         "scheme": "http",
         "server": ("m", 80),
         "path": "/",
-        "query_string": b"",
+        "query_string": query.encode(),
         "app": app,
         "headers": [(b"authorization", f"Bearer {s.admin_token}".encode())],
     }
     request = Request(scope)
     result = asyncio.run(confluence_restrictions(cid, request))
-    assert result["read"]["restrictions"]["user"]["results"]  # the private doc's author
+    assert _members(result) == members
     path = f"{_site(request)}/wiki/rest/api/content/{cid}/restriction/byOperation"
-    assert list(result) == ["read", "update", "_links"]
     assert result["_links"] == {"self": path, "base": f"{_site(request)}/wiki", "context": "/wiki"}
     for op in ("read", "update"):
-        assert list(result[op]) == ["operation", "restrictions", "_expandable", "_links"]
-        assert result[op]["_links"] == {"self": f"{path}/{op}"}
+        if op in result:
+            assert result[op]["_links"] == {"self": f"{path}/{op}"}
+            if "user" in result[op].get("restrictions", {}):
+                assert result[op]["restrictions"]["user"]["results"]  # the private doc's author
 
 
 @pytest.mark.parametrize("route", ["child/page", "child/attachment", "restriction/byOperation"])
@@ -1704,6 +1924,14 @@ def test_jira_comments_without_order_by_keep_the_order_the_corpus_states(paged):
         ("orderBy=CREATED", ["comment 7", "comment 6"]),
         ("orderBy=-Created", ["comment 1", "comment 2"]),
         ("orderBy=-%20created", ["comment 1", "comment 2"]),
+        # `_jira_order_desc` reads the rest, as real did.
+        ("orderBy=%01created", ["comment 7", "comment 6"]),
+        ("orderBy=created%01", ["comment 7", "comment 6"]),
+        ("orderBy=%01-created", ["comment 1", "comment 2"]),
+        ("orderBy=%0Bcreated", ["comment 7", "comment 6"]),
+        ("orderBy=-%0Bcreated", ["comment 1", "comment 2"]),
+        ("orderBy=-%0D%0Acreated", ["comment 1", "comment 2"]),
+        ("orderBy=created%C2%85", ["comment 7", "comment 6"]),
     ],
 )
 def test_jira_order_by_takes_the_spellings_the_real_api_takes(paged, query, want):
@@ -1718,14 +1946,30 @@ def test_jira_order_by_takes_the_spellings_the_real_api_takes(paged, query, want
     assert _bodies(d.json()) == want
 
 
-@pytest.mark.parametrize("query", ["orderBy=--created", "orderBy=%2B-created", "orderBy="])
-def test_jira_refuses_the_spellings_the_real_api_refuses(paged, query):
-    """Measured: exactly ONE sigil is stripped, so `--created` leaves `-created`, which is not a
-    field — real Jira's own message echoes `-created`, not `--created`. An empty value is refused
-    for the same reason: the field is the empty string."""
+@pytest.mark.parametrize(
+    "query, named",
+    [
+        ("orderBy=--created", "-created"),
+        ("orderBy=%2B-created", "-created"),
+        ("orderBy=", ""),
+        ("orderBy=%C2%A0created", "\xa0created"),
+        ("orderBy=%E2%80%83created", " created"),
+        ("orderBy=-%01created", "\x01created"),
+        ("orderBy=-%1Fcreated", "\x1fcreated"),
+        ("orderBy=-%C2%A0created", "\xa0created"),
+        ("orderBy=-%C2%85created", "-\x85created"),
+        ("orderBy=-cre%0Aated", "-cre\nated"),
+        ("orderBy=created%20%C2%85", "created "),
+        ("orderBy=created%C2%85%C2%85", "created\x85\x85"),
+    ],
+)
+def test_jira_refuses_the_spellings_the_real_api_refuses(paged, query, named):
+    """Each row names the field real's 400 named, as `_jira_order_desc` reads the value; the
+    sentence around it is Backlot's own."""
     client, h = paged
     r = client.get(f"/atlassian/rest/api/3/issue/PAY-7/comment?{query}", headers=h)
     assert r.status_code == 400, r.text
+    assert r.json()["errorMessages"][0].endswith(f"Instead: {named}")
 
 
 def test_jira_validates_order_by_before_resolving_the_issue(paged):

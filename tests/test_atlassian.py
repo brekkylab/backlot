@@ -6038,6 +6038,25 @@ _JSON_TYPE = "application/json"
         ),
         ("POST", "/wiki/rest/api/content/abc123/child/attachment", None, "foo", 415)
         + ("Invalid mime type \"foo\": does not contain '/'",),
+        # a type Spring cannot read, named for the reason rather than as sent
+        # (``errors.atlassian._invalid_mime_type``)
+        *(
+            ("POST", "/wiki/rest/api/space/abc123/permission", None, ctype, 415, reason)
+            for ctype, reason in (
+                (
+                    "text/plain;charset=nope",
+                    "Invalid mime type \"text/plain;charset=nope\": unsupported charset 'nope'",
+                ),
+                (
+                    "text/",
+                    "Invalid mime type \"text/\": does not contain subtype after '/'",
+                ),
+                (
+                    "a/b c",
+                    'Invalid mime type "a/b c": Invalid token character \' \' in token "b c"',
+                ),
+            )
+        ),
         # the parameters kept (``errors.atlassian._spring_media_type``)
         *(
             ("POST", "/wiki/rest/api/content/abc123/child/attachment", None, ctype, 415, named)
@@ -6092,7 +6111,8 @@ _JSON_TYPE = "application/json"
             None,
             "multipart/form-data; boundary=x; charset=u8",
             415,
-            "'multipart/form-data; boundary=x; charset=u8'",
+            'Invalid mime type "multipart/form-data; boundary=x; charset=u8": '
+            "unsupported charset 'u8'",
         ),
         (
             "POST",

@@ -217,6 +217,12 @@ _P_CONTENT_CHILD = {"parameters": [qp("limit", "integer"), qp("start", "integer"
 _JIRA_COMMENT_PAGE_MAX = 100
 _JIRA_ORDER_FIELD = "created"
 
+# Java's `^([+-]?)\s*(.*)$` under `find`: `\s` is the six ASCII spaces, `.` stops at a line
+# terminator, and `$` matches at the end or before one final line terminator (`_jira_order_desc`).
+_JIRA_ORDER = re.compile(
+    "([+-]?)[ \t\n\x0b\x0c\r]*([^\n\r\x85\u2028\u2029]*)(?:\r\n|[\n\r\x85\u2028\u2029])?\\Z"
+)
+
 
 def _jira_order_desc(raw: str) -> bool:
     """Whether ``orderBy`` asks for the reverse, or Jira's 400 for a field it does not order by.
@@ -230,14 +236,24 @@ def _jira_order_desc(raw: str) -> bool:
     the ascending spelling Atlassian's own document writes — arrives here as `" created"`. Real
     Jira answers 200 to it, so stripping is what matches rather than a special case for `+`.
 
+    Real's answers fit Java reading the value, though Jira does not say so: `String.trim` (every
+    character up to U+0020 off both ends, as :func:`_jira_project_order` measured on
+    `project/search`), then the pattern `^([+-]?)\\s*(.*)$` (:data:`_JIRA_ORDER`), whose `\\s` is
+    ASCII and whose `.` and `$` stop at a line terminator. Measured against Jira Cloud on the
+    comment read (2026-10-16 and 2026-10-17): `%01created`, `created%01` and `%01-created` are 200;
+    after the sigil `%20`, `%09`, `%0A`, `%0B`, `%0C` and `%0D` go and `%01`, `%1F`, a no-break
+    space and an em space stay (`-%01created` names U+0001 and `created`); a no-break space or an em
+    space in front stays in the field too; one line terminator at the end goes (`created%C2%85` is
+    200) and one anywhere else matches nothing, so the 400 names the value whole, sigil and all
+    (`-%C2%85created`, `-cre%0Aated`).
+
     An EMPTY value is refused, not read as absent: the field it leaves is the empty string, and
     real Jira answers 400 to `?orderBy=`.
     """
-    field = raw.strip()
+    field = raw.strip(_JAVA_TRIMMED)
     desc = False
-    if field[:1] in ("+", "-"):
-        desc = field[0] == "-"
-        field = field[1:].strip()
+    if (m := _JIRA_ORDER.match(field)) is not None:
+        desc, field = m[1] == "-", m[2]
     if field.casefold() != _JIRA_ORDER_FIELD:
         # Backlot's own sentence, not a transcription: Jira localises this one to the account's
         # language, and the account it was measured against answers in Korean.
@@ -498,8 +514,15 @@ def _jira_project_order(raw: str) -> None:
     )
 
 
-@router.get("/rest/api/3/project/search")
+@router.get(
+    "/rest/api/3/project/search",
+    openapi_extra={"parameters": [qp("startAt", "integer"), qp("maxResults", "integer")]},
+)
 async def jira_project_search(request: Request):
+    # Jira Cloud, measured 2026-10-16: integer conversion precedes orderBy;
+    # startAt is a long floored at zero, and maxResults is clamped to 1..100.
+    start = max(0, _int_param(request, "startAt", 0, width=JAVA_LONG))
+    limit = min(100, max(1, _int_param(request, "maxResults", 50)))
     # Read for the refusal above. The sort itself is not served, so `orderBy` stays undeclared:
     # `qp` is for a parameter Backlot honours, and advertising this one would offer a client an
     # order the listing never applies. `backlot diff --source jira` keeps the gap.
@@ -525,7 +548,52 @@ async def jira_project_search(request: Request):
                 "self": f"{_site(request)}/rest/api/3/project/{key}",
             }
         )
-    return {"values": values, "maxResults": 50, "startAt": 0, "total": len(values), "isLast": True}
+    total = len(values)
+    page = values[start : start + limit]
+    answer = {"self": _project_search_link(request, start, limit)}
+    if start + len(page) < total:
+        answer["nextPage"] = _project_search_link(request, start + limit, limit)
+    return answer | {
+        "maxResults": limit,
+        "startAt": start,
+        "total": total,
+        "isLast": start + len(page) >= total,
+        "values": page,
+    }
+
+
+def _project_search_link(request: Request, start: int, limit: int) -> str:
+    """`project/search`'s `self` at ``start``, and its `nextPage` at the page after: every parameter
+    the request sent but `startAt` and `maxResults`, each value of a repeated one, by its name and
+    value as sent (`a%2Bb`, `a+b`, `b%6Fgus`; a bare `bogus` as `bogus=`, and `=x` as `x=`), then
+    `maxResults` and `startAt` as read. Real lists them in the order a `java.util.HashMap` holding
+    them in that order iterates: by the bucket each name's `String.hashCode` spreads to, over
+    sixteen buckets doubled while the map is more than three quarters full, and in the order put
+    within a bucket (`maxResults=1&Zeta=1&alpha=2` links `Zeta=1&maxResults=1&alpha=2&startAt=0`).
+    Measured 2026-10-17 on a site of one project and on ecosystem.atlassian.net (100 projects,
+    anonymous), where `nextPage` came with every page but the last."""
+    params: dict[str, list[str]] = {}
+    for piece in request.scope["query_string"].decode("latin-1").split("&"):
+        name, _, value = piece.partition("=")
+        if not name:
+            name, value = value, ""
+        if name and name not in ("startAt", "maxResults"):
+            params.setdefault(name, []).append(value)
+    params["maxResults"], params["startAt"] = [str(limit)], [str(start)]
+    capacity = 16
+    while len(params) > capacity * 3 // 4:
+        capacity *= 2
+
+    def bucket(name: str) -> int:
+        code = 0
+        for char in name:
+            code = (31 * code + ord(char)) & 0xFFFFFFFF
+        return (code ^ (code >> 16)) & (capacity - 1)
+
+    query = "&".join(
+        f"{name}={value}" for name in sorted(params, key=bucket) for value in params[name]
+    )
+    return f"{_site(request)}/rest/api/3/project/search?{query}"
 
 
 def _jira_project_id(container: str) -> str:
@@ -546,14 +614,18 @@ def _require_project(request: Request, conn, key: str) -> str:
     ids; `0`, `007`, `-1`, `1000000000000000000` (nineteen digits, still a Java `long`) and `1２` (a
     full-width `２`) are keys. A credentialled caller got the same answer from a project's id as from
     its key, on `role`, `role/10002` and `POST role/99999`, on 2026-10-14 and 2026-10-15.
+
+    A key is the project's own as written: on 2026-10-17 the key in lower case or with only its
+    first letter in upper case, and the project's name in either case, were each the 404 by key,
+    with and without a credential, on `role` and `role/10002`.
     """
     ids = auth.visible_ids(request, _jira_caller(request))
     kind = "id" if re.fullmatch(r"[1-9][0-9]{0,17}", key) else "key"
+    rows = store.list_containers(conn, "jira")
     if kind == "id":
-        rows = store.list_containers(conn, "jira")
         container = next((r["name"] for r in rows if _jira_project_id(r["name"]) == key), None)
     else:
-        container = _jira_container_for_key(conn, key, request)
+        container = next((r["name"] for r in rows if _project_key(conn, r["name"]) == key), None)
     # The `ids is None` short-circuit mirrors `github._repo_visible`, where it is load-bearing: a
     # `subtype: repo` record creates a container holding no document, and the admin keeps the repo
     # as soon as that record exists. No Jira record can do that — `project` is required on every
@@ -2159,25 +2231,70 @@ async def confluence_restrictions(content_id: int, request: Request):
     site = _site(request)
     users = [] if emails is None else [_conf_user(e, site) for e in sorted(emails)]
     path = f"{site}/wiki/rest/api/content/{content_id}/restriction/byOperation"
-
-    # Real's members in real's order (Confluence Cloud, 2026-10-09 and 2026-10-14): each operation
-    # links to itself under this path, and the answer ends with the links a listing carries.
-    def _op(name):
-        return {
-            "operation": name,
-            "restrictions": {
-                "user": {"results": users, "start": 0, "limit": 200, "size": len(users)},
-                "group": {"results": [], "start": 0, "limit": 200, "size": 0},
-            },
-            "_expandable": {"content": f"/rest/api/content/{content_id}"},
-            "_links": {"self": f"{path}/{name}"},
-        }
-
-    return {
-        "read": _op("read"),
-        "update": _op("update"),
-        "_links": {"self": path, "base": f"{site}/wiki", "context": "/wiki"},
+    content = f"/rest/api/content/{content_id}"
+    lists = {
+        "user": {"results": users, "start": 0, "limit": 200, "size": len(users)},
+        "group": {"results": [], "start": 0, "limit": 200, "size": 0},
     }
+    named = _restriction_expansions(request)
+
+    # Real's members in real's order (Confluence Cloud, 2026-10-09, 2026-10-14 and 2026-10-17):
+    # each operation links to itself under this path, and the answer ends with the links a listing
+    # carries. With no `expand`, both operations come with both lists. Once `expand` names
+    # something, an operation it does not name is listed under the answer's `_expandable`, read
+    # ahead of update whatever order `expand` names them in. A named operation comes with its
+    # `restrictions` only when `expand` names them, and then with the lists it names, user ahead of
+    # group, and the others under the `restrictions` object's own `_expandable`.
+    def _op(name):
+        op = {"operation": name}
+        paths = None if named is None else named[name]
+        if paths is None or any(p[:1] == ["restrictions"] for p in paths):
+            kinds = [
+                k
+                for k in lists
+                if paths is None or any(p[:2] == ["restrictions", k] for p in paths)
+            ]
+            op["restrictions"] = {k: lists[k] for k in kinds}
+            if unnamed := [k for k in lists if k not in kinds]:
+                op["restrictions"]["_expandable"] = dict.fromkeys(unnamed, "")
+            op["_expandable"] = {"content": content}
+        else:
+            op["_expandable"] = {"restrictions": "", "content": content}
+        op["_links"] = {"self": f"{path}/{name}"}
+        return op
+
+    answer = {name: _op(name) for name in _RESTRICTION_OPERATIONS if named is None or name in named}
+    if unnamed := [name for name in _RESTRICTION_OPERATIONS if name not in answer]:
+        answer["_expandable"] = dict.fromkeys(unnamed, "")
+    answer["_links"] = {"self": path, "base": f"{site}/wiki", "context": "/wiki"}
+    return answer
+
+
+#: The operations `restriction/byOperation` answers, in the order real lists them.
+_RESTRICTION_OPERATIONS = ("read", "update")
+
+
+def _restriction_expansions(request: Request) -> dict[str, list[list[str]]] | None:
+    """What `expand` names under each operation of `restriction/byOperation`: for each operation
+    it names, the dotted segments after the operation's name, one list per item; None when no
+    `expand` value holds an item, which real answers as it answers no `expand`.
+
+    Measured on Confluence Cloud, 2026-10-17: real joins repeated `expand` parameters, splits each
+    value at `,` and each item at `.`, skips empty items (`read,`, `,read`, `read,,update`), and
+    compares each segment as sent. `READ`, ` read`, `read ` and `.read` name no operation;
+    `read.restrictions.USER`, `read..restrictions` and `read.Restrictions.user` name no list; a
+    segment past the list (`read.restrictions.user.bogus`) is ignored. `expand=` answers as no
+    `expand` does, and `expand=%20` names nothing. `read.content` expands the page into the
+    operation, which is not modelled here: it answers as `read` does."""
+    items = [i for value in request.query_params.getlist("expand") for i in value.split(",") if i]
+    if not items:
+        return None
+    named: dict[str, list[list[str]]] = {}
+    for item in items:
+        operation, *rest = item.split(".")
+        if operation in _RESTRICTION_OPERATIONS:
+            named.setdefault(operation, []).append(rest)
+    return named
 
 
 def _conf_user(email: str, site: str) -> dict:

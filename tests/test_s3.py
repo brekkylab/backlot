@@ -481,6 +481,7 @@ _OPTIONS_KEY_CONFLICTS = [
     *_OPTIONS_CONFLICTS,
     ("acl&retention", "acl, retention"),
     ("annotationName=x&acl", "acl, annotationName"),
+    ("annotation&annotationName=x&acl", "acl, annotation, annotationName"),
 ]
 _OPTIONS_QUERY_ROWS = [
     *[
@@ -2058,6 +2059,7 @@ _NO_SUCH_PART = (
     "</PartNumberRequested><ActualPartCount>1</ActualPartCount>"
 )
 _NO_BUCKET = "The specified bucket does not exist"
+_NUL = "Value must be a sequence of Unicode characters and cannot include Null."
 
 
 def _argued(name, value=None):
@@ -2525,13 +2527,25 @@ def test_annotation_writes_keep_a_malformed_v2_credentials_refusal(live_server, 
         ("annotation=&annotation=x&acl", "acl, annotation"),
         ("annotation&max-annotation-results=abc", None),
         ("annotation=&annotation=x", None),
+        ("annotationName=x", "annotationName"),
+        ("annotationName=x&acl", "acl, annotationName"),
+        ("annotationName=x&website=x", "annotationName, website"),
+        ("annotation&annotationName=x&acl", "acl, annotation, annotationName"),
+        ("partNumber=1&acl", "acl, partNumber"),
+        ("partNumber=1&website=x", "partNumber, website"),
+        ("annotationName=x&partNumber=1", "annotationName, partNumber"),
+        ("annotation&partNumber=1", "annotation, partNumber"),
+        ("annotation&partNumber=1&annotationName=x", "annotation, annotationName, partNumber"),
+        ("annotation=v&annotationName=x&acl&tagging", "acl, tagging"),
+        ("acl&website=x", "acl, website"),
     ],
 )
-def test_annotation_write_conflicts_precede_credentials_and_body_checks(
+def test_annotation_and_part_write_refusals_precede_credentials_and_body_checks(
     live_server, method, credential, query, names
 ):
-    """``object_method_refusal`` records the conflict ahead of the credential and body checks;
-    the first annotation value selects it, and a write does not parse the listing's limit."""
+    """Real's answer on each write and credential here, as ``object_method_refusal`` records it:
+    ``names`` is the conflict's, a lone `annotationName` naming only itself, and None the
+    Signature Version 4 refusal."""
     import httpx
 
     base_url, settings = live_server
@@ -2551,7 +2565,9 @@ def test_annotation_write_conflicts_precede_credentials_and_body_checks(
     if names is not None:
         expected = {
             "Code": "InvalidArgument",
-            "Message": f"Conflicting query string parameters: {names}",
+            "Message": f"Conflicting query string parameters: {names}"
+            if ", " in names
+            else "Unexpected query string parameter",
             "ArgumentName": "ResourceType",
             "ArgumentValue": names.split(", ")[0],
         }
@@ -2591,12 +2607,13 @@ def test_a_valued_annotation_on_a_write_is_the_object_operation(live_server, met
 _FULL_RANGE = f"bytes 0-{len(OBJECT_TEXT) - 1}/{len(OBJECT_TEXT)}"
 _FIRST_TEN = f"bytes 0-9/{len(OBJECT_TEXT)}"
 # The object's own answer to a GET and a HEAD, as real answered its object (2026-09-29 and
-# 2026-09-30): the query, the headers sent, the status, the range the answer names (None: none) and
-# whether it carries the object's checksum.
+# 2026-09-30; the row with `annotation=v` is `_key_selected`'s): the query, the headers sent, the
+# status, the range the answer names (None: none) and whether it carries the object's checksum.
 _OBJECT_ANSWER_ROWS = [
     ("", {}, 200, None, False),
     ("versionId=null", {}, 200, None, False),
     ("partNumber=1", {}, 206, _FULL_RANGE, False),
+    ("annotation=v&annotationName=x&partNumber=1", {}, 206, _FULL_RANGE, False),
     ("partNumber=01", {}, 206, _FULL_RANGE, False),
     ("partNumber=1&versionId=null", {}, 206, _FULL_RANGE, False),
     ("", {"Range": "bytes=0-9"}, 206, _FIRST_TEN, False),
@@ -2921,6 +2938,72 @@ def test_an_objects_attributes_size_is_its_bytes(tmp_path):
     size = len(text.encode("utf-8"))
     assert size > len(text) and body.headers["content-length"] == str(size)
     assert f"<ObjectSize>{size}</ObjectSize>" in attributes.text
+
+
+@pytest.mark.parametrize(
+    "query, written",
+    [
+        ("list-type=2", ["<Key>c&#x1;k</Key>", "<Key>d&#x1f;x</Key>", "<Key>e\x7fy</Key>"]),
+        ("list-type=2&delimiter=%01", ["<Delimiter>&#x1;</Delimiter>", "<Prefix>c&#x1;</Prefix>"]),
+        ("delimiter=%01&max-keys=1", ["<NextMarker>c&#x1;</NextMarker>"]),
+        (
+            "max-keys=1&marker=c%01k&delimiter=z",
+            ["<Marker>c&#x1;k</Marker>", "<NextMarker>c&#x1;m"],
+        ),
+        ("list-type=2&delimiter=%00", ["<Delimiter>&#x0;</Delimiter>"]),
+        (
+            "list-type=2&prefix=c%01&encoding-type=url",
+            ["<Prefix>c%01</Prefix>", "<Key>c%01k</Key>"],
+        ),
+        ("versions&max-keys=1", ["<NextKeyMarker>c&#x1;k</NextKeyMarker>", "<Key>c&#x1;k</Key>"]),
+        ("versions&delimiter=%01", ["<Delimiter>&#x1;</Delimiter>", "<Prefix>c&#x1;</Prefix>"]),
+        ("uploads&prefix=c%00", ["<Prefix>c&#x0;</Prefix>"]),
+    ],
+)
+def test_a_listing_writes_a_control_character_as_a_hexadecimal_reference(tmp_path, query, written):
+    """Each row is what real's listing wrote for the same query over the same keys, written here by
+    ``backlot.routers.s3._xml_listing_text``; U+007F stays as it is."""
+    keys = ["c\x01k", "c\x01m", "d\x1fx", "e\x7fy", "plain"]
+    records = [
+        complete(
+            source_type="s3",
+            doc_id=f"s3-control-{i}",
+            bucket="eng-artifacts",
+            group="engineering",
+            key=key,
+            title="control",
+            content="x",
+            author_email="ava@acme.com",
+            author_groups=["engineering"],
+            visibility="public",
+        )
+        for i, key in enumerate(keys)
+    ]
+    tiny = tiny_corpus(tmp_path, records)
+    with client_for(tiny, reload=True) as client:
+        r = _s3_get(client, f"/s3/eng-artifacts?{query}", tiny.admin_token)
+    assert r.status_code == 200, r.text
+    for element in written:
+        assert element in r.text, element
+
+
+@pytest.mark.parametrize(
+    "query, status",
+    [
+        ("list-type=2&prefix=c%00", 400),
+        ("marker=a%00", 400),
+        ("list-type=2&start-after=a%00", 400),
+        ("versions&key-marker=c%00", 405),
+        ("uploads&key-marker=c%00", 405),
+    ],
+)
+def test_a_head_reads_a_nul_in_a_listing_as_its_get_does(live_server, query, status):
+    """The listing's NUL refusal (``backlot.routers.s3._listing_nul_refusal``) is a HEAD's 400 with
+    no body; on `?versions` and `?uploads` the selector's 405 comes first, as real answered each
+    HEAD."""
+    base_url, settings = live_server
+    head = _signed(base_url, f"/s3/eng-artifacts?{query}", settings.admin_token, method="HEAD")
+    assert (head.status_code, head.content) == (status, b"")
 
 
 def test_the_listing_location_and_object_still_answer_and_an_unknown_key_is_ignored(live_server):
@@ -3350,6 +3433,13 @@ _PARAMETER_ROWS = [
     ("GET", "/s3/eng-artifacts/runbooks/oncall.md?annotationName=v&website=v", 400,
      "Conflicting query string parameters: annotationName, website",
      _argued("ResourceType", "annotationName")),
+    # ... and in the conflicts `_key_selected` counts it in beside `annotation`.
+    ("GET", "/s3/eng-artifacts/runbooks/oncall.md?annotation&annotationName=v&acl", 400,
+     "Conflicting query string parameters: acl, annotation, annotationName",
+     _argued("ResourceType", "acl")),
+    ("GET", "/s3/no-such-bucket/k.txt?annotation&partNumber=1&annotationName=v", 400,
+     "Conflicting query string parameters: annotation, annotationName, partNumber",
+     _argued("ResourceType", "annotation")),
     # ListObjectVersions' own, before the bucket and after it.
     ("GET", "/s3/no-such-bucket?versions&max-keys=abc", *_MAX_KEYS_ABC),
     ("GET", "/s3/no-such-bucket?versions&version-id-marker=x", *_MARKER_WITHOUT_KEY),
@@ -3411,6 +3501,59 @@ _PARAMETER_ROWS = [
     ("GET", "/s3/eng-artifacts?max-keys=-1&response-foo=x", *_FOO_AT_A_BUCKET),
     ("GET", "/s3/eng-artifacts?encoding-type=bogus&response-foo=x", *_FOO_AT_A_BUCKET),
     ("GET", "/s3/eng-artifacts?uploads&response-foo=x", *_FOO_AT_A_BUCKET),
+    # A control character echoed in an error body, as a decimal reference
+    # (``backlot.routers.s3._xml_text``).
+    ("GET", f"{OBJECT_PATH}?versionId=a%01b", 400, _BAD_VERSION, _argued("versionId", "a&#1;b")),
+    ("GET", "/s3/eng-artifacts?max-keys=%01", 400,
+     "Provided max-keys not an integer or within integer range", _argued("max-keys", "&#1;")),
+    ("GET", "/s3/eng-artifacts?list-type=2&encoding-type=%1F", 400,
+     "Invalid Encoding Method specified in Request", _argued("encoding-type", "&#31;")),
+    ("GET", f"{OBJECT_PATH}?response-a%01b=x", 400,
+     "response-a&#1;b is not in the set of overridable response headers. Please refer to the S3 "
+     "API documentation for a complete list of overridable response headers.",
+     _argued("response-a&#1;b", "x")),
+    ("GET", "/s3/eng-artifacts/no-such%01key", 404, "The specified key does not exist.",
+     "<Key>no-such&#1;key</Key>"),
+    ("GET", "/s3/eng-artifacts/no-such%01key?tagging", 404, "The specified key does not exist.",
+     "<Key>eng-artifacts/no-such&#1;key</Key>"),
+    ("GET", f"{OBJECT_PATH}?uploadId=x%01y", 404,
+     "The specified upload does not exist. The upload ID may be invalid, or the upload may have "
+     "been aborted or completed.", "<UploadId>x&#1;y</UploadId>"),
+    # A NUL in a listing's prefix or marker, and what comes before and after it
+    # (``backlot.routers.s3._nul_refusal``).
+    ("GET", "/s3/eng-artifacts?list-type=2&prefix=c%00", 400, _NUL, _argued("prefix", "c&#0;")),
+    ("GET", "/s3/eng-artifacts?prefix=c%00", 400, _NUL, _argued("prefix", "c&#0;")),
+    ("GET", "/s3/eng-artifacts?list-type=2&start-after=a%00", 400, _NUL,
+     _argued("key-marker", "a&#0;")),
+    ("GET", "/s3/eng-artifacts?marker=a%00", 400, _NUL, _argued("key-marker", "a&#0;")),
+    ("GET", "/s3/eng-artifacts?list-type=2&start-after=a%00&prefix=c%00", 400, _NUL,
+     _argued("prefix", "c&#0;")),
+    ("GET", "/s3/eng-artifacts?list-type=2&prefix=c%00&max-keys=-1", 400, _NUL,
+     _argued("prefix", "c&#0;")),
+    ("GET", "/s3/eng-artifacts?list-type=2&prefix=c%00&max-keys=abc", 400,
+     "Provided max-keys not an integer or within integer range", _argued("max-keys", "abc")),
+    ("GET", "/s3/eng-artifacts?marker=a%00&encoding-type=bogus", 400,
+     "Invalid Encoding Method specified in Request", _argued("encoding-type", "bogus")),
+    ("GET", "/s3/eng-artifacts?list-type=2&prefix=c%00&continuation-token=garbage", 400,
+     "The continuation token provided is incorrect", _argued("continuation-token")),
+    ("GET", "/s3/no-such-bucket?list-type=2&prefix=c%00", 404, _NO_BUCKET,
+     "<BucketName>no-such-bucket</BucketName>"),
+    ("GET", "/s3/eng-artifacts?versions&prefix=c%00", 400, _NUL, _argued("prefix", "c&#0;")),
+    ("GET", "/s3/eng-artifacts?versions&key-marker=c%00", 400, _NUL,
+     _argued("key-marker", "c&#0;")),
+    ("GET", "/s3/eng-artifacts?versions&key-marker=c%00&prefix=c%00", 400, _NUL,
+     _argued("prefix", "c&#0;")),
+    ("GET", "/s3/eng-artifacts?versions&prefix=c%00&max-keys=-1", 400,
+     "max-keys cannot be negative", _argued("max-keys")),
+    ("GET", "/s3/eng-artifacts?versions&key-marker=c%00&version-id-marker=bogus", 400,
+     _BAD_VERSION, _argued("version-id-marker", "bogus")),
+    ("GET", "/s3/eng-artifacts?uploads&key-marker=c%00", 400, _NUL,
+     _argued("key-marker", "c&#0;")),
+    ("GET", "/s3/eng-artifacts?uploads&key-marker=c%00&upload-id-marker=x", 400, _NUL,
+     _argued("key-marker", "c&#0;")),
+    ("GET", "/s3/eng-artifacts?uploads&key-marker=c%00&max-uploads=-1", 400,
+     "Argument max-uploads must be an integer between 0 and 2147483647",
+     _argued("max-uploads", "-1")),
 ]
 # fmt: on
 

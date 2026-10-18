@@ -804,6 +804,53 @@ def test_hubspot_search_every_operator(client, admin_h):
     }
 
 
+def test_hubspot_search_string_filters_ignore_value_case(client, admin_h):
+    """A string property's value is compared in any case and an enumeration's exactly, as
+    `_match_one` records."""
+    f = lambda **kw: _hs_filter(client, admin_h, **kw)  # noqa: E731
+    others = {"Borealis Clinics", "Stealth Health Co"}
+
+    assert f(propertyName="name", operator="EQ", value="acme health") == {"Acme Health"}
+    assert f(propertyName="name", operator="EQ", value="ACME HEALTH") == {"Acme Health"}
+    assert f(propertyName="name", operator="NEQ", value="ACME HEALTH") == others
+    assert f(propertyName="name", operator="IN", values=["acme health"]) == {"Acme Health"}
+    assert f(propertyName="name", operator="NOT_IN", values=["ACME HEALTH"]) == others
+
+
+@pytest.mark.parametrize(
+    "object_type, prop, stored",
+    [
+        ("contacts", "lifecyclestage", "lead"),
+        ("deals", "dealstage", "closedwon"),
+        ("deals", "pipeline", "default"),
+        ("companies", "industry", "COMPUTER_SOFTWARE"),
+    ],
+)
+def test_hubspot_search_compares_an_enumeration_value_exactly(tmp_path, object_type, prop, stored):
+    """Each enumeration `_match_one` compares exactly is matched only as stored, under each of the
+    four operators."""
+    from tests._helpers import client_for
+
+    record = {"source_type": "hubspot", "doc_id": "hs-enum", "object_type": object_type}
+    s = tiny_corpus(tmp_path, [{**record, "title": "r", "properties": {prop: stored}}])
+    other = stored.swapcase()
+    with client_for(s, reload=True) as c:
+        h = {"Authorization": f"Bearer {s.admin_token}"}
+
+        def total(op, **value):
+            body = {
+                "filterGroups": [{"filters": [{"propertyName": prop, "operator": op, **value}]}]
+            }
+            return c.post(
+                f"/hubspot/crm/v3/objects/{object_type}/search", headers=h, json=body
+            ).json()["total"]
+
+        assert (total("EQ", value=stored), total("EQ", value=other)) == (1, 0)
+        assert (total("IN", values=[stored]), total("IN", values=[other])) == (1, 0)
+        assert (total("NEQ", value=stored), total("NEQ", value=other)) == (0, 1)
+        assert (total("NOT_IN", values=[stored]), total("NOT_IN", values=[other])) == (0, 1)
+
+
 @pytest.mark.parametrize(
     "prop, value, want",
     [

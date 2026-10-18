@@ -3,7 +3,7 @@
   "endpoints": [
     "https://api.linear.app/graphql"
   ],
-  "measured": "2026-10-16",
+  "measured": "2026-10-17",
   "root": {
     "query": "Query"
   },
@@ -5411,6 +5411,13 @@
           "kind": "missing_field",
           "severity": "gap"
         },
+        "integrationSyncResourceIds": {
+          "status": "missing",
+          "type": "[String!]!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Linear's own description marks it internal: \"[INTERNAL] Jira project IDs available for issue sync.\" It answers for one integration of the workspace, and Backlot serves none: the integration roots on `Query`, `integration`, `integrations` and `integrationJiraProjectStatuses` among them, are gaps in this file. Measured against api.linear.app on 2026-10-17 with a personal API key: it takes one argument, `integrationId: String!` (\"The workspace integration to configure.\"), and answers `[String!]!`. Asked for four ids no integration carries (`not-a-real-integration`, the nil UUID, a made-up UUID and the empty string), it answered each with a 200 whose body is `data: null` and an `errors` member, `Entity not found: Integration` with `INPUT_ERROR`. The workspace measured answered `integrations` with no nodes, so the list this field answers for an integration that exists was not observed."
+        },
         "integrationTemplate": {
           "status": "missing",
           "type": "IntegrationTemplate!",
@@ -5620,6 +5627,13 @@
           "type": "OAuthApplication!",
           "kind": "missing_field",
           "severity": "gap"
+        },
+        "oauthApplicationCodingSessionTrustedSource": {
+          "status": "missing",
+          "type": "OAuthApplicationCodingSessionTrustedSource!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Linear's own description: \"Returns the authenticated OAuth application's trusted-source status for Coding Sessions in the workspace. Requires an OAuth access token with the `read` scope.\" The status it answers \"Combines workspace availability with the application's trust setting\", in the words of its type's description, and Backlot serves neither: no field of this schema answers whether Coding Sessions are available, and `backlot.acl.Acl.resolve` turns a token into a person, the admin caller or no one, never an application, while `oauthApplication` and `oauthApplications` are gaps in this file as well. Measured against api.linear.app on 2026-10-17: it takes no argument and answers `OAuthApplicationCodingSessionTrustedSource!`, an object of two fields, `enabled: Boolean!` and `disabledReason: CodingSessionsDisabledReason` (\"The first reason that enabled is false, or null when enabled is true.\"), an enum of three values, `CODING_SESSIONS_DISABLED`, `TRUSTED_EXTERNAL_SOURCES_UNAVAILABLE` and `APP_NOT_TRUSTED`. Asked with a personal API key, it answered a 200 whose body is `data: null` and an `errors` member, `Using an unexpected authentication method (apiKey) for an operation` with `FORBIDDEN`. Its answer to an OAuth access token was not measured: the measurement held a personal API key and no OAuth access token. This schema declares neither type."
         },
         "oauthApplications": {
           "status": "missing",

@@ -496,6 +496,82 @@ def test_linear_root_connections_reject_sort_with_order_by(client, admin_h):
 # --- Linear relations / children / attachments / releases -----------------------
 
 
+def test_linear_children_and_users_are_newest_first(tmp_path):
+    """``Issue.children`` and ``users`` are newest first by the field ``orderBy`` names, and by
+    ``createdAt`` when it names none, as ``resolve_issue_children`` and ``_ordered_users`` record.
+    ``ENG-2`` was created first and edited last, so the two fields disagree."""
+    settings = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "linear",
+                "doc_id": "parent",
+                "team": "engineering",
+                "group": "engineering",
+                "title": "Parent",
+                "content": "p",
+                "identifier": "ENG-1",
+                "author_email": "ava@acme.com",
+                "visibility": "public",
+                "created": "2026-01-01T00:00:00Z",
+            },
+            {
+                "source_type": "linear",
+                "doc_id": "edited-last",
+                "team": "engineering",
+                "group": "engineering",
+                "title": "Edited last",
+                "content": "a",
+                "identifier": "ENG-2",
+                "author_email": "bob@acme.com",
+                "visibility": "public",
+                "parent": "ENG-1",
+                "created": "2026-01-02T00:00:00Z",
+                "updated": "2026-04-01T00:00:00Z",
+            },
+            {
+                "source_type": "linear",
+                "doc_id": "created-last",
+                "team": "engineering",
+                "group": "engineering",
+                "title": "Created last",
+                "content": "b",
+                "identifier": "ENG-3",
+                "author_email": "mia@acme.com",
+                "visibility": "public",
+                "parent": "ENG-1",
+                "created": "2026-03-01T00:00:00Z",
+                "updated": "2026-02-01T00:00:00Z",
+            },
+        ],
+    )
+    with client_for(settings) as client:
+        headers = {"Authorization": settings.admin_token}
+
+        def nodes(query, *path):
+            body = gql(client, query, headers).json()
+            assert "errors" not in body, body.get("errors")
+            found = body["data"]
+            for step in path:
+                found = found[step]
+            return found["nodes"]
+
+        def children(order_by):
+            arg = f"(orderBy: {order_by})" if order_by else ""
+            query = '{ issue(id: "ENG-1") { children%s { nodes { identifier } } } }' % arg
+            return [node["identifier"] for node in nodes(query, "issue", "children")]
+
+        assert children("") == children("createdAt") == ["ENG-3", "ENG-2"]
+        assert children("updatedAt") == ["ENG-2", "ENG-3"]
+        for order_by in ("", "(orderBy: createdAt)", "(orderBy: updatedAt)"):
+            got = [
+                node["createdAt"]
+                for node in nodes("{ users%s { nodes { createdAt } } }" % order_by, "users")
+            ]
+            assert len(got) >= 2
+            assert got == sorted(got, reverse=True)
+
+
 def test_linear_children_is_the_exact_inverse_of_parent(client, admin_h):
     """Linear DEFINES `children` as the inverse of `parent`, so the two must never disagree. They
     are both read off the `parent_id` resolved at import rather than joined on `identifier`,

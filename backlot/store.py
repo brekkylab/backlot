@@ -1522,13 +1522,18 @@ def count_linear_comments(conn, *, issue_id=None, visible_ids=None, prefilter=No
 
 
 def linear_children(
-    conn, parent_id, *, visible_ids=None, limit=50, offset=0, prefilter=None
+    conn, parent_id, *, visible_ids=None, limit=50, offset=0, prefilter=None, order_by=None
 ) -> list[sqlite3.Row]:
     """Sub-issues of an issue — every row whose resolved ``parent_id`` is this one.
 
     An indexed equality on an issue id, NOT a join on ``identifier``: identifiers repeat, so a
     join would attach one issue's children to every issue sharing its key. Resolved once at import,
-    which is what makes this the exact inverse of ``Issue.parent``."""
+    which is what makes this the exact inverse of ``Issue.parent``.
+
+    Newest first by ``order_by``, and by ``createdAt`` when it is absent, the order
+    :func:`_linear_order` gives ``issues``. Measured on api.linear.app on 2026-10-04: no
+    ``orderBy`` and ``orderBy: createdAt`` were newest ``createdAt`` first, and
+    ``orderBy: updatedAt`` was newest ``updatedAt`` first."""
     sql = "SELECT * FROM linear_issues WHERE parent_id = ?"
     params: list = [parent_id]
     if prefilter:
@@ -1536,7 +1541,7 @@ def linear_children(
         sql += f" AND {frag}"
         params += fparams
     clause, cparams = _acl_clause("linear", visible_ids=visible_ids)
-    sql += clause + " ORDER BY created_ts, id LIMIT ? OFFSET ?"
+    sql += clause + f" ORDER BY {_linear_order(order_by)} LIMIT ? OFFSET ?"
     return conn.execute(sql, params + cparams + [limit, offset]).fetchall()
 
 

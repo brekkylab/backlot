@@ -1105,6 +1105,18 @@ def resolve_comments(
     return _connection([_comment(r, info) for r in rows], offset, has_next)
 
 
+def _ordered_users(users: list[dict], order_by) -> list[dict]:
+    """``users`` newest first by the field ``orderBy`` names, and by ``createdAt`` when it names
+    none. The served timestamps, which :func:`_user` derives from the address rather than a stored
+    column, so the sort is the value the client reads back. Measured on api.linear.app on
+    2026-10-04: no ``orderBy`` and ``orderBy: createdAt`` were newest ``createdAt`` first, and
+    ``orderBy: updatedAt`` was newest ``updatedAt`` first. ``sort:`` is the other order and is
+    applied instead of this one."""
+    field = order_by if order_by in ("createdAt", "updatedAt") else "createdAt"
+    users.sort(key=lambda user: user[field], reverse=True)
+    return users
+
+
 def _sorted_users(users: list[dict], sort) -> list[dict]:
     """``users(sort:)`` — Linear's ``UserSortInput``, of which Backlot declares ``name``
     (``UserNameSort``: ``order`` and ``nulls``, the latter defaulting to ``last`` exactly as the
@@ -1137,14 +1149,12 @@ def resolve_users(
     ctx = _ctx(info)
     offset, limit, floor = _slice(first, after, last, before)
     _reject_sort_with_order_by(sort, orderBy)
-    users = _sorted_users(
-        [
-            _user(r["email"], r["display_name"], info)
-            for r in store.list_users(ctx["conn"])
-            if _match_user(r, filter)
-        ],
-        sort,
-    )
+    users = [
+        _user(r["email"], r["display_name"], info)
+        for r in store.list_users(ctx["conn"])
+        if _match_user(r, filter)
+    ]
+    users = _sorted_users(users, sort) if sort else _ordered_users(users, orderBy)
     offset = _from_end(offset, limit, floor, len(users))
     return _connection(users[offset : offset + limit], offset, offset + limit < len(users))
 
@@ -1314,11 +1324,20 @@ def resolve_issue_parent(issue, info):
 
 
 def resolve_issue_children(
-    issue, info, first=None, after=None, last=None, before=None, filter=None, **_ignored
+    issue,
+    info,
+    first=None,
+    after=None,
+    last=None,
+    before=None,
+    filter=None,
+    orderBy=None,
+    **_ignored,
 ) -> dict:
     """``Issue.children`` — the exact inverse of ``Issue.parent``, read off the ``parent_id``
     resolved at import. Not a join on ``identifier``: keys repeat, so that would attach one
-    issue's children to every issue sharing its key."""
+    issue's children to every issue sharing its key. Newest first by ``orderBy``, as
+    ``store.linear_children`` records."""
     ctx = _ctx(info)
     conn, visible = ctx["conn"], ctx["visible_ids"]
     offset, limit, floor = _slice(first, after, last, before)
@@ -1331,12 +1350,23 @@ def resolve_issue_children(
             floor,
             len(
                 store.linear_children(
-                    conn, issue_id, visible_ids=visible, limit=PAGE_MAX, prefilter=prefilter
+                    conn,
+                    issue_id,
+                    visible_ids=visible,
+                    limit=PAGE_MAX,
+                    prefilter=prefilter,
+                    order_by=orderBy,
                 )
             ),
         )
     rows = store.linear_children(
-        conn, issue_id, visible_ids=visible, limit=limit + 1, offset=offset, prefilter=prefilter
+        conn,
+        issue_id,
+        visible_ids=visible,
+        limit=limit + 1,
+        offset=offset,
+        prefilter=prefilter,
+        order_by=orderBy,
     )
     rows, has_next = _page(rows, limit)
     return _connection([_issue(r, info) for r in rows], offset, has_next)

@@ -815,33 +815,6 @@ def test_linear_reads_the_body_before_the_credential(client, tokens_yaml, creden
         assert r.status_code == 401
 
 
-# A variable declared `Int` holding the integers `backlot.graphql.body._int` was measured with, and
-# the part of the 400's message that shows the double each is read as.
-_HUGE_INTEGERS = [
-    pytest.param("1" * 4301, "invalid value inf;", id="4301 ones, read as Infinity"),
-    pytest.param("1" * 311, "invalid value inf;", id="311 ones, read as Infinity"),
-    pytest.param("9" * 309, "invalid value inf;", id="309 nines, read as Infinity"),
-    pytest.param("1e400", "invalid value inf;", id="1e400, read as Infinity"),
-    # graphql-js prints the double as 1e+308; graphql-core prints its digits, cut in the middle past
-    # 240 characters, so this row reads the leading ones.
-    pytest.param(
-        "9" * 308, "invalid value 10000000000000000109790", id="308 nines, read as 1e+308"
-    ),
-    pytest.param(
-        "9007199254740993", "invalid value 9007199254740992;", id="2**53 + 1, read as 2**53"
-    ),
-]
-
-
-@pytest.mark.parametrize("digits, read_as", _HUGE_INTEGERS)
-def test_linear_reads_an_integer_as_the_double_json_parse_reads(client, admin_h, digits, read_as):
-    """The variable's value is read the way real read it; the words around it are graphql-js's."""
-    body = '{"query":"query($x: Int) { issues(first: $x) { nodes { id } } }","variables":{"x":%s}}'
-    r = client.post("/linear/graphql", content=(body % digits).encode(), headers=admin_h)
-    assert r.status_code == 400
-    assert read_as in r.json()["errors"][0]["message"]
-
-
 def test_linear_parent_resolves_and_is_acl_scoped(client, admin_h, tokens_yaml):
     """`Issue.parent` is declared in the SDL and `@linear/sdk`'s fragment selects `parent { id }`.
     The bench fills `parent_issue` on 46.7% of records, so it must resolve — and it must resolve

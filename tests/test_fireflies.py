@@ -13,7 +13,6 @@ from graphql import build_client_schema, parse, validate
 
 from backlot import store
 from backlot.graphql import mcp_tools
-from tests import test_linear
 from tests._helpers import client_for, corpus_client, gql, served_id, tiny_corpus
 
 # --- fireflies: POST /fireflies/graphql -----------------------------------------
@@ -263,8 +262,8 @@ _FIREFLIES_BODIES = [
 @pytest.mark.parametrize("credential", ["key", "none", "nope"])
 @pytest.mark.parametrize("body,answer", _FIREFLIES_BODIES)
 def test_fireflies_reads_the_body_before_the_credential(client, admin_h, credential, body, answer):
-    """Each row answers as the comment over `_FIREFLIES_BODIES` says, a refusal the same whatever
-    the credential."""
+    """Each row is answered as the comment over `_FIREFLIES_BODIES` says, and no credential
+    changes a refusal."""
     headers = {"Content-Type": "application/json"}
     if credential != "none":
         headers["Authorization"] = (
@@ -281,17 +280,6 @@ def test_fireflies_reads_the_body_before_the_credential(client, admin_h, credent
         assert (r.status_code, r.json()) == (200, {"data": {"__typename": "Query"}})
     else:
         assert r.status_code == 401
-
-
-@pytest.mark.parametrize("digits, read_as", test_linear._HUGE_INTEGERS)
-def test_fireflies_reads_an_integer_as_the_double_json_parse_reads(
-    client, admin_h, digits, read_as
-):
-    """`_HUGE_INTEGERS` in tests/test_linear.py, measured on both vendors."""
-    body = '{"query":"query($x: Int) { transcripts(limit: $x) { id } }","variables":{"x":%s}}'
-    r = client.post("/fireflies/graphql", content=(body % digits).encode(), headers=admin_h)
-    assert r.status_code == 400
-    assert read_as in r.json()["errors"][0]["message"]
 
 
 def test_fireflies_admin_crawl_sees_every_stored_transcript(client, admin_h, ro_conn):

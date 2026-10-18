@@ -770,12 +770,13 @@ async def search(request: Request):
     query = body.get("query", "")
     want = body.get("filter", {}).get("value")  # 'page' | 'database' | 'data_source' | None
     version = _version(request)
-    # A `data_source` filter keeps the database rows, served as databases before 2025-09-03 and as
-    # their data sources from it: real answered it with the three databases under 2022-06-28 and
-    # with their three data sources under 2025-09-03 and 2026-03-11 (2026-10-14). An unfiltered
-    # search does the same: `{}` lists page and database under 2022-06-28, and page and
-    # data_source (each database's data source, and no database) from 2025-09-03 on
-    # (api.notion.com, 2026-10-14).
+    # A `data_source` filter keeps the database rows. That filter, an unfiltered search and a
+    # `query` list each database as a database before 2025-09-03 and as its data source from it,
+    # in the shape `GET /v1/data_sources/{id}` answers less its `request_id`. Real answered the
+    # filter with the three databases under 2022-06-28 and their three data sources under
+    # 2025-09-03 and 2026-03-11 (2026-10-14), `{}` the same beside the pages (2026-10-14 and
+    # 2026-10-17), and a `query` naming one database's title with that database's data source
+    # under 2025-09-03 (2026-10-17).
     render_data_source = _data_sources_model(version) and want in (None, "data_source")
     offset = pagination.decode_cursor(body.get("start_cursor"))
     limit = _page_size(body.get("page_size"))

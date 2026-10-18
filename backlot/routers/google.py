@@ -636,9 +636,21 @@ async def gmail_label_get(user_id: str, label_id: str, request: Request):
     return _label_obj(label_id, (messages, threads) if label_id == _GMAIL_DEFAULT_LABEL else (0, 0))
 
 
-# The lookbehinds are the four `_GMAIL_ADDRESS_KEYS`; their comment says why.
+# The operators that read the word after whitespace as their value. Measured on a Workspace
+# mailbox: on 2026-10-16, `from: <word>`, `bcc: <word>`, `to:<tab><word>`, `From: <word>` and
+# `TO: <word>` answered the ids the operator answers with no whitespace, and `to: from: bcc:`
+# answered nothing; on 2026-10-17, so did `subject:`, `label:` and `in:` after a space or a tab
+# (`subject:` after two spaces or a no-break space too), and `after:`, `before:`, `newer:` and
+# `older:` after one space or three. A tab after those four leaves the operator empty:
+# `after:<tab>1` answered the messages holding both search terms `after` and `1`. `has:`,
+# `newer_than:`, `older_than:` and `larger:` read nothing after a space: `has: attachment` answered
+# nothing where `has:attachment` answered 160 messages.
+_GMAIL_SPACED = (
+    r"(?<=\bfrom:)|(?<=\bto:)|(?<=\bcc:)|(?<=\bbcc:)|(?<=\bsubject:)|(?<=\blabel:)|(?<=\bin:)"
+)
+_GMAIL_DATED = r"(?<=\bafter:)|(?<=\bbefore:)|(?<=\bnewer:)|(?<=\bolder:)"
 _GMAIL_OP = re.compile(
-    r'(\w+):(?:(?:(?<=\bfrom:)|(?<=\bto:)|(?<=\bcc:)|(?<=\bbcc:))\s*)?("[^"]*"|\S*)', re.IGNORECASE
+    rf'(\w+):(?:(?:{_GMAIL_SPACED})\s*|(?:{_GMAIL_DATED}) *)?("[^"]*"|\S*)', re.IGNORECASE
 )
 # operators we honor; anything else stays as free text
 _GMAIL_KEYS = {
@@ -664,13 +676,8 @@ _GMAIL_KEYS = {
 # `newer`, as an empty `after:` is `after`, and `_GMAIL_OP` leaves both in the free text.
 _GMAIL_KEY_ALIASES = {"newer": "after", "older": "before"}
 # The address operators. A Gmail search ignores one with no value rather than searching it as free
-# text, and reads the word after whitespace as its value. Measured on a Workspace mailbox: `to:`,
-# `from:` and `bcc:` with no value answered every message, as no `q` does (2026-10-14), and so did
-# `cc:`, `from:""` and `to:""` (2026-10-16). On 2026-10-16, `from: <word>`, `bcc: <word>`,
-# `to:<tab><word>`, `From: <word>` and `TO: <word>` answered the ids the operator answers with no
-# whitespace, and `to: from: bcc:` answered nothing. `has: attachment` and `newer_than: 7d` answered
-# nothing where `has:attachment` and `newer_than:7d` answered 160 and 36 messages, so `_GMAIL_OP`
-# reads across whitespace for these four alone.
+# text. Measured on a Workspace mailbox: `to:`, `from:` and `bcc:` with no value answered every
+# message, as no `q` does (2026-10-14), and so did `cc:`, `from:""` and `to:""` (2026-10-16).
 _GMAIL_ADDRESS_KEYS = {"from", "to", "cc", "bcc"}
 # The operators whose value a `+` ends. Measured on a Workspace mailbox on 2026-10-15:
 # `cc:<local>+<word>`, `from:<local>+update` and `to:<local>+update` answered the ids of the
@@ -852,6 +859,8 @@ def _resolve_relative_dates(ops: dict) -> dict:
 _GMAIL_ADDRESS_WORD = re.compile(r"[\w&]+")
 _GMAIL_ONE_ADDRESS = re.compile(r"[^@\s]+@[^@\s]+")
 _GMAIL_ADDRESS = re.compile(r"[\w.+'-]+@[\w-]+(?:\.[\w-]+)+")
+# What keeps a hyphenated value from being read joined as well (`_gmail_address_match`).
+_GMAIL_UNJOINED = re.compile(r"--|[\w&]\.[\w&]")
 
 
 def _gmail_address_match(header: str | None, value: str) -> bool:
@@ -863,7 +872,11 @@ def _gmail_address_match(header: str | None, value: str) -> bool:
     where `len`, `ena`, `par` and `com.acme` do not. `_` joins the characters around it into one
     word, so `ops` does not match `ops_team@corp.example`, and `&` counts as a word character too,
     where the rest of ASCII punctuation does not. A value with no word in it, such as `.`, `@` or
-    `""`, is ignored and matches every message, a message without the header included.
+    `""`, is ignored and matches every message, a message without the header included. A value
+    with a hyphen matches its words joined as well (`no-reply` finds `noreply@` beside
+    `no-reply@`, `jt-snowball` finds `@jtsnowball.com`) unless it holds `--` or a `.` between two
+    word characters (`jt-snowball.com` is its three words alone); a joined value does not find the
+    hyphenated spelling.
 
     Measured on a Workspace mailbox of 595 messages on 2026-10-15: 113 searches on `cc:` and
     `bcc:`, compared with the headers of every message, all match this rule, and of the 32 ASCII
@@ -871,9 +884,15 @@ def _gmail_address_match(header: str | None, value: str) -> bool:
     every message. On the same mailbox at 601 messages on 2026-10-16, 122 of 124 `from:` and `to:`
     searches built from its own addresses, local parts, domains and display-name words match this
     rule over `From`, and over `To`, `Cc` and `Bcc` together; `to:me` counts the four messages
-    where the caller is in `Bcc` alone. The other two are a hyphenated value, which real also reads
-    joined (`no-reply` finds `noreply@` as well as `no-reply@`), and part of a Korean display
-    name. On 2026-10-14, `cc:<a local part>+x` read `+x` as a search term of its own."""
+    where the caller is in `Bcc` alone. The other two are a hyphenated value, read joined as above,
+    and part of a Korean display name. At 603 messages on 2026-10-17, the 311 `from:`, `to:` and
+    `cc:` searches with a hyphen in them (a header's words split by one hyphen and by two, into two
+    and three parts, beside an `@` or a `.`, and each hyphenated local part whole and in pairs),
+    none quoted and none led by `-`, match this rule, and at 604 on 2026-10-18 so did `bcc:` on a
+    word of the one `Bcc` address there, split by one hyphen and by two and beside a `.`. Two forms
+    it does not read: a quoted value found its words alone, and a value led by `-` answered as the
+    negation `-from:` does. On 2026-10-14, `cc:<a local part>+x` read `+x` as a search term of its
+    own."""
     header = (header or "").lower()
     value = value.lower()
     if _GMAIL_ONE_ADDRESS.fullmatch(value):
@@ -881,7 +900,14 @@ def _gmail_address_match(header: str | None, value: str) -> bool:
     words, have = _GMAIL_ADDRESS_WORD.findall(value), _GMAIL_ADDRESS_WORD.findall(header)
     if not words:
         return True
-    return any(have[i : i + len(words)] == words for i in range(len(have) - len(words) + 1))
+    alternatives = [words]
+    if "-" in value and not _GMAIL_UNJOINED.search(value):
+        alternatives.append(_GMAIL_ADDRESS_WORD.findall(value.replace("-", "")))
+    return any(
+        have[i : i + len(option)] == option
+        for option in alternatives
+        for i in range(len(have) - len(option) + 1)
+    )
 
 
 def _gmail_op_match(row, ops: dict) -> bool:
@@ -2052,7 +2078,7 @@ def _drive_folder_obj(conn, name: str, me: str | None = None) -> dict:
         "webViewLink": f"https://drive.google.com/drive/folders/{fid}",
         "iconLink": "https://drive.google.com/icons/folder.png",
         "capabilities": {
-            "canDownload": False,
+            "canDownload": True,
             "canListChildren": True,
             "canComment": False,
             "canEdit": False,
@@ -2755,6 +2781,10 @@ async def drive_files_get(file_id: str, request: Request):
         # cannot see with the 404 notFound an id that names nothing gets, `fields` mask or not.
         name = _drive_folder_name_by_id(conn, file_id)
         if name is not None and store.drive_folder_has_visible(conn, name, ids):
+            # Measured 2026-10-16: a visible folder cannot be downloaded, just as a native
+            # Docs Editors file cannot; a folder the caller cannot see remains a 404.
+            if gerr.alt_format(request.query_params) == "media":
+                raise gerr.not_downloadable()
             keys = _drive_get_field_keys(gerr.first_repeat(request.query_params, "fields"))
             return _drive_project([_drive_folder_obj(conn, name, caller.email)], keys)[0]
         raise gerr.not_found_file(file_id)
@@ -2908,8 +2938,7 @@ async def drive_files_permissions(file_id: str, request: Request):
 # The Office row is narrower than the widely-cited bug reports (googlesheets4#275 and friends)
 # suggest — they only ever show the family that matches. Measured both ways: .xlsx -> Sheets and
 # .docx -> Docs give the Office message, while .xlsx -> Docs and .docx -> Sheets give the plain
-# invalid-argument one. `.pptx -> Slides` follows the confirmed pattern but was not itself
-# measured; no .pptx was available in the probed account.
+# invalid-argument one. `.pptx -> Slides` gives the Office message too, measured on 2026-10-10.
 EDITOR_NOT_FOUND = "Requested entity was not found."
 EDITOR_INVALID_ARG = "Request contains an invalid argument."
 EDITOR_OFFICE = (
@@ -2932,19 +2961,18 @@ def _editor_doc(request: Request, file_id: str, *, expect: str):
     reading a Doc through the Sheets API answers 200 with prose sliced into a "grid", plausible
     enough that a client trusts it rather than noticing the id was wrong.
 
-    Sheets and Docs resolve the stored type before visibility: a hidden file of their own type is
-    permission-denied, while a hidden file of another type gets that type's usual answer. Measured
-    on 2026-10-06, and for an Office file on 2026-10-09. Slides was not measured and resolves
-    visibility first."""
+    Sheets, Docs and Slides resolve the stored type before visibility: a hidden file of their own
+    type is permission-denied, while a hidden file of another type gets that type's usual answer.
+    Measured on 2026-10-06, for an Office file on 2026-10-09, and through Slides on 2026-10-10 and
+    2026-10-17."""
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    type_before_acl = expect in {"document", "spreadsheet"}
     # A native Doc/Sheet/Slides id is the SAME id space as Drive's own file id --
     # real Google resolves docs.googleapis.com/etc. off the identical Drive file id, so this has
-    # to resolve the file's own id. Sheets and Docs need the unscoped row to distinguish a missing
-    # id from a stored file that this caller cannot see.
-    row = store.gdrive_by_id(conn, file_id, visible_ids=None if type_before_acl else ids)
+    # to resolve the file's own id, unscoped, to distinguish a missing id from a stored file that
+    # this caller cannot see.
+    row = store.gdrive_by_id(conn, file_id, visible_ids=None)
     if row is None:
         # Folders are synthesized rather than stored, so they miss the lookup above. Real Google
         # calls a folder an invalid argument, not a missing entity, so resolve it before giving up.
@@ -2955,7 +2983,7 @@ def _editor_doc(request: Request, file_id: str, *, expect: str):
     # here too — the fallback stays in one place rather than being decided per route.
     subtype = row["subtype"] or "document"
     if subtype == expect:
-        if type_before_acl and store.gdrive_by_id(conn, file_id, visible_ids=ids) is None:
+        if store.gdrive_by_id(conn, file_id, visible_ids=ids) is None:
             raise gerr.permission_denied()
         return row
     if subtype in _EDITOR_NATIVE:  # a different Workspace type: not this API's entity at all
@@ -4796,7 +4824,7 @@ def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) ->
         "webViewLink": view,
         "iconLink": f"https://drive.google.com/icons/{(row['subtype'] or 'document')}.png",
         "capabilities": {
-            "canDownload": not is_folder,
+            "canDownload": True,
             "canListChildren": is_folder,
             "canComment": not is_folder,
             "canEdit": False,

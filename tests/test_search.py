@@ -252,6 +252,29 @@ def test_gmail_q_parse_and_match():
     assert free == "quarterly" and ops["in"] == ["anywhere"]
 
 
+@pytest.mark.parametrize(
+    "q, free, ops",
+    [
+        ("subject: rollout", "", {"subject": ["rollout"]}),
+        ("subject:\trollout", "", {"subject": ["rollout"]}),
+        ("label: inbox", "", {"label": ["inbox"]}),
+        ("in:\tsent", "", {"in": ["sent"]}),
+        ("after: 2026/10/01", "", {"after": ["1790812800"]}),
+        ("before:   2026/10/01", "", {"before": ["1790812800"]}),
+        ("newer: 2026/10/01", "", {"after": ["1790812800"]}),
+        ("older: 2026/10/01", "", {"before": ["1790812800"]}),
+        ("after:\t2026/10/01", "after: 2026/10/01", {}),
+        ("has: attachment", "has: attachment", {}),
+        ("newer_than: 7d", "newer_than: 7d", {}),
+    ],
+)
+def test_gmail_operators_read_across_whitespace(q, free, ops):
+    """Each row is how the comment on `_GMAIL_OP` reads its query."""
+    from backlot.routers.google import _parse_gmail_q
+
+    assert _parse_gmail_q(q) == (free, ops)
+
+
 def test_gmail_folder_query_sees_the_label_a_message_is_served_under(db):
     """A message the corpus gives no labels is served `labelIds: ["INBOX"]`, so `in:inbox` and
     `label:inbox` have to find it — reading only the STATED labels answered "no such mail" about

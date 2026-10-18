@@ -507,26 +507,33 @@ def test_notion_search_reads_query_and_filter_by_their_types_like_real(
 
 
 @pytest.mark.parametrize(
-    "version, value, kind, served_id",
+    "version, query, value, kind",
     [
-        ("2025-09-03", "data_source", "data_source", synth.notion_data_source_id("nt-tasks-db")),
-        ("2026-03-11", "data_source", "data_source", synth.notion_data_source_id("nt-tasks-db")),
-        ("2022-06-28", "data_source", "database", synth.notion_id("nt-tasks-db")),
-        ("2022-06-28", "database", "database", synth.notion_id("nt-tasks-db")),
+        ("2025-09-03", "", "data_source", "data_source"),
+        ("2026-03-11", "", "data_source", "data_source"),
+        ("2022-06-28", "", "data_source", "database"),
+        ("2022-06-28", "", "database", "database"),
+        ("2025-09-03", "", None, "data_source"),
+        ("2026-03-11", "", None, "data_source"),
+        ("2022-06-28", "", None, "database"),
+        ("2025-09-03", "Eng Tasks", None, "data_source"),
     ],
 )
-def test_notion_search_filter_keeps_the_databases_in_the_versions_shape(
-    client, admin_h, version, value, kind, served_id
+def test_notion_search_lists_the_databases_in_the_versions_shape(
+    client, admin_h, version, query, value, kind
 ):
-    """The `data_source` and `database` filters at each version, as the comment in `search`
-    records."""
-    s = client.post(
-        "/notion/v1/search",
-        json={"query": "", "filter": {"property": "object", "value": value}},
-        headers={**admin_h, "Notion-Version": version},
-    ).json()
-    assert {r["object"] for r in s["results"]} == {kind}
-    assert served_id in {r["id"] for r in s["results"]}
+    """Each search lists the databases as the comment in `search` records, each in the shape its
+    own `GET` answers, and beside the pages when it sends neither a filter nor a query."""
+    h = {**admin_h, "Notion-Version": version}
+    body = {"query": query} | ({"filter": {"property": "object", "value": value}} if value else {})
+    s = client.post("/notion/v1/search", json=body, headers=h).json()
+    listed = [r for r in s["results"] if r["object"] != "page"]
+    assert {r["object"] for r in listed} == {kind}
+    assert (len(listed) < len(s["results"])) is (body == {"query": ""})
+    as_kind = synth.notion_data_source_id if kind == "data_source" else synth.notion_id
+    served_id = as_kind("nt-tasks-db")
+    got = next(r for r in listed if r["id"] == served_id)
+    assert got == client.get(f"/notion/v1/{kind}s/{served_id}", headers=h).json()
 
 
 @pytest.mark.parametrize(

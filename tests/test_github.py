@@ -4331,13 +4331,13 @@ def test_github_unsupported_api_version_is_refused_ahead_of_a_missing_credential
 
 def test_github_every_answer_carries_a_request_id(gh_client, gh_admin_h, gh_org, monkeypatch):
     """Real puts an `x-github-request-id` on every answer, served or refused, code search's
-    included, and its last field is the answer's own second (the measurement is in
+    included, and its last field is the request's own second (the measurement is in
     ``backlot.routers.github.request_id``, the answers below among it). A client that logs it for a
     support ticket has nothing to log without it."""
     from backlot.routers import github as gh
 
     c, _ = gh_client
-    shape = re.compile(r"[0-9A-F]{4}:[0-9A-F]{5,6}:[0-9A-F]{6,7}:[0-9A-F]{6,7}:[0-9A-F]{8}")
+    shape = re.compile(r"[0-9A-F]{4}:[0-9A-F]{4,6}:[0-9A-F]{6,7}:[0-9A-F]{6,7}:[0-9A-F]{8}")
     repo = f"/github/repos/{gh_org}/gateway"
     before = int(time.time())
     answers = [
@@ -5948,11 +5948,19 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
         over = c.get(repo, headers=h)
         assert over.status_code == 403
         # The envelope's shape and `documentation_url` are real's for a TOKEN — three members,
-        # `status` included, and its own anchor; see `_rate_limit_exceeded_message` for the
-        # measurement and why `message`'s tail past the "user ID <id>." prefix is unreproduced.
+        # `status` included, and its own anchor; `message` quotes the answer's own request id and
+        # that id's second (see `_rate_limit_exceeded_message`).
         admin_id = synth.github_user_id("admin")
+        rid = over.headers["x-github-request-id"]
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(int(rid.rsplit(":", 1)[1], 16)))
         assert over.json() == {
-            "message": f"API rate limit exceeded for user ID {admin_id}.",
+            "message": (
+                f"API rate limit exceeded for user ID {admin_id}. If you reach out to GitHub "
+                f"Support for help, please include the request ID {rid} and timestamp {stamp} UTC. "
+                "For more on scraping GitHub and how it may affect your rights, please review our "
+                "Terms of Service (https://docs.github.com/en/site-policy/github-terms/"
+                "github-terms-of-service)"
+            ),
             "documentation_url": (
                 "https://docs.github.com/en/rest/using-the-rest-api/"
                 "getting-started-with-the-rest-api#rate-limiting"

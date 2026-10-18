@@ -200,9 +200,11 @@ none at all on a `PATCH`, `PUT` or `DELETE` (measured 2026-09-10, 2026-09-21, 20
 2026-10-16).
 
 **Every response carries an `x-github-request-id`**, as real's do, code search's and the refusals
-answered before a route runs included: five unpadded uppercase hex fields joined by colons, the last
-being the second the answer leaves Backlot (measured 2026-09-22, 2026-09-23 and 2026-10-18). Under
-`backlot serve` that second can be one ahead of `Date`, which uvicorn reads once a second.
+answered before a route runs included: five uppercase hex fields joined by colons, the last being
+the second the request arrived (measured 2026-09-22, 2026-09-23 and 2026-10-18), and a token's
+spent-window 403 quotes it and that second in its `message`. Real's `Date` is the second its answer
+left, the id's or one past it; under `backlot serve` it is uvicorn's, which reads the clock once a
+second, so it can be one behind the id's.
 
 An issue body and a pull body are the two distinct field sets real serves — a pull carries `_links`
 and its `*_url` siblings and none of the issue-only fields, `pull_request` included. A repository

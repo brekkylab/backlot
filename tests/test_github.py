@@ -4212,6 +4212,23 @@ def test_github_api_version_selects_the_payload(
     assert listing and all(("assignee" in p) is serves_removed_fields for p in listing)
 
 
+def test_github_empty_api_version_selects_the_default(gh_client, gh_admin_h, gh_org):
+    """An empty `X-GitHub-Api-Version` is answered as no header is: the route's own answer with
+    `X-GitHub-Api-Version-Selected: 2022-11-28`, where a version that does not exist is the 400
+    (measured on api.github.com on 2026-10-18)."""
+    c, _ = gh_client
+    empty = {**gh_admin_h, "X-GitHub-Api-Version": ""}
+    base = f"/github/repos/{gh_org}/gateway"
+    for path in (f"/github/orgs/{gh_org}", base, f"{base}/issues"):
+        r = c.get(path, headers=empty)
+        assert r.status_code == 200, path
+        assert r.headers["X-GitHub-Api-Version-Selected"] == "2022-11-28", path
+    r = c.get(
+        f"/github/orgs/{gh_org}", headers={**gh_admin_h, "X-GitHub-Api-Version": "1999-01-01"}
+    )
+    assert r.status_code == 400
+
+
 def test_github_json_carries_the_charset_real_sends_except_on_code_search(
     gh_client, gh_admin_h, gh_org
 ):

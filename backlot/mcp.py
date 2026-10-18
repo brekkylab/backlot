@@ -158,10 +158,13 @@ def resolve(base_url: str, user: str | None) -> Credentials:
 
 def _auth_header(creds: Credentials, source: str) -> dict[str, str]:
     # Basic `email:token` is Atlassian's scheme, where the api_token IS the Backlot token, and the
-    # email is what mcp-atlassian sends. S3 has no header here at all: `_sign_sigv4` signs it.
+    # email is what mcp-atlassian sends. Linear takes the token with no scheme
+    # (`backlot.auth.api_key_token`). S3 has no header here at all: `_sign_sigv4` signs it.
     if source == "atlassian" and creds.email:
         raw = f"{creds.email}:{creds.token}".encode()
         return {"Authorization": "Basic " + base64.b64encode(raw).decode()}
+    if source == "linear":
+        return {"Authorization": creds.token}
     return {"Authorization": f"Bearer {creds.token}"}
 
 

@@ -68,7 +68,7 @@ sees least. Nothing about the request changes but the identity.
 | Gmail, Google Drive/Docs/Sheets/Slides | `Authorization: Bearer <token>`, or `OAuth <token>` |
 | GitHub | `Authorization: Bearer <token>`, or the legacy `token <token>` |
 | Jira, Confluence | HTTP Basic with the token as the **password**, or a plain `Bearer` |
-| Linear | A **bare** `Authorization: <token>`, or `Bearer` |
+| Linear | A **bare** `Authorization: <token>`; `Bearer <token>` is a `400` |
 | Amazon S3 | AWS SigV4, SigV4a or Signature Version 2, signed with the identity's key pair |
 | A Google client with a config | Exchange it at `POST /oauth2/token` — see the Google section |
 
@@ -231,10 +231,9 @@ it, so `bearer <token>`, `BEARER <token>`, `token <token>` and `Bearer  <token>`
 `401` of category `INVALID_AUTHENTICATION`, there and here. Space or tab around the whole header
 value is ignored by both.
 
-### Linear — bare, or `Bearer`
+### Linear — bare
 
-Linear's personal API keys go in the header with **no scheme**, and Backlot accepts that spelling
-as well as `Bearer`, exactly as the real API does:
+Linear's personal API keys go in the header with **no scheme**, and a Backlot token is one:
 
 ```bash
 curl -s localhost:8000/linear/graphql \
@@ -242,6 +241,11 @@ curl -s localhost:8000/linear/graphql \
   -H "Content-Type: application/json" \
   -d '{"query":"{ viewer { id name } }"}'
 ```
+
+`Bearer` is how Linear carries an OAuth access token. An API key sent as `Bearer <token>` or
+`bearer <token>` is refused with a `400` that says to drop the prefix, there and here, before the
+body is read. Any other value is the key itself, so `Token <token>` or `BEARER <token>` is a key
+that does not resolve: a `401`. Space or tab around the whole header value is ignored by both.
 
 ### Fireflies — `Bearer`
 
@@ -251,6 +255,11 @@ curl -s localhost:8000/fireflies/graphql \
   -H "Content-Type: application/json" \
   -d '{"query":"{ users { name } }"}'
 ```
+
+The scheme is read in any case and followed by spaces, and space, tab or U+00A0 around the token is
+ignored. A credential that is refused is a `500` with an `auth_failed` entry, there and here, in one
+of two messages: the `Bearer` prefix is missing, or the key did not authenticate. No
+`Authorization` at all is the second.
 
 ### Amazon S3 — SigV4
 

@@ -5,9 +5,10 @@ endpoint. The schema and the resolvers live in ``backlot/graphql/`` (``fireflies
 ``fireflies_resolvers.py``); everything here is HTTP: a body and credentials in, a GraphQL
 envelope out, or its HTTP layer's for a body it cannot read (:func:`_body_refusal`).
 
-Auth is the ordinary bearer path (``Authorization: Bearer <api_key>``), which is what the
-vendor's own quickstart shows for all four of its raw-HTTP examples. Unlike Linear there is no
-bare-header variant to accommodate.
+Auth is the bearer path (``Authorization: Bearer <api_key>``), which is what the vendor's own
+quickstart shows for all four of its raw-HTTP examples, read by
+:func:`backlot.auth.fireflies_bearer_token`. A credential Fireflies does not take is
+:func:`_auth_failed`'s 500, which comes after the body is read and before the document is.
 
 Status codes follow the GraphQL-over-HTTP split :class:`backlot.graphql.engine.Result` marks.
 
@@ -62,6 +63,38 @@ def _body_refusal(message: str, status: int = 400) -> JSONResponse:
     )
 
 
+# The two messages Fireflies refuses a credential with: a value with no `Bearer` prefix, and one
+# with the prefix and a key that does not resolve.
+_NO_PREFIX = (
+    "Authorization header is missing the 'Bearer' prefix. Please use the format: "
+    "'Authorization: Bearer <api_key>'. If this persists, please contact Fireflies support."
+)
+_BAD_KEY = (
+    "An error occurred while authenticating your request. Please recheck your API key and try "
+    "again. If this persists, please contact Fireflies support."
+)
+
+
+def _auth_failed(message: str) -> JSONResponse:
+    """Fireflies' answer to a credential it does not take: a 500 carrying an ``auth_failed``
+    entry, as api.fireflies.ai answered on 2026-10-18 with no ``Authorization``, with ``nope``,
+    ``Basic …``, ``token <key>``, the bare key, ``Bearer nope`` and ``Bearer <key> extra``. The
+    document is not read first: ``{"query":"{"}``, ``[]`` and ``5`` drew the same 500."""
+    return JSONResponse(
+        {
+            "errors": [
+                {
+                    "friendly": True,
+                    "code": "auth_failed",
+                    "message": message,
+                    "extensions": {"code": "auth_failed"},
+                }
+            ]
+        },
+        status_code=500,
+    )
+
+
 @router.post("/graphql", include_in_schema=False)
 async def graphql(request: Request):
     """The single Fireflies endpoint. Not in the OpenAPI document on purpose: this is a GraphQL
@@ -79,21 +112,12 @@ async def graphql(request: Request):
         return _body_refusal(_NOT_JSON)
     if request_body.prototype_poisoned(payload):
         return _body_refusal(_NOT_JSON)
-    caller = auth.resolve_bearer(request)
+    token = auth.fireflies_bearer_token(request)
+    if token is None:
+        return _auth_failed(_NO_PREFIX)
+    caller = auth.acl(request).resolve(token)
     if caller is None:
-        # Real Fireflies answers a bad credential with a GraphQL error envelope and a 401, not a
-        # framework 403 — clients parse `errors[0].message`.
-        return JSONResponse(
-            {
-                "errors": [
-                    {
-                        "message": "Please provide a valid API key",
-                        "extensions": {"code": "unauthorized"},
-                    }
-                ]
-            },
-            status_code=401,
-        )
+        return _auth_failed(_BAD_KEY)
     state = request.app.state
     context = {
         "conn": auth.conn(request),

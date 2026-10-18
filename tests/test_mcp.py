@@ -449,8 +449,10 @@ def test_auth_header_spells_each_source_the_way_its_client_speaks():
     scheme, _, payload = header.partition(" ")
     assert scheme == "Basic"
     assert base64.b64decode(payload).decode() == "ava@acme.com:usr-abc"
-    for source in ("slack", "github", "notion", "linear"):
+    for source in ("slack", "github", "notion", "fireflies"):
         assert backlot_mcp._auth_header(creds, source) == {"Authorization": "Bearer usr-abc"}
+    # no scheme for Linear, which refuses a key under Bearer
+    assert backlot_mcp._auth_header(creds, "linear") == {"Authorization": "usr-abc"}
     # the admin has no email to put in a username, so Atlassian falls back to Bearer for them
     admin = dataclasses.replace(creds, email=None)
     assert backlot_mcp._auth_header(admin, "atlassian") == {"Authorization": "Bearer usr-abc"}

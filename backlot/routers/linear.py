@@ -6,9 +6,9 @@ endpoint. The schema and the resolvers live in ``backlot/graphql/`` (``linear.gr
 out, or Express's for the bodies :func:`_express` answers.
 
 Auth is the one place Linear differs from every other source in this repo. A personal API key
-travels as the **bare** header value (``Authorization: lin_api_…``, no scheme) while an OAuth
-access token travels as ``Authorization: Bearer <token>`` — the same header, two shapes, both
-accepted by the real API. :func:`backlot.auth.api_key_token` handles both.
+travels as the **bare** header value (``Authorization: lin_api_…``, no scheme), read by
+:func:`backlot.auth.api_key_token`, and a Backlot token is one. ``Bearer <token>`` is how an OAuth
+access token travels, and an API key sent that way is :func:`_api_key_as_bearer`'s 400.
 
 Status codes follow the GraphQL-over-HTTP split :class:`backlot.graphql.engine.Result` marks; real
 Linear draws the line in the same place, and generated clients branch on it.
@@ -17,7 +17,10 @@ The body is read before the credential is looked at, by Express's ``body-parser`
 GraphQL server: with no credential, a body that is not JSON drew its 400 from api.linear.app on
 2026-10-18, not the 401. :func:`_express` is that 400, and each refusal ``body-parser`` makes before
 it has the text (:func:`backlot.graphql.body.body_parser_text`); :func:`graphql` names the bodies
-answered in graphql-js's words instead.
+answered in graphql-js's words instead. An API key under ``Bearer`` is refused ahead of the body:
+with ``Bearer <key>``, ``{``, an empty body and a body holding ``NaN`` drew
+:func:`_api_key_as_bearer`'s 400 the same day, and ``charset=latin1``, ``Content-Encoding: bogus``
+and a body past the size limit did on 2026-10-19.
 """
 
 from __future__ import annotations
@@ -36,6 +39,28 @@ router = APIRouter(prefix="/linear", tags=["linear"])
 # Built once at import: the SDL is parsed and validated and the resolver map bound, so a broken
 # schema fails at startup instead of on the first request.
 ENGINE = build_engine()
+
+
+def _api_key_as_bearer() -> JSONResponse:
+    """Linear's 400 for an API key under either spelling :func:`backlot.auth.linear_bearer_token`
+    reads, as api.linear.app sent it on 2026-10-18."""
+    return JSONResponse(
+        {
+            "errors": [
+                {
+                    "message": "It looks like you're trying to use an API key as a Bearer token. "
+                    "Remove the Bearer prefix from the Authorization header.",
+                    "extensions": {
+                        "type": "invalid input",
+                        "code": "INPUT_ERROR",
+                        "statusCode": 400,
+                        "userError": True,
+                    },
+                }
+            ]
+        },
+        status_code=400,
+    )
 
 
 def _express(message: str, status: int = 400, length: int | None = None) -> Response:
@@ -73,6 +98,8 @@ async def graphql(request: Request):
     ``POST body missing, invalid Content-Type, or JSON object has no keys.``, and a body the reader
     refuses before it meets a ``NaN``, ``Infinity`` or ``-Infinity``, such as ``{`` or ``-NaN``,
     which Linear answers with V8's message."""
+    if auth.acl(request).resolve(auth.linear_bearer_token(request)) is not None:
+        return _api_key_as_bearer()
     try:
         text = request_body.body_parser_text(
             await request.body(),

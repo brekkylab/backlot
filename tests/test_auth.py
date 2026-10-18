@@ -260,37 +260,36 @@ def test_github_credential_reads_the_header_as_real_does(acl, tokens, header, to
     assert auth.github_credential(_request(header, app=_app(acl))) == expected
 
 
-# --- api_key_token --------------------------------------------------------------
+# --- api_key_token, linear_bearer_token, fireflies_bearer_token -----------------------
+# What each reader takes from one `Authorization` value; the statuses Linear and Fireflies answer
+# them with are in tests/test_linear.py and tests/test_fireflies.py.
 
 
-def test_api_key_accepts_a_bare_key():
-    assert auth.api_key_token(_request("lin_api_deadbeef")) == "lin_api_deadbeef"
-
-
-def test_api_key_accepts_a_bearer_prefixed_token():
-    assert auth.api_key_token(_request("Bearer lin_oauth_1234")) == "lin_oauth_1234"
-
-
-def test_api_key_bearer_prefix_is_case_insensitive():
-    assert auth.api_key_token(_request("bearer lin_oauth_1234")) == "lin_oauth_1234"
-
-
-def test_api_key_keeps_an_unrecognised_scheme_verbatim():
-    # Linear treats anything that isn't `Bearer <t>` as the key itself, so a stray scheme
-    # becomes part of the key and simply fails to resolve — it is not silently stripped.
-    assert auth.api_key_token(_request("Basic abc123")) == "Basic abc123"
-
-
-def test_api_key_is_none_without_a_header():
-    assert auth.api_key_token(_request()) is None
-
-
-def test_api_key_is_none_for_a_blank_header():
-    assert auth.api_key_token(_request("   ")) is None
-
-
-def test_api_key_is_none_for_a_bare_bearer_header():
-    assert auth.api_key_token(_request("Bearer")) is None
+@pytest.mark.parametrize(
+    "header, key, linear_bearer, fireflies",
+    [
+        ("lin_api_deadbeef", "lin_api_deadbeef", None, None),
+        (" \tlin_api_deadbeef\t ", "lin_api_deadbeef", None, None),
+        ("lin_api_deadbeef\xa0", "lin_api_deadbeef\xa0", None, None),
+        ("Basic abc123", "Basic abc123", None, None),
+        ("Bearer lin_oauth_1234", "Bearer lin_oauth_1234", "lin_oauth_1234", "lin_oauth_1234"),
+        ("bearer lin_oauth_1234", "bearer lin_oauth_1234", "lin_oauth_1234", "lin_oauth_1234"),
+        ("BEARER lin_oauth_1234", "BEARER lin_oauth_1234", None, "lin_oauth_1234"),
+        ("Bearer  lin_oauth_1234", "Bearer  lin_oauth_1234", " lin_oauth_1234", "lin_oauth_1234"),
+        ("Bearer \xa0x\xa0", "Bearer \xa0x\xa0", "\xa0x\xa0", "x"),
+        ("Bearer x\x85", "Bearer x\x85", "x\x85", "x\x85"),
+        ("Bearer\tx", "Bearer\tx", None, None),
+        ("Bearer", "Bearer", None, None),
+        ("Bearer \xa0", "Bearer \xa0", "\xa0", ""),
+        ("   ", None, None, ""),
+        (None, None, None, ""),
+    ],
+)
+def test_each_reader_takes_from_authorization(header, key, linear_bearer, fireflies):
+    request = _request(header)
+    assert auth.api_key_token(request) == key
+    assert auth.linear_bearer_token(request) == linear_bearer
+    assert auth.fireflies_bearer_token(request) == fireflies
 
 
 # --- resolve_api_key ------------------------------------------------------------
@@ -303,10 +302,13 @@ def test_resolve_api_key_resolves_a_bare_user_token(acl, tokens):
     assert caller.is_admin is False
 
 
-def test_resolve_api_key_resolves_a_bearer_admin_token(acl, sample_settings):
-    caller = auth.resolve_api_key(_request(f"Bearer {sample_settings.admin_token}", app=_app(acl)))
-    assert caller is not None
-    assert caller.is_admin is True
+def test_resolve_api_key_does_not_read_a_bearer_admin_token(acl, sample_settings):
+    """The whole value, scheme included, is the key, so `Bearer <admin token>` resolves to no one;
+    the Linear router answers that spelling with `_api_key_as_bearer`'s 400 instead."""
+    assert (
+        auth.resolve_api_key(_request(f"Bearer {sample_settings.admin_token}", app=_app(acl)))
+        is None
+    )
 
 
 def test_resolve_api_key_rejects_an_unknown_key(acl):

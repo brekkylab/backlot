@@ -315,126 +315,6 @@ def test_jira_project_search_refuses_an_order_by_naming_no_field(
     }
 
 
-@pytest.mark.parametrize(
-    "query, start, limit",
-    [
-        ({}, 0, 50),
-        ({"startAt": "1"}, 1, 50),
-        ({"startAt": "1", "maxResults": "1"}, 1, 1),
-        ({"startAt": "-1"}, 0, 50),
-        ({"startAt": "99999999999"}, 99999999999, 50),
-        ({"maxResults": "0"}, 0, 1),
-        ({"maxResults": "-1"}, 0, 1),
-        ({"maxResults": "1"}, 0, 1),
-        ({"maxResults": " 1"}, 0, 1),
-        ({"maxResults": "101"}, 0, 100),
-        ({"maxResults": "5000"}, 0, 100),
-    ],
-)
-def test_jira_project_search_pages(tmp_path, query, start, limit):
-    """The project pagination measurement recorded in `jira_project_search` governs each page."""
-    settings = tiny_corpus(
-        tmp_path,
-        [
-            {
-                "source_type": "jira",
-                "doc_id": f"issue-{i}",
-                "project": name,
-                "key": f"{name.upper()}-1",
-                "title": name,
-                "content": "Issue",
-                "author_email": "a@x.com",
-                "visibility": "public",
-            }
-            for i, name in enumerate(("payments", "orders"))
-        ],
-    )
-    with client_for(settings, reload=True) as client:
-        admin_h = {"Authorization": f"Bearer {settings.admin_token}"}
-        url = "/atlassian/rest/api/3/project/search"
-        full = client.get(url, headers=admin_h).json()["values"]
-        assert len(full) > 1
-        response = client.get(url, params=query, headers=admin_h)
-        assert response.status_code == 200, response.text
-        page = full[start : start + limit]
-        body = response.json()
-        last = start + len(page) >= len(full)
-        assert list(body) == ["self", *([] if last else ["nextPage"]), *_PAGE_MEMBERS]
-        assert {k: body[k] for k in _PAGE_MEMBERS} == {
-            "values": page,
-            "startAt": start,
-            "maxResults": limit,
-            "total": len(full),
-            "isLast": last,
-        }
-        assert body["self"].endswith(f"/project/search?maxResults={limit}&startAt={start}")
-        if not last:
-            assert body["nextPage"].endswith(f"?maxResults={limit}&startAt={start + limit}")
-
-
-_PAGE_MEMBERS = ["maxResults", "startAt", "total", "isLast", "values"]
-
-
-@pytest.mark.parametrize(
-    "query, link",
-    [
-        ("maxResults=1&bogus=a%2Bb", "bogus=a%2Bb&maxResults=1&startAt=0"),
-        ("maxResults=1&bogus=a+b", "bogus=a+b&maxResults=1&startAt=0"),
-        ("maxResults=1&b%6Fgus=x", "b%6Fgus=x&maxResults=1&startAt=0"),
-        ("maxResults=1&bogus", "bogus=&maxResults=1&startAt=0"),
-        ("maxResults=1&bogus=1&bogus=2", "bogus=1&bogus=2&maxResults=1&startAt=0"),
-        ("maxResults=1&Zeta=1&alpha=2", "Zeta=1&maxResults=1&alpha=2&startAt=0"),
-        ("maxResults=1&keys=A&keys=B", "keys=A&keys=B&maxResults=1&startAt=0"),
-        ("maxResults=1&=x", "maxResults=1&x=&startAt=0"),
-        ("maxResults=1&startAt=0&startAt=5", "maxResults=1&startAt=0"),
-        ("startAt=%2B1&maxResults=1", "maxResults=1&startAt=1"),
-        # fifteen names spread over thirty-two buckets, twelve over sixteen
-        (
-            "maxResults=1&qmokc=1&qscln=1&qmlde=1&qklik=1&qatpo=1&qazyu=1&qzuet=1&quimu=1&qkiux=1&qdktb=1&qolft=1&qqlew=1&qbwqu=1",
-            "qmokc=1&qazyu=1&qdktb=1&quimu=1&qatpo=1&qzuet=1&qbwqu=1&qscln=1&qolft=1&qqlew=1&maxResults=1&qkiux=1&qmlde=1&qklik=1&startAt=0",
-        ),
-        (
-            "maxResults=1&qmokc=1&qscln=1&qmlde=1&qklik=1&qatpo=1&qazyu=1&qzuet=1&quimu=1&qkiux=1&qdktb=1",
-            "qmokc=1&qazyu=1&qdktb=1&quimu=1&qatpo=1&maxResults=1&qkiux=1&qmlde=1&qzuet=1&qscln=1&qklik=1&startAt=0",
-        ),
-    ],
-)
-def test_jira_project_search_links_itself_with_what_it_was_sent(client, admin_h, query, link):
-    """Each row is the query real's `self` carried for the same query, in the order
-    `_project_search_link` gives."""
-    r = client.get(f"/atlassian/rest/api/3/project/search?{query}", headers=admin_h)
-    assert r.status_code == 200, r.text
-    assert r.json()["self"].split("?", 1)[1] == link
-
-
-@pytest.mark.parametrize(
-    "query, name, value",
-    [
-        ([("startAt", "abc")], "startAt", "abc"),
-        ([("startAt", "1.5")], "startAt", "1.5"),
-        ([("maxResults", "abc")], "maxResults", "abc"),
-        ([("startAt", "abc"), ("orderBy", "bogus")], "startAt", "abc"),
-        ([("orderBy", "bogus"), ("startAt", "abc")], "startAt", "abc"),
-        ([("maxResults", "abc"), ("orderBy", "bogus")], "maxResults", "abc"),
-        ([("orderBy", "bogus"), ("maxResults", "abc")], "maxResults", "abc"),
-        ([("startAt", "abc"), ("maxResults", "xyz")], "startAt", "abc"),
-        ([("maxResults", "xyz"), ("startAt", "abc")], "startAt", "abc"),
-    ],
-)
-def test_jira_project_search_integer_conversion_precedes_order(client, admin_h, query, name, value):
-    """The measured integer refusal precedes orderBy validation in either URL order."""
-    response = client.get("/atlassian/rest/api/3/project/search", params=query, headers=admin_h)
-    assert response.status_code == 400, response.text
-    assert response.headers["content-type"] == "application/problem+json;charset=UTF-8"
-    assert response.json() == {
-        "type": "about:blank",
-        "title": "Bad Request",
-        "status": 400,
-        "detail": f"Failed to convert '{name}' with value: '{value}'",
-        "instance": "/rest/api/3/project/search",
-    }
-
-
 @pytest.mark.parametrize("headers", UNRESOLVABLE)
 @pytest.mark.parametrize(
     "segment,kind",
@@ -7486,3 +7366,123 @@ def test_jira_operations_that_answer_an_accept_with_no_406(client, operation):
     if operation in routers_atlassian._JIRA_UNSERVED["refused"]:
         assert r.status_code == 401
         assert r.headers["content-type"] == "text/html;charset=UTF-8"
+
+
+@pytest.mark.parametrize(
+    "query, start, limit",
+    [
+        ({}, 0, 50),
+        ({"startAt": "1"}, 1, 50),
+        ({"startAt": "1", "maxResults": "1"}, 1, 1),
+        ({"startAt": "-1"}, 0, 50),
+        ({"startAt": "99999999999"}, 99999999999, 50),
+        ({"maxResults": "0"}, 0, 1),
+        ({"maxResults": "-1"}, 0, 1),
+        ({"maxResults": "1"}, 0, 1),
+        ({"maxResults": " 1"}, 0, 1),
+        ({"maxResults": "101"}, 0, 100),
+        ({"maxResults": "5000"}, 0, 100),
+    ],
+)
+def test_jira_project_search_pages(tmp_path, query, start, limit):
+    """The project pagination measurement recorded in `jira_project_search` governs each page."""
+    settings = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "jira",
+                "doc_id": f"issue-{i}",
+                "project": name,
+                "key": f"{name.upper()}-1",
+                "title": name,
+                "content": "Issue",
+                "author_email": "a@x.com",
+                "visibility": "public",
+            }
+            for i, name in enumerate(("payments", "orders"))
+        ],
+    )
+    with client_for(settings, reload=True) as client:
+        admin_h = {"Authorization": f"Bearer {settings.admin_token}"}
+        url = "/atlassian/rest/api/3/project/search"
+        full = client.get(url, headers=admin_h).json()["values"]
+        assert len(full) > 1
+        response = client.get(url, params=query, headers=admin_h)
+        assert response.status_code == 200, response.text
+        page = full[start : start + limit]
+        body = response.json()
+        last = start + len(page) >= len(full)
+        assert list(body) == ["self", *([] if last else ["nextPage"]), *_PAGE_MEMBERS]
+        assert {k: body[k] for k in _PAGE_MEMBERS} == {
+            "values": page,
+            "startAt": start,
+            "maxResults": limit,
+            "total": len(full),
+            "isLast": last,
+        }
+        assert body["self"].endswith(f"/project/search?maxResults={limit}&startAt={start}")
+        if not last:
+            assert body["nextPage"].endswith(f"?maxResults={limit}&startAt={start + limit}")
+
+
+_PAGE_MEMBERS = ["maxResults", "startAt", "total", "isLast", "values"]
+
+
+@pytest.mark.parametrize(
+    "query, link",
+    [
+        ("maxResults=1&bogus=a%2Bb", "bogus=a%2Bb&maxResults=1&startAt=0"),
+        ("maxResults=1&bogus=a+b", "bogus=a+b&maxResults=1&startAt=0"),
+        ("maxResults=1&b%6Fgus=x", "b%6Fgus=x&maxResults=1&startAt=0"),
+        ("maxResults=1&bogus", "bogus=&maxResults=1&startAt=0"),
+        ("maxResults=1&bogus=1&bogus=2", "bogus=1&bogus=2&maxResults=1&startAt=0"),
+        ("maxResults=1&Zeta=1&alpha=2", "Zeta=1&maxResults=1&alpha=2&startAt=0"),
+        ("maxResults=1&keys=A&keys=B", "keys=A&keys=B&maxResults=1&startAt=0"),
+        ("maxResults=1&=x", "maxResults=1&x=&startAt=0"),
+        ("maxResults=1&startAt=0&startAt=5", "maxResults=1&startAt=0"),
+        ("startAt=%2B1&maxResults=1", "maxResults=1&startAt=1"),
+        # fifteen names spread over thirty-two buckets, twelve over sixteen
+        (
+            "maxResults=1&qmokc=1&qscln=1&qmlde=1&qklik=1&qatpo=1&qazyu=1&qzuet=1&quimu=1&qkiux=1&qdktb=1&qolft=1&qqlew=1&qbwqu=1",
+            "qmokc=1&qazyu=1&qdktb=1&quimu=1&qatpo=1&qzuet=1&qbwqu=1&qscln=1&qolft=1&qqlew=1&maxResults=1&qkiux=1&qmlde=1&qklik=1&startAt=0",
+        ),
+        (
+            "maxResults=1&qmokc=1&qscln=1&qmlde=1&qklik=1&qatpo=1&qazyu=1&qzuet=1&quimu=1&qkiux=1&qdktb=1",
+            "qmokc=1&qazyu=1&qdktb=1&quimu=1&qatpo=1&maxResults=1&qkiux=1&qmlde=1&qzuet=1&qscln=1&qklik=1&startAt=0",
+        ),
+    ],
+)
+def test_jira_project_search_links_itself_with_what_it_was_sent(client, admin_h, query, link):
+    """Each row is the query real's `self` carried for the same query, in the order
+    `_project_search_link` gives."""
+    r = client.get(f"/atlassian/rest/api/3/project/search?{query}", headers=admin_h)
+    assert r.status_code == 200, r.text
+    assert r.json()["self"].split("?", 1)[1] == link
+
+
+@pytest.mark.parametrize(
+    "query, name, value",
+    [
+        ([("startAt", "abc")], "startAt", "abc"),
+        ([("startAt", "1.5")], "startAt", "1.5"),
+        ([("maxResults", "abc")], "maxResults", "abc"),
+        ([("startAt", "abc"), ("orderBy", "bogus")], "startAt", "abc"),
+        ([("orderBy", "bogus"), ("startAt", "abc")], "startAt", "abc"),
+        ([("maxResults", "abc"), ("orderBy", "bogus")], "maxResults", "abc"),
+        ([("orderBy", "bogus"), ("maxResults", "abc")], "maxResults", "abc"),
+        ([("startAt", "abc"), ("maxResults", "xyz")], "startAt", "abc"),
+        ([("maxResults", "xyz"), ("startAt", "abc")], "startAt", "abc"),
+    ],
+)
+def test_jira_project_search_integer_conversion_precedes_order(client, admin_h, query, name, value):
+    """The measured integer refusal precedes orderBy validation in either URL order."""
+    response = client.get("/atlassian/rest/api/3/project/search", params=query, headers=admin_h)
+    assert response.status_code == 400, response.text
+    assert response.headers["content-type"] == "application/problem+json;charset=UTF-8"
+    assert response.json() == {
+        "type": "about:blank",
+        "title": "Bad Request",
+        "status": 400,
+        "detail": f"Failed to convert '{name}' with value: '{value}'",
+        "instance": "/rest/api/3/project/search",
+    }

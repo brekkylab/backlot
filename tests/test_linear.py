@@ -393,6 +393,455 @@ def test_linear_unauthenticated_is_401(client):
     assert r.json()["errors"][0]["message"] == "Authentication required"
 
 
+# --- the body, read before the credential -------------------------------------------------------
+# A body and the bytes of the 400 Linear refused it with, or None where Linear served the query, as
+# `backlot.graphql.body` reads them. `_GRAPHQL_JS_NOT_JSON` marks the four rows
+# `backlot.routers.linear.graphql` answers in graphql-js's words: `{`, `-NaN`, an empty body and a
+# byte-order mark alone. `_REQUEST_ERROR` marks a body that is JSON but no object, the 400 with the
+# key; Linear answers it with `Operation batching disabled.` with or without one.
+_GRAPHQL_JS_NOT_JSON = b'{"errors":[{"message":"POST body sent invalid JSON."}]}'
+_REQUEST_ERROR = object()
+_LINEAR_BODIES = [
+    pytest.param(b"{", _GRAPHQL_JS_NOT_JSON, id="{"),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"x":NaN}}',
+        b'{"error":"Unexpected token \'N\', ...\\"les\\":{\\"x\\":NaN}}\\" is not valid JSON","details":{},"code":400}',
+        id="NaN at the end",
+    ),
+    pytest.param(
+        b"5",
+        b'{"error":"Unexpected token \'5\', \\"5\\" is not valid JSON","details":{},"code":400}',
+        id="top-level 5",
+    ),
+    pytest.param(
+        b'{"x":NaN}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"x\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="short object",
+    ),
+    pytest.param(
+        b'{"variables":{"x":NaN},"query":"{ __typename }"}',
+        b'{"error":"Unexpected token \'N\', ...\\"les\\":{\\"x\\":NaN},\\"quer\\"... is not valid JSON","details":{},"code":400}',
+        id="surround",
+    ),
+    pytest.param(
+        b'{"x":NaN,"query":"{ __typename }"}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"x\\":NaN,\\"query\\"... is not valid JSON","details":{},"code":400}',
+        id="start",
+    ),
+    pytest.param(
+        b"[NaN]",
+        b'{"error":"Unexpected token \'N\', \\"[NaN]\\" is not valid JSON","details":{},"code":400}',
+        id="short array",
+    ),
+    pytest.param(
+        b"NaN",
+        b'{"error":"Unexpected token \'N\', \\"NaN\\" is not valid JSON","details":{},"code":400}',
+        id="top-level NaN",
+    ),
+    pytest.param(
+        b'{"x":Infinity,"query":"{ __typename }"}',
+        b'{"error":"Unexpected token \'I\', \\"{\\"x\\":Infinity,\\"\\"... is not valid JSON","details":{},"code":400}',
+        id="Infinity",
+    ),
+    pytest.param(
+        b'{"x":-Infinity,"query":"{ __typename }"}',
+        b'{"error":"No number after minus sign in JSON at position 6 (line 1 column 7)","details":{},"code":400}',
+        id="-Infinity",
+    ),
+    pytest.param(
+        b'{\n  "query":"{ __typename }",\n  "variables": {"x": -Infinity}\n}',
+        b'{"error":"No number after minus sign in JSON at position 52 (line 3 column 23)","details":{},"code":400}',
+        id="-Infinity multi-line",
+    ),
+    pytest.param(
+        b'{\n  "query":"{ __typename }",\n  "variables": {"x": NaN}\n}',
+        b'{"error":"Unexpected token \'N\', ...\\"s\\": {\\"x\\": NaN}\\n}\\" is not valid JSON","details":{},"code":400}',
+        id="NaN multi-line",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"e":"\xf0\x9f\x98\x80\xf0\x9f\x98\x80","x":-Infinity}}',
+        b'{"error":"No number after minus sign in JSON at position 55 (line 1 column 56)","details":{},"code":400}',
+        id="-Infinity after astral",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"e":"a\xf0\x9f\x98\x80\xf0\x9f\x98\x80\xf0\x9f\x98\x80\xf0\x9f\x98\x80","x":NaN}}',
+        b'{"error":"Unexpected token \'N\', ...\\"\xf0\x9f\x98\x80\xf0\x9f\x98\x80\\",\\"x\\":NaN}}\\" is not valid JSON","details":{},"code":400}',
+        id="NaN window splits a pair",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"x":[1,NaN]}}',
+        b'{"error":"Unexpected token \'N\', ...\\"\\":{\\"x\\":[1,NaN]}}\\" is not valid JSON","details":{},"code":400}',
+        id="NaN in a list",
+    ),
+    pytest.param(
+        b'{\r\n"query":"{ __typename }",\r\n"variables":{"x":-Infinity}}',
+        b'{"error":"No number after minus sign in JSON at position 48 (line 3 column 19)","details":{},"code":400}',
+        id="-Infinity after CRLF",
+    ),
+    pytest.param(
+        b'{\r"query":"{ __typename }",\r"variables":{"x":-Infinity}}',
+        b'{"error":"No number after minus sign in JSON at position 46 (line 3 column 19)","details":{},"code":400}',
+        id="-Infinity after CR",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"e":"a\xe2\x80\xa8b","x":-Infinity}}',
+        b'{"error":"No number after minus sign in JSON at position 54 (line 1 column 55)","details":{},"code":400}',
+        id="-Infinity after U+2028 in a string",
+    ),
+    pytest.param(
+        b'{"abcdefghijk":NaN}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"abcdefghijk\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="len 20",
+    ),
+    pytest.param(
+        b'{"abcdefghijkl":NaN}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"abcdefghijkl\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="len 21",
+    ),
+    pytest.param(
+        b'{"abc":[[NaN],1,2,3,4,5,6,7]}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"abc\\":[[NaN],1,2,3\\"... is not valid JSON","details":{},"code":400}',
+        id="pos 9",
+    ),
+    pytest.param(
+        b'{"abcd":[[NaN],1,2,3,4,5,6,7]}',
+        b'{"error":"Unexpected token \'N\', ...\\"{\\"abcd\\":[[NaN],1,2,3\\"... is not valid JSON","details":{},"code":400}',
+        id="pos 10",
+    ),
+    pytest.param(
+        b'{"abcdefghijklmnopq":[Infinity]}',
+        b'{"error":"Unexpected token \'I\', ...\\"klmnopq\\":[Infinity]}\\" is not valid JSON","details":{},"code":400}',
+        id="Infinity window at the end",
+    ),
+    pytest.param(b'{"x":-NaN,"query":"{ __typename }"}', _GRAPHQL_JS_NOT_JSON, id="-NaN"),
+    pytest.param(
+        b'{"x":Infinityx,"query":"{ __typename }"}',
+        b'{"error":"Unexpected token \'I\', \\"{\\"x\\":Infinityx,\\"... is not valid JSON","details":{},"code":400}',
+        id="Infinityx",
+    ),
+    pytest.param(
+        b'{"x":NaN,}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"x\\":NaN,}\\" is not valid JSON","details":{},"code":400}',
+        id="NaN then a later error",
+    ),
+    pytest.param(
+        b'{"abcdefghijklm":NaN}',
+        b'{"error":"Unexpected token \'N\', ...\\"fghijklm\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="L21",
+    ),
+    pytest.param(
+        b'{"abcdefghijklmn":NaN}',
+        b'{"error":"Unexpected token \'N\', ...\\"ghijklmn\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="L22",
+    ),
+    pytest.param(
+        b'{"abcdefgh":NaN,"z":1}',
+        b'{"error":"Unexpected token \'N\', ...\\"abcdefgh\\":NaN,\\"z\\":1}\\" is not valid JSON","details":{},"code":400}',
+        id="L21 pos10",
+    ),
+    pytest.param(
+        b'{"e":"\xf0\x9f\x98\x80\xf0\x9f\x98\x80\xf0\x9f\x98\x80","xy":NaN}',
+        b'{"error":"Unexpected token \'N\', ...\\"\\ude00\xf0\x9f\x98\x80\\",\\"xy\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="end split low surrogate",
+    ),
+    pytest.param(
+        b'{"x":NaN,"e":"\xf0\x9f\x98\x80\xf0\x9f\x98\x80\xf0\x9f\x98\x80\xf0\x9f\x98\x80"}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"x\\":NaN,\\"e\\":\\"\\ud83d\\"... is not valid JSON","details":{},"code":400}',
+        id="start split",
+    ),
+    pytest.param(
+        b'{"e":"\xf0\x9f\x98\x80\xf0\x9f\x98\x80\xf0\x9f\x98\x80\xf0\x9f\x98\x80\xf0\x9f\x98\x80x","x":NaN,"f":"\xf0\x9f\x98\x80\xf0\x9f\x98\x80\xf0\x9f\x98\x80\xf0\x9f\x98\x80\xf0\x9f\x98\x80\xf0\x9f\x98\x80"}',
+        b'{"error":"Unexpected token \'N\', ...\\"\\ude00\xf0\x9f\x98\x80x\\",\\"x\\":NaN,\\"f\\":\\"\\ud83d\\"... is not valid JSON","details":{},"code":400}',
+        id="surround split both",
+    ),
+    pytest.param(
+        b'{\n\r"x":-Infinity}',
+        b'{"error":"No number after minus sign in JSON at position 8 (line 3 column 6)","details":{},"code":400}',
+        id="LF then CR",
+    ),
+    pytest.param(
+        b'{\t"x":\t-Infinity}',
+        b'{"error":"No number after minus sign in JSON at position 8 (line 1 column 9)","details":{},"code":400}',
+        id="tab lines",
+    ),
+    pytest.param(
+        b'"abcdefghijklmnopqrstuvwxyz0123456789"',
+        b'{"error":"Unexpected token \'\\"\', \\"\\"abcdefghi\\"... is not valid JSON","details":{},"code":400}',
+        id="top-level long string",
+    ),
+    pytest.param(
+        b"  \n 5",
+        b'{"error":"Unexpected token \'5\', \\"  \\n 5\\" is not valid JSON","details":{},"code":400}',
+        id="top-level ws then 5",
+    ),
+    pytest.param(
+        b"-Infinity",
+        b'{"error":"Unexpected token \'-\', \\"-Infinity\\" is not valid JSON","details":{},"code":400}',
+        id="top-level -Infinity",
+    ),
+    pytest.param(
+        b"Infinity",
+        b'{"error":"Unexpected token \'I\', \\"Infinity\\" is not valid JSON","details":{},"code":400}',
+        id="top-level Infinity",
+    ),
+    pytest.param(
+        b'{"a":"x\\"y\\\\z","b":NaN}',
+        b'{"error":"Unexpected token \'N\', ...\\"y\\\\\\\\z\\",\\"b\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="escaped quote in window",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","a":"p\xe2\x80\xa8q","b":NaN}',
+        b'{"error":"Unexpected token \'N\', ...\\"\\"p\xe2\x80\xa8q\\",\\"b\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="U+2028 raw in window",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","a":"\\n","b":NaN}',
+        b'{"error":"Unexpected token \'N\', ...\\":\\"\\\\n\\",\\"b\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="control escape in window",
+    ),
+    pytest.param(
+        b"   ",
+        b'{"error":"Unexpected end of JSON input","details":{},"code":400}',
+        id="whitespace only",
+    ),
+    pytest.param(
+        b"\n",
+        b'{"error":"Unexpected end of JSON input","details":{},"code":400}',
+        id="newline only",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"__proto__":{"a":1}}}', None, id="__proto__ key"
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"constructor":{"prototype":{"a":1}}}}',
+        None,
+        id="constructor.prototype",
+    ),
+    pytest.param(
+        b'\xff\xfe{\x00"\x00q\x00u\x00e\x00r\x00y\x00"\x00:\x00"\x00{\x00 \x00_\x00_\x00t\x00y\x00p\x00e\x00n\x00a\x00m\x00e\x00 \x00}\x00"\x00}\x00',
+        b'{"error":"Unexpected token \'\xef\xbf\xbd\', \\"\xef\xbf\xbd\xef\xbf\xbd{\\u0000\\"\\u0000q\\u0000u\\u0000\\"... is not valid JSON","details":{},"code":400}',
+        id="utf-16 body",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"x":"\xff"}}', None, id="invalid utf-8 in a string"
+    ),
+    pytest.param(b'\xef\xbb\xbf{"query":"{ __typename }"}', None, id="utf-8 BOM"),
+    pytest.param(
+        b'{"a":"\xe2\x82","b":NaN}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"a\\":\\"\xef\xbf\xbd\\",\\"b\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="utf8 truncated 3-byte",
+    ),
+    pytest.param(
+        b'{"a":"\xed\xa0\x80","b":NaN}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"a\\":\\"\xef\xbf\xbd\xef\xbf\xbd\xef\xbf\xbd\\",\\"b\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="utf8 surrogate",
+    ),
+    pytest.param(
+        b'{"a":"\xf0\x9f\x98","b":NaN}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"a\\":\\"\xef\xbf\xbd\\",\\"b\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="utf8 truncated 4-byte",
+    ),
+    pytest.param(
+        b'{"a":"\xc0\x80","b":NaN}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"a\\":\\"\xef\xbf\xbd\xef\xbf\xbd\\",\\"b\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="utf8 overlong 2-byte",
+    ),
+    pytest.param(
+        b'{"a":"\xf4\x90\x80\x80","b":NaN}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"a\\":\\"\xef\xbf\xbd\xef\xbf\xbd\xef\xbf\xbd\xef\xbf\xbd\\",\\"b\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="utf8 above U+10FFFF",
+    ),
+    pytest.param(
+        b'{"a":"\xff","b":NaN}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"a\\":\\"\xef\xbf\xbd\\",\\"b\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="utf8 lone FF",
+    ),
+    pytest.param(
+        b'{"a":"\x80","b":NaN}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"a\\":\\"\xef\xbf\xbd\\",\\"b\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="utf8 lone continuation",
+    ),
+    pytest.param(
+        b'{"a":"\xe0\x80\x80","b":NaN}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"a\\":\\"\xef\xbf\xbd\xef\xbf\xbd\xef\xbf\xbd\\",\\"b\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="utf8 overlong 3-byte",
+    ),
+    pytest.param(
+        b'{"a":"\xf8\x88\x80\x80\x80","b":NaN}',
+        b'{"error":"Unexpected token \'N\', ...\\"\xef\xbf\xbd\xef\xbf\xbd\xef\xbf\xbd\xef\xbf\xbd\\",\\"b\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="utf8 5-byte form",
+    ),
+    pytest.param(
+        b'{"a":"\xe0A","b":NaN}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"a\\":\\"\xef\xbf\xbdA\\",\\"b\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="utf8 E0 then ASCII",
+    ),
+    pytest.param(
+        b'{"a":"\xf0\x9fA","b":NaN}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"a\\":\\"\xef\xbf\xbdA\\",\\"b\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="utf8 F0 9F then ASCII",
+    ),
+    pytest.param(
+        b'\xef\xbb\xbf\xef\xbb\xbf{"query":"{ __typename }"}',
+        b'{"error":"Unexpected token \'\xef\xbb\xbf\', \\"\xef\xbb\xbf{\\"query\\":\\"... is not valid JSON","details":{},"code":400}',
+        id="BOM twice",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"constructor":null}}', None, id="constructor null"
+    ),
+    pytest.param(
+        b'{"query": "{ __typename }", "variables": {"x": ' + b"1" * 4300 + b"}}",
+        None,
+        id="4300 digits",
+    ),
+    pytest.param(
+        b'{"query": "{ __typename }", "variables": {"x": ' + b"1" * 4301 + b"}}",
+        None,
+        id="4301 digits",
+    ),
+    pytest.param(
+        b'{"query": "{ __typename }", "variables": {"x": ' + b"1" * 5000 + b"}}",
+        None,
+        id="5000 digits",
+    ),
+    pytest.param(
+        b'{"query": "{ __typename }", "variables": {"x": -' + b"1" * 4301 + b"}}",
+        None,
+        id="-4301 digits",
+    ),
+    pytest.param(b'{"query": "{ __typename }", "variables": {"x": 1e400}}', None, id="1e400"),
+    pytest.param(
+        b'{"query": "{ __typename }", "variables": {"x": ' + b"[" * 1001 + b"]" * 1001 + b"}}",
+        None,
+        id="nested 1001",
+    ),
+    pytest.param(
+        b'{"query": "{ __typename }", "variables": {"x": ' + b"[" * 100000 + b"]" * 100000 + b"}}",
+        None,
+        id="nested 100000",
+    ),
+    pytest.param(
+        b'{"query": "{ __typename }", "variables": {"x": ' + b"[" * 300000 + b"]" * 300000 + b"}}",
+        None,
+        id="nested 300000",
+    ),
+    pytest.param(
+        b'{"query": "{ __typename }", "variables": {"x": '
+        + b'{"a":' * 100000
+        + b"1"
+        + b"}" * 100000
+        + b"}}",
+        None,
+        id="objects nested 100000",
+    ),
+    pytest.param(
+        b'{"query": "{ __typename }", "variables": {"x": '
+        + b"[" * 100000
+        + b"NaN"
+        + b"]" * 100000
+        + b"}}",
+        b'{"error":"Unexpected token \'N\', ...\\"[[[[[[[[[[NaN]]]]]]]\\"... is not valid JSON","details":{},"code":400}',
+        id="nested 100000 then NaN",
+    ),
+    pytest.param(
+        b"null",
+        b'{"error":"Unexpected token \'n\', \\"null\\" is not valid JSON","details":{},"code":400}',
+        id="top-level null",
+    ),
+    pytest.param(
+        b'\xc2\xa0{"query":"{ __typename }"}',
+        b'{"error":"Unexpected token \'\xc2\xa0\', \\"\xc2\xa0{\\"query\\":\\"... is not valid JSON","details":{},"code":400}',
+        id="U+00A0 then {",
+    ),
+    pytest.param(
+        b'\x0b{"query":"{ __typename }"}',
+        b'{"error":"Unexpected token \'\\u000b\', \\"\\u000b{\\"query\\":\\"... is not valid JSON","details":{},"code":400}',
+        id="a vertical tab then {",
+    ),
+    pytest.param(
+        b'\x0c{"query":"{ __typename }"}',
+        b'{"error":"Unexpected token \'\\f\', \\"\\f{\\"query\\":\\"... is not valid JSON","details":{},"code":400}',
+        id="a form feed then {",
+    ),
+    pytest.param(
+        b'\xe3\x80\x80{"query":"{ __typename }"}',
+        b'{"error":"Unexpected token \'\xe3\x80\x80\', \\"\xe3\x80\x80{\\"query\\":\\"... is not valid JSON","details":{},"code":400}',
+        id="U+3000 then {",
+    ),
+    pytest.param(
+        b'\xe2\x80\xa8{"query":"{ __typename }"}',
+        b'{"error":"Unexpected token \'\xe2\x80\xa8\', \\"\xe2\x80\xa8{\\"query\\":\\"... is not valid JSON","details":{},"code":400}',
+        id="U+2028 then {",
+    ),
+    pytest.param(
+        b'\x1c{"query":"{ __typename }"}',
+        b'{"error":"Unexpected token \'\\u001c\', \\"\\u001c{\\"query\\":\\"... is not valid JSON","details":{},"code":400}',
+        id="0x1C then {",
+    ),
+    pytest.param(
+        b'{"e":"\xf0\x9f\x98\x80\xf0\x9f\x98\x80",\n"x":-Infinity}',
+        b'{"error":"No number after minus sign in JSON at position 18 (line 2 column 6)","details":{},"code":400}',
+        id="-Infinity after a surrogate pair on the line before",
+    ),
+    pytest.param(
+        b'{"e":"\xf0\x9f\x98\x80",\r\n"f":"\xf0\x9f\x98\x80\xf0\x9f\x98\x80","x":-Infinity}',
+        b'{"error":"No number after minus sign in JSON at position 28 (line 2 column 17)","details":{},"code":400}',
+        id="-Infinity after surrogate pairs on both lines",
+    ),
+    pytest.param(b"", _GRAPHQL_JS_NOT_JSON, id="empty"),
+    pytest.param(b"\xef\xbb\xbf", _GRAPHQL_JS_NOT_JSON, id="a byte-order mark alone"),
+    pytest.param(b"[]", _REQUEST_ERROR, id="an array"),
+    pytest.param(b'[{"query":"{ __typename }"}]', _REQUEST_ERROR, id="a batch of one query"),
+]
+
+
+@pytest.mark.parametrize("credential", ["key", "none", "nope"])
+@pytest.mark.parametrize("body,answer", _LINEAR_BODIES)
+def test_linear_reads_the_body_before_the_credential(client, tokens_yaml, credential, body, answer):
+    """Each row answers as the comment over `_LINEAR_BODIES` says, a refusal the same whatever
+    the credential, as Linear refused the body ending in `NaN` with no credential."""
+    headers = {"Content-Type": "application/json"}
+    if credential != "none":
+        headers["Authorization"] = tokens_yaml["admin_token"] if credential == "key" else "nope"
+    r = client.post("/linear/graphql", content=body, headers=headers)
+    if answer is _REQUEST_ERROR:
+        expected = (400, _GRAPHQL_JS_NOT_JSON) if credential == "key" else (401, r.content)
+        assert (r.status_code, r.content) == expected
+    elif answer is not None:
+        assert (r.status_code, r.content) == (400, answer)
+    elif credential == "key":
+        assert (r.status_code, r.json()) == (200, {"data": {"__typename": "Query"}})
+    else:
+        assert r.status_code == 401
+
+
+# A variable declared `Int` holding the integers `backlot.graphql.body._int` was measured with, and
+# the part of the 400's message that shows the double each is read as.
+_HUGE_INTEGERS = [
+    pytest.param("1" * 4301, "invalid value inf;", id="4301 ones, read as Infinity"),
+    pytest.param("1" * 311, "invalid value inf;", id="311 ones, read as Infinity"),
+    pytest.param("9" * 309, "invalid value inf;", id="309 nines, read as Infinity"),
+    pytest.param("1e400", "invalid value inf;", id="1e400, read as Infinity"),
+    # graphql-js prints the double as 1e+308; graphql-core prints its digits, cut in the middle past
+    # 240 characters, so this row reads the leading ones.
+    pytest.param(
+        "9" * 308, "invalid value 10000000000000000109790", id="308 nines, read as 1e+308"
+    ),
+    pytest.param(
+        "9007199254740993", "invalid value 9007199254740992;", id="2**53 + 1, read as 2**53"
+    ),
+]
+
+
+@pytest.mark.parametrize("digits, read_as", _HUGE_INTEGERS)
+def test_linear_reads_an_integer_as_the_double_json_parse_reads(client, admin_h, digits, read_as):
+    """The variable's value is read the way real read it; the words around it are graphql-js's."""
+    body = '{"query":"query($x: Int) { issues(first: $x) { nodes { id } } }","variables":{"x":%s}}'
+    r = client.post("/linear/graphql", content=(body % digits).encode(), headers=admin_h)
+    assert r.status_code == 400
+    assert read_as in r.json()["errors"][0]["message"]
+
+
 def test_linear_parent_resolves_and_is_acl_scoped(client, admin_h, tokens_yaml):
     """`Issue.parent` is declared in the SDL and `@linear/sdk`'s fragment selects `parent { id }`.
     The bench fills `parent_issue` on 46.7% of records, so it must resolve — and it must resolve

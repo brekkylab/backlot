@@ -1,9 +1,10 @@
 """Vendor-agnostic GraphQL execution: SDL + resolvers -> response envelope.
 
 Knows nothing about any vendor and nothing about :mod:`backlot.store`. A vendor builds one
-:class:`Engine` at import time from its SDL and resolver map; its router hands raw request
-bodies to :meth:`Engine.execute_request` along with a context dict (connection, caller,
-``visible_ids``) that every resolver receives as ``info.context``.
+:class:`Engine` at import time from its SDL and resolver map; its router hands a raw request
+body to :meth:`Engine.execute_request`, or one it has read itself to
+:meth:`Engine.execute_payload`, along with a context dict (connection, caller, ``visible_ids``)
+that every resolver receives as ``info.context``.
 
 Execution is deliberately split into parse -> validate -> execute rather than delegating to
 ``graphql_sync``, because the three stages produce *different* envelopes. Per the GraphQL
@@ -16,7 +17,6 @@ servers make that distinction and clients key off it, so Backlot does too —
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -31,6 +31,8 @@ from graphql import (
     parse,
     validate,
 )
+
+from backlot.graphql import body as request_body
 
 Resolver = Callable[..., Any]
 
@@ -60,6 +62,11 @@ def _request_error(errors: list[GraphQLError]) -> Result:
 
 def _client_error(message: str) -> Result:
     return _request_error([GraphQLError(message)])
+
+
+def not_json() -> Result:
+    """The request error for a body that is not JSON, in graphql-js's words."""
+    return _client_error("POST body sent invalid JSON.")
 
 
 def from_sdl(module_file: str, name: str, resolvers, scalars=None) -> "Engine":
@@ -151,14 +158,22 @@ class Engine:
 
         Body problems come back as a GraphQL error envelope rather than a framework-level
         validation error, because that is what a real GraphQL server returns and what
-        generated clients parse. Messages match graphql-js, which is what the vendors run.
+        generated clients parse. Messages match graphql-js, which is what the vendors run. The
+        body is read by :mod:`backlot.graphql.body`, as the vendors' Node servers read it.
         """
         try:
-            payload = json.loads(body)
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            return _client_error("POST body sent invalid JSON.")
+            payload = request_body.parse(
+                body if isinstance(body, str) else request_body.decode(body)
+            )
+        except request_body.NotJson:
+            return not_json()
+        return self.execute_payload(payload, context=context)
+
+    def execute_payload(self, payload: Any, *, context: Any = None) -> Result:
+        """Run a body already read with :mod:`backlot.graphql.body`. The Linear and Fireflies
+        routers read it themselves, so a body neither can read is refused in its vendor's words."""
         if not isinstance(payload, dict):
-            return _client_error("POST body sent invalid JSON.")
+            return not_json()
         query = payload.get("query")
         if not isinstance(query, str) or not query.strip():
             return _client_error("Must provide query string.")

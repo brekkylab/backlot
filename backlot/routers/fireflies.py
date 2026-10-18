@@ -8,9 +8,12 @@ Auth is the ordinary bearer path (``Authorization: Bearer <api_key>``), which is
 vendor's own quickstart shows for all four of its raw-HTTP examples. Unlike Linear there is no
 bare-header variant to accommodate.
 
-Status codes follow the GraphQL-over-HTTP split the engine already draws: a **request** error
-(unparseable document, failed validation, uncoercible variables) is a 400 with no ``data`` key,
-while a **field** error mid-execution is a 200 carrying partial ``data`` alongside ``errors``.
+Status codes follow the GraphQL-over-HTTP split the engine already draws, as
+:mod:`backlot.routers.linear` lays out.
+
+A body Fireflies cannot read is refused ahead of anything about the credential: with no
+credential, and with ``Authorization: nope``, an empty body and a body that is not JSON drew
+:func:`_body_refusal`'s 400 from api.fireflies.ai on 2026-10-18.
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ from fastapi.responses import JSONResponse
 
 from backlot import auth
 from backlot.config import get_settings
+from backlot.graphql import body as request_body
 from backlot.graphql.fireflies_resolvers import build_engine
 
 router = APIRouter(prefix="/fireflies", tags=["fireflies"])
@@ -28,6 +32,26 @@ router = APIRouter(prefix="/fireflies", tags=["fireflies"])
 # schema fails at startup instead of on the first request.
 ENGINE = build_engine()
 
+_EMPTY = "Body cannot be empty when content-type is set to 'application/json'"
+_NOT_JSON = "Body is not valid JSON but content-type is set to 'application/json'"
+
+
+def _body_refusal(message: str) -> JSONResponse:
+    """Fireflies' 400 for a body it cannot read: an envelope of its HTTP layer, not a GraphQL one,
+    with the message twice. :data:`_EMPTY` is for a body of no bytes and :data:`_NOT_JSON` for every
+    other one :mod:`backlot.graphql.body` cannot read or finds
+    :func:`~backlot.graphql.body.prototype_poisoned`, as api.fireflies.ai answered on 2026-10-18."""
+    return JSONResponse(
+        {
+            "statusCode": 400,
+            "status": False,
+            "code": "http",
+            "message": message,
+            "errorMessage": message,
+        },
+        status_code=400,
+    )
+
 
 @router.post("/graphql", include_in_schema=False)
 async def graphql(request: Request):
@@ -35,6 +59,15 @@ async def graphql(request: Request):
     service, and describing one POST route that accepts an arbitrary query would tell an
     OpenAPI→MCP bridge nothing useful (hence no ``SOURCE_PREFIXES`` entry either — see
     ``backlot/openapi.py``). Introspection is the schema description for this endpoint."""
+    raw = await request.body()
+    if not raw:
+        return _body_refusal(_EMPTY)
+    try:
+        payload = request_body.parse(request_body.decode(raw))
+    except request_body.NotJson:
+        return _body_refusal(_NOT_JSON)
+    if request_body.prototype_poisoned(payload):
+        return _body_refusal(_NOT_JSON)
     caller = auth.resolve_bearer(request)
     if caller is None:
         # Real Fireflies answers a bad credential with a GraphQL error envelope and a 401, not a
@@ -62,5 +95,5 @@ async def graphql(request: Request):
         # scale measured) and almost none of them have a Fireflies account. See resolve_users.
         "roster": frozenset(state.acl.email_to_token()) if getattr(state, "acl", None) else None,
     }
-    result = ENGINE.execute_request(await request.body(), context=context)
+    result = ENGINE.execute_payload(payload, context=context)
     return JSONResponse(result.payload, status_code=400 if result.request_error else 200)

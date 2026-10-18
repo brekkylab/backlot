@@ -9,6 +9,7 @@ search tests belong to the Fireflies and Linear test files.
 from __future__ import annotations
 
 import json
+import random
 
 import pytest
 from fastapi import APIRouter, FastAPI, Request
@@ -17,6 +18,7 @@ from graphql import GraphQLError, parse, validate
 from starlette.testclient import TestClient
 
 from backlot import auth, pagination, store
+from backlot.graphql import body as request_body
 from backlot.graphql import engine, mcp_tools
 from tests._helpers import selected_fields
 
@@ -237,11 +239,125 @@ def test_execute_request_honours_variables_and_operation_name(gql):
     assert r.payload["data"] == {"widget": {"name": "Worker"}}
 
 
-def test_execute_request_rejects_a_non_json_body(gql):
-    r = gql.execute_request(b"not json")
-    assert r.request_error is True
-    assert "data" not in r.payload
-    assert r.payload["errors"][0]["message"] == "POST body sent invalid JSON."
+_TYPENAME = b'{"query": "{ widgets { id } }", "variables": {"x": %s}}'
+
+
+@pytest.mark.parametrize(
+    "body, served",
+    [
+        pytest.param(b"not json", False, id="not JSON"),
+        pytest.param(_TYPENAME % b"NaN", False, id="NaN"),
+        pytest.param(_TYPENAME % b"-Infinity", False, id="-Infinity"),
+        pytest.param('{"query": "{ widgets { id } }"}'.encode("utf-16"), False, id="UTF-16"),
+        pytest.param(b"\xef\xbb\xbf" * 2 + _TYPENAME % b"1", False, id="two byte-order marks"),
+        pytest.param(_TYPENAME % (b"1" * 4301), True, id="4301 digits"),
+        pytest.param(_TYPENAME % (b"[" * 100000 + b"]" * 100000), True, id="nested 100000 deep"),
+        pytest.param(_TYPENAME % b'"\xff"', True, id="a byte that is not UTF-8"),
+        pytest.param(b"\xef\xbb\xbf" + _TYPENAME % b"1", True, id="a byte-order mark"),
+        pytest.param((_TYPENAME % b"1").decode(), True, id="text rather than bytes"),
+        pytest.param((_TYPENAME % b"NaN").decode(), False, id="text holding NaN"),
+    ],
+)
+def test_execute_request_reads_the_body_as_node_reads_it(gql, body, served):
+    """A body the reader refuses is the not-JSON request error, and one it reads is served, those
+    ``json.loads`` refuses or raises on among them."""
+    r = gql.execute_request(body)
+    if served:
+        assert r.payload == {"data": {"widgets": [{"id": "w1"}, {"id": "w2"}]}}
+    else:
+        assert r.request_error is True
+        assert r.payload == {"errors": [{"message": "POST body sent invalid JSON."}]}
+
+
+def _fuzz_texts(seed: int, count: int):
+    """``count`` JSON texts, each with the index of the first constant token it was given or None,
+    and as many again with one character of each deleted, doubled or replaced."""
+    rng = random.Random(seed)
+    pieces = ["0", "-0", "7", "-12", "3.5", "-0.25e3", "1E+2", "2e-3", "1" * 40, "1" * 4301]
+    strings = ['""', '"a"', '"\\u00e9\\n"', '"\\ud83d\\ude00"', '"\\ud800"', '"x\\"y"', '"\u2028"']
+    constants = ["NaN", "Infinity", "-Infinity"]
+    ws = ["", " ", "\n", "\t", "\r\n"]
+
+    def value(out: list, depth: int, marks: list):
+        roll = rng.random()
+        if depth < 6 and roll < 0.2:
+            out.append("[" + rng.choice(ws))
+            for k in range(rng.randrange(4)):
+                if k:
+                    out.append(rng.choice(ws) + "," + rng.choice(ws))
+                value(out, depth + 1, marks)
+            out.append(rng.choice(ws) + "]")
+        elif depth < 6 and roll < 0.4:
+            out.append("{" + rng.choice(ws))
+            for k in range(rng.randrange(4)):
+                if k:
+                    out.append(",")
+                out.append(
+                    rng.choice(['"k"', '"a"', '"__proto__"', '"\\u006b"']) + rng.choice(ws) + ":"
+                )
+                value(out, depth + 1, marks)
+            out.append("}")
+        elif roll < 0.45:
+            marks.append(len("".join(out)))
+            out.append(rng.choice(constants))
+        else:
+            out.append(rng.choice(pieces + strings + ["true", "false", "null"]))
+
+    for _ in range(count):
+        out: list = [rng.choice(ws)]
+        marks: list = []
+        value(out, 0, marks)
+        out.append(rng.choice(ws))
+        text = "".join(out)
+        yield text, (marks[0] if marks else None)
+        i = rng.randrange(len(text))
+        yield (
+            rng.choice(
+                [
+                    text[:i] + text[i + 1 :],
+                    text[:i] + text[i] + text[i:],
+                    text[:i] + rng.choice('{}[],:"-.e0 x') + text[i + 1 :],
+                ]
+            ),
+            "mutated",
+        )
+
+
+class _Hooked(Exception):
+    pass
+
+
+def _hook(token):
+    raise _Hooked(token)
+
+
+def _outcome_of_json_loads(text: str):
+    try:
+        return ("value", repr(json.loads(text, parse_int=request_body._int, parse_constant=_hook)))
+    except _Hooked as exc:
+        return ("constant", exc.args[0])
+    except json.JSONDecodeError:
+        return ("error",)
+
+
+def test_the_reader_without_a_stack_reads_what_json_loads_reads():
+    """Thousands of texts, valid and broken: the reader :func:`backlot.graphql.body.parse` falls
+    back to answers as ``json.loads`` does, value for value and type for type, and stops at the
+    first constant token, which is where the generator put it."""
+    checked = 0
+    for text, mark in _fuzz_texts(seed=20261018, count=3000):
+        expected = _outcome_of_json_loads(text)
+        try:
+            got = ("value", repr(request_body._parse_iteratively(text)))
+        except request_body.NotJson as exc:
+            got = ("constant", exc.constant.token) if exc.constant else ("error",)
+            if exc.constant is not None:
+                assert text.startswith(exc.constant.token, exc.constant.index), text
+                if mark != "mutated":
+                    assert exc.constant.index == mark, text
+        assert got == expected, text
+        checked += 1
+    assert checked == 6000
 
 
 def test_execute_request_requires_a_query_string(gql):

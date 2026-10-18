@@ -13,15 +13,21 @@ Status codes follow the GraphQL-over-HTTP split the engine already draws: a **re
 (unparseable document, failed validation, uncoercible variables) is a 400 with no ``data`` key,
 while a **field** error mid-execution is a 200 carrying partial ``data`` alongside ``errors``.
 Real Linear draws the line in the same place, and generated clients branch on it.
+
+The body is read before the credential is looked at, by Express's ``body-parser`` in front of the
+GraphQL server: with no credential, a body that is not JSON drew its 400 from api.linear.app on
+2026-10-18, not the 401. :func:`_not_json` is that 400.
 """
 
 from __future__ import annotations
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from backlot import auth
 from backlot.config import get_settings
+from backlot.graphql import body as request_body
+from backlot.graphql import engine
 from backlot.graphql.linear_resolvers import build_engine
 
 router = APIRouter(prefix="/linear", tags=["linear"])
@@ -31,12 +37,39 @@ router = APIRouter(prefix="/linear", tags=["linear"])
 ENGINE = build_engine()
 
 
+def _not_json(message: str) -> Response:
+    """Linear's 400 for a body V8 refuses, ``message`` being what
+    :func:`~backlot.graphql.body.strict_violation` or
+    :func:`~backlot.graphql.body.v8_constant_message` writes: Express's envelope around it, not a
+    GraphQL one, as api.linear.app answered on 2026-10-18."""
+    return Response(
+        request_body.node_json({"error": message, "details": {}, "code": 400}),
+        status_code=400,
+        media_type="application/json",
+    )
+
+
 @router.post("/graphql", include_in_schema=False)
 async def graphql(request: Request):
     """The single Linear endpoint. Not in the OpenAPI document on purpose: this is a GraphQL
     service, and describing one POST route that accepts an arbitrary query would tell an
     OpenAPI→MCP bridge nothing useful (hence no ``SOURCE_PREFIXES`` entry either — see
-    ``backlot/openapi.py``). Introspection is the schema description for this endpoint."""
+    ``backlot/openapi.py``). Introspection is the schema description for this endpoint.
+
+    Two refusals keep graphql-js's words here, before the credential as Linear's do: an empty
+    body, which Linear answers with Apollo Server's ``POST body missing, invalid Content-Type, or
+    JSON object has no keys.``, and a body Python cannot read either, such as ``{``, which Linear
+    answers with V8's message."""
+    text = request_body.decode(await request.body())
+    violation = request_body.strict_violation(text) if text else None
+    if violation is not None:
+        return _not_json(violation)
+    try:
+        payload = request_body.parse(text)
+    except request_body.NotJson as exc:
+        if exc.constant is not None:
+            return _not_json(request_body.v8_constant_message(text, exc.constant))
+        return JSONResponse(engine.not_json().payload, status_code=400)
     caller = auth.resolve_api_key(request)
     if caller is None:
         # Real Linear answers a bad credential with a GraphQL error envelope and a 401, not a
@@ -69,5 +102,5 @@ async def graphql(request: Request):
         # entities with no table of their own through `linear_entities`
         # (store.linear_entity_by_id, called by the resolvers' own `_by_id`).
     }
-    result = ENGINE.execute_request(await request.body(), context=context)
+    result = ENGINE.execute_payload(payload, context=context)
     return JSONResponse(result.payload, status_code=400 if result.request_error else 200)

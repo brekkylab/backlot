@@ -252,6 +252,11 @@ _TYPENAME = b'{"query": "{ widgets { id } }", "variables": {"x": %s}}'
         pytest.param(b"\xef\xbb\xbf" * 2 + _TYPENAME % b"1", False, id="two byte-order marks"),
         pytest.param(_TYPENAME % (b"1" * 4301), True, id="4301 digits"),
         pytest.param(_TYPENAME % (b"[" * 100000 + b"]" * 100000), True, id="nested 100000 deep"),
+        pytest.param(
+            _TYPENAME % (b"[" * 100000 + "1\u0663".encode() + b"]" * 100000),
+            False,
+            id="a digit outside 0-9 nested 100000 deep",
+        ),
         pytest.param(_TYPENAME % b'"\xff"', True, id="a byte that is not UTF-8"),
         pytest.param(b"\xef\xbb\xbf" + _TYPENAME % b"1", True, id="a byte-order mark"),
         pytest.param((_TYPENAME % b"1").decode(), True, id="text rather than bytes"),
@@ -316,7 +321,7 @@ def _fuzz_texts(seed: int, count: int):
                 [
                     text[:i] + text[i + 1 :],
                     text[:i] + text[i] + text[i:],
-                    text[:i] + rng.choice('{}[],:"-.e0 x') + text[i + 1 :],
+                    text[:i] + rng.choice('{}[],:"-.e0 x\u0663') + text[i + 1 :],
                 ]
             ),
             "mutated",

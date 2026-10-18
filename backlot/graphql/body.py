@@ -9,15 +9,16 @@ from __future__ import annotations
 
 import json
 import json.decoder
-import json.scanner
 import math
 import re
 from dataclasses import dataclass
 from typing import Any
 
-# `json.decoder`'s own grammar pieces, so the reader below accepts exactly what `json.loads` does.
+# `json.decoder`'s whitespace and string scanner, and `json.scanner.NUMBER_RE` under `re.ASCII`: the
+# C reader `json.loads` runs reads only the digits 0 to 9, which Python 3.11's `\d` alone does not.
+# So the reader below accepts exactly what `json.loads` does.
 _WHITESPACE = json.decoder.WHITESPACE.match
-_NUMBER = json.scanner.NUMBER_RE.match
+_NUMBER = re.compile(r"(-?(?:0|[1-9]\d*))(\.\d+)?([eE][-+]?\d+)?", re.ASCII).match
 _scanstring = json.decoder.scanstring
 _CONSTANTS = ("NaN", "Infinity", "-Infinity")
 

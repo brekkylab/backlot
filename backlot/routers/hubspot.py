@@ -880,12 +880,22 @@ def _match_one(prop, f: dict) -> bool:
     target = f.get("value")
     cands = _values_of(prop)
 
+    # Real compares a value with no regard to case, except on an enumeration property, which it
+    # compares exactly: "When filtering for an enumeration property, search is case-sensitive for
+    # all filter operators" (the search guide). Measured against api.hubapi.com: `firstname`,
+    # `name` and `domain` matched in any case on 2026-10-09 and 2026-10-16, and on 2026-10-16
+    # `lifecyclestage EQ LEAD`, `dealstage EQ APPOINTMENTSCHEDULED` and `pipeline EQ DEFAULT`
+    # answered nothing where the lower-case values matched. The four below are the enumerations
+    # (`/crm/v3/properties`, 2026-10-16) among the properties the bundled records carry. Real also
+    # folds accents (`MARÍA` and `marıa` match `Maria`), which `str.lower` does not.
+    exact = f.get("propertyName") in {"lifecyclestage", "dealstage", "pipeline", "industry"}
+    fold = str if exact else str.lower
     if op in ("EQ", "NEQ"):
-        hit = any(c == str(target) for c in cands)
+        hit = any(fold(c) == fold(str(target)) for c in cands)
         return hit if op == "EQ" else not hit
     if op in ("IN", "NOT_IN"):
-        wanted = {str(v) for v in (f.get("values") or [])}
-        hit = any(c in wanted for c in cands)
+        wanted = {fold(str(v)) for v in (f.get("values") or [])}
+        hit = any(fold(c) in wanted for c in cands)
         return hit if op == "IN" else not hit
     if op in ("CONTAINS_TOKEN", "NOT_CONTAINS_TOKEN"):
         pats = _token_patterns(str(target or ""))

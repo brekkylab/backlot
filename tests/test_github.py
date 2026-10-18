@@ -2296,6 +2296,10 @@ def test_github_401_says_which_credential_failed(gh_client, gh_admin_h, gh_org):
     )
     assert bad_and_unversioned.status_code == 401
     assert bad_and_unversioned.json()["message"] == "Bad credentials"
+    # two copies of a token that resolves are a bad credential too
+    twice = c.get(url, headers=[("Authorization", gh_admin_h["Authorization"])] * 2)
+    assert (twice.status_code, twice.json()["message"]) == (401, "Bad credentials")
+    assert c.get(url, headers=gh_admin_h).status_code == 200
 
 
 def test_github_documentation_url_names_the_route_that_failed(gh_client, gh_admin_h, gh_org):
@@ -5775,7 +5779,9 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
         assert list(resources) == ["code_search", "core", "search"]
         assert list(status.json()["resources"]) == ["core", "search", "code_search"]
         # a credential with no token is one too, not the request with no header above, and so is a
-        # tab after the scheme in a header that holds a comma
+        # tab after the scheme in a header that holds a comma, and more than one `Authorization`
+        admin = h["Authorization"]
+        admin_used = _ratelimit(c.get("/github/rate_limit", headers=h))["used"]
         for value in (
             "Bearer nope",
             "Bearer",
@@ -5791,8 +5797,14 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
             "Bearer\t,nope",
             "Bearer\tno,pe",
             "Basic\t!!,!!",
+            (admin, admin),
+            (admin, "Bearer nope"),
+            ("", admin),
+            ("Digest x", "Digest y"),
+            ("Bearer\tnope", admin),
         ):
-            refused = c.get("/github/rate_limit", headers={"Authorization": value})
+            values = value if isinstance(value, tuple) else (value,)
+            refused = c.get("/github/rate_limit", headers=[("Authorization", v) for v in values])
             assert refused.status_code == 401
             assert refused.json() == {
                 "message": "Bad credentials",
@@ -5817,6 +5829,7 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
                 "core",
             ], spelling
         assert c.get("/github/rate_limit").json()["resources"]["core"]["used"] == 2
+        assert _ratelimit(c.get("/github/rate_limit", headers=h))["used"] == admin_used
 
         # a search endpoint's name carries `search` past the route it serves; an empty rest and a
         # name real serves no endpoint for read `core`

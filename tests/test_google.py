@@ -2292,6 +2292,48 @@ def test_xgafv_takes_1_or_2_and_refuses_the_rest_with_reals_sentence(client, adm
     ]
 
 
+def test_a_folder_says_it_can_be_downloaded(tmp_path):
+    """Both kinds of folder, a `subtype: folder` record and the folder a record's `folder` names,
+    answer `canDownload` true, though `alt=media` refuses either. Real's did: on 2026-10-18 each of
+    the 49 folders a Google Workspace member's `files.list` named (two its own, 23 shared with it,
+    24 in shared drives) answered `capabilities.canDownload: true`."""
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "google_drive",
+                "doc_id": "gd-open",
+                "folder": "Shared",
+                "title": "Open",
+                "content": "body",
+                "author_email": "mia@acme.com",
+                "visibility": "public",
+            },
+            {
+                "source_type": "google_drive",
+                "doc_id": "gd-dir",
+                "subtype": "folder",
+                "title": "Plans",
+                "content": "x",
+                "author_email": "mia@acme.com",
+                "visibility": "public",
+            },
+        ],
+    )
+    h = {"Authorization": f"Bearer {s.admin_token}"}
+    with client_for(s, reload=True) as c:
+        q = {"q": f"mimeType='{FOLDER_MIME}'", "fields": "files(id,name)"}
+        folder = {
+            f["name"]: f["id"]
+            for f in c.get("/drive/v3/files", headers=h, params=q).json()["files"]
+        }
+        for name in ("Shared", "Plans"):
+            r = c.get(
+                f"/drive/v3/files/{folder[name]}", headers=h, params={"fields": "capabilities"}
+            )
+            assert r.json()["capabilities"]["canDownload"] is True, name
+
+
 def test_a_bad_xgafv_is_refused_before_anything_else_is_read(client, admin_h):
     """Measured: real answers the system-parameter 400 ahead of a bad token, a missing credential
     and an unparseable range. A router-level dependency is what puts the check first here."""

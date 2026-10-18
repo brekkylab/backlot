@@ -1958,8 +1958,6 @@ _DRIVE_CHECK_ROWS = [
     # does not exist
     ("/drive/v3/files/{folder}/export", "mimeType=text/plain", "admin", (403, "fileNotExportable", None, "Export only supports Docs Editors files.")),
     ("/drive/v3/files/{doc}", "alt=media", "admin", (403, "fileNotDownloadable", "alt", None)),
-    # a folder download is refused as a Docs Editors file is, not served as the folder's metadata
-    ("/drive/v3/files/{folder}", "alt=media", "admin", (403, "fileNotDownloadable", "alt", None)),
     # the shared-drive items need a companion flag, which the same spelling turns on
     ("/drive/v3/files", "includeItemsFromAllDrives=true", "admin", _SHARED_DRIVES),
     ("/drive/v3/files", "includeItemsFromAllDrives=TRUE", "admin", _SHARED_DRIVES),

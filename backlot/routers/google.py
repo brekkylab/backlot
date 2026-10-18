@@ -2685,10 +2685,6 @@ async def drive_files_get(file_id: str, request: Request):
         # cannot see with the 404 notFound an id that names nothing gets, `fields` mask or not.
         name = _drive_folder_name_by_id(conn, file_id)
         if name is not None and store.drive_folder_has_visible(conn, name, ids):
-            # Measured 2026-10-16: a folder asked for with `alt=media` is refused with the 403
-            # fileNotDownloadable a Docs Editors file gets, not served as the folder's metadata.
-            if gerr.alt_format(request.query_params) == "media":
-                raise gerr.not_downloadable()
             keys = _drive_get_field_keys(gerr.first_repeat(request.query_params, "fields"))
             return _drive_project([_drive_folder_obj(conn, name, caller.email)], keys)[0]
         raise gerr.not_found_file(file_id)

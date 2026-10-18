@@ -341,8 +341,15 @@ async def refuse_an_unserved_operation(request: Request) -> None:
     Of the 31, only `DELETE /installation/token` carried the version echo, and only a `GET` or a
     `POST` carried the five `x-ratelimit-*` and counted: `PATCH`, `PUT` and `DELETE` were refused
     with neither and moved no window, but `DELETE /installation/token`, which carried the five at
-    `used: 0`. Here none carries the echo and the methods split as real's did; ``backlot.main``
-    asks :func:`refused_an_unserved_operation` for the echo and
+    `used: 0`. Measured again on 2026-10-16, each request on its own cache-busted URL from one
+    address with no token: no `Authorization` and `Authorization: Digest x` were the 401 "Requires
+    authentication" with `X-GitHub-Api-Version-Selected: 2022-11-28` and the five, and a second
+    request with no header left `used` where the first had put it; `X-GitHub-Api-Version:
+    1999-01-01` with no `Authorization` was the version's 400 with the five and that same `used`.
+    So that one delete is answered as a served route is, the version first when no header arrived,
+    and it counts nothing (:func:`refused_an_unserved_operation_reported`). Every other operation
+    here carries no echo, and the methods split as real's did; ``backlot.main`` asks
+    :func:`refused_an_unserved_operation` for the echo and
     :func:`refused_an_unserved_operation_uncounted` for the headers. With a token, real's answers to
     `GET /user/packages` and `GET /gists/starred` carried the echo, and so does the router's 404 or
     405 here.
@@ -364,6 +371,13 @@ async def refuse_an_unserved_operation(request: Request) -> None:
     """
     if not is_an_unserved_operation(request.method, request.scope["path"]):
         return
+    if _deletes_the_installation_token(request) and (
+        "authorization" not in request.headers or _a_header_without_a_credential(request)
+    ):
+        request.state.github_unserved_refusal = "reported"
+        if "authorization" not in request.headers:
+            await _validate_api_version(request)
+        raise HTTPException(status_code=401, detail="Requires authentication")
     if "authorization" not in request.headers:
         request.state.github_unserved_refusal = (
             "uncounted" if request.method in _UNCOUNTED_METHODS else "counted"
@@ -414,6 +428,22 @@ def refused_an_unserved_operation_uncounted(request: Request) -> bool:
     nowhere and sends without the five headers: for a header that carries no credential, on any
     method, and for no header on a method in :data:`_UNCOUNTED_METHODS`."""
     return getattr(request.state, "github_unserved_refusal", None) == "uncounted"
+
+
+def refused_an_unserved_operation_reported(request: Request) -> bool:
+    """Whether :func:`refuse_an_unserved_operation` answered ``DELETE /installation/token`` as a
+    served route does for a caller with no credential: the version echo, the five `x-ratelimit-*`,
+    and nothing counted. See that function for the measurement."""
+    return getattr(request.state, "github_unserved_refusal", None) == "reported"
+
+
+def _deletes_the_installation_token(request: Request) -> bool:
+    """Whether this is `DELETE /installation/token`, the one unpublished delete real answers as a
+    served route."""
+    return (
+        request.method == "DELETE"
+        and request.scope["path"].removeprefix("/github") == "/installation/token"
+    )
 
 
 # --- rate limits ----------------------------------------------------------------
@@ -619,19 +649,21 @@ def refused_without_a_window(request: Request) -> bool:
     return refused_a_credential(request) and not auth.github_scheme_then_a_tab(request)
 
 
-def rate_limit_headers(request: Request, status_code: int) -> dict[str, str]:
+def rate_limit_headers(request: Request, status_code: int, *, count: bool = True) -> dict[str, str]:
     """The five `x-ratelimit-*` headers for a `/github` answer.
 
     Counts the request against the window, except on :data:`RATE_LIMIT_PATH`, which reports its
     window without counting: two `GET /rate_limit` in a row both answered `remaining: 5000`,
     `used: 0`, each carrying the five with `resource: core`, and the description's own note says
-    the route does not count. `/rate_limit/` never reaches this — see
+    the route does not count. ``count`` False reports the same way, which is how
+    ``DELETE /installation/token`` carries the five while leaving `used` where it was
+    (:func:`refused_an_unserved_operation_reported`). `/rate_limit/` never reaches this — see
     ``backlot.main.refuse_a_trailing_slash_on_github``."""
     key, authenticated = rate_limit_caller(request)
     resource = rate_limit_resource(request.url.path, status_code)
     counted, limit = rate_limit_window(resource, authenticated)
     windows = _rate_limit_windows(request.app)
-    read = windows.count if request.url.path != RATE_LIMIT_PATH else windows.status
+    read = windows.count if count and request.url.path != RATE_LIMIT_PATH else windows.status
     window = read(key, counted, limit)
     return {
         "x-ratelimit-limit": str(window["limit"]),

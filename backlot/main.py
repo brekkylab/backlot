@@ -271,7 +271,9 @@ async def echo_github_api_version(request: Request, call_next):
     neither does `/rate_limit` asked with no `Authorization` header (see
     ``github.honours_api_version``). Nor does a 404 for a path real does not route, whatever the
     caller's credential — see ``_github_routes`` — nor real's "Bad credentials" 401
-    (``github.refused_a_credential``), nor the 401s ``github.refused_an_unserved_operation`` names.
+    (``github.refused_a_credential``), nor the 401s ``github.refused_an_unserved_operation`` names,
+    except ``DELETE /installation/token``
+    (:func:`github.refused_an_unserved_operation_reported`), which echoes as a served route does.
     """
     response = await call_next(request)
     if (
@@ -279,7 +281,10 @@ async def echo_github_api_version(request: Request, call_next):
         and github.honours_api_version(request)
         and _github_routes(request.scope)
         and not github.refused_a_credential(request)
-        and not github.refused_an_unserved_operation(request)
+        and (
+            not github.refused_an_unserved_operation(request)
+            or github.refused_an_unserved_operation_reported(request)
+        )
     ):
         version = github.selected_api_version(request)
         if version is not None:
@@ -340,7 +345,11 @@ async def report_github_rate_limit(request: Request, call_next):
             return refusal
     response = await call_next(request)
     if gated and not github.refused_an_unserved_operation_uncounted(request):
-        for name, value in github.rate_limit_headers(request, response.status_code).items():
+        for name, value in github.rate_limit_headers(
+            request,
+            response.status_code,
+            count=not github.refused_an_unserved_operation_reported(request),
+        ).items():
             response.headers[name] = value
     return response
 

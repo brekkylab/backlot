@@ -2683,6 +2683,41 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
         assert any(name.startswith("x-ratelimit-") for name in unversioned.headers), headers
 
 
+def test_github_deleting_the_installation_token_reports_a_missing_credential(
+    gh_client,
+):
+    """`DELETE /installation/token` with no credential is the served route's answer, as
+    `refuse_an_unserved_operation` records: the 401 carries the version echo and the five
+    `x-ratelimit-*` and a second one leaves `used` where it was, `Digest x` does the same on its
+    own window, and a version real does not have is the 400 with the five and that same `used`."""
+    c, _ = gh_client
+    url = "/github/installation/token"
+    five = (
+        "x-ratelimit-limit",
+        "x-ratelimit-remaining",
+        "x-ratelimit-used",
+        "x-ratelimit-reset",
+        "x-ratelimit-resource",
+    )
+
+    def used(response):
+        assert all(name in response.headers for name in five), response.headers
+        return response.headers["x-ratelimit-used"]
+
+    first = c.delete(url)
+    assert (first.status_code, first.json()["message"]) == (401, "Requires authentication")
+    assert first.headers["x-github-api-version-selected"] == "2022-11-28"
+    assert used(first) == used(c.delete(url))
+    digest = c.delete(url, headers={"Authorization": "Digest x"})
+    assert (digest.status_code, digest.json()["message"]) == (401, "Requires authentication")
+    assert digest.headers["x-github-api-version-selected"] == "2022-11-28"
+    assert used(digest) == used(c.delete(url, headers={"Authorization": "Digest x"}))
+    bad = c.delete(url, headers={"X-GitHub-Api-Version": "1999-01-01"})
+    assert (bad.status_code, bad.json()["message"]) == (400, "Bad Request")
+    assert "x-github-api-version-selected" not in bad.headers
+    assert used(bad) == used(first)
+
+
 def test_github_a_head_is_the_get_with_the_body_left_off(gh_client, gh_admin_h, gh_org):
     """Real answers a `HEAD` on each GitHub route measured as the `GET` with nothing in the body: the GET's
     status, its headers, `content-length` of the body the GET would have carried and `Link` where

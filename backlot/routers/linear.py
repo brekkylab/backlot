@@ -32,7 +32,7 @@ from fastapi.responses import JSONResponse, Response
 from backlot import auth
 from backlot.config import get_settings
 from backlot.graphql import body as request_body
-from backlot.graphql import engine
+from backlot.graphql import engine, v8_json
 from backlot.graphql.linear_resolvers import build_engine
 
 router = APIRouter(prefix="/linear", tags=["linear"])
@@ -67,10 +67,9 @@ def _api_key_as_bearer() -> JSONResponse:
 def _express(message: str, status: int = 400, length: int | None = None) -> Response:
     """Linear's answer to a body ``body-parser`` refuses: Express's envelope around ``message``,
     not a GraphQL one, as api.linear.app answered a 400 on 2026-10-18 with what
-    :func:`~backlot.graphql.body.strict_violation` or
-    :func:`~backlot.graphql.body.v8_constant_message` writes, and each
-    :class:`~backlot.graphql.body.Unread` on 2026-10-19. A 413 for an uncompressed body carries
-    ``extensions`` naming its ``length`` and the limit."""
+    :func:`~backlot.graphql.body.strict_violation` or :func:`backlot.graphql.v8_json.error` writes,
+    and each :class:`~backlot.graphql.body.Unread` on 2026-10-19. A 413 for an uncompressed body
+    carries ``extensions`` naming its ``length`` and the limit."""
     envelope: dict = {"error": message, "details": {}}
     if length is not None:
         envelope["extensions"] = {
@@ -94,11 +93,9 @@ async def graphql(request: Request):
     OpenAPI→MCP bridge nothing useful (hence no ``SOURCE_PREFIXES`` entry either — see
     ``backlot/openapi.py``). Introspection is the schema description for this endpoint.
 
-    Two refusals keep graphql-js's words here, after the ``Bearer`` check and before the key is
-    resolved, as Linear's come: a body with no text once read, which Linear answers with Apollo
-    Server's ``POST body missing, invalid Content-Type, or JSON object has no keys.``, and a body
-    the reader refuses before it meets a ``NaN``, ``Infinity`` or ``-Infinity``, such as ``{`` or
-    ``-NaN``, which Linear answers with V8's message."""
+    A body with no text once read keeps graphql-js's words here, after the ``Bearer`` check and
+    before the key is resolved, as Linear's refusal comes: Linear answers it with Apollo Server's
+    ``POST body missing, invalid Content-Type, or JSON object has no keys.``"""
     if auth.acl(request).resolve(auth.linear_bearer_token(request)) is not None:
         return _api_key_as_bearer()
     try:
@@ -116,10 +113,11 @@ async def graphql(request: Request):
         return _express(violation)
     try:
         payload = request_body.parse(text)
-    except request_body.NotJson as exc:
-        if exc.constant is not None:
-            return _express(request_body.v8_constant_message(text, exc.constant))
-        return JSONResponse(engine.not_json().payload, status_code=400)
+    except request_body.NotJson:
+        message = v8_json.error(text) if text else None
+        if message is None:
+            return JSONResponse(engine.not_json().payload, status_code=400)
+        return _express(message)
     caller = auth.resolve_api_key(request)
     if caller is None:
         # Real Linear answers a bad credential with a GraphQL error envelope and a 401, not a

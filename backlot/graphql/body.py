@@ -1,9 +1,10 @@
 """A GraphQL POST body read the way the Node servers in front of Linear and Fireflies read it,
 where that parts from :func:`json.loads`: :func:`decode` turns the bytes into text, or
 :func:`body_parser_text` does as Linear's ``body-parser`` does, and :func:`parse` turns the text
-into values. What a vendor says to a body it cannot read is its own: :class:`Unread`,
-:func:`strict_violation` and :func:`v8_constant_message` hold Linear's words, and
-:func:`prototype_poisoned` names a body Fireflies refuses.
+into values. What a vendor says to a body it cannot read is its own: :class:`Unread` holds Linear's
+words for one it cannot read as text, :func:`strict_violation` for one that does not open with an
+object or an array, :mod:`backlot.graphql.v8_json` for the rest, and :func:`prototype_poisoned`
+names a body Fireflies refuses.
 """
 
 from __future__ import annotations
@@ -14,34 +15,24 @@ import math
 import re
 import struct
 import zlib
-from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
+
+from backlot.graphql import v8_json
 
 # `json.decoder`'s whitespace and string scanner, and `json.scanner.NUMBER_RE` under `re.ASCII`: the
 # C reader `json.loads` runs reads only the digits 0 to 9, which Python 3.11's `\d` alone does not.
 _WHITESPACE = json.decoder.WHITESPACE.match
 _NUMBER = re.compile(r"(-?(?:0|[1-9]\d*))(\.\d+)?([eE][-+]?\d+)?", re.ASCII).match
 _scanstring = json.decoder.scanstring
-_CONSTANTS = ("NaN", "Infinity", "-Infinity")
-
-
-@dataclass(frozen=True)
-class Constant:
-    """One of :data:`_CONSTANTS` in a body, and the code point it starts at."""
-
-    token: str
-    index: int
 
 
 class NotJson(ValueError):
-    """A body the Node servers do not read as JSON. ``constant`` is the first constant token when
-    the reader meets one before anything else it refuses, and None otherwise."""
+    """A body the Node servers do not read as JSON."""
 
-    def __init__(self, text: str, constant: Constant | None = None):
+    def __init__(self, text: str):
         super().__init__("not JSON")
         self.text = text
-        self.constant = constant
 
 
 def decode(raw: bytes) -> str:
@@ -238,18 +229,18 @@ def parse(text: str) -> Any:
     """``text`` as Python values, read as ``JSON.parse`` reads it; :class:`NotJson` otherwise.
 
     Besides the numbers :func:`_int` and :class:`Double` read, two readings part from
-    ``json.loads``, as both vendors answered on 2026-10-18 (UTC): the :data:`_CONSTANTS` are
-    refused, where ``json.loads`` reads them as floats, and a body nested 300000 deep is read, where
-    ``json.loads`` raises ``RecursionError`` at a depth the interpreter decides. The C reader runs
-    first; it stops at a constant without saying where and at that depth, and either hands the
-    text to :func:`_parse_iteratively`."""
+    ``json.loads``, as both vendors answered on 2026-10-18 (UTC): ``NaN``, ``Infinity`` and
+    ``-Infinity`` are refused, where ``json.loads`` reads them as floats, and a body nested 300000
+    deep is read, where ``json.loads`` raises ``RecursionError`` at a depth the interpreter decides.
+    The C reader runs first, and hands a text it cannot read without recursing that deep to
+    :func:`_parse_iteratively`."""
     try:
         return json.loads(
             text, parse_int=_int, parse_float=Double, parse_constant=_refuse_a_constant
         )
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, _ConstantRead):
         raise NotJson(text) from None
-    except (_ConstantRead, RecursionError):
+    except RecursionError:
         return _parse_iteratively(text)
 
 
@@ -277,9 +268,6 @@ def _scalar(text: str, i: int) -> tuple[Any, int]:
         if frac or exp:
             return Double(integer + (frac or "") + (exp or "")), number.end()
         return _int(integer), number.end()
-    for token in _CONSTANTS:
-        if text.startswith(token, i):
-            raise NotJson(text, Constant(token, i))
     raise NotJson(text)
 
 
@@ -339,66 +327,6 @@ def _parse_iteratively(text: str) -> Any:
         raise NotJson(text) from None
 
 
-# V8's JSON.parse quotes the source around the token it stopped at: the whole source when it is
-# shorter than _SHORT UTF-16 units, otherwise the _CONTEXT units before the token and the _CONTEXT
-# units from it on, cut at the source's ends. Measured on Linear on 2026-10-18 at lengths 19, 20, 21
-# and 22 and at positions 5, 9, 10, 18 and the last ten, with a surrogate pair cut on either side.
-_CONTEXT = 10
-_SHORT = 2 * _CONTEXT + 1
-
-
-def _units(utf16: bytes, start: int, end: int | None = None) -> str:
-    """UTF-16 units ``start`` to ``end`` of a UTF-16-LE source, a pair cut in half kept as the
-    lone surrogate JavaScript's ``substring`` leaves."""
-    stop = None if end is None else 2 * end
-    return utf16[2 * start : stop].decode("utf-16-le", "surrogatepass")
-
-
-def _utf16(text: str) -> bytes:
-    return text.encode("utf-16-le", "surrogatepass")
-
-
-def _unexpected_token(source: str, position: int) -> str:
-    """V8's message for the token at UTF-16 unit ``position`` of ``source``."""
-    utf16 = _utf16(source)
-    length = len(utf16) // 2
-    token = _units(utf16, position, position + 1)
-    if length < _SHORT:
-        return f"Unexpected token '{token}', \"{source}\" is not valid JSON"
-    if position < _CONTEXT:
-        quoted = _units(utf16, 0, position + _CONTEXT)
-        return f"Unexpected token '{token}', \"{quoted}\"... is not valid JSON"
-    if position < length - _CONTEXT:
-        quoted = _units(utf16, position - _CONTEXT, position + _CONTEXT)
-        return f"Unexpected token '{token}', ...\"{quoted}\"... is not valid JSON"
-    quoted = _units(utf16, position - _CONTEXT)
-    return f"Unexpected token '{token}', ...\"{quoted}\" is not valid JSON"
-
-
-def _line_and_column(before: str, position: int) -> tuple[int, int]:
-    """The line and column V8 reports for UTF-16 unit ``position``, given the text ``before`` it:
-    each ``\\r``, ``\\n`` and ``\\r\\n`` ends a line, the column counting UTF-16 units from 1.
-    Measured on Linear on 2026-10-18 after ``\\n``, ``\\r``, ``\\r\\n``, ``\\n\\r`` and a tab, and
-    after a U+2028 inside a string, which ends no line."""
-    line = 1 + before.count("\n") + before.count("\r") - before.count("\r\n")
-    last = max(before.rfind("\n"), before.rfind("\r"))
-    start = len(_utf16(before[: last + 1])) // 2
-    return line, position - start + 1
-
-
-def v8_constant_message(text: str, constant: Constant) -> str:
-    """What ``JSON.parse(text)`` throws at ``constant``: the unexpected-token message at the ``N``
-    or ``I`` it starts with, and for ``-Infinity`` the minus sign's message at the ``I``."""
-    position = len(_utf16(text[: constant.index])) // 2
-    if constant.token != "-Infinity":
-        return _unexpected_token(text, position)
-    position += 1
-    line, column = _line_and_column(_units(_utf16(text), 0, position), position)
-    return (
-        f"No number after minus sign in JSON at position {position} (line {line} column {column})"
-    )
-
-
 # body-parser's `firstchar`: the first character that is not one of JSON's four whitespace ones.
 _FIRST = re.compile(r"[\x20\x09\x0a\x0d]*([^\x20\x09\x0a\x0d])")
 
@@ -422,12 +350,12 @@ def strict_violation(text: str) -> str | None:
     if first.group(1) in "{[":
         return None
     index = first.start(1)  # only ASCII whitespace precedes it, so code points are units here
-    utf16 = _utf16(text)
+    utf16 = v8_json.utf16(text)
     masked = text[:index] + "#" * (len(utf16) // 2 - index)
     return re.sub(
         "#+",
-        lambda run: _units(utf16, index, index + len(run.group())),
-        _unexpected_token(masked, index),
+        lambda run: v8_json.units(utf16, index, index + len(run.group())),
+        v8_json.error(masked),
     )
 
 

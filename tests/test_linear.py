@@ -409,15 +409,19 @@ def test_linear_unauthenticated_is_401(client):
 # --- the body, and where the credential is read against it ---------------------------------------
 # The headers a body was sent with beyond `Content-Type: application/json`, the body, and the bytes
 # Linear refused it with, at the status their `code` names (400 where there is none), or None where
-# Linear served the query, as `backlot.graphql.body` reads them. `_GRAPHQL_JS_NOT_JSON` marks the
-# rows `backlot.routers.linear.graphql` answers in graphql-js's words for the key, no credential and
-# `nope` alike: `{` and `-NaN` however they arrive, and a body with no text. `_REQUEST_ERROR` marks
-# a JSON array, the 400 with the key; Linear answers it with `Operation batching disabled.` with or
+# Linear served the query, as `backlot.graphql.body` and `backlot.graphql.v8_json` read them.
+# `_GRAPHQL_JS_NOT_JSON` marks the rows `backlot.routers.linear.graphql` answers in graphql-js's
+# words for the key, no credential and `nope` alike: a body with no text. `_REQUEST_ERROR` marks a
+# JSON array, the 400 with the key; Linear answers it with `Operation batching disabled.` with or
 # without one.
 _GRAPHQL_JS_NOT_JSON = b'{"errors":[{"message":"POST body sent invalid JSON."}]}'
 _REQUEST_ERROR = object()
 _LINEAR_BODIES = [
-    pytest.param(b"{", _GRAPHQL_JS_NOT_JSON, id="{"),
+    pytest.param(
+        b"{",
+        b'{"error":"Expected property name or \'}\' in JSON at position 1 (line 1 column 2)","details":{},"code":400}',
+        id="{",
+    ),
     pytest.param(
         b'{"query":"{ __typename }","variables":{"x":NaN}}',
         b'{"error":"Unexpected token \'N\', ...\\"les\\":{\\"x\\":NaN}}\\" is not valid JSON","details":{},"code":400}',
@@ -528,7 +532,11 @@ _LINEAR_BODIES = [
         b'{"error":"Unexpected token \'I\', ...\\"klmnopq\\":[Infinity]}\\" is not valid JSON","details":{},"code":400}',
         id="Infinity window at the end",
     ),
-    pytest.param(b'{"x":-NaN,"query":"{ __typename }"}', _GRAPHQL_JS_NOT_JSON, id="-NaN"),
+    pytest.param(
+        b'{"x":-NaN,"query":"{ __typename }"}',
+        b'{"error":"No number after minus sign in JSON at position 6 (line 1 column 7)","details":{},"code":400}',
+        id="-NaN",
+    ),
     pytest.param(
         b'{"x":Infinityx,"query":"{ __typename }"}',
         b'{"error":"Unexpected token \'I\', \\"{\\"x\\":Infinityx,\\"... is not valid JSON","details":{},"code":400}',
@@ -803,6 +811,364 @@ _LINEAR_BODIES = [
         b'{"error":"No number after minus sign in JSON at position 28 (line 2 column 17)","details":{},"code":400}',
         id="-Infinity after surrogate pairs on both lines",
     ),
+    pytest.param(
+        b'{"query":"{ __typename }","b" 2}',
+        b'{"error":"Expected \':\' after property name in JSON at position 30 (line 1 column 31)","details":{},"code":400}',
+        id="colon after a later key",
+    ),
+    pytest.param(
+        b'{"query" 2}',
+        b'{"error":"Expected \':\' after property name in JSON at position 9 (line 1 column 10)","details":{},"code":400}',
+        id="colon after the first key",
+    ),
+    pytest.param(
+        b"[01]",
+        b'{"error":"Unexpected number in JSON at position 2 (line 1 column 3)","details":{},"code":400}',
+        id="leading zero in an array",
+    ),
+    pytest.param(
+        b'{"a":01}',
+        b'{"error":"Unexpected number in JSON at position 6 (line 1 column 7)","details":{},"code":400}',
+        id="leading zero in an object",
+    ),
+    pytest.param(
+        b'{"a":{"a":{"a":1,"b" 1}}}',
+        b'{"error":"Expected \':\' after property name in JSON at position 21 (line 1 column 22)","details":{},"code":400}',
+        id="nested later key no colon",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables"x:{}}',
+        b'{"error":"Expected \':\' after property name in JSON at position 37 (line 1 column 38)","details":{},"code":400}',
+        id="later key then a letter",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables",:{}}',
+        b'{"error":"Expected \':\' after property name in JSON at position 37 (line 1 column 38)","details":{},"code":400}',
+        id="later key then a comma",
+    ),
+    pytest.param(
+        b"[", b'{"error":"Unexpected end of JSON input","details":{},"code":400}', id="[ alone"
+    ),
+    pytest.param(
+        b"{ ",
+        b'{"error":"Expected property name or \'}\' in JSON at position 2 (line 1 column 3)","details":{},"code":400}',
+        id="{ then space",
+    ),
+    pytest.param(
+        b"{} x",
+        b'{"error":"Unexpected non-whitespace character after JSON at position 3 (line 1 column 4)","details":{},"code":400}',
+        id="{} then x",
+    ),
+    pytest.param(
+        b"[1]]",
+        b'{"error":"Unexpected non-whitespace character after JSON at position 3 (line 1 column 4)","details":{},"code":400}',
+        id="[1] then ]",
+    ),
+    pytest.param(
+        b'{"query',
+        b'{"error":"Unterminated string in JSON at position 7 (line 1 column 8)","details":{},"code":400}',
+        id="key unterminated",
+    ),
+    pytest.param(
+        b'{"query"',
+        b'{"error":"Expected \':\' after property name in JSON at position 8 (line 1 column 9)","details":{},"code":400}',
+        id="key then end",
+    ),
+    pytest.param(
+        b'{"query":',
+        b'{"error":"Unexpected end of JSON input","details":{},"code":400}',
+        id="key colon end",
+    ),
+    pytest.param(
+        b'{"query": ',
+        b'{"error":"Unexpected end of JSON input","details":{},"code":400}',
+        id="key colon space end",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }"',
+        b'{"error":"Expected \',\' or \'}\' after property value in JSON at position 25 (line 1 column 26)","details":{},"code":400}',
+        id="value then end",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }" x}',
+        b'{"error":"Expected \',\' or \'}\' after property value in JSON at position 26 (line 1 column 27)","details":{},"code":400}',
+        id="value then x",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }",}',
+        b'{"error":"Expected double-quoted property name in JSON at position 26 (line 1 column 27)","details":{},"code":400}',
+        id="trailing comma object",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }",1:2}',
+        b'{"error":"Expected double-quoted property name in JSON at position 26 (line 1 column 27)","details":{},"code":400}',
+        id="comma then number",
+    ),
+    pytest.param(
+        b"{'query':1}",
+        b'{"error":"Expected property name or \'}\' in JSON at position 1 (line 1 column 2)","details":{},"code":400}',
+        id="single quotes",
+    ),
+    pytest.param(
+        b"{query:1}",
+        b'{"error":"Expected property name or \'}\' in JSON at position 1 (line 1 column 2)","details":{},"code":400}',
+        id="bare key",
+    ),
+    pytest.param(
+        b"{1:2}",
+        b'{"error":"Expected property name or \'}\' in JSON at position 1 (line 1 column 2)","details":{},"code":400}',
+        id="first key a number",
+    ),
+    pytest.param(
+        b"[1,]",
+        b'{"error":"Unexpected token \']\', \\"[1,]\\" is not valid JSON","details":{},"code":400}',
+        id="array trailing comma",
+    ),
+    pytest.param(
+        b"[1 2]",
+        b'{"error":"Expected \',\' or \']\' after array element in JSON at position 3 (line 1 column 4)","details":{},"code":400}',
+        id="array two values",
+    ),
+    pytest.param(
+        b"[1}",
+        b'{"error":"Expected \',\' or \']\' after array element in JSON at position 2 (line 1 column 3)","details":{},"code":400}',
+        id="array then }",
+    ),
+    pytest.param(
+        b"[1",
+        b'{"error":"Expected \',\' or \']\' after array element in JSON at position 2 (line 1 column 3)","details":{},"code":400}',
+        id="array end",
+    ),
+    pytest.param(
+        b"[1,",
+        b'{"error":"Unexpected end of JSON input","details":{},"code":400}',
+        id="array comma end",
+    ),
+    pytest.param(
+        b'["a" "b"]',
+        b'{"error":"Expected \',\' or \']\' after array element in JSON at position 5 (line 1 column 6)","details":{},"code":400}',
+        id="array of strings missing comma",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }',
+        b'{"error":"Unterminated string in JSON at position 24 (line 1 column 25)","details":{},"code":400}',
+        id="unterminated value string",
+    ),
+    pytest.param(
+        b'{"query":"\\x"}',
+        b'{"error":"Bad escaped character in JSON at position 11 (line 1 column 12)","details":{},"code":400}',
+        id="bad escape",
+    ),
+    pytest.param(
+        b'{"query":"\\',
+        b'{"error":"Unexpected end of JSON input","details":{},"code":400}',
+        id="escape at end",
+    ),
+    pytest.param(
+        b'{"query":"\\u12G4"}',
+        b'{"error":"Bad Unicode escape in JSON at position 14 (line 1 column 15)","details":{},"code":400}',
+        id="bad unicode escape",
+    ),
+    pytest.param(
+        b'{"query":"\\u12',
+        b'{"error":"Bad Unicode escape in JSON at position 14 (line 1 column 15)","details":{},"code":400}',
+        id="unicode escape at end",
+    ),
+    pytest.param(
+        b'{"query":"a\x01b"}',
+        b'{"error":"Bad control character in string literal in JSON at position 11 (line 1 column 12)","details":{},"code":400}',
+        id="control char in string",
+    ),
+    pytest.param(
+        b'{"query":"a\tb"}',
+        b'{"error":"Bad control character in string literal in JSON at position 11 (line 1 column 12)","details":{},"code":400}',
+        id="tab in string",
+    ),
+    pytest.param(
+        b'{"query":"a\nb"}',
+        b'{"error":"Bad control character in string literal in JSON at position 11 (line 1 column 12)","details":{},"code":400}',
+        id="newline in string",
+    ),
+    pytest.param(
+        b'{"query":"\\\xc3\xa9"}',
+        b'{"error":"Bad escaped character in JSON at position 11 (line 1 column 12)","details":{},"code":400}',
+        id="escape of a two-byte char",
+    ),
+    pytest.param(
+        b'{"query":"\\\xe4\xb8\x80"}',
+        b'{"error":"Unexpected token \'\xe4\xb8\x80\', \\"{\\"query\\":\\"\\\\\xe4\xb8\x80\\"}\\" is not valid JSON","details":{},"code":400}',
+        id="escape of a char above 0xFF",
+    ),
+    pytest.param(
+        b'{"x":00}',
+        b'{"error":"Unexpected number in JSON at position 6 (line 1 column 7)","details":{},"code":400}',
+        id="leading zero",
+    ),
+    pytest.param(
+        b'{"x":-}',
+        b'{"error":"No number after minus sign in JSON at position 6 (line 1 column 7)","details":{},"code":400}',
+        id="minus alone",
+    ),
+    pytest.param(
+        b'{"x":-a}',
+        b'{"error":"No number after minus sign in JSON at position 6 (line 1 column 7)","details":{},"code":400}',
+        id="minus then letter",
+    ),
+    pytest.param(
+        b'{"x":1.}',
+        b'{"error":"Unterminated fractional number in JSON at position 7 (line 1 column 8)","details":{},"code":400}',
+        id="fraction missing",
+    ),
+    pytest.param(
+        b'{"x":1.e5}',
+        b'{"error":"Unterminated fractional number in JSON at position 7 (line 1 column 8)","details":{},"code":400}',
+        id="fraction then e",
+    ),
+    pytest.param(
+        b'{"x":1e}',
+        b'{"error":"Exponent part is missing a number in JSON at position 7 (line 1 column 8)","details":{},"code":400}',
+        id="exponent missing",
+    ),
+    pytest.param(
+        b'{"x":1e+}',
+        b'{"error":"Exponent part is missing a number in JSON at position 8 (line 1 column 9)","details":{},"code":400}',
+        id="exponent sign missing",
+    ),
+    pytest.param(
+        b"[1E",
+        b'{"error":"Exponent part is missing a number in JSON at position 3 (line 1 column 4)","details":{},"code":400}',
+        id="exponent at end",
+    ),
+    pytest.param(
+        b"[1.5.3]",
+        b'{"error":"Expected \',\' or \']\' after array element in JSON at position 4 (line 1 column 5)","details":{},"code":400}',
+        id="two dots",
+    ),
+    pytest.param(
+        b"[+1]",
+        b'{"error":"Unexpected token \'+\', \\"[+1]\\" is not valid JSON","details":{},"code":400}',
+        id="plus number",
+    ),
+    pytest.param(
+        b"[0x10]",
+        b'{"error":"Expected \',\' or \']\' after array element in JSON at position 2 (line 1 column 3)","details":{},"code":400}',
+        id="hex",
+    ),
+    pytest.param(
+        b"[tru]",
+        b'{"error":"Unexpected token \']\', \\"[tru]\\" is not valid JSON","details":{},"code":400}',
+        id="true misspelt",
+    ),
+    pytest.param(
+        b"[tru5]",
+        b'{"error":"Unexpected number in JSON at position 4 (line 1 column 5)","details":{},"code":400}',
+        id="true then digit",
+    ),
+    pytest.param(
+        b'[fals"e"]',
+        b'{"error":"Unexpected string in JSON at position 5 (line 1 column 6)","details":{},"code":400}',
+        id="false then quote",
+    ),
+    pytest.param(
+        b"[nul",
+        b'{"error":"Unexpected end of JSON input","details":{},"code":400}',
+        id="null at end",
+    ),
+    pytest.param(
+        b"[nulll]",
+        b'{"error":"Expected \',\' or \']\' after array element in JSON at position 5 (line 1 column 6)","details":{},"code":400}',
+        id="nulll",
+    ),
+    pytest.param(
+        b"[object Object]",
+        b'{"error":"\\"[object Object]\\" is not valid JSON","details":{},"code":400}',
+        id="object Object",
+    ),
+    pytest.param(
+        b"[undefined]",
+        b'{"error":"Unexpected token \'u\', \\"[undefined]\\" is not valid JSON","details":{},"code":400}',
+        id="undefined in array",
+    ),
+    pytest.param(
+        b"[:]",
+        b'{"error":"Unexpected token \':\', \\"[:]\\" is not valid JSON","details":{},"code":400}',
+        id="colon in array",
+    ),
+    pytest.param(
+        b"[,1]",
+        b'{"error":"Unexpected token \',\', \\"[,1]\\" is not valid JSON","details":{},"code":400}',
+        id="comma first in array",
+    ),
+    pytest.param(
+        b"[}]",
+        b'{"error":"Unexpected token \'}\', \\"[}]\\" is not valid JSON","details":{},"code":400}',
+        id="close brace in array",
+    ),
+    pytest.param(
+        b"[\xe4\xb8\x80]",
+        b'{"error":"Unexpected token \'\xe4\xb8\x80\', \\"[\xe4\xb8\x80]\\" is not valid JSON","details":{},"code":400}',
+        id="two-byte token in array",
+    ),
+    pytest.param(
+        b"[\xf0\x9f\x98\x80]",
+        b'{"error":"Unexpected token \'\\ud83d\', \\"[\xf0\x9f\x98\x80]\\" is not valid JSON","details":{},"code":400}',
+        id="astral token in array",
+    ),
+    pytest.param(
+        b"[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[1,]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]",
+        b'{"error":"Unexpected token \']\', ...\\"[[[[[[[[1,]]]]]]]]]]\\"... is not valid JSON","details":{},"code":400}',
+        id="deep then bad",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"x":[1,2,3,4,5,6,7,8,9,10,]}}',
+        b'{"error":"Unexpected token \']\', ...\\",7,8,9,10,]}}\\" is not valid JSON","details":{},"code":400}',
+        id="bad after long prefix",
+    ),
+    pytest.param(
+        b'{"\\q":1}',
+        b'{"error":"Bad escaped character in JSON at position 3 (line 1 column 4)","details":{},"code":400}',
+        id="key with escape bad",
+    ),
+    pytest.param(
+        b'{"12',
+        b'{"error":"Unterminated string in JSON at position 4 (line 1 column 5)","details":{},"code":400}',
+        id="numeric key unterminated",
+    ),
+    pytest.param(
+        b'{"12x":1,',
+        b'{"error":"Expected double-quoted property name in JSON at position 9 (line 1 column 10)","details":{},"code":400}',
+        id="numeric key then x",
+    ),
+    pytest.param(
+        b"[123456789.",
+        b'{"error":"Unterminated fractional number in JSON at position 11 (line 1 column 12)","details":{},"code":400}',
+        id="nine digits then dot end",
+    ),
+    pytest.param(
+        b"[1234567890e]",
+        b'{"error":"Exponent part is missing a number in JSON at position 12 (line 1 column 13)","details":{},"code":400}',
+        id="ten digits then e",
+    ),
+    pytest.param(
+        b"[-01]",
+        b'{"error":"Unexpected number in JSON at position 3 (line 1 column 4)","details":{},"code":400}',
+        id="negative zero then digit",
+    ),
+    pytest.param(
+        b"[0-1]",
+        b'{"error":"Expected \',\' or \']\' after array element in JSON at position 2 (line 1 column 3)","details":{},"code":400}',
+        id="zero then minus",
+    ),
+    pytest.param(
+        b'{ \n\t "query" \n : \n x}',
+        b'{"error":"Unexpected token \'x\', ...\\"ry\\" \\n : \\n x}\\" is not valid JSON","details":{},"code":400}',
+        id="whitespace then bad",
+    ),
+    pytest.param(
+        b'{\r\n"query":\r\n}',
+        b'{"error":"Unexpected token \'}\', \\"{\\r\\n\\"query\\":\\r\\n}\\" is not valid JSON","details":{},"code":400}',
+        id="CRLF then bad",
+    ),
     pytest.param(b"", _GRAPHQL_JS_NOT_JSON, id="empty"),
     pytest.param(b"\xef\xbb\xbf", _GRAPHQL_JS_NOT_JSON, id="a byte-order mark alone"),
     pytest.param(b"[]", _REQUEST_ERROR, id="an array"),
@@ -824,6 +1190,9 @@ def _charset(name: str) -> tuple:
 
 
 _GZIP = (("Content-Encoding", "gzip"),)
+_EXPECTED_PROPERTY = _express(
+    400, b"Expected property name or '}' in JSON at position 1 (line 1 column 2)"
+)
 _LATIN1 = _express(415, b'unsupported charset \\"LATIN1\\"')
 _HEADER_CHECK = _express(400, b"incorrect header check")
 _CUT_SHORT = _express(400, b"unexpected end of file")
@@ -884,7 +1253,7 @@ _LINEAR_READS = [
     pytest.param(_GZIP, gzip.compress(_TYPENAME)[:-5], _CUT_SHORT, id="gzip cut short"),
     pytest.param(_GZIP, b"", _CUT_SHORT, id="gzip over no bytes"),
     pytest.param(_GZIP, gzip.compress(b""), _GRAPHQL_JS_NOT_JSON, id="gzip of no bytes"),
-    pytest.param(_GZIP, gzip.compress(b"{"), _GRAPHQL_JS_NOT_JSON, id="gzip of {"),
+    pytest.param(_GZIP, gzip.compress(b"{"), _EXPECTED_PROPERTY, id="gzip of {"),
     pytest.param(
         (("Content-Encoding", "deflate"),),
         zlib.compress(_TYPENAME)[2:-4],
@@ -940,7 +1309,7 @@ _LINEAR_READS = [
         id="utf-16le 5",
     ),
     pytest.param(
-        _charset("utf-16le"), "{".encode("utf-16-le"), _GRAPHQL_JS_NOT_JSON, id="utf-16le {"
+        _charset("utf-16le"), "{".encode("utf-16-le"), _EXPECTED_PROPERTY, id="utf-16le {"
     ),
     pytest.param(_charset("utf-16le"), b"", _GRAPHQL_JS_NOT_JSON, id="utf-16le, no bytes"),
     pytest.param(_charset("utf-8; foo=bar"), _TYPENAME, None, id="another parameter"),

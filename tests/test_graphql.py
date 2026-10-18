@@ -26,7 +26,7 @@ from starlette.testclient import TestClient
 
 from backlot import auth, pagination, store
 from backlot.graphql import body as request_body
-from backlot.graphql import engine, mcp_tools
+from backlot.graphql import engine, mcp_tools, v8_json
 from tests._helpers import selected_fields
 
 SDL = """
@@ -282,22 +282,22 @@ def test_execute_request_reads_the_body_as_node_reads_it(gql, body, served):
 
 
 def _fuzz_texts(seed: int, count: int):
-    """``count`` JSON texts, each with the index of the first constant token it was given or None,
-    and as many again with one character of each deleted, doubled or replaced."""
+    """``count`` JSON texts, constant tokens among their values, and as many again with one
+    character of each deleted, doubled or replaced."""
     rng = random.Random(seed)
     pieces = ["0", "-0", "7", "-12", "3.5", "-0.25e3", "1E+2", "2e-3", "1" * 40, "1" * 4301]
     strings = ['""', '"a"', '"\\u00e9\\n"', '"\\ud83d\\ude00"', '"\\ud800"', '"x\\"y"', '"\u2028"']
     constants = ["NaN", "Infinity", "-Infinity"]
     ws = ["", " ", "\n", "\t", "\r\n"]
 
-    def value(out: list, depth: int, marks: list):
+    def value(out: list, depth: int):
         roll = rng.random()
         if depth < 6 and roll < 0.2:
             out.append("[" + rng.choice(ws))
             for k in range(rng.randrange(4)):
                 if k:
                     out.append(rng.choice(ws) + "," + rng.choice(ws))
-                value(out, depth + 1, marks)
+                value(out, depth + 1)
             out.append(rng.choice(ws) + "]")
         elif depth < 6 and roll < 0.4:
             out.append("{" + rng.choice(ws))
@@ -307,73 +307,163 @@ def _fuzz_texts(seed: int, count: int):
                 out.append(
                     rng.choice(['"k"', '"a"', '"__proto__"', '"\\u006b"']) + rng.choice(ws) + ":"
                 )
-                value(out, depth + 1, marks)
+                value(out, depth + 1)
             out.append("}")
         elif roll < 0.45:
-            marks.append(len("".join(out)))
             out.append(rng.choice(constants))
         else:
             out.append(rng.choice(pieces + strings + ["true", "false", "null"]))
 
     for _ in range(count):
         out: list = [rng.choice(ws)]
-        marks: list = []
-        value(out, 0, marks)
+        value(out, 0)
         out.append(rng.choice(ws))
         text = "".join(out)
-        yield text, (marks[0] if marks else None)
+        yield text
         i = rng.randrange(len(text))
-        yield (
-            rng.choice(
-                [
-                    text[:i] + text[i + 1 :],
-                    text[:i] + text[i] + text[i:],
-                    text[:i] + rng.choice('{}[],:"-.e0 x\u0663') + text[i + 1 :],
-                ]
-            ),
-            "mutated",
+        yield rng.choice(
+            [
+                text[:i] + text[i + 1 :],
+                text[:i] + text[i] + text[i:],
+                text[:i] + rng.choice('{}[],:"-.e0 x\u0663') + text[i + 1 :],
+            ]
         )
 
 
-class _Hooked(Exception):
-    pass
-
-
-def _hook(token):
-    raise _Hooked(token)
+def _refuse(token):
+    raise json.JSONDecodeError(f"{token} is refused", token, 0)
 
 
 def _outcome_of_json_loads(text: str):
     try:
         value = json.loads(
-            text, parse_int=request_body._int, parse_float=request_body.Double, parse_constant=_hook
+            text,
+            parse_int=request_body._int,
+            parse_float=request_body.Double,
+            parse_constant=_refuse,
         )
-        return ("value", repr(value), json.dumps(value))
-    except _Hooked as exc:
-        return ("constant", exc.args[0])
+        return repr(value), json.dumps(value)
     except json.JSONDecodeError:
-        return ("error",)
+        return "refused"
 
 
 def test_the_iterative_reader_reads_what_json_loads_reads():
     """Thousands of texts, valid and broken: the reader :func:`backlot.graphql.body.parse` falls
-    back to answers as ``json.loads`` does, value for value and type for type, and stops at the
-    first constant token, which is where the generator put it."""
+    back to answers as ``json.loads`` does, value for value and type for type, and refuses a text
+    holding a constant token."""
     checked = 0
-    for text, mark in _fuzz_texts(seed=20261018, count=3000):
-        expected = _outcome_of_json_loads(text)
+    for text in _fuzz_texts(seed=20261018, count=3000):
         try:
             value = request_body._parse_iteratively(text)
-            got = ("value", repr(value), json.dumps(value))
-        except request_body.NotJson as exc:
-            got = ("constant", exc.constant.token) if exc.constant else ("error",)
-            if exc.constant is not None:
-                assert text.startswith(exc.constant.token, exc.constant.index), text
-                if mark != "mutated":
-                    assert exc.constant.index == mark, text
-        assert got == expected, text
+            got = repr(value), json.dumps(value)
+        except request_body.NotJson:
+            got = "refused"
+        assert got == _outcome_of_json_loads(text), text
         checked += 1
     assert checked == 6000
+
+
+# Characters a mutation of `_v8_texts` puts in: each token, each escape letter, what may follow a
+# number's digits, the letters of the literals, one character between U+0080 and U+00FF and one
+# above it on each side of U+FFFF, U+2028, a byte-order mark, control characters, the whitespace
+# Python's `str.isspace` knows and JSON does not, a digit outside 0 to 9, and two characters V8 has
+# no use for.
+_V8_ALPHABET = list('{}[],:"\\/-+.eE0123456789 \t\r\ntrufalsenbx#') + [
+    "\u00e9",
+    "\u4e00",
+    "\U0001f600",
+    "\u2028",
+    "\ufeff",
+    "\x00",
+    "\x0b",
+    "\x0c",
+    "\x1f",
+    "\x7f",
+    "\u00a0",
+    "\u0663",
+]
+
+
+def _v8_texts():
+    """The texts the V8 tests read: :func:`_fuzz_texts`'s and three mutations of each of them,
+    every prefix of four texts, a token V8 refuses between two strings of 0 to 12 of ``x``, of
+    ``é`` or of an emoji two UTF-16 units long, a refusal after 0 to 3 lines ended by each line
+    terminator, the four sources V8 quotes back whole and three that differ from one by a character,
+    and a text nested 100000 deep."""
+    rng = random.Random(20261019)
+    for text in _fuzz_texts(seed=20261019, count=1500):
+        yield text
+        for _ in range(3):
+            mutated = text
+            for _ in range(rng.randint(1, 3)):
+                i = rng.randrange(len(mutated) + 1)
+                c = rng.choice(_V8_ALPHABET)
+                mutated = rng.choice(
+                    [
+                        mutated[:i] + mutated[i + 1 :],
+                        mutated[:i] + c + mutated[i:],
+                        mutated[:i] + c + mutated[i + 1 :],
+                        mutated[:i],
+                    ]
+                )
+            yield mutated
+    for whole in (
+        '{"query":"{ __typename }","variables":{"x":[1,-2.5e3,true,null,"\\u00e9\\n"]}}',
+        '[{"a":"\U0001f600"},0,-0,0.5,1E+2,false]',
+        '{"k":{"k":{"k":[[]]}},"\\"":"\\/"}',
+        '"\\b\\f\\n\\r\\t\\u12aB\\uabcd\\uefAB\\uCDEF\\u4567\\u89c0"',
+    ):
+        for end in range(len(whole) + 1):
+            yield whole[:end]
+    for filler in ("x", "\u00e9", "\U0001f600"):
+        for before in range(13):
+            for after in range(13):
+                yield '["' + filler * before + '",#,"' + filler * after + '"]'
+    for newline in ("\n", "\r", "\r\n", "\n\r"):
+        for lines in range(4):
+            yield "[1," + (newline + '"\U0001f600\u2028",') * lines + " 2 3]"
+    yield from ("[object Object]", "undefined", "Infinity", "NaN", " NaN", "NaN ", "{}x")
+    yield "[" * 100000 + "1,}" + "]" * 100000
+
+
+def test_v8_json_refuses_what_the_reader_refuses():
+    """:func:`backlot.graphql.v8_json.error` refuses a text exactly when
+    :func:`backlot.graphql.body.parse` does, so the two readers the Linear router runs one after
+    the other never disagree on whether a body is JSON."""
+    for text in _v8_texts():
+        try:
+            request_body.parse(text)
+            read = True
+        except request_body.NotJson:
+            read = False
+        assert (v8_json.error(text) is None) == read, text
+
+
+# What `JSON.parse` throws for each text on stdin, `null` for one it reads.
+_NODE_JSON_PARSE = """
+const texts = JSON.parse(require("fs").readFileSync(0, "utf8"));
+process.stdout.write(JSON.stringify(texts.map((text) => {
+  try { JSON.parse(text); return null; } catch (e) { return e.message; }
+})));
+"""
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+def test_v8_json_words_each_refusal_as_node_does():
+    """Node's own ``JSON.parse`` is the oracle: :func:`backlot.graphql.v8_json.error` says what it
+    says, word for word, to every one of :func:`_v8_texts`."""
+    texts = list(_v8_texts())
+    run = subprocess.run(
+        ["node", "-e", _NODE_JSON_PARSE],
+        input=json.dumps(texts),
+        capture_output=True,
+        encoding="utf-8",
+        check=True,
+    )
+    node = json.loads(run.stdout)
+    assert len(node) == len(texts)
+    for text, expected in zip(texts, node, strict=True):
+        assert v8_json.error(text) == expected, text
 
 
 def _numbers():

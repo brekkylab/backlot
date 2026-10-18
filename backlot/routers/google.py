@@ -811,9 +811,11 @@ def _gmail_address_match(header: str | None, value: str) -> bool:
     and part of a Korean display name. At 603 messages on 2026-10-17, the 311 `from:`, `to:` and
     `cc:` searches with a hyphen in them (a header's words split by one hyphen and by two, into two
     and three parts, beside an `@` or a `.`, and each hyphenated local part whole and in pairs),
-    none quoted and none led by `-`, match this rule. Two forms it does not read: a quoted value
-    found its words alone, and a value led by `-` answered as the negation `-from:` does. On
-    2026-10-14, `cc:<a local part>+x` read `+x` as a search term of its own."""
+    none quoted and none led by `-`, match this rule, and at 604 on 2026-10-18 so did `bcc:` on a
+    word of the one `Bcc` address there, split by one hyphen and by two and beside a `.`. Two forms
+    it does not read: a quoted value found its words alone, and a value led by `-` answered as the
+    negation `-from:` does. On 2026-10-14, `cc:<a local part>+x` read `+x` as a search term of its
+    own."""
     header = (header or "").lower()
     value = value.lower()
     if _GMAIL_ONE_ADDRESS.fullmatch(value):

@@ -868,6 +868,22 @@ async def warn_slack_post_charset(request: Request, call_next):
 
 
 @app.middleware("http")
+async def put_a_request_id_on_github_answers(request: Request, call_next):
+    """Put an `x-github-request-id` on every `/github` answer, as real does on each one measured.
+
+    Registered after the other `/github` middlewares so it wraps them, and the refusals they answer
+    early carry it too. uvicorn reads the clock for `Date` once a second, so under `backlot serve`
+    the id's last field can be a second ahead of it."""
+    response = await call_next(request)
+    if request.url.path.startswith("/github"):
+        response.headers.setdefault(
+            github.REQUEST_ID_HEADER,
+            github.request_id(request.method, request.url.path, request.url.query),
+        )
+    return response
+
+
+@app.middleware("http")
 async def vendor_json_media_type(request: Request, call_next):
     """Put the vendor's own `content-type` on a JSON body, where one is measured.
 

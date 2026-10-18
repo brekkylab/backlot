@@ -377,7 +377,9 @@ The five `x-ratelimit-*` headers are the same kind of gap. Every `/github` answe
 the ones `backlot.main.report_github_rate_limit` names, and the comparison reads parameters and
 operations off the two documents and never a response header; real's description declares three of
 the five, on `GET /rate_limit`'s 200 alone, and Backlot's document declares none. The tests are the
-record here (`tests/test_github.py`, the rate-limit test), not the baseline.
+record here (`tests/test_github.py`, the rate-limit test), not the baseline. So is
+`x-github-request-id`, which every `/github` answer carries
+(`backlot.main.put_a_request_id_on_github_answers`): its record is the request-id test beside it.
 
 The `Allow` on S3's sub-resource 405s is another. A `HEAD` carrying a sub-resource selector is 405
 on both sides, and real names the methods that sub-resource takes where Backlot names only `GET`,

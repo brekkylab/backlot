@@ -199,6 +199,11 @@ Backlot does not serve, the 401 for an `Authorization` that carries no credentia
 none at all on a `PATCH`, `PUT` or `DELETE` (measured 2026-09-10, 2026-09-21, 2026-10-14 and
 2026-10-16).
 
+**Every response carries an `x-github-request-id`**, as real's do, code search's and the refusals
+answered before a route runs included: five unpadded uppercase hex fields joined by colons, the last
+being the second the answer leaves Backlot (measured 2026-09-22, 2026-09-23 and 2026-10-18). Under
+`backlot serve` that second can be one ahead of `Date`, which uvicorn reads once a second.
+
 An issue body and a pull body are the two distinct field sets real serves — a pull carries `_links`
 and its `*_url` siblings and none of the issue-only fields, `pull_request` included. A repository
 carries a URL template for each sub-resource Backlot actually serves, and none for the ones it

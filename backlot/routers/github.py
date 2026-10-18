@@ -156,6 +156,32 @@ CODE_SEARCH_PATH = "/github/search/code"
 SEARCH_PREFIX = "/github/search/"
 # The search endpoints real counts against the `search` resource; `code` is `CODE_SEARCH_PATH`'s.
 SEARCH_ENDPOINTS = frozenset({"commits", "issues", "labels", "repositories", "topics", "users"})
+REQUEST_ID_HEADER = "x-github-request-id"
+# Hex digits in each of the first four fields of real's request id (see `request_id`).
+_REQUEST_ID_WIDTHS = ((4, 4), (5, 6), (6, 7), (6, 7))
+
+
+def _hex_field(seed: bytes, fewest: int, most: int) -> str:
+    """An unpadded uppercase hex value between ``fewest`` and ``most`` digits long."""
+    digits = fewest + seed[0] % (most - fewest + 1)
+    lowest = 16 ** (digits - 1)
+    return f"{lowest + int.from_bytes(seed[1:]) % (16**digits - lowest):X}"
+
+
+def request_id(method: str, path: str, query: str) -> str:
+    """The `x-github-request-id` for one answer.
+
+    Real sends five unpadded uppercase hex fields joined by colons: four digits, five or six, six or
+    seven, six or seven, then the answer's own second (measured on api.github.com 2026-09-22 and
+    2026-09-23 over eleven answers from a 200 to the spent-window 403s, and 2026-10-18 over fifteen
+    more, code search's 200 and 401 among them). The first four are seeded from the request, as
+    ``backlot.routers.s3.request_ids`` seeds S3's."""
+    raw = hashlib.shake_256(f"github-req:{method} {path}?{query}".encode()).digest(20)
+    fields = [
+        _hex_field(raw[5 * i : 5 * i + 5], fewest, most)
+        for i, (fewest, most) in enumerate(_REQUEST_ID_WIDTHS)
+    ]
+    return ":".join([*fields, f"{int(time.time()):X}"])
 
 
 def honours_api_version(request: Request) -> bool:

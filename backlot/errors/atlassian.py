@@ -767,43 +767,77 @@ def refuse_a_media_type(
     )
 
 
-def _invalid_mime_type(value: str) -> str | None:
-    """Spring's ``Invalid mime type "<value>": <reason>`` for a `Content-Type` Confluence cannot
-    read for a reason other than a missing `/` or a `q`, or None for a failure that is neither an
-    empty subtype, a token character, nor an unknown charset.
+#: A name Java's `Charset.forName` looks up: a letter or digit, then letters, digits and `-+:_.`.
+#: Any other name is its `IllegalCharsetNameException`, whose message is the name alone.
+_JAVA_CHARSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9+:_.-]*")
 
-    Measured on Confluence Cloud on 2026-10-16, `POST /wiki/rest/api/space/{id}/permission` with
-    no credential: `text/plain;charset=nope` was `unsupported charset 'nope'`, `text/` was
-    `does not contain subtype after '/'`, and `a/b c` was `Invalid token character ' ' in token
-    "b c"`. The quoted value is the header as sent. A value with no `/` is named by the caller,
-    and a `q` Spring cannot read is :func:`_spring_quality_reason`.
+
+def _invalid_mime_type(value: str) -> str | None:
+    """Spring's ``Invalid mime type "<value>": <reason>`` for a `Content-Type` its
+    `MimeTypeUtils.parseMimeType` cannot read, or None for one it reads. The checks run in the order
+    Spring 5.3's parser and the `MimeType` it builds run them: the type before the first `;`
+    trimmed, then `'mimeType' must not be empty`, `does not contain '/'`,
+    `does not contain subtype after '/'`, `wildcard type is legal only in '*/*' (all mime types)`
+    and `'type' must not be empty`; the first character of the type, then of the subtype, that is no
+    token character; then each parameter with a `=` in the order first named, with the last value
+    given it: `'parameter' must not be empty`, `'value' must not be empty`, a name's first character
+    that is no token character, and for `charset` the name itself where Java takes no charset by
+    that name and `unsupported charset '<name>'` where it knows none, its quotes off, or for another
+    parameter its value's first character that is no token character unless the value is quoted.
+    Measured on Confluence Cloud on 2026-10-16 and 2026-10-18 with each of those, at
+    `POST /wiki/rest/api/space/{id}/permission` with no credential: `;x`, `foo`, `text/`, `*/json`,
+    `/plain`, `t ext/plain`, `text//plain`, `text/plain;=x`, `text/plain;a=`, `text/plain;a b=c`,
+    `text/plain;a=b c`, `text/plain;a="b`, `text/plain;charset=a b` (named `a b`) and
+    `text/plain;charset=nope`, and `text/plain;a b=c;charset=nope` named the space in `a b` first.
+    Not read here: `text/plain;charset=` was a 500.
     """
-    if _spring_media_type(value, charset_in_any_case=False) is not None:
-        return None
-    full, _, rest = value.partition(";")
-    full = full.strip(_JAVA_TRIMMED)
+    index = value.find(";")
+    full = (value if index < 0 else value[:index]).strip(_JAVA_TRIMMED)
     if full == "*":
         full = "*/*"
     kind, slash, subtype = full.partition("/")
-    if not slash or subtype == "":
-        if not slash:
-            return None
-        return f"Invalid mime type \"{value}\": does not contain subtype after '/'"
-    for token in (kind, subtype):
-        for ch in token:
-            if _TOKEN.fullmatch(ch) is None:
-                return (
-                    f'Invalid mime type "{value}": '
-                    f"Invalid token character '{ch}' in token \"{token}\""
-                )
-    listed = []
-    for parameter in _split_parameters(rest):
-        name, eq, given = parameter.strip(_JAVA_TRIMMED).partition("=")
-        if eq:
-            listed.append((name.strip(_JAVA_TRIMMED), given.strip(_JAVA_TRIMMED)))
-    given = dict(listed).get("charset")
-    if given is not None and not _java_charset(_unquoted(given)):
-        return f"Invalid mime type \"{value}\": unsupported charset '{_unquoted(given)}'"
+    reason = None
+    if not full:
+        reason = "'mimeType' must not be empty"
+    elif not slash:
+        reason = "does not contain '/'"
+    elif not subtype:
+        reason = "does not contain subtype after '/'"
+    elif kind == "*" and subtype != "*":
+        reason = "wildcard type is legal only in '*/*' (all mime types)"
+    elif not kind:
+        reason = "'type' must not be empty"
+    else:
+        parameters: dict[str, str] = {}
+        for parameter in _split_parameters(value[index + 1 :]) if index >= 0 else ():
+            name, eq, given = parameter.strip(_JAVA_TRIMMED).partition("=")
+            if eq:
+                parameters[name.strip(_JAVA_TRIMMED)] = given.strip(_JAVA_TRIMMED)
+        reason = _token_reason(kind) or _token_reason(subtype)
+        for name, given in parameters.items():
+            reason = reason or _parameter_reason(name, given)
+    return None if reason is None else f'Invalid mime type "{value}": {reason}'
+
+
+def _parameter_reason(name: str, given: str) -> str | None:
+    """Spring's reason for one parameter of the type :func:`_invalid_mime_type` reads, or None."""
+    if not name:
+        return "'parameter' must not be empty"
+    if not given:
+        return "'value' must not be empty"
+    if (reason := _token_reason(name)) is not None or name != "charset":
+        return reason or (_token_reason(given) if _unquoted(given) == given else None)
+    charset = _unquoted(given)
+    if _JAVA_CHARSET_NAME.fullmatch(charset) is None:
+        return charset
+    return None if _java_charset(charset) else f"unsupported charset '{charset}'"
+
+
+def _token_reason(token: str) -> str | None:
+    """Spring's reason for the first character of ``token`` that is no token character, or None."""
+    for ch in token:
+        if _TOKEN.fullmatch(ch) is None:
+            return f"Invalid token character '{ch}' in token \"{token}\""
     return None
 
 
@@ -816,30 +850,23 @@ def refuse_a_confluence_media_type(headers, consumes: tuple[str, ...]) -> Atlass
     measured 2026-10-13). Measured 2026-10-12 on the attachment writes and
     `POST space/{key}/permission`: an absent or empty `Content-Type` is named `''`, a type is named
     as :func:`_parse_media_type` reads it (`APPLICATION/JSON` as `application/json`,
-    `TEXT/Plain;Charset=UTF-8;X=Y` with its parameters kept), and a value with no `/` (`foo`) is
-    `Invalid mime type "foo": does not contain '/'`. A value whose `q` is all Spring cannot read is
-    `Invalid media type "<value>": ` and the reason :func:`_spring_quality_reason` gives. A value
-    Spring cannot read for another reason names why (:func:`_invalid_mime_type`): an unknown
-    charset (`text/plain;charset=nope` is `unsupported charset 'nope'`), a type with nothing after
-    the slash (`text/` is `does not contain subtype after '/'`) and a token character the type
-    cannot hold (`a/b c` is `Invalid token character ' ' in token "b c"`), each as
-    `Invalid mime type "<value>": <reason>`, measured on Confluence Cloud on 2026-10-16. A failure
-    that function does not name stays the type as sent. The status and the code are the same. Only
-    a parameter named `charset` in that case is a charset to it
-    (`multipart/form-data; boundary=x; Charset=bogus` is read, 2026-10-13).
+    `TEXT/Plain;Charset=UTF-8;X=Y` with its parameters kept, `*` as `*/*`). A value Spring's parser
+    cannot read is the sentence :func:`_invalid_mime_type` gives, and one whose `q` is then all it
+    cannot read is `Invalid media type "<value>": ` and the reason :func:`_spring_quality_reason`
+    gives. Each quotes the header without the spaces and tabs around it (` ;x` is named `";x"`,
+    2026-10-18). The status and the code are the same. Only a parameter named `charset` in that
+    case is a charset to it (`multipart/form-data; boundary=x; Charset=bogus` is read, 2026-10-13).
     """
-    value = headers.get("content-type") or ""
+    value = (headers.get("content-type") or "").strip(" \t")
     media_type = _parse_media_type(value, charset_in_any_case=False) if value else None
     if media_type is not None and _takes(consumes, media_type):
         return None
-    quality = _spring_quality_reason(value)
     mime = _invalid_mime_type(value) if value else None
-    if value and "/" not in value:
-        reason = f"Invalid mime type \"{value}\": does not contain '/'"
+    quality = _spring_quality_reason(value)
+    if mime is not None:
+        reason = mime
     elif quality is not None:
         reason = f'Invalid media type "{value}": {quality}'
-    elif mime is not None:
-        reason = mime
     else:
         reason = f"Content type '{media_type or value}' not supported"
     return AtlassianError(

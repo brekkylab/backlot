@@ -156,6 +156,35 @@ CODE_SEARCH_PATH = "/github/search/code"
 SEARCH_PREFIX = "/github/search/"
 # The search endpoints real counts against the `search` resource; `code` is `CODE_SEARCH_PATH`'s.
 SEARCH_ENDPOINTS = frozenset({"commits", "issues", "labels", "repositories", "topics", "users"})
+REQUEST_ID_HEADER = "x-github-request-id"
+# Hex digits in each of the first four fields of real's request id (see `request_id`).
+_REQUEST_ID_WIDTHS = ((4, 4), (4, 6), (6, 7), (6, 7))
+
+
+def _hex_field(seed: bytes, fewest: int, most: int) -> str:
+    """An unpadded uppercase hex value between ``fewest`` and ``most`` digits long."""
+    digits = fewest + seed[0] % (most - fewest + 1)
+    lowest = 16 ** (digits - 1)
+    return f"{lowest + int.from_bytes(seed[1:]) % (16**digits - lowest):X}"
+
+
+def request_id(method: str, path: str, query: str) -> str:
+    """The `x-github-request-id` for one request.
+
+    Real sends five uppercase hex fields joined by colons: four digits, four to six, six or seven,
+    six or seven, then the second the request arrived (measured on api.github.com 2026-09-22 and
+    2026-09-23 over eleven answers from a 200 to the spent-window 403s, and 2026-10-18 over fifteen
+    more, code search's 200 and 401 among them, and over sixty-four across eight kinds of answer:
+    the second field had four digits on four, two of them `0BF8`, and `Date` was a second past the
+    last field on fourteen). Real answered three calls to one URL with three ids; here the first
+    four fields are seeded from the request, as ``backlot.routers.s3.request_ids`` seeds S3's, so
+    one request asked twice in the same second gets one id twice."""
+    raw = hashlib.shake_256(f"github-req:{method} {path}?{query}".encode()).digest(20)
+    fields = [
+        _hex_field(raw[5 * i : 5 * i + 5], fewest, most)
+        for i, (fewest, most) in enumerate(_REQUEST_ID_WIDTHS)
+    ]
+    return ":".join([*fields, f"{int(time.time()):X}"])
 
 
 def honours_api_version(request: Request) -> bool:
@@ -668,12 +697,9 @@ def _rate_limit_exceeded_message(request: Request, authenticated: bool) -> str:
     its cap. Real's sentence there is `API rate limit exceeded for user ID <id>. If you reach out
     to GitHub Support for help, please include the request ID <x-github-request-id> and timestamp
     <YYYY-MM-DD HH:MM:SS> UTC. For more on scraping GitHub and how it may affect your rights,
-    please review our Terms of Service (…)`. This returns real's sentence up to `user ID <id>.`;
-    the Support/Terms-of-Service sentence past it is not reproduced, because it names a request id
-    and a timestamp that come from `x-github-request-id` — a header Backlot sends on no `/github`
-    answer today (real sends it on every answer, 200 and refusal alike, and its own last field is
-    that answer's `Date` to the second). That header is #333's; the rest of this sentence belongs
-    there, not a synthesized or placeholder value here."""
+    please review our Terms of Service (…)`. The request id is the answer's own
+    `x-github-request-id` and the timestamp is that id's last field, on each of four refusals
+    measured 2026-10-18 the same way."""
     if not authenticated:
         host = request.client.host if request.client is not None else "anonymous"
         return (
@@ -682,7 +708,14 @@ def _rate_limit_exceeded_message(request: Request, authenticated: bool) -> str:
         )
     caller = auth.acl(request).resolve(auth.github_credential(request))
     email = caller.email if caller is not None and caller.email is not None else "admin"
-    return f"API rate limit exceeded for user ID {synth.github_user_id(email)}."
+    rid = request.state.github_request_id
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(int(rid.rsplit(":", 1)[1], 16)))
+    return (
+        f"API rate limit exceeded for user ID {synth.github_user_id(email)}. If you reach out to "
+        f"GitHub Support for help, please include the request ID {rid} and timestamp {stamp} UTC. "
+        "For more on scraping GitHub and how it may affect your rights, please review our Terms of "
+        "Service (https://docs.github.com/en/site-policy/github-terms/github-terms-of-service)"
+    )
 
 
 def rate_limit_refusal(request: Request) -> Response | None:

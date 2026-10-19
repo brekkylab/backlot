@@ -4852,6 +4852,11 @@ def test_jira_refuses_what_it_will_not_run_for_a_caller_it_cannot_name(
     headers = admin_h if credential == "admin" else _CREDENTIALS[credential]
     r = client.request(method, path, headers=headers)
     assert r.status_code == status, r.text
+    if status == 404:
+        # the URL's 404, naming the path as sent (``errors.atlassian.no_endpoint``)
+        echoed = path.removeprefix("/atlassian")
+        assert r.json()["detail"] == f"No endpoint {method} {echoed}."
+        assert r.json()["instance"] == echoed
     if status != 401:
         assert "www-authenticate" not in r.headers
         return

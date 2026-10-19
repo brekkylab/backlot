@@ -4766,16 +4766,21 @@ def test_jira_answers_a_path_it_mounts_nothing_at_as_rfc_7807(
     }
 
 
+#: The stub of Jira's `(null)` error page: its title and the one line real's reads.
+_JIRA_NULL_PAGE = (
+    "<!DOCTYPE html><html><head><title>(null)</title></head><body>"
+    '<p>Encountered a "null - null" error while loading this page.</p></body></html>'
+)
+
+
 @pytest.mark.parametrize("accept", ["application/json", "*/*"])
 @pytest.mark.parametrize(
     "vendor_path,status,page",
     [
         ("/rest/api/3/nope%5Bx", 404, errors_atlassian.HTML_NOT_FOUND),
         ("/rest/api/3/nope%5Dx", 404, errors_atlassian.HTML_NOT_FOUND),
-        ("/rest/api/3/issue/A%5BB/comment?maxResults=abc", 400)
-        + (errors_atlassian._JIRA_NULL_ERROR_PAGE,),
-        ("/rest/api/3/issue/A%5DB/comment?maxResults=abc", 400)
-        + (errors_atlassian._JIRA_NULL_ERROR_PAGE,),
+        ("/rest/api/3/issue/A%5BB/comment?maxResults=abc", 400, _JIRA_NULL_PAGE),
+        ("/rest/api/3/issue/A%5DB/comment?maxResults=abc", 400, _JIRA_NULL_PAGE),
         # the issue's own 404 is not one of the two
         ("/rest/api/3/issue/A%5BB", 404, None),
     ],
@@ -5928,6 +5933,9 @@ _TOMCAT_PAGE = "text/html;charset=utf-8"
         ("GET", "/wiki/rest/api/content/1;2", 400, _EDGE_400, _EDGE_PAGE),
         ("GET", "/rest/api/3/nopeA..;/x", 400, _EDGE_400, _EDGE_PAGE),
         ("GET", "/rest/api/3/nope/..;a/x", 400, _EDGE_400, _EDGE_PAGE),
+        # the edge stands in front of Tomcat, so a `;` beside an encoded slash is the edge's (the
+        # two were not measured together)
+        ("GET", "/wiki/rest/api/space/NO%2F;x", 400, _EDGE_400, _EDGE_PAGE),
         # a `HEAD` is the page's status and length with no body
         ("HEAD", "/rest/api/3/nope<script>", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
         ("HEAD", "/wiki/rest/api/space/NO%2FSUCH", 400, _TOMCAT_400, _TOMCAT_PAGE),
@@ -5968,6 +5976,10 @@ _TOMCAT_PAGE = "text/html;charset=utf-8"
         # the web app answers `spaces/` itself (real's single-page app at 200, which is not copied)
         ("GET", "/wiki/spaces/NO%2FSUCH", 404, None, "text/html;charset=UTF-8"),
         ("GET", "/wiki/SPACES/NO%2FSUCH", 404, None, "text/html;charset=UTF-8"),
+        # a `;` outside both API mounts, where the edge's refusal was not measured: Jira's site and
+        # Confluence's web app answer their own pages
+        ("GET", "/foo;x", 404, None, errors_atlassian.JIRA_SITE_HTML_MEDIA_TYPE),
+        ("GET", "/wiki/display/A;B", 404, None, errors_atlassian.HTML_MEDIA_TYPE),
     ],
 )
 def test_atlassian_front_door_answers_before_either_product(
@@ -6011,7 +6023,12 @@ def test_atlassian_front_door_answers_before_either_product(
     "accept,media_type,body",
     [
         ("application/json", "application/json", b'{"message":"","status":400}'),
-        ("*/*", "text/html", errors_atlassian._EDGE_PAGE_400.encode()),
+        (
+            "*/*",
+            "text/html",
+            b'<!DOCTYPE html><html><head><meta name="details" content="lua_response">'
+            b"<title>400</title></head><body><p>400</p></body></html>",
+        ),
     ],
 )
 def test_atlassian_edge_refuses_a_semicolon_in_the_shape_accept_picks(

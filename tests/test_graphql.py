@@ -364,10 +364,9 @@ def test_the_iterative_reader_reads_what_json_loads_reads():
 
 
 # Characters a mutation of `_v8_texts` puts in: each token, each escape letter, what may follow a
-# number's digits, the letters of the literals, one character between U+0080 and U+00FF and one
-# above it on each side of U+FFFF, U+2028, a byte-order mark, control characters, some of the
-# whitespace Python's `str.isspace` knows and JSON does not, a digit outside 0 to 9, and two
-# characters V8 has no use for.
+# number's digits, the letters of the literals, `é`, `一` and an emoji on either side of U+FFFF,
+# U+2028, a byte-order mark, control characters, some of the whitespace Python's `str.isspace` knows
+# and JSON does not, a digit outside 0 to 9, and two characters V8 has no use for.
 _V8_ALPHABET = list('{}[],:"\\/-+.eE0123456789 \t\r\ntrufalsenbx#') + [
     "\u00e9",
     "\u4e00",

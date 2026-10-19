@@ -32,7 +32,8 @@ _SKIP_DIGITS = re.compile(r"[0-9]*").match
 # The characters `ScanJsonString` reads past: all but a quote, a backslash and U+0000 to U+001F.
 _SKIP_STRING = re.compile(r'[^"\\\x00-\x1f]*').match
 
-# The templates that carry a position, which V8 follows with "(line % column %)".
+# Each template that ends "at position % (line % column %)" in V8, without that ending, which
+# _message adds.
 _EXPECTED_PROPERTY = "Expected property name or '}' in JSON"
 _EXPECTED_QUOTED_PROPERTY = "Expected double-quoted property name in JSON"
 _EXPECTED_COLON = "Expected ':' after property name in JSON"

@@ -1032,7 +1032,7 @@ _LINEAR_BODIES = [
     pytest.param(
         b'{"x":1e+}',
         b'{"error":"Exponent part is missing a number in JSON at position 8 (line 1 column 9)","details":{},"code":400}',
-        id="exponent sign missing",
+        id="exponent sign then no digit",
     ),
     pytest.param(
         b"[1E",

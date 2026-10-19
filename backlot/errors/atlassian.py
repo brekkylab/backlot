@@ -1274,8 +1274,8 @@ def jaxrs_picks_json(accept: str | None) -> bool:
     return False
 
 
-#: What every route of either product answers in, and so what an endpoint produces unless it is
-#: named as producing more (an entry's ``produces`` in ``scripts/gen_jira_unserved.py``).
+#: What every route of either product answers in, and so what Backlot's 406 names unless an entry's
+#: ``produces`` in ``scripts/gen_jira_unserved.py`` names more.
 JSON_ONLY = ("application/json",)
 
 

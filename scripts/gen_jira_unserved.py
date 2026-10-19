@@ -130,7 +130,7 @@ DOCUMENTED_OTHERWISE = {
 # the license counts, the plans, two Connect paths and the rest their 401 and the avatar views a 400
 # or the image, and `service-registry` its 415 first; the other 1154 answered the 406. With a
 # credential, `invalid-jqls-access-log` and `license/approximateLicenseCount` answered the 406
-# (2026-10-19): there the check is behind the 401 rather than absent.
+# (2026-10-19), behind the 401.
 ACCEPT_UNCHECKED = _both(
     "GET /rest/api/{v}/invalid-jqls-access-log",
     "GET /rest/api/{v}/license/approximateLicenseCount",

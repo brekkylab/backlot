@@ -3425,11 +3425,11 @@ def _published_answer(request: Request, vendor_path: str) -> Response | None:
     give but the gap the baseline's `missing` operation acknowledges.
 
     Jira checks the request's media type where the operation does, for any caller the gateway lets
-    through (:func:`_jira_media_refusal`), then `Accept` (``errors.atlassian.not_acceptable``; a
-    caller with no credential gets none on an operation whose entry says ``"accept": "unchecked"``),
-    then refuses a caller with no credential it resolves where the operation will not run
-    anonymously, and any `OPTIONS` on one (:func:`_jira_unauthenticated`), each measured 2026-09-30
-    and the `Accept` check's place 2026-10-13; where the operation runs and is one of
+    through (:func:`_jira_media_refusal`), then `Accept` (``errors.atlassian.not_acceptable``, asked
+    of no caller where the operation's entry says ``"accept": "unchecked"``, which was measured with
+    no credential), then refuses a caller with no credential it resolves where the operation will
+    not run anonymously, and any `OPTIONS` on one (:func:`_jira_unauthenticated`), each measured
+    2026-09-30 and the `Accept` check's place 2026-10-13; where the operation runs and is one of
     :data:`_JIRA_ISSUE_WRITES` or :data:`_JIRA_ROLE_WRITES`, its lookup of a key that names nothing
     the caller can see is its 404, and a role write's is followed by the 401
     :func:`_require_project_admin` gives. The operation is the one :func:`_jira_operation` names.

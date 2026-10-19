@@ -641,31 +641,42 @@ def test_slack_history_reads_and_echoes_a_timestamp(client, admin_h, params, ech
 
 
 @pytest.mark.parametrize(
-    "param, offset, inclusive, served",
+    "bounds, inclusive, served",
     [
-        ("oldest", 0, False, False),
-        ("oldest", 0, True, True),
-        ("oldest", -1, False, True),
-        ("oldest", 1, False, False),
-        ("latest", 0, True, True),
-        ("latest", 1, False, True),
-        ("latest", -1, False, False),
+        ({"oldest": 0}, False, False),
+        ({"oldest": 0}, True, True),
+        ({"oldest": -1}, False, True),
+        ({"oldest": 1}, False, False),
+        ({"latest": 0}, False, False),
+        ({"latest": 0}, True, True),
+        ({"latest": 1}, False, True),
+        ({"latest": -1}, False, False),
+        ({"oldest": 0, "latest": 0}, False, False),
+        ({"oldest": 0, "latest": 0}, True, True),
+        ({"oldest": -1, "latest": 1}, False, True),
+        ({"oldest": 1, "latest": -1}, False, False),
     ],
 )
 def test_slack_history_bounds_a_message_to_the_microsecond(
-    client, admin_h, param, offset, inclusive, served
+    client, admin_h, bounds, inclusive, served
 ):
-    """A message `offset` microseconds from a bound is served or not as real serves it."""
+    """The newest message, with each bound its row's offset in microseconds from the message's `ts`,
+    is served or not as real serves it, and is the page's only message between two bounds that
+    close."""
     cid = _a_channel_id(client, admin_h)
     history = "/slack/api/conversations.history"
     ts = client.get(history, headers=admin_h, params={"channel": cid}).json()["messages"][0]["ts"]
     seconds, micros = ts.split(".")
-    bound = int(seconds) * 1_000_000 + int(micros) + offset
-    params = {"channel": cid, param: f"{bound // 1_000_000}.{bound % 1_000_000:06d}"}
+    at = int(seconds) * 1_000_000 + int(micros)
+    params = {"channel": cid}
+    for param, offset in bounds.items():
+        params[param] = f"{(at + offset) // 1_000_000}.{(at + offset) % 1_000_000:06d}"
     if inclusive:
         params["inclusive"] = "true"
-    page = client.get(history, headers=admin_h, params=params).json()
-    assert (ts in [m["ts"] for m in page["messages"]]) is served
+    page = [m["ts"] for m in client.get(history, headers=admin_h, params=params).json()["messages"]]
+    assert (ts in page) is served
+    if len(bounds) == 2:
+        assert page == ([ts] if served else [])
 
 
 def test_slack_members_are_the_channels_own_speakers(client, admin_h, tokens, ro_conn):

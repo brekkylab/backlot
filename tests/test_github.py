@@ -2684,6 +2684,42 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
         assert any(name.startswith("x-ratelimit-") for name in unversioned.headers), headers
 
 
+_NO_CREDENTIAL = "Requires authentication"
+
+
+@pytest.mark.parametrize(
+    "headers, status, message, echo, five",
+    [
+        ({}, 401, _NO_CREDENTIAL, "2022-11-28", True),
+        ({"X-GitHub-Api-Version": "2026-03-10"}, 401, _NO_CREDENTIAL, "2026-03-10", True),
+        ({"X-GitHub-Api-Version": "1999-01-01"}, 400, "Bad Request", None, True),
+        ({"Authorization": ""}, 401, _NO_CREDENTIAL, "2022-11-28", True),
+        ({"Authorization": "Digest x"}, 401, _NO_CREDENTIAL, "2022-11-28", True),
+        ({"Authorization": "Digest x", "X-GitHub-Api-Version": "1999-01-01"}, 400, "Bad Request",
+         None, True),
+        ({"Authorization": "Basic Zm9vOmJhcg=="}, 401, _NO_CREDENTIAL, "2022-11-28", True),
+        ({"Authorization": "Bearer\tnope"}, 401, "Bad credentials", None, True),
+        ({"Authorization": "Bearer nope"}, 401, "Bad credentials", None, False),
+        ({"Authorization": "Bearer nope", "X-GitHub-Api-Version": "1999-01-01"}, 401,
+         "Bad credentials", None, False),
+    ],
+)  # fmt: skip
+def test_github_deleting_the_installation_token_is_answered_as_a_served_route(
+    gh_client, headers, status, message, echo, five
+):
+    """Each row is real's answer as the comment on `refuse_an_unserved_operation` records it: the
+    status, the message, the version echo and whether the five `x-ratelimit-*` ride on it, and a
+    second request leaves `used` where the first put it."""
+    c, _ = gh_client
+    first = c.delete("/github/installation/token", headers=headers)
+    assert (first.status_code, first.json()["message"]) == (status, message), headers
+    assert first.headers.get("x-github-api-version-selected") == echo, headers
+    assert ("x-ratelimit-used" in first.headers) is five, headers
+    if five:
+        second = c.delete("/github/installation/token", headers=headers)
+        assert second.headers["x-ratelimit-used"] == first.headers["x-ratelimit-used"], headers
+
+
 def test_github_a_head_is_the_get_with_the_body_left_off(gh_client, gh_admin_h, gh_org):
     """Real answers a `HEAD` on each GitHub route measured as the `GET` with nothing in the body: the GET's
     status, its headers, `content-length` of the body the GET would have carried and `Link` where

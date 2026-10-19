@@ -32,7 +32,7 @@ class Constant:
 
 class NotJson(ValueError):
     """A body the Node servers do not read as JSON. ``constant`` is the first constant token when
-    that is what stopped the reader, and None when Python's reader refuses the body too."""
+    the reader meets one before anything else it refuses, and None otherwise."""
 
     def __init__(self, text: str, constant: Constant | None = None):
         super().__init__("not JSON")

@@ -58,8 +58,9 @@ async def graphql(request: Request):
 
     Two refusals keep graphql-js's words here, before the credential as Linear's do: an empty
     body, which Linear answers with Apollo Server's ``POST body missing, invalid Content-Type, or
-    JSON object has no keys.``, and a body Python cannot read either, such as ``{``, which Linear
-    answers with V8's message."""
+    JSON object has no keys.``, and a body the reader refuses before it meets a ``NaN``,
+    ``Infinity`` or ``-Infinity``, such as ``{`` or ``-NaN``, which Linear answers with V8's
+    message."""
     text = request_body.decode(await request.body())
     violation = request_body.strict_violation(text) if text else None
     if violation is not None:

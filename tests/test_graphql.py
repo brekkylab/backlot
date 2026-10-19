@@ -400,10 +400,10 @@ def test_an_unsound_schema_fails_at_construction_not_at_request_time():
 
 
 # --- mounted over HTTP ----------------------------------------------------------
-# A throwaway vendor ("acme") wired the way a real GraphQL source will be: an APIRouter with
-# a prefix, the API-key auth resolver, and the caller's visible_ids injected into the
-# resolver context so the resolver reaches store.py's existing ACL path with no per-source
-# ACL code. Proves the seams line up; the vendor schemas themselves ship with their issues.
+# A throwaway vendor ("acme") wired with the parts every GraphQL source here shares: an APIRouter
+# with a prefix, the API-key auth resolver, and the caller's visible_ids injected into the resolver
+# context so the resolver reaches store.py's existing ACL path with no per-source ACL code. Proves
+# the seams line up; the vendor schemas themselves ship with their issues.
 
 ACME_SDL = """
 type Query {

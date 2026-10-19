@@ -396,9 +396,9 @@ def test_linear_unauthenticated_is_401(client):
 # --- the body, read before the credential -------------------------------------------------------
 # A body and the bytes of the 400 Linear refused it with, or None where Linear served the query, as
 # `backlot.graphql.body` reads them. `_GRAPHQL_JS_NOT_JSON` marks the four rows
-# `backlot.routers.linear.graphql` answers in graphql-js's words: `{`, `-NaN`, an empty body and a
-# byte-order mark alone. `_REQUEST_ERROR` marks a JSON array, the 400 with the key; Linear answers
-# it with `Operation batching disabled.` with or without one.
+# `backlot.routers.linear.graphql` answers in graphql-js's words whatever the credential: `{`,
+# `-NaN`, an empty body and a byte-order mark alone. `_REQUEST_ERROR` marks a JSON array, the 400
+# with the key; Linear answers it with `Operation batching disabled.` with or without one.
 _GRAPHQL_JS_NOT_JSON = b'{"errors":[{"message":"POST body sent invalid JSON."}]}'
 _REQUEST_ERROR = object()
 _LINEAR_BODIES = [

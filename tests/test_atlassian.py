@@ -5009,14 +5009,17 @@ def test_jira_checks_the_media_type_an_operation_takes_before_anything_else(
     }
 
 
-def test_jira_unserved_sorts_every_operation_no_route_serves(monkeypatch):
+def test_jira_unserved_agrees_with_the_baseline_and_the_script(monkeypatch):
     """``backlot/data/jira_unserved.json`` sorts each `missing` operation of the Jira baseline
     into `refused` or `run` and holds nothing else, so one the file has lost, or one the baseline
     has gained or dropped since the file was written, fails here: the reminder to rerun
     ``scripts/gen_jira_unserved.py``. A route added for one of them is `implemented` in the baseline
     and the file would otherwise refuse a served operation's path for a method no route takes. Which
     list an operation belongs in is read off Jira's documents, which that script's `--check`
-    compares on the schedule in `.github/workflows/fidelity.yml`."""
+    compares on the schedule in `.github/workflows/fidelity.yml`. An entry's accept, produces and
+    charset, which `ACCEPT_UNCHECKED`, `PRODUCES` and `DOCUMENTED_OTHERWISE` set whatever the
+    documents say, are compared as well, so a name added to or dropped from one of those three
+    without a rerun fails here too."""
     import runpy
 
     import backlot
@@ -5031,7 +5034,12 @@ def test_jira_unserved_sorts_every_operation_no_route_serves(monkeypatch):
     # nothing, it refuses every one of them.
     monkeypatch.setattr("backlot.fidelity.fetch.fetch_json", lambda url, **kw: {"paths": {}})
     script = runpy.run_path(str(table.parents[2] / "scripts" / "gen_jira_unserved.py"))
-    assert sorted(script["build"]()["refused"]) == sorted(unserved)
+    built = script["build"]()["refused"]
+    assert sorted(built) == sorted(unserved)
+    held = {**content["refused"], **content["run"]}
+    for field in ("accept", "produces", "charset"):
+        written = {op: entry[field] for op, entry in built.items() if field in entry}
+        assert written == {op: entry[field] for op, entry in held.items() if field in entry}, field
 
 
 @pytest.mark.parametrize(
@@ -6787,6 +6795,10 @@ _ACCEPT_ROWS = [
     + ("problem, text/plain", {}),
     ("GET", "/atlassian/rest/api/3/license/approximateLicenseCount", "none", _HTML, None, 401)
     + ("text/html;charset=UTF-8", None, {}),
+    ("GET", "/atlassian/rest/api/3/invalid-jqls-access-log", "none", _HTML, None, 401)
+    + ("text/html;charset=UTF-8", None, {"www-authenticate": _PRESENT}),
+    ("GET", "/atlassian/rest/api/2/invalid-jqls-access-log", "none", _HTML, None, 401)
+    + ("text/html;charset=UTF-8", None, {"www-authenticate": _PRESENT}),
     ("OPTIONS", _INFO, "none", _HTML, None, 401, "text/html;charset=UTF-8", None, {}),
     # -- Confluence: a Spring route's 406 in each of its shapes, and the values that pass it
     ("GET", _SPACES, "none", _HTML, None, 406, _TOMCAT, "page", {"content-language": "en"}),
@@ -7642,8 +7654,7 @@ _ACCEPT_ROWS += [
     ),
     # the gateway's Connect-token 403 comes before Spring sorts `Accept`
     ("GET", _INFO, "unreadable-bearer", _SORT_FAILS, None, 403, _JSON, _CONNECT_JSON, {}),
-    # the same choice on an operation that asks no 406, where a `GET` and a `HEAD` reach the two
-    # answers that differ by method: neither carries `Allow`, and the wildcard's 500 is the page
+    # the same choice on `_LICENSE` by GET and HEAD (``errors.atlassian.jira_unauthenticated``)
     ("GET", _LICENSE, "none", "foo", None, 401, _EMPTY_HTML, b"")
     + ({"allow": None, "www-authenticate": _PRESENT},),
     ("HEAD", _LICENSE, "none", "*.*", None, 401, _EMPTY_HTML, b"", {"allow": None}),
@@ -7721,10 +7732,10 @@ def _accept_unchecked() -> list[str]:
 
 @pytest.mark.parametrize("operation", _accept_unchecked())
 def test_jira_operations_that_answer_an_accept_with_no_406(client, operation):
-    """Pins each entry `ACCEPT_UNCHECKED` in ``scripts/gen_jira_unserved.py`` marks: none answers
-    `Accept: text/html` with the 406, with a body of a type it takes. The refused ones answer their
-    401 under that type; the avatar views, which real runs, get what any operation real runs gets
-    here."""
+    """Pins each entry `ACCEPT_UNCHECKED` in ``scripts/gen_jira_unserved.py`` marks: none gives a
+    caller with no credential the 406 for `Accept: text/html`, with a body of a type it takes. The
+    refused ones answer their 401 under that type; the avatar views, which real runs, get what any
+    operation real runs gets here."""
     entry = routers_atlassian._JIRA_ENTRIES[operation]
     method, template = operation.split(" ", 1)
     headers = {"Accept": _HTML}

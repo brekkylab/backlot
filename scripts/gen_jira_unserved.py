@@ -16,12 +16,13 @@ to the documents shows.
 caller. Which is which is read off each operation's ``security`` in the documents
 ``backlot.fidelity.comparisons.COMPARISONS["jira"]`` names: one whose requirements do not include
 the empty one, ``{}``, is refused, and so is one the documents give no ``security`` at all. Measured
-on Jira Cloud with no credential, over every operation the baseline lists, on 2026-09-30 and, for
-the `agents` and `policies` ones, on 2026-10-13: all 306 GETs without ``{}`` answered that 401, as
-did the two with no ``security`` (`service-registry` once its `Content-Type` passed, see below), and
-all 226 with it reached the operation (a 200, a 404 for the key or id that names nothing, a 400, a
-403, a 410, or a 401 of the operation's own); all 447 DELETEs, PUTs and POSTs without it answered
-the 401 when they carried a body of a type the operation takes, and none of the 232 with it did.
+on Jira Cloud with no credential, over every operation the baseline lists, on 2026-09-30, the
+`agents` and `policies` ones on 2026-10-13 and the `invalid-jqls-access-log` ones on 2026-10-19: all
+308 GETs without ``{}`` answered that 401, as did the two with no ``security`` (`service-registry`
+once its `Content-Type` passed, see below), and all 226 with it reached the operation (a 200, a 404
+for the key or id that names nothing, a 400, a 403, a 410, or a 401 of the operation's own); all 447
+DELETEs, PUTs and POSTs without it answered the 401 when they carried a body of a type the operation
+takes, and none of the 232 with it did.
 
 Each entry, in both, says what the operation takes, which it checks first, for any caller the
 gateway lets through: ``consumes`` lists the media types, concrete ones before a wildcard, the order
@@ -33,9 +34,10 @@ credential, which sent each of its 232 DELETEs, PUTs and POSTs once with no body
 `text/plain` one. How the check reads a `Content-Type` is
 ``backlot.errors.atlassian.refuse_a_media_type``'s.
 
-An entry's ``accept`` is ``"unchecked"`` where the operation answers an `Accept` admitting no JSON
-with no 406, and its ``produces`` names what its 406 names where that is more than JSON
-(``backlot.routers.atlassian._published_answer`` reads both); the names below say which.
+An entry's ``accept`` is ``"unchecked"`` where the operation gives a caller with no credential no
+406 for an `Accept` admitting no JSON, and its ``produces`` names what the 406 it gives that caller
+names where that is more than JSON (``backlot.routers.atlassian._published_answer`` reads both); the
+names below say which.
 """
 
 from __future__ import annotations
@@ -124,10 +126,13 @@ DOCUMENTED_OTHERWISE = {
 }
 # Answered `Accept: text/html` with something other than the 406, with no credential and a body of
 # a type they take, measured 2026-10-13 on each of the 1197 operations above (528 GETs, 669
-# DELETEs, PUTs and POSTs): these 42 did, the license counts, the plans, two Connect paths and the
-# rest their 401 and the avatar views a 400 or the image, and `service-registry` its 415 first; the
-# other 1154 answered the 406.
+# DELETEs, PUTs and POSTs) and 2026-10-19 on the two `invalid-jqls-access-log` GETs: these 44 did,
+# the license counts, the plans, two Connect paths and the rest their 401 and the avatar views a 400
+# or the image, and `service-registry` its 415 first; the other 1154 answered the 406. With a
+# credential, `invalid-jqls-access-log` and `license/approximateLicenseCount` answered the 406
+# (2026-10-19), behind the 401.
 ACCEPT_UNCHECKED = _both(
+    "GET /rest/api/{v}/invalid-jqls-access-log",
     "GET /rest/api/{v}/license/approximateLicenseCount",
     "GET /rest/api/{v}/license/approximateLicenseCount/product/{}",
     "GET /rest/api/{v}/universal_avatar/view/type/{}",
@@ -150,9 +155,9 @@ ACCEPT_UNCHECKED = _both(
     "GET /rest/atlassian-connect/1/addons/{}/properties",
     *(f"{m} /rest/atlassian-connect/1/app/module/dynamic" for m in ("GET", "POST", "DELETE")),
 }
-# What the 406 names where it is more than `[application/json]`, of those that answered it:
-# `mypreferences` `text/plain` beside JSON, letting `text/plain`, `TEXT/PLAIN` and `text/*` past it
-# to the 401, and `filter/{}/columns`'s `DELETE` seven types (2026-10-13).
+# What the 406 names where it is more than `[application/json]`, of those that answered it with no
+# credential: `mypreferences` `text/plain` beside JSON, letting `text/plain`, `TEXT/PLAIN` and
+# `text/*` past it to the 401, and `filter/{}/columns`'s `DELETE` seven types (2026-10-13).
 PRODUCES = {
     **{
         op: ["application/json", "text/plain"]

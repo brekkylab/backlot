@@ -1274,8 +1274,8 @@ def jaxrs_picks_json(accept: str | None) -> bool:
     return False
 
 
-#: What every route of either product answers in, and so what an endpoint produces unless it is
-#: named as producing more (an entry's ``produces`` in ``scripts/gen_jira_unserved.py``).
+#: What every route of either product answers in, and so what Backlot's 406 names unless an entry's
+#: ``produces`` in ``scripts/gen_jira_unserved.py`` names more.
 JSON_ONLY = ("application/json",)
 
 
@@ -1541,8 +1541,9 @@ def jira_unauthenticated(
 
     Measured 2026-10-13 on `OPTIONS serverInfo` with no `Accept` and sixty-six values, the same
     on `GET myself` for each value that admits JSON (the 406 answers the others there first), and
-    2026-10-14 on `GET` and `HEAD` of operations that ask no 406 (`license/approximateLicenseCount`,
-    `app/module/dynamic`) for the two answers that differ by method:
+    2026-10-14 on `GET` and `HEAD` of operations that give a caller with no credential no 406
+    (`license/approximateLicenseCount`, `app/module/dynamic`) for the two answers that turn on the
+    method:
 
     - a header any member of which Jira cannot read (:func:`_accept`: `foo`, `*.*`, `*/json`,
       `q=2`, `charset=bogus`), wherever it stands: the 401 with no body, under

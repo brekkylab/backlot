@@ -6708,6 +6708,10 @@ _ACCEPT_ROWS = [
     + ("problem, text/plain", {}),
     ("GET", "/atlassian/rest/api/3/license/approximateLicenseCount", "none", _HTML, None, 401)
     + ("text/html;charset=UTF-8", None, {}),
+    ("GET", "/atlassian/rest/api/3/invalid-jqls-access-log", "none", _HTML, None, 401)
+    + ("text/html;charset=UTF-8", None, {"www-authenticate": _PRESENT}),
+    ("GET", "/atlassian/rest/api/2/invalid-jqls-access-log", "none", _HTML, None, 401)
+    + ("text/html;charset=UTF-8", None, {"www-authenticate": _PRESENT}),
     ("OPTIONS", _INFO, "none", _HTML, None, 401, "text/html;charset=UTF-8", None, {}),
     # -- Confluence: a Spring route's 406 in each of its shapes, and the values that pass it
     ("GET", _SPACES, "none", _HTML, None, 406, _TOMCAT, "page", {"content-language": "en"}),

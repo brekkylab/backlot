@@ -4,7 +4,7 @@
     "https://developer.atlassian.com/cloud/jira/platform/swagger-v3.v3.json",
     "https://developer.atlassian.com/cloud/jira/platform/swagger.v3.json"
   ],
-  "measured": "2026-10-14",
+  "measured": "2026-10-19",
   "operations": [
     {
       "operation": "DELETE /rest/api/2/attachment/{}",
@@ -1760,6 +1760,14 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
+    },
+    {
+      "operation": "GET /rest/api/2/invalid-jqls-access-log",
+      "id": "getAuditEntries",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "Read off Atlassian's own v2 document on 2026-10-19: `getAuditEntries`, marked `x-experimental`, whose description opens \"Returns JQL searches that need updating because Jira can no longer support them.\" One-way data flow is not what keeps it out: it reads. Scope is. A Backlot jira record is an issue carrying its project, status, comments and the people on it, and an entry here is a JQL search the site logged for using something Jira no longer supports, which no record carries. Measured against a live Jira Cloud site on 2026-10-19 as a non-administrator: 403 \"You must be a Jira administrator to access the invalid JQL audit log\", where a path the same site does not serve draws 404 \"No endpoint GET /rest/api/2/invalid-jqls-access-log/nosuchthing.\""
     },
     {
       "operation": "GET /rest/api/2/issue/createmeta",
@@ -3715,6 +3723,14 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
+    },
+    {
+      "operation": "GET /rest/api/3/invalid-jqls-access-log",
+      "id": "getAuditEntries",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "Read off Atlassian's own v3 document on 2026-10-19: `getAuditEntries`, marked `x-experimental`, whose description opens \"Returns JQL searches that need updating because Jira can no longer support them.\" One-way data flow is not what keeps it out: it reads. Scope is. A Backlot jira record is an issue carrying its project, status, comments and the people on it, and an entry here is a JQL search the site logged for using something Jira no longer supports, which no record carries. Measured against a live Jira Cloud site on 2026-10-19 as a non-administrator: 403 \"You must be a Jira administrator to access the invalid JQL audit log\", where a path the same site does not serve draws 404 \"No endpoint GET /rest/api/3/invalid-jqls-access-log/nosuchthing.\""
     },
     {
       "operation": "GET /rest/api/3/issue/createmeta",

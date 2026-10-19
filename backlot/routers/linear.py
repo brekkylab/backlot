@@ -8,7 +8,8 @@ out, or Express's for the bodies :func:`_express` answers.
 Auth is the one place Linear differs from every other source in this repo. A personal API key
 travels as the **bare** header value (``Authorization: lin_api_…``, no scheme), read by
 :func:`backlot.auth.api_key_token`, and a Backlot token is one. ``Bearer <token>`` is how an OAuth
-access token travels, and an API key sent that way is :func:`_api_key_as_bearer`'s 400.
+access token travels, and what Linear takes for an API key there
+(:func:`backlot.auth.linear_api_key_under_bearer`) is :func:`_api_key_as_bearer`'s 400.
 
 Status codes follow the GraphQL-over-HTTP split :class:`backlot.graphql.engine.Result` marks; real
 Linear draws the line in the same place, and generated clients branch on it.
@@ -21,7 +22,8 @@ and each refusal ``body-parser`` makes before it has the text
 graphql-js's words instead. An API key under ``Bearer`` is refused ahead of the body: with
 ``Bearer <key>``, ``{``, an empty body and a body holding ``NaN`` drew :func:`_api_key_as_bearer`'s
 400 the same day, and ``charset=latin1``, ``Content-Encoding: bogus`` and a body past the size
-limit did on 2026-10-19.
+limit did on 2026-10-19, when a key in an API key's shape that Linear never issued drew it under
+``Bearer`` with ``{``, ``NaN``, ``5``, ``charset=latin1`` and an empty body.
 """
 
 from __future__ import annotations
@@ -46,8 +48,9 @@ ENGINE = build_engine()
 
 
 def _api_key_as_bearer() -> JSONResponse:
-    """Linear's 400 for an API key under either spelling :func:`backlot.auth.linear_bearer_token`
-    reads, as api.linear.app sent it on 2026-10-18."""
+    """Linear's 400 for an API key under ``Bearer``, which
+    :func:`backlot.auth.linear_api_key_under_bearer` finds, as api.linear.app sent it on
+    2026-10-18."""
     return JSONResponse(
         {
             "errors": [
@@ -96,7 +99,7 @@ async def graphql(request: Request):
     service, and describing one POST route that accepts an arbitrary query would tell an
     OpenAPI→MCP bridge nothing useful (hence no ``SOURCE_PREFIXES`` entry either — see
     ``backlot/openapi.py``). Introspection is the schema description for this endpoint."""
-    if auth.acl(request).resolve(auth.linear_bearer_token(request)) is not None:
+    if auth.linear_api_key_under_bearer(request):
         return _api_key_as_bearer()
     # In a worker thread: `_read` can take seconds over a body near the 10 MiB limit, which would
     # hold up every other request on the event loop.

@@ -244,10 +244,12 @@ curl -s localhost:8000/linear/graphql \
 
 `Bearer` is how Linear carries an OAuth access token. An API key sent as `Bearer <token>` or
 `bearer <token>` is refused with a `400` that says to drop the prefix, there and here, before the
-body is read. Any other value is the key itself, so `Token <token>` or `BEARER <token>` is a key
-that does not resolve: a `401`. Space or tab around the whole header value is ignored by both. A
-request carrying `Authorization` twice is a `400` HTML page from Cloudflare, in front of Linear and
-Fireflies alike, there and here.
+body is read. Linear tells an API key there by its shape, `lin_api_` and forty letters and digits,
+so a value in that shape draws the `400` whether or not Linear issued it; Backlot gives the same
+`400` to its own tokens, which stand for API keys. Any other value is the key itself, so
+`Token <token>` or `BEARER <token>` is a key that does not resolve: a `401`. Space or tab around
+the whole header value is ignored by both. A request carrying `Authorization` twice is a `400`
+HTML page from Cloudflare, in front of Linear and Fireflies alike, there and here.
 
 ### Fireflies — `Bearer`
 

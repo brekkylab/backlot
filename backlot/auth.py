@@ -106,7 +106,7 @@ def github_credential(request: Request) -> str | None:
     `/user/repos` and `/repos/psf/requests`, and five of them moved neither the token's window nor
     the address's (2026-10-17).
     """
-    if _repeated_authorization(request):
+    if repeated_authorization(request):
         return ""
     scheme, rest = github_scheme(request)
     if scheme in ("bearer", "token"):
@@ -135,11 +135,11 @@ def github_scheme_then_a_tab(request: Request) -> bool:
     return (
         github_scheme(request)[1].startswith("\t")
         and "," not in header
-        and not _repeated_authorization(request)
+        and not repeated_authorization(request)
     )
 
 
-def _repeated_authorization(request: Request) -> bool:
+def repeated_authorization(request: Request) -> bool:
     """Whether the request carries more than one `Authorization` header."""
     return len(request.headers.getlist("authorization")) > 1
 

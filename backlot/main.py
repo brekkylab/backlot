@@ -876,6 +876,38 @@ async def warn_slack_post_charset(request: Request, call_next):
     )
 
 
+#: The page Cloudflare, in front of Linear and Fireflies, answers a request carrying `Authorization`
+#: more than once with: `text/html` with no charset, CRLF line ends, 155 bytes.
+_CLOUDFLARE_REPEATED_AUTHORIZATION = (
+    "<html>\r\n<head><title>400 Bad Request</title></head>\r\n<body>\r\n"
+    "<center><h1>400 Bad Request</h1></center>\r\n<hr><center>cloudflare</center>\r\n"
+    "</body>\r\n</html>\r\n"
+)
+
+
+@app.middleware("http")
+async def refuse_a_repeated_authorization_on_linear_and_fireflies(request: Request, call_next):
+    """Answer a `/linear` or `/fireflies` request that carries `Authorization` more than once with
+    :data:`_CLOUDFLARE_REPEATED_AUTHORIZATION`'s 400, ahead of the route, the body and the
+    credential. api.linear.app and api.fireflies.ai answered it on 2026-10-19 (UTC) to two copies of
+    a key, a key and `nope` in either order, a key and an empty value, two empty values, three
+    copies and a second header named in lower case; on `POST /graphql` with a query, with no bytes,
+    with `{` and with a body past each vendor's size limit, on `GET /graphql`, on `HEAD /graphql`,
+    which declared the 155 bytes and sent none, and on `POST /nosuch` and `POST /`."""
+    path = request.url.path
+    if not any(
+        path == prefix or path.startswith(f"{prefix}/") for prefix in ("/linear", "/fireflies")
+    ):
+        return await call_next(request)
+    if not auth.repeated_authorization(request):
+        return await call_next(request)
+    return Response(
+        _CLOUDFLARE_REPEATED_AUTHORIZATION.encode(),
+        status_code=400,
+        headers={"Content-Type": "text/html"},
+    )
+
+
 @app.middleware("http")
 async def put_a_request_id_on_github_answers(request: Request, call_next):
     """Put an `x-github-request-id` on every `/github` answer, as real does on each one measured.

@@ -15,7 +15,7 @@ import sqlite3
 
 import pytest
 
-from tests._helpers import build_corpus, client_for, crawl_confluence, db_count
+from tests._helpers import build_corpus, client_for, crawl_confluence, db_count, padded_query
 
 
 def test_unauthenticated_request_reports_the_vendors_own_401_detail(client):
@@ -328,3 +328,57 @@ def test_a_graphql_vendor_quotes_a_number_as_javascript_prints_it(
     message = r.json()["errors"][0]["message"]
     assert f" got invalid value {quoted}; Int cannot represent " in message
     assert message.endswith(f" value: {quoted}")
+
+
+# A request to Linear or Fireflies with `Authorization` sent more than once, `{key}` standing for
+# the vendor's own spelling of the admin token, each answered with the 400 page
+# `backlot.main.refuse_a_repeated_authorization_on_linear_and_fireflies` records. The last three
+# rows are the control: one header reaches the vendor, and a path that only starts with the
+# vendor's name is not the vendor's.
+_TYPENAME = b'{"query":"{ __typename }"}'
+_CLOUDFLARE = 400
+_REPEATED = [
+    pytest.param("POST", "/graphql", _TYPENAME, ("{key}", "{key}"), _CLOUDFLARE, id="two keys"),
+    pytest.param("POST", "/graphql", _TYPENAME, ("{key}", "nope"), _CLOUDFLARE, id="a key, nope"),
+    pytest.param("POST", "/graphql", _TYPENAME, ("nope", "{key}"), _CLOUDFLARE, id="nope, a key"),
+    pytest.param("POST", "/graphql", _TYPENAME, ("{key}", ""), _CLOUDFLARE, id="a key, empty"),
+    pytest.param("POST", "/graphql", _TYPENAME, ("", ""), _CLOUDFLARE, id="two empty"),
+    pytest.param("POST", "/graphql", _TYPENAME, ("{key}",) * 3, _CLOUDFLARE, id="three keys"),
+    pytest.param("POST", "/graphql", b"", ("{key}", "nope"), _CLOUDFLARE, id="no bytes"),
+    pytest.param("POST", "/graphql", b"{", ("{key}", "nope"), _CLOUDFLARE, id="{"),
+    pytest.param("POST", "/graphql", None, ("{key}", "nope"), _CLOUDFLARE, id="past the limit"),
+    pytest.param("GET", "/graphql", b"", ("{key}", "nope"), _CLOUDFLARE, id="GET"),
+    pytest.param("HEAD", "/graphql", b"", ("{key}", "nope"), _CLOUDFLARE, id="HEAD"),
+    pytest.param("POST", "/nosuch", _TYPENAME, ("{key}", "nope"), _CLOUDFLARE, id="another path"),
+    pytest.param("POST", "", _TYPENAME, ("{key}", "nope"), _CLOUDFLARE, id="the root"),
+    pytest.param("POST", "/graphql", _TYPENAME, ("{key}",), 200, id="one key"),
+    pytest.param("POST", "x/graphql", _TYPENAME, ("{key}", "nope"), 404, id="a longer name"),
+]
+
+
+@pytest.mark.parametrize("vendor", ["linear", "fireflies"])
+@pytest.mark.parametrize("method, path, body, values, status", _REPEATED)
+def test_cloudflare_refuses_a_repeated_authorization(
+    client, tokens_yaml, vendor, method, path, body, values, status
+):
+    admin = tokens_yaml["admin_token"]
+    key = admin if vendor == "linear" else f"Bearer {admin}"
+    if body is None:
+        body = padded_query({"linear": 10 * 2**20, "fireflies": 2**20}[vendor] + 1)
+    headers = [("Content-Type", "application/json")]
+    headers += [("Authorization", value.format(key=key)) for value in values]
+    r = client.request(method, f"/{vendor}{path}", content=body, headers=headers)
+    assert r.status_code == status
+    page = (
+        b"<html>\r\n<head><title>400 Bad Request</title></head>\r\n<body>\r\n"
+        b"<center><h1>400 Bad Request</h1></center>\r\n<hr><center>cloudflare</center>\r\n"
+        b"</body>\r\n</html>\r\n"
+    )
+    if status != _CLOUDFLARE:
+        assert page not in r.content
+        if status == 200:
+            assert r.json() == {"data": {"__typename": "Query"}}
+        return
+    assert (r.headers["content-type"], r.headers["content-length"]) == ("text/html", "155")
+    if method != "HEAD":
+        assert r.content == page

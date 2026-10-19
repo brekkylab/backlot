@@ -6058,6 +6058,15 @@ _JSON_TYPE = "application/json"
                 (";x", "Invalid mime type \";x\": 'mimeType' must not be empty"),
                 (" ;x", "Invalid mime type \";x\": 'mimeType' must not be empty"),
                 (
+                    "text/plain\xa0",
+                    'Invalid mime type "text/plain\xa0": '
+                    "Invalid token character '\xa0' in token \"plain\xa0\"",
+                ),
+                (
+                    "text/plain;charset=nope\xa0",
+                    'Invalid mime type "text/plain;charset=nope\xa0": nope\xa0',
+                ),
+                (
                     "*/json",
                     'Invalid mime type "*/json": '
                     "wildcard type is legal only in '*/*' (all mime types)",

@@ -789,7 +789,9 @@ def _invalid_mime_type(value: str) -> str | None:
     `/plain`, `t ext/plain`, `text//plain`, `text/plain;=x`, `text/plain;a=`, `text/plain;a b=c`,
     `text/plain;a=b c`, `text/plain;a="b`, `text/plain;charset=a b` (named `a b`) and
     `text/plain;charset=nope`, and `text/plain;a b=c;charset=nope` named the space in `a b` first.
-    Not read here: `text/plain;charset=` was a 500.
+    On 2026-10-19 a no-break space (U+00A0) at either end of the header stayed part of it:
+    `text/plain` and `text/plain;charset=nope` followed by one were named for it. Not read here:
+    `text/plain;charset=` was a 500.
     """
     index = value.find(";")
     full = (value if index < 0 else value[:index]).strip(_JAVA_TRIMMED)

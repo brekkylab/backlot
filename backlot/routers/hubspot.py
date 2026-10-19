@@ -631,12 +631,12 @@ def _operator(f: dict):
     return (f.get("operator") or "EQ").strip(_TRIM)
 
 
-def _token_at(raw: bytes, path: tuple) -> tuple[int, int]:
-    """Where the value at `path` starts in the JSON body `raw`, as real reports a position: a
-    1-based line and a 1-based column counted in UTF-8 bytes, so `ééé` before the value moves it
-    six columns and a CRLF line ending none (measured 2026-10-06), a lone CR is a line break and a
-    byte-order mark three columns of line 1 (2026-10-13). A key the body repeats resolves to its
-    last occurrence, the one `json.loads` keeps."""
+def _token_span(raw: bytes, path: tuple) -> tuple[str, int, int]:
+    """The decoded body and the start/end offsets of its value at `path`.
+
+    Walk parsed values, so braces in strings or nested objects do not end a value early. A key
+    repeated in an object resolves to its last occurrence, the one `json.loads` keeps.
+    """
     encoding = json.detect_encoding(raw)
     if encoding == "utf-8-sig":
         encoding = "utf-8"
@@ -660,7 +660,23 @@ def _token_at(raw: bytes, path: tuple) -> tuple[int, int]:
             if text[pos] == ",":
                 pos = _WS.match(text, pos + 1).end()
         pos = found
+    return text, pos, decoder.raw_decode(text, pos)[1]
+
+
+def _token_at(raw: bytes, path: tuple) -> tuple[int, int]:
+    """Where the value at `path` starts in the JSON body `raw`, as real reports a position: a
+    1-based line and a 1-based column counted in UTF-8 bytes, so `ééé` before the value moves it
+    six columns and a CRLF line ending none (measured 2026-10-06), a lone CR is a line break and a
+    byte-order mark three columns of line 1 (2026-10-13). A key the body repeats resolves to its
+    last occurrence, the one `json.loads` keeps."""
+    text, pos, _ = _token_span(raw, path)
     return _position(text, pos)
+
+
+def _closing_at(raw: bytes, path: tuple) -> tuple[int, int]:
+    """The closing brace of the object at `path`, in the same coordinates as `_token_at`."""
+    text, _, end = _token_span(raw, path)
+    return _position(text, end - 1)
 
 
 def _position(text: str, pos: int) -> tuple[int, int]:
@@ -825,12 +841,17 @@ def _refuse_a_batch_read_shape(
     2026-10-09, 2026-10-11 and 2026-10-12: real reads `inputs`, `properties` and
     `propertiesWithHistory` in body order and stops at the first that is neither null nor a list, or
     at the first element of `inputs` that is neither an object nor a string, naming where that value
-    starts. A string `properties` or `propertiesWithHistory` is echoed trimmed (`_TRIM`), and one
-    that trims to nothing is named by its field alone. A null element of `inputs` is refused only
-    once the rest of the body has been read, in an envelope with no `category`. The elements of
-    `properties` and the members of an object in `inputs` are not checked here. With a `before`
-    from `_non_standard_number`, a value from there on and a null element are left to the token."""
+    starts. An object or array in an input's `id` or either properties list is named where it
+    starts too. A missing or null `id` is refused at the input's closing brace. A string
+    `properties` or `propertiesWithHistory` is echoed trimmed (`_TRIM`), and one that trims to
+    nothing is named by its field alone. A null element of either properties list, and a null
+    element of `inputs`, are deferred until after the other value refusals. Then `properties`
+    is named first, followed by `propertiesWithHistory`, then a null input, whatever their order
+    in the body (measured 2026-10-18). A properties element is named at the body's closing brace;
+    a null input's envelope has no `category`. With a `before` from `_non_standard_number`, a
+    refusal from there on and the deferred null elements are left to the token."""
     null_input = False
+    null_properties = set()
     for key, value in body.items():
         if key not in ("inputs", "properties", "propertiesWithHistory") or value is None:
             continue
@@ -850,17 +871,55 @@ def _refuse_a_batch_read_shape(
                 "String-argument constructor/factory method to deserialize from String value "
                 f"('{value.strip(_TRIM)}')",
             )
-        for i, item in enumerate(value if key == "inputs" else ()):
-            if item is None:
-                null_input = True
-            elif not isinstance(item, (str, dict)):
-                if not _ahead(raw, ("inputs", i), before):
+        for i, item in enumerate(value):
+            path = (key, i)
+            if key == "inputs":
+                if item is None:
+                    null_input = True
+                    continue
+                if not isinstance(item, (str, dict)):
+                    if not _ahead(raw, path, before):
+                        return None
+                    return _invalid_at(raw, path, _not_an_input(item))
+                if isinstance(item, str):
+                    continue
+                if item.get("id") is None:
+                    position = _closing_at(raw, path)
+                    if before is not None and position >= before:
+                        return None
+                    line, column = position
+                    return _error(
+                        400,
+                        f"Invalid input JSON on line {line}, column {column}. "
+                        "Some required fields were not set: [id]",
+                    )
+                item = item["id"]
+                path += ("id",)
+            elif item is None:
+                null_properties.add(key)
+                continue
+            if isinstance(item, (dict, list)):
+                if not _ahead(raw, path, before):
                     return None
-                return _invalid_at(raw, ("inputs", i), _not_an_input(item))
-    if null_input and before is None:
-        return JSONResponse(
-            status_code=400, content={"status": "error", "message": "Input IDs must be non-null."}
-        )
+                kind = "Object" if isinstance(item, dict) else "Array"
+                return _invalid_at(
+                    raw,
+                    path,
+                    f"Cannot deserialize value of type  from {kind} value "
+                    f"(token `JsonToken.START_{kind.upper()}`)",
+                )
+    if before is None:
+        for key in ("properties", "propertiesWithHistory"):
+            if key in null_properties:
+                line, column = _closing_at(raw, ())
+                return _error(
+                    400, f"Invalid input JSON on line {line}, column {column}: {key} element"
+                )
+        if null_input:
+            return JSONResponse(
+                status_code=400,
+                content={"status": "error", "message": "Input IDs must be non-null."},
+            )
     return None
 
 
@@ -1200,9 +1259,14 @@ async def batch_read(object_type: str, request: Request):
     conn, visible = auth.conn(request), auth.visible_ids(request, caller)
     keep = _keep(body.get("properties"))
     results, errors = [], []
-    for item in body.get("inputs") or []:
+    for i, item in enumerate(body.get("inputs") or []):
         # A string in `inputs` is answered as `{"id": <that string>}` is (measured 2026-10-11).
-        rid = item if isinstance(item, str) else str(item.get("id"))
+        rid = item if isinstance(item, str) else item["id"]
+        if not isinstance(rid, str):
+            # A number or boolean id is echoed as the body spells it (`1e3`, `1E3`, `1.0`, `-0.0`,
+            # `true`), measured 2026-10-11 and 2026-10-18; an integer naming a record finds it.
+            text, start, end = _token_span(await request.body(), ("inputs", i, "id"))
+            rid = text[start:end]
         # One ACL-scoped query, not a resolve followed by a get_document refetch of the same
         # row -- see get_object's comment for why the collapse is safe.
         row = store.hubspot_by_id(conn, rid, visible)

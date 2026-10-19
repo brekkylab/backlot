@@ -407,6 +407,14 @@ _PLURAL = {plural: singular for singular, plural in _SINGULAR.items()}
 # too; `archived=true` on each id is the refusal its name gets, naming the same id; and the v4
 # associations route reads each id on either side as it reads the name.
 #
+# Thirteen more are mapped from real's 403s (measured 2026-10-19 with a key holding no scope on
+# them): `PATCH /crm/v3/objects/{type}/1` answered the same 403 MISSING_SCOPES on each id as on the
+# name below, byte for byte but for `correlationId`, and so did the listing where it was sent. That
+# sweep also found `0-410`, `0-420`, `0-421` and `0-500` resolving, past the `0-165` above, while
+# `0-166` to `0-170`, `0-200`, `0-300` and `0-400` stayed the 400. `0-101` answered as both
+# `commerce_payments` and `payments`, and `0-35`, `0-130` and `0-131` as `campaigns`, so they stay
+# unmapped, as do `discounts`, `fees`, `taxes` and `postal_mail`, which that key could not settle.
+#
 # A custom object is a `2-<n>`, and its records are addressed here by the name the corpus gave it.
 # HubSpot's own alias for one is `p_<name>` (or the fully qualified `p<portalId>_<name>`), but both
 # forms answer 400 `Unable to infer object type from: <name>` on a portal that does not hold that
@@ -427,8 +435,21 @@ _TYPE_IDS = {
     "0-47": "meetings",
     "0-48": "calls",
     "0-49": "emails",
+    "0-53": "invoices",
+    "0-54": "marketing_events",
     "0-64": "quote_templates",
+    "0-69": "subscriptions",
     "0-72": "deal_splits",
+    "0-74": "goal_targets",
+    "0-115": "users",
+    "0-123": "orders",
+    "0-136": "leads",
+    "0-142": "carts",
+    "0-145": "partner_clients",
+    "0-162": "services",
+    "0-410": "courses",
+    "0-420": "listings",
+    "0-421": "appointments",
 }
 # The shape of an objectTypeId, for telling "an id I do not know" apart from "not a type at all":
 # HubSpot answers those two with different messages.

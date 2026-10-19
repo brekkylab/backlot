@@ -585,7 +585,11 @@ def test_a_surrogate_pair_is_read_as_node_reads_it():
         assert request_body.node_json(request_body.parse(text)).decode() == expected, text
 
 
-@pytest.mark.parametrize("value", [float("nan"), float("inf"), request_body.Double("-inf")])
+@pytest.mark.parametrize(
+    "value",
+    [float("nan"), float("inf"), request_body.Double("-inf")],
+    ids=["nan", "inf", "a Double holding -inf"],
+)
 def test_node_json_refuses_a_float_that_is_not_finite(value):
     with pytest.raises(ValueError):
         request_body.node_json({"x": value})

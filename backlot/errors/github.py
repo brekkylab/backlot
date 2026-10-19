@@ -24,8 +24,11 @@ both 401s, which is this module's one knowing divergence.
 
 from __future__ import annotations
 
+import json
 import re
 from functools import lru_cache
+
+from fastapi import Request, Response
 
 PREFIX = "/github"
 
@@ -220,6 +223,29 @@ def http_body(path: str, exc, query=None) -> dict | None:
         "documentation_url": DOCS_ROOT if exc.status_code == 401 else docs_url(path),
         "status": str(exc.status_code),
     }
+
+
+def rendered(request: Request, status_code: int, body: dict, headers=None) -> Response | None:
+    """The backend version refusal's newline and Go-style HTML escapes.
+
+    Each `<`, `>` and `&` in its `message` came back from api.github.com on 2026-10-19 as
+    `\\u003c`, `\\u003e` and `\\u0026`, as Go's `encoding/json` writes them. The newline's
+    measurement is the comment in ``backlot.routers.github._validate_api_version``.
+
+    Its empty Selected header distinguishes it from the gateway's version refusal. Other GitHub
+    errors keep the shared JSON rendering.
+    """
+    if status_code == 400 and headers and headers.get("X-GitHub-Api-Version-Selected") == "":
+        written = json.dumps(body, ensure_ascii=False, separators=(",", ":"))
+        for ch in "<>&":
+            written = written.replace(ch, f"\\u{ord(ch):04x}")
+        return Response(
+            written + "\n",
+            status_code=status_code,
+            headers=headers,
+            media_type=JSON_MEDIA_TYPE,
+        )
+    return None
 
 
 def validation_body(path: str, errors) -> tuple[int, dict]:

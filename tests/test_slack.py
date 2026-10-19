@@ -679,6 +679,52 @@ def test_slack_history_bounds_a_message_to_the_microsecond(
         assert page == ([ts] if served else [])
 
 
+#: Each measured value and whether the boundary message was served; the measurement lives in
+#: conversations_history. These values were sent with oldest, latest and both bounds.
+_INCLUSIVE_AT_EACH_BOUND = [
+    (None, False),
+    ("", False),
+    ("0", False),
+    ("false", False),
+    ("False", False),
+    *((value, True) for value in ("true", "True", "TRUE", "tRuE", "1", "01", "2", "-1", "1.0")),
+    *((value, True) for value in ("yes", "on", "t", " true", "true ")),
+]
+#: These values, including the repeated parameters, were measured with both bounds set.
+_INCLUSIVE_AT_BOTH_BOUNDS = [
+    ("FALSE", False),
+    ("fAlSe", False),
+    *((value, True) for value in ("no", "off", "f", "n", "00", "000", "0.0", " 0", "0 ", "-0")),
+    *((value, True) for value in ("+0", "null", "none", "nil", "false ", " false", "\x00")),
+    (("true", "0"), False),
+    (("0", "true"), True),
+]
+
+
+@pytest.mark.parametrize(
+    "bounds, value, served",
+    [
+        (bounds, value, served)
+        for bounds in (("oldest",), ("latest",), ("oldest", "latest"))
+        for value, served in _INCLUSIVE_AT_EACH_BOUND
+    ]
+    + [(("oldest", "latest"), value, served) for value, served in _INCLUSIVE_AT_BOTH_BOUNDS],
+)
+def test_slack_history_inclusive_spellings(client, admin_h, bounds, value, served):
+    """The `inclusive` values sent to conversations_history serve or omit each bound message."""
+    history = "/slack/api/conversations.history"
+    cid = _a_channel_id(client, admin_h)
+    ts = client.get(history, headers=admin_h, params={"channel": cid}).json()["messages"][0]["ts"]
+    params = [("channel", cid), *((bound, ts) for bound in bounds)]
+    if value is not None:
+        params += [
+            ("inclusive", item) for item in (value if isinstance(value, tuple) else (value,))
+        ]
+    response = client.get(history, headers=admin_h, params=params).json()
+    assert response["ok"] is True
+    assert (ts in [m["ts"] for m in response["messages"]]) is served
+
+
 def test_slack_members_are_the_channels_own_speakers(client, admin_h, tokens, ro_conn):
     """Every public channel reported the same membership — the entire roster — because the handler
     skipped membership for a public channel. Real Slack's membership differs per channel, and a

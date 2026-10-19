@@ -3455,10 +3455,9 @@ def _published_answer(request: Request, vendor_path: str) -> Response | None:
     `Accept` check's 2026-10-13.
     """
     method = request.method
-    # the routed path classifies it by product, as ``vendor_path`` does in :func:`unmatched_path`;
-    # nothing echoes it (the refusals below carry no path, and `_echoed_path` reads the raw spelling
-    # where one does)
-    if errors_atlassian.is_confluence(request.scope["path"]):
+    # `request.url.path` here classifies the path by product and mount only; nothing echoes it (the
+    # refusals below carry no path, and `_echoed_path` reads the raw spelling where one does)
+    if errors_atlassian.is_confluence(request.url.path):
         if method == "OPTIONS" or not (
             _is(_CONFLUENCE_PUBLISHED, method, vendor_path)
             or _is(_CONFLUENCE_OUTSIDE_THE_DOCUMENT, method, vendor_path)

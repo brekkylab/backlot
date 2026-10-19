@@ -2197,12 +2197,13 @@ def front_door(
     one is that 400 too); then a method it does not pass on (:data:`SERVED_METHODS`); then its
     firewall (:func:`waf_blocks`), so a `PROPFIND` on a path the firewall refuses is the method's
     403 and a `PATCH` on one is the firewall's; then the gateway's `PATCH`
-    (:data:`GATEWAY_REFUSED`). Behind those, the edge answers a `;` in an API path, bare or as
-    `%3B`, with 400 in the shape `Accept` picks (:data:`_EDGE_PAGE_400`), on both products; measured
-    2026-10-12 and 2026-10-18 on eleven paths, served routes' among them, under
-    `application/json` and `*/*`. Which layer sends that 400 was not measured, and neither was a
-    path carrying a `;` beside an encoded slash or backslash; the `;` is read first here, with the
-    edge's headers. Confluence's Tomcat answers an encoded slash anywhere under
+    (:data:`GATEWAY_REFUSED`). A `;` in an API path, bare or as `%3B`, is a 400 in the shape
+    `Accept` picks (:data:`_EDGE_PAGE_400`) on both products, measured with an API token on eleven
+    paths, served routes' among them, under `application/json` and `*/*` (2026-10-12 and
+    2026-10-18). Which layer sends it was not measured, nor where it falls beside the checks above
+    or Tomcat's below, nor another `Accept`: it is read here after the gateway's `PATCH` and before
+    Tomcat's, with the edge's headers, and as JSON wherever `Accept` names `application/json`.
+    Confluence's Tomcat answers an encoded slash anywhere under
     `/wiki/` with 400, for every method, every credential and the `Accept` values `*/*`,
     `application/json`, `application/xml` and none, where Jira decodes one and routes the decoded
     path; an encoded backslash is the same 400 (2026-10-13), and on Jira's API the same page under

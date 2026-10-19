@@ -4739,6 +4739,8 @@ _NO_ENDPOINT_PATHS = [
         ("GET", "/atlassian/rest/api/3/nope%09x", "/rest/api/3/nope%09x"),
         ("GET", "/atlassian/rest/api/3/nope%0Dx", "/rest/api/3/nope%0Dx"),
         ("GET", "/atlassian/rest/api/3/nope%0Ax", "/rest/api/3/nope%0Ax"),
+        # beside the escaped brackets, which draw a page instead (the bracket test below)
+        ("GET", "/atlassian/rest/api/3/nope%5Ex", "/rest/api/3/nope%5Ex"),
         # and ones it decodes
         ("GET", "/atlassian/rest/api/3/nope%2dx", "/rest/api/3/nope-x"),
         ("GET", "/atlassian/rest/api/3/nope%7ex", "/rest/api/3/nope~x"),
@@ -4777,12 +4779,14 @@ _JIRA_NULL_PAGE = (
 @pytest.mark.parametrize(
     "vendor_path,status,page",
     [
-        ("/rest/api/3/nope%5Bx", 404, errors_atlassian.HTML_NOT_FOUND),
-        ("/rest/api/3/nope%5Dx", 404, errors_atlassian.HTML_NOT_FOUND),
+        # the dead-link page, the one the site answers `/foo` with
+        ("/rest/api/3/nope%5Bx", 404, "/foo"),
+        ("/rest/api/3/nope%5Dx", 404, "/foo"),
         ("/rest/api/3/issue/A%5BB/comment?maxResults=abc", 400, _JIRA_NULL_PAGE),
         ("/rest/api/3/issue/A%5DB/comment?maxResults=abc", 400, _JIRA_NULL_PAGE),
         # the issue's own 404 is not one of the two
         ("/rest/api/3/issue/A%5BB", 404, None),
+        ("/rest/api/3/issue/A%5DB", 404, None),
     ],
 )
 def test_jira_answers_an_escaped_bracket_with_a_page_of_its_web_app(
@@ -4793,10 +4797,12 @@ def test_jira_answers_an_escaped_bracket_with_a_page_of_its_web_app(
     r = client.get(f"/atlassian{vendor_path}", headers={**admin_h, "Accept": accept})
     assert r.status_code == status, r.text
     if page is None:
-        assert r.headers["content-type"] == errors_atlassian.JIRA_JSON_MEDIA_TYPE
+        assert r.headers["content-type"] == "application/json;charset=UTF-8"
         assert sorted(r.json()) == ["errorMessages", "errors"]
         return
-    assert r.headers["content-type"] == errors_atlassian.JIRA_SITE_HTML_MEDIA_TYPE
+    if page == "/foo":
+        page = client.get("/atlassian/foo", headers=admin_h).text
+    assert r.headers["content-type"] == "text/html;charset=utf-8"
     assert r.text == page
 
 

@@ -5009,14 +5009,17 @@ def test_jira_checks_the_media_type_an_operation_takes_before_anything_else(
     }
 
 
-def test_jira_unserved_sorts_every_operation_no_route_serves(monkeypatch):
+def test_jira_unserved_agrees_with_the_baseline_and_the_script(monkeypatch):
     """``backlot/data/jira_unserved.json`` sorts each `missing` operation of the Jira baseline
     into `refused` or `run` and holds nothing else, so one the file has lost, or one the baseline
     has gained or dropped since the file was written, fails here: the reminder to rerun
     ``scripts/gen_jira_unserved.py``. A route added for one of them is `implemented` in the baseline
     and the file would otherwise refuse a served operation's path for a method no route takes. Which
     list an operation belongs in is read off Jira's documents, which that script's `--check`
-    compares on the schedule in `.github/workflows/fidelity.yml`."""
+    compares on the schedule in `.github/workflows/fidelity.yml`. An entry's accept, produces and
+    charset, which `ACCEPT_UNCHECKED`, `PRODUCES` and `DOCUMENTED_OTHERWISE` set whatever the
+    documents say, are compared as well, so a name added to or dropped from one of those three
+    without a rerun fails here too."""
     import runpy
 
     import backlot
@@ -5031,7 +5034,12 @@ def test_jira_unserved_sorts_every_operation_no_route_serves(monkeypatch):
     # nothing, it refuses every one of them.
     monkeypatch.setattr("backlot.fidelity.fetch.fetch_json", lambda url, **kw: {"paths": {}})
     script = runpy.run_path(str(table.parents[2] / "scripts" / "gen_jira_unserved.py"))
-    assert sorted(script["build"]()["refused"]) == sorted(unserved)
+    built = script["build"]()["refused"]
+    assert sorted(built) == sorted(unserved)
+    held = {**content["refused"], **content["run"]}
+    for field in ("accept", "produces", "charset"):
+        written = {op: entry[field] for op, entry in built.items() if field in entry}
+        assert written == {op: entry[field] for op, entry in held.items() if field in entry}, field
 
 
 @pytest.mark.parametrize(

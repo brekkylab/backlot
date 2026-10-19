@@ -28,6 +28,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi import Path as PathParameter
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict
+from starlette.convertors import PathConvertor, register_url_convertor
 from starlette.routing import Match
 
 from backlot import auth, store, synth
@@ -3069,6 +3070,16 @@ _CONFLUENCE_HTML_RESOURCES = ("space", "content")
 
 unmatched_router = APIRouter(prefix="/atlassian", include_in_schema=False)
 
+
+class _EveryPath(PathConvertor):
+    """Starlette's `path`, a newline included: its `.*` stops at one, so `GET /rest/api/3/nope%0Ax`
+    would miss the catch-all, where real answers it as any path no route matches (2026-10-18)."""
+
+    regex = "(?s:.*)"
+
+
+register_url_convertor("every_path", _EveryPath())
+
 _PACKAGE = Path(__file__).resolve().parent.parent
 
 
@@ -3797,7 +3808,7 @@ def _site_surface(request: Request) -> Response:
     )
 
 
-@unmatched_router.api_route("/{rest:path}", methods=_UNMATCHED_METHODS)
+@unmatched_router.api_route("/{rest:every_path}", methods=_UNMATCHED_METHODS)
 async def unmatched_path(request: Request, rest: str) -> Response:
     """What either product answers for a path no route above serves, and for a method they do not.
 
@@ -3819,7 +3830,9 @@ async def unmatched_path(request: Request, rest: str) -> Response:
     run for gets the answer above. Outside both API mounts the site is its web app
     (:func:`_site_surface`).
     """
-    path = request.url.path
+    # the path as routed, not `request.url.path`: parsing the URL again drops a decoded newline or
+    # tab and ends the path at a decoded `#`, so `myse%0Alf` would be looked up as `myself`
+    path = request.scope["path"]
     vendor_path = _vendor_path(path)
     served = _some_atlassian_route_matches(request)
     if served and request.method == "OPTIONS":

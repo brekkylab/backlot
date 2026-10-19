@@ -2,7 +2,8 @@
 
 Fireflies is **GraphQL only** — there is no REST surface to emulate — so this router is one
 endpoint. The schema and the resolvers live in ``backlot/graphql/`` (``fireflies.graphql`` +
-``fireflies_resolvers.py``); everything here is HTTP: credentials in, a GraphQL envelope out.
+``fireflies_resolvers.py``); everything here is HTTP: a body and credentials in, a GraphQL
+envelope out, or its HTTP layer's for a body it cannot read (:func:`_body_refusal`).
 
 Auth is the ordinary bearer path (``Authorization: Bearer <api_key>``), which is what the
 vendor's own quickstart shows for all four of its raw-HTTP examples. Unlike Linear there is no

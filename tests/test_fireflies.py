@@ -263,7 +263,7 @@ _FIREFLIES_BODIES = [
 @pytest.mark.parametrize("body,answer", _FIREFLIES_BODIES)
 def test_fireflies_reads_the_body_before_the_credential(client, admin_h, credential, body, answer):
     """Each row is answered as the comment over `_FIREFLIES_BODIES` says, and no credential
-    changes a refusal."""
+    changes a `_body_refusal`."""
     headers = {"Content-Type": "application/json"}
     if credential != "none":
         headers["Authorization"] = (

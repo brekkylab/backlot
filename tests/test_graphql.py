@@ -239,28 +239,28 @@ def test_execute_request_honours_variables_and_operation_name(gql):
     assert r.payload["data"] == {"widget": {"name": "Worker"}}
 
 
-_TYPENAME = b'{"query": "{ widgets { id } }", "variables": {"x": %s}}'
+_WIDGETS = b'{"query": "{ widgets { id } }", "variables": {"x": %s}}'
 
 
 @pytest.mark.parametrize(
     "body, served",
     [
         pytest.param(b"not json", False, id="not JSON"),
-        pytest.param(_TYPENAME % b"NaN", False, id="NaN"),
-        pytest.param(_TYPENAME % b"-Infinity", False, id="-Infinity"),
+        pytest.param(_WIDGETS % b"NaN", False, id="NaN"),
+        pytest.param(_WIDGETS % b"-Infinity", False, id="-Infinity"),
         pytest.param('{"query": "{ widgets { id } }"}'.encode("utf-16"), False, id="UTF-16"),
-        pytest.param(b"\xef\xbb\xbf" * 2 + _TYPENAME % b"1", False, id="two byte-order marks"),
-        pytest.param(_TYPENAME % (b"1" * 4301), True, id="4301 digits"),
-        pytest.param(_TYPENAME % (b"[" * 100000 + b"]" * 100000), True, id="nested 100000 deep"),
+        pytest.param(b"\xef\xbb\xbf" * 2 + _WIDGETS % b"1", False, id="two byte-order marks"),
+        pytest.param(_WIDGETS % (b"1" * 4301), True, id="4301 digits"),
+        pytest.param(_WIDGETS % (b"[" * 100000 + b"]" * 100000), True, id="nested 100000 deep"),
         pytest.param(
-            _TYPENAME % (b"[" * 100000 + "1\u0663".encode() + b"]" * 100000),
+            _WIDGETS % (b"[" * 100000 + "1\u0663".encode() + b"]" * 100000),
             False,
             id="a digit outside 0-9 nested 100000 deep",
         ),
-        pytest.param(_TYPENAME % b'"\xff"', True, id="a byte that is not UTF-8"),
-        pytest.param(b"\xef\xbb\xbf" + _TYPENAME % b"1", True, id="a byte-order mark"),
-        pytest.param((_TYPENAME % b"1").decode(), True, id="text rather than bytes"),
-        pytest.param((_TYPENAME % b"NaN").decode(), False, id="text holding NaN"),
+        pytest.param(_WIDGETS % b'"\xff"', True, id="a byte that is not UTF-8"),
+        pytest.param(b"\xef\xbb\xbf" + _WIDGETS % b"1", True, id="a byte-order mark"),
+        pytest.param((_WIDGETS % b"1").decode(), True, id="text rather than bytes"),
+        pytest.param((_WIDGETS % b"NaN").decode(), False, id="text holding NaN"),
     ],
 )
 def test_execute_request_reads_the_body_as_node_reads_it(gql, body, served):

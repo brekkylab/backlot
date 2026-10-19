@@ -781,7 +781,7 @@ _LINEAR_BODIES = [
     pytest.param(
         b'{"e":"\xf0\x9f\x98\x80\xf0\x9f\x98\x80",\n"x":-Infinity}',
         b'{"error":"No number after minus sign in JSON at position 18 (line 2 column 6)","details":{},"code":400}',
-        id="-Infinity after a surrogate pair on the line before",
+        id="-Infinity after two surrogate pairs on the line before",
     ),
     pytest.param(
         b'{"e":"\xf0\x9f\x98\x80",\r\n"f":"\xf0\x9f\x98\x80\xf0\x9f\x98\x80","x":-Infinity}',
@@ -798,8 +798,8 @@ _LINEAR_BODIES = [
 @pytest.mark.parametrize("credential", ["key", "none", "nope"])
 @pytest.mark.parametrize("body,answer", _LINEAR_BODIES)
 def test_linear_reads_the_body_before_the_credential(client, tokens_yaml, credential, body, answer):
-    """Each row answers as the comment over `_LINEAR_BODIES` says, a refusal the same whatever
-    the credential, as Linear refused the body ending in `NaN` with no credential."""
+    """Each row answers as the comment over `_LINEAR_BODIES` says, and every refusal but a
+    `_REQUEST_ERROR` row's is the same whatever the credential."""
     headers = {"Content-Type": "application/json"}
     if credential != "none":
         headers["Authorization"] = tokens_yaml["admin_token"] if credential == "key" else "nope"

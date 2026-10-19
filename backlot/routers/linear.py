@@ -2,17 +2,16 @@
 
 Linear is **GraphQL only** — there is no REST surface to emulate — so this router is one
 endpoint. The schema and the resolvers live in ``backlot/graphql/`` (``linear.graphql`` +
-``linear_resolvers.py``); everything here is HTTP: credentials in, a GraphQL envelope out.
+``linear_resolvers.py``); everything here is HTTP: a body and credentials in, a GraphQL envelope
+out, or Express's for the bodies :func:`_not_json` answers.
 
 Auth is the one place Linear differs from every other source in this repo. A personal API key
 travels as the **bare** header value (``Authorization: lin_api_…``, no scheme) while an OAuth
 access token travels as ``Authorization: Bearer <token>`` — the same header, two shapes, both
 accepted by the real API. :func:`backlot.auth.api_key_token` handles both.
 
-Status codes follow the GraphQL-over-HTTP split the engine already draws: a **request** error
-(unparseable document, failed validation, uncoercible variables) is a 400 with no ``data`` key,
-while a **field** error mid-execution is a 200 carrying partial ``data`` alongside ``errors``.
-Real Linear draws the line in the same place, and generated clients branch on it.
+Status codes follow the GraphQL-over-HTTP split :class:`backlot.graphql.engine.Result` marks; real
+Linear draws the line in the same place, and generated clients branch on it.
 
 The body is read before the credential is looked at, by Express's ``body-parser`` in front of the
 GraphQL server: with no credential, a body that is not JSON drew its 400 from api.linear.app on

@@ -585,6 +585,12 @@ def test_a_surrogate_pair_is_read_as_node_reads_it():
         assert request_body.node_json(request_body.parse(text)).decode() == expected, text
 
 
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), request_body.Double("-inf")])
+def test_node_json_refuses_a_float_that_is_not_finite(value):
+    with pytest.raises(ValueError):
+        request_body.node_json({"x": value})
+
+
 def _compressed():
     """Whole gzip and deflate streams, each also cut short, with a bit flipped, and followed by
     bytes that start another member or none, and the bytes of no stream, as (gzip?, bytes)."""

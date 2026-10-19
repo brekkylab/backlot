@@ -26,7 +26,7 @@ from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from backlot import auth
 from backlot.config import get_settings
@@ -128,7 +128,11 @@ async def graphql(request: Request):
         "roster": frozenset(state.acl.email_to_token()) if getattr(state, "acl", None) else None,
     }
     result = ENGINE.execute_payload(payload, context=context)
-    return JSONResponse(result.payload, status_code=400 if result.request_error else 200)
+    return Response(
+        request_body.node_json(result.payload),
+        status_code=400 if result.request_error else 200,
+        media_type="application/json",
+    )
 
 
 def _read(raw: bytes) -> Any:

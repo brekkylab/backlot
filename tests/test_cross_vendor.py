@@ -415,3 +415,77 @@ def test_a_graphql_vendor_reads_the_body_in_a_worker_thread(
     monkeypatch.setattr(module, name, recording)
     client.post(f"/{vendor}/graphql", content=body, headers={"Content-Type": "application/json"})
     assert where == ["a worker thread"]
+
+
+# Half a surrogate pair where graphql-core quotes the client's text without escaping it: the `\u`
+# escape sent, the text the message names, and the bytes that text is on the wire. A pair is the
+# control, the one character it makes.
+_ISSUE_FILTER = "query($f: IssueFilter) { issues(filter: $f) { nodes { id } } }"
+_TWO_OPERATIONS = "query A { __typename } query B { __typename }"
+_HIGH, _LOW = chr(0xD83D), chr(0xDC00)
+_LONE_SURROGATES = [
+    pytest.param("linear", "key", "\\ud83d", _HIGH, b"\\ud83d", id="Linear, a key, the high half"),
+    pytest.param(
+        "linear",
+        "key",
+        "\\uD83D",
+        _HIGH,
+        b"\\ud83d",
+        id="Linear, a key, the high half in upper case",
+    ),
+    pytest.param("linear", "key", "\\udc00", _LOW, b"\\udc00", id="Linear, a key, the low half"),
+    pytest.param(
+        "linear",
+        "key",
+        "\\udc00\\ud83d",
+        _LOW + _HIGH,
+        b"\\udc00\\ud83d",
+        id="Linear, a key, low then high",
+    ),
+    pytest.param(
+        "linear", "operationName", "\\ud83d", _HIGH, b"\\ud83d", id="Linear, an operationName"
+    ),
+    pytest.param(
+        "fireflies", "operationName", "\\ud83d", _HIGH, b"\\ud83d", id="Fireflies, an operationName"
+    ),
+    pytest.param(
+        "fireflies",
+        "operationName",
+        "\\uDC00",
+        _LOW,
+        b"\\udc00",
+        id="Fireflies, the low half in upper case",
+    ),
+    pytest.param(
+        "linear",
+        "key",
+        "\\ud83d" + "\\ude00",
+        chr(0x1F600),
+        chr(0x1F600).encode(),
+        id="Linear, a key, a pair",
+    ),
+]
+
+
+@pytest.mark.parametrize("vendor, where, sent, named, wire", _LONE_SURROGATES)
+def test_a_graphql_vendor_writes_a_lone_surrogate_as_an_escape(
+    client, tokens_yaml, vendor, where, sent, named, wire
+):
+    """The answer is the request error, its message naming the text and its bytes carrying it as
+    `backlot.graphql.body.node_json` writes it."""
+    admin = tokens_yaml["admin_token"]
+    if where == "key":
+        body = '{"query":"%s","variables":{"f":{"%s":1}}}' % (_ISSUE_FILTER, sent)
+        quoted = f"'{named}' is not defined by type"
+    else:
+        body = '{"query":"%s","operationName":"%s"}' % (_TWO_OPERATIONS, sent)
+        quoted = f"operation named '{named}'"
+    credential = admin if vendor == "linear" else f"Bearer {admin}"
+    r = client.post(
+        f"/{vendor}/graphql",
+        content=body.encode(),
+        headers={"Authorization": credential, "Content-Type": "application/json"},
+    )
+    assert r.status_code == 400
+    assert quoted in r.json()["errors"][0]["message"]
+    assert wire in r.content

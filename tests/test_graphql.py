@@ -365,9 +365,9 @@ def test_the_iterative_reader_reads_what_json_loads_reads():
 
 # Characters a mutation of `_v8_texts` puts in: each token, each escape letter, what may follow a
 # number's digits, the letters of the literals, one character between U+0080 and U+00FF and one
-# above it on each side of U+FFFF, U+2028, a byte-order mark, control characters, the whitespace
-# Python's `str.isspace` knows and JSON does not, a digit outside 0 to 9, and two characters V8 has
-# no use for.
+# above it on each side of U+FFFF, U+2028, a byte-order mark, control characters, some of the
+# whitespace Python's `str.isspace` knows and JSON does not, a digit outside 0 to 9, and two
+# characters V8 has no use for.
 _V8_ALPHABET = list('{}[],:"\\/-+.eE0123456789 \t\r\ntrufalsenbx#') + [
     "\u00e9",
     "\u4e00",
@@ -388,8 +388,8 @@ def _v8_texts():
     """The texts the V8 tests read: :func:`_fuzz_texts`'s and three mutations of each of them,
     every prefix of four texts, a token V8 refuses between two strings of 0 to 12 of ``x``, of
     ``é`` or of an emoji two UTF-16 units long, a refusal after 0 to 3 lines ended by each line
-    terminator, the four sources V8 quotes back whole and three that differ from one by a character,
-    and a text nested 100000 deep."""
+    terminator, the four sources V8 quotes back whole, ``NaN`` with a space before or after it and
+    ``{}x``, and a text nested 100000 deep."""
     rng = random.Random(20261019)
     for text in _fuzz_texts(seed=20261019, count=1500):
         yield text

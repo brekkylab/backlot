@@ -6,8 +6,8 @@ and 25 run V8 12.4.254.21, 12.9.202.28 and 14.1.146.11, which have the same temp
 the same place in each text the tests try; Linear does not say which it runs. What it answered on
 2026-10-18 (UTC) puts it after V8 11.8: to ``{"query":"{ __typename }","b" 2}`` it said ``Expected
 ':' after property name in JSON at position 30 (line 1 column 31)``, as Node 22 does, where V8
-11.8.172.17 says ``Unexpected number in JSON at position 30 (line 1 column 31)``. Positions, lines
-and columns count UTF-16 units, as V8's do.
+11.8.172.17 says ``Unexpected number in JSON at position 30 (line 1 column 31)``. Positions and
+columns count UTF-16 units, as V8's do.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ _TOKENS.update({"t": _TRUE, "f": _FALSE, "n": _NULL, ":": _COLON, ",": _COMMA})
 _TOKENS.update(dict.fromkeys("0123456789", _NUMBER))
 _LITERALS = {_TRUE: "true", _FALSE: "false", _NULL: "null"}
 
-# `GetJsonScanFlags`: what a backslash may be followed by.
+# `GetJsonScanFlags`: what a backslash may be followed by, besides the `u` that opens a `\u` escape.
 _ESCAPES = frozenset('"\\/bfnrt')
 _DIGITS = frozenset("0123456789")
 _HEX = frozenset("0123456789abcdefABCDEF")

@@ -6038,6 +6038,84 @@ _JSON_TYPE = "application/json"
         ),
         ("POST", "/wiki/rest/api/content/abc123/child/attachment", None, "foo", 415)
         + ("Invalid mime type \"foo\": does not contain '/'",),
+        # a type Spring's parser cannot read, named for its reason
+        # (``errors.atlassian._invalid_mime_type``), and `*` and `text/plain;a`, which it reads
+        *(
+            ("POST", "/wiki/rest/api/space/abc123/permission", None, ctype, 415, reason)
+            for ctype, reason in (
+                (
+                    "text/plain;charset=nope",
+                    "Invalid mime type \"text/plain;charset=nope\": unsupported charset 'nope'",
+                ),
+                (
+                    "text/",
+                    "Invalid mime type \"text/\": does not contain subtype after '/'",
+                ),
+                (
+                    "a/b c",
+                    'Invalid mime type "a/b c": Invalid token character \' \' in token "b c"',
+                ),
+                (";x", "Invalid mime type \";x\": 'mimeType' must not be empty"),
+                (" ;x", "Invalid mime type \";x\": 'mimeType' must not be empty"),
+                (
+                    "text/plain\xa0",
+                    'Invalid mime type "text/plain\xa0": '
+                    "Invalid token character '\xa0' in token \"plain\xa0\"",
+                ),
+                (
+                    "text/plain;charset=nope\xa0",
+                    'Invalid mime type "text/plain;charset=nope\xa0": nope\xa0',
+                ),
+                (
+                    "*/json",
+                    'Invalid mime type "*/json": '
+                    "wildcard type is legal only in '*/*' (all mime types)",
+                ),
+                ("*", "'*/*'"),
+                ("/plain", "Invalid mime type \"/plain\": 'type' must not be empty"),
+                (
+                    "text//plain",
+                    'Invalid mime type "text//plain": Invalid token character \'/\' in token "/plain"',
+                ),
+                (
+                    "text/plain;=x",
+                    "Invalid mime type \"text/plain;=x\": 'parameter' must not be empty",
+                ),
+                ("text/plain;a=", "Invalid mime type \"text/plain;a=\": 'value' must not be empty"),
+                (
+                    "text/plain;a b=c;charset=nope",
+                    'Invalid mime type "text/plain;a b=c;charset=nope": '
+                    "Invalid token character ' ' in token \"a b\"",
+                ),
+                (
+                    "text/plain;a=b c",
+                    'Invalid mime type "text/plain;a=b c": Invalid token character \' \' in token "b c"',
+                ),
+                (
+                    'text/plain;a="b',
+                    'Invalid mime type "text/plain;a="b": Invalid token character \'"\' in token ""b"',
+                ),
+                ("text/plain;charset=a b", 'Invalid mime type "text/plain;charset=a b": a b'),
+                (
+                    "t x/p y",
+                    'Invalid mime type "t x/p y": Invalid token character \' \' in token "t x"',
+                ),
+                (
+                    "text/pl ain;charset=nope",
+                    'Invalid mime type "text/pl ain;charset=nope": '
+                    "Invalid token character ' ' in token \"pl ain\"",
+                ),
+                (
+                    "text/plain;=",
+                    "Invalid mime type \"text/plain;=\": 'parameter' must not be empty",
+                ),
+                ("text/plain;a", "'text/plain'"),
+                (
+                    "text/plain; charset = nope ",
+                    "Invalid mime type \"text/plain; charset = nope\": unsupported charset 'nope'",
+                ),
+            )
+        ),
         # the parameters kept (``errors.atlassian._spring_media_type``)
         *(
             ("POST", "/wiki/rest/api/content/abc123/child/attachment", None, ctype, 415, named)
@@ -6092,7 +6170,8 @@ _JSON_TYPE = "application/json"
             None,
             "multipart/form-data; boundary=x; charset=u8",
             415,
-            "'multipart/form-data; boundary=x; charset=u8'",
+            'Invalid mime type "multipart/form-data; boundary=x; charset=u8": '
+            "unsupported charset 'u8'",
         ),
         (
             "POST",

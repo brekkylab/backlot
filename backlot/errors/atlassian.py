@@ -2243,14 +2243,15 @@ def _cloudfront(status: int, reason: str, method: str, raw_path: str) -> str:
     return _CLOUDFRONT_PAGE.format(status=status, reason=reason, request_id=request_id)
 
 
-#: What the edge answers a `;` in a path with, by `Accept` (:func:`front_door`). Under
-#: `application/json` it is this body, 28 bytes with its newline, on `application/json`; under `*/*`
+#: What the edge answers a `;` in a path with, JSON or a page as `Accept` picks
+#: (:func:`front_door`). The JSON is this body, 28 bytes with its newline, on `application/json`;
 #: real's page is 18,943 bytes on `text/html` with no charset,
 #: `<meta name="details" content="lua_response">` among them, reading the status and a request id of
-#: its own (2026-10-12, 2026-10-18 and 2026-10-19). The page here is a stub with the status, the
-#: media type and that tag, so a `HEAD` declares the stub's length. Both carry
-#: `Access-Control-Allow-Origin: *` beside the edge's two headers (2026-10-19, on all 51 such
-#: answers sent).
+#: its own (2026-10-12, 2026-10-18 and 2026-10-19). The stub here keeps the status, the media type
+#: and that tag, so a `HEAD` declares the stub's length. Both carry `Access-Control-Allow-Origin: *`
+#: beside the edge's two headers, and the gateway's two ids beside those where the path holds the
+#: `;` escaped and none bare (2026-10-19: the first on all 192 such answers sent, the ids on the 55
+#: with `%3B` or `%3b` alone and on none of the 137 with a bare `;`).
 _EDGE_JSON_400 = '{"message":"","status":400}\n'
 _EDGE_PAGE_400 = (
     '<!DOCTYPE html><html><head><meta name="details" content="lua_response">'
@@ -2269,23 +2270,24 @@ def front_door(
     one is that 400 too); then a method it does not pass on (:data:`SERVED_METHODS`); then its
     firewall (:func:`waf_blocks`), so a `PROPFIND` on a path the firewall refuses is the method's
     403 and a `PATCH` on one is the firewall's; then the edge's 400 for a `;` anywhere in the path,
-    bare or as `%3B` (2026-10-19: behind `%00`, a `PROPFIND` and the firewall's `..;/`, ahead of the
-    gateway's `PATCH` on both products and of Tomcat's encoded slash); then the gateway's `PATCH`
-    (:data:`GATEWAY_REFUSED`). The `;` refusal is JSON where `Accept` holds `application/json` as
-    spelled, wherever it stands and whatever its `q` (`text/html, application/json` and
-    `application/json;q=0, text/html` were JSON, `APPLICATION/JSON` the page), and the page
-    (:data:`_EDGE_PAGE_400`) for anything else, none included; the same on both products, with an
-    API token and with none, for `GET`, `HEAD`, `OPTIONS`, `POST`, `PUT`, `DELETE` and `PATCH`, on
-    served routes, on paths no route matches and outside the API mounts (`/browse/A-1;x`,
-    `/wiki/spaces/X;y`, `/x;y`), 2026-10-12 to 2026-10-19. Confluence's Tomcat answers an encoded
-    slash anywhere under `/wiki/` with 400, for every method, every credential and the `Accept`
-    values `*/*`, `application/json`, `application/xml` and none, where Jira decodes one and routes
-    the decoded path; an encoded backslash is the same 400 (2026-10-13), and on Jira's API the same
-    page under both values measured (2026-10-18). `/wiki/spaces/` is the exception, in any case
-    (`/wiki/SPACES/`), the web app's own pages, which answered both with 200 (2026-10-13). Each
-    layer's answer is the same whatever the credential, and the gateway's Connect-token 403 comes
-    after all of them. Which product a path is the gateway's to decide, and it reads the path with
-    each run of slashes as one: `PATCH //wiki/rest/api/space` is openresty's 405 (2026-10-13).
+    bare or as `%3B` (2026-10-19, each spelling: behind `%00`, a `PROPFIND` and the firewall's
+    `..;/` or `..%3B/`, ahead of the gateway's `PATCH` on both products and of Tomcat's encoded
+    slash and backslash); then the gateway's `PATCH` (:data:`GATEWAY_REFUSED`). The `;` refusal is
+    JSON where `Accept` holds `application/json` as spelled, wherever it stands and whatever its `q`
+    (`text/html, application/json` and `application/json;q=0, text/html` were JSON,
+    `APPLICATION/JSON` the page), and the page (:data:`_EDGE_PAGE_400`) for anything else, none
+    included; the same on both products, with an API token and with none, for `GET`, `HEAD`,
+    `OPTIONS`, `POST`, `PUT`, `DELETE` and `PATCH`, on served routes, on paths no route matches and
+    outside the API mounts (`/browse/A-1;x`, `/wiki/spaces/X;y`, `/x;y`), 2026-10-12 to 2026-10-19.
+    Confluence's Tomcat answers an encoded slash anywhere under `/wiki/` with 400, for every method,
+    every credential and the `Accept` values `*/*`, `application/json`, `application/xml` and none,
+    where Jira decodes one and routes the decoded path; an encoded backslash is the same 400
+    (2026-10-13), and on Jira's API the same page under both values measured (2026-10-18).
+    `/wiki/spaces/` is the exception, in any case (`/wiki/SPACES/`), the web app's own pages, which
+    answered both with 200 (2026-10-13). Each layer's answer is the same whatever the credential,
+    and the gateway's Connect-token 403 comes after all of them. Which product a path is the
+    gateway's to decide, and it reads the path with each run of slashes as one:
+    `PATCH //wiki/rest/api/space` is openresty's 405 (2026-10-13).
 
     An `Accept` naming `text/html` first draws the edge's own "Page Unavailable" page in place of
     Tomcat's, which is not copied. ``raw_path`` is the path as sent, prefix included, which is
@@ -2311,10 +2313,12 @@ def front_door(
     confluence = collapsed == WIKI or collapsed.startswith(f"{WIKI}/")
     encoded = collapsed.lower()
     if ";" in encoded or "%3b" in encoded:
+        # the gateway's ids where no `;` is bare (:data:`_EDGE_JSON_400`)
+        layer = "cdn edge" if ";" in encoded else "gateway"
         edge = {"Access-Control-Allow-Origin": "*"}
         if accept is not None and "application/json" in accept:
-            return FrontDoor(400, "cdn edge", "application/json", _EDGE_JSON_400, edge)
-        return FrontDoor(400, "cdn edge", "text/html", _EDGE_PAGE_400, edge)
+            return FrontDoor(400, layer, "application/json", _EDGE_JSON_400, edge)
+        return FrontDoor(400, layer, "text/html", _EDGE_PAGE_400, edge)
     if method in GATEWAY_REFUSED:
         status, phrase, server = (
             (405, "Not Allowed", "openresty") if confluence else (400, "Bad Request", "nginx")
@@ -2365,8 +2369,8 @@ def no_endpoint(path: str, method: str) -> AtlassianError:
     `detail` names the method as sent -- `GET`, `POST`, `DELETE` and `OPTIONS` each came back in it,
     and `PUT` with no credential on 2026-09-30 -- and both fields carry the vendor path with the
     query string left off. A credential changes nothing; an `Accept` holding a member Jira cannot
-    read empties the body (:func:`rendered`). A path carrying an escaped bracket is the dead-link
-    page instead (:data:`_JIRA_BRACKET`).
+    read empties the body (:func:`rendered`). A path carrying a bracket, escaped or bare, is the
+    dead-link page instead (:data:`_JIRA_BRACKET`).
     """
     if _JIRA_BRACKET.search(path):
         return AtlassianError(

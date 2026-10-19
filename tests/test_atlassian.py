@@ -5690,6 +5690,16 @@ _JIRA_PAGE = errors_atlassian.JIRA_SITE_HTML_MEDIA_TYPE
             None,
             "no-store, max-age=0, stale-if-error=0",
         ),
+        # an encoded backslash in the key included, which is Tomcat's 400 under Jira's API
+        # (``errors.atlassian.front_door``) and not here
+        (
+            "/atlassian/browse/A%5C1",
+            True,
+            200,
+            "text/html",
+            None,
+            "no-store, max-age=0, stale-if-error=0",
+        ),
         # The mount itself keeps its slash, since stripped it would be a path no route matches and
         # Starlette's slash redirect would send the client back to the spelling it asked for; it
         # is the site's root, which redirects.
@@ -5933,12 +5943,13 @@ _TOMCAT_PAGE = "text/html;charset=utf-8"
         ("GET", "/rest/api/3/nope%5Cx", 400, _TOMCAT_400, _TOMCAT_PAGE),
         ("GET", "/rest/api/3/issue/A%5CB", 400, _TOMCAT_400, _TOMCAT_PAGE),
         ("GET", "/rest/api/3/issue/A%5CB/comment?maxResults=abc", 400, _TOMCAT_400, _TOMCAT_PAGE),
-        # the edge: a `;` anywhere in the path, bare or escaped, served routes and paths outside the
-        # API mounts included, ahead of the gateway's `PATCH`, and a `..;` the firewall lets through
-        # (the shape `Accept` picks is
+        # the edge's 400 for a `;`, bare or escaped in either case, wherever it stands, a `..;` the
+        # firewall lets through included (the shape `Accept` picks is
         # `test_atlassian_edge_refuses_a_semicolon_in_the_shape_accept_picks`)
         ("GET", "/rest/api/3/nope%3Bx", 400, _EDGE_400, _EDGE_PAGE),
+        ("GET", "/rest/api/3/nope%3bx", 400, _EDGE_400, _EDGE_PAGE),
         ("GET", "/rest/api/3/nope;x", 400, _EDGE_400, _EDGE_PAGE),
+        ("GET", "/rest/api/3/nope;x%3By", 400, _EDGE_400, _EDGE_PAGE),
         ("GET", "/rest/api/3/issue/A%3BB", 400, _EDGE_400, _EDGE_PAGE),
         ("GET", "/rest/api/3/issue/A;B", 400, _EDGE_400, _EDGE_PAGE),
         ("GET", "/rest/api/3/issue/A%3BB/comment?maxResults=abc", 400, _EDGE_400, _EDGE_PAGE),
@@ -5956,8 +5967,7 @@ _TOMCAT_PAGE = "text/html;charset=utf-8"
         ("GET", "/wiki/rest/api;x", 400, _EDGE_400, _EDGE_PAGE),
         ("PATCH", "/rest/api/3/issue/A;B", 400, _EDGE_400, _EDGE_PAGE),
         ("PATCH", "/wiki/rest/api/space;x", 400, _EDGE_400, _EDGE_PAGE),
-        # and behind `%00`, a `PROPFIND` and the firewall's `..;/`, ahead of Tomcat's encoded slash
-        # and backslash (measured under `application/json`, where the edge's answer is its JSON)
+        # and where it stands among the other layers' refusals (``errors.atlassian.front_door``)
         ("GET", "/rest/api/3/nope%00;x", 400, _CLOUDFRONT_400, _EDGE_PAGE),
         ("PROPFIND", "/rest/api/3/nope;x", 403, _CLOUDFRONT_METHOD_403, _EDGE_PAGE),
         ("GET", "/rest/api/3/..;/nope;x", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
@@ -6004,9 +6014,6 @@ _TOMCAT_PAGE = "text/html;charset=utf-8"
         # the web app answers `spaces/` itself (real's single-page app at 200, which is not copied)
         ("GET", "/wiki/spaces/NO%2FSUCH", 404, None, "text/html;charset=UTF-8"),
         ("GET", "/wiki/SPACES/NO%2FSUCH", 404, None, "text/html;charset=UTF-8"),
-        # and Jira's web app its issue page, an encoded backslash in the key included (real's page
-        # at 200)
-        ("GET", "/browse/A%5C1", 200, None, "text/html; charset=utf-8"),
     ],
 )
 def test_atlassian_front_door_answers_before_either_product(
@@ -6029,10 +6036,15 @@ def test_atlassian_front_door_answers_before_either_product(
     length, digest = page
     assert "allow" not in r.headers
     assert ("content-language" in r.headers) == (media_type == _TOMCAT_PAGE)
+    # the gateway's two ids, which the edge's 400 carries too where no `;` is bare
+    ids = page in (_NGINX_400, _OPENRESTY_405, _TOMCAT_400) or (
+        page == _EDGE_400 and ";" not in vendor_path
+    )
     for name in ("atl-request-id", "atl-traceid"):
-        assert (name in r.headers) == (page in (_NGINX_400, _OPENRESTY_405, _TOMCAT_400)), name
+        assert (name in r.headers) == ids, name
     for name in ("x-content-type-options", "x-xss-protection"):
         assert (name in r.headers) == (page not in (_CLOUDFRONT_405, _CLOUDFRONT_400)), name
+    assert r.headers.get("access-control-allow-origin") == ("*" if page == _EDGE_400 else None)
     if method == "HEAD":
         assert r.content == b"" and r.headers["content-length"] == str(length)
         return

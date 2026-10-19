@@ -149,11 +149,11 @@ there is the gateway's answer rather than that backend's, and carries the charse
 
 **`X-GitHub-Api-Version` is honoured too**, in both values real currently supports: `2026-03-10`
 drops `assignee` (issues and pulls) and `merge_commit_sha` (pulls), `2022-11-28` keeps them, an
-unpinned request gets `2022-11-28`, anything else is the real API's 400, and a response reports its
-choice in `X-GitHub-Api-Version-Selected` but on the answers `backlot.main.echo_github_api_version`
-names. `search/code` is the one route that does neither: real's code search backend does not read
-the header, so a pinned version there is served whatever it says and no response from it carries the
-`Selected` header (measured 2026-09-06).
+unpinned request and one whose header is empty get `2022-11-28`, any other value is the real API's
+400, and a response reports its choice in `X-GitHub-Api-Version-Selected` but on the answers
+`backlot.main.echo_github_api_version` names. `search/code` is the one route that does neither:
+real's code search backend does not read the header, so a pinned version there is served whatever it
+says and no response from it carries the `Selected` header (measured 2026-09-06).
 
 **An operation GitHub publishes and Backlot does not serve is refused for its credential first**: a
 token that does not resolve is "Bad credentials", as on a served route, and no

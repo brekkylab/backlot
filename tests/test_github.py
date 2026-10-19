@@ -4218,8 +4218,13 @@ def test_github_a_repo_qualifier_naming_nothing_is_refused_rather_than_widened(
 
 @pytest.mark.parametrize(
     "pinned, serves_removed_fields",
-    [(None, True), ("2022-11-28", True), ("2026-03-10", False)],
-    ids=["unpinned-defaults-to-2022-11-28", "2022-11-28", "2026-03-10"],
+    [(None, True), ("", True), ("2022-11-28", True), ("2026-03-10", False)],
+    ids=[
+        "unpinned-defaults-to-2022-11-28",
+        "empty-defaults-to-2022-11-28",
+        "2022-11-28",
+        "2026-03-10",
+    ],
 )
 def test_github_api_version_selects_the_payload(
     gh_client, gh_admin_h, gh_org, pinned, serves_removed_fields
@@ -4232,7 +4237,7 @@ def test_github_api_version_selects_the_payload(
     c, _ = gh_client
     from backlot import synth
 
-    h = {**gh_admin_h, **({"X-GitHub-Api-Version": pinned} if pinned else {})}
+    h = {**gh_admin_h, **({"X-GitHub-Api-Version": pinned} if pinned is not None else {})}
     num = synth.github_number("gh-pr-1")
     base = f"/github/repos/{gh_org}/gateway"
     for path, removed in (

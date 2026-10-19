@@ -210,9 +210,15 @@ def honours_api_version(request: Request) -> bool:
 
 
 def selected_api_version(request: Request) -> str | None:
-    """The version this request selected, or ``None`` if it pinned one that does not exist."""
+    """The version this request selected, or ``None`` if it pinned one that does not exist.
+
+    An empty header selects the default, as no header does: on api.github.com on 2026-10-18,
+    `X-GitHub-Api-Version:` with nothing after it was answered as an unpinned request and echoed
+    `2022-11-28` on `/repos/{owner}/{repo}`, its `/issues`, `/orgs/{org}`, `/zen` and
+    `DELETE /installation/token`, where `1999-01-01` is the version's 400.
+    """
     pinned = request.headers.get(API_VERSION_HEADER)
-    if pinned is None:
+    if not pinned:
         return DEFAULT_API_VERSION
     return pinned if pinned in API_VERSIONS else None
 

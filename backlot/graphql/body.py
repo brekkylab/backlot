@@ -281,7 +281,7 @@ def _joined(value: Any) -> Any:
             for key, item in items:
                 node[_join(key)] = _join(item) if type(item) is str else item
             pending.extend(item for item in node.values() if type(item) in (dict, list))
-        elif type(node) is list:
+        else:
             for i, item in enumerate(node):
                 if type(item) is str:
                     node[i] = _join(item)

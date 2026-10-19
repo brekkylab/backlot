@@ -277,15 +277,17 @@ def gql(client, path: str, query: str, token: str | None = None, **variables):
 SWEPT_BYTES = (0x09, *range(0x20, 0x7F), *range(0x80, 0x100))
 
 
-def sent_as(client, method: str, path: str, headers: dict[str, str], content=None):
-    """``method`` on ``path`` with each header's latin-1 bytes as sent. The TestClient re-encodes a
-    header's bytes above 0x7F as UTF-8 (`\\x85` reaches the app as `\\xc2\\x85`), where httpx's
-    own `ASGITransport` hands the app what it was given, over the app the fixture started."""
+def sent_as(client, method: str, path: str, headers, content=None):
+    """``method`` on ``path`` with each header's latin-1 bytes as sent, ``headers`` a mapping or a
+    sequence of pairs, which can name a header twice. The TestClient re-encodes a header's bytes
+    above 0x7F as UTF-8 (`\\x85` reaches the app as `\\xc2\\x85`), where httpx's own
+    `ASGITransport` hands the app what it was given, over the app the fixture started."""
     import asyncio
 
     import httpx
 
-    raw = {name: value.encode("latin-1") for name, value in headers.items()}
+    pairs = headers.items() if isinstance(headers, dict) else headers
+    raw = [(name.encode("latin-1"), value.encode("latin-1")) for name, value in pairs]
 
     async def send():
         transport = httpx.ASGITransport(app=client.app)

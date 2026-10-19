@@ -854,6 +854,24 @@ _LINEAR_READS = [
         (("Content-Encoding", "gzip\t"),), gzip.compress(_TYPENAME), None, id="a tab after gzip"
     ),
     pytest.param(
+        (("Content-Encoding", "gzip\xa0"),),
+        gzip.compress(_TYPENAME),
+        _express(415, 'unsupported content encoding \\"gzip\xa0\\"'.encode()),
+        id="U+00A0 after gzip",
+    ),
+    pytest.param(
+        (("Content-Encoding", "\xa0gzip"),),
+        gzip.compress(_TYPENAME),
+        _express(415, 'unsupported content encoding \\"\xa0gzip\\"'.encode()),
+        id="U+00A0 before gzip",
+    ),
+    pytest.param(
+        (("Content-Encoding", "gzip\x85"),),
+        gzip.compress(_TYPENAME),
+        _express(415, 'unsupported content encoding \\"gzip\x85\\"'.encode()),
+        id="U+0085 after gzip",
+    ),
+    pytest.param(
         (("Content-Encoding", "g zip"),),
         gzip.compress(_TYPENAME),
         _express(415, b'unsupported content encoding \\"g zip\\"'),
@@ -1072,7 +1090,7 @@ def test_linear_orders_the_body_and_the_credential(
             credential, _KEY_SHAPED
         )
         headers = (*headers, ("Authorization", key))
-    r = client.post("/linear/graphql", content=body, headers=list(headers))
+    r = sent_as(client, "POST", "/linear/graphql", headers, content=body)
     if credential.startswith("Bearer"):
         assert (r.status_code, r.content) == (400, _API_KEY_AS_BEARER)
     elif answer is _REQUEST_ERROR:

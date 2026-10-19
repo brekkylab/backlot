@@ -459,7 +459,8 @@ def test_a_number_is_read_and_printed_as_node_does():
 
 def _surrogate_texts():
     """Texts holding U+D83D and U+DE00, each raw or as its escape, in either order: in a string,
-    beside each alone in an array, as a key, and as a key the escaped pair follows as a key too."""
+    beside each alone in an array, as a key, as a key the escaped pair follows as a key too, as a
+    value, and in an array and an object inside an array and an object."""
     for high in (chr(0xD83D), "\\ud83d"):
         for low in (chr(0xDE00), "\\ude00"):
             for pair in (high + low, low + high):
@@ -467,6 +468,9 @@ def _surrogate_texts():
                 yield f'["a{pair}b", "{high}", "{low}"]'
                 yield f'{{"{pair}": 1}}'
                 yield f'{{"{pair}": 1, "x": 2, "\\ud83d\\ude00": [3, "{pair}"]}}'
+                yield f'{{"k": "{pair}"}}'
+                yield f'[["{pair}"], {{"{pair}": "{pair}"}}]'
+                yield f'{{"a": {{"{pair}": [1]}}}}'
 
 
 # What Node gives back for each text on stdin: what JSON.parse reads, as JSON.stringify writes it.

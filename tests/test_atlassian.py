@@ -4766,6 +4766,35 @@ def test_jira_answers_a_path_it_mounts_nothing_at_as_rfc_7807(
     }
 
 
+@pytest.mark.parametrize("accept", ["application/json", "*/*"])
+@pytest.mark.parametrize(
+    "vendor_path,status,page",
+    [
+        ("/rest/api/3/nope%5Bx", 404, errors_atlassian.HTML_NOT_FOUND),
+        ("/rest/api/3/nope%5Dx", 404, errors_atlassian.HTML_NOT_FOUND),
+        ("/rest/api/3/issue/A%5BB/comment?maxResults=abc", 400)
+        + (errors_atlassian._JIRA_NULL_ERROR_PAGE,),
+        ("/rest/api/3/issue/A%5DB/comment?maxResults=abc", 400)
+        + (errors_atlassian._JIRA_NULL_ERROR_PAGE,),
+        # the issue's own 404 is not one of the two
+        ("/rest/api/3/issue/A%5BB", 404, None),
+    ],
+)
+def test_jira_answers_an_escaped_bracket_with_a_page_of_its_web_app(
+    client, admin_h, vendor_path, status, page, accept
+):
+    """Pins the two refusals ``errors.atlassian._JIRA_BRACKET`` names, under both `Accept` values
+    measured."""
+    r = client.get(f"/atlassian{vendor_path}", headers={**admin_h, "Accept": accept})
+    assert r.status_code == status, r.text
+    if page is None:
+        assert r.headers["content-type"] == errors_atlassian.JIRA_JSON_MEDIA_TYPE
+        assert sorted(r.json()) == ["errorMessages", "errors"]
+        return
+    assert r.headers["content-type"] == errors_atlassian.JIRA_SITE_HTML_MEDIA_TYPE
+    assert r.text == page
+
+
 _CREDENTIALS = {
     "none": {},
     "failed-pair": FAILED_PAIR,

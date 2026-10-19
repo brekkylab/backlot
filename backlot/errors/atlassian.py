@@ -232,6 +232,20 @@ def _instance(path: str) -> str:
     return path[len(PREFIX) :] if path.startswith(PREFIX) else path
 
 
+#: An escaped `[` or `]` in a Jira path, which turns two of its RFC 7807 refusals into pages of the
+#: web app's, under `Accept: application/json` and `*/*` alike (2026-10-18): the no-endpoint 404 at
+#: `nope%5Bx` into the dead-link page (:func:`no_endpoint`), and the conversion 400 at
+#: `issue/A%5BB/comment?maxResults=abc` into :data:`_JIRA_NULL_ERROR_PAGE`; the same for `%5D`. The
+#: issue's own 404 at `issue/A%5BB` is unchanged.
+_JIRA_BRACKET = re.compile(r"%5[BD]", re.IGNORECASE)
+#: That 400's page: real's is 66,815 bytes on `text/html;charset=utf-8`, titled `(null)`; this is a
+#: stub with the status, the media type, the title and the one line it reads.
+_JIRA_NULL_ERROR_PAGE = (
+    "<!DOCTYPE html><html><head><title>(null)</title></head><body>"
+    '<p>Encountered a "null - null" error while loading this page.</p></body></html>'
+)
+
+
 def integer_conversion_failure(path: str, name: str, values: list[str]) -> AtlassianError:
     """The 400 either product answers for a query parameter it cannot read as an ``int``, which
     Jira also answers for one it cannot read as a boolean and for a path variable it cannot read as
@@ -269,6 +283,10 @@ def integer_conversion_failure(path: str, name: str, values: list[str]) -> Atlas
                     f'java.lang.NumberFormatException: For input string: "{shown}"'
                 ),
             },
+        )
+    if _JIRA_BRACKET.search(path):
+        return AtlassianError(
+            400, _JIRA_NULL_ERROR_PAGE.encode(), headers={"Content-Type": JIRA_SITE_HTML_MEDIA_TYPE}
         )
     # Masked to 32 bits: `Integer.toHexString(hashCode())` is at most eight digits, where CPython's
     # `id` is a heap address and renders nine here — which would also put a live address on the wire.
@@ -2268,8 +2286,13 @@ def no_endpoint(path: str, method: str) -> AtlassianError:
     `detail` names the method as sent -- `GET`, `POST`, `DELETE` and `OPTIONS` each came back in it,
     and `PUT` with no credential on 2026-09-30 -- and both fields carry the vendor path with the
     query string left off. A credential changes nothing; an `Accept` holding a member Jira cannot
-    read empties the body (:func:`rendered`).
+    read empties the body (:func:`rendered`). A path carrying an escaped bracket is the dead-link
+    page instead (:data:`_JIRA_BRACKET`).
     """
+    if _JIRA_BRACKET.search(path):
+        return AtlassianError(
+            404, HTML_NOT_FOUND.encode(), headers={"Content-Type": JIRA_SITE_HTML_MEDIA_TYPE}
+        )
     vendor_path = _instance(path)
     return AtlassianError(
         404,

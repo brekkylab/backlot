@@ -3455,9 +3455,10 @@ def _published_answer(request: Request, vendor_path: str) -> Response | None:
     `Accept` check's 2026-10-13.
     """
     method = request.method
-    # `request.url.path` here classifies the path by product and mount only; nothing echoes it (the
-    # refusals below carry no path, and `_echoed_path` reads the raw spelling where one does)
-    if errors_atlassian.is_confluence(request.url.path):
+    # the routed path classifies it by product, as ``vendor_path`` does in :func:`unmatched_path`;
+    # nothing echoes it (the refusals below carry no path, and `_echoed_path` reads the raw spelling
+    # where one does)
+    if errors_atlassian.is_confluence(request.scope["path"]):
         if method == "OPTIONS" or not (
             _is(_CONFLUENCE_PUBLISHED, method, vendor_path)
             or _is(_CONFLUENCE_OUTSIDE_THE_DOCUMENT, method, vendor_path)
@@ -3830,7 +3831,9 @@ async def unmatched_path(request: Request, rest: str) -> Response:
     run for gets the answer above. Outside both API mounts the site is its web app
     (:func:`_site_surface`).
     """
-    path = request.url.path
+    # the path as routed, not `request.url.path`: parsing the URL again drops a decoded newline or
+    # tab and ends the path at a decoded `#`, so `myse%0Alf` would be looked up as `myself`
+    path = request.scope["path"]
     vendor_path = _vendor_path(path)
     served = _some_atlassian_route_matches(request)
     if served and request.method == "OPTIONS":

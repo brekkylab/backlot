@@ -4827,9 +4827,13 @@ _CREDENTIALS = {
         ("OPTIONS", "/atlassian/rest/api/3/issue/NOPE-1", "none", 401),
         ("OPTIONS", "/atlassian/rest/api/3/dashboard", "none", 401),
         ("OPTIONS", "/atlassian/rest/api/3/serverInfo", "admin", 200),
-        # and on a path it publishes nothing at, the URL's 404 whatever the credential
+        # and on a path it publishes nothing at, the URL's 404 whatever the credential, a decoded
+        # newline, tab or `#` in a published path's spelling included
         ("OPTIONS", "/atlassian/rest/api/3/nopesuchroute", "none", 404),
         ("OPTIONS", "/atlassian/rest/api/3/nopesuchroute", "unreadable-bearer", 404),
+        ("GET", "/atlassian/rest/api/3/myse%0Alf", "none", 404),
+        ("GET", "/atlassian/rest/api/3/my%09self", "none", 404),
+        ("GET", "/atlassian/rest/api/3/myself%23x", "none", 404),
     ],
 )
 def test_jira_refuses_what_it_will_not_run_for_a_caller_it_cannot_name(

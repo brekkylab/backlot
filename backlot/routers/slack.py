@@ -660,14 +660,17 @@ async def conversations_history(request: Request):
 
         def _in_window(r) -> bool:
             ts_us = _ts_to_us(r["ts"])
-            # Slack: latest is inclusive; oldest is exclusive unless inclusive=true
+            # Both bounds are exclusive unless `inclusive` is sent true: measured against
+            # slack.com/api on 2026-10-16, a message whose ts equals `latest` is left out, as one
+            # at `oldest` is, and a page bounded by one message's ts on both sides is empty —
+            # `inclusive=true` puts that message back, alone.
             if lo is not None:
                 lo_us = _ts_to_us(lo)
                 if ts_us < lo_us if inclusive else ts_us <= lo_us:
                     return False
             if hi is not None:
                 hi_us = _ts_to_us(hi)
-                if ts_us > hi_us:
+                if ts_us > hi_us if inclusive else ts_us >= hi_us:
                     return False
             return True
 

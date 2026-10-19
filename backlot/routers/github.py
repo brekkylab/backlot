@@ -156,6 +156,35 @@ CODE_SEARCH_PATH = "/github/search/code"
 SEARCH_PREFIX = "/github/search/"
 # The search endpoints real counts against the `search` resource; `code` is `CODE_SEARCH_PATH`'s.
 SEARCH_ENDPOINTS = frozenset({"commits", "issues", "labels", "repositories", "topics", "users"})
+REQUEST_ID_HEADER = "x-github-request-id"
+# Hex digits in each of the first four fields of real's request id (see `request_id`).
+_REQUEST_ID_WIDTHS = ((4, 4), (4, 6), (6, 7), (6, 7))
+
+
+def _hex_field(seed: bytes, fewest: int, most: int) -> str:
+    """An unpadded uppercase hex value between ``fewest`` and ``most`` digits long."""
+    digits = fewest + seed[0] % (most - fewest + 1)
+    lowest = 16 ** (digits - 1)
+    return f"{lowest + int.from_bytes(seed[1:]) % (16**digits - lowest):X}"
+
+
+def request_id(method: str, path: str, query: str) -> str:
+    """The `x-github-request-id` for one request.
+
+    Real sends five uppercase hex fields joined by colons: four digits, four to six, six or seven,
+    six or seven, then the second the request arrived (measured on api.github.com 2026-09-22 and
+    2026-09-23 over eleven answers from a 200 to the spent-window 403s, and 2026-10-18 over fifteen
+    more, code search's 200 and 401 among them, and over sixty-four across eight kinds of answer:
+    the second field had four digits on four, two of them `0BF8`, and `Date` was a second past the
+    last field on fourteen). Real answered three calls to one URL with three ids; here the first
+    four fields are seeded from the request, as ``backlot.routers.s3.request_ids`` seeds S3's, so
+    one request asked twice in the same second gets one id twice."""
+    raw = hashlib.shake_256(f"github-req:{method} {path}?{query}".encode()).digest(20)
+    fields = [
+        _hex_field(raw[5 * i : 5 * i + 5], fewest, most)
+        for i, (fewest, most) in enumerate(_REQUEST_ID_WIDTHS)
+    ]
+    return ":".join([*fields, f"{int(time.time()):X}"])
 
 
 def honours_api_version(request: Request) -> bool:
@@ -347,8 +376,16 @@ async def refuse_an_unserved_operation(request: Request) -> None:
     Of the 31, only `DELETE /installation/token` carried the version echo, and only a `GET` or a
     `POST` carried the five `x-ratelimit-*` and counted: `PATCH`, `PUT` and `DELETE` were refused
     with neither and moved no window, but `DELETE /installation/token`, which carried the five at
-    `used: 0`. Here none carries the echo and the methods split as real's did; ``backlot.main``
-    asks :func:`refused_an_unserved_operation` for the echo and
+    `used: 0`. On 2026-10-16, 2026-10-18 and 2026-10-19, each request on its own cache-busted URL
+    from one address with no token, that one delete was answered as a served route answers a caller
+    with no credential, header by header as ``GET /user/repos`` is here: no `Authorization`, an
+    empty one, `Digest x` and a `Basic` value naming no token were the 401 "Requires authentication"
+    with the version echo (`2026-03-10` when pinned to it) and the five; any of them pinned to
+    `1999-01-01` the version's 400 with the five; `Bearer nope` and `token nope` the 401 "Bad
+    credentials" with neither, and `Bearer<tab>x` that 401 with the five. None of them moved `used`
+    (:func:`refused_an_unserved_operation_reported`). Every other operation here carries no echo,
+    and the methods split as real's did; ``backlot.main`` asks
+    :func:`refused_an_unserved_operation` for the echo and
     :func:`refused_an_unserved_operation_uncounted` for the headers. With a token, real's answers to
     `GET /user/packages` and `GET /gists/starred` carried the echo, and so does the router's 404 or
     405 here.
@@ -369,6 +406,13 @@ async def refuse_an_unserved_operation(request: Request) -> None:
     counted. Here it is :func:`_require`'s 401 after the version, carrying both.
     """
     if not is_an_unserved_operation(request.method, request.scope["path"]):
+        return
+    if _deletes_the_installation_token(request):
+        request.state.github_unserved_refusal = "reported"
+        await _validate_bad_credential(request)
+        await _validate_api_version(request)
+        _require(request)
+        del request.state.github_unserved_refusal
         return
     if "authorization" not in request.headers:
         request.state.github_unserved_refusal = (
@@ -420,6 +464,22 @@ def refused_an_unserved_operation_uncounted(request: Request) -> bool:
     nowhere and sends without the five headers: for a header that carries no credential, on any
     method, and for no header on a method in :data:`_UNCOUNTED_METHODS`."""
     return getattr(request.state, "github_unserved_refusal", None) == "uncounted"
+
+
+def refused_an_unserved_operation_reported(request: Request) -> bool:
+    """Whether :func:`refuse_an_unserved_operation` answered ``DELETE /installation/token`` as a
+    served route does for a caller with no credential: the version echo, the five `x-ratelimit-*`,
+    and nothing counted. See that function for the measurement."""
+    return getattr(request.state, "github_unserved_refusal", None) == "reported"
+
+
+def _deletes_the_installation_token(request: Request) -> bool:
+    """Whether this is `DELETE /installation/token`, the one unpublished delete real answers as a
+    served route."""
+    return (
+        request.method == "DELETE"
+        and request.scope["path"].removeprefix("/github") == "/installation/token"
+    )
 
 
 # --- rate limits ----------------------------------------------------------------
@@ -625,19 +685,21 @@ def refused_without_a_window(request: Request) -> bool:
     return refused_a_credential(request) and not auth.github_scheme_then_a_tab(request)
 
 
-def rate_limit_headers(request: Request, status_code: int) -> dict[str, str]:
+def rate_limit_headers(request: Request, status_code: int, *, count: bool = True) -> dict[str, str]:
     """The five `x-ratelimit-*` headers for a `/github` answer.
 
     Counts the request against the window, except on :data:`RATE_LIMIT_PATH`, which reports its
     window without counting: two `GET /rate_limit` in a row both answered `remaining: 5000`,
     `used: 0`, each carrying the five with `resource: core`, and the description's own note says
-    the route does not count. `/rate_limit/` never reaches this — see
+    the route does not count. ``count`` False reports the same way, which is how
+    ``DELETE /installation/token`` carries the five while leaving `used` where it was
+    (:func:`refused_an_unserved_operation_reported`). `/rate_limit/` never reaches this — see
     ``backlot.main.refuse_a_trailing_slash_on_github``."""
     key, authenticated = rate_limit_caller(request)
     resource = rate_limit_resource(request.url.path, status_code)
     counted, limit = rate_limit_window(resource, authenticated)
     windows = _rate_limit_windows(request.app)
-    read = windows.count if request.url.path != RATE_LIMIT_PATH else windows.status
+    read = windows.count if count and request.url.path != RATE_LIMIT_PATH else windows.status
     window = read(key, counted, limit)
     return {
         "x-ratelimit-limit": str(window["limit"]),
@@ -674,12 +736,9 @@ def _rate_limit_exceeded_message(request: Request, authenticated: bool) -> str:
     its cap. Real's sentence there is `API rate limit exceeded for user ID <id>. If you reach out
     to GitHub Support for help, please include the request ID <x-github-request-id> and timestamp
     <YYYY-MM-DD HH:MM:SS> UTC. For more on scraping GitHub and how it may affect your rights,
-    please review our Terms of Service (…)`. This returns real's sentence up to `user ID <id>.`;
-    the Support/Terms-of-Service sentence past it is not reproduced, because it names a request id
-    and a timestamp that come from `x-github-request-id` — a header Backlot sends on no `/github`
-    answer today (real sends it on every answer, 200 and refusal alike, and its own last field is
-    that answer's `Date` to the second). That header is #333's; the rest of this sentence belongs
-    there, not a synthesized or placeholder value here."""
+    please review our Terms of Service (…)`. The request id is the answer's own
+    `x-github-request-id` and the timestamp is that id's last field, on each of four refusals
+    measured 2026-10-18 the same way."""
     if not authenticated:
         host = request.client.host if request.client is not None else "anonymous"
         return (
@@ -688,7 +747,14 @@ def _rate_limit_exceeded_message(request: Request, authenticated: bool) -> str:
         )
     caller = auth.acl(request).resolve(auth.github_credential(request))
     email = caller.email if caller is not None and caller.email is not None else "admin"
-    return f"API rate limit exceeded for user ID {synth.github_user_id(email)}."
+    rid = request.state.github_request_id
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(int(rid.rsplit(":", 1)[1], 16)))
+    return (
+        f"API rate limit exceeded for user ID {synth.github_user_id(email)}. If you reach out to "
+        f"GitHub Support for help, please include the request ID {rid} and timestamp {stamp} UTC. "
+        "For more on scraping GitHub and how it may affect your rights, please review our Terms of "
+        "Service (https://docs.github.com/en/site-policy/github-terms/github-terms-of-service)"
+    )
 
 
 def rate_limit_refusal(request: Request) -> Response | None:

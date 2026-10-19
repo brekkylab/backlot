@@ -272,6 +272,8 @@ async def echo_github_api_version(request: Request, call_next):
     ``github.honours_api_version``). Nor does a 404 for a path real does not route, whatever the
     caller's credential — see ``_github_routes`` — nor real's "Bad credentials" 401
     (``github.refused_a_credential``), nor the 401s ``github.refused_an_unserved_operation`` names.
+    ``DELETE /installation/token``'s 401 is the one of those that echoes, as a served route's does
+    (:func:`github.refused_an_unserved_operation_reported`).
     """
     response = await call_next(request)
     if (
@@ -279,7 +281,10 @@ async def echo_github_api_version(request: Request, call_next):
         and github.honours_api_version(request)
         and _github_routes(request.scope)
         and not github.refused_a_credential(request)
-        and not github.refused_an_unserved_operation(request)
+        and (
+            not github.refused_an_unserved_operation(request)
+            or github.refused_an_unserved_operation_reported(request)
+        )
     ):
         version = github.selected_api_version(request)
         if version is not None:
@@ -340,7 +345,11 @@ async def report_github_rate_limit(request: Request, call_next):
             return refusal
     response = await call_next(request)
     if gated and not github.refused_an_unserved_operation_uncounted(request):
-        for name, value in github.rate_limit_headers(request, response.status_code).items():
+        for name, value in github.rate_limit_headers(
+            request,
+            response.status_code,
+            count=not github.refused_an_unserved_operation_reported(request),
+        ).items():
             response.headers[name] = value
     return response
 
@@ -865,6 +874,23 @@ async def warn_slack_post_charset(request: Request, call_next):
         status_code=response.status_code,
         headers=headers,
     )
+
+
+@app.middleware("http")
+async def put_a_request_id_on_github_answers(request: Request, call_next):
+    """Put an `x-github-request-id` on every `/github` answer, as real does on each one measured.
+
+    Registered after the other `/github` middlewares so it wraps them, and the refusals they answer
+    early carry it too. Made before the route runs (``backlot.routers.github.request_id`` has why)
+    and left on ``request.state`` for the token's spent-window `message`, which quotes it
+    (``github._rate_limit_exceeded_message``)."""
+    if not request.url.path.startswith("/github"):
+        return await call_next(request)
+    rid = github.request_id(request.method, request.url.path, request.url.query)
+    request.state.github_request_id = rid
+    response = await call_next(request)
+    response.headers.setdefault(github.REQUEST_ID_HEADER, rid)
+    return response
 
 
 @app.middleware("http")

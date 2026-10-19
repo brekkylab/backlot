@@ -504,6 +504,39 @@ def test_gmail_after_before_over_the_wire(tmp_path):
         assert count("before:99999999999999999999") == 0
 
 
+@pytest.mark.parametrize(
+    "q, free, ops",
+    [
+        ("-from:bob", "", {"-from": ["bob"]}),
+        ("from:-bob", "", {"-from": ["bob"]}),
+        ("-FROM:bob", "", {"-from": ["bob"]}),
+        ("-from: bob", "", {"-from": ["bob"]}),
+        ("from: -bob", "", {"-from": ["bob"]}),
+        ("-from:-bob", "", {"-from": ["bob"]}),
+        ("--from:bob", "", {"-from": ["bob"]}),
+        ("from:--bob", "", {"-from": ["bob"]}),
+        ('-from:"bob"', "", {"-from": ["bob"]}),
+        ("-to:ava", "", {"-to": ["ava"]}),
+        ("cc:-lena", "", {"-cc": ["lena"]}),
+        ("-bcc:lena", "", {"-bcc": ["lena"]}),
+        ("-cc:lena+update", "+update", {"-cc": ["lena"]}),
+        ('from:"-bob"', "", {"from": ["-bob"]}),
+        ("from:mary-jane", "", {"from": ["mary-jane"]}),
+        ("-from:", "", {}),
+        ("from:-", "", {}),
+        ("-from:-", "", {}),
+        ("from:--", "", {}),
+        ('-from:""', "", {}),
+        ("label:-", "", {"label": ["-"]}),
+    ],
+)
+def test_gmail_a_minus_negates_an_address_operator(q, free, ops):
+    """Each row is how the comment on `_GMAIL_NEGATED_ADDRESS` reads its query."""
+    from backlot.routers.google import _parse_gmail_q
+
+    assert _parse_gmail_q(q) == (free, ops)
+
+
 def test_github_search_q_parse():
     """One parser, a qualifier vocabulary per endpoint: a key the endpoint does not honor stays
     free text, so the FTS still gets a chance at it."""

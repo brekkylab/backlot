@@ -181,11 +181,12 @@ def linear_api_key_under_bearer(request: Request) -> bool:
     ``POST /oauth2/token`` also hands back as its access token, so each stands for an API key.
 
     On 2026-10-19 (UTC) api.linear.app gave the 400 to ``lin_api_`` followed by forty zeros, forty
-    ``a``, forty ``A``, and a key it issued with the last character changed, and the 401 to
-    thirty-nine and to forty-one to a hundred characters after ``lin_api_``, to forty with a last
-    character of ``-``, ``_``, ``.``, ``!`` or ``é``, and to forty after ``LIN_API_``,
-    ``lin_oauth_`` or ``xlin_api_``. Put first and then last of the forty, each of the 94 printable
-    ASCII characters drew the 400 if it was a letter or a digit and the 401 otherwise."""
+    ``a``, forty ``A``, and a key it issued with the last character changed, and the 401 to each
+    other length from none to forty-five characters after ``lin_api_`` and to fifty, sixty,
+    sixty-four and a hundred, to forty with a last character of ``-``, ``_``, ``.``, ``!`` or ``é``,
+    and to forty after ``LIN_API_``, ``lin_oauth_`` or ``xlin_api_``. Put first and then last of the
+    forty, each of the 94 printable ASCII characters drew the 400 if it was a letter or a digit and
+    the 401 otherwise."""
     token = linear_bearer_token(request)
     if token is None:
         return False

@@ -1106,14 +1106,10 @@ def resolve_comments(
 
 
 def _ordered_users(users: list[dict], order_by) -> list[dict]:
-    """``users`` newest first by the field ``orderBy`` names, and by ``createdAt`` when it names
-    none. The served timestamps, which :func:`_user` derives from the address rather than a stored
-    column, so the sort is the value the client reads back. Measured on api.linear.app on
-    2026-10-04: no ``orderBy`` and ``orderBy: createdAt`` were newest ``createdAt`` first, and
-    ``orderBy: updatedAt`` was newest ``updatedAt`` first. ``sort:`` is the other order and is
-    applied instead of this one."""
-    field = order_by if order_by in ("createdAt", "updatedAt") else "createdAt"
-    users.sort(key=lambda user: user[field], reverse=True)
+    """``users`` in the order ``issues`` takes, as ``store.LINEAR_DEFAULT_ORDER_BY`` records, over
+    the timestamps :func:`_user` serves, since it derives them from the address rather than a
+    stored column."""
+    users.sort(key=lambda user: user[order_by or store.LINEAR_DEFAULT_ORDER_BY], reverse=True)
     return users
 
 

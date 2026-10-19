@@ -1340,7 +1340,10 @@ def list_hubspot_objects(
 # newest first, measured against api.linear.app on 2026-10-05 over eight issues whose `updatedAt`
 # order differs from their `createdAt` order: `issues` and `Team.issues` with no `orderBy` and with
 # `orderBy: createdAt` came in descending `createdAt`, and with `orderBy: updatedAt` in descending
-# `updatedAt`. `id` breaks ties into a total order, which offset paging requires.
+# `updatedAt`. So did `Issue.children`, over a parent's three children whose two orders differ,
+# and `users`, over the workspace's three (2026-10-04 and 2026-10-18), where `children(first: 1)`
+# was the newest child and `children(last: 1)` the oldest. `id` breaks ties into a total order,
+# which offset paging requires.
 LINEAR_DEFAULT_ORDER_BY = "createdAt"
 
 # `Issue.updatedAt` is non-null in Linear; an issue with no recorded edit reports its creation
@@ -1530,10 +1533,8 @@ def linear_children(
     join would attach one issue's children to every issue sharing its key. Resolved once at import,
     which is what makes this the exact inverse of ``Issue.parent``.
 
-    Newest first by ``order_by``, and by ``createdAt`` when it is absent, the order
-    :func:`_linear_order` gives ``issues``. Measured on api.linear.app on 2026-10-04: no
-    ``orderBy`` and ``orderBy: createdAt`` were newest ``createdAt`` first, and
-    ``orderBy: updatedAt`` was newest ``updatedAt`` first."""
+    In the order :func:`_linear_order` gives ``issues``, as :data:`LINEAR_DEFAULT_ORDER_BY`
+    records."""
     sql = "SELECT * FROM linear_issues WHERE parent_id = ?"
     params: list = [parent_id]
     if prefilter:

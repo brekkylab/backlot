@@ -416,20 +416,25 @@ def test_linear_issue_without_a_parent_is_null(client, admin_h):
     )
 
 
+@pytest.mark.parametrize(("connection", "args"), [("issues", "first: 50"), ("users", "")])
 @pytest.mark.parametrize(
     ("order_by", "field"),
     [
         ("", "createdAt"),
-        (", orderBy: createdAt", "createdAt"),
-        (", orderBy: updatedAt", "updatedAt"),
+        ("orderBy: createdAt", "createdAt"),
+        ("orderBy: updatedAt", "updatedAt"),
     ],
     ids=["default", "createdAt", "updatedAt"],
 )
-def test_linear_default_and_order_by_are_newest_first(client, admin_h, order_by, field):
-    """`issues` is newest first by the field `orderBy` names, and by `createdAt` with no `orderBy`,
-    as the comment on `LINEAR_DEFAULT_ORDER_BY` records."""
-    q = "{ issues(first: 50%s) { nodes { createdAt updatedAt } } }" % order_by
-    stamps = [n[field] for n in gql(client, q, admin_h).json()["data"]["issues"]["nodes"]]
+def test_linear_default_and_order_by_are_newest_first(
+    client, admin_h, connection, args, order_by, field
+):
+    """`issues` and `users` are newest first by the field `orderBy` names, and by `createdAt` with
+    no `orderBy`, as the comment on `LINEAR_DEFAULT_ORDER_BY` records."""
+    joined = ", ".join(a for a in (args, order_by) if a)
+    q = "{ %s%s { nodes { createdAt updatedAt } } }" % (connection, f"({joined})" if joined else "")
+    stamps = [n[field] for n in gql(client, q, admin_h).json()["data"][connection]["nodes"]]
+    assert len(stamps) >= 2
     assert stamps == sorted(stamps, reverse=True)
 
 
@@ -496,10 +501,19 @@ def test_linear_root_connections_reject_sort_with_order_by(client, admin_h):
 # --- Linear relations / children / attachments / releases -----------------------
 
 
-def test_linear_children_and_users_are_newest_first(tmp_path):
-    """``Issue.children`` and ``users`` are newest first by the field ``orderBy`` names, and by
-    ``createdAt`` when it names none, as ``resolve_issue_children`` and ``_ordered_users`` record.
-    ``ENG-2`` was created first and edited last, so the two fields disagree."""
+@pytest.mark.parametrize(
+    ("args", "served"),
+    [
+        ("", ["ENG-3", "ENG-2"]),
+        ("(orderBy: createdAt)", ["ENG-3", "ENG-2"]),
+        ("(orderBy: updatedAt)", ["ENG-2", "ENG-3"]),
+        ("(first: 1)", ["ENG-3"]),
+        ("(last: 1)", ["ENG-2"]),
+    ],
+)
+def test_linear_children_are_newest_first(tmp_path, args, served):
+    """Each row is an issue's `children` in the order the comment on `LINEAR_DEFAULT_ORDER_BY`
+    records; `ENG-2` was created first and edited last, so the two fields disagree."""
     settings = build_corpus(
         tmp_path,
         [
@@ -545,31 +559,11 @@ def test_linear_children_and_users_are_newest_first(tmp_path):
             },
         ],
     )
+    query = '{ issue(id: "ENG-1") { children%s { nodes { identifier } } } }' % args
     with client_for(settings) as client:
-        headers = {"Authorization": settings.admin_token}
-
-        def nodes(query, *path):
-            body = gql(client, query, headers).json()
-            assert "errors" not in body, body.get("errors")
-            found = body["data"]
-            for step in path:
-                found = found[step]
-            return found["nodes"]
-
-        def children(order_by):
-            arg = f"(orderBy: {order_by})" if order_by else ""
-            query = '{ issue(id: "ENG-1") { children%s { nodes { identifier } } } }' % arg
-            return [node["identifier"] for node in nodes(query, "issue", "children")]
-
-        assert children("") == children("createdAt") == ["ENG-3", "ENG-2"]
-        assert children("updatedAt") == ["ENG-2", "ENG-3"]
-        for order_by in ("", "(orderBy: createdAt)", "(orderBy: updatedAt)"):
-            got = [
-                node["createdAt"]
-                for node in nodes("{ users%s { nodes { createdAt } } }" % order_by, "users")
-            ]
-            assert len(got) >= 2
-            assert got == sorted(got, reverse=True)
+        body = gql(client, query, {"Authorization": settings.admin_token}).json()
+    assert "errors" not in body, body.get("errors")
+    assert [n["identifier"] for n in body["data"]["issue"]["children"]["nodes"]] == served
 
 
 def test_linear_children_is_the_exact_inverse_of_parent(client, admin_h):

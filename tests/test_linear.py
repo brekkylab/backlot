@@ -406,7 +406,7 @@ def test_linear_unauthenticated_is_401(client):
     assert r.json()["errors"][0]["message"] == "Authentication required"
 
 
-# --- the body, read before the credential -------------------------------------------------------
+# --- the body, and where the credential is read against it ---------------------------------------
 # The headers a body was sent with beyond `Content-Type: application/json`, the body, and the bytes
 # Linear refused it with, at the status their `code` names (400 where there is none), or None where
 # Linear served the query, as `backlot.graphql.body` reads them. `_GRAPHQL_JS_NOT_JSON` marks the
@@ -1053,7 +1053,7 @@ _LINEAR_READS = [
     "headers,body,answer",
     [pytest.param((), *row.values, id=row.id) for row in _LINEAR_BODIES] + _LINEAR_READS,
 )
-def test_linear_reads_the_body_before_the_credential(
+def test_linear_orders_the_body_and_the_credential(
     client, tokens_yaml, credential, headers, body, answer
 ):
     """Each row answers as the comment over `_LINEAR_BODIES` says, and every refusal but a

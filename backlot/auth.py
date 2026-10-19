@@ -161,8 +161,9 @@ def linear_bearer_token(request: Request) -> str | None:
     With an API key, Linear's answers on 2026-10-18 (UTC) were the 400 for those two spellings and
     the 401 for the 62 other casings of the six letters, as for a tab after the scheme, two
     spaces, and U+00A0 or another latin-1 byte other than a control character between the space and
-    the key. A space or a tab after the key is left off and the 400 stays. Backlot issues no OAuth
-    tokens, so every token this finds that resolves is an API key."""
+    the key. A space or a tab after the key is left off and the 400 stays. Every token Backlot
+    resolves is a user's or the admin's own, which ``POST /oauth2/token`` also hands back as its
+    access token, so every token this finds that resolves is an API key."""
     hdr = (_authorization(request) or "").strip(" \t")
     for scheme in ("Bearer ", "bearer "):
         if hdr.startswith(scheme):

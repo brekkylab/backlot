@@ -39,7 +39,7 @@ def ff_gql(client, query, headers, **variables):
 
 
 # The two 500s `backlot.routers.fireflies._auth_failed` answers, as real sends them but for the
-# newline real ends each with, which no Backlot answer carries.
+# newline real ends each with, which `_auth_failed` leaves off.
 _NO_PREFIX = (
     b'{"errors":[{"friendly":true,"code":"auth_failed","message":"Authorization header is missing'
     b" the 'Bearer' prefix. Please use the format: 'Authorization: Bearer <api_key>'. If this"

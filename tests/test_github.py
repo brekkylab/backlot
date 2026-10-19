@@ -4181,8 +4181,13 @@ def test_github_a_repo_qualifier_naming_nothing_is_refused_rather_than_widened(
 
 @pytest.mark.parametrize(
     "pinned, serves_removed_fields",
-    [(None, True), ("2022-11-28", True), ("2026-03-10", False)],
-    ids=["unpinned-defaults-to-2022-11-28", "2022-11-28", "2026-03-10"],
+    [(None, True), ("", True), ("2022-11-28", True), ("2026-03-10", False)],
+    ids=[
+        "unpinned-defaults-to-2022-11-28",
+        "empty-defaults-to-2022-11-28",
+        "2022-11-28",
+        "2026-03-10",
+    ],
 )
 def test_github_api_version_selects_the_payload(
     gh_client, gh_admin_h, gh_org, pinned, serves_removed_fields
@@ -4195,7 +4200,7 @@ def test_github_api_version_selects_the_payload(
     c, _ = gh_client
     from backlot import synth
 
-    h = {**gh_admin_h, **({"X-GitHub-Api-Version": pinned} if pinned else {})}
+    h = {**gh_admin_h, **({"X-GitHub-Api-Version": pinned} if pinned is not None else {})}
     num = synth.github_number("gh-pr-1")
     base = f"/github/repos/{gh_org}/gateway"
     for path, removed in (
@@ -4210,23 +4215,6 @@ def test_github_api_version_selects_the_payload(
     # the listings serve the same shape as the single-object routes they page over
     listing = c.get(f"{base}/pulls", headers=h, params={"state": "all"}).json()
     assert listing and all(("assignee" in p) is serves_removed_fields for p in listing)
-
-
-def test_github_empty_api_version_selects_the_default(gh_client, gh_admin_h, gh_org):
-    """An empty `X-GitHub-Api-Version` is answered as no header is: the route's own answer with
-    `X-GitHub-Api-Version-Selected: 2022-11-28`, where a version that does not exist is the 400
-    (measured on api.github.com on 2026-10-18)."""
-    c, _ = gh_client
-    empty = {**gh_admin_h, "X-GitHub-Api-Version": ""}
-    base = f"/github/repos/{gh_org}/gateway"
-    for path in (f"/github/orgs/{gh_org}", base, f"{base}/issues"):
-        r = c.get(path, headers=empty)
-        assert r.status_code == 200, path
-        assert r.headers["X-GitHub-Api-Version-Selected"] == "2022-11-28", path
-    r = c.get(
-        f"/github/orgs/{gh_org}", headers={**gh_admin_h, "X-GitHub-Api-Version": "1999-01-01"}
-    )
-    assert r.status_code == 400
 
 
 def test_github_json_carries_the_charset_real_sends_except_on_code_search(

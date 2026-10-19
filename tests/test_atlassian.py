@@ -5973,10 +5973,12 @@ _TOMCAT_PAGE = "text/html;charset=utf-8"
 def test_atlassian_front_door_answers_before_either_product(
     client, admin_h, method, vendor_path, status, page, media_type
 ):
-    """Each refusal is the page real sent, held here as its length and digest, with the headers real
-    sent beside it (``errors.atlassian.FrontDoor``); which layer gives it and in what order is
-    ``errors.atlassian.front_door``'s, which carries the measurement. The rows with no page reach
-    the product. The credential does not change which layer answers, so an admin request is enough
+    """Each refusal is the page real sent, held here as its length and digest, with the headers its
+    layer carries (``errors.atlassian.FrontDoor``). The edge's `;` page is the stub
+    ``errors.atlassian._EDGE_PAGE_400`` describes, and the headers beside it and beside Jira's
+    `%5C` page are their layers', not measured beside them. Which layer gives a refusal and in what
+    order is ``errors.atlassian.front_door``'s, which carries the measurement. The rows with no
+    page reach the product. The credential does not change which layer answers, so an admin request is enough
     to show a served route does not reach its handler."""
     path, _, query = vendor_path.partition("?")
     answer = errors_atlassian.front_door(method, f"/atlassian{path}", query)

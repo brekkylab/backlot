@@ -2171,7 +2171,7 @@ def _cloudfront(status: int, reason: str, method: str, raw_path: str) -> str:
 #: `application/json` it is this body on `application/json`; under `*/*` real's page is 18,943 bytes
 #: on `text/html` with no charset, `<meta name="details" content="lua_response">` among them, reading
 #: the status and a request id of its own (2026-10-12 and 2026-10-18). The page here is a stub with
-#: the status, the media type and that tag.
+#: the status, the media type and that tag, so a `HEAD` declares the stub's length.
 _EDGE_JSON_400 = '{"message":"","status":400}'
 _EDGE_PAGE_400 = (
     '<!DOCTYPE html><html><head><meta name="details" content="lua_response">'
@@ -2180,8 +2180,9 @@ _EDGE_PAGE_400 = (
 
 
 def _an_api_path(collapsed: str) -> bool:
-    """Whether ``collapsed`` is under Jira's REST mount or Confluence's, where the edge's `;` and
-    Jira's `%5C` were measured."""
+    """Whether ``collapsed`` is under Jira's REST mount or Confluence's API mount. The edge's `;` and
+    Jira's `%5C` were measured under `/rest/api/3/` and `/wiki/rest/api/`; the rest of Jira's
+    `/rest/` is taken to answer as `/rest/api/3/` does."""
     return serves_the_jira_api(collapsed) or collapsed.startswith(f"{WIKI}/rest/api/")
 
 
@@ -2198,7 +2199,7 @@ def front_door(
     403 and a `PATCH` on one is the firewall's; then the gateway's `PATCH`
     (:data:`GATEWAY_REFUSED`). Behind those, the edge answers a `;` in an API path, bare or as
     `%3B`, with 400 in the shape `Accept` picks (:data:`_EDGE_PAGE_400`), on both products; measured
-    2026-10-12 and 2026-10-18 on thirteen paths, a served route's among them, under
+    2026-10-12 and 2026-10-18 on eleven paths, served routes' among them, under
     `application/json` and `*/*`. Confluence's Tomcat answers an encoded slash anywhere under
     `/wiki/` with 400, for every method, every credential and the `Accept` values `*/*`,
     `application/json`, `application/xml` and none, where Jira decodes one and routes the decoded

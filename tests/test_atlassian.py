@@ -6116,6 +6116,16 @@ _JSON_TYPE = "application/json"
                 ),
             )
         ),
+        # an empty charset, whether the route takes the type or not, is a 500 with no body and no
+        # `content-type` (``errors.atlassian._names_an_empty_charset``)
+        *(
+            ("POST", "/wiki/rest/api/space/abc123/permission", None, ctype, 500, b"")
+            for ctype in (
+                "text/plain;charset=",
+                "application/json;charset=",
+                "application/json; charset=",
+            )
+        ),
         # the parameters kept (``errors.atlassian._spring_media_type``)
         *(
             ("POST", "/wiki/rest/api/content/abc123/child/attachment", None, ctype, 415, named)

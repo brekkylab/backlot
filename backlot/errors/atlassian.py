@@ -791,7 +791,7 @@ def _invalid_mime_type(value: str) -> str | None:
     `text/plain;charset=nope`, and `text/plain;a b=c;charset=nope` named the space in `a b` first.
     On 2026-10-19 a no-break space (U+00A0) at either end of the header stayed part of it:
     `text/plain` and `text/plain;charset=nope` followed by one were named for it. Not read here:
-    `text/plain;charset=` was a 500.
+    `text/plain;charset=` was a 500 (:func:`_names_an_empty_charset`).
     """
     index = value.find(";")
     full = (value if index < 0 else value[:index]).strip(_JAVA_TRIMMED)
@@ -843,6 +843,21 @@ def _token_reason(token: str) -> str | None:
     return None
 
 
+def _names_an_empty_charset(value: str) -> bool:
+    """Whether a `Content-Type` gives the last `charset` parameter it names no value, which
+    Confluence answers with a 500 that has no body and no `content-type`, whether the operation
+    takes the type or not: measured on Confluence Cloud at `POST /wiki/rest/api/space/{id}/permission`
+    with no credential, `text/plain;charset=` on 2026-10-18 and 2026-10-19, and
+    `application/json;charset=` and `application/json; charset=` on 2026-10-19."""
+    index = value.find(";")
+    charset = None
+    for parameter in _split_parameters(value[index + 1 :]) if index >= 0 else ():
+        name, eq, given = parameter.strip(_JAVA_TRIMMED).partition("=")
+        if eq and name.strip(_JAVA_TRIMMED) == "charset":
+            charset = given.strip(_JAVA_TRIMMED)
+    return charset == ""
+
+
 def refuse_a_confluence_media_type(headers, consumes: tuple[str, ...]) -> AtlassianError | None:
     """Confluence's 415 for a request whose `Content-Type` an operation that ``consumes`` those
     types does not take, or None where it takes it.
@@ -858,8 +873,11 @@ def refuse_a_confluence_media_type(headers, consumes: tuple[str, ...]) -> Atlass
     gives. Each quotes the header without the spaces and tabs around it (` ;x` is named `";x"`,
     2026-10-18). The status and the code are the same. Only a parameter named `charset` in that
     case is a charset to it (`multipart/form-data; boundary=x; Charset=bogus` is read, 2026-10-13).
+    An empty one is no 415 but the empty 500 :func:`_names_an_empty_charset` describes.
     """
     value = (headers.get("content-type") or "").strip(" \t")
+    if _names_an_empty_charset(value):
+        return AtlassianError(500, b"")
     media_type = _parse_media_type(value, charset_in_any_case=False) if value else None
     if media_type is not None and _takes(consumes, media_type):
         return None

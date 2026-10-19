@@ -5810,6 +5810,7 @@ _CLOUDFRONT_BLOCKED = (919, "9d105cf52ff43a5280d20ee1f0fdfac202ef44d9d70b25857d2
 _NGINX_400 = (150, "487ad0d2cf075f4328a1adf57ef428759ad4e2c873a8ebd2ad9653990829c9cf")
 _OPENRESTY_405 = (154, "4a327e30d348f9975e50913c72d1bdb067f31f726722326c17c6af8d7f04b3a6")
 _TOMCAT_400 = (435, "141d0eee920f04eae74509434b49e8c473014166b90ec31e6f03596a782bf89f")
+_EDGE_400 = (126, "8266721d920027d1f639bfc978f9293bd845ffd458017961400c519328e2c328")
 _EDGE_PAGE = "text/html"
 _TOMCAT_PAGE = "text/html;charset=utf-8"
 
@@ -5875,17 +5876,34 @@ _TOMCAT_PAGE = "text/html;charset=utf-8"
         ("GET", "/wiki/rest/api/nope%2Fthing", 400, _TOMCAT_400, _TOMCAT_PAGE),
         ("GET", "/wiki/rest/api/space%2F", 400, _TOMCAT_400, _TOMCAT_PAGE),
         ("GET", "/wiki/display/A%2FB", 400, _TOMCAT_400, _TOMCAT_PAGE),
+        # and on Jira's API an encoded backslash, at a path no route matches and at served ones
+        ("GET", "/rest/api/3/nope%5Cx", 400, _TOMCAT_400, _TOMCAT_PAGE),
+        ("GET", "/rest/api/3/issue/A%5CB", 400, _TOMCAT_400, _TOMCAT_PAGE),
+        ("GET", "/rest/api/3/issue/A%5CB/comment?maxResults=abc", 400, _TOMCAT_400, _TOMCAT_PAGE),
+        # the edge: a `;` in either product's API path, bare or escaped, served routes included,
+        # and a `..;` the firewall lets through (the shape `Accept` picks is
+        # `test_atlassian_edge_refuses_a_semicolon_in_the_shape_accept_picks`)
+        ("GET", "/rest/api/3/nope%3Bx", 400, _EDGE_400, _EDGE_PAGE),
+        ("GET", "/rest/api/3/nope;x", 400, _EDGE_400, _EDGE_PAGE),
+        ("GET", "/rest/api/3/issue/A%3BB", 400, _EDGE_400, _EDGE_PAGE),
+        ("GET", "/rest/api/3/issue/A;B", 400, _EDGE_400, _EDGE_PAGE),
+        ("GET", "/rest/api/3/issue/A%3BB/comment?maxResults=abc", 400, _EDGE_400, _EDGE_PAGE),
+        ("GET", "/wiki/rest/api/nope%3Bx", 400, _EDGE_400, _EDGE_PAGE),
+        ("GET", "/wiki/rest/api/nope;x", 400, _EDGE_400, _EDGE_PAGE),
+        ("GET", "/wiki/rest/api/space/NO;SUCH", 400, _EDGE_400, _EDGE_PAGE),
+        ("GET", "/wiki/rest/api/space/NO%3BSUCH", 400, _EDGE_400, _EDGE_PAGE),
+        ("GET", "/wiki/rest/api/content/1;2", 400, _EDGE_400, _EDGE_PAGE),
+        ("GET", "/rest/api/3/nopeA..;/x", 400, _EDGE_400, _EDGE_PAGE),
+        ("GET", "/rest/api/3/nope/..;a/x", 400, _EDGE_400, _EDGE_PAGE),
         # a `HEAD` is the page's status and length with no body
         ("HEAD", "/rest/api/3/nope<script>", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
         ("HEAD", "/wiki/rest/api/space/NO%2FSUCH", 400, _TOMCAT_400, _TOMCAT_PAGE),
         # what none of them refuses reaches the product: a tag the firewall does not name, a
-        # closing tag but `script`'s, a name short of `!doctype`, a `..;` inside a segment or with
-        # no `/` after it, a tag in the query, a `..\` there that neither a `\` nor a `/` nor the
-        # end of the value follows, a step in a parameter's name, a broken escape in the query,
-        # Jira's decoded slash and the web app's `spaces/` in any case
+        # closing tag but `script`'s, a name short of `!doctype`, a tag in the query, a `..\` there
+        # that neither a `\` nor a `/` nor the end of the value follows, a `;` there, a step in a
+        # parameter's name, a broken escape in the query, Jira's decoded slash and the web app's
+        # `spaces/` in any case
         ("GET", "/rest/api/3/nope<img>", 404, None, errors_atlassian.PROBLEM_JSON),
-        ("GET", "/rest/api/3/nopeA..;/x", 404, None, errors_atlassian.PROBLEM_JSON),
-        ("GET", "/rest/api/3/nope/..;a/x", 404, None, errors_atlassian.PROBLEM_JSON),
         ("GET", "/rest/api/3/nope</style>", 404, None, errors_atlassian.PROBLEM_JSON),
         ("GET", "/rest/api/3/nope<!doctyp>", 404, None, errors_atlassian.PROBLEM_JSON),
         ("GET", "/rest/api/3/nope<!ELEMENT>", 404, None, errors_atlassian.PROBLEM_JSON),
@@ -5949,6 +5967,27 @@ def test_atlassian_front_door_answers_before_either_product(
     assert re.search(r"Request ID: [A-Za-z0-9_-]{54}==\n", r.text) or "Request ID" not in r.text
     normalised = re.sub(r"Request ID: \S+", "Request ID: <id>", r.text)
     assert hashlib.sha256(normalised.encode()).hexdigest() == digest
+
+
+@pytest.mark.parametrize(
+    "vendor_path", ["/rest/api/3/issue/A;B", "/rest/api/3/nope%3Bx", "/wiki/rest/api/space/NO;SUCH"]
+)
+@pytest.mark.parametrize(
+    "accept,media_type,body",
+    [
+        ("application/json", "application/json", b'{"message":"","status":400}'),
+        ("*/*", "text/html", errors_atlassian._EDGE_PAGE_400.encode()),
+    ],
+)
+def test_atlassian_edge_refuses_a_semicolon_in_the_shape_accept_picks(
+    client, admin_h, vendor_path, accept, media_type, body
+):
+    """The edge's 400 for a `;` (``errors.atlassian.front_door``), in the shape each of the two
+    `Accept` values measured draws, with no charset on either product."""
+    r = client.get(f"/atlassian{vendor_path}", headers={**admin_h, "Accept": accept})
+    assert r.status_code == 400
+    assert r.headers["content-type"] == media_type
+    assert r.content == body
 
 
 @pytest.mark.parametrize(

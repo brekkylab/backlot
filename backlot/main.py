@@ -792,6 +792,7 @@ async def answer_at_the_atlassian_front_door(request: Request, call_next):
         request.method,
         raw_path.decode("latin-1"),
         request.scope.get("query_string", b"").decode("latin-1"),
+        request.headers.get("accept"),
     )
     if answer is None:
         return await call_next(request)
@@ -885,10 +886,13 @@ async def vendor_json_media_type(request: Request, call_next):
     than around it; the route handlers and the two exception handlers above are covered from either
     position, those handlers because they run inside ``ExceptionMiddleware``. The status goes along
     with the path because the answer can depend on it: code search's own 200 and 422 carry no
-    charset where the gateway's 401 on the same path does.
+    charset where the gateway's 401 on the same path does. An answer given in front of Jira is not
+    Jira's, and keeps the type its layer gives (the edge's `;` 400, ``errors.atlassian.front_door``).
     """
     response = await call_next(request)
-    if response.headers.get("content-type") == "application/json":
+    if response.headers.get("content-type") == "application/json" and not request.scope.get(
+        "atlassian_front_door"
+    ):
         media_type = errors.json_media_type(request.url.path, response.status_code)
         if media_type is not None:
             response.headers["content-type"] = media_type

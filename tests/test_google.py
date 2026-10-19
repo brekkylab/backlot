@@ -9709,12 +9709,26 @@ def test_gmail_cc_bcc_searches_address_headers(tmp_path, surface, caller, query,
         ("admin", "from:ava@acme.com", ["reply"]),
         ("admin", "to:ava@acme.com", ["plan", "lunch"]),
         ("admin", "from:", ["plan", "lunch", "reply"]),
+        # a `-` in front of the operator or its value negates it
+        ("ava", "-from:bob", ["lunch", "reply"]),
+        ("ava", "from:-bob", ["lunch", "reply"]),
+        ("ava", "-from: bob", ["lunch", "reply"]),
+        ("ava", 'from:"-bob"', ["plan"]),
+        ("ava", "-to:lena", ["plan", "reply"]),
+        ("ava", "-cc:dev", ["plan", "lunch"]),
+        ("ava", "bcc:-ava", ["plan", "reply"]),
+        ("ava", "-from:me", ["plan", "lunch"]),
+        ("ava", "-from:bob from:mia", ["lunch"]),
+        ("ava", '-from:""', ["plan", "lunch", "reply"]),
+        ("ava", "from:-", ["plan", "lunch", "reply"]),
+        ("admin", "-from:me", ["plan", "lunch", "reply"]),
     ],
 )
 def test_gmail_from_to_searches_address_headers(tmp_path, surface, caller, query, expected):
     """A `from:` search matches author email, and `to:` matches any recipient header (To, Cc, or
     Bcc) as whole words or address. `me` resolves to the caller's address, and for admin callers,
-    the address `_service_email` gives. Empty address operators are ignored."""
+    the address `_service_email` gives. Empty address operators are ignored, and a `-` in front of
+    an operator or its value negates it (`_GMAIL_NEGATED_ADDRESS`)."""
     records = [
         {
             "doc_id": "plan",

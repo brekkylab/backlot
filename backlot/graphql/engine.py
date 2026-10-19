@@ -158,8 +158,8 @@ class Engine:
 
         Body problems come back as a GraphQL error envelope in graphql-js's words rather than a
         framework-level validation error. The body is read by :mod:`backlot.graphql.body`, as the
-        vendors' Node servers read it; a router that answers a body problem in its vendor's
-        envelope reads the body itself and calls :meth:`execute_payload`.
+        vendors' Node servers read it. To answer a body problem in its vendor's envelope instead, a
+        router reads the body itself and calls :meth:`execute_payload`.
         """
         try:
             payload = request_body.parse(

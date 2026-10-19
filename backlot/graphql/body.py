@@ -242,15 +242,52 @@ def parse(text: str) -> Any:
     refused, where ``json.loads`` reads them as floats, and a body nested 300000 deep is read, where
     ``json.loads`` raises ``RecursionError`` at a depth the interpreter decides. The C reader runs
     first; it stops at a constant without saying where and at that depth, and either hands the
-    text to :func:`_parse_iteratively`."""
+    text to :func:`_parse_iteratively`.
+
+    A text holding a surrogate, which a UTF-16 or UTF-32 body :func:`body_parser_text` decodes can,
+    is read through :func:`_joined`. On 2026-10-19 (UTC) Linear quoted a variable sent as U+D83D
+    raw and then the escape of U+DE00, or as the escape and then the raw unit, back as the one
+    character U+1F600, as it quoted the two escapes, and a key sent the first way as that character
+    too."""
     try:
-        return json.loads(
+        value = json.loads(
             text, parse_int=_int, parse_float=Double, parse_constant=_refuse_a_constant
         )
     except json.JSONDecodeError:
         raise NotJson(text) from None
     except (_ConstantRead, RecursionError):
-        return _parse_iteratively(text)
+        value = _parse_iteratively(text)
+    return _joined(value) if _LONE_SURROGATE.search(text) else value
+
+
+def _join(string: str) -> str:
+    """``string`` as the UTF-16 units JavaScript holds it in: a high surrogate followed by a low
+    one is the character the two make."""
+    return string.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "surrogatepass")
+
+
+def _joined(value: Any) -> Any:
+    """``value`` with :func:`_join` over each string in it, keys included. Two keys that become one
+    keep the first one's place and the last one's value, as ``JSON.parse`` keeps a key it reads
+    twice."""
+    if type(value) is str:
+        return _join(value)
+    pending = [value]
+    while pending:
+        node = pending.pop()
+        if type(node) is dict:
+            items = list(node.items())
+            node.clear()
+            for key, item in items:
+                node[_join(key)] = _join(item) if type(item) is str else item
+            pending.extend(item for item in node.values() if type(item) in (dict, list))
+        elif type(node) is list:
+            for i, item in enumerate(node):
+                if type(item) is str:
+                    node[i] = _join(item)
+                elif type(item) in (dict, list):
+                    pending.append(item)
+    return value
 
 
 def _key(text: str, i: int) -> tuple[str, int]:

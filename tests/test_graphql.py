@@ -473,9 +473,9 @@ def test_a_compressed_body_is_inflated_as_node_inflates_it():
         assert got == expected, (gz, raw)
 
 
-# A `utf-16` or `utf-32` body with no byte-order mark, as hex, and the order iconv-lite 0.7.2's
-# `detectEncoding` read it in, decoding each on 2026-10-19: one row for each test the heuristic
-# makes of a unit, where the two orders read the body differently.
+# Bodies with no byte-order mark, as hex, and the order iconv-lite 0.7.2 reads each in
+# (`backlot.graphql.body._byte_order`): a row for each test its heuristic makes of a unit, where the
+# two orders read the body differently.
 _BYTE_ORDERS = [
     pytest.param(2, "0111", "le"),
     pytest.param(2, "ff4e000041ff41114eff", "le"),

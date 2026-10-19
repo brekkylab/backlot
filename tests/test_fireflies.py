@@ -16,6 +16,7 @@ from graphql import build_client_schema, parse, validate
 from backlot import store
 from backlot.graphql import mcp_tools
 from tests._helpers import (
+    SWEPT_BYTES,
     client_for,
     corpus_client,
     gql,
@@ -82,8 +83,8 @@ _FIREFLIES_SPELLINGS = [
 ]
 
 
-# Each latin-1 byte other than a control character, in three places of the header: the bytes that
-# served the query, and the 500 every other byte drew.
+# `SWEPT_BYTES` in three places of the header: the bytes that served the query, and the 500 every
+# other byte drew.
 _FIREFLIES_BYTES = {
     "Bearer{x}{t}": ({0x20}, _NO_PREFIX),
     "Bearer {x}{t}": ({0x09, 0x20, 0xA0}, _BAD_KEY),
@@ -92,12 +93,12 @@ _FIREFLIES_BYTES = {
 
 
 def _fireflies_credentials() -> list:
-    """`_FIREFLIES_SPELLINGS`, then each byte of `_FIREFLIES_BYTES` in each place, a value already
-    in the table kept once."""
+    """`_FIREFLIES_SPELLINGS`, then each byte of `_FIREFLIES_BYTES` in each place, less the values
+    the table already holds."""
     rows = list(_FIREFLIES_SPELLINGS)
     seen = {row.values[0] for row in rows}
     for shape, (served, refusal) in _FIREFLIES_BYTES.items():
-        for byte in (0x09, *range(0x20, 0x7F), *range(0x80, 0x100)):
+        for byte in SWEPT_BYTES:
             value = shape.replace("{x}", chr(byte))
             if value not in seen:
                 seen.add(value)

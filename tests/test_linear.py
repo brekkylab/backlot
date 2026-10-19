@@ -23,6 +23,7 @@ from backlot import synth
 from backlot.fidelity.graphql_diff import backlot_schema
 from backlot.graphql import linear_filters, mcp_tools
 from tests._helpers import (
+    SWEPT_BYTES,
     build_corpus,
     client_for,
     complete,
@@ -3821,8 +3822,8 @@ _LINEAR_SPELLINGS = [
 ]
 
 
-# Each latin-1 byte other than a control character, put in five places of `Authorization`: the
-# statuses other than the 401 every other byte drew.
+# `SWEPT_BYTES` in five places of `Authorization`: the statuses other than the 401 every other byte
+# drew.
 _LINEAR_BYTES = {
     "Bearer{x}{t}": {0x20: 400},
     "Bearer {x}{t}": {},
@@ -3834,7 +3835,7 @@ _LINEAR_BYTES = {
 
 def _linear_credentials() -> list:
     """`_LINEAR_SPELLINGS`, then each byte of `_LINEAR_BYTES` in each place and each of the 64
-    casings of the scheme, a value already in the table kept once."""
+    casings of the scheme, less the values the table already holds."""
     rows = list(_LINEAR_SPELLINGS)
     seen = {row.values[0] for row in rows}
 
@@ -3844,7 +3845,7 @@ def _linear_credentials() -> list:
             rows.append(pytest.param(value, status, id=id))
 
     for shape, answers in _LINEAR_BYTES.items():
-        for byte in (0x09, *range(0x20, 0x7F), *range(0x80, 0x100)):
+        for byte in SWEPT_BYTES:
             add(shape.replace("{x}", chr(byte)), answers.get(byte, 401), f"{shape} {byte:#04x}")
     for letters in itertools.product(*[(c, c.upper()) for c in "bearer"]):
         scheme = "".join(letters)

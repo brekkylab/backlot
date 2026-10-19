@@ -271,6 +271,11 @@ def gql(client, path: str, query: str, token: str | None = None, **variables):
     return client.post(path, json=body, headers=headers)
 
 
+# The bytes the credential sweeps put into `Authorization`: each latin-1 byte but the control
+# characters other than the tab, which Linear's and Fireflies' front ends answer with an empty 400.
+SWEPT_BYTES = (0x09, *range(0x20, 0x7F), *range(0x80, 0x100))
+
+
 def sent_as(client, method: str, path: str, headers: dict[str, str], content=None):
     """``method`` on ``path`` with each header's latin-1 bytes as sent. The TestClient re-encodes a
     header's bytes above 0x7F as UTF-8 (`\\x85` reaches the app as `\\xc2\\x85`), where httpx's

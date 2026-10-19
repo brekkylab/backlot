@@ -387,9 +387,9 @@ _V8_ALPHABET = list('{}[],:"\\/-+.eE0123456789 \t\r\ntrufalsenbx#') + [
 def _v8_texts():
     """The texts the V8 tests read: :func:`_fuzz_texts`'s and three mutations of each of them,
     every prefix of four texts, a token V8 refuses between two strings of 0 to 12 of ``x``, of
-    ``é`` or of an emoji two UTF-16 units long, a refusal after 0 to 3 lines ended by each line
-    terminator, the four sources V8 quotes back whole, ``NaN`` with a space before or after it and
-    ``{}x``, and a text nested 100000 deep."""
+    ``é`` or of an emoji two UTF-16 units long, a refusal after 0 to 3 repetitions of ``\\n``,
+    ``\\r``, ``\\r\\n`` or ``\\n\\r``, the four sources V8 quotes back whole, ``NaN`` with a space
+    before or after it and ``{}x``, and a text nested 100000 deep."""
     rng = random.Random(20261019)
     for text in _fuzz_texts(seed=20261019, count=1500):
         yield text

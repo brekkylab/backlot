@@ -2,9 +2,9 @@
 where that parts from :func:`json.loads`: :func:`decode` turns the bytes into text, or
 :func:`body_parser_text` does as Linear's ``body-parser`` does, and :func:`parse` turns the text
 into values. What a vendor says to a body it cannot read is its own: :class:`Unread` holds Linear's
-words for one it cannot read as text, :func:`strict_violation` for one that does not open with an
-object or an array, :mod:`backlot.graphql.v8_json` for the rest, and :func:`prototype_poisoned`
-names a body Fireflies refuses.
+words for one it cannot read as text, :func:`strict_violation` for a non-empty one that does not
+open with an object or an array, :mod:`backlot.graphql.v8_json` for the rest, and
+:func:`prototype_poisoned` names a body Fireflies refuses.
 """
 
 from __future__ import annotations

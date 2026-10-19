@@ -49,9 +49,9 @@ _MISSING_EXPONENT = "Exponent part is missing a number in JSON"
 _BY_TOKEN = {_NUMBER: "Unexpected number in JSON", _STRING: "Unexpected string in JSON"}
 
 # `GetErrorMessageWithEllipses`: the whole source when it is shorter than _SHORT UTF-16 units,
-# otherwise _CONTEXT units on each side of the token, cut at the source's ends. Measured on Linear
-# on 2026-10-18 at lengths 19, 20, 21 and 22 and at positions 5, 9, 10, 18 and the last ten, with
-# a surrogate pair cut on either side.
+# otherwise the _CONTEXT units before the token and the _CONTEXT units from it on, cut at the
+# source's ends. Measured on Linear on 2026-10-18 at lengths 19, 20, 21 and 22 and at positions 5,
+# 9, 10, 18 and the last ten, with a surrogate pair cut on either side.
 _CONTEXT = 10
 _SHORT = 2 * _CONTEXT + 1
 # `IsSpecialString`: a whole source V8 quotes back without naming a token.

@@ -805,8 +805,9 @@ def test_linear_reads_the_body_before_the_credential(client, tokens_yaml, creden
         headers["Authorization"] = tokens_yaml["admin_token"] if credential == "key" else "nope"
     r = client.post("/linear/graphql", content=body, headers=headers)
     if answer is _REQUEST_ERROR:
-        expected = (400, _GRAPHQL_JS_NOT_JSON) if credential == "key" else (401, r.content)
-        assert (r.status_code, r.content) == expected
+        if credential == "key":
+            assert r.content == _GRAPHQL_JS_NOT_JSON
+        assert r.status_code == (400 if credential == "key" else 401)
     elif answer is not None:
         assert (r.status_code, r.content) == (400, answer)
     elif credential == "key":

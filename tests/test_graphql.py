@@ -345,7 +345,7 @@ def _outcome_of_json_loads(text: str):
         return ("error",)
 
 
-def test_the_reader_without_a_stack_reads_what_json_loads_reads():
+def test_the_iterative_reader_reads_what_json_loads_reads():
     """Thousands of texts, valid and broken: the reader :func:`backlot.graphql.body.parse` falls
     back to answers as ``json.loads`` does, value for value and type for type, and stops at the
     first constant token, which is where the generator put it."""

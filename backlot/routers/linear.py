@@ -16,7 +16,8 @@ Real Linear draws the line in the same place, and generated clients branch on it
 
 The body is read before the credential is looked at, by Express's ``body-parser`` in front of the
 GraphQL server: with no credential, a body that is not JSON drew its 400 from api.linear.app on
-2026-10-18, not the 401. :func:`_not_json` is that 400.
+2026-10-18, not the 401. :func:`_not_json` is that 400; :func:`graphql` names the bodies answered in
+graphql-js's words instead.
 """
 
 from __future__ import annotations

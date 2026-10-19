@@ -285,8 +285,8 @@ def test_health_source_documents_is_null_without_the_meta_key(tmp_path):
     assert body["documents"] == 1
 
 
-# A variable declared `Int` holding the integers `backlot.graphql.body._int` was measured with, and
-# the part of the 400's message that shows the double each is read as.
+# A variable declared `Int` holding the numbers `backlot.graphql.body._int`'s integers were measured
+# with, and the part of the 400's message that shows the double each is read as.
 _HUGE_INTEGERS = [
     pytest.param("1" * 4301, "invalid value inf;", id="4301 ones, read as Infinity"),
     pytest.param("1" * 311, "invalid value inf;", id="311 ones, read as Infinity"),

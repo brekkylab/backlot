@@ -44,8 +44,8 @@ def test_fireflies_requires_a_bearer_key(client):
 # --- a body Fireflies reads ahead of the credential ----------------------------------------------
 # A body and Fireflies' answer to it with the key: `_EMPTY` or `_NOT_JSON`, the two 400s of its HTTP
 # layer `backlot.routers.fireflies._body_refusal` sends, or None where it served the query.
-# `_REQUEST_ERROR` is a row of JSON that holds no object: past that layer it reaches the credential,
-# and with the key it is a 400, in Apollo Server's words on real and graphql-js's here.
+# `_REQUEST_ERROR` is a row of JSON that is not an object: past that layer it reaches the
+# credential, and with the key it is a 400, in Apollo Server's words on real and graphql-js's here.
 _REQUEST_ERROR = object()
 _EMPTY = (
     b'{"statusCode":400,"status":false,"code":"http","message":"Body cannot be empty when'
@@ -241,8 +241,8 @@ _FIREFLIES_BODIES = [
         _NOT_JSON,
         id="-Infinity after U+2028 in a string",
     ),
-    pytest.param(b'{"abcdefghijk":NaN}', _NOT_JSON, id="len 20"),
-    pytest.param(b'{"abcdefghijkl":NaN}', _NOT_JSON, id="len 21"),
+    pytest.param(b'{"abcdefghijk":NaN}', _NOT_JSON, id="len 19"),
+    pytest.param(b'{"abcdefghijkl":NaN}', _NOT_JSON, id="len 20"),
     pytest.param(b'{"abc":[[NaN],1,2,3,4,5,6,7]}', _NOT_JSON, id="pos 9"),
     pytest.param(b'{"abcd":[[NaN],1,2,3,4,5,6,7]}', _NOT_JSON, id="pos 10"),
     pytest.param(b'{"abcdefghijklmnopq":[Infinity]}', _NOT_JSON, id="Infinity window at the end"),

@@ -16,7 +16,7 @@ from typing import Any
 
 # `json.decoder`'s whitespace and string scanner, and `json.scanner.NUMBER_RE` under `re.ASCII`: the
 # C reader `json.loads` runs reads only the digits 0 to 9, which Python 3.11's `\d` alone does not.
-# So the reader below accepts exactly what `json.loads` does.
+# So the reader below scans whitespace, strings and numbers as `json.loads` does.
 _WHITESPACE = json.decoder.WHITESPACE.match
 _NUMBER = re.compile(r"(-?(?:0|[1-9]\d*))(\.\d+)?([eE][-+]?\d+)?", re.ASCII).match
 _scanstring = json.decoder.scanstring
@@ -57,8 +57,8 @@ def _int(digits: str) -> int | float:
     """An integer as the double ``JSON.parse`` reads it as, kept a Python ``int`` unless that
     double is infinite. Both vendors echoed a variable declared ``Int`` this way on 2026-10-18:
     ``9007199254740993`` came back as ``9007199254740992`` and 308 nines as ``1e+308``, while 309
-    nines, 311 ones, 4301 ones and ``1e400`` all came back as ``Infinity``. ``float`` reads a
-    digit string of any length, so the 4300-digit limit on ``int`` is never reached."""
+    nines, 311 ones and 4301 ones came back as ``Infinity``, as the float ``1e400`` did. ``float``
+    reads a digit string of any length, so the 4300-digit limit on ``int`` is never reached."""
     double = float(digits)
     return double if math.isinf(double) else int(double)
 

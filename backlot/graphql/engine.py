@@ -156,10 +156,10 @@ class Engine:
     def execute_request(self, body: bytes | str, *, context: Any = None) -> Result:
         """Run a GraphQL-over-HTTP POST body (``{query, variables, operationName}``).
 
-        Body problems come back as a GraphQL error envelope rather than a framework-level
-        validation error, because that is what a real GraphQL server returns and what
-        generated clients parse. Messages match graphql-js, which is what the vendors run. The
-        body is read by :mod:`backlot.graphql.body`, as the vendors' Node servers read it.
+        Body problems come back as a GraphQL error envelope in graphql-js's words rather than a
+        framework-level validation error. The body is read by :mod:`backlot.graphql.body`, as the
+        vendors' Node servers read it; a router that answers a body problem in its vendor's
+        envelope reads the body itself and calls :meth:`execute_payload`.
         """
         try:
             payload = request_body.parse(
@@ -170,8 +170,8 @@ class Engine:
         return self.execute_payload(payload, context=context)
 
     def execute_payload(self, payload: Any, *, context: Any = None) -> Result:
-        """Run a body already read with :mod:`backlot.graphql.body`. The Linear and Fireflies
-        routers read it themselves, so a body neither can read is refused in its vendor's words."""
+        """Run a body its router has already read with :mod:`backlot.graphql.body`, so that router
+        can refuse a body before it looks at the credential."""
         if not isinstance(payload, dict):
             return not_json()
         query = payload.get("query")

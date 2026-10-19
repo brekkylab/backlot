@@ -397,8 +397,8 @@ def test_linear_unauthenticated_is_401(client):
 # A body and the bytes of the 400 Linear refused it with, or None where Linear served the query, as
 # `backlot.graphql.body` reads them. `_GRAPHQL_JS_NOT_JSON` marks the four rows
 # `backlot.routers.linear.graphql` answers in graphql-js's words: `{`, `-NaN`, an empty body and a
-# byte-order mark alone. `_REQUEST_ERROR` marks a body that is JSON but no object, the 400 with the
-# key; Linear answers it with `Operation batching disabled.` with or without one.
+# byte-order mark alone. `_REQUEST_ERROR` marks a JSON array, the 400 with the key; Linear answers
+# it with `Operation batching disabled.` with or without one.
 _GRAPHQL_JS_NOT_JSON = b'{"errors":[{"message":"POST body sent invalid JSON."}]}'
 _REQUEST_ERROR = object()
 _LINEAR_BODIES = [
@@ -491,12 +491,12 @@ _LINEAR_BODIES = [
     pytest.param(
         b'{"abcdefghijk":NaN}',
         b'{"error":"Unexpected token \'N\', \\"{\\"abcdefghijk\\":NaN}\\" is not valid JSON","details":{},"code":400}',
-        id="len 20",
+        id="len 19",
     ),
     pytest.param(
         b'{"abcdefghijkl":NaN}',
         b'{"error":"Unexpected token \'N\', \\"{\\"abcdefghijkl\\":NaN}\\" is not valid JSON","details":{},"code":400}',
-        id="len 21",
+        id="len 20",
     ),
     pytest.param(
         b'{"abc":[[NaN],1,2,3,4,5,6,7]}',
@@ -537,7 +537,7 @@ _LINEAR_BODIES = [
     pytest.param(
         b'{"abcdefgh":NaN,"z":1}',
         b'{"error":"Unexpected token \'N\', ...\\"abcdefgh\\":NaN,\\"z\\":1}\\" is not valid JSON","details":{},"code":400}',
-        id="L21 pos10",
+        id="L22 pos12",
     ),
     pytest.param(
         b'{"e":"\xf0\x9f\x98\x80\xf0\x9f\x98\x80\xf0\x9f\x98\x80","xy":NaN}',

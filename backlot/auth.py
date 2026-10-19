@@ -155,20 +155,41 @@ def api_key_token(request: Request) -> str | None:
 
 
 def linear_bearer_token(request: Request) -> str | None:
-    """What follows ``Bearer `` or ``bearer `` in ``Authorization``, which Linear reads as an OAuth
-    access token and refuses with a 400 when it is an API key; None for any other value.
+    """What follows ``Bearer `` or ``bearer `` in ``Authorization``, where Linear reads an OAuth
+    access token; None for any other value.
 
     With an API key, Linear's answers on 2026-10-18 (UTC) were the 400 for those two spellings and
     the 401 for the 62 other casings of the six letters, as for a tab after the scheme, two
     spaces, and U+00A0 or another latin-1 byte other than a control character between the space and
-    the key. A space or a tab after the key is left off and the 400 stays. Every token Backlot
-    resolves is a user's or the admin's own, which ``POST /oauth2/token`` also hands back as its
-    access token, so every token this finds that resolves is an API key."""
+    the key. A space or a tab after the key is left off and the 400 stays."""
     hdr = (_authorization(request) or "").strip(" \t")
     for scheme in ("Bearer ", "bearer "):
         if hdr.startswith(scheme):
             return hdr[len(scheme) :]
     return None
+
+
+#: What Linear takes for a personal API key under ``Bearer``: ``lin_api_`` and forty ASCII letters
+#: and digits (:func:`linear_api_key_under_bearer`).
+_LINEAR_API_KEY = re.compile(r"lin_api_[0-9A-Za-z]{40}")
+
+
+def linear_api_key_under_bearer(request: Request) -> bool:
+    """Whether :func:`linear_bearer_token` holds an API key, which Linear refuses with a 400 before
+    it reads the body: a token in :data:`_LINEAR_API_KEY`'s shape, whether or not Linear issued it,
+    or one Backlot resolves. Every token Backlot resolves is a user's or the admin's own, which
+    ``POST /oauth2/token`` also hands back as its access token, so each stands for an API key.
+
+    On 2026-10-19 (UTC) api.linear.app gave the 400 to ``lin_api_`` followed by forty zeros, forty
+    ``a``, forty ``A``, and a key it issued with the last character changed, and the 401 to
+    thirty-nine and to forty-one to a hundred characters after ``lin_api_``, to forty with a last
+    character of ``-``, ``_``, ``.``, ``!`` or ``é``, and to forty after ``LIN_API_``,
+    ``lin_oauth_`` or ``xlin_api_``. Put first and then last of the forty, each of the 94 printable
+    ASCII characters drew the 400 if it was a letter or a digit and the 401 otherwise."""
+    token = linear_bearer_token(request)
+    if token is None:
+        return False
+    return _LINEAR_API_KEY.fullmatch(token) is not None or acl(request).resolve(token) is not None
 
 
 def fireflies_bearer_token(request: Request) -> str | None:

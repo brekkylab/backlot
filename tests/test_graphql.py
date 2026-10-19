@@ -281,6 +281,48 @@ def test_execute_request_reads_the_body_as_node_reads_it(gql, body, served):
         assert r.payload == {"errors": [{"message": "POST body sent invalid JSON."}]}
 
 
+_ECHO = engine.Engine(
+    "type Query { echo(id: ID!): ID }", {"Query": {"echo": lambda _r, _i, id: id}}
+)
+
+
+@pytest.mark.parametrize(
+    "value, answer",
+    [
+        pytest.param("1e21", {"data": {"echo": "1e+21"}}, id="1e21"),
+        pytest.param("1e300", {"data": {"echo": "1e+300"}}, id="1e300"),
+        pytest.param(
+            "734946803407896717", {"data": {"echo": "734946803407896700"}}, id="past 2**53"
+        ),
+        pytest.param(
+            "12345678901234567890", {"data": {"echo": "12345678901234567000"}}, id="20 digits"
+        ),
+        pytest.param("9007199254740993", {"data": {"echo": "9007199254740992"}}, id="2**53 + 1"),
+        pytest.param("5", {"data": {"echo": "5"}}, id="5"),
+        pytest.param("-0", {"data": {"echo": "0"}}, id="-0"),
+        pytest.param("1.0", {"data": {"echo": "1"}}, id="1.0"),
+        pytest.param('"w1"', {"data": {"echo": "w1"}}, id="a string"),
+        pytest.param(
+            "1.5",
+            {
+                "errors": [
+                    {
+                        "message": "Variable '$x' got invalid value 1.5; "
+                        "ID cannot represent value: 1.5",
+                        "locations": [{"line": 1, "column": 7}],
+                    }
+                ]
+            },
+            id="1.5",
+        ),
+    ],
+)
+def test_an_id_variable_is_read_as_graphql_js_reads_it(value, answer):
+    """Each value is read by :func:`backlot.graphql.engine._id_from_a_variable`."""
+    body = '{"query": "query($x: ID!) { echo(id: $x) }", "variables": {"x": %s}}' % value
+    assert _ECHO.execute_request(body).payload == answer
+
+
 def _fuzz_texts(seed: int, count: int):
     """``count`` JSON texts, constant tokens among their values, and as many again with one
     character of each deleted, doubled or replaced."""
@@ -502,6 +544,41 @@ def test_a_number_is_read_and_printed_as_node_does():
     )
     for text, expected in zip(texts, json.loads(run.stdout), strict=True):
         assert repr(request_body.parse(text)) == expected, text
+
+
+def _surrogate_texts():
+    """Texts holding U+D83D and U+DE00, each raw or as its escape, in either order: in a string,
+    beside each alone in an array, as a key, and as a key the escaped pair follows as a key too."""
+    for high in (chr(0xD83D), "\\ud83d"):
+        for low in (chr(0xDE00), "\\ude00"):
+            for pair in (high + low, low + high):
+                yield f'"{pair}"'
+                yield f'["a{pair}b", "{high}", "{low}"]'
+                yield f'{{"{pair}": 1}}'
+                yield f'{{"{pair}": 1, "x": 2, "\\ud83d\\ude00": [3, "{pair}"]}}'
+
+
+# What Node gives back for each text on stdin: what JSON.parse reads, as JSON.stringify writes it.
+_NODE_STRINGIFY = """
+const texts = JSON.parse(require("fs").readFileSync(0, "utf8"));
+process.stdout.write(JSON.stringify(texts.map((text) => JSON.stringify(JSON.parse(text)))));
+"""
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+def test_a_surrogate_pair_is_read_as_node_reads_it():
+    """What :func:`backlot.graphql.body.parse` makes of each of :func:`_surrogate_texts`, written
+    by :func:`backlot.graphql.body.node_json`, is what Node makes of it."""
+    texts = list(_surrogate_texts())
+    run = subprocess.run(
+        ["node", "-e", _NODE_STRINGIFY],
+        input=json.dumps(texts),
+        capture_output=True,
+        encoding="utf-8",
+        check=True,
+    )
+    for text, expected in zip(texts, json.loads(run.stdout), strict=True):
+        assert request_body.node_json(request_body.parse(text)).decode() == expected, text
 
 
 def _compressed():

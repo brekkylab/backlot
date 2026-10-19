@@ -8,7 +8,8 @@ out, or Express's for the bodies :func:`_express` answers.
 Auth is the one place Linear differs from every other source in this repo. A personal API key
 travels as the **bare** header value (``Authorization: lin_api_…``, no scheme), read by
 :func:`backlot.auth.api_key_token`, and a Backlot token is one. ``Bearer <token>`` is how an OAuth
-access token travels, and an API key sent that way is :func:`_api_key_as_bearer`'s 400.
+access token travels, and what Linear takes for an API key there
+(:func:`backlot.auth.linear_api_key_under_bearer`) is :func:`_api_key_as_bearer`'s 400.
 
 Status codes follow the GraphQL-over-HTTP split :class:`backlot.graphql.engine.Result` marks; real
 Linear draws the line in the same place, and generated clients branch on it.
@@ -17,16 +18,20 @@ Express's ``body-parser``, in front of the GraphQL server, reads the body before
 looked at, for any credential but an API key under ``Bearer``: with no credential, a body that is
 not JSON drew its 400 from api.linear.app on 2026-10-18, not the 401. :func:`_express` is that 400,
 and each refusal ``body-parser`` makes before it has the text
-(:func:`backlot.graphql.body.body_parser_text`); :func:`graphql` names the bodies answered in
+(:func:`backlot.graphql.body.body_parser_text`); :func:`_read` names the bodies answered in
 graphql-js's words instead. An API key under ``Bearer`` is refused ahead of the body: with
 ``Bearer <key>``, ``{``, an empty body and a body holding ``NaN`` drew :func:`_api_key_as_bearer`'s
 400 the same day, and ``charset=latin1``, ``Content-Encoding: bogus`` and a body past the size
-limit did on 2026-10-19.
+limit did on 2026-10-19, when a key in an API key's shape that Linear never issued drew it under
+``Bearer`` with ``{``, ``NaN``, ``5``, ``charset=latin1`` and an empty body.
 """
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, Response
 
 from backlot import auth
@@ -43,8 +48,9 @@ ENGINE = build_engine()
 
 
 def _api_key_as_bearer() -> JSONResponse:
-    """Linear's 400 for an API key under either spelling :func:`backlot.auth.linear_bearer_token`
-    reads, as api.linear.app sent it on 2026-10-18."""
+    """Linear's 400 for an API key under ``Bearer``, which
+    :func:`backlot.auth.linear_api_key_under_bearer` finds, as api.linear.app sent it on
+    2026-10-18."""
     return JSONResponse(
         {
             "errors": [
@@ -91,33 +97,21 @@ async def graphql(request: Request):
     """The single Linear endpoint. Not in the OpenAPI document on purpose: this is a GraphQL
     service, and describing one POST route that accepts an arbitrary query would tell an
     OpenAPI→MCP bridge nothing useful (hence no ``SOURCE_PREFIXES`` entry either — see
-    ``backlot/openapi.py``). Introspection is the schema description for this endpoint.
-
-    A body with no text once read keeps graphql-js's words here, after the ``Bearer`` check and
-    before the key is resolved, as Linear's refusal comes: Linear answers it with Apollo Server's
-    ``POST body missing, invalid Content-Type, or JSON object has no keys.``"""
-    if auth.acl(request).resolve(auth.linear_bearer_token(request)) is not None:
+    ``backlot/openapi.py``). Introspection is the schema description for this endpoint."""
+    if auth.linear_api_key_under_bearer(request):
         return _api_key_as_bearer()
-    try:
-        text = request_body.body_parser_text(
-            await request.body(),
-            request.headers.get("content-type"),
-            # Node hands each header value over without the spaces and tabs at its ends, which
-            # uvicorn keeps at the end: Linear served `Content-Encoding: gzip<TAB>` and ` gzip `.
-            ", ".join(value.strip(" \t") for value in request.headers.getlist("content-encoding")),
-        )
-    except request_body.Unread as unread:
-        return _express(unread.message, unread.status, unread.length)
-    violation = request_body.strict_violation(text) if text else None
-    if violation is not None:
-        return _express(violation)
-    try:
-        payload = request_body.parse(text)
-    except request_body.NotJson:
-        message = v8_json.error(text) if text else None
-        if message is None:
-            return JSONResponse(engine.not_json().payload, status_code=400)
-        return _express(message)
+    # In a worker thread: `_read` can take seconds over a body near the 10 MiB limit, which would
+    # hold up every other request on the event loop.
+    payload = await run_in_threadpool(
+        _read,
+        await request.body(),
+        request.headers.get("content-type"),
+        # Node hands each header value over without the spaces and tabs at its ends, which uvicorn
+        # keeps at the end: Linear served `Content-Encoding: gzip<TAB>` and ` gzip `.
+        ", ".join(value.strip(" \t") for value in request.headers.getlist("content-encoding")),
+    )
+    if isinstance(payload, Response):
+        return payload
     caller = auth.resolve_api_key(request)
     if caller is None:
         # Real Linear answers a bad credential with a GraphQL error envelope and a 401, not a
@@ -152,3 +146,25 @@ async def graphql(request: Request):
     }
     result = ENGINE.execute_payload(payload, context=context)
     return JSONResponse(result.payload, status_code=400 if result.request_error else 200)
+
+
+def _read(raw: bytes, content_type: str | None, content_encoding: str) -> Any:
+    """The payload Linear reads from the body ``raw``, or the response this router refuses it with.
+
+    A body with no text once read keeps graphql-js's words here, after the ``Bearer`` check and
+    before the key is resolved, as Linear's refusal comes: Linear answers it with Apollo Server's
+    ``POST body missing, invalid Content-Type, or JSON object has no keys.``"""
+    try:
+        text = request_body.body_parser_text(raw, content_type, content_encoding)
+    except request_body.Unread as unread:
+        return _express(unread.message, unread.status, unread.length)
+    violation = request_body.strict_violation(text) if text else None
+    if violation is not None:
+        return _express(violation)
+    try:
+        return request_body.parse(text)
+    except request_body.NotJson:
+        message = v8_json.error(text) if text else None
+        if message is None:
+            return JSONResponse(engine.not_json().payload, status_code=400)
+        return _express(message)

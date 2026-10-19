@@ -271,9 +271,9 @@ async def echo_github_api_version(request: Request, call_next):
     neither does `/rate_limit` asked with no `Authorization` header (see
     ``github.honours_api_version``). Nor does a 404 for a path real does not route, whatever the
     caller's credential — see ``_github_routes`` — nor real's "Bad credentials" 401
-    (``github.refused_a_credential``), nor the 401s ``github.refused_an_unserved_operation`` names,
-    except ``DELETE /installation/token``
-    (:func:`github.refused_an_unserved_operation_reported`), which echoes as a served route does.
+    (``github.refused_a_credential``), nor the 401s ``github.refused_an_unserved_operation`` names.
+    ``DELETE /installation/token``'s 401 is the one of those that echoes, as a served route's does
+    (:func:`github.refused_an_unserved_operation_reported`).
     """
     response = await call_next(request)
     if (

@@ -341,14 +341,15 @@ async def refuse_an_unserved_operation(request: Request) -> None:
     Of the 31, only `DELETE /installation/token` carried the version echo, and only a `GET` or a
     `POST` carried the five `x-ratelimit-*` and counted: `PATCH`, `PUT` and `DELETE` were refused
     with neither and moved no window, but `DELETE /installation/token`, which carried the five at
-    `used: 0`. Measured again on 2026-10-16, each request on its own cache-busted URL from one
-    address with no token: no `Authorization` and `Authorization: Digest x` were the 401 "Requires
-    authentication" with `X-GitHub-Api-Version-Selected: 2022-11-28` and the five, and a second
-    request with no header left `used` where the first had put it; `X-GitHub-Api-Version:
-    1999-01-01` with no `Authorization` was the version's 400 with the five and that same `used`.
-    So that one delete is answered as a served route is, the version first when no header arrived,
-    and it counts nothing (:func:`refused_an_unserved_operation_reported`). Every other operation
-    here carries no echo, and the methods split as real's did; ``backlot.main`` asks
+    `used: 0`. On 2026-10-16, 2026-10-18 and 2026-10-19, each request on its own cache-busted URL
+    from one address with no token, that one delete was answered as a served route answers a caller
+    with no credential, header by header as ``GET /user/repos`` is here: no `Authorization`, an
+    empty one, `Digest x` and a `Basic` value naming no token were the 401 "Requires authentication"
+    with the version echo (`2026-03-10` when pinned to it) and the five; any of them pinned to
+    `1999-01-01` the version's 400 with the five; `Bearer nope` and `token nope` the 401 "Bad
+    credentials" with neither, and `Bearer<tab>x` that 401 with the five. None of them moved `used`
+    (:func:`refused_an_unserved_operation_reported`). Every other operation here carries no echo,
+    and the methods split as real's did; ``backlot.main`` asks
     :func:`refused_an_unserved_operation` for the echo and
     :func:`refused_an_unserved_operation_uncounted` for the headers. With a token, real's answers to
     `GET /user/packages` and `GET /gists/starred` carried the echo, and so does the router's 404 or
@@ -371,13 +372,13 @@ async def refuse_an_unserved_operation(request: Request) -> None:
     """
     if not is_an_unserved_operation(request.method, request.scope["path"]):
         return
-    if _deletes_the_installation_token(request) and (
-        "authorization" not in request.headers or _a_header_without_a_credential(request)
-    ):
+    if _deletes_the_installation_token(request):
         request.state.github_unserved_refusal = "reported"
-        if "authorization" not in request.headers:
-            await _validate_api_version(request)
-        raise HTTPException(status_code=401, detail="Requires authentication")
+        await _validate_bad_credential(request)
+        await _validate_api_version(request)
+        _require(request)
+        del request.state.github_unserved_refusal
+        return
     if "authorization" not in request.headers:
         request.state.github_unserved_refusal = (
             "uncounted" if request.method in _UNCOUNTED_METHODS else "counted"

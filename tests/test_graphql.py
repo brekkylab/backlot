@@ -348,7 +348,7 @@ def _outcome_of_json_loads(text: str):
         value = json.loads(
             text, parse_int=request_body._int, parse_float=request_body.Double, parse_constant=_hook
         )
-        return ("value", repr(value))
+        return ("value", repr(value), json.dumps(value))
     except _Hooked as exc:
         return ("constant", exc.args[0])
     except json.JSONDecodeError:
@@ -363,7 +363,8 @@ def test_the_iterative_reader_reads_what_json_loads_reads():
     for text, mark in _fuzz_texts(seed=20261018, count=3000):
         expected = _outcome_of_json_loads(text)
         try:
-            got = ("value", repr(request_body._parse_iteratively(text)))
+            value = request_body._parse_iteratively(text)
+            got = ("value", repr(value), json.dumps(value))
         except request_body.NotJson as exc:
             got = ("constant", exc.constant.token) if exc.constant else ("error",)
             if exc.constant is not None:

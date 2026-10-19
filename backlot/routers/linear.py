@@ -77,7 +77,9 @@ async def graphql(request: Request):
         text = request_body.body_parser_text(
             await request.body(),
             request.headers.get("content-type"),
-            ", ".join(request.headers.getlist("content-encoding")),
+            # Node hands each header value over without the spaces and tabs at its ends, which
+            # uvicorn keeps at the end: Linear served `Content-Encoding: gzip<TAB>` and ` gzip `.
+            ", ".join(value.strip(" \t") for value in request.headers.getlist("content-encoding")),
         )
     except request_body.Unread as unread:
         return _express(unread.message, unread.status, unread.length)

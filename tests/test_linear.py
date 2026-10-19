@@ -20,7 +20,6 @@ from graphql import GraphQLError, build_client_schema, is_enum_type, parse, vali
 
 from backlot import synth
 from backlot.fidelity.graphql_diff import backlot_schema
-from backlot.graphql import body as request_body
 from backlot.graphql import linear_filters, mcp_tools
 from tests._helpers import (
     build_corpus,
@@ -801,7 +800,7 @@ _LINEAR_BODIES = [
 
 
 _TYPENAME = b'{"query":"{ __typename }"}'
-_LIMIT = request_body.LINEAR_LIMIT
+_LIMIT = 10 * 2**20
 
 
 def _express(status: int, message: bytes) -> bytes:
@@ -837,6 +836,18 @@ _LINEAR_READS = [
     pytest.param((("Content-Encoding", "GZIP"),), gzip.compress(_TYPENAME), None, id="GZIP"),
     pytest.param((("Content-Encoding", "deflate"),), zlib.compress(_TYPENAME), None, id="deflate"),
     pytest.param((("Content-Encoding", ""),), _TYPENAME, None, id="an empty encoding"),
+    pytest.param(
+        (("Content-Encoding", " gzip "),), gzip.compress(_TYPENAME), None, id="spaces around gzip"
+    ),
+    pytest.param(
+        (("Content-Encoding", "gzip\t"),), gzip.compress(_TYPENAME), None, id="a tab after gzip"
+    ),
+    pytest.param(
+        (("Content-Encoding", "g zip"),),
+        gzip.compress(_TYPENAME),
+        _express(415, b'unsupported content encoding \\"g zip\\"'),
+        id="a space inside",
+    ),
     pytest.param(
         (("Content-Encoding", "x-gzip"),),
         gzip.compress(_TYPENAME),

@@ -868,6 +868,23 @@ async def warn_slack_post_charset(request: Request, call_next):
 
 
 @app.middleware("http")
+async def put_a_request_id_on_github_answers(request: Request, call_next):
+    """Put an `x-github-request-id` on every `/github` answer, as real does on each one measured.
+
+    Registered after the other `/github` middlewares so it wraps them, and the refusals they answer
+    early carry it too. Made before the route runs (``backlot.routers.github.request_id`` has why)
+    and left on ``request.state`` for the token's spent-window `message`, which quotes it
+    (``github._rate_limit_exceeded_message``)."""
+    if not request.url.path.startswith("/github"):
+        return await call_next(request)
+    rid = github.request_id(request.method, request.url.path, request.url.query)
+    request.state.github_request_id = rid
+    response = await call_next(request)
+    response.headers.setdefault(github.REQUEST_ID_HEADER, rid)
+    return response
+
+
+@app.middleware("http")
 async def vendor_json_media_type(request: Request, call_next):
     """Put the vendor's own `content-type` on a JSON body, where one is measured.
 

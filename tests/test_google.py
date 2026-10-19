@@ -4324,11 +4324,56 @@ def test_drive_order_by_shared_with_me_time(client, tokens_yaml):
     assert times == sorted(times, reverse=True)
 
 
-def test_drive_owned_by_me_reflects_the_caller(client, tokens_yaml):
-    """`ownedByMe` is per-caller in real Drive; Backlot reported False for every file."""
-    mia = {"Authorization": f"Bearer {tok(tokens_yaml, 'mia@acme.com')}"}
-    assert _drive_find(client, mia, "Brand")["ownedByMe"] is True
-    assert _drive_find(client, mia, "Whitepaper")["ownedByMe"] is False
+@pytest.mark.parametrize(
+    "name, owned",
+    [("Mine", True), ("Theirs", False), ("Plans", False), ("Figures", True), ("Drafts", False)],
+)
+def test_drive_owned_by_me_and_can_share_follow_the_caller(tmp_path, name, owned):
+    """`ownedByMe` is per caller, and `canShare` with it: what the caller owns it can share, and
+    what it can only read it cannot. Real answered `canShare: true` on 117 of the 118 items a Google
+    Workspace member's `files.list` named as its own on 2026-10-18 and on 2026-10-19, and `false` on
+    each folder and each file shared with it to read. `Plans` is a folder a record's `folder` names,
+    and `Figures` and `Drafts` are `subtype: folder` records."""
+    record = {
+        "source_type": "google_drive",
+        "folder": "Plans",
+        "content": "body",
+        "readers": ["ava@acme.com", "mia@acme.com"],
+        "visibility": "private",
+    }
+    rows = [("mine", "Mine", "ava", None), ("theirs", "Theirs", "mia", None)]
+    rows += [("figures", "Figures", "ava", "folder"), ("drafts", "Drafts", "mia", "folder")]
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                **record,
+                "doc_id": doc_id,
+                "title": title,
+                "author_email": f"{author}@acme.com",
+                **({"subtype": subtype} if subtype else {}),
+            }
+            for doc_id, title, author, subtype in rows
+        ],
+    )
+    tokens = yaml.safe_load(s.tokens_path.read_text(encoding="utf-8"))
+    ava = {"Authorization": f"Bearer {tok(tokens, 'ava@acme.com')}"}
+    with client_for(s, reload=True) as c:
+        listed = {
+            f["name"]: f
+            for f in c.get(
+                "/drive/v3/files",
+                headers=ava,
+                params={"fields": "files(id,name,ownedByMe,capabilities/canShare)"},
+            ).json()["files"]
+        }[name]
+        got = c.get(
+            f"/drive/v3/files/{listed['id']}",
+            headers=ava,
+            params={"fields": "ownedByMe,capabilities/canShare"},
+        ).json()
+    for f in (listed, got):
+        assert (f["ownedByMe"], f["capabilities"]["canShare"]) == (owned, owned)
 
 
 def test_drive_order_by_sorts_the_result(client, admin_h):

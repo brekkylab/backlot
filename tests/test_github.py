@@ -11,6 +11,7 @@ import base64
 import hashlib
 import json
 import re
+import time
 from urllib.parse import quote
 
 import pytest
@@ -4328,6 +4329,53 @@ def test_github_unsupported_api_version_is_refused_ahead_of_a_missing_credential
     assert unversioned.json()["message"] == "Requires authentication"
 
 
+def test_github_every_answer_carries_a_request_id(gh_client, gh_admin_h, gh_org, monkeypatch):
+    """Real puts an `x-github-request-id` on every answer, served or refused, code search's
+    included, and its last field is the request's own second (the measurement is in
+    ``backlot.routers.github.request_id``, the answers below among it). A client that logs it for a
+    support ticket has nothing to log without it."""
+    from backlot.routers import github as gh
+
+    c, _ = gh_client
+    shape = re.compile(r"[0-9A-F]{4}:[0-9A-F]{4,6}:[0-9A-F]{6,7}:[0-9A-F]{6,7}:[0-9A-F]{8}")
+    repo = f"/github/repos/{gh_org}/gateway"
+    before = int(time.time())
+    answers = [
+        (c.get(repo, headers=gh_admin_h), 200),
+        (c.get("/github/rate_limit", headers=gh_admin_h), 200),
+        (c.get("/github/user/repos", headers=gh_admin_h), 200),
+        (c.head(repo, headers=gh_admin_h), 200),
+        (c.get(repo, headers={**gh_admin_h, "X-GitHub-Api-Version": "1999-01-01"}), 400),
+        (c.get("/github/user/repos"), 401),
+        (c.get(f"/github/repos/{gh_org}/ghost", headers={"Authorization": "Bearer nope"}), 401),
+        (c.get("/github/nonexistent-route-zz", headers=gh_admin_h), 404),
+        (c.get(f"{repo}/", headers=gh_admin_h), 404),
+        (c.get(f"{repo}/commits/", headers=gh_admin_h), 422),
+        (c.get("/github/search/code", headers=gh_admin_h, params={"q": "helper"}), 200),
+        (c.get("/github/search/code", params={"q": "helper"}), 401),
+    ]
+    # a spent window's refusal, which the rate-limit middleware answers before any route runs
+    monkeypatch.setitem(gh.RATE_LIMITS, "core", gh._ResourceLimit(1, 5000, gh.RATE_LIMIT_WINDOW))
+    monkeypatch.setitem(
+        gh.RATE_LIMITS, "search", gh._ResourceLimit(1, 30, gh.SEARCH_RATE_LIMIT_WINDOW)
+    )
+    c.app.state.github_rate_limits = gh.RateLimitWindows()
+    for path, params in ((repo, None), ("/github/search/issues", {"q": "x"})):
+        c.get(path, params=params)
+        answers.append((c.get(path, params=params), 403))
+    after = int(time.time())
+    for r, status in answers:
+        assert r.status_code == status, r.request.url
+        rid = r.headers["x-github-request-id"]
+        assert shape.fullmatch(rid), rid
+        assert before <= int(rid.rsplit(":", 1)[1], 16) <= after, rid
+    # seeded from the request: the same request gets the same first four fields
+    first = c.get(repo, headers=gh_admin_h).headers["x-github-request-id"]
+    again = c.get(repo, headers=gh_admin_h).headers["x-github-request-id"]
+    assert first.rsplit(":", 1)[0] == again.rsplit(":", 1)[0]
+    assert c.get("/health").headers.get("x-github-request-id") is None
+
+
 # --- a pull is a pull, not an issue with extra keys -------------
 
 
@@ -5900,11 +5948,19 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
         over = c.get(repo, headers=h)
         assert over.status_code == 403
         # The envelope's shape and `documentation_url` are real's for a TOKEN — three members,
-        # `status` included, and its own anchor; see `_rate_limit_exceeded_message` for the
-        # measurement and why `message`'s tail past the "user ID <id>." prefix is unreproduced.
+        # `status` included, and its own anchor; `message` quotes the answer's own request id and
+        # that id's second (see `_rate_limit_exceeded_message`).
         admin_id = synth.github_user_id("admin")
+        rid = over.headers["x-github-request-id"]
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(int(rid.rsplit(":", 1)[1], 16)))
         assert over.json() == {
-            "message": f"API rate limit exceeded for user ID {admin_id}.",
+            "message": (
+                f"API rate limit exceeded for user ID {admin_id}. If you reach out to GitHub "
+                f"Support for help, please include the request ID {rid} and timestamp {stamp} UTC. "
+                "For more on scraping GitHub and how it may affect your rights, please review our "
+                "Terms of Service (https://docs.github.com/en/site-policy/github-terms/"
+                "github-terms-of-service)"
+            ),
             "documentation_url": (
                 "https://docs.github.com/en/rest/using-the-rest-api/"
                 "getting-started-with-the-rest-api#rate-limiting"

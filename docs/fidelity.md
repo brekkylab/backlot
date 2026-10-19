@@ -84,14 +84,16 @@ incomplete rather than Backlot being wrong:
 - Slack's spec documents one verb per method, and of the search methods only `search.messages`:
   `search.all` and `search.files` are absent. Measured against slack.com, all fourteen answer
   `200/ok` over **both** GET and POST.
-- GitHub's spec describes neither `contents` without a path nor the legacy per-sha statuses read.
-  Measured against api.github.com, both answer `200`.
+- GitHub's spec declares a `GET` for neither `contents` without a path nor the legacy per-sha
+  statuses read, and describes both in the prose of the operations they belong to. Measured
+  against api.github.com, both answer `200`.
 - Atlassian's published Confluence v1 document no longer describes the content and space reads
   Backlot serves: `content`, `content/{id}` with its `child/page`, `child/comment`,
   `child/attachment` and `label`, `space` and `space/{key}`. It still describes 65 reads —
   `content/search`, `content/{id}/descendant`, `group`, `label` and `user/current` among them — and
-  the writes. The v1 reads Backlot serves are deprecated in favour of Confluence REST v2, not
-  documented as removed, so on that source this comparison currently covers almost nothing.
+  the writes. The v1 reads Backlot serves are deprecated in favour of Confluence REST v2, and
+  each 200 names a removal date already past, so on that source this comparison currently covers
+  almost nothing.
 
 So on a REST source, read `missing_*` as reliable and `extra_*` as *undocumented by the vendor —
 verify by hand*, never as proof of a bug. Those measurements are what the baseline notes carry.
@@ -377,7 +379,9 @@ The five `x-ratelimit-*` headers are the same kind of gap. Every `/github` answe
 the ones `backlot.main.report_github_rate_limit` names, and the comparison reads parameters and
 operations off the two documents and never a response header; real's description declares three of
 the five, on `GET /rate_limit`'s 200 alone, and Backlot's document declares none. The tests are the
-record here (`tests/test_github.py`, the rate-limit test), not the baseline.
+record here (`tests/test_github.py`, the rate-limit test), not the baseline. `x-github-request-id`
+is another: every `/github` answer carries it (`backlot.main.put_a_request_id_on_github_answers`),
+and `test_github_every_answer_carries_a_request_id` in the same file is its record.
 
 The `Allow` on S3's sub-resource 405s is another. A `HEAD` carrying a sub-resource selector is 405
 on both sides, and real names the methods that sub-resource takes where Backlot names only `GET`,

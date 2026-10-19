@@ -9693,6 +9693,9 @@ def test_gmail_cc_bcc_searches_address_headers(tmp_path, surface, caller, query,
         ("ava", 'to:""', ["plan", "lunch", "reply"]),
         ("ava", "to: from: bcc:", []),
         ("ava", "from: bob", ["plan"]),
+        ("ava", 'from:"" bob', ["plan"]),
+        ("ava", 'to:" " lena', ["lunch"]),
+        ("ava", 'cc:""dev', ["reply"]),
         ("ava", "From: bob", ["plan"]),
         ("ava", "to:\tlena", ["lunch"]),
         ("ava", "cc: dev", ["reply"]),
@@ -9706,12 +9709,26 @@ def test_gmail_cc_bcc_searches_address_headers(tmp_path, surface, caller, query,
         ("admin", "from:ava@acme.com", ["reply"]),
         ("admin", "to:ava@acme.com", ["plan", "lunch"]),
         ("admin", "from:", ["plan", "lunch", "reply"]),
+        # a `-` in front of the operator or its value negates it
+        ("ava", "-from:bob", ["lunch", "reply"]),
+        ("ava", "from:-bob", ["lunch", "reply"]),
+        ("ava", "-from: bob", ["lunch", "reply"]),
+        ("ava", 'from:"-bob"', ["plan"]),
+        ("ava", "-to:lena", ["plan", "reply"]),
+        ("ava", "-cc:dev", ["plan", "lunch"]),
+        ("ava", "bcc:-ava", ["plan", "reply"]),
+        ("ava", "-from:me", ["plan", "lunch"]),
+        ("ava", "-from:bob from:mia", ["lunch"]),
+        ("ava", '-from:""', ["plan", "lunch", "reply"]),
+        ("ava", "from:-", ["plan", "lunch", "reply"]),
+        ("admin", "-from:me", ["plan", "lunch", "reply"]),
     ],
 )
 def test_gmail_from_to_searches_address_headers(tmp_path, surface, caller, query, expected):
     """A `from:` search matches author email, and `to:` matches any recipient header (To, Cc, or
     Bcc) as whole words or address. `me` resolves to the caller's address, and for admin callers,
-    the address `_service_email` gives. Empty address operators are ignored."""
+    the address `_service_email` gives. Empty address operators are ignored, and a `-` in front of
+    an operator or its value negates it (`_GMAIL_NEGATED_ADDRESS`)."""
     records = [
         {
             "doc_id": "plan",
@@ -9765,6 +9782,64 @@ def test_gmail_from_to_searches_address_headers(tmp_path, surface, caller, query
         )
     assert response.status_code == 200
     assert {r["id"] for r in response.json().get(surface, [])} == {
+        served_id("gmail", doc_id) for doc_id in expected
+    }
+
+
+@pytest.mark.parametrize("surface", ["messages", "threads"])
+@pytest.mark.parametrize(
+    "query, expected",
+    [
+        ("subject:", ["plan", "lunch", "after"]),
+        ("subject: ", ["plan", "lunch", "after"]),
+        ("subject:\t", ["plan", "lunch", "after"]),
+        ("SUBJECT:", ["plan", "lunch", "after"]),
+        ("label:", ["plan", "lunch", "after"]),
+        ('label:""', ["plan", "lunch", "after"]),
+        ("in:", ["plan", "lunch", "after"]),
+        ('in:""', ["plan", "lunch", "after"]),
+        ("lunch label:", ["lunch"]),
+        ('subject:"" lunch', ["lunch"]),
+        ('subject:" " lunch', ["lunch"]),
+        ('label:"" lunch', []),
+        ("after:", ["after"]),
+    ],
+)
+def test_gmail_an_empty_operator_is_dropped_or_the_term_it_spells(
+    tmp_path, surface, query, expected
+):
+    """Each row is how the comments on `_GMAIL_DROPPED_WHEN_EMPTY` and `_GMAIL_SPACED` read its
+    query, over both listings; the corpus holds the word `after` so that a bare `after:` can be told
+    from a dropped one."""
+    settings = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "gmail",
+                "doc_id": doc_id,
+                "mailbox": "ava",
+                "title": title,
+                "content": content,
+                "author_email": "ava@acme.com",
+                "readers": ["ava@acme.com"],
+                "created": "2026-03-01T09:00:00Z",
+            }
+            for doc_id, title, content in [
+                ("plan", "Rollout plan", "attached"),
+                ("lunch", "Lunch", "Friday?"),
+                ("after", "Later", "see after the meeting"),
+            ]
+        ],
+    )
+    tokens = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
+    with client_for(settings, reload=True) as c:
+        r = c.get(
+            f"/gmail/v1/users/me/{surface}",
+            headers={"Authorization": f"Bearer {tok(tokens, 'ava@acme.com')}"},
+            params={"q": query},
+        )
+    assert r.status_code == 200
+    assert {item["id"] for item in r.json().get(surface, [])} == {
         served_id("gmail", doc_id) for doc_id in expected
     }
 

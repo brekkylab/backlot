@@ -4096,7 +4096,7 @@
       "kind": "extra_operation",
       "severity": "breaking",
       "detail": "the vendor's spec declares no such operation",
-      "note": "Measured against api.github.com on 2026-09-01: the real API answers 200. GitHub's published OpenAPI describes neither \u2014 `contents` without a path (the root listing) nor the legacy per-sha statuses read \u2014 but both are live."
+      "note": "Measured against api.github.com on 2026-09-01: the real API answers 200. GitHub's published OpenAPI declares a `GET` for neither: `contents` without a path (the root listing) is no path item, and `statuses/{sha}` (the legacy per-sha statuses read) carries only `POST` (`repos/create-commit-status`). It describes both in prose: `repos/get-content` (\"If you omit the `path` parameter, you will receive the contents of the repository's root directory\") and `repos/list-commit-statuses-for-ref` (\"This resource is also available via a legacy route: `GET /repos/:owner/:repo/statuses/:ref`\")."
     },
     {
       "operation": "GET /repos/{}/{}/contents/{}",
@@ -5092,7 +5092,7 @@
       "kind": "extra_operation",
       "severity": "breaking",
       "detail": "the vendor's spec declares no such operation",
-      "note": "Measured against api.github.com on 2026-09-01: the real API answers 200. GitHub's published OpenAPI describes neither \u2014 `contents` without a path (the root listing) nor the legacy per-sha statuses read \u2014 but both are live."
+      "note": "Measured against api.github.com on 2026-09-01: the real API answers 200. GitHub's published OpenAPI declares a `GET` for neither: `contents` without a path (the root listing) is no path item, and `statuses/{sha}` (the legacy per-sha statuses read) carries only `POST` (`repos/create-commit-status`). It describes both in prose: `repos/get-content` (\"If you omit the `path` parameter, you will receive the contents of the repository's root directory\") and `repos/list-commit-statuses-for-ref` (\"This resource is also available via a legacy route: `GET /repos/:owner/:repo/statuses/:ref`\")."
     },
     {
       "operation": "GET /repos/{}/{}/subscribers",

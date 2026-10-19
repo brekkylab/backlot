@@ -4324,11 +4324,56 @@ def test_drive_order_by_shared_with_me_time(client, tokens_yaml):
     assert times == sorted(times, reverse=True)
 
 
-def test_drive_owned_by_me_reflects_the_caller(client, tokens_yaml):
-    """`ownedByMe` is per-caller in real Drive; Backlot reported False for every file."""
-    mia = {"Authorization": f"Bearer {tok(tokens_yaml, 'mia@acme.com')}"}
-    assert _drive_find(client, mia, "Brand")["ownedByMe"] is True
-    assert _drive_find(client, mia, "Whitepaper")["ownedByMe"] is False
+@pytest.mark.parametrize(
+    "name, owned",
+    [("Mine", True), ("Theirs", False), ("Plans", False), ("Figures", True), ("Drafts", False)],
+)
+def test_drive_owned_by_me_and_can_share_follow_the_caller(tmp_path, name, owned):
+    """`ownedByMe` is per caller, and `canShare` with it: what the caller owns it can share, and
+    what it can only read it cannot. Real answered `canShare: true` on 117 of the 118 items a Google
+    Workspace member's `files.list` named as its own on 2026-10-18 and on 2026-10-19, and `false` on
+    each folder and each file shared with it to read. `Plans` is a folder a record's `folder` names,
+    and `Figures` and `Drafts` are `subtype: folder` records."""
+    record = {
+        "source_type": "google_drive",
+        "folder": "Plans",
+        "content": "body",
+        "readers": ["ava@acme.com", "mia@acme.com"],
+        "visibility": "private",
+    }
+    rows = [("mine", "Mine", "ava", None), ("theirs", "Theirs", "mia", None)]
+    rows += [("figures", "Figures", "ava", "folder"), ("drafts", "Drafts", "mia", "folder")]
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                **record,
+                "doc_id": doc_id,
+                "title": title,
+                "author_email": f"{author}@acme.com",
+                **({"subtype": subtype} if subtype else {}),
+            }
+            for doc_id, title, author, subtype in rows
+        ],
+    )
+    tokens = yaml.safe_load(s.tokens_path.read_text(encoding="utf-8"))
+    ava = {"Authorization": f"Bearer {tok(tokens, 'ava@acme.com')}"}
+    with client_for(s, reload=True) as c:
+        listed = {
+            f["name"]: f
+            for f in c.get(
+                "/drive/v3/files",
+                headers=ava,
+                params={"fields": "files(id,name,ownedByMe,capabilities/canShare)"},
+            ).json()["files"]
+        }[name]
+        got = c.get(
+            f"/drive/v3/files/{listed['id']}",
+            headers=ava,
+            params={"fields": "ownedByMe,capabilities/canShare"},
+        ).json()
+    for f in (listed, got):
+        assert (f["ownedByMe"], f["capabilities"]["canShare"]) == (owned, owned)
 
 
 def test_drive_order_by_sorts_the_result(client, admin_h):
@@ -9648,6 +9693,9 @@ def test_gmail_cc_bcc_searches_address_headers(tmp_path, surface, caller, query,
         ("ava", 'to:""', ["plan", "lunch", "reply"]),
         ("ava", "to: from: bcc:", []),
         ("ava", "from: bob", ["plan"]),
+        ("ava", 'from:"" bob', ["plan"]),
+        ("ava", 'to:" " lena', ["lunch"]),
+        ("ava", 'cc:""dev', ["reply"]),
         ("ava", "From: bob", ["plan"]),
         ("ava", "to:\tlena", ["lunch"]),
         ("ava", "cc: dev", ["reply"]),
@@ -9661,12 +9709,26 @@ def test_gmail_cc_bcc_searches_address_headers(tmp_path, surface, caller, query,
         ("admin", "from:ava@acme.com", ["reply"]),
         ("admin", "to:ava@acme.com", ["plan", "lunch"]),
         ("admin", "from:", ["plan", "lunch", "reply"]),
+        # a `-` in front of the operator or its value negates it
+        ("ava", "-from:bob", ["lunch", "reply"]),
+        ("ava", "from:-bob", ["lunch", "reply"]),
+        ("ava", "-from: bob", ["lunch", "reply"]),
+        ("ava", 'from:"-bob"', ["plan"]),
+        ("ava", "-to:lena", ["plan", "reply"]),
+        ("ava", "-cc:dev", ["plan", "lunch"]),
+        ("ava", "bcc:-ava", ["plan", "reply"]),
+        ("ava", "-from:me", ["plan", "lunch"]),
+        ("ava", "-from:bob from:mia", ["lunch"]),
+        ("ava", '-from:""', ["plan", "lunch", "reply"]),
+        ("ava", "from:-", ["plan", "lunch", "reply"]),
+        ("admin", "-from:me", ["plan", "lunch", "reply"]),
     ],
 )
 def test_gmail_from_to_searches_address_headers(tmp_path, surface, caller, query, expected):
     """A `from:` search matches author email, and `to:` matches any recipient header (To, Cc, or
     Bcc) as whole words or address. `me` resolves to the caller's address, and for admin callers,
-    the address `_service_email` gives. Empty address operators are ignored."""
+    the address `_service_email` gives. Empty address operators are ignored, and a `-` in front of
+    an operator or its value negates it (`_GMAIL_NEGATED_ADDRESS`)."""
     records = [
         {
             "doc_id": "plan",
@@ -9720,6 +9782,64 @@ def test_gmail_from_to_searches_address_headers(tmp_path, surface, caller, query
         )
     assert response.status_code == 200
     assert {r["id"] for r in response.json().get(surface, [])} == {
+        served_id("gmail", doc_id) for doc_id in expected
+    }
+
+
+@pytest.mark.parametrize("surface", ["messages", "threads"])
+@pytest.mark.parametrize(
+    "query, expected",
+    [
+        ("subject:", ["plan", "lunch", "after"]),
+        ("subject: ", ["plan", "lunch", "after"]),
+        ("subject:\t", ["plan", "lunch", "after"]),
+        ("SUBJECT:", ["plan", "lunch", "after"]),
+        ("label:", ["plan", "lunch", "after"]),
+        ('label:""', ["plan", "lunch", "after"]),
+        ("in:", ["plan", "lunch", "after"]),
+        ('in:""', ["plan", "lunch", "after"]),
+        ("lunch label:", ["lunch"]),
+        ('subject:"" lunch', ["lunch"]),
+        ('subject:" " lunch', ["lunch"]),
+        ('label:"" lunch', []),
+        ("after:", ["after"]),
+    ],
+)
+def test_gmail_an_empty_operator_is_dropped_or_the_term_it_spells(
+    tmp_path, surface, query, expected
+):
+    """Each row is how the comments on `_GMAIL_DROPPED_WHEN_EMPTY` and `_GMAIL_SPACED` read its
+    query, over both listings; the corpus holds the word `after` so that a bare `after:` can be told
+    from a dropped one."""
+    settings = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "gmail",
+                "doc_id": doc_id,
+                "mailbox": "ava",
+                "title": title,
+                "content": content,
+                "author_email": "ava@acme.com",
+                "readers": ["ava@acme.com"],
+                "created": "2026-03-01T09:00:00Z",
+            }
+            for doc_id, title, content in [
+                ("plan", "Rollout plan", "attached"),
+                ("lunch", "Lunch", "Friday?"),
+                ("after", "Later", "see after the meeting"),
+            ]
+        ],
+    )
+    tokens = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
+    with client_for(settings, reload=True) as c:
+        r = c.get(
+            f"/gmail/v1/users/me/{surface}",
+            headers={"Authorization": f"Bearer {tok(tokens, 'ava@acme.com')}"},
+            params={"q": query},
+        )
+    assert r.status_code == 200
+    assert {item["id"] for item in r.json().get(surface, [])} == {
         served_id("gmail", doc_id) for doc_id in expected
     }
 

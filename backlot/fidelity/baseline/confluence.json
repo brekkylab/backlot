@@ -207,7 +207,7 @@
       "kind": "extra_operation",
       "severity": "breaking",
       "detail": "the vendor's spec declares no such operation",
-      "note": "Atlassian's published v1 document no longer describes the content and space reads Backlot serves; it still describes 65 reads and the writes. These v1 reads are deprecated in favour of Confluence REST v2, not documented as removed. Read off the document on 2026-09-01; not measured against a live site."
+      "note": "Atlassian's published v1 document no longer describes the content and space reads Backlot serves; it still describes 65 reads and the writes. These v1 reads are deprecated in favour of Confluence REST v2, and the live API names a removal date already past: measured on 2026-10-16, each 200 carries `deprecation: Wed, 1 Mar 2023 00:00:00 GMT`, `warning: 299 - \"Deprecated API, will be removed on Mon, 31 Mar 2025 00:00:00 GMT\"` and `link: <https://developer.atlassian.com/cloud/confluence/changelog/#CHANGE-864>; rel=\"deprecation\"` \u2014 the same trio Backlot's `CONFLUENCE_DEPRECATION` sends on these reads."
     },
     {
       "operation": "GET /wiki/rest/api/content-states",
@@ -229,7 +229,7 @@
       "kind": "extra_operation",
       "severity": "breaking",
       "detail": "the vendor's spec declares no such operation",
-      "note": "Atlassian's published v1 document no longer describes the content and space reads Backlot serves; it still describes 65 reads and the writes. These v1 reads are deprecated in favour of Confluence REST v2, not documented as removed. Read off the document on 2026-09-01; not measured against a live site."
+      "note": "Atlassian's published v1 document no longer describes the content and space reads Backlot serves; it still describes 65 reads and the writes. These v1 reads are deprecated in favour of Confluence REST v2, and the live API names a removal date already past: measured on 2026-10-16, each 200 carries `deprecation: Wed, 1 Mar 2023 00:00:00 GMT`, `warning: 299 - \"Deprecated API, will be removed on Mon, 31 Mar 2025 00:00:00 GMT\"` and `link: <https://developer.atlassian.com/cloud/confluence/changelog/#CHANGE-864>; rel=\"deprecation\"` \u2014 the same trio Backlot's `CONFLUENCE_DEPRECATION` sends on these reads."
     },
     {
       "operation": "GET /wiki/rest/api/content/{}/child/attachment",
@@ -252,7 +252,7 @@
       "kind": "extra_operation",
       "severity": "breaking",
       "detail": "the vendor's spec declares no such operation",
-      "note": "Atlassian's published v1 document no longer describes the content and space reads Backlot serves; it still describes 65 reads and the writes. These v1 reads are deprecated in favour of Confluence REST v2, not documented as removed. Read off the document on 2026-09-01; not measured against a live site."
+      "note": "Atlassian's published v1 document no longer describes the content and space reads Backlot serves; it still describes 65 reads and the writes. These v1 reads are deprecated in favour of Confluence REST v2, and the live API names a removal date already past: measured on 2026-10-16, each 200 carries `deprecation: Wed, 1 Mar 2023 00:00:00 GMT`, `warning: 299 - \"Deprecated API, will be removed on Mon, 31 Mar 2025 00:00:00 GMT\"` and `link: <https://developer.atlassian.com/cloud/confluence/changelog/#CHANGE-864>; rel=\"deprecation\"` \u2014 the same trio Backlot's `CONFLUENCE_DEPRECATION` sends on these reads."
     },
     {
       "operation": "GET /wiki/rest/api/content/{}/child/page",
@@ -260,7 +260,7 @@
       "kind": "extra_operation",
       "severity": "breaking",
       "detail": "the vendor's spec declares no such operation",
-      "note": "Atlassian's published v1 document no longer describes the content and space reads Backlot serves; it still describes 65 reads and the writes. These v1 reads are deprecated in favour of Confluence REST v2, not documented as removed. Read off the document on 2026-09-01; not measured against a live site."
+      "note": "Atlassian's published v1 document no longer describes the content and space reads Backlot serves; it still describes 65 reads and the writes. These v1 reads are deprecated in favour of Confluence REST v2, and the live API names a removal date already past: measured on 2026-10-16, each 200 carries `deprecation: Wed, 1 Mar 2023 00:00:00 GMT`, `warning: 299 - \"Deprecated API, will be removed on Mon, 31 Mar 2025 00:00:00 GMT\"` and `link: <https://developer.atlassian.com/cloud/confluence/changelog/#CHANGE-864>; rel=\"deprecation\"` \u2014 the same trio Backlot's `CONFLUENCE_DEPRECATION` sends on these reads."
     },
     {
       "operation": "GET /wiki/rest/api/content/{}/descendant",
@@ -303,7 +303,7 @@
       "kind": "extra_operation",
       "severity": "breaking",
       "detail": "the vendor's spec declares no such operation",
-      "note": "Atlassian's published v1 document no longer describes the content and space reads Backlot serves; it still describes 65 reads and the writes. These v1 reads are deprecated in favour of Confluence REST v2, not documented as removed. Read off the document on 2026-09-01; not measured against a live site."
+      "note": "Atlassian's published v1 document no longer describes the content and space reads Backlot serves; it still describes 65 reads and the writes. These v1 reads are deprecated in favour of Confluence REST v2, and the live API names a removal date already past: measured on 2026-10-16, each 200 carries `deprecation: Wed, 1 Mar 2023 00:00:00 GMT`, `warning: 299 - \"Deprecated API, will be removed on Mon, 31 Mar 2025 00:00:00 GMT\"` and `link: <https://developer.atlassian.com/cloud/confluence/changelog/#CHANGE-864>; rel=\"deprecation\"` \u2014 the same trio Backlot's `CONFLUENCE_DEPRECATION` sends on these reads."
     },
     {
       "operation": "GET /wiki/rest/api/content/{}/notification/child-created",
@@ -547,7 +547,7 @@
       "kind": "extra_operation",
       "severity": "breaking",
       "detail": "the vendor's spec declares no such operation",
-      "note": "Atlassian's published v1 document no longer describes the content and space reads Backlot serves; it still describes 65 reads and the writes. These v1 reads are deprecated in favour of Confluence REST v2, not documented as removed. Read off the document on 2026-09-01; not measured against a live site."
+      "note": "Atlassian's published v1 document no longer describes the content and space reads Backlot serves; it still describes 65 reads and the writes. These v1 reads are deprecated in favour of Confluence REST v2, and the live API names a removal date already past: measured on 2026-10-16, each 200 carries `deprecation: Wed, 1 Mar 2023 00:00:00 GMT`, `warning: 299 - \"Deprecated API, will be removed on Mon, 31 Mar 2025 00:00:00 GMT\"` and `link: <https://developer.atlassian.com/cloud/confluence/changelog/#CHANGE-864>; rel=\"deprecation\"` \u2014 the same trio Backlot's `CONFLUENCE_DEPRECATION` sends on these reads."
     },
     {
       "operation": "GET /wiki/rest/api/space/{}",
@@ -555,7 +555,7 @@
       "kind": "extra_operation",
       "severity": "breaking",
       "detail": "the vendor's spec declares no such operation",
-      "note": "Atlassian's published v1 document no longer describes the content and space reads Backlot serves; it still describes 65 reads and the writes. These v1 reads are deprecated in favour of Confluence REST v2, not documented as removed. Read off the document on 2026-09-01; not measured against a live site."
+      "note": "Atlassian's published v1 document no longer describes the content and space reads Backlot serves; it still describes 65 reads and the writes. These v1 reads are deprecated in favour of Confluence REST v2, and the live API names a removal date already past: measured on 2026-10-16, each 200 carries `deprecation: Wed, 1 Mar 2023 00:00:00 GMT`, `warning: 299 - \"Deprecated API, will be removed on Mon, 31 Mar 2025 00:00:00 GMT\"` and `link: <https://developer.atlassian.com/cloud/confluence/changelog/#CHANGE-864>; rel=\"deprecation\"` \u2014 the same trio Backlot's `CONFLUENCE_DEPRECATION` sends on these reads."
     },
     {
       "operation": "GET /wiki/rest/api/space/{}/label",

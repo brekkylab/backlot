@@ -272,7 +272,8 @@ def gql(client, path: str, query: str, token: str | None = None, **variables):
 
 
 # The bytes the credential sweeps put into `Authorization`: each latin-1 byte but the control
-# characters other than the tab, which Linear's and Fireflies' front ends answer with an empty 400.
+# characters other than the tab, whose answers, where they were sent, are in
+# `backlot.auth.api_key_token`.
 SWEPT_BYTES = (0x09, *range(0x20, 0x7F), *range(0x80, 0x100))
 
 

@@ -303,8 +303,6 @@ def test_resolve_api_key_resolves_a_bare_user_token(acl, tokens):
 
 
 def test_resolve_api_key_does_not_read_a_bearer_admin_token(acl, sample_settings):
-    """The whole value, scheme included, is the key, so `Bearer <admin token>` resolves to no one;
-    the Linear router answers that spelling with `_api_key_as_bearer`'s 400 instead."""
     assert (
         auth.resolve_api_key(_request(f"Bearer {sample_settings.admin_token}", app=_app(acl)))
         is None

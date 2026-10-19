@@ -3834,8 +3834,8 @@ _LINEAR_BYTES = {
 
 
 def _linear_credentials() -> list:
-    """`_LINEAR_SPELLINGS`, then each byte of `_LINEAR_BYTES` in each place and each of the 64
-    casings of the scheme, less the values the table already holds."""
+    """`_LINEAR_SPELLINGS`, then each of `SWEPT_BYTES` in each place `_LINEAR_BYTES` names and
+    each of the 64 casings of the scheme, less the values the table already holds."""
     rows = list(_LINEAR_SPELLINGS)
     seen = {row.values[0] for row in rows}
 

@@ -93,8 +93,8 @@ _FIREFLIES_BYTES = {
 
 
 def _fireflies_credentials() -> list:
-    """`_FIREFLIES_SPELLINGS`, then each byte of `_FIREFLIES_BYTES` in each place, less the values
-    the table already holds."""
+    """`_FIREFLIES_SPELLINGS`, then each of `SWEPT_BYTES` in each place `_FIREFLIES_BYTES` names,
+    less the values the table already holds."""
     rows = list(_FIREFLIES_SPELLINGS)
     seen = {row.values[0] for row in rows}
     for shape, (served, refusal) in _FIREFLIES_BYTES.items():

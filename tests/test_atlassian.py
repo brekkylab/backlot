@@ -29,6 +29,7 @@ from tests._helpers import (
     crawl_confluence,
     crawl_jira,
     db_count,
+    sent_as,
     served_id,
     tiny_corpus,
 )
@@ -485,24 +486,6 @@ def test_jira_role_routes_find_a_project_by_its_key_as_written_or_its_id(
         }, path
 
 
-def _sent_as(client, method: str, path: str, headers: dict[str, str], content=None):
-    """``method`` on ``path`` with each header's latin-1 bytes as sent. The TestClient re-encodes a
-    header's bytes above 0x7F as UTF-8 (`\\x85` reaches the app as `\\xc2\\x85`), where httpx's
-    own `ASGITransport` hands the app what it was given, over the app the fixture started."""
-    import asyncio
-
-    import httpx
-
-    raw = {name: value.encode("latin-1") for name, value in headers.items()}
-
-    async def send():
-        transport = httpx.ASGITransport(app=client.app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
-            return await c.request(method, path, headers=raw, content=content)
-
-    return asyncio.run(send())
-
-
 def test_jira_refuses_a_bearer_it_cannot_read_as_a_connect_token(client):
     """A bearer is not the Basic pair: Jira does not go anonymous for one it cannot resolve, it
     refuses with 403 and a body that is neither API's envelope. A Backlot token is an opaque
@@ -538,7 +521,7 @@ def test_jira_refuses_a_bearer_it_cannot_read_as_a_connect_token(client):
         *("usr-nope", "a\tb", "a,b", "a.b", "\tusr-nope", "\t\tusr-nope"),
         *("\x85a", "\xa0a", "\x85", "\xa0", "\xa0\xa0"),
     ):
-        info = _sent_as(
+        info = sent_as(
             client, "GET", "/atlassian/rest/api/3/serverInfo", {"Authorization": f"Bearer {token}"}
         )
         assert info.status_code == 403 and info.json() == {
@@ -590,7 +573,7 @@ def test_jira_reads_an_unrecognised_scheme_as_no_credential(client, header):
     """The 403 above is for a credential the site READ. A spelling it does not read is not a
     credential at all, and the request is the anonymous one — which is how each spelling was told
     apart on the real sites in the first place (403 = read, 200 = not read)."""
-    r = _sent_as(client, "GET", "/atlassian/rest/api/3/project/search", {"Authorization": header})
+    r = sent_as(client, "GET", "/atlassian/rest/api/3/project/search", {"Authorization": header})
     assert r.status_code == 200 and r.json()["values"] == []
 
 
@@ -6536,7 +6519,7 @@ def test_confluence_answers_an_operation_before_it_runs(
     headers = {} if ctype is None else {"Content-Type": ctype}
     if authorization is not None:
         headers["Authorization"] = authorization
-    r = _sent_as(
+    r = sent_as(
         client, method, f"/atlassian{vendor_path}", headers, content=b"x" if ctype else None
     )
     assert r.status_code == status, r.text
@@ -6807,7 +6790,7 @@ def _unparsed(accept: str) -> bytes:
 
 def _send_as_latin1(client, request):
     """``request``, built by the TestClient with its default headers, sent with each header value's
-    bytes as they are, which :func:`_sent_as` says why the TestClient does not."""
+    bytes as they are, which :func:`tests._helpers.sent_as` says why the TestClient does not."""
     if all(value.isascii() for value in request.headers.values()):
         return client.send(request)
 

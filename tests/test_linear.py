@@ -30,6 +30,7 @@ from tests._helpers import (
     padded_query,
     selected_field_count,
     selected_fields,
+    sent_as,
     served_id,
 )
 
@@ -843,6 +844,24 @@ _LINEAR_READS = [
         (("Content-Encoding", "gzip\t"),), gzip.compress(_TYPENAME), None, id="a tab after gzip"
     ),
     pytest.param(
+        (("Content-Encoding", "gzip\xa0"),),
+        gzip.compress(_TYPENAME),
+        _express(415, 'unsupported content encoding \\"gzip\xa0\\"'.encode()),
+        id="U+00A0 after gzip",
+    ),
+    pytest.param(
+        (("Content-Encoding", "\xa0gzip"),),
+        gzip.compress(_TYPENAME),
+        _express(415, 'unsupported content encoding \\"\xa0gzip\\"'.encode()),
+        id="U+00A0 before gzip",
+    ),
+    pytest.param(
+        (("Content-Encoding", "gzip\x85"),),
+        gzip.compress(_TYPENAME),
+        _express(415, 'unsupported content encoding \\"gzip\x85\\"'.encode()),
+        id="U+0085 after gzip",
+    ),
+    pytest.param(
         (("Content-Encoding", "g zip"),),
         gzip.compress(_TYPENAME),
         _express(415, b'unsupported content encoding \\"g zip\\"'),
@@ -1053,7 +1072,7 @@ def test_linear_reads_the_body_before_the_credential(
     if credential != "none":
         key = tokens_yaml["admin_token"] if credential == "key" else "nope"
         headers = (*headers, ("Authorization", key))
-    r = client.post("/linear/graphql", content=body, headers=list(headers))
+    r = sent_as(client, "POST", "/linear/graphql", headers, content=body)
     if answer is _REQUEST_ERROR:
         if credential == "key":
             assert r.content == _GRAPHQL_JS_NOT_JSON

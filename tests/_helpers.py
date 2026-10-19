@@ -271,6 +271,26 @@ def gql(client, path: str, query: str, token: str | None = None, **variables):
     return client.post(path, json=body, headers=headers)
 
 
+def sent_as(client, method: str, path: str, headers, content=None):
+    """``method`` on ``path`` with each header's latin-1 bytes as sent, ``headers`` a mapping or a
+    sequence of pairs, which can name a header twice. The TestClient re-encodes a header's bytes
+    above 0x7F as UTF-8 (`\\x85` reaches the app as `\\xc2\\x85`), where httpx's own
+    `ASGITransport` hands the app what it was given, over the app the fixture started."""
+    import asyncio
+
+    import httpx
+
+    pairs = headers.items() if isinstance(headers, dict) else headers
+    raw = [(name.encode("latin-1"), value.encode("latin-1")) for name, value in pairs]
+
+    async def send():
+        transport = httpx.ASGITransport(app=client.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
+            return await c.request(method, path, headers=raw, content=content)
+
+    return asyncio.run(send())
+
+
 def selected_fields(document: str, *path: str) -> set[str]:
     """The field names ``document`` selects at ``path`` — for asserting on a generated selection
     set (``backlot.graphql.mcp_tools``) by shape rather than by substring."""

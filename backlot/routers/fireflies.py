@@ -63,8 +63,9 @@ def _body_refusal(message: str, status: int = 400) -> JSONResponse:
     )
 
 
-# The two messages Fireflies refuses a credential with: a value with no `Bearer` prefix, and one
-# with the prefix and a key that does not resolve.
+# The two messages Fireflies refuses a credential with: a value with no `Bearer` prefix, and the
+# prefix with a key that does not resolve, which is also the answer to no `Authorization` or an
+# empty one.
 _NO_PREFIX = (
     "Authorization header is missing the 'Bearer' prefix. Please use the format: "
     "'Authorization: Bearer <api_key>'. If this persists, please contact Fireflies support."

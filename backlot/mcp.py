@@ -20,9 +20,9 @@ pointing a real vendor client at Backlot is its own thing to show.
 
 **One credential input.** ``--user <email>`` names a person, and this module resolves that person's
 whole credential set from the server's own ``GET /_meta/users`` — bearer token, and the S3
-access-key pair. Each source is then spelled the way it authenticates: Bearer, Atlassian's Basic
-``email:token``, S3's SigV4. Every tool call carries it, so Backlot's per-document ACL decides what
-comes back. Without ``--user`` the admin sees everything.
+access-key pair. Each source is then spelled the way it authenticates: Bearer, Linear's bare token,
+Atlassian's Basic ``email:token``, S3's SigV4. Every tool call carries it, so Backlot's per-document
+ACL decides what comes back. Without ``--user`` the admin sees everything.
 
 **Which server.** ``--url`` when given; otherwise the default local port if a Backlot server already
 answers there; otherwise one started here, as a subprocess over the data dir's corpus (or the

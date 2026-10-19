@@ -13,14 +13,15 @@ access token travels, and an API key sent that way is :func:`_api_key_as_bearer`
 Status codes follow the GraphQL-over-HTTP split :class:`backlot.graphql.engine.Result` marks; real
 Linear draws the line in the same place, and generated clients branch on it.
 
-The body is read before the credential is looked at, by Express's ``body-parser`` in front of the
-GraphQL server: with no credential, a body that is not JSON drew its 400 from api.linear.app on
-2026-10-18, not the 401. :func:`_express` is that 400, and each refusal ``body-parser`` makes before
-it has the text (:func:`backlot.graphql.body.body_parser_text`); :func:`graphql` names the bodies
-answered in graphql-js's words instead. An API key under ``Bearer`` is refused ahead of the body:
-with ``Bearer <key>``, ``{``, an empty body and a body holding ``NaN`` drew
-:func:`_api_key_as_bearer`'s 400 the same day, and ``charset=latin1``, ``Content-Encoding: bogus``
-and a body past the size limit did on 2026-10-19.
+Express's ``body-parser``, in front of the GraphQL server, reads the body before the credential is
+looked at, for any credential but an API key under ``Bearer``: with no credential, a body that is
+not JSON drew its 400 from api.linear.app on 2026-10-18, not the 401. :func:`_express` is that 400,
+and each refusal ``body-parser`` makes before it has the text
+(:func:`backlot.graphql.body.body_parser_text`); :func:`graphql` names the bodies answered in
+graphql-js's words instead. An API key under ``Bearer`` is refused ahead of the body: with
+``Bearer <key>``, ``{``, an empty body and a body holding ``NaN`` drew :func:`_api_key_as_bearer`'s
+400 the same day, and ``charset=latin1``, ``Content-Encoding: bogus`` and a body past the size
+limit did on 2026-10-19.
 """
 
 from __future__ import annotations
@@ -93,11 +94,11 @@ async def graphql(request: Request):
     OpenAPI→MCP bridge nothing useful (hence no ``SOURCE_PREFIXES`` entry either — see
     ``backlot/openapi.py``). Introspection is the schema description for this endpoint.
 
-    Two refusals keep graphql-js's words here, before the credential as Linear's do: a body with no
-    text once read, which Linear answers with Apollo Server's
-    ``POST body missing, invalid Content-Type, or JSON object has no keys.``, and a body the reader
-    refuses before it meets a ``NaN``, ``Infinity`` or ``-Infinity``, such as ``{`` or ``-NaN``,
-    which Linear answers with V8's message."""
+    Two refusals keep graphql-js's words here, after the ``Bearer`` check and before the key is
+    resolved, as Linear's come: a body with no text once read, which Linear answers with Apollo
+    Server's ``POST body missing, invalid Content-Type, or JSON object has no keys.``, and a body
+    the reader refuses before it meets a ``NaN``, ``Infinity`` or ``-Infinity``, such as ``{`` or
+    ``-NaN``, which Linear answers with V8's message."""
     if auth.acl(request).resolve(auth.linear_bearer_token(request)) is not None:
         return _api_key_as_bearer()
     try:

@@ -259,7 +259,7 @@ curl -s localhost:8000/fireflies/graphql \
 The scheme is read in any case and followed by spaces, and space, tab or U+00A0 around the token is
 ignored. A credential that is refused is a `500` with an `auth_failed` entry, there and here, in one
 of two messages: the `Bearer` prefix is missing, or the key did not authenticate. No
-`Authorization` at all is the second.
+`Authorization`, or an empty one, is the second.
 
 ### Amazon S3 — SigV4
 

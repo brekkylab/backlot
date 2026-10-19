@@ -490,3 +490,9 @@ def crawl_confluence(client, headers):
             break
         start += limit
     return out
+
+
+def padded_query(length: int) -> bytes:
+    """A GraphQL body asking for ``__typename``, padded out to ``length`` bytes."""
+    head, tail = b'{"query":"{ __typename }","pad":"', b'"}'
+    return head + b"a" * (length - len(head) - len(tail)) + tail

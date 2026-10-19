@@ -13,7 +13,10 @@ Status codes follow the GraphQL-over-HTTP split :class:`backlot.graphql.engine.R
 
 A body Fireflies cannot read is refused ahead of anything about the credential: with no
 credential, and with ``Authorization: nope``, an empty body and a body that is not JSON drew
-:func:`_body_refusal`'s 400 from api.fireflies.ai on 2026-10-18.
+:func:`_body_refusal`'s 400 from api.fireflies.ai on 2026-10-18, and a body over :data:`_LIMIT`
+draws its 413. ``Content-Encoding`` and the charset go unread: on 2026-10-19 a gzipped body drew
+the not-JSON 400, and ``charset=latin1``, ``charset=utf-nope`` and ``Content-Encoding: bogus`` were
+served.
 """
 
 from __future__ import annotations
@@ -34,22 +37,28 @@ ENGINE = build_engine()
 
 _EMPTY = "Body cannot be empty when content-type is set to 'application/json'"
 _NOT_JSON = "Body is not valid JSON but content-type is set to 'application/json'"
+_TOO_LARGE = "Request body is too large"
+#: The most bytes Fireflies reads: api.fireflies.ai served a body of 1048576 bytes and answered one
+#: of 1048577 with :data:`_TOO_LARGE`'s 413 on 2026-10-19, with a credential, with none and with
+#: ``Authorization: nope``.
+_LIMIT = 1024 * 1024
 
 
-def _body_refusal(message: str) -> JSONResponse:
-    """Fireflies' 400 for a body it cannot read: an envelope of its HTTP layer, not a GraphQL one,
-    with the message twice. :data:`_EMPTY` is for a body of no bytes and :data:`_NOT_JSON` for every
-    other one :mod:`backlot.graphql.body` cannot read or finds
-    :func:`~backlot.graphql.body.prototype_poisoned`, as api.fireflies.ai answered on 2026-10-18."""
+def _body_refusal(message: str, status: int = 400) -> JSONResponse:
+    """Fireflies' answer to a body it cannot read: an envelope of its HTTP layer, not a GraphQL
+    one, with the message twice. :data:`_EMPTY` is the 400 for a body of no bytes and
+    :data:`_NOT_JSON` the 400 for every other one :mod:`backlot.graphql.body` cannot read or finds
+    :func:`~backlot.graphql.body.prototype_poisoned`, as api.fireflies.ai answered on 2026-10-18;
+    :data:`_TOO_LARGE` is the 413 for one over :data:`_LIMIT`."""
     return JSONResponse(
         {
-            "statusCode": 400,
+            "statusCode": status,
             "status": False,
             "code": "http",
             "message": message,
             "errorMessage": message,
         },
-        status_code=400,
+        status_code=status,
     )
 
 
@@ -60,6 +69,8 @@ async def graphql(request: Request):
     OpenAPI→MCP bridge nothing useful (hence no ``SOURCE_PREFIXES`` entry either — see
     ``backlot/openapi.py``). Introspection is the schema description for this endpoint."""
     raw = await request.body()
+    if len(raw) > _LIMIT:
+        return _body_refusal(_TOO_LARGE, 413)
     if not raw:
         return _body_refusal(_EMPTY)
     try:

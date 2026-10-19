@@ -6,6 +6,8 @@ or call the response builder directly.
 
 from __future__ import annotations
 
+import gzip
+import json
 import sqlite3
 
 import pytest
@@ -13,7 +15,14 @@ from graphql import build_client_schema, parse, validate
 
 from backlot import store
 from backlot.graphql import mcp_tools
-from tests._helpers import client_for, corpus_client, gql, served_id, tiny_corpus
+from tests._helpers import (
+    client_for,
+    corpus_client,
+    gql,
+    padded_query,
+    served_id,
+    tiny_corpus,
+)
 
 # --- fireflies: POST /fireflies/graphql -----------------------------------------
 # Fireflies has no SDK and no LlamaIndex reader; the vendor's own quickstart is a raw HTTP POST,
@@ -42,10 +51,12 @@ def test_fireflies_requires_a_bearer_key(client):
 
 
 # --- a body Fireflies reads ahead of the credential ----------------------------------------------
-# A body and Fireflies' answer to it with the key: `_EMPTY` or `_NOT_JSON`, the two 400s of its HTTP
-# layer `backlot.routers.fireflies._body_refusal` sends, or None where it served the query.
-# `_REQUEST_ERROR` is a row of JSON that is not an object: past that layer it reaches the
-# credential, and with the key it is a 400, in Apollo Server's words on real and graphql-js's here.
+# The headers a body was sent with beyond `Content-Type: application/json`, the body, and Fireflies'
+# answer to it with the key: `_EMPTY`, `_NOT_JSON` or `_TOO_LARGE`, its HTTP layer's refusals
+# `backlot.routers.fireflies._body_refusal` sends at the status their `statusCode` names, or None
+# where it served the query. `_REQUEST_ERROR` is a row of JSON that is not an object: past that
+# layer it reaches the credential, and with the key it is a 400, in Apollo Server's words on real
+# and graphql-js's here.
 _REQUEST_ERROR = object()
 _EMPTY = (
     b'{"statusCode":400,"status":false,"code":"http","message":"Body cannot be empty when'
@@ -57,6 +68,33 @@ _NOT_JSON = (
     b' content-type is set to \'application/json\'","errorMessage":"Body is not valid JSON but'
     b" content-type is set to 'application/json'\"}"
 )
+_TOO_LARGE = (
+    b'{"statusCode":413,"status":false,"code":"http","message":"Request body is too large",'
+    b'"errorMessage":"Request body is too large"}'
+)
+_TYPENAME = b'{"query":"{ __typename }"}'
+
+
+_FIREFLIES_READS = [
+    pytest.param((), padded_query(2**20), None, id="the limit"),
+    pytest.param((), padded_query(2**20 + 1), _TOO_LARGE, id="past the limit"),
+    pytest.param((), b"{" * (2**20 + 1), _TOO_LARGE, id="past the limit, not JSON"),
+    pytest.param((("Content-Encoding", "gzip"),), gzip.compress(_TYPENAME), _NOT_JSON, id="gzip"),
+    pytest.param((("Content-Encoding", "gzip"),), _TYPENAME, None, id="gzip over a plain body"),
+    pytest.param((("Content-Encoding", "bogus"),), _TYPENAME, None, id="bogus"),
+    pytest.param(
+        (("Content-Type", "application/json; charset=latin1"),), _TYPENAME, None, id="latin1"
+    ),
+    pytest.param(
+        (("Content-Type", "application/json; charset=utf-nope"),), _TYPENAME, None, id="utf-nope"
+    ),
+    pytest.param(
+        (("Content-Type", "application/json; charset=utf-16"),),
+        _TYPENAME.decode().encode("utf-16"),
+        _NOT_JSON,
+        id="utf-16",
+    ),
+]
 _FIREFLIES_BODIES = [
     pytest.param(b'{"query":"{ __typename }"}', None, id="a query"),
     pytest.param(b"{", _NOT_JSON, id="{"),
@@ -260,22 +298,27 @@ _FIREFLIES_BODIES = [
 
 
 @pytest.mark.parametrize("credential", ["key", "none", "nope"])
-@pytest.mark.parametrize("body,answer", _FIREFLIES_BODIES)
-def test_fireflies_reads_the_body_before_the_credential(client, admin_h, credential, body, answer):
+@pytest.mark.parametrize(
+    "headers,body,answer",
+    [pytest.param((), *row.values, id=row.id) for row in _FIREFLIES_BODIES] + _FIREFLIES_READS,
+)
+def test_fireflies_reads_the_body_before_the_credential(
+    client, admin_h, credential, headers, body, answer
+):
     """Each row is answered as the comment over `_FIREFLIES_BODIES` says, and no credential
     changes a `_body_refusal`."""
-    headers = {"Content-Type": "application/json"}
+    if not any(name == "Content-Type" for name, _ in headers):
+        headers = (("Content-Type", "application/json"), *headers)
     if credential != "none":
-        headers["Authorization"] = (
-            admin_h["Authorization"] if credential == "key" else "Bearer nope"
-        )
-    r = client.post("/fireflies/graphql", content=body, headers=headers)
+        key = admin_h["Authorization"] if credential == "key" else "Bearer nope"
+        headers = (*headers, ("Authorization", key))
+    r = client.post("/fireflies/graphql", content=body, headers=list(headers))
     if answer is _REQUEST_ERROR:
         if credential == "key":
             assert r.json() == {"errors": [{"message": "POST body sent invalid JSON."}]}
         assert r.status_code == (400 if credential == "key" else 401)
     elif answer is not None:
-        assert (r.status_code, r.content) == (400, answer)
+        assert (r.status_code, r.content) == (json.loads(answer)["statusCode"], answer)
     elif credential == "key":
         assert (r.status_code, r.json()) == (200, {"data": {"__typename": "Query"}})
     else:

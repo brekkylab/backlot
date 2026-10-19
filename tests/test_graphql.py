@@ -8,8 +8,15 @@ search tests belong to the Fireflies and Linear test files.
 
 from __future__ import annotations
 
+import base64
+import gzip
 import json
+import math
 import random
+import shutil
+import struct
+import subprocess
+import zlib
 
 import pytest
 from fastapi import APIRouter, FastAPI, Request
@@ -338,7 +345,10 @@ def _hook(token):
 
 def _outcome_of_json_loads(text: str):
     try:
-        return ("value", repr(json.loads(text, parse_int=request_body._int, parse_constant=_hook)))
+        value = json.loads(
+            text, parse_int=request_body._int, parse_float=request_body.Double, parse_constant=_hook
+        )
+        return ("value", repr(value))
     except _Hooked as exc:
         return ("constant", exc.args[0])
     except json.JSONDecodeError:
@@ -363,6 +373,133 @@ def test_the_iterative_reader_reads_what_json_loads_reads():
         assert got == expected, text
         checked += 1
     assert checked == 6000
+
+
+def _numbers():
+    """Texts of numbers: doubles from random bit patterns, mantissas at each power of ten from 1e-30
+    to 1e30, an integer of each length up to thirty digits, zeros and the two infinities."""
+    rng = random.Random(20261019)
+    for _ in range(5000):
+        double = struct.unpack("<d", rng.getrandbits(64).to_bytes(8, "little"))[0]
+        if math.isfinite(double):
+            yield repr(double)
+    for exponent in range(-30, 31):
+        for mantissa in ("1", "1.5", "123456789", "9.999999999999999"):
+            yield f"{mantissa}e{exponent}"
+    for digits in range(1, 31):
+        yield str(rng.randrange(10 ** (digits - 1), 10**digits))
+    yield from ("0", "-0", "-0.0", "1e400", "-1e400")
+
+
+# What Node prints for the number in each text on stdin.
+_NODE_STRING = """
+const texts = JSON.parse(require("fs").readFileSync(0, "utf8"));
+process.stdout.write(JSON.stringify(texts.map((text) => String(JSON.parse(text)))));
+"""
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+def test_a_number_is_read_and_printed_as_node_does():
+    """Node is the oracle: :func:`backlot.graphql.body.parse` reads each of :func:`_numbers` as a
+    value whose ``repr`` is what ``String(JSON.parse(text))`` prints."""
+    texts = list(_numbers())
+    run = subprocess.run(
+        ["node", "-e", _NODE_STRING],
+        input=json.dumps(texts),
+        capture_output=True,
+        encoding="utf-8",
+        check=True,
+    )
+    for text, expected in zip(texts, json.loads(run.stdout), strict=True):
+        assert repr(request_body.parse(text)) == expected, text
+
+
+def _compressed():
+    """Whole gzip and deflate streams, each also cut short, with a bit flipped, and followed by
+    bytes that start another member or none, and the bytes of no stream, as (gzip?, bytes)."""
+    rng = random.Random(20261019)
+    tails = (b"\x00", b"\x00x", b"x", b"xx", b"\x1f", b"\x1f\x8b")
+    tails += (gzip.compress(b"t"), zlib.compress(b"t"))
+    for _ in range(100):
+        payload = rng.randbytes(rng.randrange(300))
+        for gz in (True, False):
+            whole = gzip.compress(payload) if gz else zlib.compress(payload)
+            flipped = bytearray(whole)
+            flipped[rng.randrange(len(whole))] ^= 1 << rng.randrange(8)
+            yield from ((gz, whole), (gz, whole[: rng.randrange(len(whole))]), (gz, bytes(flipped)))
+            yield from ((gz, whole + tail) for tail in tails)
+    yield from ((True, b""), (False, b""), (True, b"x"), (False, zlib.compress(b"t")[2:-4]))
+
+
+# What Node's zlib stream yields from each case on stdin, or the error it throws.
+_NODE_INFLATE = """
+const zlib = require("zlib");
+const cases = JSON.parse(require("fs").readFileSync(0, "utf8"));
+(async () => {
+  const out = [];
+  for (const [gzip, base64] of cases) {
+    out.push(await new Promise((resolve) => {
+      const stream = gzip ? zlib.createGunzip() : zlib.createInflate();
+      const chunks = [];
+      stream.on("data", (chunk) => chunks.push(chunk));
+      stream.on("end", () => resolve(Buffer.concat(chunks).toString("base64")));
+      stream.on("error", (error) => resolve({ error: error.message }));
+      stream.end(Buffer.from(base64, "base64"));
+    }));
+  }
+  process.stdout.write(JSON.stringify(out));
+})();
+"""
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+def test_a_compressed_body_is_inflated_as_node_inflates_it():
+    """Node's zlib streams are the oracle: for each of :func:`_compressed`,
+    :func:`backlot.graphql.body._inflate` yields the same bytes or fails with the same message."""
+    cases = list(_compressed())
+    run = subprocess.run(
+        ["node", "-e", _NODE_INFLATE],
+        input=json.dumps([[gz, base64.b64encode(raw).decode()] for gz, raw in cases]),
+        capture_output=True,
+        encoding="utf-8",
+        check=True,
+    )
+    for (gz, raw), expected in zip(cases, json.loads(run.stdout), strict=True):
+        try:
+            got = base64.b64encode(request_body._inflate(raw, gz)).decode()
+        except request_body.Unread as unread:
+            got = {"error": unread.message}
+        assert got == expected, (gz, raw)
+
+
+# A `utf-16` or `utf-32` body with no byte-order mark, as hex, and the order iconv-lite 0.7.2's
+# `detectEncoding` read it in, decoding each on 2026-10-19: one row for each test the heuristic
+# makes of a unit, where the two orders read the body differently.
+_BYTE_ORDERS = [
+    pytest.param(2, "0111", "le"),
+    pytest.param(2, "ff4e000041ff41114eff", "le"),
+    pytest.param(2, "0000101100411041fe01", "be"),
+    pytest.param(2, "10fe0001014e", "be"),
+    pytest.param(4, "00fe414e0000ff001100fe11410001fe01ff0100ff11ff01", "be"),
+    pytest.param(4, "fffe1041014e11410000004111fe010011ff1041", "be"),
+    pytest.param(4, "00fe014e104101fffe000100410000fe", "le"),
+    pytest.param(4, "ffff10000041ffff0011fe10", "le"),
+    pytest.param(4, "114efe4e101001fffe101110ff41ff001110011041ff1000", "le"),
+    pytest.param(4, "0000010141014e4e11000000414e4e01fe110101", "le"),
+    pytest.param(4, "0001ff10000100004e411141ffff41414141114e014e1001", "le"),
+    pytest.param(4, "001000ff000000000101fefe104100014e00ff41", "be"),
+    pytest.param(4, "41fe4efe000101fffe41ff11fe104e1100fffe00", "be"),
+    pytest.param(4, "001000114141fe4e004e41004e4101ff104e0141", "be"),
+    pytest.param(4, "0010414efe4eff1011ff014e11004e4e", "be"),
+    pytest.param(4, "000000004100000000000041", "le"),
+]
+
+
+@pytest.mark.parametrize("width, hex_bytes, order", _BYTE_ORDERS)
+def test_a_body_with_no_byte_order_mark_is_read_in_the_order_iconv_lite_picks(
+    width, hex_bytes, order
+):
+    assert request_body._byte_order(bytes.fromhex(hex_bytes), width) == order
 
 
 def test_execute_request_requires_a_query_string(gql):

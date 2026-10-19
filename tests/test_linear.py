@@ -9,7 +9,9 @@ not merely that it filters something.
 
 from __future__ import annotations
 
+import gzip
 import json
+import zlib
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
@@ -18,6 +20,7 @@ from graphql import GraphQLError, build_client_schema, is_enum_type, parse, vali
 
 from backlot import synth
 from backlot.fidelity.graphql_diff import backlot_schema
+from backlot.graphql import body as request_body
 from backlot.graphql import linear_filters, mcp_tools
 from tests._helpers import (
     build_corpus,
@@ -25,6 +28,7 @@ from tests._helpers import (
     complete,
     corpus_client,
     db_count,
+    padded_query,
     selected_field_count,
     selected_fields,
     served_id,
@@ -394,11 +398,12 @@ def test_linear_unauthenticated_is_401(client):
 
 
 # --- the body, read before the credential -------------------------------------------------------
-# A body and the bytes of the 400 Linear refused it with, or None where Linear served the query, as
-# `backlot.graphql.body` reads them. `_GRAPHQL_JS_NOT_JSON` marks the four rows
-# `backlot.routers.linear.graphql` answers in graphql-js's words whatever the credential: `{`,
-# `-NaN`, an empty body and a byte-order mark alone. `_REQUEST_ERROR` marks a JSON array, the 400
-# with the key; Linear answers it with `Operation batching disabled.` with or without one.
+# The headers a body was sent with beyond `Content-Type: application/json`, the body, and the bytes
+# Linear refused it with, at the status their `code` names (400 where there is none), or None where
+# Linear served the query, as `backlot.graphql.body` reads them. `_GRAPHQL_JS_NOT_JSON` marks the
+# rows `backlot.routers.linear.graphql` answers in graphql-js's words whatever the credential: `{`
+# and `-NaN` however they arrive, and a body with no text. `_REQUEST_ERROR` marks a JSON array, the
+# 400 with the key; Linear answers it with `Operation batching disabled.` with or without one.
 _GRAPHQL_JS_NOT_JSON = b'{"errors":[{"message":"POST body sent invalid JSON."}]}'
 _REQUEST_ERROR = object()
 _LINEAR_BODIES = [
@@ -795,21 +800,255 @@ _LINEAR_BODIES = [
 ]
 
 
+_TYPENAME = b'{"query":"{ __typename }"}'
+_LIMIT = request_body.LINEAR_LIMIT
+
+
+def _express(status: int, message: bytes) -> bytes:
+    """Express's envelope as Linear writes it around ``message``, already JSON-escaped."""
+    return b'{"error":"%s","details":{},"code":%d}' % (message, status)
+
+
+def _charset(name: str) -> tuple:
+    return (("Content-Type", f"application/json; charset={name}"),)
+
+
+_GZIP = (("Content-Encoding", "gzip"),)
+_LATIN1 = _express(415, b'unsupported charset \\"LATIN1\\"')
+_HEADER_CHECK = _express(400, b"incorrect header check")
+_CUT_SHORT = _express(400, b"unexpected end of file")
+_BOGUS = _express(415, b'unsupported content encoding \\"bogus\\"')
+_TOO_LARGE = _express(413, b"request entity too large")
+_TOO_LARGE_DECLARED = (
+    b'{"error":"request entity too large","details":{},"extensions":{"code":"PAYLOAD_TOO_LARGE",'
+    b'"type":"payload too large","statusCode":413,"userError":true,"limit":10485760,'
+    b'"length":10485761},"code":413}'
+)
+# Forty ideographs outnumber the ASCII around them, so without a byte-order mark iconv-lite reads
+# the body in the order that is wrong for it, and Linear quotes the characters that make.
+_IDEOGRAPHS = '{"query":"{ __typename }","x":"' + "\u4e00" * 40 + '"}'
+_IDEOGRAPHS_MISREAD = _express(
+    400,
+    "Unexpected token '\u7b00', \\\"\u7b00\u2200\u7100\u7500\u6500\u7200\u7900\u2200\u3a00"
+    '\u2200\\"... is not valid JSON'.encode(),
+)
+_LINEAR_READS = [
+    pytest.param(_GZIP, gzip.compress(_TYPENAME), None, id="gzip"),
+    pytest.param((("Content-Encoding", "GZIP"),), gzip.compress(_TYPENAME), None, id="GZIP"),
+    pytest.param((("Content-Encoding", "deflate"),), zlib.compress(_TYPENAME), None, id="deflate"),
+    pytest.param((("Content-Encoding", ""),), _TYPENAME, None, id="an empty encoding"),
+    pytest.param(
+        (("Content-Encoding", "x-gzip"),),
+        gzip.compress(_TYPENAME),
+        _express(415, b'unsupported content encoding \\"x-gzip\\"'),
+        id="x-gzip",
+    ),
+    pytest.param((("Content-Encoding", "bogus"),), _TYPENAME, _BOGUS, id="bogus"),
+    pytest.param((("Content-Encoding", "BOGUS"),), _TYPENAME, _BOGUS, id="BOGUS"),
+    pytest.param(
+        (("Content-Encoding", "gzip"), ("Content-Encoding", "gzip")),
+        gzip.compress(gzip.compress(_TYPENAME)),
+        _express(415, b'unsupported content encoding \\"gzip, gzip\\"'),
+        id="gzip twice",
+    ),
+    pytest.param(
+        (("Content-Encoding", "gzip, identity"),),
+        gzip.compress(_TYPENAME),
+        _express(415, b'unsupported content encoding \\"gzip, identity\\"'),
+        id="gzip, identity",
+    ),
+    pytest.param(_GZIP, _TYPENAME, _HEADER_CHECK, id="gzip over a plain body"),
+    pytest.param(_GZIP, gzip.compress(_TYPENAME) + b"xx", _HEADER_CHECK, id="gzip then xx"),
+    pytest.param(_GZIP, gzip.compress(_TYPENAME)[:-5], _CUT_SHORT, id="gzip cut short"),
+    pytest.param(_GZIP, b"", _CUT_SHORT, id="gzip over no bytes"),
+    pytest.param(_GZIP, gzip.compress(b""), _GRAPHQL_JS_NOT_JSON, id="gzip of no bytes"),
+    pytest.param(_GZIP, gzip.compress(b"{"), _GRAPHQL_JS_NOT_JSON, id="gzip of {"),
+    pytest.param(
+        (("Content-Encoding", "deflate"),),
+        zlib.compress(_TYPENAME)[2:-4],
+        _HEADER_CHECK,
+        id="raw deflate",
+    ),
+    pytest.param(_charset("utf-16le"), _TYPENAME.decode().encode("utf-16-le"), None, id="utf-16le"),
+    pytest.param(
+        _charset("utf-16-le"), _TYPENAME.decode().encode("utf-16-le"), None, id="utf-16-le"
+    ),
+    pytest.param(_charset("utf-16be"), _TYPENAME.decode().encode("utf-16-be"), None, id="utf-16be"),
+    pytest.param(
+        _charset("utf-16"), _TYPENAME.decode().encode("utf-16"), None, id="utf-16, marked"
+    ),
+    pytest.param(
+        _charset("utf-16"), _TYPENAME.decode().encode("utf-16-be"), None, id="utf-16, big-endian"
+    ),
+    pytest.param(
+        _charset("utf-16"), _TYPENAME.decode().encode("utf-16-le"), None, id="utf-16, little-endian"
+    ),
+    pytest.param(
+        _charset("utf-16le"),
+        '\ufeff{"query":"{ __typename }"}'.encode("utf-16-le"),
+        None,
+        id="utf-16le, marked",
+    ),
+    pytest.param(
+        _charset("utf-16le"), _TYPENAME.decode().encode("utf-16-le") + b"x", None, id="odd bytes"
+    ),
+    pytest.param(
+        _charset("utf-16le"),
+        b'{"query":"{ __typename }","x":"'.decode().encode("utf-16-le")
+        + b"\x00\xd8"
+        + b'"}'.decode().encode("utf-16-le"),
+        None,
+        id="a lone surrogate",
+    ),
+    pytest.param(
+        _charset("utf-32"), _TYPENAME.decode().encode("utf-32"), None, id="utf-32, marked"
+    ),
+    pytest.param(
+        _charset("utf-32"), _TYPENAME.decode().encode("utf-32-be"), None, id="utf-32, big-endian"
+    ),
+    pytest.param(_charset("utf-32le"), _TYPENAME.decode().encode("utf-32-le"), None, id="utf-32le"),
+    pytest.param(_charset("UTF-8"), _TYPENAME, None, id="UTF-8"),
+    pytest.param(_charset('"utf-8"'), _TYPENAME, None, id="utf-8 quoted"),
+    pytest.param(_charset("utf-7"), _TYPENAME, None, id="utf-7"),
+    pytest.param(_charset("utf-7-imap"), _TYPENAME, None, id="utf-7-imap"),
+    pytest.param(
+        _charset("utf-16le"),
+        "5".encode("utf-16-le"),
+        _express(400, b"Unexpected token '5', \\\"5\\\" is not valid JSON"),
+        id="utf-16le 5",
+    ),
+    pytest.param(
+        _charset("utf-16le"), "{".encode("utf-16-le"), _GRAPHQL_JS_NOT_JSON, id="utf-16le {"
+    ),
+    pytest.param(_charset("utf-16le"), b"", _GRAPHQL_JS_NOT_JSON, id="utf-16le, no bytes"),
+    pytest.param(_charset("utf-8; foo=bar"), _TYPENAME, None, id="another parameter"),
+    pytest.param(_charset('"utf\\-8"'), _TYPENAME, None, id="a quoted pair"),
+    pytest.param(_charset('"lat\\in1"'), _TYPENAME, _LATIN1, id="a quoted pair, latin1"),
+    pytest.param(
+        (("Content-Type", "application/json; charset = latin1"),),
+        _TYPENAME,
+        _LATIN1,
+        id="spaces around =",
+    ),
+    pytest.param(_charset('"utf-8:1234"'), _TYPENAME, None, id="a trailing :1234"),
+    pytest.param(_charset("utf-32be"), _TYPENAME.decode().encode("utf-32-be"), None, id="utf-32be"),
+    pytest.param(
+        _charset("utf-32be"),
+        b'{"query":"{ __typename }","x":"'.decode().encode("utf-32-be")
+        + b"\x00\x11\x00\x00"
+        + b'"}'.decode().encode("utf-32-be"),
+        None,
+        id="past U+10FFFF",
+    ),
+    pytest.param(
+        _charset("utf-16le"), _IDEOGRAPHS.encode("utf-16-le"), None, id="utf-16le, ideographs"
+    ),
+    pytest.param(
+        _charset("utf-16"), _IDEOGRAPHS.encode("utf-16"), None, id="utf-16, marked, ideographs"
+    ),
+    pytest.param(
+        _charset("utf-16"),
+        b"\xfe\xff" + _IDEOGRAPHS.encode("utf-16-be"),
+        None,
+        id="utf-16, marked big-endian, ideographs",
+    ),
+    pytest.param(
+        _charset("utf-16"),
+        _IDEOGRAPHS.encode("utf-16-le"),
+        _IDEOGRAPHS_MISREAD,
+        id="utf-16, little-endian ideographs",
+    ),
+    pytest.param(
+        _charset("utf-16"),
+        _IDEOGRAPHS.encode("utf-16-be"),
+        _IDEOGRAPHS_MISREAD,
+        id="utf-16, big-endian ideographs",
+    ),
+    pytest.param(_charset("latin1"), _TYPENAME, _LATIN1, id="latin1"),
+    pytest.param(
+        _charset("iso-8859-1"),
+        _TYPENAME,
+        _express(415, b'unsupported charset \\"ISO-8859-1\\"'),
+        id="iso-8859-1",
+    ),
+    pytest.param(
+        _charset("utf8"), _TYPENAME, _express(415, b'unsupported charset \\"UTF8\\"'), id="utf8"
+    ),
+    pytest.param(
+        _charset("utf-nope"),
+        _TYPENAME,
+        _express(415, b'unsupported charset \\"UTF-NOPE\\"'),
+        id="utf-nope",
+    ),
+    pytest.param(
+        _charset("utf_16le"),
+        _TYPENAME.decode().encode("utf-16-le"),
+        _express(415, b'unsupported charset \\"UTF_16LE\\"'),
+        id="utf_16le",
+    ),
+    pytest.param(
+        (("Content-Type", "Application/JSON; Charset=Latin1"),), _TYPENAME, _LATIN1, id="Charset"
+    ),
+    pytest.param(_charset("utf-8; charset=latin1"), _TYPENAME, _LATIN1, id="two charsets"),
+    pytest.param(
+        _charset("latin1") + (("Content-Encoding", "bogus"),),
+        _TYPENAME,
+        _LATIN1,
+        id="latin1, bogus",
+    ),
+    pytest.param(
+        _charset("utf-nope") + (("Content-Encoding", "bogus"),),
+        _TYPENAME,
+        _BOGUS,
+        id="utf-nope, bogus",
+    ),
+    pytest.param((), padded_query(_LIMIT), None, id="the limit"),
+    pytest.param((), padded_query(_LIMIT + 1), _TOO_LARGE_DECLARED, id="past the limit"),
+    pytest.param(_GZIP, gzip.compress(padded_query(_LIMIT)), None, id="the limit, gzipped"),
+    pytest.param(_GZIP, gzip.compress(padded_query(_LIMIT + 1)), _TOO_LARGE, id="past it, gzipped"),
+    pytest.param(
+        _GZIP, gzip.compress(padded_query(_LIMIT + 2)), _TOO_LARGE, id="past it by two, gzipped"
+    ),
+    pytest.param(
+        (("Content-Encoding", "deflate"),),
+        zlib.compress(padded_query(_LIMIT + 1)),
+        _TOO_LARGE,
+        id="past it, deflated",
+    ),
+    pytest.param(_GZIP, b"x" * (_LIMIT + 1), _HEADER_CHECK, id="past it, not gzip"),
+    pytest.param((), b"{" * (_LIMIT + 1), _TOO_LARGE_DECLARED, id="past it, not JSON"),
+    pytest.param(
+        (("Content-Encoding", "bogus"),), padded_query(_LIMIT + 1), _BOGUS, id="past it, bogus"
+    ),
+    pytest.param(_charset("latin1"), padded_query(_LIMIT + 1), _LATIN1, id="past it, latin1"),
+    pytest.param(
+        _charset("utf-nope"), padded_query(_LIMIT + 1), _TOO_LARGE_DECLARED, id="past it, utf-nope"
+    ),
+]
+
+
 @pytest.mark.parametrize("credential", ["key", "none", "nope"])
-@pytest.mark.parametrize("body,answer", _LINEAR_BODIES)
-def test_linear_reads_the_body_before_the_credential(client, tokens_yaml, credential, body, answer):
+@pytest.mark.parametrize(
+    "headers,body,answer",
+    [pytest.param((), *row.values, id=row.id) for row in _LINEAR_BODIES] + _LINEAR_READS,
+)
+def test_linear_reads_the_body_before_the_credential(
+    client, tokens_yaml, credential, headers, body, answer
+):
     """Each row answers as the comment over `_LINEAR_BODIES` says, and every refusal but a
     `_REQUEST_ERROR` row's is the same whatever the credential."""
-    headers = {"Content-Type": "application/json"}
+    if not any(name == "Content-Type" for name, _ in headers):
+        headers = (("Content-Type", "application/json"), *headers)
     if credential != "none":
-        headers["Authorization"] = tokens_yaml["admin_token"] if credential == "key" else "nope"
-    r = client.post("/linear/graphql", content=body, headers=headers)
+        key = tokens_yaml["admin_token"] if credential == "key" else "nope"
+        headers = (*headers, ("Authorization", key))
+    r = client.post("/linear/graphql", content=body, headers=list(headers))
     if answer is _REQUEST_ERROR:
         if credential == "key":
             assert r.content == _GRAPHQL_JS_NOT_JSON
         assert r.status_code == (400 if credential == "key" else 401)
     elif answer is not None:
-        assert (r.status_code, r.content) == (400, answer)
+        assert (r.status_code, r.content) == (json.loads(answer).get("code", 400), answer)
     elif credential == "key":
         assert (r.status_code, r.json()) == (200, {"data": {"__typename": "Query"}})
     else:

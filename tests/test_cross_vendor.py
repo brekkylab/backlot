@@ -285,21 +285,23 @@ def test_health_source_documents_is_null_without_the_meta_key(tmp_path):
     assert body["documents"] == 1
 
 
-# A variable declared `Int` holding the numbers `backlot.graphql.body._int`'s integers were measured
-# with, and the part of the 400's message that shows the double each is read as.
-_HUGE_INTEGERS = [
-    pytest.param("1" * 4301, "invalid value inf;", id="4301 ones, read as Infinity"),
-    pytest.param("1" * 311, "invalid value inf;", id="311 ones, read as Infinity"),
-    pytest.param("9" * 309, "invalid value inf;", id="309 nines, read as Infinity"),
-    pytest.param("1e400", "invalid value inf;", id="1e400, read as Infinity"),
-    # graphql-js prints the double as 1e+308; graphql-core prints its digits, cut in the middle past
-    # 240 characters, so this row reads the leading ones.
-    pytest.param(
-        "9" * 308, "invalid value 10000000000000000109790", id="308 nines, read as 1e+308"
-    ),
-    pytest.param(
-        "9007199254740993", "invalid value 9007199254740992;", id="2**53 + 1, read as 2**53"
-    ),
+# A variable declared `Int` holding a number as the body spells it, and that number as both vendors
+# quoted it back, which the docstrings of `backlot.graphql.body._int` and `Double` record.
+_NUMBERS = [
+    pytest.param("1" * 4301, "Infinity", id="4301 ones"),
+    pytest.param("1" * 311, "Infinity", id="311 ones"),
+    pytest.param("9" * 309, "Infinity", id="309 nines"),
+    pytest.param("1e400", "Infinity", id="1e400"),
+    pytest.param("-1e400", "-Infinity", id="-1e400"),
+    pytest.param("9" * 308, "1e+308", id="308 nines"),
+    pytest.param("9007199254740993", "9007199254740992", id="2**53 + 1"),
+    pytest.param("734946803407896717", "734946803407896700", id="past 2**53"),
+    pytest.param("123456789012345678901234", "1.2345678901234569e+23", id="24 digits"),
+    pytest.param("1e21", "1e+21", id="1e21"),
+    pytest.param("1e20", "100000000000000000000", id="1e20"),
+    pytest.param("3000000000.0", "3000000000", id="3000000000.0"),
+    pytest.param("0.00001", "0.00001", id="0.00001"),
+    pytest.param("1e-7", "1e-7", id="1e-7"),
 ]
 
 
@@ -310,17 +312,19 @@ _HUGE_INTEGERS = [
         ("fireflies", "query($x: Int) { transcripts(limit: $x) { id } }"),
     ],
 )
-@pytest.mark.parametrize("digits, read_as", _HUGE_INTEGERS)
-def test_a_graphql_vendor_reads_an_integer_as_the_double_json_parse_reads(
-    client, tokens_yaml, vendor, document, digits, read_as
+@pytest.mark.parametrize("number, quoted", _NUMBERS)
+def test_a_graphql_vendor_quotes_a_number_as_javascript_prints_it(
+    client, tokens_yaml, vendor, document, number, quoted
 ):
-    """The variable's value is read the way both vendors read it; the words around it are
-    graphql-js's."""
+    """The variable's value is read as the double ``JSON.parse`` reads and quoted as JavaScript
+    prints it, at both places graphql-js quotes it."""
     admin = tokens_yaml["admin_token"]
     credential = admin if vendor == "linear" else f"Bearer {admin}"
-    body = '{"query":"%s","variables":{"x":%s}}' % (document, digits)
+    body = '{"query":"%s","variables":{"x":%s}}' % (document, number)
     r = client.post(
         f"/{vendor}/graphql", content=body.encode(), headers={"Authorization": credential}
     )
     assert r.status_code == 400
-    assert read_as in r.json()["errors"][0]["message"]
+    message = r.json()["errors"][0]["message"]
+    assert f" got invalid value {quoted}; Int cannot represent " in message
+    assert message.endswith(f" value: {quoted}")

@@ -3,7 +3,7 @@
 Linear is **GraphQL only** — there is no REST surface to emulate — so this router is one
 endpoint. The schema and the resolvers live in ``backlot/graphql/`` (``linear.graphql`` +
 ``linear_resolvers.py``); everything here is HTTP: a body and credentials in, a GraphQL envelope
-out, or Express's for the bodies :func:`_not_json` answers.
+out, or Express's for the bodies :func:`_express` answers.
 
 Auth is the one place Linear differs from every other source in this repo. A personal API key
 travels as the **bare** header value (``Authorization: lin_api_…``, no scheme) while an OAuth
@@ -15,8 +15,9 @@ Linear draws the line in the same place, and generated clients branch on it.
 
 The body is read before the credential is looked at, by Express's ``body-parser`` in front of the
 GraphQL server: with no credential, a body that is not JSON drew its 400 from api.linear.app on
-2026-10-18, not the 401. :func:`_not_json` is that 400; :func:`graphql` names the bodies answered in
-graphql-js's words instead.
+2026-10-18, not the 401. :func:`_express` is that 400, and each refusal ``body-parser`` makes before
+it has the text (:func:`backlot.graphql.body.body_parser_text`); :func:`graphql` names the bodies
+answered in graphql-js's words instead.
 """
 
 from __future__ import annotations
@@ -37,15 +38,26 @@ router = APIRouter(prefix="/linear", tags=["linear"])
 ENGINE = build_engine()
 
 
-def _not_json(message: str) -> Response:
-    """Linear's 400 for a body V8 refuses, ``message`` being what
+def _express(message: str, status: int = 400, length: int | None = None) -> Response:
+    """Linear's answer to a body ``body-parser`` refuses: Express's envelope around ``message``,
+    not a GraphQL one, as api.linear.app answered a 400 on 2026-10-18 with what
     :func:`~backlot.graphql.body.strict_violation` or
-    :func:`~backlot.graphql.body.v8_constant_message` writes: Express's envelope around it, not a
-    GraphQL one, as api.linear.app answered on 2026-10-18."""
+    :func:`~backlot.graphql.body.v8_constant_message` writes, and each
+    :class:`~backlot.graphql.body.Unread` on 2026-10-19. A 413 for an uncompressed body carries
+    ``extensions`` naming its ``length`` and the limit."""
+    envelope: dict = {"error": message, "details": {}}
+    if length is not None:
+        envelope["extensions"] = {
+            "code": "PAYLOAD_TOO_LARGE",
+            "type": "payload too large",
+            "statusCode": 413,
+            "userError": True,
+            "limit": request_body.LINEAR_LIMIT,
+            "length": length,
+        }
+    envelope["code"] = status
     return Response(
-        request_body.node_json({"error": message, "details": {}, "code": 400}),
-        status_code=400,
-        media_type="application/json",
+        request_body.node_json(envelope), status_code=status, media_type="application/json"
     )
 
 
@@ -56,20 +68,27 @@ async def graphql(request: Request):
     OpenAPI→MCP bridge nothing useful (hence no ``SOURCE_PREFIXES`` entry either — see
     ``backlot/openapi.py``). Introspection is the schema description for this endpoint.
 
-    Two refusals keep graphql-js's words here, before the credential as Linear's do: an empty
-    body, which Linear answers with Apollo Server's ``POST body missing, invalid Content-Type, or
-    JSON object has no keys.``, and a body the reader refuses before it meets a ``NaN``,
-    ``Infinity`` or ``-Infinity``, such as ``{`` or ``-NaN``, which Linear answers with V8's
-    message."""
-    text = request_body.decode(await request.body())
+    Two refusals keep graphql-js's words here, before the credential as Linear's do: a body with no
+    text once read, which Linear answers with Apollo Server's
+    ``POST body missing, invalid Content-Type, or JSON object has no keys.``, and a body the reader
+    refuses before it meets a ``NaN``, ``Infinity`` or ``-Infinity``, such as ``{`` or ``-NaN``,
+    which Linear answers with V8's message."""
+    try:
+        text = request_body.body_parser_text(
+            await request.body(),
+            request.headers.get("content-type"),
+            ", ".join(request.headers.getlist("content-encoding")),
+        )
+    except request_body.Unread as unread:
+        return _express(unread.message, unread.status, unread.length)
     violation = request_body.strict_violation(text) if text else None
     if violation is not None:
-        return _not_json(violation)
+        return _express(violation)
     try:
         payload = request_body.parse(text)
     except request_body.NotJson as exc:
         if exc.constant is not None:
-            return _not_json(request_body.v8_constant_message(text, exc.constant))
+            return _express(request_body.v8_constant_message(text, exc.constant))
         return JSONResponse(engine.not_json().payload, status_code=400)
     caller = auth.resolve_api_key(request)
     if caller is None:

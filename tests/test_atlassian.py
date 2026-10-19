@@ -7567,8 +7567,9 @@ _ACCEPT_ROWS += [
     ),
     # the gateway's Connect-token 403 comes before Spring sorts `Accept`
     ("GET", _INFO, "unreadable-bearer", _SORT_FAILS, None, 403, _JSON, _CONNECT_JSON, {}),
-    # the same choice on an operation that asks no 406, where a `GET` and a `HEAD` reach the two
-    # answers that differ by method: neither carries `Allow`, and the wildcard's 500 is the page
+    # the same choice on an operation that gives a caller with no credential no 406, by the methods
+    # ``errors.atlassian.jira_unauthenticated`` was measured on there: neither of the next two
+    # carries `Allow`, and the wildcard's 500 is the page
     ("GET", _LICENSE, "none", "foo", None, 401, _EMPTY_HTML, b"")
     + ({"allow": None, "www-authenticate": _PRESENT},),
     ("HEAD", _LICENSE, "none", "*.*", None, 401, _EMPTY_HTML, b"", {"allow": None}),

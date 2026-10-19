@@ -1466,8 +1466,9 @@ def jira_unauthenticated(
 
     Measured 2026-10-13 on `OPTIONS serverInfo` with no `Accept` and sixty-six values, the same
     on `GET myself` for each value that admits JSON (the 406 answers the others there first), and
-    2026-10-14 on `GET` and `HEAD` of operations that ask no 406 (`license/approximateLicenseCount`,
-    `app/module/dynamic`) for the two answers that differ by method:
+    2026-10-14 on `GET` and `HEAD` of operations that give a caller with no credential no 406
+    (`license/approximateLicenseCount`, `app/module/dynamic`) for the two answers that turn on the
+    method:
 
     - a header any member of which Jira cannot read (:func:`_accept`: `foo`, `*.*`, `*/json`,
       `q=2`, `charset=bogus`), wherever it stands: the 401 with no body, under

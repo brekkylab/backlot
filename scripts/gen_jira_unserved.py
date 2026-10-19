@@ -34,7 +34,7 @@ credential, which sent each of its 232 DELETEs, PUTs and POSTs once with no body
 `text/plain` one. How the check reads a `Content-Type` is
 ``backlot.errors.atlassian.refuse_a_media_type``'s.
 
-An entry's ``accept`` is ``"unchecked"`` where the operation, for a caller with no credential,
+For a caller with no credential, an entry's ``accept`` is ``"unchecked"`` where the operation
 answers an `Accept` admitting no JSON with no 406, and its ``produces`` names what its 406 names
 where that is more than JSON (``backlot.routers.atlassian._published_answer`` reads both); the names
 below say which.
@@ -155,9 +155,9 @@ ACCEPT_UNCHECKED = _both(
     "GET /rest/atlassian-connect/1/addons/{}/properties",
     *(f"{m} /rest/atlassian-connect/1/app/module/dynamic" for m in ("GET", "POST", "DELETE")),
 }
-# What the 406 names where it is more than `[application/json]`, of those that answered it:
-# `mypreferences` `text/plain` beside JSON, letting `text/plain`, `TEXT/PLAIN` and `text/*` past it
-# to the 401, and `filter/{}/columns`'s `DELETE` seven types (2026-10-13).
+# What the 406 names where it is more than `[application/json]`, of those that answered it with no
+# credential: `mypreferences` `text/plain` beside JSON, letting `text/plain`, `TEXT/PLAIN` and
+# `text/*` past it to the 401, and `filter/{}/columns`'s `DELETE` seven types (2026-10-13).
 PRODUCES = {
     **{
         op: ["application/json", "text/plain"]

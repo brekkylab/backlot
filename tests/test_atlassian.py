@@ -5979,9 +5979,12 @@ _TOMCAT_PAGE = "text/html;charset=utf-8"
         ("GET", "/wiki/spaces/NO%2FSUCH", 404, None, "text/html;charset=UTF-8"),
         ("GET", "/wiki/SPACES/NO%2FSUCH", 404, None, "text/html;charset=UTF-8"),
         # a `;` outside both API mounts, where the edge's refusal was not measured: Jira's site and
-        # Confluence's web app answer their own pages
+        # Confluence's web app answer their own pages, a segment that only begins like a mount's
+        # included
         ("GET", "/foo;x", 404, None, errors_atlassian.JIRA_SITE_HTML_MEDIA_TYPE),
+        ("GET", "/restx/api/3/nope;x", 404, None, errors_atlassian.JIRA_SITE_HTML_MEDIA_TYPE),
         ("GET", "/wiki/display/A;B", 404, None, errors_atlassian.HTML_MEDIA_TYPE),
+        ("GET", "/wiki/rest/apix;x", 404, None, errors_atlassian.HTML_MEDIA_TYPE),
     ],
 )
 def test_atlassian_front_door_answers_before_either_product(

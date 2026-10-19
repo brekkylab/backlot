@@ -4738,6 +4738,7 @@ _NO_ENDPOINT_PATHS = [
         ("GET", "/atlassian/rest/api/3/nope%23x", "/rest/api/3/nope%23x"),
         ("GET", "/atlassian/rest/api/3/nope%09x", "/rest/api/3/nope%09x"),
         ("GET", "/atlassian/rest/api/3/nope%0Dx", "/rest/api/3/nope%0Dx"),
+        ("GET", "/atlassian/rest/api/3/nope%0Ax", "/rest/api/3/nope%0Ax"),
         # and ones it decodes
         ("GET", "/atlassian/rest/api/3/nope%2dx", "/rest/api/3/nope-x"),
         ("GET", "/atlassian/rest/api/3/nope%7ex", "/rest/api/3/nope~x"),
@@ -5091,6 +5092,8 @@ def test_jira_unserved_sorts_every_operation_no_route_serves(monkeypatch):
         ("/atlassian/wiki/rest/api/nope%3Fx", "application/json", "json", "nope%3Fx"),
         ("/atlassian/wiki/rest/api/nope%23x", "application/json", "json", "nope%23x"),
         ("/atlassian/wiki/rest/api/nope%2Dx", "application/json", "json", "nope-x"),
+        ("/atlassian/wiki/rest/api/nope%0Ax", "application/json", "json", "nope%0Ax"),
+        ("/atlassian/wiki/rest/api/nope%0Ax", "*/*", "xml", "nope%0Ax"),
         # an escaped `?` beside a real query: the query is the one sent, after the path's escape
         ("/atlassian/wiki/rest/api/nope%3Fx?_=1", "application/json", "json", "nope%3Fx?_=1"),
     ],

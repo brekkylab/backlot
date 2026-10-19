@@ -281,6 +281,48 @@ def test_execute_request_reads_the_body_as_node_reads_it(gql, body, served):
         assert r.payload == {"errors": [{"message": "POST body sent invalid JSON."}]}
 
 
+_ECHO = engine.Engine(
+    "type Query { echo(id: ID!): ID }", {"Query": {"echo": lambda _r, _i, id: id}}
+)
+
+
+@pytest.mark.parametrize(
+    "value, answer",
+    [
+        pytest.param("1e21", {"data": {"echo": "1e+21"}}, id="1e21"),
+        pytest.param("1e300", {"data": {"echo": "1e+300"}}, id="1e300"),
+        pytest.param(
+            "734946803407896717", {"data": {"echo": "734946803407896700"}}, id="past 2**53"
+        ),
+        pytest.param(
+            "12345678901234567890", {"data": {"echo": "12345678901234567000"}}, id="20 digits"
+        ),
+        pytest.param("9007199254740993", {"data": {"echo": "9007199254740992"}}, id="2**53 + 1"),
+        pytest.param("5", {"data": {"echo": "5"}}, id="5"),
+        pytest.param("-0", {"data": {"echo": "0"}}, id="-0"),
+        pytest.param("1.0", {"data": {"echo": "1"}}, id="1.0"),
+        pytest.param('"w1"', {"data": {"echo": "w1"}}, id="a string"),
+        pytest.param(
+            "1.5",
+            {
+                "errors": [
+                    {
+                        "message": "Variable '$x' got invalid value 1.5; "
+                        "ID cannot represent value: 1.5",
+                        "locations": [{"line": 1, "column": 7}],
+                    }
+                ]
+            },
+            id="1.5",
+        ),
+    ],
+)
+def test_an_id_variable_is_read_as_graphql_js_reads_it(value, answer):
+    """Each value is read by :func:`backlot.graphql.engine._id_from_a_variable`."""
+    body = '{"query": "query($x: ID!) { echo(id: $x) }", "variables": {"x": %s}}' % value
+    assert _ECHO.execute_request(body).payload == answer
+
+
 def _fuzz_texts(seed: int, count: int):
     """``count`` JSON texts, each with the index of the first constant token it was given or None,
     and as many again with one character of each deleted, doubled or replaced."""

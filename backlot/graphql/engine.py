@@ -23,6 +23,7 @@ from typing import Any, Callable, Mapping
 
 from graphql import (
     GraphQLError,
+    GraphQLID,
     GraphQLScalarType,
     GraphQLSchema,
     assert_valid_schema,
@@ -31,10 +32,29 @@ from graphql import (
     parse,
     validate,
 )
+from graphql.type.scalars import coerce_id
 
 from backlot.graphql import body as request_body
 
 Resolver = Callable[..., Any]
+
+
+def _id_from_a_variable(value: Any) -> str:
+    """``ID``'s reading of a variable's value: graphql-core's ``coerce_id``, but for a
+    :class:`~backlot.graphql.body.Double` holding an integer, which graphql-js turns into an ID with
+    ``Number::toString`` where ``coerce_id`` writes ``str(int(value))``. graphql 16.9.0's
+    ``GraphQLID.parseValue`` under Node 24.18.0 read ``1e21``, ``1e300`` and
+    ``12345678901234567890`` as ``1e+21``, ``1e+300`` and ``12345678901234567000`` on 2026-10-19
+    (UTC), where ``coerce_id`` writes the integer the double holds, digit for digit."""
+    if type(value) is request_body.Double and value.is_integer():
+        return repr(value)
+    return coerce_id(value)
+
+
+# graphql-core has one `ID` scalar for every schema in the process, so this reads an `ID` variable
+# for all of them; it parts from `coerce_id` only on a Double holding an integer, and a Double is
+# made only by `backlot.graphql.body`.
+GraphQLID.parse_value = _id_from_a_variable
 
 # One custom scalar's coercion: ``parse_value`` takes a variable's JSON value, ``parse_literal`` an
 # AST node. graphql-core runs both BEFORE any resolver, so a scalar that rejects an operand turns a

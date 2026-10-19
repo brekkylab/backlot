@@ -913,7 +913,8 @@ async def vendor_json_media_type(request: Request, call_next):
     position, those handlers because they run inside ``ExceptionMiddleware``. The status goes along
     with the path because the answer can depend on it: code search's own 200 and 422 carry no
     charset where the gateway's 401 on the same path does. An answer given in front of Jira is not
-    Jira's, and keeps the type its layer gives (the edge's `;` 400, ``errors.atlassian.front_door``).
+    Jira's, and keeps the type its layer gives (the edge's `;` 400,
+    ``errors.atlassian.front_door``).
     """
     response = await call_next(request)
     if response.headers.get("content-type") == "application/json" and not request.scope.get(

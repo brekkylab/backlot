@@ -232,12 +232,13 @@ def _instance(path: str) -> str:
     return path[len(PREFIX) :] if path.startswith(PREFIX) else path
 
 
-#: An escaped `[` or `]` in a Jira path, which turns two of its RFC 7807 refusals into pages of the
-#: web app's, under `Accept: application/json` and `*/*` alike (2026-10-18): the no-endpoint 404 at
-#: `nope%5Bx` into the dead-link page (:func:`no_endpoint`), and the conversion 400 at
-#: `issue/A%5BB/comment?maxResults=abc` into :data:`_JIRA_NULL_ERROR_PAGE`; the same for `%5D`. The
-#: issue's own 404 at `issue/A%5BB` is unchanged.
-_JIRA_BRACKET = re.compile(r"%5[BD]", re.IGNORECASE)
+#: A `[` or `]` in a Jira path, escaped or bare, which turns two of its RFC 7807 refusals into pages
+#: of the web app's, under `Accept: application/json` and `*/*` alike (2026-10-18): the no-endpoint
+#: 404 at `nope%5Bx` into the dead-link page (:func:`no_endpoint`), and the conversion 400 at
+#: `issue/A%5BB/comment?maxResults=abc` into :data:`_JIRA_NULL_ERROR_PAGE`; the same for `%5D`. At
+#: `issue/A%5BB` the issue's own JSON 404 stands. On 2026-10-19 `nope%5bx` and the bare `nope[x`
+#: were the dead-link page, and `issue/A[B/comment?maxResults=abc` the `(null)` page.
+_JIRA_BRACKET = re.compile(r"%5[BD]|[\[\]]", re.IGNORECASE)
 #: That 400's page: real's is 66,815 bytes on `text/html;charset=utf-8`, titled `(null)`; this is a
 #: stub with the status, the media type, the title and the one line it reads.
 _JIRA_NULL_ERROR_PAGE = (
@@ -2169,7 +2170,7 @@ _TAG = re.compile(r"<(/?)([^\t\n\v\f\r /<>]*)")
 #: anywhere, measured 2026-10-12, and a whole segment `..` followed by one or more `;` and a `/`
 #: (`/..;/`, `/..;;/`, `/..;%3B/`), measured 2026-10-13. A `..;` inside a segment (`/a..;/`) or
 #: with no `/` after its semicolons (`/..;a/`) is not refused here; real answers it further in,
-#: with a 400 page, and in an API path the `;` in it draws the edge's (:func:`front_door`).
+#: with a 400 page, the edge's for the `;` in it (:func:`front_door`).
 _PATH_STEP = re.compile(r"\.\.[/\\]|(?<![^/])\.\.;+/")
 #: The same in a query parameter's value, where the firewall reads less: `../` anywhere, and `..\`
 #: where a `\` or a `/` follows it or the value ends (`?x=..%5C`, `?x=..%5C%5Cy` and
@@ -2242,23 +2243,19 @@ def _cloudfront(status: int, reason: str, method: str, raw_path: str) -> str:
     return _CLOUDFRONT_PAGE.format(status=status, reason=reason, request_id=request_id)
 
 
-#: What the edge answers a `;` in an API path with, by `Accept` (:func:`front_door`). Under
-#: `application/json` it is this body on `application/json`; under `*/*` real's page is 18,943 bytes
-#: on `text/html` with no charset, `<meta name="details" content="lua_response">` among them, reading
-#: the status and a request id of its own (2026-10-12 and 2026-10-18). The page here is a stub with
-#: the status, the media type and that tag, so a `HEAD` declares the stub's length.
-_EDGE_JSON_400 = '{"message":"","status":400}'
+#: What the edge answers a `;` in a path with, by `Accept` (:func:`front_door`). Under
+#: `application/json` it is this body, 28 bytes with its newline, on `application/json`; under `*/*`
+#: real's page is 18,943 bytes on `text/html` with no charset,
+#: `<meta name="details" content="lua_response">` among them, reading the status and a request id of
+#: its own (2026-10-12, 2026-10-18 and 2026-10-19). The page here is a stub with the status, the
+#: media type and that tag, so a `HEAD` declares the stub's length. Both carry
+#: `Access-Control-Allow-Origin: *` beside the edge's two headers (2026-10-19, on all 51 such
+#: answers sent).
+_EDGE_JSON_400 = '{"message":"","status":400}\n'
 _EDGE_PAGE_400 = (
     '<!DOCTYPE html><html><head><meta name="details" content="lua_response">'
     "<title>400</title></head><body><p>400</p></body></html>"
 )
-
-
-def _an_api_path(collapsed: str) -> bool:
-    """Whether ``collapsed`` is under Jira's REST mount or Confluence's API mount. The edge's `;` and
-    Jira's `%5C` were measured under `/rest/api/3/` and `/wiki/rest/api/`; the rest of Jira's
-    `/rest/` is taken to answer as `/rest/api/3/` does."""
-    return serves_the_jira_api(collapsed) or collapsed.startswith(f"{WIKI}/rest/api/")
 
 
 def front_door(
@@ -2271,22 +2268,24 @@ def front_door(
     with its 400, ahead of everything (a `TRACE`, a `PROPFIND` or a tag the firewall names beside
     one is that 400 too); then a method it does not pass on (:data:`SERVED_METHODS`); then its
     firewall (:func:`waf_blocks`), so a `PROPFIND` on a path the firewall refuses is the method's
-    403 and a `PATCH` on one is the firewall's; then the gateway's `PATCH`
-    (:data:`GATEWAY_REFUSED`). A `;` in an API path, bare or as `%3B`, is a 400 in the shape
-    `Accept` picks (:data:`_EDGE_PAGE_400`) on both products, measured with an API token on eleven
-    paths, served routes' among them, under `application/json` and `*/*` (2026-10-12 and
-    2026-10-18). Which layer sends it was not measured, nor where it falls beside the checks above
-    or Tomcat's below, nor another `Accept`: it is read here after the gateway's `PATCH` and before
-    Tomcat's, with the edge's headers, and as JSON wherever `Accept` names `application/json`.
-    Confluence's Tomcat answers an encoded slash anywhere under
-    `/wiki/` with 400, for every method, every credential and the `Accept` values `*/*`,
-    `application/json`, `application/xml` and none, where Jira decodes one and routes the decoded
-    path; an encoded backslash is the same 400 (2026-10-13), and on Jira's API the same page under
-    both values measured (2026-10-18). `/wiki/spaces/` is the exception, in any case
-    (`/wiki/SPACES/`), the web app's own pages, which answered both with 200 (2026-10-13).
-    Each layer's answer is the same whatever the credential, and the gateway's Connect-token 403
-    comes after all of them. Which product a path is the gateway's to decide, and it reads the path
-    with each run of slashes as one: `PATCH //wiki/rest/api/space` is openresty's 405 (2026-10-13).
+    403 and a `PATCH` on one is the firewall's; then the edge's 400 for a `;` anywhere in the path,
+    bare or as `%3B` (2026-10-19: behind `%00`, a `PROPFIND` and the firewall's `..;/`, ahead of the
+    gateway's `PATCH` on both products and of Tomcat's encoded slash); then the gateway's `PATCH`
+    (:data:`GATEWAY_REFUSED`). The `;` refusal is JSON where `Accept` holds `application/json` as
+    spelled, wherever it stands and whatever its `q` (`text/html, application/json` and
+    `application/json;q=0, text/html` were JSON, `APPLICATION/JSON` the page), and the page
+    (:data:`_EDGE_PAGE_400`) for anything else, none included; the same on both products, with an
+    API token and with none, for `GET`, `HEAD`, `OPTIONS`, `POST`, `PUT`, `DELETE` and `PATCH`, on
+    served routes, on paths no route matches and outside the API mounts (`/browse/A-1;x`,
+    `/wiki/spaces/X;y`, `/x;y`), 2026-10-12 to 2026-10-19. Confluence's Tomcat answers an encoded
+    slash anywhere under `/wiki/` with 400, for every method, every credential and the `Accept`
+    values `*/*`, `application/json`, `application/xml` and none, where Jira decodes one and routes
+    the decoded path; an encoded backslash is the same 400 (2026-10-13), and on Jira's API the same
+    page under both values measured (2026-10-18). `/wiki/spaces/` is the exception, in any case
+    (`/wiki/SPACES/`), the web app's own pages, which answered both with 200 (2026-10-13). Each
+    layer's answer is the same whatever the credential, and the gateway's Connect-token 403 comes
+    after all of them. Which product a path is the gateway's to decide, and it reads the path with
+    each run of slashes as one: `PATCH //wiki/rest/api/space` is openresty's 405 (2026-10-13).
 
     An `Accept` naming `text/html` first draws the edge's own "Page Unavailable" page in place of
     Tomcat's, which is not copied. ``raw_path`` is the path as sent, prefix included, which is
@@ -2310,17 +2309,18 @@ def front_door(
         return FrontDoor(403, "cdn edge", "text/html", page, {})
     collapsed = re.sub(r"/{2,}", "/", raw_path)
     confluence = collapsed == WIKI or collapsed.startswith(f"{WIKI}/")
+    encoded = collapsed.lower()
+    if ";" in encoded or "%3b" in encoded:
+        edge = {"Access-Control-Allow-Origin": "*"}
+        if accept is not None and "application/json" in accept:
+            return FrontDoor(400, "cdn edge", "application/json", _EDGE_JSON_400, edge)
+        return FrontDoor(400, "cdn edge", "text/html", _EDGE_PAGE_400, edge)
     if method in GATEWAY_REFUSED:
         status, phrase, server = (
             (405, "Not Allowed", "openresty") if confluence else (400, "Bad Request", "nginx")
         )
         page = _GATEWAY_PATCH_PAGE.format(status=status, phrase=phrase, server=server)
         return FrontDoor(status, "gateway", "text/html", page, {})
-    encoded = collapsed.lower()
-    if _an_api_path(collapsed) and (";" in encoded or "%3b" in encoded):
-        if accept is not None and "application/json" in accept.lower():
-            return FrontDoor(400, "cdn edge", "application/json", _EDGE_JSON_400, {})
-        return FrontDoor(400, "cdn edge", "text/html", _EDGE_PAGE_400, {})
     if (
         collapsed.startswith(f"{WIKI}/")
         and not encoded.startswith(f"{WIKI}/spaces/")

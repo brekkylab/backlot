@@ -4784,12 +4784,16 @@ _JIRA_NULL_PAGE = (
         ("/rest/api/3/nope%5Dx", 404, "/foo"),
         ("/rest/api/3/issue/A%5BB/comment?maxResults=abc", 400, _JIRA_NULL_PAGE),
         ("/rest/api/3/issue/A%5DB/comment?maxResults=abc", 400, _JIRA_NULL_PAGE),
+        # in lower case, and bare
+        ("/rest/api/3/nope%5bx", 404, "/foo"),
+        ("/rest/api/3/nope[x", 404, "/foo"),
+        ("/rest/api/3/issue/A[B/comment?maxResults=abc", 400, _JIRA_NULL_PAGE),
         # the issue's own 404 is not one of the two
         ("/rest/api/3/issue/A%5BB", 404, None),
         ("/rest/api/3/issue/A%5DB", 404, None),
     ],
 )
-def test_jira_answers_an_escaped_bracket_with_a_page_of_its_web_app(
+def test_jira_answers_a_bracket_with_a_page_of_its_web_app(
     client, admin_h, vendor_path, status, page, accept
 ):
     """Pins the two refusals ``errors.atlassian._JIRA_BRACKET`` names, under both `Accept` values
@@ -5929,8 +5933,9 @@ _TOMCAT_PAGE = "text/html;charset=utf-8"
         ("GET", "/rest/api/3/nope%5Cx", 400, _TOMCAT_400, _TOMCAT_PAGE),
         ("GET", "/rest/api/3/issue/A%5CB", 400, _TOMCAT_400, _TOMCAT_PAGE),
         ("GET", "/rest/api/3/issue/A%5CB/comment?maxResults=abc", 400, _TOMCAT_400, _TOMCAT_PAGE),
-        # the edge: a `;` in either product's API path, bare or escaped, served routes included,
-        # and a `..;` the firewall lets through (the shape `Accept` picks is
+        # the edge: a `;` anywhere in the path, bare or escaped, served routes and paths outside the
+        # API mounts included, ahead of the gateway's `PATCH`, and a `..;` the firewall lets through
+        # (the shape `Accept` picks is
         # `test_atlassian_edge_refuses_a_semicolon_in_the_shape_accept_picks`)
         ("GET", "/rest/api/3/nope%3Bx", 400, _EDGE_400, _EDGE_PAGE),
         ("GET", "/rest/api/3/nope;x", 400, _EDGE_400, _EDGE_PAGE),
@@ -5944,9 +5949,24 @@ _TOMCAT_PAGE = "text/html;charset=utf-8"
         ("GET", "/wiki/rest/api/content/1;2", 400, _EDGE_400, _EDGE_PAGE),
         ("GET", "/rest/api/3/nopeA..;/x", 400, _EDGE_400, _EDGE_PAGE),
         ("GET", "/rest/api/3/nope/..;a/x", 400, _EDGE_400, _EDGE_PAGE),
+        ("GET", "/browse/A-1;x", 400, _EDGE_400, _EDGE_PAGE),
+        ("GET", "/x;y", 400, _EDGE_400, _EDGE_PAGE),
+        ("GET", "/wiki/x;y", 400, _EDGE_400, _EDGE_PAGE),
+        ("GET", "/wiki/spaces/X;y", 400, _EDGE_400, _EDGE_PAGE),
+        ("GET", "/wiki/rest/api;x", 400, _EDGE_400, _EDGE_PAGE),
+        ("PATCH", "/rest/api/3/issue/A;B", 400, _EDGE_400, _EDGE_PAGE),
+        ("PATCH", "/wiki/rest/api/space;x", 400, _EDGE_400, _EDGE_PAGE),
+        # and behind `%00`, a `PROPFIND` and the firewall's `..;/`, ahead of Tomcat's encoded slash
+        # and backslash (measured under `application/json`, where the edge's answer is its JSON)
+        ("GET", "/rest/api/3/nope%00;x", 400, _CLOUDFRONT_400, _EDGE_PAGE),
+        ("PROPFIND", "/rest/api/3/nope;x", 403, _CLOUDFRONT_METHOD_403, _EDGE_PAGE),
+        ("GET", "/rest/api/3/..;/nope;x", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+        ("GET", "/wiki/rest/api/space/A%2FB;x", 400, _EDGE_400, _EDGE_PAGE),
+        ("GET", "/rest/api/3/issue/A%5CB;x", 400, _EDGE_400, _EDGE_PAGE),
         # a `HEAD` is the page's status and length with no body
         ("HEAD", "/rest/api/3/nope<script>", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
         ("HEAD", "/wiki/rest/api/space/NO%2FSUCH", 400, _TOMCAT_400, _TOMCAT_PAGE),
+        ("HEAD", "/rest/api/3/nope;x", 400, _EDGE_400, _EDGE_PAGE),
         # what none of them refuses reaches the product: a tag the firewall does not name, a
         # closing tag but `script`'s, a name short of `!doctype`, a tag in the query, a `..\` there
         # that neither a `\` nor a `/` nor the end of the value follows, a `;` there, a step in a
@@ -5984,13 +6004,9 @@ _TOMCAT_PAGE = "text/html;charset=utf-8"
         # the web app answers `spaces/` itself (real's single-page app at 200, which is not copied)
         ("GET", "/wiki/spaces/NO%2FSUCH", 404, None, "text/html;charset=UTF-8"),
         ("GET", "/wiki/SPACES/NO%2FSUCH", 404, None, "text/html;charset=UTF-8"),
-        # a `;` outside both API mounts, where the edge's refusal was not measured: Jira's site and
-        # Confluence's web app answer their own pages, a segment that only begins like a mount's
-        # included
-        ("GET", "/foo;x", 404, None, errors_atlassian.JIRA_SITE_HTML_MEDIA_TYPE),
-        ("GET", "/restx/api/3/nope;x", 404, None, errors_atlassian.JIRA_SITE_HTML_MEDIA_TYPE),
-        ("GET", "/wiki/display/A;B", 404, None, errors_atlassian.HTML_MEDIA_TYPE),
-        ("GET", "/wiki/rest/apix;x", 404, None, errors_atlassian.HTML_MEDIA_TYPE),
+        # and Jira's web app its issue page, an encoded backslash in the key included (real's page
+        # at 200)
+        ("GET", "/browse/A%5C1", 200, None, "text/html; charset=utf-8"),
     ],
 )
 def test_atlassian_front_door_answers_before_either_product(
@@ -5998,10 +6014,9 @@ def test_atlassian_front_door_answers_before_either_product(
 ):
     """Each refusal is the page real sent, held here as its length and digest, with the headers its
     layer carries (``errors.atlassian.FrontDoor``). The edge's `;` page is the stub
-    ``errors.atlassian._EDGE_PAGE_400`` describes, and the headers beside it and beside Jira's
-    `%5C` page are their layers', not measured beside them. Which layer gives a refusal and in what
-    order is ``errors.atlassian.front_door``'s, which carries the measurement. The rows with no
-    page reach the product. The credential does not change which layer answers, so an admin request is enough
+    ``errors.atlassian._EDGE_PAGE_400`` describes. Which layer gives a refusal and in what order is
+    ``errors.atlassian.front_door``'s, which carries the measurement. The rows with no page reach
+    the product. The credential does not change which layer answers, so an admin request is enough
     to show a served route does not reach its handler."""
     path, _, query = vendor_path.partition("?")
     answer = errors_atlassian.front_door(method, f"/atlassian{path}", query)
@@ -6027,29 +6042,38 @@ def test_atlassian_front_door_answers_before_either_product(
     assert hashlib.sha256(normalised.encode()).hexdigest() == digest
 
 
+_EDGE_JSON = b'{"message":"","status":400}\n'
+_EDGE_STUB = (
+    b'<!DOCTYPE html><html><head><meta name="details" content="lua_response">'
+    b"<title>400</title></head><body><p>400</p></body></html>"
+)
+
+
 @pytest.mark.parametrize(
     "vendor_path", ["/rest/api/3/issue/A;B", "/rest/api/3/nope%3Bx", "/wiki/rest/api/space/NO;SUCH"]
 )
 @pytest.mark.parametrize(
     "accept,media_type,body",
     [
-        ("application/json", "application/json", b'{"message":"","status":400}'),
-        (
-            "*/*",
-            "text/html",
-            b'<!DOCTYPE html><html><head><meta name="details" content="lua_response">'
-            b"<title>400</title></head><body><p>400</p></body></html>",
-        ),
+        ("application/json", "application/json", _EDGE_JSON),
+        ("application/json, text/html", "application/json", _EDGE_JSON),
+        ("text/html, application/json", "application/json", _EDGE_JSON),
+        ("application/json;q=0, text/html", "application/json", _EDGE_JSON),
+        ("APPLICATION/JSON", "text/html", _EDGE_STUB),
+        ("application/*, application/xml", "text/html", _EDGE_STUB),
+        ("text/html", "text/html", _EDGE_STUB),
+        ("*/*", "text/html", _EDGE_STUB),
     ],
 )
 def test_atlassian_edge_refuses_a_semicolon_in_the_shape_accept_picks(
     client, admin_h, vendor_path, accept, media_type, body
 ):
-    """The edge's 400 for a `;` (``errors.atlassian.front_door``), in the shape each of the two
-    `Accept` values measured draws, with no charset on either product."""
+    """The edge's 400 for a `;` (``errors.atlassian.front_door``), in the shape `Accept` picks, with
+    no charset on either product."""
     r = client.get(f"/atlassian{vendor_path}", headers={**admin_h, "Accept": accept})
     assert r.status_code == 400
     assert r.headers["content-type"] == media_type
+    assert r.headers["access-control-allow-origin"] == "*"
     assert r.content == body
 
 

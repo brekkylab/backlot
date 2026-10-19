@@ -21,7 +21,10 @@ served.
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from backlot import auth
@@ -68,17 +71,10 @@ async def graphql(request: Request):
     service, and describing one POST route that accepts an arbitrary query would tell an
     OpenAPI→MCP bridge nothing useful (hence no ``SOURCE_PREFIXES`` entry either — see
     ``backlot/openapi.py``). Introspection is the schema description for this endpoint."""
-    raw = await request.body()
-    if len(raw) > _LIMIT:
-        return _body_refusal(_TOO_LARGE, 413)
-    if not raw:
-        return _body_refusal(_EMPTY)
-    try:
-        payload = request_body.parse(request_body.decode(raw))
-    except request_body.NotJson:
-        return _body_refusal(_NOT_JSON)
-    if request_body.prototype_poisoned(payload):
-        return _body_refusal(_NOT_JSON)
+    # Off the event loop, as a body of `_LIMIT` bytes can keep `_read` busy a third of a second.
+    payload = await run_in_threadpool(_read, await request.body())
+    if isinstance(payload, JSONResponse):
+        return payload
     caller = auth.resolve_bearer(request)
     if caller is None:
         # Real Fireflies answers a bad credential with a GraphQL error envelope and a 401, not a
@@ -108,3 +104,19 @@ async def graphql(request: Request):
     }
     result = ENGINE.execute_payload(payload, context=context)
     return JSONResponse(result.payload, status_code=400 if result.request_error else 200)
+
+
+def _read(raw: bytes) -> Any:
+    """The payload Fireflies reads from the body ``raw``, or :func:`_body_refusal`'s refusal of
+    it."""
+    if len(raw) > _LIMIT:
+        return _body_refusal(_TOO_LARGE, 413)
+    if not raw:
+        return _body_refusal(_EMPTY)
+    try:
+        payload = request_body.parse(request_body.decode(raw))
+    except request_body.NotJson:
+        return _body_refusal(_NOT_JSON)
+    if request_body.prototype_poisoned(payload):
+        return _body_refusal(_NOT_JSON)
+    return payload

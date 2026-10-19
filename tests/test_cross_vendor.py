@@ -11,10 +11,12 @@ these share are in ``tests/_helpers.py``.
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 
 import pytest
 
+from backlot.graphql import body as request_body
 from tests._helpers import build_corpus, client_for, crawl_confluence, db_count
 
 
@@ -328,3 +330,30 @@ def test_a_graphql_vendor_quotes_a_number_as_javascript_prints_it(
     message = r.json()["errors"][0]["message"]
     assert f" got invalid value {quoted}; Int cannot represent " in message
     assert message.endswith(f" value: {quoted}")
+
+
+@pytest.mark.parametrize(
+    "vendor, reader",
+    [
+        pytest.param("linear", (request_body, "decode"), id="linear"),
+        pytest.param("fireflies", (request_body, "decode"), id="fireflies"),
+    ],
+)
+def test_a_graphql_vendor_reads_the_body_in_a_worker_thread(client, monkeypatch, vendor, reader):
+    """The router hands the body to its reader through ``run_in_threadpool``, so the reader runs
+    where no event loop does and the loop serves other requests while it reads."""
+    module, name = reader
+    where = []
+    original = getattr(module, name)
+
+    def recording(*args):
+        try:
+            asyncio.get_running_loop()
+            where.append("the event loop")
+        except RuntimeError:
+            where.append("a worker thread")
+        return original(*args)
+
+    monkeypatch.setattr(module, name, recording)
+    client.post(f"/{vendor}/graphql", json={"query": "{ __typename }"})
+    assert where == ["a worker thread"]

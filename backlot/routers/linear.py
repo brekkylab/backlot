@@ -16,13 +16,16 @@ Linear draws the line in the same place, and generated clients branch on it.
 The body is read before the credential is looked at, by Express's ``body-parser`` in front of the
 GraphQL server: with no credential, a body that is not JSON drew its 400 from api.linear.app on
 2026-10-18, not the 401. :func:`_express` is that 400, and each refusal ``body-parser`` makes before
-it has the text (:func:`backlot.graphql.body.body_parser_text`); :func:`graphql` names the bodies
+it has the text (:func:`backlot.graphql.body.body_parser_text`); :func:`_read` names the bodies
 answered in graphql-js's words instead.
 """
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, Response
 
 from backlot import auth
@@ -66,32 +69,19 @@ async def graphql(request: Request):
     """The single Linear endpoint. Not in the OpenAPI document on purpose: this is a GraphQL
     service, and describing one POST route that accepts an arbitrary query would tell an
     OpenAPI→MCP bridge nothing useful (hence no ``SOURCE_PREFIXES`` entry either — see
-    ``backlot/openapi.py``). Introspection is the schema description for this endpoint.
-
-    Two refusals keep graphql-js's words here, before the credential as Linear's do: a body with no
-    text once read, which Linear answers with Apollo Server's
-    ``POST body missing, invalid Content-Type, or JSON object has no keys.``, and a body the reader
-    refuses before it meets a ``NaN``, ``Infinity`` or ``-Infinity``, such as ``{`` or ``-NaN``,
-    which Linear answers with V8's message."""
-    try:
-        text = request_body.body_parser_text(
-            await request.body(),
-            request.headers.get("content-type"),
-            # Node hands each header value over without the spaces and tabs at its ends, which
-            # uvicorn keeps at the end: Linear served `Content-Encoding: gzip<TAB>` and ` gzip `.
-            ", ".join(value.strip(" \t") for value in request.headers.getlist("content-encoding")),
-        )
-    except request_body.Unread as unread:
-        return _express(unread.message, unread.status, unread.length)
-    violation = request_body.strict_violation(text) if text else None
-    if violation is not None:
-        return _express(violation)
-    try:
-        payload = request_body.parse(text)
-    except request_body.NotJson as exc:
-        if exc.constant is not None:
-            return _express(request_body.v8_constant_message(text, exc.constant))
-        return JSONResponse(engine.not_json().payload, status_code=400)
+    ``backlot/openapi.py``). Introspection is the schema description for this endpoint."""
+    # In a worker thread: `_read` can take seconds over a body near the 10 MiB limit, which would
+    # hold up every other request on the event loop.
+    payload = await run_in_threadpool(
+        _read,
+        await request.body(),
+        request.headers.get("content-type"),
+        # Node hands each header value over without the spaces and tabs at its ends, which uvicorn
+        # keeps at the end: Linear served `Content-Encoding: gzip<TAB>` and ` gzip `.
+        ", ".join(value.strip(" \t") for value in request.headers.getlist("content-encoding")),
+    )
+    if isinstance(payload, Response):
+        return payload
     caller = auth.resolve_api_key(request)
     if caller is None:
         # Real Linear answers a bad credential with a GraphQL error envelope and a 401, not a
@@ -126,3 +116,26 @@ async def graphql(request: Request):
     }
     result = ENGINE.execute_payload(payload, context=context)
     return JSONResponse(result.payload, status_code=400 if result.request_error else 200)
+
+
+def _read(raw: bytes, content_type: str | None, content_encoding: str) -> Any:
+    """The payload Linear reads from the body ``raw``, or the response this router refuses it with.
+
+    Two refusals keep graphql-js's words here, before the credential as Linear's do: a body with no
+    text once read, which Linear answers with Apollo Server's
+    ``POST body missing, invalid Content-Type, or JSON object has no keys.``, and a body the reader
+    refuses before it meets a ``NaN``, ``Infinity`` or ``-Infinity``, such as ``{`` or ``-NaN``,
+    which Linear answers with V8's message."""
+    try:
+        text = request_body.body_parser_text(raw, content_type, content_encoding)
+    except request_body.Unread as unread:
+        return _express(unread.message, unread.status, unread.length)
+    violation = request_body.strict_violation(text) if text else None
+    if violation is not None:
+        return _express(violation)
+    try:
+        return request_body.parse(text)
+    except request_body.NotJson as exc:
+        if exc.constant is not None:
+            return _express(request_body.v8_constant_message(text, exc.constant))
+        return JSONResponse(engine.not_json().payload, status_code=400)

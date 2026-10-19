@@ -91,8 +91,9 @@ incomplete rather than Backlot being wrong:
   Backlot serves: `content`, `content/{id}` with its `child/page`, `child/comment`,
   `child/attachment` and `label`, `space` and `space/{key}`. It still describes 65 reads —
   `content/search`, `content/{id}/descendant`, `group`, `label` and `user/current` among them — and
-  the writes. The v1 reads Backlot serves are deprecated in favour of Confluence REST v2, not
-  documented as removed, so on that source this comparison currently covers almost nothing.
+  the writes. The v1 reads Backlot serves are deprecated in favour of Confluence REST v2, and
+  each 200 names a removal date already past, so on that source this comparison currently covers
+  almost nothing.
 
 So on a REST source, read `missing_*` as reliable and `extra_*` as *undocumented by the vendor —
 verify by hand*, never as proof of a bug. Those measurements are what the baseline notes carry.

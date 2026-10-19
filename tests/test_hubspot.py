@@ -382,6 +382,42 @@ def test_hubspot_0_18_0_72_0_64_are_their_types(tmp_path):
             assert (linked.status_code, linked.json()) == (200, {"results": []}), to
 
 
+@pytest.mark.parametrize(
+    "asked,named",
+    [
+        ("0-53", "invoices"),
+        ("0-54", "marketing_events"),
+        ("0-69", "subscriptions"),
+        ("0-74", "goal_targets"),
+        ("0-115", "users"),
+        ("0-123", "orders"),
+        ("0-136", "leads"),
+        ("0-142", "carts"),
+        ("0-145", "partner_clients"),
+        ("0-162", "services"),
+        ("0-410", "courses"),
+        ("0-420", "listings"),
+        ("0-421", "appointments"),
+    ],
+)
+def test_hubspot_a_measured_type_id_is_its_type(client, admin_h, asked, named):
+    """The thirteen pairings the comment above `_TYPE_IDS` records from real's 403s
+    (2026-10-19): each id answers as its name does."""
+    by_id = client.get(f"/hubspot/crm/v3/objects/{asked}", headers=admin_h)
+    by_name = client.get(f"/hubspot/crm/v3/objects/{named}", headers=admin_h)
+    assert by_id.status_code == by_name.status_code == 200, by_id.json()
+    assert by_id.json()["results"] == by_name.json()["results"]
+
+
+@pytest.mark.parametrize("asked", ["0-101", "0-35", "0-130", "0-131", "0-166", "0-400"])
+def test_hubspot_an_unsettled_type_id_stays_unmapped(client, admin_h, asked):
+    """`0-101` answered as two types and the campaign ids as one that three ids share, so nothing
+    says which type to serve; `0-166` and `0-400` are real's 400 (measured 2026-10-19)."""
+    r = client.get(f"/hubspot/crm/v3/objects/{asked}", headers=admin_h)
+    assert r.status_code == 400
+    assert r.json()["message"] == f"Invalid object or event type id: {asked}"
+
+
 def test_hubspot_one_type_stated_both_ways_is_one_type(tmp_path):
     """A portal has ONE `deals` type, so no HubSpot response can show a record under
     `/objects/deal/{id}` that `/objects/deal` never lists. Resolving to the first spelling that

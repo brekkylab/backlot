@@ -497,8 +497,11 @@ _LONE_SURROGATE = re.compile("[\ud800-\udfff]")
 
 
 def node_json(value: Any) -> bytes:
-    """``value`` the way Express's ``res.json`` writes it: compact, non-ASCII as itself, and a lone
-    surrogate as a lower-case ``\\u`` escape, which is how Linear quoted half a surrogate pair back
-    on 2026-10-18 and what UTF-8 cannot carry otherwise."""
-    text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    """``value`` the way ``JSON.stringify`` writes it for Express's ``res.json`` and Apollo Server:
+    compact, non-ASCII as itself, and a lone surrogate as a lower-case ``\\u`` escape, which UTF-8
+    cannot carry otherwise. Linear quoted half a surrogate pair back so on 2026-10-18. Sent the next
+    day as an ``operationName``, in upper case or lower, one half came back so from both vendors,
+    and from Linear sent as an unknown field of an input object. A float that is not finite is
+    refused, as Starlette's ``JSONResponse`` refuses one."""
+    text = json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
     return _LONE_SURROGATE.sub(lambda m: f"\\u{ord(m.group()):04x}", text).encode("utf-8")

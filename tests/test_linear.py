@@ -416,20 +416,25 @@ def test_linear_issue_without_a_parent_is_null(client, admin_h):
     )
 
 
+@pytest.mark.parametrize(("connection", "args"), [("issues", "first: 50"), ("users", "")])
 @pytest.mark.parametrize(
     ("order_by", "field"),
     [
         ("", "createdAt"),
-        (", orderBy: createdAt", "createdAt"),
-        (", orderBy: updatedAt", "updatedAt"),
+        ("orderBy: createdAt", "createdAt"),
+        ("orderBy: updatedAt", "updatedAt"),
     ],
     ids=["default", "createdAt", "updatedAt"],
 )
-def test_linear_default_and_order_by_are_newest_first(client, admin_h, order_by, field):
-    """`issues` is newest first by the field `orderBy` names, and by `createdAt` with no `orderBy`,
-    as the comment on `LINEAR_DEFAULT_ORDER_BY` records."""
-    q = "{ issues(first: 50%s) { nodes { createdAt updatedAt } } }" % order_by
-    stamps = [n[field] for n in gql(client, q, admin_h).json()["data"]["issues"]["nodes"]]
+def test_linear_default_and_order_by_are_newest_first(
+    client, admin_h, connection, args, order_by, field
+):
+    """`issues` and `users` are newest first by the field `orderBy` names, and by `createdAt` with
+    no `orderBy`, as the comment on `LINEAR_DEFAULT_ORDER_BY` records."""
+    joined = ", ".join(a for a in (args, order_by) if a)
+    q = "{ %s%s { nodes { createdAt updatedAt } } }" % (connection, f"({joined})" if joined else "")
+    stamps = [n[field] for n in gql(client, q, admin_h).json()["data"][connection]["nodes"]]
+    assert len(stamps) >= 2
     assert stamps == sorted(stamps, reverse=True)
 
 
@@ -494,6 +499,71 @@ def test_linear_root_connections_reject_sort_with_order_by(client, admin_h):
 
 
 # --- Linear relations / children / attachments / releases -----------------------
+
+
+@pytest.mark.parametrize(
+    ("args", "served"),
+    [
+        ("", ["ENG-3", "ENG-2"]),
+        ("(orderBy: createdAt)", ["ENG-3", "ENG-2"]),
+        ("(orderBy: updatedAt)", ["ENG-2", "ENG-3"]),
+        ("(first: 1)", ["ENG-3"]),
+        ("(last: 1)", ["ENG-2"]),
+    ],
+)
+def test_linear_children_are_newest_first(tmp_path, args, served):
+    """Each row is an issue's `children` in the order the comment on `LINEAR_DEFAULT_ORDER_BY`
+    records; `ENG-2` was created first and edited last, so the two fields disagree."""
+    settings = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "linear",
+                "doc_id": "parent",
+                "team": "engineering",
+                "group": "engineering",
+                "title": "Parent",
+                "content": "p",
+                "identifier": "ENG-1",
+                "author_email": "ava@acme.com",
+                "visibility": "public",
+                "created": "2026-01-01T00:00:00Z",
+            },
+            {
+                "source_type": "linear",
+                "doc_id": "edited-last",
+                "team": "engineering",
+                "group": "engineering",
+                "title": "Edited last",
+                "content": "a",
+                "identifier": "ENG-2",
+                "author_email": "bob@acme.com",
+                "visibility": "public",
+                "parent": "ENG-1",
+                "created": "2026-01-02T00:00:00Z",
+                "updated": "2026-04-01T00:00:00Z",
+            },
+            {
+                "source_type": "linear",
+                "doc_id": "created-last",
+                "team": "engineering",
+                "group": "engineering",
+                "title": "Created last",
+                "content": "b",
+                "identifier": "ENG-3",
+                "author_email": "mia@acme.com",
+                "visibility": "public",
+                "parent": "ENG-1",
+                "created": "2026-03-01T00:00:00Z",
+                "updated": "2026-02-01T00:00:00Z",
+            },
+        ],
+    )
+    query = '{ issue(id: "ENG-1") { children%s { nodes { identifier } } } }' % args
+    with client_for(settings) as client:
+        body = gql(client, query, {"Authorization": settings.admin_token}).json()
+    assert "errors" not in body, body.get("errors")
+    assert [n["identifier"] for n in body["data"]["issue"]["children"]["nodes"]] == served
 
 
 def test_linear_children_is_the_exact_inverse_of_parent(client, admin_h):

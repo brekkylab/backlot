@@ -1340,7 +1340,10 @@ def list_hubspot_objects(
 # newest first, measured against api.linear.app on 2026-10-05 over eight issues whose `updatedAt`
 # order differs from their `createdAt` order: `issues` and `Team.issues` with no `orderBy` and with
 # `orderBy: createdAt` came in descending `createdAt`, and with `orderBy: updatedAt` in descending
-# `updatedAt`. `id` breaks ties into a total order, which offset paging requires.
+# `updatedAt`. So did `Issue.children`, over a parent's three children whose two orders differ,
+# and `users`, over the workspace's three (2026-10-04 and 2026-10-18), where `children(first: 1)`
+# was the newest child and `children(last: 1)` the oldest. `id` breaks ties into a total order,
+# which offset paging requires.
 LINEAR_DEFAULT_ORDER_BY = "createdAt"
 
 # `Issue.updatedAt` is non-null in Linear; an issue with no recorded edit reports its creation
@@ -1522,13 +1525,16 @@ def count_linear_comments(conn, *, issue_id=None, visible_ids=None, prefilter=No
 
 
 def linear_children(
-    conn, parent_id, *, visible_ids=None, limit=50, offset=0, prefilter=None
+    conn, parent_id, *, visible_ids=None, limit=50, offset=0, prefilter=None, order_by=None
 ) -> list[sqlite3.Row]:
     """Sub-issues of an issue — every row whose resolved ``parent_id`` is this one.
 
     An indexed equality on an issue id, NOT a join on ``identifier``: identifiers repeat, so a
     join would attach one issue's children to every issue sharing its key. Resolved once at import,
-    which is what makes this the exact inverse of ``Issue.parent``."""
+    which is what makes this the exact inverse of ``Issue.parent``.
+
+    In the order :func:`_linear_order` gives ``issues``, as :data:`LINEAR_DEFAULT_ORDER_BY`
+    records."""
     sql = "SELECT * FROM linear_issues WHERE parent_id = ?"
     params: list = [parent_id]
     if prefilter:
@@ -1536,7 +1542,7 @@ def linear_children(
         sql += f" AND {frag}"
         params += fparams
     clause, cparams = _acl_clause("linear", visible_ids=visible_ids)
-    sql += clause + " ORDER BY created_ts, id LIMIT ? OFFSET ?"
+    sql += clause + f" ORDER BY {_linear_order(order_by)} LIMIT ? OFFSET ?"
     return conn.execute(sql, params + cparams + [limit, offset]).fetchall()
 
 

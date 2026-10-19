@@ -50,9 +50,8 @@ _BAD_KEY = (
     b' please contact Fireflies support.","extensions":{"code":"auth_failed"}}]}'
 )
 # Values of the header, None for none and `{t}` for a key that resolves, with the 500 Fireflies
-# refused each with or None where it served the query, as `backlot.auth.fireflies_bearer_token`
-# records.
-_FIREFLIES_CREDENTIALS = [
+# refused each with or None where it served the query.
+_FIREFLIES_SPELLINGS = [
     pytest.param("Bearer {t}", None, id="Bearer"),
     pytest.param("bearer {t}", None, id="bearer"),
     pytest.param("BEARER {t}", None, id="BEARER"),
@@ -83,21 +82,7 @@ _FIREFLIES_CREDENTIALS = [
 ]
 
 
-@pytest.mark.parametrize("value, refusal", _FIREFLIES_CREDENTIALS)
-def test_fireflies_reads_a_credential_as_fireflies_does(client, tokens_yaml, value, refusal):
-    headers = {"Content-Type": "application/json"}
-    if value is not None:
-        headers["Authorization"] = value.format(t=tokens_yaml["admin_token"])
-    r = sent_as(
-        client, "POST", "/fireflies/graphql", headers, content=b'{"query":"{ __typename }"}'
-    )
-    if refusal is None:
-        assert (r.status_code, r.json()) == (200, {"data": {"__typename": "Query"}})
-    else:
-        assert (r.status_code, r.content) == (500, refusal)
-
-
-# `backlot.auth.fireflies_bearer_token`'s byte sweep, in three places of the header: the bytes that
+# Each latin-1 byte other than a control character, in three places of the header: the bytes that
 # served the query, and the 500 every other byte drew.
 _FIREFLIES_BYTES = {
     "Bearer{x}{t}": ({0x20}, _NO_PREFIX),
@@ -106,18 +91,33 @@ _FIREFLIES_BYTES = {
 }
 
 
-def test_fireflies_reads_each_byte_around_a_credential_as_fireflies_does(client, tokens_yaml):
-    admin = tokens_yaml["admin_token"]
+def _fireflies_credentials() -> list:
+    """`_FIREFLIES_SPELLINGS`, then each byte of `_FIREFLIES_BYTES` in each place, a value already
+    in the table kept once."""
+    rows = list(_FIREFLIES_SPELLINGS)
+    seen = {row.values[0] for row in rows}
     for shape, (served, refusal) in _FIREFLIES_BYTES.items():
         for byte in (0x09, *range(0x20, 0x7F), *range(0x80, 0x100)):
-            headers = {"Authorization": shape.format(x=chr(byte), t=admin)}
-            r = sent_as(
-                client, "POST", "/fireflies/graphql", headers, content=b'{"query":"{ __typename }"}'
-            )
-            expected = 200 if byte in served else 500
-            assert r.status_code == expected, (shape, hex(byte))
-            if expected == 500:
-                assert r.content == refusal, (shape, hex(byte))
+            value = shape.replace("{x}", chr(byte))
+            if value not in seen:
+                seen.add(value)
+                answer = None if byte in served else refusal
+                rows.append(pytest.param(value, answer, id=f"{shape} {byte:#04x}"))
+    return rows
+
+
+@pytest.mark.parametrize("value, refusal", _fireflies_credentials())
+def test_fireflies_reads_a_credential_as_fireflies_does(client, tokens_yaml, value, refusal):
+    headers = {"Content-Type": "application/json"}
+    if value is not None:
+        headers["Authorization"] = value.replace("{t}", tokens_yaml["admin_token"])
+    r = sent_as(
+        client, "POST", "/fireflies/graphql", headers, content=b'{"query":"{ __typename }"}'
+    )
+    if refusal is None:
+        assert (r.status_code, r.json()) == (200, {"data": {"__typename": "Query"}})
+    else:
+        assert (r.status_code, r.content) == (500, refusal)
 
 
 # --- a body Fireflies reads ahead of the credential ----------------------------------------------
@@ -367,7 +367,11 @@ _FIREFLIES_BODIES = [
 ]
 
 
-@pytest.mark.parametrize("credential", ["key", "none", "nope"])
+# Each credential the body table is sent with, and the 500 a body Fireflies reads draws under it.
+_BODY_CREDENTIALS = {"key": None, "none": _BAD_KEY, "Bearer nope": _BAD_KEY, "nope": _NO_PREFIX}
+
+
+@pytest.mark.parametrize("credential", _BODY_CREDENTIALS)
 @pytest.mark.parametrize(
     "headers,body,answer",
     [pytest.param((), *row.values, id=row.id) for row in _FIREFLIES_BODIES] + _FIREFLIES_READS,
@@ -380,21 +384,18 @@ def test_fireflies_reads_the_body_before_the_credential(
     if not any(name == "Content-Type" for name, _ in headers):
         headers = (("Content-Type", "application/json"), *headers)
     if credential != "none":
-        key = admin_h["Authorization"] if credential == "key" else "Bearer nope"
+        key = admin_h["Authorization"] if credential == "key" else credential
         headers = (*headers, ("Authorization", key))
     r = client.post("/fireflies/graphql", content=body, headers=list(headers))
-    if answer is _REQUEST_ERROR:
-        if credential == "key":
-            assert r.json() == {"errors": [{"message": "POST body sent invalid JSON."}]}
-            assert r.status_code == 400
-        else:
-            assert (r.status_code, r.content) == (500, _BAD_KEY)
-    elif answer is not None:
+    if answer is not None and answer is not _REQUEST_ERROR:
         assert (r.status_code, r.content) == (json.loads(answer)["statusCode"], answer)
-    elif credential == "key":
-        assert (r.status_code, r.json()) == (200, {"data": {"__typename": "Query"}})
+    elif credential != "key":
+        assert (r.status_code, r.content) == (500, _BODY_CREDENTIALS[credential])
+    elif answer is _REQUEST_ERROR:
+        assert r.json() == {"errors": [{"message": "POST body sent invalid JSON."}]}
+        assert r.status_code == 400
     else:
-        assert (r.status_code, r.content) == (500, _BAD_KEY)
+        assert (r.status_code, r.json()) == (200, {"data": {"__typename": "Query"}})
 
 
 def test_fireflies_admin_crawl_sees_every_stored_transcript(client, admin_h, ro_conn):

@@ -3566,9 +3566,7 @@ def test_attachment_string_fields_follow_linears_null_rules(fclient):
 
 
 # --- Linear -----------------------------------------------------------------------
-# Linear's auth is the one shape no other source in this repo uses: the personal API key is the
-# BARE `Authorization` value with no scheme, and `Bearer <token>` is an OAuth access token's, an
-# API key sent that way being a 400. A Backlot token is an API key.
+# Linear's auth: see `backlot.routers.linear`.
 
 LINEAR_CORPUS = [
     {
@@ -3790,9 +3788,8 @@ _API_KEY_AS_BEARER = (
     b' input","code":"INPUT_ERROR","statusCode":400,"userError":true}}]}'
 )
 # `Authorization` values, `{t}` for an API key that resolves, and the status Linear gave each: 200
-# serving the query and 400 being `_API_KEY_AS_BEARER`, as `backlot.auth.api_key_token` and
-# `linear_bearer_token` record. Backlot's 401 keeps its own body.
-_LINEAR_CREDENTIALS = [
+# serving the query and 400 being `_API_KEY_AS_BEARER`. Backlot's 401 keeps its own body.
+_LINEAR_SPELLINGS = [
     pytest.param("{t}", 200, id="bare"),
     pytest.param(" {t}", 200, id="a space before"),
     pytest.param("{t} ", 200, id="a space after"),
@@ -3824,9 +3821,40 @@ _LINEAR_CREDENTIALS = [
 ]
 
 
-@pytest.mark.parametrize("value, status", _LINEAR_CREDENTIALS)
+# Each latin-1 byte other than a control character, put in five places of `Authorization`: the
+# statuses other than the 401 every other byte drew.
+_LINEAR_BYTES = {
+    "Bearer{x}{t}": {0x20: 400},
+    "Bearer {x}{t}": {},
+    "Bearer {t}{x}": {0x09: 400, 0x20: 400},
+    "{x}{t}": {0x09: 200, 0x20: 200},
+    "{t}{x}": {0x09: 200, 0x20: 200},
+}
+
+
+def _linear_credentials() -> list:
+    """`_LINEAR_SPELLINGS`, then each byte of `_LINEAR_BYTES` in each place and each of the 64
+    casings of the scheme, a value already in the table kept once."""
+    rows = list(_LINEAR_SPELLINGS)
+    seen = {row.values[0] for row in rows}
+
+    def add(value: str, status: int, id: str) -> None:
+        if value not in seen:
+            seen.add(value)
+            rows.append(pytest.param(value, status, id=id))
+
+    for shape, answers in _LINEAR_BYTES.items():
+        for byte in (0x09, *range(0x20, 0x7F), *range(0x80, 0x100)):
+            add(shape.replace("{x}", chr(byte)), answers.get(byte, 401), f"{shape} {byte:#04x}")
+    for letters in itertools.product(*[(c, c.upper()) for c in "bearer"]):
+        scheme = "".join(letters)
+        add(f"{scheme} {{t}}", 400 if scheme in ("Bearer", "bearer") else 401, scheme)
+    return rows
+
+
+@pytest.mark.parametrize("value, status", _linear_credentials())
 def test_linear_reads_a_credential_as_linear_does(client, tokens_yaml, value, status):
-    header = value.format(t=tokens_yaml["admin_token"])
+    header = value.replace("{t}", tokens_yaml["admin_token"])
     r = sent_as(
         client,
         "POST",
@@ -3839,40 +3867,6 @@ def test_linear_reads_a_credential_as_linear_does(client, tokens_yaml, value, st
         assert r.json()["data"]["viewer"]["id"]
     elif status == 400:
         assert r.content == _API_KEY_AS_BEARER
-
-
-# The byte sweep `backlot.auth.api_key_token` and `linear_bearer_token` record, each latin-1 byte
-# but a control character put in five places of `Authorization`: the statuses other than the 401
-# that every other byte drew.
-_LINEAR_BYTES = {
-    "Bearer{x}{t}": {0x20: 400},
-    "Bearer {x}{t}": {},
-    "Bearer {t}{x}": {0x09: 400, 0x20: 400},
-    "{x}{t}": {0x09: 200, 0x20: 200},
-    "{t}{x}": {0x09: 200, 0x20: 200},
-}
-
-
-def test_linear_reads_each_byte_around_a_credential_and_each_casing_of_bearer(client, tokens_yaml):
-    """The byte table above, then the 64 casings of the six letters of the scheme, which
-    ``backlot.auth.linear_bearer_token`` records."""
-    admin = tokens_yaml["admin_token"]
-
-    def status(value: str) -> int:
-        headers = {"Authorization": value, "Content-Type": "application/json"}
-        return sent_as(
-            client, "POST", "/linear/graphql", headers, content=b'{"query":"{ __typename }"}'
-        ).status_code
-
-    for shape, answers in _LINEAR_BYTES.items():
-        for byte in (0x09, *range(0x20, 0x7F), *range(0x80, 0x100)):
-            value = shape.format(x=chr(byte), t=admin)
-            assert status(value) == answers.get(byte, 401), (shape, hex(byte))
-    for letters in itertools.product(*[(c, c.upper()) for c in "bearer"]):
-        scheme = "".join(letters)
-        assert status(f"{scheme} {admin}") == (400 if scheme in ("Bearer", "bearer") else 401), (
-            scheme
-        )
 
 
 def test_linear_issue_asserts_rather_than_re_derive_a_missing_identifier():

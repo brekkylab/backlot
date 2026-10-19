@@ -34,10 +34,10 @@ credential, which sent each of its 232 DELETEs, PUTs and POSTs once with no body
 `text/plain` one. How the check reads a `Content-Type` is
 ``backlot.errors.atlassian.refuse_a_media_type``'s.
 
-For a caller with no credential, an entry's ``accept`` is ``"unchecked"`` where the operation
-answers an `Accept` admitting no JSON with no 406, and its ``produces`` names what its 406 names
-where that is more than JSON (``backlot.routers.atlassian._published_answer`` reads both); the names
-below say which.
+An entry's ``accept`` is ``"unchecked"`` where the operation gives a caller with no credential no
+406 for an `Accept` admitting no JSON, and its ``produces`` names what the 406 it gives that caller
+names where that is more than JSON (``backlot.routers.atlassian._published_answer`` reads both); the
+names below say which.
 """
 
 from __future__ import annotations

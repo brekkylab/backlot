@@ -7567,9 +7567,9 @@ _ACCEPT_ROWS += [
     ),
     # the gateway's Connect-token 403 comes before Spring sorts `Accept`
     ("GET", _INFO, "unreadable-bearer", _SORT_FAILS, None, 403, _JSON, _CONNECT_JSON, {}),
-    # the same choice on an operation that gives a caller with no credential no 406, by the methods
-    # ``errors.atlassian.jira_unauthenticated`` was measured on there: neither of the next two
-    # carries `Allow`, and the wildcard's 500 is the page
+    # the same choice on an operation with no 406 for a caller lacking a credential, where a GET and
+    # a HEAD reach the answers that depend on the method: neither carries `Allow`, and the
+    # wildcard's 500 is the page
     ("GET", _LICENSE, "none", "foo", None, 401, _EMPTY_HTML, b"")
     + ({"allow": None, "www-authenticate": _PRESENT},),
     ("HEAD", _LICENSE, "none", "*.*", None, 401, _EMPTY_HTML, b"", {"allow": None}),
@@ -7647,10 +7647,10 @@ def _accept_unchecked() -> list[str]:
 
 @pytest.mark.parametrize("operation", _accept_unchecked())
 def test_jira_operations_that_answer_an_accept_with_no_406(client, operation):
-    """Pins each entry `ACCEPT_UNCHECKED` in ``scripts/gen_jira_unserved.py`` marks: none answers
-    `Accept: text/html` with the 406, with a body of a type it takes. The refused ones answer their
-    401 under that type; the avatar views, which real runs, get what any operation real runs gets
-    here."""
+    """Pins each entry `ACCEPT_UNCHECKED` in ``scripts/gen_jira_unserved.py`` marks: none gives a
+    caller with no credential the 406 for `Accept: text/html`, with a body of a type it takes. The
+    refused ones answer their 401 under that type; the avatar views, which real runs, get what any
+    operation real runs gets here."""
     entry = routers_atlassian._JIRA_ENTRIES[operation]
     method, template = operation.split(" ", 1)
     headers = {"Accept": _HTML}

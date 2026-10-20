@@ -232,6 +232,21 @@ def _instance(path: str) -> str:
     return path[len(PREFIX) :] if path.startswith(PREFIX) else path
 
 
+#: A `[` or `]` in a Jira path, escaped or bare, which turns two of its RFC 7807 refusals into pages
+#: of the web app's, under `Accept: application/json` and `*/*` alike (2026-10-18): the no-endpoint
+#: 404 at `nope%5Bx` into the dead-link page (:func:`no_endpoint`), and the conversion 400 at
+#: `issue/A%5BB/comment?maxResults=abc` into :data:`_JIRA_NULL_ERROR_PAGE`; the same for `%5D`. At
+#: `issue/A%5BB` the issue's own JSON 404 stands. On 2026-10-19 `nope%5bx` and the bare `nope[x`
+#: were the dead-link page, and `issue/A[B/comment?maxResults=abc` the `(null)` page.
+_JIRA_BRACKET = re.compile(r"%5[BD]|[\[\]]", re.IGNORECASE)
+#: That 400's page: real's is 66,815 bytes on `text/html;charset=utf-8`, titled `(null)`; this is a
+#: stub with the status, the media type, the title and the one line it reads.
+_JIRA_NULL_ERROR_PAGE = (
+    "<!DOCTYPE html><html><head><title>(null)</title></head><body>"
+    '<p>Encountered a "null - null" error while loading this page.</p></body></html>'
+)
+
+
 def integer_conversion_failure(path: str, name: str, values: list[str]) -> AtlassianError:
     """The 400 either product answers for a query parameter it cannot read as an ``int``, which
     Jira also answers for one it cannot read as a boolean and for a path variable it cannot read as
@@ -269,6 +284,10 @@ def integer_conversion_failure(path: str, name: str, values: list[str]) -> Atlas
                     f'java.lang.NumberFormatException: For input string: "{shown}"'
                 ),
             },
+        )
+    if _JIRA_BRACKET.search(path):
+        return AtlassianError(
+            400, _JIRA_NULL_ERROR_PAGE.encode(), headers={"Content-Type": JIRA_SITE_HTML_MEDIA_TYPE}
         )
     # Masked to 32 bits: `Integer.toHexString(hashCode())` is at most eight digits, where CPython's
     # `id` is a heap address and renders nine here — which would also put a live address on the wire.
@@ -790,8 +809,9 @@ def _invalid_mime_type(value: str) -> str | None:
     `text/plain;a=b c`, `text/plain;a="b`, `text/plain;charset=a b` (named `a b`) and
     `text/plain;charset=nope`, and `text/plain;a b=c;charset=nope` named the space in `a b` first.
     On 2026-10-19 a no-break space (U+00A0) at either end of the header stayed part of it:
-    `text/plain` and `text/plain;charset=nope` followed by one were named for it. Not read here:
-    `text/plain;charset=` was a 500.
+    `text/plain` and `text/plain;charset=nope` followed by one were named for it. Not read here: a
+    charset Tomcat reads that Java takes no name for, the 500 :func:`refuse_a_confluence_media_type`
+    gives first.
     """
     index = value.find(";")
     full = (value if index < 0 else value[:index]).strip(_JAVA_TRIMMED)
@@ -843,6 +863,59 @@ def _token_reason(token: str) -> str | None:
     return None
 
 
+#: Tomcat's `HttpParser`: a token, and a quoted string, each after any spaces and tabs.
+_TOMCAT_TOKEN = re.compile(r"[ \t]*([!#$%&'*+.^_`|~0-9A-Za-z-]*)")
+_TOMCAT_QUOTED = re.compile(r'[ \t]*"((?:[^"\\]|\\.)*)"', re.DOTALL)
+
+
+def _tomcat_charset(value: str) -> str | None:
+    """The `charset` Tomcat reads off a `Content-Type` ahead of Spring, its quotes and escapes off,
+    or None where it reads none: Tomcat's `MediaType.parseMediaType` (`9.0.98` and `10.1.34` alike)
+    takes a type and a subtype that are tokens either side of a `/`, then parameters each after a
+    `;`, with spaces and tabs around each, and nothing else, so `foo;charset=` and
+    `text/plain;a b=c;charset=` hold none. A name is read in any case, a later one replacing an
+    earlier one. A name with no `=` has an empty value, and so has one whose `=` ends the header,
+    where one whose `=` meets a `;` has none (`charset=;x=y`)."""
+    pos = 0
+
+    def token() -> str | None:
+        # `readToken`: the token, empty at the end of the header, None ahead of anything else
+        nonlocal pos
+        match = _TOMCAT_TOKEN.match(value, pos)
+        pos = match.end()
+        return match[1] if match[1] or pos == len(value) else None
+
+    def skip(constant: str) -> bool | None:
+        # `skipConstant`: whether ``constant`` comes next, None at the end of the header
+        nonlocal pos
+        while pos < len(value) and value[pos] in " \t":
+            pos += 1
+        if pos == len(value):
+            return None
+        next_is_it = value[pos] == constant
+        pos += next_is_it
+        return next_is_it
+
+    if not token() or skip("/") is not True or not token():
+        return None
+    charset = None
+    found = skip(";")
+    while found:
+        name, given = token(), ""
+        if skip("="):
+            quoted = _TOMCAT_QUOTED.match(value, pos)
+            if quoted:
+                given, pos = re.sub(r"\\(.)", r"\1", quoted[1], flags=re.DOTALL), quoted.end()
+            elif value[pos:].lstrip(" \t").startswith('"'):
+                given, pos = None, len(value)  # a quote left open reads to the end
+            else:
+                given = token()
+        if name is not None and name.lower() == "charset":
+            charset = given
+        found = skip(";")
+    return None if found is False else charset
+
+
 def refuse_a_confluence_media_type(headers, consumes: tuple[str, ...]) -> AtlassianError | None:
     """Confluence's 415 for a request whose `Content-Type` an operation that ``consumes`` those
     types does not take, or None where it takes it.
@@ -858,8 +931,20 @@ def refuse_a_confluence_media_type(headers, consumes: tuple[str, ...]) -> Atlass
     gives. Each quotes the header without the spaces and tabs around it (` ;x` is named `";x"`,
     2026-10-18). The status and the code are the same. Only a parameter named `charset` in that
     case is a charset to it (`multipart/form-data; boundary=x; Charset=bogus` is read, 2026-10-13).
+
+    Ahead of all of it, a charset Tomcat reads (:func:`_tomcat_charset`) that is no name Java takes
+    (:data:`_JAVA_CHARSET_NAME`), an empty one among them, is a 500 with no body and no
+    `content-type`, whether the operation takes the type or not. Measured on Confluence Cloud at
+    `POST space/{key}/permission` with no credential, `text/plain;charset=` on 2026-10-18 and
+    2026-10-19, and on 2026-10-19 `application/json;charset=`, `text/plain;Charset=`,
+    `text/plain;charset`, `text/plain;charset=""`, `text/plain;charset=_x` and
+    `text/plain;charset=utf-8;charset=` with it, where `text/plain;charset=;x=y` and `foo;charset=`
+    were each the 415.
     """
     value = (headers.get("content-type") or "").strip(" \t")
+    charset = _tomcat_charset(value)
+    if charset is not None and _JAVA_CHARSET_NAME.fullmatch(charset) is None:
+        return AtlassianError(500, b"")
     media_type = _parse_media_type(value, charset_in_any_case=False) if value else None
     if media_type is not None and _takes(consumes, media_type):
         return None
@@ -2152,7 +2237,7 @@ _TAG = re.compile(r"<(/?)([^\t\n\v\f\r /<>]*)")
 #: anywhere, measured 2026-10-12, and a whole segment `..` followed by one or more `;` and a `/`
 #: (`/..;/`, `/..;;/`, `/..;%3B/`), measured 2026-10-13. A `..;` inside a segment (`/a..;/`) or
 #: with no `/` after its semicolons (`/..;a/`) is not refused here; real answers it further in,
-#: with a 400 page that is not copied.
+#: with a 400 page, the edge's for the `;` in it (:func:`front_door`).
 _PATH_STEP = re.compile(r"\.\.[/\\]|(?<![^/])\.\.;+/")
 #: The same in a query parameter's value, where the firewall reads less: `../` anywhere, and `..\`
 #: where a `\` or a `/` follows it or the value ends (`?x=..%5C`, `?x=..%5C%5Cy` and
@@ -2225,7 +2310,25 @@ def _cloudfront(status: int, reason: str, method: str, raw_path: str) -> str:
     return _CLOUDFRONT_PAGE.format(status=status, reason=reason, request_id=request_id)
 
 
-def front_door(method: str, raw_path: str, raw_query: str) -> FrontDoor | None:
+#: What the edge answers a `;` in a path with, JSON or a page as `Accept` picks
+#: (:func:`front_door`). The JSON is this body, 28 bytes with its newline, on `application/json`;
+#: real's page is 18,943 bytes on `text/html` with no charset,
+#: `<meta name="details" content="lua_response">` among them, reading the status and a request id of
+#: its own (2026-10-12, 2026-10-18 and 2026-10-19). The stub here keeps the status, the media type
+#: and that tag, so a `HEAD` declares the stub's length. Both carry `Access-Control-Allow-Origin: *`
+#: beside the edge's two headers, and the gateway's two ids beside those where the path holds the
+#: `;` escaped and none bare (2026-10-19: the first on all 192 such answers sent, the ids on the 55
+#: with `%3B` or `%3b` alone and on none of the 137 with a bare `;`).
+_EDGE_JSON_400 = '{"message":"","status":400}\n'
+_EDGE_PAGE_400 = (
+    '<!DOCTYPE html><html><head><meta name="details" content="lua_response">'
+    "<title>400</title></head><body><p>400</p></body></html>"
+)
+
+
+def front_door(
+    method: str, raw_path: str, raw_query: str, accept: str | None = None
+) -> FrontDoor | None:
     """What answers an `/atlassian` request before either product sees it, or None.
 
     The checks a request meets, in order, measured 2026-10-12 by sending two of them wrong at once:
@@ -2233,15 +2336,25 @@ def front_door(method: str, raw_path: str, raw_query: str) -> FrontDoor | None:
     with its 400, ahead of everything (a `TRACE`, a `PROPFIND` or a tag the firewall names beside
     one is that 400 too); then a method it does not pass on (:data:`SERVED_METHODS`); then its
     firewall (:func:`waf_blocks`), so a `PROPFIND` on a path the firewall refuses is the method's
-    403 and a `PATCH` on one is the firewall's; then the gateway's `PATCH`
-    (:data:`GATEWAY_REFUSED`). Behind those, Confluence's Tomcat answers an encoded slash anywhere
-    under `/wiki/` with 400, for every method, every credential and the `Accept` values `*/*`,
-    `application/json`, `application/xml` and none, where Jira decodes one and routes the decoded
-    path; an encoded backslash is the same 400 (2026-10-13). `/wiki/spaces/` is the exception, in
-    any case (`/wiki/SPACES/`), the web app's own pages, which answered both with 200 (2026-10-13).
-    Each layer's answer is the same whatever the credential, and the gateway's Connect-token 403
-    comes after all of them. Which product a path is the gateway's to decide, and it reads the path
-    with each run of slashes as one: `PATCH //wiki/rest/api/space` is openresty's 405 (2026-10-13).
+    403 and a `PATCH` on one is the firewall's; then the edge's 400 for a `;` anywhere in the path,
+    bare or as `%3B` (2026-10-19, each spelling: behind `%00`, a `PROPFIND` and the firewall's
+    `..;/` or `..%3B/`, ahead of the gateway's `PATCH` on both products and of Tomcat's encoded
+    slash and backslash); then the gateway's `PATCH` (:data:`GATEWAY_REFUSED`). The `;` refusal is
+    JSON where `Accept` holds `application/json` as spelled, wherever it stands and whatever its `q`
+    (`text/html, application/json` and `application/json;q=0, text/html` were JSON,
+    `APPLICATION/JSON` the page), and the page (:data:`_EDGE_PAGE_400`) for anything else, none
+    included; the same on both products, with an API token and with none, for `GET`, `HEAD`,
+    `OPTIONS`, `POST`, `PUT`, `DELETE` and `PATCH`, on served routes, on paths no route matches and
+    outside the API mounts (`/browse/A-1;x`, `/wiki/spaces/X;y`, `/x;y`), 2026-10-12 to 2026-10-19.
+    Confluence's Tomcat answers an encoded slash anywhere under `/wiki/` with 400, for every method,
+    every credential and the `Accept` values `*/*`, `application/json`, `application/xml` and none,
+    where Jira decodes one and routes the decoded path; an encoded backslash is the same 400
+    (2026-10-13), and on Jira's API the same page under both values measured (2026-10-18).
+    `/wiki/spaces/` is the exception, in any case (`/wiki/SPACES/`), the web app's own pages, which
+    answered both with 200 (2026-10-13). Each layer's answer is the same whatever the credential,
+    and the gateway's Connect-token 403 comes after all of them. Which product a path is the
+    gateway's to decide, and it reads the path with each run of slashes as one:
+    `PATCH //wiki/rest/api/space` is openresty's 405 (2026-10-13).
 
     An `Accept` naming `text/html` first draws the edge's own "Page Unavailable" page in place of
     Tomcat's, which is not copied. ``raw_path`` is the path as sent, prefix included, which is
@@ -2265,18 +2378,25 @@ def front_door(method: str, raw_path: str, raw_query: str) -> FrontDoor | None:
         return FrontDoor(403, "cdn edge", "text/html", page, {})
     collapsed = re.sub(r"/{2,}", "/", raw_path)
     confluence = collapsed == WIKI or collapsed.startswith(f"{WIKI}/")
+    encoded = collapsed.lower()
+    if ";" in encoded or "%3b" in encoded:
+        # the gateway's ids where no `;` is bare (:data:`_EDGE_JSON_400`)
+        layer = "cdn edge" if ";" in encoded else "gateway"
+        edge = {"Access-Control-Allow-Origin": "*"}
+        if accept is not None and "application/json" in accept:
+            return FrontDoor(400, layer, "application/json", _EDGE_JSON_400, edge)
+        return FrontDoor(400, layer, "text/html", _EDGE_PAGE_400, edge)
     if method in GATEWAY_REFUSED:
         status, phrase, server = (
             (405, "Not Allowed", "openresty") if confluence else (400, "Bad Request", "nginx")
         )
         page = _GATEWAY_PATCH_PAGE.format(status=status, phrase=phrase, server=server)
         return FrontDoor(status, "gateway", "text/html", page, {})
-    encoded = collapsed.lower()
     if (
         collapsed.startswith(f"{WIKI}/")
         and not encoded.startswith(f"{WIKI}/spaces/")
         and ("%2f" in encoded or "%5c" in encoded)
-    ):
+    ) or (serves_the_jira_api(collapsed) and "%5c" in encoded):
         return FrontDoor(
             400, "gateway", TOMCAT_MEDIA_TYPE, tomcat_page(400), {"Content-Language": "en"}
         )
@@ -2316,8 +2436,13 @@ def no_endpoint(path: str, method: str) -> AtlassianError:
     `detail` names the method as sent -- `GET`, `POST`, `DELETE` and `OPTIONS` each came back in it,
     and `PUT` with no credential on 2026-09-30 -- and both fields carry the vendor path with the
     query string left off. A credential changes nothing; an `Accept` holding a member Jira cannot
-    read empties the body (:func:`rendered`).
+    read empties the body (:func:`rendered`). A path carrying a bracket, escaped or bare, is the
+    dead-link page instead (:data:`_JIRA_BRACKET`).
     """
+    if _JIRA_BRACKET.search(path):
+        return AtlassianError(
+            404, HTML_NOT_FOUND.encode(), headers={"Content-Type": JIRA_SITE_HTML_MEDIA_TYPE}
+        )
     vendor_path = _instance(path)
     return AtlassianError(
         404,

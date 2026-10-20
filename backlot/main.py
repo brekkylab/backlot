@@ -174,10 +174,10 @@ async def _http_exception_handler(request: Request, exc: StarletteHTTPException)
     # are indented to the byte and a `callback` on a GET answers one at 200 as a script, and an
     # Atlassian refusal takes the shape `Accept` asks for (``errors.atlassian.rendered``).
     # Asking the envelope keeps that where the rest of that vendor's error shape lives, and leaves
-    # GitHub with FastAPI's `JSONResponse`. GitHub honours `callback` through an envelope of its
-    # own — `/**/cb({"meta": …, "data": …})` under `application/javascript; charset=utf-8`, with
-    # the status inside `meta` and an unparseable name refused UNWRAPPED — which is a shape to
-    # build, not one to share.
+    # most GitHub errors with FastAPI's `JSONResponse`. GitHub honours `callback` through an
+    # envelope of its own — `/**/cb({"meta": …, "data": …})` under
+    # `application/javascript; charset=utf-8`, with the status inside `meta` and an unparseable
+    # name refused UNWRAPPED — which is a shape to build, not one to share.
     rendered = errors.rendered(request, exc.status_code, body, headers)
     if rendered is not None:
         return rendered
@@ -256,6 +256,18 @@ async def refuse_an_unserved_github_operation(request: Request, call_next):
 
 
 @app.middleware("http")
+async def refuse_an_unserved_hubspot_operation(request: Request, call_next):
+    """An operation HubSpot publishes that no route here serves is refused for its credential as a
+    served route refuses one, ahead of the router's 404 or 405
+    (``backlot.routers.hubspot.refuse_an_unserved_operation``)."""
+    if request.scope["path"].startswith("/hubspot/"):
+        refusal = hubspot.refuse_an_unserved_operation(request)
+        if refusal is not None:
+            return refusal
+    return await call_next(request)
+
+
+@app.middleware("http")
 async def echo_github_api_version(request: Request, call_next):
     """Report which API version served the response, on the `/github` answers real echoes one for,
     200 and error alike.
@@ -265,10 +277,10 @@ async def echo_github_api_version(request: Request, call_next):
     and diff media types do (see ``backlot.routers.github``) — so exactly the responses whose SHAPE
     the header describes would ship without it.
 
-    A rejected version gets no echo, matching real: it selected nothing. That is `None` from
-    ``selected_api_version``, the same call the router's 400 is raised from. Code search gets no
-    echo either, whatever it pinned: real's code search backend does not read the header, and
-    neither does `/rate_limit` asked with no `Authorization` header (see
+    A rejected version gets no added echo: ``selected_api_version`` returns `None`. The pull and
+    contents backend's own empty echo is preserved (see ``github._validate_api_version``).
+    Code search gets no echo either, whatever it pinned: real's code search backend does not read
+    the header, and neither does `/rate_limit` asked with no `Authorization` header (see
     ``github.honours_api_version``). Nor does a 404 for a path real does not route, whatever the
     caller's credential — see ``_github_routes`` — nor real's "Bad credentials" 401
     (``github.refused_a_credential``), nor the 401s ``github.refused_an_unserved_operation`` names.
@@ -727,7 +739,8 @@ async def answer_head_as_the_get_without_its_body(request: Request, call_next):
     What the vendors do NOT share is the `content-length`: GitHub and Notion declare the length of
     the body the `GET` would have carried, and Atlassian's and Google's answers split, so that
     header is asked for rather than assumed, through ``errors.head_content_length``. The request
-    is marked ``answering_head`` on its state for ``errors.google.jsonp_callback``, which reads it.
+    is marked ``answering_head`` on its state for ``errors.google.jsonp_callback`` and
+    ``routers.github._validate_api_version``, which read it.
 
     The method goes back to `HEAD` on the scope once the GET has answered, because the server frames
     the response by it: uvicorn's httptools protocol reads ``scope["method"]`` when it writes the
@@ -801,6 +814,7 @@ async def answer_at_the_atlassian_front_door(request: Request, call_next):
         request.method,
         raw_path.decode("latin-1"),
         request.scope.get("query_string", b"").decode("latin-1"),
+        request.headers.get("accept"),
     )
     if answer is None:
         return await call_next(request)
@@ -911,10 +925,14 @@ async def vendor_json_media_type(request: Request, call_next):
     than around it; the route handlers and the two exception handlers above are covered from either
     position, those handlers because they run inside ``ExceptionMiddleware``. The status goes along
     with the path because the answer can depend on it: code search's own 200 and 422 carry no
-    charset where the gateway's 401 on the same path does.
+    charset where the gateway's 401 on the same path does. An answer given in front of Jira is not
+    Jira's, and keeps the type its layer gives (the edge's `;` 400,
+    ``errors.atlassian.front_door``).
     """
     response = await call_next(request)
-    if response.headers.get("content-type") == "application/json":
+    if response.headers.get("content-type") == "application/json" and not request.scope.get(
+        "atlassian_front_door"
+    ):
         media_type = errors.json_media_type(request.url.path, response.status_code)
         if media_type is not None:
             response.headers["content-type"] = media_type

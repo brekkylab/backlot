@@ -1,10 +1,10 @@
 """Vendor-agnostic GraphQL execution: SDL + resolvers -> response envelope.
 
 Knows nothing about any vendor and nothing about :mod:`backlot.store`. A vendor builds one
-:class:`Engine` at import time from its SDL and resolver map; its router hands a raw request
-body to :meth:`Engine.execute_request`, or one it has read itself to
-:meth:`Engine.execute_payload`, along with a context dict (connection, caller, ``visible_ids``)
-that every resolver receives as ``info.context``.
+:class:`Engine` at import time from its SDL and resolver map; its router reads the request body
+with :mod:`backlot.graphql.body` and hands it to :meth:`Engine.execute_payload`, along with a
+context dict (connection, caller, ``visible_ids``) that every resolver receives as
+``info.context``.
 
 Execution is deliberately split into parse -> validate -> execute rather than delegating to
 ``graphql_sync``, because the three stages produce *different* envelopes. Per the GraphQL
@@ -52,8 +52,7 @@ def _id_from_a_variable(value: Any) -> str:
 
 
 # graphql-core has one `ID` scalar for every schema in the process, so this reads an `ID` variable
-# for all of them; it parts from `coerce_id` only on a Double holding an integer, and a Double is
-# made only by `backlot.graphql.body`.
+# for all of them; a Double is made only by `backlot.graphql.body`.
 GraphQLID.parse_value = _id_from_a_variable
 
 # One custom scalar's coercion: ``parse_value`` takes a variable's JSON value, ``parse_literal`` an
@@ -173,25 +172,10 @@ class Engine:
             return _request_error(list(result.errors))
         return Result(payload=result.formatted)
 
-    def execute_request(self, body: bytes | str, *, context: Any = None) -> Result:
-        """Run a GraphQL-over-HTTP POST body (``{query, variables, operationName}``).
-
-        Body problems come back as a GraphQL error envelope in graphql-js's words rather than a
-        framework-level validation error. The body is read by :mod:`backlot.graphql.body`, as the
-        vendors' Node servers read it. To answer a body problem in its vendor's envelope instead, a
-        router reads the body itself and calls :meth:`execute_payload`.
-        """
-        try:
-            payload = request_body.parse(
-                body if isinstance(body, str) else request_body.decode(body)
-            )
-        except request_body.NotJson:
-            return not_json()
-        return self.execute_payload(payload, context=context)
-
     def execute_payload(self, payload: Any, *, context: Any = None) -> Result:
-        """Run a body its router has already read with :mod:`backlot.graphql.body`, so that router
-        can refuse a body before it looks at the credential."""
+        """Run a GraphQL-over-HTTP POST body (``{query, variables, operationName}``) its router has
+        read with :mod:`backlot.graphql.body`. A body of the wrong shape comes back as a GraphQL
+        error envelope in graphql-js's words rather than a framework-level validation error."""
         if not isinstance(payload, dict):
             return not_json()
         query = payload.get("query")

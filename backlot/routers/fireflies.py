@@ -14,10 +14,9 @@ Status codes follow the GraphQL-over-HTTP split :class:`backlot.graphql.engine.R
 
 A body Fireflies cannot read is refused ahead of anything about the credential: with no
 credential, and with ``Authorization: nope``, an empty body and a body that is not JSON drew
-:func:`_body_refusal`'s 400 from api.fireflies.ai on 2026-10-18, and a body over :data:`_LIMIT`
-draws its 413. ``Content-Encoding`` and the charset go unread: on 2026-10-19 a gzipped body drew
-the not-JSON 400, and ``charset=latin1``, ``charset=utf-nope`` and ``Content-Encoding: bogus`` were
-served.
+:func:`_body_refusal`'s 400 from api.fireflies.ai on 2026-10-18. ``Content-Encoding`` and the
+charset go unread: on 2026-10-19 a gzipped body drew the not-JSON 400, and ``charset=latin1``,
+``charset=utf-nope`` and ``Content-Encoding: bogus`` were served.
 """
 
 from __future__ import annotations

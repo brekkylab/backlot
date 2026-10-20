@@ -386,19 +386,12 @@ def test_cloudflare_refuses_a_repeated_authorization(
         assert r.content == page
 
 
-@pytest.mark.parametrize(
-    "vendor, reader",
-    [
-        pytest.param("linear", (request_body, "decode"), id="linear"),
-        pytest.param("fireflies", (request_body, "decode"), id="fireflies"),
-    ],
-)
-def test_a_graphql_vendor_reads_the_body_in_a_worker_thread(client, monkeypatch, vendor, reader):
+@pytest.mark.parametrize("vendor", ["linear", "fireflies"])
+def test_a_graphql_vendor_reads_the_body_in_a_worker_thread(client, monkeypatch, vendor):
     """The router hands the body to its reader through ``run_in_threadpool``, so the reader runs
     where no event loop does and the loop serves other requests while it reads."""
-    module, name = reader
     where = []
-    original = getattr(module, name)
+    original = request_body.decode
 
     def recording(*args):
         try:
@@ -408,7 +401,7 @@ def test_a_graphql_vendor_reads_the_body_in_a_worker_thread(client, monkeypatch,
             where.append("a worker thread")
         return original(*args)
 
-    monkeypatch.setattr(module, name, recording)
+    monkeypatch.setattr(request_body, "decode", recording)
     client.post(f"/{vendor}/graphql", json={"query": "{ __typename }"})
     assert where == ["a worker thread"]
 

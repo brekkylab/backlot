@@ -8,22 +8,22 @@ status codes were already right.
 Everything here was measured against the live Docs / Drive / Gmail / Sheets / Slides APIs. The
 envelope is NOT uniform — three families differ in which optional members they carry:
 
-    family                  errors[]           status               no Authorization header, GET
-    ------------------------|------------------|---------------------|-----------------------------
-    Drive v3                | always           | auth failures,      | 403 PERMISSION_DENIED
-                            |                  | typed values,       |
-                            |                  | `$.xgafv` and the   |
-                            |                  | batch redirect only |
-    Gmail v1                | unless $.xgafv=2 | always              | 401 UNAUTHENTICATED
-    Docs v1 / Slides v1     | $.xgafv=1        | always              | 401 UNAUTHENTICATED
-    Sheets v4               | $.xgafv=1        | always              | 403 PERMISSION_DENIED
+    family                  errors[]           status
+    ------------------------|------------------|-----------------------------------------------
+    Drive v3                | always           | auth failures, typed values, `$.xgafv`, the
+                            |                  | batch redirect and `Unknown Error.` only
+    Gmail v1                | unless $.xgafv=2 | always
+    Docs v1 / Slides v1     | $.xgafv=1        | always
+    Sheets v4               | $.xgafv=1        | always
 
-Sheets parts from the other two editor APIs on that last column: measured, a GET with no
-Authorization header is 403 PERMISSION_DENIED with the unregistered-caller sentence, where Docs
-answers 401 UNAUTHENTICATED with the missing-credential one. The column is the GET rule only
-(:func:`no_credentials`). A present-but-invalid token is 401 UNAUTHENTICATED in every family, which
-is why a missing header and a bad token are separate constructors here rather than one
-"unauthorized".
+A request that carries no credential is refused by operation rather than by family: the 403 of an
+unregistered caller on the operations that also take an API key, the 401 of a missing credential on
+the rest (:func:`no_credentials`), and on a download the 403 that names the missing API key when no
+`Authorization` is sent (:func:`missing_api_key`), or :func:`download_credential_refused`'s 401 when
+one is sent that is no credential. One whose credential does not resolve is the 401 of
+:func:`bad_token` in every family, which is why a missing credential and a bad token are separate
+constructors here rather than one "unauthorized". What counts as a credential is
+``routers.google._credential``'s to say.
 
 `errors[]` is what `$.xgafv` selects, and the middle column above is the whole rule
 (:func:`has_errors_array`). It is a SYSTEM parameter — a top-level entry of a discovery document's
@@ -46,13 +46,15 @@ measurement. Measured on Sheets and Docs at `$.xgafv=1`: a typed value the proto
 ``reason: invalid`` with NO ``domain`` (:func:`invalid_field_value`), and so are a JSON body member
 the request message does not have and a JSON body that is not an object
 (:func:`invalid_field_values`); a request body that is not JSON is ``parseError``
-(:func:`invalid_json`); every other measured 400 is ``badRequest`` under ``global``
-(:func:`invalid_argument`, :func:`bad_field_mask`); a 404 is ``notFound``; a bad token ``authError``
-at ``location: Authorization``; an anonymous Sheets GET ``forbidden``; the missing credential — any
-anonymous POST, and a GET on the three OAuth-only APIs — ``required`` with the short
+(:func:`invalid_json`); an Office file read through the API of its own family is
+``failedPrecondition`` under ``global`` (:func:`failed_precondition`); every other measured 400 is
+``badRequest`` under ``global`` (:func:`invalid_argument`, :func:`bad_field_mask`); a 404 is
+``notFound``; a file of the API's own type that the caller cannot see ``forbidden``
+(:func:`permission_denied`); a bad token ``authError`` at ``location: Authorization``; an
+unregistered caller ``forbidden``; the missing credential ``required`` with the short
 ``Login Required.``; and the 500 the data-filter reads answer ``backendError``
-(:func:`internal_error`). The editor 400 NOT measured keeps whatever its constructor renders: an
-Office file read as a native document is :func:`failed_precondition`, so ``failedPrecondition``.
+(:func:`internal_error`). Drive's `Unknown Error.` 500 carries one entry with no members at all
+(:func:`unknown_error`).
 """
 
 from __future__ import annotations
@@ -74,6 +76,7 @@ _PREFIX_FAMILY = (
     ("/sheets/v4", EDITOR),
     ("/slides/v1", EDITOR),
 )
+PREFIXES = tuple(prefix for prefix, _ in _PREFIX_FAMILY)
 
 # The long forms Google actually sends. Kept verbatim: a client that matches on the message needs
 # the real text, and the short "Invalid Credentials" belongs in `errors[0]`, not at the top.
@@ -92,6 +95,14 @@ UNREGISTERED_CALLER_MESSAGE = (
     "API Key or other form of API consumer identity to call this API."
 )
 MISSING_API_KEY_MESSAGE = "The request is missing a valid API key."
+QUERY_TOKEN_MESSAGE = (
+    "OAuth token was passed in the query parameter. Please send it in Authorization header instead."
+)
+
+# The query parameters real reads an OAuth token from, in the order its front end ranks them
+# (``routers.google._query_credential``). A byte-stream read refuses any of them
+# (:func:`token_in_query`).
+QUERY_TOKENS = ("access_token", "bearer_token", "oauth_token")
 
 
 def family(path: str) -> str | None:
@@ -129,8 +140,10 @@ class GoogleError(HTTPException):
         short: str | None = None,
         details: list | None = None,
         domain: str | None = "global",
+        empty_entry: bool = False,
+        headers: dict[str, str] | None = None,
     ):
-        super().__init__(status_code=status_code, detail=message)
+        super().__init__(status_code=status_code, detail=message, headers=headers)
         self.message = message
         self.reason = reason
         self.location = location
@@ -142,6 +155,8 @@ class GoogleError(HTTPException):
         # (a typed value, a body member or root the request message cannot take), which carry none —
         # so a constructor that renders one of those passes ``None``.
         self.domain = domain
+        # `errors[0]` rendered as `{}`, the entry :func:`unknown_error` carries.
+        self.empty_entry = empty_entry
 
 
 # --- constructors: the call site names the KIND of failure, which is what only it knows ---------
@@ -200,6 +215,17 @@ def sorting_not_supported_fulltext() -> GoogleError:
 def not_found_file(file_id: str) -> GoogleError:
     """Drive's not-found, which names the id so a batch caller can tell which request failed."""
     return GoogleError(404, f"File not found: {file_id}.", reason="notFound", location="fileId")
+
+
+def permission_denied() -> GoogleError:
+    """An editor API resolved a file of its own type but the caller cannot read it. Measured on
+    Sheets and Docs on 2026-10-06; unlike a missing id, this is a 403 with ``forbidden``."""
+    return GoogleError(
+        403,
+        "The caller does not have permission",
+        reason="forbidden",
+        status="PERMISSION_DENIED",
+    )
 
 
 def not_found_entity() -> GoogleError:
@@ -356,6 +382,16 @@ def drive_internal_error() -> GoogleError:
     return GoogleError(500, "Internal Error", reason="internalError")
 
 
+def unknown_error() -> GoogleError:
+    """Drive's 500 `Unknown Error.`, whose `errors[]` entry has no members, for two or more
+    `pageSize` values on `permissions.list` whose first is outside 1-100;
+    ``routers.google._drive_permissions_page_size`` records the measurement. Real answers the same
+    body to a `permissions.list` `pageToken` of `BOGUS`, `0`, a `files.list` token or an issued
+    token with `.` added, measured 2026-10-09, which
+    ``routers.google._drive_permissions_page_token`` refuses with its 400 instead."""
+    return GoogleError(500, "Unknown Error.", status="UNKNOWN", empty_entry=True)
+
+
 def unsupported_conversion() -> GoogleError:
     """`files.export` asked for a format the file's type does not export to. Measured 2026-09-23
     on a spreadsheet: `text/plain`, `bogus/type`, a native Google type, a padded `text/csv `,
@@ -394,6 +430,18 @@ def bad_field_mask(path: str) -> GoogleError:
     )
 
 
+def invalid_page_token() -> GoogleError:
+    """Gmail's answer to a page token that does not parse, on both listings: 400 INVALID_ARGUMENT,
+    whose `errors[]` entry is `global` / `invalidArgument` and which carries no `details`. Real
+    does not check that it issued the token: on 2026-10-09 both listings served `0`, `1` and an
+    issued token with its last digit changed or dropped, and refused one with a 21st digit, a
+    letter or a leading space. Where it comes among the other refusals is
+    ``routers.google._gmail_page``'s."""
+    return GoogleError(
+        400, "Invalid pageToken", reason="invalidArgument", status="INVALID_ARGUMENT"
+    )
+
+
 def invalid_attachment_token() -> GoogleError:
     """Gmail's answer to an attachment id it does not hold. Measured 2026-09-30 and 2026-10-01:
     400 INVALID_ARGUMENT for a made-up id and for a real one with characters changed, whatever
@@ -412,7 +460,7 @@ def invalid_id_value() -> GoogleError:
 def invalid_max_results() -> GoogleError:
     """Gmail's ``Invalid maxResults`` for a `maxResults` of zero or from 2**31 up: 400
     INVALID_ARGUMENT, whose `errors[]` entry is `global` / `invalidArgument` and which carries no
-    `details`. The values and the measurement are ``routers.google._gmail_max_results``'s. A value
+    `details`. The values and the measurement are ``routers.google._gmail_page``'s. A value
     the proto layer cannot read at all is :func:`invalid_field_value`'s shape instead, which names
     the field it refused."""
     return GoogleError(
@@ -425,8 +473,20 @@ def failed_precondition(message: str) -> GoogleError:
     return GoogleError(400, message, reason="failedPrecondition", status="FAILED_PRECONDITION")
 
 
-def bad_token() -> GoogleError:
-    """A present-but-invalid bearer: 401 in every family."""
+# The challenge the front end's 401s carry, measured 2026-10-11 on all five hosts, with a credential
+# that does not resolve adding `error="invalid_token"` to it (:func:`bad_token`). It rides along on
+# a 401 a `callback` wraps at 200 as well. The download server's own 401 names the realm without
+# its trailing slash (:func:`download_credential_refused`).
+_CHALLENGE = 'Bearer realm="https://accounts.google.com/"'
+
+
+def bad_token(*, named: bool = True) -> GoogleError:
+    """A credential that does not resolve: 401 in every family. ``named`` is whether it named a
+    token at all, which the challenge says: measured 2026-10-11, `Bearer nope`, `OAuth nope`,
+    `Bearer x <token>` and `Bearer <token>;x` carry `error="invalid_token"` in `WWW-Authenticate`,
+    where `Bearer<token>` and `Bearer<TAB><token>`, a scheme with no space after it, carry the bare
+    challenge."""
+    challenge = f'{_CHALLENGE}, error="invalid_token"' if named else _CHALLENGE
     return GoogleError(
         401,
         BAD_TOKEN_MESSAGE,
@@ -435,12 +495,12 @@ def bad_token() -> GoogleError:
         location_type="header",
         status="UNAUTHENTICATED",
         short="Invalid Credentials",
+        headers={"WWW-Authenticate": challenge},
     )
 
 
 def missing_credentials() -> GoogleError:
-    """No Authorization header, on an OAuth-only API (Gmail, Docs, Slides), or on a POST to any
-    of the five.
+    """No credential, on an operation that does not take an API key (:func:`no_credentials`).
 
     One answer for all of them: measured 2026-09-14, Gmail, Docs and Slides send the same long
     top-level message and the same `errors[]` entry, the short ``Login Required.`` at ``location:
@@ -455,35 +515,87 @@ def missing_credentials() -> GoogleError:
         location_type="header",
         status="UNAUTHENTICATED",
         short="Login Required.",
+        headers={"WWW-Authenticate": _CHALLENGE},
     )
 
 
 def unregistered_caller() -> GoogleError:
-    """No Authorization header, on a GET to an API that also accepts API keys (Drive, Sheets) — so
-    an anonymous GET is a caller with no established identity rather than a missing credential."""
+    """No credential where the operation also takes an API key (:func:`no_credentials`). The caller
+    has no established identity, rather than missing a credential, and the answer carries no
+    `WWW-Authenticate`."""
     return GoogleError(
         403, UNREGISTERED_CALLER_MESSAGE, reason="forbidden", status="PERMISSION_DENIED"
     )
 
 
-def no_credentials(path: str, method: str) -> GoogleError:
-    """The right anonymous-request error for this path and method. Sheets shares the editor ENVELOPE
-    with Docs and Slides but not this behaviour, so it is resolved from the path rather than the
-    family; and the path is half the rule. Measured 2026-09-22 with no ``Authorization`` header on
-    all five families: a GET on Drive or Sheets is the 403 unregistered caller, and a POST on any of
-    the five — Sheets' two data-filter reads included — is the 401 missing credential.
+# The operations whose caller with no credential is an unregistered one rather than one missing a
+# credential, as (method, path pattern). Measured 2026-10-11 with no `Authorization` on every
+# operation served here and on each of the 147 the `gmail` and `google_drive` baselines list as
+# `missing_operation`, where `Bearer nope` beside each was the 401 that shows the path is an
+# operation: these answered the 403, and every other one the 401. A file id of `generateIds` or
+# `generateCseToken` is its own operation, the 401 one; `trash` is the 403 of a file read.
+_UNREGISTERED_CALLER_OPERATIONS = tuple(
+    (method, re.compile(pattern))
+    for method, pattern in (
+        ("GET", r"/drive/v3/files"),
+        ("GET", r"/drive/v3/files/(?!generateIds$|generateCseToken$)[^/]+"),
+        ("GET", r"/drive/v3/files/[^/]+/export"),
+        ("GET", r"/drive/v3/files/[^/]+/comments(/[^/]+(/replies(/[^/]+)?)?)?"),
+        ("POST", r"/drive/v3/files/[^/]+/comments(/[^/]+/replies)?"),
+        ("PATCH", r"/drive/v3/files/[^/]+/comments/[^/]+(/replies/[^/]+)?"),
+        ("DELETE", r"/drive/v3/files/[^/]+/comments/[^/]+(/replies/[^/]+)?"),
+        ("POST", r"/drive/v3/files/[^/]+/(download|watch)"),
+        ("GET", r"/drive/v3/apps"),
+        ("GET", r"/drive/v3/operations/[^/]+"),
+        ("GET", r"/sheets/v4/spreadsheets/[^/]+"),
+        ("GET", r"/sheets/v4/spreadsheets/[^/]+/values/.+"),
+        ("GET", r"/sheets/v4/spreadsheets/[^/]+/values:batchGet"),
+    )
+)
 
-    A byte-stream read with no credential is a third answer, :func:`missing_api_key`, which the
-    route asks for by name.
+
+def no_credentials(path: str, method: str) -> GoogleError:
+    """What a request with no credential gets on this operation: :func:`unregistered_caller` on the
+    ones in `_UNREGISTERED_CALLER_OPERATIONS`, :func:`missing_credentials` on the rest, Gmail, Docs
+    and Slides whole among them.
+
+    A byte-stream read with no credential has two answers of its own, :func:`missing_api_key` with
+    no `Authorization` and :func:`download_credential_refused` with one that is no credential, which
+    the route asks for by name.
     """
-    if method == "GET" and (family(path) == DRIVE or path.startswith("/sheets/v4")):
+    if any(m == method and p.fullmatch(path) for m, p in _UNREGISTERED_CALLER_OPERATIONS):
         return unregistered_caller()
     return missing_credentials()
 
 
+def delegation_denied(email: str) -> GoogleError:
+    """Gmail's answer to a user's token asking for another address's mailbox, naming the caller's
+    own address. Measured 2026-10-11 with a Workspace member's `gmail.readonly` token, on every
+    Gmail route served here, for an address in the member's domain and one outside it. Which
+    `userId` is the caller's own, and which refusals come before it, is
+    ``routers.google._refuse_another_mailbox``'s."""
+    return GoogleError(
+        403, f"Delegation denied for {email}", reason="forbidden", status="PERMISSION_DENIED"
+    )
+
+
+def invalid_user_id() -> GoogleError:
+    """:func:`delegation_denied` for a `userId` that is not an address at all: `bob`, `@`, a local
+    part with nothing after its `@` and a domain with nothing before it each answered this sentence
+    on 2026-10-11, where `a%40b.com` was an address. Which `userId` gets it here is
+    ``routers.google._refuse_another_mailbox``'s."""
+    return GoogleError(
+        403,
+        "Invalid user id specified in request/Delegation denied",
+        reason="forbidden",
+        status="PERMISSION_DENIED",
+    )
+
+
 def refuse_download(request: Request) -> None:
-    """The one refusal a byte-stream read makes before it reads its parameters: a `callback` that
-    cannot be called is real's 503 `Backend Error`.
+    """The two refusals a byte-stream read makes before it reads its parameters: a token named in
+    the query (:func:`token_in_query`), then a `callback` that cannot be called, which is real's 503
+    `Backend Error`.
 
     A `callback` on a download is not JSONP. Measured 2026-10-07 on `files.get?alt=media` and
     `files.export`, against a PDF and a Doc: a name a script can call is ignored when the download
@@ -495,9 +607,11 @@ def refuse_download(request: Request) -> None:
     Whether a request is a download is `routers.google._drive_download`'s question, read off the
     route, and the route calls this once it is true: an export asking for `alt=json` and a file
     whose id is literally `export` are ordinary reads to real (measured 2026-10-07), so neither
-    reaches here. A present-but-invalid `Bearer` answers its own 401 ahead of this, which is where
-    real puts it.
+    reaches here. A credential that does not resolve (``routers.google._credential``) answers its
+    own 401 ahead of this, which is where real puts it.
     """
+    if names_a_query_token(request.query_params):
+        raise token_in_query()
     callback = first_repeat(request.query_params, CALLBACK) or ""
     if not callback:
         return
@@ -506,16 +620,58 @@ def refuse_download(request: Request) -> None:
         raise backend_error()
 
 
+def names_a_query_token(query: Mapping[str, str]) -> bool:
+    """Whether ``query`` names one of the `QUERY_TOKENS` in any case, which is what
+    :func:`token_in_query` refuses."""
+    return any(name.lower() in QUERY_TOKENS for name in query)
+
+
+def token_in_query() -> GoogleError:
+    """A byte-stream read whose query names an OAuth token: 400 under `badRequest`, beside a header
+    credential that resolves as beside none, and whatever the value but one the query is read as a
+    token that does not resolve, which answers that token's 401 first (the route's credential check
+    runs ahead of this). The names are :func:`names_a_query_token`'s; a name that only resembles one
+    is left to the download's other refusals.
+
+    Measured 2026-10-13 on `files.export`, and on `files.get?alt=media` with an empty value and
+    inside a batch; ``tests/test_google.py::_DOWNLOAD_QUERY_TOKEN_ROWS`` holds the cases.
+    """
+    return invalid_argument(QUERY_TOKEN_MESSAGE)
+
+
+def download_credential_refused() -> GoogleError:
+    """A byte-stream read whose `Authorization` real's front end does not read as a credential
+    (``routers.google._credential``), refused by the server that holds the bytes: 401 with the short
+    ``Invalid Credentials`` as its message, no ``status``, and a challenge naming the realm without
+    its trailing slash.
+
+    Measured 2026-10-11 on `files.get?alt=media` and `files.export`, each sent on its own:
+    `bearer nope`, `Basic YWJjOmRlZg==`, a bare `Bearer` and `nope` each answered this, and on
+    2026-10-13 an `Authorization` whose value is empty did too, where no header at all is the
+    missing API key's 403 and `Bearer nope` the front end's own 401. Its place among the download's
+    refusals is :func:`missing_api_key`'s to say."""
+    return GoogleError(
+        401,
+        "Invalid Credentials",
+        reason="authError",
+        location="Authorization",
+        location_type="header",
+        headers={"WWW-Authenticate": 'Bearer realm="https://accounts.google.com"'},
+    )
+
+
 def missing_api_key() -> GoogleError:
-    """No credential on a byte-stream read. Measured 2026-10-04 on `files.export` and 2026-10-05 on
-    `files.get?alt=media`, on an existing file and on a missing id alike: 403 with this sentence and
-    `reason: forbidden`, and NO ``status`` -- where the same route without the download answers
-    :func:`unregistered_caller`'s sentence with `PERMISSION_DENIED`.
+    """No `Authorization` on a byte-stream read. Measured 2026-10-04 on `files.export` and
+    2026-10-05 on `files.get?alt=media`, on an existing file and on a missing id alike: 403 with
+    this sentence and `reason: forbidden`, and NO ``status`` -- where the same route without the
+    download answers :func:`unregistered_caller`'s sentence with `PERMISSION_DENIED`.
 
     Real answers it last of the refusals a download makes, which is why the route raises it after
     the download's parameters rather than at the top. Measured 2026-10-07, the order a byte-stream
-    read answers in is: `$.xgafv` 400, a `Bearer` that does not resolve 401, `callback` 503, a
-    mistyped parameter or an absent `mimeType` 400, this 403, then the lookup."""
+    read answers in is: `$.xgafv` 400, a credential that does not resolve 401, a token named in the
+    query 400 (:func:`token_in_query`, 2026-10-13), `callback` 503, a mistyped parameter or an
+    absent `mimeType` 400, this 403 (or, for a header that is no credential,
+    :func:`download_credential_refused`), then the lookup."""
     return GoogleError(403, MISSING_API_KEY_MESSAGE, reason="forbidden")
 
 
@@ -636,6 +792,8 @@ def first_repeat(query: Mapping[str, str] | None, name: str) -> str | None:
                           |                                      | 2026-09-22
         maxResults        | `1&3` is 3, `3&1` is 1               | Gmail messages.list and
                           |                                      | threads.list 2026-10-08
+        pageToken         | `bad&<valid>` is the next page,      | Gmail messages.list and
+                          | `<valid>&bad` a 400                  | threads.list 2026-10-09
 
     An empty first repeat is read as itself rather than skipped, measured 2026-09-23:
     `q=&q=<folders>` is the unfiltered listing, `fields=&fields=id` on Drive `files.get` answers
@@ -652,8 +810,7 @@ def first_repeat(query: Mapping[str, str] | None, name: str) -> str | None:
     `excludeTablesInBandedRanges`, measured the same day, and of `majorDimension`, measured
     2026-09-22.
 
-    Gmail's `q` and `pageToken` stay on ``.get`` because which end real reads them from is
-    unmeasured.
+    Gmail's `q` stays on ``.get`` because which end real reads it from is unmeasured.
     """
     if query is None:
         return None
@@ -723,7 +880,11 @@ def jsonp_callback(request: Request) -> str | None:
     `values:batchGetByDataFilter` and on `spreadsheets:getByDataFilter` is ignored outright -- no
     wrap on a success, none on an error, and a name that a GET would be refused for is not even
     looked at -- where the same POST honours `$.xgafv` and `prettyPrint`. So GET is the only
-    method this parameter applies to.
+    method this parameter applies to. A `HEAD` (``request.state.answering_head``) is not GET here
+    either: measured 2026-10-11 on Drive's `files.list` and Gmail's `profile`, a callable name and
+    an uncallable one each answered a `HEAD` with 200 `application/json; charset=UTF-8`, where the
+    GET beside it was the script, and a `HEAD` that failed beside one kept its own status — no
+    credential's and a bad one's, and a missing file's 404 — where its GET was the script at 200.
 
     Two values that look like a callback are not one either. An empty `callback=` is absent:
     measured, it answers the plain body at the real status, success and error alike. So is any
@@ -751,7 +912,7 @@ def jsonp_callback(request: Request) -> str | None:
     Both are read as :func:`first_repeat`, not off ``QueryParams.get``: real answers a repeated
     `callback` through the first name and a repeated `alt` through the first format.
     """
-    if request.method != "GET":
+    if request.method != "GET" or getattr(request.state, "answering_head", False):
         return None
     query = request.query_params
     alt = alt_format(query)
@@ -833,7 +994,7 @@ def http_body(path: str, exc: HTTPException, query: Mapping[str, str] | None = N
         if location:
             entry["location"] = location
             entry["locationType"] = getattr(exc, "location_type", "parameter")
-        err["errors"] = [entry]
+        err["errors"] = [{} if getattr(exc, "empty_entry", False) else entry]
     status = getattr(exc, "status", None)
     if status:
         err["status"] = status
@@ -1021,3 +1182,55 @@ def rendered(
     checked = getattr(request.state, "google_system_parameters_checked", False)
     callback = jsonp_callback(request) if checked else None
     return respond(body, callback=callback, status_code=status_code, headers=headers)
+
+
+# --- a `HEAD` -----------------------------------------------------------------------------------
+
+
+def refuses_head(path: str) -> bool:
+    """Whether a `HEAD` on ``path`` is :func:`head_refusal`: on any path of the editor family,
+    routed or not, where Drive and Gmail answer one as the GET
+    (``backlot.main._HEAD_IS_THE_GET_WITHOUT_ITS_BODY``).
+
+    A prefix test with no boundary, as :func:`family`'s is, because the host refuses the method past
+    the version segment as well: `HEAD /v4x` and `/v4x/spreadsheets/abc` on Sheets, `/v1x` on Docs
+    and `/v1x/presentations/abc` on Slides each answered the 400 too, measured 2026-10-11."""
+    return family(path) == EDITOR
+
+
+def head_refusal() -> Response:
+    """What the Docs, Sheets and Slides hosts answer a `HEAD` with: 400, `text/html; charset=utf-8`,
+    `content-length: 0` and no body, ahead of the credential and of the system parameter alike.
+    Measured 2026-10-11 on routed paths, an unrouted one and the root, beside an unknown `$.xgafv`
+    and with a trailing slash, with a Workspace member's token, a bad one and none.
+
+    Sheets answers some with its host's HTML 404 page instead, and not by class of credential. On
+    2026-10-13 one Workspace spreadsheet's id got the 404 on 32 of 32, whoever asked; across 20
+    other Sheets paths two gcloud-issued tokens (that member's and a consumer account's) got the 400
+    on 160 of 160, while a bad token and no credential got the 404 on 28 of 160; that member's
+    token from the OAuth 2.0 Playground got the 400 on 35 of 35 across seven of those paths, and
+    that member's gcloud token got the 400 on 18 of 18 across six other spreadsheets the member can
+    open. Nor does Sheets go by whether the caller is a domain administrator: that member is not
+    one, like every caller modelled here, and another Workspace member who is not one either got the
+    404 on each made-up Sheets path it tried, with `drive`, `gmail.readonly` or both, but the 400 on
+    a spreadsheet that exists, while that domain's administrator got the 400 on both through the
+    same OAuth client. What picks the page was not found, so every caller gets the 400 here."""
+    return Response(status_code=400, media_type="text/html")
+
+
+def head_content_length(request: Request, status_code: int) -> bool:
+    """True only where the GET a `HEAD` runs as is a Drive download's 200.
+
+    Measured 2026-10-11 under `Accept-Encoding: identity` on every Drive and Gmail route served
+    here, each `HEAD` beside its GET: the `HEAD` answered the GET's status and `content-type` with
+    no body — the 200s; a missing file's, label's and message's 404; an unparseable id's, a bad page
+    size's and an unknown `$.xgafv`'s 400; the 401s and 403s a missing or bad credential gets; and
+    on a download the missing API key's 403 and an uncallable name's 503. Every answer but a
+    download's was chunked, with no `content-length` on either method. A download's 200 declares one
+    on the `HEAD` as on the GET — `files.export` to `text/plain` and to `text/html` and
+    `files.get?alt=media` on a PDF, 16, 798 and 587 bytes — while a download that fails declares a
+    length on its GET (`File not found`, an unsupported `mimeType`, an absent one, a Docs file read
+    with `alt=media`, no credential, the 503) and none on its `HEAD`.
+
+    ``request.state.google_download`` is set by ``routers.google._system_parameters``."""
+    return status_code == 200 and getattr(request.state, "google_download", False)

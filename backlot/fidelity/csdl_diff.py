@@ -41,6 +41,14 @@ from typing import Any, Callable, Iterable, Mapping, Protocol
 from backlot.fidelity.errors import FidelityError
 from backlot.fidelity.fetch import fetch_text
 from backlot.fidelity.findings import BREAKING, Finding
+from backlot.fidelity.surface import (
+    EXTRA,
+    IMPLEMENTED,
+    Measurement,
+    Member,
+    SchemaSurface,
+    TypeNode,
+)
 
 _EDM = "http://docs.oasis-open.org/odata/ns/edm"
 
@@ -50,6 +58,8 @@ class Declared:
     """One type as the vendor declares it."""
 
     name: str
+    # `EntityType` or `ComplexType`, the element that declared it.
+    kind: str = "EntityType"
     # Property name -> its declared type, walked through BaseType so an inherited property counts
     # as declared. `id` lives on `graph.entity` and nowhere else, so without the walk every entity
     # in every response reports it as invented.
@@ -70,6 +80,10 @@ class Schema:
 
     types: dict[str, Declared]
     enums: dict[str, frozenset[str]]
+    # The entity container's name and the entity sets and singletons it declares: the roots every
+    # request path starts from, which is what this contract has in place of a route list.
+    container: str = ""
+    roots: frozenset[str] = frozenset()
 
     def declared(self, name: str) -> Declared:
         try:
@@ -112,7 +126,15 @@ def schema(document: str) -> Schema:
     aliases: dict[str, str] = {}
     raw: dict[str, dict[str, Any]] = {}
     enums: dict[str, frozenset[str]] = {}
+    container, roots = "", frozenset()
     for element in root.iter(f"{{{_EDM}}}Schema"):
+        for declared in element.findall(f"{{{_EDM}}}EntityContainer"):
+            container = declared.get("Name")
+            roots = frozenset(
+                e.get("Name")
+                for e in declared
+                if e.tag in (f"{{{_EDM}}}EntitySet", f"{{{_EDM}}}Singleton")
+            )
         namespace = element.get("Namespace")
         if element.get("Alias"):
             aliases[element.get("Alias")] = namespace
@@ -120,6 +142,7 @@ def schema(document: str) -> Schema:
             for declared in element.findall(f"{{{_EDM}}}{kind}"):
                 properties = declared.findall(f"{{{_EDM}}}Property")
                 raw[f"{namespace}.{declared.get('Name')}"] = {
+                    "kind": kind,
                     "base": declared.get("BaseType"),
                     "open": declared.get("OpenType") == "true",
                     "properties": {p.get("Name"): p.get("Type") for p in properties},
@@ -154,12 +177,13 @@ def schema(document: str) -> Schema:
             current = _qualify(entry["base"], aliases)
         resolved[name] = Declared(
             name=name,
+            kind=raw[name]["kind"],
             properties=properties,
             navigations=frozenset(navigations),
             required=frozenset(required),
             open=is_open,
         )
-    return Schema(types=resolved, enums=enums, _aliases=aliases)
+    return Schema(types=resolved, enums=enums, container=container, roots=roots, _aliases=aliases)
 
 
 def check(schema: Schema, type_name: str, obj: Mapping[str, Any], where: str) -> list[Finding]:
@@ -222,15 +246,36 @@ def _annotation(key: str) -> bool:
     return "@odata." in key or key.endswith("@odata.count") or key.endswith("@odata.nextLink")
 
 
+def surface(
+    schema: Schema, served: Mapping[str, Iterable[str]], roots: Iterable[str]
+) -> SchemaSurface:
+    """What a walk measured, as the elements a baseline records.
+
+    The container is the root type, and its fields are the roots the walk's requests started from,
+    so they are this contract's operations. Under it, each type the walk checked, keyed by the
+    short name a finding's path uses, with every property it was served: ``implemented`` where the
+    type declares it, ``extra`` where it does not. A property the type declares and nothing served
+    is not listed, for the reason the module docstring gives.
+    """
+    container = {r: Member(IMPLEMENTED if r in schema.roots else EXTRA) for r in sorted(set(roots))}
+    types = {schema.container: TypeNode("EntityContainer", IMPLEMENTED, fields=container)}
+    for type_name, keys in served.items():
+        declared = schema.declared(type_name)
+        known = set(declared.properties) | declared.navigations
+        fields = {k: Member(IMPLEMENTED if k in known else EXTRA) for k in sorted(set(keys))}
+        types[type_name.split(".")[-1]] = TypeNode(declared.kind, IMPLEMENTED, fields=fields)
+    return SchemaSurface(schema.container, types)
+
+
 class CSDLTarget(Protocol):
     """What this module needs of a comparison. Structural, so the registry can import this module
     without this module importing the registry."""
 
     spec_url: str
-    walk: "Callable[[str, str, Schema, float], Iterable[Finding]]"
+    walk: "Callable[[str, str, Schema, float], Measurement]"
 
 
-def divergences(source: CSDLTarget, *, timeout: float = 120.0) -> list[Finding]:
+def measure(source: CSDLTarget, *, timeout: float = 120.0) -> Measurement:
     """This module's entry point: read the vendor's type system, start a server, and ask it.
 
     Fetching and parsing happen here so every CSDL source shares them; the source supplies only the
@@ -244,4 +289,4 @@ def divergences(source: CSDLTarget, *, timeout: float = 120.0) -> list[Finding]:
 
     declared = schema(fetch_text(source.spec_url, timeout=timeout))
     with backlot.serve() as server:
-        return list(source.walk(server.base_url, server.token, declared, timeout))
+        return source.walk(server.base_url, server.token, declared, timeout)

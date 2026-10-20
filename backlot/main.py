@@ -50,7 +50,7 @@ async def lifespan(app: FastAPI):
     # Adopt the corpus-derived org a BYO import recorded, so the routers (which read these off
     # settings) agree with the ACL. A roster-built tokens.yaml has no org; the defaults then stand.
     if settings.tokens_path.exists():
-        data = yaml.safe_load(settings.tokens_path.read_text()) or {}
+        data = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8")) or {}
         if data.get("org"):
             settings.org_name = data["org"]
         if data.get("org_domain"):
@@ -174,7 +174,8 @@ async def _http_exception_handler(request: Request, exc: StarletteHTTPException)
     # is asked for here rather than raised where the other refusals are. The exception is replaced
     # rather than edited: what follows reads the body, media type and headers off it either way.
     if exc.status_code == 405:
-        vendor = errors.method_not_allowed(request.url.path, request.method)
+        # The path as a refusal echoes it, which is the routed one on any vendor but Atlassian.
+        vendor = errors.method_not_allowed(atlassian._echoed_path(request), request.method)
         if vendor is not None:
             if vendor.headers is None:
                 vendor.headers = getattr(exc, "headers", None)
@@ -184,13 +185,13 @@ async def _http_exception_handler(request: Request, exc: StarletteHTTPException)
     if body is None:
         body = {"detail": exc.detail}
     # A vendor may decide how the body reaches the wire as well as what is in it — Google's errors
-    # are indented to the byte and a `callback` on a GET answers one at 200 as a script. Asking the
-    # envelope keeps that where the rest of that vendor's error shape lives, and leaves Atlassian
-    # and GitHub with exactly the JSONResponse they had. Measured 2026-09-15, that is right for
-    # both and for different reasons: Jira and Confluence ignore `callback` outright, on an error
-    # and on a success, while GitHub honours it through an envelope of its own — `/**/cb({"meta":
-    # …, "data": …})` under `application/javascript; charset=utf-8`, with the status inside `meta`
-    # and an unparseable name refused UNWRAPPED — which is a shape to build, not one to share.
+    # are indented to the byte and a `callback` on a GET answers one at 200 as a script, and an
+    # Atlassian refusal takes the shape `Accept` asks for (``errors.atlassian.rendered``).
+    # Asking the envelope keeps that where the rest of that vendor's error shape lives, and leaves
+    # most GitHub errors with FastAPI's `JSONResponse`. GitHub honours `callback` through an
+    # envelope of its own — `/**/cb({"meta": …, "data": …})` under
+    # `application/javascript; charset=utf-8`, with the status inside `meta` and an unparseable
+    # name refused UNWRAPPED — which is a shape to build, not one to share.
     rendered = errors.rendered(request, exc.status_code, body, headers)
     if rendered is not None:
         return rendered
@@ -216,12 +217,19 @@ async def _validation_exception_handler(request: Request, exc: RequestValidation
 
 
 def _some_github_route_matches(scope: Scope) -> bool:
-    """Whether some mounted route matches this scope's path, whatever the method.
+    """Whether some mounted route matches this scope's path, whatever the method."""
+    return any(route.matches(scope)[0] is not Match.NONE for route in app.router.routes)
 
-    A 404 for a path no route matches at all carries no version echo, and carries the five
-    `x-ratelimit-*` headers only for a request that sent no `Authorization` header at all — the
-    same line `refuse_a_trailing_slash_on_github` draws for the trailing-slash spelling of such a
-    path, which real draws for every spelling. Measured against api.github.com 2026-09-21:
+
+def _github_routes(scope: Scope) -> bool:
+    """Whether real routes this scope: some mounted route matches its path, whatever the method
+    (:func:`_some_github_route_matches`), or its method and path are an operation GitHub publishes
+    and no route here serves (``backlot.routers.github.is_an_unserved_operation``).
+
+    A 404 for a path real does not route carries no version echo, and carries the five
+    `x-ratelimit-*` headers only for a request that sent no `Authorization` header at all — the same
+    line `refuse_a_trailing_slash_on_github` draws for the trailing-slash spelling of such a path,
+    which real draws for every spelling. Measured against api.github.com 2026-09-21:
     `/repos/psf/requests/<unmatched>`, its trailing-slash spelling and a top-level `/<unmatched>`
     all answered 404 with no echo, where `/repos/psf/requests/issues/<missing>` — a route that DOES
     match, on a resource that does not exist — carried both for either caller. With no
@@ -229,9 +237,48 @@ def _some_github_route_matches(scope: Scope) -> bool:
     Every header value carried none of them and moved no window: a valid token (whose `used` read 0
     before three of them and 0 after), a bad bearer, `Basic Zm9vOmJhcg==` and a scheme-less value —
     so what real reads here is that a credential arrived, not that one resolved, where the same
-    unparseable `Basic` on a route that matches is served and counted.
+    `Basic` value, which names no token, on a route that matches is served and counted.
     """
-    return any(route.matches(scope)[0] is not Match.NONE for route in app.router.routes)
+    return _some_github_route_matches(scope) or github.is_an_unserved_operation(
+        scope["method"], scope["path"]
+    )
+
+
+def _a_github_route_serves(scope: Scope) -> bool:
+    """Whether a GitHub route serves this scope's method and path. Asked of
+    ``backlot.routers.github.router``, which holds the GitHub routes and nothing else."""
+    return any(route.matches(scope)[0] is Match.FULL for route in github.router.routes)
+
+
+@app.middleware("http")
+async def refuse_an_unserved_github_operation(request: Request, call_next):
+    """An operation GitHub publishes that no route here serves under the request's method is
+    refused as a served route refuses before it runs, ahead of the router's 404 or 405
+    (``backlot.routers.github.refuse_an_unserved_operation``).
+
+    Registered before the other GitHub middlewares, which makes it the innermost of them: it reads
+    the path ``resolve_github_id_paths`` rewrote and a `HEAD` as the GET it is rewritten to, and
+    its refusal leaves through the version echo and the rate-limit headers as a served route's 401
+    does.
+    """
+    if request.scope["path"].startswith("/github/") and not _a_github_route_serves(request.scope):
+        try:
+            await github.refuse_an_unserved_operation(request)
+        except StarletteHTTPException as exc:
+            return await _http_exception_handler(request, exc)
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def refuse_an_unserved_hubspot_operation(request: Request, call_next):
+    """An operation HubSpot publishes that no route here serves is refused for its credential as a
+    served route refuses one, ahead of the router's 404 or 405
+    (``backlot.routers.hubspot.refuse_an_unserved_operation``)."""
+    if request.scope["path"].startswith("/hubspot/"):
+        refusal = hubspot.refuse_an_unserved_operation(request)
+        if refusal is not None:
+            return refusal
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -244,20 +291,26 @@ async def echo_github_api_version(request: Request, call_next):
     and diff media types do (see ``backlot.routers.github``) — so exactly the responses whose SHAPE
     the header describes would ship without it.
 
-    A rejected version gets no echo, matching real: it selected nothing. That is `None` from
-    ``selected_api_version``, the same call the router's 400 is raised from. Code search gets no
-    echo either, whatever it pinned: real's code search backend does not read the header, and
-    neither does `/rate_limit` asked with no `Authorization` header (see
-    ``github.honours_api_version``). Nor does a 404 for a path no route matches at all, whatever
-    the caller's credential — see ``_some_github_route_matches`` — nor real's "Bad credentials"
-    401 (``github.refused_a_credential``).
+    A rejected version gets no added echo: ``selected_api_version`` returns `None`. The pull and
+    contents backend's own empty echo is preserved (see ``github._validate_api_version``).
+    Code search gets no echo either, whatever it pinned: real's code search backend does not read
+    the header, and neither does `/rate_limit` asked with no `Authorization` header (see
+    ``github.honours_api_version``). Nor does a 404 for a path real does not route, whatever the
+    caller's credential — see ``_github_routes`` — nor real's "Bad credentials" 401
+    (``github.refused_a_credential``), nor the 401s ``github.refused_an_unserved_operation`` names.
+    ``DELETE /installation/token``'s 401 is the one of those that echoes, as a served route's does
+    (:func:`github.refused_an_unserved_operation_reported`).
     """
     response = await call_next(request)
     if (
         request.url.path.startswith("/github")
         and github.honours_api_version(request)
-        and _some_github_route_matches(request.scope)
+        and _github_routes(request.scope)
         and not github.refused_a_credential(request)
+        and (
+            not github.refused_an_unserved_operation(request)
+            or github.refused_an_unserved_operation_reported(request)
+        )
     ):
         version = github.selected_api_version(request)
         if version is not None:
@@ -299,24 +352,30 @@ async def report_github_rate_limit(request: Request, call_next):
     so a `HEAD` runs through here as the GET it is rewritten to and counts once, as it does on real
     (`remaining` 46 → 45 across one `HEAD`, measured 2026-09-09), and the head copies the five
     with the rest of the GET's headers. A path outside `/github` gets nothing: the other vendors'
-    rate-limit answers are not measured. A 404 for a path no route matches at all gets them only
-    for a request that carried no `Authorization` header at all — see
-    ``_some_github_route_matches`` — and a credential that did not resolve gets them on no path at
-    all (``github.refused_a_credential``); the refusal check shares that same gate, so neither is
-    ever refused by it.
+    rate-limit answers are not measured. A 404 for a path real does not route gets them only for a
+    request that carried no `Authorization` header at all — see ``_github_routes`` — and a
+    credential that did not resolve gets them on no path at all but those
+    ``github.refused_without_a_window`` leaves out; the refusal check shares that same gate, so
+    neither is ever refused by it. Of the 401s an operation no route here serves gets for
+    its credential, the ones ``github.refused_an_unserved_operation_uncounted`` names get none
+    either and count nothing.
     """
     gated = (
         request.url.path.startswith("/github")
-        and not github.refused_a_credential(request)
-        and (_some_github_route_matches(request.scope) or "authorization" not in request.headers)
+        and not github.refused_without_a_window(request)
+        and (_github_routes(request.scope) or "authorization" not in request.headers)
     )
     if gated:
         refusal = github.rate_limit_refusal(request)
         if refusal is not None:
             return refusal
     response = await call_next(request)
-    if gated:
-        for name, value in github.rate_limit_headers(request, response.status_code).items():
+    if gated and not github.refused_an_unserved_operation_uncounted(request):
+        for name, value in github.rate_limit_headers(
+            request,
+            response.status_code,
+            count=not github.refused_an_unserved_operation_reported(request),
+        ).items():
             response.headers[name] = value
     return response
 
@@ -364,16 +423,16 @@ async def refuse_a_trailing_slash_on_github(request: Request, call_next):
     address, ahead of and independent of routing, where a credential's window only starts once a
     route is reached (anonymous `/repos/psf/requests/` answered `used` 45, 46 then 47 across a pair
     of bad-bearer 404s that carried no headers and moved no window between them, measured
-    2026-09-17) — see `_some_github_route_matches` for the unparseable-credential and matched-route
-    cases, which draw the same line.
+    2026-09-17) — see `_github_routes` for a header real reads as no credential and
+    for a matched route, which draw the same line.
 
     `redirect_slashes` is a setting of the whole app's `Router`, shared by every vendor mounted
-    here, and no other vendor's own answer to a trailing slash has been measured — so this
-    intercepts ahead of routing rather than turning the flag off for all of them. Registered inside
-    `resolve_github_id_paths`, so an id-keyed path is already its login-keyed spelling by the time
-    the question is asked and refuses its slash with the rest; and outside `report_github_rate_limit`
-    and the version echo, so a refused path reaches the rate limiter only through the call below and
-    never carries the echo.
+    here, and the vendors measured answer a trailing slash each their own way (Notion, Atlassian and
+    Google have middlewares of their own below) — so this intercepts ahead of routing rather than
+    turning the flag off for all of them. Registered inside `resolve_github_id_paths`, so an
+    id-keyed path is already its login-keyed spelling by the time the question is asked and refuses
+    its slash with the rest; and outside `report_github_rate_limit` and the version echo, so a
+    refused path reaches the rate limiter only through the call below and never carries the echo.
 
     An anonymous caller's spent rate-limit window outranks this 404 too: `GET /repos/{owner}/{repo}/`
     answers real's 403 rather than this 404 once the window is spent, `server: Varnish` (measured
@@ -439,6 +498,59 @@ async def serve_a_slashed_notion_path_as_the_path_without_it(request: Request, c
     return await call_next(request)
 
 
+def _google_route_match(scope: Scope) -> Match:
+    """How the best Google route matches this scope: in full, by its path alone (``PARTIAL``, the
+    router's 405), or not at all. Asked of ``backlot.routers.google.router``, which holds the Google
+    routes and nothing else."""
+    best = Match.NONE
+    for route in google.router.routes:
+        match = route.matches(scope)[0]
+        if match is Match.FULL:
+            return match
+        if match is Match.PARTIAL:
+            best = match
+    return best
+
+
+@app.middleware("http")
+async def route_a_google_path_the_way_google_does(request: Request, call_next):
+    """Trailing slashes on a Google family path are not part of the path: real serves what the
+    slash-free spelling serves, however many there are, refusals included. Measured 2026-10-11
+    against the five hosts, on the spellings ``tests/test_google.py::_SLASHED_ROWS`` lists. And an
+    operation Google publishes that no route here serves under the request's method is refused as a
+    served route refuses before it runs, ahead of the router's 404 or 405
+    (``backlot.routers.google.refuse_an_unserved_operation``).
+
+    An escaped slash is not one of them — `values/A1%2F` is real's 400 `Unable to parse range: A1/`
+    — so the slashes counted are the raw path's. Nor is a run of slashes inside a path:
+    `/drive/v3//files` and `users/me//labels` are real's unrouted 404, and so are `values` and
+    `values/`, whose range would be empty. With the slash gone no route here matches `values`, and
+    the router's `redirect_slashes` would answer it with a 307 to `values/`, which the route reading
+    `values/{a1_range:path}` takes; so a path that matches no route once its slashes are gone is the
+    unrouted 404 here.
+
+    The raw path keeps the slashes, because a Drive download sent as a batch part is redirected to
+    its path as sent, slashes and all, which ``backlot.routers.google._drive_batch_redirect`` builds
+    from the raw bytes. The path is the scope's rather than ``request.url``'s, in which a decoded
+    `%23` would start a fragment and cut the path short.
+    """
+    path = request.scope["path"]
+    if not any(path.startswith(f"{p}/") for p in errors.google.PREFIXES):
+        return await call_next(request)
+    raw = request.scope.get("raw_path") or path.encode()
+    slashes = len(raw) - len(raw.rstrip(b"/"))
+    request.scope["path"] = path[: len(path) - slashes]
+    match = _google_route_match(request.scope)
+    if match is not Match.FULL:
+        try:
+            google.refuse_an_unserved_operation(request)
+        except StarletteHTTPException as exc:
+            return await _http_exception_handler(request, exc)
+        if match is Match.NONE:
+            return await _http_exception_handler(request, StarletteHTTPException(status_code=404))
+    return await call_next(request)
+
+
 @app.middleware("http")
 async def normalise_the_slashes_in_an_atlassian_path(request: Request, call_next):
     """Route an `/atlassian` path the way the real gateway does: runs of slashes are one, and a
@@ -453,15 +565,20 @@ async def normalise_the_slashes_in_an_atlassian_path(request: Request, call_next
     What the request ECHOES is not normalised the same way, which is why the path is kept: real
     collapses an interior run in `detail`, `instance` and Confluence's `null for uri:` message
     (`/api/3//nope` comes back `/api/3/nope`) but leaves a trailing slash in all three
-    (`/nopesuchroute/` comes back `/nopesuchroute/`). The collapsed spelling is stashed on the
-    scope for :func:`backlot.routers.atlassian.unmatched_path` to echo.
+    (`/nopesuchroute/` comes back `/nopesuchroute/`). Nor are its escapes: real echoes the path as
+    it arrived, decoding only some of them (``errors.atlassian.echoed_spelling``), where routing
+    reads the decoded path. That spelling is built from `raw_path` before the rewrite below
+    replaces it, and stashed on the scope for ``backlot.routers.atlassian._echoed_path`` to read.
 
     Ahead of routing, because the answer for a path no route matches is a route of its own
     (`atlassian.unmatched_router`), which would otherwise claim every slashed spelling of a served
     one. GitHub's trailing slash is the opposite rule and has its own middleware above -- the two
     vendors are measured separately.
     """
-    path = request.url.path
+    # the decoded path as the server parsed it: `request.url` parses it again, so an escaped `?` or
+    # `#` would end it there and hide a trailing slash after it (`POST /rest/api/3/issue/A%23B/` is
+    # real's 405, 2026-10-17)
+    path = request.scope["path"]
     if path.startswith(f"{errors.atlassian.PREFIX}/"):
         collapsed = re.sub("/{2,}", "/", path)
         routed = collapsed.rstrip("/")
@@ -470,7 +587,10 @@ async def normalise_the_slashes_in_an_atlassian_path(request: Request, call_next
         # arrived. It keeps its slash and reaches the catch-all like any other unserved path.
         if routed == errors.atlassian.PREFIX:
             routed = collapsed
-        request.scope["atlassian_echo_path"] = collapsed
+        raw = request.scope.get("raw_path") or path.encode()
+        request.scope["atlassian_echo_path"] = errors.atlassian.echoed_spelling(
+            raw.decode("latin-1"), confluence=errors.atlassian.is_confluence(path)
+        )
         if routed != path:
             request.scope["path"] = routed
             request.scope["raw_path"] = routed.encode()
@@ -507,46 +627,106 @@ async def refuse_a_bearer_jira_cannot_read(request: Request, call_next):
     """Refuse a Jira read whose bearer the real gateway would not read, before the route runs.
 
     Unlike the Basic pair, which Jira serves anonymously, an unreadable bearer is refused — and
-    refused ahead of everything, so `serverInfo` and `field` answer it too even though neither
-    needs a credential. That is why this short-circuits rather than living in
+    refused ahead of every route, behind only the front door
+    (:func:`answer_at_the_atlassian_front_door`), so `serverInfo` and `field` answer it too even
+    though neither needs a credential. That is why this short-circuits rather than living in
     ``atlassian._jira_caller``. Confluence is not here: it answers its own 403 for any credential
     that fails, which ``atlassian._confluence_caller`` already gives. Measured on two Jira Cloud
     sites on 2026-09-04.
 
     The body is spelled the way real spells it, a space after the colon (fifteen of them on
-    2026-09-30), and this runs inside :func:`answer_head_as_the_get_without_its_body`: a `HEAD` is
-    refused as its GET is and so carries no `content-length`, as real's did on `serverInfo` and on
-    `nopesuchroute` the same day. An `OPTIONS` is not refused here: real answers one with an
-    unreadable bearer as it answers one with none (``backlot.routers.atlassian._options_answer``).
+    2026-09-30), or is the XML for the `Accept` values ``errors.atlassian.connect_token_answer``
+    names, and this runs inside :func:`answer_head_as_the_get_without_its_body`: a
+    `HEAD` is refused as its GET is and so carries no `content-length`, as real's did on
+    `serverInfo` and on `nopesuchroute` the same day. An `OPTIONS` is not refused here: real answers
+    one with an unreadable bearer as it answers one with none
+    (``backlot.routers.atlassian._options_answer``).
     """
     if (
         request.method != "OPTIONS"
         and request.url.path.startswith("/atlassian/rest/")
         and auth.atlassian_bearer_unreadable(request)
     ):
-        body = json.dumps(errors.atlassian.connect_token_body())
-        return Response(body, status_code=403, media_type="application/json")
+        media_type, body = errors.atlassian.connect_token_answer(request.headers.get("accept"))
+        return Response(body, status_code=403, media_type=media_type)
     return await call_next(request)
 
 
-# The path prefixes whose `HEAD` is the GET with the body left off. GitHub, Atlassian and Notion
-# because each is measured to be, and a vendor is added here once its own is rather than by a
-# rewrite that assumes they share GitHub's: both Atlassian products answered a `HEAD` with the
-# `GET`'s status and `content-type` and nothing in the body, on all 24 routes served here and on an
-# unknown issue's and an unknown space's 404, measured 2026-09-22, and api.notion.com answered
-# `HEAD /v1/users/me` the credential's 401 and `HEAD /v1/nonexistent_thing/xyz` the URL's 400 on
-# 2026-09-22, each with the `content-length` and `content-type` of the GET body beside it (178 and
-# 145 bytes). What the vendors do NOT share is the length — see ``errors.head_content_length``,
-# asked below. `/health` and `/_meta` are Backlot's own routes, with no vendor to measure against: a
-# `HEAD /health` is the shape a liveness probe takes, and with `/health` left out of this tuple it
-# is the 405 with `allow: GET` a GitHub route gets with `/github` left out.
-_HEAD_IS_THE_GET_WITHOUT_ITS_BODY = ("/github", "/atlassian", "/notion", "/health", "/_meta")
+@app.middleware("http")
+async def refuse_a_head_on_the_google_editor_hosts(request: Request, call_next):
+    """Refuse a `HEAD` on Docs, Sheets or Slides the way their host does, before anything else
+    reads the request: ``errors.google.head_refusal``, where the measurement is.
+
+    Inside the `HEAD` middleware below, whose tuple leaves these prefixes out, so the method is
+    still `HEAD` when it gets here.
+    """
+    if request.method == "HEAD" and errors.google.refuses_head(request.url.path):
+        return errors.google.head_refusal()
+    return await call_next(request)
+
+
+# The path prefixes whose `HEAD` is the GET with the body left off. GitHub, Atlassian, Notion,
+# Drive and Gmail because each is measured to be, and a vendor is added here once its own is rather
+# than by a rewrite that assumes they share GitHub's: both Atlassian products answered a `HEAD` with
+# the `GET`'s status and `content-type` and nothing in the body, on every route served here and on
+# an unknown issue's and an unknown space's 404, measured 2026-09-22 and on Confluence's
+# `child/attachment` 2026-10-10, and api.notion.com answered `HEAD /v1/users/me` the credential's
+# 401 and `HEAD /v1/nonexistent_thing/xyz` the URL's 400 on 2026-09-22, each with the
+# `content-length` and `content-type` of the GET body beside it (178 and 145 bytes). Drive and
+# Gmail answered each route served here that way on 2026-10-11, refusals included
+# (``errors.google.head_content_length`` lists them), and the other three Google hosts refuse the
+# method (``errors.google.refuses_head``, asked by the middleware above). What the vendors do NOT
+# share is the length — see ``errors.head_content_length``, asked below. `/health` and `/_meta` are
+# Backlot's own routes, with no vendor to measure against: a `HEAD /health` is the shape a liveness
+# probe takes, and with `/health` left out of this tuple it is the 405 with `allow: GET` a GitHub
+# route gets with `/github` left out.
+_HEAD_IS_THE_GET_WITHOUT_ITS_BODY = (
+    "/github",
+    "/atlassian",
+    "/notion",
+    "/drive/v3",
+    "/gmail/v1",
+    "/health",
+    "/_meta",
+)
+
+
+@app.middleware("http")
+async def answer_an_atlassian_write_that_fails(request: Request, call_next):
+    """Answer as real does where a Spring service could not sort `Accept`'s members
+    (``errors.atlassian.spring_cannot_sort``) or could not write its answer under it
+    (``errors.atlassian.quality_spring_cannot_copy``); what each answer becomes is
+    ``backlot.routers.atlassian.spring_sort_failure``'s and ``spring_write_failure``'s.
+
+    Middleware because what Spring would have answered decides what replaces it: this reads the
+    answer the route or the refusal gave and replaces it. Registered before the `HEAD` rewrite
+    below, so it reads a `HEAD`'s answer as its GET's, and the front door and the headers are put on
+    what it gives as on any answer.
+    """
+    path = request.url.path  # picks the product only
+    if not errors.atlassian.owns(path):
+        return await call_next(request)
+    reader = "spring" if errors.atlassian.is_confluence(path) else "jira"
+    accept = request.headers.get("accept")
+    if errors.atlassian.spring_cannot_sort(accept, reader=reader):
+        answer = atlassian.spring_sort_failure
+    elif errors.atlassian.quality_spring_cannot_copy(accept, reader=reader):
+        answer = atlassian.spring_write_failure
+    else:
+        return await call_next(request)
+    response = await call_next(request)
+    body = b"".join([chunk async for chunk in response.body_iterator])
+    failed = answer(request, response.status_code, response.headers, body)
+    if failed is None:
+        failed = Response(body, status_code=response.status_code)
+        failed.raw_headers = response.raw_headers
+    return failed
 
 
 @app.middleware("http")
 async def answer_head_as_the_get_without_its_body(request: Request, call_next):
     """Answer a `HEAD` as the `GET` with the body left off, which is how real GitHub, both Atlassian
-    products and Notion answer one.
+    products, Notion, Drive and Gmail answer one.
 
     FastAPI's ``APIRoute`` does not add `HEAD` to a GET route the way Starlette's ``Route`` does, so
     without this a `HEAD` on a route that serves the GET is a 405, whatever the GET answers. Real
@@ -571,8 +751,10 @@ async def answer_head_as_the_get_without_its_body(request: Request, call_next):
     the only way to have that number; a `HEAD` costs what its GET costs, here as on real.
 
     What the vendors do NOT share is the `content-length`: GitHub and Notion declare the length of
-    the body the `GET` would have carried and Atlassian's answers split, so that header is asked
-    for rather than assumed, through ``errors.head_content_length``.
+    the body the `GET` would have carried, and Atlassian's and Google's answers split, so that
+    header is asked for rather than assumed, through ``errors.head_content_length``. The request
+    is marked ``answering_head`` on its state for ``errors.google.jsonp_callback`` and
+    ``routers.github._validate_api_version``, which read it.
 
     The method goes back to `HEAD` on the scope once the GET has answered, because the server frames
     the response by it: uvicorn's httptools protocol reads ``scope["method"]`` when it writes the
@@ -590,13 +772,14 @@ async def answer_head_as_the_get_without_its_body(request: Request, call_next):
     ):
         return await call_next(request)
     request.scope["method"] = "GET"
+    request.state.answering_head = True
     response = await call_next(request)
     request.scope["method"] = "HEAD"
     length = 0
     async for chunk in response.body_iterator:
         length += len(chunk)
     head = Response(status_code=response.status_code, headers=response.headers)
-    declares = errors.head_content_length(request.url.path, response.status_code)
+    declares = errors.head_content_length(request, response.status_code)
     if declares is False:
         del head.headers["content-length"]
     else:
@@ -620,6 +803,42 @@ async def report_failed_jira_login(request: Request, call_next):
         if auth.atlassian_caller(request).is_anonymous:
             response.headers["X-Seraph-LoginReason"] = "AUTHENTICATED_FAILED"
     return response
+
+
+@app.middleware("http")
+async def answer_at_the_atlassian_front_door(request: Request, call_next):
+    """Answer an `/atlassian` request the way a layer in front of Jira and Confluence does, where
+    one answers it: the CDN, its firewall, the gateway and Confluence's Tomcat, each with its own
+    page (which, and in what order, is ``errors.atlassian.front_door``).
+
+    Registered after the slash rewrite, the Connect-token refusal, the `HEAD` rewrite and the
+    Seraph header, so it runs ahead of each of them: a `HEAD` arrives here as a `HEAD` (real
+    declares each page's length on one and sends no body), and none of the other three runs for a
+    request this refuses, as none of them runs on real. Whose headers the answer carries
+    (``errors.atlassian.FrontDoor``) is left on the scope for
+    ``backlot.routers.atlassian.vendor_headers``.
+    """
+    # `request.url.path` only decides ownership and seeds the raw-path fallback; the pages echo no
+    # path verbatim (the CloudFront id is a hash of it, the rest are static), so the decoded form is
+    # safe here where `front_door` itself reads `raw_path`
+    if not errors.atlassian.owns(request.url.path):
+        return await call_next(request)
+    raw_path = request.scope.get("raw_path") or request.url.path.encode()
+    answer = errors.atlassian.front_door(
+        request.method,
+        raw_path.decode("latin-1"),
+        request.scope.get("query_string", b"").decode("latin-1"),
+        request.headers.get("accept"),
+    )
+    if answer is None:
+        return await call_next(request)
+    request.scope["atlassian_front_door"] = answer.layer
+    body = answer.body.encode()
+    headers = {"Content-Type": answer.media_type, **answer.headers}
+    if request.method == "HEAD":
+        headers["Content-Length"] = str(len(body))
+        body = b""
+    return Response(body, status_code=answer.status, headers=headers)
 
 
 @app.middleware("http")
@@ -658,6 +877,83 @@ async def parse_slack_form(request: Request, call_next):
 
 
 @app.middleware("http")
+async def warn_slack_post_charset(request: Request, call_next):
+    """Add the charset warning ``slack.post_charset_warning`` decides to a Slack POST's answer.
+
+    Middleware because the answers it goes on are built all over the router, the refusals of
+    ``slack._caller_or_error`` and ``slack._missing_argument`` among them. The body is rendered
+    again by ``JSONResponse``, which renders every Slack answer, so a warned answer is the unwarned
+    one's bytes with the two keys added; ``slack.attach_warning`` says where they go.
+    """
+    if not (request.url.path.startswith("/slack/") and request.method == "POST"):
+        return await call_next(request)
+
+    warning = slack.post_charset_warning(
+        request.headers.get("content-type"), bool(await request.body())
+    )
+    response = await call_next(request)
+    if warning is None or response.status_code != 200:
+        return response
+
+    body = b"".join([chunk async for chunk in response.body_iterator])
+    headers = {k: v for k, v in response.headers.items() if k != "content-length"}
+    return JSONResponse(
+        slack.attach_warning(json.loads(body), warning),
+        status_code=response.status_code,
+        headers=headers,
+    )
+
+
+#: The page Cloudflare, in front of Linear and Fireflies, answers a request carrying `Authorization`
+#: more than once with: `text/html` with no charset, CRLF line ends, 155 bytes.
+_CLOUDFLARE_REPEATED_AUTHORIZATION = (
+    "<html>\r\n<head><title>400 Bad Request</title></head>\r\n<body>\r\n"
+    "<center><h1>400 Bad Request</h1></center>\r\n<hr><center>cloudflare</center>\r\n"
+    "</body>\r\n</html>\r\n"
+)
+
+
+@app.middleware("http")
+async def refuse_a_repeated_authorization_on_linear_and_fireflies(request: Request, call_next):
+    """Answer a `/linear` or `/fireflies` request that carries `Authorization` more than once with
+    :data:`_CLOUDFLARE_REPEATED_AUTHORIZATION`'s 400, ahead of the route, the body and the
+    credential. api.linear.app and api.fireflies.ai answered it on 2026-10-19 (UTC) to two copies of
+    a key, a key and `nope` in either order, a key and an empty value, two empty values, three
+    copies and a second header named in lower case; on `POST /graphql` with a query, with no bytes,
+    with `{` and with a body past each vendor's size limit, on `GET /graphql`, on `HEAD /graphql`,
+    which declared the 155 bytes and sent none, and on `POST /nosuch` and `POST /`."""
+    path = request.url.path
+    if not any(
+        path == prefix or path.startswith(f"{prefix}/") for prefix in ("/linear", "/fireflies")
+    ):
+        return await call_next(request)
+    if not auth.repeated_authorization(request):
+        return await call_next(request)
+    return Response(
+        _CLOUDFLARE_REPEATED_AUTHORIZATION.encode(),
+        status_code=400,
+        headers={"Content-Type": "text/html"},
+    )
+
+
+@app.middleware("http")
+async def put_a_request_id_on_github_answers(request: Request, call_next):
+    """Put an `x-github-request-id` on every `/github` answer, as real does on each one measured.
+
+    Registered after the other `/github` middlewares so it wraps them, and the refusals they answer
+    early carry it too. Made before the route runs (``backlot.routers.github.request_id`` has why)
+    and left on ``request.state`` for the token's spent-window `message`, which quotes it
+    (``github._rate_limit_exceeded_message``)."""
+    if not request.url.path.startswith("/github"):
+        return await call_next(request)
+    rid = github.request_id(request.method, request.url.path, request.url.query)
+    request.state.github_request_id = rid
+    response = await call_next(request)
+    response.headers.setdefault(github.REQUEST_ID_HEADER, rid)
+    return response
+
+
+@app.middleware("http")
 async def vendor_json_media_type(request: Request, call_next):
     """Put the vendor's own `content-type` on a JSON body, where one is measured.
 
@@ -675,10 +971,14 @@ async def vendor_json_media_type(request: Request, call_next):
     than around it; the route handlers and the two exception handlers above are covered from either
     position, those handlers because they run inside ``ExceptionMiddleware``. The status goes along
     with the path because the answer can depend on it: code search's own 200 and 422 carry no
-    charset where the gateway's 401 on the same path does.
+    charset where the gateway's 401 on the same path does. An answer given in front of Jira is not
+    Jira's, and keeps the type its layer gives (the edge's `;` 400,
+    ``errors.atlassian.front_door``).
     """
     response = await call_next(request)
-    if response.headers.get("content-type") == "application/json":
+    if response.headers.get("content-type") == "application/json" and not request.scope.get(
+        "atlassian_front_door"
+    ):
         media_type = errors.json_media_type(request.url.path, response.status_code)
         if media_type is not None:
             response.headers["content-type"] = media_type

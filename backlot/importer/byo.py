@@ -235,18 +235,16 @@ def _seconds(n):
     integer form at all — `json.loads` accepts both as bare literals, so a corpus can
     hand them over and `int()` raises rather than returning anything. And a finite
     second outside `datetime`'s year 1..9999 cannot be rendered: the servers date a row
-    through `datetime.fromtimestamp`, so milliseconds written where seconds belong
+    through `synth.utc_datetime`, so milliseconds written where seconds belong
     imports clean and then raises at SERVE time, well after the import said it worked.
     Asked of the same function the servers use rather than against a hardcoded bound."""
-    from datetime import datetime, timezone
-
     try:
         sec = int(n)
     except (ValueError, OverflowError):  # nan, inf
         return None
     try:
-        datetime.fromtimestamp(sec, tz=timezone.utc)
-    except (ValueError, OverflowError, OSError):
+        synth.utc_datetime(sec)
+    except OverflowError:
         return None
     return sec
 
@@ -285,13 +283,21 @@ def _epoch(v):
         return None
     if isinstance(v, (int, float)):
         return _seconds(v)
-    from datetime import datetime
+    from datetime import datetime, timezone
 
     s = str(v).strip().replace("Z", "+00:00")
     try:
-        return int(datetime.fromisoformat(s).timestamp())
+        written = datetime.fromisoformat(s)
     except ValueError:
         pass
+    else:
+        # Read as UTC, as the ERB importer reads one; `timestamp()` reads a naive time in the
+        # importing machine's zone through the platform's C library: on 2026-10-13
+        # `1969-12-31T00:00:00` came out as -118800 on a macOS set to UTC+9 and raised OSError
+        # [Errno 22] on Windows 11 (Python 3.14.0), and -86400 with `+00:00` on both.
+        if written.tzinfo is None:
+            written = written.replace(tzinfo=timezone.utc)
+        return int(written.timestamp())
     # Epoch seconds written as a string — `"1770746760"`, or the `<sec>.<frac>` a Slack
     # ts takes, which is the form an `edited.ts` next door is already in. ISO is tried
     # first, so an 8-digit basic-format date stays a date rather than becoming a second.
@@ -689,7 +695,7 @@ def corpus_records(source) -> Iterator[tuple[int, str]]:
             raise SystemExit(
                 f"{mf} not found — pass a JSONL file, a .jsonl.gz, or a sharded artifact directory"
             )
-        manifest = json.loads(mf.read_text())
+        manifest = json.loads(mf.read_text(encoding="utf-8"))
         # The artifact is downloaded, which makes its manifest untrusted input: a shard path has to
         # stay inside the directory it came with.
         paths = []
@@ -720,7 +726,7 @@ def verify_manifest(source) -> list[str]:
     mf = source / "manifest.json"
     if not mf.exists():
         return [f"{mf} not found"]
-    manifest = json.loads(mf.read_text())
+    manifest = json.loads(mf.read_text(encoding="utf-8"))
     problems = []
     for src in sorted(manifest.get("sources", {})):
         for shard in manifest["sources"][src]["shards"]:
@@ -811,7 +817,7 @@ def load_roster(path) -> dict:
     `author_email` / `readers` become references into it, and an address absent from it (a Slack
     handle, an outside sender) stays a plain address instead of becoming an account with a token.
     """
-    data = yaml.safe_load(Path(path).read_text()) or {}
+    data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
 
     def _slugs(raw) -> list[str]:
         """One roster field — ``group:`` or ``groups:`` — in any shape, as group ids.
@@ -3416,7 +3422,7 @@ def _check_id_map_destination(path: Path) -> None:
     """
     existed = path.exists()
     try:
-        with path.open("a"):
+        with path.open("a", encoding="utf-8"):
             pass
     except OSError as e:
         raise SystemExit(f"--id-map {path}: {e.strerror}")
@@ -3529,7 +3535,7 @@ def load_records(
     # completed import over an output path. Under --append there is no salvage to restore at all,
     # so a raise in there left the rows in place and the command dead, and a re-run appended twice.
     if manifest is not None:
-        Path(id_map).write_text(manifest)
+        Path(id_map).write_text(manifest, encoding="utf-8")
     return result
 
 
@@ -3540,7 +3546,29 @@ def _load_records(
     roster: Path | None,
     want_id_map: bool = False,
 ) -> tuple[dict, str | None]:
-    """The load itself. See :func:`load_records`, which is this plus the replace-safely dance.
+    """Runs :func:`_load_records_into` on a connection it closes however the load ends;
+    :func:`load_records` is this plus the replace-safely dance.
+
+    The close on a raise comes before `load_records` unlinks the half-built DB to put the previous
+    one back: an unclosed connection lives as long as the traceback of the exception that left it,
+    and unlinking ``db.sqlite`` with a connection to it still open raised PermissionError
+    [WinError 32] on Windows 11 (2026-10-13, Python 3.14.0)."""
+    conn = store.connect_rw(settings.db_path)
+    try:
+        return _load_records_into(conn, records_factory, settings, reset, roster, want_id_map)
+    finally:
+        conn.close()
+
+
+def _load_records_into(
+    conn,
+    records_factory,
+    settings: Settings,
+    reset: bool,
+    roster: Path | None,
+    want_id_map: bool,
+) -> tuple[dict, str | None]:
+    """The load on ``conn``, which :func:`_load_records` opens and closes.
 
     ``records_factory`` returns a FRESH iterator of ``(where, record)`` pairs and may be called
     twice — the org has to be inferred from every author's address before the first grant is
@@ -3550,7 +3578,6 @@ def _load_records(
     bug there should name the record rather than surface as a constraint violation three layers
     down.
     """
-    conn = store.connect_rw(settings.db_path)
 
     # infer the org from the corpus (dominant email domain) before building any grants,
     # since public docs are granted to the org principal — see _infer_org. Read in its own pass,
@@ -3729,7 +3756,7 @@ def _load_records(
     token_org, token_domain = org_name, org_domain
     token_admin = settings.admin_token
     if not reset and settings.tokens_path.exists():
-        prev = yaml.safe_load(settings.tokens_path.read_text()) or {}
+        prev = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8")) or {}
         token_org = prev.get("org", token_org)
         token_domain = prev.get("org_domain", token_domain)
         token_admin = prev.get("admin_token", settings.admin_token)
@@ -3743,7 +3770,7 @@ def _load_records(
         "admin_token": token_admin,
         "users": [users_rows[k] for k in sorted(users_rows)],
     }
-    settings.tokens_path.write_text(yaml.safe_dump(tokens, sort_keys=False))
+    settings.tokens_path.write_text(yaml.safe_dump(tokens, sort_keys=False), encoding="utf-8")
     from backlot import oauth
 
     oauth.generate(settings, org=org_name)
@@ -3758,7 +3785,6 @@ def _load_records(
     # Built while the loader and the connection are still alive; WRITTEN by `load_records`, once
     # the load can no longer be rolled back.
     manifest = _id_map_manifest(loader, conn) if want_id_map else None
-    conn.close()
     return {
         "counts": counts,
         "users": len(users),

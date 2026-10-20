@@ -201,10 +201,10 @@ client disconnects — which is what makes the install a single line.
 **One credential flag.** `--user <email>` answers every call as that person, so Backlot's
 per-document ACL decides each answer; without it, the admin, who sees everything. The command
 resolves that email through the server's own `GET /_meta/users` and spells the credential the way
-each source authenticates — `Bearer` for most, HTTP Basic `email:token` for Atlassian, a SigV4
-signature per request for S3 — so there is nothing per-service to pass. An email the corpus does not
-know is refused before a single tool exists. `--depth` is the GraphQL selection depth. The code is
-`backlot/mcp.py`.
+each source authenticates — `Bearer` for most, the bare token for Linear, HTTP Basic `email:token`
+for Atlassian, a SigV4 signature per request for S3 — so there is nothing per-service to pass. An
+email the corpus does not know is refused before a single tool exists. `--depth` is the GraphQL
+selection depth. The code is `backlot/mcp.py`.
 
 ## How the OpenAPI→MCP bridge connects (`github.py` / `slack.py` / `gmail.py` / `gdrive.py` / `hubspot.py`)
 
@@ -261,10 +261,10 @@ OpenAPI bridge — the app does the schema work, the bridge is transport:
   roots …), 4 for Fireflies (`transcripts`, `transcript`, `user`, `users`). It derives each tool's
   argument JSON Schema *and* its GraphQL document, which is the one thing OpenAPI never has to
   decide: a REST operation returns a fixed body, a GraphQL field returns whatever was asked for.
-- **the bridge** posts `tool.document` with the caller's `Authorization: Bearer <token>` and passes
-  the GraphQL envelope back untouched, so Backlot's per-token ACL decides every result. One header
-  spelling serves both: Fireflies is the ordinary bearer path, and Linear accepts a bare API key or
-  a `Bearer` token on the same header exactly as the real API does.
+- **the bridge** posts `tool.document` with the caller's credential, as `Authorization: Bearer
+  <token>` to Fireflies and as the bare token to Linear, which refuses an API key under `Bearer`
+  with a 400, and passes the GraphQL envelope back as it came, so Backlot's per-token ACL decides
+  every result.
 
 **Typed tools, not a `graphql(query:)` passthrough.** A passthrough is three lines and turns the
 exercise into "can the model write GraphQL against a schema it has not seen"; no other example here

@@ -6,6 +6,8 @@ or call the response builder directly.
 
 from __future__ import annotations
 
+import gzip
+import json
 import sqlite3
 
 import pytest
@@ -13,7 +15,16 @@ from graphql import build_client_schema, parse, validate
 
 from backlot import store
 from backlot.graphql import mcp_tools
-from tests._helpers import client_for, corpus_client, gql, served_id, tiny_corpus
+from tests._helpers import (
+    SWEPT_BYTES,
+    client_for,
+    corpus_client,
+    gql,
+    padded_query,
+    sent_as,
+    served_id,
+    tiny_corpus,
+)
 
 # --- fireflies: POST /fireflies/graphql -----------------------------------------
 # Fireflies has no SDK and no LlamaIndex reader; the vendor's own quickstart is a raw HTTP POST,
@@ -27,18 +38,305 @@ def ff_gql(client, query, headers, **variables):
     return client.post("/fireflies/graphql", json=body, headers=headers)
 
 
-def test_fireflies_requires_a_bearer_key(client):
-    r = client.post("/fireflies/graphql", json={"query": "{ transcripts { id } }"})
-    assert r.status_code == 401
-    # a GraphQL error envelope, not a framework 403 — clients parse errors[0].message
-    assert r.json()["errors"][0]["message"]
-    assert "data" not in r.json()
-    bad = client.post(
-        "/fireflies/graphql",
-        json={"query": "{ transcripts { id } }"},
-        headers={"Authorization": "Bearer not-a-real-key"},
+# The two 500s `backlot.routers.fireflies._auth_failed` answers, as real sends them but for the
+# newline real ends each with, which `_auth_failed` leaves off.
+_NO_PREFIX = (
+    b'{"errors":[{"friendly":true,"code":"auth_failed","message":"Authorization header is missing'
+    b" the 'Bearer' prefix. Please use the format: 'Authorization: Bearer <api_key>'. If this"
+    b' persists, please contact Fireflies support.","extensions":{"code":"auth_failed"}}]}'
+)
+_BAD_KEY = (
+    b'{"errors":[{"friendly":true,"code":"auth_failed","message":"An error occurred while'
+    b" authenticating your request. Please recheck your API key and try again. If this persists,"
+    b' please contact Fireflies support.","extensions":{"code":"auth_failed"}}]}'
+)
+# Values of the header, None for none and `{t}` for a key that resolves, with the 500 Fireflies
+# refused each with or None where it served the query.
+_FIREFLIES_SPELLINGS = [
+    pytest.param("Bearer {t}", None, id="Bearer"),
+    pytest.param("bEaReR {t}", None, id="bEaReR"),
+    pytest.param("Bearer  {t}", None, id="two spaces"),
+    pytest.param(" Bearer {t}", None, id="a space before"),
+    pytest.param("Bearer \xa0{t}\xa0", None, id="U+00A0 around the key"),
+    pytest.param(None, _BAD_KEY, id="no header"),
+    pytest.param("", _BAD_KEY, id="an empty header"),
+    pytest.param("Bearer nope", _BAD_KEY, id="Bearer nope"),
+    pytest.param("Bearer {t} extra", _BAD_KEY, id="a word after"),
+    pytest.param("Bearer {t}x", _BAD_KEY, id="a key that does not resolve"),
+    pytest.param("Bearer {t}\x85", _BAD_KEY, id="U+0085 after"),
+    pytest.param("Bearer \xa0", _BAD_KEY, id="U+00A0 alone"),
+    pytest.param("Bearer \xa0\xa0", _BAD_KEY, id="U+00A0 twice"),
+    pytest.param("Bearer\t{t}", _NO_PREFIX, id="a tab"),
+    pytest.param("Bearer", _NO_PREFIX, id="Bearer alone"),
+    pytest.param("Bearer{t}", _NO_PREFIX, id="no space"),
+    pytest.param("Bearer,{t}", _NO_PREFIX, id="a comma"),
+    pytest.param("\xa0Bearer {t}", _NO_PREFIX, id="U+00A0 before"),
+    pytest.param("{t}", _NO_PREFIX, id="bare"),
+    pytest.param("Token {t}", _NO_PREFIX, id="Token"),
+]
+
+
+# `SWEPT_BYTES` in three places of the header: the bytes that served the query, and the 500 every
+# other byte drew.
+_FIREFLIES_BYTES = {
+    "Bearer{x}{t}": ({0x20}, _NO_PREFIX),
+    "Bearer {x}{t}": ({0x09, 0x20, 0xA0}, _BAD_KEY),
+    "Bearer {t}{x}": ({0x09, 0x20, 0xA0}, _BAD_KEY),
+}
+
+
+def _fireflies_credentials() -> list:
+    """`_FIREFLIES_SPELLINGS`, then each of `SWEPT_BYTES` in each place `_FIREFLIES_BYTES` names,
+    less the values the table already holds."""
+    rows = list(_FIREFLIES_SPELLINGS)
+    seen = {row.values[0] for row in rows}
+    for shape, (served, refusal) in _FIREFLIES_BYTES.items():
+        for byte in SWEPT_BYTES:
+            value = shape.replace("{x}", chr(byte))
+            if value not in seen:
+                seen.add(value)
+                answer = None if byte in served else refusal
+                rows.append(pytest.param(value, answer, id=f"{shape} {byte:#04x}"))
+    return rows
+
+
+@pytest.mark.parametrize("value, refusal", _fireflies_credentials())
+def test_fireflies_reads_a_credential_as_fireflies_does(client, tokens_yaml, value, refusal):
+    headers = {"Content-Type": "application/json"}
+    if value is not None:
+        headers["Authorization"] = value.replace("{t}", tokens_yaml["admin_token"])
+    r = sent_as(
+        client, "POST", "/fireflies/graphql", headers, content=b'{"query":"{ __typename }"}'
     )
-    assert bad.status_code == 401
+    if refusal is None:
+        assert (r.status_code, r.json()) == (200, {"data": {"__typename": "Query"}})
+    else:
+        assert (r.status_code, r.content) == (500, refusal)
+
+
+# --- a body Fireflies reads ahead of the credential ----------------------------------------------
+# The headers a body was sent with beyond `Content-Type: application/json`, the body, and Fireflies'
+# answer to it with the key: `_EMPTY`, `_NOT_JSON` or `_TOO_LARGE`, its HTTP layer's refusals
+# `backlot.routers.fireflies._body_refusal` sends at the status their `statusCode` names, or None
+# where it served the query. `_REQUEST_ERROR` is a row of JSON that is not an object: past that
+# layer it reaches the credential, one of `_auth_failed`'s 500s without the key, and with the key
+# it is a 400, in Apollo Server's words on real and graphql-js's here.
+_REQUEST_ERROR = object()
+_EMPTY = (
+    b'{"statusCode":400,"status":false,"code":"http","message":"Body cannot be empty when'
+    b' content-type is set to \'application/json\'","errorMessage":"Body cannot be empty when'
+    b" content-type is set to 'application/json'\"}"
+)
+_NOT_JSON = (
+    b'{"statusCode":400,"status":false,"code":"http","message":"Body is not valid JSON but'
+    b' content-type is set to \'application/json\'","errorMessage":"Body is not valid JSON but'
+    b" content-type is set to 'application/json'\"}"
+)
+_TOO_LARGE = (
+    b'{"statusCode":413,"status":false,"code":"http","message":"Request body is too large",'
+    b'"errorMessage":"Request body is too large"}'
+)
+_TYPENAME = b'{"query":"{ __typename }"}'
+
+
+_FIREFLIES_READS = [
+    pytest.param((), padded_query(2**20), None, id="the limit"),
+    pytest.param((), padded_query(2**20 + 1), _TOO_LARGE, id="past the limit"),
+    pytest.param((), b"{" * (2**20 + 1), _TOO_LARGE, id="past the limit, not JSON"),
+    pytest.param((("Content-Encoding", "gzip"),), gzip.compress(_TYPENAME), _NOT_JSON, id="gzip"),
+    pytest.param((("Content-Encoding", "gzip"),), _TYPENAME, None, id="gzip over a plain body"),
+    pytest.param((("Content-Encoding", "bogus"),), _TYPENAME, None, id="bogus"),
+    pytest.param(
+        (("Content-Type", "application/json; charset=latin1"),), _TYPENAME, None, id="latin1"
+    ),
+    pytest.param(
+        (("Content-Type", "application/json; charset=utf-nope"),), _TYPENAME, None, id="utf-nope"
+    ),
+    pytest.param(
+        (("Content-Type", "application/json; charset=utf-16"),),
+        _TYPENAME.decode().encode("utf-16"),
+        _NOT_JSON,
+        id="utf-16",
+    ),
+]
+_FIREFLIES_BODIES = [
+    pytest.param(b'{"query":"{ __typename }"}', None, id="a query"),
+    pytest.param(b"{", _NOT_JSON, id="{"),
+    pytest.param(b"", _EMPTY, id="empty"),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"x":NaN}}', _NOT_JSON, id="NaN at the end"
+    ),
+    pytest.param(b"   ", _NOT_JSON, id="whitespace only"),
+    pytest.param(b"\n", _NOT_JSON, id="newline only"),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"__proto__":{"a":1}}}',
+        _NOT_JSON,
+        id="__proto__ key",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"constructor":{"prototype":{"a":1}}}}',
+        _NOT_JSON,
+        id="constructor.prototype",
+    ),
+    pytest.param(
+        b'\xff\xfe{\x00"\x00q\x00u\x00e\x00r\x00y\x00"\x00:\x00"\x00{\x00 \x00_\x00_\x00t\x00y\x00p\x00e\x00n\x00a\x00m\x00e\x00 \x00}\x00"\x00}\x00',
+        _NOT_JSON,
+        id="utf-16 body",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"x":"\xff"}}', None, id="invalid utf-8 in a string"
+    ),
+    pytest.param(b'\xef\xbb\xbf{"query":"{ __typename }"}', None, id="utf-8 BOM"),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"constructor":null}}', None, id="constructor null"
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"constructor":"x"}}', None, id="constructor string"
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"constructor":[1]}}', None, id="constructor array"
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"constructor":{"a":1}}}',
+        None,
+        id="constructor object without prototype",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"constructor":{"prototype":null}}}',
+        _NOT_JSON,
+        id="constructor.prototype null",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"\\u005f_proto__":1}}',
+        _NOT_JSON,
+        id="__proto__ escaped",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"x":[{"__proto__":1}]}}',
+        _NOT_JSON,
+        id="__proto__ in an array",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"x":"\\"__proto__\\":1"}}',
+        None,
+        id="__proto__ in a string value",
+    ),
+    pytest.param(b'{"__proto__":1,"query":"{ __typename }"}', _NOT_JSON, id="__proto__ top-level"),
+    pytest.param(
+        b'{"constructor":{"prototype":1},"query":"{ __typename }"}',
+        _NOT_JSON,
+        id="constructor top-level with prototype",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"prototype":1}}',
+        None,
+        id="prototype without constructor",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"constructor":{"prototype":1},"constructor":1}}',
+        None,
+        id="constructor twice, last without prototype",
+    ),
+    pytest.param(b'\xef\xbb\xbf\xef\xbb\xbf{"query":"{ __typename }"}', _NOT_JSON, id="BOM twice"),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"a":"\xff","x":NaN}}',
+        _NOT_JSON,
+        id="utf-8 replacement then NaN",
+    ),
+    pytest.param(
+        b'{"query": "{ __typename }", "variables": {"x": ' + b"1" * 4300 + b"}}",
+        None,
+        id="4300 digits",
+    ),
+    pytest.param(
+        b'{"query": "{ __typename }", "variables": {"x": ' + b"1" * 4301 + b"}}",
+        None,
+        id="4301 digits",
+    ),
+    pytest.param(
+        b'{"query": "{ __typename }", "variables": {"x": ' + b"1" * 5000 + b"}}",
+        None,
+        id="5000 digits",
+    ),
+    pytest.param(
+        b'{"query": "{ __typename }", "variables": {"x": -' + b"1" * 4301 + b"}}",
+        None,
+        id="-4301 digits",
+    ),
+    pytest.param(b'{"query": "{ __typename }", "variables": {"x": 1e400}}', None, id="1e400"),
+    pytest.param(
+        b'{"query": "{ __typename }", "variables": {"x": ' + b"[" * 1001 + b"]" * 1001 + b"}}",
+        None,
+        id="nested 1001",
+    ),
+    pytest.param(
+        b'{"query": "{ __typename }", "variables": {"x": ' + b"[" * 100000 + b"]" * 100000 + b"}}",
+        None,
+        id="nested 100000",
+    ),
+    pytest.param(
+        b'{"query": "{ __typename }", "variables": {"x": ' + b"[" * 300000 + b"]" * 300000 + b"}}",
+        None,
+        id="nested 300000",
+    ),
+    pytest.param(
+        b'{"query": "{ __typename }", "variables": {"x": '
+        + b'{"a":' * 100000
+        + b"1"
+        + b"}" * 100000
+        + b"}}",
+        None,
+        id="objects nested 100000",
+    ),
+    pytest.param(
+        b'{"query": "{ __typename }", "variables": {"x": '
+        + b"[" * 100000
+        + b"NaN"
+        + b"]" * 100000
+        + b"}}",
+        _NOT_JSON,
+        id="nested 100000 then NaN",
+    ),
+    pytest.param(b"\xef\xbb\xbf", _NOT_JSON, id="BOM only"),
+    pytest.param(b'{"x":Infinity,"query":"{ __typename }"}', _NOT_JSON, id="Infinity"),
+    pytest.param(b'{"x":-Infinity,"query":"{ __typename }"}', _NOT_JSON, id="-Infinity"),
+    pytest.param(b"[]", _REQUEST_ERROR, id="an array"),
+    pytest.param(b"null", _REQUEST_ERROR, id="null"),
+    pytest.param(b'"x"', _REQUEST_ERROR, id="a string"),
+    pytest.param(b"5", _REQUEST_ERROR, id="a number"),
+    pytest.param(b'[{"query":"{ __typename }"}]', _REQUEST_ERROR, id="a batch of one query"),
+]
+
+
+# Each credential the body table is sent with, and the 500 a body Fireflies reads draws under it.
+_BODY_CREDENTIALS = {"key": None, "none": _BAD_KEY, "Bearer nope": _BAD_KEY, "nope": _NO_PREFIX}
+
+
+@pytest.mark.parametrize("credential", _BODY_CREDENTIALS)
+@pytest.mark.parametrize(
+    "headers,body,answer",
+    [pytest.param((), *row.values, id=row.id) for row in _FIREFLIES_BODIES] + _FIREFLIES_READS,
+)
+def test_fireflies_reads_the_body_before_the_credential(
+    client, admin_h, credential, headers, body, answer
+):
+    """Each row is answered as the comment over `_FIREFLIES_BODIES` says, and no credential
+    changes a `_body_refusal`."""
+    if not any(name == "Content-Type" for name, _ in headers):
+        headers = (("Content-Type", "application/json"), *headers)
+    if credential != "none":
+        key = admin_h["Authorization"] if credential == "key" else credential
+        headers = (*headers, ("Authorization", key))
+    r = client.post("/fireflies/graphql", content=body, headers=list(headers))
+    if answer is not None and answer is not _REQUEST_ERROR:
+        assert (r.status_code, r.content) == (json.loads(answer)["statusCode"], answer)
+    elif credential != "key":
+        assert (r.status_code, r.content) == (500, _BODY_CREDENTIALS[credential])
+    elif answer is _REQUEST_ERROR:
+        assert r.json() == {"errors": [{"message": "POST body sent invalid JSON."}]}
+        assert r.status_code == 400
+    else:
+        assert (r.status_code, r.json()) == (200, {"data": {"__typename": "Query"}})
 
 
 def test_fireflies_admin_crawl_sees_every_stored_transcript(client, admin_h, ro_conn):
@@ -255,6 +553,10 @@ def test_fireflies_date_selects_a_day_and_the_singular_email_filters_narrow(clie
     # 2026-04-10T16:00:00Z, the all-hands meeting: its own instant, and midnight that day
     assert titles("date: 1775836800000") == {"April all-hands"}
     assert titles("date: 1775779200000") == {"April all-hands"}
+    # the millisecond before that midnight is the day before, and the instant in seconds is read
+    # as milliseconds, a day in January 1970
+    assert titles("date: 1775779199999") == set()
+    assert titles("date: 1775836800") == set()
     # the discovery call is a different day, so it is not in either answer
     assert titles("date: 1775142000000") == {"Acme x Northwind — latency discovery"}
     # a day no meeting falls on
@@ -262,8 +564,14 @@ def test_fireflies_date_selects_a_day_and_the_singular_email_filters_narrow(clie
     # `date` narrows AGAINST a range rather than replacing it: a toDate before that day wins
     assert titles("date: 1775836800000, toDate: 1775142000000") == set()
 
+    assert titles('host_email: "ava@acme.com"') == {"Acme x Northwind — latency discovery"}
     assert titles('organizer_email: "ava@acme.com"') == {"Acme x Northwind — latency discovery"}
     assert titles('participant_email: "ava@acme.com"') == {"Acme x Northwind — latency discovery"}
+    # upper-cased, the host and organizer addresses find nothing while the participant address
+    # still matches, as measured above those two filters in `store._fireflies_where`
+    assert titles('host_email: "AVA@ACME.COM"') == set()
+    assert titles('organizer_email: "AVA@ACME.COM"') == set()
+    assert titles('participant_email: "AVA@ACME.COM"') == {"Acme x Northwind — latency discovery"}
     # `participants` is who the SENTENCES attribute, so a guest-list-only attendee is not one
     assert titles('participant_email: "dana@northwind.example"') == set()
     assert titles('participant_email: "nobody@acme.com"') == set()
@@ -351,7 +659,7 @@ def test_fireflies_the_hand_written_examples_queries_still_validate(client, admi
 
     from tests.conftest import REPO_ROOT
 
-    text = (REPO_ROOT / "examples/using-official-sdk/fireflies.py").read_text()
+    text = (REPO_ROOT / "examples/using-official-sdk/fireflies.py").read_text(encoding="utf-8")
     documents = {
         name: body
         for name, body in re.findall(r'^([A-Z_]+) = """(.*?)"""', text, re.S | re.M)
@@ -741,5 +1049,5 @@ def test_fireflies_users_is_the_workspace_roster_not_every_named_person(tmp_path
 def _roster_emails(settings):
     import yaml
 
-    data = yaml.safe_load(settings.tokens_path.read_text()) or {}
+    data = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8")) or {}
     return [u["email"] for u in data.get("users", [])]

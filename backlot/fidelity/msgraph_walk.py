@@ -20,15 +20,19 @@ from urllib.parse import quote
 
 import httpx
 
-from backlot.fidelity.csdl_diff import Schema, check
+from backlot.fidelity.csdl_diff import Schema, check, surface
 from backlot.fidelity.errors import FidelityError
 from backlot.fidelity.findings import Finding
+from backlot.fidelity.surface import Measurement
 
 _G = "microsoft.graph"
 V1 = "/msgraph/v1.0"
 
 
-def _get(client: httpx.Client, path: str) -> dict:
+def _get(client: httpx.Client, path: str, roots: set[str] | None = None) -> dict:
+    """One request's answer. ``roots`` collects the container member each path starts from."""
+    if roots is not None:
+        roots.add(path.removeprefix(f"{V1}/").split("/")[0].split("?")[0])
     response = client.get(path)
     if response.status_code != 200:
         raise FidelityError(f"Backlot answered {response.status_code} for {path}")
@@ -73,47 +77,54 @@ def _message_parts(message: Mapping[str, Any], where: str) -> Iterator[tuple[str
                         )
 
 
-def _objects(client: httpx.Client) -> Iterator[tuple[str, Mapping, str]]:
+def _objects(
+    client: httpx.Client, roots: set[str] | None = None
+) -> Iterator[tuple[str, Mapping, str]]:
     """Sample first-page objects and inline replies, paired with their declared types."""
-    yield f"{_G}.user", _get(client, f"{V1}/me"), "GET /me"
-    for user in _get(client, f"{V1}/users")["value"]:
+    yield f"{_G}.user", _get(client, f"{V1}/me", roots), "GET /me"
+    for user in _get(client, f"{V1}/users", roots)["value"]:
         yield f"{_G}.user", user, "GET /users"
 
-    teams = _get(client, f"{V1}/me/joinedTeams")["value"]
+    teams = _get(client, f"{V1}/me/joinedTeams", roots)["value"]
     for team in teams:
         yield f"{_G}.team", team, "GET /me/joinedTeams"
     if not teams:
         raise FidelityError("the corpus serves no team, so nothing below it can be compared")
     team_id = quote(teams[0]["id"], safe="")
 
-    channels = _get(client, f"{V1}/teams/{team_id}/channels")["value"]
+    channels = _get(client, f"{V1}/teams/{team_id}/channels", roots)["value"]
     for channel in channels:
         yield f"{_G}.channel", channel, "GET /channels"
     for channel in channels:
         base = f"{V1}/teams/{team_id}/channels/{quote(channel['id'], safe='')}"
-        yield f"{_G}.channel", _get(client, base), "GET /channels/{id}"
-        for member in _get(client, f"{base}/members")["value"]:
+        yield f"{_G}.channel", _get(client, base, roots), "GET /channels/{id}"
+        for member in _get(client, f"{base}/members", roots)["value"]:
             yield f"{_G}.aadUserConversationMember", member, "GET /channels/{id}/members"
         # `$expand=replies` in one request rather than a second walk: it is the shape a crawler
         # actually asks for, and it puts a reply through the same checks as a root.
-        for message in _get(client, f"{base}/messages?$expand=replies")["value"]:
+        for message in _get(client, f"{base}/messages?$expand=replies", roots)["value"]:
             yield from _message_parts(message, "GET /messages")
             for reply in message.get("replies") or []:
                 yield from _message_parts(reply, "GET /messages?$expand=replies replies[]")
 
 
-def run(base_url: str, token: str, schema: Schema, timeout: float) -> list[Finding]:
+def run(base_url: str, token: str, schema: Schema, timeout: float) -> Measurement:
     """Compare sampled Teams objects against the vendor declarations, without following pages."""
     found: list[Finding] = []
+    served: dict[str, set[str]] = {}
+    roots: set[str] = set()
     with httpx.Client(
         base_url=base_url, timeout=timeout, headers={"Authorization": f"Bearer {token}"}
     ) as client:
         seen: set[str] = set()
-        for type_name, obj, where in _objects(client):
+        for type_name, obj, where in _objects(client, roots):
+            served.setdefault(type_name, set()).update(k for k in obj if "@odata." not in k)
             for finding in check(schema, type_name, obj, where):
                 # One row per divergence, not per object that carries it: every message in a
                 # channel would otherwise report the same undeclared property.
                 if finding.key not in seen:
                     seen.add(finding.key)
                     found.append(finding)
-    return found
+    return Measurement(
+        sorted(found, key=lambda f: (f.path, f.kind)), surface(schema, served, roots)
+    )

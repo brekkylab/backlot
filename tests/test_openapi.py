@@ -12,6 +12,7 @@ import warnings
 import pytest
 
 from backlot import openapi
+from tests._helpers import python_child_env
 
 
 def test_operation_id_picks_the_method_deterministically():
@@ -75,8 +76,9 @@ def test_served_operation_ids_are_stable_across_processes():
             [sys.executable, "-c", script],
             capture_output=True,
             text=True,
-            env={**os.environ, "PYTHONHASHSEED": seed},
+            env=python_child_env(PYTHONHASHSEED=seed),
             cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            encoding="utf-8",
         )
         assert out.returncode == 0, out.stderr[-2000:]
         runs.append(json.loads(out.stdout))
@@ -280,8 +282,9 @@ def test_build_mcp_spec_collapses_exactly_the_known_aliases():
             "jira_issue_comments": 1,
             "jira_fields": 1,
         },  # fmt: skip
-        # ListBuckets answers at both `/s3` and `/s3/`
-        "s3": {"list_buckets": 1},
+        # ListBuckets answers at both `/s3` and `/s3/`, a bucket's GET at both `/{bucket}` and
+        # `/{bucket}/`
+        "s3": {"list_buckets": 1, "bucket_get": 1},
     }
     for source, prefixes in openapi.SOURCE_PREFIXES.items():
         routes = openapi.name_operations(

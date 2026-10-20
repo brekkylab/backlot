@@ -1,0 +1,1145 @@
+{
+ "source": "OpenJDK jdk-21+35, make/data/charsetmapping/charsets; jdk-17+35 lists the same names",
+ "charsets": {
+  "US-ASCII": [
+   "iso-ir-6",
+   "ANSI_X3.4-1986",
+   "ISO_646.irv:1991",
+   "ASCII",
+   "ISO646-US",
+   "us",
+   "IBM367",
+   "cp367",
+   "csASCII",
+   "646",
+   "iso_646.irv:1983",
+   "ANSI_X3.4-1968",
+   "ascii7"
+  ],
+  "UTF-8": [
+   "UTF8",
+   "unicode-1-1-utf-8"
+  ],
+  "CESU-8": [
+   "CESU8",
+   "csCESU-8"
+  ],
+  "UTF-16": [
+   "UTF_16",
+   "utf16",
+   "unicode",
+   "UnicodeBig"
+  ],
+  "UTF-16BE": [
+   "UTF_16BE",
+   "ISO-10646-UCS-2",
+   "X-UTF-16BE",
+   "UnicodeBigUnmarked"
+  ],
+  "UTF-16LE": [
+   "UTF_16LE",
+   "X-UTF-16LE",
+   "UnicodeLittleUnmarked"
+  ],
+  "x-UTF-16LE-BOM": [
+   "UnicodeLittle"
+  ],
+  "UTF-32": [
+   "UTF_32",
+   "UTF32"
+  ],
+  "UTF-32LE": [
+   "UTF_32LE",
+   "X-UTF-32LE"
+  ],
+  "UTF-32BE": [
+   "UTF_32BE",
+   "X-UTF-32BE"
+  ],
+  "X-UTF-32LE-BOM": [
+   "UTF_32LE_BOM",
+   "UTF-32LE-BOM"
+  ],
+  "X-UTF-32BE-BOM": [
+   "UTF_32BE_BOM",
+   "UTF-32BE-BOM"
+  ],
+  "ISO-8859-1": [
+   "iso-ir-100",
+   "ISO_8859-1",
+   "latin1",
+   "l1",
+   "IBM819",
+   "cp819",
+   "csISOLatin1",
+   "819",
+   "IBM-819",
+   "ISO8859_1",
+   "ISO_8859-1:1987",
+   "ISO_8859_1",
+   "8859_1",
+   "ISO8859-1"
+  ],
+  "ISO-8859-2": [
+   "iso8859_2",
+   "8859_2",
+   "iso-ir-101",
+   "ISO_8859-2",
+   "ISO_8859-2:1987",
+   "ISO8859-2",
+   "latin2",
+   "l2",
+   "ibm912",
+   "ibm-912",
+   "cp912",
+   "912",
+   "csISOLatin2"
+  ],
+  "ISO-8859-4": [
+   "iso8859_4",
+   "iso8859-4",
+   "8859_4",
+   "iso-ir-110",
+   "ISO_8859-4",
+   "ISO_8859-4:1988",
+   "latin4",
+   "l4",
+   "ibm914",
+   "ibm-914",
+   "cp914",
+   "914",
+   "csISOLatin4"
+  ],
+  "ISO-8859-5": [
+   "iso8859_5",
+   "8859_5",
+   "iso-ir-144",
+   "ISO_8859-5",
+   "ISO_8859-5:1988",
+   "ISO8859-5",
+   "cyrillic",
+   "ibm915",
+   "ibm-915",
+   "cp915",
+   "915",
+   "csISOLatinCyrillic"
+  ],
+  "ISO-8859-7": [
+   "iso8859_7",
+   "8859_7",
+   "iso-ir-126",
+   "ISO_8859-7",
+   "ISO_8859-7:1987",
+   "ELOT_928",
+   "ECMA-118",
+   "greek",
+   "greek8",
+   "csISOLatinGreek",
+   "sun_eu_greek",
+   "ibm813",
+   "ibm-813",
+   "813",
+   "cp813",
+   "iso8859-7"
+  ],
+  "ISO-8859-9": [
+   "iso8859_9",
+   "8859_9",
+   "iso-ir-148",
+   "ISO_8859-9",
+   "ISO_8859-9:1989",
+   "ISO8859-9",
+   "latin5",
+   "l5",
+   "ibm920",
+   "ibm-920",
+   "920",
+   "cp920",
+   "csISOLatin5"
+  ],
+  "ISO-8859-13": [
+   "iso8859_13",
+   "8859_13",
+   "iso_8859-13",
+   "ISO8859-13"
+  ],
+  "ISO-8859-15": [
+   "ISO_8859-15",
+   "Latin-9",
+   "csISO885915",
+   "8859_15",
+   "ISO-8859-15",
+   "ISO8859_15",
+   "ISO8859-15",
+   "IBM923",
+   "IBM-923",
+   "cp923",
+   "923",
+   "LATIN0",
+   "LATIN9",
+   "L9",
+   "csISOlatin0",
+   "csISOlatin9",
+   "ISO8859_15_FDIS"
+  ],
+  "ISO-8859-16": [
+   "iso-ir-226",
+   "ISO_8859-16:2001",
+   "ISO_8859-16",
+   "ISO8859_16",
+   "latin10",
+   "l10",
+   "csISO885916"
+  ],
+  "KOI8-R": [
+   "koi8_r",
+   "koi8",
+   "cskoi8r"
+  ],
+  "KOI8-U": [
+   "koi8_u"
+  ],
+  "windows-1250": [
+   "cp1250",
+   "cp5346"
+  ],
+  "windows-1251": [
+   "cp1251",
+   "cp5347",
+   "ansi-1251"
+  ],
+  "windows-1252": [
+   "cp1252",
+   "cp5348",
+   "ibm-1252",
+   "ibm1252"
+  ],
+  "windows-1253": [
+   "cp1253",
+   "cp5349"
+  ],
+  "windows-1254": [
+   "cp1254",
+   "cp5350"
+  ],
+  "windows-1257": [
+   "cp1257",
+   "cp5353"
+  ],
+  "IBM437": [
+   "cp437",
+   "ibm437",
+   "ibm-437",
+   "437",
+   "cspc8codepage437",
+   "windows-437"
+  ],
+  "x-IBM737": [
+   "cp737",
+   "ibm737",
+   "ibm-737",
+   "737"
+  ],
+  "IBM775": [
+   "cp775",
+   "ibm775",
+   "ibm-775",
+   "775"
+  ],
+  "IBM850": [
+   "cp850",
+   "ibm-850",
+   "ibm850",
+   "850",
+   "cspc850multilingual"
+  ],
+  "IBM852": [
+   "cp852",
+   "ibm852",
+   "ibm-852",
+   "852",
+   "csPCp852"
+  ],
+  "IBM855": [
+   "cp855",
+   "ibm-855",
+   "ibm855",
+   "855",
+   "cspcp855"
+  ],
+  "IBM857": [
+   "cp857",
+   "ibm857",
+   "ibm-857",
+   "857",
+   "csIBM857"
+  ],
+  "IBM00858": [
+   "cp858",
+   "ccsid00858",
+   "cp00858",
+   "858",
+   "PC-Multilingual-850+euro",
+   "ibm858",
+   "ibm-858"
+  ],
+  "IBM862": [
+   "cp862",
+   "ibm862",
+   "ibm-862",
+   "862",
+   "csIBM862",
+   "cspc862latinhebrew"
+  ],
+  "IBM866": [
+   "cp866",
+   "ibm866",
+   "ibm-866",
+   "866",
+   "csIBM866"
+  ],
+  "x-IBM874": [
+   "cp874",
+   "ibm874",
+   "ibm-874",
+   "874"
+  ],
+  "GB18030": [],
+  "Big5": [
+   "csBig5"
+  ],
+  "x-MS950-HKSCS-XP": [
+   "MS950_HKSCS_XP"
+  ],
+  "x-MS950-HKSCS": [
+   "MS950_HKSCS"
+  ],
+  "x-windows-950": [
+   "ms950",
+   "windows-950"
+  ],
+  "x-windows-874": [
+   "ms874",
+   "ms-874",
+   "windows-874"
+  ],
+  "x-EUC-TW": [
+   "euc_tw",
+   "euctw",
+   "cns11643",
+   "EUC-TW"
+  ],
+  "Big5-HKSCS": [
+   "Big5_HKSCS",
+   "big5hk",
+   "big5-hkscs",
+   "big5hkscs"
+  ],
+  "x-Big5-HKSCS-2001": [
+   "Big5_HKSCS_2001",
+   "big5hk-2001",
+   "big5-hkscs-2001",
+   "big5-hkscs:unicode3.0",
+   "big5hkscs-2001"
+  ],
+  "x-Big5-Solaris": [
+   "Big5_Solaris"
+  ],
+  "GBK": [
+   "windows-936",
+   "CP936"
+  ],
+  "GB2312": [
+   "gb2312",
+   "gb2312-80",
+   "gb2312-1980",
+   "euc-cn",
+   "euccn",
+   "x-EUC-CN",
+   "EUC_CN"
+  ],
+  "x-mswin-936": [
+   "ms936",
+   "ms_936"
+  ],
+  "Shift_JIS": [
+   "sjis",
+   "shift_jis",
+   "shift-jis",
+   "ms_kanji",
+   "x-sjis",
+   "csShiftJIS"
+  ],
+  "windows-31j": [
+   "MS932",
+   "windows-932",
+   "csWindows31J"
+  ],
+  "JIS_X0201": [
+   "JIS0201",
+   "JIS_X0201",
+   "X0201",
+   "csHalfWidthKatakana"
+  ],
+  "x-JIS0208": [
+   "JIS0208",
+   "JIS_C6226-1983",
+   "iso-ir-87",
+   "x0208",
+   "JIS_X0208-1983",
+   "csISO87JISX0208"
+  ],
+  "JIS_X0212-1990": [
+   "JIS0212",
+   "jis_x0212-1990",
+   "x0212",
+   "iso-ir-159",
+   "csISO159JISX02121990"
+  ],
+  "x-SJIS_0213": [
+   "sjis-0213",
+   "sjis_0213",
+   "sjis:2004",
+   "sjis_0213:2004",
+   "shift_jis_0213:2004",
+   "shift_jis:2004"
+  ],
+  "x-MS932_0213": [
+   "MS932-0213",
+   "MS932_0213",
+   "MS932:2004",
+   "windows-932-0213",
+   "windows-932:2004"
+  ],
+  "EUC-JP": [
+   "euc_jp",
+   "eucjis",
+   "eucjp",
+   "Extended_UNIX_Code_Packed_Format_for_Japanese",
+   "csEUCPkdFmtjapanese",
+   "x-euc-jp",
+   "x-eucjp"
+  ],
+  "x-euc-jp-linux": [
+   "euc_jp_linux",
+   "euc-jp-linux"
+  ],
+  "x-eucJP-Open": [
+   "EUC_JP_Solaris",
+   "eucJP-open"
+  ],
+  "x-PCK": [
+   "pck"
+  ],
+  "ISO-2022-JP": [
+   "iso2022jp",
+   "jis",
+   "csISO2022JP",
+   "jis_encoding",
+   "csjisencoding"
+  ],
+  "ISO-2022-JP-2": [
+   "csISO2022JP2",
+   "iso2022jp2"
+  ],
+  "x-windows-50221": [
+   "ms50221",
+   "cp50221"
+  ],
+  "x-windows-50220": [
+   "ms50220",
+   "cp50220"
+  ],
+  "x-windows-iso2022jp": [
+   "windows-iso2022jp"
+  ],
+  "x-JISAutoDetect": [
+   "JISAutoDetect"
+  ],
+  "EUC-KR": [
+   "euc_kr",
+   "ksc5601",
+   "euckr",
+   "ks_c_5601-1987",
+   "ksc5601-1987",
+   "ksc5601_1987",
+   "ksc_5601",
+   "csEUCKR",
+   "5601"
+  ],
+  "x-windows-949": [
+   "ms949",
+   "windows949",
+   "windows-949",
+   "ms_949"
+  ],
+  "x-Johab": [
+   "ksc5601-1992",
+   "ksc5601_1992",
+   "ms1361",
+   "johab"
+  ],
+  "ISO-2022-KR": [
+   "ISO2022KR",
+   "csISO2022KR"
+  ],
+  "ISO-2022-CN": [
+   "ISO2022CN",
+   "csISO2022CN"
+  ],
+  "x-ISO-2022-CN-CNS": [
+   "ISO2022CN_CNS",
+   "ISO-2022-CN-CNS"
+  ],
+  "x-ISO-2022-CN-GB": [
+   "ISO2022CN_GB",
+   "ISO-2022-CN-GB"
+  ],
+  "x-ISCII91": [
+   "iscii",
+   "ST_SEV_358-88",
+   "iso-ir-153",
+   "csISO153GOST1976874",
+   "ISCII91"
+  ],
+  "ISO-8859-3": [
+   "iso8859_3",
+   "8859_3",
+   "ISO_8859-3:1988",
+   "iso-ir-109",
+   "ISO_8859-3",
+   "ISO8859-3",
+   "latin3",
+   "l3",
+   "ibm913",
+   "ibm-913",
+   "cp913",
+   "913",
+   "csISOLatin3"
+  ],
+  "ISO-8859-6": [
+   "iso8859_6",
+   "8859_6",
+   "iso-ir-127",
+   "ISO_8859-6",
+   "ISO_8859-6:1987",
+   "ISO8859-6",
+   "ECMA-114",
+   "ASMO-708",
+   "arabic",
+   "ibm1089",
+   "ibm-1089",
+   "cp1089",
+   "1089",
+   "csISOLatinArabic"
+  ],
+  "ISO-8859-8": [
+   "iso8859_8",
+   "8859_8",
+   "iso-ir-138",
+   "ISO_8859-8",
+   "ISO_8859-8:1988",
+   "ISO8859-8",
+   "cp916",
+   "916",
+   "ibm916",
+   "ibm-916",
+   "hebrew",
+   "csISOLatinHebrew"
+  ],
+  "x-iso-8859-11": [
+   "iso-8859-11",
+   "iso8859_11"
+  ],
+  "TIS-620": [
+   "tis620",
+   "tis620.2533"
+  ],
+  "windows-1255": [
+   "cp1255"
+  ],
+  "windows-1256": [
+   "cp1256"
+  ],
+  "windows-1258": [
+   "cp1258"
+  ],
+  "x-IBM942": [
+   "cp942",
+   "ibm942",
+   "ibm-942",
+   "942"
+  ],
+  "x-IBM942C": [
+   "cp942C",
+   "ibm942C",
+   "ibm-942C",
+   "942C",
+   "cp932",
+   "ibm932",
+   "ibm-932",
+   "932",
+   "x-ibm932"
+  ],
+  "x-IBM943": [
+   "cp943",
+   "ibm943",
+   "ibm-943",
+   "943"
+  ],
+  "x-IBM943C": [
+   "cp943C",
+   "ibm943C",
+   "ibm-943C",
+   "943C"
+  ],
+  "x-IBM948": [
+   "cp948",
+   "ibm948",
+   "ibm-948",
+   "948"
+  ],
+  "x-IBM950": [
+   "cp950",
+   "ibm950",
+   "ibm-950",
+   "950"
+  ],
+  "x-IBM930": [
+   "cp930",
+   "ibm930",
+   "ibm-930",
+   "930"
+  ],
+  "x-IBM935": [
+   "cp935",
+   "ibm935",
+   "ibm-935",
+   "935"
+  ],
+  "x-IBM937": [
+   "cp937",
+   "ibm937",
+   "ibm-937",
+   "937"
+  ],
+  "x-IBM856": [
+   "cp856",
+   "ibm-856",
+   "ibm856",
+   "856"
+  ],
+  "IBM860": [
+   "cp860",
+   "ibm860",
+   "ibm-860",
+   "860",
+   "csIBM860"
+  ],
+  "IBM861": [
+   "cp861",
+   "ibm861",
+   "ibm-861",
+   "861",
+   "csIBM861",
+   "cp-is"
+  ],
+  "IBM863": [
+   "cp863",
+   "ibm863",
+   "ibm-863",
+   "863",
+   "csIBM863"
+  ],
+  "IBM864": [
+   "cp864",
+   "ibm864",
+   "ibm-864",
+   "864",
+   "csIBM864"
+  ],
+  "IBM865": [
+   "cp865",
+   "ibm865",
+   "ibm-865",
+   "865",
+   "csIBM865"
+  ],
+  "IBM868": [
+   "cp868",
+   "ibm868",
+   "ibm-868",
+   "868",
+   "cp-ar",
+   "csIBM868"
+  ],
+  "IBM869": [
+   "cp869",
+   "ibm869",
+   "ibm-869",
+   "869",
+   "cp-gr",
+   "csIBM869"
+  ],
+  "x-IBM921": [
+   "cp921",
+   "ibm921",
+   "ibm-921",
+   "921"
+  ],
+  "x-IBM1006": [
+   "cp1006",
+   "ibm1006",
+   "ibm-1006",
+   "1006"
+  ],
+  "x-IBM1046": [
+   "cp1046",
+   "ibm1046",
+   "ibm-1046",
+   "1046"
+  ],
+  "IBM1047": [
+   "cp1047",
+   "ibm-1047",
+   "1047"
+  ],
+  "x-IBM1098": [
+   "cp1098",
+   "ibm1098",
+   "ibm-1098",
+   "1098"
+  ],
+  "IBM037": [
+   "cp037",
+   "ibm037",
+   "ebcdic-cp-us",
+   "ebcdic-cp-ca",
+   "ebcdic-cp-wt",
+   "ebcdic-cp-nl",
+   "csIBM037",
+   "cs-ebcdic-cp-us",
+   "cs-ebcdic-cp-ca",
+   "cs-ebcdic-cp-wt",
+   "cs-ebcdic-cp-nl",
+   "ibm-037",
+   "ibm-37",
+   "cpibm37",
+   "037"
+  ],
+  "x-IBM1025": [
+   "cp1025",
+   "ibm1025",
+   "ibm-1025",
+   "1025"
+  ],
+  "IBM1026": [
+   "cp1026",
+   "ibm1026",
+   "ibm-1026",
+   "1026"
+  ],
+  "x-IBM1112": [
+   "cp1112",
+   "ibm1112",
+   "ibm-1112",
+   "1112"
+  ],
+  "x-IBM1122": [
+   "cp1122",
+   "ibm1122",
+   "ibm-1122",
+   "1122"
+  ],
+  "x-IBM1123": [
+   "cp1123",
+   "ibm1123",
+   "ibm-1123",
+   "1123"
+  ],
+  "x-IBM1124": [
+   "cp1124",
+   "ibm1124",
+   "ibm-1124",
+   "1124"
+  ],
+  "x-IBM1129": [
+   "cp1129",
+   "ibm1129",
+   "ibm-1129",
+   "1129"
+  ],
+  "x-IBM1364": [
+   "cp1364",
+   "ibm1364",
+   "ibm-1364",
+   "1364"
+  ],
+  "IBM273": [
+   "cp273",
+   "ibm273",
+   "ibm-273",
+   "273"
+  ],
+  "IBM277": [
+   "cp277",
+   "ibm277",
+   "ibm-277",
+   "277"
+  ],
+  "IBM278": [
+   "cp278",
+   "ibm278",
+   "ibm-278",
+   "278",
+   "ebcdic-sv",
+   "ebcdic-cp-se",
+   "csIBM278"
+  ],
+  "IBM280": [
+   "cp280",
+   "ibm280",
+   "ibm-280",
+   "280"
+  ],
+  "IBM284": [
+   "cp284",
+   "ibm284",
+   "ibm-284",
+   "284",
+   "csIBM284",
+   "cpibm284"
+  ],
+  "IBM285": [
+   "cp285",
+   "ibm285",
+   "ibm-285",
+   "285",
+   "ebcdic-cp-gb",
+   "ebcdic-gb",
+   "csIBM285",
+   "cpibm285"
+  ],
+  "IBM297": [
+   "cp297",
+   "ibm297",
+   "ibm-297",
+   "297",
+   "ebcdic-cp-fr",
+   "cpibm297",
+   "csIBM297"
+  ],
+  "IBM420": [
+   "cp420",
+   "ibm420",
+   "ibm-420",
+   "ebcdic-cp-ar1",
+   "420",
+   "csIBM420"
+  ],
+  "IBM424": [
+   "cp424",
+   "ibm424",
+   "ibm-424",
+   "424",
+   "ebcdic-cp-he",
+   "csIBM424"
+  ],
+  "IBM500": [
+   "cp500",
+   "ibm500",
+   "ibm-500",
+   "500",
+   "ebcdic-cp-ch",
+   "ebcdic-cp-bh",
+   "csIBM500"
+  ],
+  "x-IBM833": [
+   "cp833",
+   "ibm833",
+   "ibm-833",
+   "833"
+  ],
+  "x-IBM834": [
+   "cp834",
+   "ibm834",
+   "834",
+   "ibm-834"
+  ],
+  "IBM-Thai": [
+   "cp838",
+   "ibm838",
+   "ibm-838",
+   "838"
+  ],
+  "IBM870": [
+   "cp870",
+   "ibm870",
+   "ibm-870",
+   "870",
+   "ebcdic-cp-roece",
+   "ebcdic-cp-yu",
+   "csIBM870"
+  ],
+  "IBM871": [
+   "cp871",
+   "ibm871",
+   "ibm-871",
+   "871",
+   "ebcdic-cp-is",
+   "csIBM871"
+  ],
+  "x-IBM875": [
+   "cp875",
+   "ibm875",
+   "ibm-875",
+   "875"
+  ],
+  "IBM918": [
+   "cp918",
+   "ibm-918",
+   "918",
+   "ebcdic-cp-ar2"
+  ],
+  "x-IBM922": [
+   "cp922",
+   "ibm922",
+   "ibm-922",
+   "922"
+  ],
+  "x-IBM1097": [
+   "cp1097",
+   "ibm1097",
+   "ibm-1097",
+   "1097"
+  ],
+  "x-IBM949": [
+   "cp949",
+   "ibm949",
+   "ibm-949",
+   "949"
+  ],
+  "x-IBM949C": [
+   "cp949C",
+   "ibm949C",
+   "ibm-949C",
+   "949C"
+  ],
+  "x-IBM939": [
+   "cp939",
+   "ibm939",
+   "ibm-939",
+   "939"
+  ],
+  "x-IBM933": [
+   "cp933",
+   "ibm933",
+   "ibm-933",
+   "933"
+  ],
+  "x-IBM1381": [
+   "cp1381",
+   "ibm1381",
+   "ibm-1381",
+   "1381"
+  ],
+  "x-IBM1383": [
+   "cp1383",
+   "ibm1383",
+   "ibm-1383",
+   "1383",
+   "ibmeuccn",
+   "ibm-euccn",
+   "cpeuccn"
+  ],
+  "x-IBM970": [
+   "cp970",
+   "ibm970",
+   "ibm-970",
+   "ibm-eucKR",
+   "970"
+  ],
+  "x-IBM964": [
+   "cp964",
+   "ibm964",
+   "ibm-964",
+   "ibm-euctw",
+   "964"
+  ],
+  "x-IBM29626C": [
+   "cp29626c",
+   "ibm29626c",
+   "ibm-29626c",
+   "29626c",
+   "ibm-eucjp"
+  ],
+  "x-IBM33722": [
+   "cp33722",
+   "ibm33722",
+   "ibm-33722",
+   "ibm-5050",
+   "ibm-33722_vascii_vpua",
+   "33722"
+  ],
+  "IBM01140": [
+   "cp1140",
+   "ccsid01140",
+   "cp01140",
+   "1140",
+   "ebcdic-us-037+euro",
+   "ibm1140",
+   "ibm-1140"
+  ],
+  "IBM01141": [
+   "cp1141",
+   "ccsid01141",
+   "cp01141",
+   "1141",
+   "ebcdic-de-273+euro",
+   "ibm1141",
+   "ibm-1141"
+  ],
+  "IBM01142": [
+   "cp1142",
+   "ccsid01142",
+   "cp01142",
+   "1142",
+   "ebcdic-no-277+euro",
+   "ebcdic-dk-277+euro",
+   "ibm1142",
+   "ibm-1142"
+  ],
+  "IBM01143": [
+   "cp1143",
+   "ccsid01143",
+   "cp01143",
+   "1143",
+   "ebcdic-fi-278+euro",
+   "ebcdic-se-278+euro",
+   "ibm1143",
+   "ibm-1143"
+  ],
+  "IBM01144": [
+   "cp1144",
+   "ccsid01144",
+   "cp01144",
+   "1144",
+   "ebcdic-it-280+euro",
+   "ibm1144",
+   "ibm-1144"
+  ],
+  "IBM01145": [
+   "cp1145",
+   "ccsid01145",
+   "cp01145",
+   "1145",
+   "ebcdic-es-284+euro",
+   "ibm1145",
+   "ibm-1145"
+  ],
+  "IBM01146": [
+   "cp1146",
+   "ccsid01146",
+   "cp01146",
+   "1146",
+   "ebcdic-gb-285+euro",
+   "ibm1146",
+   "ibm-1146"
+  ],
+  "IBM01147": [
+   "cp1147",
+   "ccsid01147",
+   "cp01147",
+   "1147",
+   "ebcdic-fr-277+euro",
+   "ibm1147",
+   "ibm-1147"
+  ],
+  "IBM01148": [
+   "cp1148",
+   "ccsid01148",
+   "cp01148",
+   "1148",
+   "ebcdic-international-500+euro",
+   "ibm1148",
+   "ibm-1148"
+  ],
+  "IBM01149": [
+   "cp1149",
+   "ccsid01149",
+   "cp01149",
+   "1149",
+   "ebcdic-s-871+euro",
+   "ibm1149",
+   "ibm-1149"
+  ],
+  "IBM290": [
+   "cp290",
+   "ibm290",
+   "ibm-290",
+   "csIBM290",
+   "EBCDIC-JP-kana",
+   "290"
+  ],
+  "x-IBM1166": [
+   "cp1166",
+   "ibm1166",
+   "ibm-1166",
+   "1166"
+  ],
+  "x-IBM300": [
+   "cp300",
+   "ibm300",
+   "ibm-300",
+   "300"
+  ],
+  "x-MacRoman": [
+   "MacRoman"
+  ],
+  "x-MacCentralEurope": [
+   "MacCentralEurope"
+  ],
+  "x-MacCroatian": [
+   "MacCroatian"
+  ],
+  "x-MacGreek": [
+   "MacGreek"
+  ],
+  "x-MacCyrillic": [
+   "MacCyrillic"
+  ],
+  "x-MacUkraine": [
+   "MacUkraine"
+  ],
+  "x-MacTurkish": [
+   "MacTurkish"
+  ],
+  "x-MacArabic": [
+   "MacArabic"
+  ],
+  "x-MacHebrew": [
+   "MacHebrew"
+  ],
+  "x-MacIceland": [
+   "MacIceland"
+  ],
+  "x-MacRomania": [
+   "MacRomania"
+  ],
+  "x-MacThai": [
+   "MacThai"
+  ],
+  "x-MacSymbol": [
+   "MacSymbol"
+  ],
+  "x-MacDingbat": [
+   "MacDingbat"
+  ],
+  "x-JIS0208_Solaris": [],
+  "x-JIS0208_MS5022X": [],
+  "x-JIS0208_MS932": [],
+  "x-JIS0212_Solaris": [],
+  "x-JIS0212_MS5022X": [],
+  "SimpleEUCEncoder": []
+ }
+}

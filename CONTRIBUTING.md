@@ -55,7 +55,10 @@ Two words, and they are not interchangeable:
 ```bash
 pytest                    # unit + HTTP endpoint tests; needs no data and no network
 pytest -rs                # the same, and it names every test that skipped, with the reason
+PYTHONWARNDEFAULTENCODING=1 pytest   # as CI runs it: an open() without encoding= fails its test
 ruff check . && ruff format --check .    # both gate CI; ruff comes from the `dev` extra
+ruff check --preview --select PLW1514 .  # an open() without encoding=, a preview rule CI runs alone
+python scripts/prose_check.py   # issue numbers and re-dated measurements in new comments
 ```
 
 Everything that runs on a `dev` install must pass for every change, and it needs no data and no
@@ -74,7 +77,7 @@ file with them:
 | `.[mirage]` | the shim tests in `tests/test_integrations.py` |
 | `.[fsspec]` — `fsspec` and `gdrive-fsspec` | the Google Drive and GitHub filesystem tests in `tests/test_integrations.py` |
 | Docker, `npx`, `uvx` | one `tests/test_mcp.py` test each — the Atlassian, Notion and AWS MCP servers |
-| `git` | the tests in `tests/test_github.py` that build a real repo |
+| `git` | the tests in `tests/test_github.py` that build a real repo, and the one in `tests/test_prose_check.py` |
 
 Install with `uv sync --all-extras --locked` — the same command CI runs, and the one to use rather
 than pip, whose resolver cannot solve this dependency graph. It installs every extra above, so
@@ -89,8 +92,22 @@ uv pip install --no-deps "llama-index-readers-hubspot<0.6"
 
 (`.[all]` names the same set for anyone installing Backlot from PyPI rather than a checkout.)
 
-CI runs the suite, ruff, and the Linear example on every push to `main` and every pull request
-(see `.github/workflows/ci.yml`).
+CI runs the suite, ruff, and the Linear example on every push to `main` and every pull request (see
+`.github/workflows/ci.yml`). On a pull request it also runs `scripts/prose_check.py`, whose findings
+show as warnings on the lines they name and do not fail the run.
+
+Windows, where the default text encoding is the locale's code page (cp1252 on `windows-latest`)
+rather than UTF-8, has its own workflow (`.github/workflows/windows.yml`). It runs on a pull request
+once a maintainer adds the `windows` label: the README's first command, the test files that read
+and write Backlot's own files, and the tests marked `windows` or xfail. On `main` it runs the whole
+suite of a `dev` and `mcp` install once a day. A test that fails on Windows for a known,
+deterministic reason is marked `xfail(strict=True)` there and `windows`, so the pull request that
+fixes it removes the first mark and that run keeps the test.
+
+Every file Backlot ships, writes and reads back is UTF-8, so a text file (and a text-mode subprocess
+pipe, with `PYTHONIOENCODING=utf-8` for a Python child) is always opened with `encoding="utf-8"`.
+Ruff (`PLW1514`) and the suite run as CI runs it, under `PYTHONWARNDEFAULTENCODING=1` (an
+`EncodingWarning` is then an error), refuse one opened without it.
 
 ### Testing the agent skill
 

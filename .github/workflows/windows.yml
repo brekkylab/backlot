@@ -1,0 +1,75 @@
+# Does Backlot run where the default text encoding is not UTF-8?
+#
+# windows-latest is the one runner whose locale encoding is cp1252: a file opened without
+# encoding="utf-8" decodes with it, and the bundled schemas then fail to load before any command
+# runs. The Linux suite under PYTHONWARNDEFAULTENCODING=1 (ci.yml) refuses such an open on every
+# pull request wherever a test reaches it; this job is the proof on the platform itself, with
+# PYTHONUTF8 unset, and it is too slow to run on every commit (on 2026-10-13 its pull-request run
+# took 5 minutes 25 seconds on windows-latest, and each Linux test job under 4). So it runs on a
+# pull request only once a maintainer adds the `windows` label, for a change to how Backlot opens
+# files, spawns processes or reads paths, and then on each push to it. A step before the tests
+# refuses a runner whose locale, or Python's UTF-8 mode, is UTF-8, where every step after it would
+# pass without proving anything; for the same reason Python is pinned below 3.15, where UTF-8 mode
+# becomes the default (PEP 686).
+name: Windows
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  schedule:
+    # Daily at 02:00 UTC, 11:00 in Seoul, an hour after the fidelity run.
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # A newer push to the same pull request, or the `windows` label added to it, replaces a run still
+  # going. Any other label added gets a group of its own: its run starts no job, and must not cancel
+  # one that is testing.
+  group: >-
+    windows-${{ github.event.pull_request.number || github.ref }}${{
+    github.event.action == 'labeled' && github.event.label.name != 'windows'
+    && format('-{0}', github.run_id) || '' }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    if: >-
+      github.event_name != 'pull_request'
+      || (contains(github.event.pull_request.labels.*.name, 'windows')
+      && (github.event.action != 'labeled' || github.event.label.name == 'windows'))
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --extra dev --extra mcp --locked --python 3.14
+      - name: The locale is not UTF-8
+        run: >
+          uv run --no-sync python -c "import locale, sys; e = locale.getencoding();
+          print(e, sys.flags.utf8_mode);
+          assert e.lower().replace('-', '') != 'utf8' and not sys.flags.utf8_mode,
+          'this run would prove nothing: the locale or UTF-8 mode is UTF-8'"
+      - name: The README's first command
+        run: uv run --no-sync backlot import --bundled
+      - name: The test files that read and write Backlot's own files
+        if: github.event_name == 'pull_request'
+        run: >
+          uv run --no-sync pytest -rs
+          tests/test_cli.py tests/test_server.py tests/test_schema.py tests/test_docs.py
+          tests/test_importer_erb.py tests/test_acl.py tests/test_fidelity.py
+          tests/test_packaging.py
+      - name: The tests marked windows or xfail
+        if: github.event_name == 'pull_request'
+        # pytest exits 5 when the selection is empty, which is not a failure here.
+        run: |
+          uv run --no-sync pytest -rxs -o addopts= -m "xfail or windows" tests
+          if ($LASTEXITCODE -eq 5) { exit 0 }
+      - name: The whole suite
+        if: github.event_name != 'pull_request'
+        run: uv run --no-sync pytest -rs

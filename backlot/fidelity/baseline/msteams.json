@@ -3,6 +3,346 @@
   "endpoints": [
     "https://graph.microsoft.com/v1.0/$metadata"
   ],
-  "measured": "2026-10-08",
-  "acknowledged": []
+  "measured": "2026-10-20",
+  "root": {
+    "query": "GraphService"
+  },
+  "types": {
+    "GraphService": {
+      "type_kind": "EntityContainer",
+      "status": "implemented",
+      "fields": {
+        "me": {
+          "status": "implemented"
+        },
+        "teams": {
+          "status": "implemented"
+        },
+        "users": {
+          "status": "implemented"
+        }
+      }
+    },
+    "aadUserConversationMember": {
+      "type_kind": "EntityType",
+      "status": "implemented",
+      "fields": {
+        "displayName": {
+          "status": "implemented"
+        },
+        "email": {
+          "status": "implemented"
+        },
+        "id": {
+          "status": "implemented"
+        },
+        "roles": {
+          "status": "implemented"
+        },
+        "userId": {
+          "status": "implemented"
+        }
+      }
+    },
+    "channel": {
+      "type_kind": "EntityType",
+      "status": "implemented",
+      "fields": {
+        "createdDateTime": {
+          "status": "implemented"
+        },
+        "description": {
+          "status": "implemented"
+        },
+        "displayName": {
+          "status": "implemented"
+        },
+        "email": {
+          "status": "implemented"
+        },
+        "id": {
+          "status": "implemented"
+        },
+        "isArchived": {
+          "status": "implemented"
+        },
+        "isFavoriteByDefault": {
+          "status": "implemented"
+        },
+        "layoutType": {
+          "status": "implemented"
+        },
+        "membershipType": {
+          "status": "implemented"
+        },
+        "webUrl": {
+          "status": "implemented"
+        }
+      }
+    },
+    "channelIdentity": {
+      "type_kind": "ComplexType",
+      "status": "implemented",
+      "fields": {
+        "channelId": {
+          "status": "implemented"
+        },
+        "teamId": {
+          "status": "implemented"
+        }
+      }
+    },
+    "chatMessage": {
+      "type_kind": "EntityType",
+      "status": "implemented",
+      "fields": {
+        "attachments": {
+          "status": "implemented"
+        },
+        "body": {
+          "status": "implemented"
+        },
+        "channelIdentity": {
+          "status": "implemented"
+        },
+        "chatId": {
+          "status": "implemented"
+        },
+        "createdDateTime": {
+          "status": "implemented"
+        },
+        "deletedDateTime": {
+          "status": "implemented"
+        },
+        "etag": {
+          "status": "implemented"
+        },
+        "eventDetail": {
+          "status": "implemented"
+        },
+        "from": {
+          "status": "implemented"
+        },
+        "id": {
+          "status": "implemented"
+        },
+        "importance": {
+          "status": "implemented"
+        },
+        "lastEditedDateTime": {
+          "status": "implemented"
+        },
+        "lastModifiedDateTime": {
+          "status": "implemented"
+        },
+        "locale": {
+          "status": "implemented"
+        },
+        "mentions": {
+          "status": "implemented"
+        },
+        "messageHistory": {
+          "status": "implemented"
+        },
+        "messageType": {
+          "status": "implemented"
+        },
+        "policyViolation": {
+          "status": "implemented"
+        },
+        "reactions": {
+          "status": "implemented"
+        },
+        "replies": {
+          "status": "implemented"
+        },
+        "replyToId": {
+          "status": "implemented"
+        },
+        "subject": {
+          "status": "implemented"
+        },
+        "summary": {
+          "status": "implemented"
+        },
+        "webUrl": {
+          "status": "implemented"
+        }
+      }
+    },
+    "chatMessageFromIdentitySet": {
+      "type_kind": "ComplexType",
+      "status": "implemented",
+      "fields": {
+        "application": {
+          "status": "implemented"
+        },
+        "device": {
+          "status": "implemented"
+        },
+        "user": {
+          "status": "implemented"
+        }
+      }
+    },
+    "chatMessageReaction": {
+      "type_kind": "ComplexType",
+      "status": "implemented",
+      "fields": {
+        "createdDateTime": {
+          "status": "implemented"
+        },
+        "reactionType": {
+          "status": "implemented"
+        },
+        "user": {
+          "status": "implemented"
+        }
+      }
+    },
+    "chatMessageReactionIdentitySet": {
+      "type_kind": "ComplexType",
+      "status": "implemented",
+      "fields": {
+        "application": {
+          "status": "implemented"
+        },
+        "device": {
+          "status": "implemented"
+        },
+        "user": {
+          "status": "implemented"
+        }
+      }
+    },
+    "itemBody": {
+      "type_kind": "ComplexType",
+      "status": "implemented",
+      "fields": {
+        "content": {
+          "status": "implemented"
+        },
+        "contentType": {
+          "status": "implemented"
+        }
+      }
+    },
+    "team": {
+      "type_kind": "EntityType",
+      "status": "implemented",
+      "fields": {
+        "classification": {
+          "status": "implemented"
+        },
+        "createdDateTime": {
+          "status": "implemented"
+        },
+        "description": {
+          "status": "implemented"
+        },
+        "discoverySettings": {
+          "status": "extra"
+        },
+        "displayName": {
+          "status": "implemented"
+        },
+        "funSettings": {
+          "status": "implemented"
+        },
+        "guestSettings": {
+          "status": "implemented"
+        },
+        "id": {
+          "status": "implemented"
+        },
+        "internalId": {
+          "status": "implemented"
+        },
+        "isArchived": {
+          "status": "implemented"
+        },
+        "isMembershipLimitedToOwners": {
+          "status": "extra"
+        },
+        "memberSettings": {
+          "status": "implemented"
+        },
+        "messagingSettings": {
+          "status": "implemented"
+        },
+        "specialization": {
+          "status": "implemented"
+        },
+        "summary": {
+          "status": "implemented"
+        },
+        "tagSettings": {
+          "status": "extra"
+        },
+        "tenantId": {
+          "status": "implemented"
+        },
+        "visibility": {
+          "status": "implemented"
+        },
+        "webUrl": {
+          "status": "implemented"
+        }
+      }
+    },
+    "teamworkUserIdentity": {
+      "type_kind": "ComplexType",
+      "status": "implemented",
+      "fields": {
+        "displayName": {
+          "status": "implemented"
+        },
+        "id": {
+          "status": "implemented"
+        },
+        "userIdentityType": {
+          "status": "implemented"
+        }
+      }
+    },
+    "user": {
+      "type_kind": "EntityType",
+      "status": "implemented",
+      "fields": {
+        "businessPhones": {
+          "status": "implemented"
+        },
+        "displayName": {
+          "status": "implemented"
+        },
+        "givenName": {
+          "status": "implemented"
+        },
+        "id": {
+          "status": "implemented"
+        },
+        "jobTitle": {
+          "status": "implemented"
+        },
+        "mail": {
+          "status": "implemented"
+        },
+        "mobilePhone": {
+          "status": "implemented"
+        },
+        "officeLocation": {
+          "status": "implemented"
+        },
+        "preferredLanguage": {
+          "status": "implemented"
+        },
+        "surname": {
+          "status": "implemented"
+        },
+        "userPrincipalName": {
+          "status": "implemented"
+        }
+      }
+    }
+  }
 }

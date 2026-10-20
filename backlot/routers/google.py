@@ -20,7 +20,9 @@ from contextvars import ContextVar
 from email.parser import BytesParser
 from email.utils import formataddr, getaddresses
 from http import HTTPStatus
+from pathlib import Path
 from typing import NamedTuple
+from urllib.parse import unquote
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, Response
@@ -33,7 +35,7 @@ from backlot.acl import Caller
 from backlot.config import get_settings
 from backlot.errors import google as gerr
 from backlot.openapi import qp
-from backlot.pagination import decode_cursor, decode_cursor_or_none, next_page_token
+from backlot.pagination import decode_cursor_or_none, next_page_token
 
 # `$.xgafv` is checked before any route runs, and `callback` too but on a Drive download inside a
 # batch — see `_system_parameters`. A router dependency runs only once a route has MATCHED, so a
@@ -48,8 +50,12 @@ from backlot.pagination import decode_cursor, decode_cursor_or_none, next_page_t
 def _system_parameters(request: Request) -> None:
     """`gerr.validate_system_parameters`, with `callback` left alone on a Drive download: real
     answers an uncallable name there with its own 503, and a batch part with a 302, rather than
-    refusing the name (see `gerr.refuse_download` and `_drive_batch_redirect`)."""
-    gerr.validate_system_parameters(request, callback=not _drive_download_request(request))
+    refusing the name (see `gerr.refuse_download` and `_drive_batch_redirect`). Whether the request
+    is a download is left on ``request.state`` for `gerr.head_content_length`, which is asked once
+    the route has answered."""
+    download = _drive_download_request(request)
+    request.state.google_download = download
+    gerr.validate_system_parameters(request, callback=not download)
 
 
 router = APIRouter(tags=["google"], dependencies=[Depends(_system_parameters)])
@@ -107,6 +113,7 @@ class DrivePermissionList(_GLoose):
 # drive_files_get / .export return a raw Response on some branches — they get openapi_extra params
 # only (no JSON response_model, which would mis-serialize the raw body).
 _P_DRIVE_LIST = [qp("pageSize", "integer"), qp("pageToken"), qp("q"), qp("fields"), qp("orderBy")]
+_P_DRIVE_PERMISSIONS = [qp("pageSize", "integer"), qp("pageToken")]
 _P_DRIVE_ALT = [qp("alt"), qp("fields")]
 _P_DRIVE_EXPORT = [qp("mimeType", required=True)]
 _P_DRIVE_ABOUT = [qp("fields", required=True)]
@@ -182,13 +189,21 @@ def _batch_sub_response(r, base: str) -> str:
     request's base URL. The download redirect (:func:`gerr.download_redirect`), the 302 whose
     `Location` is under `base`'s `/download`, carries real's three headers, measured 2026-10-04 in
     this order: `Content-Length: 0`, though its error body follows, `Content-Type` and `Location`.
-    Any other part carries `Content-Type` alone, so the `Location` of a redirect a route builds from
-    the host the parts are dispatched to, which nothing answers, is not passed on."""
+    A part whose answer carries a `WWW-Authenticate`, a 401, passes it on ahead of `Content-Type`,
+    where real's 401 parts put it on 2026-10-13, on Drive's batch and on Sheets', for a missing
+    credential and for a bad one. Real's 200, 404 and 401 parts end their headers with a
+    `Content-Length` too, and its 200s and 404s carry `Cache-Control`, `Date` and `Expires` ahead of
+    `Content-Type`, in an order that changes from part to part, measured on Drive's batch on
+    2026-10-13; this server sends none of those four on them. Any other header stays behind, so the
+    `Location` of a redirect a route builds from the host the parts are dispatched to, which nothing
+    answers, is not passed on."""
     location = r.headers.get("location", "")
     redirect = r.status_code == 302 and location.startswith(f"{base}download/")
     lines = [f"HTTP/1.1 {r.status_code} {_batch_reason(r.status_code)}"]
     if redirect:
         lines.append("Content-Length: 0")
+    if "www-authenticate" in r.headers:
+        lines.append(f"WWW-Authenticate: {r.headers['www-authenticate']}")
     lines.append(f"Content-Type: {r.headers.get('content-type', 'application/json')}")
     if redirect:
         lines.append(f"Location: {location}")
@@ -256,49 +271,195 @@ async def batch(request: Request, api: str = "", version: str = "") -> Response:
     return Response(content=body, media_type=f'multipart/mixed; boundary="{_BATCH_BOUNDARY}"')
 
 
+# The schemes real reads a token under, spelt exactly so, and what ends the token after one.
+_SCHEMES = ("Bearer", "OAuth")
+_TOKEN_END = re.compile(r"[ \t,]")
+
+
+def _credential(request: Request) -> tuple[bool, str | None]:
+    """Whether real Google reads a credential off the request, and the token it names, which is
+    ``None`` for a credential that names none. ``Authorization`` is read first, and the query only
+    where the header leaves it a say (`_query_credential`).
+
+    The scheme is `Bearer` or `OAuth` in that case, and one space after it starts the token, which
+    runs to the next space, tab or comma once any of those in front of it are passed. A token that
+    starts with `"` runs to the next `"` instead, or to the end without one, and loses the spaces,
+    tabs and commas at its two ends but none between; what follows the closing `"` is passed over,
+    and `""` names no token. A scheme with something other than a space after it, and one whose
+    space leads to nothing but those three, is a credential whose header names no token; a scheme
+    with nothing but spaces and tabs after it is no credential at all, the query's included, and a
+    scheme in another case and anything else are no credential in the header, which leaves the query
+    to decide (below). Measured on 2026-10-11 against Drive (`files.list` and `about`), Sheets,
+    Docs, Slides and Gmail, with a token that resolves and with `nope`, a quoted token only on
+    2026-10-13, and every spelling ``tests/test_google.py::_CREDENTIAL_ROWS`` lists replayed on
+    Gmail's `labels.get` and Drive's `files.list` on 2026-10-13.
+
+    The query is read where there is no header, where the header is no credential but for a bare
+    `Bearer` or `OAuth`, which keeps the query out too, and where it is a scheme with no space after
+    it (`Bearer<t>`, `Bearer<TAB><t>`, `Bearers <t>`, `OAuth2 <t>`), which reads the query without
+    the gate `_query_credential` sets on a value, and is a credential that names no token where
+    the query names none.
+
+    A Drive download and a batch part read the header this way too (`_require_download_bearer`,
+    `_drive_batch_redirect`)."""
+    value = request.headers.get("authorization") or ""
+    for scheme in _SCHEMES:
+        if value.startswith(scheme):
+            rest = value[len(scheme) :]
+            if not rest.strip():
+                return False, None
+            if not rest.startswith(" "):
+                return _query_credential(request, gated=False) or (True, None)
+            token = rest.lstrip(" \t,")
+            if token.startswith('"'):
+                quoted = token[1:].split('"', 1)[0]
+                return True, quoted.strip(" \t,") if quoted else None
+            return True, _TOKEN_END.split(token, maxsplit=1)[0] or None
+    return _query_credential(request, gated=True) or (False, None)
+
+
+# The prefixes a query value needs for real's front end to read it as a token, behind no header or
+# one that is no credential (`_credential` says which header lifts the gate).
+_QUERY_TOKEN_PREFIXES = ("ya29.", "1/")
+
+
+def _query_credential(request: Request, *, gated: bool) -> tuple[bool, str | None] | None:
+    """The credential the query names, as whether there is one and the token it names, or ``None``
+    where the query names none.
+
+    Three names carry a token, ``gerr.QUERY_TOKENS``, spelt exactly so. Taken in that order, the
+    first the query carries is the gate and the last is the token, wherever each stands in the
+    query. ``gated``, the gate's first value has to start `ya29.` or `1/` once decoded, or the query
+    names no credential. Past the gate the token's value is resolved as it stands; an empty one, or
+    a token whose name the query repeats, names no token. Inside a batch a part reads each of the
+    three names from its own query where it carries that name and from the batch's where it does
+    not, so a part's values for a name stand in for the batch's rather than join them.
+
+    Measured on Drive and Gmail on 2026-10-13 and 2026-10-14, with the rows ``tests/test_google.py``
+    keeps in `_QUERY_CREDENTIAL_ROWS`, and in `_BATCH_ROWS` for a batch. The two prefixes are what a
+    byte sweep found, 282 values with each of the 94 visible ASCII characters (0x21 to 0x7E) after
+    ya29 and after 1 and before a slash.
+    """
+    query = request.query_params
+    outer = _BATCH_OUTER.get()
+    if outer is not None:
+        batch = QueryParams(outer.query)
+        query = QueryParams(
+            [
+                (name, value)
+                for name in gerr.QUERY_TOKENS
+                for value in (query if name in query else batch).getlist(name)
+            ]
+        )
+    named = [name for name in gerr.QUERY_TOKENS if name in query]
+    if not named:
+        return None
+    if gated and not query.getlist(named[0])[0].startswith(_QUERY_TOKEN_PREFIXES):
+        return None
+    values = query.getlist(named[-1])
+    return True, (values[0] or None) if len(values) == 1 else None
+
+
+_ESCAPED_SLASH = re.compile(r"%2F", re.I)
+
+
+def _operation_path(request: Request) -> str:
+    """The path real chooses a Google operation by: the path as sent with an escaped `/` kept inside
+    its segment, every other escape decoded, and the trailing slashes dropped. Measured 2026-10-13
+    on Drive with no credential: `files/abc%2Fpermissions` is `files.get`'s 403, and a `POST` to
+    `files/abc%2Fcopy` is the front end's HTML 404 whatever the credential, no operation being a
+    `POST` on a file. The routes match the decoded path, so a credential that resolves reaches the
+    route that path names."""
+    raw = request.scope.get("raw_path")
+    if not raw:
+        return request.scope["path"]
+    return unquote(_ESCAPED_SLASH.sub("%252F", raw.decode("latin-1"))).rstrip("/")
+
+
 def _require(request: Request, *, download: bool = False) -> Caller:
     """The caller, or the error real Google gives — NOT the shared ``auth.require_bearer``, because
-    Google's answer is not one status. Measured: a present-but-invalid bearer is 401 UNAUTHENTICATED
-    everywhere, while NO Authorization header at all is 403 PERMISSION_DENIED on a Drive or Sheets
-    GET (they accept API keys, so an anonymous GET is a caller with no established identity) and
-    401 on the OAuth-only Gmail/Docs/Slides and on a POST to any family.
+    Google's answer is not one status. A credential that does not resolve is 401 UNAUTHENTICATED
+    everywhere (:func:`gerr.bad_token`), while no credential at all is a 403 or a 401 by operation
+    (:func:`gerr.no_credentials`). What is a credential is `_credential`'s to say.
 
     ``download`` asks for a byte-stream read's answer instead: measured 2026-10-04 on
     `files.export` and 2026-10-05 on `files.get?alt=media`, a missing credential there names the
     missing API key (:func:`gerr.missing_api_key`) instead of the anonymous GET's unregistered
-    caller, and real puts it AFTER the download's own parameters — which is why the handlers
-    resolve a download late."""
-    caller = auth.resolve_bearer(request)
+    caller, a header that is no credential is :func:`gerr.download_credential_refused`, and real
+    puts both AFTER the download's own parameters — which is why the handlers resolve a download
+    late."""
+    present, token = _credential(request)
+    if not present:
+        if download and "authorization" in request.headers:
+            raise gerr.download_credential_refused()
+        if download:
+            raise gerr.missing_api_key()
+        raise gerr.no_credentials(_operation_path(request), request.method)
+    caller = auth.acl(request).resolve(token) if token is not None else None
     if caller is None:
-        if not request.headers.get("authorization"):
-            if download:
-                raise gerr.missing_api_key()
-            raise gerr.no_credentials(request.url.path, request.method)
-        raise gerr.bad_token()
+        raise gerr.bad_token(named=token is not None)
     return caller
 
 
-def _sends_a_bearer_token(request: Request) -> bool:
-    """Whether ``Authorization`` is `Bearer`, spelt exactly so, and a token: the one header a Drive
-    download treats as a credential ahead of its own refusals, on its own
-    (`_require_download_bearer`) and as a batch part (`_drive_batch_redirect`). Narrower than
-    ``auth.bearer_token``, which `_require` reads a credential with and which also takes `bearer`,
-    `BEARER` and `token`."""
-    scheme, _, token = (request.headers.get("authorization") or "").partition(" ")
-    return scheme == "Bearer" and bool(token.strip())
-
-
 def _require_download_bearer(request: Request) -> None:
-    """The 401 a Drive download answers ahead of its own refusals, for a `Bearer` token
-    (`_sends_a_bearer_token`) that does not resolve.
+    """The 401 a Drive download answers ahead of its own refusals, for a credential (`_credential`)
+    that does not resolve.
 
     Measured 2026-10-07 and 2026-10-08 on `files.get?alt=media` and `files.export` beside
     `callback=a b`: `Bearer nope` answers the 401, where `bearer nope`, `BEARER nope`,
     `token nope`, a bare `Bearer`, `bearer`, `nope` and `Basic YWJjOmRlZg==` each answer the
-    callback's 503. Every other value is left to :func:`gerr.refuse_download`, and without a
+    callback's 503; on 2026-10-11 `OAuth nope`, `Bearer nope x`, `Bearer<t>` and `Bearer<TAB>nope`
+    answered the 401 too. Every other value is left to :func:`gerr.refuse_download`, and without a
     `callback` is `_require`'s to answer."""
-    if _sends_a_bearer_token(request) and auth.resolve_bearer(request) is None:
-        raise gerr.bad_token()
+    if _credential(request)[0]:
+        _require(request)
+
+
+# The baselines `backlot diff` keeps for Google's two sources, read without importing
+# ``backlot.fidelity``, whose ``__init__`` loads the comparison modules.
+_BASELINES = Path(__file__).resolve().parent.parent / "fidelity" / "baseline"
+# Where the paths the editor APIs' own documents spell from the version on are mounted here, as
+# `backlot.fidelity.comparisons.GOOGLE_DISCOVERY` strips them.
+_EDITOR_MOUNTS = (("/v4/", "/sheets"), ("/v1/documents", "/docs"), ("/v1/presentations", "/slides"))
+
+
+def _published_not_served() -> tuple[tuple[str, re.Pattern[str]], ...]:
+    """The two Google baselines' `missing` operations as (method, path pattern), each at the
+    path Backlot mounts it on and each `{}` one path segment."""
+    operations = []
+    for source in ("gmail", "google_drive"):
+        entries = json.loads((_BASELINES / f"{source}.json").read_text(encoding="utf-8"))[
+            "operations"
+        ]
+        for e in entries:
+            if e["status"] != "missing":
+                continue
+            method, path = e["operation"].split(" ", 1)
+            mount = next((m for spelled, m in _EDITOR_MOUNTS if path.startswith(spelled)), "")
+            pattern = "[^/]+".join(re.escape(part) for part in (mount + path).split("{}"))
+            operations.append((method, re.compile(pattern)))
+    return tuple(operations)
+
+
+_PUBLISHED_NOT_SERVED = _published_not_served()
+
+
+def refuse_an_unserved_operation(request: Request) -> None:
+    """Raise what real answers ahead of an operation in `_PUBLISHED_NOT_SERVED`, which is what a
+    served route answers ahead of its own work: `$.xgafv`, then a `callback` on a GET, then the
+    credential, by `_require`'s rule and the operation's own anonymous answer
+    (:func:`gerr.no_credentials`). A caller that passes all three gets the router's 404 or 405, as
+    Backlot has no operation to run.
+
+    Measured 2026-10-11 on eight of the operations beside an unknown `$.xgafv`, `$.xgafv=1`, a
+    callable `callback` and an uncallable one, with a trailing slash and as a `HEAD`: each refused
+    as a served route of the same method does. The operation is chosen on
+    :func:`_operation_path`."""
+    path = _operation_path(request)
+    if not any(m == request.method and p.fullmatch(path) for m, p in _PUBLISHED_NOT_SERVED):
+        return
+    gerr.validate_system_parameters(request)
+    _require(request)
 
 
 def _b64url(text: str) -> str:
@@ -308,9 +469,47 @@ def _b64url(text: str) -> str:
 # ================================ Gmail =========================================
 
 
+def _is_me(user_id: str) -> bool:
+    """Whether `userId` is the caller's own alias, in any case: `ME` and `Me` read the caller's
+    mailbox as `me` does, measured 2026-10-11."""
+    return user_id.lower() == "me"
+
+
+def _mailbox_caller(request: Request, user_id: str) -> Caller:
+    """The caller, as `_require` gives it, refused by :func:`_refuse_another_mailbox`."""
+    caller = _require(request)
+    _refuse_another_mailbox(caller, user_id)
+    return caller
+
+
+def _refuse_another_mailbox(caller: Caller, user_id: str) -> None:
+    """Refuse a user's token a `userId` that names a mailbox not its own.
+
+    A user's token reads its own mailbox only, named `me` (:func:`_is_me`) or by its own address in
+    any case. A `userId` with no `@`, or nothing on one side of it, is :func:`gerr.invalid_user_id`
+    and any other is :func:`gerr.delegation_denied`. Real draws that line more narrowly: on
+    2026-10-12 `a@b`, `a@b.c`, `a@b@c`, `a@x.com.`, `a@b_c.com`, a local part holding a space, a
+    tab, `"`, `,` or `;`, and a literal `+`, which real reads as a space, were each the invalid id,
+    where `a%2Bb@x.com`, `a@1.2` and `.a@x.com` were addresses; here those are the delegation
+    refusal.
+
+    Measured 2026-10-11 and 2026-10-12 on every Gmail route served here: the refusal comes after
+    `$.xgafv`, the credential and a `maxResults` the proto layer cannot read as a uint32
+    (:func:`_gmail_max_results`), and ahead of an unparseable message id or attachment token, a
+    missing message or label, a `maxResults` of 0 and a page token that does not parse. The admin
+    token stands for a domain-wide-delegated service account and reads any mailbox; real's answer
+    to one was not measured, since only a domain's administrator can grant the delegation."""
+    if caller.email is None or _is_me(user_id) or user_id.lower() == caller.email.lower():
+        return
+    local, at, domain = user_id.partition("@")
+    if not (local and at and domain):
+        raise gerr.invalid_user_id()
+    raise gerr.delegation_denied(caller.email)
+
+
 def _mailbox_email(caller: Caller, user_id: str) -> str | None:
     """Resolve the mailbox owner email; None means 'all mailboxes' (admin, 'me')."""
-    if user_id == "me":
+    if _is_me(user_id) or caller.email is not None:
         return caller.email  # None for admin
     return user_id if "@" in user_id else None
 
@@ -326,7 +525,7 @@ def _mailbox_container(conn, caller: Caller, user_id: str) -> str | None:
     None = all mailboxes (admin ``me``). A concrete address (``me`` for a user, or an explicit
     email) resolves to the WHOLE mailbox — received and sent — rather than to the messages that
     address happened to author; ``store.mailbox_for`` is what knows how the corpus spelled it."""
-    email = caller.email if user_id == "me" else (user_id if "@" in user_id else None)
+    email = _mailbox_email(caller, user_id)
     return store.mailbox_for(conn, email) if email else None
 
 
@@ -355,7 +554,7 @@ def _mailbox_totals(conn, caller: Caller, user_id: str, ids) -> tuple[int, int]:
 @router.get("/gmail/v1/users/{user_id}/profile")
 async def gmail_profile(user_id: str, request: Request):
     conn = auth.conn(request)
-    caller = _require(request)
+    caller = _mailbox_caller(request, user_id)
     # A concrete mailbox (``me`` -> caller.email, or an explicit address) if we have one;
     # otherwise the admin/service identity — never echo the raw ``me`` path segment.
     email = _mailbox_email(caller, user_id) or caller.email or _service_email(request)
@@ -422,14 +621,14 @@ def _label_obj(lid: str, counts: tuple[int, int] | None = None) -> dict:
 
 @router.get("/gmail/v1/users/{user_id}/labels")
 async def gmail_labels(user_id: str, request: Request):
-    _require(request)
+    _mailbox_caller(request, user_id)
     return {"labels": [_label_obj(lid) for lid in _SYSTEM_LABELS]}
 
 
 @router.get("/gmail/v1/users/{user_id}/labels/{label_id}")
 async def gmail_label_get(user_id: str, label_id: str, request: Request):
     conn = auth.conn(request)
-    caller = _require(request)
+    caller = _mailbox_caller(request, user_id)
     if label_id not in _SYSTEM_LABELS:
         raise gerr.not_found_entity()
     ids = auth.visible_ids(request, caller)
@@ -437,11 +636,56 @@ async def gmail_label_get(user_id: str, label_id: str, request: Request):
     return _label_obj(label_id, (messages, threads) if label_id == _GMAIL_DEFAULT_LABEL else (0, 0))
 
 
-_GMAIL_OP = re.compile(r'(\w+):("[^"]*"|\S+)')
+# The operators that read the word after whitespace as their value. Measured on a Workspace
+# mailbox: on 2026-10-16, `from: <word>`, `bcc: <word>`, `to:<tab><word>`, `From: <word>` and
+# `TO: <word>` answered the ids the operator answers with no whitespace, and `to: from: bcc:`
+# answered nothing; on 2026-10-17, so did `subject:`, `label:` and `in:` after a space or a tab
+# (`subject:` after two spaces or a no-break space too), and `after:`, `before:`, `newer:` and
+# `older:` after one space or three. A tab after those four leaves the operator empty:
+# `after:<tab>1` answered the messages holding both search terms `after` and `1`. `has:`,
+# `newer_than:`, `older_than:` and `larger:` read nothing after a space: `has: attachment` answered
+# nothing where `has:attachment` answered 160 messages. On 2026-10-19 a pair of quotes holding
+# nothing or only spaces read as whitespace after each operator `_GMAIL_SPACED` names:
+# `label:"" probe`, `subject:" " probe`, `from:"" <word>` and `cc:""<word>` answered what
+# `label: probe`, `subject: probe`, `from: <word>` and `cc: <word>` answer, and `<word> to:""` what
+# `<word>` alone answers.
+_GMAIL_SPACED = (
+    r"(?<=\bfrom:)|(?<=\bto:)|(?<=\bcc:)|(?<=\bbcc:)|(?<=\bsubject:)|(?<=\blabel:)|(?<=\bin:)"
+)
+_GMAIL_DATED = r"(?<=\bafter:)|(?<=\bbefore:)|(?<=\bnewer:)|(?<=\bolder:)"
+# An empty operator `_GMAIL_OP` drops, so that the operator after it applies. Measured on a
+# Workspace mailbox of 625 messages on 2026-10-19, comparing `messages.list` id sets
+# (`threads.list` answered the ten queries sent to it alike):
+#
+#   dropped   an empty `subject:`, `from:`, `to:`, `cc:` or `bcc:` with spaces, a tab, a pair of
+#             quotes holding nothing or spaces, or nothing at all after it, and an empty `label:` or
+#             `in:` with any of those except nothing, in any letter case, before `label:`, `in:`,
+#             `has:`, `after:`, `before:`, `newer:`, `older:`, `newer_than:` or `older_than:` whose
+#             value starts right after its colon, or after spaces for the four date operators:
+#             `subject:label:inbox`, `bcc:""in:sent`, `label:" "label:inbox`,
+#             `SUBJECT: NEWER_THAN:30d` and `in: before: 2026/10/01` answered the ids of the
+#             operator after the empty one
+#   kept      before `subject:`, `from:`, `to:`, `cc:` or `bcc:`, before one of those nine whose
+#             value is empty, quoted or (for the five that are not dates) after a space, before a
+#             date operator whose value is `-`, and with a no-break space after it:
+#             `subject: from:me`, `label: label:""`, `in: label:"inbox"`, `from: label: inbox`,
+#             `subject: after:-` and `subject:<no-break space>label:inbox` answered nothing, and
+#             `_GMAIL_OP` reads the next word as the empty operator's value
+_GMAIL_EMPTY_BEFORE = (
+    r'(?:(?:subject|from|to|cc|bcc):|(?:label|in):(?=[ \t"]))(?:[ \t]|"[ \t]*")*'
+    r'(?=(?:label|in|has|newer_than|older_than):[^\s"]|(?:after|before|newer|older): *[^\s"-])'
+)
+_GMAIL_OP = re.compile(
+    rf'(?:{_GMAIL_EMPTY_BEFORE})?(\w+):(?:(?:{_GMAIL_SPACED})(?:\s|"\s*")*|(?:{_GMAIL_DATED}) *)?'
+    r'("[^"]*"|\S*)',
+    re.IGNORECASE,
+)
 # operators we honor; anything else stays as free text
 _GMAIL_KEYS = {
     "from",
     "to",
+    "cc",
+    "bcc",
     "subject",
     "after",
     "before",
@@ -450,23 +694,177 @@ _GMAIL_KEYS = {
     "has",
     "newer_than",
     "older_than",
+    "newer",
+    "older",
 }
+# Real reads `newer:` as `after:` and `older:` as `before:`, so each is folded into the operator
+# it is another name for. Measured on a Workspace mailbox on 2026-10-15: messages.list and
+# threads.list answered `newer:X` with the ids `after:X` answers, and `older:X` with those of
+# `before:X`, for each value X tried, read as a date or not. An empty `newer:` is the search term
+# `newer`, as an empty `after:` is `after`, and `_GMAIL_OP` leaves both in the free text.
+_GMAIL_KEY_ALIASES = {"newer": "after", "older": "before"}
+# The address operators. A Gmail search ignores one with no value rather than searching it as free
+# text. Measured on a Workspace mailbox: `to:`, `from:` and `bcc:` with no value answered every
+# message, as no `q` does (2026-10-14), and so did `cc:`, `from:""` and `to:""` (2026-10-16).
+_GMAIL_ADDRESS_KEYS = {"from", "to", "cc", "bcc"}
+# The operators a search ignores when they have no value, as it ignores an address operator with
+# none, where a bare `after:`, `before:`, `newer:` or `older:` is the word it spells. Measured on a
+# Workspace mailbox, comparing `messages.list` id sets with those of no `q`: on 2026-10-17,
+# `subject:`, `label:` and `in:` answered every message, with a space after the colon or none,
+# where `subject`, `label` and `in` alone did not; on 2026-10-18 so did `subject:""`, `label:""`
+# and `in:""`, a tab or two spaces after the colon, and `SUBJECT:`. `probe label:` answered as
+# `probe` does, and `threads.list` answered each of the three with every thread.
+_GMAIL_DROPPED_WHEN_EMPTY = {"subject", "label", "in"}
+# The operators whose value a `+` ends. Measured on a Workspace mailbox on 2026-10-15:
+# `cc:<local>+<word>`, `from:<local>+update` and `to:<local>+update` answered the ids of the
+# operator with `+<word>` sent as a search term of its own; `cc:<local>+`, `cc:<local>++` and
+# `from:<local>+   to:<local>+` answered nothing; `cc:+<local>` answered as `cc:<local>` does,
+# `+` alone with every message, and `cc:<local> +` as `cc:<local>`. On 2026-10-16, `bcc:` and
+# `subject:` answered alike (`subject:backlot+probe` as `subject:backlot +probe`, `bcc:<local>+`
+# and `subject:backlot+` nothing, `bcc:+<local>` as `bcc:<local>`), and so did a word outside an
+# operator (`+update` as `update`, `update+` and `+update+` nothing). A value with a character
+# before an `@` keeps what follows a `+`: `from:<address>+x`, `cc:<address>+x` and
+# `from:<local>@+x` answered nothing and `from:<local>+<tag>@<domain>` that address's messages,
+# while `from:<address>+` and `from:<address>++` answered as `from:<address>` and `from:@<domain>+x`
+# as `from:@<domain> +x`. `label:`, `in:` and `has:` keep a `+` (`label:inbox+x` answered nothing).
+_GMAIL_PLUS_ENDS = {"from", "to", "cc", "bcc", "subject"}
+# The `ops` key of a value that ends in `+`: real answers such a search with nothing. No operator
+# can be named this, since `_GMAIL_OP` reads a name of at least one word character.
+_GMAIL_NOTHING = ""
+# How real reads the value of `after:` and `before:` (and so of `newer:` and `older:`), as
+# `_gmail_q_date` reads it. Measured on a Workspace mailbox, comparing the ids each query returned
+# with those of a date written `YYYY/MM/DD` (595 messages on 2026-10-15, 603 on 2026-10-17):
+#
+#   read as seconds   ASCII digits whose value is above 0 and at most `_GMAIL_SECONDS_MAX`,
+#                     leading zeros and all: `1`, `01`, `1790812800`, `01790812800`,
+#                     `253402300800`; `0`, `000`, `-1`, `+1790812800`, `1e9`, `9223372036854` and
+#                     `99999999999999999999` nothing
+#   read as a date    three runs of ASCII digits split by one `/` or one `-`, tried as year, month,
+#                     day, then month, day, year, then day, month, year, the first that is a date:
+#                     `10/1/2026` is 1 October, `01/10/2026` 10 January, `15/10/2026` 15 October;
+#                     a year above 0 and below 100 is in the 2000s (`26/10/05`, `9/30/26`), so
+#                     `10/05/26` is 26 May 2010; a first run of three digits or more is the year
+#                     (`026/10/05`, `02026/10/01`); a month or day may carry leading zeros
+#                     (`2026/010/01`, `2026/10/005`)
+#   either            after the trailing `/`, `.`, `,` and `:` are dropped (`2026/10/01//`,
+#                     `2026/10/01.`, `1790812800,`, `2026/10/01:`)
+#   nothing           anything else: `abc`, `2026/13/01`, `2026/02/30`, `2026.10.01`,
+#                     `2026-10-01T00:00`, `2026/10-01`, `"2026/10/01"`, `(2026/10/01)`, digits
+#                     that are not ASCII (`２０２６/１０/０１`), and a query holding one of them
+#                     beside a value real reads
+#
+# A `-` in front negates the operator when its value reads: `-after:2026/10/01` answered as
+# `before:2026/10/01`, and `-before:X` as `after:X`; `-after:abc`, `-after:0` and `-before:0`
+# answered every message. `after:-` is the search term `after`, as an empty `after:` is. Not
+# modelled here, each answered nothing: a year past 9999 (real read `10000/01/01` as a date after
+# every message), `00` (real read it), a count of seconds between `_GMAIL_SECONDS_MAX` and
+# `9223372036854`, and values real answered with ids no reading above gives (`2026/10`, `10/01`,
+# `2026/10/01x`, `1790812800.5`).
+_GMAIL_DATE_KEYS = {"after", "before"}
+# The largest count of seconds measured to read, 10000-01-01T00:00:00Z.
+_GMAIL_SECONDS_MAX = 253402300800
+_GMAIL_DATE = re.compile(r"([0-9]+)([/-])([0-9]+)\2([0-9]+)")
+_GMAIL_NEGATED_DATE = re.compile(r"(?<!\S)-(after|before|newer|older): *(\S+)", re.IGNORECASE)
+# A `-` in front of an address operator, or in front of its value, negates it. Measured on a
+# Workspace mailbox, comparing `messages.list` id sets: on 2026-10-17, `-from:<word>` and
+# `from:-<word>` each answered the messages `from:<word>` does not, and so did `to:` and `cc:`, for
+# three words on each operator and for 15 hyphenated local parts sent as `from:-<local part>`. On
+# 2026-10-18, so did `bcc:`, and on all four operators `-from: <word>`, `from: -<word>`,
+# `-from:-<word>`, `--from:<word>`, `from:--<word>`, `-FROM:<word>`, `-from:"<word>"`, a whole
+# address, an `@<domain>` and `me`; `from:"-<word>"` answered as `from:<word>`, and `-from:`,
+# `from:-`, `-from:-`, `from:--` and `-from:""` every message. Another operator keeps the `-` in its
+# value: `label:-` answered nothing. Not modelled: `- from:<word>` answered as `from:<word>`, where
+# the `-` standing alone is searched here as a term, and `from:-<word>+update` answered every
+# message, where `-from:<word>+update` answered the messages of `+update` that `from:<word>` leaves
+# out. A negated value is stored under its key with a `-` in front.
+_GMAIL_NEGATED_ADDRESS = re.compile(r"(?<!\S)-+(from|to|cc|bcc):\s*", re.IGNORECASE)
+_GMAIL_NEGATION = {"after": "before", "before": "after", "newer": "older", "older": "newer"}
+
+
+def _gmail_q_date(v: str) -> str | None:
+    """The epoch seconds an `after:` or `before:` value in a search names, or None for a value real
+    answers with nothing (the reading the comment at `_GMAIL_DATE_KEYS` measures)."""
+    v = v.rstrip("/.,:")
+    if re.fullmatch(r"[0-9]+", v):
+        return str(int(v)) if 0 < int(v) <= _GMAIL_SECONDS_MAX else None
+    m = _GMAIL_DATE.fullmatch(v)
+    if m is None:
+        return None
+    a, b, c = m.group(1), m.group(3), m.group(4)
+    for y, mo, d in [(a, b, c)] if len(a) > 2 else [(a, b, c), (c, a, b), (c, b, a)]:
+        year = int(y) + 2000 if 0 < int(y) < 100 else int(y)
+        try:
+            day = datetime.datetime(year, int(mo), int(d), tzinfo=datetime.timezone.utc)
+        except ValueError:
+            continue
+        return str(int(day.timestamp()))
+    return None
+
+
+def _gmail_negated_date(m: re.Match) -> str:
+    """A negated date operator as the one it flips to, or nothing at all when its value does not
+    read (the comment at `_GMAIL_DATE_KEYS`)."""
+    if _gmail_q_date(m.group(2)) is None:
+        return " "
+    return f"{_GMAIL_NEGATION[m.group(1).lower()]}:{m.group(2)}"
 
 
 def _parse_gmail_q(q: str) -> tuple[str, dict]:
-    """Split a Gmail search `q` into (free_text, operators). Honors from:/to:/subject:/
-    after:/before:/newer_than:/older_than:/label:/in:/has: — the rest is free text matched
-    full-text."""
+    """Split a Gmail search `q` into (free_text, operators). Honors from:/to:/cc:/bcc:/subject:/
+    after:/before:/newer:/older:/newer_than:/older_than:/label:/in:/has: — the rest is free text
+    matched full-text."""
     ops: dict[str, list[str]] = {}
 
     def _take(m):
         key = m.group(1).lower()
         if key in _GMAIL_KEYS:
-            ops.setdefault(key, []).append(m.group(2).strip('"'))
+            key = _GMAIL_KEY_ALIASES.get(key, key)
+            value = m.group(2)
+            if not value and key not in _GMAIL_ADDRESS_KEYS:
+                if key in _GMAIL_DROPPED_WHEN_EMPTY:
+                    return " "
+                return m.group(0)
+            if key in _GMAIL_DATE_KEYS:
+                if value == "-":
+                    return m.group(0)
+                read = _gmail_q_date(value)
+                ops.setdefault(_GMAIL_NOTHING if read is None else key, []).append(read or value)
+                return " "
+            stored = key
+            if key in _GMAIL_ADDRESS_KEYS and value.startswith("-"):
+                value, stored = value.lstrip("-"), f"-{key}"
+                if not _GMAIL_ADDRESS_WORD.search(value):
+                    return " "
+            if key in _GMAIL_PLUS_ENDS and not value.startswith('"'):
+                value = value.lstrip("+")
+                if re.search(r"[^@]@", value):
+                    value = value.rstrip("+")
+                else:
+                    value, plus, term = value.partition("+")
+                    if plus and not term.strip("+"):
+                        ops.setdefault(_GMAIL_NOTHING, []).append(value)
+                        return " "
+                    if plus:
+                        ops.setdefault(stored, []).append(value)
+                        return f" +{term} "
+            # A quoted address value keeps its quotes, which `_gmail_address_match` reads.
+            quoted = (
+                key in _GMAIL_ADDRESS_KEYS and len(value) > 1 and value[:1] == value[-1:] == '"'
+            )
+            ops.setdefault(stored, []).append(value if quoted else value.strip('"'))
             return " "
         return m.group(0)
 
+    q = _GMAIL_NEGATED_DATE.sub(_gmail_negated_date, q)
+    q = _GMAIL_NEGATED_ADDRESS.sub(lambda m: f"{m.group(1)}:-", q)
     free = re.sub(r"\s+", " ", _GMAIL_OP.sub(_take, q)).strip()
+    # A `+` standing alone is no search term, and a word ending in one matches nothing (the
+    # measurement at `_GMAIL_PLUS_ENDS`).
+    if not (len(free) >= 2 and free[0] == free[-1] == '"'):
+        words = [t for t in free.split(" ") if t != "+"]
+        if any(t.endswith("+") for t in words):
+            ops.setdefault(_GMAIL_NOTHING, []).append(free)
+        free = " ".join(words)
     return free, ops
 
 
@@ -517,13 +915,96 @@ def _resolve_relative_dates(ops: dict) -> dict:
     return ops
 
 
+# What `_gmail_address_match` reads: a word is a run of letters, digits, `_` and `&` in any
+# script, and a value shaped like one address is compared with each address the header holds.
+_GMAIL_ADDRESS_WORD = re.compile(r"[\w&]+")
+_GMAIL_ONE_ADDRESS = re.compile(r"[^@\s]+@[^@\s]+")
+_GMAIL_ADDRESS = re.compile(r"[\w.+'-]+@[\w-]+(?:\.[\w-]+)+")
+# What keeps a hyphenated value from being read joined as well (`_gmail_address_match`).
+_GMAIL_UNJOINED = re.compile(r"--|[\w&]\.[\w&]")
+
+
+def _gmail_address_match(header: str | None, value: str) -> bool:
+    """Whether an address header answers an address search value as Gmail answers it, in any case.
+    A value shaped like one address matches an address in the header exactly: `lena@acme.com`
+    does, `lena@acme` names no address and matches nothing. Any other value matches when its words
+    come one after another among the header's words, display names included: `lena`, `acme`,
+    `acme.com`, `@acme.com` and `lena@` match `Lena Park <lena@acme.com>`, and so does `park`,
+    where `len`, `ena`, `par` and `com.acme` do not. `_` joins the characters around it into one
+    word, so `ops` does not match `ops_team@corp.example`, and `&` counts as a word character too,
+    where the rest of ASCII punctuation does not. A value with no word in it, such as `.`, `@` or
+    `""`, is ignored and matches every message, a message without the header included. A value
+    with a hyphen matches its words joined as well (`no-reply` finds `noreply@` beside
+    `no-reply@`, `jt-snowball` finds `@jtsnowball.com`) unless it holds `--` or a `.` between two
+    word characters (`jt-snowball.com` is its three words alone); a joined value does not find the
+    hyphenated spelling. A quoted value is matched without its quotes and with no joined spelling:
+    `from:"no-reply"` finds `no-reply@` and not `noreply@`.
+
+    Measured on a Workspace mailbox of 595 messages on 2026-10-15: 113 searches on `cc:` and
+    `bcc:`, compared with the headers of every message, all match this rule, and of the 32 ASCII
+    punctuation marks sent alone as a `cc:` value, `_` and `&` match nothing and the other 30 match
+    every message. On the same mailbox at 601 messages on 2026-10-16, 122 of 124 `from:` and `to:`
+    searches built from its own addresses, local parts, domains and display-name words match this
+    rule over `From`, and over `To`, `Cc` and `Bcc` together; `to:me` counts the four messages
+    where the caller is in `Bcc` alone. The other two are a hyphenated value, read joined as above,
+    and part of a Korean display name. At 603 messages on 2026-10-17, the 311 `from:`, `to:` and
+    `cc:` searches with a hyphen in them (a header's words split by one hyphen and by two, into two
+    and three parts, beside an `@` or a `.`, and each hyphenated local part whole and in pairs),
+    none quoted and none led by `-`, match this rule, and at 604 on 2026-10-18 so did `bcc:` on a
+    word of the one `Bcc` address there, split by one hyphen and by two and beside a `.`. At 624
+    on 2026-10-19 so did 444 searches on the four operators, compared with the headers of every
+    message in `messages.list` and `threads.list`: 27 words of five letters or more from the
+    mailbox's local parts, domain labels and display names, each whole, split by a hyphen, both of
+    those quoted, and the quoted two negated; the 7 domain labels among them split after an `@`,
+    quoted and not; and the 37 local parts the mailbox holds that are letters and digits joined by
+    `-`, each whole, joined, both of those quoted, negated quoted and not, and quoted with its
+    domain and as `@<domain>`. A value led by `-` is the negation the comment at
+    `_GMAIL_NEGATED_ADDRESS` measures. On 2026-10-14, `cc:<a local part>+x` read `+x` as a search
+    term of its own."""
+    header = (header or "").lower()
+    value = value.lower()
+    # A value the parser kept its quotes around is read alone: no joined spelling beside its words.
+    quoted = len(value) > 1 and value[:1] == value[-1:] == '"'
+    if quoted:
+        value = value[1:-1]
+    if _GMAIL_ONE_ADDRESS.fullmatch(value):
+        return value in _GMAIL_ADDRESS.findall(header)
+    words, have = _GMAIL_ADDRESS_WORD.findall(value), _GMAIL_ADDRESS_WORD.findall(header)
+    if not words:
+        return True
+    alternatives = [words]
+    if not quoted and "-" in value and not _GMAIL_UNJOINED.search(value):
+        alternatives.append(_GMAIL_ADDRESS_WORD.findall(value.replace("-", "")))
+    return any(
+        have[i : i + len(option)] == option
+        for option in alternatives
+        for i in range(len(have) - len(option) + 1)
+    )
+
+
 def _gmail_op_match(row, ops: dict) -> bool:
+    if _GMAIL_NOTHING in ops:
+        return False
     for v in ops.get("from", []):
-        if v.lower() not in (row["author_email"] or "").lower():
+        if not _gmail_address_match(row["author_email"], v):
             return False
     for v in ops.get("to", []):
-        if v.lower() not in (row["to_addr"] or "").lower():
+        if not any(_gmail_address_match(row[k], v) for k in ("to_addr", "cc", "bcc")):
             return False
+    for key in ("cc", "bcc"):
+        for v in ops.get(key, []):
+            if not _gmail_address_match(row[key], v):
+                return False
+    for v in ops.get("-from", []):
+        if _gmail_address_match(row["author_email"], v):
+            return False
+    for v in ops.get("-to", []):
+        if any(_gmail_address_match(row[k], v) for k in ("to_addr", "cc", "bcc")):
+            return False
+    for key in ("cc", "bcc"):
+        for v in ops.get(f"-{key}", []):
+            if _gmail_address_match(row[key], v):
+                return False
     for v in ops.get("subject", []):
         if v.lower() not in (row["title"] or "").lower():
             return False
@@ -551,10 +1032,16 @@ def _gmail_op_match(row, ops: dict) -> bool:
     return True
 
 
-def _gmail_query(conn, mailbox, ids, q: str) -> list:
+def _gmail_query(conn, mailbox, ids, q: str, caller_email: str | None = None) -> list:
     """Full ACL+mailbox-filtered match set for a Gmail `q` (FTS-ranked when free text is
     present; otherwise the mailbox listing). The caller paginates the returned rows."""
     free, ops = _parse_gmail_q(q)
+    if caller_email:
+        # `me` reads through quotes: on 2026-10-19, `op:"me"` and `-op:"me"` answered what `op:me`
+        # and `-op:me` answer on each address operator.
+        for key in ("from", "to", "cc", "bcc", "-from", "-to", "-cc", "-bcc"):
+            if key in ops:
+                ops[key] = [caller_email if v.strip('"').lower() == "me" else v for v in ops[key]]
     ops = _resolve_relative_dates(ops)  # newer_than:/older_than: -> absolute after:/before: bounds
     if free:
         # Honor a fully "quoted" free-text term as a phrase (Gmail's quote semantics): match the
@@ -641,8 +1128,16 @@ def _by_thread(rows) -> list:
     return out
 
 
-def _gmail_max_results(request: Request) -> int:
-    """The page size `messages.list` and `threads.list` serve.
+def _gmail_max_results(request: Request) -> list[int]:
+    """Every `maxResults` the request sends, each read as Gmail's proto layer reads it, a uint32
+    (:func:`_gmail_uint32`). Where that refusal stands is :func:`_refuse_another_mailbox`'s to say.
+    What the method makes of the values is :func:`_gmail_page`'s."""
+    return _typed_query(request, {"maxResults": _gmail_uint32})["maxResults"]
+
+
+def _gmail_page(request: Request, listing: str, sizes: list[int]) -> tuple[int, int]:
+    """The page size and offset `messages.list` and `threads.list` serve from the `maxResults`
+    values in ``sizes``, refused in the order real refuses them on each.
 
     Measured on gmail.googleapis.com on 2026-10-07 with a Workspace user's `gmail.readonly` token,
     one request per row; `threads.list` answered every row with the same status and error, on
@@ -657,18 +1152,36 @@ def _gmail_max_results(request: Request) -> int:
     `nextPageToken`, and the reference gives both methods "The maximum allowed value for this field
     is 500". With no `maxResults`, the page is the default size capped at 500. A sent value is also
     capped at the deployment's `max_page_size`.
+
+    The uint32 refusal (:func:`_gmail_max_results`) comes first on both listings. After it
+    `messages.list` refuses a `pageToken` that does not parse (:func:`_gmail_page_token`) before a
+    `maxResults` out of range, and `threads.list` the range before the token: measured on 2026-10-09
+    with `maxResults` of `0` and `2147483648` beside a token that does not parse, each request sent
+    four times with the same answer.
     """
-    sizes = _typed_query(request, {"maxResults": _gmail_uint32})["maxResults"]
+    offset = _gmail_page_token(request) if listing == "messages" else None
     if not sizes:
-        return min(get_settings().default_page_size, 500)
-    size = sizes[-1]
-    if size == 0 or size >= 2**31:
+        limit = min(get_settings().default_page_size, 500)
+    elif sizes[-1] == 0 or sizes[-1] >= 2**31:
         raise gerr.invalid_max_results()
-    return min(size, 500, get_settings().max_page_size)
+    else:
+        limit = min(sizes[-1], 500, get_settings().max_page_size)
+    if offset is None:
+        offset = _gmail_page_token(request)
+    return limit, offset
+
+
+def _gmail_page_token(request: Request) -> int:
+    """The offset a Gmail `pageToken` names, read from its last repeat as real reads it. An empty
+    token is the first page, and one that does not decode is :func:`gerr.invalid_page_token`."""
+    offset = decode_cursor_or_none(request.query_params.get("pageToken"))
+    if offset is None:
+        raise gerr.invalid_page_token()
+    return offset
 
 
 # `maxResults` as Gmail's proto layer reads it: a uint32, where Drive's `pageSize` is an int32
-# (`_INT32`). The spellings and the bound are `_gmail_max_results`'s.
+# (`_INT32`). The spellings and the bound are `_gmail_page`'s.
 _UINT32 = re.compile(r"\+?[0-9]+")
 
 
@@ -699,13 +1212,14 @@ def _gmail_ids(row) -> tuple[str, str]:
 async def gmail_messages_list(user_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
+    sizes = _gmail_max_results(request)
+    _refuse_another_mailbox(caller, user_id)
     ids = auth.visible_ids(request, caller)
     mailbox = _mailbox_container(conn, caller, user_id)  # None = all mailboxes
-    limit = _gmail_max_results(request)
-    offset = decode_cursor(request.query_params.get("pageToken"))
+    limit, offset = _gmail_page(request, "messages", sizes)
     q = request.query_params.get("q", "") or ""
     if q.strip():  # search: filter the ACL-visible set by the query, then paginate
-        matched = _gmail_query(conn, mailbox, ids, q)
+        matched = _gmail_query(conn, mailbox, ids, q, caller.email or _service_email(request))
         total = len(matched)
         rows = matched[offset : offset + limit]
     else:
@@ -732,7 +1246,7 @@ async def gmail_messages_list(user_id: str, request: Request):
 )
 async def gmail_messages_get(user_id: str, msg_id: str, request: Request):
     conn = auth.conn(request)
-    caller = _require(request)
+    caller = _mailbox_caller(request, user_id)
     ids = auth.visible_ids(request, caller)
     row = _gmail_doc(conn, ids, msg_id)
     if row is None:
@@ -760,7 +1274,7 @@ def _byte_len(text: str) -> int:
 )
 async def gmail_attachment(user_id: str, msg_id: str, att_id: str, request: Request):
     conn = auth.conn(request)
-    caller = _require(request)
+    caller = _mailbox_caller(request, user_id)
     ids = auth.visible_ids(request, caller)
     # The path's message id plays no part in the answer, in real Gmail or here: an attachment id
     # is served under the message it belongs to, under another message's id, under a well-formed
@@ -802,19 +1316,22 @@ def _attachment(rows, att_id: str) -> tuple[str, int, dict] | None:
 async def gmail_threads_list(user_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
+    sizes = _gmail_max_results(request)
+    _refuse_another_mailbox(caller, user_id)
     ids = auth.visible_ids(request, caller)
     # The MAILBOX's threads, like messages.list and like real Gmail — not the threads the caller
     # happens to have written in. Scoping by author served a mailbox owner none of the mail they
     # received, and `q` was already scoping by container, so the two halves of this one listing
     # disagreed about what a thread list is.
     mailbox = _mailbox_container(conn, caller, user_id)
-    limit = _gmail_max_results(request)
-    offset = decode_cursor(request.query_params.get("pageToken"))
+    limit, offset = _gmail_page(request, "threads", sizes)
     q = request.query_params.get("q", "") or ""
     if q.strip():
         # A search returns the THREADS its matches are in: Gmail lists a thread whose match is in a
         # reply, and lists it once even when several of its messages match.
-        matched = _by_thread(_gmail_query(conn, mailbox, ids, q))
+        matched = _by_thread(
+            _gmail_query(conn, mailbox, ids, q, caller.email or _service_email(request))
+        )
         total = len(matched)
         rows = matched[offset : offset + limit]
     else:
@@ -843,7 +1360,7 @@ async def gmail_threads_list(user_id: str, request: Request):
 )
 async def gmail_thread_get(user_id: str, thread_id: str, request: Request):
     conn = auth.conn(request)
-    caller = _require(request)
+    caller = _mailbox_caller(request, user_id)
     ids = auth.visible_ids(request, caller)
     thread_key = _gmail_resolve(thread_id)
     msgs = store.gmail_thread(conn, thread_key, visible_ids=ids)
@@ -1645,12 +2162,12 @@ def _drive_folder_obj(conn, name: str, me: str | None = None) -> dict:
         "webViewLink": f"https://drive.google.com/drive/folders/{fid}",
         "iconLink": "https://drive.google.com/icons/folder.png",
         "capabilities": {
-            "canDownload": False,
+            "canDownload": True,
             "canListChildren": True,
             "canComment": False,
             "canEdit": False,
             "canCopy": False,
-            "canShare": True,
+            "canShare": False,
             "canRename": False,
             "canTrash": False,
             "canDelete": False,
@@ -2343,8 +2860,15 @@ async def drive_files_get(file_id: str, request: Request):
     ids = auth.visible_ids(request, caller)
     row = store.gdrive_by_id(conn, file_id, visible_ids=ids)
     if row is None:
-        name = _drive_folder_name_by_id(conn, file_id)  # folders aren't stored as rows
-        if name is not None:
+        # Folders aren't stored as rows. Measured 2026-10-15 and 2026-10-16 with a Workspace
+        # member's token: real serves a folder the caller can see with 200, and answers one it
+        # cannot see with the 404 notFound an id that names nothing gets, `fields` mask or not.
+        name = _drive_folder_name_by_id(conn, file_id)
+        if name is not None and store.drive_folder_has_visible(conn, name, ids):
+            # Measured 2026-10-16: a visible folder cannot be downloaded, just as a native
+            # Docs Editors file cannot; a folder the caller cannot see remains a 404.
+            if gerr.alt_format(request.query_params) == "media":
+                raise gerr.not_downloadable()
             keys = _drive_get_field_keys(gerr.first_repeat(request.query_params, "fields"))
             return _drive_project([_drive_folder_obj(conn, name, caller.email)], keys)[0]
         raise gerr.not_found_file(file_id)
@@ -2375,9 +2899,10 @@ async def drive_files_export(file_id: str, request: Request):
 
     A byte-stream read layers real's three download refusals before those, measured 2026-10-04,
     2026-10-05 and 2026-10-07: a `Bearer` that does not resolve is its 401, a `callback` is the 503
-    an uncallable name answers and the shape every later error takes, and a missing credential is
-    named only after `mimeType` (`gerr.missing_api_key`). An export asking for `alt=json` is none of
-    that -- it is an ordinary read, which `_drive_download` decides.
+    an uncallable name answers and the shape every later error takes, and no credential is refused
+    only after `mimeType` (`gerr.missing_api_key` with no `Authorization`,
+    `gerr.download_credential_refused` with one that is no credential). An export asking for
+    `alt=json` is none of that -- it is an ordinary read, which `_drive_download` decides.
 
     The export's `Content-Type` is the `mimeType` as sent and nothing more, measured 2026-09-30 on
     eleven formats of a spreadsheet and a document under five `Accept` values each (none, `*/*`,
@@ -2402,6 +2927,12 @@ async def drive_files_export(file_id: str, request: Request):
     ids = auth.visible_ids(request, caller)
     row = store.gdrive_by_id(conn, file_id, visible_ids=ids)
     if row is None:
+        # A folder is synthesized rather than stored, so the lookup misses it. Measured 2026-10-09
+        # and 2026-10-15: real refuses the export of a folder the caller can see with the 403 a PDF
+        # gets, and of one it cannot see with the 404 an id that names nothing gets.
+        name = _drive_folder_name_by_id(conn, file_id)
+        if name is not None and store.drive_folder_has_visible(conn, name, ids):
+            raise gerr.not_exportable()
         raise gerr.not_found_file(file_id)
     native = _native(row)
     if native is None or native[2] is None:  # binary or folder — not exportable
@@ -2427,7 +2958,11 @@ async def drive_files_export(file_id: str, request: Request):
     return Response(body, headers={"content-type": requested})
 
 
-@router.get("/drive/v3/files/{file_id}/permissions", response_model=DrivePermissionList)
+@router.get(
+    "/drive/v3/files/{file_id}/permissions",
+    response_model=DrivePermissionList,
+    openapi_extra={"parameters": _P_DRIVE_PERMISSIONS},
+)
 async def drive_files_permissions(file_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
@@ -2435,7 +2970,12 @@ async def drive_files_permissions(file_id: str, request: Request):
         request, "supportsAllDrives", "supportsTeamDrives", "useDomainAdminAccess", page_size=True
     )["pageSize"]
     _drive_page_size_in_range(sizes, 100)
-    _drive_listing_page_token(request, expired_empty=True)
+    # Refused in real's order, measured by sending two bad values at once: the `pageToken`
+    # refusals, a repeated `pageSize`'s 500, the domain-administrator refusal and the file lookup
+    # below, and a token issued for another file last, in `_drive_permission_page`. The places of
+    # the 500 and of that last refusal were measured 2026-10-08.
+    token = _drive_permissions_page_token(request)
+    size = _drive_permissions_page_size(sizes)
     # No caller here is a domain administrator: 404 for the file, even one the caller owns,
     # measured 2026-10-04 on a consumer account and 2026-10-06 on a Workspace member.
     if _drive_true(request, "useDomainAdminAccess"):
@@ -2445,15 +2985,16 @@ async def drive_files_permissions(file_id: str, request: Request):
     if row is None:
         # A folder id is a first-class file id on real Drive — files.get answers for one, so
         # permissions.list has to as well. Folders aren't stored as rows, so their sharing comes
-        # from the grants on the files they hold.
+        # from the grants on the files they hold. Measured 2026-10-15 and 2026-10-16 with a
+        # Workspace member's token, real answers a folder the caller cannot see with the 404
+        # notFound an id that names nothing gets.
         name = _drive_folder_name_by_id(conn, file_id)
-        if name is None:
+        if name is None or not store.drive_folder_has_visible(conn, name, ids):
             raise gerr.not_found_file(file_id)
-        return {
-            "kind": "drive#permissionList",
-            "permissions": _drive_permissions(conn, file_id, folder=name),
-        }
-    return {"kind": "drive#permissionList", "permissions": _drive_permissions(conn, row["id"])}
+        permissions = _drive_permissions(conn, file_id, folder=name)
+    else:
+        permissions = _drive_permissions(conn, row["id"])
+    return _drive_permission_page(permissions, file_id, size, token)
 
 
 # --- Google Workspace editors read APIs (Docs / Sheets / Slides) ------------------
@@ -2481,8 +3022,7 @@ async def drive_files_permissions(file_id: str, request: Request):
 # The Office row is narrower than the widely-cited bug reports (googlesheets4#275 and friends)
 # suggest — they only ever show the family that matches. Measured both ways: .xlsx -> Sheets and
 # .docx -> Docs give the Office message, while .xlsx -> Docs and .docx -> Sheets give the plain
-# invalid-argument one. `.pptx -> Slides` follows the confirmed pattern but was not itself
-# measured; no .pptx was available in the probed account.
+# invalid-argument one. `.pptx -> Slides` gives the Office message too, measured on 2026-10-10.
 EDITOR_NOT_FOUND = "Requested entity was not found."
 EDITOR_INVALID_ARG = "Request contains an invalid argument."
 EDITOR_OFFICE = (
@@ -2505,15 +3045,18 @@ def _editor_doc(request: Request, file_id: str, *, expect: str):
     reading a Doc through the Sheets API answers 200 with prose sliced into a "grid", plausible
     enough that a client trusts it rather than noticing the id was wrong.
 
-    Visibility resolves FIRST, so a caller who cannot see the file gets not-found and never a type
-    error: the type of a document you cannot access is not something the API should confirm."""
+    Sheets, Docs and Slides resolve the stored type before visibility: a hidden file of their own
+    type is permission-denied, while a hidden file of another type gets that type's usual answer.
+    Measured on 2026-10-06, for an Office file on 2026-10-09, and through Slides on 2026-10-10 and
+    2026-10-17."""
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     # A native Doc/Sheet/Slides id is the SAME id space as Drive's own file id --
     # real Google resolves docs.googleapis.com/etc. off the identical Drive file id, so this has
-    # to resolve the file's own id.
-    row = store.gdrive_by_id(conn, file_id, visible_ids=ids)
+    # to resolve the file's own id, unscoped, to distinguish a missing id from a stored file that
+    # this caller cannot see.
+    row = store.gdrive_by_id(conn, file_id, visible_ids=None)
     if row is None:
         # Folders are synthesized rather than stored, so they miss the lookup above. Real Google
         # calls a folder an invalid argument, not a missing entity, so resolve it before giving up.
@@ -2524,6 +3067,8 @@ def _editor_doc(request: Request, file_id: str, *, expect: str):
     # here too — the fallback stays in one place rather than being decided per route.
     subtype = row["subtype"] or "document"
     if subtype == expect:
+        if store.gdrive_by_id(conn, file_id, visible_ids=ids) is None:
+            raise gerr.permission_denied()
         return row
     if subtype in _EDITOR_NATIVE:  # a different Workspace type: not this API's entity at all
         raise gerr.not_found_entity()
@@ -2532,23 +3077,78 @@ def _editor_doc(request: Request, file_id: str, *, expect: str):
     raise gerr.invalid_argument(EDITOR_INVALID_ARG)
 
 
+# `documents.get`'s two enums, names in number order. Measured 2026-10-09: `suggestionsViewMode`
+# reads `0` through `3`, `+1` and `01` (the value numbered 1) and a name in any ASCII case, and
+# refuses `4`, `-1`, `1.0`, a padded `" 1"`, empty and `NOPE`. `commentsViewMode` reads the same
+# way (2026-10-14: `3`, `+1` and `comments_view_mode_omitted` read, `4` and `-1` refused).
+# `includeTabsContent` is the boolean `_sheets_bool_value` reads (2026-10-14: `no`, `n`, `y`, `T`
+# and `F` read, `on`, `off`, `2` and `tru` refused). A value that cannot be read is a 400 before
+# the document is looked up.
+_DOCS_VIEW = "type.googleapis.com/google.apps.docs.v1"
+_DOCS_SUGGESTIONS_VIEW = protojson.Enum(
+    f"{_DOCS_VIEW}.SuggestionsViewMode",
+    (
+        "DEFAULT_FOR_CURRENT_ACCESS",
+        "SUGGESTIONS_INLINE",
+        "PREVIEW_SUGGESTIONS_ACCEPTED",
+        "PREVIEW_WITHOUT_SUGGESTIONS",
+    ),
+)
+_DOCS_COMMENTS_VIEW = protojson.Enum(
+    f"{_DOCS_VIEW}.CommentsViewMode",
+    (
+        "COMMENTS_VIEW_MODE_UNSPECIFIED",
+        "COMMENTS_VIEW_MODE_DEFAULT_FOR_CURRENT_ACCESS",
+        "COMMENTS_VIEW_MODE_OMITTED",
+        "COMMENTS_VIEW_MODE_INCLUDED",
+    ),
+)
+
+
 @router.get("/docs/v1/documents/{document_id}")
 async def docs_get(document_id: str, request: Request):
     """The document as Docs structural elements: one ``paragraph`` per line of the stored text."""
+    # The credential, then the typed values, then the lookup -- `_typed_query` records the order.
+    _require(request)
+    # Validated and then unused: the body is the same whatever a value that is read selects, where
+    # real's changes with it.
+    _typed_query(
+        request,
+        {
+            "suggestionsViewMode": lambda raw: _sheets_enum_value(
+                raw, "suggestions_view_mode", _DOCS_SUGGESTIONS_VIEW
+            ),
+            "includeTabsContent": lambda raw: _sheets_bool_value(raw, "include_tabs_content"),
+            "commentsViewMode": lambda raw: _sheets_enum_value(
+                raw, "comments_view_mode", _DOCS_COMMENTS_VIEW
+            ),
+        },
+    )
     row = _editor_doc(request, document_id, expect="document")
     content = [{"sectionBreak": {"sectionStyle": {}}}]
     for line in (row["content"] or "").split("\n"):
         content.append(
             {"paragraph": {"elements": [{"textRun": {"content": line + "\n", "textStyle": {}}}]}}
         )
+    # Real's order for an untabbed read (docs.googleapis.com, 2026-10-16, twelve Docs, six owned by
+    # a Workspace member and six by a consumer account), the same under each `suggestionsViewMode`,
+    # `includeTabsContent=false` and a `fields` mask naming the members in another order
+    # (`documentId,title`, `revisionId,body,title`). Real also serves `headers` and `footers` after
+    # `body`, `lists` after `namedStyles` and `inlineObjects` before `documentId` when a Doc has
+    # them; this server serves none of the four.
     return {
-        "documentId": document_id,
         "title": row["title"],
-        "revisionId": synth._digest(document_id)[:24],
-        "suggestionsViewMode": "SUGGESTIONS_INLINE",
         "body": {"content": content},
         "documentStyle": {},
         "namedStyles": {"styles": []},
+        "revisionId": synth._digest(document_id)[:24],
+        "suggestionsViewMode": "SUGGESTIONS_INLINE",
+        "documentId": document_id,
+        # Last, where real serves it. Real's value for a read that asks for no comments, whatever
+        # `suggestionsViewMode` and `includeTabsContent` select (measured 2026-10-09 and
+        # 2026-10-15); `commentsViewMode=COMMENTS_VIEW_MODE_INCLUDED` beside the tabs and inline
+        # suggestions is answered `COMMENTS_VIEW_MODE_INCLUDED` there and this value here.
+        "commentsViewMode": "COMMENTS_VIEW_MODE_OMITTED",
     }
 
 
@@ -2590,11 +3190,12 @@ def _sheets_grid(content: str | None) -> list[list[str]]:
 #                    response -- Backlot enforces no quota, so there is nothing for it to select
 #   upload_protocol  accepted and ignored on a read
 #
-# `key`, `access_token` and `oauth_token` are NOT here: each is an alternative way to authenticate,
-# and honouring one means a second credential path through `backlot.auth` rather than a parameter
-# this module can read. `uploadType` is not here either -- measured, the real API REFUSES it on a
-# read ("Cannot bind query parameter"), so the baseline's "the vendor accepts it" is not what the
-# vendor does.
+# `key` is NOT here: it is an alternative way to authenticate, and honouring it means a second
+# credential path through `backlot.auth` rather than a parameter this module can read. Nor are
+# `access_token` and `oauth_token`, which `_credential` reads and
+# `backlot.openapi.google_system_parameters` declares for every family. `uploadType` is not here
+# either -- measured, the real API REFUSES it on a read ("Cannot bind query parameter"), so the
+# baseline's "the vendor accepts it" is not what the vendor does.
 _P_SHEETS_STD = [
     qp("fields"),
     qp("prettyPrint", "boolean"),
@@ -4307,12 +4908,12 @@ def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) ->
         "webViewLink": view,
         "iconLink": f"https://drive.google.com/icons/{(row['subtype'] or 'document')}.png",
         "capabilities": {
-            "canDownload": not is_folder,
+            "canDownload": True,
             "canListChildren": is_folder,
             "canComment": not is_folder,
             "canEdit": False,
             "canCopy": not is_folder,
-            "canShare": True,
+            "canShare": _drive_owned_by(author, me),
             "canRename": False,
             "canTrash": False,
             "canDelete": False,
@@ -4539,13 +5140,16 @@ def _drive_batch_redirect(request: Request) -> None:
     `/download`.
 
     Measured 2026-10-04 on `files.get` with `alt=media` and on `files.export`: the redirect comes
-    after `$.xgafv` and after a credential the part carries, a bad one being the 401, while a part
-    with no credential at all is redirected. Only `Bearer` and a token is a credential there:
-    measured 2026-10-05, `Basic YWJjOmRlZg==`, `bearer nope`, a bare `Bearer` and `nope` are each
-    redirected, though each is the 401 on a download sent on its own. The redirect comes ahead of
-    everything else measured beside it: a file that does not exist, `supportsAllDrives=NOPE`,
-    `fields=bogus`, an absent or empty `mimeType`, a Docs file read with `alt=media`, and a
-    `callback`, which neither wraps the redirect (`cb`) nor refuses it (`a b`).
+    after `$.xgafv` and after a credential the part carries (`_credential`), a bad one being the
+    401, while a part with no credential at all is redirected: measured 2026-10-05,
+    `Basic YWJjOmRlZg==`, `bearer nope`, a bare `Bearer` and `nope` are each redirected, though each
+    is :func:`gerr.download_credential_refused` on a download sent on its own, and on 2026-10-11
+    `OAuth nope`, `Bearer nope x`, `Bearer<t>`, `Bearer<TAB>nope` and `Bearer ,nope` were each the
+    401 in a part. A token named in the part's query or in the batch's is
+    :func:`gerr.token_in_query` instead of the redirect, after that 401, measured 2026-10-13. The
+    redirect comes ahead of everything else measured beside it: a file that does not exist,
+    `supportsAllDrives=NOPE`, `fields=bogus`, an absent or empty `mimeType`, a Docs file read with
+    `alt=media`, and a `callback`, which neither wraps the redirect (`cb`) nor refuses it (`a b`).
 
     `Location` is the request's path under `/download`, as sent but for its escapes: measured
     2026-10-05 on `files/a%XXb` for each byte 0x20-0x7E, real decodes an escape of an ASCII letter,
@@ -4556,9 +5160,13 @@ def _drive_batch_redirect(request: Request) -> None:
     `Foo` does not, and a name the batch repeats is carried every time. The path and the query are
     read from the request's raw bytes, not its decoded URL, in which `%23` would start a
     fragment."""
-    if _sends_a_bearer_token(request):
+    if _credential(request)[0]:
         _require(request)
     outer = _BATCH_OUTER.get()
+    if gerr.names_a_query_token(request.query_params) or gerr.names_a_query_token(
+        QueryParams(outer.query)
+    ):
+        raise gerr.token_in_query()
     path = _batch_escapes(request.scope["raw_path"].decode("latin-1"), "-._~")
     pairs = _batch_query_pairs(request.scope["query_string"].decode("latin-1"))
     named = {name for name, _ in pairs}
@@ -4586,8 +5194,9 @@ def _drive_page_size_in_range(sizes: list[int], top: int) -> None:
     """Refuse one `pageSize` outside 1 to ``top`` with real's range sentence, which names the value
     as an int. Measured 2026-09-23, and on each of the three routes again 2026-09-30: ``top`` is
     1000 on `files.list` and 100 on `permissions.list` and `drives.list`; `0`, `-1`, `-0` (named
-    `0`), ``top + 1`` and `2147483647` are refused alike; and two or more values are not
-    range-checked at all."""
+    `0`), ``top + 1`` and `2147483647` are refused alike; and two or more values get no range
+    sentence, the first of them deciding instead, in `_drive_page_size` on `files.list` and
+    `_drive_permissions_page_size` on `permissions.list`."""
     if len(sizes) == 1 and not 1 <= sizes[0] <= top:
         raise gerr.invalid_parameter(
             "page_size",
@@ -4596,29 +5205,95 @@ def _drive_page_size_in_range(sizes: list[int], top: int) -> None:
         )
 
 
-def _drive_listing_page_token(request: Request, *, expired_empty: bool = False) -> None:
-    """Refuse a `pageToken` sent to a listing that issues no `nextPageToken`, where every token is
-    one it did not issue: `permissions.list`, which serves a file's whole sharing on one page, and
-    `drives.list`, which is empty. Presence is the whole test: `decode_cursor_or_none`, which
-    `files.list` calls, reads `bzow` and that route's own tokens as offsets. Read from the first
-    repeat, after the typed and range refusals and ahead of the `useDomainAdminAccess=true` refusal
-    and `permissions.list`'s file lookup. Measured 2026-10-04 and 2026-10-05, and the empty, `bad`,
-    `bzow`, `BOGUS` and issued-token cells again on 2026-10-07 as a Workspace member::
+def _drive_permissions_token(file_id: str, offset: int) -> str:
+    """The `nextPageToken` `permissions.list` issues: the offset of the next page and the file it
+    pages, so that `_drive_permission_page` can refuse a token sent back to another file."""
+    return base64.urlsafe_b64encode(f"p:{offset}:{file_id}".encode()).decode()
+
+
+def _drive_permissions_page_token(request: Request) -> tuple[int, str] | None:
+    """The `pageToken` sent to `permissions.list`, as the offset and the file it was issued for, or
+    ``None`` when none was sent. Read from the first repeat. Measured against Drive v3 on 2026-10-04
+    and 2026-10-05, the empty, `bad`, `bzow`, `BOGUS` and `files.list`-token cells again on
+    2026-10-07 as a Workspace member, and `bzox` and the last two rows on 2026-10-08 on a consumer
+    account::
 
         pageToken                         permissions.list          drives.list
         --------------------------------|-------------------------|-------------------------
         empty                           | 403 `pageTokenExpired`  | the first page
-        `bad`, `bzow`, `AAAA`           | 400 `Invalid Value`     | 400 `Invalid Value`
+        `bad`, `bzow`, `bzox`, `AAAA`   | 400 `Invalid Value`     | 400 `Invalid Value`
         `BOGUS`, `0`, `a`, a space, a   | 500 `Unknown Error.`    | 400 `Invalid Value`
         token `files.list` issued       |                         |
+        one issued for another file     | 403 `pageTokenExpired`  |
+        one issued for this file        | the next page           |
 
-    ``expired_empty`` asks for the empty row's 403, which only `permissions.list` answers. The 500
-    is not modelled; those tokens get the 400 here too."""
+    An issued token with a character added, changed or dropped was the 500, the 400, the 403 or the
+    next page by which character it was, measured 2026-10-08. A token here names the offset, from 1,
+    and the file (`_drive_permissions_token`), and only the exact spelling issued is read, so the
+    spellings the table lists against the 400 and the 500, and every altered token, are the 400
+    here: the 500, and an altered token's 403 and next page, are not modelled. A token naming
+    another file does decode, and its 403 comes after the file lookup, in `_drive_permission_page`.
+    `drives.list` issues none, and `_drive_listing_page_token` reads its column."""
     token = gerr.first_repeat(request.query_params, "pageToken")
     if token is None:
-        return
-    if not token and expired_empty:
+        return None
+    if not token:
         raise gerr.page_token_expired()
+    try:
+        _, offset, file_id = base64.urlsafe_b64decode(token).decode().split(":", 2)
+        issued = int(offset), file_id
+    except ValueError:
+        raise gerr.invalid_value("pageToken") from None
+    if issued[0] < 1 or _drive_permissions_token(file_id, issued[0]) != token:
+        raise gerr.invalid_value("pageToken")
+    return issued
+
+
+def _drive_permissions_page_size(sizes: list[int]) -> int | None:
+    """The `pageSize` `permissions.list` pages by, or ``None`` for the whole list. One value outside
+    1-100 is the range refusal `_drive_page_size_in_range` raises; two or more are read from the
+    first, and real answers :func:`gerr.unknown_error` when that one is outside 1-100. Measured
+    against Drive v3 on 2026-10-08 on a consumer account: `0&2`, `-0&2`, `-1&2`, `0&0`, `0&101`,
+    `101&2`, `101&101`, `2147483647&2`, `-2147483648&2` and `0&2&2` each answered the 500, where
+    `100&2` and `2&0&0` served two permissions and `1&0`, `+1&0`, `1&2` and `1&2&3` one and a
+    token."""
+    if not sizes:
+        return None
+    if not 1 <= sizes[0] <= 100:
+        raise gerr.unknown_error()
+    return sizes[0]
+
+
+def _drive_permission_page(
+    permissions: list[dict], file_id: str, size: int | None, token: tuple[int, str] | None
+) -> dict:
+    """One page of a file's permissions, in the unpaged list's order, and the token for the next.
+
+    Measured against Drive v3 on two-permission My Drive files on 2026-10-05, and on a file and a
+    folder on 2026-10-08: no `pageSize` serves the whole list and no `nextPageToken`; `pageSize=1`
+    the first permission and a token; that token, sent back with a `pageSize` of 1 or 2 or with
+    none, the other permission and no token; and a `pageSize` of 2, 3 or 100 both and no token. A
+    token issued for another file is 403 `pageTokenExpired` (`_drive_permissions_page_token`)."""
+    offset = 0
+    if token is not None:
+        offset, issued_for = token
+        if issued_for != file_id:
+            raise gerr.page_token_expired()
+    end = len(permissions) if size is None else offset + size
+    body = {"kind": "drive#permissionList", "permissions": permissions[offset:end]}
+    if end < len(permissions):
+        body["nextPageToken"] = _drive_permissions_token(file_id, end)
+    return body
+
+
+def _drive_listing_page_token(request: Request) -> None:
+    """Refuse a `pageToken` sent to `drives.list`, which is empty and issues no `nextPageToken`,
+    so every token is one it did not issue. Presence is the whole test: `decode_cursor_or_none`,
+    which `files.list` calls, reads `bzow` and that route's own tokens as offsets. Read from the
+    first repeat, after the typed and range refusals and ahead of the `useDomainAdminAccess=true`
+    refusal. What real answers is the `drives.list` column of the table
+    `_drive_permissions_page_token` records."""
+    token = gerr.first_repeat(request.query_params, "pageToken")
     if token:
         raise gerr.invalid_value("pageToken")
 

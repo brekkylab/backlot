@@ -46,7 +46,8 @@ Two things it has to work around, both explained inline in `index.ts`:
   here a `graphql-request` `GraphQLClient` aimed at `<base>/linear/graphql`. `GraphQLClient.request`
   already has `LinearRequest`'s signature, so the shim is a few lines.
 - **The `Authorization` header carries the BARE key**, with no `Bearer` prefix — that is how a
-  Linear personal API key travels. (Backlot accepts `Bearer <token>` too, Linear's OAuth shape.)
+  Linear personal API key travels. `Bearer <token>` is Linear's OAuth shape: Backlot, like
+  Linear, refuses a personal key under it with a `400`.
 
 `tests/test_sdk.py` stays Python-only and cannot exercise `@linear/sdk`; the CI job is what
 covers it.

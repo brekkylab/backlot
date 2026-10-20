@@ -16,20 +16,28 @@ to the documents shows.
 caller. Which is which is read off each operation's ``security`` in the documents
 ``backlot.fidelity.comparisons.COMPARISONS["jira"]`` names: one whose requirements do not include
 the empty one, ``{}``, is refused, and so is one the documents give no ``security`` at all. Measured
-on Jira Cloud on 2026-09-30 with no credential, over every operation the baseline lists: all 300
-GETs without ``{}`` answered that 401, as did the two with no ``security`` (`service-registry` once
-its `Content-Type` passed, see below), and all 226 with it reached the operation (a 200, a 404 for
-the key or id that names nothing, a 400, a 403, a 410, or a 401 of the operation's own); all 437
+on Jira Cloud with no credential, over every operation the baseline lists, on 2026-09-30, the
+`agents` and `policies` ones on 2026-10-13 and the `invalid-jqls-access-log` ones on 2026-10-19: all
+308 GETs without ``{}`` answered that 401, as did the two with no ``security`` (`service-registry`
+once its `Content-Type` passed, see below), and all 226 with it reached the operation (a 200, a 404
+for the key or id that names nothing, a 400, a 403, a 410, or a 401 of the operation's own); all 447
 DELETEs, PUTs and POSTs without it answered the 401 when they carried a body of a type the operation
 takes, and none of the 232 with it did.
 
-A refused operation's entry says what it takes, which it checks first, for any caller the gateway
-lets through: ``consumes`` lists the media types, concrete ones before a wildcard, the order Jira
-names them in the 415's `Accept` (`multipart/form-data, */*` for `settings/columns`, whose document
-lists `*/*` first); ``body`` is ``"optional"`` where a request with no body is not checked. The
-types are the documents' ``requestBody``, but where the same sweep measured otherwise, the names
-below say so. How the check reads a `Content-Type` is
+Each entry, in both, says what the operation takes, which it checks first, for any caller the
+gateway lets through: ``consumes`` lists the media types, concrete ones before a wildcard, the order
+Jira names them in the 415's `Accept` (`multipart/form-data, */*` for `settings/columns`, whose
+document lists `*/*` first); ``body`` is ``"optional"`` where a request with no body is not checked.
+The types are the documents' ``requestBody``, but where a sweep measured otherwise, the names below
+say so: the one above for ``refused``, and for ``run`` one on Jira Cloud on 2026-10-12 with no
+credential, which sent each of its 232 DELETEs, PUTs and POSTs once with no body and once with a
+`text/plain` one. How the check reads a `Content-Type` is
 ``backlot.errors.atlassian.refuse_a_media_type``'s.
+
+An entry's ``accept`` is ``"unchecked"`` where the operation gives a caller with no credential no
+406 for an `Accept` admitting no JSON, and its ``produces`` names what the 406 it gives that caller
+names where that is more than JSON (``backlot.routers.atlassian._published_answer`` reads both); the
+names below say which.
 """
 
 from __future__ import annotations
@@ -72,28 +80,117 @@ UNCHECKED = _both(
     "PUT /rest/atlassian-connect/1/addons/{}/properties/{}",
     "PUT /rest/forge/1/app/properties/{}",
 }
-# Answered the 401 with no body and a 415 for a `text/plain` one.
+# Documented with a JSON body, and answered the 401 with none and with one typed `application/json`
+# or `text/plain`, and one PUT and one POST of them with `application/xml`, `foo` and an empty type
+# too, on 2026-10-13. With a credential each answered `text/plain` with a 415: the type is checked,
+# but behind the 401 rather than ahead of it.
+CHECKED_PAST_THE_401 = _both(
+    "POST /rest/api/{v}/policies/project/{}/validate",
+    "POST /rest/api/{v}/policies/{}/apply",
+    "POST /rest/api/{v}/policies/{}/remove",
+    "PUT /rest/api/{v}/policies/project/{}/policies",
+)
+# Answered with no body what they answer with a body of a type they take, the 401 where the
+# operation is refused and its own answer where it runs, and a 415 for a `text/plain` one.
 BODY_OPTIONAL = _both(
     "POST /rest/api/{v}/uiModifications",
     "PUT /rest/api/{v}/uiModifications/{}",
     "PUT /rest/api/{v}/issues/archive/export",
+    "POST /rest/api/{v}/issue",
+    "POST /rest/api/{v}/issue/{}/transitions",
+    "POST /rest/api/{v}/issue/{}/watchers",
+    "PUT /rest/api/{v}/issue/{}/assignee",
+    "PUT /rest/api/{v}/filter/{}/columns",
+    "PUT /rest/api/{v}/user/columns",
 )
-# Documented with no body, and answered a 415 naming `'null'` with no Content-Type and the 401 with
-# `application/json`.
+# Documented with no body, and answered a 415 naming `'null'` with no Content-Type:
+# `remove-template` and `service-registry` the 401 with `application/json`, and `remotelink`, which
+# runs, a 415 for a `text/plain` body too.
 UNDOCUMENTED = {
     op: ["application/json"]
-    for op in _both("DELETE /rest/api/{v}/project-template/remove-template")
+    for op in _both(
+        "DELETE /rest/api/{v}/project-template/remove-template",
+        "DELETE /rest/api/{v}/issue/{}/remotelink",
+    )
     | {"GET /rest/atlassian-connect/1/service-registry"}
+}
+# Documented as taking `multipart/form-data` and `*/*` (`filter/{}/columns` `application/json`
+# besides), and answered a 415 for a `text/plain` body naming these three in `Accept`. The 415's
+# `detail` gives a type that arrived without a charset `;charset=UTF-8` at the end and keeps one
+# that arrived with it, on each of twelve spellings sent to two of the four on 2026-10-12
+# (`text/csv;x=y` as `text/csv;x=y;charset=UTF-8`, `text/plain;charset=ISO-8859-1` as sent), which
+# an entry's ``charset`` names; the other operations measured name the type as read.
+DOCUMENTED_OTHERWISE = {
+    op: ["application/json", "application/yaml", "application/*+json"]
+    for op in _both("PUT /rest/api/{v}/filter/{}/columns", "PUT /rest/api/{v}/user/columns")
+}
+# Answered `Accept: text/html` with something other than the 406, with no credential and a body of
+# a type they take, measured 2026-10-13 on each of the 1197 operations above (528 GETs, 669
+# DELETEs, PUTs and POSTs) and 2026-10-19 on the two `invalid-jqls-access-log` GETs: these 44 did,
+# the license counts, the plans, two Connect paths and the rest their 401 and the avatar views a 400
+# or the image, and `service-registry` its 415 first; the other 1154 answered the 406. With a
+# credential, `invalid-jqls-access-log` and `license/approximateLicenseCount` answered the 406
+# (2026-10-19), behind the 401.
+ACCEPT_UNCHECKED = _both(
+    "GET /rest/api/{v}/invalid-jqls-access-log",
+    "GET /rest/api/{v}/license/approximateLicenseCount",
+    "GET /rest/api/{v}/license/approximateLicenseCount/product/{}",
+    "GET /rest/api/{v}/universal_avatar/view/type/{}",
+    "GET /rest/api/{v}/universal_avatar/view/type/{}/avatar/{}",
+    "GET /rest/api/{v}/universal_avatar/view/type/{}/owner/{}",
+    "DELETE /rest/api/{v}/permissionscheme/{}",
+    "DELETE /rest/api/{v}/permissionscheme/{}/permission/{}",
+    "DELETE /rest/api/{v}/projectCategory/{}",
+    "POST /rest/api/{v}/task/{}/cancel",
+    "PUT /rest/api/{v}/project/{}/email",
+    "PUT /rest/api/{v}/plans/plan/{}",
+    "PUT /rest/api/{v}/plans/plan/{}/archive",
+    "PUT /rest/api/{v}/plans/plan/{}/trash",
+    *(
+        f"{method} /rest/api/{{v}}/plans/plan/{{}}/team/{kind}{tail}"
+        for kind in ("atlassian", "planonly")
+        for method, tail in (("POST", ""), ("PUT", "/{}"), ("DELETE", "/{}"))
+    ),
+) | {
+    "GET /rest/atlassian-connect/1/addons/{}/properties",
+    *(f"{m} /rest/atlassian-connect/1/app/module/dynamic" for m in ("GET", "POST", "DELETE")),
+}
+# What the 406 names where it is more than `[application/json]`, of those that answered it with no
+# credential: `mypreferences` `text/plain` beside JSON, letting `text/plain`, `TEXT/PLAIN` and
+# `text/*` past it to the 401, and `filter/{}/columns`'s `DELETE` seven types (2026-10-13).
+PRODUCES = {
+    **{
+        op: ["application/json", "text/plain"]
+        for op in _both(*(f"{m} /rest/api/{{v}}/mypreferences" for m in ("GET", "PUT", "DELETE")))
+    },
+    **{
+        op: [
+            "application/json;charset=UTF-8",
+            "application/json",
+            "application/*+json",
+            "application/yaml",
+            "application/xml",
+            "text/xml",
+            "application/*+xml",
+        ]
+        for op in _both("DELETE /rest/api/{v}/filter/{}/columns")
+    },
 }
 
 
 def _entry(key: str, content: list[str] | None) -> dict:
-    types = UNDOCUMENTED.get(key, content)
-    if not types or key in UNCHECKED:
-        return {}
-    entry: dict = {"consumes": sorted(types, key=lambda t: "*" in t)}
-    if key in BODY_OPTIONAL:
-        entry["body"] = "optional"
+    entry: dict = {}
+    types = {**UNDOCUMENTED, **DOCUMENTED_OTHERWISE}.get(key, content)
+    if types and key not in UNCHECKED | CHECKED_PAST_THE_401:
+        entry["consumes"] = sorted(types, key=lambda t: "*" in t)
+        if key in BODY_OPTIONAL:
+            entry["body"] = "optional"
+        if key in DOCUMENTED_OTHERWISE:
+            entry["charset"] = "UTF-8"
+    if key in ACCEPT_UNCHECKED:
+        entry["accept"] = "unchecked"
+    if key in PRODUCES:
+        entry["produces"] = PRODUCES[key]
     return entry
 
 
@@ -112,18 +209,25 @@ def build() -> dict:
                     security[key] = operation.get("security", default)
                     body = operation.get("requestBody")
                     content[key] = None if body is None else list(body.get("content", {}))
-    baseline = json.loads(baseline_path("jira").read_text())["acknowledged"]
-    unserved = sorted(r["path"] for r in baseline if r["kind"] == "missing_operation")
-    refused, run = {}, []
+    baseline = json.loads(baseline_path("jira").read_text(encoding="utf-8"))["operations"]
+    unserved = sorted(e["operation"] for e in baseline if e["status"] == "missing")
+    refused, run = {}, {}
     for key in unserved:
         requirements = security.get(key)
-        if requirements is None or {} not in requirements:
-            refused[key] = _entry(key, content.get(key))
-        else:
-            run.append(key)
-    named = UNCHECKED | BODY_OPTIONAL | set(UNDOCUMENTED)
-    if named - set(refused):
-        raise SystemExit(f"measured by name but no longer refused: {sorted(named - set(refused))}")
+        sort = refused if requirements is None or {} not in requirements else run
+        sort[key] = _entry(key, content.get(key))
+    named = (
+        UNCHECKED
+        | CHECKED_PAST_THE_401
+        | BODY_OPTIONAL
+        | set(UNDOCUMENTED)
+        | set(DOCUMENTED_OTHERWISE)
+        | ACCEPT_UNCHECKED
+        | set(PRODUCES)
+    )
+    if named - set(refused) - set(run):
+        stale = sorted(named - set(refused) - set(run))
+        raise SystemExit(f"measured by name but no longer unserved: {stale}")
     return {
         "about": (
             "What real answers before each Jira operation no route serves runs. Written by "
@@ -150,11 +254,11 @@ def main() -> int:
         print(e, file=sys.stderr)
         return 2
     if args.check:
-        if not OUT.exists() or OUT.read_text() != text:
+        if not OUT.exists() or OUT.read_text(encoding="utf-8") != text:
             print(f"{OUT.relative_to(REPO)} is stale; run scripts/gen_jira_unserved.py")
             return 1
         return 0
-    OUT.write_text(text)
+    OUT.write_text(text, encoding="utf-8")
     table = json.loads(text)
     print(
         f"wrote {OUT.relative_to(REPO)}: {len(table['refused'])} refused, {len(table['run'])} run"

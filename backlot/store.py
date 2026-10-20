@@ -1200,11 +1200,12 @@ def list_documents(
     not_author_email=None,
     exclude_trashed=False,
     title=None,
+    subtype=None,
 ) -> list[sqlite3.Row]:
     # state: only valid for source_type="github" — it's the only items table with a `state`
     # column; passing it for any other source_type raises sqlite3.OperationalError. Likewise
     # exclude_trashed, which only gdrive_files has a column for. title matches the whole title,
-    # ignoring ASCII case.
+    # ignoring ASCII case. subtype is Confluence's content type, where a row with none is a page.
     tbl = table(source_type)
     sql = f"SELECT * FROM {tbl} WHERE 1=1"
     params: list = []
@@ -1217,6 +1218,9 @@ def list_documents(
     if title is not None:
         sql += " AND title = ? COLLATE NOCASE"
         params.append(title)
+    if subtype is not None:
+        sql += " AND COALESCE(subtype, 'page') = ?"
+        params.append(subtype)
     clause, cparams = _acl_clause(source_type, visible_ids=visible_ids)
     sql += clause + f" ORDER BY {_order_by(source_type)} LIMIT ? OFFSET ?"
     params += cparams + [limit, offset]
@@ -1385,7 +1389,10 @@ def list_hubspot_objects(
 # newest first, measured against api.linear.app on 2026-10-05 over eight issues whose `updatedAt`
 # order differs from their `createdAt` order: `issues` and `Team.issues` with no `orderBy` and with
 # `orderBy: createdAt` came in descending `createdAt`, and with `orderBy: updatedAt` in descending
-# `updatedAt`. `id` breaks ties into a total order, which offset paging requires.
+# `updatedAt`. So did `Issue.children`, over a parent's three children whose two orders differ,
+# and `users`, over the workspace's three (2026-10-04 and 2026-10-18), where `children(first: 1)`
+# was the newest child and `children(last: 1)` the oldest. `id` breaks ties into a total order,
+# which offset paging requires.
 LINEAR_DEFAULT_ORDER_BY = "createdAt"
 
 # `Issue.updatedAt` is non-null in Linear; an issue with no recorded edit reports its creation
@@ -1567,13 +1574,16 @@ def count_linear_comments(conn, *, issue_id=None, visible_ids=None, prefilter=No
 
 
 def linear_children(
-    conn, parent_id, *, visible_ids=None, limit=50, offset=0, prefilter=None
+    conn, parent_id, *, visible_ids=None, limit=50, offset=0, prefilter=None, order_by=None
 ) -> list[sqlite3.Row]:
     """Sub-issues of an issue — every row whose resolved ``parent_id`` is this one.
 
     An indexed equality on an issue id, NOT a join on ``identifier``: identifiers repeat, so a
     join would attach one issue's children to every issue sharing its key. Resolved once at import,
-    which is what makes this the exact inverse of ``Issue.parent``."""
+    which is what makes this the exact inverse of ``Issue.parent``.
+
+    In the order :func:`_linear_order` gives ``issues``, as :data:`LINEAR_DEFAULT_ORDER_BY`
+    records."""
     sql = "SELECT * FROM linear_issues WHERE parent_id = ?"
     params: list = [parent_id]
     if prefilter:
@@ -1581,7 +1591,7 @@ def linear_children(
         sql += f" AND {frag}"
         params += fparams
     clause, cparams = _acl_clause("linear", visible_ids=visible_ids)
-    sql += clause + " ORDER BY created_ts, id LIMIT ? OFFSET ?"
+    sql += clause + f" ORDER BY {_linear_order(order_by)} LIMIT ? OFFSET ?"
     return conn.execute(sql, params + cparams + [limit, offset]).fetchall()
 
 
@@ -1842,9 +1852,16 @@ def hubspot_associations(
 
     No join to ``hubspot_objects``: ``to_id`` IS the served id the v4 payload's ``toObjectId``
     reports, so it is read straight off this row. Recomputing it from a hash would not do —
-    hubspot's id is PROBED, so the raw hash can disagree with what the target resolves at."""
-    sql = "SELECT * FROM hubspot_associations WHERE from_id = ? AND to_type = ?"
-    params: list = [from_id, to_type]
+    hubspot's id is PROBED, so the raw hash can disagree with what the target resolves at.
+
+    ``to_type`` may be several spellings of one type, as for ``list_hubspot_objects``: the corpus
+    states the target's type in whichever spelling it likes."""
+    types = [to_type] if isinstance(to_type, str) else list(to_type)
+    sql = (
+        "SELECT * FROM hubspot_associations WHERE from_id = ? "
+        f"AND to_type IN ({','.join('?' * len(types))})"
+    )
+    params: list = [from_id, *types]
     if after_to_id:
         sql += " AND to_id > ?"
         params.append(after_to_id)
@@ -2028,6 +2045,7 @@ def count_documents(
     exclude_trashed=False,
     roots_only=False,
     title=None,
+    subtype=None,
 ) -> int:
     # state: only valid for source_type="github" — it's the only items table with a `state`
     # column; passing it for any other source_type raises sqlite3.OperationalError. Likewise
@@ -2048,6 +2066,9 @@ def count_documents(
     if title is not None:
         sql += " AND title = ? COLLATE NOCASE"
         params.append(title)
+    if subtype is not None:
+        sql += " AND COALESCE(subtype, 'page') = ?"
+        params.append(subtype)
     clause, cparams = _acl_clause(source_type, visible_ids=visible_ids)
     sql += clause
     params += cparams
@@ -2107,16 +2128,23 @@ def _fireflies_where(
     if channel is not None:
         sql += " AND channel = ?"
         params.append(channel)
+    # `host_email` and `organizers` match an address as written, not case-folded. Measured against
+    # api.fireflies.ai on 2026-10-10 over a workspace whose owner organized both of its meetings,
+    # which serve `host_email: null`: the owner's address as served found both under `host_email`
+    # and `organizer_email`, and none came back with all of it, its local part, its domain or only
+    # its first letter upper-cased, while `participant_email` folds case. That workspace's organizer
+    # and participant addresses are all lower-case, so these requests cannot tell an exact match
+    # from one that folds the stored side alone.
     if host_email:
-        sql += " AND lower(author_email) = ?"
-        params.append(host_email.lower())
+        sql += " AND author_email = ?"
+        params.append(host_email)
     if organizers:
         # `organizer_email` is null when the organizer IS the host, which is the common case, so
         # the filter has to consider both — otherwise organizing a meeting you also hosted would
         # not match your own address.
         marks = ", ".join("?" for _ in organizers)
-        sql += f" AND lower(COALESCE(organizer_email, author_email)) IN ({marks})"
-        params += [o.lower() for o in organizers]
+        sql += f" AND COALESCE(organizer_email, author_email) IN ({marks})"
+        params += list(organizers)
     for email in participants or []:
         # `participants` is a JSON array column; json_each is the exact membership test (a LIKE on
         # the serialized text would match an address that is merely a substring of another).
@@ -2891,6 +2919,10 @@ def github_by_number(conn, repo, number, visible_ids=None) -> sqlite3.Row | None
     can be primary (see the schema) — so this CAN return a file row, and the caller must reject
     one. `routers.github._issue_row` is where that happens; a file is addressed by (repo, path)
     and its number is never served."""
+    # Real answers a number outside 64 bits with the 404 an unknown number gets (api.github.com,
+    # 2026-10-10). SQLite holds no such number, and sqlite3 raises OverflowError binding one.
+    if not -(2**63) <= number < 2**63:
+        return None
     clause, cp = _acl_clause("github", visible_ids=visible_ids)
     return conn.execute(
         f"SELECT * FROM github_items WHERE repo = ? AND number = ?{clause}",
@@ -3047,6 +3079,8 @@ def get_github_comment(conn, comment_id: int) -> sqlite3.Row | None:
     A PRIMARY KEY lookup: the id is assigned at import (see :mod:`backlot.importer.byo`), so it
     cannot be ambiguous.
     """
+    if not -(2**63) <= comment_id < 2**63:  # a miss, as in github_by_number
+        return None
     return conn.execute(
         "SELECT id, repo, number, seq, author_email, body, created_ts, reactions, path, line, "
         "diff_hunk FROM github_comments WHERE id = ?",

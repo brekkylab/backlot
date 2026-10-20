@@ -43,13 +43,12 @@ import hashlib
 import json
 import re
 import uuid
-from pathlib import Path
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
-from backlot import auth, pagination, store, synth
+from backlot import auth, pagination, published, store, synth
 from backlot.openapi import qp
 from backlot.routers import json_body
 
@@ -101,6 +100,15 @@ class NotionList(_NLoose):
 
 
 _P_PAGINATE = [qp("start_cursor"), qp("page_size", "integer")]
+_P_FILTER_PROPERTIES = qp(
+    "filter_properties",
+    description=(
+        "A property id or name; repeat the parameter, or spell it `filter_properties[]` or "
+        "`filter_properties[0]`, to list several. A page inside a database comes back with only "
+        "the listed properties (none when the value is unknown or empty); a page outside a "
+        "database keeps its title whatever is listed."
+    ),
+)
 _P_COMMENTS = [qp("block_id", required=True), *_P_PAGINATE]
 
 
@@ -402,7 +410,10 @@ def _user_obj(conn, email: str) -> dict:
         "type": "person",
         "name": name,
         "avatar_url": None,
-        "person": {"email": email},
+        # Real's person member is `email` then `email_verified` under each Notion-Version, the
+        # latter `true` for the one person measured (2026-10-13). The corpus records no
+        # verification, so every person is served `true`.
+        "person": {"email": email, "email_verified": True},
     }
 
 
@@ -464,6 +475,58 @@ def _page_obj(conn, row) -> dict:
         "url": f"https://www.notion.so/{pid.replace('-', '')}",
         "public_url": None,
     }
+
+
+_FILTER_PROPERTIES_KEY = re.compile(r"filter_properties((?:\[[^\[\]]*\])*)")
+_BRACKET = re.compile(r"\[([^\[\]]*)\]")
+
+
+def _filter_properties_keep(request: Request) -> list[str] | None | JSONResponse:
+    """The ``filter_properties`` names, ``None`` when the parameter is absent, or the 400 real
+    answers. Measured against api.notion.com (2022-06-28 and 2025-09-03) on 2026-10-15, which reads
+    the query string the way Node's ``qs`` does: the bare key, ``[]`` and an index from 0 to 20
+    all add to one list; any other single bracket (``[x]``, ``[21]``, ``[01]``) is a 400 unless the
+    bare key came first, and then lists nothing; a deeper bracket (``[0][x]``) or an index given
+    twice lists nothing. A bare ``[][]=Tags`` kept ``Tags`` on real and keeps nothing here."""
+    keep: list[str] = []
+    slots: dict[str, list[str]] = {}
+    first = refused = None
+    for key, value in request.query_params.multi_items():
+        if (m := _FILTER_PROPERTIES_KEY.fullmatch(key)) is None:
+            continue
+        brackets = _BRACKET.findall(m[1])
+        first = brackets if first is None else first
+        if brackets in ([], [""]):
+            keep.append(value)
+        elif len(brackets) > 1:
+            continue
+        elif (i := brackets[0]).isascii() and i.isdigit() and str(int(i)) == i and int(i) <= 20:
+            slots.setdefault(i, []).append(value)
+        else:
+            refused = first != []
+    if first is None:
+        return None
+    if refused:
+        return _error(
+            request,
+            400,
+            "validation_error",
+            'The value of "filter_properties" in query parameters must be a string or list of '
+            "strings",
+        )
+    return keep + [values[0] for values in slots.values() if len(values) == 1]
+
+
+def _filter_properties(page: dict, keep: list[str] | None) -> dict:
+    """Narrow ``properties`` to those whose id or name is in ``keep``; ``None`` leaves the page
+    as it is."""
+    if keep is None:
+        return page
+    wanted = set(keep)
+    page["properties"] = {
+        k: v for k, v in page["properties"].items() if k in wanted or v["id"] in wanted
+    }
+    return page
 
 
 def _schema_props(row) -> dict:
@@ -675,11 +738,18 @@ async def query_database(database_id: str, request: Request):
 # --------------------------------------------------------------------------- search
 
 
-@router.post("/search", response_model=NotionList, openapi_extra={**_B_SEARCH, **_params()})
+@router.post(
+    "/search",
+    response_model=NotionList,
+    openapi_extra={**_B_SEARCH, **_params(_P_FILTER_PROPERTIES)},
+)
 async def search(request: Request):
     caller = auth.resolve_bearer(request)
     if (refusal := _refusal(request, caller)) is not None:
         return refusal
+    # Answered after the credential and the version and before the body, measured 2026-10-15.
+    if isinstance(keep := _filter_properties_keep(request), JSONResponse):
+        return keep
     body = await json_body(request)
     # Measured against api.notion.com on 2026-10-01 and 2026-10-04: once the credential and the
     # version clear, a `query` that is present must be a string and a `filter` that is present an
@@ -698,7 +768,16 @@ async def search(request: Request):
     conn = auth.conn(request)
     visible = auth.visible_ids(request, caller)
     query = body.get("query", "")
-    want = body.get("filter", {}).get("value")  # 'page' | 'database' | None
+    want = body.get("filter", {}).get("value")  # 'page' | 'database' | 'data_source' | None
+    version = _version(request)
+    # A `data_source` filter keeps the database rows. That filter, an unfiltered search and a
+    # `query` list each database as a database before 2025-09-03 and as its data source from it,
+    # in the shape `GET /v1/data_sources/{id}` answers less its `request_id`. Real answered the
+    # filter with the three databases under 2022-06-28 and their three data sources under
+    # 2025-09-03 and 2026-03-11 (2026-10-14), `{}` the same beside the pages (2026-10-14 and
+    # 2026-10-17), and a `query` naming one database's title with that database's data source
+    # under 2025-09-03 (2026-10-17).
+    render_data_source = _data_sources_model(version) and want in (None, "data_source")
     offset = pagination.decode_cursor(body.get("start_cursor"))
     limit = _page_size(body.get("page_size"))
     # Over-fetch so object-type filtering still fills a page; cap keeps it bounded. An empty query
@@ -711,16 +790,20 @@ async def search(request: Request):
     picked = []
     for r in rows:
         is_db = r["subtype"] == "database"
-        if want == "database" and not is_db:
+        if want in ("database", "data_source") and not is_db:
             continue
         if want == "page" and is_db:
             continue
         picked.append(r)
     window = picked[offset : offset + limit]
+    # A database row is narrowed under every Notion-Version, its parent typed `database_id` or
+    # `data_source_id`; a page outside a database keeps its title whatever is listed.
     results = [
-        _database_obj(conn, r, _version(request))
+        _data_source_obj(conn, r)
+        if r["subtype"] == "database" and render_data_source
+        else _database_obj(conn, r, version)
         if r["subtype"] == "database"
-        else _page_obj(conn, r)
+        else _filter_properties(_page_obj(conn, r), keep if r["parent_id"] else None)
         for r in window
     ]
     return _list_obj(results, offset, len(window), len(picked), "page_or_database")
@@ -867,26 +950,9 @@ async def list_comments(request: Request):
 # --------------------------------------------------------------------------- misc
 
 
-# The baseline `backlot diff --source notion` keeps, the file ``backlot.fidelity.baseline_path``
-# names; read here without importing that package, whose ``__init__`` loads the comparison modules.
-_BASELINE = Path(__file__).resolve().parent.parent / "fidelity" / "baseline" / "notion.json"
-
-
-def _published_operations_not_served() -> tuple[tuple[str, re.Pattern[str]], ...]:
-    """The operations Notion publishes and no route here serves, as (method, path pattern): the
-    baseline's ``missing_operation`` rows, each ``{}`` one path segment. Read off that file rather
-    than listed here, so an operation Notion adds reaches ``unmatched_path`` once the baseline
-    acknowledges it; a route added here wins over ``unmatched_path`` whatever the file says."""
-    operations = []
-    for row in json.loads(_BASELINE.read_text())["acknowledged"]:
-        if row["kind"] == "missing_operation":
-            method, path = row["path"].split(" ", 1)
-            pattern = "[^/]+".join(re.escape(part) for part in path.split("{}"))
-            operations.append((method, re.compile(pattern)))
-    return tuple(operations)
-
-
-_PUBLISHED_NOT_SERVED = _published_operations_not_served()
+# The operations Notion publishes and no route here serves (see ``backlot.published``); a route
+# added here wins over ``unmatched_path`` whatever the baseline says.
+_PUBLISHED_NOT_SERVED = published.not_served("notion")
 # The three operations Notion's document puts behind `basicAuth` rather than the `bearerAuth`
 # every other operation inherits (read 2026-09-28): its OAuth client endpoints.
 _CLIENT_AUTH_OPERATIONS = frozenset(
@@ -925,12 +991,12 @@ async def unmatched_path(request: Request, rest: str) -> JSONResponse:
     so the URL is the first thing that API checks.
 
     A published operation exists for that check whether or not Backlot serves it. On 2026-09-28
-    each of the 53 the baseline lists as ``missing_operation`` (see
-    :func:`_published_operations_not_served`) answered the format's 401 with no header and the
-    token's 401 with `Bearer nope`, the two a served route answers, apart from the three OAuth
-    client endpoints and their own refusal (see :func:`_invalid_client`). A request that clears
-    the credential and the version on one of the other fifty gets the URL's 400 here, as
-    Backlot has no operation to run: that is the gap each of those rows acknowledges.
+    each of the 53 the baseline lists as ``missing_operation`` (see ``backlot.published``) answered
+    the format's 401 with no header and the token's 401 with `Bearer nope`, the two a served route
+    answers, apart from the three OAuth client endpoints and their own refusal (see
+    :func:`_invalid_client`). A request that clears the credential and the version on one of the
+    other fifty gets the URL's 400 here, as Backlot has no operation to run: that is the gap each of
+    those operations acknowledges.
 
     The method is part of the URL that check reads: `GET /v1/search` and `GET /v1/pages`, both POST
     routes, `DELETE`, `PUT`, `PATCH` and `OPTIONS` on `/v1/users/me`, a GET route, and `PUT` on
@@ -955,7 +1021,7 @@ async def unmatched_path(request: Request, rest: str) -> JSONResponse:
     path under `/notion` where its slash redirect fires, since this route matches every other.
     """
     path = request.url.path.removeprefix("/notion")
-    if any(m == request.method and p.fullmatch(path) for m, p in _PUBLISHED_NOT_SERVED):
+    if published.includes(_PUBLISHED_NOT_SERVED, request.method, path):
         if (request.method, path) in _CLIENT_AUTH_OPERATIONS:
             return _invalid_client(request)
         if (refusal := _refusal(request, auth.resolve_bearer(request))) is not None:

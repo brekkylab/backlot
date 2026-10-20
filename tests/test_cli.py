@@ -18,6 +18,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import signal
+import threading
 from pathlib import Path
 
 import pytest
@@ -129,7 +131,7 @@ def spy_erb_export(monkeypatch):
 
 def test_import_defaults_to_byo_and_loads_the_corpus(tmp_path, monkeypatch):
     corpus = tmp_path / "corpus.jsonl"
-    corpus.write_text(json.dumps(_record()) + "\n")
+    corpus.write_text(json.dumps(_record()) + "\n", encoding="utf-8")
     monkeypatch.setenv("BACKLOT_DATA_DIR", str(tmp_path / "data"))
 
     assert cli.main(["import", str(corpus)]) == 0
@@ -138,7 +140,7 @@ def test_import_defaults_to_byo_and_loads_the_corpus(tmp_path, monkeypatch):
 
 def test_import_dry_run_validates_without_writing_a_db(tmp_path, monkeypatch, capsys):
     corpus = tmp_path / "corpus.jsonl"
-    corpus.write_text(json.dumps(_record()) + "\n")
+    corpus.write_text(json.dumps(_record()) + "\n", encoding="utf-8")
     monkeypatch.setenv("BACKLOT_DATA_DIR", str(tmp_path / "data"))
 
     assert cli.main(["import", str(corpus), "--dry-run"]) == 0
@@ -158,7 +160,7 @@ def test_a_corpus_the_importer_rejects_reports_its_reason_and_exits_1(
     hole was exactly here.
     """
     corpus = tmp_path / "bad.jsonl"
-    corpus.write_text('{"source_type": "slack", "id": "x"}\nthis is not json\n')
+    corpus.write_text('{"source_type": "slack", "id": "x"}\nthis is not json\n', encoding="utf-8")
     monkeypatch.setenv("BACKLOT_DATA_DIR", str(tmp_path / "data"))
 
     assert cli.main(["import", str(corpus)]) == 1
@@ -169,7 +171,7 @@ def test_a_corpus_the_importer_rejects_reports_its_reason_and_exits_1(
 
 def test_a_dry_run_of_an_invalid_corpus_exits_non_zero(tmp_path, monkeypatch):
     corpus = tmp_path / "bad.jsonl"
-    corpus.write_text(json.dumps({"source_type": "slack"}) + "\n")  # no content
+    corpus.write_text(json.dumps({"source_type": "slack"}) + "\n", encoding="utf-8")  # no content
     monkeypatch.setenv("BACKLOT_DATA_DIR", str(tmp_path / "data"))
 
     assert cli.main(["import", str(corpus), "--dry-run"]) == 1
@@ -307,7 +309,7 @@ def test_export_rejects_a_destination_it_cannot_create(tmp_path, monkeypatch, ca
     """Named, and BEFORE the ~1GB fetch. The destination was first touched inside `export_byo`, i.e.
     after the download, so a mistyped path cost the whole wait and then a pathlib traceback."""
     not_a_dir = tmp_path / "afile"
-    not_a_dir.write_text("")
+    not_a_dir.write_text("", encoding="utf-8")
     called = _spy(monkeypatch, erb, "run_export")
 
     assert cli.main(["export", str(not_a_dir / "out")]) == 2
@@ -406,6 +408,45 @@ def test_no_proxy_headers_is_the_only_way_to_turn_them_off(monkeypatch, a_data_d
 
 
 @pytest.mark.parametrize(
+    ("argv", "stops"), [(["serve"], False), (["serve", "--exit-on-stdin-close"], True)]
+)
+def test_serve_stops_at_stdin_eof_only_when_asked(
+    argv, stops, monkeypatch, a_data_dir_with_a_corpus
+):
+    """`--exit-on-stdin-close` sends this process SIGTERM once stdin reaches end of file and not
+    before, from a daemon thread so that the wait cannot hold the process's exit, and a `serve`
+    without it starts no such thread. The stdin is a pipe written to, then closed; the SIGTERM is
+    recorded rather than delivered."""
+    _spy_uvicorn(monkeypatch)
+    sent = []
+    raised = threading.Event()
+    monkeypatch.setattr(signal, "raise_signal", lambda sig: (sent.append(sig), raised.set()))
+    read_end, write_end = os.pipe()
+    writer = open(write_end, "wb")
+    writer.write(b"written while serving\n")
+    writer.flush()
+    stdin = open(read_end, encoding="utf-8")
+    monkeypatch.setattr("sys.stdin", stdin)
+    watchers = []
+    try:
+        assert cli.main(argv) == 0
+        watchers = [t for t in threading.enumerate() if t.name == "backlot-stdin-eof"]
+        assert [t.daemon for t in watchers] == ([True] if stops else [])
+        assert not raised.wait(0.5), "SIGTERM while stdin was still open"
+        writer.close()
+        assert raised.wait(5 if stops else 1) is stops
+        assert sent == ([signal.SIGTERM] if stops else [])
+    finally:
+        # A watcher still reading must not reach the real `raise_signal` after this test, nor read
+        # the descriptor's number once another file reuses it: end of file first, then wait for
+        # it, then close.
+        writer.close()
+        for watcher in watchers:
+            watcher.join(5)
+        stdin.close()
+
+
+@pytest.mark.parametrize(
     ("damage", "reason"),
     [
         ("random-bytes", "file is not a database"),
@@ -461,7 +502,7 @@ def test_data_dir_overrides_the_environment(tmp_path, monkeypatch):
     """The flag has to win over BACKLOT_DATA_DIR, or the two ways to say it would disagree."""
     monkeypatch.setenv("BACKLOT_DATA_DIR", str(tmp_path / "from-env"))
     corpus = tmp_path / "corpus.jsonl"
-    corpus.write_text(json.dumps(_record()) + "\n")
+    corpus.write_text(json.dumps(_record()) + "\n", encoding="utf-8")
 
     assert cli.main(["import", str(corpus), "--data-dir", str(tmp_path / "from-flag")]) == 0
     assert (tmp_path / "from-flag" / "db.sqlite").exists()
@@ -544,6 +585,16 @@ def test_version_reports_the_installed_distribution(capsys):
 
     assert cli.main(["--version"]) == 0
     assert plain(capsys.readouterr().out) == f"backlot {version('backlot')}"
+
+
+def test_serve_help_leaves_out_the_option_only_serve_passes(capsys):
+    """`backlot serve --help` lists the options a person types and leaves out the hidden one (its
+    comment in `backlot/cli.py` says why); `test_serve_stops_at_stdin_eof_only_when_asked` passes
+    it and requires that it still works."""
+    assert cli.main(["serve", "--help"]) == 0
+    out = plain(capsys.readouterr().out)
+    assert "--data-dir" in out and "--log-level" in out, out
+    assert "exit-on-stdin" not in out, out
 
 
 def test_help_shows_every_command(capsys):

@@ -23,6 +23,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Framework :: FastAPI",
     "Topic :: Software Development :: Testing :: Mocking",
 ]
@@ -61,12 +62,14 @@ all = ["backlot[dev,official-sdk,mcp,llamaindex,mirage,fsspec]"]
 dev = [
     "pytest>=8.0",
     "pytest-xdist>=3.6",
+    # scripts/invariance.py records coverage to hold a test-only change to the lines it executed.
+    "pytest-cov>=6",
     # starlette 1.6's TestClient wants httpx2; the httpx the tests also call directly is a core
     # dependency.
     "httpx2",
     # Pinned, not a lower bound: a ruff minor can change both the formatter and the lint
     # defaults. CI installs it from here, so local and CI cannot disagree.
-    "ruff>=0.15.22,<0.17.0",
+    "ruff>=0.15.22,<0.18.0",
 ]
 # Official SDKs used by examples/using-official-sdk/, tests/test_sdk.py (one per service) + the ACL demo.
 official-sdk = [
@@ -193,6 +196,12 @@ extend-select = [
     "S612",  # logging.config.listen
 ]
 
+[tool.coverage.run]
+# Follow the uvicorn subprocess `live_server` and `backlot.serve` start, which most of the S3 and SDK
+# tests talk to; `backlot.serve` stops it with SIGTERM, which coverage saves nothing on unless told.
+patch = ["subprocess"]
+sigterm = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # loadfile, not the default: several modules share a module-scoped corpus.
@@ -209,6 +218,13 @@ filterwarnings = [
     # Teams call, so it says nothing about this repo and there is nothing here to change.
     "ignore:This class is deprecated. Please use the generic RequestConfiguration:DeprecationWarning",
     "ignore:GetQueryParameters is deprecated:DeprecationWarning",
+    # An open without encoding= (a text file, or a subprocess pipe in text mode) in backlot, tests
+    # or scripts fails the test that reaches it; one in a dependency stays a warning. Python emits
+    # the warning only under PYTHONWARNDEFAULTENCODING=1, which CI sets.
+    "error::EncodingWarning:backlot|tests|scripts",
+]
+markers = [
+    "windows: a test the Windows workflow runs on every pull request it runs on",
 ]
 
 [tool.setuptools_scm]

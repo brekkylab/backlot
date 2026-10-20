@@ -13,7 +13,7 @@ import json
 import re
 import time
 from collections.abc import Callable
-from email.utils import formatdate
+from email.utils import format_datetime
 from typing import NamedTuple
 from urllib.parse import quote, unquote_plus
 
@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, ConfigDict
 
-from backlot import auth, store, synth
+from backlot import auth, published, store, synth
 from backlot.acl import Caller
 from backlot.config import get_settings
 from backlot.pagination import (
@@ -90,16 +90,22 @@ def _require(request: Request) -> Caller:
     and at `/user`). A client that branches on which — retry versus re-authenticate — reads one
     answer for both otherwise.
 
-    Header PRESENT but not a scheme this API takes is the second case, not the first: real ignores
-    an `Authorization` it cannot parse and serves the request anonymously (measured: `Basic …` and a
-    scheme-less value both answer 200 on a public repo), so the caller reaches an auth-required
-    route with no credential rather than with a rejected one. Backlot serves no document
-    anonymously, which is why that lands here as the missing-credential 401 rather than as a public
-    read (`/rate_limit`, which serves none, is the exception — see :func:`_validate_path_owner`).
+    A header real serves as no credential is the second case, not the first: real ignores an
+    `Authorization` it does not read as one and serves the request anonymously (measured: a `Basic`
+    value that names no token and a scheme-less value both answer 200 on a public repo; which values
+    those are is :func:`backlot.auth.github_credential`'s table), so the caller reaches an
+    auth-required route with no credential rather than with a rejected one. Backlot serves no
+    document anonymously, which is why that lands here as the missing-credential 401 rather than as
+    a public read (`/rate_limit`, which serves none, is the exception — see
+    :func:`_validate_path_owner`).
     """
-    if auth.bearer_token(request) is None:
+    token = auth.github_credential(request)
+    if token is None:
         raise HTTPException(status_code=401, detail="Requires authentication")
-    return auth.require_bearer(request, "Bad credentials")
+    caller = auth.acl(request).resolve(token)
+    if caller is None:
+        raise HTTPException(status_code=401, detail="Bad credentials")
+    return caller
 
 
 async def _validate_bad_credential(request: Request) -> None:
@@ -115,8 +121,8 @@ async def _validate_bad_credential(request: Request) -> None:
     :func:`_validate_path_owner` answers the missing-credential case in its own place, after the
     version check.
     """
-    if auth.bearer_token(request) is not None:
-        auth.require_bearer(request, "Bad credentials")
+    if refused_a_credential(request):
+        raise HTTPException(status_code=401, detail="Bad credentials")
 
 
 def _org(request: Request) -> str:
@@ -150,6 +156,35 @@ CODE_SEARCH_PATH = "/github/search/code"
 SEARCH_PREFIX = "/github/search/"
 # The search endpoints real counts against the `search` resource; `code` is `CODE_SEARCH_PATH`'s.
 SEARCH_ENDPOINTS = frozenset({"commits", "issues", "labels", "repositories", "topics", "users"})
+REQUEST_ID_HEADER = "x-github-request-id"
+# Hex digits in each of the first four fields of real's request id (see `request_id`).
+_REQUEST_ID_WIDTHS = ((4, 4), (4, 6), (6, 7), (6, 7))
+
+
+def _hex_field(seed: bytes, fewest: int, most: int) -> str:
+    """An unpadded uppercase hex value between ``fewest`` and ``most`` digits long."""
+    digits = fewest + seed[0] % (most - fewest + 1)
+    lowest = 16 ** (digits - 1)
+    return f"{lowest + int.from_bytes(seed[1:]) % (16**digits - lowest):X}"
+
+
+def request_id(method: str, path: str, query: str) -> str:
+    """The `x-github-request-id` for one request.
+
+    Real sends five uppercase hex fields joined by colons: four digits, four to six, six or seven,
+    six or seven, then the second the request arrived (measured on api.github.com 2026-09-22 and
+    2026-09-23 over eleven answers from a 200 to the spent-window 403s, and 2026-10-18 over fifteen
+    more, code search's 200 and 401 among them, and over sixty-four across eight kinds of answer:
+    the second field had four digits on four, two of them `0BF8`, and `Date` was a second past the
+    last field on fourteen). Real answered three calls to one URL with three ids; here the first
+    four fields are seeded from the request, as ``backlot.routers.s3.request_ids`` seeds S3's, so
+    one request asked twice in the same second gets one id twice."""
+    raw = hashlib.shake_256(f"github-req:{method} {path}?{query}".encode()).digest(20)
+    fields = [
+        _hex_field(raw[5 * i : 5 * i + 5], fewest, most)
+        for i, (fewest, most) in enumerate(_REQUEST_ID_WIDTHS)
+    ]
+    return ":".join([*fields, f"{int(time.time()):X}"])
 
 
 def honours_api_version(request: Request) -> bool:
@@ -164,7 +199,7 @@ def honours_api_version(request: Request) -> bool:
 
     `/rate_limit` reads it only from a request that carries an `Authorization` header: with none, a
     pinned `2026-03-10` is still `resources` AND `rate` with no echo and a pinned `1999-01-01` is a
-    200 rather than the version's 400, where a token and an unparseable `Basic` alike get
+    200 rather than the version's 400, where a token and a `Basic` value naming no token alike get
     `resources` alone with the echo and the 400. The route is the whole of the exception — that
     same `1999-01-01` with no credential is a 400 on `/repos/psf/requests`, `/users/psf` and
     `/user/repos` (measured against api.github.com 2026-09-21, on cache-busted urls).
@@ -175,22 +210,73 @@ def honours_api_version(request: Request) -> bool:
 
 
 def selected_api_version(request: Request) -> str | None:
-    """The version this request selected, or ``None`` if it pinned one that does not exist."""
+    """The version this request selected, or ``None`` if it pinned one that does not exist.
+
+    An empty header selects the default, as no header does: on api.github.com on 2026-10-18,
+    `X-GitHub-Api-Version:` with nothing after it was answered as an unpinned request and echoed
+    `2022-11-28` on `/repos/{owner}/{repo}`, its `/issues`, `/orgs/{org}`, `/zen` and
+    `DELETE /installation/token`, where `1999-01-01` is the version's 400.
+    """
     pinned = request.headers.get(API_VERSION_HEADER)
-    if pinned is None:
+    if not pinned:
         return DEFAULT_API_VERSION
     return pinned if pinned in API_VERSIONS else None
 
 
-def _unsupported_version_error(pinned: str) -> HTTPException:
-    """Real's own 400, wording included — a client that matches on the message needs the real text.
+def _go_quoted(value: str) -> str:
+    """``value``'s bytes in double quotes as Go's `strconv.Quote` writes them, which is how real's
+    backend names the version it refused: `"` and `\\` behind a backslash, a tab as `\\t`, a byte
+    that is not UTF-8 as `\\x` and its two hex digits, a character Go does not print as `\\u` and
+    four (`\\U` and eight past U+FFFF), and every other character as it came. What Go prints is
+    what `str.isprintable` keeps: letters, marks, numbers, punctuation, symbols and the ASCII space,
+    each by the Unicode version it carries.
+
+    Measured against api.github.com on 2026-10-19, sending each byte from 0x01 to 0xFF but CR and
+    LF between an `a` and a `b` on `contents/README.md`, then UTF-8 sequences the same way: the
+    printable ASCII came back as sent but for `"` and `\\`, a tab as `\\t`, a lone byte from 0x80
+    up as `\\x` and its digits, `é`, U+FFFD, U+10000, an emoji and a combining acute as sent,
+    U+00A0, U+2028, U+2029, U+200B, U+E000 and U+FFFF as `\\u` escapes, U+10FFFF as `\\U0010ffff`,
+    and each byte of a truncated, overlong, surrogate or past-U+10FFFF sequence as `\\x`. The other
+    control bytes and DEL were the front door's 400 and reached no backend. Real's Go carries
+    Unicode 15.0, as Python 3.12 does: U+1F6DC and U+31350, new in 15.0, came back as sent, and
+    U+2EBF0, U+31EF and U+2FFC from 15.1 and U+1CC00 from 16.0 as escapes.
+    """
+    out = []
+    for ch in value.encode("latin-1").decode("utf-8", "surrogateescape"):
+        cp = ord(ch)
+        if 0xDC80 <= cp <= 0xDCFF:  # where `surrogateescape` puts an undecodable byte
+            out.append(f"\\x{cp & 0xFF:02x}")
+        elif ch in '"\\':
+            out.append("\\" + ch)
+        elif ch == "\t":
+            out.append("\\t")
+        elif ch.isprintable():
+            out.append(ch)
+        else:
+            out.append(f"\\u{cp:04x}" if cp < 0x10000 else f"\\U{cp:08x}")
+    return '"' + "".join(out) + '"'
+
+
+def _unsupported_version_error(pinned: str, *, backend: bool = False) -> HTTPException:
+    """The gateway or backend's 400, including the wording a client can match on.
 
     Composed from ``API_VERSIONS`` rather than pasted, so the sentence cannot fall out of step with
-    the list it describes. The "X (most recent) and Y" phrasing is real's for the two versions it
-    supports today; a third would need real's phrasing for three, not a guess at it.
+    the list it describes. The gateway's "X (most recent) and Y" and backend's comma before "and"
+    are measured for two versions; a third would need real's phrasing for three, not a guess at it.
     """
     newest, *rest = API_VERSIONS
     supported = ", ".join(f'"{v}"' for v in rest)
+    if backend:
+        quoted = _go_quoted(pinned)
+        exc = HTTPException(status_code=400, headers={SELECTED_VERSION_HEADER: ""})
+        exc.github_body = {
+            "message": (
+                f'The version you specified in the "X-GitHub-Api-Version" request header, {quoted}, '
+                f"is not a supported version. The following versions are currently supported: "
+                f'"{newest}" (most recent), and {supported}.'
+            )
+        }
+        return exc
     exc = HTTPException(status_code=400, detail="Bad Request")
     # The github envelope, carried on the exception the way backlot.errors.google carries its extra
     # fields; backlot.errors.github renders it. `errors` is a STRING here, not the usual array.
@@ -233,7 +319,22 @@ async def _validate_api_version(request: Request) -> None:
     """
     if honours_api_version(request) and selected_api_version(request) is None:
         # `None` is only reachable with the header present, so this read cannot miss.
-        raise _unsupported_version_error(request.headers[API_VERSION_HEADER])
+        # Measured against api.github.com on 2026-10-18: contents and the JSON pull backend
+        # answer a one-member body, newline and empty Selected header, ahead of a missing repository
+        # or path and of a missing credential, though a bad bearer is still `Bad credentials` first.
+        # A pull `_github_media` reads as a diff or a patch keeps the gateway's envelope, a diff
+        # after `application/json` included, and so does a HEAD on the pull whatever `Accept`
+        # holds, where a HEAD on contents is the backend's (measured 2026-10-19).
+        route = getattr(request.scope.get("route"), "path", None)
+        backend = route in {
+            "/github/repos/{owner}/{repo}/contents",
+            "/github/repos/{owner}/{repo}/contents/{path:path}",
+        } or (
+            route == "/github/repos/{owner}/{repo}/pulls/{number}"
+            and not getattr(request.state, "answering_head", False)
+            and not (_github_media(request, "diff") or _github_media(request, "patch"))
+        )
+        raise _unsupported_version_error(request.headers[API_VERSION_HEADER], backend=backend)
 
 
 async def _validate_path_owner(request: Request) -> None:
@@ -293,6 +394,152 @@ async def _canonical_path_repo(request: Request) -> None:
     spelled = store.container_spelling(auth.conn(request), "github", repo)
     if spelled is not None:
         request.path_params["repo"] = spelled
+
+
+#: The baseline's operations api.github.com does not route as a `{}` for any one segment would:
+#: `{archive_format}` routes `zip`, where the other three values sent, `tar` among them, were the
+#: 404, and `POST …/releases/{}/assets` routes nothing.
+_ROUTED_AS = {
+    "GET /repos/{}/{}/actions/artifacts/{}/{}": "GET /repos/{}/{}/actions/artifacts/{}/zip"
+}
+_NOT_ROUTED = frozenset({"POST /repos/{}/{}/releases/{}/assets"})
+#: The GitHub baseline's ``missing`` operations (``backlot.published``), read as those two say.
+#: One under `/organizations/{}` is matched at `/orgs/{}`, the path ``backlot.main``'s
+#: `resolve_github_id_paths` hands on for it; real answered each of the 13 under both with "Bad
+#: credentials" for `Bearer nope` (2026-10-14).
+_PUBLISHED_NOT_SERVED = published.operations(
+    _ROUTED_AS.get(op, op).replace(" /organizations/", " /orgs/", 1)
+    for op in published.missing_operations("github")
+    if op not in _NOT_ROUTED
+)
+
+
+async def refuse_an_unserved_operation(request: Request) -> None:
+    """Refuse a request whose method and path are an operation of :data:`_PUBLISHED_NOT_SERVED` as
+    real refuses it before running it: no `Authorization` header, or one that carries no
+    credential (:func:`_a_header_without_a_credential`), then a credential that does not resolve,
+    then a version real does not have, then a `Basic` value that names no token. A request none of
+    those refuse goes on to the router's own 404 or 405, an operation Backlot cannot run.
+
+    Measured against api.github.com on 2026-10-14, one cache-busted request each. With
+    `Bearer nope`, every operation the baseline lists answered "Bad credentials", but the
+    spellings :data:`_NOT_ROUTED` and :data:`_ROUTED_AS` leave out, with each `{}` past the owner
+    and the repository sent as `1` and again as `x`. With no `Authorization` header, 31 of a sample
+    of 42 answered "Requires authentication", and the four of them sent pinned to `1999-01-01` were
+    the 401 rather than the version's 400: `PATCH /repos/{owner}/{repo}`, `POST /user/gpg_keys`,
+    `GET /user/packages` and `GET /gists/starred`. Ten of the 42 real answered without asking for a
+    credential, 200, 404 or 422 (`GET /zen`, `GET /users/{username}/repos` and `POST /markdown`
+    among them), and the remaining one, `POST …/releases/{}/assets`, was the 404 :data:`_NOT_ROUTED`
+    keeps out; here no credential is :func:`_require`'s 401 on those ten too, as it is on every
+    served route but `/rate_limit`.
+
+    Of the 31, only `DELETE /installation/token` carried the version echo, and only a `GET` or a
+    `POST` carried the five `x-ratelimit-*` and counted: `PATCH`, `PUT` and `DELETE` were refused
+    with neither and moved no window, but `DELETE /installation/token`, which carried the five at
+    `used: 0`. On 2026-10-16, 2026-10-18 and 2026-10-19, each request on its own cache-busted URL
+    from one address with no token, that one delete was answered as a served route answers a caller
+    with no credential, header by header as ``GET /user/repos`` is here: no `Authorization`, an
+    empty one, `Digest x` and a `Basic` value naming no token were the 401 "Requires authentication"
+    with the version echo (`2026-03-10` when pinned to it) and the five; any of them pinned to
+    `1999-01-01` the version's 400 with the five; `Bearer nope` and `token nope` the 401 "Bad
+    credentials" with neither, and `Bearer<tab>x` that 401 with the five. None of them moved `used`
+    (:func:`refused_an_unserved_operation_reported`). Every other operation here carries no echo,
+    and the methods split as real's did; ``backlot.main`` asks
+    :func:`refused_an_unserved_operation` for the echo and
+    :func:`refused_an_unserved_operation_uncounted` for the headers. With a token, real's answers to
+    `GET /user/packages` and `GET /gists/starred` carried the echo, and so does the router's 404 or
+    405 here.
+
+    An `Authorization` header that carries no credential is the same 401 with neither, whatever the
+    method and ahead of the version: measured on 2026-10-16 on the 43 operations of a sample of 51
+    that asked for a credential, `Digest x`, `nope`, `Bearer<TAB>nope` and `Basic<TAB>!!!!` were
+    each "Requires authentication" with none of the five and no echo, and so was a bearer that
+    resolves after a tab, on the 18 `GET`s among them, which served it after a space. On the
+    eight operations the tests send, each pinned to `1999-01-01`, so was an empty `Authorization`.
+
+    A `Basic` value that names no token is the caller a served route serves with no credential: on
+    those eight, `Basic Zm9vOmJhcg==` was each operation's own answer to that caller, carrying the
+    echo and the five, on every method (2026-10-16). That answer was "Requires authentication" on
+    `GET /user/packages` and `DELETE /user/keys/1`, and on the other six a 400, a 403, a 404 or the
+    401 "You must be logged in to do that.". Pinned to `1999-01-01`, `GET /user/packages`,
+    `DELETE /user/keys/1`, `POST /user/gpg_keys` and `GET /gists/starred` were the version's 400,
+    counted. Here it is :func:`_require`'s 401 after the version, carrying both.
+    """
+    if not is_an_unserved_operation(request.method, request.scope["path"]):
+        return
+    if _deletes_the_installation_token(request):
+        request.state.github_unserved_refusal = "reported"
+        await _validate_bad_credential(request)
+        await _validate_api_version(request)
+        _require(request)
+        del request.state.github_unserved_refusal
+        return
+    if "authorization" not in request.headers:
+        request.state.github_unserved_refusal = (
+            "uncounted" if request.method in _UNCOUNTED_METHODS else "counted"
+        )
+        raise HTTPException(status_code=401, detail="Requires authentication")
+    if _a_header_without_a_credential(request):
+        request.state.github_unserved_refusal = "uncounted"
+        raise HTTPException(status_code=401, detail="Requires authentication")
+    await _validate_bad_credential(request)
+    await _validate_api_version(request)
+    _require(request)
+
+
+#: The methods whose 401 for no credential at all, on an operation of :data:`_PUBLISHED_NOT_SERVED`,
+#: carries none of the five `x-ratelimit-*` (see :func:`refuse_an_unserved_operation`).
+_UNCOUNTED_METHODS = frozenset({"PATCH", "PUT", "DELETE"})
+
+
+def _a_header_without_a_credential(request: Request) -> bool:
+    """Whether the request carries an `Authorization` header that real reads no credential from on
+    an operation of :data:`_PUBLISHED_NOT_SERVED`: one ``auth.github_scheme_then_a_tab`` holds for,
+    whatever it names, or one ``auth.github_credential`` reads as no credential, but a `Basic`
+    value."""
+    if "authorization" not in request.headers:
+        return False
+    if auth.github_scheme_then_a_tab(request):
+        return True
+    scheme, _ = auth.github_scheme(request)
+    return auth.github_credential(request) is None and scheme != "basic"
+
+
+def is_an_unserved_operation(method: str, path: str) -> bool:
+    """Whether ``method`` on the `/github` ``path`` is in :data:`_PUBLISHED_NOT_SERVED`. The path is
+    the scope's, decoded but whole: ``request.url.path`` ends at a decoded `#` or `?`, which would
+    take `/zen%23` for `/zen`, where real answered `GET /zen%23` and `POST …/forks%23` with the 404
+    on 2026-10-14."""
+    return published.includes(_PUBLISHED_NOT_SERVED, method, path.removeprefix("/github"))
+
+
+def refused_an_unserved_operation(request: Request) -> bool:
+    """Whether :func:`refuse_an_unserved_operation` refused this request with no credential: no
+    `Authorization` header, or one that carries none."""
+    return getattr(request.state, "github_unserved_refusal", None) is not None
+
+
+def refused_an_unserved_operation_uncounted(request: Request) -> bool:
+    """Whether :func:`refuse_an_unserved_operation` refused this request with a 401 that real counts
+    nowhere and sends without the five headers: for a header that carries no credential, on any
+    method, and for no header on a method in :data:`_UNCOUNTED_METHODS`."""
+    return getattr(request.state, "github_unserved_refusal", None) == "uncounted"
+
+
+def refused_an_unserved_operation_reported(request: Request) -> bool:
+    """Whether :func:`refuse_an_unserved_operation` answered ``DELETE /installation/token`` as a
+    served route does for a caller with no credential: the version echo, the five `x-ratelimit-*`,
+    and nothing counted. See that function for the measurement."""
+    return getattr(request.state, "github_unserved_refusal", None) == "reported"
+
+
+def _deletes_the_installation_token(request: Request) -> bool:
+    """Whether this is `DELETE /installation/token`, the one unpublished delete real answers as a
+    served route."""
+    return (
+        request.method == "DELETE"
+        and request.scope["path"].removeprefix("/github") == "/installation/token"
+    )
 
 
 # --- rate limits ----------------------------------------------------------------
@@ -433,23 +680,28 @@ def rate_limit_caller(request: Request) -> tuple[str, bool]:
     with no credential (the docs' 60 an hour "for unauthenticated requests", `limit: 60` on every
     anonymous answer measured).
 
-    An `Authorization` real cannot parse is served rather than refused, and counted apart from the
-    bare-anonymous requests from the same address, in ONE window shared by every such value: on
-    `/repos/psf/requests`, alternating `Basic`, `Digest` and scheme-less values real had not seen
-    before ran one counter 10 through 15 at one `reset`, while the bare anonymous calls interleaved
-    with them read 23, 24, 25 at another, both at `limit: 60` (measured against api.github.com
-    2026-09-21).
+    An `Authorization` real reads as no credential (see :func:`backlot.auth.github_credential`) is
+    served rather than refused, and counted apart from the bare-anonymous requests from the same
+    address, in ONE window shared by every such value: on `/repos/psf/requests`, alternating
+    `Basic`, `Digest` and scheme-less values real had not seen before ran one counter 10 through 15
+    at one `reset`, while the bare anonymous calls interleaved with them read 23, 24, 25 at another,
+    both at `limit: 60` (measured against api.github.com 2026-09-21).
 
-    A bearer that does not resolve is keyed with the address here but never counted — see
-    :func:`refused_a_credential`. Callers that draw real's line themselves check `request.headers`
-    for the
-    presence of `Authorization` directly instead of asking `auth.bearer_token`, which is `None` for
-    a scheme it does not parse — see `refuse_a_trailing_slash_on_github`."""
-    token = auth.bearer_token(request)
-    if token is not None and auth.resolve_bearer(request) is not None:
+    Either bearer scheme followed by a tab rather than a space (``auth.github_scheme_then_a_tab``)
+    is counted in that same window, though it is answered as Bad credentials: an unknown scheme and
+    then a bad bearer after a tab, on `/repos/psf/requests`, read `used` 4 and 5, while the
+    address's anonymous window stayed at 8 (2026-10-14). Any other credential that does not resolve
+    is keyed with the address here but never counted — see :func:`refused_without_a_window`. Callers
+    that draw real's line themselves check `request.headers` for the presence of `Authorization`
+    directly instead of asking `auth.github_credential`, which is `None` for a header real serves as
+    anonymous — see `refuse_a_trailing_slash_on_github`."""
+    token = auth.github_credential(request)
+    if token is not None and auth.acl(request).resolve(token) is not None:
         return f"token:{token}", True
     host = request.client.host if request.client is not None else "anonymous"
-    if token is None and "authorization" in request.headers:
+    if "authorization" in request.headers and (
+        token is None or auth.github_scheme_then_a_tab(request)
+    ):
         return f"unparseable:{host}", False
     return f"host:{host}", False
 
@@ -457,29 +709,57 @@ def rate_limit_caller(request: Request) -> tuple[str, bool]:
 def refused_a_credential(request: Request) -> bool:
     """Whether a credential arrived and did not resolve — real's "Bad credentials" 401.
 
-    `Bearer` and `token` alike are refused with none of the five `x-ratelimit-*` headers and no
-    version echo, on `/repos/psf/requests` and on `/rate_limit`, and the address's `core` window
-    read `used: 13` before three of them and after — where an anonymous 401 on `/user/repos`
-    carries all five, counts, and echoes (measured against api.github.com 2026-09-21). A path no
-    route matches is answered the same way for a wider set of callers, see
-    ``backlot.main._some_github_route_matches``.
+    `Bearer` and `token` separated from the token by a space are refused with none of the five
+    `x-ratelimit-*` headers and no version echo, on `/repos/psf/requests` and on `/rate_limit`, and
+    the address's `core` window read `used: 13` before three of them and after — where an anonymous
+    401 on `/user/repos` carries all five, counts, and echoes (measured against api.github.com
+    2026-09-21). A path real does not route is answered the same way for a wider set of callers,
+    see ``backlot.main._github_routes``.
+
+    A tab after the scheme is still "Bad credentials" and still carries no version echo: on
+    2026-10-14 a bearer that does not resolve after a tab answered no
+    `x-github-api-version-selected` on `/rate_limit` and `/repos/psf/requests`, with and without
+    `X-GitHub-Api-Version: 2022-11-28`, and on `/user/repos` with it. Which of these 401s carry the
+    five is
+    :func:`refused_without_a_window`'s.
     """
-    return auth.bearer_token(request) is not None and auth.resolve_bearer(request) is None
+    token = auth.github_credential(request)
+    return token is not None and auth.acl(request).resolve(token) is None
 
 
-def rate_limit_headers(request: Request, status_code: int) -> dict[str, str]:
+def refused_without_a_window(request: Request) -> bool:
+    """Whether :func:`refused_a_credential` holds and ``backlot.auth.github_scheme_then_a_tab``
+    does not: the 401 real counts in no window and answers with none of the five headers, as each
+    scheme with nothing after it and a value after `Basic` that does not decode were (2026-10-14),
+    and so were `Bearer<TAB>,nope`, `token<TAB>,nope`, `Bearer<TAB>no,pe` and `Bearer<TAB>nope,`
+    (2026-10-16), all on the rate-limit route.
+
+    Where that helper holds, the same 401 carries the five of the window it is counted in, the
+    unparseable one: measured against api.github.com 2026-10-14 on `GET /rate_limit`,
+    `Bearer<TAB>nope` and `token<TAB>nope` each answered 401 with `limit: 60`, `remaining: 60`,
+    `used: 0`, `resource: core` and a `reset` an hour after `Date`, while the same two after a space
+    answered the same 401 with none of the five. Once that window was spent, the two after a tab on
+    a public repository, and the first on `/user/repos`, were its 403, as an unknown scheme was,
+    where the bearer after a space was still the 401.
+    """
+    return refused_a_credential(request) and not auth.github_scheme_then_a_tab(request)
+
+
+def rate_limit_headers(request: Request, status_code: int, *, count: bool = True) -> dict[str, str]:
     """The five `x-ratelimit-*` headers for a `/github` answer.
 
     Counts the request against the window, except on :data:`RATE_LIMIT_PATH`, which reports its
     window without counting: two `GET /rate_limit` in a row both answered `remaining: 5000`,
     `used: 0`, each carrying the five with `resource: core`, and the description's own note says
-    the route does not count. `/rate_limit/` never reaches this — see
+    the route does not count. ``count`` False reports the same way, which is how
+    ``DELETE /installation/token`` carries the five while leaving `used` where it was
+    (:func:`refused_an_unserved_operation_reported`). `/rate_limit/` never reaches this — see
     ``backlot.main.refuse_a_trailing_slash_on_github``."""
     key, authenticated = rate_limit_caller(request)
     resource = rate_limit_resource(request.url.path, status_code)
     counted, limit = rate_limit_window(resource, authenticated)
     windows = _rate_limit_windows(request.app)
-    read = windows.count if request.url.path != RATE_LIMIT_PATH else windows.status
+    read = windows.count if count and request.url.path != RATE_LIMIT_PATH else windows.status
     window = read(key, counted, limit)
     return {
         "x-ratelimit-limit": str(window["limit"]),
@@ -516,21 +796,25 @@ def _rate_limit_exceeded_message(request: Request, authenticated: bool) -> str:
     its cap. Real's sentence there is `API rate limit exceeded for user ID <id>. If you reach out
     to GitHub Support for help, please include the request ID <x-github-request-id> and timestamp
     <YYYY-MM-DD HH:MM:SS> UTC. For more on scraping GitHub and how it may affect your rights,
-    please review our Terms of Service (…)`. This returns real's sentence up to `user ID <id>.`;
-    the Support/Terms-of-Service sentence past it is not reproduced, because it names a request id
-    and a timestamp that come from `x-github-request-id` — a header Backlot sends on no `/github`
-    answer today (real sends it on every answer, 200 and refusal alike, and its own last field is
-    that answer's `Date` to the second). That header is #333's; the rest of this sentence belongs
-    there, not a synthesized or placeholder value here."""
+    please review our Terms of Service (…)`. The request id is the answer's own
+    `x-github-request-id` and the timestamp is that id's last field, on each of four refusals
+    measured 2026-10-18 the same way."""
     if not authenticated:
         host = request.client.host if request.client is not None else "anonymous"
         return (
             f"API rate limit exceeded for {host}. (But here's the good news: Authenticated "
             "requests get a higher rate limit. Check out the documentation for more details.)"
         )
-    caller = auth.resolve_bearer(request)
+    caller = auth.acl(request).resolve(auth.github_credential(request))
     email = caller.email if caller is not None and caller.email is not None else "admin"
-    return f"API rate limit exceeded for user ID {synth.github_user_id(email)}."
+    rid = request.state.github_request_id
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(int(rid.rsplit(":", 1)[1], 16)))
+    return (
+        f"API rate limit exceeded for user ID {synth.github_user_id(email)}. If you reach out to "
+        f"GitHub Support for help, please include the request ID {rid} and timestamp {stamp} UTC. "
+        "For more on scraping GitHub and how it may affect your rights, please review our Terms of "
+        "Service (https://docs.github.com/en/site-policy/github-terms/github-terms-of-service)"
+    )
 
 
 def rate_limit_refusal(request: Request) -> Response | None:
@@ -661,6 +945,8 @@ class GitHubIssueSearch(_Loose):
     total_count: int
     incomplete_results: bool
     items: list[GitHubIssue]
+    # After `items`, where real sends it; a response's members go out in the order declared here.
+    search_type: str
 
 
 class GitHubCodeHit(_Loose):
@@ -884,7 +1170,9 @@ class _Ordering(NamedTuple):
 #: pull seen through this listing, its review comments: 5797 (`comments: 105`, `review_comments:
 #: 25`) sits between 2966 (211) and 1573 (122), which no single member orders. Ties keep the
 #: unsent order whatever the direction: `sort=comments&direction=asc` answers 7620, 7619, 7618,
-#: three rows at 0 comments, newest first.
+#: three rows at 0 comments, newest first, and on 2026-10-13 `labels=Bug&state=all&sort=updated`
+#: answered 1703 before 1642, 1755 before 1746 and 1029 before 639, each pair sharing one
+#: `updated_at`, with `direction=asc` and with `direction=desc`.
 _ISSUE_ORDERING = _Ordering(
     sorts=("created", "updated", "comments"),
     default="created",
@@ -905,7 +1193,11 @@ _ISSUE_ORDERING = _Ordering(
 #: here. `direction=asc` alone 4, 8, 10. `sort=bogus` 4, 8, 10 and `sort=bogus&direction=desc`
 #: 7619, 7616, 7609, so an unknown sort is read as `created` with the direction honoured;
 #: `direction=bogus` alone the unsent order and `sort=updated&direction=bogus` 7025, 7026, 6675,
-#: the `direction=desc` order, so an unknown direction is `desc` with the sort kept.
+#: the `direction=desc` order, so an unknown direction is `desc` with the sort kept. Pulls that
+#: share an `updated_at` are ordered by number in the direction asked: on 2026-10-13, with
+#: `state=all&per_page=100`, the first page of `sort=updated` held 27 such groups, each lowest
+#: number first (192 before 196), and that of `sort=updated&direction=desc` 4, each highest number
+#: first (7543 before 7520).
 _PULL_ORDERING = _Ordering(
     sorts=("created", "updated", "popularity", "long-running"),
     default="created",
@@ -1007,15 +1299,20 @@ def _updated_ts(row) -> int:
     return row["updated_ts"] or _created_ts(row) + 3600
 
 
-def _issue_sort_keys(conn, repo: str, sort: str, ids) -> dict[str, Callable]:
+def _issue_sort_keys(
+    conn, repo: str, sort: str, ids, *, updated_keeps_unsent: bool = False
+) -> dict[str, Callable]:
     """The sort keys of the issue and pull listings, over the store's rows.
 
-    The timestamps are the ones the bodies serve (:func:`_shared_obj` reads the same two
-    functions), and the number breaks a tie the way real's monotonic ids do. `comments` and
-    `popularity` are one key: both order by the conversation and review comments added together,
-    which is the count real orders by (see :data:`_ISSUE_ORDERING`), read in one query for the
-    repository and only when asked for. `long-running` is `created` with no filter (see
-    :data:`_PULL_ORDERING`).
+    The timestamps are the ones the bodies serve (:func:`_shared_obj` reads the same two functions).
+    `created` breaks a same-second tie by number, and so does `updated` on the pull listing, so that
+    number reverses with the direction (see :data:`_PULL_ORDERING`). The issue listing passes
+    ``updated_keeps_unsent``, which makes `updated` the timestamp alone, so rows that share an
+    `updated_at` keep the unsent order, newest first, in either direction (see
+    :data:`_ISSUE_ORDERING`). `comments` and `popularity` are one key: both order by the
+    conversation and review comments added together, which is the count real orders by (see
+    :data:`_ISSUE_ORDERING`), read in one query for the repository and only when asked for.
+    `long-running` is `created` with no filter (see :data:`_PULL_ORDERING`).
 
     ``ids`` scopes that count to the comments the caller is served, so a row's position is the
     position its own served numbers put it in (see :func:`store.github_comment_counts`)."""
@@ -1027,7 +1324,10 @@ def _issue_sort_keys(conn, repo: str, sort: str, ids) -> dict[str, Callable]:
         return _created_ts(row), row["number"]
 
     def updated(row):
-        return _updated_ts(row), row["number"]
+        ts = _updated_ts(row)
+        if updated_keeps_unsent:
+            return ts
+        return ts, row["number"]
 
     def comments(row):
         return counts.get(row["number"], 0)
@@ -1247,7 +1547,15 @@ async def search_issues(
         for r in matched[start : start + per_page]
     ]
     _search_paged(request, response, q, page, per_page, len(matched))
-    return {"total_count": len(matched), "incomplete_results": False, "items": items}
+    # Real answers `lexical` to a search that does not ask for `search_type=semantic` or `hybrid`,
+    # an empty one included (measured 2026-10-10). This route ignores `search_type` and always
+    # matches lexically.
+    return {
+        "total_count": len(matched),
+        "incomplete_results": False,
+        "items": items,
+        "search_type": "lexical",
+    }
 
 
 # --- code search ----------------------------------------------------------------
@@ -1880,6 +2188,9 @@ async def list_issues(
     state: str = _state_param(_ISSUE_STATE_DESCRIPTION),
     sort: str = _enum_param("created", _ISSUE_SORT_DESCRIPTION, _ISSUE_ORDERING.sorts),
     direction: str = _enum_param("desc", _ISSUE_DIRECTION_DESCRIPTION, _DIRECTIONS),
+    labels: str = Query(
+        None, description="A list of comma separated label names. Example: `bug,ui,@high`"
+    ),
     page: PageParam = None,
     per_page: PageParam = None,
 ):
@@ -1907,9 +2218,29 @@ async def list_issues(
         for r in store.list_documents(conn, "github", repo, ids, limit=10_000, state=state_filter)
         if r["kind"] != "file"
     ]
+    # Measured on psf/requests, api.github.com, 2026-10-12 and 2026-10-13: an issue is served when
+    # its labels include every name the value lists, comma-separated and compared without case, and
+    # the last repeated parameter is the one read and the one a page link carries. A space is part
+    # of a name (`%20Bug` and `Bug%20` match nothing) and an empty name between two others is a name
+    # too (`Bug,,Documentation` matches nothing), but empty names at the end are dropped
+    # (`Bug,` is `Bug`). A value of commas alone (`,`) or of whitespace alone (`%20`, `%09`,
+    # `%C2%A0`, `%E3%80%80`) filters nothing; `%1C` to `%1F`, which `str.isspace` counts too, match
+    # nothing.
+    named = (labels or "").rstrip(",")
+    if named and not all(ch.isspace() and not 0x1C <= ord(ch) <= 0x1F for ch in labels):
+        wanted = {name.lower() for name in named.split(",")}
+        all_rows = [
+            row
+            for row in all_rows
+            if wanted <= {name.lower() for name in store.jcol(row, "labels")}
+        ]
     sort, descending = _order(request, _ISSUE_ORDERING)
     all_rows = _ordered(
-        all_rows, _issue_sort_keys(conn, repo, sort, ids), _ISSUE_ORDERING, sort, descending
+        all_rows,
+        _issue_sort_keys(conn, repo, sort, ids, updated_keeps_unsent=True),
+        _ISSUE_ORDERING,
+        sort,
+        descending,
     )
     asserted = page  # kept: the page urls carry the number the caller claimed, or none at all
     page, per_page = _clamp(page, per_page)
@@ -1930,7 +2261,7 @@ async def list_issues(
     return _paged_by_cursor(
         request,
         len(all_rows),
-        _echo(request, state=state, **_sent(request, "sort", "direction")),
+        _echo(request, state=state, **_sent(request, "sort", "direction", "labels")),
         body,
         link_page,
         per_page,
@@ -2362,7 +2693,18 @@ def _ref_exists(conn, owner: str, repo: str, ref: str, ids) -> bool:
         return bool(name) and name in _repo_tags(conn, repo)
     if head == "pull":
         number, _, kind = name.partition("/")
-        if kind not in ("head", "merge") or not number.isdigit():
+        # Only a pull's number in its own decimal spelling names its ref. Measured on
+        # octocat/Hello-World (api.github.com, 2026-10-11): `pull/11482/head` and `…/merge` are
+        # 200, and the same number in fullwidth, Arabic-Indic or Devanagari digits, with leading
+        # zeros or a sign, and `²` are each the 404 an unknown number gets. Nineteen digits hold
+        # every number SQLite stores (`store.github_by_number` misses one past 64 bits), and the
+        # bound keeps `int()` off a string longer than the 4,300 digits it converts.
+        if kind not in ("head", "merge") or not (
+            number.isascii()
+            and number.isdigit()
+            and len(number) <= 19
+            and str(int(number)) == number
+        ):
             return False
         row = store.github_by_number(conn, repo, int(number), ids)
         if row is None or row["kind"] != "pull_request":
@@ -2862,6 +3204,22 @@ async def get_commit(owner: str, repo: str, sha: str, request: Request):
     }
 
 
+#: The names a README is looked up by, the first the corpus holds winning. Measured 2026-10-07:
+#: curl/curl holds `README` and `README.md` and is served `README.md`, octocat/Hello-World's
+#: `README` is served at `readme` and at `readme/`, and torvalds/linux's `fs/cramfs/README` at
+#: `readme/fs/cramfs`.
+_README_NAMES = ("README.md", "readme.md", "README")
+
+
+def _readme_row(conn, repo: str, directory: str, ids, ref: str | None):
+    """The first of :data:`_README_NAMES` the corpus holds in ``directory`` for this caller."""
+    for name in _README_NAMES:
+        row = store.get_repo_file(conn, repo, f"{directory}{name}", ids, ref=ref)
+        if row is not None:
+            return row
+    return None
+
+
 @router.get("/repos/{owner}/{repo}/readme/{dir:path}")
 async def get_readme_for_a_directory(
     owner: str, repo: str, dir: str, request: Request, ref: str | None = Query(None)
@@ -2874,7 +3232,7 @@ async def get_readme_for_a_directory(
     is why a trailing slash answers 200 here where it is a refusal on the routes around it.
 
     The empty directory is a directory like any other, so it is looked up here rather than handed
-    to :func:`get_readme`, whose stub would answer 200: measured 2026-09-28, `readme/` on a
+    to :func:`get_readme`, whose 404 names the root anchor: measured 2026-09-28, `readme/` on a
     repository holding no README (octocat/test-repo1) is the same directory-anchor 404.
 
     Slashes, measured 2026-09-28 on github/gitignore and python/cpython: a path ending in up to two
@@ -2884,9 +3242,8 @@ async def get_readme_for_a_directory(
     credential and after `?ref=` (`readme///?ref=nope` is the ref's own 404).
 
     WHICH file it serves is where this and real part: real answers whatever the directory's README
-    is, `Doc/README.rst` on python/cpython among them, and this looks for `README.md` and then
-    `readme.md`, as the root route does. A corpus stating `docs/README.rst` gets a 404 here and a
-    200 there.
+    is, `Doc/README.rst` on python/cpython among them, and this looks for :data:`_README_NAMES`, as
+    the root route does. A corpus stating `docs/README.rst` gets a 404 here and a 200 on real.
     """
     conn = auth.conn(request)
     caller = _require(request)
@@ -2897,10 +3254,7 @@ async def get_readme_for_a_directory(
     if len(sent) - len(sent.rstrip("/")) > 2:
         raise HTTPException(status_code=404, detail="Not Found")
     inside = dir.strip("/")
-    prefix = f"{inside}/" if inside else ""
-    row = store.get_repo_file(conn, repo, f"{prefix}README.md", ids, ref=ref) or (
-        store.get_repo_file(conn, repo, f"{prefix}readme.md", ids, ref=ref)
-    )
+    row = _readme_row(conn, repo, f"{inside}/" if inside else "", ids, ref)
     if row is None:
         raise HTTPException(status_code=404, detail="Not Found")
     return _raw_response(request, row["content"], _CONTENT_RAW_TYPE) or _file_obj(
@@ -2910,7 +3264,10 @@ async def get_readme_for_a_directory(
 
 @router.get("/repos/{owner}/{repo}/readme")
 async def get_readme(owner: str, repo: str, request: Request, ref: str | None = Query(None)):
-    """`ref` selects a snapshot, as on `/contents` — real GitHub takes it here too, and both serve
+    """The repository's README (:func:`_readme_row`), and where the corpus holds none the 404 real
+    gives octocat/test-repo1 in either media type (measured 2026-10-07).
+
+    `ref` selects a snapshot, as on `/contents` — real GitHub takes it here too, and both serve
     the same underlying object (see :func:`_file_obj`), so a README the corpus snapshots would
     otherwise be reachable at an older revision through one route and not the other."""
     conn = auth.conn(request)
@@ -2919,38 +3276,12 @@ async def get_readme(owner: str, repo: str, request: Request, ref: str | None = 
     _require_repo(conn, repo, ids)
     _require_ref(conn, owner, repo, ref, ids)
     ab = _api_base(request)
-    row = store.get_repo_file(conn, repo, "README.md", ids, ref=ref) or store.get_repo_file(
-        conn, repo, "readme.md", ids, ref=ref
-    )
+    row = _readme_row(conn, repo, "", ids, ref)
     if row is not None:
         return _raw_response(request, row["content"], _CONTENT_RAW_TYPE) or _file_obj(
             owner, repo, row, ab, ref
         )
-    text = f"# {repo}\n\nRepository `{owner}/{repo}`.\n"
-    raw = _raw_response(request, text, _CONTENT_RAW_TYPE)
-    if raw is not None:
-        return raw
-    sha = hashlib.sha1(text.encode()).hexdigest()
-    url = f"{ab}/repos/{owner}/{repo}/contents/README.md"
-    return {
-        "type": "file",
-        "name": "README.md",
-        "path": "README.md",
-        "encoding": "base64",
-        "content": base64.b64encode(text.encode()).decode(),
-        "size": len(text),
-        "sha": sha,
-        "node_id": synth.node_id("Blob", sha[:12]),
-        "url": url,
-        "git_url": f"{ab}/repos/{owner}/{repo}/git/blobs/{sha}",
-        "html_url": f"https://github.com/{owner}/{repo}/blob/main/README.md",
-        "download_url": f"https://raw.githubusercontent.com/{owner}/{repo}/main/README.md",
-        "_links": {
-            "self": url,
-            "git": f"{ab}/repos/{owner}/{repo}/git/blobs/{sha}",
-            "html": f"https://github.com/{owner}/{repo}/blob/main/README.md",
-        },
-    }
+    raise HTTPException(status_code=404, detail="Not Found")
 
 
 @router.get("/repos/{owner}/{repo}/collaborators")
@@ -3956,7 +4287,7 @@ def _pr_mbox(row, obj: dict, diff: str) -> str:
     return (
         f"From {head} Mon Sep 17 00:00:00 2001\n"
         f"From: {login} <{email_addr}>\n"
-        f"Date: {formatdate(ts, usegmt=True)}\n"
+        f"Date: {format_datetime(synth.utc_datetime(ts), usegmt=True)}\n"
         f"Subject: [PATCH] {obj['title']}\n\n"
         f"{body}\n---\n{diff}-- \n2.45.0\n"
     )

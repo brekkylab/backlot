@@ -9,7 +9,6 @@ just the README.
 from __future__ import annotations
 
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -19,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from backlot.validation import SERVICE_SCHEMAS
+from tests._helpers import python_child_env
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -41,7 +41,7 @@ def _markdown_files() -> list[Path]:
 def _relative_targets(md: Path) -> list[tuple[int, str]]:
     """(line number, target) for every link in `md` that should resolve on disk."""
     out = []
-    for lineno, line in enumerate(md.read_text().splitlines(), start=1):
+    for lineno, line in enumerate(md.read_text(encoding="utf-8").splitlines(), start=1):
         for target in _LINK_RE.findall(line):
             if target.startswith(_EXTERNAL):
                 continue
@@ -90,7 +90,7 @@ def _scanned_files(*suffixes: str):
 
 
 def test_readme_stays_short():
-    lines = (REPO / "README.md").read_text().splitlines()
+    lines = (REPO / "README.md").read_text(encoding="utf-8").splitlines()
     assert len(lines) <= _README_MAX_LINES, (
         f"README.md is {len(lines)} lines (max {_README_MAX_LINES}) — move reference content into "
         "docs/ rather than raising this limit"
@@ -105,7 +105,7 @@ def test_no_prose_states_the_source_count():
     """
     offenders = []
     for path, rel in _scanned_files(".md", ".py", ".json", ".toml"):
-        for lineno, line in enumerate(path.read_text().splitlines(), start=1):
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
             for match in _COUNT_RE.finditer(line):
                 offenders.append(f"{rel}:{lineno}: {match.group(0)!r}")
     assert not offenders, (
@@ -142,13 +142,15 @@ def test_no_prose_states_the_bundled_corpus_size():
     a corpus that is actually loaded — `source_documents` offered, `documents` served.
     """
     corpus = REPO / "backlot" / "data" / "hello.jsonl"
-    records = str(sum(1 for line in corpus.read_text().splitlines() if line.strip()))
+    records = str(
+        sum(1 for line in corpus.read_text(encoding="utf-8").splitlines() if line.strip())
+    )
     offenders = []
     # `.py` as well as `.md`: the count this test was written for lived in three places, and the
     # third was `backlot/server.py`'s module docstring, which a markdown-only sweep walked past.
     # A docstring describing the corpus is documentation wherever it is stored.
     for path, rel in _scanned_files(".md", ".py"):
-        for lineno, line in enumerate(path.read_text().splitlines(), start=1):
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
             for match in _CORPUS_COUNT_RE.finditer(line):
                 if _BUNDLED_RE.search(line) or match.group(1).replace(",", "") == records:
                     offenders.append(f"{rel}:{lineno}: {match.group(0)!r}")
@@ -168,8 +170,13 @@ def test_generated_docs_are_current():
     proc = subprocess.run(
         [sys.executable, "scripts/gen_docs.py", "--check"],
         cwd=REPO,
+        # The child process is outside pyproject.toml's EncodingWarning filter, so it gets a
+        # stricter form of the rule by hand: under PYTHONWARNDEFAULTENCODING=1 any EncodingWarning
+        # in it, a dependency's included, ends it.
+        env=python_child_env(PYTHONWARNINGS="error::EncodingWarning"),
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     assert proc.returncode == 0, f"{proc.stdout}{proc.stderr}\nrun: python scripts/gen_docs.py"
 
@@ -191,10 +198,10 @@ def test_gen_docs_renders_from_its_own_tree(tmp_path):
         REPO / "backlot", shadow / "backlot", ignore=shutil.ignore_patterns("__pycache__")
     )
     schema_file = shadow / "backlot" / "schemas" / "slack.schema.json"
-    schema = json.loads(schema_file.read_text())
+    schema = json.loads(schema_file.read_text(encoding="utf-8"))
     schema["description"] = "A record from the shadow tree. " + schema["description"]
-    schema_file.write_text(json.dumps(schema))
-    env = {**os.environ, "PYTHONPATH": str(shadow)}
+    schema_file.write_text(json.dumps(schema), encoding="utf-8")
+    env = python_child_env(PYTHONPATH=str(shadow))
 
     # The control: under this environment a bare import does get the shadow, and the shadow's slack
     # schema is the changed one, whose first sentence is what the docs table's last column holds.
@@ -210,6 +217,7 @@ def test_gen_docs_renders_from_its_own_tree(tmp_path):
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     assert probe.stdout.startswith("A record from the shadow tree."), (
         f"{probe.stdout}{probe.stderr}"
@@ -221,6 +229,7 @@ def test_gen_docs_renders_from_its_own_tree(tmp_path):
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     assert proc.returncode == 0, (
         "scripts/gen_docs.py --check failed with the shadow tree first on PYTHONPATH. If "
@@ -237,7 +246,7 @@ def test_every_source_type_is_documented():
     that silently omit it start lying. The endpoint reference is the one place the full list lives,
     so it is the one place that has to stay honest.
     """
-    doc = (REPO / "docs" / "supported-sources.md").read_text()
+    doc = (REPO / "docs" / "supported-sources.md").read_text(encoding="utf-8")
     missing = [st for st in sorted(SERVICE_SCHEMAS) if f"`{st}`" not in doc]
     assert not missing, f"source_types with no row in docs/supported-sources.md: {missing}"
 
@@ -250,7 +259,7 @@ def test_documented_graphql_paths_are_mounted(client):
     back out of the generated table and call them: a documented path that 404s is a lie, whichever
     side of it moved.
     """
-    doc = (REPO / "docs" / "supported-sources.md").read_text()
+    doc = (REPO / "docs" / "supported-sources.md").read_text(encoding="utf-8")
     paths = re.findall(r"^\| `\w+` \|[^|]*\| `(/\S*/graphql)` \|", doc, re.M)
     assert paths, "the generated table lists no GraphQL path — did the table's shape change?"
 
@@ -270,7 +279,7 @@ def test_configuration_page_names_exactly_the_settings():
     and the number the prose promises."""
     from backlot.config import Settings
 
-    page = (REPO / "docs" / "configuration.md").read_text()
+    page = (REPO / "docs" / "configuration.md").read_text(encoding="utf-8")
     expected = {f"BACKLOT_{name.upper()}" for name in Settings.model_fields}
     assert set(re.findall(r"BACKLOT_[A-Z_]+", page)) == expected
     assert len(re.findall(r"^\| `BACKLOT_", page, re.M)) == len(expected)
@@ -286,7 +295,9 @@ def test_env_example_names_only_real_settings():
     gets a var the server ignores."""
     from backlot.config import Settings
 
-    listed = set(re.findall(r"BACKLOT_[A-Z_]+", (REPO / ".env.example").read_text()))
+    listed = set(
+        re.findall(r"BACKLOT_[A-Z_]+", (REPO / ".env.example").read_text(encoding="utf-8"))
+    )
     real = {f"BACKLOT_{name.upper()}" for name in Settings.model_fields}
     assert listed <= real, sorted(listed - real)
 
@@ -311,6 +322,20 @@ _LOOP_FILES = (
             "description:",
             "allowed-tools:",
             "## Rehearsal",
+        ),
+    ),
+    (
+        ".claude/agents/invariance-reviewer.md",
+        ("---\nname: invariance-reviewer\n", "description:", "disallowedTools:"),
+    ),
+    (
+        ".claude/skills/backlot-debloat/SKILL.md",
+        (
+            "---\nname: backlot-debloat\n",
+            "description:",
+            "allowed-tools:",
+            "## Rehearsal",
+            "scripts/invariance.py",
         ),
     ),
     (
@@ -340,6 +365,6 @@ _LOOP_FILES = (
 
 @pytest.mark.parametrize(("path", "needles"), _LOOP_FILES, ids=[p for p, _ in _LOOP_FILES])
 def test_loop_files_are_in_place(path, needles):
-    text = (REPO / path).read_text()
+    text = (REPO / path).read_text(encoding="utf-8")
     missing = [n for n in needles if n not in text]
     assert not missing, f"{path} lacks: {missing}"

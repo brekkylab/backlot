@@ -1,9 +1,10 @@
 """Vendor-agnostic GraphQL execution: SDL + resolvers -> response envelope.
 
 Knows nothing about any vendor and nothing about :mod:`backlot.store`. A vendor builds one
-:class:`Engine` at import time from its SDL and resolver map; its router hands raw request
-bodies to :meth:`Engine.execute_request` along with a context dict (connection, caller,
-``visible_ids``) that every resolver receives as ``info.context``.
+:class:`Engine` at import time from its SDL and resolver map; its router reads the request body
+with :mod:`backlot.graphql.body` and hands it to :meth:`Engine.execute_payload`, along with a
+context dict (connection, caller, ``visible_ids``) that every resolver receives as
+``info.context``.
 
 Execution is deliberately split into parse -> validate -> execute rather than delegating to
 ``graphql_sync``, because the three stages produce *different* envelopes. Per the GraphQL
@@ -16,23 +17,63 @@ servers make that distinction and clients key off it, so Backlot does too —
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from graphql import (
     GraphQLError,
+    GraphQLID,
+    GraphQLInputObjectType,
+    GraphQLList,
+    GraphQLNonNull,
     GraphQLScalarType,
     GraphQLSchema,
     assert_valid_schema,
     build_schema,
     execute_sync,
+    get_operation_ast,
     parse,
+    type_from_ast,
     validate,
 )
 
+from backlot.graphql import body as request_body
+
 Resolver = Callable[..., Any]
+
+
+def _ids_as_graphql_js_reads_them(value: Any, type_: Any) -> Any:
+    """``value`` for a variable of ``type_``, each :class:`~backlot.graphql.body.Double` holding an
+    integer where ``type_`` holds an ``ID`` turned into the ID graphql-js makes of it with
+    ``Number::toString``, where graphql-core's ``coerce_id`` writes ``str(int(value))``. graphql
+    16.9.0's ``GraphQLID.parseValue`` under Node 24.18.0 read ``1e21``, ``1e300`` and
+    ``12345678901234567890`` as ``1e+21``, ``1e+300`` and ``12345678901234567000`` on 2026-10-19
+    (UTC), where ``coerce_id`` writes the integer the double holds, digit for digit. graphql
+    16.9.0's ``graphqlSync`` read ``1e21`` so as an ``[ID!]`` variable, alone or in a list, and in
+    an input object's ``ID`` and ``[ID!]`` fields on 2026-10-20 (UTC).
+
+    They are read here, before graphql-core coerces them, because graphql-core has one ``ID`` scalar
+    for every schema in a process, and a process that imports :data:`backlot.main.app` can hold a
+    schema of its own."""
+    if isinstance(type_, GraphQLNonNull):
+        return _ids_as_graphql_js_reads_them(value, type_.of_type)
+    if isinstance(type_, GraphQLList):
+        if isinstance(value, list):
+            return [_ids_as_graphql_js_reads_them(item, type_.of_type) for item in value]
+        return _ids_as_graphql_js_reads_them(value, type_.of_type)
+    if isinstance(type_, GraphQLInputObjectType):
+        if not isinstance(value, dict):
+            return value
+        fields = type_.fields
+        return {
+            key: _ids_as_graphql_js_reads_them(item, fields[key].type) if key in fields else item
+            for key, item in value.items()
+        }
+    if type_ is GraphQLID and type(value) is request_body.Double and value.is_integer():
+        return repr(value)
+    return value
+
 
 # One custom scalar's coercion: ``parse_value`` takes a variable's JSON value, ``parse_literal`` an
 # AST node. graphql-core runs both BEFORE any resolver, so a scalar that rejects an operand turns a
@@ -62,12 +103,21 @@ def _client_error(message: str) -> Result:
     return _request_error([GraphQLError(message)])
 
 
+def not_json() -> Result:
+    """The request error for a body that is not JSON, in graphql-js's words."""
+    return _client_error("POST body sent invalid JSON.")
+
+
 def from_sdl(module_file: str, name: str, resolvers, scalars=None) -> "Engine":
     """An :class:`Engine` over the ``<name>.graphql`` sitting beside ``module_file``.
 
     Each vendor's resolver module keeps its SDL as a sibling file, so this is the one place that
     knows how the two are paired."""
-    return Engine((Path(module_file).parent / f"{name}.graphql").read_text(), resolvers, scalars)
+    return Engine(
+        (Path(module_file).parent / f"{name}.graphql").read_text(encoding="utf-8"),
+        resolvers,
+        scalars,
+    )
 
 
 class Engine:
@@ -128,6 +178,16 @@ class Engine:
         errors = validate(self.schema, doc)
         if errors:
             return _request_error(list(errors))
+        operation = get_operation_ast(doc, operation_name)
+        if variables and operation is not None:
+            types = {
+                definition.variable.name.value: type_from_ast(self.schema, definition.type)
+                for definition in operation.variable_definitions
+            }
+            variables = {
+                name: _ids_as_graphql_js_reads_them(value, types.get(name))
+                for name, value in variables.items()
+            }
         result = execute_sync(
             self.schema,
             doc,
@@ -142,19 +202,12 @@ class Engine:
             return _request_error(list(result.errors))
         return Result(payload=result.formatted)
 
-    def execute_request(self, body: bytes | str, *, context: Any = None) -> Result:
-        """Run a GraphQL-over-HTTP POST body (``{query, variables, operationName}``).
-
-        Body problems come back as a GraphQL error envelope rather than a framework-level
-        validation error, because that is what a real GraphQL server returns and what
-        generated clients parse. Messages match graphql-js, which is what the vendors run.
-        """
-        try:
-            payload = json.loads(body)
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            return _client_error("POST body sent invalid JSON.")
+    def execute_payload(self, payload: Any, *, context: Any = None) -> Result:
+        """Run a GraphQL-over-HTTP POST body (``{query, variables, operationName}``) its router has
+        read with :mod:`backlot.graphql.body`. A body of the wrong shape comes back as a GraphQL
+        error envelope in graphql-js's words rather than a framework-level validation error."""
         if not isinstance(payload, dict):
-            return _client_error("POST body sent invalid JSON.")
+            return not_json()
         query = payload.get("query")
         if not isinstance(query, str) or not query.strip():
             return _client_error("Must provide query string.")

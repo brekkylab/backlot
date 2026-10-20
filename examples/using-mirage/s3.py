@@ -93,7 +93,10 @@ def main_fuse(resource) -> None:
             if objs:
                 # a genuinely separate process reads the FUSE mount like any real directory
                 hit = subprocess.run(
-                    ["grep", "-rc", "dashboards", mnt], capture_output=True, text=True
+                    ["grep", "-rc", "dashboards", mnt],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
                 )
                 print(
                     f"\n$ grep -rc dashboards {mnt}   # a separate process reads the mount → "

@@ -682,9 +682,9 @@ def resolve_team_issue_count(team, info) -> int:
 
 
 def _team(container: str, info) -> dict:
-    """A ``Team``. 43 of its fields are non-null in the SDK's fragment; the ones Backlot cannot
-    know take Linear's own product defaults (cycles off, 2-week duration, estimate scale
-    ``notUsed``) rather than zero values that would read as configured."""
+    """A ``Team``. 43 of its fields are non-null in the SDK's fragment, and so is ``__typename``;
+    the ones Backlot cannot know take Linear's own product defaults (cycles off, 2-week duration,
+    estimate scale ``notUsed``) rather than zero values that would read as configured."""
     key = _team_key(container, info)
     created = synth.rfc3339(synth.epoch("linear-team:" + container))
     return {
@@ -734,6 +734,12 @@ def _team(container: str, info) -> dict:
         "slackIssueStatuses": False,
         "scimManaged": False,
         "scimGroupName": None,
+        # A real team answers its own member `false` (measured 2026-10-08), and the caller is one
+        # (see `_membership`). What a real team answers a non-member is unmeasured, as the workspace
+        # measured has one team with the key's user in it and a second would be a write; the
+        # field's own description says it "Runs the same checks `teamMembershipCreate` applies",
+        # and this server declares no `Mutation` type.
+        "viewerCanJoin": False,
         "icon": None,
         "color": None,
         "description": None,
@@ -775,8 +781,12 @@ def _issue(row, info) -> dict:
         # issue's markdown description is.
         "description": row["content"],
         "url": synth.linear_url(identifier, title, _org(info)),
+        # Measured 2026-10-09: an unassigned issue's branch prefix is the caller's email
+        # local part.
         "branchName": row["branch_name"]
-        or synth.linear_branch_name(identifier, title, row["assignee_email"]),
+        or synth.linear_branch_name(
+            identifier, title, row["assignee_email"] or _ctx(info).get("caller_email")
+        ),
         "priority": float(row["priority"] if row["priority"] is not None else 0),
         "priorityLabel": synth.linear_priority_label(row["priority"]),
         "estimate": float(row["estimate"]) if row["estimate"] is not None else None,
@@ -1051,23 +1061,32 @@ def resolve_team(_root, info, id):
     return _team(container, info)
 
 
+def _visible_teams(info) -> list[str]:
+    """The teams the caller can see, read once per request.
+
+    A team the caller can see no issue in is not a team they can see — same rule the Slack router
+    applies to channels, and it keeps `teams` consistent with what `team.issues` returns. An EXISTS
+    probe per team, NOT the grouped count: `issueCount` is a bound field that only runs when
+    selected, and computing every team's total just to test visibility cost 22ms of ACL-filtered
+    scan of a large corpus for a question `LIMIT 1` answers."""
+    ctx = _ctx(info)
+    names = ctx.get("_visible_teams")
+    if names is None:
+        names = [
+            r["name"]
+            for r in store.list_containers(ctx["conn"], "linear")
+            if ctx["visible_ids"] is None
+            or store.linear_team_has_visible(ctx["conn"], r["name"], ctx["visible_ids"])
+        ]
+        ctx["_visible_teams"] = names
+    return names
+
+
 def resolve_teams(
     _root, info, first=None, after=None, last=None, before=None, filter=None, **_ignored
 ) -> dict:
-    ctx = _ctx(info)
     offset, limit, floor = _slice(first, after, last, before)
-    # A team the caller can see no issue in is not a team they can see — same rule the Slack
-    # router applies to channels, and it keeps `teams` consistent with what `team.issues` returns.
-    # An EXISTS probe per team, NOT the grouped count: `issueCount` is a bound field that only
-    # runs when selected, and computing every team's total just to test visibility cost 22ms of
-    # ACL-filtered scan of a large corpus for a question `LIMIT 1` answers.
-    names = [
-        r["name"]
-        for r in store.list_containers(ctx["conn"], "linear")
-        if ctx["visible_ids"] is None
-        or store.linear_team_has_visible(ctx["conn"], r["name"], ctx["visible_ids"])
-    ]
-    names = [n for n in names if _match_team(n, filter, info)]
+    names = [n for n in _visible_teams(info) if _match_team(n, filter, info)]
     offset = _from_end(offset, limit, floor, len(names))
     page = names[offset : offset + limit]
     return _connection([_team(n, info) for n in page], offset, offset + limit < len(names))
@@ -1092,6 +1111,14 @@ def resolve_comments(
     )
     rows, has_next = _page(rows, limit)
     return _connection([_comment(r, info) for r in rows], offset, has_next)
+
+
+def _ordered_users(users: list[dict], order_by) -> list[dict]:
+    """``users`` in the order ``issues`` takes, as ``store.LINEAR_DEFAULT_ORDER_BY`` records, over
+    the timestamps :func:`_user` serves, since it derives them from the address rather than a
+    stored column."""
+    users.sort(key=lambda user: user[order_by or store.LINEAR_DEFAULT_ORDER_BY], reverse=True)
+    return users
 
 
 def _sorted_users(users: list[dict], sort) -> list[dict]:
@@ -1126,14 +1153,12 @@ def resolve_users(
     ctx = _ctx(info)
     offset, limit, floor = _slice(first, after, last, before)
     _reject_sort_with_order_by(sort, orderBy)
-    users = _sorted_users(
-        [
-            _user(r["email"], r["display_name"], info)
-            for r in store.list_users(ctx["conn"])
-            if _match_user(r, filter)
-        ],
-        sort,
-    )
+    users = [
+        _user(r["email"], r["display_name"], info)
+        for r in store.list_users(ctx["conn"])
+        if _match_user(r, filter)
+    ]
+    users = _sorted_users(users, sort) if sort else _ordered_users(users, orderBy)
     offset = _from_end(offset, limit, floor, len(users))
     return _connection(users[offset : offset + limit], offset, offset + limit < len(users))
 
@@ -1248,6 +1273,57 @@ def resolve_viewer(_root, info) -> dict:
     return _user(email, row["display_name"] if row else None, info)
 
 
+# --- the viewer's team memberships ---------------------------------------------------------
+# Backlot reads the caller as a member of every team it can see. Measured against api.linear.app
+# on 2026-10-20, the one team in a workspace answered a member a `TeamMembership` with
+# `owner: false`, `archivedAt: null` and `createdAt == updatedAt`, `false` for `viewerCanLeave`,
+# and the same membership by id from `teamMembership(id:)`; an unknown id answers "Entity not
+# found: TeamMembership", a message that carries no id.
+
+
+def _membership(container: str, info) -> dict:
+    """The caller's ``TeamMembership`` in one team.
+
+    A membership cannot predate its team or its user, so it is created at the later of the two, the
+    earliest it can be: one member's was created with both in the same instant, another's 64 seconds
+    after its user. Linear describes ``sortOrder`` as "The sort order of this team in the user's
+    personal team list", so a team's is its position in the caller's team list; the two memberships
+    measured answered 41 and 0."""
+    viewer = resolve_viewer(None, info)
+    team = _team(container, info)
+    created = max(team["createdAt"], viewer["createdAt"])
+    return {
+        "id": synth.linear_team_membership_id(container, viewer["id"]),
+        "createdAt": created,
+        "updatedAt": created,
+        "archivedAt": None,
+        "owner": False,
+        "sortOrder": float(_visible_teams(info).index(container)),
+        "user": viewer,
+        "team": team,
+    }
+
+
+def resolve_team_viewer_membership(team, info) -> dict:
+    return _membership(team["_container"], info)
+
+
+def resolve_team_viewer_can_leave(_parent, info) -> bool:
+    """Linear's own description: false when "leaving would leave the viewer without an active
+    team", the case measured. A caller in two teams answers true, which is unmeasured: the
+    description's other conditions are SCIM management, which no served team has, and an app user
+    the team does not accept, which nothing in a corpus records."""
+    return len(_visible_teams(info)) > 1
+
+
+def resolve_team_membership(_root, info, id) -> dict:
+    viewer_id = resolve_viewer(None, info)["id"]
+    for container in _visible_teams(info):
+        if synth.linear_team_membership_id(container, viewer_id) == str(id):
+            return _membership(container, info)
+    raise GraphQLError("Entity not found: TeamMembership")
+
+
 # --- relation fields that take arguments ------------------------------------------------
 
 
@@ -1303,11 +1379,20 @@ def resolve_issue_parent(issue, info):
 
 
 def resolve_issue_children(
-    issue, info, first=None, after=None, last=None, before=None, filter=None, **_ignored
+    issue,
+    info,
+    first=None,
+    after=None,
+    last=None,
+    before=None,
+    filter=None,
+    orderBy=None,
+    **_ignored,
 ) -> dict:
     """``Issue.children`` — the exact inverse of ``Issue.parent``, read off the ``parent_id``
     resolved at import. Not a join on ``identifier``: keys repeat, so that would attach one
-    issue's children to every issue sharing its key."""
+    issue's children to every issue sharing its key. Newest first by ``orderBy``, as
+    ``store.linear_children`` records."""
     ctx = _ctx(info)
     conn, visible = ctx["conn"], ctx["visible_ids"]
     offset, limit, floor = _slice(first, after, last, before)
@@ -1320,12 +1405,23 @@ def resolve_issue_children(
             floor,
             len(
                 store.linear_children(
-                    conn, issue_id, visible_ids=visible, limit=PAGE_MAX, prefilter=prefilter
+                    conn,
+                    issue_id,
+                    visible_ids=visible,
+                    limit=PAGE_MAX,
+                    prefilter=prefilter,
+                    order_by=orderBy,
                 )
             ),
         )
     rows = store.linear_children(
-        conn, issue_id, visible_ids=visible, limit=limit + 1, offset=offset, prefilter=prefilter
+        conn,
+        issue_id,
+        visible_ids=visible,
+        limit=limit + 1,
+        offset=offset,
+        prefilter=prefilter,
+        order_by=orderBy,
     )
     rows, has_next = _page(rows, limit)
     return _connection([_issue(r, info) for r in rows], offset, has_next)
@@ -1450,8 +1546,14 @@ RESOLVERS = {
         "release": resolve_release,
         "attachment": resolve_attachment,
         "issueRelation": resolve_issue_relation,
+        "teamMembership": resolve_team_membership,
     },
-    "Team": {"issues": resolve_team_issues, "issueCount": resolve_team_issue_count},
+    "Team": {
+        "issues": resolve_team_issues,
+        "issueCount": resolve_team_issue_count,
+        "viewerMembership": resolve_team_viewer_membership,
+        "viewerCanLeave": resolve_team_viewer_can_leave,
+    },
     "Issue": {
         "comments": resolve_issue_comments,
         "labels": resolve_issue_labels,

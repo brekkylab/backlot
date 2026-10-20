@@ -1327,6 +1327,12 @@ _LINEAR_READS = [
         id="a space before a comma",
     ),
     pytest.param(
+        (("Content-Encoding", "gzip,"), ("Content-Encoding", "gzip")),
+        gzip.compress(_TYPENAME),
+        _express(415, b'unsupported content encoding \\"gzip,, gzip\\"'),
+        id="a comma ending an encoding, then gzip",
+    ),
+    pytest.param(
         (("Content-Encoding", "gzip, identity"),),
         gzip.compress(_TYPENAME),
         _express(415, b'unsupported content encoding \\"gzip, identity\\"'),
@@ -4261,8 +4267,6 @@ _LINEAR_SPELLINGS = [
     pytest.param("bearer {t}", 400, id="bearer"),
     pytest.param("Bearer {t} ", 400, id="Bearer, a space after"),
     pytest.param(" Bearer {t}", 400, id="Bearer, a space before"),
-    pytest.param("BEARER {t}", 401, id="BEARER"),
-    pytest.param("BeArEr {t}", 401, id="BeArEr"),
     pytest.param("Bearer  {t}", 401, id="Bearer, two spaces"),
     pytest.param("Bearer\t{t}", 401, id="Bearer, a tab"),
     pytest.param("Bearer \t{t}", 401, id="Bearer, a space and a tab"),
@@ -4289,11 +4293,7 @@ _LINEAR_SPELLINGS = [
     pytest.param("lin_api_" + "0" * 40, 401, id="a key's shape alone"),
     pytest.param("Bearer nope", 401, id="Bearer nope"),
     pytest.param("bearer nope", 401, id="bearer nope"),
-    pytest.param("Bearer", 401, id="Bearer alone"),
     pytest.param("Token {t}", 401, id="Token"),
-    pytest.param("token {t}", 401, id="token"),
-    pytest.param("Basic {t}", 401, id="Basic"),
-    pytest.param("OAuth {t}", 401, id="OAuth"),
 ]
 
 

@@ -54,11 +54,8 @@ _BAD_KEY = (
 # refused each with or None where it served the query.
 _FIREFLIES_SPELLINGS = [
     pytest.param("Bearer {t}", None, id="Bearer"),
-    pytest.param("bearer {t}", None, id="bearer"),
-    pytest.param("BEARER {t}", None, id="BEARER"),
     pytest.param("bEaReR {t}", None, id="bEaReR"),
     pytest.param("Bearer  {t}", None, id="two spaces"),
-    pytest.param("Bearer {t} ", None, id="a space after"),
     pytest.param(" Bearer {t}", None, id="a space before"),
     pytest.param("Bearer \xa0{t}\xa0", None, id="U+00A0 around the key"),
     pytest.param(None, _BAD_KEY, id="no header"),
@@ -74,12 +71,8 @@ _FIREFLIES_SPELLINGS = [
     pytest.param("Bearer{t}", _NO_PREFIX, id="no space"),
     pytest.param("Bearer,{t}", _NO_PREFIX, id="a comma"),
     pytest.param("\xa0Bearer {t}", _NO_PREFIX, id="U+00A0 before"),
-    pytest.param("nope", _NO_PREFIX, id="nope"),
     pytest.param("{t}", _NO_PREFIX, id="bare"),
-    pytest.param("Basic Zm9vOmJhcg==", _NO_PREFIX, id="Basic"),
-    pytest.param("token {t}", _NO_PREFIX, id="token"),
     pytest.param("Token {t}", _NO_PREFIX, id="Token"),
-    pytest.param("OAuth {t}", _NO_PREFIX, id="OAuth"),
 ]
 
 

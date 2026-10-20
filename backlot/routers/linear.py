@@ -186,7 +186,6 @@ def _read(raw: bytes, content_type: str | None, content_encoding: str) -> Any:
     try:
         return request_body.parse(text)
     except request_body.NotJson:
-        message = v8_json.error(text) if text else None
-        if message is None:
+        if not text:
             return JSONResponse(engine.not_json().payload, status_code=400)
-        return _express(message)
+        return _express(v8_json.error(text))

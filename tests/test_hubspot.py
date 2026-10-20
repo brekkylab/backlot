@@ -309,6 +309,8 @@ def test_hubspot_unknown_object_type_is_400(client, admin_h):
         ("0-3", True),  # deals: a real type, so an empty page rather than an error
         ("0-6", False),  # no standard object holds it
         ("0-41", False),
+        ("0-166", False),
+        ("0-400", False),
         ("2-12345", False),  # a custom object's id, which no corpus of Backlot defines
     ],
 )
@@ -400,22 +402,28 @@ def test_hubspot_0_18_0_72_0_64_are_their_types(tmp_path):
         ("0-421", "appointments"),
     ],
 )
-def test_hubspot_a_measured_type_id_is_its_type(client, admin_h, asked, named):
-    """The thirteen pairings the comment above `_TYPE_IDS` records from real's 403s
-    (2026-10-19): each id answers as its name does."""
-    by_id = client.get(f"/hubspot/crm/v3/objects/{asked}", headers=admin_h)
-    by_name = client.get(f"/hubspot/crm/v3/objects/{named}", headers=admin_h)
-    assert by_id.status_code == by_name.status_code == 200, by_id.json()
-    assert by_id.json()["results"] == by_name.json()["results"]
+def test_hubspot_a_measured_type_id_is_its_type(tmp_path, asked, named):
+    """The thirteen pairings the comment above `_TYPE_IDS` records from real's 403s, over a corpus
+    holding one record of the type, so an id read as any other type lists nothing."""
+    from tests._helpers import client_for
 
-
-@pytest.mark.parametrize("asked", ["0-101", "0-35", "0-130", "0-131", "0-166", "0-400"])
-def test_hubspot_an_unsettled_type_id_stays_unmapped(client, admin_h, asked):
-    """`0-101` answered as two types and the campaign ids as one that three ids share, so nothing
-    says which type to serve; `0-166` and `0-400` are real's 400 (measured 2026-10-19)."""
-    r = client.get(f"/hubspot/crm/v3/objects/{asked}", headers=admin_h)
-    assert r.status_code == 400
-    assert r.json()["message"] == f"Invalid object or event type id: {asked}"
+    record = {
+        "source_type": "hubspot",
+        "doc_id": f"hs-{named}",
+        "object_type": named,
+        "title": named,
+        "content": f"One of {named}.",
+        "author_email": "rep@acme.com",
+        "created": "2026-03-01T09:00:00Z",
+    }
+    settings = tiny_corpus(tmp_path, [record])
+    with client_for(settings, reload=True) as c:
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        by_id = c.get(f"/hubspot/crm/v3/objects/{asked}", headers=h)
+        assert by_id.status_code == 200, by_id.json()
+        assert [r["id"] for r in by_id.json()["results"]] == [
+            served_id("hubspot", record["doc_id"])
+        ]
 
 
 def test_hubspot_one_type_stated_both_ways_is_one_type(tmp_path):

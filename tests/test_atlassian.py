@@ -6265,6 +6265,54 @@ _JSON_TYPE = "application/json"
                 ),
             )
         ),
+        # the charset Tomcat reads first (``errors.atlassian.refuse_a_confluence_media_type``)
+        *(
+            ("POST", "/wiki/rest/api/space/abc123/permission", None, ctype, status, body)
+            for ctype, status, body in (
+                ("text/plain;charset=", 500, b""),
+                ("application/json;charset=", 500, b""),
+                ("application/json; charset=", 500, b""),
+                ("text/plain;Charset=", 500, b""),
+                ("text/plain;charset", 500, b""),
+                ('text/plain;charset=""', 500, b""),
+                ("text/plain;charset=utf-8;charset=", 500, b""),
+                ("application/json;charset=utf-8;Charset=", 500, b""),
+                ("text/plain;charset=_x", 500, b""),
+                ('text/plain;charset="a b"', 500, b""),
+                ("text/plain; charset =", 500, b""),
+                ('text/plain;charset;a="b', 500, b""),
+                ("application/json;charset=;charset=utf-8", 403, None),
+                ("text/plain;charset=;charset=utf-8", 415, "'text/plain;charset=utf-8'"),
+                (
+                    "text/plain;charset=;x=y",
+                    415,
+                    "Invalid mime type \"text/plain;charset=;x=y\": 'value' must not be empty",
+                ),
+                (
+                    "text/plain;charset= ;x=y",
+                    415,
+                    "Invalid mime type \"text/plain;charset= ;x=y\": 'value' must not be empty",
+                ),
+                ("foo;charset=", 415, "Invalid mime type \"foo;charset=\": does not contain '/'"),
+                (";charset=", 415, "Invalid mime type \";charset=\": 'mimeType' must not be empty"),
+                (
+                    "text/plain;a b=c;charset=",
+                    415,
+                    'Invalid mime type "text/plain;a b=c;charset=": '
+                    "Invalid token character ' ' in token \"a b\"",
+                ),
+                (
+                    "text/plain;charset=_x;a b=c",
+                    415,
+                    'Invalid mime type "text/plain;charset=_x;a b=c": _x',
+                ),
+                (
+                    'text/plain;charset="nope"',
+                    415,
+                    'Invalid mime type "text/plain;charset="nope"": unsupported charset \'nope\'',
+                ),
+            )
+        ),
         # the parameters kept (``errors.atlassian._spring_media_type``)
         *(
             ("POST", "/wiki/rest/api/content/abc123/child/attachment", None, ctype, 415, named)

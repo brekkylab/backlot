@@ -676,7 +676,7 @@ _GMAIL_EMPTY_BEFORE = (
     r'(?=(?:label|in|has|newer_than|older_than):[^\s"]|(?:after|before|newer|older): *[^\s"-])'
 )
 _GMAIL_OP = re.compile(
-    rf'(?:{_GMAIL_EMPTY_BEFORE})?(\w+):(?:(?:{_GMAIL_SPACED})(?:\s|"\s*")*|(?:{_GMAIL_DATED}) *)?'
+    rf'(?:{_GMAIL_EMPTY_BEFORE})?(-+)?(\w+):(?:(?:{_GMAIL_SPACED})(?:\s|"\s*")*|(?:{_GMAIL_DATED}) *)?'
     r'("[^"]*"|\S*)',
     re.IGNORECASE,
 )
@@ -780,6 +780,17 @@ _GMAIL_NEGATED_DATE = re.compile(r"(?<!\S)-(after|before|newer|older): *(\S+)", 
 _GMAIL_NEGATED_ADDRESS = re.compile(r"(?<!\S)-+(from|to|cc|bcc):\s*", re.IGNORECASE)
 _GMAIL_NEGATION = {"after": "before", "before": "after", "newer": "older", "older": "newer"}
 
+# A `-` before an empty operator — one whose value is the start of another operator, not a value —
+# passes the negation through to that next operator. Measured on a Workspace mailbox of 625
+# messages on 2026-10-19, comparing `messages.list` id sets: `-subject: label:inbox`,
+# `-label: label:inbox`, `-from: label:inbox` and `-from:label:inbox` each answered the ids of
+# `-label:inbox`, not the ids of the empty operator beside them.
+_GMAIL_NEGATED_EMPTY = re.compile(
+    r"(?<!\S)-+(?:subject|from|to|cc|bcc|label|in|has|after|before|newer|older):\s*"
+    r"(?=(?:from|to|cc|bcc|subject|label|in|has|after|before|newer|older|newer_than|older_than):)",
+    re.IGNORECASE,
+)
+
 
 def _gmail_q_date(v: str) -> str | None:
     """The epoch seconds an `after:` or `before:` value in a search names, or None for a value real
@@ -816,10 +827,11 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
     ops: dict[str, list[str]] = {}
 
     def _take(m):
-        key = m.group(1).lower()
+        negated = m.group(1) is not None
+        key = m.group(2).lower()
         if key in _GMAIL_KEYS:
             key = _GMAIL_KEY_ALIASES.get(key, key)
-            value = m.group(2)
+            value = m.group(3)
             if not value and key not in _GMAIL_ADDRESS_KEYS:
                 if key in _GMAIL_DROPPED_WHEN_EMPTY:
                     return " "
@@ -831,6 +843,8 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
                 ops.setdefault(_GMAIL_NOTHING if read is None else key, []).append(read or value)
                 return " "
             stored = key
+            if negated and key not in _GMAIL_ADDRESS_KEYS:
+                stored = f"-{key}"
             if key in _GMAIL_ADDRESS_KEYS and value.startswith("-"):
                 value, stored = value.lstrip("-"), f"-{key}"
                 if not _GMAIL_ADDRESS_WORD.search(value):
@@ -855,6 +869,7 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
             return " "
         return m.group(0)
 
+    q = _GMAIL_NEGATED_EMPTY.sub("-", q)
     q = _GMAIL_NEGATED_DATE.sub(_gmail_negated_date, q)
     q = _GMAIL_NEGATED_ADDRESS.sub(lambda m: f"{m.group(1)}:-", q)
     free = re.sub(r"\s+", " ", _GMAIL_OP.sub(_take, q)).strip()
@@ -1008,6 +1023,9 @@ def _gmail_op_match(row, ops: dict) -> bool:
     for v in ops.get("subject", []):
         if v.lower() not in (row["title"] or "").lower():
             return False
+    for v in ops.get("-subject", []):
+        if v.lower() in (row["title"] or "").lower():
+            return False
     # `in:` and `label:` ask the same question of a message — Gmail's folders ARE labels — and both
     # have to see the label a message is served under rather than only a stated one. `in:anywhere`
     # is the exception: it widens the search to spam and trash, which Backlot holds none of, so
@@ -1016,7 +1034,14 @@ def _gmail_op_match(row, ops: dict) -> bool:
     for v in ops.get("label", []) + [x for x in ops.get("in", []) if x.lower() != "anywhere"]:
         if v.lower() not in labels:
             return False
+    for v in ops.get("-label", []) + [x for x in ops.get("-in", []) if x.lower() != "anywhere"]:
+        if v.lower() in labels:
+            return False
     if any(v.lower() == "attachment" for v in ops.get("has", [])) and not store.jcol(
+        row, "attachments"
+    ):
+        return False
+    if any(v.lower() == "attachment" for v in ops.get("-has", [])) and store.jcol(
         row, "attachments"
     ):
         return False

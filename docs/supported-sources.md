@@ -562,7 +562,8 @@ operation's 415 carry the account id alone.
 
 Plus the `Team.issues` and `Issue.{comments,labels,children,relations,inverseRelations,attachments,releases}`
 connections, and the by-id roots (`user`, `workflowState`, `project`, `issueLabel`, `cycle`,
-`release`, `attachment`, `issueRelation`) the official SDK's lazy relation accessors call.
+`release`, `attachment`, `issueRelation`, `teamMembership`) the official SDK's lazy relation accessors
+call.
 
 Relay pagination (`first`/`after`, `last`/`before` → `{nodes, pageInfo}`), server-side `filter`
 compiled into SQL, and full introspection.

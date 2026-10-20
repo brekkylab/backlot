@@ -734,11 +734,11 @@ def _team(container: str, info) -> dict:
         "slackIssueStatuses": False,
         "scimManaged": False,
         "scimGroupName": None,
-        # A real team answers its own member `false` (measured 2026-10-08), and the caller is a
-        # member of every team it can see (`viewerMembership`). What a real team answers a
-        # non-member is unmeasured, as the workspace measured has one team with the key's user in
-        # it and a second would be a write; the field's own description says it "Runs the same
-        # checks `teamMembershipCreate` applies", and this server declares no `Mutation` type.
+        # A real team answers its own member `false` (measured 2026-10-08), and the caller is one
+        # (see `_membership`). What a real team answers a non-member is unmeasured, as the workspace
+        # measured has one team with the key's user in it and a second would be a write; the
+        # field's own description says it "Runs the same checks `teamMembershipCreate` applies",
+        # and this server declares no `Mutation` type.
         "viewerCanJoin": False,
         "icon": None,
         "color": None,
@@ -1274,20 +1274,21 @@ def resolve_viewer(_root, info) -> dict:
 
 
 # --- the viewer's team memberships ---------------------------------------------------------
-# Backlot reads the caller as a member of every team it can see, which is why `viewerCanJoin` is
-# `false` on each. Measured against api.linear.app on 2026-10-20, the one team in a workspace
-# answered its member a `TeamMembership` with `owner: false`, `archivedAt: null` and
-# `createdAt == updatedAt`, `false` for `viewerCanLeave`, and the same membership by id from
-# `teamMembership(id:)`; an unknown id answers "Entity not found: TeamMembership".
+# Backlot reads the caller as a member of every team it can see. Measured against api.linear.app
+# on 2026-10-20, the one team in a workspace answered a member a `TeamMembership` with
+# `owner: false`, `archivedAt: null` and `createdAt == updatedAt`, `false` for `viewerCanLeave`,
+# and the same membership by id from `teamMembership(id:)`; an unknown id answers "Entity not
+# found: TeamMembership", a message that carries no id.
 
 
 def _membership(container: str, info) -> dict:
     """The caller's ``TeamMembership`` in one team.
 
-    A membership cannot predate its team or its user, so it is created at the later of the two;
-    the measured one was created with both, in the same instant. The measured ``sortOrder`` was 41,
-    a value nothing in a corpus derives, so a team's ``sortOrder`` is its position in the caller's
-    team list."""
+    A membership cannot predate its team or its user, so it is created at the later of the two, the
+    earliest it can be: one member's was created with both in the same instant, another's 64 seconds
+    after its user. Linear describes ``sortOrder`` as "The sort order of this team in the user's
+    personal team list", so a team's is its position in the caller's team list; the two memberships
+    measured answered 41 and 0."""
     viewer = resolve_viewer(None, info)
     team = _team(container, info)
     created = max(team["createdAt"], viewer["createdAt"])
@@ -1320,9 +1321,7 @@ def resolve_team_membership(_root, info, id) -> dict:
     for container in _visible_teams(info):
         if synth.linear_team_membership_id(container, viewer_id) == str(id):
             return _membership(container, info)
-    raise GraphQLError(
-        f"Entity not found: TeamMembership - Could not find referenced TeamMembership. id={id}"
-    )
+    raise GraphQLError("Entity not found: TeamMembership")
 
 
 # --- relation fields that take arguments ------------------------------------------------

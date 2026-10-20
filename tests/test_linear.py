@@ -202,6 +202,19 @@ def test_linear_team_issue_count_is_the_visible_count(client, admin_h, tokens_ya
     bla = synth.linear_team_membership_id("blackops", synth.linear_user_id("ava@acme.com"))
     hidden = gql(client, "{ teamMembership(id: %s) { id } }" % lit(bla), ava_h)
     assert "Entity not found" in hidden.json()["errors"][0]["message"]
+    # Each caller's membership in ENG is its own: a different id, at ENG's position in that caller's
+    # team list (third of the admin's three teams, second of ava's two).
+    q = "{ teams { nodes { key viewerMembership { id sortOrder } } } }"
+    eng = [
+        next(
+            t["viewerMembership"]
+            for t in gql(client, q, h).json()["data"]["teams"]["nodes"]
+            if t["key"] == "ENG"
+        )
+        for h in (admin_h, ava_h)
+    ]
+    assert [m["sortOrder"] for m in eng] == [2.0, 1.0]
+    assert eng[0]["id"] != eng[1]["id"]
 
 
 def test_linear_state_type_is_linears_category(client, admin_h):
@@ -2558,11 +2571,23 @@ _MEMBERSHIP = "id createdAt updatedAt archivedAt owner sortOrder user { id } tea
 
 
 def test_linear_viewer_membership_is_the_callers_own(tmp_path):
-    """The measurement above `_membership`: the member of a workspace's one team is answered its
+    """The measurement above `_membership`: a member of a workspace's one team is answered its
     membership, `viewerCanLeave: false`, and the same membership again from `teamMembership(id:)`,
-    the query `@linear/sdk`'s `team.viewerMembership` accessor sends."""
-    with _linear_client(tmp_path) as (client, settings):
-        h = {"Authorization": settings.admin_token}
+    the query `@linear/sdk`'s `team.viewerMembership` accessor sends. ava sees one of the corpus's
+    two teams, so it is the teams she can see that `viewerCanLeave` counts."""
+    sealed = {
+        "source_type": "linear",
+        "doc_id": "lin-sealed",
+        "team": "blackops",
+        "title": "Sealed",
+        "content": "Sealed.",
+        "author_email": "hana@acme.com",
+        "readers": ["hana@acme.com"],
+        "identifier": "BLA-1",
+    }
+    with corpus_client(tmp_path, [*LINEAR_CORPUS, sealed]) as (client, _settings):
+        users = client.get("/_meta/users").json()["users"]
+        h = {"Authorization": next(u["token"] for u in users if u["email"] == "ava@acme.com")}
         q = "{ viewer { id createdAt } teams { nodes { id createdAt viewerCanLeave"
         d = gql(client, q + " viewerMembership { %s } } } }" % _MEMBERSHIP, h).json()["data"]
         (team,) = d["teams"]["nodes"]
@@ -2573,8 +2598,14 @@ def test_linear_viewer_membership_is_the_callers_own(tmp_path):
         assert m["createdAt"] == m["updatedAt"] == max(team["createdAt"], d["viewer"]["createdAt"])
         by_id = gql(client, "{ teamMembership(id: %s) { %s } }" % (lit(m["id"]), _MEMBERSHIP), h)
         assert by_id.json()["data"]["teamMembership"] == m
-        miss = gql(client, '{ teamMembership(id: "%s") { id } }' % synth.linear_id("nope"), h)
-        assert "Entity not found: TeamMembership" in miss.json()["errors"][0]["message"]
+        # A lone surrogate is answered as any other unknown id; the raw body carries it as JSON's
+        # `\ud800` escape, which a client encoding the string as UTF-8 first cannot send.
+        for x in (synth.linear_id("nope"), "a\ud800b"):
+            body = {"query": "query($x: String!) { teamMembership(id: $x) { id } }"}
+            body["variables"] = {"x": x}
+            miss = client.post("/linear/graphql", content=json.dumps(body), headers=h)
+            assert miss.status_code == 200
+            assert miss.json()["errors"][0]["message"] == "Entity not found: TeamMembership"
 
 
 def test_enum_fields_serve_a_member_of_the_vendors_enum(fclient):

@@ -593,12 +593,13 @@ async def _msteams_reads(graph):
     posts = await incidents.messages.get(request_configuration=config)
     root = next(m for m in posts.value if "502s" in m.body.content)
     check("Teams", "channel messages")(lambda: f"{posts.odata_count} roots")
-    # The SDK parses a datetime. Its relation to the id is a Backlot synthesis convention,
-    # not a Microsoft guarantee about real message ids or etags.
+    # The id is the creation time and the etag the last-modified time, both in epoch ms, as live.
     check("Teams", "id is createdDateTime")(
         lambda: round(root.created_date_time.timestamp() * 1000) == int(root.id) or 1 / 0
     )
-    check("Teams", "etag is id")(lambda: root.etag == root.id or 1 / 0)
+    check("Teams", "etag is lastModifiedDateTime")(
+        lambda: round(root.last_modified_date_time.timestamp() * 1000) == int(root.etag) or 1 / 0
+    )
     check("Teams", "message.from")(lambda: root.from_.user.display_name)
     check("Teams", "message.messageType")(lambda: root.message_type.value)
     check("Teams", "$expand=replies")(lambda: f"{len(root.replies)} inline")
@@ -611,8 +612,9 @@ async def _msteams_reads(graph):
             else 1 / 0
         )
     )
-    fetched = await incidents.messages.by_chat_message_id(replies.value[0].id).get()
-    check("Teams", "messages/{id} on a reply")(lambda: fetched.reply_to_id == root.id or 1 / 0)
+    thread = incidents.messages.by_chat_message_id(root.id)
+    fetched = await thread.replies.by_chat_message_id1(replies.value[0].id).get()
+    check("Teams", "replies/{id}")(lambda: fetched.reply_to_id == root.id or 1 / 0)
 
     members = await incidents.members.get()
     check("Teams", "channel members")(lambda: ", ".join(sorted(m.email for m in members.value)))
@@ -632,8 +634,8 @@ async def _msteams_reads(graph):
         # Rebound, because Python clears an `except ... as` name at the end of its block and the
         # closure below outlives it.
         raised = exc
-    check("Teams", "404 is an ODataError")(
-        lambda: raised.error.code if raised and raised.response_status_code == 404 else 1 / 0
+    check("Teams", "an unknown message is an ODataError")(
+        lambda: raised.error.code if raised and raised.response_status_code == 403 else 1 / 0
     )
 
 
@@ -781,8 +783,8 @@ def test_msteams_sdk_acl_scopes_to_user(live_server, tokens):
     """`People Confidential` is group-scoped to people; bob is engineering.
 
     Asserted through the SDK rather than over HTTP because that is where a client would notice: the
-    channel has to be absent from the listing AND unreachable by id, or a caller who saved the id
-    keeps reading a room they were removed from.
+    channel has to be absent from the listing AND refused by id, or a caller who saved the id keeps
+    reading a room they were removed from.
     """
     pytest.importorskip("msgraph")
     import asyncio
@@ -815,4 +817,4 @@ def test_msteams_sdk_acl_scopes_to_user(live_server, tokens):
 
     names, status = asyncio.run(bob())
     assert "People Confidential" not in names
-    assert status == 404, "a channel bob cannot read must not resolve by id either"
+    assert status == 403, "a channel bob cannot read is refused by id, as live refuses it"

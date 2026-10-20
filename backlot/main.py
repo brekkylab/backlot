@@ -80,14 +80,13 @@ async def lifespan(app: FastAPI):
     # per-source COUNT(*), channel -> principals granted on any of its docs, and channel -> member
     # count. Every consumer treats None as "not warm yet" and falls back to its own query.
     #
-    # The two conversation sources get their OWN pair rather than sharing one keyed by source: a
-    # channel name is unique within its source and nothing stops `#incidents` existing in both, so
-    # one map would answer for a channel the caller asked nothing about.
+    # Teams gets its OWN channel -> principals map rather than sharing Slack's: a channel name is
+    # unique within its source and nothing stops `#incidents` existing in both, so one map would
+    # answer for a channel the caller asked nothing about.
     app.state.doc_counts = None
     app.state.channel_acl = None
     app.state.channel_members = None
     app.state.msteams_channel_acl = None
-    app.state.msteams_channel_members = None
 
     app.state.warm_error = None
 
@@ -122,7 +121,6 @@ async def lifespan(app: FastAPI):
                     for src, tbl in store.SOURCE_TABLE.items()
                 }
                 app.state.channel_members = store.conversation_member_counts(c, "slack")
-                app.state.msteams_channel_members = store.conversation_member_counts(c, "msteams")
             finally:
                 c.close()
         except Exception as e:  # noqa: BLE001 — a warm-up must not be able to kill the server
@@ -1093,6 +1091,8 @@ async def meta_openapi(source: str, request: Request):
 app.include_router(oauth.router)
 app.include_router(slack.router)
 app.include_router(msteams.router)
+# after the routes it serves, so only a path none of them match reaches it
+app.include_router(msteams.unmatched_router)
 app.include_router(google.router)
 app.include_router(github.router)
 app.include_router(atlassian.router)

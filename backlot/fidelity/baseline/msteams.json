@@ -39,7 +39,13 @@
         "roles": {
           "status": "implemented"
         },
+        "tenantId": {
+          "status": "implemented"
+        },
         "userId": {
+          "status": "implemented"
+        },
+        "visibleHistoryStartDateTime": {
           "status": "implemented"
         }
       }
@@ -73,6 +79,12 @@
           "status": "implemented"
         },
         "membershipType": {
+          "status": "implemented"
+        },
+        "summary": {
+          "status": "implemented"
+        },
+        "tenantId": {
           "status": "implemented"
         },
         "webUrl": {
@@ -141,9 +153,6 @@
         "mentions": {
           "status": "implemented"
         },
-        "messageHistory": {
-          "status": "implemented"
-        },
         "messageType": {
           "status": "implemented"
         },
@@ -190,6 +199,12 @@
       "status": "implemented",
       "fields": {
         "createdDateTime": {
+          "status": "implemented"
+        },
+        "displayName": {
+          "status": "implemented"
+        },
+        "reactionContentUrl": {
           "status": "implemented"
         },
         "reactionType": {
@@ -299,6 +314,9 @@
         },
         "id": {
           "status": "implemented"
+        },
+        "tenantId": {
+          "status": "extra"
         },
         "userIdentityType": {
           "status": "implemented"

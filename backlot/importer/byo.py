@@ -430,9 +430,7 @@ def _service_columns(
             "reactions": _j(_msteams_reactions(ex.get("reactions"))),
             "attachments": _j(ex.get("attachments")),
             "mentions": _j(ex.get("mentions")),
-            "last_edited_ts": _epoch_field(
-                ex.get("lastEditedDateTime"), f"msteams message {seed!r}", "lastEditedDateTime"
-            ),
+            "last_edited_ts": _epoch_field(ex.get("edited"), f"msteams message {seed!r}", "edited"),
             "created_ts": created,
         }
     if src == "slack":
@@ -1551,12 +1549,11 @@ class _Loader:
     def _message_id(self, src: str, channel: str, seed: str, created_ts, author_email, body):
         """The id a conversation message is served and addressed by, assigned once at import.
 
-        Slack's `ts` was once computed per request from `(created_ts, thread-root key)`, which
-        COLLIDED: every message of a thread hashed the same root key into the same micro-fraction,
-        so two replies landing in the same second produced one ts between them and one of the two
-        was reachable only at the other's. Assigning it here, probed within the channel, is what
-        makes it an identifier rather than a formatting of one. Teams shares the identity and
-        append checks, with its own format and a smaller, exhaustively probed fraction space.
+        Assigned here and probed within the channel, because a value derived per request from
+        `(created_ts, thread-root key)` collides for two replies in one second: both hash the same
+        root key into the same sub-second part, and one of them is reachable only at the other's.
+        Teams shares the identity and append checks, with its own format and a smaller,
+        exhaustively probed sub-second space.
 
         No deferred pass, unlike github's number: nothing in a corpus ever provides one of these
         ids, so there is no provided-beats-synthesized race to settle -- only collisions, which an
@@ -1568,10 +1565,9 @@ class _Loader:
         base = int(created_ts) if created_ts is not None else synth.epoch(seed)
         taken = self._msg_ids_taken.setdefault((src, channel), set())
         preloaded = self._msg_ids_preloaded.get((src, channel), frozenset())
-        # Keyed on the message's OWN seed, where the serve-time version keyed a reply on its
-        # thread root — that shared key is precisely what made two replies in one second
-        # indistinguishable. A reply still sorts after its root because its `created_ts` is the
-        # root's plus its position, which is where thread order actually comes from.
+        # Keyed on the message's OWN seed: a reply keyed on its thread root would share that key
+        # with every other reply in the same second. A reply still sorts after its root because its
+        # `created_ts` is the root's plus its position, which is where thread order comes from.
         candidate = fmt(base, seed)
         start = int(candidate) % fractions if src == "msteams" else None
         for salt in range(1, fractions + 1):
@@ -1588,9 +1584,9 @@ class _Loader:
                 src, channel, candidate, author_email, body
             ):
                 return candidate
-            # Teams has only 1000 slots: salted rehashing can revisit occupied fractions and
-            # falsely report exhaustion with a slot still free. Walk each fraction once, keeping
-            # the original hash as the first candidate. Preserve Slack's existing id assignment.
+            # Teams has only 1000 slots, and salted rehashing can revisit an occupied one and report
+            # exhaustion with a slot still free, so it walks each slot once from the hashed start.
+            # Slack's million keep the salted rehash.
             candidate = (
                 str(base * 1000 + (start + salt) % fractions)
                 if start is not None
@@ -2127,7 +2123,6 @@ class _Loader:
             "message_type",
             "importance",
             "mentions",
-            "lastEditedDateTime",
             # Linear (its own field names: `state` not status, camelCase timestamps)
             "identifier",
             "estimate",
@@ -2346,7 +2341,7 @@ class _Loader:
                     edited = cols["last_edited_ts"]
                     if edited is not None and edited * 1000 < int(cols[idcol]):
                         raise SystemExit(
-                            f"{where}: message {did!r}: lastEditedDateTime must not precede "
+                            f"{where}: message {did!r}: `edited` must not precede "
                             "this message's createdDateTime"
                         )
             elif src == "fireflies":
@@ -2705,7 +2700,8 @@ class _Loader:
             # mentions/importance). Its second was resolved with the rest of the thread's in
             # `_thread_seconds`, which is where the ordering rule and its refusals live.
             rep_cts = reply_seconds[i - 1]
-            _check_edited(f"{where}: reply {i}", rep.get("edited"), rep_cts, rep_author)
+            if src == "slack":
+                _check_edited(f"{where}: reply {i}", rep.get("edited"), rep_cts, rep_author)
             insert(
                 rep_id,
                 rep_author,

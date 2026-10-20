@@ -160,7 +160,7 @@ SAMPLE = [
                 "author_email": "bob@acme.com",
                 "content_type": "html",
                 "created": "2026-02-10T18:06:00Z",
-                "lastEditedDateTime": "2026-02-10T18:07:00Z",
+                "edited": "2026-02-10T18:07:00Z",
             },
         ],
         "created": "2026-02-10T18:00:00Z",

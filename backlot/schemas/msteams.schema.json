@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/brekkylab/backlot/schemas/msteams.schema.json",
   "title": "BYO corpus record — msteams",
-  "description": "A Microsoft Teams channel message. Title is optional (a chatMessage has a `subject`, and it is null on almost every one). A record with `replies` becomes a root post; each reply is served under conversations' `replies` relationship and only the root shows in the channel's message list, which is what `GET /channels/{id}/messages` returns.",
+  "description": "A Microsoft Teams channel message. Title is optional (a chatMessage has a `subject`, and it is null on almost every one). A record with `replies` becomes a root post; each reply is served at `…/messages/{id}/replies` and only the root shows in the channel's message list, which is what `GET /channels/{id}/messages` returns.",
   "type": "object",
   "properties": {
     "source_type": {
@@ -11,7 +11,7 @@
     "content": {
       "type": "string",
       "minLength": 1,
-      "description": "The retrieval payload served verbatim as the message `body.content`."
+      "description": "The retrieval payload, served verbatim as the message's `body.content` (a system event's body is `<systemEventMessage/>` instead)."
     },
     "doc_id": {
       "type": "string",
@@ -65,14 +65,14 @@
         "string",
         "null"
       ],
-      "description": "The message's `subject`, in plaintext. Null on almost every real message; Teams shows one only where the poster typed it."
+      "description": "The message's `subject`, in plaintext. Teams shows one only where the poster typed it; a message without one is served with the empty string."
     },
     "message_type": {
       "enum": [
         "message",
         "systemEventMessage"
       ],
-      "description": "Graph's `messageType` (default: message). `systemEventMessage` is a notice Teams itself generated (a member joined), which carries no `from`."
+      "description": "Graph's `messageType` (default: message). `systemEventMessage` is a notice Teams itself generated (a member joined): it carries no `from`, its body is `<systemEventMessage/>`, and it is served as `unknownFutureValue` unless the request sends `Prefer: include-unknown-enum-members`."
     },
     "content_type": {
       "enum": [
@@ -98,7 +98,7 @@
           "reactionType": {
             "type": "string",
             "minLength": 1,
-            "description": "e.g. like, heart, laugh, surprised, sad, angry."
+            "description": "The emoji, as Graph serves it (e.g. 👍, 😢, 🎉). `like`, the name Graph's older enum used for 👍, is read as 👍."
           },
           "user": {
             "type": "string",
@@ -114,18 +114,9 @@
             "description": "When they reacted (epoch seconds or ISO 8601). Defaults to the message's own time, since Graph declares this non-nullable and a reaction has to carry one."
           },
           "displayName": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "The reaction's display name, where a custom one has one."
-          },
-          "reactionContentUrl": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "URL of a custom reaction's content."
+            "type": "string",
+            "minLength": 1,
+            "description": "The reaction's name (e.g. Like). Default: the name Teams gives the emoji, for the ones Backlot knows."
           }
         },
         "required": [
@@ -138,19 +129,63 @@
     },
     "attachments": {
       "type": "array",
-      "description": "chatMessageAttachment objects."
+      "description": "Files shared in this message. Each becomes a `reference` chatMessageAttachment, the shape a file shared in a channel takes; the body names it with `<attachment id=\"…\"></attachment>`.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The file's name."
+          },
+          "contentUrl": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Where the file lives."
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The id the body's `<attachment>` tag names (default: a GUID derived from the message)."
+          }
+        },
+        "required": [
+          "name",
+          "contentUrl"
+        ],
+        "additionalProperties": false
+      }
     },
     "mentions": {
       "type": "array",
-      "description": "chatMessageMention objects: [{id, mentionText, mentioned}]."
+      "description": "The people this message @-mentions, in the order the body's `<at id=\"0\">…</at>` tags number them. Each becomes a chatMessageMention whose `mentioned.user` the router builds from the address.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "user": {
+            "type": "string",
+            "format": "email",
+            "description": "Who is mentioned."
+          },
+          "mentionText": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The text the body shows inside the `<at>` tag (default: the person's display name)."
+          }
+        },
+        "required": [
+          "user"
+        ],
+        "additionalProperties": false
+      }
     },
-    "lastEditedDateTime": {
+    "edited": {
       "type": [
         "integer",
         "number",
         "string"
       ],
-      "description": "When the message was last edited (epoch seconds or ISO 8601). Absent means it never was, which the API reports as null."
+      "description": "When the message was last edited (epoch seconds or ISO 8601), served as `lastEditedDateTime`. Absent means it never was, which the API reports as null."
     },
     "created": {
       "type": [
@@ -195,13 +230,15 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "The message's `subject`, in plaintext. Teams shows one only where the poster typed it; a message without one is served with the empty string."
           },
           "message_type": {
             "enum": [
               "message",
               "systemEventMessage"
-            ]
+            ],
+            "description": "Graph's `messageType` (default: message). `systemEventMessage` is a notice Teams itself generated (a member joined): it carries no `from`, its body is `<systemEventMessage/>`, and it is served as `unknownFutureValue` unless the request sends `Prefer: include-unknown-enum-members`."
           },
           "content_type": {
             "enum": [
@@ -225,7 +262,7 @@
                 "reactionType": {
                   "type": "string",
                   "minLength": 1,
-                  "description": "e.g. like, heart, laugh, surprised, sad, angry."
+                  "description": "The emoji, as Graph serves it (e.g. 👍, 😢, 🎉). `like`, the name Graph's older enum used for 👍, is read as 👍."
                 },
                 "user": {
                   "type": "string",
@@ -241,18 +278,9 @@
                   "description": "When they reacted (epoch seconds or ISO 8601). Defaults to the message's own time, since Graph declares this non-nullable and a reaction has to carry one."
                 },
                 "displayName": {
-                  "type": [
-                    "string",
-                    "null"
-                  ],
-                  "description": "The reaction's display name, where a custom one has one."
-                },
-                "reactionContentUrl": {
-                  "type": [
-                    "string",
-                    "null"
-                  ],
-                  "description": "URL of a custom reaction's content."
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "The reaction's name (e.g. Like). Default: the name Teams gives the emoji, for the ones Backlot knows."
                 }
               },
               "required": [
@@ -264,17 +292,64 @@
             "description": "Reactions to this message. `chatMessageReaction` is a closed type in Graph's metadata and declares `reactionType`, `createdDateTime` and `user` non-nullable, so the shape is enforced here rather than passed through."
           },
           "attachments": {
-            "type": "array"
+            "type": "array",
+            "description": "Files shared in this message. Each becomes a `reference` chatMessageAttachment, the shape a file shared in a channel takes; the body names it with `<attachment id=\"…\"></attachment>`.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "The file's name."
+                },
+                "contentUrl": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Where the file lives."
+                },
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "The id the body's `<attachment>` tag names (default: a GUID derived from the message)."
+                }
+              },
+              "required": [
+                "name",
+                "contentUrl"
+              ],
+              "additionalProperties": false
+            }
           },
           "mentions": {
-            "type": "array"
+            "type": "array",
+            "description": "The people this message @-mentions, in the order the body's `<at id=\"0\">…</at>` tags number them. Each becomes a chatMessageMention whose `mentioned.user` the router builds from the address.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "user": {
+                  "type": "string",
+                  "format": "email",
+                  "description": "Who is mentioned."
+                },
+                "mentionText": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "The text the body shows inside the `<at>` tag (default: the person's display name)."
+                }
+              },
+              "required": [
+                "user"
+              ],
+              "additionalProperties": false
+            }
           },
-          "lastEditedDateTime": {
+          "edited": {
             "type": [
               "integer",
               "number",
               "string"
-            ]
+            ],
+            "description": "When the message was last edited (epoch seconds or ISO 8601), served as `lastEditedDateTime`. Absent means it never was, which the API reports as null."
           }
         },
         "required": [

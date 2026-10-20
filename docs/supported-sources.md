@@ -23,7 +23,7 @@ Generated from `backlot/schemas/*.schema.json` and the app's own `/openapi.json`
 | `hubspot` | HubSpot | `/hubspot` | 5 | [`hubspot.schema.json`](../backlot/schemas/hubspot.schema.json) | A HubSpot CRM record (contact, company, deal, ticket, note, …). |
 | `jira` | Jira | `/atlassian/rest/api` | 14 | [`jira.schema.json`](../backlot/schemas/jira.schema.json) | A Jira issue. |
 | `linear` | Linear | `/linear/graphql` | GraphQL (one `POST`) | [`linear.schema.json`](../backlot/schemas/linear.schema.json) | A Linear issue. |
-| `msteams` | Microsoft Teams | `/msgraph/v1.0` | 10 | [`msteams.schema.json`](../backlot/schemas/msteams.schema.json) | A Microsoft Teams channel message. |
+| `msteams` | Microsoft Teams | `/msgraph/v1.0` | 11 | [`msteams.schema.json`](../backlot/schemas/msteams.schema.json) | A Microsoft Teams channel message. |
 | `notion` | Notion | `/notion/v1` | 12 | [`notion.schema.json`](../backlot/schemas/notion.schema.json) | A Notion page or database. |
 | `s3` | Amazon S3 | `/s3` | 5 | [`s3.schema.json`](../backlot/schemas/s3.schema.json) | An S3 object. |
 | `slack` | Slack | `/slack/api` | 12 | [`slack.schema.json`](../backlot/schemas/slack.schema.json) | A Slack message. |
@@ -574,54 +574,50 @@ compiled into SQL, and full introspection.
 Microsoft Graph's own base path, so a Graph client changes its base URL and nothing else.
 Responses are OData: `@odata.context`, `@odata.count`, `value`, and an absolute `@odata.nextLink`
 carrying a `$skiptoken`. Errors are real status codes with an `{"error": {"code", "message"}}` body.
+Shapes, status codes and query-option answers below were measured against graph.microsoft.com in
+October 2026, with app-only and delegated tokens, on a tenant with a private channel.
 
 | Endpoint | Notes |
 |---|---|
 | `me` | `$select` |
 | `me/joinedTeams` | The one team this corpus models |
-| `users` | `$top`, `$skiptoken`, `$select` |
+| `users` | `$top` (1–999, default 100), `$skiptoken`, `$select`, `$filter`; `@odata.count` only with `$count=true` and `ConsistencyLevel: eventual` |
 | `users/{id}` | Object id *or* userPrincipalName |
-| `teams/{team-id}/channels` | `$top`, `$skiptoken`, `$select`, `$filter=membershipType eq '…'` |
-| `teams/{team-id}/channels/{channel-id}` | `$select`; the method that reports `layoutType` |
-| `teams/{team-id}/channels/{channel-id}/messages` | Root messages only. `$top` (max 50), `$expand=replies` |
-| `.../messages/{message-id}` | A root or a reply alike |
-| `.../messages/{message-id}/replies` | Newest first |
-| `teams/{team-id}/channels/{channel-id}/members` | `conversationMember` objects, paginated |
+| `teams/{team-id}/channels` | Every visible channel in one response: no paging. `$select`, `$filter` |
+| `teams/{team-id}/channels/{channel-id}` | `$select`; the method that reports `layoutType` and `summary` |
+| `teams/{team-id}/channels/{channel-id}/messages` | Root messages, newest reply chain first. `$top` (1–50, default 20), `$select`, `$expand=replies` |
+| `.../messages/{message-id}` | A root; a reply's id is a `404` here, and an id that names nothing a `403` |
+| `.../messages/{message-id}/replies` | Newest first, paged as messages are |
+| `.../messages/{message-id}/replies/{reply-id}` | One reply |
+| `teams/{team-id}/channels/{channel-id}/members` | `aadUserConversationMember` objects, all of them: `$top` is ignored. `$select`, `$filter` |
 
-One team, and channels only: a Backlot corpus has one org and no DMs, so a request naming another
-team is a `404 NotFound` and `chatId` is null on every message. Backlot synthesizes a message's
-`id` from creation milliseconds and reuses it as the `etag`. These are emulator conventions, not
-Microsoft guarantees: the [chatMessage reference](https://learn.microsoft.com/en-us/graph/api/resources/chatmessage?view=graph-rest-1.0)
-declares separate id, timestamp, and version properties. Treat real ids and etags as opaque.
+`@odata.count` is the number of items on the page. A credential that does not resolve is the 401
+before anything else, on any path and any method, as it is live. Query
+options Graph refuses are refused with its words: `$top` past a method's limit, a `$skiptoken`
+that does not decode (a `502` on replies, as live), `$filter`/`$orderby` on messages, `$orderby`/
+`$expand`/`$top` on channels, and a `$select`/`$expand`/`$filter` property the type does not
+declare. `$filter` supports `eq`, `ne`, `gt`/`ge`/`lt`/`le`, `startswith`, `endswith`,
+`contains` (not on `/users`), `and`, `or` and `not`; the directory compares strings without regard
+to case, channels with it.
 
-A channel the caller cannot see is refused by id as well as hidden from the listing: get-channel,
-messages, replies and members all answer the same `404` an id that names nothing gets, so a private
-channel's name, description and membership are not readable from its id alone. `$filter` is
-rejected rather than ignored where it is not the documented `membershipType` form, so a caller
-cannot mistake an unfiltered list for a filtered one.
+A private channel the caller is not in is left out of the listing, and every method that names it
+by id answers `403 Forbidden` — the status Graph gives, which does tell the caller the id exists.
+A channel id the team does not have is a `404` from get-channel and members and a `410 Gone` from
+the message methods; another team's id is a `404` worded per method.
 
-**Fidelity limits:** the metadata check validates declared properties, explicit non-nullability and
-enum values on a sample of local responses; it is not an authenticated tenant comparison. Hidden
-resources returning 404 rather than 403, direct message-get accepting reply ids, malformed paging
-fallbacks, defaults not stated by the endpoint reference, and rejection of unsupported channel
-filters are local policies whose real tenant behavior remains unmeasured. Other query options are
-not implemented. The [message listing reference](https://learn.microsoft.com/en-us/graph/api/channel-list-messages?view=graph-rest-1.0)
-documents 20 messages by default, at most 50, and up to 200 expanded replies; the
-[member listing reference](https://learn.microsoft.com/en-us/graph/api/channel-list-members?view=graph-rest-1.0)
-documents default/max member pages of 100/999. Users and channels use Backlot's configured page
-sizes; replies currently reuse the message-list limits. Backlot's expanded `replies@odata.count`
-counts inline replies (200 for a thread with 205 replies); the continuation's collection
-`@odata.count` reports the total visible replies (205), not its remaining page length (5). The
-reference documents the 200-reply default and continuation link (and also describes larger live
-reply pages), but these count semantics have not been verified against an authenticated tenant.
-Follow the continuation to obtain every reply.
-Undecodable or negative skiptokens restart at the first page; a decoded offset above SQLite's
-signed 64-bit maximum is a Graph-shaped 400, an emulator safety limit rather than measured Graph
-behavior. Imported reply times must advance by a whole second, and at most 1,000 synthetic ids
-fit one channel-second: neither restriction is a Microsoft limit. Edit timestamps must parse and
-must not precede the message's served creation milliseconds; imported edits have whole-second
-precision. Public-channel members are inferred from authors; private members from ACL grants.
-Real tenant authorization, chat/DM APIs, writes, and the full OData query language are not emulated.
+A standard channel's members are the whole team — everyone in the directory — and a private
+channel's are the people granted it. One team, and channels only: a Backlot corpus has one org and
+no DMs, so `chatId` is null on every message. A message `id` is its creation time in epoch
+milliseconds and its `etag` the last-modified time in the same units, which an edit or a reaction
+moves; a reply does not move its root's, but it does move the root up the listing. A system event
+is served as `messageType: unknownFutureValue` unless the request sends
+`Prefer: include-unknown-enum-members`.
+
+**Not modelled:** owners (every member's `roles` is empty, and `summary.ownersCount` 0), deleted
+messages (live keeps them in the listing with `deletedDateTime` set), a system event's typed
+`eventDetail`, the `post` channel layout, chats, writes, and real tenant authorization. Imported
+reply times must advance by a whole second, and at most 1,000 ids fit one channel-second, both
+because an id is a creation millisecond; an edit must not precede its message.
 
 ### Notion — `/notion/v1`
 

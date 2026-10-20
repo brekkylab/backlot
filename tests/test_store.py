@@ -2514,3 +2514,37 @@ def test_jira_numeric_ids_are_order_independent_and_preserved_across_append(tmp_
     with pytest.raises(SystemExit, match="already claimed"):
         byo.load_records(lambda: enumerate(records, 1), shard, reset=False)
     assert ids(shard) == after
+
+
+@pytest.mark.parametrize("visibility", ["public", "private"])
+def test_slacks_deactivated_roster_removes_no_teams_member(tmp_path, visibility):
+    """The channel-membership SQL is shared by both conversation sources, and Slack's deactivated
+    roster is Slack's: a person on it still speaks in, and belongs to, a Teams channel."""
+    from tests._helpers import build_corpus
+
+    email = "ava@acme.com"
+    settings = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": source,
+                "channel": "shared-name",
+                "author_email": email,
+                "visibility": visibility,
+            }
+            for source in ("slack", "msteams")
+        ],
+    )
+    conn = store.connect_rw(settings.db_path)
+    try:
+        conn.execute("INSERT INTO slack_deactivated_users(email) VALUES (?)", (email,))
+        for source, expected in (("slack", []), ("msteams", [email])):
+            assert store.conversation_member_emails(conn, source, "shared-name") == expected
+            assert store.count_conversation_members(conn, source, "shared-name") == len(expected)
+            assert store.conversation_member_counts(conn, source)["shared-name"] == len(expected)
+            assert store.conversation_has_author(conn, source, "shared-name", email) == bool(
+                expected
+            )
+            assert store.conversation_membership_violations(conn, source) == []
+    finally:
+        conn.close()

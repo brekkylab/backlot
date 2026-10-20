@@ -3,22 +3,15 @@
 The stable machine-readable contract is ``error.code``. Microsoft explicitly warns callers not
 to depend on the human-readable message (https://learn.microsoft.com/graph/errors).
 
-Anonymous GET https://graph.microsoft.com/v1.0/me was measured again on 2026-10-08. No real token
-or tenant was used. Every case answered 401 / InvalidAuthenticationToken:
+Every body below was read off graph.microsoft.com on 2026-10-20 (the 401s anonymously, the rest
+with app-only and delegated tokens on a Teams tenant). Graph answers an error in one of two
+shapes. Most carry ``code``, ``message`` and an ``innerError`` of ``date``, ``request-id`` and
+``client-request-id``, with ``code`` and ``message`` ahead of those where the inner layer reports
+its own. A request the OData query validator refuses carries an EMPTY ``code``, a ``details``
+list, and the reason again as ``innerError.message``.
 
-- no Authorization header: ``Access token is empty.``
-- ``Bearer`` or ``Bearer ``: ``UnableToParseTokens``
-- ``Bearer nope`` (also lower/uppercase bearer, ``token nope``, ``Basic bm9wZTpub3Bl`` and bare
-  ``nope``): ``Protocol 'Bearer' failed to validate because The token could not be read.``
-
-Those last two messages differ from the patch author's 2026-09-02 observation (ArgumentNull and
-IDX14100). Tests pin the fresh measurement, not those older strings. All nine responses contained
-innerError with date, request-id and client-request-id, and no inner code. Backlot generates its
-own correlation values, and does not yet echo a caller-supplied client-request-id.
-
-The other status/code combinations are emulator choices informed by published examples, not
-measurements against an authenticated tenant. In particular, hidden resources use the same 404
-as missing resources for concealment; whether a real tenant returns 403 or 404 is unmeasured.
+Backlot generates its own correlation values, and does not yet echo a caller-supplied
+client-request-id.
 """
 
 from __future__ import annotations
@@ -35,56 +28,182 @@ def owns(path: str) -> bool:
     return path.startswith("/msgraph")
 
 
-class GraphError(HTTPException):
-    """An error carrying the ``code`` a client branches on, and the inner code where Graph sends
-    one. The message is still the ``detail``, so a plain ``HTTPException`` raised on a Graph path
-    renders too — it just falls back to the status's generic code."""
+# Sent on every 401, whatever the credential looked like.
+WWW_AUTHENTICATE = (
+    'Bearer realm="", authorization_uri="https://login.microsoftonline.com/common/oauth2/'
+    'authorize", client_id="00000003-0000-0000-c000-000000000000"'
+)
 
-    def __init__(self, status_code: int, code: str, message: str, *, inner: str | None = None):
-        super().__init__(status_code=status_code, detail=message)
+
+class GraphError(HTTPException):
+    """An error carrying the ``code`` a client branches on, and what Graph puts beside it: an inner
+    code and message where the inner layer reports its own, and the validator's ``details``. The
+    message is still the ``detail``, so a plain ``HTTPException`` raised on a Graph path renders
+    too — it just falls back to the status's generic code."""
+
+    def __init__(
+        self,
+        status_code: int,
+        code: str,
+        message: str,
+        *,
+        inner: str | None = None,
+        inner_message: str | None = None,
+        details: bool = False,
+        headers: dict[str, str] | None = None,
+    ):
+        super().__init__(status_code=status_code, detail=message, headers=headers)
         self.code = code
         self.inner = inner
+        self.inner_message = inner_message
+        self.details = details
 
 
 # The code a bare HTTPException on a Graph path renders as, so a route that raises one still
 # produces a body a client can branch on rather than a null code.
 _GENERIC_CODE = {
-    400: "badRequest",
+    400: "BadRequest",
     401: "InvalidAuthenticationToken",
-    403: "accessDenied",
-    404: "itemNotFound",
-    405: "methodNotAllowed",
-    422: "badRequest",
+    403: "Forbidden",
+    404: "NotFound",
+    405: "BadRequest",
+    422: "BadRequest",
 }
 
 
-# GET https://graph.microsoft.com/v1.0/me, measured 2026-10-08 without a tenant.
-# All nonempty malformed credentials in the table above returned this text.
+# --- 401 -------------------------------------------------------------------------------------
+# GET /v1.0/me with each credential shape below. The scheme is never checked: `bearer nope`,
+# `BEARER nope`, `token nope`, `Basic bm9wZTpub3Bl` and a bare `nope` all answer as `Bearer nope`.
+
 JWT_MALFORMED_MESSAGE = "Protocol 'Bearer' failed to validate because The token could not be read."
+
+
+def _unauthorized(message: str) -> GraphError:
+    return GraphError(
+        401,
+        "InvalidAuthenticationToken",
+        message,
+        headers={"WWW-Authenticate": WWW_AUTHENTICATE},
+    )
 
 
 def no_credentials() -> GraphError:
     """No Authorization header at all."""
-    return GraphError(401, "InvalidAuthenticationToken", "Access token is empty.")
+    return _unauthorized("Access token is empty.")
 
 
 def empty_credentials() -> GraphError:
-    """An Authorization header whose token part is blank (``Bearer`` and nothing after it).
-
-    Its own message, because it is its own case live: a header that carried nothing is not the same
-    as no header, and a client that distinguishes them is distinguishing something real."""
-    return GraphError(401, "InvalidAuthenticationToken", "UnableToParseTokens")
+    """An Authorization header whose token part is blank (``Bearer`` and nothing after it)."""
+    return _unauthorized("UnableToParseTokens")
 
 
 def bad_token() -> GraphError:
-    """A token that was presented and resolves to nobody."""
-    return GraphError(401, "InvalidAuthenticationToken", JWT_MALFORMED_MESSAGE)
+    """A token that was presented, is not a JWT, and resolves to nobody."""
+    return _unauthorized(JWT_MALFORMED_MESSAGE)
 
 
-def not_found(message: str) -> GraphError:
-    """The Teams 404: a team, channel or message that does not resolve — or that this caller may
-    not see, which is answered the same way for the reason ``routers.msteams`` states."""
-    return GraphError(404, "NotFound", message, inner="ItemNotFound")
+def foreign_jwt() -> GraphError:
+    """A token shaped as a JWT (three base64url segments) that resolves to nobody: it parses, and
+    names no application Graph issued it to."""
+    return _unauthorized("NoAppIdInToken")
+
+
+# --- 400 -------------------------------------------------------------------------------------
+
+
+def bad_request(message: str) -> GraphError:
+    return GraphError(400, "BadRequest", message)
+
+
+def unsupported_query(message: str) -> GraphError:
+    """The directory's refusal of a query option it parsed and will not run."""
+    return GraphError(400, "Request_UnsupportedQuery", message)
+
+
+def query_option_invalid(reason: str) -> GraphError:
+    """The OData validator's refusal: no code, a ``details`` list, and the reason twice."""
+    return GraphError(
+        400,
+        "",
+        f"The query specified in the URI is not valid. {reason}",
+        inner_message=reason,
+        details=True,
+    )
+
+
+def option_not_allowed(option: str) -> GraphError:
+    """``$orderby`` and friends on a method whose validator allows none of them."""
+    return query_option_invalid(
+        f"Query option '{option}' is not allowed. To allow it, set the 'AllowedQueryOptions' "
+        "property on EnableQueryAttribute or QueryValidationSettings."
+    )
+
+
+def top_too_large(limit: int, value: str) -> GraphError:
+    return query_option_invalid(
+        f"The limit of '{limit}' for Top query has been exceeded. The value from the incoming "
+        f"request is '{value}'."
+    )
+
+
+def top_not_integer(value: str) -> GraphError:
+    return bad_request(
+        f"Invalid value '{value}' for $top query option found. The $top query option requires a "
+        "non-negative integer value."
+    )
+
+
+def unknown_property(name: str, type_name: str) -> GraphError:
+    """``$select`` or ``$expand`` naming a property the type does not declare."""
+    return bad_request(
+        f"Parsing OData Select and Expand failed: Could not find a property named '{name}' on "
+        f"type 'microsoft.graph.{type_name}'."
+    )
+
+
+def unknown_segment(segment: str) -> GraphError:
+    """A path whose first segment names nothing the service exposes."""
+    return bad_request(f"Resource not found for the segment '{segment}'.")
+
+
+# --- 403, 404, 410, 502 ----------------------------------------------------------------------
+
+
+def forbidden(message: str, *, inner: str | None = None) -> GraphError:
+    return GraphError(403, "Forbidden", message, inner=inner)
+
+
+def not_found(message: str, *, inner: str | None = None, inner_message: str | None = None):
+    return GraphError(404, "NotFound", message, inner=inner, inner_message=inner_message)
+
+
+def unsupported_path() -> GraphError:
+    """A path under a known resource that names no API."""
+    return not_found("Requested API is not supported. Please check the path.")
+
+
+def team_not_found(team_id: str) -> GraphError:
+    """``/teams/{id}/channels`` for a team id that names no team."""
+    message = f"No threadId found for TeamId {team_id}"
+    return not_found(message, inner="Unknown", inner_message=message)
+
+
+def channel_not_found(channel_id: str) -> GraphError:
+    """A channel id the team does not have, read as a channel (its own route, or ``/members``)."""
+    return not_found(
+        "NotFound",
+        inner="1",
+        inner_message=f"LocationLookupFailed-Location lookup failed for thread {channel_id}",
+    )
+
+
+def channel_gone() -> GraphError:
+    """A channel id the team does not have, read for its messages."""
+    return GraphError(410, "Gone", "UnknownError")
+
+
+def message_not_found() -> GraphError:
+    return not_found("UnknownError")
 
 
 def user_not_found(user_id: str) -> GraphError:
@@ -97,11 +216,12 @@ def user_not_found(user_id: str) -> GraphError:
     )
 
 
-def bad_request(message: str) -> GraphError:
-    return GraphError(400, "badRequest", message)
+def backend_failure() -> GraphError:
+    """What ``/replies`` answers a ``$skiptoken`` it cannot decode."""
+    return GraphError(502, "BadGateway", "Failed to execute backend request.")
 
 
-def _inner(code: str | None) -> dict:
+def _inner(exc) -> dict:
     """The ``innerError`` real Graph sends on every error.
 
     ``date`` has no timezone suffix and no fractional seconds live ("2026-09-02T11:24:27"), so it
@@ -109,44 +229,42 @@ def _inner(code: str | None) -> dict:
     differ only when the CLIENT supplied its own ``client-request-id``, which nothing in Backlot
     does yet.
     """
+    body: dict = {}
+    code = getattr(exc, "inner", None)
+    message = getattr(exc, "inner_message", None)
+    if code:
+        body["code"] = code
+    if message:
+        body["message"] = message
     request_id = str(uuid.uuid4())
-    body = {
-        "date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"),
-        "request-id": request_id,
-        "client-request-id": request_id,
-    }
-    # Measured absent on the 401s; the Teams 404s are reported with one.
-    return {"code": code, **body} if code else body
+    body["date"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    body["request-id"] = request_id
+    body["client-request-id"] = request_id
+    return body
 
 
 def http_body(path: str, exc: HTTPException, query=None) -> dict:
     detail = exc.detail
     message = detail if isinstance(detail, str) else str(detail)
-    return {
-        "error": {
-            "code": getattr(exc, "code", None)
-            or _GENERIC_CODE.get(exc.status_code, "generalException"),
-            "message": message,
-            "innerError": _inner(getattr(exc, "inner", None)),
-        }
+    code = getattr(exc, "code", None)
+    error: dict = {
+        "code": code if code is not None else _GENERIC_CODE.get(exc.status_code, "UnknownError"),
+        "message": message,
     }
+    if getattr(exc, "details", False):
+        error["details"] = []
+    error["innerError"] = _inner(exc)
+    return {"error": error}
 
 
 def validation_body(path: str, errors) -> tuple[int, dict]:
     """The answer to a request FastAPI's own validator rejected.
 
-    **400, not 422.** Graph has no 422 for a read: a parameter it cannot use is a ``badRequest``,
-    and answering 422 would send a client down a branch the real service never takes. The status is
-    part of the contract precisely so a vendor can say this.
+    **400, not 422.** Graph has no 422 for a read: a parameter it cannot use is a ``BadRequest``,
+    and answering 422 would send a client down a branch the real service never takes.
 
     The routes here take their parameters off the raw request rather than through typed signatures,
     so nothing should reach the validator — but a body is shaped rather than left as
     ``{"detail": …}`` so that if one ever does, a Graph client still sees a Graph error.
     """
-    return 400, {
-        "error": {
-            "code": "badRequest",
-            "message": "The request is malformed or incorrect.",
-            "innerError": _inner(None),
-        }
-    }
+    return 400, http_body(path, bad_request("The request is malformed or incorrect."))

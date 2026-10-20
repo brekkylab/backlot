@@ -1,61 +1,22 @@
 """Microsoft Teams over Microsoft Graph: teams, channels, messages, members and the directory.
 
-One file per router, so a source's shape assertions live in one place. The shapes asserted here
-are the ones the vendor's v1.0 reference and its worked examples publish — see the sourcing note
-in ``backlot.routers.msteams``.
+Every expected value below is one live Graph answered — ``backlot.routers.msteams`` records the
+measurement.
 """
 
 from __future__ import annotations
 
+import base64
 import uuid
 from datetime import datetime, timezone
 
 import pytest
 
 from backlot import store, synth
-from tests._helpers import corpus_client, db_count, tok
+from backlot.errors.msgraph import WWW_AUTHENTICATE
+from tests._helpers import complete, corpus_client, db_count, tok
 
 V1 = "/msgraph/v1.0"
-
-
-def test_graph_me_serves_the_authenticated_identity(client, admin_h):
-    """Regression first observed against upstream: the missing route answered 404."""
-    response = client.get(f"{V1}/me", headers=admin_h)
-    assert response.status_code == 200, response.text
-    assert response.json()["userPrincipalName"]
-
-
-@pytest.mark.parametrize("visibility", ["public", "private"])
-def test_slack_deactivation_does_not_remove_a_teams_member(tmp_path, visibility):
-    """The generic membership SQL must preserve Slack's newer deactivation rule only for Slack."""
-    from tests._helpers import build_corpus
-
-    email = "ava@acme.com"
-    settings = build_corpus(
-        tmp_path,
-        [
-            {
-                "source_type": source,
-                "channel": "shared-name",
-                "author_email": email,
-                "visibility": visibility,
-            }
-            for source in ("slack", "msteams")
-        ],
-    )
-    conn = store.connect_rw(settings.db_path)
-    try:
-        conn.execute("INSERT INTO slack_deactivated_users(email) VALUES (?)", (email,))
-        for source, expected in (("slack", []), ("msteams", [email])):
-            assert store.conversation_member_emails(conn, source, "shared-name") == expected
-            assert store.count_conversation_members(conn, source, "shared-name") == len(expected)
-            assert store.conversation_member_counts(conn, source)["shared-name"] == len(expected)
-            assert store.conversation_has_author(conn, source, "shared-name", email) == bool(
-                expected
-            )
-            assert store.conversation_membership_violations(conn, source) == []
-    finally:
-        conn.close()
 
 
 @pytest.fixture(scope="module")
@@ -69,12 +30,16 @@ def _channels(client, headers, team) -> dict[str, str]:
     return {c["displayName"]: c["id"] for c in body["value"]}
 
 
+def _error(response, status: int) -> dict:
+    assert response.status_code == status, response.text
+    return response.json()["error"]
+
+
 # --- auth ------------------------------------------------------------------------
 
-
-# Re-measured 2026-10-08: the three 401 messages and innerError shape below are from live
-# graph.microsoft.com: authentication is answered before a tenant is needed, so an unauthenticated
-# request gets a real response. See backlot.errors.msgraph for the transcript.
+_UNREADABLE = "Protocol 'Bearer' failed to validate because The token could not be read."
+# A JWT whose header and payload parse, signed by nobody: Graph reads it and finds no application.
+_FOREIGN_JWT = "eyJ0eXAiOiAiSldUIiwgImFsZyI6ICJSUzI1NiJ9.eyJhdWQiOiAieCJ9.c2ln"
 
 
 @pytest.mark.parametrize(
@@ -83,65 +48,74 @@ def _channels(client, headers, team) -> dict[str, str]:
         (None, "Access token is empty."),
         ("Bearer", "UnableToParseTokens"),
         ("Bearer ", "UnableToParseTokens"),
-        (
-            "Bearer nope",
-            "Protocol 'Bearer' failed to validate because The token could not be read.",
-        ),
-        # The scheme is not checked live: each of these reaches the JWT parser and fails there,
-        # so none of them may be reported as a missing credential.
-        (
-            "bearer nope",
-            "Protocol 'Bearer' failed to validate because The token could not be read.",
-        ),
-        (
-            "BEARER nope",
-            "Protocol 'Bearer' failed to validate because The token could not be read.",
-        ),
-        ("token nope", "Protocol 'Bearer' failed to validate because The token could not be read."),
-        (
-            "Basic bm9wZTpub3Bl",
-            "Protocol 'Bearer' failed to validate because The token could not be read.",
-        ),
-        ("nope", "Protocol 'Bearer' failed to validate because The token could not be read."),
+        ("Bearer nope", _UNREADABLE),
+        # The scheme is not checked: each of these reaches the token parser and fails there, so
+        # none of them may be reported as a missing credential.
+        ("bearer nope", _UNREADABLE),
+        ("BEARER nope", _UNREADABLE),
+        ("token nope", _UNREADABLE),
+        ("Basic bm9wZTpub3Bl", _UNREADABLE),
+        ("nope", _UNREADABLE),
+        (f"Bearer {_FOREIGN_JWT}", "NoAppIdInToken"),
     ],
 )
 def test_every_way_a_credential_fails_answers_the_message_live_graph_answers(
     client, header, message
 ):
     r = client.get(f"{V1}/me", headers={"Authorization": header} if header else {})
-    assert r.status_code == 401
-    err = r.json()["error"]
+    err = _error(r, 401)
     assert err["code"] == "InvalidAuthenticationToken"
     assert err["message"] == message
-
-
-def test_an_error_is_a_graph_envelope_not_fastapis_detail(client, admin_h, team_id):
-    """FastAPI's `{"detail": …}` is a body no Graph client parses: every one of them reads
-    `error.code`. A 404 that carried `detail` was indistinguishable from a transport failure."""
-    r = client.get(f"{V1}/teams/{team_id}/channels/19:nope@thread.tacv2", headers=admin_h)
-    assert r.status_code == 404
-    err = r.json()["error"]
-    assert err["code"] == "NotFound"
-    assert err["message"] == "No channel found with id 19:nope@thread.tacv2"
-    assert err["innerError"]["code"] == "ItemNotFound"
-
-
-def test_every_error_carries_the_inner_error_real_graph_sends(client):
-    """Measured: `innerError` is on every 401, and it carries `date`, `request-id` and
-    `client-request-id` — but no `code`. Backlot fills them because it IS the server answering, so
-    an id it mints for its own request is the real value rather than a placeholder."""
-    err = client.get(f"{V1}/me").json()["error"]
+    assert r.headers["www-authenticate"] == WWW_AUTHENTICATE
+    # `innerError` is on every error: `date` with no zone and no fraction, and a fresh request id.
     inner = err["innerError"]
-    assert set(inner) == {"date", "request-id", "client-request-id"}
-    # The live format carries no timezone suffix and no fractional seconds.
+    assert list(inner) == ["date", "request-id", "client-request-id"]
     datetime.strptime(inner["date"], "%Y-%m-%dT%H:%M:%S")
     uuid.UUID(inner["request-id"])
-    # A fresh id per request, which is what makes it usable for correlating one.
-    again = client.get(f"{V1}/me").json()["error"]["innerError"]
-    assert again["request-id"] != inner["request-id"]
+    again = client.get(f"{V1}/me", headers={"Authorization": header} if header else {})
+    assert again.json()["error"]["innerError"]["request-id"] != inner["request-id"]
 
 
-# --- identity and the team -------------------------------------------------------
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("GET", "/nonexistentsegment"),
+        ("GET", "/teams/x/nonexistent"),
+        ("POST", "/me"),
+        ("DELETE", "/me"),
+    ],
+)
+def test_the_credential_is_read_before_the_path_or_the_method(client, method, path):
+    for headers in ({}, {"Authorization": "Bearer nope"}):
+        r = client.request(method, f"{V1}{path}", headers=headers)
+        assert _error(r, 401)["code"] == "InvalidAuthenticationToken"
+
+
+@pytest.mark.parametrize(
+    "path,status,code,message",
+    [
+        (
+            "/nonexistentsegment",
+            400,
+            "BadRequest",
+            "Resource not found for the segment 'nonexistentsegment'.",
+        ),
+        (
+            "/teams/x/nonexistent",
+            404,
+            "NotFound",
+            "Requested API is not supported. Please check the path.",
+        ),
+    ],
+)
+def test_a_path_nothing_serves_is_refused_once_the_credential_holds(
+    client, admin_h, path, status, code, message
+):
+    err = _error(client.get(f"{V1}{path}", headers=admin_h), status)
+    assert (err["code"], err["message"]) == (code, message)
+
+
+# --- identity, the directory and the team ----------------------------------------
 
 
 def test_me_answers_the_calling_user(client, tokens_yaml):
@@ -150,8 +124,7 @@ def test_me_answers_the_calling_user(client, tokens_yaml):
     ).json()
     assert me["userPrincipalName"] == "bob@acme.com"
     assert me["id"] == synth.msteams_user_id("bob@acme.com")
-    # The eleven properties Graph returns when no $select narrows the request — a client generated
-    # from the vendor's schema binds to all of them, so a short object is a shape real never sends.
+    # The eleven properties Graph returns when no $select narrows the request.
     assert set(me) - {"@odata.context"} == {
         "businessPhones",
         "displayName",
@@ -167,48 +140,240 @@ def test_me_answers_the_calling_user(client, tokens_yaml):
     }
 
 
-def test_select_narrows_an_entity_but_never_drops_its_id(client, admin_h):
-    """A client that lists with `$select` and then re-fetches each row has nothing to re-fetch by
-    if the projection takes `id` with it, which is why Graph keeps it whatever was asked for."""
+def test_select_keeps_only_what_was_named_and_the_directory_accepts_any_name(client, admin_h):
+    """`id` is not kept unless asked for. The directory answers a name it does not have with an
+    object that lacks it, where the Teams types refuse one (see the channel and message tests)."""
     body = client.get(f"{V1}/users", headers=admin_h, params={"$select": "displayName"}).json()
     assert body["value"], "the sample corpus has users"
-    for user in body["value"]:
-        assert set(user) == {"displayName", "id"}
+    assert all(set(u) == {"displayName"} for u in body["value"])
     assert body["@odata.context"].endswith("#users(displayName)")
+    bogus = client.get(f"{V1}/users", headers=admin_h, params={"$select": "bogus"}).json()
+    assert all(u == {} for u in bogus["value"])
+    one = client.get(f"{V1}/users/ava@acme.com", headers=admin_h, params={"$select": "bogus"})
+    assert one.json() == {
+        "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#users(bogus)/$entity"
+    }
+
+
+def test_the_directory_counts_only_an_advanced_query(client, admin_h):
+    plain = client.get(f"{V1}/users", headers=admin_h).json()
+    assert "@odata.count" not in plain
+    asked = client.get(f"{V1}/users", headers=admin_h, params={"$count": "true"}).json()
+    assert "@odata.count" not in asked
+    advanced = client.get(
+        f"{V1}/users",
+        headers={**admin_h, "ConsistencyLevel": "eventual"},
+        params={"$count": "true"},
+    ).json()
+    assert advanced["@odata.count"] == len(plain["value"])
+
+
+def test_the_directory_filters_without_regard_to_case(client, admin_h):
+    ava = client.get(f"{V1}/users/ava@acme.com", headers=admin_h).json()
+    for expr in (
+        f"displayName eq '{ava['displayName'].lower()}'",
+        f"startswith(displayName,'{ava['displayName'][:2].lower()}')",
+    ):
+        got = client.get(f"{V1}/users", headers=admin_h, params={"$filter": expr}).json()
+        assert ava["id"] in {u["id"] for u in got["value"]}, expr
+
+
+@pytest.mark.parametrize(
+    "params,code,message",
+    [
+        (
+            {"$top": "1000"},
+            "Request_UnsupportedQuery",
+            "Invalid page size specified: '1000'. Must be between 1 and 999 inclusive.",
+        ),
+        (
+            {"$top": "0"},
+            "Request_UnsupportedQuery",
+            "Invalid page size specified: '0'. Must be between 1 and 999 inclusive.",
+        ),
+        (
+            {"$top": "abc"},
+            "BadRequest",
+            "Invalid value 'abc' for $top query option found. The "
+            "$top query option requires a non-negative integer value.",
+        ),
+        (
+            {"$skiptoken": "garbage"},
+            "Request_UnsupportedQuery",
+            "Unable to execute query; invalid page token specified.",
+        ),
+        (
+            {"$filter": "contains(displayName,'K')"},
+            "Request_UnsupportedQuery",
+            "Filter operator 'Contains' is not supported.",
+        ),
+        (
+            {"$filter": "foo eq 'x'"},
+            "Request_UnsupportedQuery",
+            "Property 'foo' does not exist as a declared property or extension property.",
+        ),
+        (
+            {"$filter": "displayName eq"},
+            "BadRequest",
+            "Invalid filter clause: Expression expected at position 14 in 'displayName eq'.",
+        ),
+    ],
+)
+def test_the_directory_refuses_a_query_it_cannot_run(client, admin_h, params, code, message):
+    err = _error(client.get(f"{V1}/users", headers=admin_h, params=params), 400)
+    assert (err["code"], err["message"]) == (code, message)
+
+
+def test_a_user_resolves_by_object_id_and_by_principal_name(client, admin_h):
+    by_upn = client.get(f"{V1}/users/ava@acme.com", headers=admin_h).json()
+    by_id = client.get(f"{V1}/users/{by_upn['id']}", headers=admin_h).json()
+    assert by_id == by_upn
+    err = _error(client.get(f"{V1}/users/nobody@acme.com", headers=admin_h), 404)
+    assert err["code"] == "Request_ResourceNotFound"
+    assert err["message"] == (
+        "Resource 'nobody@acme.com' does not exist or one of its queried reference-property "
+        "objects are not present."
+    )
 
 
 def test_joined_teams_is_the_one_team_the_corpus_models(client, admin_h):
-    teams = client.get(f"{V1}/me/joinedTeams", headers=admin_h).json()["value"]
-    assert len(teams) == 1
-    # `joinedTeams` is documented as populating only id, displayName, description, isArchived and
-    # tenantId, and returning every other property as null. A client written against that treats
-    # the nulls as "call Get team"; filling them in would train it out of a round trip the real API
-    # still needs.
-    populated = {k for k, v in teams[0].items() if v is not None}
+    body = client.get(f"{V1}/me/joinedTeams", headers=admin_h).json()
+    assert body["@odata.count"] == len(body["value"]) == 1
+    # Only id, displayName, description, isArchived and tenantId are populated; the rest are null.
+    populated = {k for k, v in body["value"][0].items() if v is not None}
     assert populated == {"id", "displayName", "description", "isArchived", "tenantId"}
-
-
-def test_a_request_for_another_team_is_not_found(client, admin_h):
-    r = client.get(f"{V1}/teams/00000000-0000-0000-0000-000000000000/channels", headers=admin_h)
-    assert r.status_code == 404
-    assert r.json()["error"]["code"] == "NotFound"
 
 
 # --- channels --------------------------------------------------------------------
 
 
-def test_layout_type_is_null_when_listing_and_set_when_getting_one(client, admin_h, team_id):
-    """The vendor documents a known issue: **layoutType returns null when listing all channels**,
-    and points at Get channel for it. A client that works around that has to keep having something
-    to work around, so the two methods are deliberately allowed to disagree here."""
-    listed = _channels(client, admin_h, team_id)
-    assert listed, "the sample corpus has Teams channels"
-    body = client.get(f"{V1}/teams/{team_id}/channels", headers=admin_h).json()
-    assert all(c["layoutType"] is None for c in body["value"])
+def test_listing_and_getting_a_channel_differ_where_graph_does(client, admin_h, team_id):
+    listed = client.get(f"{V1}/teams/{team_id}/channels", headers=admin_h).json()
+    assert listed["@odata.count"] == len(listed["value"])
+    platform = next(c for c in listed["value"] if c["displayName"] == "Platform")
+    assert list(platform) == [
+        "id",
+        "createdDateTime",
+        "displayName",
+        "description",
+        "isFavoriteByDefault",
+        "email",
+        "tenantId",
+        "webUrl",
+        "membershipType",
+        "layoutType",
+        "isArchived",
+    ]
+    assert platform["layoutType"] is None
+    assert platform["description"] is None and platform["email"] is None
+    assert platform["webUrl"].startswith("https://teams.cloud.microsoft/l/channel/")
+    assert platform["webUrl"].endswith("&allowXTenantAccess=False&ngc=True")
 
-    one = client.get(f"{V1}/teams/{team_id}/channels/{listed['Platform']}", headers=admin_h).json()
-    assert one["layoutType"] == "post"
-    assert one["@odata.context"].endswith("/$entity")
+    one = client.get(f"{V1}/teams/{team_id}/channels/{platform['id']}", headers=admin_h).json()
+    assert one["@odata.context"].endswith(f"teams('{team_id}')/channels/$entity")
+    assert one["layoutType"] == "chat"
+    members = client.get(
+        f"{V1}/teams/{team_id}/channels/{platform['id']}/members", headers=admin_h
+    ).json()
+    assert one["summary"] == {
+        "ownersCount": 0,
+        "membersCount": len(members["value"]),
+        "guestsCount": 0,
+        "hasMembersFromOtherTenants": False,
+    }
+    assert {
+        k: v for k, v in one.items() if k not in ("@odata.context", "layoutType", "summary")
+    } == {k: v for k, v in platform.items() if k != "layoutType"}
+
+
+@pytest.mark.parametrize(
+    "expr,names",
+    [
+        ("membershipType eq 'private'", ["People Confidential"]),
+        ("membershipType eq 'shared'", []),
+        ("displayName eq 'Platform'", ["Platform"]),
+        ("displayName eq 'PLATFORM'", []),  # case-sensitive here, unlike the directory
+        ("startswith(displayName,'Pl')", ["Platform"]),
+        ("contains(displayName,'cid')", ["Incidents"]),
+        ("displayName ne 'Platform' and membershipType eq 'standard'", ["Incidents"]),
+    ],
+)
+def test_a_channel_filter_selects_what_graph_selects(client, admin_h, team_id, expr, names):
+    body = client.get(
+        f"{V1}/teams/{team_id}/channels", headers=admin_h, params={"$filter": expr}
+    ).json()
+    assert sorted(c["displayName"] for c in body["value"]) == names
+
+
+@pytest.mark.parametrize(
+    "params,code,message",
+    [
+        (
+            {"$filter": "foo eq 'x'"},
+            "BadRequest",
+            "Invalid filter clause: Could not find a "
+            "property named 'foo' on type 'microsoft.graph.channel'.",
+        ),
+        (
+            {"$filter": "membershipType eq 'bogus'"},
+            "BadRequest",
+            "Invalid filter clause: The string 'bogus' is not a valid enumeration type constant.",
+        ),
+        (
+            {"$filter": "displayName eq"},
+            "BadRequest",
+            "Invalid filter clause: Expression expected at position 14 in 'displayName eq'.",
+        ),
+        (
+            {"$select": "bogus"},
+            "BadRequest",
+            "Parsing OData Select and Expand failed: Could not "
+            "find a property named 'bogus' on type 'microsoft.graph.channel'.",
+        ),
+        # The listing is not paged, and refuses what would page it.
+        (
+            {"$top": "1"},
+            "BadRequest",
+            "The query specified in the URI is not valid. Query option 'Top' is not allowed.",
+        ),
+        (
+            {"$skiptoken": "x"},
+            "BadRequest",
+            "The query specified in the URI is not valid. Query option 'SkipToken' is not allowed.",
+        ),
+        (
+            {"$orderby": "displayName"},
+            "",
+            "The query specified in the URI is not valid. Query "
+            "option 'OrderBy' is not allowed. To allow it, set the 'AllowedQueryOptions' property "
+            "on EnableQueryAttribute or QueryValidationSettings.",
+        ),
+        (
+            {"$expand": "members"},
+            "",
+            "The query specified in the URI is not valid. Query option "
+            "'Expand' is not allowed. To allow it, set the 'AllowedQueryOptions' property on "
+            "EnableQueryAttribute or QueryValidationSettings.",
+        ),
+    ],
+)
+def test_a_channel_listing_refuses_a_query_it_cannot_run(
+    client, admin_h, team_id, params, code, message
+):
+    err = _error(client.get(f"{V1}/teams/{team_id}/channels", headers=admin_h, params=params), 400)
+    assert (err["code"], err["message"]) == (code, message)
+    # The validator's own refusals carry no code, a `details` list and the reason again inside.
+    if code == "":
+        assert err["details"] == []
+        assert message.endswith(err["innerError"]["message"])
+
+
+def test_select_projects_a_channel_without_keeping_its_id(client, admin_h, team_id):
+    body = client.get(
+        f"{V1}/teams/{team_id}/channels", headers=admin_h, params={"$select": "displayName"}
+    ).json()
+    assert body["@odata.context"].endswith(f"teams('{team_id}')/channels(displayName)")
+    assert all(set(c) == {"displayName"} for c in body["value"])
 
 
 def test_a_channel_granted_to_the_org_is_standard_and_a_narrower_one_is_private(
@@ -220,182 +385,381 @@ def test_a_channel_granted_to_the_org_is_standard_and_a_narrower_one_is_private(
     assert by_name["People Confidential"]["membershipType"] == "private"
 
 
-def test_membership_type_filter_selects_and_an_unsupported_filter_is_refused(
-    client, admin_h, team_id
+@pytest.mark.parametrize(
+    "suffix,status,code,message,inner",
+    [
+        ("", 404, "NotFound", "NotFound", "1"),
+        ("/members", 404, "NotFound", "NotFound", "1"),
+        ("/messages", 410, "Gone", "UnknownError", None),
+        ("/messages/1791860130491", 410, "Gone", "UnknownError", None),
+        ("/messages/1791860130491/replies", 410, "Gone", "UnknownError", None),
+    ],
+)
+def test_a_channel_the_team_does_not_have_is_answered_per_method(
+    client, admin_h, team_id, suffix, status, code, message, inner
 ):
-    """`$filter` is the one OData parameter where ignoring it is worse than refusing it: a caller
-    who asked for a subset and silently got everything has no way to tell."""
-    private = client.get(
-        f"{V1}/teams/{team_id}/channels",
-        headers=admin_h,
-        params={"$filter": "membershipType eq 'private'"},
-    ).json()
-    assert [c["displayName"] for c in private["value"]] == ["People Confidential"]
-
-    refused = client.get(
-        f"{V1}/teams/{team_id}/channels",
-        headers=admin_h,
-        params={"$filter": "displayName eq 'Platform'"},
+    missing = "19:00000000000000000000000000000000@thread.tacv2"
+    err = _error(
+        client.get(f"{V1}/teams/{team_id}/channels/{missing}{suffix}", headers=admin_h), status
     )
-    assert refused.status_code == 400
-    assert refused.json()["error"]["code"] == "badRequest"
+    assert (err["code"], err["message"], err["innerError"].get("code")) == (code, message, inner)
+    if inner == "1":
+        assert err["innerError"]["message"] == (
+            f"LocationLookupFailed-Location lookup failed for thread {missing}"
+        )
 
 
-def test_a_channel_the_caller_cannot_read_is_hidden_by_id_as_well_as_from_the_listing(
-    client, admin_h, tokens_yaml, team_id
+@pytest.mark.parametrize(
+    "suffix,message,inner",
+    [
+        ("/channels", "No threadId found for TeamId {team}", "Unknown"),
+        ("/channels/{channel}", "Channel does not belong to Team.", None),
+        ("/channels/{channel}/messages", "Group ID '{team}' is not found.", None),
+    ],
+)
+def test_a_team_the_corpus_does_not_model_is_answered_per_method(
+    client, admin_h, team_id, suffix, message, inner
 ):
-    """A channel id is otherwise enough for any authenticated principal to read a private channel's
-    name and description and enumerate who is in it — none of which the ACL on its messages allows
-    them to know."""
+    other = "00000000-0000-0000-0000-000000000000"
+    channel = _channels(client, admin_h, team_id)["Platform"]
+    path = suffix.format(channel=channel)
+    err = _error(client.get(f"{V1}/teams/{other}{path}", headers=admin_h), 404)
+    assert err["code"] == "NotFound"
+    assert err["message"] == message.format(team=other)
+    assert err["innerError"].get("code") == inner
+
+
+@pytest.mark.parametrize(
+    "suffix,message,inner",
+    [
+        ("", "Failed to execute GetThreadAsync.", "Unknown"),
+        ("/members", "InsufficientPrivileges", "1"),
+        ("/messages", "UnknownError", None),
+        ("/messages/{message}", "UnknownError", None),
+        ("/messages/{message}/replies", "UnknownError", None),
+    ],
+)
+def test_a_private_channel_the_caller_is_not_in_is_listed_to_nobody_and_refused_by_id(
+    client, admin_h, tokens_yaml, team_id, suffix, message, inner
+):
+    """The listing leaves it out, and every method that names it by id answers 403 — measured with
+    a delegated token for a person outside the channel."""
     confidential = _channels(client, admin_h, team_id)["People Confidential"]
+    root = client.get(
+        f"{V1}/teams/{team_id}/channels/{confidential}/messages", headers=admin_h
+    ).json()["value"][0]["id"]
     bob = {"Authorization": f"Bearer {tok(tokens_yaml, 'bob@acme.com')}"}
     assert "People Confidential" not in _channels(client, bob, team_id)
-    for path in (
-        f"{V1}/teams/{team_id}/channels/{confidential}",
-        f"{V1}/teams/{team_id}/channels/{confidential}/messages",
-        f"{V1}/teams/{team_id}/channels/{confidential}/members",
-        f"{V1}/teams/{team_id}/channels/{confidential}/messages/1/replies",
+    path = f"{V1}/teams/{team_id}/channels/{confidential}{suffix.format(message=root)}"
+    err = _error(client.get(path, headers=bob), 403)
+    assert (err["code"], err["message"], err["innerError"].get("code")) == (
+        "Forbidden",
+        message,
+        inner,
+    )
+
+
+# --- members ---------------------------------------------------------------------
+
+
+def test_a_standard_channel_is_the_whole_team_and_a_private_one_its_readers(
+    client, admin_h, tokens_yaml, team_id, ro_conn
+):
+    """A standard channel "inherits the list of members of the parent team" — everyone in the
+    directory, whether or not they ever posted in it. A private one is the people granted it."""
+    channels = _channels(client, admin_h, team_id)
+    roster = set(store.all_user_emails(ro_conn))
+    for name, expected in (
+        ("Platform", roster),
+        (
+            "People Confidential",
+            set(store.conversation_members_by_grant(ro_conn, "msteams", "People Confidential")),
+        ),
     ):
-        assert client.get(path, headers=bob).status_code == 404, path
+        body = client.get(
+            f"{V1}/teams/{team_id}/channels/{channels[name]}/members", headers=admin_h
+        ).json()
+        assert {m["email"] for m in body["value"]} == expected, name
+        assert body["@odata.count"] == len(body["value"])
+    # A scoped caller is a member of a standard channel whether or not they ever posted in it.
+    bob = {"Authorization": f"Bearer {tok(tokens_yaml, 'bob@acme.com')}"}
+    seen = client.get(
+        f"{V1}/teams/{team_id}/channels/{channels['Platform']}/members", headers=bob
+    ).json()
+    assert "bob@acme.com" in {m["email"] for m in seen["value"]}
+
+
+def test_a_member_is_shaped_and_identified_as_graph_sends_one(client, admin_h, team_id):
+    platform = _channels(client, admin_h, team_id)["Platform"]
+    base = f"{V1}/teams/{team_id}/channels/{platform}/members"
+    member = client.get(base, headers=admin_h).json()["value"][0]
+    assert list(member) == [
+        "@odata.type",
+        "id",
+        "roles",
+        "displayName",
+        "visibleHistoryStartDateTime",
+        "userId",
+        "email",
+        "tenantId",
+    ]
+    assert member["@odata.type"] == "#microsoft.graph.aadUserConversationMember"
+    assert member["userId"] == synth.msteams_user_id(member["email"])
+    assert base64.b64decode(member["id"]).decode() == (
+        f"0##2##{member['tenantId']}##{platform}##{member['userId']}"
+    )
+    # `$select` keeps the polymorphic type a client deserializes by; `$top` pages nothing.
+    selected = client.get(base, headers=admin_h, params={"$select": "displayName"}).json()
+    assert all(set(m) == {"@odata.type", "displayName"} for m in selected["value"])
+    for top in ("0", "1000"):
+        assert len(client.get(base, headers=admin_h, params={"$top": top}).json()["value"]) == len(
+            client.get(base, headers=admin_h).json()["value"]
+        )
+    filtered = client.get(
+        base, headers=admin_h, params={"$filter": f"displayName eq '{member['displayName']}'"}
+    ).json()
+    assert [m["id"] for m in filtered["value"]] == [member["id"]]
+    err = _error(client.get(base, headers=admin_h, params={"$select": "bogus"}), 400)
+    assert err["message"] == (
+        "Parsing OData Select and Expand failed: Could not find a property named 'bogus' on type "
+        "'microsoft.graph.conversationMember'."
+    )
 
 
 # --- messages --------------------------------------------------------------------
 
 
-def test_a_messages_id_is_its_created_time_in_milliseconds_and_its_etag(client, admin_h, team_id):
-    """Backlot's synthetic ids encode milliseconds; the imported-message etag reuses the id.
-    This tests the emulator convention, not a guarantee about Microsoft's opaque ids."""
+def _incident(client, admin_h, team_id, **params) -> tuple[str, dict]:
     incidents = _channels(client, admin_h, team_id)["Incidents"]
-    messages = client.get(
-        f"{V1}/teams/{team_id}/channels/{incidents}/messages", headers=admin_h
-    ).json()["value"]
-    assert messages
-    for m in messages:
-        assert m["etag"] == m["id"]
-        stamp = datetime.strptime(m["createdDateTime"], "%Y-%m-%dT%H:%M:%S.%f%z")
-        assert round(stamp.replace(tzinfo=timezone.utc).timestamp() * 1000) == int(m["id"])
+    base = f"{V1}/teams/{team_id}/channels/{incidents}/messages"
+    roots = client.get(base, headers=admin_h, params=params).json()["value"]
+    return base, next(m for m in roots if "502s" in m["body"]["content"])
 
 
-def test_a_channel_listing_returns_roots_only_and_replies_carry_their_parent(
-    client, admin_h, team_id
-):
-    """ "The list of messages (without the replies)" — a reply reaches a client through the replies
-    relationship, and it names its root in `replyToId` rather than repeating the thread."""
-    incidents = _channels(client, admin_h, team_id)["Incidents"]
-    roots = client.get(
-        f"{V1}/teams/{team_id}/channels/{incidents}/messages", headers=admin_h
-    ).json()["value"]
-    assert all(m["replyToId"] is None for m in roots)
-
-    root = next(m for m in roots if "502s" in m["body"]["content"])
-    replies = client.get(
-        f"{V1}/teams/{team_id}/channels/{incidents}/messages/{root['id']}/replies",
-        headers=admin_h,
-    ).json()
-    assert replies["@odata.count"] == 2
-    assert all(r["replyToId"] == root["id"] for r in replies["value"])
-    # Newest first, which is the order the vendor's own example returns (Reply3, Reply2, Reply1).
-    assert [r["id"] for r in replies["value"]] == sorted(
-        (r["id"] for r in replies["value"]), reverse=True
-    )
-
-
-def test_expand_replies_folds_a_thread_into_one_response(client, admin_h, team_id):
-    incidents = _channels(client, admin_h, team_id)["Incidents"]
-    body = client.get(
-        f"{V1}/teams/{team_id}/channels/{incidents}/messages",
-        headers=admin_h,
-        params={"$expand": "replies"},
-    ).json()
-    root = next(m for m in body["value"] if "502s" in m["body"]["content"])
-    assert root["replies@odata.count"] == 2
-    assert {r["body"]["content"] for r in root["replies"]} == {
-        "Yeah, looking now.",
-        "<p>Rolled back; 502s clearing.</p>",
-    }
-    # Without $expand the key is absent entirely, not present and empty — a client testing for it
-    # is asking whether it expanded, not whether the thread has replies.
-    plain = client.get(
-        f"{V1}/teams/{team_id}/channels/{incidents}/messages", headers=admin_h
-    ).json()
-    assert all("replies" not in m for m in plain["value"])
-
-
-def test_a_message_carries_the_per_message_fields_the_corpus_stated(client, admin_h, team_id):
-    incidents = _channels(client, admin_h, team_id)["Incidents"]
-    roots = client.get(
-        f"{V1}/teams/{team_id}/channels/{incidents}/messages",
-        headers=admin_h,
-        params={"$expand": "replies"},
-    ).json()["value"]
-    root = next(m for m in roots if "502s" in m["body"]["content"])
+def test_a_message_is_shaped_as_graph_sends_one(client, admin_h, team_id):
+    base, root = _incident(client, admin_h, team_id)
+    assert list(root) == [
+        "id",
+        "replyToId",
+        "etag",
+        "messageType",
+        "createdDateTime",
+        "lastModifiedDateTime",
+        "lastEditedDateTime",
+        "deletedDateTime",
+        "subject",
+        "summary",
+        "chatId",
+        "importance",
+        "locale",
+        "webUrl",
+        "policyViolation",
+        "eventDetail",
+        "from",
+        "body",
+        "channelIdentity",
+        "attachments",
+        "mentions",
+        "reactions",
+    ]
     assert root["importance"] == "high"
-    # Graph's metadata declares `reactionType`, `createdDateTime` and `user` non-nullable on a
-    # chatMessageReaction, so a corpus states an ADDRESS and the router assembles the rest. Passing
-    # the corpus's object straight through let a reaction with no `user` out — a shape the real
-    # service cannot send.
+    # A person's message without a subject carries the empty string, not null.
+    assert root["subject"] == ""
+    assert root["chatId"] is None  # a channel message is not a chat message
+    assert root["from"]["user"] == {
+        "@odata.type": "#microsoft.graph.teamworkUserIdentity",
+        "id": synth.msteams_user_id("bob@acme.com"),
+        "displayName": root["from"]["user"]["displayName"],
+        "userIdentityType": "aadUser",
+        "tenantId": root["from"]["user"]["tenantId"],
+    }
+    assert root["channelIdentity"]["teamId"] == team_id
+    # The id is the creation time in epoch milliseconds, as it is live.
+    stamp = datetime.strptime(root["createdDateTime"], "%Y-%m-%dT%H:%M:%S.%f%z")
+    assert round(stamp.timestamp() * 1000) == int(root["id"])
+
+
+def test_a_reaction_moves_the_messages_modified_time_and_etag(client, admin_h, team_id):
+    """Live, the etag is the last-modified time in epoch ms: the id on an untouched message, and
+    later once an edit or a reaction lands."""
+    base, root = _incident(client, admin_h, team_id, **{"$expand": "replies"})
     assert root["reactions"] == [
         {
-            "reactionType": "like",
+            "reactionType": "👍",
+            "displayName": "Like",
+            "reactionContentUrl": None,
             "createdDateTime": "2026-02-10T18:01:00.000Z",
             "user": {
                 "application": None,
                 "device": None,
                 "user": {
+                    "@odata.type": "#microsoft.graph.teamworkUserIdentity",
                     "id": synth.msteams_user_id("ava@acme.com"),
-                    "displayName": "Ava",
+                    "displayName": None,  # a reactor's name is not sent
                     "userIdentityType": "aadUser",
+                    "tenantId": root["from"]["user"]["tenantId"],
                 },
             },
         }
     ]
-    assert root["body"]["contentType"] == "text"
-    assert root["from"]["user"]["userIdentityType"] == "aadUser"
-    assert root["channelIdentity"] == {"teamId": team_id, "channelId": incidents}
-    assert root["chatId"] is None  # a channel message is not a chat message
-
-    edited = next(r for r in root["replies"] if r["body"]["contentType"] == "html")
-    assert edited["lastEditedDateTime"] is not None
-    assert edited["lastModifiedDateTime"] == edited["lastEditedDateTime"]
-    unedited = next(r for r in root["replies"] if r["body"]["contentType"] == "text")
-    assert unedited["lastEditedDateTime"] is None
-    assert unedited["lastModifiedDateTime"] == unedited["createdDateTime"]
-
-
-def test_get_message_resolves_a_reply_as_well_as_a_root(client, admin_h, team_id):
-    """A client that got its id from a `replyToId` or a search hit passes a reply's id here, and
-    Graph resolves this route against the whole channel."""
-    incidents = _channels(client, admin_h, team_id)["Incidents"]
-    base = f"{V1}/teams/{team_id}/channels/{incidents}/messages"
-    root = next(
-        m
-        for m in client.get(base, headers=admin_h).json()["value"]
-        if "502s" in m["body"]["content"]
+    assert root["lastModifiedDateTime"] == "2026-02-10T18:01:00.000Z"
+    assert root["etag"] == str(
+        int(datetime(2026, 2, 10, 18, 1, tzinfo=timezone.utc).timestamp()) * 1000
     )
+    edited = next(r for r in root["replies"] if r["body"]["contentType"] == "html")
+    assert edited["lastModifiedDateTime"] == edited["lastEditedDateTime"] is not None
+    untouched = next(r for r in root["replies"] if r["body"]["contentType"] == "text")
+    assert untouched["lastEditedDateTime"] is None
+    assert untouched["lastModifiedDateTime"] == untouched["createdDateTime"]
+    assert untouched["etag"] == untouched["id"]
+
+
+def test_a_channel_listing_returns_roots_only_and_replies_newest_first(client, admin_h, team_id):
+    base, root = _incident(client, admin_h, team_id)
+    roots = client.get(base, headers=admin_h).json()["value"]
+    assert all(m["replyToId"] is None for m in roots)
+    replies = client.get(f"{base}/{root['id']}/replies", headers=admin_h).json()
+    assert replies["@odata.count"] == len(replies["value"]) == 2
+    assert all(r["replyToId"] == root["id"] for r in replies["value"])
+    assert [r["id"] for r in replies["value"]] == sorted(
+        (r["id"] for r in replies["value"]), reverse=True
+    )
+
+
+def test_a_reply_is_read_under_its_root_and_not_at_the_root_route(client, admin_h, team_id):
+    base, root = _incident(client, admin_h, team_id)
     reply = client.get(f"{base}/{root['id']}/replies", headers=admin_h).json()["value"][0]
-    fetched = client.get(f"{base}/{reply['id']}", headers=admin_h).json()
-    assert fetched["id"] == reply["id"] and fetched["replyToId"] == root["id"]
-    assert client.get(f"{base}/9999999999999", headers=admin_h).status_code == 404
+    one = client.get(f"{base}/{root['id']}/replies/{reply['id']}", headers=admin_h)
+    assert one.status_code == 200, one.text
+    assert {k: v for k, v in one.json().items() if k != "@odata.context"} == reply
+    err = _error(client.get(f"{base}/{reply['id']}", headers=admin_h), 404)
+    assert (err["code"], err["message"]) == ("NotFound", "UnknownError")
+    # An id that names no message at all is refused rather than not found, to a delegated caller.
+    err = _error(client.get(f"{base}/9999999999999", headers=admin_h), 403)
+    assert (err["code"], err["message"]) == ("Forbidden", "UnknownError")
+    assert "code" not in err["innerError"]
+    # Teams threads are one level deep: a reply's own replies are an empty collection.
+    nested = client.get(f"{base}/{reply['id']}/replies", headers=admin_h).json()
+    assert (nested["@odata.count"], nested["value"]) == (0, [])
 
 
-# --- pagination ------------------------------------------------------------------
+def test_expand_replies_inlines_every_thread_and_counts_only_a_nonempty_one(
+    client, admin_h, team_id
+):
+    base, root = _incident(client, admin_h, team_id, **{"$expand": "replies"})
+    assert root["replies@odata.count"] == len(root["replies"]) == 2
+    assert root["replies@odata.context"].endswith(f"/messages('{root['id']}')/replies")
+    platform = _channels(client, admin_h, team_id)["Platform"]
+    quiet = client.get(
+        f"{V1}/teams/{team_id}/channels/{platform}/messages",
+        headers=admin_h,
+        params={"$expand": "Replies"},  # the option's value is read without regard to case
+    ).json()["value"]
+    assert quiet, "the sample corpus has a root with no replies"
+    for m in quiet:
+        assert m["replies"] == [] and "replies@odata.count" not in m
+        assert "replies@odata.context" in m
+    plain = client.get(base, headers=admin_h).json()["value"]
+    assert all("replies" not in m for m in plain)
 
 
-def test_next_link_pages_a_channel_and_stops(client, admin_h, team_id, ro_conn):
-    """The nextLink is absolute and carries the state a client needs; Graph omits the key entirely
-    on the last page rather than sending an empty one."""
-    incidents = _channels(client, admin_h, team_id)["Incidents"]
-    url = f"{V1}/teams/{team_id}/channels/{incidents}/messages?$top=1"
-    seen, pages = [], 0
+@pytest.mark.parametrize(
+    "params,status,code,message",
+    [
+        (
+            {"$top": "51"},
+            400,
+            "",
+            "The query specified in the URI is not valid. The limit of "
+            "'50' for Top query has been exceeded. The value from the incoming request is '51'.",
+        ),
+        (
+            {"$top": "0"},
+            400,
+            "BadRequest",
+            "PageSize needs to be more than 0. (Parameter 'pageSize')",
+        ),
+        (
+            {"$top": "abc"},
+            400,
+            "BadRequest",
+            "Invalid value 'abc' for $top query option found. "
+            "The $top query option requires a non-negative integer value.",
+        ),
+        ({"$skiptoken": "garbage"}, 400, "BadRequest", "UnknownError"),
+        (
+            {"$filter": "messageType eq 'message'"},
+            400,
+            "BadRequest",
+            "Parameter 'Filter' not supported for this request.",
+        ),
+        (
+            {"$orderby": "createdDateTime"},
+            400,
+            "",
+            "The query specified in the URI is not valid. "
+            "Query option 'OrderBy' is not allowed. To allow it, set the 'AllowedQueryOptions' "
+            "property on EnableQueryAttribute or QueryValidationSettings.",
+        ),
+        (
+            {"$expand": "bogus"},
+            400,
+            "BadRequest",
+            "Parsing OData Select and Expand failed: Could "
+            "not find a property named 'bogus' on type 'microsoft.graph.chatMessage'.",
+        ),
+        (
+            {"$select": "bogus"},
+            400,
+            "BadRequest",
+            "Parsing OData Select and Expand failed: Could "
+            "not find a property named 'bogus' on type 'microsoft.graph.chatMessage'.",
+        ),
+    ],
+)
+def test_a_message_listing_refuses_a_query_it_cannot_run(
+    client, admin_h, team_id, params, status, code, message
+):
+    base, _ = _incident(client, admin_h, team_id)
+    err = _error(client.get(base, headers=admin_h, params=params), status)
+    assert (err["code"], err["message"]) == (code, message)
+
+
+def test_a_replies_page_token_that_does_not_decode_is_a_backend_failure(client, admin_h, team_id):
+    base, root = _incident(client, admin_h, team_id)
+    for key in ("$skiptoken", "$skipToken"):
+        err = _error(
+            client.get(f"{base}/{root['id']}/replies", headers=admin_h, params={key: "garbage"}),
+            502,
+        )
+        assert (err["code"], err["message"]) == ("BadGateway", "Failed to execute backend request.")
+
+
+def test_select_projects_a_message_to_what_was_named(client, admin_h, team_id):
+    base, root = _incident(client, admin_h, team_id)
+    body = client.get(base, headers=admin_h, params={"$select": "id"}).json()
+    assert all(set(m) == {"id"} for m in body["value"])
+    one = client.get(f"{base}/{root['id']}", headers=admin_h, params={"$select": "id"}).json()
+    assert one["@odata.context"].endswith("/messages(id)/$entity")
+    assert set(one) == {"@odata.context", "id"}
+
+
+# --- paging and ordering ---------------------------------------------------------
+
+
+def test_a_page_counts_itself_and_the_next_link_walks_the_channel(
+    client, admin_h, team_id, ro_conn
+):
+    base, _ = _incident(client, admin_h, team_id)
+    url, seen, pages = f"{base}?$top=1", [], 0
     while url and pages < 10:
         body = client.get(url, headers=admin_h).json()
+        assert body["@odata.count"] == len(body["value"])
         seen += [m["id"] for m in body["value"]]
         url = body.get("@odata.nextLink")
         pages += 1
     assert url is None, "paging did not terminate"
-    assert len(seen) == len(set(seen)), "a page repeated a message"
-    total = store.count_msteams_top_level(ro_conn, "Incidents", None)
-    assert len(seen) == total
+    assert len(seen) == len(set(seen)) == store.count_msteams_top_level(ro_conn, "Incidents", None)
 
 
 def test_a_crawl_reaches_every_stored_message(client, admin_h, team_id, ro_conn):
@@ -415,176 +779,202 @@ def test_a_crawl_reaches_every_stored_message(client, admin_h, team_id, ro_conn)
     assert len(found) == db_count(ro_conn, "msteams")
 
 
-# --- members and the directory ---------------------------------------------------
-
-
-def test_channel_members_are_its_speakers_and_carry_the_polymorphic_type(client, admin_h, team_id):
-    """`conversationMember` is a polymorphic base, and a client deserializing the collection picks
-    its concrete type from `@odata.type` — without it the SDKs cannot construct the object."""
-    incidents = _channels(client, admin_h, team_id)["Incidents"]
-    body = client.get(f"{V1}/teams/{team_id}/channels/{incidents}/members", headers=admin_h).json()
-    assert {m["email"] for m in body["value"]} == {"ava@acme.com", "bob@acme.com"}
-    for m in body["value"]:
-        assert m["@odata.type"] == "#microsoft.graph.aadUserConversationMember"
-        assert m["userId"] == synth.msteams_user_id(m["email"])
-        assert m["roles"] == []
-    assert body["@odata.count"] == len(body["value"])
-
-
-def test_a_member_id_is_the_teams_and_users_ids_the_way_graph_encodes_it(client, admin_h, team_id):
-    """Microsoft says to treat the id as opaque, and nothing here parses it — but a real one
-    decodes to `<teamId>##<userId>`, and a value that does not is a difference someone diffing a
-    recorded response has to explain."""
-    import base64
-
-    incidents = _channels(client, admin_h, team_id)["Incidents"]
-    member = client.get(
-        f"{V1}/teams/{team_id}/channels/{incidents}/members", headers=admin_h
-    ).json()["value"][0]
-    assert base64.b64decode(member["id"]).decode() == f"{team_id}##{member['userId']}"
-
-
-def test_a_user_resolves_by_object_id_and_by_principal_name(client, admin_h):
-    by_upn = client.get(f"{V1}/users/ava@acme.com", headers=admin_h).json()
-    by_id = client.get(f"{V1}/users/{by_upn['id']}", headers=admin_h).json()
-    assert by_id == by_upn
-
-    missing = client.get(f"{V1}/users/nobody@acme.com", headers=admin_h)
-    assert missing.status_code == 404
-    assert missing.json()["error"]["code"] == "Request_ResourceNotFound"
-    assert "nobody@acme.com" in missing.json()["error"]["message"]
-
-
 # Placed after every `client`-fixture test in this module: each opens a SECOND app over a different
 # DB via `corpus_client`, which overwrites the module-scoped fixture's shared `app.state` (see
 # `tests._helpers.client_for`'s docstring).
 
 
-def test_a_channel_is_ordered_by_its_reply_chains_newest_activity(tmp_path):
-    """Graph sorts a channel "by the last modified date of the entire reply chain, including both
-    the root channel message and its replies" — so an old post someone answered today outranks a
-    newer post nobody has touched. Ordering by the root's own clock alone gets this backwards."""
-    records = [
-        {
-            "source_type": "msteams",
-            "doc_id": "old-but-active",
-            "channel": "Platform",
-            "content": "Old post.",
-            "author_email": "ava@x.com",
-            "created": "2026-01-01T09:00:00Z",
-            "replies": [
-                {
-                    "content": "Still going.",
-                    "author_email": "bo@x.com",
-                    "created": "2026-03-01T09:00:00Z",
-                }
-            ],
-        },
-        {
-            "source_type": "msteams",
-            "doc_id": "newer-but-quiet",
-            "channel": "Platform",
-            "content": "Newer post.",
-            "author_email": "bo@x.com",
-            "created": "2026-02-01T09:00:00Z",
-        },
-    ]
-    with corpus_client(tmp_path, records) as (client, settings):
+@pytest.mark.parametrize(
+    "activity",
+    ["reply", "edited reply", "edited root", "reaction", "reaction on a reply"],
+)
+def test_a_channel_is_ordered_by_its_reply_chains_newest_activity(tmp_path, activity):
+    """A new reply to the oldest root moved it to the top live, while the root's own
+    `lastModifiedDateTime` did not change; an edit or a reaction on any message of the chain moves
+    that message's, and so the chain's."""
+    old = complete("msteams", doc_id="old", channel="Platform", content="Old", created=100)
+    reply = {"content": "Reply", "author_email": "bo@x.com", "created": 150}
+    if activity == "reply":
+        reply["created"] = 300
+    if activity == "edited reply":
+        reply["edited"] = 300
+    if activity == "edited root":
+        old["edited"] = 300
+    if activity == "reaction":
+        old["reactions"] = [{"reactionType": "👍", "user": "bo@x.com", "createdDateTime": 300}]
+    if activity == "reaction on a reply":
+        reply["reactions"] = [{"reactionType": "👍", "user": "ava@x.com", "createdDateTime": 300}]
+    old["replies"] = [reply]
+    newer = complete("msteams", doc_id="newer", channel="Platform", content="Newer", created=200)
+    with corpus_client(tmp_path, [old, newer]) as (client, settings):
         h = {"Authorization": f"Bearer {settings.admin_token}"}
         team = client.get(f"{V1}/me/joinedTeams", headers=h).json()["value"][0]["id"]
-        channel = _channels(client, h, team)["Platform"]
-        bodies = [
-            m["body"]["content"]
-            for m in client.get(f"{V1}/teams/{team}/channels/{channel}/messages", headers=h).json()[
-                "value"
-            ]
-        ]
-    assert bodies == ["Old post.", "Newer post."]
-
-
-def test_a_system_event_message_carries_no_sender(tmp_path):
-    """Measured against the vendor's own example: `from` is null beside
-    `messageType: systemEventMessage`, because Teams generated the notice rather than a person."""
-    with corpus_client(
-        tmp_path,
-        [
-            {
-                "source_type": "msteams",
-                "channel": "Platform",
-                "message_type": "systemEventMessage",
-                "content": "<systemEventMessage/>",
-                "content_type": "html",
-                "author_email": "ava@x.com",
-                "created": "2026-02-01T09:00:00Z",
-            }
-        ],
-    ) as (client, settings):
-        h = {"Authorization": f"Bearer {settings.admin_token}"}
-        team = client.get(f"{V1}/me/joinedTeams", headers=h).json()["value"][0]["id"]
-        channel = _channels(client, h, team)["Platform"]
-        m = client.get(f"{V1}/teams/{team}/channels/{channel}/messages", headers=h).json()["value"][
-            0
-        ]
-    assert m["messageType"] == "systemEventMessage"
-    assert m["from"] is None
+        cid = synth.msteams_channel_id("Platform")
+        roots = client.get(f"{V1}/teams/{team}/channels/{cid}/messages", headers=h).json()["value"]
+    assert [m["body"]["content"] for m in roots] == ["Old", "Newer"]
+    first = roots[0]
+    moved = activity in ("edited root", "reaction")
+    assert (first["lastModifiedDateTime"] == "1970-01-01T00:05:00.000Z") == moved
 
 
 def test_a_sender_id_from_a_message_resolves_at_the_users_route(tmp_path):
-    """An id the API hands out has to resolve. A reply's sender may be a bot or anyone else the
-    corpus names, and `from.user.id` is the only handle a client has for them — a `/users/{id}`
-    that came back not-found for it would be Backlot advertising an id it will not answer."""
-    with corpus_client(
-        tmp_path,
-        [
-            {
-                "source_type": "msteams",
-                "channel": "Platform",
-                "content": "Nightly build passed.",
-                "author_email": "ava@x.com",
-                "created": "2026-02-01T09:00:00Z",
-                "replies": [
-                    {
-                        "content": "Artifacts uploaded.",
-                        "author_email": "buildbot@x.com",
-                        "created": "2026-02-01T09:00:30Z",
-                    }
-                ],
-            }
-        ],
-    ) as (client, settings):
+    """An id the API hands out has to resolve, a bot's that the directory does not carry included."""
+    record = complete(
+        "msteams",
+        channel="Platform",
+        author_email="ava@x.com",
+        replies=[{"content": "Artifacts uploaded.", "author_email": "buildbot@x.com"}],
+    )
+    with corpus_client(tmp_path, [record]) as (client, settings):
         h = {"Authorization": f"Bearer {settings.admin_token}"}
         team = client.get(f"{V1}/me/joinedTeams", headers=h).json()["value"][0]["id"]
-        channel = _channels(client, h, team)["Platform"]
-        base = f"{V1}/teams/{team}/channels/{channel}/messages"
+        base = f"{V1}/teams/{team}/channels/{_channels(client, h, team)['Platform']}/messages"
         root = client.get(base, headers=h).json()["value"][0]
         reply = client.get(f"{base}/{root['id']}/replies", headers=h).json()["value"][0]
         resolved = client.get(f"{V1}/users/{reply['from']['user']['id']}", headers=h)
-
     assert resolved.status_code == 200
     assert resolved.json()["userPrincipalName"] == "buildbot@x.com"
 
 
 def test_a_reaction_without_its_own_time_takes_the_messages(tmp_path):
-    with corpus_client(
-        tmp_path,
-        [
-            {
-                "source_type": "msteams",
-                "channel": "Platform",
-                "content": "Ship it.",
-                "author_email": "ava@x.com",
-                "created": "2026-02-01T09:00:00Z",
-                "reactions": [{"reactionType": "heart", "user": "bo@x.com"}],
-            }
-        ],
-    ) as (client, settings):
+    record = complete(
+        "msteams",
+        channel="Platform",
+        author_email="ava@x.com",
+        reactions=[{"reactionType": "🎉", "user": "bo@x.com"}],
+    )
+    with corpus_client(tmp_path, [record]) as (client, settings):
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        team = client.get(f"{V1}/me/joinedTeams", headers=h).json()["value"][0]["id"]
+        url = f"{V1}/teams/{team}/channels/{_channels(client, h, team)['Platform']}/messages"
+        m = client.get(url, headers=h).json()["value"][0]
+    reaction = m["reactions"][0]
+    assert reaction["createdDateTime"] == m["createdDateTime"] == m["lastModifiedDateTime"]
+    assert (reaction["reactionType"], reaction["displayName"]) == ("🎉", "Party popper")
+
+
+@pytest.mark.parametrize("warm", [False, True], ids=["cold", "warm"])
+@pytest.mark.parametrize(
+    "reader,visible", [("org:other", False), ("org:acme", True), ("user:bob@acme.com", True)]
+)
+def test_channel_visibility_intersects_the_callers_own_principals(tmp_path, warm, reader, visible):
+    """An org grant to some OTHER org does not make a channel public to this caller, whether the
+    channel ACL cache is warm or not."""
+    records = [
+        complete("msteams", channel="restricted", author_email="bob@acme.com", readers=[reader])
+    ]
+    with corpus_client(tmp_path, records) as (client, settings):
+        client.app.state.warm_thread.join()
+        assert client.app.state.warm_error is None
+        if not warm:
+            client.app.state.msteams_channel_acl = None
+        token = client.app.state.acl.email_to_token()["bob@acme.com"]
+        headers = {"Authorization": f"Bearer {token}"}
+        team = client.get(f"{V1}/me/joinedTeams", headers=headers).json()["value"][0]["id"]
+        cid = synth.msteams_channel_id("restricted")
+        base = f"{V1}/teams/{team}/channels"
+        listed = client.get(base, headers=headers).json()
+        assert [row["id"] for row in listed["value"]] == ([cid] if visible else [])
+        for suffix in ("", "/members", "/messages"):
+            r = client.get(f"{base}/{cid}{suffix}", headers=headers)
+            assert r.status_code == (200 if visible else 403), r.text
+
+
+def test_mentions_and_attachments_are_built_from_what_the_corpus_names(tmp_path):
+    record = complete(
+        "msteams",
+        channel="Platform",
+        content='<p><at id="0">Bo</at> see <attachment id="a1"></attachment></p>',
+        content_type="html",
+        author_email="ava@x.com",
+        mentions=[{"user": "bo@x.com", "mentionText": "Bo"}],
+        attachments=[{"id": "a1", "name": "plan.pdf", "contentUrl": "https://x.sharepoint.com/p"}],
+    )
+    with corpus_client(tmp_path, [record]) as (client, settings):
         h = {"Authorization": f"Bearer {settings.admin_token}"}
         team = client.get(f"{V1}/me/joinedTeams", headers=h).json()["value"][0]["id"]
         channel = _channels(client, h, team)["Platform"]
         m = client.get(f"{V1}/teams/{team}/channels/{channel}/messages", headers=h).json()["value"][
             0
         ]
+    assert m["mentions"] == [
+        {
+            "id": 0,
+            "mentionText": "Bo",
+            "mentioned": {
+                "application": None,
+                "device": None,
+                "conversation": None,
+                "tag": None,
+                "user": {
+                    "@odata.type": "#microsoft.graph.teamworkUserIdentity",
+                    "id": synth.msteams_user_id("bo@x.com"),
+                    "displayName": m["mentions"][0]["mentioned"]["user"]["displayName"],
+                    "userIdentityType": "aadUser",
+                    "tenantId": m["from"]["user"]["tenantId"],
+                },
+            },
+        }
+    ]
+    assert m["attachments"] == [
+        {
+            "id": "a1",
+            "contentType": "reference",
+            "contentUrl": "https://x.sharepoint.com/p",
+            "content": None,
+            "name": "plan.pdf",
+            "thumbnailUrl": None,
+            "teamsAppId": None,
+        }
+    ]
 
-    reaction = m["reactions"][0]
-    assert reaction["createdDateTime"] == m["createdDateTime"]
-    assert reaction["user"]["user"]["id"] == synth.msteams_user_id("bo@x.com")
+
+def test_a_system_event_is_an_unknown_future_value_unless_the_caller_opts_in(tmp_path):
+    record = complete(
+        "msteams",
+        channel="Platform",
+        message_type="systemEventMessage",
+        content="Raj joined the team.",
+        author_email="ava@x.com",
+    )
+    with corpus_client(tmp_path, [record]) as (client, settings):
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        team = client.get(f"{V1}/me/joinedTeams", headers=h).json()["value"][0]["id"]
+        url = f"{V1}/teams/{team}/channels/{_channels(client, h, team)['Platform']}/messages"
+        plain = client.get(url, headers=h).json()["value"][0]
+        opted = client.get(url, headers={**h, "Prefer": "include-unknown-enum-members"}).json()[
+            "value"
+        ][0]
+    assert plain["messageType"] == "unknownFutureValue"
+    assert opted["messageType"] == "systemEventMessage"
+    for m in (plain, opted):
+        assert m["from"] is None
+        assert m["subject"] is None
+        assert m["body"] == {"contentType": "html", "content": "<systemEventMessage/>"}
+
+
+def test_an_expanded_thread_past_200_continues_at_the_link_graph_gives(tmp_path):
+    record = complete(
+        "msteams",
+        channel="Platform",
+        created=100,
+        replies=[{"content": f"Reply {i}", "created": 101 + i} for i in range(205)],
+    )
+    with corpus_client(tmp_path, [record]) as (client, settings):
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        team = client.get(f"{V1}/me/joinedTeams", headers=h).json()["value"][0]["id"]
+        cid = synth.msteams_channel_id("Platform")
+        root = client.get(
+            f"{V1}/teams/{team}/channels/{cid}/messages", headers=h, params={"$expand": "replies"}
+        ).json()["value"][0]
+        assert root["replies@odata.count"] == len(root["replies"]) == 200
+        link = root["replies@odata.nextLink"]
+        assert link.startswith(
+            f"http://testserver{V1}/teams('{team}')/channels('{cid}')/messages('{root['id']}')"
+            "/replies?$skipToken="
+        )
+        page = client.get(link, headers=h).json()
+        assert page["@odata.count"] == len(page["value"]) == 5
+        assert "@odata.nextLink" not in page
+    replies = root["replies"] + page["value"]
+    assert [r["body"]["content"] for r in replies] == [f"Reply {i}" for i in reversed(range(205))]

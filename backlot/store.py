@@ -2802,18 +2802,23 @@ def slack_thread(conn, channel, thread_ts, visible_ids=None) -> list[sqlite3.Row
 # `channel-list-messages` returns — is a NULL test rather than the `thread_seq = 0` slack uses.
 
 
-# A root's newest activity includes creation and edits on the root AND every reply. This is
-# what Graph orders a channel listing by — "sorted by the last modified date of the entire reply
-# chain, including both the root channel message and its replies". The correlated MAX uses
-# idx_msteams_thread; the outer MAX retains a root edit newer than all of its replies.
-# Compare milliseconds: Backlot's synthetic ids encode the served creation fraction, while
-# stored edit times use whole seconds. This id/time relation is local, not a Graph guarantee.
+def _msteams_modified(alias: str) -> str:
+    """A message's last-modified time in epoch milliseconds, as SQL: its creation (the id), its last
+    edit, and its newest reaction, each of which moves ``lastModifiedDateTime`` live. A reaction
+    with no time of its own is the message's, which the id already counts."""
+    return (
+        f"MAX(CAST({alias}.id AS INTEGER), COALESCE({alias}.last_edited_ts * 1000, 0), "
+        "COALESCE((SELECT MAX(CAST(json_extract(j.value, '$.createdDateTime') AS INTEGER)) * 1000 "
+        f"FROM json_each(COALESCE({alias}.reactions, '[]')) j), 0))"
+    )
+
+
+# What a channel listing is ordered by: the newest last-modified time across the root and every
+# reply. Measured: a new reply to the oldest root moved it to the top, while the root's own
+# `lastModifiedDateTime` stayed where it was. The correlated MAX uses idx_msteams_thread.
 _MSTEAMS_CHAIN_TS = (
-    "MAX(CAST(m.id AS INTEGER), COALESCE(m.last_edited_ts * 1000, CAST(m.id AS INTEGER)), "
-    "COALESCE((SELECT MAX(MAX(CAST(r.id AS INTEGER), "
-    "COALESCE(r.last_edited_ts * 1000, CAST(r.id AS INTEGER)))) "
-    "FROM msteams_messages r WHERE r.channel = m.channel AND r.reply_to_id = m.id), "
-    "CAST(m.id AS INTEGER)))"
+    f"MAX({_msteams_modified('m')}, COALESCE((SELECT MAX({_msteams_modified('r')}) "
+    "FROM msteams_messages r WHERE r.channel = m.channel AND r.reply_to_id = m.id), 0))"
 )
 
 
@@ -3431,7 +3436,7 @@ def group_members(conn, group_id) -> list[sqlite3.Row]:
 # lets a grant row name its container without joining the document table; a source whose grouping
 # column is not part of its key has no membership in this sense and must not be passed here.
 #
-# The `slack_*` wrappers below are the names the Slack router and the importer already call.
+# The `slack_*` wrappers below are the names the Slack router and the importer call.
 
 
 def _conversation_active_author(source_type: str, qualifier: str = "") -> str:

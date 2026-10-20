@@ -269,15 +269,20 @@ def msteams_user_id(email: str) -> str:
     return _uuid_from("msteams-user:" + email)
 
 
-def msteams_member_id(team_id: str, user_id: str) -> str:
-    """A channel membership id: base64 of ``<teamId>##<userId>``.
+def msteams_member_id(tenant_id: str, channel_id: str, user_id: str) -> str:
+    """A channel membership id: base64 of ``0##2##<tenantId>##<channelId>##<userId>``.
 
-    Read off the vendor's own ``channel-list-members`` example, whose ids decode to exactly that
-    pair. Microsoft documents the value as opaque, so this is not a contract a client may rely on
-    — it is what makes Backlot's ids indistinguishable from real ones for the clients that log or
-    diff them.
+    Every member id read off graph.microsoft.com on 2026-10-20, of a standard channel and a private
+    one alike, decoded to exactly that. Microsoft documents the value as opaque, so this is not a
+    contract a client may rely on — it is what makes Backlot's ids indistinguishable from real ones
+    for the clients that log or diff them.
     """
-    return base64.b64encode(f"{team_id}##{user_id}".encode()).decode()
+    return base64.b64encode(f"0##2##{tenant_id}##{channel_id}##{user_id}".encode()).decode()
+
+
+def msteams_attachment_id(message_id: str, position: int) -> str:
+    """A file attachment's id, a GUID as live ones are, for a corpus that states none."""
+    return _uuid_from(f"msteams-attachment:{message_id}:{position}")
 
 
 # Capacity of Backlot's synthetic channel-second id space, not a Microsoft throughput limit.

@@ -24,36 +24,56 @@ from typing import Any, Callable, Mapping
 from graphql import (
     GraphQLError,
     GraphQLID,
+    GraphQLInputObjectType,
+    GraphQLList,
+    GraphQLNonNull,
     GraphQLScalarType,
     GraphQLSchema,
     assert_valid_schema,
     build_schema,
     execute_sync,
+    get_operation_ast,
     parse,
+    type_from_ast,
     validate,
 )
-from graphql.type.scalars import coerce_id
 
 from backlot.graphql import body as request_body
 
 Resolver = Callable[..., Any]
 
 
-def _id_from_a_variable(value: Any) -> str:
-    """``ID``'s reading of a variable's value: graphql-core's ``coerce_id``, but for a
-    :class:`~backlot.graphql.body.Double` holding an integer, which graphql-js turns into an ID with
-    ``Number::toString`` where ``coerce_id`` writes ``str(int(value))``. graphql 16.9.0's
-    ``GraphQLID.parseValue`` under Node 24.18.0 read ``1e21``, ``1e300`` and
+def _ids_as_graphql_js_reads_them(value: Any, type_: Any) -> Any:
+    """``value`` for a variable of ``type_``, each :class:`~backlot.graphql.body.Double` holding an
+    integer where ``type_`` holds an ``ID`` turned into the ID graphql-js makes of it with
+    ``Number::toString``, where graphql-core's ``coerce_id`` writes ``str(int(value))``. graphql
+    16.9.0's ``GraphQLID.parseValue`` under Node 24.18.0 read ``1e21``, ``1e300`` and
     ``12345678901234567890`` as ``1e+21``, ``1e+300`` and ``12345678901234567000`` on 2026-10-19
-    (UTC), where ``coerce_id`` writes the integer the double holds, digit for digit."""
-    if type(value) is request_body.Double and value.is_integer():
+    (UTC), where ``coerce_id`` writes the integer the double holds, digit for digit. graphql
+    16.9.0's ``graphqlSync`` read ``1e21`` so as an ``[ID!]`` variable, alone or in a list, and in
+    an input object's ``ID`` and ``[ID!]`` fields on 2026-10-20 (UTC).
+
+    They are read here, before graphql-core coerces them, because graphql-core has one ``ID`` scalar
+    for every schema in a process, and a process that imports :data:`backlot.main.app` can hold a
+    schema of its own."""
+    if isinstance(type_, GraphQLNonNull):
+        return _ids_as_graphql_js_reads_them(value, type_.of_type)
+    if isinstance(type_, GraphQLList):
+        if isinstance(value, list):
+            return [_ids_as_graphql_js_reads_them(item, type_.of_type) for item in value]
+        return _ids_as_graphql_js_reads_them(value, type_.of_type)
+    if isinstance(type_, GraphQLInputObjectType):
+        if not isinstance(value, dict):
+            return value
+        fields = type_.fields
+        return {
+            key: _ids_as_graphql_js_reads_them(item, fields[key].type) if key in fields else item
+            for key, item in value.items()
+        }
+    if type_ is GraphQLID and type(value) is request_body.Double and value.is_integer():
         return repr(value)
-    return coerce_id(value)
+    return value
 
-
-# graphql-core has one `ID` scalar for every schema in the process, so this reads an `ID` variable
-# for all of them; a Double is made only by `backlot.graphql.body`.
-GraphQLID.parse_value = _id_from_a_variable
 
 # One custom scalar's coercion: ``parse_value`` takes a variable's JSON value, ``parse_literal`` an
 # AST node. graphql-core runs both BEFORE any resolver, so a scalar that rejects an operand turns a
@@ -158,6 +178,16 @@ class Engine:
         errors = validate(self.schema, doc)
         if errors:
             return _request_error(list(errors))
+        operation = get_operation_ast(doc, operation_name)
+        if variables and operation is not None:
+            types = {
+                definition.variable.name.value: type_from_ast(self.schema, definition.type)
+                for definition in operation.variable_definitions
+            }
+            variables = {
+                name: _ids_as_graphql_js_reads_them(value, types.get(name))
+                for name, value in variables.items()
+            }
         result = execute_sync(
             self.schema,
             doc,

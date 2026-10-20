@@ -198,6 +198,10 @@ def test_linear_team_issue_count_is_the_visible_count(client, admin_h, tokens_ya
     hidden = gql(client, '{ team(id: "BLA") { key } }', ava_h)
     assert hidden.json()["data"] is None
     assert "Entity not found" in hidden.json()["errors"][0]["message"]
+    # So does `teamMembership(id:)`, though ava's membership id there is computable offline.
+    bla = synth.linear_team_membership_id("blackops", synth.linear_user_id("ava@acme.com"))
+    hidden = gql(client, "{ teamMembership(id: %s) { id } }" % lit(bla), ava_h)
+    assert "Entity not found" in hidden.json()["errors"][0]["message"]
 
 
 def test_linear_state_type_is_linears_category(client, admin_h):
@@ -2378,6 +2382,8 @@ LINEAR_TYPES = {
     # selected by `@linear/sdk`'s own Team and Project fragments
     "Team.initiativesEnabled": "Boolean!",
     "Team.viewerCanJoin": "Boolean!",
+    "Team.viewerCanLeave": "Boolean!",
+    "Team.viewerMembership": "TeamMembership",
     "Project.resourceCount": "Int!",
     # non-null where Backlot was nullable
     "Issue.sharedAccess": "IssueSharedAccess!",
@@ -2526,20 +2532,49 @@ def test_counts_are_served_as_json_integers(fclient):
 
 
 def test_fields_the_sdk_fragments_select_resolve_to_what_backlot_serves(fclient):
-    """All three are non-null, so a declaration with nothing behind it voids the whole result. A
+    """All four are non-null, so a declaration with nothing behind it voids the whole result. A
     real team answers `initiativesEnabled: false` (measured 2026-09-07), and `_team` gives the
-    reason `viewerCanJoin` is `false`; Backlot serves no project resources, so `resourceCount` is
-    a count rather than a stand-in."""
+    reason `viewerCanJoin` is `false`; the caller here is in two teams, so leaving one does not
+    leave it without an active team; Backlot serves no project resources, so `resourceCount` is a
+    count rather than a stand-in."""
     r = post(
         fclient,
-        '{ issue(id: "ENG-2") { team { initiativesEnabled viewerCanJoin }'
+        '{ issue(id: "ENG-2") { team { initiativesEnabled viewerCanJoin viewerCanLeave }'
         " project { resourceCount } } }",
     ).json()
     assert "errors" not in r, r.get("errors")
     d = r["data"]["issue"]
     team = d["team"]
-    served = (team["initiativesEnabled"], team["viewerCanJoin"], d["project"]["resourceCount"])
-    assert served == (False, False, 0)
+    served = (
+        team["initiativesEnabled"],
+        team["viewerCanJoin"],
+        team["viewerCanLeave"],
+        d["project"]["resourceCount"],
+    )
+    assert served == (False, False, True, 0)
+
+
+_MEMBERSHIP = "id createdAt updatedAt archivedAt owner sortOrder user { id } team { id }"
+
+
+def test_linear_viewer_membership_is_the_callers_own(tmp_path):
+    """The measurement above `_membership`: the member of a workspace's one team is answered its
+    membership, `viewerCanLeave: false`, and the same membership again from `teamMembership(id:)`,
+    the query `@linear/sdk`'s `team.viewerMembership` accessor sends."""
+    with _linear_client(tmp_path) as (client, settings):
+        h = {"Authorization": settings.admin_token}
+        q = "{ viewer { id createdAt } teams { nodes { id createdAt viewerCanLeave"
+        d = gql(client, q + " viewerMembership { %s } } } }" % _MEMBERSHIP, h).json()["data"]
+        (team,) = d["teams"]["nodes"]
+        m = team["viewerMembership"]
+        assert team["viewerCanLeave"] is False
+        assert (m["user"]["id"], m["team"]["id"]) == (d["viewer"]["id"], team["id"])
+        assert (m["owner"], m["archivedAt"], m["sortOrder"]) == (False, None, 0)
+        assert m["createdAt"] == m["updatedAt"] == max(team["createdAt"], d["viewer"]["createdAt"])
+        by_id = gql(client, "{ teamMembership(id: %s) { %s } }" % (lit(m["id"]), _MEMBERSHIP), h)
+        assert by_id.json()["data"]["teamMembership"] == m
+        miss = gql(client, '{ teamMembership(id: "%s") { id } }' % synth.linear_id("nope"), h)
+        assert "Entity not found: TeamMembership" in miss.json()["errors"][0]["message"]
 
 
 def test_enum_fields_serve_a_member_of_the_vendors_enum(fclient):

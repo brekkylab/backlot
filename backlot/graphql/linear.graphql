@@ -71,8 +71,9 @@ type Query {
 
   # An `@linear/sdk` relation accessor (`await issue.state`, `await issue.assignee`) does NOT read
   # the value out of the issue it already fetched — it fires a fresh query for that entity by id.
-  # These four roots are what make `issue.state` / `.assignee` / `.creator` / `.project` /
-  # `.cycle` / `.labels()` work instead of failing with "Cannot query field on type 'Query'".
+  # These roots are what make `issue.state` / `.assignee` / `.creator` / `.project` / `.cycle` /
+  # `.labels()` and `team.viewerMembership` work instead of failing with "Cannot query field on
+  # type 'Query'".
   user(id: String!): User!
   workflowState(id: String!): WorkflowState!
   project(id: String!): Project!
@@ -81,6 +82,7 @@ type Query {
   attachment(id: String!): Attachment!
   issueRelation(id: String!): IssueRelation!
   release(id: String!): Release!
+  teamMembership(id: String!): TeamMembership!
 }
 
 # --- connections & entity types -----------------------------------------------------
@@ -912,6 +914,8 @@ type Team {
   setIssueSortOrderOnStateChange: String!
   allMembersCanJoin: Boolean
   viewerCanJoin: Boolean!
+  viewerCanLeave: Boolean!
+  viewerMembership: TeamMembership
   requirePriorityToLeaveTriage: Boolean!
   autoCloseChildIssues: Boolean
   autoCloseParentIssues: Boolean
@@ -949,6 +953,20 @@ type Team {
   triageIssueState: WorkflowState
   markedAsDuplicateWorkflowState: WorkflowState
   issues(after: String, before: String, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy, filter: IssueFilter, includeSubTeams: Boolean): IssueConnection!
+}
+
+# Backlot serves the viewer's own membership in each team it can see, and no one else's:
+# `teamMembership(id:)` finds only those, and `Team.members`, `membership`, `memberships` and
+# `User.teamMemberships` are gaps.
+type TeamMembership {
+  id: ID!
+  createdAt: DateTime!
+  updatedAt: DateTime!
+  archivedAt: DateTime
+  user: User!
+  team: Team!
+  owner: Boolean!
+  sortOrder: Float!
 }
 
 type TeamConnection {

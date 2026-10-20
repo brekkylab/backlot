@@ -358,8 +358,9 @@ def test_gmail_plus_ends_an_address_or_subject_value():
     assert _parse_gmail_q("from:lena+news@acme.com") == ("", {"from": ["lena+news@acme.com"]})
     assert _parse_gmail_q("cc:lena@acme.com++") == ("", {"cc": ["lena@acme.com"]})
     assert _parse_gmail_q("cc:@acme.com+x") == ("+x", {"cc": ["@acme.com"]})
-    # A quoted value keeps its `+`, and so does `label:`.
-    assert _parse_gmail_q('cc:"lena+x"') == ("", {"cc": ["lena+x"]})
+    # A quoted address value keeps its `+` and its quotes, which tell the matcher to read it alone;
+    # `label:` keeps its `+` too.
+    assert _parse_gmail_q('cc:"lena+x"') == ("", {"cc": ['"lena+x"']})
     assert _parse_gmail_q("label:inbox+x") == ("", {"label": ["inbox+x"]})
 
 
@@ -515,12 +516,12 @@ def test_gmail_after_before_over_the_wire(tmp_path):
         ("-from:-bob", "", {"-from": ["bob"]}),
         ("--from:bob", "", {"-from": ["bob"]}),
         ("from:--bob", "", {"-from": ["bob"]}),
-        ('-from:"bob"', "", {"-from": ["bob"]}),
+        ('-from:"bob"', "", {"-from": ['"bob"']}),
         ("-to:ava", "", {"-to": ["ava"]}),
         ("cc:-lena", "", {"-cc": ["lena"]}),
         ("-bcc:lena", "", {"-bcc": ["lena"]}),
         ("-cc:lena+update", "+update", {"-cc": ["lena"]}),
-        ('from:"-bob"', "", {"from": ["-bob"]}),
+        ('from:"-bob"', "", {"from": ['"-bob"']}),
         ("from:mary-jane", "", {"from": ["mary-jane"]}),
         ("-from:", "", {}),
         ("from:-", "", {}),

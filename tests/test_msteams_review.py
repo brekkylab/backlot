@@ -89,7 +89,7 @@ def test_append_empty_readers_revokes_existing_thread_grants(tmp_path, source):
         assert all(store.doc_grants(conn, source, *key) for key in ids)
 
     replacement = tmp_path / "admin-only.jsonl"
-    replacement.write_text(json.dumps({**record, "readers": []}))
+    replacement.write_text(json.dumps({**record, "readers": []}), encoding="utf-8")
     load(replacement, settings, reset=False)
 
     with client_for(settings) as client:
@@ -283,7 +283,9 @@ def test_message_id_probe_uses_all_1000_slots_and_reimports_stably(tmp_path):
     assert assigned(fresh) == first
     # Reimport both an initial candidate and a heavily probed one into the full space.
     reimport = settings.data_dir / "reimport.jsonl"
-    reimport.write_text("\n".join(json.dumps(r) for r in (records[0], records[-1])))
+    reimport.write_text(
+        "\n".join(json.dumps(r) for r in (records[0], records[-1])), encoding="utf-8"
+    )
     load(reimport, settings, reset=False)
     assert assigned(settings) == first
 
@@ -293,7 +295,8 @@ def test_message_id_probe_uses_all_1000_slots_and_reimports_stably(tmp_path):
             complete(
                 "msteams", doc_id="overflow", channel="busy", content="One too many", created=100
             )
-        )
+        ),
+        encoding="utf-8",
     )
     with pytest.raises(SystemExit, match="1000 sub-second values"):
         load(overflow, settings, reset=False)

@@ -177,16 +177,14 @@ _LINEAR_API_KEY = re.compile(r"lin_api_[0-9A-Za-z]{40}")
 def linear_api_key_under_bearer(request: Request) -> bool:
     """Whether :func:`linear_bearer_token` holds an API key, which Linear refuses with a 400 before
     it reads the body: a token in :data:`_LINEAR_API_KEY`'s shape, whether or not Linear issued it,
-    or one Backlot resolves. Every token Backlot resolves is a user's or the admin's own, which
-    ``POST /oauth2/token`` also hands back as its access token, so each stands for an API key.
+    or one Backlot resolves. A Backlot token is served when sent bare, which is how a Linear
+    personal API key travels, so it stands for that user's ``lin_api_`` key.
 
-    On 2026-10-19 (UTC) api.linear.app gave the 400 to ``lin_api_`` followed by forty zeros, forty
-    ``a``, forty ``A``, and a key it issued with the last character changed, and the 401 to each
-    other length from none to forty-five characters after ``lin_api_`` and to fifty, sixty,
-    sixty-four and a hundred, to forty with a last character of ``-``, ``_``, ``.``, ``!`` or ``é``,
-    and to forty after ``LIN_API_``, ``lin_oauth_`` or ``xlin_api_``. Put first and then last of the
-    forty, each of the 94 printable ASCII characters drew the 400 if it was a letter or a digit and
-    the 401 otherwise."""
+    On 2026-10-19 (UTC) api.linear.app gave the 400 to ``lin_api_`` and forty ASCII letters or
+    digits, whether or not it issued the key, and the 401 to each other length tried (none to
+    forty-five, fifty, sixty, sixty-four and a hundred), to any other printable ASCII character put
+    first or last of the forty or ``é`` put last, and to ``LIN_API_``, ``lin_oauth_`` and
+    ``xlin_api_``."""
     token = linear_bearer_token(request)
     if token is None:
         return False
@@ -203,8 +201,7 @@ def fireflies_bearer_token(request: Request) -> str | None:
     key, every latin-1 byte other than NUL, LF and CR showed that only a space opens the token, a
     tab or a comma there leaving no prefix; a tab, a space or U+00A0 around the key served the
     query, and U+0085 or another byte there was a key that does not resolve. ``BEARER`` and
-    ``bEaReR`` were served, and a U+00A0 before the scheme was no prefix. The control characters but
-    the tab drew the same empty 400 as from Linear (:func:`api_key_token`)."""
+    ``bEaReR`` were served, and a U+00A0 before the scheme was no prefix."""
     hdr = (_authorization(request) or "").strip(" \t")
     if not hdr:
         return ""

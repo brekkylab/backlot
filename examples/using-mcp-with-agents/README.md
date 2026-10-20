@@ -202,9 +202,9 @@ client disconnects — which is what makes the install a single line.
 per-document ACL decides each answer; without it, the admin, who sees everything. The command
 resolves that email through the server's own `GET /_meta/users` and spells the credential the way
 each source authenticates — `Bearer` for most, the bare token for Linear, HTTP Basic `email:token`
-for Atlassian, a SigV4 signature per request for S3 — so there is nothing per-service to pass. An email the corpus does not
-know is refused before a single tool exists. `--depth` is the GraphQL selection depth. The code is
-`backlot/mcp.py`.
+for Atlassian, a SigV4 signature per request for S3 — so there is nothing per-service to pass. An
+email the corpus does not know is refused before a single tool exists. `--depth` is the GraphQL
+selection depth. The code is `backlot/mcp.py`.
 
 ## How the OpenAPI→MCP bridge connects (`github.py` / `slack.py` / `gmail.py` / `gdrive.py` / `hubspot.py`)
 

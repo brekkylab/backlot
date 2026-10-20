@@ -958,6 +958,12 @@ _LINEAR_READS = [
         id="a space before a comma",
     ),
     pytest.param(
+        (("Content-Encoding", "gzip,"), ("Content-Encoding", "gzip")),
+        gzip.compress(_TYPENAME),
+        _express(415, b'unsupported content encoding \\"gzip,, gzip\\"'),
+        id="a comma ending an encoding, then gzip",
+    ),
+    pytest.param(
         (("Content-Encoding", "gzip, identity"),),
         gzip.compress(_TYPENAME),
         _express(415, b'unsupported content encoding \\"gzip, identity\\"'),

@@ -76,9 +76,7 @@ async def graphql(request: Request):
         _read,
         await request.body(),
         request.headers.get("content-type"),
-        # Node hands each header value over without the spaces and tabs at its ends, which uvicorn
-        # keeps at the end: Linear served `Content-Encoding: gzip<TAB>` and ` gzip `.
-        ", ".join(value.strip(" \t") for value in request.headers.getlist("content-encoding")),
+        _content_encoding(request),
     )
     if isinstance(payload, Response):
         return payload
@@ -120,6 +118,25 @@ async def graphql(request: Request):
         status_code=400 if result.request_error else 200,
         media_type="application/json",
     )
+
+
+def _content_encoding(request: Request) -> str:
+    """``Content-Encoding`` as Linear's ``body-parser`` reads it, the header sent once or more: each
+    value without the spaces and tabs at its ends, which uvicorn keeps at the end, an empty one
+    taken over by the value after it and any other joined to the next after ``", "``, and the whole
+    without spaces and tabs at its end.
+
+    api.linear.app answered each of 112 requests on 2026-10-20 (UTC), with one to three of the
+    header, each empty, a space, a tab, ``gzip`` with or without a space or a tab around it,
+    ``GZIP``, ``bogus`` or ``deflate``, as :func:`backlot.graphql.body.body_parser_text` answers the
+    value this gives. The join is Cloudflare's, in front of Linear: Node 21 to 25 on their own join
+    the values with ``", "`` whatever they hold, so an empty value then ``gzip`` is ``", gzip"`` and
+    its 415, where Notion, behind Cloudflare too, inflated that request as Linear did."""
+    joined = ""
+    for value in request.headers.getlist("content-encoding"):
+        value = value.strip(" \t")
+        joined = f"{joined}, {value}" if joined else value
+    return joined.rstrip(" \t")
 
 
 def _read(raw: bytes, content_type: str | None, content_encoding: str) -> Any:

@@ -27,7 +27,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict
 
-from backlot import auth, store, synth
+from backlot import auth, published, store, synth
 from backlot.acl import Caller
 from backlot.openapi import qp
 from backlot.routers import json_body
@@ -1105,6 +1105,105 @@ def _bearer_credential(request: Request) -> str | None:
 
 def _caller(request: Request) -> Caller | None:
     return auth.acl(request).resolve(_bearer_credential(request))
+
+
+#: The HubSpot baseline's ``missing`` operations (``backlot.published``): what HubSpot publishes
+#: that no route here serves, its CRM writes and the v4 association `batch/read` among them.
+_PUBLISHED_NOT_SERVED = published.not_served("hubspot")
+
+
+#: The scopes real's 403 lists for a write on each object type, in its order. Measured against
+#: api.hubapi.com on 2026-10-18 with a service key: `PATCH` and `DELETE` on
+#: `/crm/v3/objects/{type}/1` answered each list the same on every request, for `contact`,
+#: `CONTACTS` and `0-1` as for `contacts`. That key passes the scope check on `tickets`, `notes`,
+#: `tasks`, `calls`, `emails`, `meetings`, `line_items` and `products`, and no other standard type
+#: was sent, so no other type's list is measured.
+_WRITE_SCOPES = {
+    "contacts": [
+        "crm.schemas.contacts.write",
+        "crm.objects.contacts.write",
+        "crm.objects.contacts.sensitive.write.v2",
+        "crm.objects.contacts.highly_sensitive.write.v2",
+    ],
+    "companies": [
+        "crm.objects.companies.write",
+        "crm.schemas.companies.write",
+        "crm.objects.companies.highly_sensitive.write.v2",
+        "crm.objects.companies.sensitive.write.v2",
+    ],
+    "deals": [
+        "crm.objects.deals.write",
+        "crm.schemas.deals.write",
+        "crm.objects.deals.sensitive.write.v2",
+        "crm.objects.deals.highly_sensitive.write.v2",
+    ],
+    "quotes": ["crm.schemas.quotes.write", "crm.objects.quotes.write", "cpq.quotes.write"],
+    "orders": [
+        "crm.schemas.orders.write",
+        "crm.objects.orders.write",
+        "crm.pipelines.orders.write",
+    ],
+}
+
+_RECORD_PATH = re.compile(r"/crm/v3/objects/([^/]+)/([^/]+)")
+
+
+def _missing_scopes(object_type: str) -> JSONResponse:
+    """Real's 403 for a write the key has no scope for. Its body also carries a `correlationId`,
+    after `message`, which this one leaves out."""
+    return JSONResponse(
+        status_code=403,
+        content={
+            "status": "error",
+            "message": "This app hasn't been granted all required scopes to make this call. "
+            "Read more about required scopes here: https://developers.hubspot.com/scopes.",
+            "errors": [
+                {
+                    "message": "One or more of the following scopes are required.",
+                    "context": {"requiredGranularScopes": _WRITE_SCOPES[object_type]},
+                }
+            ],
+            "links": {"scopes": "https://developers.hubspot.com/scopes"},
+            "category": "MISSING_SCOPES",
+        },
+    )
+
+
+def refuse_an_unserved_operation(request: Request) -> JSONResponse | None:
+    """The INVALID_AUTHENTICATION 401 for an operation of :data:`_PUBLISHED_NOT_SERVED` sent with no
+    key or one that does not resolve, as a served route refuses it before running. With a key that
+    resolves, `PATCH` or `DELETE` on a record is the 400 for an object type real can't resolve, and
+    the 403 MISSING_SCOPES for a type of :data:`_WRITE_SCOPES`: real checks the credential, then the
+    type, then that the body parses, then the scopes, and doesn't look the record up first (`1`
+    names no contact and was the 403, against api.hubapi.com on 2026-10-18). A `PATCH` body that
+    doesn't parse, such as `{`, is real's JSON 400 ahead of the scopes; it is the 403 here, and that
+    parse belongs between the type and the scopes once Backlot parses request bodies the way real
+    does. None otherwise, so the request goes on to the router's own 404 or 405, an operation
+    Backlot cannot run.
+
+    Measured against api.hubapi.com on 2026-09-28 with no `Authorization` header and with
+    `Bearer nope`: `POST /crm/v3/objects/contacts`, `PATCH` and `DELETE`
+    `/crm/v3/objects/contacts/abc123` and `POST /crm/v3/objects/contacts/batch/create` each answered
+    the 401 a served route answers, where `GET /crm/v3/nonexistent-xyz`, which HubSpot does not
+    publish, was a 404 with no key, so only the baseline's operations are refused. On 2026-10-19
+    every other operation the baseline lists answered the same 401 both ways, the v4 association
+    writes and `batch/read` among them, and so did `PATCH` on `zzz/1` and `DELETE` on `2-999/1`,
+    whose types real can't resolve. The path is the scope's, decoded but whole, as
+    ``backlot.routers.github.is_an_unserved_operation`` reads it.
+    """
+    path = request.scope["path"].removeprefix("/hubspot")
+    if not published.includes(_PUBLISHED_NOT_SERVED, request.method, path):
+        return None
+    if _caller(request) is None:
+        return _error(401, "Authentication credentials not found.", "INVALID_AUTHENTICATION")
+    record = _RECORD_PATH.fullmatch(path)
+    if record and request.method in ("PATCH", "DELETE"):
+        object_type = record[1]
+        if _resolve_type(request, object_type) is None:
+            return _unknown_type(object_type)
+        if _canonical(object_type) in _WRITE_SCOPES:
+            return _missing_scopes(_canonical(object_type))
+    return None
 
 
 # --------------------------------------------------------------------------- routes

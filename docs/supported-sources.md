@@ -149,11 +149,11 @@ there is the gateway's answer rather than that backend's, and carries the charse
 
 **`X-GitHub-Api-Version` is honoured too**, in both values real currently supports: `2026-03-10`
 drops `assignee` (issues and pulls) and `merge_commit_sha` (pulls), `2022-11-28` keeps them, an
-unpinned request gets `2022-11-28`, anything else is the real API's 400, and a response reports its
-choice in `X-GitHub-Api-Version-Selected` but on the answers `backlot.main.echo_github_api_version`
-names. `search/code` is the one route that does neither: real's code search backend does not read
-the header, so a pinned version there is served whatever it says and no response from it carries the
-`Selected` header (measured 2026-09-06).
+unpinned request and one whose header is empty get `2022-11-28`, any other value is the real API's
+400, and a response reports its choice in `X-GitHub-Api-Version-Selected` but on the answers
+`backlot.main.echo_github_api_version` names. `search/code` is the one route that does neither:
+real's code search backend does not read the header, so a pinned version there is served whatever it
+says and no response from it carries the `Selected` header (measured 2026-09-06).
 
 **An operation GitHub publishes and Backlot does not serve is refused for its credential first**: a
 token that does not resolve is "Bad credentials", as on a served route, and no
@@ -495,15 +495,15 @@ re-imported; the startup schema check names the missing column.
 A JSON body is `application/json;charset=UTF-8` — no space after the semicolon, `UTF-8` upper-case —
 as real's is on every route and status measured, except where real answers a different type
 altogether: the RFC 7807 refusals (a type-conversion 400, the 405, the 415) are
-`application/problem+json;charset=UTF-8`, and the gateway's 403 for a bearer it cannot read as a
-Connect token is the bare `application/json`, or XML for an `Accept` that names `application/xml`
-and nowhere names `application/json`, matched as text in any case. An `Accept` admitting no JSON
-draws a 406 in that RFC 7807 shape, behind a 405 and a 415 and ahead of the 401, a bad parameter's
-400 and whatever the route answers, on every operation but the ones
-`backlot/data/jira_unserved.json` marks, and one with any member Jira cannot read draws it with no
-body; the 401 takes its media type from `Accept`. A `q` named in another case (`Q=2`) that is no
-quality fails an answer as it is written: a route's answer, the 401 and the `orderBy` refusal are
-Jira's 500 page, its other refusals as they were.
+`application/problem+json;charset=UTF-8`, the gateway's 403 for a bearer it cannot read as a Connect
+token is the bare `application/json`, or XML for an `Accept` that names `application/xml` and
+nowhere names `application/json`, matched as text in any case, and the 400 for a `;` in a path is
+the bare `application/json` too where it is JSON. An `Accept` admitting no JSON draws a 406 in that
+RFC 7807 shape, behind a 405 and a 415 and ahead of the 401, a bad parameter's 400 and whatever the
+route answers, on every operation but the ones `backlot/data/jira_unserved.json` marks, and one with
+any member Jira cannot read draws it with no body; the 401 takes its media type from `Accept`. A `q`
+named in another case (`Q=2`) that is no quality fails an answer as it is written: a route's answer,
+the 401 and the `orderBy` refusal are Jira's 500 page, its other refusals as they were.
 
 A trailing slash is not part of a path on either product, and a run of slashes inside one is a
 single slash — both spellings answer what the canonical one answers, though a refusal echoes the
@@ -512,29 +512,39 @@ length but on Jira's 401 to an unauthenticated caller, which is where Jira parts
 `OPTIONS` is 200 for a caller whose credential resolves, with an empty `text/html` body, an empty
 `Accept-Patch`, an `Allow` naming the methods the vendor serves at that route — the `PUT` and
 `DELETE` on an issue among them, which Backlot does not serve — and a quota of its own; anyone else
-gets Jira's 401. A `PATCH` never reaches either product: the gateway answers 400 on Jira and 405 on
-Confluence. Nor does a method the CDN refuses itself: `TRACE` and `CONNECT` are its 405, and any
-other method it does not pass on is its 403 or 400 by how the method is spelled. Its firewall turns
-back a path that carries a script tag or a directory step with a 403, and the CDN one with a `%00`
-byte or a `%` that two hex digits do not follow with a 400, each its own page; an encoded slash or
-backslash under `/wiki/` (but `/wiki/spaces/`) is Confluence's own 400, where Jira takes it apart
-and routes what it decodes to. A path no route serves is RFC 7807 at 404 with
-`No endpoint <METHOD> <path>.` where Jira publishes nothing at it; at an operation it publishes and
-no route here serves — reached by a path with no route or by a method a served route does not take —
-a `Content-Type` the operation does not take is its 415 for any caller the gateway lets through, and
-after that a caller with no credential gets Jira's 401 where the operation will not run anonymously
+gets Jira's 401.
+
+A `PATCH` never reaches either product: the gateway answers 400 on Jira and 405 on Confluence. Nor
+does a method the CDN refuses itself: `TRACE` and `CONNECT` are its 405, and any other method it
+does not pass on is its 403 or 400 by how the method is spelled. Its firewall turns back a path that
+carries a script tag or a directory step with a 403, and the CDN one with a `%00` byte or a `%` that
+two hex digits do not follow with a 400, each its own page. Behind those, and ahead of the gateway's
+`PATCH`, a `;` anywhere in a path, bare or as `%3B`, is a 400 with `Access-Control-Allow-Origin: *`:
+`{"message":"","status":400}` where `Accept` holds `application/json` as written, a page otherwise.
+An encoded slash or backslash under `/wiki/` (but `/wiki/spaces/`) is Confluence's own 400, and an
+encoded backslash under `/atlassian/rest` the same page, where Jira takes an encoded slash apart and
+routes what it decodes to.
+
+A path no route serves is RFC 7807 at 404 with `No endpoint <METHOD> <path>.` where Jira publishes
+nothing at it, but a `[` or `]` in the path, escaped or bare, makes that 404 and a type-conversion
+400 pages of Jira's web app; at an operation it publishes and no route here serves — reached by a
+path with no route or by a method a served route does not take — a `Content-Type` the operation does
+not take is its 415 for any caller the gateway lets through, and after that a caller with no
+credential gets Jira's 401 where the operation will not run anonymously
 (`backlot/data/jira_unserved.json`); otherwise it is the operation's own answer, an issue's or a
 project's 404 for a key that names nothing, and the no-route 404, or on a served route's path its
 405, is the gap the baseline acknowledges. That is under `/atlassian/rest` only: outside the two API
 mounts the site is its web app, `/browse` at 200, the root a redirect to log in or to
-`/jira/for-you`, and Jira's own not-found page for the rest. Every answer past the CDN carries
-`atl-request-id`, `atl-traceid`, `x-content-type-options` and `x-xss-protection`, and Jira's own
-answers add `x-arequestid`, `cache-control` and `timing-allow-origin`, which the gateway's refusals
-(the Connect-token 403, a `PATCH`) do not carry; a caller whose credential resolves also gets its
-own `x-aaccountid`, and the burst quota's four (`ratelimit`, `ratelimit-policy`,
-`x-ratelimit-limit`, `x-ratelimit-remaining`) where a route answers or an `OPTIONS` asks at one,
-counted per method and route. An anonymous request carries none of those five, and the no-endpoint
-404, a 405, a 406 and an unserved operation's 415 carry the account id alone.
+`/jira/for-you`, and Jira's own not-found page for the rest.
+
+Every answer past the CDN carries `atl-request-id`, `atl-traceid`, `x-content-type-options` and
+`x-xss-protection` (the 400 for a bare `;` neither id), and Jira's own answers add `x-arequestid`,
+`cache-control` and `timing-allow-origin`, which the gateway's refusals (the Connect-token 403, a
+`PATCH`) do not carry; a caller whose credential resolves also gets its own `x-aaccountid`, and the
+burst quota's four (`ratelimit`, `ratelimit-policy`, `x-ratelimit-limit`, `x-ratelimit-remaining`)
+where a route answers or an `OPTIONS` asks at one, counted per method and route. An anonymous
+request carries none of those five, and the no-endpoint 404, a 405, a 406 and an unserved
+operation's 415 carry the account id alone.
 
 ### Linear — `/linear/graphql`
 

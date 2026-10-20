@@ -28,6 +28,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi import Path as PathParameter
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict
+from starlette.convertors import PathConvertor, register_url_convertor
 from starlette.routing import Match
 
 from backlot import auth, store, synth
@@ -3069,6 +3070,16 @@ _CONFLUENCE_HTML_RESOURCES = ("space", "content")
 
 unmatched_router = APIRouter(prefix="/atlassian", include_in_schema=False)
 
+
+class _EveryPath(PathConvertor):
+    """Starlette's `path`, a newline included: its `.*` stops at one, so `GET /rest/api/3/nope%0Ax`
+    would miss the catch-all, where real answers it as any path no route matches (2026-10-18)."""
+
+    regex = "(?s:.*)"
+
+
+register_url_convertor("every_path", _EveryPath())
+
 _PACKAGE = Path(__file__).resolve().parent.parent
 
 
@@ -3425,14 +3436,14 @@ def _published_answer(request: Request, vendor_path: str) -> Response | None:
     give but the gap the baseline's `missing` operation acknowledges.
 
     Jira checks the request's media type where the operation does, for any caller the gateway lets
-    through (:func:`_jira_media_refusal`), then `Accept` (``errors.atlassian.not_acceptable``, on
-    every operation but those whose entry says ``"accept": "unchecked"``), then refuses a caller
-    with no credential it resolves where the operation will not run anonymously, and any `OPTIONS`
-    on one (:func:`_jira_unauthenticated`), each measured 2026-09-30 and the `Accept` check's place
-    2026-10-13; where the operation runs and is one of :data:`_JIRA_ISSUE_WRITES` or
-    :data:`_JIRA_ROLE_WRITES`, its lookup of a key that names nothing the caller can see is its 404,
-    and a role write's is followed by the 401 :func:`_require_project_admin` gives. The operation
-    is the one :func:`_jira_operation` names.
+    through (:func:`_jira_media_refusal`), then `Accept` (``errors.atlassian.not_acceptable``, asked
+    of no caller where the operation's entry says ``"accept": "unchecked"``, which was measured with
+    no credential), then refuses a caller with no credential it resolves where the operation will
+    not run anonymously, and any `OPTIONS` on one (:func:`_jira_unauthenticated`), each measured
+    2026-09-30 and the `Accept` check's place 2026-10-13; where the operation runs and is one of
+    :data:`_JIRA_ISSUE_WRITES` or :data:`_JIRA_ROLE_WRITES`, its lookup of a key that names nothing
+    the caller can see is its 404, and a role write's is followed by the 401
+    :func:`_require_project_admin` gives. The operation is the one :func:`_jira_operation` names.
 
     Confluence answers a Basic value it cannot read with Tomcat's 401 first, then checks the media
     type where the operation does (:data:`_CONFLUENCE_CONSUMES`, and its JAX-RS writes their own
@@ -3797,7 +3808,7 @@ def _site_surface(request: Request) -> Response:
     )
 
 
-@unmatched_router.api_route("/{rest:path}", methods=_UNMATCHED_METHODS)
+@unmatched_router.api_route("/{rest:every_path}", methods=_UNMATCHED_METHODS)
 async def unmatched_path(request: Request, rest: str) -> Response:
     """What either product answers for a path no route above serves, and for a method they do not.
 
@@ -3819,7 +3830,9 @@ async def unmatched_path(request: Request, rest: str) -> Response:
     run for gets the answer above. Outside both API mounts the site is its web app
     (:func:`_site_surface`).
     """
-    path = request.url.path
+    # the path as routed, not `request.url.path`: parsing the URL again drops a decoded newline or
+    # tab and ends the path at a decoded `#`, so `myse%0Alf` would be looked up as `myself`
+    path = request.scope["path"]
     vendor_path = _vendor_path(path)
     served = _some_atlassian_route_matches(request)
     if served and request.method == "OPTIONS":

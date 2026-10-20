@@ -3730,7 +3730,6 @@ def test_attachment_string_fields_follow_linears_null_rules(fclient):
 
 
 # --- Linear -----------------------------------------------------------------------
-# Linear's auth: see `backlot.routers.linear`.
 
 LINEAR_CORPUS = [
     {

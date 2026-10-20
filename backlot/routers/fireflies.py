@@ -8,7 +8,7 @@ envelope out, or its HTTP layer's for a body it cannot read (:func:`_body_refusa
 Auth is the bearer path (``Authorization: Bearer <api_key>``), which is what the vendor's own
 quickstart shows for all four of its raw-HTTP examples, read by
 :func:`backlot.auth.fireflies_bearer_token`. A credential Fireflies does not take is
-:func:`_auth_failed`'s 500, which comes after the body is read and before the document is.
+:func:`_auth_failed`'s 500, which comes after the body is read.
 
 Status codes follow the GraphQL-over-HTTP split :class:`backlot.graphql.engine.Result` marks.
 

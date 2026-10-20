@@ -227,22 +227,15 @@ def test_context_is_visible_to_resolvers(gql):
 # --- request body (GraphQL over HTTP) -------------------------------------------
 
 
-def test_execute_request_runs_the_body_query(gql):
-    body = json.dumps({"query": '{ widget(id: "w1") { name } }'}).encode()
-    r = gql.execute_request(body)
-    assert r.payload["data"] == {"widget": {"name": "Gateway"}}
-
-
-def test_execute_request_honours_variables_and_operation_name(gql):
-    body = json.dumps(
+def test_execute_payload_honours_variables_and_operation_name(gql):
+    r = gql.execute_payload(
         {
             "query": 'query A { widget(id: "w1") { name } } '
             "query B($id: ID!) { widget(id: $id) { name } }",
             "variables": {"id": "w2"},
             "operationName": "B",
         }
-    ).encode()
-    r = gql.execute_request(body)
+    )
     assert r.payload["data"] == {"widget": {"name": "Worker"}}
 
 
@@ -266,19 +259,19 @@ _WIDGETS = b'{"query": "{ widgets { id } }", "variables": {"x": %s}}'
         ),
         pytest.param(_WIDGETS % b'"\xff"', True, id="a byte that is not UTF-8"),
         pytest.param(b"\xef\xbb\xbf" + _WIDGETS % b"1", True, id="a byte-order mark"),
-        pytest.param((_WIDGETS % b"1").decode(), True, id="text rather than bytes"),
-        pytest.param((_WIDGETS % b"NaN").decode(), False, id="text holding NaN"),
     ],
 )
-def test_execute_request_reads_the_body_as_node_reads_it(gql, body, served):
-    """A body the reader refuses is the not-JSON request error, and one it reads is served, those
-    ``json.loads`` refuses or raises on among them."""
-    r = gql.execute_request(body)
+def test_a_body_is_read_as_node_reads_it(gql, body, served):
+    """A body the reader refuses is :class:`~backlot.graphql.body.NotJson`, and one it reads runs,
+    those ``json.loads`` refuses or raises on among them."""
     if served:
-        assert r.payload == {"data": {"widgets": [{"id": "w1"}, {"id": "w2"}]}}
+        payload = request_body.parse(request_body.decode(body))
+        assert gql.execute_payload(payload).payload == {
+            "data": {"widgets": [{"id": "w1"}, {"id": "w2"}]}
+        }
     else:
-        assert r.request_error is True
-        assert r.payload == {"errors": [{"message": "POST body sent invalid JSON."}]}
+        with pytest.raises(request_body.NotJson):
+            request_body.parse(request_body.decode(body))
 
 
 _ECHO = engine.Engine(
@@ -320,7 +313,7 @@ _ECHO = engine.Engine(
 def test_an_id_variable_is_read_as_graphql_js_reads_it(value, answer):
     """Each value is read by :func:`backlot.graphql.engine._id_from_a_variable`."""
     body = '{"query": "query($x: ID!) { echo(id: $x) }", "variables": {"x": %s}}' % value
-    assert _ECHO.execute_request(body).payload == answer
+    assert _ECHO.execute_payload(request_body.parse(body)).payload == answer
 
 
 def _fuzz_texts(seed: int, count: int):
@@ -594,15 +587,14 @@ def test_a_body_with_no_byte_order_mark_is_read_in_the_order_iconv_lite_picks(
     assert request_body._byte_order(bytes.fromhex(hex_bytes), width) == order
 
 
-def test_execute_request_requires_a_query_string(gql):
-    r = gql.execute_request(json.dumps({"variables": {}}).encode())
+def test_execute_payload_requires_a_query_string(gql):
+    r = gql.execute_payload({"variables": {}})
     assert r.request_error is True
     assert r.payload["errors"][0]["message"] == "Must provide query string."
 
 
-def test_execute_request_rejects_non_object_variables(gql):
-    body = json.dumps({"query": "{ widgets { id } }", "variables": "nope"}).encode()
-    r = gql.execute_request(body)
+def test_execute_payload_rejects_non_object_variables(gql):
+    r = gql.execute_payload({"query": "{ widgets { id } }", "variables": "nope"})
     assert r.request_error is True
     assert r.payload["errors"][0]["message"] == "Variables are invalid JSON."
 
@@ -675,7 +667,12 @@ def acme_client(db, acl):
                 {"errors": [{"message": "Authentication required"}]}, status_code=401
             )
         context = {"conn": auth.conn(request), "visible_ids": auth.visible_ids(request, caller)}
-        result = ACME.execute_request(await request.body(), context=context)
+        try:
+            payload = request_body.parse(request_body.decode(await request.body()))
+        except request_body.NotJson:
+            result = engine.not_json()
+        else:
+            result = ACME.execute_payload(payload, context=context)
         return JSONResponse(result.payload, status_code=400 if result.request_error else 200)
 
     app.include_router(router)

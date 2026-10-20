@@ -645,6 +645,10 @@ def linear_user_id(email: str) -> str:
     return _uuid_from("linear-user:" + email)
 
 
+def linear_team_membership_id(team: str, user_id: str) -> str:
+    return _uuid_from(f"linear-team-membership:{team}:{user_id}")
+
+
 def linear_state_id(name: str, team: str = "") -> str:
     """Workflow states are per-TEAM in Linear — ENG's "Done" and DES's "Done" are different
     objects with different ids — so the team is part of the seed."""

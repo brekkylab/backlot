@@ -21,7 +21,8 @@ import zlib
 import pytest
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse
-from graphql import GraphQLError, parse, validate
+from graphql import GraphQLError, GraphQLID, parse, validate
+from graphql.type.scalars import coerce_id
 from starlette.testclient import TestClient
 
 from backlot import auth, pagination, store
@@ -209,9 +210,10 @@ def test_operation_name_picks_the_operation_to_run(gql):
     assert r.payload["data"] == {"widget": {"name": "Worker"}}
 
 
-def test_ambiguous_operation_without_a_name_is_a_request_error(gql):
+@pytest.mark.parametrize("variables", [None, {"id": "w1"}], ids=["no variables", "variables"])
+def test_ambiguous_operation_without_a_name_is_a_request_error(gql, variables):
     q = 'query A { widget(id: "w1") { name } } query B { widget(id: "w2") { name } }'
-    r = gql.execute(q)
+    r = gql.execute(q, variables=variables)
     assert r.request_error is True
     assert "data" not in r.payload
 
@@ -227,22 +229,15 @@ def test_context_is_visible_to_resolvers(gql):
 # --- request body (GraphQL over HTTP) -------------------------------------------
 
 
-def test_execute_request_runs_the_body_query(gql):
-    body = json.dumps({"query": '{ widget(id: "w1") { name } }'}).encode()
-    r = gql.execute_request(body)
-    assert r.payload["data"] == {"widget": {"name": "Gateway"}}
-
-
-def test_execute_request_honours_variables_and_operation_name(gql):
-    body = json.dumps(
+def test_execute_payload_honours_variables_and_operation_name(gql):
+    r = gql.execute_payload(
         {
             "query": 'query A { widget(id: "w1") { name } } '
             "query B($id: ID!) { widget(id: $id) { name } }",
             "variables": {"id": "w2"},
             "operationName": "B",
         }
-    ).encode()
-    r = gql.execute_request(body)
+    )
     assert r.payload["data"] == {"widget": {"name": "Worker"}}
 
 
@@ -266,43 +261,64 @@ _WIDGETS = b'{"query": "{ widgets { id } }", "variables": {"x": %s}}'
         ),
         pytest.param(_WIDGETS % b'"\xff"', True, id="a byte that is not UTF-8"),
         pytest.param(b"\xef\xbb\xbf" + _WIDGETS % b"1", True, id="a byte-order mark"),
-        pytest.param((_WIDGETS % b"1").decode(), True, id="text rather than bytes"),
-        pytest.param((_WIDGETS % b"NaN").decode(), False, id="text holding NaN"),
     ],
 )
-def test_execute_request_reads_the_body_as_node_reads_it(gql, body, served):
-    """A body the reader refuses is the not-JSON request error, and one it reads is served, those
-    ``json.loads`` refuses or raises on among them."""
-    r = gql.execute_request(body)
+def test_a_body_is_read_as_node_reads_it(gql, body, served):
+    """A body the reader refuses is :class:`~backlot.graphql.body.NotJson`, and one it reads runs,
+    those ``json.loads`` refuses or raises on among them."""
     if served:
-        assert r.payload == {"data": {"widgets": [{"id": "w1"}, {"id": "w2"}]}}
+        payload = request_body.parse(request_body.decode(body))
+        assert gql.execute_payload(payload).payload == {
+            "data": {"widgets": [{"id": "w1"}, {"id": "w2"}]}
+        }
     else:
-        assert r.request_error is True
-        assert r.payload == {"errors": [{"message": "POST body sent invalid JSON."}]}
+        with pytest.raises(request_body.NotJson):
+            request_body.parse(request_body.decode(body))
 
 
 _ECHO = engine.Engine(
-    "type Query { echo(id: ID!): ID }", {"Query": {"echo": lambda _r, _i, id: id}}
+    "input F { id: ID, ids: [ID!] } type Query { echo(id: ID!): ID list(ids: [ID!]): [ID!] "
+    "f(f: F): [ID] num(n: Float): Float }",
+    {
+        "Query": {
+            "echo": lambda _r, _i, id: id,
+            "list": lambda _r, _i, ids: ids,
+            "f": lambda _r, _i, f: [f.get("id"), *f.get("ids", [])],
+            "num": lambda _r, _i, n: n,
+        }
+    },
 )
+_ECHO_FIELDS = {
+    "ID!": "echo(id: $x)",
+    "[ID!]": "list(ids: $x)",
+    "F": "f(f: $x)",
+    "Float": "num(n: $x)",
+}
 
 
 @pytest.mark.parametrize(
-    "value, answer",
+    "type_, value, answer",
     [
-        pytest.param("1e21", {"data": {"echo": "1e+21"}}, id="1e21"),
-        pytest.param("1e300", {"data": {"echo": "1e+300"}}, id="1e300"),
+        pytest.param("ID!", "1e21", {"data": {"echo": "1e+21"}}, id="1e21"),
+        pytest.param("ID!", "1e300", {"data": {"echo": "1e+300"}}, id="1e300"),
         pytest.param(
-            "734946803407896717", {"data": {"echo": "734946803407896700"}}, id="past 2**53"
+            "ID!", "734946803407896717", {"data": {"echo": "734946803407896700"}}, id="past 2**53"
         ),
         pytest.param(
-            "12345678901234567890", {"data": {"echo": "12345678901234567000"}}, id="20 digits"
+            "ID!",
+            "12345678901234567890",
+            {"data": {"echo": "12345678901234567000"}},
+            id="20 digits",
         ),
-        pytest.param("9007199254740993", {"data": {"echo": "9007199254740992"}}, id="2**53 + 1"),
-        pytest.param("5", {"data": {"echo": "5"}}, id="5"),
-        pytest.param("-0", {"data": {"echo": "0"}}, id="-0"),
-        pytest.param("1.0", {"data": {"echo": "1"}}, id="1.0"),
-        pytest.param('"w1"', {"data": {"echo": "w1"}}, id="a string"),
         pytest.param(
+            "ID!", "9007199254740993", {"data": {"echo": "9007199254740992"}}, id="2**53 + 1"
+        ),
+        pytest.param("ID!", "5", {"data": {"echo": "5"}}, id="5"),
+        pytest.param("ID!", "-0", {"data": {"echo": "0"}}, id="-0"),
+        pytest.param("ID!", "1.0", {"data": {"echo": "1"}}, id="1.0"),
+        pytest.param("ID!", '"w1"', {"data": {"echo": "w1"}}, id="a string"),
+        pytest.param(
+            "ID!",
             "1.5",
             {
                 "errors": [
@@ -315,12 +331,56 @@ _ECHO = engine.Engine(
             },
             id="1.5",
         ),
+        pytest.param(
+            "[ID!]", '[1e21, 5, "w1"]', {"data": {"list": ["1e+21", "5", "w1"]}}, id="IDs in a list"
+        ),
+        pytest.param("[ID!]", "1e21", {"data": {"list": ["1e+21"]}}, id="one ID for a list"),
+        pytest.param(
+            "F",
+            '{"id": 1e21, "ids": [1e300, 5]}',
+            {"data": {"f": ["1e+21", "1e+300", "5"]}},
+            id="IDs in an input object",
+        ),
+        pytest.param(
+            "F",
+            '{"nope": 1e21}',
+            {
+                "errors": [
+                    {
+                        "message": "Variable '$x' got invalid value {'nope': 1e+21}; "
+                        "Field 'nope' is not defined by type 'F'.",
+                        "locations": [{"line": 1, "column": 7}],
+                    }
+                ]
+            },
+            id="a field the input object does not have",
+        ),
+        pytest.param(
+            "F",
+            "5",
+            {
+                "errors": [
+                    {
+                        "message": "Variable '$x' got invalid value 5; "
+                        "Expected type 'F' to be a mapping.",
+                        "locations": [{"line": 1, "column": 7}],
+                    }
+                ]
+            },
+            id="a number for an input object",
+        ),
+        pytest.param("Float", "1e21", {"data": {"num": 1e21}}, id="a Float"),
     ],
 )
-def test_an_id_variable_is_read_as_graphql_js_reads_it(value, answer):
-    """Each value is read by :func:`backlot.graphql.engine._id_from_a_variable`."""
-    body = '{"query": "query($x: ID!) { echo(id: $x) }", "variables": {"x": %s}}' % value
-    assert _ECHO.execute_request(body).payload == answer
+def test_a_variable_is_read_as_graphql_js_reads_it(type_, value, answer):
+    """Each value is read by :func:`backlot.graphql.engine._ids_as_graphql_js_reads_them`."""
+    query = "query($x: %s) { %s }" % (type_, _ECHO_FIELDS[type_])
+    body = '{"query": "%s", "variables": {"x": %s}}' % (query, value)
+    assert _ECHO.execute_payload(request_body.parse(body)).payload == answer
+
+
+def test_graphql_cores_id_scalar_is_left_as_graphql_core_has_it():
+    assert GraphQLID.parse_value is coerce_id
 
 
 def _fuzz_texts(seed: int, count: int):
@@ -683,15 +743,14 @@ def test_a_body_with_no_byte_order_mark_is_read_in_the_order_iconv_lite_picks(
     assert request_body._byte_order(bytes.fromhex(hex_bytes), width) == order
 
 
-def test_execute_request_requires_a_query_string(gql):
-    r = gql.execute_request(json.dumps({"variables": {}}).encode())
+def test_execute_payload_requires_a_query_string(gql):
+    r = gql.execute_payload({"variables": {}})
     assert r.request_error is True
     assert r.payload["errors"][0]["message"] == "Must provide query string."
 
 
-def test_execute_request_rejects_non_object_variables(gql):
-    body = json.dumps({"query": "{ widgets { id } }", "variables": "nope"}).encode()
-    r = gql.execute_request(body)
+def test_execute_payload_rejects_non_object_variables(gql):
+    r = gql.execute_payload({"query": "{ widgets { id } }", "variables": "nope"})
     assert r.request_error is True
     assert r.payload["errors"][0]["message"] == "Variables are invalid JSON."
 
@@ -764,7 +823,12 @@ def acme_client(db, acl):
                 {"errors": [{"message": "Authentication required"}]}, status_code=401
             )
         context = {"conn": auth.conn(request), "visible_ids": auth.visible_ids(request, caller)}
-        result = ACME.execute_request(await request.body(), context=context)
+        try:
+            payload = request_body.parse(request_body.decode(await request.body()))
+        except request_body.NotJson:
+            result = engine.not_json()
+        else:
+            result = ACME.execute_payload(payload, context=context)
         return JSONResponse(result.payload, status_code=400 if result.request_error else 200)
 
     app.include_router(router)

@@ -538,6 +538,82 @@ def test_gmail_a_minus_negates_an_address_operator(q, free, ops):
     assert _parse_gmail_q(q) == (free, ops)
 
 
+@pytest.mark.parametrize(
+    "q, free, ops",
+    [
+        ("subject: label:inbox", "", {"label": ["inbox"]}),
+        ("label: in:sent", "", {"in": ["sent"]}),
+        ("in: has:attachment", "", {"has": ["attachment"]}),
+        ("from: after:2026/10/01", "", {"after": [_OCT_1]}),
+        ("to: before:2026/10/01", "", {"before": [_OCT_1]}),
+        ("cc: newer:2026/10/01", "", {"after": [_OCT_1]}),
+        ("bcc: older:2026/10/01", "", {"before": [_OCT_1]}),
+        ("subject: newer_than:30d", "", {"newer_than": ["30d"]}),
+        ("label: older_than:30d", "", {"older_than": ["30d"]}),
+        ("subject:label:inbox", "", {"label": ["inbox"]}),
+        ("bcc:in:sent", "", {"in": ["sent"]}),
+        ("subject:\tlabel:inbox", "", {"label": ["inbox"]}),
+        ("in:\tin:sent", "", {"in": ["sent"]}),
+        ("subject:  label:inbox", "", {"label": ["inbox"]}),
+        ('subject:"" label:inbox', "", {"label": ["inbox"]}),
+        ('label:""label:inbox', "", {"label": ["inbox"]}),
+        ('label:" "label:inbox', "", {"label": ["inbox"]}),
+        ("SUBJECT:LABEL:inbox", "", {"label": ["inbox"]}),
+        ("in: before: 2026/10/01", "", {"before": [_OCT_1]}),
+        ("subject:older: 2026/10/01", "", {"before": [_OCT_1]}),
+        ("subject: subject:probe", "", {"subject": ["subject:probe"]}),
+        ("label: from:me", "", {"label": ["from:me"]}),
+        ("in: to:me", "", {"in": ["to:me"]}),
+        ("from: cc:me", "", {"from": ["cc:me"]}),
+        ("subject: label:", "", {"subject": ["label:"]}),
+        ('label: label:""', "", {"label": ["label:"]}),
+        ('in: label:"inbox"', "", {"in": ['label:"inbox']}),
+        ("from: label: inbox", "inbox", {"from": ["label:"]}),
+        ("label:label:inbox", "", {"label": ["label:inbox"]}),
+        ("subject:\xa0label:inbox", "", {"subject": ["label:inbox"]}),
+        ("subject: after:-", "", {"subject": ["after:-"]}),
+        ('subject: after:"2026/10/01"', "", {"subject": ['after:"2026/10/01']}),
+    ],
+)
+def test_gmail_an_empty_operator_before_another(q, free, ops):
+    """Each row is how the comment on `_GMAIL_EMPTY_BEFORE` reads its query."""
+    from backlot.routers.google import _parse_gmail_q
+
+    assert _parse_gmail_q(q) == (free, ops)
+
+
+def test_gmail_empty_operator_over_the_wire(tmp_path):
+    """The issue's reproduction: one message in the inbox, one sent."""
+    from tests._helpers import client_for, tiny_corpus
+
+    base = {"source_type": "gmail", "mailbox": "ava", "to": "ava@acme.com"}
+    records = [
+        {**base, "doc_id": "plan", "title": "Rollout plan", "content": "attached",
+         "author_email": "bob@acme.com", "label_ids": ["INBOX"], "readers": ["ava@acme.com"],
+         "created": "2026-03-01T09:00:00Z"},
+        {**base, "doc_id": "lunch", "title": "Lunch", "content": "Friday?",
+         "author_email": "mia@acme.com", "label_ids": ["SENT"], "readers": ["ava@acme.com"],
+         "created": "2026-03-02T09:00:00Z"},
+    ]  # fmt: skip
+    settings = tiny_corpus(tmp_path, records)
+    with client_for(settings, reload=True) as c:
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+
+        def ids(q):
+            r = c.get("/gmail/v1/users/ava@acme.com/messages", headers=h, params={"q": q})
+            return {m["id"] for m in r.json().get("messages", [])}
+
+        inbox, sent = ids("label:inbox"), ids("in:sent")
+        assert inbox and sent and inbox != sent
+        for q in ("subject: label:inbox", "label: label:inbox", "in: label:inbox"):
+            assert ids(q) == inbox, q
+        assert ids('subject:"" label:inbox') == inbox
+        assert ids("label: in:sent") == ids("from: in:sent") == sent
+        assert ids("subject:plan") == ids("from:bob") == inbox
+        assert ids("subject: subject:plan") == ids("subject: from:bob") == set()
+        assert ids('subject: label:"inbox"') == ids('subject: label:""') == set()
+
+
 def test_github_search_q_parse():
     """One parser, a qualifier vocabulary per endpoint: a key the endpoint does not honor stays
     free text, so the FTS still gets a chance at it."""

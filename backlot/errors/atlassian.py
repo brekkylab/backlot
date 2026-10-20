@@ -809,8 +809,9 @@ def _invalid_mime_type(value: str) -> str | None:
     `text/plain;a=b c`, `text/plain;a="b`, `text/plain;charset=a b` (named `a b`) and
     `text/plain;charset=nope`, and `text/plain;a b=c;charset=nope` named the space in `a b` first.
     On 2026-10-19 a no-break space (U+00A0) at either end of the header stayed part of it:
-    `text/plain` and `text/plain;charset=nope` followed by one were named for it. Not read here:
-    `text/plain;charset=` was a 500.
+    `text/plain` and `text/plain;charset=nope` followed by one were named for it. Not read here: a
+    charset Tomcat reads that Java takes no name for, the 500 :func:`refuse_a_confluence_media_type`
+    gives first.
     """
     index = value.find(";")
     full = (value if index < 0 else value[:index]).strip(_JAVA_TRIMMED)
@@ -862,6 +863,59 @@ def _token_reason(token: str) -> str | None:
     return None
 
 
+#: Tomcat's `HttpParser`: a token, and a quoted string, each after any spaces and tabs.
+_TOMCAT_TOKEN = re.compile(r"[ \t]*([!#$%&'*+.^_`|~0-9A-Za-z-]*)")
+_TOMCAT_QUOTED = re.compile(r'[ \t]*"((?:[^"\\]|\\.)*)"', re.DOTALL)
+
+
+def _tomcat_charset(value: str) -> str | None:
+    """The `charset` Tomcat reads off a `Content-Type` ahead of Spring, its quotes and escapes off,
+    or None where it reads none: Tomcat's `MediaType.parseMediaType` (`9.0.98` and `10.1.34` alike)
+    takes a type and a subtype that are tokens either side of a `/`, then parameters each after a
+    `;`, with spaces and tabs around each, and nothing else, so `foo;charset=` and
+    `text/plain;a b=c;charset=` hold none. A name is read in any case, a later one replacing an
+    earlier one. A name with no `=` has an empty value, and so has one whose `=` ends the header,
+    where one whose `=` meets a `;` has none (`charset=;x=y`)."""
+    pos = 0
+
+    def token() -> str | None:
+        # `readToken`: the token, empty at the end of the header, None ahead of anything else
+        nonlocal pos
+        match = _TOMCAT_TOKEN.match(value, pos)
+        pos = match.end()
+        return match[1] if match[1] or pos == len(value) else None
+
+    def skip(constant: str) -> bool | None:
+        # `skipConstant`: whether ``constant`` comes next, None at the end of the header
+        nonlocal pos
+        while pos < len(value) and value[pos] in " \t":
+            pos += 1
+        if pos == len(value):
+            return None
+        next_is_it = value[pos] == constant
+        pos += next_is_it
+        return next_is_it
+
+    if not token() or skip("/") is not True or not token():
+        return None
+    charset = None
+    found = skip(";")
+    while found:
+        name, given = token(), ""
+        if skip("="):
+            quoted = _TOMCAT_QUOTED.match(value, pos)
+            if quoted:
+                given, pos = re.sub(r"\\(.)", r"\1", quoted[1], flags=re.DOTALL), quoted.end()
+            elif value[pos:].lstrip(" \t").startswith('"'):
+                given, pos = None, len(value)  # a quote left open reads to the end
+            else:
+                given = token()
+        if name is not None and name.lower() == "charset":
+            charset = given
+        found = skip(";")
+    return None if found is False else charset
+
+
 def refuse_a_confluence_media_type(headers, consumes: tuple[str, ...]) -> AtlassianError | None:
     """Confluence's 415 for a request whose `Content-Type` an operation that ``consumes`` those
     types does not take, or None where it takes it.
@@ -877,8 +931,20 @@ def refuse_a_confluence_media_type(headers, consumes: tuple[str, ...]) -> Atlass
     gives. Each quotes the header without the spaces and tabs around it (` ;x` is named `";x"`,
     2026-10-18). The status and the code are the same. Only a parameter named `charset` in that
     case is a charset to it (`multipart/form-data; boundary=x; Charset=bogus` is read, 2026-10-13).
+
+    Ahead of all of it, a charset Tomcat reads (:func:`_tomcat_charset`) that is no name Java takes
+    (:data:`_JAVA_CHARSET_NAME`), an empty one among them, is a 500 with no body and no
+    `content-type`, whether the operation takes the type or not. Measured on Confluence Cloud at
+    `POST space/{key}/permission` with no credential, `text/plain;charset=` on 2026-10-18 and
+    2026-10-19, and on 2026-10-19 `application/json;charset=`, `text/plain;Charset=`,
+    `text/plain;charset`, `text/plain;charset=""`, `text/plain;charset=_x` and
+    `text/plain;charset=utf-8;charset=` with it, where `text/plain;charset=;x=y` and `foo;charset=`
+    were each the 415.
     """
     value = (headers.get("content-type") or "").strip(" \t")
+    charset = _tomcat_charset(value)
+    if charset is not None and _JAVA_CHARSET_NAME.fullmatch(charset) is None:
+        return AtlassianError(500, b"")
     media_type = _parse_media_type(value, charset_in_any_case=False) if value else None
     if media_type is not None and _takes(consumes, media_type):
         return None

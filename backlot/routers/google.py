@@ -653,8 +653,32 @@ _GMAIL_SPACED = (
     r"(?<=\bfrom:)|(?<=\bto:)|(?<=\bcc:)|(?<=\bbcc:)|(?<=\bsubject:)|(?<=\blabel:)|(?<=\bin:)"
 )
 _GMAIL_DATED = r"(?<=\bafter:)|(?<=\bbefore:)|(?<=\bnewer:)|(?<=\bolder:)"
+# An empty operator `_GMAIL_OP` drops, so that the operator after it applies. Measured on a
+# Workspace mailbox of 625 messages on 2026-10-19, comparing `messages.list` id sets
+# (`threads.list` answered the ten queries sent to it alike):
+#
+#   dropped   an empty `subject:`, `from:`, `to:`, `cc:` or `bcc:` with spaces, a tab, a pair of
+#             quotes holding nothing or spaces, or nothing at all after it, and an empty `label:` or
+#             `in:` with any of those except nothing, in any letter case, before `label:`, `in:`,
+#             `has:`, `after:`, `before:`, `newer:`, `older:`, `newer_than:` or `older_than:` whose
+#             value starts right after its colon, or after spaces for the four date operators:
+#             `subject:label:inbox`, `bcc:""in:sent`, `label:" "label:inbox`,
+#             `SUBJECT: NEWER_THAN:30d` and `in: before: 2026/10/01` answered the ids of the
+#             operator after the empty one
+#   kept      before `subject:`, `from:`, `to:`, `cc:` or `bcc:`, before one of those nine whose
+#             value is empty, quoted or (for the five that are not dates) after a space, before a
+#             date operator whose value is `-`, and with a no-break space after it:
+#             `subject: from:me`, `label: label:""`, `in: label:"inbox"`, `from: label: inbox`,
+#             `subject: after:-` and `subject:<no-break space>label:inbox` answered nothing, and
+#             `_GMAIL_OP` reads the next word as the empty operator's value
+_GMAIL_EMPTY_BEFORE = (
+    r'(?:(?:subject|from|to|cc|bcc):|(?:label|in):(?=[ \t"]))(?:[ \t]|"[ \t]*")*'
+    r'(?=(?:label|in|has|newer_than|older_than):[^\s"]|(?:after|before|newer|older): *[^\s"-])'
+)
 _GMAIL_OP = re.compile(
-    rf'(\w+):(?:(?:{_GMAIL_SPACED})(?:\s|"\s*")*|(?:{_GMAIL_DATED}) *)?("[^"]*"|\S*)', re.IGNORECASE
+    rf'(?:{_GMAIL_EMPTY_BEFORE})?(\w+):(?:(?:{_GMAIL_SPACED})(?:\s|"\s*")*|(?:{_GMAIL_DATED}) *)?'
+    r'("[^"]*"|\S*)',
+    re.IGNORECASE,
 )
 # operators we honor; anything else stays as free text
 _GMAIL_KEYS = {
@@ -823,7 +847,11 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
                     if plus:
                         ops.setdefault(stored, []).append(value)
                         return f" +{term} "
-            ops.setdefault(stored, []).append(value.strip('"'))
+            # A quoted address value keeps its quotes, which `_gmail_address_match` reads.
+            quoted = (
+                key in _GMAIL_ADDRESS_KEYS and len(value) > 1 and value[:1] == value[-1:] == '"'
+            )
+            ops.setdefault(stored, []).append(value if quoted else value.strip('"'))
             return " "
         return m.group(0)
 
@@ -909,7 +937,8 @@ def _gmail_address_match(header: str | None, value: str) -> bool:
     with a hyphen matches its words joined as well (`no-reply` finds `noreply@` beside
     `no-reply@`, `jt-snowball` finds `@jtsnowball.com`) unless it holds `--` or a `.` between two
     word characters (`jt-snowball.com` is its three words alone); a joined value does not find the
-    hyphenated spelling.
+    hyphenated spelling. A quoted value is matched without its quotes and with no joined spelling:
+    `from:"no-reply"` finds `no-reply@` and not `noreply@`.
 
     Measured on a Workspace mailbox of 595 messages on 2026-10-15: 113 searches on `cc:` and
     `bcc:`, compared with the headers of every message, all match this rule, and of the 32 ASCII
@@ -922,19 +951,29 @@ def _gmail_address_match(header: str | None, value: str) -> bool:
     `cc:` searches with a hyphen in them (a header's words split by one hyphen and by two, into two
     and three parts, beside an `@` or a `.`, and each hyphenated local part whole and in pairs),
     none quoted and none led by `-`, match this rule, and at 604 on 2026-10-18 so did `bcc:` on a
-    word of the one `Bcc` address there, split by one hyphen and by two and beside a `.`. Two forms
-    it does not read: a quoted value found its words alone, and a value led by `-` answered as the
-    negation `-from:` does. On 2026-10-14, `cc:<a local part>+x` read `+x` as a search term of its
-    own."""
+    word of the one `Bcc` address there, split by one hyphen and by two and beside a `.`. At 624
+    on 2026-10-19 so did 444 searches on the four operators, compared with the headers of every
+    message in `messages.list` and `threads.list`: 27 words of five letters or more from the
+    mailbox's local parts, domain labels and display names, each whole, split by a hyphen, both of
+    those quoted, and the quoted two negated; the 7 domain labels among them split after an `@`,
+    quoted and not; and the 37 local parts the mailbox holds that are letters and digits joined by
+    `-`, each whole, joined, both of those quoted, negated quoted and not, and quoted with its
+    domain and as `@<domain>`. A value led by `-` is the negation the comment at
+    `_GMAIL_NEGATED_ADDRESS` measures. On 2026-10-14, `cc:<a local part>+x` read `+x` as a search
+    term of its own."""
     header = (header or "").lower()
     value = value.lower()
+    # A value the parser kept its quotes around is read alone: no joined spelling beside its words.
+    quoted = len(value) > 1 and value[:1] == value[-1:] == '"'
+    if quoted:
+        value = value[1:-1]
     if _GMAIL_ONE_ADDRESS.fullmatch(value):
         return value in _GMAIL_ADDRESS.findall(header)
     words, have = _GMAIL_ADDRESS_WORD.findall(value), _GMAIL_ADDRESS_WORD.findall(header)
     if not words:
         return True
     alternatives = [words]
-    if "-" in value and not _GMAIL_UNJOINED.search(value):
+    if not quoted and "-" in value and not _GMAIL_UNJOINED.search(value):
         alternatives.append(_GMAIL_ADDRESS_WORD.findall(value.replace("-", "")))
     return any(
         have[i : i + len(option)] == option
@@ -998,9 +1037,11 @@ def _gmail_query(conn, mailbox, ids, q: str, caller_email: str | None = None) ->
     present; otherwise the mailbox listing). The caller paginates the returned rows."""
     free, ops = _parse_gmail_q(q)
     if caller_email:
+        # `me` reads through quotes: on 2026-10-19, `op:"me"` and `-op:"me"` answered what `op:me`
+        # and `-op:me` answer on each address operator.
         for key in ("from", "to", "cc", "bcc", "-from", "-to", "-cc", "-bcc"):
             if key in ops:
-                ops[key] = [caller_email if v.lower() == "me" else v for v in ops[key]]
+                ops[key] = [caller_email if v.strip('"').lower() == "me" else v for v in ops[key]]
     ops = _resolve_relative_dates(ops)  # newer_than:/older_than: -> absolute after:/before: bounds
     if free:
         # Honor a fully "quoted" free-text term as a phrase (Gmail's quote semantics): match the

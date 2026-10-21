@@ -110,6 +110,8 @@ async def graphql(request: Request):
     )
     if isinstance(payload, Response):
         return payload
+    # The telemetry middleware names the call by this document (backlot.telemetry.naming).
+    request.state.graphql_payload = payload
     caller = auth.resolve_api_key(request)
     if caller is None:
         # Real Linear answers a bad credential with a GraphQL error envelope and a 401, not a

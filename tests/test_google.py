@@ -5225,6 +5225,9 @@ _MADE_12 = [
 ]
 _BY_NAME_NATURAL_12 = [_MADE_12[i] for i in (0, 4, 1, 5, 2, 8, 6, 9, 3, 10, 7)]
 _BY_NAME_NATURAL_DESC_12 = [_MADE_12[i] for i in (7, 10, 3, 9, 6, 8, 2, 5, 1, 4, 0)]
+# A Python whose `unicodedata` predates Unicode 15 does not know the Small Kana Extension's two
+# letters, which `backlot.collation` then sorts by code point, so the replay leaves those out there.
+_KEPT_12 = [n for n in _MADE_12 if "Cn" not in map(unicodedata.category, n)]
 
 
 @pytest.mark.parametrize(
@@ -5256,8 +5259,8 @@ _BY_NAME_NATURAL_DESC_12 = [_MADE_12[i] for i in (7, 10, 3, 9, 6, 8, 2, 5, 1, 4,
         (_MADE_10, "name_natural desc", _BY_NAME_NATURAL_DESC_10),
         (_MADE_11, "name_natural", _BY_NAME_NATURAL_11),
         (_MADE_11, "name_natural desc", _BY_NAME_NATURAL_DESC_11),
-        (_MADE_12, "name_natural", _BY_NAME_NATURAL_12),
-        (_MADE_12, "name_natural desc", _BY_NAME_NATURAL_DESC_12),
+        (_KEPT_12, "name_natural", [n for n in _BY_NAME_NATURAL_12 if n in _KEPT_12]),
+        (_KEPT_12, "name_natural desc", [n for n in _BY_NAME_NATURAL_DESC_12 if n in _KEPT_12]),
     ],
 )
 def test_drive_order_by_a_name_lists_a_folder_as_real_did(tmp_path, made, order_by, listed):

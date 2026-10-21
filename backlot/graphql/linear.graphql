@@ -1004,7 +1004,7 @@ type User {
   app: Boolean!
   isMentionable: Boolean!
   isMe: Boolean!
-  supportsAgentSessions: Boolean!
+  supportsAgentSessions(forCurrentUser: Boolean! = false): Boolean!
   canAccessAnyPublicTeam: Boolean!
   calendarHash: String
   inviteHash: String!

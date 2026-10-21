@@ -18,14 +18,20 @@ response, which needs a credential.
 For a source compared against a **document its vendor publishes**, the request surface — which
 operations exist, which query parameters each accepts, and, for Google, the batch endpoint its
 `batchPath` names. Backlot's side is the app's own `/openapi.json`. The vendor's side comes in two formats, read by two parsers, because Google does
-not publish OpenAPI: **OpenAPI** documents for GitHub, Slack, Jira, Confluence, Notion and
-HubSpot, and **Google API Discovery** documents for Gmail and the Drive family. A source is
+not publish OpenAPI: **OpenAPI** documents for GitHub, Jira, Confluence, Notion and HubSpot, and
+**Google API Discovery** documents for Gmail and the Drive family. A source is
 compared against as many documents as its vendor publishes for the surface Backlot serves — Jira's
 two REST versions, Drive alongside Docs, Sheets and Slides, HubSpot's CRM and associations. All
 are public, so these comparisons run with **no credential, no quota and no account**. Response
 bodies are out of scope here: a vendor spec describes them through deep `$ref` chains that
 Backlot's `response_model` set does not mirror shape-for-shape, so a body diff would report how two
 documents are written rather than how two servers answer.
+
+For **Slack**, which maintains no machine-readable description, its reference documentation:
+which methods exist, which arguments each takes and at which type, and which fields each answer
+carries and at which type, in both directions. Backlot's side is `/openapi.json` for the arguments
+and a local Backlot's own answers for the fields. See [Slack is read off its reference
+documentation](#slack-is-read-off-its-reference-documentation).
 
 Path templates are compared with placeholders flattened. The vendor calling a segment `{userId}`
 and Backlot calling it `{user_id}` is not a divergence.
@@ -81,9 +87,6 @@ document only *describes* the contract, and it lags, omits paid tiers, and docum
 the server accepts two. Every `extra_operation` this has reported so far was the spec being
 incomplete rather than Backlot being wrong:
 
-- Slack's spec documents one verb per method, and of the search methods only `search.messages`:
-  `search.all` and `search.files` are absent. Measured against slack.com, all fourteen answer
-  `200/ok` over **both** GET and POST.
 - GitHub's spec declares a `GET` for neither `contents` without a path nor the legacy per-sha
   statuses read, and describes both in the prose of the operations they belong to. Measured
   against api.github.com, both answer `200`.
@@ -97,6 +100,69 @@ incomplete rather than Backlot being wrong:
 
 So on a REST source, read `missing_*` as reliable and `extra_*` as *undocumented by the vendor —
 verify by hand*, never as proof of a bug. Those measurements are what the baseline notes carry.
+
+## Slack is read off its reference documentation
+
+Slack's OpenAPI document, `slackapi/slack-api-specs`, is archived, its last content change dated
+2020-10-06: it declares 174 methods where the reference lists 340, `canvases.*`, `bookmarks.*`
+and `assistant.threads.*` among those it lacks. The copy `api.slack.com/specs/openapi/v2/` still
+serves is the same version, 1.7.0, with 170. What Slack maintains is the reference at
+`docs.slack.dev`, which serves every page as markdown (`docs.slack.dev/llms.txt`). Markdown is
+prose, not a schema, so each part is read only where the page gives it one fixed spelling, and a
+page that stops spelling it that way is a contract that could not be read (exit 2), never a
+divergence. Measured 2026-10-21 over all 340 method pages and the nine object pages:
+
+- **Methods** are the index's table rows, each a method's name linked to its own page. Every row
+  but the header must read that way. A method's own page is read only where Backlot serves it,
+  and its `method_name` frontmatter must be the name the index linked.
+- **Arguments** are the lines of a page's `## Arguments` section: 1516 lines of one shape, a
+  bolded code name, an optional type (`string` 968, `boolean` 131, `array` 129, `integer` 72,
+  `object` 16, `number` 6, none 194) and `Required` or `Optional`. Every bolded code name anywhere
+  in a section is one of those lines, and every page but `admin.audit.anomaly.allow.getItem`, which
+  Backlot does not serve, reads at least one, so a served page that reads none is refused. An
+  argument with no type is compared by name only; `integer` and `number` are one JSON type.
+- **Fields** are read off the JSON examples in a page's `## Response` section, success examples
+  only (`"ok": true`). 608 fenced blocks there open as JSON: 596 are JSON as written and 3 more
+  once an elision (`...`, `// ...`) and a trailing comma outside every string are taken out. The
+  9 left, single-quoted strings, missing commas and one JSON Lines file, are all on methods
+  Backlot does not serve, whose pages are not read. A key that is not a field name (a profile's
+  custom-field ids, a file's per-channel `shares`, a huddle's per-person `participants_events`)
+  collapses to `{}`.
+- An example shows one sample, so where the section links an **object page**
+  (`reference/objects/user-object.md`), that page's Field/Type/Description tables add every field
+  the object may carry. The first table names the object's own fields, and the object goes where
+  an example carries the container sharing the most of them (`members[]` on `users.list`, `user`
+  on `users.info`); a later table goes under the container its rows share the most names with (the
+  user object's second table is its `profile`). A type cell reads as a JSON type by its first
+  word — `String`, `Boolean`, `Integer`, `Unix timestamp`, `Array of …`, a backticked id such as
+  `` `user_id` `` — which every one of the 513 typed rows' cells does but `last_read`'s
+  `Timestamp`, a string or a number as Slack's timestamps go, which types nothing. So do the 25
+  rows of the conversation object's booleans table, which has no Type column.
+
+Backlot's side of the fields is what a local Backlot answers on a corpus `slack_docs` supplies,
+over every channel, thread and person it holds and with the arguments the reference's examples
+were sent where an answer echoes them (`api.test`'s `foo`, `conversations.history`'s `latest`, a
+page with more to follow), so a finding reproduces with `backlot.serve(records=…)`.
+A field Backlot answers under a list the documentation never looks inside, or the documentation
+under one Backlot answered empty, is compared against nothing and not reported; an empty object
+Backlot answers is looked inside, and an example's empty object is not. `null` beside a type is not
+another type.
+
+The answer is not read off slack.com. Measured 2026-09-23, which fields a live workspace's answer
+carries depends on what it holds and who asks: one channel holding only join messages left out
+eleven `conversations.history` fields a threaded one carries, two threads differed by thirty-two
+`conversations.replies` fields, `has_2fa` comes back only to an admin and `profile.email` only to a
+token with `users:read.email`. A comparison against that would move with the workspace. Nor is a
+model asked to read the pages: every part compared reads deterministically as above, and a reader
+that answers differently run to run would rewrite the baseline with it.
+
+A method is one operation, named as Slack names it (`conversations.list`): a page names one
+`http_method`, and slack.com answers every method Backlot serves over GET and POST alike.
+
+The reference documents less than slack.com serves. A message's thread, reaction, edit and file
+fields are absent from `conversations.history`'s examples and documented only in prose elsewhere,
+so Backlot serving them reads as `extra_field`; each such entry in the baseline carries a note with
+the vendor evidence for it.
 
 ## Severities
 
@@ -214,10 +280,11 @@ The surface takes the shape of the contract:
   has. `status` is `implemented` (both sides), `missing` (the vendor has it and Backlot does not
   serve it), `extra` (Backlot's only) or, for S3, `refused` (a write answered with an error). `id`
   is the vendor's own name for it: the `operationId` for an OpenAPI document, the method `id` for a
-  Discovery document, the botocore operation for S3, and the method name for Slack, which is the
-  path under either verb (`conversations.list`), served routes the document omits included.
-  Elsewhere a served route with no path item in its document carries no `id`. A parameter appears
-  only where it diverges, under `params` of its operation. A Google source adds `batch`: each
+  Discovery document, the botocore operation for S3, and for Slack the method name, which is also
+  the operation itself (`conversations.list`). A served route with no path item in its document,
+  or a Slack method the reference does not list, carries no `id`. A parameter appears only where
+  it diverges, under `params` of its operation, and so, for Slack, does a field of a method's
+  answer, under `fields`. A Google source adds `batch`: each
   document's declared `batchPath` with whether a route answers it, and each of Backlot's batch
   routes with whether a document selects it.
 - **A GraphQL schema** — `types`, every type Backlot declares with every field, enum value and
@@ -263,7 +330,8 @@ reasoning rather than a flag on a command nobody kept. One added that way surviv
 The element is the one the finding's `path` names. `Transcript.duration` is
 `types.Transcript.fields.duration`; an argument, `Query.transcripts(limit)`, is under that field's
 `args`; an enum value or a union member is under its type's `values` or `members`. An operation is
-the `operations` entry whose `operation` is the path, and `GET /x?name` is `params.name` in it.
+the `operations` entry whose `operation` is the path, and `GET /x?name` is `params.name` in it;
+`users.info user.profile.email` is `fields."user.profile.email"` in `users.info`'s entry.
 `severity` is `breaking` or `gap`, in lower case, and the command refuses a file carrying any other,
 or a `note` or `detail` on an element with no `kind`, rather than drop it. The `detail` is compared
 character for character, so copy it from `--json` (`.new[].detail`): the terminal form wraps a long
@@ -314,7 +382,7 @@ each of those is compared, and a test fails if the two sets ever drift apart.
 |---|---|---|
 | Fireflies | GraphQL introspection | `api_key` — `FIREFLIES_API_KEY`, sent as `Bearer <key>` |
 | Linear | GraphQL introspection | `api_key` — `LINEAR_API_KEY`, sent **bare** |
-| Slack | published OpenAPI | none |
+| Slack | reference documentation — methods, arguments and answers, see [Slack is read off its reference documentation](#slack-is-read-off-its-reference-documentation) | none |
 | Gmail | Google Discovery, operations and `batchPath` | none |
 | Google Drive (`google_drive`) | Google Discovery — Drive, Docs, Sheets and Slides, operations and `batchPath` | none |
 | GitHub | published OpenAPI | none |

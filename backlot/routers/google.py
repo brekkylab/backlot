@@ -1811,26 +1811,44 @@ _DRIVE_Q_OPERATORS: dict[str, frozenset[str]] = {
     "mimeType": frozenset({"contains", "=", "!="}),
     "modifiedTime": frozenset({"<=", "<", "=", "!=", ">", ">="}),
     "createdTime": frozenset({"<=", "<", "=", "!=", ">", ">="}),
-    "trashed": frozenset({"=", "!="}),
+    "trashed": frozenset({"=", "!=", "<", "<=", ">", ">="}),
     "sharedWithMe": frozenset({"=", "!="}),
 }
 _DRIVE_Q_COLLECTIONS = frozenset({"parents", "owners"})
 _DRIVE_Q_BOOLEAN = frozenset({"trashed", "sharedWithMe"})
+#: What `trashed` with `<`, `<=`, `>` or `>=` lists: the files `trashed = <value>` lists, or none
+#: (None). No order of `false` and `true` gives all eight. Measured on Drive v3 on 2026-10-21 over
+#: a Workspace member's files with two trashed ones among them; `sharedWithMe` with any of the four
+#: is the 400.
+_DRIVE_Q_TRASHED_ORDERED = {
+    ("<", "true"): None,
+    ("<", "false"): None,
+    ("<=", "true"): "true",
+    ("<=", "false"): None,
+    (">", "true"): None,
+    (">", "false"): "false",
+    (">=", "true"): "true",
+    (">=", "false"): "false",
+}
 # Documented on the reference, and nothing in a corpus record to evaluate them against.
 _DRIVE_Q_UNMODELLED = frozenset(
     {"starred", "viewedByMeTime", "writers", "readers", "properties", "appProperties", "visibility"}
 )
 # `{` and `}` are tokens so that `properties has { key='x' and value='y' }`, the reference's own
 # spelling, reaches `term()` with the field read — the refusal then names `properties` instead of
-# the bare `Invalid Value` an unlexable character gets.
+# the bare `Invalid Value` an unlexable character gets. `()` with nothing between is a token of its
+# own, the empty group real lists every file for, where `( )` is the 400 (2026-10-21); a value in
+# double quotes is read as the same value in single quotes (2026-10-20).
 _DRIVE_Q_TOKEN = re.compile(
-    r"\s*(?:(?P<paren>[()])|(?P<brace>[{}])|(?P<op>!=|<=|>=|=|<|>)|'(?P<str>(?:[^'\\]|\\.)*)'"
+    r"\s*(?:(?P<empty>\(\))|(?P<paren>[()])|(?P<brace>[{}])|(?P<op>!=|<=|>=|=|<|>)"
+    r"|(?P<str>'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\")"
     r"|(?P<word>[A-Za-z_][A-Za-z0-9_]*))"
 )
-# Nesting past this is refused. The parser is recursive, so an unbounded query answered 500 where
-# this section's contract is a 400: 320 parentheses, or 960 `not`s, exhausted the interpreter's
-# frame limit. Real Drive's own limit is unmeasured; no client writes a query 32 levels deep.
-_DRIVE_Q_MAX_DEPTH = 32
+# Nesting past this is refused here and read by real: 2,000 parentheses around a term, and 400
+# groups each inside the last one's `and`, were served on 2026-10-21, where 4,000 and 800 overran
+# the URL. The parser is recursive, so an unbounded query answered 500 where this section's contract
+# is a 400: 320 parentheses exhausted the interpreter's frame limit.
+_DRIVE_Q_MAX_DEPTH = 128
 
 
 class _QTerm(NamedTuple):
@@ -1851,6 +1869,10 @@ class _QOr(NamedTuple):
     parts: tuple
 
 
+class _QAll(NamedTuple):
+    """The empty group `()`, and the missing operand of a trailing `or`: every file."""
+
+
 def _drive_q_refused(message: str | None = None) -> gerr.GoogleError:
     return gerr.invalid_value("q", message)
 
@@ -1868,7 +1890,9 @@ def _drive_q_tokens(q: str) -> list[tuple[str, str]]:
         pos = m.end()
         kind = m.lastgroup or ""
         text = m.group(kind)
-        out.append((kind, re.sub(r"\\(.)", r"\1", text) if kind == "str" else text))
+        if kind == "str":
+            text = re.sub(r"\\(.)", r"\1", text[1:-1])  # strip surrounding quotes
+        out.append((kind, text))
     return out
 
 
@@ -1900,7 +1924,9 @@ def _drive_q_parse(q: str):
         parts = [conjunction()]
         while is_word("or"):
             take()
-            parts.append(conjunction())
+            # at the end or before a `)`, every file, where a trailing `and` is the 400 (2026-10-21)
+            ended = peek() in ((None, None), ("paren", ")"))
+            parts.append(_QAll() if ended else conjunction())
         return parts[0] if len(parts) == 1 else _QOr(tuple(parts))
 
     def conjunction():
@@ -1920,7 +1946,12 @@ def _drive_q_parse(q: str):
         try:
             if is_word("not"):
                 take()
+                if is_word("not"):  # `not not x` is the 400, `not (not x)` x (2026-10-21)
+                    raise _drive_q_refused()
                 return _QNot(unary())
+            if peek() == ("empty", "()"):
+                take()
+                return _QAll()
             if peek() == ("paren", "("):
                 take()
                 node = disjunction()
@@ -2060,9 +2091,14 @@ def _drive_q_eval(node, f: dict, me: str | None, fulltext: dict[str, set[str]]) 
         return all(_drive_q_eval(p, f, me, fulltext) for p in node.parts)
     if isinstance(node, _QOr):
         return any(_drive_q_eval(p, f, me, fulltext) for p in node.parts)
+    if isinstance(node, _QAll):
+        return True
     field, op, value = node
     if field == "trashed":
-        return ((value == "true") == f["trashed"]) == (op == "=")
+        if op in ("=", "!="):
+            return ((value == "true") == f["trashed"]) == (op == "=")
+        same = _DRIVE_Q_TRASHED_ORDERED[op, value]
+        return same is not None and (same == "true") == f["trashed"]
     if field == "sharedWithMe":
         # "Shared with me" = visible to the caller and not owned by them. Items shared with you
         # carry no My Drive parent on real Drive, so this clause is the only way to enumerate

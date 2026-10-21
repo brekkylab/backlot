@@ -791,6 +791,19 @@ _GMAIL_NEGATED_EMPTY = re.compile(
     re.IGNORECASE,
 )
 
+# `NOT` and `-(...)` around an operator: real reads `NOT has:attachment` as `-has:attachment`,
+# `NOT after:2026/10/01` as `before:2026/10/01` (the date flip _GMAIL_NEGATED_DATE does),
+# `-(from:me to:me)` as the negation of the group, and `NOT NOT from:me` as `from:me`.
+# Measured 2026-10-20/21 on a 637-639 message Workspace mailbox.
+_GMAIL_NOT_OPERATOR = re.compile(
+    r"(?<!\w)NOT\s+(?=(?:has|after|before|newer|older|newer_than|older_than|subject|label|in|from|to|cc|bcc):)",
+    re.IGNORECASE,
+)
+_GMAIL_NOT_PAREN = re.compile(r"(?<!\w)NOT\s*\(", re.IGNORECASE)
+_GMAIL_NEGATED_PARENS = re.compile(r"-\(([^)]*)\)", re.IGNORECASE)
+_GMAIL_DOUBLE_NOT = re.compile(r"(?<!\w)NOT\s+NOT\s+", re.IGNORECASE)
+_GMAIL_PARENS = re.compile(r"\(([^)]*)\)")
+
 
 def _gmail_q_date(v: str) -> str | None:
     """The epoch seconds an `after:` or `before:` value in a search names, or None for a value real
@@ -869,6 +882,12 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
             return " "
         return m.group(0)
 
+    q = _GMAIL_DOUBLE_NOT.sub("", q)
+    q = _GMAIL_NOT_OPERATOR.sub("-", q)
+    q = _GMAIL_NOT_PAREN.sub("-(", q)
+    q = _GMAIL_NEGATED_PARENS.sub(r"-\1", q)
+    q = _GMAIL_PARENS.sub(r"\1", q)
+    q = re.sub(r"(?<!\S)-(?!\S)", "", q)
     q = _GMAIL_NEGATED_EMPTY.sub("-", q)
     q = _GMAIL_NEGATED_DATE.sub(_gmail_negated_date, q)
     q = _GMAIL_NEGATED_ADDRESS.sub(lambda m: f"{m.group(1)}:-", q)

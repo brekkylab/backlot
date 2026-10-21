@@ -10028,3 +10028,24 @@ def test_gmail_hyphenated_address_search(tmp_path, surface, query, expected):
     assert {x["id"] for x in r.json().get(surface, [])} == {
         served_id("gmail", doc_id) for doc_id in expected
     }
+
+
+@pytest.mark.parametrize(
+    "q, expected_ops",
+    [
+        ("NOT has:attachment", {"-has": ["attachment"]}),
+        ("NOT after:2026/10/01", {"before": ["1790812800"]}),
+        ("NOT newer_than:30d", {"-newer_than": ["30d"]}),
+        ("-(has:attachment)", {"-has": ["attachment"]}),
+        ("NOT NOT from:me", {"from": ["me"]}),
+        ("NOT(from:me)", {"-from": ["me"]}),
+        ("(from:me)", {"from": ["me"]}),
+        ("-((from:me))", {"-from": ["me"]}),
+    ],
+)
+def test_gmail_not_and_negated_groups(q, expected_ops):
+    """#917: NOT and -(...) around operators read as real reads them."""
+    from backlot.routers.google import _parse_gmail_q
+
+    free, ops = _parse_gmail_q(q)
+    assert ops == expected_ops, f"{q}: free={free!r} ops={ops}"

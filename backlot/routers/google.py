@@ -676,8 +676,8 @@ _GMAIL_EMPTY_BEFORE = (
     r'(?=(?:label|in|has|newer_than|older_than):[^\s"]|(?:after|before|newer|older): *[^\s"-])'
 )
 _GMAIL_OP = re.compile(
-    rf'(?:{_GMAIL_EMPTY_BEFORE})?(-+)?(\w+):(?:(?:{_GMAIL_SPACED})(?:\s|"\s*")*|(?:{_GMAIL_DATED}) *)?'
-    r'("[^"]*"|\S*)',
+    rf"(?:{_GMAIL_EMPTY_BEFORE})?(?:(?<!\S)-+)?(\w+):"
+    rf'(?:(?:{_GMAIL_SPACED})(?:\s|"\s*")*|(?:{_GMAIL_DATED}) *)?("[^"]*"|\S*)',
     re.IGNORECASE,
 )
 # operators we honor; anything else stays as free text
@@ -772,24 +772,53 @@ _GMAIL_NEGATED_DATE = re.compile(r"(?<!\S)-(after|before|newer|older): *(\S+)", 
 # 2026-10-18, so did `bcc:`, and on all four operators `-from: <word>`, `from: -<word>`,
 # `-from:-<word>`, `--from:<word>`, `from:--<word>`, `-FROM:<word>`, `-from:"<word>"`, a whole
 # address, an `@<domain>` and `me`; `from:"-<word>"` answered as `from:<word>`, and `-from:`,
-# `from:-`, `-from:-`, `from:--` and `-from:""` every message. Another operator keeps the `-` in its
-# value: `label:-` answered nothing. Not modelled: `- from:<word>` answered as `from:<word>`, where
-# the `-` standing alone is searched here as a term, and `from:-<word>+update` answered every
-# message, where `-from:<word>+update` answered the messages of `+update` that `from:<word>` leaves
-# out. A negated value is stored under its key with a `-` in front.
+# `from:-`, `-from:-`, `from:--` and `-from:""` every message. `label:` keeps the `-` in its value:
+# `label:-` answered nothing. Not modelled: `from:-<word>+update` answered every message, where
+# `-from:<word>+update` answered the messages of `+update` that `from:<word>` leaves out. A negated
+# value is stored under its key with a `-` in front.
 _GMAIL_NEGATED_ADDRESS = re.compile(r"(?<!\S)-+(from|to|cc|bcc):\s*", re.IGNORECASE)
-_GMAIL_NEGATION = {"after": "before", "before": "after", "newer": "older", "older": "newer"}
-
-# A `-` before an empty operator — one whose value is the start of another operator, not a value —
-# passes the negation through to that next operator. Measured on a Workspace mailbox of 625
-# messages on 2026-10-19, comparing `messages.list` id sets: `-subject: label:inbox`,
-# `-label: label:inbox`, `-from: label:inbox` and `-from:label:inbox` each answered the ids of
-# `-label:inbox`, not the ids of the empty operator beside them.
-_GMAIL_NEGATED_EMPTY = re.compile(
-    r"(?<!\S)-+(?:subject|from|to|cc|bcc|label|in|has|after|before|newer|older):\s*"
-    r"(?=(?:from|to|cc|bcc|subject|label|in|has|after|before|newer|older|newer_than|older_than):)",
-    re.IGNORECASE,
+# A `-` in front of `subject:`, `label:` or `in:` negates it, and so does a `-` in front of its
+# value after whitespace or a pair of quotes; a `-` touching the colon negates `subject:` and stays
+# in the value of `label:` and `in:`. `NOT` in capitals, and a `-(…)` group around one operator,
+# negate an address operator, `subject:`, `label:` or `in:` as a `-` does, and `NOT` in front of a
+# `-` leaves neither. A `-` standing alone is no search term. Measured on a Workspace mailbox,
+# comparing `messages.list` id sets: on 2026-10-18, `-subject:probe`, `-label:inbox`,
+# `label: -inbox`, `-in:sent` and `in: -sent` answered the messages the operator alone does not,
+# `- from:<word>` the ids of `from:<word>`, and `NOT from:<word>` and `-(from:<word>)` the ids
+# `from:<word>` does not answer, for three words on each of `from:`, `to:`, `cc:` and `bcc:`; on
+# 2026-10-19 `label:"" -probe` answered every message. On 2026-10-20 (637 messages),
+# `-label: inbox`, `-label:<tab>inbox`, `-label: "inbox"`, `-label:"" inbox`, `-label: -inbox`,
+# `-subject: probe`, `subject:-probe`, `-in: sent`, `NOT label:inbox`, `NOT subject:probe`,
+# `NOT in:sent`, `-(label:inbox)` and `-( from:me )` answered the messages the operator alone does
+# not; `NOT -from:me` and `NOT -label:inbox` the ids of the operator alone; `not from:me` those of
+# `from:me not`; `-subject:<word>+probe`, for a word in no subject, those of `probe`;
+# `label:-inbox`, `in:-sent` and `-in:anywhere` nothing; and `-label:-inbox`, `-subject:""`,
+# `-label:" "`, `subject:-`, `subject: -`, `label: -` and `subject: -label:inbox` every message.
+# Not modelled: `subject:-<word>+probe` answered every message, `NOT <word>` and `-(<word>)` the
+# messages `<word>` does not, and `-(from:me to:me)` those `from:me to:me` does not.
+_GMAIL_NEGATABLE = {"subject", "label", "in"}
+_GMAIL_NOT = re.compile(r"(?<!\S)NOT\s+(-*)(?=(?i:from|to|cc|bcc|subject|label|in):)")
+_GMAIL_NOT_GROUP = re.compile(
+    r"(?<!\S)-\(\s*((?:from|to|cc|bcc|subject|label|in):[^()\s]+)\s*\)", re.IGNORECASE
 )
+_GMAIL_NEGATION = {"after": "before", "before": "after", "newer": "older", "older": "newer"}
+# A `-` in front of an empty operator `_GMAIL_OP` drops is moved onto the operator after it.
+# Measured on a Workspace mailbox, comparing `messages.list` id sets: on 2026-10-19,
+# `-subject: label:inbox`, `-label: label:inbox`, `-from: label:inbox` and `-from:label:inbox`
+# answered the ids of `-label:inbox`; on 2026-10-20, so did `-in: label:inbox`, `-to: label:inbox`,
+# `-subject:label:inbox`, `-subject:<tab>label:inbox`, `-SUBJECT: LABEL:inbox`,
+# `-subject:"" label:inbox`, `-from:"" label:inbox` and `-label:" " label:inbox`, and
+# `-subject: in:sent`, `-cc: has:attachment`, `-from: in:anywhere`, `-from: after:2026/10/01` and
+# `-to: newer_than:30d` answered the ids of the operator after the empty one with a `-` in front.
+# Where the empty operator is kept the `-` stays on it: `-from: from:me`, `-subject: subject:probe`,
+# `-label:label:inbox` and `-in:label:inbox` answered every message, and `-has: label:inbox`,
+# `-after: label:inbox` and `-newer: label:inbox` the ids of `label:inbox -has`,
+# `label:inbox -after` and `label:inbox -newer`.
+_GMAIL_NEGATED_EMPTY = re.compile(rf"(?<!\S)-+{_GMAIL_EMPTY_BEFORE}", re.IGNORECASE)
+# A `-` flips an age operator and negates `has:`: on 2026-10-20 `-newer_than:30d` answered the ids
+# of `older_than:30d`, `-older_than:30d` those of `newer_than:30d`, and `-has:attachment` the
+# messages `has:attachment` does not.
+_GMAIL_AGE_NEGATION = {"newer_than": "older_than", "older_than": "newer_than"}
 
 
 def _gmail_q_date(v: str) -> str | None:
@@ -827,11 +856,10 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
     ops: dict[str, list[str]] = {}
 
     def _take(m):
-        negated = m.group(1) is not None
-        key = m.group(2).lower()
+        key = m.group(1).lower()
         if key in _GMAIL_KEYS:
             key = _GMAIL_KEY_ALIASES.get(key, key)
-            value = m.group(3)
+            value = m.group(2)
             if not value and key not in _GMAIL_ADDRESS_KEYS:
                 if key in _GMAIL_DROPPED_WHEN_EMPTY:
                     return " "
@@ -843,12 +871,25 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
                 ops.setdefault(_GMAIL_NOTHING if read is None else key, []).append(read or value)
                 return " "
             stored = key
-            if negated and key not in _GMAIL_ADDRESS_KEYS:
-                stored = f"-{key}"
             if key in _GMAIL_ADDRESS_KEYS and value.startswith("-"):
                 value, stored = value.lstrip("-"), f"-{key}"
                 if not _GMAIL_ADDRESS_WORD.search(value):
                     return " "
+            if key in _GMAIL_NEGATABLE:
+                spaced = m.start(2) > m.end(1) + 1
+                if value[:1] == "-" and (key == "subject" or spaced):
+                    value, stored = value.lstrip("-"), f"-{key}"
+                    if not value:
+                        return " "
+                elif m.group(0).startswith("-"):
+                    stored = f"-{key}"
+            elif m.group(0).startswith("-"):
+                if key in _GMAIL_AGE_NEGATION:
+                    stored = _GMAIL_AGE_NEGATION[key]
+                elif key == "has":
+                    stored = "-has"
+                else:
+                    return m.group(0)
             if key in _GMAIL_PLUS_ENDS and not value.startswith('"'):
                 value = value.lstrip("+")
                 if re.search(r"[^@]@", value):
@@ -869,14 +910,16 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
             return " "
         return m.group(0)
 
+    q = _GMAIL_NOT.sub(lambda m: "" if m.group(1) else "-", q)
+    q = _GMAIL_NOT_GROUP.sub(lambda m: f"-{m.group(1)}", q)
     q = _GMAIL_NEGATED_EMPTY.sub("-", q)
     q = _GMAIL_NEGATED_DATE.sub(_gmail_negated_date, q)
     q = _GMAIL_NEGATED_ADDRESS.sub(lambda m: f"{m.group(1)}:-", q)
     free = re.sub(r"\s+", " ", _GMAIL_OP.sub(_take, q)).strip()
-    # A `+` standing alone is no search term, and a word ending in one matches nothing (the
-    # measurement at `_GMAIL_PLUS_ENDS`).
+    # A `+` or a `-` standing alone is no search term, and a word ending in a `+` matches nothing
+    # (the measurements at `_GMAIL_PLUS_ENDS` and `_GMAIL_NEGATABLE`).
     if not (len(free) >= 2 and free[0] == free[-1] == '"'):
-        words = [t for t in free.split(" ") if t != "+"]
+        words = [t for t in free.split(" ") if t not in ("+", "-")]
         if any(t.endswith("+") for t in words):
             ops.setdefault(_GMAIL_NOTHING, []).append(free)
         free = " ".join(words)
@@ -1034,9 +1077,11 @@ def _gmail_op_match(row, ops: dict) -> bool:
     for v in ops.get("label", []) + [x for x in ops.get("in", []) if x.lower() != "anywhere"]:
         if v.lower() not in labels:
             return False
-    for v in ops.get("-label", []) + [x for x in ops.get("-in", []) if x.lower() != "anywhere"]:
+    for v in ops.get("-label", []) + ops.get("-in", []):
         if v.lower() in labels:
             return False
+    if any(v.lower() == "anywhere" for v in ops.get("-in", [])):
+        return False
     if any(v.lower() == "attachment" for v in ops.get("has", [])) and not store.jcol(
         row, "attachments"
     ):
@@ -2111,7 +2156,8 @@ def _drive_created(row) -> int:
 
 
 def _drive_modified(row) -> int:
-    """A file's last-modified second, an hour after creation when the corpus states none."""
+    """A file's last-modified second, an hour after creation when the corpus states none
+    (``store.DRIVE_MODIFIED`` is the same in SQL)."""
     return row["updated_ts"] if row["updated_ts"] is not None else _drive_created(row) + 3600
 
 
@@ -2416,6 +2462,26 @@ def _drive_sort(files: list[dict], specs: list[tuple]) -> list[dict]:
     for keyfn, reverse in reversed(specs):
         files.sort(key=keyfn, reverse=reverse)
     return files
+
+
+def _drive_newest_first(objects, folders: list[dict], offset: int, limit: int) -> list[dict]:
+    """The page at ``offset`` of a listing whose request names no `orderBy` and whose `q` has no
+    `fullText` term: newest `modifiedTime` first, ties by id, each synthesized folder among the
+    stored files where its own time puts it. Measured on Drive v3: a Workspace member's 170 files
+    and a consumer account's 21,702 with no `q` (2026-10-20), and on 2026-10-21 the member's 228
+    with `orderBy=` or `q=` empty, under `trashed = false` and under a `modifiedTime` bound, in the
+    order `orderBy=modifiedTime desc` gives, id for id, and in descending `modifiedTime` under
+    `mimeType` and `name contains` terms on both accounts and `'root' in parents` on the member's.
+    Five `fullText contains` queries on the two accounts came back with 16 to 144 of their adjacent
+    pairs out of time order.
+
+    ``objects(o, n)`` reads stored rows ``o`` to ``o + n`` already in that order. A row on the page
+    has at most ``len(folders)`` folders ahead of it, so the page holds no row before row
+    ``offset - len(folders)``, and a folder ahead of every row from there sorts before the page."""
+    start = max(0, offset - len(folders))
+    window = objects(start, offset + limit - start, with_shared=False)
+    newest = [(_DRIVE_ORDER_KEYS["modifiedTime"], True)]
+    return _drive_sort(window + folders, newest)[offset - start : offset - start + limit]
 
 
 def _drive_starred_after_another_key(order_by: str | None) -> bool:
@@ -2757,13 +2823,10 @@ async def drive_files_list(request: Request):
         raise gerr.supports_all_drives_required()
     q = gerr.first_repeat(params, "q") or ""
     query = _drive_q_parse(q)  # 400 on a clause Backlot cannot evaluate; None when there is no q
-    if order and query is not None and any(t.field == "fullText" for t in _drive_q_terms(query)):
+    fulltext = any(t.field == "fullText" for t in _drive_q_terms(query))
+    if order and fulltext:
         raise gerr.sorting_not_supported_fulltext()
     order = _drive_order_keyfns(order)
-    # Real Drive (measured 2026-10-20) lists every file — folders among them — in descending
-    # modifiedTime when no orderBy is given, not in stored-row order.
-    if not order:
-        order = [(_DRIVE_ORDER_KEYS["modifiedTime"], True)]
     # Measured 2026-09-23: a token the API did not issue is 400 `Invalid Value`, where an empty one
     # is the first page.
     offset = decode_cursor_or_none(gerr.first_repeat(params, "pageToken"))
@@ -2802,6 +2865,9 @@ async def drive_files_list(request: Request):
         fetch = lambda o, n: store.list_drive_folder(conn, container, ids, limit=n, offset=o)  # noqa: E731
     elif query is not None:  # filter the visible set by the query, then paginate
         matched = _drive_q_rows(conn, query, container, ids, me, hits)
+        if not fulltext:  # in the order `_drive_newest_first` reads rows in
+            matched.sort(key=lambda r: r["id"])
+            matched.sort(key=_drive_modified, reverse=True)
         total_rows, fetch = len(matched), lambda o, n: matched[o : o + n]  # noqa: E731
     else:
         # exclude_trashed: with no `q` at all there is no query to carry `trashed = false`, and
@@ -2813,7 +2879,13 @@ async def drive_files_list(request: Request):
             conn, "google_drive", visible_ids=ids, exclude_trashed=True
         )
         fetch = lambda o, n: store.list_documents(  # noqa: E731
-            conn, "google_drive", visible_ids=ids, limit=n, offset=o, exclude_trashed=True
+            conn,
+            "google_drive",
+            visible_ids=ids,
+            limit=n,
+            offset=o,
+            exclude_trashed=True,
+            newest_first=True,
         )
 
     # The file ids that came from the row stream, as opposed to a synthesized folder -- see
@@ -2831,10 +2903,25 @@ async def drive_files_list(request: Request):
         return [_drive_file(conn, r, shared=r["id"] in shared, me=me) for r in rows]
 
     total = total_rows + len(folders)
-    files = _drive_sort(objects(0, total_rows, with_shared=False) + folders, order)[
-        offset : offset + limit
-    ]
-    _drive_fill_shared(conn, files, stored)
+    if order:
+        # A sort spans the whole result set, so it needs the whole set: paging in SQL would order
+        # each page in isolation. Materializing the corpus costs more than a paged listing, which
+        # is why it happens only when a sort is actually asked for — and `shared`, the one field
+        # that costs a query per page and that no sort key reads, is deferred to the page below.
+        files = _drive_sort(objects(0, total_rows, with_shared=False) + folders, order)[
+            offset : offset + limit
+        ]
+        _drive_fill_shared(conn, files, stored)
+    elif fulltext:
+        # The index's rank order (`_drive_q_rows`), the folder objects as the tail: real lists a
+        # `fullText` match in an order of its own, not by time (`_drive_newest_first`).
+        files = objects(offset, min(limit, max(0, total_rows - offset)))
+        if len(files) < limit:
+            start = max(0, offset - total_rows)
+            files += folders[start : start + limit - len(files)]
+    else:
+        files = _drive_newest_first(objects, folders, offset, limit)
+        _drive_fill_shared(conn, files, stored)
     body = {
         "kind": "drive#fileList",
         "incompleteSearch": False,

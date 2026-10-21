@@ -266,14 +266,6 @@ def test_gmail_q_parse_and_match():
         ("after:\t2026/10/01", "after: 2026/10/01", {}),
         ("has: attachment", "has: attachment", {}),
         ("newer_than: 7d", "newer_than: 7d", {}),
-        # A `-` before an empty operator passes the negation through to the next operator (#859).
-        ("-label:inbox", "", {"-label": ["inbox"]}),
-        ("-in:inbox", "", {"-in": ["inbox"]}),
-        ("-has:attachment", "", {"-has": ["attachment"]}),
-        ("-subject: label:inbox", "", {"-label": ["inbox"]}),
-        ("-label: label:inbox", "", {"-label": ["inbox"]}),
-        ("-from: label:inbox", "", {"-label": ["inbox"]}),
-        ("-from:label:inbox", "", {"-label": ["inbox"]}),
     ],
 )
 def test_gmail_operators_read_across_whitespace(q, free, ops):
@@ -590,6 +582,39 @@ def test_gmail_an_empty_operator_before_another(q, free, ops):
     assert _parse_gmail_q(q) == (free, ops)
 
 
+@pytest.mark.parametrize(
+    "q, ops",
+    [
+        ("-subject: label:inbox", {"-label": ["inbox"]}),
+        ("-label: label:inbox", {"-label": ["inbox"]}),
+        ("-in: label:inbox", {"-label": ["inbox"]}),
+        ("-from: label:inbox", {"-label": ["inbox"]}),
+        ("-from:label:inbox", {"-label": ["inbox"]}),
+        ("-subject:\tlabel:inbox", {"-label": ["inbox"]}),
+        ("-SUBJECT: LABEL:inbox", {"-label": ["inbox"]}),
+        ('-subject:"" label:inbox', {"-label": ["inbox"]}),
+        ('-label:" " label:inbox', {"-label": ["inbox"]}),
+        ("-cc: has:attachment", {"-has": ["attachment"]}),
+        ("-from: in:anywhere", {"-in": ["anywhere"]}),
+        ("-from: after:2026/10/01", {"before": [_OCT_1]}),
+        ("-to: newer_than:30d", {"older_than": ["30d"]}),
+        ("-newer_than:30d", {"older_than": ["30d"]}),
+        ("-older_than:30d", {"newer_than": ["30d"]}),
+        ("-has:attachment", {"-has": ["attachment"]}),
+        # Kept, so the `-` stays on the empty operator.
+        ("-from: from:bob", {"-from": ["from:bob"]}),
+        ("-subject: subject:plan", {"-subject": ["subject:plan"]}),
+        ("-label:label:inbox", {"-label": ["label:inbox"]}),
+    ],
+)
+def test_gmail_a_minus_before_an_empty_operator_has_or_an_age_operator(q, ops):
+    """Each row is how the comments on `_GMAIL_NEGATED_EMPTY` and `_GMAIL_AGE_NEGATION` read its
+    query."""
+    from backlot.routers.google import _parse_gmail_q
+
+    assert _parse_gmail_q(q) == ("", ops)
+
+
 def test_gmail_empty_operator_over_the_wire(tmp_path):
     """The issue's reproduction: one message in the inbox, one sent."""
     from tests._helpers import client_for, tiny_corpus
@@ -598,7 +623,8 @@ def test_gmail_empty_operator_over_the_wire(tmp_path):
     records = [
         {**base, "doc_id": "plan", "title": "Rollout plan", "content": "attached",
          "author_email": "bob@acme.com", "label_ids": ["INBOX"], "readers": ["ava@acme.com"],
-         "created": "2026-03-01T09:00:00Z"},
+         "created": "2026-03-01T09:00:00Z",
+         "attachments": [{"filename": "plan.pdf", "mime_type": "application/pdf", "content": "x"}]},
         {**base, "doc_id": "lunch", "title": "Lunch", "content": "Friday?",
          "author_email": "mia@acme.com", "label_ids": ["SENT"], "readers": ["ava@acme.com"],
          "created": "2026-03-02T09:00:00Z"},
@@ -620,17 +646,106 @@ def test_gmail_empty_operator_over_the_wire(tmp_path):
         assert ids("subject:plan") == ids("from:bob") == inbox
         assert ids("subject: subject:plan") == ids("subject: from:bob") == set()
         assert ids('subject: label:"inbox"') == ids('subject: label:""') == set()
-        # A `-` before an empty operator passes the negation through to the next operator (#859):
-        # each of these reads as `-label:inbox`, i.e. the SENT message, not the INBOX one.
+        # The readings the comments on `_GMAIL_NEGATED_EMPTY` and `_GMAIL_AGE_NEGATION` measure.
         for q in (
-            "-label:inbox",
             "-subject: label:inbox",
             "-label: label:inbox",
             "-from: label:inbox",
             "-from:label:inbox",
+            '-subject:"" label:inbox',
             "-in:inbox",
+            "-has:attachment",
+            "-cc: has:attachment",
         ):
             assert ids(q) == sent, q
+        assert ids("has:attachment") == inbox
+        assert ids("-from: from:bob") == ids("-label:label:inbox") == inbox | sent
+        assert ids("-from: in:anywhere") == set()
+
+
+@pytest.mark.parametrize(
+    "q, want",
+    [
+        ("-subject:plan", ("", {"-subject": ["plan"]})),
+        ("-subject: plan", ("", {"-subject": ["plan"]})),
+        ("subject:-plan", ("", {"-subject": ["plan"]})),
+        ("-label:inbox", ("", {"-label": ["inbox"]})),
+        ("-label: inbox", ("", {"-label": ["inbox"]})),
+        ("-label:\tinbox", ("", {"-label": ["inbox"]})),
+        ('-label: "inbox"', ("", {"-label": ["inbox"]})),
+        ('-label:"" inbox', ("", {"-label": ["inbox"]})),
+        ("label: -inbox", ("", {"-label": ["inbox"]})),
+        ("-label: -inbox", ("", {"-label": ["inbox"]})),
+        ('label:"" -probe', ("", {"-label": ["probe"]})),
+        ("label:-inbox", ("", {"label": ["-inbox"]})),
+        ("-label:-inbox", ("", {"-label": ["-inbox"]})),
+        ("-in:sent", ("", {"-in": ["sent"]})),
+        ("-in: sent", ("", {"-in": ["sent"]})),
+        ("in: -sent", ("", {"-in": ["sent"]})),
+        ("in:-sent", ("", {"in": ["-sent"]})),
+        ('-subject:""', ("", {})),
+        ('-label:" "', ("", {})),
+        ("subject:-", ("", {})),
+        ("label: -", ("", {})),
+        ("-subject:plan+probe", ("+probe", {"-subject": ["plan"]})),
+        ("subject: -label:inbox", ("", {"-subject": ["label:inbox"]})),
+        ("- from:bob", ("", {"from": ["bob"]})),
+        ("NOT from:bob", ("", {"-from": ["bob"]})),
+        ("NOT bcc:lena", ("", {"-bcc": ["lena"]})),
+        ("NOT label:inbox", ("", {"-label": ["inbox"]})),
+        ("NOT -from:bob", ("", {"from": ["bob"]})),
+        ("NOT -label:inbox", ("", {"label": ["inbox"]})),
+        ("-(from:bob)", ("", {"-from": ["bob"]})),
+        ("-( subject:plan )", ("", {"-subject": ["plan"]})),
+        ("not from:bob", ("not", {"from": ["bob"]})),
+        ("label:-", ("", {"label": ["-"]})),
+        ("mary-jane", ("mary-jane", {})),
+        # Not modelled; the comment on `_GMAIL_NEGATABLE` lists it.
+        ("NOT probe", ("NOT probe", {})),
+    ],
+)
+def test_gmail_negation_of_subject_label_in_and_not(q, want):
+    """The readings the comment on `_GMAIL_NEGATABLE` measures."""
+    from backlot.routers.google import _parse_gmail_q
+
+    assert _parse_gmail_q(q) == want
+
+
+def test_gmail_negation_of_subject_label_in_over_the_wire(tmp_path):
+    """The issue's reproduction: one message in the inbox from bob, one sent by mia."""
+    from tests._helpers import client_for, tiny_corpus
+
+    base = {"source_type": "gmail", "mailbox": "ava", "to": "ava@acme.com"}
+    records = [
+        {**base, "doc_id": "plan", "title": "Rollout plan", "content": "attached",
+         "author_email": "bob@acme.com", "label_ids": ["INBOX"], "readers": ["ava@acme.com"],
+         "created": "2026-03-01T09:00:00Z"},
+        {**base, "doc_id": "lunch", "title": "Lunch", "content": "Friday?",
+         "author_email": "mia@acme.com", "label_ids": ["SENT"], "readers": ["ava@acme.com"],
+         "created": "2026-03-02T09:00:00Z"},
+    ]  # fmt: skip
+    settings = tiny_corpus(tmp_path, records)
+    with client_for(settings, reload=True) as c:
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+
+        def ids(q):
+            r = c.get("/gmail/v1/users/ava@acme.com/messages", headers=h, params={"q": q})
+            return {m["id"] for m in r.json().get("messages", [])}
+
+        every = ids("")
+        for plain, negated in (
+            ("subject:plan", ("-subject:plan", "-subject: plan", "subject:-plan")),
+            ("label:inbox", ("-label:inbox", "-label: inbox", "label: -inbox", "NOT label:inbox")),
+            ("in:sent", ("-in:sent", "-in: sent", "in: -sent", "-(in:sent)")),
+            ("from:bob", ("NOT from:bob", "-(from:bob)")),
+        ):
+            matched = ids(plain)
+            assert matched and matched != every, plain
+            for q in negated:
+                assert ids(q) == every - matched, q
+        assert ids("- from:bob") == ids("NOT -from:bob") == ids("from:bob")
+        assert ids("in:anywhere") == every
+        assert ids("label:-inbox") == ids("in:-sent") == ids("-in:anywhere") == set()
 
 
 def test_github_search_q_parse():

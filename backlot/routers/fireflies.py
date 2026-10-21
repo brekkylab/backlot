@@ -108,6 +108,8 @@ async def graphql(request: Request):
     payload = await run_in_threadpool(_read, await request.body())
     if isinstance(payload, JSONResponse):
         return payload
+    # The telemetry middleware names the call by this document (backlot.telemetry.naming).
+    request.state.graphql_payload = payload
     token = auth.fireflies_bearer_token(request)
     if token is None:
         return _auth_failed(_NO_PREFIX)

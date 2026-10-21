@@ -58,7 +58,7 @@ _ICONV_UTF = frozenset({"utf8", "utf16le", "utf16be", "utf16", "utf32le", "utf32
 _ICONV_UTF7 = frozenset({"utf7", "utf7imap"})
 # The `content-type` package's `PARAM_REGEXP` and `QESC_REGEXP`, as version 1.0.5 has them.
 _TOKEN = r"[!#$%&'*+.^_`|~0-9A-Za-z-]+"
-_PARAMETER = re.compile(
+PARAMETER = re.compile(
     rf'; *({_TOKEN}) *= *("(?:[\x0b\x20\x21\x23-\x5b\x5d-\x7e\x80-\xff]|\\[\x0b\x20-\xff])*"|{_TOKEN}) *'
 )
 _QUOTED_PAIR = re.compile(r"\\([\x0b\x20-\xff])")
@@ -74,11 +74,18 @@ class Unread(Exception):
         self.status, self.message, self.length = status, message, length
 
 
-def body_parser_text(raw: bytes, content_type: str | None, content_encoding: str | None) -> str:
+def body_parser_text(
+    raw: bytes,
+    content_type: str | None,
+    content_encoding: str | None,
+    *,
+    limit: int = LINEAR_LIMIT,
+    brotli: bool = True,
+) -> str:
     """The text Linear's ``body-parser`` reads from ``raw``, or :class:`Unread`: read off
     ``lib/read.js`` in body-parser 2.2.2, in its order of checks. A charset that does not start
     ``utf-`` is a 415, then an encoding other than ``identity``, ``gzip``, ``deflate`` and ``br``,
-    then an uncompressed body past the limit the 413, which ``raw-body`` answers from
+    then an uncompressed body past ``limit`` the 413, which ``raw-body`` answers from
     ``Content-Length`` before it reads, then a ``utf-`` charset iconv-lite does not know the 415;
     then :func:`_inflate` reads a compressed body, and the bytes are decoded in the charset's byte
     order (:func:`_byte_order`).
@@ -90,20 +97,21 @@ def body_parser_text(raw: bytes, content_type: str | None, content_encoding: str
     and ``utf-16le``, ``utf-16-le``, ``utf-16be``, ``utf-16`` and ``utf-32`` with and without a
     byte-order mark, ``utf-32le``, ``GZIP``, ``deflate`` and an empty encoding were served. It
     decompressed a ``br`` body, which body-parser 1.x refuses with the encoding's 415, so it runs a
-    2.x; such a body is read here as it arrives, and a ``utf-7`` or ``utf-7-imap`` one as UTF-8."""
+    2.x; such a body is read here as it arrives, and a ``utf-7`` or ``utf-7-imap`` one as UTF-8.
+    Without ``brotli``, ``br`` is the encoding's 415 as on a 1.x."""
     charset = _charset(content_type)
     if not charset.startswith("utf-"):
         raise Unread(415, f'unsupported charset "{charset.upper()}"')
     encoding = (content_encoding or "identity").lower()
-    if encoding not in ("identity", "gzip", "deflate", "br"):
+    if encoding not in ("identity", "gzip", "deflate", *(("br",) if brotli else ())):
         raise Unread(415, f'unsupported content encoding "{encoding}"')
-    if encoding == "identity" and len(raw) > LINEAR_LIMIT:
+    if encoding == "identity" and len(raw) > limit:
         raise Unread(413, "request entity too large", len(raw))
     name = re.sub(r":\d{4}$|[^0-9a-z]", "", charset)
     if name not in _ICONV_UTF | _ICONV_UTF7:
         raise Unread(415, f'unsupported charset "{charset.upper()}"')
     if encoding in ("gzip", "deflate"):
-        raw = _inflate(raw, gzip=encoding == "gzip")
+        raw = _inflate(raw, gzip=encoding == "gzip", limit=limit)
     if name in ("utf8", *_ICONV_UTF7):
         return decode(raw)
     width = 2 if name.startswith("utf16") else 4
@@ -119,6 +127,27 @@ def body_parser_text(raw: bytes, content_type: str | None, content_encoding: str
     return text[1:] if text.startswith("\ufeff") else text
 
 
+def joined_header(values: list[str]) -> str:
+    """A header as :func:`body_parser_text` reads it behind Cloudflare, from the header sent once or
+    more: each value without the spaces and tabs at its ends, which uvicorn keeps at the end, an
+    empty one taken over by the value after it and any other joined to the next after ``", "``,
+    and the whole without spaces and tabs at its end. Notion read ``Content-Type`` the same way on
+    2026-10-21: an empty copy, then ``application/json``, was read as JSON, and the two the other
+    way round were not.
+
+    api.linear.app answered each of 123 requests on 2026-10-20 (UTC), with one to four of the
+    header, each empty, a space, a tab, a comma, ``gzip`` with or without spaces, tabs and commas
+    beside it, ``gzip,gzip``, ``GZIP``, ``bogus`` or ``deflate``, as :func:`body_parser_text` reads
+    the value this gives. The join is Cloudflare's, in front of Linear and of Notion: Node 21 to 25
+    on their own join the values with ``", "`` whatever they hold, so an empty value then ``gzip``
+    is ``", gzip"`` and its 415, where Notion inflated that request as Linear did."""
+    joined = ""
+    for value in values:
+        value = value.strip(" \t")
+        joined = f"{joined}, {value}" if joined else value
+    return joined.rstrip(" \t")
+
+
 def _charset(content_type: str | None) -> str:
     """``getCharset``: the last ``charset`` parameter of ``content_type`` in lower case, or
     ``utf-8`` for none. api.linear.app refused ``charset=utf-8; charset=latin1`` with the
@@ -126,7 +155,7 @@ def _charset(content_type: str | None) -> str:
     package cannot parse, which ``body-parser`` does not read at all, is read here for what
     parameters it holds."""
     charset = ""
-    for name, value in _PARAMETER.findall(content_type or ""):
+    for name, value in PARAMETER.findall(content_type or ""):
         if name.lower() == "charset":
             charset = _QUOTED_PAIR.sub(r"\1", value[1:-1]) if value[:1] == '"' else value
     return charset.lower() or "utf-8"
@@ -153,20 +182,20 @@ def _byte_order(raw: bytes, width: int) -> str:
     return "be" if score > 0 else "le"
 
 
-def _inflate(raw: bytes, gzip: bool) -> bytes:
+def _inflate(raw: bytes, gzip: bool, limit: int = LINEAR_LIMIT) -> bytes:
     """``raw`` through Node's ``createGunzip`` or ``createInflate``, which ``body-parser`` pipes a
-    body through, and :class:`Unread` where that stream fails or yields more than
-    :data:`LINEAR_LIMIT` bytes. Node gunzips one member after another while the bytes left over do
-    not start with a zero byte, and leaves what follows a ``deflate`` stream unread. The messages
+    body through, and :class:`Unread` where that stream fails or yields more than ``limit``
+    bytes. Node gunzips one member after another while the bytes left over do not start with a
+    zero byte, and leaves what follows a ``deflate`` stream unread. The messages
     are zlib's, and ``unexpected end of file`` for a stream cut short."""
     out = bytearray()
     while True:
         inflater = zlib.decompressobj(31 if gzip else 15)
         try:
-            out += inflater.decompress(raw, LINEAR_LIMIT + 1 - len(out))
+            out += inflater.decompress(raw, limit + 1 - len(out))
         except zlib.error as exc:
             raise Unread(400, str(exc).rpartition(": ")[2]) from None
-        if len(out) > LINEAR_LIMIT:
+        if len(out) > limit:
             raise Unread(413, "request entity too large")
         if not inflater.eof:
             raise Unread(400, "unexpected end of file")

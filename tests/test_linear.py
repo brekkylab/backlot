@@ -3794,15 +3794,15 @@ def _internal_server_error(path: list, column: int) -> dict:
 def test_for_current_user_and_a_null_variable_at_a_non_null_argument_answer_as_linear_does(
     fclient, query, variables, expected
 ):
-    """Each row is api.linear.app's answer to the same document and variables on 2026-10-21
-    (UTC)."""
+    """Each row is api.linear.app's answer to the same document and variables, measured when
+    ``_field_error`` says."""
     r = post(fclient, query, variables)
     assert (r.status_code, r.json()) == (200, expected)
 
 
 def test_supports_agent_sessions_declares_linears_default(fclient):
-    """Introspection rather than an answer, which is ``false`` under either value: api.linear.app
-    declared ``forCurrentUser: Boolean! = false`` on 2026-10-21 (UTC)."""
+    """Introspection rather than an answer, which is ``false`` under either value; the comment in
+    ``_user`` has the vendor's declaration."""
     fields = post(
         fclient,
         '{ __type(name: "User") { fields { name args { name defaultValue'

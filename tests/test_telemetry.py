@@ -665,7 +665,7 @@ def test_each_message_slug_is_one_backlot_sends(client, method, path, kwargs, ex
         ),
     ],
 )
-def test_each_graphql_message_slug_is_one_backlot_sends(client, payload, headers, expected):
+def test_each_graphql_error_code_is_one_backlot_sends(client, payload, headers, expected):
     calls = _calls(lambda: client.post("/linear/graphql", headers=headers, json=payload))
     assert [c.get("backlot.error_code") for c in calls] == [expected], calls
 
@@ -675,7 +675,7 @@ def test_every_message_slug_has_a_request_that_sends_it():
         row[-1]
         for t in (
             test_each_message_slug_is_one_backlot_sends,
-            test_each_graphql_message_slug_is_one_backlot_sends,
+            test_each_graphql_error_code_is_one_backlot_sends,
         )
         for row in t.pytestmark[0].args[1]
     } | {"rate_limited", "unsupported_filter"}

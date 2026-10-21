@@ -400,10 +400,10 @@ def _user(email: str | None, display: str | None, info) -> dict | None:
         "app": False,
         "isMentionable": True,
         "isMe": bool(caller and caller == email),
-        # `false` whatever `forCurrentUser` asks: Linear describes it as "Whether to require an
-        # active webhook for sessions started by the current user", a condition added to the
-        # answer. api.linear.app answered `false` for each of a workspace's three users with it
-        # absent, `false` and `true` on 2026-10-21 (UTC).
+        # `false` with `forCurrentUser` absent, `false` or `true`. api.linear.app declared it
+        # `Boolean! = false`, "Whether to require an active webhook for sessions started by the
+        # current user", a condition added to the answer, and answered `false` for each of a
+        # workspace's three users with it absent, `false` and `true` on 2026-10-21 (UTC).
         "supportsAgentSessions": False,
         "canAccessAnyPublicTeam": True,
         "createdIssueCount": 0,

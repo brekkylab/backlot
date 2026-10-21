@@ -1179,6 +1179,32 @@ def test_confluence_cql_search_refuses_a_request_with_no_first_cql(
         assert r.json() == body
 
 
+def test_confluence_cql_search_reads_its_content_type_as_jaxrs_does(client, admin_h):
+    """The search reads the request's `Content-Type` as Confluence's other JAX-RS GETs do
+    (``backlot.routers.atlassian._CONFLUENCE_JAXRS_GETS`` records the measurement): a type JSON
+    is not compatible with is the empty 415 and a header Jersey cannot read is Tomcat's 400 page,
+    each ahead of the caller check and of the `cql` refusal, with no credential and with one,
+    where a type it reads reaches the search as before."""
+    url = "/atlassian/wiki/rest/api/search?cql=type%3Dpage"
+    for credential in ({}, admin_h):
+        r = client.get(url, headers={**credential, "Content-Type": "text/plain"})
+        assert r.status_code == 415 and r.content == b"", r.text
+        assert r.headers.get("content-type") is None
+        r = client.get(url, headers={**credential, "Content-Type": "foo"})
+        assert r.status_code == 400, r.text
+        assert r.content == errors_atlassian.tomcat_page(400).encode()
+        assert r.headers["content-type"] == errors_atlassian.TOMCAT_MEDIA_TYPE
+    # ahead of the operation's own 400 for a `cql` that names nothing, and on a `HEAD`
+    r = client.get(
+        "/atlassian/wiki/rest/api/search", headers={**admin_h, "Content-Type": "text/plain"}
+    )
+    assert r.status_code == 415, r.text
+    r = client.head(url, headers={"Content-Type": "text/plain"})
+    assert r.status_code == 415, r.text
+    r = client.get(url, headers={**admin_h, "Content-Type": "application/json"})
+    assert r.status_code == 200, r.text
+
+
 def test_confluence_cql_search_with_no_tilde_selects_by_its_clauses(tmp_path):
     """Pins what :func:`backlot.routers.atlassian.confluence_cql_search` says a CQL with no `~`
     clause answers, for the admin and for a caller one page is hidden from, and which value of a
@@ -6741,6 +6767,51 @@ _JSON_TYPE = "application/json"
                 "atlassian-connect/1/app/module/dynamic",
             )
         ),
+        # the same GETs reading a `Content-Type`, as ``_CONFLUENCE_JAXRS_GETS`` records: a type
+        # JSON is not compatible with is the empty 415 ahead of the caller check, on each but
+        # `settings/lookandfeel`, which takes any type and reaches it, and a header Jersey
+        # cannot read is Tomcat's 400 page on either kind
+        *(
+            ("GET", f"/wiki/rest/{path}", None, "text/plain", 415, b"")
+            for path in (
+                "api/audit",
+                "api/audit/export",
+                "api/audit/retention",
+                "api/audit/since",
+                "api/content-states",
+                "api/longtask",
+                "api/longtask/1",
+                "api/relation/1/from/1/1/to/1",
+                "api/relation/1/from/1/1/to/1/1",
+                "api/relation/1/to/1/1/from/1",
+                "api/search/user",
+                "api/template/blueprint",
+                "api/template/page",
+                "api/template/1",
+                "api/user/watch/content/1",
+                "api/user/watch/label/1",
+                "api/user/watch/space/1",
+                "atlassian-connect/1/app/module/dynamic",
+            )
+        ),
+        ("GET", "/wiki/rest/api/settings/lookandfeel", None, "text/plain", 403)
+        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+        ("GET", "/wiki/rest/api/audit", None, "application/*+json", 415, b""),
+        ("GET", "/wiki/rest/api/audit", None, "application/json;charset=_x", 403)
+        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+        ("GET", "/wiki/rest/api/audit", None, "foo", 400)
+        + (errors_atlassian.tomcat_page(400).encode(),),
+        ("GET", "/wiki/rest/api/audit", None, "application/json;x=", 400)
+        + (errors_atlassian.tomcat_page(400).encode(),),
+        ("GET", "/wiki/rest/api/settings/lookandfeel", None, "foo", 400)
+        + (errors_atlassian.tomcat_page(400).encode(),),
+        # a path no service serves: the header Jersey cannot read is the 400 page ahead of
+        # its 404, and a type it can read leaves that 404 alone
+        ("GET", "/wiki/rest/api/nosuch", None, "foo", 400)
+        + (errors_atlassian.tomcat_page(400).encode(),),
+        ("GET", "/wiki/rest/api/nosuch", None, "", 400)
+        + (errors_atlassian.tomcat_page(400).encode(),),
+        ("GET", "/wiki/rest/api/nosuch", None, "text/plain", 404, None),
         *(
             (method, path, None, None, 403, errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY)
             for method, path in (

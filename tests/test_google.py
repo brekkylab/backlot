@@ -6965,19 +6965,37 @@ def test_drive_q_refuses_a_clause_it_cannot_parse(tmp_path):
             "modifiedTime contains 'x'",
             "modifiedTime < 'yesterday'",  # the reference wants RFC 3339 here
             "'x' in bogus",
-            "name contains 'a' or",
             "(name contains 'a'",
             "name contains 'a' name contains 'b'",
             # Past the nesting bound: the parser is recursive, and these exhausted the frame
-            # limit into a 500 before the bound was there.
-            "(" * 64 + "name contains 'a'" + ")" * 64,
-            "not " * 64 + "name contains 'a'",
+            # limit into a 500 before the bound was there. Real Drive serves up to 64 levels.
+            "(" * 200 + "name contains 'a'" + ")" * 200,
+            "not " * 200 + "name contains 'a'",
         ):
             r = client.get("/drive/v3/files", headers=h, params={"q": q})
             assert r.status_code == 400, f"{q}: {r.text}"
             err = r.json()["error"]
             assert err["message"] == "Invalid Value", q
             assert (err["errors"][0]["reason"], err["errors"][0]["location"]) == ("invalid", "q")
+
+
+def test_drive_q_accepts_shapes_real_serves(tmp_path):
+    """#897: shapes real Drive accepts that Backlot used to 400."""
+    from tests._helpers import corpus_client
+
+    with corpus_client(tmp_path, _Q_RECORDS) as (client, settings):
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        for q in (
+            'name = "hello"',  # double-quoted value
+            "trashed < true",  # boolean comparison
+            "trashed != false",
+            "sharedWithMe >= true",
+            "()",  # empty group matches all
+            "name contains 'a' or",  # trailing or
+            'name = "a" or name = "b"',  # double-quoted on both sides
+        ):
+            r = client.get("/drive/v3/files", headers=h, params={"q": q})
+            assert r.status_code != 400, f"{q}: {r.text}"
 
 
 def test_drive_q_refuses_a_documented_term_it_holds_no_fact_for(tmp_path):

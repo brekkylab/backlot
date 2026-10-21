@@ -1766,8 +1766,8 @@ _DRIVE_Q_OPERATORS: dict[str, frozenset[str]] = {
     "mimeType": frozenset({"contains", "=", "!="}),
     "modifiedTime": frozenset({"<=", "<", "=", "!=", ">", ">="}),
     "createdTime": frozenset({"<=", "<", "=", "!=", ">", ">="}),
-    "trashed": frozenset({"=", "!="}),
-    "sharedWithMe": frozenset({"=", "!="}),
+    "trashed": frozenset({"=", "!=", "<", "<=", ">", ">="}),
+    "sharedWithMe": frozenset({"=", "!=", "<", "<=", ">", ">="}),
 }
 _DRIVE_Q_COLLECTIONS = frozenset({"parents", "owners"})
 _DRIVE_Q_BOOLEAN = frozenset({"trashed", "sharedWithMe"})
@@ -1779,13 +1779,14 @@ _DRIVE_Q_UNMODELLED = frozenset(
 # spelling, reaches `term()` with the field read — the refusal then names `properties` instead of
 # the bare `Invalid Value` an unlexable character gets.
 _DRIVE_Q_TOKEN = re.compile(
-    r"\s*(?:(?P<paren>[()])|(?P<brace>[{}])|(?P<op>!=|<=|>=|=|<|>)|'(?P<str>(?:[^'\\]|\\.)*)'"
+    r"\s*(?:(?P<paren>[()])|(?P<brace>[{}])|(?P<op>!=|<=|>=|=|<|>)"
+    r"|(?P<str>'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\")"
     r"|(?P<word>[A-Za-z_][A-Za-z0-9_]*))"
 )
 # Nesting past this is refused. The parser is recursive, so an unbounded query answered 500 where
 # this section's contract is a 400: 320 parentheses, or 960 `not`s, exhausted the interpreter's
 # frame limit. Real Drive's own limit is unmeasured; no client writes a query 32 levels deep.
-_DRIVE_Q_MAX_DEPTH = 32
+_DRIVE_Q_MAX_DEPTH = 128
 
 
 class _QTerm(NamedTuple):
@@ -1806,6 +1807,13 @@ class _QOr(NamedTuple):
     parts: tuple
 
 
+class _QAll:
+    """An empty group `()` or a trailing `or` — matches every file, as real does."""
+
+    def __iter__(self):
+        return iter(())
+
+
 def _drive_q_refused(message: str | None = None) -> gerr.GoogleError:
     return gerr.invalid_value("q", message)
 
@@ -1823,7 +1831,9 @@ def _drive_q_tokens(q: str) -> list[tuple[str, str]]:
         pos = m.end()
         kind = m.lastgroup or ""
         text = m.group(kind)
-        out.append((kind, re.sub(r"\\(.)", r"\1", text) if kind == "str" else text))
+        if kind == "str":
+            text = re.sub(r"\\(.)", r"\1", text[1:-1])  # strip surrounding quotes
+        out.append((kind, text))
     return out
 
 
@@ -1852,32 +1862,45 @@ def _drive_q_parse(q: str):
         return kind == "word" and (tok or "").lower() == text
 
     def disjunction():
-        parts = [conjunction()]
+        parts = [c for c in (conjunction(),) if c is not None]
         while is_word("or"):
             take()
-            parts.append(conjunction())
+            nxt = conjunction()
+            if nxt is not None:
+                parts.append(nxt)
         return parts[0] if len(parts) == 1 else _QOr(tuple(parts))
 
     def conjunction():
-        parts = [unary()]
+        first = unary()
+        if first is None:
+            return None
+        parts = [first]
         while is_word("and"):
             take()
-            parts.append(unary())
+            nxt = unary()
+            if nxt is not None:
+                parts.append(nxt)
         return parts[0] if len(parts) == 1 else _QAnd(tuple(parts))
 
     depth = 0
 
     def unary():
         nonlocal depth
+        if peek() == (None, None):
+            return None
         depth += 1
         if depth > _DRIVE_Q_MAX_DEPTH:
             raise _drive_q_refused()
         try:
             if is_word("not"):
                 take()
-                return _QNot(unary())
+                inner = unary()
+                return _QAll() if inner is None else _QNot(inner)
             if peek() == ("paren", "("):
                 take()
+                if peek() == ("paren", ")"):
+                    take()
+                    return _QAll()
                 node = disjunction()
                 if take() != ("paren", ")"):
                     raise _drive_q_refused()
@@ -2015,15 +2038,29 @@ def _drive_q_eval(node, f: dict, me: str | None, fulltext: dict[str, set[str]]) 
         return all(_drive_q_eval(p, f, me, fulltext) for p in node.parts)
     if isinstance(node, _QOr):
         return any(_drive_q_eval(p, f, me, fulltext) for p in node.parts)
+    if isinstance(node, _QAll):
+        return True
     field, op, value = node
     if field == "trashed":
-        return ((value == "true") == f["trashed"]) == (op == "=")
-    if field == "sharedWithMe":
+        actual = 1 if f["trashed"] else 0
+        want = 1 if value == "true" else 0
+    elif field == "sharedWithMe":
         # "Shared with me" = visible to the caller and not owned by them. Items shared with you
         # carry no My Drive parent on real Drive, so this clause is the only way to enumerate
         # that section.
-        shared = not _drive_owned_by(f["owner_email"], me)
-        return ((value == "true") == shared) == (op == "=")
+        actual = 0 if _drive_owned_by(f["owner_email"], me) else 1
+        want = 1 if value == "true" else 0
+    else:
+        actual = want = None
+    if field in ("trashed", "sharedWithMe"):
+        return {
+            "=": actual == want,
+            "!=": actual != want,
+            "<": actual < want,
+            "<=": actual <= want,
+            ">": actual > want,
+            ">=": actual >= want,
+        }[op]
     if field == "name":
         # Two comparisons, both measured 2026-09-14 against real Drive and each the one
         # `store.list_drive_by_name` builds its candidate set with, so SQL and this agree. `=` and

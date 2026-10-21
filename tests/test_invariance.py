@@ -129,6 +129,15 @@ def test_compare_flags_a_difference_and_only_one_two_base_runs_agree_on(
 @pytest.mark.parametrize(
     "written", ["backlot/x.py", "backlot\\x.py"], ids=["written-slash", "written-backslash"]
 )
+def test_coverage_names_a_recordings_files_with_slashes(tmp_path, written):
+    files = {written: {"executed_lines": [1]}}
+    (tmp_path / "coverage.json").write_text(json.dumps({"files": files}), encoding="utf-8")
+    assert invariance._coverage(tmp_path) == {"backlot/x.py": ({1}, set())}
+
+
+@pytest.mark.parametrize(
+    "written", ["backlot/x.py", "backlot\\x.py"], ids=["written-slash", "written-backslash"]
+)
 @pytest.mark.parametrize(
     ("path", "listed"),
     [
@@ -146,7 +155,6 @@ def test_a_recordings_files_are_named_with_slashes_and_found_by_either_separator
 ):
     files = {written: {"executed_lines": [1], "missing_lines": [2]}}
     (tmp_path / "coverage.json").write_text(json.dumps({"files": files}), encoding="utf-8")
-    assert list(invariance._coverage(tmp_path)) == ["backlot/x.py"]
     assert invariance._uncovered(tmp_path, [path]) == 0
     listing = "backlot/x.py: 1 lines no test executes: [2]\n"
     assert capsys.readouterr().out == (listing if listed else "")

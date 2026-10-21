@@ -794,16 +794,31 @@ _GMAIL_NEGATED_ADDRESS = re.compile(r"(?<!\S)-+(from|to|cc|bcc):\s*", re.IGNOREC
 # `from:me not`; `-subject:<word>+probe`, for a word in no subject, those of `probe`;
 # `label:-inbox`, `in:-sent` and `-in:anywhere` nothing; and `-label:-inbox`, `-subject:""`,
 # `-label:" "`, `subject:-`, `subject: -`, `label: -` and `subject: -label:inbox` every message.
-# Not modelled: `subject:-<word>+probe` answered every message, and `-has:attachment`,
-# `-newer_than:30d` and `-older_than:30d` (each kept here as a search term) the messages the
-# operator alone does not, `NOT <word>` and `-(<word>)` those `<word>` does not, and
-# `-(from:me to:me)` those `from:me to:me` does not.
+# Not modelled: `subject:-<word>+probe` answered every message, `NOT <word>` and `-(<word>)` the
+# messages `<word>` does not, and `-(from:me to:me)` those `from:me to:me` does not.
 _GMAIL_NEGATABLE = {"subject", "label", "in"}
 _GMAIL_NOT = re.compile(r"(?<!\S)NOT\s+(-*)(?=(?i:from|to|cc|bcc|subject|label|in):)")
 _GMAIL_NOT_GROUP = re.compile(
     r"(?<!\S)-\(\s*((?:from|to|cc|bcc|subject|label|in):[^()\s]+)\s*\)", re.IGNORECASE
 )
 _GMAIL_NEGATION = {"after": "before", "before": "after", "newer": "older", "older": "newer"}
+# A `-` in front of an empty operator `_GMAIL_OP` drops is moved onto the operator after it.
+# Measured on a Workspace mailbox, comparing `messages.list` id sets: on 2026-10-19,
+# `-subject: label:inbox`, `-label: label:inbox`, `-from: label:inbox` and `-from:label:inbox`
+# answered the ids of `-label:inbox`; on 2026-10-20, so did `-in: label:inbox`, `-to: label:inbox`,
+# `-subject:label:inbox`, `-subject:<tab>label:inbox`, `-SUBJECT: LABEL:inbox`,
+# `-subject:"" label:inbox`, `-from:"" label:inbox` and `-label:" " label:inbox`, and
+# `-subject: in:sent`, `-cc: has:attachment`, `-from: in:anywhere`, `-from: after:2026/10/01` and
+# `-to: newer_than:30d` answered the ids of the operator after the empty one with a `-` in front.
+# Where the empty operator is kept the `-` stays on it: `-from: from:me`, `-subject: subject:probe`,
+# `-label:label:inbox` and `-in:label:inbox` answered every message, and `-has: label:inbox`,
+# `-after: label:inbox` and `-newer: label:inbox` the ids of `label:inbox -has`,
+# `label:inbox -after` and `label:inbox -newer`.
+_GMAIL_NEGATED_EMPTY = re.compile(rf"(?<!\S)-+{_GMAIL_EMPTY_BEFORE}", re.IGNORECASE)
+# A `-` flips an age operator and negates `has:`: on 2026-10-20 `-newer_than:30d` answered the ids
+# of `older_than:30d`, `-older_than:30d` those of `newer_than:30d`, and `-has:attachment` the
+# messages `has:attachment` does not.
+_GMAIL_AGE_NEGATION = {"newer_than": "older_than", "older_than": "newer_than"}
 
 
 def _gmail_q_date(v: str) -> str | None:
@@ -869,7 +884,12 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
                 elif m.group(0).startswith("-"):
                     stored = f"-{key}"
             elif m.group(0).startswith("-"):
-                return m.group(0)
+                if key in _GMAIL_AGE_NEGATION:
+                    stored = _GMAIL_AGE_NEGATION[key]
+                elif key == "has":
+                    stored = "-has"
+                else:
+                    return m.group(0)
             if key in _GMAIL_PLUS_ENDS and not value.startswith('"'):
                 value = value.lstrip("+")
                 if re.search(r"[^@]@", value):
@@ -892,6 +912,7 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
 
     q = _GMAIL_NOT.sub(lambda m: "" if m.group(1) else "-", q)
     q = _GMAIL_NOT_GROUP.sub(lambda m: f"-{m.group(1)}", q)
+    q = _GMAIL_NEGATED_EMPTY.sub("-", q)
     q = _GMAIL_NEGATED_DATE.sub(_gmail_negated_date, q)
     q = _GMAIL_NEGATED_ADDRESS.sub(lambda m: f"{m.group(1)}:-", q)
     free = re.sub(r"\s+", " ", _GMAIL_OP.sub(_take, q)).strip()
@@ -1062,6 +1083,10 @@ def _gmail_op_match(row, ops: dict) -> bool:
     if any(v.lower() == "anywhere" for v in ops.get("-in", [])):
         return False
     if any(v.lower() == "attachment" for v in ops.get("has", [])) and not store.jcol(
+        row, "attachments"
+    ):
+        return False
+    if any(v.lower() == "attachment" for v in ops.get("-has", [])) and store.jcol(
         row, "attachments"
     ):
         return False

@@ -582,6 +582,39 @@ def test_gmail_an_empty_operator_before_another(q, free, ops):
     assert _parse_gmail_q(q) == (free, ops)
 
 
+@pytest.mark.parametrize(
+    "q, ops",
+    [
+        ("-subject: label:inbox", {"-label": ["inbox"]}),
+        ("-label: label:inbox", {"-label": ["inbox"]}),
+        ("-in: label:inbox", {"-label": ["inbox"]}),
+        ("-from: label:inbox", {"-label": ["inbox"]}),
+        ("-from:label:inbox", {"-label": ["inbox"]}),
+        ("-subject:\tlabel:inbox", {"-label": ["inbox"]}),
+        ("-SUBJECT: LABEL:inbox", {"-label": ["inbox"]}),
+        ('-subject:"" label:inbox', {"-label": ["inbox"]}),
+        ('-label:" " label:inbox', {"-label": ["inbox"]}),
+        ("-cc: has:attachment", {"-has": ["attachment"]}),
+        ("-from: in:anywhere", {"-in": ["anywhere"]}),
+        ("-from: after:2026/10/01", {"before": [_OCT_1]}),
+        ("-to: newer_than:30d", {"older_than": ["30d"]}),
+        ("-newer_than:30d", {"older_than": ["30d"]}),
+        ("-older_than:30d", {"newer_than": ["30d"]}),
+        ("-has:attachment", {"-has": ["attachment"]}),
+        # Kept, so the `-` stays on the empty operator.
+        ("-from: from:bob", {"-from": ["from:bob"]}),
+        ("-subject: subject:plan", {"-subject": ["subject:plan"]}),
+        ("-label:label:inbox", {"-label": ["label:inbox"]}),
+    ],
+)
+def test_gmail_a_minus_before_an_empty_operator_has_or_an_age_operator(q, ops):
+    """Each row is how the comments on `_GMAIL_NEGATED_EMPTY` and `_GMAIL_AGE_NEGATION` read its
+    query."""
+    from backlot.routers.google import _parse_gmail_q
+
+    assert _parse_gmail_q(q) == ("", ops)
+
+
 def test_gmail_empty_operator_over_the_wire(tmp_path):
     """The issue's reproduction: one message in the inbox, one sent."""
     from tests._helpers import client_for, tiny_corpus
@@ -590,7 +623,8 @@ def test_gmail_empty_operator_over_the_wire(tmp_path):
     records = [
         {**base, "doc_id": "plan", "title": "Rollout plan", "content": "attached",
          "author_email": "bob@acme.com", "label_ids": ["INBOX"], "readers": ["ava@acme.com"],
-         "created": "2026-03-01T09:00:00Z"},
+         "created": "2026-03-01T09:00:00Z",
+         "attachments": [{"filename": "plan.pdf", "mime_type": "application/pdf", "content": "x"}]},
         {**base, "doc_id": "lunch", "title": "Lunch", "content": "Friday?",
          "author_email": "mia@acme.com", "label_ids": ["SENT"], "readers": ["ava@acme.com"],
          "created": "2026-03-02T09:00:00Z"},
@@ -612,6 +646,21 @@ def test_gmail_empty_operator_over_the_wire(tmp_path):
         assert ids("subject:plan") == ids("from:bob") == inbox
         assert ids("subject: subject:plan") == ids("subject: from:bob") == set()
         assert ids('subject: label:"inbox"') == ids('subject: label:""') == set()
+        # The readings the comments on `_GMAIL_NEGATED_EMPTY` and `_GMAIL_AGE_NEGATION` measure.
+        for q in (
+            "-subject: label:inbox",
+            "-label: label:inbox",
+            "-from: label:inbox",
+            "-from:label:inbox",
+            '-subject:"" label:inbox',
+            "-in:inbox",
+            "-has:attachment",
+            "-cc: has:attachment",
+        ):
+            assert ids(q) == sent, q
+        assert ids("has:attachment") == inbox
+        assert ids("-from: from:bob") == ids("-label:label:inbox") == inbox | sent
+        assert ids("-from: in:anywhere") == set()
 
 
 @pytest.mark.parametrize(
@@ -651,9 +700,8 @@ def test_gmail_empty_operator_over_the_wire(tmp_path):
         ("not from:bob", ("not", {"from": ["bob"]})),
         ("label:-", ("", {"label": ["-"]})),
         ("mary-jane", ("mary-jane", {})),
-        # Not modelled; the comment on `_GMAIL_NEGATABLE` lists these.
+        # Not modelled; the comment on `_GMAIL_NEGATABLE` lists it.
         ("NOT probe", ("NOT probe", {})),
-        ("-has:attachment", ("-has:attachment", {})),
     ],
 )
 def test_gmail_negation_of_subject_label_in_and_not(q, want):

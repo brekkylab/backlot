@@ -676,7 +676,7 @@ _GMAIL_EMPTY_BEFORE = (
     r'(?=(?:label|in|has|newer_than|older_than):[^\s"]|(?:after|before|newer|older): *[^\s"-])'
 )
 _GMAIL_OP = re.compile(
-    rf'(?:{_GMAIL_EMPTY_BEFORE})?(-+)?(\w+):(?:(?:{_GMAIL_SPACED})(?:\s|"\s*")*|(?:{_GMAIL_DATED}) *)?'
+    rf'(?:{_GMAIL_EMPTY_BEFORE})?(\w+):(?:(?:{_GMAIL_SPACED})(?:\s|"\s*")*|(?:{_GMAIL_DATED}) *)?'
     r'("[^"]*"|\S*)',
     re.IGNORECASE,
 )
@@ -780,30 +780,6 @@ _GMAIL_NEGATED_DATE = re.compile(r"(?<!\S)-(after|before|newer|older): *(\S+)", 
 _GMAIL_NEGATED_ADDRESS = re.compile(r"(?<!\S)-+(from|to|cc|bcc):\s*", re.IGNORECASE)
 _GMAIL_NEGATION = {"after": "before", "before": "after", "newer": "older", "older": "newer"}
 
-# A `-` before an empty operator — one whose value is the start of another operator, not a value —
-# passes the negation through to that next operator. Measured on a Workspace mailbox of 625
-# messages on 2026-10-19, comparing `messages.list` id sets: `-subject: label:inbox`,
-# `-label: label:inbox`, `-from: label:inbox` and `-from:label:inbox` each answered the ids of
-# `-label:inbox`, not the ids of the empty operator beside them.
-_GMAIL_NEGATED_EMPTY = re.compile(
-    r"(?<!\S)-+(?:subject|from|to|cc|bcc|label|in|has|after|before|newer|older):\s*"
-    r"(?=(?:from|to|cc|bcc|subject|label|in|has|after|before|newer|older|newer_than|older_than):)",
-    re.IGNORECASE,
-)
-
-# `NOT` and `-(...)` around an operator: real reads `NOT has:attachment` as `-has:attachment`,
-# `NOT after:2026/10/01` as `before:2026/10/01` (the date flip _GMAIL_NEGATED_DATE does),
-# `-(from:me to:me)` as the negation of the group, and `NOT NOT from:me` as `from:me`.
-# Measured 2026-10-20/21 on a 637-639 message Workspace mailbox.
-_GMAIL_NOT_OPERATOR = re.compile(
-    r"(?<!\w)NOT\s+(?=(?:has|after|before|newer|older|newer_than|older_than|subject|label|in|from|to|cc|bcc):)",
-    re.IGNORECASE,
-)
-_GMAIL_NOT_PAREN = re.compile(r"(?<!\w)NOT\s*\(", re.IGNORECASE)
-_GMAIL_NEGATED_PARENS = re.compile(r"-\(([^)]*)\)", re.IGNORECASE)
-_GMAIL_DOUBLE_NOT = re.compile(r"(?<!\w)NOT\s+NOT\s+", re.IGNORECASE)
-_GMAIL_PARENS = re.compile(r"\(([^)]*)\)")
-
 
 def _gmail_q_date(v: str) -> str | None:
     """The epoch seconds an `after:` or `before:` value in a search names, or None for a value real
@@ -840,11 +816,10 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
     ops: dict[str, list[str]] = {}
 
     def _take(m):
-        negated = m.group(1) is not None
-        key = m.group(2).lower()
+        key = m.group(1).lower()
         if key in _GMAIL_KEYS:
             key = _GMAIL_KEY_ALIASES.get(key, key)
-            value = m.group(3)
+            value = m.group(2)
             if not value and key not in _GMAIL_ADDRESS_KEYS:
                 if key in _GMAIL_DROPPED_WHEN_EMPTY:
                     return " "
@@ -856,8 +831,6 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
                 ops.setdefault(_GMAIL_NOTHING if read is None else key, []).append(read or value)
                 return " "
             stored = key
-            if negated and key not in _GMAIL_ADDRESS_KEYS:
-                stored = f"-{key}"
             if key in _GMAIL_ADDRESS_KEYS and value.startswith("-"):
                 value, stored = value.lstrip("-"), f"-{key}"
                 if not _GMAIL_ADDRESS_WORD.search(value):
@@ -882,13 +855,6 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
             return " "
         return m.group(0)
 
-    q = _GMAIL_DOUBLE_NOT.sub("", q)
-    q = _GMAIL_NOT_OPERATOR.sub("-", q)
-    q = _GMAIL_NOT_PAREN.sub("-(", q)
-    q = _GMAIL_NEGATED_PARENS.sub(r"-\1", q)
-    q = _GMAIL_PARENS.sub(r"\1", q)
-    q = re.sub(r"(?<!\S)-(?!\S)", "", q)
-    q = _GMAIL_NEGATED_EMPTY.sub("-", q)
     q = _GMAIL_NEGATED_DATE.sub(_gmail_negated_date, q)
     q = _GMAIL_NEGATED_ADDRESS.sub(lambda m: f"{m.group(1)}:-", q)
     free = re.sub(r"\s+", " ", _GMAIL_OP.sub(_take, q)).strip()
@@ -1042,9 +1008,6 @@ def _gmail_op_match(row, ops: dict) -> bool:
     for v in ops.get("subject", []):
         if v.lower() not in (row["title"] or "").lower():
             return False
-    for v in ops.get("-subject", []):
-        if v.lower() in (row["title"] or "").lower():
-            return False
     # `in:` and `label:` ask the same question of a message — Gmail's folders ARE labels — and both
     # have to see the label a message is served under rather than only a stated one. `in:anywhere`
     # is the exception: it widens the search to spam and trash, which Backlot holds none of, so
@@ -1053,14 +1016,7 @@ def _gmail_op_match(row, ops: dict) -> bool:
     for v in ops.get("label", []) + [x for x in ops.get("in", []) if x.lower() != "anywhere"]:
         if v.lower() not in labels:
             return False
-    for v in ops.get("-label", []) + [x for x in ops.get("-in", []) if x.lower() != "anywhere"]:
-        if v.lower() in labels:
-            return False
     if any(v.lower() == "attachment" for v in ops.get("has", [])) and not store.jcol(
-        row, "attachments"
-    ):
-        return False
-    if any(v.lower() == "attachment" for v in ops.get("-has", [])) and store.jcol(
         row, "attachments"
     ):
         return False
@@ -1785,8 +1741,8 @@ _DRIVE_Q_OPERATORS: dict[str, frozenset[str]] = {
     "mimeType": frozenset({"contains", "=", "!="}),
     "modifiedTime": frozenset({"<=", "<", "=", "!=", ">", ">="}),
     "createdTime": frozenset({"<=", "<", "=", "!=", ">", ">="}),
-    "trashed": frozenset({"=", "!=", "<", "<=", ">", ">="}),
-    "sharedWithMe": frozenset({"=", "!=", "<", "<=", ">", ">="}),
+    "trashed": frozenset({"=", "!="}),
+    "sharedWithMe": frozenset({"=", "!="}),
 }
 _DRIVE_Q_COLLECTIONS = frozenset({"parents", "owners"})
 _DRIVE_Q_BOOLEAN = frozenset({"trashed", "sharedWithMe"})
@@ -1798,14 +1754,13 @@ _DRIVE_Q_UNMODELLED = frozenset(
 # spelling, reaches `term()` with the field read — the refusal then names `properties` instead of
 # the bare `Invalid Value` an unlexable character gets.
 _DRIVE_Q_TOKEN = re.compile(
-    r"\s*(?:(?P<paren>[()])|(?P<brace>[{}])|(?P<op>!=|<=|>=|=|<|>)"
-    r"|(?P<str>'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\")"
+    r"\s*(?:(?P<paren>[()])|(?P<brace>[{}])|(?P<op>!=|<=|>=|=|<|>)|'(?P<str>(?:[^'\\]|\\.)*)'"
     r"|(?P<word>[A-Za-z_][A-Za-z0-9_]*))"
 )
 # Nesting past this is refused. The parser is recursive, so an unbounded query answered 500 where
 # this section's contract is a 400: 320 parentheses, or 960 `not`s, exhausted the interpreter's
 # frame limit. Real Drive's own limit is unmeasured; no client writes a query 32 levels deep.
-_DRIVE_Q_MAX_DEPTH = 128
+_DRIVE_Q_MAX_DEPTH = 32
 
 
 class _QTerm(NamedTuple):
@@ -1826,13 +1781,6 @@ class _QOr(NamedTuple):
     parts: tuple
 
 
-class _QAll:
-    """An empty group `()` or a trailing `or` — matches every file, as real does."""
-
-    def __iter__(self):
-        return iter(())
-
-
 def _drive_q_refused(message: str | None = None) -> gerr.GoogleError:
     return gerr.invalid_value("q", message)
 
@@ -1850,9 +1798,7 @@ def _drive_q_tokens(q: str) -> list[tuple[str, str]]:
         pos = m.end()
         kind = m.lastgroup or ""
         text = m.group(kind)
-        if kind == "str":
-            text = re.sub(r"\\(.)", r"\1", text[1:-1])  # strip surrounding quotes
-        out.append((kind, text))
+        out.append((kind, re.sub(r"\\(.)", r"\1", text) if kind == "str" else text))
     return out
 
 
@@ -1881,45 +1827,32 @@ def _drive_q_parse(q: str):
         return kind == "word" and (tok or "").lower() == text
 
     def disjunction():
-        parts = [c for c in (conjunction(),) if c is not None]
+        parts = [conjunction()]
         while is_word("or"):
             take()
-            nxt = conjunction()
-            if nxt is not None:
-                parts.append(nxt)
+            parts.append(conjunction())
         return parts[0] if len(parts) == 1 else _QOr(tuple(parts))
 
     def conjunction():
-        first = unary()
-        if first is None:
-            return None
-        parts = [first]
+        parts = [unary()]
         while is_word("and"):
             take()
-            nxt = unary()
-            if nxt is not None:
-                parts.append(nxt)
+            parts.append(unary())
         return parts[0] if len(parts) == 1 else _QAnd(tuple(parts))
 
     depth = 0
 
     def unary():
         nonlocal depth
-        if peek() == (None, None):
-            return None
         depth += 1
         if depth > _DRIVE_Q_MAX_DEPTH:
             raise _drive_q_refused()
         try:
             if is_word("not"):
                 take()
-                inner = unary()
-                return _QAll() if inner is None else _QNot(inner)
+                return _QNot(unary())
             if peek() == ("paren", "("):
                 take()
-                if peek() == ("paren", ")"):
-                    take()
-                    return _QAll()
                 node = disjunction()
                 if take() != ("paren", ")"):
                     raise _drive_q_refused()
@@ -2057,29 +1990,15 @@ def _drive_q_eval(node, f: dict, me: str | None, fulltext: dict[str, set[str]]) 
         return all(_drive_q_eval(p, f, me, fulltext) for p in node.parts)
     if isinstance(node, _QOr):
         return any(_drive_q_eval(p, f, me, fulltext) for p in node.parts)
-    if isinstance(node, _QAll):
-        return True
     field, op, value = node
     if field == "trashed":
-        actual = 1 if f["trashed"] else 0
-        want = 1 if value == "true" else 0
-    elif field == "sharedWithMe":
+        return ((value == "true") == f["trashed"]) == (op == "=")
+    if field == "sharedWithMe":
         # "Shared with me" = visible to the caller and not owned by them. Items shared with you
         # carry no My Drive parent on real Drive, so this clause is the only way to enumerate
         # that section.
-        actual = 0 if _drive_owned_by(f["owner_email"], me) else 1
-        want = 1 if value == "true" else 0
-    else:
-        actual = want = None
-    if field in ("trashed", "sharedWithMe"):
-        return {
-            "=": actual == want,
-            "!=": actual != want,
-            "<": actual < want,
-            "<=": actual <= want,
-            ">": actual > want,
-            ">=": actual >= want,
-        }[op]
+        shared = not _drive_owned_by(f["owner_email"], me)
+        return ((value == "true") == shared) == (op == "=")
     if field == "name":
         # Two comparisons, both measured 2026-09-14 against real Drive and each the one
         # `store.list_drive_by_name` builds its candidate set with, so SQL and this agree. `=` and
@@ -2816,10 +2735,6 @@ async def drive_files_list(request: Request):
     if order and query is not None and any(t.field == "fullText" for t in _drive_q_terms(query)):
         raise gerr.sorting_not_supported_fulltext()
     order = _drive_order_keyfns(order)
-    # Real Drive (measured 2026-10-20) lists every file — folders among them — in descending
-    # modifiedTime when no orderBy is given, not in stored-row order.
-    if not order:
-        order = [(_DRIVE_ORDER_KEYS["modifiedTime"], True)]
     # Measured 2026-09-23: a token the API did not issue is 400 `Invalid Value`, where an empty one
     # is the first page.
     offset = decode_cursor_or_none(gerr.first_repeat(params, "pageToken"))
@@ -2887,10 +2802,23 @@ async def drive_files_list(request: Request):
         return [_drive_file(conn, r, shared=r["id"] in shared, me=me) for r in rows]
 
     total = total_rows + len(folders)
-    files = _drive_sort(objects(0, total_rows, with_shared=False) + folders, order)[
-        offset : offset + limit
-    ]
-    _drive_fill_shared(conn, files, stored)
+    if order:
+        # A sort spans the whole result set, so it needs the whole set: paging in SQL would order
+        # each page in isolation. Materializing the corpus costs more than a paged listing, which
+        # is why it happens only when a sort is actually asked for — and `shared`, the one field
+        # that costs a query per page and that no sort key reads, is deferred to the page below.
+        files = _drive_sort(objects(0, total_rows, with_shared=False) + folders, order)[
+            offset : offset + limit
+        ]
+        _drive_fill_shared(conn, files, stored)
+    else:
+        # No sort: the stored rows first (SQL-paginated), the folder objects as the tail. Real
+        # Drive leaves the default order unspecified, and keeping folders last means a client that
+        # reads files[0] out of an unfiltered listing still gets a file.
+        files = objects(offset, min(limit, max(0, total_rows - offset)))
+        if len(files) < limit:
+            start = max(0, offset - total_rows)
+            files += folders[start : start + limit - len(files)]
     body = {
         "kind": "drive#fileList",
         "incompleteSearch": False,

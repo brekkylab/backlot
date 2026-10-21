@@ -266,14 +266,6 @@ def test_gmail_q_parse_and_match():
         ("after:\t2026/10/01", "after: 2026/10/01", {}),
         ("has: attachment", "has: attachment", {}),
         ("newer_than: 7d", "newer_than: 7d", {}),
-        # A `-` before an empty operator passes the negation through to the next operator (#859).
-        ("-label:inbox", "", {"-label": ["inbox"]}),
-        ("-in:inbox", "", {"-in": ["inbox"]}),
-        ("-has:attachment", "", {"-has": ["attachment"]}),
-        ("-subject: label:inbox", "", {"-label": ["inbox"]}),
-        ("-label: label:inbox", "", {"-label": ["inbox"]}),
-        ("-from: label:inbox", "", {"-label": ["inbox"]}),
-        ("-from:label:inbox", "", {"-label": ["inbox"]}),
     ],
 )
 def test_gmail_operators_read_across_whitespace(q, free, ops):
@@ -620,17 +612,6 @@ def test_gmail_empty_operator_over_the_wire(tmp_path):
         assert ids("subject:plan") == ids("from:bob") == inbox
         assert ids("subject: subject:plan") == ids("subject: from:bob") == set()
         assert ids('subject: label:"inbox"') == ids('subject: label:""') == set()
-        # A `-` before an empty operator passes the negation through to the next operator (#859):
-        # each of these reads as `-label:inbox`, i.e. the SENT message, not the INBOX one.
-        for q in (
-            "-label:inbox",
-            "-subject: label:inbox",
-            "-label: label:inbox",
-            "-from: label:inbox",
-            "-from:label:inbox",
-            "-in:inbox",
-        ):
-            assert ids(q) == sent, q
 
 
 def test_github_search_q_parse():

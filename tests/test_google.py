@@ -7925,7 +7925,8 @@ def test_drive_a_folder_scope_or_a_name_is_listed_from_sql(tmp_path, monkeypatch
 
 def test_drive_lists_only_the_trash_its_caller_may_see(tmp_path):
     """Mia lists her own trash, and neither Ava's private file nor the two of Ava's she can read,
-    which `files.get` still answers; the admin token lists every one. To each of the three users
+    which `files.get` still answers; the admin token lists every one. Ava's file out of the trash,
+    `Kept`, is listed to each caller under each `q` but `trashed`. To each of the three users
     `files.get` answers `ownedByMe: true` on exactly the trashed files it lists: `MIA@acme.com`'s is
     `mia@acme.com`'s, and `Éva@acme.com`'s is not `éva@acme.com`'s."""
     from backlot import synth
@@ -7944,6 +7945,7 @@ def test_drive_lists_only_the_trash_its_caller_may_see(tmp_path):
             | {"visibility": "private", "readers": ["MIA@acme.com", "mia@acme.com"]},
             {**record, "doc_id": "accent", "title": "Accent", "author_email": "Éva@acme.com"}
             | {"visibility": "private", "readers": ["Éva@acme.com", "éva@acme.com"]},
+            {**ava, "doc_id": "kept", "title": "Kept", "visibility": "public", "trashed": False},
         ],
     )
     tokens = yaml.safe_load(s.tokens_path.read_text(encoding="utf-8"))
@@ -7964,10 +7966,13 @@ def test_drive_lists_only_the_trash_its_caller_may_see(tmp_path):
                 params = {"q": q, "fields": "files(name,mimeType)"} if q else {}
                 r = c.get("/drive/v3/files", headers=h, params=params)
                 names = {f["name"] for f in r.json()["files"] if f["mimeType"] != _FOLDER}
-                assert names == want, (who, q)
-            for name in ("Hers", "Public", "Lent", "Shout", "Accent"):
+                assert names == (want if q == "trashed" else want | {"Kept"}), (who, q)
+            for name in ("Hers", "Public", "Lent", "Shout", "Accent", "Kept"):
                 r = c.get("/drive/v3/files", headers=h, params={"q": f"name = '{name}'"})
-                assert {f["name"] for f in r.json()["files"]} == {name} & want, (who, name)
+                assert {f["name"] for f in r.json()["files"]} == {name} & (want | {"Kept"}), (
+                    who,
+                    name,
+                )
             if who == "admin":
                 continue
             for doc_id in ("hers", "secret", "public", "lent", "shout", "accent"):

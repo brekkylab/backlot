@@ -853,10 +853,10 @@ _OTHER_ANSWERS: dict[str, tuple[dict, bool]] = {
 #: (`invalid_auth`, as on any method). Real answered `oauth.v2.exchange` `invalid_arguments` naming
 #: the arguments missing whatever the credential, `tooling.tokens.rotate` `invalid_arguments`
 #: without a `refresh_token` and `invalid_refresh_token` with a bogus one, and `blocks.validate`
-#: `ok` to a `POST` of `blocks=[]` and `invalid_arguments` to a `POST`, `PUT` or `DELETE` of
-#: nothing; a `GET` of `blocks.validate` was `unsupported_http_method` whatever the credential,
-#: which :func:`unserved_answer` answers (2026-10-20). The rest is left to the router: an answer
-#: for one set of arguments does not hold for another.
+#: `ok` to a `POST` of `blocks=[]` and `invalid_arguments` to a `POST`, `PUT`, `PATCH` or `DELETE`
+#: of nothing; a `GET` of `blocks.validate` was `unsupported_http_method` whatever the credential,
+#: which :func:`unserved_answer` answers (2026-10-20, the `PATCH` on 2026-10-21). The rest is left
+#: to the router: an answer for one set of arguments does not hold for another.
 _ANSWERED_BY_ARGUMENTS = {
     "blocks.validate": True,
     "oauth.v2.exchange": False,

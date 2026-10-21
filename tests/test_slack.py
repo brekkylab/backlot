@@ -3868,7 +3868,10 @@ _RETIRED = (
         # a method of `slack._ANSWERED_BY_ARGUMENTS`, answered before its arguments are read (its
         # comment)
         ("GET", "tooling.tokens.rotate", "bogus", None, None, "invalid_auth"),
-        ("PUT", "blocks.validate", "bogus", None, None, "invalid_auth"),
+        *(
+            (verb, "blocks.validate", "bogus", None, None, "invalid_auth")
+            for verb in ("PUT", "PATCH", "DELETE")
+        ),
         ("GET", "blocks.validate", "admin", None, None, "unsupported_http_method"),
         # a name `slack_sdk` calls that the baseline does not list (`slack._OTHER_ANSWERS`)
         *(
@@ -3889,6 +3892,10 @@ _RETIRED = (
         ("GET", "emoji.list", "admin", None, None, _LEFT),
         ("GET", "files.getUploadURLExternal", "admin", None, None, _LEFT),
         ("POST", "blocks.validate", None, _FORM, b"", _LEFT),
+        *(
+            (verb, "blocks.validate", None, None, None, _LEFT)
+            for verb in ("PUT", "PATCH", "DELETE")
+        ),
         ("POST", "tooling.tokens.rotate", None, _FORM, b"refresh_token=xoxe-1-bogus", _LEFT),
         ("GET", "oauth.v2.exchange", "bogus", None, None, _LEFT),
         ("GET", "emoji.list/", None, None, None, _LEFT),

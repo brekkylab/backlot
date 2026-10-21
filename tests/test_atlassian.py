@@ -6851,6 +6851,7 @@ _BROWSER = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
 _INFO = "/atlassian/rest/api/3/serverInfo"
 _SEARCH = "/atlassian/rest/api/3/search/jql"
 _ISSUE_NOPE = "/atlassian/rest/api/3/issue/NOPE-1"
+_ISSUE_BRACKET = "/atlassian/rest/api/3/issue/A%5BB"
 _SPACES = "/atlassian/wiki/rest/api/space"
 _ATTACH = "/atlassian/wiki/rest/api/content/1/child/attachment"
 _LABEL = "/atlassian/wiki/rest/api/space/NOPESUCH/label"
@@ -7198,6 +7199,32 @@ _ACCEPT_ROWS = [
     ("GET", "/atlassian/rest/api/3/nopesuchroute", "none", _HTML, None, 404, _PROBLEM, None, {}),
     ("GET", "/atlassian/rest/api/3/nopesuchroute", "none", "foo", None, 404)
     + (errors_atlassian.HTML_MEDIA_TYPE, b"", {}),
+    # -- Jira: a bracket in the path turns the 405, the 415 and the 406 into Tomcat's pages, under
+    # an `Accept` that empties the RFC 7807 one too (``errors.atlassian._JIRA_BRACKET``)
+    ("POST", _ISSUE_NOPE, "none", _JSON, None, 405, _PROBLEM, None)
+    + ({"allow": "GET, PUT, DELETE", "content-language": None},),
+    ("POST", _ISSUE_BRACKET, "none", _JSON, None, 405, _TOMCAT, "page")
+    + ({"allow": "GET, PUT, DELETE", "content-language": "en"},),
+    ("POST", _ISSUE_BRACKET, "none", "foo", None, 405, _TOMCAT, "page", {}),
+    ("POST", _ISSUE_BRACKET, "none", None, None, 405, _TOMCAT, "page", {}),
+    ("DELETE", f"{_ISSUE_BRACKET}/comment", "admin", "*/*", None, 405, _TOMCAT, "page")
+    + ({"allow": "GET, POST"},),
+    ("POST", f"{_ISSUE_NOPE}/comment", "none", _JSON, ("text/plain", b"x"), 415, _PROBLEM, None)
+    + ({"accept": "application/json", "content-language": None},),
+    ("POST", f"{_ISSUE_BRACKET}/comment", "none", _JSON, ("text/plain", b"x"), 415, _TOMCAT)
+    + ("page", {"accept": "application/json", "content-language": "en"}),
+    ("POST", f"{_ISSUE_BRACKET}/comment", "none", "foo", ("text/plain", b"x"), 415, _TOMCAT)
+    + ("page", {}),
+    ("POST", f"{_ISSUE_BRACKET}/comment", "none", _JSON, (_JSON, b"{}"), 404, _JIRA_JSON, None, {}),
+    ("GET", _ISSUE_BRACKET, "none", _HTML, None, 406, _TOMCAT, "page")
+    + ({"accept": "application/json", "content-language": "en"},),
+    ("GET", _ISSUE_BRACKET, "none", "foo", None, 406, _TOMCAT, "page", {}),
+    # the key spelled with `]`, in lower case and bare, and under `/rest/api/2`
+    ("POST", "/atlassian/rest/api/3/issue/A%5DB", "none", _JSON, None, 405, _TOMCAT, "page", {}),
+    ("POST", "/atlassian/rest/api/3/issue/A%5bB", "none", _JSON, None, 405, _TOMCAT, "page", {}),
+    ("POST", "/atlassian/rest/api/3/issue/A[B", "none", _JSON, None, 405, _TOMCAT, "page", {}),
+    ("GET", "/atlassian/rest/api/3/issue/A]B", "none", _HTML, None, 406, _TOMCAT, "page", {}),
+    ("POST", "/atlassian/rest/api/2/issue/A%5BB", "none", _JSON, None, 405, _TOMCAT, "page", {}),
     # -- Jira: a published operation with no route of its own (``_published_answer``)
     ("GET", "/atlassian/rest/api/3/myself", "none", _HTML, None, 406, _PROBLEM, "problem")
     + ({"www-authenticate": None},),

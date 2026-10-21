@@ -8054,6 +8054,7 @@ def test_drive_q_refuses_a_clause_it_cannot_parse(tmp_path):
             "name contains 'a' and not(starred)",
             *("trashed" + chr(cp) + "= false" for cp in (0x0B, 0x1C, 0x85, 0xA0, 0x2003, 0x3000)),
             chr(0xA0) + "trashed = false",
+            *("trashed = false" + chr(cp) for cp in (0x0B, 0xA0, 0x3000)),
             " and ",
             " ",
             "\t",
@@ -8114,6 +8115,7 @@ def test_drive_q_shapes_clients_send_still_parse(tmp_path):
             ("not (not starred)", set()),
             ("not\t(name != 'Q1 Deck')", {"Q1 Deck"}),
             ("trashed = false\fand\rname = 'Q1 Deck'", {"Q1 Deck"}),
+            ("trashed = false and(name = 'Q1 Deck') \t\n", {"Q1 Deck"}),
             ("'mia@x.com' in owners and name contains 'Q1'", {"Q1 Deck"}),
             # `me` is the caller; the admin token owns nothing, so nothing is `me`'s and
             # everything non-trashed is `not me`'s.

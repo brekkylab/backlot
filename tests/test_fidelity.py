@@ -1586,6 +1586,9 @@ def test_the_teams_walk_asks_as_the_service_account_and_reaches_every_type_it_na
             "teamworkUserIdentity",
             "chatMessageReaction",
             "chatMessageReactionIdentitySet",
+            "chatMessageAttachment",
+            "chatMessageMention",
+            "chatMessageMentionedIdentitySet",
         )
     }
     assert named <= reached

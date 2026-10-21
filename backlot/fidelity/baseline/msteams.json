@@ -3,7 +3,7 @@
   "endpoints": [
     "https://graph.microsoft.com/v1.0/$metadata"
   ],
-  "measured": "2026-10-20",
+  "measured": "2026-10-21",
   "root": {
     "query": "GraphService"
   },
@@ -179,6 +179,33 @@
         }
       }
     },
+    "chatMessageAttachment": {
+      "type_kind": "ComplexType",
+      "status": "implemented",
+      "fields": {
+        "content": {
+          "status": "implemented"
+        },
+        "contentType": {
+          "status": "implemented"
+        },
+        "contentUrl": {
+          "status": "implemented"
+        },
+        "id": {
+          "status": "implemented"
+        },
+        "name": {
+          "status": "implemented"
+        },
+        "teamsAppId": {
+          "status": "implemented"
+        },
+        "thumbnailUrl": {
+          "status": "implemented"
+        }
+      }
+    },
     "chatMessageFromIdentitySet": {
       "type_kind": "ComplexType",
       "status": "implemented",
@@ -188,6 +215,42 @@
         },
         "device": {
           "status": "implemented"
+        },
+        "user": {
+          "status": "implemented"
+        }
+      }
+    },
+    "chatMessageMention": {
+      "type_kind": "ComplexType",
+      "status": "implemented",
+      "fields": {
+        "id": {
+          "status": "implemented"
+        },
+        "mentionText": {
+          "status": "implemented"
+        },
+        "mentioned": {
+          "status": "implemented"
+        }
+      }
+    },
+    "chatMessageMentionedIdentitySet": {
+      "type_kind": "ComplexType",
+      "status": "implemented",
+      "fields": {
+        "application": {
+          "status": "implemented"
+        },
+        "conversation": {
+          "status": "implemented"
+        },
+        "device": {
+          "status": "implemented"
+        },
+        "tag": {
+          "status": "extra"
         },
         "user": {
           "status": "implemented"

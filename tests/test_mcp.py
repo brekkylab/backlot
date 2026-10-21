@@ -113,6 +113,10 @@ def _atlassian_params(base: str, token: str, username: str = "svc@example.com"):
             "--transport",
             "stdio",
         ],
+        # `_docker_runs_linux_containers` asked the daemon this environment names; mcp 2.3.0's
+        # `stdio_client` would otherwise hand `docker run` a fixed list of variables, DOCKER_HOST
+        # and DOCKER_CONTEXT not among them.
+        env=dict(os.environ),
     )
 
 
@@ -188,6 +192,14 @@ def test_the_atlassian_test_runs_only_where_docker_runs_linux_containers(
     monkeypatch.setattr(subprocess, "run", run)
     assert _docker_runs_linux_containers() is runs
     assert calls == ([["docker", "info", "--format", "{{.OSType}}"]] if docker else [])
+
+
+@pytest.mark.parametrize("name", ["DOCKER_HOST", "DOCKER_CONTEXT"])
+def test_the_atlassian_servers_docker_run_keeps_the_variables_that_pick_its_daemon(
+    monkeypatch, name
+):
+    monkeypatch.setenv(name, "elsewhere")
+    assert _atlassian_params("http://127.0.0.1:1", "token").env[name] == "elsewhere"
 
 
 @pytest.mark.skipif(

@@ -201,9 +201,7 @@ def test_the_atlassian_test_runs_only_where_docker_runs_linux_containers(
 
 
 @pytest.mark.parametrize("name", ["DOCKER_HOST", "DOCKER_CONTEXT"])
-def test_the_atlassian_servers_docker_run_keeps_the_variables_that_pick_its_daemon(
-    monkeypatch, name
-):
+def test_docker_run_keeps_the_variables_that_pick_its_daemon(monkeypatch, name):
     monkeypatch.setenv(name, "elsewhere")
     assert _atlassian_params("http://127.0.0.1:1", "token").env[name] == "elsewhere"
 

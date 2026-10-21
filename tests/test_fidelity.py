@@ -48,7 +48,7 @@ from backlot.fidelity.comparisons import (
     UNCOMPARED,
 )
 from backlot.fidelity.graphql_diff import backlot_schema, diff_schemas, schema_surface
-from backlot.fidelity.surface import OperationSurface, SchemaSurface
+from backlot.fidelity.surface import GraphSurface, OperationSurface, SchemaSurface
 
 VENDOR = """
 type Query { transcripts(limit: Int, keyword: String): [Transcript!], origin: Origin }
@@ -630,13 +630,14 @@ def test_every_comparison_ships_a_baseline(tmp_path):
         names = [e.operation for e in entries]
         assert names == sorted(set(names)), f"{name}: one entry per operation, in order"
         surface = baseline.surface
-        if isinstance(surface, SchemaSurface):
-            statuses = set(surface.elements().values())
-        else:
-            statuses = {e.status for e in entries}
-            if surface.batch is not None:
-                statuses |= {d.status for d in surface.batch.documents}
-                statuses |= {r.status for r in surface.batch.routes}
+        statuses = {e.status for e in entries}
+        if isinstance(surface, GraphSurface):
+            statuses |= set(surface.schema.elements().values())
+        elif isinstance(surface, SchemaSurface):
+            statuses |= set(surface.elements().values())
+        elif surface.batch is not None:
+            statuses |= {d.status for d in surface.batch.documents}
+            statuses |= {r.status for r in surface.batch.routes}
         allowed = {IMPLEMENTED, MISSING, EXTRA}
         if isinstance(comparison, comparisons.ProbeComparison):
             allowed.add(REFUSED)
@@ -760,8 +761,16 @@ def test_every_served_element_is_one_its_baseline_records_served():
         baseline = Baseline.load(baseline_path(name))
         assert baseline.operations, f"{name}: the baseline names no operations"
         rerun = f"{name}: rerun `backlot diff -s {name} --update-baseline`"
-        # A probe's and a CSDL walk's served surface is what a running Backlot answers.
-        if isinstance(comparison, (comparisons.ProbeComparison, comparisons.CSDLComparison)):
+        recorded_ops = {
+            e.operation for e in baseline.operations if e.status in (IMPLEMENTED, EXTRA)
+        }
+        # A probe's and a CSDL walk's served surface is what a running Backlot answers; a CSDL
+        # source's operations are still the app's routes under its mount.
+        if isinstance(comparison, comparisons.CSDLComparison):
+            mine = operations.from_backlot(spec, comparison.mount, comparison.mount[0])
+            assert recorded_ops == {str(op) for op in mine.values()}, rerun
+            continue
+        if isinstance(comparison, comparisons.ProbeComparison):
             continue
         if isinstance(comparison, comparisons.GraphQLComparison):
             sdl = backlot_schema(name)
@@ -783,8 +792,7 @@ def test_every_served_element_is_one_its_baseline_records_served():
             for s in comparison.specs
             for op in operations.from_backlot(spec, s.mount, s.strip).values()
         }
-        recorded = {e.operation for e in baseline.operations if e.status in (IMPLEMENTED, EXTRA)}
-        assert recorded == set(served_ops), rerun
+        assert recorded_ops == set(served_ops), rerun
         served_params = {f"{o}?{p}" for o, op in served_ops.items() for p in op.params}
         missing = {f.path for f in baseline.acknowledged.values() if f.kind == "missing_param"}
         assert not served_params & missing, rerun

@@ -31,7 +31,7 @@ UNREACHABLE = "http://127.0.0.1:9/v1/metrics"
 # The values an export may carry. The collector replaces a value outside its own shape checks with
 # `invalid`, and every pattern here is narrower than those.
 STORED = {
-    "backlot.source": r"^(github|slack|gmail|google_drive|jira|confluence|notion|s3|hubspot|linear|fireflies|other)$",
+    "backlot.source": r"^(github|slack|gmail|google_drive|jira|confluence|notion|s3|hubspot|linear|fireflies|msteams|other)$",
     "backlot.support": r"^(implemented|extra|refused|missing|unknown)$",
     "backlot.operation": r"^[A-Za-z_][A-Za-z0-9_.,/+{}-]{0,127}$",
     "backlot.error_code": r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$",
@@ -200,6 +200,7 @@ def test_each_client_rule_names_the_headers_it_was_measured_from():
         "PyGithub",
         "aiohttp",
         "python-httpx2",
+        "kiota-python",
         "python-httpx",
         "python-requests",
         "python-urllib",
@@ -283,6 +284,9 @@ def test_a_failure_is_classed_by_its_answer(source, support, status, code, spent
         ("linear", 400, b'{"errors":[{"message":"x","extensions":[1]}]}', "unrecognized"),
         ("jira", 401, b"Client must be authenticated to access this resource.", "unauthenticated"),
         ("jira", 400, b"<!DOCTYPE html><html><head><title>(null)</title></head></html>", ""),
+        ("msteams", 404, b'{"error":{"code":"NotFound","message":"x"}}', "NotFound"),
+        ("msteams", 400, b'{"error":{"code":"","message":"Something else."}}', "unrecognized"),
+        ("msteams", 400, b"<html><title>Bad Request</title></html>", ""),
     ],
 )
 def test_an_error_code_is_the_envelopes_own_identifier(source, status, body, expected):
@@ -290,6 +294,7 @@ def test_an_error_code_is_the_envelopes_own_identifier(source, status, body, exp
 
 
 GITHUB = "/github/repos/acme/docs-site"
+TEAM = "/msgraph/v1.0/teams/778451ab-3734-4e45-beba-caf1bd343541"
 
 
 @pytest.mark.parametrize(
@@ -420,6 +425,18 @@ GITHUB = "/github/repos/acme/docs-site"
             "/s3/acme-artifacts/k.txt",
             {"content": b"x"},
             ("s3", "PutObject", "refused", 400, "InvalidArgument", "unsupported"),
+        ),
+        (
+            "GET",
+            f"{TEAM}/Channels",
+            {},
+            ("msteams", "teams.ListChannels", "implemented", 200, None, None),
+        ),
+        (
+            "GET",
+            "/msgraph/v1.0/ME/chats",
+            {},
+            ("msteams", "me.ListChats", "missing", 404, "Request_ResourceNotFound", "unsupported"),
         ),
         (
             "GET",
@@ -610,6 +627,7 @@ OLD_VERSION = {"X-GitHub-Api-Version": "1999-01-01"}
         ("GET", f"{W}/space?limit=abc", {}, "invalid_parameter"),
         ("GET", f"{W}/space?limit=-1", {}, "invalid_parameter"),
         ("GET", f"{W}/content?type=bogus", {}, "content_type_not_found"),
+        ("GET", f"{TEAM}/channels?$orderby=displayName", {}, "invalid_query_option"),
     ],
 )
 def test_each_message_slug_is_one_backlot_sends(client, method, path, kwargs, expected):
@@ -673,7 +691,7 @@ def test_every_message_slug_has_a_request_that_sends_it():
         )
         for row in t.pytestmark[0].args[1]
     } | {"rate_limited", "unsupported_filter"}
-    tables = errors._GITHUB + errors._JIRA + errors._CONFLUENCE + errors._GRAPHQL
+    tables = errors._GITHUB + errors._JIRA + errors._CONFLUENCE + errors._GRAPHQL + errors._MSGRAPH
     assert {slug for _, slug in tables} <= sent
 
 
@@ -997,4 +1015,5 @@ def test_a_server_sends_what_it_counted_when_it_stops(hello, collector):
         "hubspot",
         "linear",
         "fireflies",
+        "msteams",
     }

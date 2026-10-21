@@ -33,7 +33,12 @@ enumerates neither Backlot's paths nor the vendor's: it declares entity types, w
 properties may be null, whether a type accepts properties it does not name, and the members of
 every enum. So Backlot's side is not a document either — it is the responses a running server
 actually sends. See [Teams is asked against its type
-system](#teams-is-asked-against-its-type-system).
+system](#teams-is-asked-against-its-type-system). Its operations come from the OpenAPI document
+Microsoft generates its Graph SDKs from (`openapi/v1.0/openapi.yaml` in
+`microsoftgraph/msgraph-metadata`), cut to the Teams surface — teams, chats, teamwork, and `/me`
+and `/users/{id}` with their joined teams, chats and teamwork — and compared by method and path
+alone: Graph's parameters are the OData system query options on every collection, which
+`tests/test_msteams.py` holds as measured.
 
 Path templates are compared with placeholders flattened. The vendor calling a segment `{userId}`
 and Backlot calling it `{user_id}` is not a divergence.
@@ -280,7 +285,9 @@ The surface takes the shape of the contract:
 - **A CSDL** — the same `types` shape, built from what the walk was served. `root.query` is the
   entity container (`GraphService`), and its fields are the entity sets and singletons the walk's
   requests start from. Under it, each type the walk checked lists every property it was served:
-  `implemented` where the type declares it, `extra` where it does not.
+  `implemented` where the type declares it, `extra` where it does not. Beside `types` sit the
+  `operations` of Graph's OpenAPI document in the first bullet's shape, with Microsoft's
+  `operationId` as each one's `id`; telemetry names a Teams call by them.
 
 ```json
 { "operation": "GET /repos/{}/{}", "id": "repos/get", "status": "implemented" }
@@ -378,7 +385,7 @@ each of those is compared, and a test fails if the two sets ever drift apart.
 | Confluence | published OpenAPI (v1) | none |
 | HubSpot | published OpenAPI, CRM v3 and Associations v4, resolved through the API catalog | none |
 | Notion | published OpenAPI | none |
-| Microsoft Teams (`msteams`) | Graph's published CSDL, against served responses — see [Teams is asked against its type system](#teams-is-asked-against-its-type-system) | none |
+| Microsoft Teams (`msteams`) | Graph's published OpenAPI for operations, and its CSDL against served responses — see [Teams is asked against its type system](#teams-is-asked-against-its-type-system) | none |
 | Amazon S3 | botocore service model, **probed** — see [S3 is asked, not read](#s3-is-asked-not-read) | none |
 
 The credential column is measured, not read off a page: Linear's personal API keys go in bare, and

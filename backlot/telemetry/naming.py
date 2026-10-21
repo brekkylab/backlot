@@ -24,6 +24,7 @@ from graphql import (
 
 from backlot.fidelity.baselines import Baseline
 from backlot.fidelity.comparisons import (
+    CSDL,
     GOOGLE_DISCOVERY,
     GRAPHQL,
     OPENAPI,
@@ -114,6 +115,12 @@ class Namer:
             for spec in comparison.specs:
                 for prefix in spec.mount:
                     self._batch_api.setdefault(prefix.strip("/").split("/")[0], name)
+        # A CSDL source's operations are its baseline's path half, under the mount the vendor's
+        # paths start below (`/msgraph/v1.0/teams/...` is Graph's `/teams/...`).
+        for name, comparison in CSDL.items():
+            for prefix in comparison.mount:
+                self._mounts.append((prefix, prefix, name))
+            self._index(name, Baseline.load(baseline_path(name)).operations or ())
         for prefix in PROBE["s3"].mount:
             self._mounts.append((prefix, prefix, "s3"))
         for entry in Baseline.load(baseline_path("s3")).operations or ():
@@ -334,7 +341,7 @@ def surface() -> dict[tuple[str, str], int]:
     v2 and v3, Slack's two verbs) counts once, in its best state; a served route with no vendor id
     is not one of the vendor's operations and is left out."""
     best: dict[tuple[str, str], str] = {}
-    for name in (*OPENAPI, *GOOGLE_DISCOVERY, "s3"):
+    for name in (*OPENAPI, *GOOGLE_DISCOVERY, *CSDL, "s3"):
         for entry in Baseline.load(baseline_path(name)).operations or ():
             key = (name, entry.id)
             if entry.id and (key not in best or _PREFERENCE[entry.status] < _PREFERENCE[best[key]]):

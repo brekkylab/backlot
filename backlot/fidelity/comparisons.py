@@ -261,10 +261,13 @@ class CSDLComparison:
     walk: Callable[[str, str, Any, float], Measurement]
     mount: tuple[str, ...] = ()
     credentials: tuple[Credential, ...] = ()
+    # The vendor's path document, where it publishes one beside the CSDL: the operations half of
+    # the comparison (see :class:`~backlot.fidelity.surface.GraphSurface`).
+    operations_url: str | None = None
 
     @property
     def endpoints(self) -> tuple[str, ...]:
-        return (self.spec_url,)
+        return (self.spec_url,) + ((self.operations_url,) if self.operations_url else ())
 
     def measure(
         self, credentials: Mapping[str, str] | None = None, *, timeout: float = 120.0
@@ -479,6 +482,12 @@ CSDL = {
         spec_url="https://graph.microsoft.com/v1.0/$metadata",
         mount=("/msgraph/v1.0",),
         walk=msgraph_walk.run,
+        # The OpenAPI document Microsoft generates its Graph SDKs from, of which the Teams surface
+        # is this source's operations (`msgraph_openapi.SCOPE`).
+        operations_url=(
+            "https://raw.githubusercontent.com/microsoftgraph/msgraph-metadata/master/openapi/"
+            "v1.0/openapi.yaml"
+        ),
     ),
 }
 

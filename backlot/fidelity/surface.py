@@ -337,11 +337,43 @@ class SchemaSurface:
         return cls(raw["root"]["query"], types), findings
 
 
-Surface = OperationSurface | SchemaSurface
+_OPERATION_KINDS = ("missing_operation", "extra_operation")
+
+
+@dataclass(frozen=True)
+class GraphSurface:
+    """A source measured against two documents of one vendor: the operations a path document
+    declares, and the type system a CSDL declares. Microsoft Graph publishes both, and neither
+    answers the other's question. The file holds each in its own shape, side by side; a finding goes
+    to the half whose element it names."""
+
+    paths: OperationSurface
+    schema: SchemaSurface
+
+    @property
+    def operations(self) -> tuple[OperationEntry, ...]:
+        return self.paths.operations
+
+    def to_json(self, findings: Iterable[Finding]) -> dict[str, Any]:
+        findings = list(findings)
+        ops = [f for f in findings if f.kind in _OPERATION_KINDS]
+        types = [f for f in findings if f.kind not in _OPERATION_KINDS]
+        return {**self.paths.to_json(ops), **self.schema.to_json(types)}
+
+    @classmethod
+    def from_json(cls, raw: Mapping[str, Any]) -> tuple["GraphSurface", list[Finding]]:
+        paths, ops = OperationSurface.from_json(raw)
+        schema, types = SchemaSurface.from_json(raw)
+        return cls(paths, schema), ops + types
+
+
+Surface = OperationSurface | SchemaSurface | GraphSurface
 
 
 def surface_from_json(raw: Mapping[str, Any]) -> tuple[Surface | None, list[Finding]]:
     """The surface a baseline file holds, and the findings written onto it."""
+    if "types" in raw and "operations" in raw:
+        return GraphSurface.from_json(raw)
     if "types" in raw:
         return SchemaSurface.from_json(raw)
     if "operations" in raw:

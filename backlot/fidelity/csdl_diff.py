@@ -35,15 +35,17 @@ more, so "declared, not served" is the normal case and reporting it would bury t
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Iterable, Mapping, Protocol
 
 from backlot.fidelity.errors import FidelityError
 from backlot.fidelity.fetch import fetch_text
 from backlot.fidelity.findings import BREAKING, Finding
+from backlot.fidelity.operations import diff_operations, from_backlot, inventory
 from backlot.fidelity.surface import (
     EXTRA,
     IMPLEMENTED,
+    GraphSurface,
     Measurement,
     Member,
     SchemaSurface,
@@ -273,6 +275,8 @@ class CSDLTarget(Protocol):
 
     spec_url: str
     walk: "Callable[[str, str, Schema, float], Measurement]"
+    mount: tuple[str, ...]
+    operations_url: str | None
 
 
 def measure(source: CSDLTarget, *, timeout: float = 120.0) -> Measurement:
@@ -289,4 +293,20 @@ def measure(source: CSDLTarget, *, timeout: float = 120.0) -> Measurement:
 
     declared = schema(fetch_text(source.spec_url, timeout=timeout))
     with backlot.serve() as server:
-        return source.walk(server.base_url, server.token, declared, timeout)
+        types = source.walk(server.base_url, server.token, declared, timeout)
+    if not source.operations_url:
+        return types
+    # The operations half: the vendor's path document against the routes this source serves,
+    # compared by method and path alone (see `msgraph_openapi` on parameters).
+    from backlot.fidelity import msgraph_openapi
+    from backlot.main import app
+
+    vendor = msgraph_openapi.fetch(source.operations_url, timeout=timeout)
+    served = {
+        key: replace(op, params=frozenset())
+        for key, op in from_backlot(app.openapi(), source.mount, source.mount[0]).items()
+    }
+    return Measurement(
+        diff_operations(served, vendor) + types.findings,
+        GraphSurface(inventory(served, vendor), types.surface),
+    )

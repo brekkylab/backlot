@@ -4868,6 +4868,25 @@ def test_github_pull_accept_diff_returns_a_unified_diff(diff_pr, gh_admin_h, gh_
         ("application/vnd.github.diff;charset=utf-8;q=0", "diff"),
         ("application/vnd.github.diff;q=0;charset=utf-8", "json"),
         ("application/vnd.github.diff;q=abc", "diff"),
+        ("application/vnd.github.diff;q=-0", "diff"),
+        ("application/vnd.github.diff;q=+0", "diff"),
+        ("application/vnd.github.diff;q=-0.0", "diff"),
+        ("application/vnd.github.diff;q= 0", "diff"),
+        ("application/vnd.github.diff;q=0;q=1", "diff"),
+        ('application/vnd.github.diff;q="0"', "json"),
+        ('application/vnd.github.diff;q=0"', "json"),
+        ("application/vnd.github.diff;q=1;q=0", "json"),
+        ("application/vnd.github.diff;q=0.000", "json"),
+        ("application/vnd.github.diff;q=0e0", "json"),
+        ("application/vnd.github.diff;q=0_0", "json"),
+        ("application/vnd.github.diff;q=00", "json"),
+        ("application/vnd.github.diff;q=.0", "json"),
+        ("application/vnd.github.diff;q=0 ", "json"),
+        ('application/vnd.github.diff;q="1"', "diff"),
+        ('application/vnd.github.diff;q="0.5"', "diff"),
+        ("application/vnd.github.diff;q='0'", "diff"),
+        ('application/vnd.github.diff;q="0', "diff"),
+        ("application/vnd.github.diff;q=0abc", "diff"),
         ("application/vnd.github.diff;charset=utf-8", "diff"),
         ("text/plain, application/vnd.github.diff", "diff"),
         ("application/vnd.github.diff;q=0.5", "diff"),
@@ -4880,6 +4899,23 @@ def test_github_pull_is_served_as_the_representation_accept_names(diff_pr, accep
     r = c.get(f"/github/repos/{org}/diffable/pulls/{num}", headers={**h, "Accept": accept})
     assert r.status_code == 200
     assert r.text.startswith({"json": "{", "diff": "diff --git ", "patch": "From "}[served])
+
+
+@pytest.mark.parametrize(
+    "accept, served",
+    [
+        (b"application/vnd.github.diff;q=\xa00", "diff"),
+        (b"application/vnd.github.diff;q=0\xa0", "json"),
+    ],
+)
+def test_github_pull_diff_q_around_a_no_break_space(diff_pr, accept, served):
+    """A no-break space ahead of the zero is not read as zero and one after it is (see
+    `_zero_q`); the TestClient does not send the byte in a string, so it goes as it is."""
+    c, h, org, num = diff_pr
+    headers = {"Authorization": h["Authorization"].encode(), "Accept": accept}
+    r = _sent_raw(c, f"/github/repos/{org}/diffable/pulls/{num}", headers)
+    assert r.status_code == 200
+    assert r.text.startswith({"json": "{", "diff": "diff --git "}[served])
 
 
 def test_github_pull_accept_patch_returns_an_mbox_patch(diff_pr):

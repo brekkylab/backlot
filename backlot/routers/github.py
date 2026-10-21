@@ -962,27 +962,55 @@ def _accept_types(request: Request) -> list[str]:
     case: a pull answers `…github.DIFF` with its JSON and `Application/vnd.github.diff`,
     `…vnd.GitHub.diff`, `…github.V3.diff` and `…diff+JSON` each with the diff, and `raw` on
     contents, readme and blobs and `text-match` on code search read those spellings the same way.
-    A ``diff`` whose first parameter is a ``q`` of zero is left out, and no other name is:
-    `patch;q=0`, `raw;q=0` and `text-match+json;q=0` are served as asked, and so is a diff under
-    `Q=0`, `q = 0` or a `q` after `charset`."""
+    A ``diff`` whose opening ``q`` weights end on one read as zero is left out, and no other
+    name is: `patch;q=0`, `raw;q=0` and `text-match+json;q=0` are served as asked, and so is a
+    diff under `Q=0`, `q = 0` or a `q` after `charset`. Of the ``q``s that open the parameter
+    list the last decides, and the weight is not read as Python's ``float()`` reads it (see
+    :func:`_zero_q`)."""
     types: list[str] = []
     for member in request.headers.get("accept", "").split(","):
         media_type, _, params = member.partition(";")
         media_type = media_type.strip()
         m = _GITHUB_MEDIA.fullmatch(media_type)
         if m is not None:
-            if m[2] == "diff" and _zero_q(params.partition(";")[0].strip()):
+            if m[2] == "diff" and _zero_q(params):
                 continue
             media_type = m[1].lower() + m[2] + (m[3] or "").lower()
         types.append(media_type)
     return types
 
 
-def _zero_q(param: str) -> bool:
-    """Whether ``param`` is a ``q`` weight that reads as zero."""
-    name, _, value = param.partition("=")
+def _zero_q(params: str) -> bool:
+    """Whether the ``q`` weight a member's parameters open with reads as zero.
+
+    Only the parameters that open the list are read, and only while they are ``q``s: a ``q``
+    after `charset` is not read, and of the ones that are, the last decides, so `q=0;q=1`
+    keeps the member and `q=1;q=0` leaves it out. The value is not read as Python's
+    ``float()`` reads it, measured against api.github.com on 2026-10-21: a sign ahead of the
+    digits (`q=-0`, `q=+0`, `q=-0.0`) and a space or no-break space ahead of them (`q= 0`)
+    are not zero, while a quote after the zero is, whether or not one comes before it
+    (``q="0"`` and ``q=0"`` read as zero; ``q="0``, with none after, does not)."""
+    zero = False
+    for param in params.split(";"):
+        name, _, value = param.strip().partition("=")
+        if name != "q":
+            break
+        zero = _zero_weight(value)
+    return zero
+
+
+def _zero_weight(value: str) -> bool:
+    """Whether one ``q`` value reads as zero (see :func:`_zero_q` for the reading)."""
+    if value.startswith('"'):
+        if len(value) < 2 or not value.endswith('"'):
+            return False
+        value = value[1:-1]
+    elif value.endswith('"'):
+        value = value[:-1]
+    if not value or value[0] in "+-" or value != value.strip():
+        return False
     try:
-        return name == "q" and float(value) == 0
+        return float(value) == 0
     except ValueError:
         return False
 

@@ -1795,7 +1795,7 @@ _DRIVES_Q = _DriveQTerms(
 # the bare `Invalid Value` an unlexable character gets. Tokens stand apart by a space, a tab, a line
 # feed, a form feed or a carriage return: real served each of those five between two tokens and
 # before the first, and refused U+000B, U+001C, U+0085, U+00A0, U+2003 and U+3000 in either place
-# with the 400 at `q`, measured 2026-10-20.
+# with the 400 at `q`, measured 2026-10-21.
 _DRIVE_Q_SPACE = " \t\n\f\r"
 _DRIVE_Q_TOKEN = re.compile(
     r"[ \t\n\f\r]*(?:(?P<paren>[()])|(?P<brace>[{}])|(?P<op>!=|<=|>=|=|<|>)|'(?P<str>(?:[^'\\]|\\.)*)'"
@@ -1844,7 +1844,7 @@ def _drive_q_tokens(q: str) -> list[tuple[str, str]]:
         text = m.group(kind)
         # Real refused `not(trashed)`, `NOT(trashed)` and `not(hidden)`, a `not` its group's
         # parenthesis touches, and served `not (trashed)`, `not\t(trashed)` and
-        # `trashed and(starred)`, measured 2026-10-20.
+        # `trashed and(starred)`, measured 2026-10-21.
         if kind == "word" and text.lower() == "not" and q.startswith("(", pos):
             raise _drive_q_refused()
         out.append((kind, re.sub(r"\\(.)", r"\1", text) if kind == "str" else text))

@@ -18,12 +18,18 @@ stay small and odd in ways neither of those may be, which is why it is not one o
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
 
 import pytest
 import yaml
+
+# The suite's calls are not anyone's use of Backlot: no app it builds and no server it starts
+# (which inherit this environment) sends usage telemetry. tests/test_telemetry.py turns it back on
+# for its own app, with the export pointed somewhere local.
+os.environ["BACKLOT_TELEMETRY"] = "0"
 
 import backlot
 from backlot import store

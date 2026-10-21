@@ -1974,6 +1974,7 @@ _DRIVES_Q_TAKEN = [
     "not name < 'a'",
     "name < 'a' and hidden = false",
     "not (not hidden)",
+    "not (hidden)",
 ]
 _DRIVES_Q_REFUSED = [
     " ",
@@ -1998,6 +1999,8 @@ _DRIVES_Q_REFUSED = [
     "starred = true",
     "not not hidden",
     "not not name contains 'a'",
+    "not(hidden)",
+    "hidden" + chr(0xA0) + "= true",
 ]
 _PAGE_EXPIRED = (403, "pageTokenExpired", None, None)
 _UNKNOWN = (500, None, None, None)
@@ -7764,6 +7767,12 @@ def test_drive_q_refuses_a_clause_it_cannot_parse(tmp_path):
             "sharedWithMe = false",
             "sharedWithMe != true",
             "not (name contains 'a' and sharedWithMe)",
+            "not(trashed)",
+            "NOT(trashed)",
+            "(not(trashed))",
+            "name contains 'a' and not(starred)",
+            *("trashed" + chr(cp) + "= false" for cp in (0x0B, 0x1C, 0x85, 0xA0, 0x2003, 0x3000)),
+            chr(0xA0) + "trashed = false",
             " and ",
             " ",
             "\t",
@@ -7822,6 +7831,8 @@ def test_drive_q_shapes_clients_send_still_parse(tmp_path):
                 {"mk", "fin", "Brand guidelines", "Q1 Revenue", "Q1 Deck", "Mia's Notes"},
             ),
             ("not (not starred)", set()),
+            ("not\t(name != 'Q1 Deck')", {"Q1 Deck"}),
+            ("trashed = false\fand\rname = 'Q1 Deck'", {"Q1 Deck"}),
             ("'mia@x.com' in owners and name contains 'Q1'", {"Q1 Deck"}),
             # `me` is the caller; the admin token owns nothing, so nothing is `me`'s and
             # everything non-trashed is `not me`'s.

@@ -1790,9 +1790,13 @@ _DRIVES_Q = _DriveQTerms(
 )
 # `{` and `}` are tokens so that `properties has { key='x' and value='y' }`, the reference's own
 # spelling, reaches `term()` with the field read — the refusal then names `properties` instead of
-# the bare `Invalid Value` an unlexable character gets.
+# the bare `Invalid Value` an unlexable character gets. Tokens stand apart by a space, a tab, a line
+# feed, a form feed or a carriage return: real served each of those five between two tokens and
+# before the first, and refused U+000B, U+001C, U+0085, U+00A0, U+2003 and U+3000 in either place
+# with the 400 at `q`, measured 2026-10-20.
+_DRIVE_Q_SPACE = " \t\n\f\r"
 _DRIVE_Q_TOKEN = re.compile(
-    r"\s*(?:(?P<paren>[()])|(?P<brace>[{}])|(?P<op>!=|<=|>=|=|<|>)|'(?P<str>(?:[^'\\]|\\.)*)'"
+    r"[ \t\n\f\r]*(?:(?P<paren>[()])|(?P<brace>[{}])|(?P<op>!=|<=|>=|=|<|>)|'(?P<str>(?:[^'\\]|\\.)*)'"
     r"|(?P<word>[A-Za-z_][A-Za-z0-9_]*))"
 )
 # Nesting past this is refused. The parser is recursive, so an unbounded query answered 500 where
@@ -1830,21 +1834,27 @@ def _drive_q_tokens(q: str) -> list[tuple[str, str]]:
     while pos < len(q):
         m = _DRIVE_Q_TOKEN.match(q, pos)
         if m is None:
-            if q[pos:].strip():
+            if q[pos:].strip(_DRIVE_Q_SPACE):
                 raise _drive_q_refused()
             break
         pos = m.end()
         kind = m.lastgroup or ""
         text = m.group(kind)
+        # Real refused `not(trashed)`, `NOT(trashed)` and `not(hidden)`, a `not` its group's
+        # parenthesis touches, and served `not (trashed)`, `not\t(trashed)` and
+        # `trashed and(starred)`, measured 2026-10-20.
+        if kind == "word" and text.lower() == "not" and q.startswith("(", pos):
+            raise _drive_q_refused()
         out.append((kind, re.sub(r"\\(.)", r"\1", text) if kind == "str" else text))
     return out
 
 
 def _drive_q_parse(q: str, terms: _DriveQTerms = _FILES_Q):
-    """The parsed query, or ``None`` for an empty one; a query of white space alone is the 400, as
-    real answered a space, a tab, a newline and U+00A0 on `files.list` and a space and a tab on
-    `drives.list`. A clause ``terms`` does not take is a 400. A query that names no ``trashed`` term
-    matches a trashed file, as `drive_files_list` lists the caller's trash with no ``q``."""
+    """The parsed query, or ``None`` for an empty one; a query of the separators `_DRIVE_Q_TOKEN`
+    reads alone is the 400, as real answered a space, a tab and a newline on `files.list` and a
+    space and a tab on `drives.list`. A clause ``terms`` does not take is a 400. A query that names
+    no ``trashed`` term matches a trashed file, as `drive_files_list` lists the caller's trash with
+    no ``q``."""
     tokens = _drive_q_tokens(q)
     if not tokens:
         if q:

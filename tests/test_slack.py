@@ -3796,8 +3796,7 @@ _RETIRED = (
             ("unknown_method", "nonexistent.method"),
         ),
         ("POST", "nonexistent.method", None, _FORM, b"{}", "invalid_form_data"),
-        # a name real has retired, by `GET` with each credential and by `POST` with no token and with
-        # a bogus one
+        # a name real has retired
         *(
             ("GET", name, cred, None, None, ("unknown_method", name))
             for name in _RETIRED

@@ -806,10 +806,11 @@ _METHOD_NAME = re.compile(r"[0-9A-Za-z.]+")
 #: The Slack baseline's ``missing`` operations (``backlot.published``): the methods Slack's
 #: reference index lists that no route here serves, by name. Measured on 2026-10-20 with no token
 #: and with a bogus one, by `GET` and by `POST`, each answered the credential's refusal
-#: (`not_authed`, `invalid_auth`) but those :data:`_OTHER_ANSWERS` and :data:`_ANSWERED_BY_ARGUMENTS`
-#: hold. Ten that Slack's archived OpenAPI document lists and the index does not, `oauth.token`,
-#: three `workflows` ones and six `apps.permissions` ones, real answered `unknown_method` for, as
-#: for a name it never had, whatever the credential, one that resolves included.
+#: (`not_authed`, `invalid_auth`) but those :data:`_OTHER_ANSWERS` and
+#: :data:`_ANSWERED_BY_ARGUMENTS` hold. Ten that Slack's archived OpenAPI document lists and the
+#: index does not, `oauth.token`, three `workflows` ones and six `apps.permissions` ones, real
+#: answered `unknown_method` for, as for a name it never had, whatever the credential, one that
+#: resolves included.
 _PUBLISHED_NOT_SERVED = frozenset(published.missing_operations("slack"))
 #: The answer, where it is not the credential's refusal, of a method no route here serves, and
 #: whether a credential sent that does not resolve is refused ahead of it, each also answered so to

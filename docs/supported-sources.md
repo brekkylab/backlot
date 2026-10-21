@@ -777,7 +777,7 @@ Slack's reference index (`docs.slack.dev/reference/methods.md`) lists is refused
 credential sent is refused. `channels.mark`, `groups.mark`, `im.mark`, `mpim.mark`, `im.list` and
 `mpim.list`, which the index does not list, answer `method_deprecated` with real's message, and
 `invalid_auth` to a credential that does not resolve. Any other name is `unknown_method` with
-`req_method`, whatever the credential, ten that Slack's archived OpenAPI document lists among them,
+`req_method`, whatever the credential, `oauth.token` and the `apps.permissions` methods among them,
 and a path holding a byte other than an ASCII letter, a digit or `.` is real's HTML 404 page. A body
 real refuses is refused ahead of the credential and of `unknown_method`, and not read on a path that
 names no method. Under `PUT`, `PATCH` and `DELETE` a body is refused only for a name

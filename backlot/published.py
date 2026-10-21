@@ -2,10 +2,11 @@
 
 `backlot diff` keeps one baseline per source, the file ``backlot.fidelity.baseline_path`` names, and
 each operation in it whose status is ``missing`` is one the vendor's description publishes that
-Backlot does not serve, written ``METHOD /path`` with each path parameter as ``{}``, or on Slack as
-the method's name. Notion's, GitHub's, HubSpot's and Slack's routers read the list from here to
+Backlot does not serve. Notion's, GitHub's, HubSpot's and Slack's routers read the list from here to
 answer such an operation the way the vendor answers ahead of running one, so an operation the vendor
-adds gets that answer once the baseline acknowledges it.
+adds gets that answer once the baseline acknowledges it. The first three's baselines write an
+operation ``METHOD /path`` with each path parameter as ``{}``, which :func:`operations` reads, and
+Slack's writes the method's name.
 
 It reads the file itself: importing ``backlot.fidelity`` would load the comparison modules, which
 its ``__init__`` imports.

@@ -108,6 +108,8 @@ for it for a one-shot demonstration, never to stand a server up for someone. `se
 takes BYO-JSONL dicts inline, and `backlot.serve_or_connect` prefers a server that is already
 running — the shape every script in `examples/` uses.
 
+**Usage telemetry.** The server sends BrekkyLab anonymous counts of which vendor operations it is asked for, never paths, bodies, tokens or corpus values, and they decide what Backlot builds and fixes next ([docs/telemetry.md](../../docs/telemetry.md)). Mention it once, in passing, the first time you start a server for someone. If they ask for it off, `--disable-telemetry` (on `backlot serve` and `backlot mcp`) or `backlot.serve(telemetry=False)` does it. A server in a test fixture or CI job you write starts with `telemetry=False`, because those calls are not anyone's use of Backlot.
+
 ## 7. Get credentials
 
 ```bash

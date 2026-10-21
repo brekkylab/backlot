@@ -7879,17 +7879,27 @@ def test_drive_q_plain_folder_reads_a_folder_scope(q, scope):
     assert google._drive_q_plain_folder(google._drive_q_parse(q)) == scope
 
 
-def test_drive_a_bare_folder_scope_is_listed_from_sql(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "q, scan, listed",
+    [
+        ("'{folder}' in parents", "backlot.routers.google._drive_q_rows", {"Live", "Gone"}),
+        ("name = 'Gone'", "backlot.store.list_documents", {"Gone"}),
+        ("name contains 'ON'", "backlot.store.list_documents", {"Gone"}),
+        ("name = 'Gone' and trashed = false", "backlot.store.list_documents", set()),
+        ("name contains 'e' and not trashed", "backlot.store.list_documents", {"Live"}),
+    ],
+)
+def test_drive_a_folder_scope_or_a_name_is_listed_from_sql(tmp_path, monkeypatch, q, scan, listed):
     """`'<id>' in parents`, LlamaIndex's Google Drive reader's `q`, is served by
-    `store.list_drive_folder`, with its owner's trash: with `_drive_q_rows` patched to fail, the
-    listing still answers, where the rows it would build stop at 100,000 candidates."""
+    `store.list_drive_folder`, and a `name` term, mirage's lookup, by `store.list_drive_by_name`,
+    each with its owner's trash and whatever `trashed` term sits beside it: with ``scan`` patched
+    to fail, the listing still answers, where the rows a scan builds stop at 100,000 candidates."""
     from backlot import synth
-    from backlot.routers import google
 
     def fail(*args, **kwargs):
-        raise AssertionError("a bare folder scope reached _drive_q_rows")
+        raise AssertionError(f"{q} reached {scan}")
 
-    monkeypatch.setattr(google, "_drive_q_rows", fail)
+    monkeypatch.setattr(scan, fail)
     record = {
         "source_type": "google_drive",
         "folder": "mk",
@@ -7906,17 +7916,18 @@ def test_drive_a_bare_folder_scope_is_listed_from_sql(tmp_path, monkeypatch):
     )
     tokens = yaml.safe_load(s.tokens_path.read_text(encoding="utf-8"))
     mia = {"Authorization": f"Bearer {tok(tokens, 'mia@acme.com')}"}
-    q = f"'{synth.drive_folder_id('mk')}' in parents"
+    params = {"q": q.format(folder=synth.drive_folder_id("mk")), "fields": "files(name)"}
     with client_for(s, reload=True) as c:
-        r = c.get("/drive/v3/files", headers=mia, params={"q": q, "fields": "files(name)"})
+        r = c.get("/drive/v3/files", headers=mia, params=params)
         assert r.status_code == 200, r.text
-        assert {f["name"] for f in r.json()["files"]} == {"Live", "Gone"}
+        assert {f["name"] for f in r.json()["files"]} == listed
 
 
 def test_drive_lists_only_the_trash_its_caller_may_see(tmp_path):
-    """A trashed file is listed to its owner alone, as `_drive_unlisted` says: Mia gets her own, and
-    neither Ava's private one nor the two of Ava's she can read, which `files.get` still answers.
-    The admin token gets all four."""
+    """Mia lists her own trash, and neither Ava's private file nor the two of Ava's she can read,
+    which `files.get` still answers; the admin token lists every one. To each of the three users
+    `files.get` answers `ownedByMe: true` on exactly the trashed files it lists: `MIA@acme.com`'s is
+    `mia@acme.com`'s, and `Éva@acme.com`'s is not `éva@acme.com`'s."""
     from backlot import synth
 
     record = {"source_type": "google_drive", "folder": "mk", "content": "alpha", "trashed": True}
@@ -7929,31 +7940,46 @@ def test_drive_lists_only_the_trash_its_caller_may_see(tmp_path):
             {**ava, "doc_id": "public", "title": "Public", "visibility": "public"},
             {**ava, "doc_id": "lent", "title": "Lent", "visibility": "private"}
             | {"readers": ["ava@acme.com", "mia@acme.com"]},
+            {**record, "doc_id": "shout", "title": "Shout", "author_email": "MIA@acme.com"}
+            | {"visibility": "private", "readers": ["MIA@acme.com", "mia@acme.com"]},
+            {**record, "doc_id": "accent", "title": "Accent", "author_email": "Éva@acme.com"}
+            | {"visibility": "private", "readers": ["Éva@acme.com", "éva@acme.com"]},
         ],
     )
     tokens = yaml.safe_load(s.tokens_path.read_text(encoding="utf-8"))
-    callers = {
-        "admin": tokens["admin_token"],
-        "mia": tok(tokens, "mia@acme.com"),
-        "ava": tok(tokens, "ava@acme.com"),
-    }
+    callers = {"admin": tokens["admin_token"]}
+    callers |= {who: tok(tokens, f"{who}@acme.com") for who in ("mia", "ava", "éva")}
     folder = synth.drive_folder_id("mk")
+    queries = (None, "trashed", f"'{folder}' in parents", "fullText contains 'alpha'")
+    queries += ("name contains 'e' or name contains 'u'", "name != 'x'")
     with client_for(s, reload=True) as c:
         for who, want in (
-            ("admin", {"Hers", "Secret", "Public", "Lent"}),
-            ("mia", {"Hers"}),
+            ("admin", {"Hers", "Secret", "Public", "Lent", "Shout", "Accent"}),
+            ("mia", {"Hers", "Shout"}),
             ("ava", {"Secret", "Public", "Lent"}),
+            ("éva", set()),
         ):
             h = {"Authorization": f"Bearer {callers[who]}"}
-            for q in (None, "trashed", f"'{folder}' in parents", "fullText contains 'alpha'"):
+            for q in queries:
                 params = {"q": q, "fields": "files(name,mimeType)"} if q else {}
                 r = c.get("/drive/v3/files", headers=h, params=params)
                 names = {f["name"] for f in r.json()["files"] if f["mimeType"] != _FOLDER}
                 assert names == want, (who, q)
-        mia = {"Authorization": f"Bearer {callers['mia']}"}
-        for doc_id in ("public", "lent"):
-            r = c.get(f"/drive/v3/files/{synth.gdrive_file_id(doc_id)}", headers=mia)
-            assert (r.status_code, r.json().get("trashed")) == (200, True), doc_id
+            for name in ("Hers", "Public", "Lent", "Shout", "Accent"):
+                r = c.get("/drive/v3/files", headers=h, params={"q": f"name = '{name}'"})
+                assert {f["name"] for f in r.json()["files"]} == {name} & want, (who, name)
+            if who == "admin":
+                continue
+            for doc_id in ("hers", "secret", "public", "lent", "shout", "accent"):
+                url = f"/drive/v3/files/{synth.gdrive_file_id(doc_id)}"
+                r = c.get(url, headers=h, params={"fields": "name,trashed,ownedByMe"})
+                if r.status_code == 404:
+                    continue
+                body = r.json()
+                assert body["trashed"] and body["ownedByMe"] == (body["name"] in want), (
+                    who,
+                    doc_id,
+                )
 
 
 _Q_RECORDS = [

@@ -1149,16 +1149,15 @@ def list_documents(
     author_email=None,
     state=None,
     not_author_email=None,
-    exclude_trashed=False,
     title=None,
     subtype=None,
-    exclude_ids=(),
+    trash=True,
 ) -> list[sqlite3.Row]:
     # state: only valid for source_type="github" — it's the only items table with a `state`
-    # column; passing it for any other source_type raises sqlite3.OperationalError. Likewise
-    # exclude_trashed, which only gdrive_files has a column for, and exclude_ids, which names rows
-    # by an `id` column. title matches the whole title, ignoring ASCII case. subtype is
-    # Confluence's content type, where a row with none is a page.
+    # column; passing it for any other source_type raises sqlite3.OperationalError. Likewise trash
+    # other than True: `_drive_trash` reads a column only gdrive_files has. title matches the whole
+    # title, ignoring ASCII case. subtype is Confluence's content type, where a row with none is a
+    # page.
     tbl = table(source_type)
     sql = f"SELECT * FROM {tbl} WHERE 1=1"
     params: list = []
@@ -1166,9 +1165,7 @@ def list_documents(
     if state is not None:
         sql += " AND COALESCE(state, 'open') = ?"
         params.append(state)
-    if exclude_trashed:
-        sql += " AND COALESCE(trashed, 0) = 0"
-    sql = _exclude_ids(sql, params, exclude_ids)
+    sql = _drive_trash(sql, params, trash)
     if title is not None:
         sql += " AND title = ? COLLATE NOCASE"
         params.append(title)
@@ -1826,16 +1823,13 @@ def hubspot_associations(
 
 
 def list_drive_folder(
-    conn, folder, visible_ids=None, limit=100, offset=0, trash=False, exclude_ids=()
+    conn, folder, visible_ids=None, limit=100, offset=0, trash=False
 ) -> list[sqlite3.Row]:
-    """The files directly in a Drive folder, the trashed ones too when ``trash``, less
-    ``exclude_ids`` — SQL-scoped + SQL-paginated, so listing a big folder costs one page of rows
+    """The files directly in a Drive folder, with the trashed ones ``trash`` keeps (see
+    `_drive_trash`) — SQL-scoped + SQL-paginated, so listing a big folder costs one page of rows
     per request, not a full-corpus scan on every page."""
-    sql = "SELECT * FROM gdrive_files WHERE folder = ?"
-    if not trash:
-        sql += " AND COALESCE(trashed, 0) = 0"
     params: list = [folder]
-    sql = _exclude_ids(sql, params, exclude_ids)
+    sql = _drive_trash("SELECT * FROM gdrive_files WHERE folder = ?", params, trash)
     clause, cparams = _acl_clause("google_drive", visible_ids=visible_ids)
     # No ORDER BY: the folder index already yields a stable order for pagination, and adding
     # ORDER BY id forces a per-page sort of the whole folder (≈30x slower on a big folder).
@@ -1861,11 +1855,20 @@ def drive_name_fold(title: str) -> str:
 
 
 def list_drive_by_name(
-    conn, name, container=None, visible_ids=None, limit=100_000, offset=0, *, exact=False
+    conn,
+    name,
+    container=None,
+    visible_ids=None,
+    limit=100_000,
+    offset=0,
+    *,
+    exact=False,
+    trash=False,
 ) -> list[sqlite3.Row]:
-    """Non-trashed Drive files whose title matches ``name``, optionally within a folder — the SQL
-    path for a name lookup, which otherwise listed the WHOLE corpus (~25k rows, ~1.6s) to compare
-    in Python. ``exact`` is Drive's ``name = 'X'``; without it, ``name contains 'X'``.
+    """Drive files whose title matches ``name``, optionally within a folder, less the trashed ones
+    `_drive_trash` drops for ``trash`` — the SQL path for a name lookup, which otherwise listed the
+    WHOLE corpus (~25k rows, ~1.6s) to compare in Python. ``exact`` is Drive's ``name = 'X'``;
+    without it, ``name contains 'X'``.
 
     Each is the comparison real Drive makes, measured 2026-09-14, so the rows this returns are the
     rows the evaluator accepts — not a superset it narrows. ``name =`` folds case for ASCII letters
@@ -1877,17 +1880,13 @@ def list_drive_by_name(
         needle = _like_escape(name)
         # SQLite LIKE is case-insensitive for ASCII and exact elsewhere — real's `name =` rule;
         # no lower() wrapper, which would force a per-row scan.
-        sql = (
-            "SELECT * FROM gdrive_files WHERE COALESCE(trashed, 0) = 0 AND title LIKE ? ESCAPE '\\'"
-        )
+        sql = "SELECT * FROM gdrive_files WHERE title LIKE ? ESCAPE '\\'"
         params: list = [needle]
     else:
         needle = _like_escape(drive_name_fold(name))
-        sql = (
-            "SELECT * FROM gdrive_files WHERE COALESCE(trashed, 0) = 0 "
-            "AND title_fold LIKE ? ESCAPE '\\'"
-        )
+        sql = "SELECT * FROM gdrive_files WHERE title_fold LIKE ? ESCAPE '\\'"
         params = [f"%{needle}%"]
+    sql = _drive_trash(sql, params, trash)
     if container is not None:
         sql += " AND folder = ?"
         params.append(container)
@@ -1897,13 +1896,10 @@ def list_drive_by_name(
     return conn.execute(sql, params).fetchall()
 
 
-def count_drive_folder(conn, folder, visible_ids=None, trash=False, exclude_ids=()) -> int:
+def count_drive_folder(conn, folder, visible_ids=None, trash=False) -> int:
     """How many files `list_drive_folder` lists for the same arguments."""
-    sql = "SELECT COUNT(*) FROM gdrive_files WHERE folder = ?"
-    if not trash:
-        sql += " AND COALESCE(trashed, 0) = 0"
     params: list = [folder]
-    sql = _exclude_ids(sql, params, exclude_ids)
+    sql = _drive_trash("SELECT COUNT(*) FROM gdrive_files WHERE folder = ?", params, trash)
     clause, cparams = _acl_clause("google_drive", visible_ids=visible_ids)
     sql += clause
     params += cparams
@@ -1918,20 +1914,17 @@ def drive_folder_has_visible(conn, folder, visible_ids=None) -> bool:
     return conn.execute(sql, [folder, *params]).fetchone() is not None
 
 
-def _exclude_ids(sql: str, params: list, ids) -> str:
-    """``sql`` with the rows whose ``id`` is one of ``ids`` left out."""
-    ids = list(ids)
-    if not ids:
+def _drive_trash(sql: str, params: list, trash) -> str:
+    """``sql`` keeping the trashed Drive files ``trash`` names: each of them when it is True, none
+    when it is False or empty, and when it is an address the ones whose ``author_email`` is that
+    address, ASCII letters folded as SQLite's ``lower()`` folds them. At most one bound value
+    whatever the corpus holds, so a listing never runs into SQLite's limit on bound variables."""
+    if trash is True:
         return sql
-    params.extend(ids)
-    return sql + f" AND id NOT IN ({','.join('?' for _ in ids)})"
-
-
-def drive_trashed(conn, visible_ids=None) -> list[sqlite3.Row]:
-    """The id and author of each trashed Drive file this caller can see."""
-    clause, params = _acl_clause("google_drive", visible_ids=visible_ids)
-    sql = f"SELECT id, author_email FROM gdrive_files WHERE COALESCE(trashed, 0) = 1{clause}"
-    return conn.execute(sql, params).fetchall()
+    if not trash:
+        return sql + " AND COALESCE(trashed, 0) = 0"
+    params.append(trash)
+    return sql + " AND (COALESCE(trashed, 0) = 0 OR lower(COALESCE(author_email, '')) = lower(?))"
 
 
 def drive_usage_bytes(conn, visible_ids=None) -> tuple[int, int]:
@@ -2022,17 +2015,15 @@ def count_documents(
     visible_ids=None,
     author_email=None,
     state=None,
-    exclude_trashed=False,
     roots_only=False,
     title=None,
     subtype=None,
-    exclude_ids=(),
+    trash=True,
 ) -> int:
     # state: only valid for source_type="github" — it's the only items table with a `state`
-    # column; passing it for any other source_type raises sqlite3.OperationalError. Likewise
-    # exclude_trashed, which only gdrive_files has a column for, and roots_only, which counts
-    # gmail THREADS rather than messages. It has to track list_documents': a count that includes
-    # rows the listing drops makes nextPageToken lie.
+    # column; passing it for any other source_type raises sqlite3.OperationalError. trash is
+    # list_documents', and roots_only counts gmail THREADS rather than messages. It has to track
+    # list_documents': a count that includes rows the listing drops makes nextPageToken lie.
     tbl = table(source_type)
     sql = f"SELECT COUNT(*) FROM {tbl} WHERE 1=1"
     params: list = []
@@ -2040,9 +2031,7 @@ def count_documents(
     if state is not None:
         sql += " AND COALESCE(state, 'open') = ?"
         params.append(state)
-    if exclude_trashed:
-        sql += " AND COALESCE(trashed, 0) = 0"
-    sql = _exclude_ids(sql, params, exclude_ids)
+    sql = _drive_trash(sql, params, trash)
     if roots_only:
         sql += _GMAIL_ROOT
     if title is not None:

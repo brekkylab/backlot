@@ -1804,10 +1804,7 @@ def _gmail_message(
 # A term Backlot cannot evaluate is a 400 on `q`, never a silence. Two kinds: a term the listing
 # does not take (`bogusField = 'x'`), which real Drive refuses too with the bare `Invalid Value` of
 # the parameter envelope, and a term `_FILES_Q.unmodelled` names, which `files.list` documents and
-# Backlot holds no fact for, refused with a message that says so. `viewedByMeTime` and `starred` are
-# not that kind: nothing in the corpus is viewed or starred, as every file's `viewedByMe` and
-# `starred` say, and real answers a file never viewed and never starred the way `_drive_q_eval`
-# does.
+# Backlot holds no fact for, refused with a message that says so.
 
 _TIME_OPS = frozenset({"<=", "<", "=", "!=", ">", ">="})
 _TIME_FIELDS = frozenset({"modifiedTime", "createdTime", "viewedByMeTime"})
@@ -2126,6 +2123,7 @@ def _drive_q_eval(node, f: dict, me: str | None, fulltext: dict[str, set[str]]) 
     if field == "trashed":
         return ((value == "true") == f["trashed"]) == (op == "=")
     if field == "starred":
+        # Nothing here is starred, as every file's `starred` says.
         return (value == "false") == (op == "=")
     if field == "viewedByMeTime":
         # No file has one: real matched a file its caller never viewed under `!=` and under no
@@ -2197,22 +2195,23 @@ def _drive_q_fulltext_ids(hits: dict[str, list]) -> dict[str, set[str]]:
     return {value: {r["id"] for r in rows} for value, rows in hits.items()}
 
 
-def _drive_unlisted(conn, ids: set[str] | None, me: str | None) -> set[str]:
-    """The files a caller can see that `files.list` leaves out: each trashed one it does not own.
-    Real listed a trashed file to its owner alone: a Google Workspace member's `files.get` answered
-    two files another user owns and trashed, and `files.list` listed neither with no `q` or under
-    `trashed = true`, `trashed`, the file's name, its folder or `not 'me' in owners`, measured
-    2026-10-20. The admin token, ``ids`` ``None``, sees every file and lists them all."""
-    if ids is None:
-        return set()
-    trashed = store.drive_trashed(conn, ids)
-    return {r["id"] for r in trashed if not _drive_owned_by(r["author_email"], me)}
+def _drive_listed_trash(ids: set[str] | None, me: str | None) -> bool | str:
+    """The trashed files `files.list` lists to this caller, as the ``trash`` the store's Drive
+    listings take: those it owns. Real listed a trashed file to its owner, with no `q` and under
+    each `q` it was sent that named no `trashed` term, on two accounts' Drives, the folder scope on
+    one, and to no one else: a Google Workspace member's `files.get` answered two files another
+    user owns and trashed, and `files.list` listed neither with no `q` or under `trashed = true`,
+    `trashed`, the file's name, its folder or `not 'me' in owners`, measured 2026-10-20. The admin
+    token, ``ids`` ``None``, sees every file and lists them all."""
+    return True if ids is None else (me or False)
 
 
 def _drive_owned_by(owner_email: str | None, me: str | None) -> bool:
     """Whether the caller owns this file. The admin/service token is not a Drive user (its
-    ``caller.email`` is None), so it owns nothing — for it, everything reads as shared."""
-    return bool(me) and (owner_email or "").lower() == me.lower()
+    ``caller.email`` is None), so it owns nothing — for it, everything reads as shared. ASCII
+    letters fold, as SQLite's ``lower()`` folds them in the trash rule `_drive_listed_trash`
+    hands the store, so a listing and ``ownedByMe`` agree on whose a file is."""
+    return bool(me) and _ascii_lower(owner_email or "") == _ascii_lower(me)
 
 
 def _shared_with_me_time(owner_email: str | None, me: str | None, created: int) -> dict:
@@ -2824,20 +2823,19 @@ def _drive_q_rows(conn, query, container: str | None, ids, me: str | None, hits:
     # same one `_drive_q_eval` makes, so the candidate set is the answer for that term and the
     # evaluator only applies the others. Nothing the evaluator accepts is outside it.
     name = next((t for t in conjuncts if t.field == "name" and t.op in ("contains", "=")), None)
-    # `list_drive_by_name` answers non-trashed rows only, so it can be the candidate set only when
-    # every match is non-trashed — `trashed = false` a conjunct, not merely present: under a `not`
-    # it asks for the trash.
-    non_trashed = _QTerm("trashed", "=", "false") in conjuncts or (
-        _QTerm("trashed", "!=", "true") in conjuncts
-    )
+    trash = _drive_listed_trash(ids, me)
     if fulltext is not None:  # the index's candidates, in rank order, then the other terms
-        candidates = hits[fulltext.value]
-    elif name is not None and non_trashed:
+        candidates = [
+            r
+            for r in hits[fulltext.value]
+            if not r["trashed"] or trash is True or _drive_owned_by(r["author_email"], me)
+        ]
+    elif name is not None:
         # A name lookup (mirage resolves every gdrive file with `name='…'`) — SQL title LIKE
         # instead of materializing the whole corpus (~25k rows, ~1.6s) to match in Python. The
-        # remaining terms still filter the (small) name-matched set below.
+        # remaining terms, `trashed` among them, still filter the (small) name-matched set below.
         candidates = store.list_drive_by_name(
-            conn, name.value, container, ids, limit=100_000, exact=name.op == "="
+            conn, name.value, container, ids, limit=100_000, exact=name.op == "=", trash=trash
         )
     else:  # scope to the folder and/or the owner (if any) to shrink the set before the filter
         owner, not_owner = _drive_shared_with_me_scope(conjuncts, me)
@@ -2849,6 +2847,7 @@ def _drive_q_rows(conn, query, container: str | None, ids, me: str | None, hits:
             limit=100_000,
             author_email=owner,
             not_author_email=not_owner,
+            trash=trash,
         )
     ids_by_value = _drive_q_fulltext_ids(hits)
     return [r for r in candidates if _drive_q_eval(query, _drive_facts(r), me, ids_by_value)]
@@ -3138,30 +3137,19 @@ async def drive_files_list(request: Request):
         total_rows, fetch = 0, lambda o, n: []  # every stored file lives in a folder
     elif container is not None and (scope := _drive_q_plain_folder(query)):
         # The common case: a client walking the tree wants just this folder's files.
-        trash = scope == "all"
-        unlisted = _drive_unlisted(conn, ids, me) if trash else set()
-        total_rows = store.count_drive_folder(conn, container, ids, trash, unlisted)
+        trash = _drive_listed_trash(ids, me) if scope == "all" else False
+        total_rows = store.count_drive_folder(conn, container, ids, trash)
         fetch = lambda o, n: store.list_drive_folder(  # noqa: E731
-            conn, container, ids, limit=n, offset=o, trash=trash, exclude_ids=unlisted
+            conn, container, ids, limit=n, offset=o, trash=trash
         )
     elif query is not None:  # filter the visible set by the query, then paginate
-        unlisted = _drive_unlisted(conn, ids, me)
-        matched = [
-            r
-            for r in _drive_q_rows(conn, query, container, ids, me, hits)
-            if r["id"] not in unlisted
-        ]
+        matched = _drive_q_rows(conn, query, container, ids, me, hits)
         total_rows, fetch = len(matched), lambda o, n: matched[o : o + n]  # noqa: E731
     else:
-        # The caller's own trash with the rest: real listed a trashed file to its owner with no `q`,
-        # and under each `q` it was sent that named no `trashed` term, measured 2026-10-20 on two
-        # accounts' Drives, the folder scope on one; `_drive_unlisted` keeps another user's out.
-        unlisted = _drive_unlisted(conn, ids, me)
-        total_rows = store.count_documents(
-            conn, "google_drive", visible_ids=ids, exclude_ids=unlisted
-        )
+        trash = _drive_listed_trash(ids, me)  # the caller's own trash with the rest
+        total_rows = store.count_documents(conn, "google_drive", visible_ids=ids, trash=trash)
         fetch = lambda o, n: store.list_documents(  # noqa: E731
-            conn, "google_drive", visible_ids=ids, limit=n, offset=o, exclude_ids=unlisted
+            conn, "google_drive", visible_ids=ids, limit=n, offset=o, trash=trash
         )
 
     # The file ids that came from the row stream, as opposed to a synthesized folder -- see
@@ -5683,8 +5671,8 @@ def _drive_listing_page_token(request: Request) -> None:
     """Refuse a `pageToken` sent to `drives.list`, which is empty and issues no `nextPageToken`,
     so every token is one it did not issue. Presence is the whole test: `decode_cursor_or_none`,
     which `files.list` calls, reads `bzow` and that route's own tokens as offsets. Read from the
-    first repeat, after the typed and range refusals and a `q` it does not take, and ahead of the
-    `useDomainAdminAccess=true` refusal. What real answers is the `drives.list` column of the table
+    first repeat, ahead of the `useDomainAdminAccess=true` refusal; the route comment says what
+    precedes it. What real answers is the `drives.list` column of the table
     `_drive_permissions_page_token` records."""
     token = gerr.first_repeat(request.query_params, "pageToken")
     if token:

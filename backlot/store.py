@@ -1788,8 +1788,11 @@ def linear_team_issue_counts(conn, visible_ids=None) -> dict[str, int]:
     """team -> visible issue count, in one grouped scan — ``Team.issueCount`` for a whole page of
     teams without a COUNT(*) per team."""
     clause, cparams = _acl_clause("linear", visible_ids=visible_ids)
+    # The recorded api.linear.app measurement (2026-10-09) counts live issues, matching the
+    # default issues listing even when includeArchived: true can still retrieve archived ones.
     rows = conn.execute(
-        f"SELECT team, COUNT(*) FROM linear_issues WHERE 1=1{clause} GROUP BY team", cparams
+        f"SELECT team, COUNT(*) FROM linear_issues WHERE archived_ts IS NULL{clause} GROUP BY team",
+        cparams,
     )
     return {r[0]: r[1] for r in rows}
 

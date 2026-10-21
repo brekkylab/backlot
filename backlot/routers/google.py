@@ -2469,11 +2469,13 @@ def _drive_newest_first(objects, folders: list[dict], offset: int, limit: int) -
     `fullText` term: newest `modifiedTime` first, ties by id, each synthesized folder among the
     stored files where its own time puts it. Measured on Drive v3: a Workspace member's 170 files
     and a consumer account's 21,702 with no `q` (2026-10-20), and on 2026-10-21 the member's 228
-    with `orderBy=` or `q=` empty, under `trashed = false` and under a `modifiedTime` bound, in the
-    order `orderBy=modifiedTime desc` gives, id for id, and in descending `modifiedTime` under
-    `mimeType` and `name contains` terms on both accounts and `'root' in parents` on the member's.
-    Five `fullText contains` queries on the two accounts came back with 16 to 144 of their adjacent
-    pairs out of time order.
+    with `orderBy=` or `q=` empty, under `trashed = false` and under a `modifiedTime` bound, and
+    both accounts' under `createdTime` and `viewedByMeTime` bounds, `starred = false`,
+    `sharedWithMe = true`, `'me' in owners` and `trashed = true`, in the order
+    `orderBy=modifiedTime desc` gives, id for id, and in descending `modifiedTime` under `mimeType`
+    and `name contains` terms on both accounts and `'root' in parents` on the member's. Five
+    `fullText contains` queries on the two accounts came back with 16 to 144 of their adjacent pairs
+    out of time order.
 
     ``objects(o, n)`` reads stored rows ``o`` to ``o + n`` already in that order. A row on the page
     has at most ``len(folders)`` folders ahead of it, so the page holds no row before row

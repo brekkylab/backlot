@@ -4989,6 +4989,12 @@ _MADE_7 += [
 ]
 _BY_NAME_NATURAL_7 = [_MADE_7[i] for i in (0, 2, 3, 1, 4, 8, 6, 7, 5)]
 _BY_NAME_NATURAL_DESC_7 = [_MADE_7[i] for i in (5, 7, 8, 6, 4, 1, 3, 2, 0)]
+# The eighth: Tibetan vowel signs whose later sign completes the first one past another, which
+# real tied with the same signs written the other way round, listed newest first both ways.
+_MADE_8 = ["\u0f71\u0f71\u0f72", "\u0f71\u0f72\u0f71", "\u0f71\u0f71\u0f74", "\u0f71\u0f74\u0f71"]
+_MADE_8 += ["\u0f71\u0f71\u0f80", "\u0f71\u0f80\u0f71"]
+_BY_NAME_NATURAL_8 = [_MADE_8[i] for i in (1, 0, 5, 4, 3, 2)]
+_BY_NAME_NATURAL_DESC_8 = [_MADE_8[i] for i in (3, 2, 5, 4, 1, 0)]
 # Eleven names real listed under `name_natural` on 2026-10-10, in a folder made for them in a
 # Korean-language account; `name_natural desc` was the exact reverse. None holds Hangul or Han,
 # which a Korean-language account orders otherwise than an English-language one.
@@ -5014,6 +5020,8 @@ _ELEVEN = ["2²3", "10²", "²", "a", "x2", "x2①", "x2²", "x3", "x10", "x22",
         (_MADE_6, "name_natural desc", _BY_NAME_NATURAL_DESC_6),
         (_MADE_7, "name_natural", _BY_NAME_NATURAL_7),
         (_MADE_7, "name_natural desc", _BY_NAME_NATURAL_DESC_7),
+        (_MADE_8, "name_natural", _BY_NAME_NATURAL_8),
+        (_MADE_8, "name_natural desc", _BY_NAME_NATURAL_DESC_8),
         (_ELEVEN, "name_natural", _ELEVEN),
         (_ELEVEN, "name_natural desc", _ELEVEN[::-1]),
     ],

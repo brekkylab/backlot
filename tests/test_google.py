@@ -5135,6 +5135,23 @@ _BY_NAME_NATURAL_DESC_10 = [
 _MADE_11 = ["\uaa80", "\uaa81", "\uaab5\uaa80"]
 _BY_NAME_NATURAL_11 = [_MADE_11[i] for i in (0, 2, 1)]
 _BY_NAME_NATURAL_DESC_11 = [_MADE_11[i] for i in (1, 2, 0)]
+# The twelfth: small kana of the Katakana Phonetic Extensions and of the Small Kana Extension
+# beside the letters they tie, and katakana `ア` beside a longer hiragana name.
+_MADE_12 = [
+    "\u3042",
+    "\u3042\u3044",
+    "\u304f",
+    "\u3053",
+    "\u30a2",
+    "\u30a2\u3044",
+    "\u30af",
+    "\u30b3",
+    "\u31f0",
+    "\U0001b132",
+    "\U0001b155",
+]
+_BY_NAME_NATURAL_12 = [_MADE_12[i] for i in (0, 4, 1, 5, 2, 8, 6, 9, 3, 10, 7)]
+_BY_NAME_NATURAL_DESC_12 = [_MADE_12[i] for i in (7, 10, 3, 9, 6, 8, 2, 5, 1, 4, 0)]
 
 
 @pytest.mark.parametrize(
@@ -5166,6 +5183,8 @@ _BY_NAME_NATURAL_DESC_11 = [_MADE_11[i] for i in (1, 2, 0)]
         (_MADE_10, "name_natural desc", _BY_NAME_NATURAL_DESC_10),
         (_MADE_11, "name_natural", _BY_NAME_NATURAL_11),
         (_MADE_11, "name_natural desc", _BY_NAME_NATURAL_DESC_11),
+        (_MADE_12, "name_natural", _BY_NAME_NATURAL_12),
+        (_MADE_12, "name_natural desc", _BY_NAME_NATURAL_DESC_12),
     ],
 )
 def test_drive_order_by_a_name_lists_a_folder_as_real_did(tmp_path, made, order_by, listed):

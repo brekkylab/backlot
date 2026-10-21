@@ -18,7 +18,8 @@ ICU:
   Greek ``ϝ`` after ``ε``, Latin ``ƀ`` after ``b``, and Han across its blocks, U+20000 between
   U+4E00 and U+3400.
 - A mark outside ``_ACCENT_RANGES`` is weighed as a letter, where ICU weighs some as accents, such
-  as Devanagari's anusvara.
+  as Devanagari's anusvara, and an accent ``_ACCENTS`` does not list sorts after the listed ones,
+  where ICU puts some among them, such as the kana voicing mark ahead of the short stroke.
 - White space, punctuation or a symbol ``_VARIABLE`` does not list sorts after the listed ones of
   its kind, where ICU puts some among them, such as ``‰`` after ``%``.
 - Two code points are weighed as one only where NFC or ``_JOINED`` joins them. ICU also joins a
@@ -37,8 +38,14 @@ import unicodedata
 _ASCII_LOWER = {cp: cp + 32 for cp in range(ord("A"), ord("Z") + 1)}
 # ICU reads at most 254 digits of a run as one number and the rest as the next.
 _NUMBER_DIGITS = 254
-# Ignored wholly: the variation selectors.
-_IGNORED = re.compile("[\ufe00-\ufe0f\U000e0100-\U000e01ef]")
+# Marks the table ignores wholly: the combining grapheme joiner, Hebrew cantillation, meteg and
+# upper and lower dots, the Arabic Quranic marks, some of the combining half marks, and the
+# variation selectors.
+_IGNORED = re.compile(
+    "[\u034f\u0591-\u05af\u05bd\u05c4\u05c5\u0610-\u061a"
+    "\u06d6-\u06dc\u06df-\u06e4\u06e7\u06e8\u06ea-\u06ed"
+    "\ufe00-\ufe0f\ufe21\ufe23-\ufe26\ufe28\ufe2a-\ufe2d\ufe2f\U000e0100-\U000e01ef]"
+)
 
 # Code points the table weighs as the one code point they spell, which NFC does not compose: Thai
 # and Lao SARA AM written as NIKHAHIT and SARA AA, and Tibetan vowel signs written in parts.
@@ -70,15 +77,16 @@ _PREVOWEL = re.compile(
 _WHOLE = frozenset("\u0419\u0439\u0622\u0623\u0624\u0625\u0626" + "".join(_JOINED.values()))
 
 # The white space, punctuation and symbols a name is likely to hold, in the order of the table's
-# primary weights. Another of each kind sorts after the last of that kind here, by code point.
+# primary weights, but for the ones it weighs as their decomposition. Another of each kind sorts
+# after the last of that kind here, by code point.
 _VARIABLE = (
-    "\t\n\x0b\x0c\r\x85\u2028\u2029 \xa0\u202f_\u2017-\u2010\u2011\u2012\u2013\u2014\u2015"
-    "\u301c\u30fb,\u3001;:!\xa1?\xbf.\u2024\u2025\u2026\u3002\xb7'\u2018\u2019\u201a\u201b\""
+    "\t\n\x0b\x0c\r\x85\u2028\u2029 _\u2017-\u2010\u2012\u2013\u2014\u2015"
+    "\u301c\u30fb,\u3001;:!\xa1?\xbf.\u3002\xb7'\u2018\u2019\u201a\u201b\""
     "\u201c\u201d\u201e\u201f\u301d\u301e\xab\xbb()[]{}\u3008\u3009\u300a\u300b\u300c\u300d"
     "\u300e\u300f\u3010\u3011\u3014\u3015\u2016\xa7\xb6@*/\\&#%\u2020\u2021\u2022\u2023\u2027"
-    "\u3003`\xb4^\xaf\xa8\xb8\xb0\xa9\xae\u2190\u219a\u2192\u219b\u2191\u2193\u2194\u2195\u2196"
+    "\u3003`\xb4^\xaf\xa8\xb8\xb0\xa9\xae\u2190\u2192\u2191\u2193\u2194\u2195\u2196"
     "\u2197\u2198\u2199\u219c\u219d\u219e\u219f+\xb1\xf7\xd7<=>\xac|\xa6~\u0e46\u0ec6\u3005"
-    "\u303b\u309d\u309e\u30fc\u30fd\u30fe\xa4\xa2$\xa3\xa5\u20ac\u3006"
+    "\u303b\u309d\u30fc\u30fd\xa4\xa2$\xa3\xa5\u20ac\u3006"
 )
 _VAR_RANK = {c: i for i, c in enumerate(_VARIABLE)}
 
@@ -102,8 +110,8 @@ _ACCENTS = (
     + _JOIN_ACCENT
 )
 _ACCENT_RANK = {c: i + 1 for i, c in enumerate(_ACCENTS)}
-# Ranges of marks every one of which the table weighs as an accent. A mark outside them, such as a
-# Tibetan vowel sign, is a letter of its own.
+# Ranges of marks every one of which the table weighs as an accent, once ``_IGNORED`` has taken out
+# the ones it ignores. A mark outside them, such as a Tibetan vowel sign, is a letter of its own.
 _ACCENT_RANGES = (
     (0x0300, 0x0362),  # Combining Diacritical Marks, without the combining Latin letters
     (0x0591, 0x05C7),  # Hebrew
@@ -263,7 +271,9 @@ def sort_key(name: str) -> tuple[tuple, tuple, tuple]:
         else:
             decomposition = unicodedata.decomposition(c)
             tag = decomposition.split()[0] if decomposition.startswith("<") else ""
-            for b in c if c in _WHOLE else unicodedata.normalize("NFKD", c):
+            # A spacing accent, a space and a mark under its decomposition, is a symbol of its own.
+            whole = c in _WHOLE or decomposition.startswith("<compat> 0020 ")
+            for b in c if whole else unicodedata.normalize("NFKD", c):
                 if unicodedata.category(b) in ("Mn", "Me") and any(
                     lo <= ord(b) <= hi for lo, hi in _ACCENT_RANGES
                 ):

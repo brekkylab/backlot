@@ -22,6 +22,7 @@ from graphql import GraphQLError, build_client_schema, is_enum_type, parse, vali
 from backlot import synth
 from backlot.fidelity.graphql_diff import backlot_schema
 from backlot.graphql import linear_filters, mcp_tools
+from backlot.routers import linear as linear_router
 from tests._helpers import (
     SWEPT_BYTES,
     build_corpus,
@@ -3815,6 +3816,24 @@ def test_supports_agent_sessions_declares_linears_default(fclient):
             "type": {"kind": "NON_NULL", "ofType": {"name": "Boolean"}},
         }
     ]
+
+
+def test_an_exception_a_resolver_raises_keeps_its_own_message(fclient, monkeypatch):
+    """``_field_error`` answers only graphql-core's refusal of a variable; an error with any other
+    cause is answered as graphql-core formats it. No served Linear resolver raises anything but a
+    ``GraphQLError``, so one is made to raise a ``RuntimeError`` here."""
+
+    def broken(*_args, **_kwargs):
+        raise RuntimeError("a resolver failed")
+
+    viewer = linear_router.ENGINE.schema.type_map["Query"].fields["viewer"]
+    monkeypatch.setattr(viewer, "resolve", broken)
+    r = post(fclient, "{ viewer { id } }")
+    error = {"message": "a resolver failed", "locations": [{"line": 1, "column": 3}]}
+    assert (r.status_code, r.json()) == (
+        200,
+        {"data": None, "errors": [{**error, "path": ["viewer"]}]},
+    )
 
 
 _MEMBERSHIP = "id createdAt updatedAt archivedAt owner sortOrder user { id } team { id }"

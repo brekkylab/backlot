@@ -1139,6 +1139,11 @@ def _scope(
     return sql
 
 
+#: A Drive file's last-modified second as ``backlot.routers.google._drive_modified`` reads it, for
+#: an ORDER BY: its own, else an hour after its creation.
+DRIVE_MODIFIED = "COALESCE(updated_ts, created_ts + 3600)"
+
+
 def list_documents(
     conn,
     source_type,
@@ -1152,10 +1157,12 @@ def list_documents(
     exclude_trashed=False,
     title=None,
     subtype=None,
+    newest_first=False,
 ) -> list[sqlite3.Row]:
     # state: only valid for source_type="github" — it's the only items table with a `state`
     # column; passing it for any other source_type raises sqlite3.OperationalError. Likewise
-    # exclude_trashed, which only gdrive_files has a column for. title matches the whole title,
+    # exclude_trashed, which only gdrive_files has a column for, and newest_first, which orders
+    # gdrive_files rows by DRIVE_MODIFIED, newest first, ties by id. title matches the whole title,
     # ignoring ASCII case. subtype is Confluence's content type, where a row with none is a page.
     tbl = table(source_type)
     sql = f"SELECT * FROM {tbl} WHERE 1=1"
@@ -1173,7 +1180,8 @@ def list_documents(
         sql += " AND COALESCE(subtype, 'page') = ?"
         params.append(subtype)
     clause, cparams = _acl_clause(source_type, visible_ids=visible_ids)
-    sql += clause + f" ORDER BY {_order_by(source_type)} LIMIT ? OFFSET ?"
+    order = f"{DRIVE_MODIFIED} DESC, id" if newest_first else _order_by(source_type)
+    sql += clause + f" ORDER BY {order} LIMIT ? OFFSET ?"
     params += cparams + [limit, offset]
     return conn.execute(sql, params).fetchall()
 
@@ -1823,14 +1831,13 @@ def hubspot_associations(
 
 
 def list_drive_folder(conn, folder, visible_ids=None, limit=100, offset=0) -> list[sqlite3.Row]:
-    """Non-trashed files directly in a Drive folder — SQL-scoped + SQL-paginated, so listing a
-    big folder costs one page of rows per request, not a full-corpus scan on every page."""
+    """Non-trashed files directly in a Drive folder, newest first by :data:`DRIVE_MODIFIED`, ties by
+    id — SQL-scoped + SQL-paginated, so listing a big folder costs one page of rows per request, not
+    a full-corpus scan on every page."""
     sql = "SELECT * FROM gdrive_files WHERE folder = ? AND COALESCE(trashed, 0) = 0"
     params: list = [folder]
     clause, cparams = _acl_clause("google_drive", visible_ids=visible_ids)
-    # No ORDER BY: the folder index already yields a stable order for pagination, and adding
-    # ORDER BY id forces a per-page sort of the whole folder (≈30x slower on a big folder).
-    sql += clause + " LIMIT ? OFFSET ?"
+    sql += clause + f" ORDER BY {DRIVE_MODIFIED} DESC, id LIMIT ? OFFSET ?"
     params += cparams + [limit, offset]
     return conn.execute(sql, params).fetchall()
 
@@ -2379,10 +2386,10 @@ def fts_add_docs(conn, source_type: str, doc_keys: list) -> int:
         values = ",".join("(" + ",".join("?" for _ in cols) + ")" for _ in chunk)
         flat = [v for row in chunk for v in row]
         conn.execute(f"DELETE FROM {fts} WHERE ({key}) IN (VALUES {values})", flat)
-        cols = ", ".join(_fts_text_columns(source_type))
+        text_cols = ", ".join(_fts_text_columns(source_type))
         conn.execute(
-            f"INSERT INTO {fts}({key}, {cols}) "
-            f"SELECT {key}, {cols} FROM {tbl} WHERE ({key}) IN (VALUES {values})",
+            f"INSERT INTO {fts}({key}, {text_cols}) "
+            f"SELECT {key}, {text_cols} FROM {tbl} WHERE ({key}) IN (VALUES {values})",
             flat,
         )
         n += len(chunk)

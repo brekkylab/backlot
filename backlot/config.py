@@ -1,7 +1,7 @@
 """Runtime configuration for Backlot server.
 
-All settings are overridable via environment variables (prefix ``BACKLOT_``) so the
-server and the offline build scripts read the same values.
+All settings are overridable via environment variables (prefix ``BACKLOT_``, but for
+``DO_NOT_TRACK``) so the server and the offline build scripts read the same values.
 
 Corpus-specific knobs do NOT belong here — this is what every layer reads, and a setting only one
 importer uses would put that importer's dataset in front of everyone. A downloading importer keeps
@@ -13,7 +13,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -72,6 +72,13 @@ class Settings(BaseSettings):
     # (see ``backlot.routers.github.rate_limit_refusal``). docs/configuration.md's GitHub section
     # has what the switch does and when to flip it.
     github_enforce_rate_limits: bool = True
+
+    # --- usage telemetry (backlot.telemetry; docs/telemetry.md says what is sent) ---
+    telemetry: bool = True
+    # The `DO_NOT_TRACK` convention many developer tools honour, read without the prefix, from the
+    # environment or `.env` as every setting is. A string, so an empty value turns nothing off
+    # rather than failing validation.
+    do_not_track: str = Field("", validation_alias="DO_NOT_TRACK")
 
     # --- sqlite read tuning (serving connection; see store.connect_ro) ---
     # Sized for the corpus most people serve — their own, or the bundled one, which is under a

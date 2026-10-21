@@ -6732,65 +6732,78 @@ def test_drive_files_list_excludes_trashed_with_no_query_at_all(tmp_path):
         assert [f["id"] for f in asked["files"]] == [gone_id]
 
 
-def test_drive_files_list_defaults_to_descending_modified_time(tmp_path):
-    """Real Drive lists every file in descending modifiedTime when no orderBy is given (#894).
+#: Two folders whose synthesized times (``synth.epoch``) fall between their files', a file whose
+#: time ties the `ops` folder's to the second, two files newer than every folder that tie each
+#: other, stored in the opposite order to their ids, and a file only its author's token lists.
+_NEWEST_FIRST_RECORDS = [
+    {
+        "source_type": "google_drive",
+        "doc_id": doc,
+        "folder": folder,
+        "title": title,
+        "content": content,
+        "author_email": author,
+        "visibility": visibility,
+        "created": "2022-12-01T00:00:00Z",
+        "updated": updated,
+    }
+    for doc, folder, title, content, author, visibility, updated in [
+        ("old", "mk", "Old", "beta beta beta beta", "a@x.com", "public", "2023-01-01T00:00:00Z"),
+        ("mid", "ops", "Mid", "gamma", "a@x.com", "private", "2023-03-01T00:00:00Z"),
+        ("same", "ops", "Same", "gamma", "b@x.com", "public", "2023-06-06T01:18:43Z"),
+        ("new", "mk", "New", "alpha beta gamma delta", "a@x.com", "public", "2024-01-01T00:00:00Z"),
+        ("twin-a", "mk", "Twin A", "delta", "a@x.com", "public", "2025-01-01T00:00:00Z"),
+        ("twin-b", "mk", "Twin B", "delta", "a@x.com", "public", "2025-01-01T00:00:00Z"),
+    ]
+]
+_NEWEST_FIRST = ["Twin B", "Twin A", "New", "ops", "Same", "Mid", "mk", "Old"]
 
-    Measured 2026-10-20 against www.googleapis.com with two accounts' tokens: every adjacent
-    pair in 170 and 21,702-file listings was in descending modifiedTime, folders among the files."""
+
+@pytest.mark.parametrize(
+    "params,caller,names",
+    [
+        ({}, "admin", _NEWEST_FIRST),
+        ({"orderBy": ""}, "admin", _NEWEST_FIRST),
+        ({"q": "trashed = false"}, "admin", _NEWEST_FIRST),
+        ({}, "b@x.com", ["Twin B", "Twin A", "New", "ops", "Same", "mk", "Old"]),
+        ({"q": "'root' in parents"}, "admin", ["ops", "mk"]),
+        ({"q": "'{mk}' in parents"}, "admin", ["Twin B", "Twin A", "New", "Old"]),
+        ({"q": "name contains 'twin'"}, "admin", ["Twin B", "Twin A"]),
+        (
+            {"q": "mimeType != 'application/vnd.google-apps.folder'"},
+            "admin",
+            ["Twin B", "Twin A", "New", "Same", "Mid", "Old"],
+        ),
+        # the index's rank order, the older file first
+        ({"q": "fullText contains 'beta'"}, "admin", ["Old", "New"]),
+    ],
+)
+def test_drive_files_list_with_no_order_by_lists_the_newest_first(tmp_path, params, caller, names):
+    """Pins the order ``_drive_newest_first`` serves and the `fullText` listing it leaves alone, at
+    every page size, so each folder falls inside a page's window and outside one."""
+    from backlot import synth
     from tests._helpers import corpus_client
 
-    records = [
-        {
-            "source_type": "google_drive",
-            "doc_id": "old",
-            "folder": "mk",
-            "title": "Old",
-            "content": "x",
-            "author_email": "a@x.com",
-            "visibility": "public",
-            "created": "2024-01-01T00:00:00Z",
-        },
-        {
-            "source_type": "google_drive",
-            "doc_id": "new",
-            "folder": "mk",
-            "title": "New",
-            "content": "y",
-            "author_email": "a@x.com",
-            "visibility": "public",
-            "created": "2026-06-01T00:00:00Z",
-        },
-        {
-            "source_type": "google_drive",
-            "doc_id": "mid",
-            "folder": "mk",
-            "title": "Mid",
-            "content": "z",
-            "author_email": "a@x.com",
-            "visibility": "public",
-            "created": "2025-03-01T00:00:00Z",
-        },
-    ]
-    with corpus_client(tmp_path, records) as (client, settings):
-        h = {"Authorization": f"Bearer {settings.admin_token}"}
-        body = client.get(
-            "/drive/v3/files",
-            headers=h,
-            params={"pageSize": 100, "fields": "files(name,modifiedTime)"},
-        ).json()
-        times = [f["modifiedTime"] for f in body["files"]]
-        assert times == sorted(times, reverse=True), times
-        # The default matches an explicit `modifiedTime desc`.
-        explicit = client.get(
-            "/drive/v3/files",
-            headers=h,
-            params={
-                "pageSize": 100,
-                "orderBy": "modifiedTime desc",
-                "fields": "files(name,modifiedTime)",
-            },
-        ).json()
-        assert [f["modifiedTime"] for f in explicit["files"]] == times
+    if "q" in params:
+        params = {**params, "q": params["q"].format(mk=synth.drive_folder_id("mk"))}
+    with corpus_client(tmp_path, _NEWEST_FIRST_RECORDS) as (client, settings):
+        token = settings.admin_token
+        if caller != "admin":
+            users = client.get("/_meta/users").json()["users"]
+            token = next(u["token"] for u in users if u["email"] == caller)
+        h = {"Authorization": f"Bearer {token}"}
+        for size in range(1, len(names) + 2):
+            listed, page_token = [], None
+            for _ in range(len(names) + 1):
+                p = {**params, "pageSize": size, "fields": "nextPageToken,files(name)"}
+                if page_token:
+                    p["pageToken"] = page_token
+                body = client.get("/drive/v3/files", headers=h, params=p).json()
+                listed += [f["name"] for f in body["files"]]
+                page_token = body.get("nextPageToken")
+                if not page_token:
+                    break
+            assert listed == names, size
 
 
 _Q_RECORDS = [
@@ -6967,10 +6980,19 @@ def test_drive_q_refuses_a_clause_it_cannot_parse(tmp_path):
             "'x' in bogus",
             "(name contains 'a'",
             "name contains 'a' name contains 'b'",
-            # Past the nesting bound: the parser is recursive, and these exhausted the frame
-            # limit into a 500 before the bound was there. Real Drive serves up to 64 levels.
+            # past `_DRIVE_Q_MAX_DEPTH`, which real reads
             "(" * 200 + "name contains 'a'" + ")" * 200,
+            # refused by real beside the shapes the test below reads
+            "( )",
+            "()()",
+            "name contains 'a' and",
+            "name contains 'a' or or name contains 'b'",
+            "not",
+            "name contains 'a' and not",
+            "not not name contains 'a'",
             "not " * 200 + "name contains 'a'",
+            "sharedWithMe < true",
+            "sharedWithMe >= false",
         ):
             r = client.get("/drive/v3/files", headers=h, params={"q": q})
             assert r.status_code == 400, f"{q}: {r.text}"
@@ -6979,23 +7001,43 @@ def test_drive_q_refuses_a_clause_it_cannot_parse(tmp_path):
             assert (err["errors"][0]["reason"], err["errors"][0]["location"]) == ("invalid", "q")
 
 
-def test_drive_q_accepts_shapes_real_serves(tmp_path):
-    """#897: shapes real Drive accepts that Backlot used to 400."""
+_LIVE = {"Brand guidelines", "Q1 Revenue", "Q1 Deck", "Mia's Notes"}
+
+
+@pytest.mark.parametrize(
+    "q,names",
+    [
+        ('name = "Q1 Deck"', {"Q1 Deck"}),
+        ("trashed < true", set()),
+        ("trashed < false", set()),
+        ("trashed <= true", {"Old Deck"}),
+        ("trashed <= false", set()),
+        ("trashed > true", set()),
+        ("trashed > false", _LIVE),
+        ("trashed >= true", {"Old Deck"}),
+        ("trashed >= false", _LIVE),
+        ("()", _LIVE),
+        ("name = 'Q1 Deck' and ()", {"Q1 Deck"}),
+        ("name = 'Q1 Deck' or", _LIVE),
+        ("(name = 'Q1 Deck' or) and name contains 'Q1'", {"Q1 Deck", "Q1 Revenue"}),
+        ("not (not name = 'Q1 Deck')", {"Q1 Deck"}),
+        ("(" * 64 + "name = 'Q1 Deck'" + ")" * 64, {"Q1 Deck"}),
+    ],
+)
+def test_drive_q_reads_what_real_reads_past_the_reference(tmp_path, q, names):
+    """Shapes the reference does not list and real answers with a 200, each with the files its
+    answer names here, folders left out."""
     from tests._helpers import corpus_client
 
     with corpus_client(tmp_path, _Q_RECORDS) as (client, settings):
         h = {"Authorization": f"Bearer {settings.admin_token}"}
-        for q in (
-            'name = "hello"',  # double-quoted value
-            "trashed < true",  # boolean comparison
-            "trashed != false",
-            "sharedWithMe >= true",
-            "()",  # empty group matches all
-            "name contains 'a' or",  # trailing or
-            'name = "a" or name = "b"',  # double-quoted on both sides
-        ):
-            r = client.get("/drive/v3/files", headers=h, params={"q": q})
-            assert r.status_code != 400, f"{q}: {r.text}"
+        r = client.get(
+            "/drive/v3/files",
+            headers=h,
+            params={"q": q, "fields": "files(name,mimeType)", "pageSize": 100},
+        )
+        assert r.status_code == 200, r.text
+        assert {f["name"] for f in r.json()["files"] if f["mimeType"] != _FOLDER} == names
 
 
 def test_drive_q_refuses_a_documented_term_it_holds_no_fact_for(tmp_path):

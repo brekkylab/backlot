@@ -3,7 +3,7 @@
   "endpoints": [
     "https://developers.notion.com/openapi.json"
   ],
-  "measured": "2026-10-16",
+  "measured": "2026-10-21",
   "operations": [
     {
       "operation": "DELETE /v1/agents/{}",
@@ -328,13 +328,7 @@
     {
       "operation": "POST /v1/data_sources/{}/query",
       "id": "post-database-query",
-      "status": "implemented",
-      "params": {
-        "filter_properties": {
-          "kind": "missing_param",
-          "severity": "gap"
-        }
-      }
+      "status": "implemented"
     },
     {
       "operation": "POST /v1/databases",

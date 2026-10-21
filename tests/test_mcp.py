@@ -4,7 +4,7 @@ Uses the ``live_server`` fixture (a real ``uvicorn`` on the conftest SAMPLE corp
 real MCP server against it: a document the admin can read is blocked for an ACL-restricted user —
 same tool, same object, different identity.
 
-- **Atlassian** (`mcp-atlassian`, Docker) — skipped unless Docker is available.
+- **Atlassian** (`mcp-atlassian`, Docker) — skipped unless ``docker`` runs Linux containers here.
 - **Notion** (`@notionhq/notion-mcp-server`, npx) — skipped unless ``npx`` (Node) is on PATH; the
   first run downloads the npm package.
 - **S3** (`awslabs.aws-api-mcp-server`, uvx) — skipped unless ``uvx`` is on PATH; the first run
@@ -52,13 +52,28 @@ from backlot.acl import Acl  # noqa: E402
 from tests._helpers import POSIX_SIGNALS, python_child_env, readline_within  # noqa: E402
 
 
-def _docker_available() -> bool:
+def _docker_runs_linux_containers() -> bool:
+    """Whether ``docker`` runs Linux containers here. The index of
+    ``ghcr.io/sooperset/mcp-atlassian:latest`` lists ``linux/amd64`` and ``linux/arm64`` images only
+    (fetched 2026-10-20), and Docker on ``windows-latest`` answers but runs Windows containers, so
+    the pull there finds no image and the server never starts. Podman 6.1.4 called as ``docker``
+    has no ``.OSType``, exits 125 on that template and names the OS at ``.Host.OS`` instead.
+    """
     if not shutil.which("docker"):
         return False
     try:
-        return subprocess.run(["docker", "info"], capture_output=True, timeout=10).returncode == 0
+        for template in ("{{.OSType}}", "{{.Host.OS}}"):
+            info = subprocess.run(
+                ["docker", "info", "--format", template],
+                capture_output=True,
+                encoding="utf-8",
+                timeout=10,
+            )
+            if info.returncode == 0:
+                break
     except Exception:  # noqa: BLE001
         return False
+    return info.stdout.strip() == "linux"
 
 
 def _atlassian_params(base: str, token: str, username: str = "svc@example.com"):
@@ -101,6 +116,10 @@ def _atlassian_params(base: str, token: str, username: str = "svc@example.com"):
             "--transport",
             "stdio",
         ],
+        # `_docker_runs_linux_containers` asked the daemon this environment names; mcp 2.3.0's
+        # `stdio_client` would otherwise hand `docker run` a fixed list of variables, DOCKER_HOST
+        # and DOCKER_CONTEXT not among them.
+        env=dict(os.environ),
     )
 
 
@@ -151,7 +170,45 @@ async def _call(params, tool_pred, args, ok_pred) -> bool:
 # --------------------------------------------------------------------------- Atlassian
 
 
-@pytest.mark.skipif(not _docker_available(), reason="Docker not available")
+@pytest.mark.parametrize(
+    ("docker", "answers", "runs"),
+    [
+        pytest.param(None, [], False, id="no-docker"),
+        pytest.param("docker", [(0, "linux\n")], True, id="linux-containers"),
+        pytest.param("docker", [(0, "windows\n")], False, id="windows-containers"),
+        pytest.param("docker", [(1, "\n"), (1, "\n")], False, id="no-daemon"),
+        pytest.param("docker", [(125, ""), (0, "linux\n")], True, id="podman"),
+        pytest.param("docker", [subprocess.TimeoutExpired("docker", 10)], False, id="timeout"),
+    ],
+)
+def test_the_atlassian_test_runs_only_where_docker_runs_linux_containers(
+    monkeypatch, docker, answers, runs
+):
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(args)
+        answer = answers[len(calls) - 1]
+        if isinstance(answer, Exception):
+            raise answer
+        return subprocess.CompletedProcess(args, answer[0], stdout=answer[1], stderr="")
+
+    monkeypatch.setattr(shutil, "which", lambda name: docker)
+    monkeypatch.setattr(subprocess, "run", run)
+    assert _docker_runs_linux_containers() is runs
+    asked = [["docker", "info", "--format", t] for t in ("{{.OSType}}", "{{.Host.OS}}")]
+    assert calls == asked[: len(answers)]
+
+
+@pytest.mark.parametrize("name", ["DOCKER_HOST", "DOCKER_CONTEXT"])
+def test_docker_run_keeps_the_variables_that_pick_its_daemon(monkeypatch, name):
+    monkeypatch.setenv(name, "elsewhere")
+    assert _atlassian_params("http://127.0.0.1:1", "token").env[name] == "elsewhere"
+
+
+@pytest.mark.skipif(
+    not _docker_runs_linux_containers(), reason="no Docker daemon running Linux containers"
+)
 def test_mcp_atlassian_acl_enforced(live_server):
     """A Jira issue the admin reads through mcp-atlassian is not-found for a scoped user.
 

@@ -237,7 +237,14 @@ def _instance(path: str) -> str:
 #: 404 at `nope%5Bx` into the dead-link page (:func:`no_endpoint`), and the conversion 400 at
 #: `issue/A%5BB/comment?maxResults=abc` into :data:`_JIRA_NULL_ERROR_PAGE`; the same for `%5D`. At
 #: `issue/A%5BB` the issue's own JSON 404 stands. On 2026-10-19 `nope%5bx` and the bare `nope[x`
-#: were the dead-link page, and `issue/A[B/comment?maxResults=abc` the `(null)` page.
+#: were the dead-link page, and `issue/A[B/comment?maxResults=abc` the `(null)` page. Its 405, 415
+#: and 406 are Tomcat's pages instead (:func:`_jira_tomcat_refusal`), whatever the `Accept`:
+#: measured on Jira Cloud on 2026-10-21 on `POST issue/A%5BB`, `DELETE issue/A%5BB/comment` and
+#: `POST issue/A%5BB/comment` with a `text/plain` body under `application/json`, `*/*`, `text/html`,
+#: `application/xml`, `foo` and none, and on `GET issue/A%5BB` under `text/html`, `application/xml`
+#: and `foo`, with a credential and without, the page each time, where `foo` leaves the RFC 7807
+#: answer at `A-1` with no body (:func:`rendered`). The key spelled `A%5DB`, `A%5bB`, `A[B` or
+#: `A]B`, and `/rest/api/2`, answered alike.
 _JIRA_BRACKET = re.compile(r"%5[BD]|[\[\]]", re.IGNORECASE)
 #: That 400's page: real's is 66,815 bytes on `text/html;charset=utf-8`, titled `(null)`; this is a
 #: stub with the status, the media type, the title and the one line it reads.
@@ -245,6 +252,17 @@ _JIRA_NULL_ERROR_PAGE = (
     "<!DOCTYPE html><html><head><title>(null)</title></head><body>"
     '<p>Encountered a "null - null" error while loading this page.</p></body></html>'
 )
+
+
+def _jira_tomcat_refusal(status: int, headers: dict[str, str]) -> AtlassianError:
+    """Tomcat's page for Jira's ``status`` on a path carrying a bracket (:data:`_JIRA_BRACKET`), on
+    :data:`TOMCAT_MEDIA_TYPE` with `Content-Language: en` and ``headers`` beside it: the ones the
+    RFC 7807 answer carries, `Allow` on the 405 and `Accept` on the 415 and the 406."""
+    return AtlassianError(
+        status,
+        tomcat_page(status).encode(),
+        headers={"Content-Type": TOMCAT_MEDIA_TYPE, "Content-Language": "en", **headers},
+    )
 
 
 def integer_conversion_failure(path: str, name: str, values: list[str]) -> AtlassianError:
@@ -405,6 +423,110 @@ def content_finder_cannot_fetch(content_type: str) -> AtlassianError:
         501,
         "unchecked.NotImplementedServiceException",
         f"Cannot fetch {content_type}s with ContentFinder",
+    )
+
+
+#: The six routes under `content/{id}`, each with the sentence real's 404 carries for it and
+#: whether the `data` object beside it is the refused shape or the readable one. Measured on
+#: Confluence Cloud, 2026-10-16, on ids naming no page (`999999999`, `888888888`, `-1`, `0`,
+#: `9223372036854775807`): `content/{id}` and `label` name the id bare and answer the refused
+#: shape, the three `child/*` routes name it as a `ContentId` and answer the readable one, and
+#: `restriction/byOperation` wraps that `ContentId` in angle brackets.
+_CONTENT_NOT_FOUND = {
+    "content": (lambda i: f"No content found with id : {i}", False),
+    "label": (lambda i: f"No content found with id : {i}", False),
+    "child/page": (
+        lambda i: f"No parent or not permitted to view content with id : ContentId{{id={i}}}",
+        True,
+    ),
+    "child/comment": (
+        lambda i: f"No parent or not permitted to view content with id : ContentId{{id={i}}}",
+        True,
+    ),
+    "child/attachment": (lambda i: f"No content found with id: ContentId{{id={i}}}", True),
+    "restriction/byOperation": (
+        lambda i: f"No content with id <ContentId{{id={i}}}> can be found",
+        False,
+    ),
+}
+
+
+def content_not_found(route: str, content_id: int, *, attachment: bool = False) -> AtlassianError:
+    """Confluence's 404 for a content id naming no page, in the three members and the two `data`
+    shapes :data:`_CONTENT_NOT_FOUND` records.
+
+    The id named is the one READ, never the one sent: `content/05/child/page` names
+    `ContentId{id=5}`, because real converts the path variable before it looks the page up
+    (:func:`content_id_not_convertible` is what refuses the ones it cannot). A page the caller may
+    not read answers this too, so its 404 and a made-up id's differ only in the id each names.
+
+    ``attachment`` is what `content/{id}` and `label` pass for an id sent as `att<long>`, which
+    names an attachment, and no corpus record is one. Those two routes answer it with a third shape
+    whatever the number, a readable page's included: measured on Confluence Cloud, 2026-10-21,
+    `content/att229469` and `content/att229469/label` (229469 a page that serves) and
+    `att999999999` on both are `NotFoundException: null` beside `authorized` false and `valid`
+    true. The other four routes read the number alone and answer as for the bare id.
+    """
+    sentence_of, readable = _CONTENT_NOT_FOUND[route]
+    if attachment:
+        sentence = "null"
+        data = {"authorized": False, "valid": True, "errors": [], "successful": False}
+    elif readable:
+        sentence = sentence_of(content_id)
+        data = {"authorized": True, "valid": True, "errors": [], "successful": True}
+    else:
+        sentence = sentence_of(content_id)
+        data = {
+            "authorized": False,
+            "valid": False,
+            "errors": [{"message": {"translation": sentence, "args": []}}],
+            "successful": False,
+        }
+    return AtlassianError(
+        404,
+        {
+            "statusCode": 404,
+            "data": data,
+            "message": (
+                f"com.atlassian.confluence.api.service.exceptions.api.NotFoundException: {sentence}"
+            ),
+        },
+    )
+
+
+def content_id_not_convertible(value: str) -> AtlassianError:
+    """Spring's 400 for a `content/{id}` path variable Confluence's `ContentId` cannot parse, the
+    value named as the path decodes it.
+
+    What ends the message depends on the value's first three characters. After `att`, it is the
+    `NumberFormatException` of the `long` that should follow, naming what does: `att` names `""`,
+    `attabc` names `"abc"`. Otherwise it is `Can't parse as a ContentId`. Measured on Confluence
+    Cloud, 2026-10-16 (`abc`, `1.5`, `1e3`, a space, `9223372036854775808`, `-9223372036854775809`,
+    `99999999999999999999`) and 2026-10-21 (`att`, `attabc`, `att%205`, `att9223372036854775808`,
+    and `ATT999999999` and `Att5`, which end as `abc` does).
+    """
+    if value.startswith("att"):
+        cause = f'java.lang.NumberFormatException: For input string: "{value[3:]}"'
+    else:
+        cause = (
+            "com.atlassian.confluence.api.service.exceptions.api.BadRequestException: "
+            "Can't parse as a ContentId"
+        )
+    return AtlassianError(
+        400,
+        {
+            "statusCode": 400,
+            "message": (
+                "org.springframework.web.method.annotation."
+                "MethodArgumentTypeMismatchException: Failed to convert value of type "
+                "'java.lang.String' to required type "
+                "'com.atlassian.confluence.api.model.content.id.ContentId'; nested exception is "
+                "org.springframework.core.convert.ConversionFailedException: Failed to convert "
+                "from type [java.lang.String] to type [@org.springframework.web.bind.annotation."
+                f"PathVariable com.atlassian.confluence.api.model.content.id.ContentId] for "
+                f"value [{value}]; nested exception is {cause}"
+            ),
+        },
     )
 
 
@@ -747,6 +869,7 @@ def refuse_a_media_type(
       after a bare `;`, `TEXT/Plain;Charset=UTF-8;X=Y` as `text/plain;Charset=UTF-8;X=Y`
     - `Accept` names ``consumes``, joined by `, `, on every 415; `Accept` on the request changes
       none of it, though an unreadable one leaves the body out (:func:`rendered`)
+    - a path carrying a bracket is Tomcat's 415 page instead (:func:`_jira_tomcat_refusal`)
 
     Where the operation's entry names a ``charset``, ``detail`` adds `;charset=<it>` to a type read
     without one, as `DOCUMENTED_OTHERWISE` in ``scripts/gen_jira_unserved.py`` records.
@@ -772,6 +895,8 @@ def refuse_a_media_type(
             if charset is not None and "charset" not in names:
                 media_type = f"{media_type};charset={charset}"
             detail = f"Content-Type '{media_type}' is not supported."
+    if _JIRA_BRACKET.search(path):
+        return _jira_tomcat_refusal(415, {"Accept": ", ".join(consumes)})
     return AtlassianError(
         415,
         {
@@ -1459,7 +1584,8 @@ def not_acceptable(
 
     - Jira: RFC 7807 under :data:`PROBLEM_JSON`, ``detail`` naming ``produces``
       (`Acceptable representations: [application/json].`) and `Accept` naming them beside it, the
-      request's path in ``instance``
+      request's path in ``instance``; on a path carrying a bracket, Tomcat's 406 page instead
+      (:func:`_jira_tomcat_refusal`)
     - Confluence's Spring services: the `errors` list :func:`confluence_refusal` renders, Tomcat's
       page for every value measured but a `+json` type
     - its JAX-RS services (``jaxrs``): no body under no `content-type`, and for a header they
@@ -1492,6 +1618,8 @@ def not_acceptable(
     if accepts(accept, reader="jira", produces=produces):
         return None
     named = ", ".join(produces)
+    if _JIRA_BRACKET.search(path):
+        return _jira_tomcat_refusal(406, {"Accept": named})
     return AtlassianError(
         406,
         {
@@ -2015,6 +2143,7 @@ def method_not_allowed(path: str, method: str) -> AtlassianError:
     directions — Confluence's `errors` is a LIST carrying no `Allow` (Tomcat's page names one,
     :data:`_CONFLUENCE_ALLOW`, which :func:`confluence_refusal` says an `Accept` draws), Jira's is
     RFC 7807 on `application/problem+json` naming the methods that path takes (:data:`_JIRA_ALLOW`).
+    A Jira path carrying a bracket is Tomcat's 405 page instead (:func:`_jira_tomcat_refusal`).
     A client reading `errors[0]["code"]` is the one Confluence's 405 serves; Confluence's
     served-route envelope (:func:`_confluence_envelope`) has no `errors` at all. Confluence's
     `search` is neither (:data:`_CONFLUENCE_SEARCH_ALLOW`).
@@ -2055,6 +2184,8 @@ def method_not_allowed(path: str, method: str) -> AtlassianError:
             headers={} if allow is None else {"Allow": allow},
         )
     allow = jira_allow(path)
+    if _JIRA_BRACKET.search(path):
+        return _jira_tomcat_refusal(405, {} if allow is None else {"Allow": allow})
     return AtlassianError(
         405,
         {
@@ -2603,10 +2734,9 @@ def http_body(path: str, exc, query=None) -> dict:
 
 def validation_body(path: str, errors) -> tuple[int, dict]:
     """A 422 from FastAPI's own request validation, in the product's refusal envelope. The per-field
-    detail collapses to one sentence because that is the only part a client reads. Jira's routes
-    read their own parameters, so what reaches this is a Confluence integer path parameter, for
-    which real answers a 400 in the same two members, a Spring
-    `MethodArgumentTypeMismatchException`, where this answers the 422."""
+    detail collapses to one sentence because that is the only part a client reads. Jira's and
+    Confluence's routes read their own parameters and path variables, so a route reaches this only
+    if it declares one typed."""
     message = "; ".join(e.get("msg", "invalid request") for e in errors) or "Invalid request"
     if is_confluence(path):
         return 422, _confluence_envelope(422, message)

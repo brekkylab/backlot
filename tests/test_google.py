@@ -6978,19 +6978,66 @@ def test_drive_q_refuses_a_clause_it_cannot_parse(tmp_path):
             "modifiedTime contains 'x'",
             "modifiedTime < 'yesterday'",  # the reference wants RFC 3339 here
             "'x' in bogus",
-            "name contains 'a' or",
             "(name contains 'a'",
             "name contains 'a' name contains 'b'",
-            # Past the nesting bound: the parser is recursive, and these exhausted the frame
-            # limit into a 500 before the bound was there.
-            "(" * 64 + "name contains 'a'" + ")" * 64,
-            "not " * 64 + "name contains 'a'",
+            # past `_DRIVE_Q_MAX_DEPTH`, which real reads
+            "(" * 200 + "name contains 'a'" + ")" * 200,
+            # refused by real beside the shapes the test below reads
+            "( )",
+            "()()",
+            "name contains 'a' and",
+            "name contains 'a' or or name contains 'b'",
+            "not",
+            "name contains 'a' and not",
+            "not not name contains 'a'",
+            "not " * 200 + "name contains 'a'",
+            "sharedWithMe < true",
+            "sharedWithMe >= false",
         ):
             r = client.get("/drive/v3/files", headers=h, params={"q": q})
             assert r.status_code == 400, f"{q}: {r.text}"
             err = r.json()["error"]
             assert err["message"] == "Invalid Value", q
             assert (err["errors"][0]["reason"], err["errors"][0]["location"]) == ("invalid", "q")
+
+
+_LIVE = {"Brand guidelines", "Q1 Revenue", "Q1 Deck", "Mia's Notes"}
+
+
+@pytest.mark.parametrize(
+    "q,names",
+    [
+        ('name = "Q1 Deck"', {"Q1 Deck"}),
+        ("trashed < true", set()),
+        ("trashed < false", set()),
+        ("trashed <= true", {"Old Deck"}),
+        ("trashed <= false", set()),
+        ("trashed > true", set()),
+        ("trashed > false", _LIVE),
+        ("trashed >= true", {"Old Deck"}),
+        ("trashed >= false", _LIVE),
+        ("()", _LIVE),
+        ("name = 'Q1 Deck' and ()", {"Q1 Deck"}),
+        ("name = 'Q1 Deck' or", _LIVE),
+        ("(name = 'Q1 Deck' or) and name contains 'Q1'", {"Q1 Deck", "Q1 Revenue"}),
+        ("not (not name = 'Q1 Deck')", {"Q1 Deck"}),
+        ("(" * 64 + "name = 'Q1 Deck'" + ")" * 64, {"Q1 Deck"}),
+    ],
+)
+def test_drive_q_reads_what_real_reads_past_the_reference(tmp_path, q, names):
+    """Shapes the reference does not list and real answers with a 200, each with the files its
+    answer names here, folders left out."""
+    from tests._helpers import corpus_client
+
+    with corpus_client(tmp_path, _Q_RECORDS) as (client, settings):
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        r = client.get(
+            "/drive/v3/files",
+            headers=h,
+            params={"q": q, "fields": "files(name,mimeType)", "pageSize": 100},
+        )
+        assert r.status_code == 200, r.text
+        assert {f["name"] for f in r.json()["files"] if f["mimeType"] != _FOLDER} == names
 
 
 def test_drive_q_refuses_a_documented_term_it_holds_no_fact_for(tmp_path):

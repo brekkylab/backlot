@@ -1794,10 +1794,15 @@ def linear_entity_has_visible(conn, kind: str, value, visible_ids=None) -> bool:
 
 def linear_team_issue_counts(conn, visible_ids=None) -> dict[str, int]:
     """team -> visible issue count, in one grouped scan — ``Team.issueCount`` for a whole page of
-    teams without a COUNT(*) per team."""
+    teams without a COUNT(*) per team. An archived issue is left out, as the default `issues`
+    listing leaves it out (:func:`_linear_archived`): on api.linear.app a team's `issueCount` was 8
+    beside 8 listed issues and 9 under `includeArchived: true` (2026-10-09), and went from 9 to 8
+    when one of its issues was archived (2026-10-21)."""
     clause, cparams = _acl_clause("linear", visible_ids=visible_ids)
     rows = conn.execute(
-        f"SELECT team, COUNT(*) FROM linear_issues WHERE 1=1{clause} GROUP BY team", cparams
+        f"SELECT team, COUNT(*) FROM linear_issues WHERE 1=1{_linear_archived(False)}{clause} "
+        "GROUP BY team",
+        cparams,
     )
     return {r[0]: r[1] for r in rows}
 

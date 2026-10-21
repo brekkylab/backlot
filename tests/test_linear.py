@@ -187,6 +187,49 @@ def test_linear_team_resolves_by_key_and_uuid(client, admin_h, ro_conn):
     )
 
 
+def test_linear_team_issue_count_excludes_archived_issues(tmp_path):
+    """Pins the archived issue ``store.linear_team_issue_counts`` leaves out, beside the listing,
+    the `includeArchived: true` listing and the read by id that still serve it."""
+    records = [
+        {
+            **LINEAR_CORPUS[0],
+            "doc_id": doc_id,
+            "identifier": identifier,
+            "team": team,
+            "group": team,
+            **({"archivedAt": "2026-03-01T00:00:00Z"} if archived else {}),
+        }
+        for doc_id, identifier, team, archived in [
+            ("live", "ENG-1", "engineering", False),
+            ("archived", "ENG-2", "engineering", True),
+            ("archived-only", "DES-1", "design", True),
+        ]
+    ]
+    with corpus_client(tmp_path, records) as (client, settings):
+        headers = {"Authorization": settings.admin_token}
+        body = gql(
+            client,
+            '{ team(id: "ENG") { issueCount issues { nodes { identifier } } } '
+            "issues(includeArchived: true) { nodes { identifier } } "
+            'archivedTeam: team(id: "DES") { issueCount } }',
+            headers,
+        ).json()
+        assert "errors" not in body, body.get("errors")
+        assert body["data"]["team"] == {
+            "issueCount": 1,
+            "issues": {"nodes": [{"identifier": "ENG-1"}]},
+        }
+        assert {n["identifier"] for n in body["data"]["issues"]["nodes"]} == {
+            "ENG-1",
+            "ENG-2",
+            "DES-1",
+        }
+        assert body["data"]["archivedTeam"]["issueCount"] == 0
+        archived = gql(client, '{ issue(id: "ENG-2") { identifier archivedAt } }', headers).json()
+        assert archived["data"]["issue"]["identifier"] == "ENG-2"
+        assert archived["data"]["issue"]["archivedAt"] is not None
+
+
 def test_linear_team_issue_count_is_the_visible_count(client, admin_h, tokens_yaml):
     """Asserted for BOTH an admin and a restricted caller: as admin alone the count's ACL branch
     never runs, so the assertion would hold with scoping removed entirely."""

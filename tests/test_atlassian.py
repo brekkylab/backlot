@@ -5043,6 +5043,59 @@ def test_jira_answers_a_bracket_with_a_page_of_its_web_app(
     assert r.text == page
 
 
+@pytest.mark.parametrize(
+    "method,vendor_path,accept,content_type,status,carried",
+    [
+        # the 405s, under each `Accept` the measurement sent them under: the page carries the
+        # `Allow` the RFC 7807 answer at `A-1` carries, in the order it carries it there
+        ("POST", "/rest/api/3/issue/A%5BB", "application/json", None, 405)
+        + (("allow", "GET, PUT, DELETE"),),
+        ("POST", "/rest/api/3/issue/A%5BB", "*/*", None, 405) + (("allow", "GET, PUT, DELETE"),),
+        ("DELETE", "/rest/api/3/issue/A%5BB/comment", "application/json", None, 405)
+        + (("allow", "GET, POST"),),
+        ("DELETE", "/rest/api/3/issue/A%5BB/comment", "*/*", None, 405) + (("allow", "GET, POST"),),
+        # the 415 under the same two, its `Accept` naming what the operation consumes
+        ("POST", "/rest/api/3/issue/A%5BB/comment", "application/json", "text/plain", 415)
+        + (("accept", "application/json"),),
+        ("POST", "/rest/api/3/issue/A%5BB/comment", "*/*", "text/plain", 415)
+        + (("accept", "application/json"),),
+        # the 406, under the two `Accept` values measured for it
+        ("GET", "/rest/api/3/issue/A%5BB", "text/html", None, 406)
+        + (("accept", "application/json"),),
+        ("GET", "/rest/api/3/issue/A%5BB", "application/xml", None, 406)
+        + (("accept", "application/json"),),
+        # the `]` spelling, and the bracket bare
+        ("POST", "/rest/api/3/issue/A%5DB", "application/json", None, 405)
+        + (("allow", "GET, PUT, DELETE"),),
+        ("POST", "/rest/api/3/issue/A[B", "application/json", None, 405)
+        + (("allow", "GET, PUT, DELETE"),),
+        ("DELETE", "/rest/api/3/issue/A[B/comment", "application/json", None, 405)
+        + (("allow", "GET, POST"),),
+    ],
+)
+def test_jira_answers_a_bracket_with_tomcats_page_for_its_405_406_and_415(
+    client, admin_h, method, vendor_path, accept, content_type, status, carried
+):
+    """Pins the other three refusals ``errors.atlassian._JIRA_BRACKET`` names: on a path carrying
+    a bracket each is Tomcat's page for the status, on `text/html;charset=utf-8` with
+    `Content-Language: en` and the one header the RFC 7807 answer at a bracketless key carries."""
+    headers = {**admin_h, "Accept": accept}
+    if content_type is not None:
+        headers["Content-Type"] = content_type
+    r = client.request(
+        method,
+        f"/atlassian{vendor_path}",
+        headers=headers,
+        content=b"x" if content_type else None,
+    )
+    assert r.status_code == status, r.text
+    assert r.headers["content-type"] == "text/html;charset=utf-8"
+    assert r.headers["content-language"] == "en"
+    assert r.text == errors_atlassian.tomcat_page(status)
+    name, value = carried
+    assert r.headers[name] == value
+
+
 _CREDENTIALS = {
     "none": {},
     "failed-pair": FAILED_PAIR,

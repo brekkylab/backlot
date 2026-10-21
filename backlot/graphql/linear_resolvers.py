@@ -1577,13 +1577,14 @@ RESOLVERS = {
 
 
 def _field_error(error: GraphQLError, variables) -> GraphQLError:
-    """Linear's answer for a variable sent as ``null`` to a non-null argument with a default.
-    GraphQL lets a nullable variable stand at such an argument, so the ``null`` is refused only as
-    the field runs: graphql-core names the argument, and Linear answers ``Internal server error``
-    with ``INTERNAL_SERVER_ERROR`` at the field's path and the variable's location. api.linear.app
-    answered so on 2026-10-21 (UTC) at ``User.supportsAgentSessions(forCurrentUser)``, the one such
-    argument this schema declares, and at ``Query.ssoUrlFromEmail(type)``, the only other one its
-    own schema has. Every other error is kept."""
+    """Linear's answer for a variable sent as ``null`` to a non-null argument. GraphQL lets a
+    nullable variable stand there when the argument or the variable declares a default, so the
+    ``null`` is refused only as the field runs: graphql-core names the argument, and Linear answers
+    ``Internal server error`` with ``INTERNAL_SERVER_ERROR`` at the field's path and the variable's
+    location. api.linear.app answered so on 2026-10-21 (UTC) at
+    ``User.supportsAgentSessions(forCurrentUser)`` and ``Query.ssoUrlFromEmail(type)``, the two
+    non-null arguments its schema gives a default, and at ``issue(id:)``, ``team(id:)`` and
+    ``user(id:)`` under ``$x: String = "a"``. Every other error is kept."""
     cause = error.original_error
     node = cause.nodes[0] if isinstance(cause, GraphQLError) and cause.nodes else None
     if not isinstance(node, VariableNode):

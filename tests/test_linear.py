@@ -3768,10 +3768,29 @@ def _internal_server_error(path: list, column: int) -> dict:
             {"v": None},
             _internal_server_error(["users", "nodes", 0, "supportsAgentSessions"], 91),
         ),
+        (
+            "query($v: Boolean = true) { viewer { supportsAgentSessions(forCurrentUser: $v) } }",
+            {"v": None},
+            _internal_server_error(["viewer", "supportsAgentSessions"], 76),
+        ),
+        (
+            'query($x: String = "a") { issue(id: $x) { id } }',
+            {"x": None},
+            _internal_server_error(["issue"], 37),
+        ),
     ],
-    ids=["absent", "literals", "variable omitted", "variable true", "variable null", "in a list"],
+    ids=[
+        "absent",
+        "literals",
+        "variable omitted",
+        "variable true",
+        "variable null",
+        "in a list",
+        "variable null, its default true",
+        "issue id, variable null, its default a",
+    ],
 )
-def test_supports_agent_sessions_answers_each_for_current_user_as_linear_does(
+def test_for_current_user_and_a_null_variable_at_a_non_null_argument_answer_as_linear_does(
     fclient, query, variables, expected
 ):
     """Each row is api.linear.app's answer to the same document and variables on 2026-10-21

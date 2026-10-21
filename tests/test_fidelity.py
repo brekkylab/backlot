@@ -36,7 +36,6 @@ from backlot.fidelity import (
     operations,
     s3_probe,
     slack_docs,
-    slack_probe,
 )
 from backlot.fidelity.comparisons import (
     COMPARISONS,
@@ -1910,7 +1909,7 @@ def test_a_slack_response_is_its_examples_with_each_linked_object_placed_where_t
     # An example's empty object is one sample's contents; a table's object is a container.
     assert (
         "members[].profile.fields"
-        not in slack_probe.shape_of(
+        not in slack_docs.shape_of(
             {"profile": {"fields": {}}}, empty_object_entered=False
         ).containers
     )
@@ -1921,7 +1920,7 @@ def test_a_slack_response_is_its_examples_with_each_linked_object_placed_where_t
     assert elsewhere == obj
     with pytest.raises(FidelityError, match="no example carries that object"):
         slack_docs.response_shape(
-            SLACK_PAGE, {OBJECT_URL: slack_probe.shape_of({"x": 1, "y": 2})}.__getitem__
+            SLACK_PAGE, {OBJECT_URL: slack_docs.shape_of({"x": 1, "y": 2})}.__getitem__
         )
 
 
@@ -1950,10 +1949,10 @@ def test_slack_divergences_are_classified_like_operation_ones():
     )
     assert served["users.list"].arguments == {"limit": "number", "cursor": "string", "x": ""}
 
-    ours = slack_probe.shape_of(
+    ours = slack_docs.shape_of(
         {"members": [{"id": "U1", "tz": 3, "bot": {"a": 1}, "name": None}], "cache_ts": "x"}
     )
-    documented = slack_probe.shape_of(
+    documented = slack_docs.shape_of(
         {
             "members": [{"id": "U1", "tz": "Asia/Seoul", "bot": {}, "name": "a"}],
             "extra": [{"y": 1}],
@@ -2008,9 +2007,9 @@ def test_slack_is_measured_off_the_reference_with_each_page_read_once(monkeypatc
         lambda spec, mount: {"users.list": slack_docs.Method("users.list", {"limit": "number"})},
     )
     monkeypatch.setattr(
-        slack_probe,
+        slack_docs,
         "answers",
-        lambda *, timeout: {"users.list": slack_probe.shape_of({"ok": True, "members": []})},
+        lambda *, timeout: {"users.list": slack_docs.shape_of({"ok": True, "members": []})},
     )
     measured = slack_docs.measure(COMPARISONS["slack"])
     assert fetched == list(pages)
@@ -2033,7 +2032,7 @@ def test_the_probe_corpus_answers_every_method_backlot_serves():
     reaction, edit and file fields are each answered somewhere."""
     from backlot.main import app
 
-    answered = slack_probe.answers(timeout=20.0)
+    answered = slack_docs.answers(timeout=20.0)
     assert set(answered) == set(slack_docs.from_backlot(app.openapi(), ("/slack/api",)))
     history = answered["conversations.history"].fields
     for field in ("reply_count", "reactions", "edited", "files[].id"):

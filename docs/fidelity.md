@@ -135,7 +135,7 @@ never a divergence. Measured 2026-10-21 over all 340 method pages and the nine o
   `Timestamp`, a string or a number as Slack's timestamps go, which types nothing. So do the 25
   rows of the conversation object's booleans table, which has no Type column.
 
-Backlot's side of the fields is what a local Backlot answers on a corpus `slack_probe` supplies, over
+Backlot's side of the fields is what a local Backlot answers on a corpus `slack_docs` supplies, over
 every channel, thread and person it holds, so a finding reproduces with `backlot.serve(records=…)`.
 A field Backlot answers under a list the documentation never looks inside, or the documentation
 under one Backlot answered empty, is compared against nothing and not reported; an empty object

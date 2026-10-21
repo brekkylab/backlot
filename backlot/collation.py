@@ -5,8 +5,8 @@ capitals lowered, so ``A`` ties ``a`` where ``Ä`` sorts after ``ä`` and ``ⓐ`
 Measured against Drive v3 on 2026-10-20 and 2026-10-21, real collates by the language the caller's
 Google account is set to. Two Korean-language accounts listed their 21,872 files in ICU's ``ko``
 order, Hangul and Han ahead of Latin, apart from rows a page boundary repeated; one of them, set to
-English, then listed its 228 files, and eleven folders of 58, 32, 6, 6, 16, 19, 9, 6, 366, 24 and 3
-names made for it, in the root order. Backlot collates as the English-language account did. Names
+English, then listed its 228 files, and twelve folders of 58, 32, 6, 6, 16, 19, 9, 6, 366, 24, 3 and
+11 names made for it, in the root order. Backlot collates as the English-language account did. Names
 the collation ties, such as ``A`` and ``a``, keep the order ``backlot.routers.google._drive_sort``
 gives ties.
 
@@ -124,6 +124,7 @@ _ACCENT_RANGES = (
     (0xFE20, 0xFE2F),  # Combining Half Marks
     (0x3099, 0x309A),  # kana voicing marks
 )
+_ACCENT_MARKS = frozenset(chr(cp) for lo, hi in _ACCENT_RANGES for cp in range(lo, hi + 1))
 
 # The letters of the Latin-1 Supplement and Latin Extended-A blocks that no decomposition maps onto
 # an ASCII letter, as the table weighs them: two letters joined, an ASCII letter and an accent, or
@@ -176,6 +177,14 @@ _TERTIARY = {
 }
 _KANA = {"HIRAGANA": (0x0D, 0x0E), "KATAKANA": (0x0F, 0x11), "<narrow>": (0x10, 0x12)}
 _CIRCLED_KANA = 0x13
+# Every kana letter, by its name; they are all in Hiragana and Katakana, Katakana Phonetic
+# Extensions, and Kana Extended-B to Small Kana Extension.
+_KANA_NAMES = {
+    chr(cp): name
+    for lo, hi in ((0x3041, 0x30FF), (0x31F0, 0x31FF), (0x1AFF0, 0x1B16F))
+    for cp in range(lo, hi + 1)
+    if (name := unicodedata.name(chr(cp), "")).startswith(("HIRAGANA LETTER ", "KATAKANA LETTER "))
+}
 
 
 def _primary(b: str) -> tuple:
@@ -203,8 +212,8 @@ def _tertiary(tag: str, b: str) -> int:
 
 def _kana(b: str, tag: str) -> tuple[str, int] | None:
     """A kana letter as the hiragana it ties at the primary level, with its tertiary weight."""
-    name = unicodedata.name(b, "")
-    if not name.startswith(("HIRAGANA LETTER ", "KATAKANA LETTER ")):
+    name = _KANA_NAMES.get(b)
+    if name is None:
         return None
     script = name.split(" ")[0]
     small = " SMALL " in name
@@ -215,6 +224,41 @@ def _kana(b: str, tag: str) -> tuple[str, int] | None:
     if tag == "<circle>":
         return b, _CIRCLED_KANA
     return b, _KANA[tag if tag == "<narrow>" else script][0 if small else 1]
+
+
+@functools.lru_cache(maxsize=1 << 16)
+def _elements(c: str) -> tuple[tuple, ...]:
+    """What one character adds to a key, in order: ``(primary, tertiary)`` for each letter,
+    digit, space, punctuation mark or symbol it is weighed as, and ``(None, secondary)`` for each
+    accent."""
+    if unicodedata.category(c) in ("Cc", "Cf") and c not in _VAR_RANK:
+        return ()  # ignorable
+    lower = c.lower()
+    if lower in _LIGATURES:
+        first, second = _LIGATURES[lower]
+        return (
+            (_primary(first), _tertiary("<compat>", c)),
+            (None, _ACCENT_RANK[_JOIN_ACCENT]),
+            (_primary(second), _tertiary("<compat>", c)),
+        )
+    if lower in _WITH:
+        base, accent = _WITH[lower]
+        return (_primary(base), _tertiary("", c)), (None, _ACCENT_RANK[accent])
+    if lower in _AFTER:
+        return (((3, ord(_AFTER[lower]), 1), _tertiary("", c)),)
+    decomposition = unicodedata.decomposition(c)
+    tag = decomposition.split()[0] if decomposition.startswith("<") else ""
+    # A spacing accent, a space and a mark under its decomposition, is a symbol of its own.
+    whole = c in _WHOLE or decomposition.startswith("<compat> 0020 ")
+    elements = []
+    for b in c if whole else unicodedata.normalize("NFKD", c):
+        if b in _ACCENT_MARKS:
+            elements.append((None, _ACCENT_RANK.get(b, len(_ACCENTS) + 1 + ord(b))))
+        elif kana := _kana(b, tag):
+            elements.append((_primary(kana[0]), kana[1]))
+        else:
+            elements.append((_primary(b), _tertiary(tag, b)))
+    return tuple(elements)
 
 
 @functools.lru_cache(maxsize=1 << 16)
@@ -251,32 +295,12 @@ def sort_key(name: str) -> tuple[tuple, tuple, tuple]:
             i = j
             continue
         i += 1
-        if unicodedata.category(c) in ("Cc", "Cf") and c not in _VAR_RANK:
-            continue  # ignorable
-        lower = c.lower()
-        if lower in _LIGATURES:
-            first, second = _LIGATURES[lower]
-            letter(_primary(first), _tertiary("<compat>", c))
+        if c == _MIDDLE_DOT and i >= 2 and text[i - 2] in "lL":
             secondaries.append(_ACCENT_RANK[_JOIN_ACCENT])
-            letter(_primary(second), _tertiary("<compat>", c))
-        elif lower in _WITH:
-            base, accent = _WITH[lower]
-            letter(_primary(base), _tertiary("", c))
-            secondaries.append(_ACCENT_RANK[accent])
-        elif lower in _AFTER:
-            letter((3, ord(_AFTER[lower]), 1), _tertiary("", c))
-        elif c == _MIDDLE_DOT and i >= 2 and text[i - 2] in "lL":
-            secondaries.append(_ACCENT_RANK[_JOIN_ACCENT])
-        else:
-            decomposition = unicodedata.decomposition(c)
-            tag = decomposition.split()[0] if decomposition.startswith("<") else ""
-            # A spacing accent, a space and a mark under its decomposition, is a symbol of its own.
-            whole = c in _WHOLE or decomposition.startswith("<compat> 0020 ")
-            for b in c if whole else unicodedata.normalize("NFKD", c):
-                if any(lo <= ord(b) <= hi for lo, hi in _ACCENT_RANGES):
-                    secondaries.append(_ACCENT_RANK.get(b, len(_ACCENTS) + 1 + ord(b)))
-                elif kana := _kana(b, tag):
-                    letter(_primary(kana[0]), kana[1])
-                else:
-                    letter(_primary(b), _tertiary(tag, b))
+            continue
+        for primary, weight in _elements(c):
+            if primary is None:
+                secondaries.append(weight)
+            else:
+                letter(primary, weight)
     return tuple(primaries), tuple(secondaries), tuple(tertiaries)

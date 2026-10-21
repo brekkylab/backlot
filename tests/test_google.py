@@ -4673,21 +4673,27 @@ def test_drive_shared_with_me_time_needs_a_caller(client, admin_h):
 
 
 @pytest.mark.parametrize(
-    "key, field",
+    "order_by, listed",
     [
-        ("sharedWithMeTime", "sharedWithMeTime"),
-        ("modifiedByMeTime", "modifiedByMeTime"),
-        ("viewedByMeTime", "viewedByMeTime"),
-        ("recency", "modifiedByMeTime"),
+        ("sharedWithMeTime", "a2 a1 m1 m2"),
+        ("sharedWithMeTime asc", "a2 a1 m1 m2"),
+        ("sharedWithMeTime desc", "m2 m1 a2 a1"),
+        ("modifiedByMeTime", "m2 m1 a1 a2"),
+        ("modifiedByMeTime asc", "m2 m1 a1 a2"),
+        ("modifiedByMeTime desc", "a2 a1 m2 m1"),
+        ("viewedByMeTime", "a2 a1 m2 m1"),
+        ("viewedByMeTime asc", "a2 a1 m2 m1"),
+        ("viewedByMeTime desc", "m2 m1 a2 a1"),
+        ("recency", "a2 a1 m2 m1"),
+        ("recency asc", "a2 a1 m2 m1"),
+        ("recency desc", "a2 a1 m2 m1"),
     ],
 )
-@pytest.mark.parametrize("direction", ["", " asc", " desc"])
-def test_drive_order_by_a_per_caller_time(tmp_path, key, field, direction):
-    """A file without the caller's time sorts ahead of every file with one, and after every one
-    under `desc`; `recency`, the later of the caller's two times, lists newest first under all
-    three. Ava owns two of the files and the other two are Mia's, shared with her, modified in
-    turn, so each block's order is its own and not the files' modification order; none holds a
-    `viewedByMeTime`. Files without the time stay newest modification first."""
+def test_drive_order_by_a_per_caller_time(tmp_path, order_by, listed):
+    """Ava owns two of the files and the other two are Mia's, shared with her, modified in turn,
+    so each block's order is its own and not the files' modification order. None is viewed, so
+    under `viewedByMeTime` Mia's files sort after Ava's own, where `_DRIVE_ORDER_KEYS` says real
+    puts them."""
     records = [
         {
             "source_type": "google_drive",
@@ -4715,22 +4721,13 @@ def test_drive_order_by_a_per_caller_time(tmp_path, key, field, direction):
             "/drive/v3/files",
             headers={"Authorization": f"Bearer {ava}"},
             params={
-                "orderBy": key + direction,
-                "fields": f"files({field},modifiedTime)",
+                "orderBy": order_by,
+                "fields": "files(name)",
                 "q": "mimeType != 'application/vnd.google-apps.folder'",
             },
         )
     assert r.status_code == 200, r.text
-    files = r.json()["files"]
-    times = [f.get(field) for f in files]
-    present = [t for t in times if t is not None]
-    absent = [f["modifiedTime"] for f in files if f.get(field) is None]
-    assert absent == sorted(absent, reverse=True)
-    if direction == " desc" or key == "recency":
-        assert times == sorted(present, reverse=True) + [None] * len(absent)
-    else:
-        assert times == [None] * len(absent) + sorted(present)
-    assert (len(present), len(absent)) == ((0, 4) if field == "viewedByMeTime" else (2, 2))
+    assert [f["name"] for f in r.json()["files"]] == listed.split()
 
 
 @pytest.mark.parametrize(
@@ -5499,6 +5496,23 @@ _BY_NAME_NATURAL_DESC_10 = [
 _MADE_11 = ["\uaa80", "\uaa81", "\uaab5\uaa80"]
 _BY_NAME_NATURAL_11 = [_MADE_11[i] for i in (0, 2, 1)]
 _BY_NAME_NATURAL_DESC_11 = [_MADE_11[i] for i in (1, 2, 0)]
+# The twelfth: small kana of the Katakana Phonetic Extensions and of the Small Kana Extension
+# beside the letters they tie, and katakana `ア` beside a longer hiragana name.
+_MADE_12 = [
+    "\u3042",
+    "\u3042\u3044",
+    "\u304f",
+    "\u3053",
+    "\u30a2",
+    "\u30a2\u3044",
+    "\u30af",
+    "\u30b3",
+    "\u31f0",
+    "\U0001b132",
+    "\U0001b155",
+]
+_BY_NAME_NATURAL_12 = [_MADE_12[i] for i in (0, 4, 1, 5, 2, 8, 6, 9, 3, 10, 7)]
+_BY_NAME_NATURAL_DESC_12 = [_MADE_12[i] for i in (7, 10, 3, 9, 6, 8, 2, 5, 1, 4, 0)]
 
 
 @pytest.mark.parametrize(
@@ -5530,6 +5544,8 @@ _BY_NAME_NATURAL_DESC_11 = [_MADE_11[i] for i in (1, 2, 0)]
         (_MADE_10, "name_natural desc", _BY_NAME_NATURAL_DESC_10),
         (_MADE_11, "name_natural", _BY_NAME_NATURAL_11),
         (_MADE_11, "name_natural desc", _BY_NAME_NATURAL_DESC_11),
+        (_MADE_12, "name_natural", _BY_NAME_NATURAL_12),
+        (_MADE_12, "name_natural desc", _BY_NAME_NATURAL_DESC_12),
     ],
 )
 def test_drive_order_by_a_name_lists_a_folder_as_real_did(tmp_path, made, order_by, listed):

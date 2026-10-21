@@ -4331,8 +4331,8 @@ def test_drive_shared_with_me_time_needs_a_caller(client, admin_h):
 def test_drive_order_by_a_per_caller_time(tmp_path, order_by, listed):
     """Ava owns two of the files and the other two are Mia's, shared with her, modified in turn,
     so each block's order is its own and not the files' modification order. None is viewed, so
-    `viewedByMeTime` puts Mia's files, shared with Ava, after Ava's own, as real puts a file shared
-    with the caller and never viewed."""
+    under `viewedByMeTime` Mia's files sort after Ava's own, where `_DRIVE_ORDER_KEYS` says real
+    puts them."""
     records = [
         {
             "source_type": "google_drive",

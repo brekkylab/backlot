@@ -232,16 +232,19 @@ def _instance(path: str) -> str:
     return path[len(PREFIX) :] if path.startswith(PREFIX) else path
 
 
-#: A `[` or `]` in a Jira path, escaped or bare, which turns five of its RFC 7807 refusals into
-#: pages, under `Accept: application/json` and `*/*` alike (2026-10-18): the no-endpoint 404 at
-#: `nope%5Bx` into the dead-link page (:func:`no_endpoint`), and the conversion 400 at
+#: A `[` or `]` in a Jira path, escaped or bare, which turns two of its RFC 7807 refusals into pages
+#: of the web app's, under `Accept: application/json` and `*/*` alike (2026-10-18): the no-endpoint
+#: 404 at `nope%5Bx` into the dead-link page (:func:`no_endpoint`), and the conversion 400 at
 #: `issue/A%5BB/comment?maxResults=abc` into :data:`_JIRA_NULL_ERROR_PAGE`; the same for `%5D`. At
 #: `issue/A%5BB` the issue's own JSON 404 stands. On 2026-10-19 `nope%5bx` and the bare `nope[x`
-#: were the dead-link page, and `issue/A[B/comment?maxResults=abc` the `(null)` page. The 405, the
-#: 406 and the 415 on such a path are Tomcat's pages instead (:func:`_jira_tomcat_refusal`):
-#: measured on Jira Cloud on 2026-10-19 beside the same requests at the key `A-1`, the 405s and
-#: the 415 under `Accept: application/json` and `*/*`, the 406 under `text/html` and
-#: `application/xml`, the key spelled `A%5BB` and `A[B`, each pair answering alike.
+#: were the dead-link page, and `issue/A[B/comment?maxResults=abc` the `(null)` page. Its 405, 415
+#: and 406 are Tomcat's pages instead (:func:`_jira_tomcat_refusal`), whatever the `Accept`:
+#: measured on Jira Cloud on 2026-10-21 on `POST issue/A%5BB`, `DELETE issue/A%5BB/comment` and
+#: `POST issue/A%5BB/comment` with a `text/plain` body under `application/json`, `*/*`, `text/html`,
+#: `application/xml`, `foo` and none, and on `GET issue/A%5BB` under `text/html`, `application/xml`
+#: and `foo`, with a credential and without, the page each time, where `foo` leaves the RFC 7807
+#: answer at `A-1` with no body (:func:`rendered`). The key spelled `A%5DB`, `A%5bB`, `A[B` or
+#: `A]B`, and `/rest/api/2`, answered alike.
 _JIRA_BRACKET = re.compile(r"%5[BD]|[\[\]]", re.IGNORECASE)
 #: That 400's page: real's is 66,815 bytes on `text/html;charset=utf-8`, titled `(null)`; this is a
 #: stub with the status, the media type, the title and the one line it reads.
@@ -252,10 +255,9 @@ _JIRA_NULL_ERROR_PAGE = (
 
 
 def _jira_tomcat_refusal(status: int, headers: dict[str, str]) -> AtlassianError:
-    """Tomcat's page for one of Jira's refusals on a path carrying a bracket
-    (:data:`_JIRA_BRACKET`), on `text/html;charset=utf-8` with `Content-Language: en`, carrying
-    beside it the headers the RFC 7807 answer at a bracketless path carries — the 405's `Allow`,
-    the 406's and the 415's `Accept` — as each was measured on 2026-10-19."""
+    """Tomcat's page for Jira's ``status`` on a path carrying a bracket (:data:`_JIRA_BRACKET`), on
+    :data:`TOMCAT_MEDIA_TYPE` with `Content-Language: en` and ``headers`` beside it: the ones the
+    RFC 7807 answer carries, `Allow` on the 405 and `Accept` on the 415 and the 406."""
     return AtlassianError(
         status,
         tomcat_page(status).encode(),

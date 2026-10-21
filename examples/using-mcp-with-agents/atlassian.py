@@ -109,8 +109,7 @@ def build_params(base_url: str, token: str, username: str | None) -> StdioServer
     if not ssl_verify:
         args += ["-e", "JIRA_SSL_VERIFY=false", "-e", "CONFLUENCE_SSL_VERIFY=false"]
     args += ["ghcr.io/sooperset/mcp-atlassian:latest", "--transport", "stdio"]
-    # The whole environment, since `stdio_client` would otherwise hand `docker run` a fixed list of
-    # variables with neither DOCKER_HOST nor DOCKER_CONTEXT in it, and so miss a daemon either picks.
+    # The whole environment, so `docker run` reaches a daemon DOCKER_HOST or DOCKER_CONTEXT picks.
     return StdioServerParameters(command="docker", args=args, env=dict(os.environ))
 
 

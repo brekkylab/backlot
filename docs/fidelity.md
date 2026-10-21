@@ -252,7 +252,7 @@ and quotes what it declared about it. What the two share is only that Backlot's 
 running server, which is a consequence of the vendor describing types rather than routes.
 
 Which request answers with which declared type is the one thing no document carries, so
-[`msgraph_walk`](../backlot/fidelity/msgraph_walk.py) states it and the source names that walk.
+[`msgraph`](../backlot/fidelity/msgraph.py) states it and the source names that walk.
 Deriving it from the source's name would turn a rename into an `ImportError` on a nightly run.
 
 ## The baseline

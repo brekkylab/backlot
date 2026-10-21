@@ -33,7 +33,7 @@ from backlot.fidelity import (
     csdl_diff,
     google_discovery_diff,
     hubspot_catalog,
-    msgraph_walk,
+    msgraph,
     openapi_diff,
     operations,
     s3_probe,
@@ -1576,8 +1576,8 @@ def test_the_teams_walk_asks_as_the_service_account_and_reaches_every_type_it_na
             timeout=30,
             headers={"Authorization": f"Bearer {server.token}"},
         ) as client:
-            reached = {t for t, _, _ in msgraph_walk._objects(client)}
-        anonymous = httpx.get(f"{server.base_url}{msgraph_walk.V1}/me")
+            reached = {t for t, _, _ in msgraph._objects(client)}
+        anonymous = httpx.get(f"{server.base_url}{msgraph.V1}/me")
     assert anonymous.status_code == 401  # the walk's answers are the authenticated ones
 
     named = {

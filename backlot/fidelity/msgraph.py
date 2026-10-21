@@ -1,21 +1,33 @@
-"""Which Graph requests to make, and which declared type each answer is.
+"""Microsoft Graph's half of the Teams comparison: which requests to make and which declared type
+each answer is, and which of the vendor's operations are the Teams surface.
 
-The knowledge here is the pairing, and it cannot be derived. A CSDL says what a ``chatMessage`` is;
-it does not say that ``GET /teams/{id}/channels/{id}/messages`` answers with a collection of them,
+The pairing of a request with its type cannot be derived. A CSDL says what a ``chatMessage`` is; it
+does not say that ``GET /teams/{id}/channels/{id}/messages`` answers with a collection of them,
 because it declares types rather than routes. So the source names its own walk, the way S3 names
 its own prober, and a renamed endpoint is something a reader can follow rather than a convention
 that silently stops covering anything.
 
-This is a shape sample: first pages only, plus replies returned inline by ``$expand``. Collection
-and reply continuation links are not followed; a successful comparison is not an exhaustive crawl.
-The enumerated nested objects are checked too, against their own declared types. An explicitly
-null non-nullable property is a schema mismatch; an omitted property is not reported. Neither
-classification claims that every generated client will refuse to deserialize the payload.
+The walk is a shape sample: first pages only, plus replies returned inline by ``$expand``.
+Collection and reply continuation links are not followed; a successful comparison is not an
+exhaustive crawl. The enumerated nested objects are checked too, against their own declared types.
+An explicitly null non-nullable property is a schema mismatch; an omitted property is not reported.
+Neither classification claims that every generated client will refuse to deserialize the payload.
+
+The operations come from the OpenAPI document Microsoft generates its SDKs from. It declares every
+Graph operation — 17,885 in v1.0 — in about 44 MB of YAML, and only the part a Teams client reaches
+is this source's contract: teams, chats and teamwork, and the people they hang off (``/me`` and
+``/users/{id}``, with their joined teams, chats and teamwork). A YAML parser would build the whole
+document to read that part, so the paths, methods and ``operationId``s are read off its lines
+instead: Microsoft's generator writes each path at two spaces, each method at four and each
+``operationId`` at six. Parameters are not read. Graph's are the OData system query options on
+every collection, which the routes answer as measured rather than as declared;
+``tests/test_msteams.py`` holds those.
 """
 
 from __future__ import annotations
 
-from typing import Any, Iterator, Mapping
+import re
+from typing import Any, Iterable, Iterator, Mapping
 from urllib.parse import quote
 
 import httpx
@@ -23,10 +35,20 @@ import httpx
 from backlot.fidelity.csdl_diff import Schema, check, surface
 from backlot.fidelity.errors import FidelityError
 from backlot.fidelity.findings import Finding
+from backlot.fidelity.operations import Operation, canonical
 from backlot.fidelity.surface import Measurement
 
 _G = "microsoft.graph"
 V1 = "/msgraph/v1.0"
+# The Teams surface, by vendor path.
+SCOPE = re.compile(
+    r"^/(?:teams|chats|teamwork)(?:/|$)"
+    r"|^/users$"
+    r"|^/(?:me|users/\{user-id\})(?:/(?:joinedTeams|chats|teamwork)(?:/.*)?)?$"
+)
+_PATH = re.compile(r"^  (['\"]?)(/.*?)\1:\s*$")
+_METHOD = re.compile(r"^    (get|post|put|patch|delete):\s*$")
+_OPERATION_ID = re.compile(r"^      operationId: (\S+)\s*$")
 
 
 def _get(client: httpx.Client, path: str, roots: set[str] | None = None) -> dict:
@@ -142,3 +164,37 @@ def run(base_url: str, token: str, schema: Schema, timeout: float) -> Measuremen
     return Measurement(
         sorted(found, key=lambda f: (f.path, f.kind)), surface(schema, served, roots)
     )
+
+
+def operations(lines: Iterable[str], scope: re.Pattern = SCOPE) -> dict[tuple[str, str], Operation]:
+    """The in-scope operations ``lines`` (the document, line by line) declare."""
+    out: dict[tuple[str, str], Operation] = {}
+    in_paths, path, method = False, None, None
+    for line in lines:
+        if not in_paths:
+            in_paths = line.startswith("paths:")
+            continue
+        if line[:1] not in (" ", "\n", ""):
+            break
+        if m := _PATH.match(line):
+            path, method = m.group(2), None
+        elif m := _METHOD.match(line):
+            method = m.group(1)
+        elif (m := _OPERATION_ID.match(line)) and path and method and scope.match(path):
+            op = Operation(method, canonical(path), frozenset(), m.group(1))
+            out[op.key] = op
+    return out
+
+
+def fetch(url: str, *, timeout: float = 120.0) -> dict[tuple[str, str], Operation]:
+    """The in-scope operations of the document at ``url``, streamed rather than held."""
+    try:
+        with httpx.stream("GET", url, timeout=timeout, follow_redirects=True) as response:
+            if response.status_code != 200:
+                raise FidelityError(f"{url} answered {response.status_code}")
+            found = operations(response.iter_lines())
+    except httpx.HTTPError as e:
+        raise FidelityError(f"{url} unreachable: {e}") from e
+    if not found:
+        raise FidelityError(f"{url} declared no Teams operations; is it still Graph's OpenAPI?")
+    return found

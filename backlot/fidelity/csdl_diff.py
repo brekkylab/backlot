@@ -297,11 +297,11 @@ def measure(source: CSDLTarget, *, timeout: float = 120.0) -> Measurement:
     if not source.operations_url:
         return types
     # The operations half: the vendor's path document against the routes this source serves,
-    # compared by method and path alone (see `msgraph_openapi` on parameters).
-    from backlot.fidelity import msgraph_openapi
+    # compared by method and path alone (see `msgraph` on parameters).
+    from backlot.fidelity import msgraph
     from backlot.main import app
 
-    vendor = msgraph_openapi.fetch(source.operations_url, timeout=timeout)
+    vendor = msgraph.fetch(source.operations_url, timeout=timeout)
     served = {
         key: replace(op, params=frozenset())
         for key, op in from_backlot(app.openapi(), source.mount, source.mount[0]).items()

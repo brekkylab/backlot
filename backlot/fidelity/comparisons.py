@@ -31,7 +31,7 @@ from backlot.fidelity import (
     google_discovery_diff,
     graphql_diff,
     hubspot_catalog,
-    msgraph_walk,
+    msgraph,
     openapi_diff,
     s3_probe,
 )
@@ -481,9 +481,9 @@ CSDL = {
         # is the one the live service answers with, not a copy of it in a repository.
         spec_url="https://graph.microsoft.com/v1.0/$metadata",
         mount=("/msgraph/v1.0",),
-        walk=msgraph_walk.run,
+        walk=msgraph.run,
         # The OpenAPI document Microsoft generates its Graph SDKs from, of which the Teams surface
-        # is this source's operations (`msgraph_openapi.SCOPE`).
+        # is this source's operations (`msgraph.SCOPE`).
         operations_url=(
             "https://raw.githubusercontent.com/microsoftgraph/msgraph-metadata/master/openapi/"
             "v1.0/openapi.yaml"

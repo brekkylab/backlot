@@ -345,7 +345,7 @@ GITHUB = "/github/repos/acme/docs-site"
             "POST",
             "/slack/api/nonexistent.method",
             {},
-            ("slack", "unmatched", "unknown", 404, None, "client"),
+            ("slack", "unmatched", "unknown", 200, "unknown_method", "client"),
         ),
         (
             "GET",

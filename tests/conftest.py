@@ -18,12 +18,18 @@ stay small and odd in ways neither of those may be, which is why it is not one o
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
 
 import pytest
 import yaml
+
+# The suite's calls are not anyone's use of Backlot: no app it builds and no server it starts
+# (which inherit this environment) sends usage telemetry. tests/test_telemetry.py turns it back on
+# for its own app, with the export pointed somewhere local.
+os.environ["BACKLOT_TELEMETRY"] = "0"
 
 import backlot
 from backlot import store
@@ -991,7 +997,8 @@ def live_server(sample_settings):
     server never answers; Docker Desktop forwards it to the host's own loopback instead, so on
     macOS the wider bind would buy nothing and cost every contributor the firewall prompt that
     opening a port to the network raises. With no ``docker`` at all, that test does not run and
-    nothing dials the wider bind either — the same predicate ``_docker_available`` opens with.
+    nothing dials the wider bind either — the same predicate ``_docker_runs_linux_containers``
+    opens with.
     """
     host = "0.0.0.0" if sys.platform == "linux" and shutil.which("docker") else "127.0.0.1"
     with backlot.serve(SAMPLE, host=host) as s:

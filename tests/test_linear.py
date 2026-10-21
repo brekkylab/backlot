@@ -188,8 +188,8 @@ def test_linear_team_resolves_by_key_and_uuid(client, admin_h, ro_conn):
 
 
 def test_linear_team_issue_count_excludes_archived_issues(tmp_path):
-    # The recorded api.linear.app measurement returns the live count even when an archived
-    # issue remains reachable by id and through includeArchived: true.
+    """Pins the archived issue ``store.linear_team_issue_counts`` leaves out, beside the listing,
+    the `includeArchived: true` listing and the read by id that still serve it."""
     records = [
         {
             **LINEAR_CORPUS[0],
@@ -3761,6 +3761,56 @@ def test_fields_the_sdk_fragments_select_resolve_to_what_backlot_serves(fclient)
         d["project"]["resourceCount"],
     )
     assert served == (False, False, True, 0)
+
+
+_AGENT_SESSIONS = "query($v: Boolean) { viewer { supportsAgentSessions(forCurrentUser: $v) } }"
+
+
+@pytest.mark.parametrize(
+    "query,variables,expected",
+    [
+        (
+            "{ viewer { supportsAgentSessions } }",
+            None,
+            {"viewer": {"supportsAgentSessions": False}},
+        ),
+        (
+            "{ viewer { f: supportsAgentSessions(forCurrentUser: false)"
+            " t: supportsAgentSessions(forCurrentUser: true) } }",
+            None,
+            {"viewer": {"f": False, "t": False}},
+        ),
+        (_AGENT_SESSIONS, {}, {"viewer": {"supportsAgentSessions": False}}),
+        (_AGENT_SESSIONS, {"v": False}, {"viewer": {"supportsAgentSessions": False}}),
+        (_AGENT_SESSIONS, {"v": True}, {"viewer": {"supportsAgentSessions": False}}),
+    ],
+    ids=["absent", "literals", "variable omitted", "variable false", "variable true"],
+)
+def test_supports_agent_sessions_answers_false_under_each_for_current_user(
+    fclient, query, variables, expected
+):
+    """Each row is api.linear.app's answer to the same document and variables, measured when the
+    comment in ``_user`` says."""
+    r = post(fclient, query, variables)
+    assert (r.status_code, r.json()) == (200, {"data": expected})
+
+
+def test_supports_agent_sessions_declares_linears_default(fclient):
+    """Introspection rather than an answer, which is ``false`` under either value; the comment in
+    ``_user`` has the vendor's declaration."""
+    fields = post(
+        fclient,
+        '{ __type(name: "User") { fields { name args { name defaultValue'
+        " type { kind ofType { name } } } } } }",
+    ).json()["data"]["__type"]["fields"]
+    (field,) = (f for f in fields if f["name"] == "supportsAgentSessions")
+    assert field["args"] == [
+        {
+            "name": "forCurrentUser",
+            "defaultValue": "false",
+            "type": {"kind": "NON_NULL", "ofType": {"name": "Boolean"}},
+        }
+    ]
 
 
 _MEMBERSHIP = "id createdAt updatedAt archivedAt owner sortOrder user { id } team { id }"

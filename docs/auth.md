@@ -85,7 +85,9 @@ is **HTTP 200 with `ok: false`** — `not_authed` when the header is missing or 
 field, which is where Slack's own clients put it and which real reads ahead of the header. A
 `token` query parameter is refused, since Slack stopped taking one from apps created after February
 24, 2021, the kind of app Backlot answers as: `invalid_auth` for a non-empty value, and for an empty
-one beside a token in the header or the form.
+one beside a token in the header or the form. A `token` form field, even an empty one, takes the
+parameter's place, so beside one the parameter is refused only when a token is read from the header
+or the form.
 
 **It is a user token, not a bot token.** Slack has two kinds and they are not interchangeable; a
 Backlot token behaves as the first:

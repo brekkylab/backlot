@@ -1,260 +1,1581 @@
 {
   "source": "slack",
   "endpoints": [
-    "https://raw.githubusercontent.com/slackapi/slack-api-specs/master/web-api/slack_web_openapi_v2.json"
+    "https://docs.slack.dev/reference/methods.md"
   ],
-  "measured": "2026-10-14",
+  "measured": "2026-10-21",
   "operations": [
     {
-      "operation": "GET /admin.apps.approved.list",
+      "operation": "admin.analytics.getFile",
+      "id": "admin.analytics.getFile",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.analytics.messages.activity",
+      "id": "admin.analytics.messages.activity",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.analytics.messages.metadata",
+      "id": "admin.analytics.messages.metadata",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.apps.activities.list",
+      "id": "admin.apps.activities.list",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.apps.approve",
+      "id": "admin.apps.approve",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.apps.approved.list",
       "id": "admin.apps.approved.list",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "GET /admin.apps.requests.list",
+      "operation": "admin.apps.clearResolution",
+      "id": "admin.apps.clearResolution",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.apps.config.lookup",
+      "id": "admin.apps.config.lookup",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.apps.config.set",
+      "id": "admin.apps.config.set",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.apps.mcp.servers.list",
+      "id": "admin.apps.mcp.servers.list",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.apps.mcp.servers.permissions.list",
+      "id": "admin.apps.mcp.servers.permissions.list",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.apps.mcp.servers.permissions.set",
+      "id": "admin.apps.mcp.servers.permissions.set",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.apps.permissions.add",
+      "id": "admin.apps.permissions.add",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.apps.permissions.list",
+      "id": "admin.apps.permissions.list",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.apps.permissions.remove",
+      "id": "admin.apps.permissions.remove",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.apps.permissions.set",
+      "id": "admin.apps.permissions.set",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.apps.requests.cancel",
+      "id": "admin.apps.requests.cancel",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.apps.requests.list",
       "id": "admin.apps.requests.list",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "GET /admin.apps.restricted.list",
+      "operation": "admin.apps.restrict",
+      "id": "admin.apps.restrict",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.apps.restricted.list",
       "id": "admin.apps.restricted.list",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "GET /admin.conversations.ekm.listOriginalConnectedChannelInfo",
+      "operation": "admin.apps.uninstall",
+      "id": "admin.apps.uninstall",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.audit.anomaly.allow.getItem",
+      "id": "admin.audit.anomaly.allow.getItem",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.audit.anomaly.allow.updateItem",
+      "id": "admin.audit.anomaly.allow.updateItem",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.auth.policy.assignEntities",
+      "id": "admin.auth.policy.assignEntities",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.auth.policy.getEntities",
+      "id": "admin.auth.policy.getEntities",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.auth.policy.removeEntities",
+      "id": "admin.auth.policy.removeEntities",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.barriers.create",
+      "id": "admin.barriers.create",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.barriers.delete",
+      "id": "admin.barriers.delete",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.barriers.list",
+      "id": "admin.barriers.list",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.barriers.update",
+      "id": "admin.barriers.update",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.conversations.archive",
+      "id": "admin.conversations.archive",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.conversations.bulkArchive",
+      "id": "admin.conversations.bulkArchive",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.conversations.bulkDelete",
+      "id": "admin.conversations.bulkDelete",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.conversations.bulkMove",
+      "id": "admin.conversations.bulkMove",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.conversations.bulkSetExcludeFromSlackAi",
+      "id": "admin.conversations.bulkSetExcludeFromSlackAi",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.conversations.bulkSetProperties",
+      "id": "admin.conversations.bulkSetProperties",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.conversations.convertToPrivate",
+      "id": "admin.conversations.convertToPrivate",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.conversations.convertToPublic",
+      "id": "admin.conversations.convertToPublic",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.conversations.create",
+      "id": "admin.conversations.create",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.conversations.createForObjects",
+      "id": "admin.conversations.createForObjects",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.conversations.delete",
+      "id": "admin.conversations.delete",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.conversations.disconnectShared",
+      "id": "admin.conversations.disconnectShared",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.conversations.ekm.listOriginalConnectedChannelInfo",
       "id": "admin.conversations.ekm.listOriginalConnectedChannelInfo",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "GET /admin.conversations.getConversationPrefs",
+      "operation": "admin.conversations.getConversationPrefs",
       "id": "admin.conversations.getConversationPrefs",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "GET /admin.conversations.getTeams",
+      "operation": "admin.conversations.getCustomRetention",
+      "id": "admin.conversations.getCustomRetention",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.conversations.getTeams",
       "id": "admin.conversations.getTeams",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "GET /admin.conversations.restrictAccess.listGroups",
+      "operation": "admin.conversations.invite",
+      "id": "admin.conversations.invite",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.conversations.linkObjects",
+      "id": "admin.conversations.linkObjects",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.conversations.lookup",
+      "id": "admin.conversations.lookup",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.conversations.removeCustomRetention",
+      "id": "admin.conversations.removeCustomRetention",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.conversations.rename",
+      "id": "admin.conversations.rename",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.conversations.restrictAccess.addGroup",
+      "id": "admin.conversations.restrictAccess.addGroup",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.conversations.restrictAccess.listGroups",
       "id": "admin.conversations.restrictAccess.listGroups",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "GET /admin.conversations.search",
+      "operation": "admin.conversations.restrictAccess.removeGroup",
+      "id": "admin.conversations.restrictAccess.removeGroup",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.conversations.search",
       "id": "admin.conversations.search",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "GET /admin.emoji.list",
+      "operation": "admin.conversations.setConversationPrefs",
+      "id": "admin.conversations.setConversationPrefs",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.conversations.setCustomRetention",
+      "id": "admin.conversations.setCustomRetention",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.conversations.setTeams",
+      "id": "admin.conversations.setTeams",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.conversations.unarchive",
+      "id": "admin.conversations.unarchive",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.conversations.unlinkObjects",
+      "id": "admin.conversations.unlinkObjects",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.emoji.add",
+      "id": "admin.emoji.add",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.emoji.addAlias",
+      "id": "admin.emoji.addAlias",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.emoji.list",
       "id": "admin.emoji.list",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "GET /admin.inviteRequests.approved.list",
+      "operation": "admin.emoji.remove",
+      "id": "admin.emoji.remove",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.emoji.rename",
+      "id": "admin.emoji.rename",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.functions.list",
+      "id": "admin.functions.list",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.functions.permissions.lookup",
+      "id": "admin.functions.permissions.lookup",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.functions.permissions.set",
+      "id": "admin.functions.permissions.set",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.inviteRequests.approve",
+      "id": "admin.inviteRequests.approve",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.inviteRequests.approved.list",
       "id": "admin.inviteRequests.approved.list",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "GET /admin.inviteRequests.denied.list",
+      "operation": "admin.inviteRequests.denied.list",
       "id": "admin.inviteRequests.denied.list",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "GET /admin.inviteRequests.list",
+      "operation": "admin.inviteRequests.deny",
+      "id": "admin.inviteRequests.deny",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.inviteRequests.list",
       "id": "admin.inviteRequests.list",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "GET /admin.teams.admins.list",
+      "operation": "admin.roles.addAssignments",
+      "id": "admin.roles.addAssignments",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.roles.listAssignments",
+      "id": "admin.roles.listAssignments",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.roles.removeAssignments",
+      "id": "admin.roles.removeAssignments",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.teams.admins.list",
       "id": "admin.teams.admins.list",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "GET /admin.teams.list",
+      "operation": "admin.teams.create",
+      "id": "admin.teams.create",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.teams.list",
       "id": "admin.teams.list",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "GET /admin.teams.owners.list",
+      "operation": "admin.teams.owners.list",
       "id": "admin.teams.owners.list",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "GET /admin.teams.settings.info",
+      "operation": "admin.teams.settings.info",
       "id": "admin.teams.settings.info",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "GET /admin.usergroups.listChannels",
+      "operation": "admin.teams.settings.setDefaultChannels",
+      "id": "admin.teams.settings.setDefaultChannels",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.teams.settings.setDescription",
+      "id": "admin.teams.settings.setDescription",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.teams.settings.setDiscoverability",
+      "id": "admin.teams.settings.setDiscoverability",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.teams.settings.setIcon",
+      "id": "admin.teams.settings.setIcon",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.teams.settings.setName",
+      "id": "admin.teams.settings.setName",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.usergroups.addChannels",
+      "id": "admin.usergroups.addChannels",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.usergroups.addTeams",
+      "id": "admin.usergroups.addTeams",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.usergroups.addUsers",
+      "id": "admin.usergroups.addUsers",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.usergroups.create",
+      "id": "admin.usergroups.create",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.usergroups.fetch",
+      "id": "admin.usergroups.fetch",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.usergroups.listChannels",
       "id": "admin.usergroups.listChannels",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "GET /admin.users.list",
+      "operation": "admin.usergroups.removeChannels",
+      "id": "admin.usergroups.removeChannels",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.usergroups.removeTeams",
+      "id": "admin.usergroups.removeTeams",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.usergroups.removeUsers",
+      "id": "admin.usergroups.removeUsers",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.usergroups.update",
+      "id": "admin.usergroups.update",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.usergroups.uploadUsers",
+      "id": "admin.usergroups.uploadUsers",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.users.assign",
+      "id": "admin.users.assign",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.users.getExpiration",
+      "id": "admin.users.getExpiration",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.users.invite",
+      "id": "admin.users.invite",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.users.list",
       "id": "admin.users.list",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "GET /api.test",
+      "operation": "admin.users.remove",
+      "id": "admin.users.remove",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.users.session.clearSettings",
+      "id": "admin.users.session.clearSettings",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.users.session.getSettings",
+      "id": "admin.users.session.getSettings",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.users.session.invalidate",
+      "id": "admin.users.session.invalidate",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.users.session.list",
+      "id": "admin.users.session.list",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.users.session.reset",
+      "id": "admin.users.session.reset",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.users.session.resetBulk",
+      "id": "admin.users.session.resetBulk",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.users.session.setSettings",
+      "id": "admin.users.session.setSettings",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.users.setAdmin",
+      "id": "admin.users.setAdmin",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.users.setExpiration",
+      "id": "admin.users.setExpiration",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.users.setOwner",
+      "id": "admin.users.setOwner",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.users.setRegular",
+      "id": "admin.users.setRegular",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.users.unsupportedVersions.export",
+      "id": "admin.users.unsupportedVersions.export",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.workflows.collaborators.add",
+      "id": "admin.workflows.collaborators.add",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.workflows.collaborators.remove",
+      "id": "admin.workflows.collaborators.remove",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.workflows.permissions.lookup",
+      "id": "admin.workflows.permissions.lookup",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.workflows.search",
+      "id": "admin.workflows.search",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.workflows.triggers.types.permissions.lookup",
+      "id": "admin.workflows.triggers.types.permissions.lookup",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.workflows.triggers.types.permissions.set",
+      "id": "admin.workflows.triggers.types.permissions.set",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "admin.workflows.unpublish",
+      "id": "admin.workflows.unpublish",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "agents.conversations.archive",
+      "id": "agents.conversations.archive",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "agents.conversations.create",
+      "id": "agents.conversations.create",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "agents.conversations.getCanvas",
+      "id": "agents.conversations.getCanvas",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "agents.conversations.listViews",
+      "id": "agents.conversations.listViews",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "agents.conversations.removeView",
+      "id": "agents.conversations.removeView",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "agents.conversations.setCanvasContent",
+      "id": "agents.conversations.setCanvasContent",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "agents.conversations.setCommands",
+      "id": "agents.conversations.setCommands",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "agents.conversations.setProperties",
+      "id": "agents.conversations.setProperties",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "agents.conversations.setView",
+      "id": "agents.conversations.setView",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "agents.sessions.rename",
+      "id": "agents.sessions.rename",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "agents.sessions.setStatus",
+      "id": "agents.sessions.setStatus",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "api.test",
       "id": "api.test",
       "status": "implemented",
       "params": {
         "error": {
           "kind": "missing_param",
           "severity": "gap"
-        },
-        "foo": {
-          "kind": "missing_param",
-          "severity": "gap"
+        }
+      },
+      "fields": {
+        "args.token": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "slack.com echoes the credential it read as `args.token`: measured 2026-09-22 and 2026-10-21, `api.test` with an `Authorization: Bearer` header answers `args: {\"token\": \"<the token>\"}`, and with no credential `args: {}`. The reference's examples show only `args.foo`, the argument they sent."
         }
       }
     },
     {
-      "operation": "GET /apps.event.authorizations.list",
+      "operation": "apps.activities.list",
+      "id": "apps.activities.list",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "apps.auth.external.delete",
+      "id": "apps.auth.external.delete",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "apps.auth.external.get",
+      "id": "apps.auth.external.get",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "apps.connections.open",
+      "id": "apps.connections.open",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "apps.datastore.bulkDelete",
+      "id": "apps.datastore.bulkDelete",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "apps.datastore.bulkGet",
+      "id": "apps.datastore.bulkGet",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "apps.datastore.bulkPut",
+      "id": "apps.datastore.bulkPut",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "apps.datastore.count",
+      "id": "apps.datastore.count",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "apps.datastore.delete",
+      "id": "apps.datastore.delete",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "apps.datastore.get",
+      "id": "apps.datastore.get",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "apps.datastore.put",
+      "id": "apps.datastore.put",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "apps.datastore.query",
+      "id": "apps.datastore.query",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "apps.datastore.update",
+      "id": "apps.datastore.update",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "apps.event.authorizations.list",
       "id": "apps.event.authorizations.list",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "GET /apps.permissions.info",
-      "id": "apps.permissions.info",
+      "operation": "apps.icon.set",
+      "id": "apps.icon.set",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "GET /apps.permissions.request",
-      "id": "apps.permissions.request",
+      "operation": "apps.managed.permissions.set",
+      "id": "apps.managed.permissions.set",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "GET /apps.permissions.resources.list",
-      "id": "apps.permissions.resources.list",
+      "operation": "apps.manifest.create",
+      "id": "apps.manifest.create",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "GET /apps.permissions.scopes.list",
-      "id": "apps.permissions.scopes.list",
+      "operation": "apps.manifest.delete",
+      "id": "apps.manifest.delete",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "GET /apps.permissions.users.list",
-      "id": "apps.permissions.users.list",
+      "operation": "apps.manifest.export",
+      "id": "apps.manifest.export",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "GET /apps.permissions.users.request",
-      "id": "apps.permissions.users.request",
+      "operation": "apps.manifest.update",
+      "id": "apps.manifest.update",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "GET /apps.uninstall",
+      "operation": "apps.manifest.validate",
+      "id": "apps.manifest.validate",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "apps.uninstall",
       "id": "apps.uninstall",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "GET /auth.revoke",
+      "operation": "apps.user.connection.update",
+      "id": "apps.user.connection.update",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "assistant.search.context",
+      "id": "assistant.search.context",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "assistant.search.info",
+      "id": "assistant.search.info",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "assistant.threads.setStatus",
+      "id": "assistant.threads.setStatus",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "assistant.threads.setSuggestedPrompts",
+      "id": "assistant.threads.setSuggestedPrompts",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "assistant.threads.setTitle",
+      "id": "assistant.threads.setTitle",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "auth.revoke",
       "id": "auth.revoke",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "GET /auth.test",
-      "id": "auth.test",
-      "status": "implemented"
+      "operation": "auth.teams.list",
+      "id": "auth.teams.list",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
     },
     {
-      "operation": "GET /bots.info",
+      "operation": "auth.test",
+      "id": "auth.test",
+      "status": "implemented",
+      "params": {
+        "token": {
+          "kind": "missing_param",
+          "severity": "gap",
+          "note": "Backlot does accept `token`: `auth.slack_token` reads it from the query string and from the form on every method, and `auth.test?token=<token>` answers `ok: true`. Backlot's declared `openapi_extra` parameters do not name it, which is what this entry records."
+        }
+      },
+      "fields": {
+        "bot_id": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "is_enterprise_install": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "slack.com serves it: measured 2026-10-21, `auth.test` with a user token answers `\"is_enterprise_install\": false`. The reference's examples leave it out."
+        }
+      }
+    },
+    {
+      "operation": "blocks.validate",
+      "id": "blocks.validate",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "bookmarks.add",
+      "id": "bookmarks.add",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "bookmarks.edit",
+      "id": "bookmarks.edit",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "bookmarks.list",
+      "id": "bookmarks.list",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "bookmarks.remove",
+      "id": "bookmarks.remove",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "bots.info",
       "id": "bots.info",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "GET /calls.info",
+      "operation": "calls.add",
+      "id": "calls.add",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "calls.end",
+      "id": "calls.end",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "calls.info",
       "id": "calls.info",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "GET /chat.getPermalink",
+      "operation": "calls.participants.add",
+      "id": "calls.participants.add",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "calls.participants.remove",
+      "id": "calls.participants.remove",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "calls.update",
+      "id": "calls.update",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "canvases.access.delete",
+      "id": "canvases.access.delete",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "canvases.access.set",
+      "id": "canvases.access.set",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "canvases.create",
+      "id": "canvases.create",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "canvases.delete",
+      "id": "canvases.delete",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "canvases.edit",
+      "id": "canvases.edit",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "canvases.getContent",
+      "id": "canvases.getContent",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "canvases.sections.lookup",
+      "id": "canvases.sections.lookup",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "chat.appendStream",
+      "id": "chat.appendStream",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "chat.delete",
+      "id": "chat.delete",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "chat.deleteScheduledMessage",
+      "id": "chat.deleteScheduledMessage",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "chat.getPermalink",
       "id": "chat.getPermalink",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "GET /chat.scheduledMessages.list",
+      "operation": "chat.meMessage",
+      "id": "chat.meMessage",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "chat.postEphemeral",
+      "id": "chat.postEphemeral",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "chat.postMessage",
+      "id": "chat.postMessage",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "chat.scheduleMessage",
+      "id": "chat.scheduleMessage",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "chat.scheduledMessages.list",
       "id": "chat.scheduledMessages.list",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "GET /conversations.history",
+      "operation": "chat.startStream",
+      "id": "chat.startStream",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "chat.stopStream",
+      "id": "chat.stopStream",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "chat.unfurl",
+      "id": "chat.unfurl",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "chat.update",
+      "id": "chat.update",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "conversations.acceptSharedInvite",
+      "id": "conversations.acceptSharedInvite",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "conversations.approveSharedInvite",
+      "id": "conversations.approveSharedInvite",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "conversations.archive",
+      "id": "conversations.archive",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "conversations.canvases.create",
+      "id": "conversations.canvases.create",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "conversations.close",
+      "id": "conversations.close",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "conversations.create",
+      "id": "conversations.create",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "conversations.declineSharedInvite",
+      "id": "conversations.declineSharedInvite",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "conversations.externalInvitePermissions.set",
+      "id": "conversations.externalInvitePermissions.set",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "conversations.history",
       "id": "conversations.history",
       "status": "implemented",
       "params": {
-        "token": {
+        "include_all_metadata": {
           "kind": "missing_param",
           "severity": "gap"
+        },
+        "token": {
+          "kind": "missing_param",
+          "severity": "gap",
+          "note": "Backlot does accept `token`: `auth.slack_token` reads it from the query string and from the form on every method, and `conversations.history?token=<token>` answers `ok: true`. Backlot's declared `openapi_extra` parameters do not name it, which is what this entry records."
+        }
+      },
+      "fields": {
+        "channel_actions_count": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "slack.com serves it: measured 2026-10-21 over `conversations.history` with a user token, across a workspace's 8 channels and 189 threads. The reference's examples for this method leave it out."
+        },
+        "channel_actions_ts": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "slack.com serves it: measured 2026-10-21 over `conversations.history` with a user token, across a workspace's 8 channels and 189 threads. The reference's examples for this method leave it out."
+        },
+        "messages[].attachments": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "messages[].blocks": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "slack.com serves it: measured 2026-10-21 over `conversations.history` with a user token, across a workspace's 8 channels and 189 threads. The reference's examples for this method leave it out."
+        },
+        "messages[].client_msg_id": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "slack.com serves it: measured 2026-10-21 over `conversations.history` with a user token, across a workspace's 8 channels and 189 threads. The reference's examples for this method leave it out."
+        },
+        "messages[].edited": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "slack.com serves it: measured 2026-10-21 over `conversations.history` with a user token, across a workspace's 8 channels and 189 threads. The reference's examples for this method leave it out."
+        },
+        "messages[].files": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "slack.com serves it: measured 2026-10-21 over `conversations.history` with a user token, across a workspace's 8 channels and 189 threads. The reference's examples for this method leave it out."
+        },
+        "messages[].is_locked": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "slack.com serves it: measured 2026-10-21 over `conversations.history` with a user token, across a workspace's 8 channels and 189 threads. The reference's examples for this method leave it out."
+        },
+        "messages[].latest_reply": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "slack.com serves it: measured 2026-10-21 over `conversations.history` with a user token, across a workspace's 8 channels and 189 threads. The reference's examples for this method leave it out."
+        },
+        "messages[].reactions": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "slack.com serves it: measured 2026-10-21 over `conversations.history` with a user token, across a workspace's 8 channels and 189 threads. The reference's examples for this method leave it out."
+        },
+        "messages[].reply_count": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "slack.com serves it: measured 2026-10-21 over `conversations.history` with a user token, across a workspace's 8 channels and 189 threads. The reference's examples for this method leave it out."
+        },
+        "messages[].reply_users": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "slack.com serves it: measured 2026-10-21 over `conversations.history` with a user token, across a workspace's 8 channels and 189 threads. The reference's examples for this method leave it out."
+        },
+        "messages[].reply_users_count": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "slack.com serves it: measured 2026-10-21 over `conversations.history` with a user token, across a workspace's 8 channels and 189 threads. The reference's examples for this method leave it out."
+        },
+        "messages[].subscribed": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "slack.com serves it: measured 2026-10-21 over `conversations.history` with a user token, across a workspace's 8 channels and 189 threads. The reference's examples for this method leave it out."
+        },
+        "messages[].team": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "slack.com serves it: measured 2026-10-21 over `conversations.history` with a user token, across a workspace's 8 channels and 189 threads. The reference's examples for this method leave it out."
+        },
+        "messages[].thread_ts": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "slack.com serves it: measured 2026-10-21 over `conversations.history` with a user token, across a workspace's 8 channels and 189 threads. The reference's examples for this method leave it out."
         }
       }
     },
     {
-      "operation": "GET /conversations.info",
+      "operation": "conversations.info",
       "id": "conversations.info",
       "status": "implemented",
       "params": {
@@ -264,12 +1585,234 @@
         },
         "token": {
           "kind": "missing_param",
+          "severity": "gap",
+          "note": "Backlot does accept `token`: `auth.slack_token` reads it from the query string and from the form on every method, and `conversations.info?token=<token>` answers `ok: true`. Backlot's declared `openapi_extra` parameters do not name it, which is what this entry records."
+        }
+      },
+      "fields": {
+        "channel.connected_team_ids": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.conversation_host_id": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.enterprise_id": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.frozen_reason": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.has_pins": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.internal_team_ids": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.is_channel_agent_enabled": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.is_ext_ws_shared": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.is_file": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.is_frozen": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.is_moved": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.is_non_threadable": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.is_open": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.is_org_default": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.is_org_mandatory": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.is_read_only": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.is_starred": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.is_thread_only": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.latest": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.locale": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.num_members": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.priority": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.properties.at_channel_restricted": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.properties.at_here_restricted": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.properties.auto_open_tab_id": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.properties.canvas": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.properties.channel_solutions": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.properties.channel_workflows": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.properties.crm": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.properties.default_tab_id": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.properties.huddles": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.properties.huddles_restricted": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.properties.meeting_notes": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.properties.membership_limit": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.properties.posting_restricted_to": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.properties.record_channel": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.properties.sharing_disabled": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.properties.tabs": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.properties.threads_restricted_to": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.properties.who_can_manage_channel_agent": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.properties.workflow": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.retention_duration": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.unread_count": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.unread_count_display": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.use_case": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channel.user": {
+          "kind": "missing_field",
           "severity": "gap"
         }
       }
     },
     {
-      "operation": "GET /conversations.list",
+      "operation": "conversations.invite",
+      "id": "conversations.invite",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "conversations.inviteShared",
+      "id": "conversations.inviteShared",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "conversations.join",
+      "id": "conversations.join",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "conversations.kick",
+      "id": "conversations.kick",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "conversations.leave",
+      "id": "conversations.leave",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "conversations.list",
       "id": "conversations.list",
       "status": "implemented",
       "params": {
@@ -277,14 +1820,219 @@
           "kind": "missing_param",
           "severity": "gap"
         },
+        "team_id": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
         "token": {
           "kind": "missing_param",
+          "severity": "gap",
+          "note": "Backlot does accept `token`: `auth.slack_token` reads it from the query string and from the form on every method, and `conversations.list?token=<token>` answers `ok: true`. Backlot's declared `openapi_extra` parameters do not name it, which is what this entry records."
+        }
+      },
+      "fields": {
+        "channels[].connected_team_ids": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].conversation_host_id": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].enterprise_id": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].frozen_reason": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].has_pins": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].internal_team_ids": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].is_channel_agent_enabled": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].is_ext_ws_shared": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].is_file": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].is_frozen": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].is_moved": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].is_non_threadable": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].is_open": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].is_org_default": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].is_org_mandatory": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].is_read_only": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].is_starred": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].is_thread_only": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].is_user_deleted": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].last_read": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].latest": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].priority": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].properties.at_channel_restricted": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].properties.at_here_restricted": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].properties.auto_open_tab_id": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].properties.canvas": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].properties.channel_solutions": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].properties.channel_workflows": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].properties.crm": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].properties.default_tab_id": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].properties.huddles": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].properties.huddles_restricted": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].properties.meeting_notes": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].properties.membership_limit": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].properties.posting_restricted_to": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].properties.record_channel": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].properties.sharing_disabled": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].properties.tabs": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].properties.threads_restricted_to": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].properties.who_can_manage_channel_agent": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].properties.workflow": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].retention_duration": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].unread_count": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].unread_count_display": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].use_case": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "channels[].user": {
+          "kind": "missing_field",
           "severity": "gap"
         }
       }
     },
     {
-      "operation": "GET /conversations.members",
+      "operation": "conversations.listConnectInvites",
+      "id": "conversations.listConnectInvites",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "conversations.mark",
+      "id": "conversations.mark",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "conversations.members",
       "id": "conversations.members",
       "status": "implemented",
       "params": {
@@ -298,16 +2046,35 @@
         },
         "token": {
           "kind": "missing_param",
-          "severity": "gap"
+          "severity": "gap",
+          "note": "Backlot does accept `token`: `auth.slack_token` reads it from the query string and from the form on every method, and `conversations.members?token=<token>` answers `ok: true`. Backlot's declared `openapi_extra` parameters do not name it, which is what this entry records."
         }
       }
     },
     {
-      "operation": "GET /conversations.replies",
+      "operation": "conversations.open",
+      "id": "conversations.open",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "conversations.rename",
+      "id": "conversations.rename",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "conversations.replies",
       "id": "conversations.replies",
       "status": "implemented",
       "params": {
         "cursor": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "include_all_metadata": {
           "kind": "missing_param",
           "severity": "gap"
         },
@@ -329,1108 +2096,1589 @@
         },
         "token": {
           "kind": "missing_param",
-          "severity": "gap"
+          "severity": "gap",
+          "note": "Backlot does accept `token`: `auth.slack_token` reads it from the query string and from the form on every method, and `conversations.replies?token=<token>` answers `ok: true`. Backlot's declared `openapi_extra` parameters do not name it, which is what this entry records."
         }
-      }
-    },
-    {
-      "operation": "GET /dialog.open",
-      "id": "dialog.open",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "GET /dnd.info",
-      "id": "dnd.info",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "GET /dnd.teamInfo",
-      "id": "dnd.teamInfo",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "GET /emoji.list",
-      "id": "emoji.list",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "GET /files.info",
-      "id": "files.info",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "GET /files.list",
-      "id": "files.list",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "GET /files.remote.info",
-      "id": "files.remote.info",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "GET /files.remote.list",
-      "id": "files.remote.list",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "GET /files.remote.share",
-      "id": "files.remote.share",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "GET /migration.exchange",
-      "id": "migration.exchange",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "GET /oauth.access",
-      "id": "oauth.access",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "GET /oauth.token",
-      "id": "oauth.token",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "GET /oauth.v2.access",
-      "id": "oauth.v2.access",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "GET /pins.list",
-      "id": "pins.list",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "GET /reactions.get",
-      "id": "reactions.get",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "GET /reactions.list",
-      "id": "reactions.list",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "GET /reminders.info",
-      "id": "reminders.info",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "GET /reminders.list",
-      "id": "reminders.list",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "GET /rtm.connect",
-      "id": "rtm.connect",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "GET /search.all",
-      "id": "search.all",
-      "status": "extra",
-      "kind": "extra_operation",
-      "severity": "breaking",
-      "detail": "the vendor's spec declares no such operation",
-      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
-    },
-    {
-      "operation": "GET /search.files",
-      "id": "search.files",
-      "status": "extra",
-      "kind": "extra_operation",
-      "severity": "breaking",
-      "detail": "the vendor's spec declares no such operation",
-      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
-    },
-    {
-      "operation": "GET /search.messages",
-      "id": "search.messages",
-      "status": "implemented",
-      "params": {
-        "highlight": {
-          "kind": "missing_param",
+      },
+      "fields": {
+        "messages[].blocks": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "slack.com serves it: measured 2026-10-21 over `conversations.replies` with a user token, across a workspace's 8 channels and 189 threads. The reference's examples for this method leave it out."
+        },
+        "messages[].client_msg_id": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "slack.com serves it: measured 2026-10-21 over `conversations.replies` with a user token, across a workspace's 8 channels and 189 threads. The reference's examples for this method leave it out."
+        },
+        "messages[].edited": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "slack.com serves it: measured 2026-10-21 over `conversations.replies` with a user token, across a workspace's 8 channels and 189 threads. The reference's examples for this method leave it out."
+        },
+        "messages[].files": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "slack.com serves it: measured 2026-10-21 over `conversations.replies` with a user token, across a workspace's 8 channels and 189 threads. The reference's examples for this method leave it out."
+        },
+        "messages[].is_locked": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "slack.com serves it: measured 2026-10-21 over `conversations.replies` with a user token, across a workspace's 8 channels and 189 threads. The reference's examples for this method leave it out."
+        },
+        "messages[].last_read": {
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "`last_read` sits on a thread's parent message only for a caller subscribed to that thread. Measured 2026-09-23, a caller subscribed to the workspace's threads gets it on each parent and one not subscribed (`subscribed: false`) gets it on none, so it is conditional on the caller."
+        },
+        "messages[].latest_reply": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "slack.com serves it: measured 2026-10-21 over `conversations.replies` with a user token, across a workspace's 8 channels and 189 threads. The reference's examples for this method leave it out."
+        },
+        "messages[].reactions": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "slack.com serves it: measured 2026-10-21 over `conversations.replies` with a user token, across a workspace's 8 channels and 189 threads. The reference's examples for this method leave it out."
+        },
+        "messages[].reply_users": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "slack.com serves it: measured 2026-10-21 over `conversations.replies` with a user token, across a workspace's 8 channels and 189 threads. The reference's examples for this method leave it out."
+        },
+        "messages[].reply_users_count": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "slack.com serves it: measured 2026-10-21 over `conversations.replies` with a user token, across a workspace's 8 channels and 189 threads. The reference's examples for this method leave it out."
+        },
+        "messages[].team": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "slack.com serves it: measured 2026-10-21 over `conversations.replies` with a user token, across a workspace's 8 channels and 189 threads. The reference's examples for this method leave it out."
+        },
+        "messages[].unread_count": {
+          "kind": "missing_field",
           "severity": "gap"
         },
-        "token": {
-          "kind": "missing_param",
+        "response_metadata": {
+          "kind": "missing_field",
           "severity": "gap"
         }
       }
     },
     {
-      "operation": "GET /stars.list",
-      "id": "stars.list",
+      "operation": "conversations.requestSharedInvite.approve",
+      "id": "conversations.requestSharedInvite.approve",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "GET /team.accessLogs",
-      "id": "team.accessLogs",
+      "operation": "conversations.requestSharedInvite.deny",
+      "id": "conversations.requestSharedInvite.deny",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "GET /team.billableInfo",
-      "id": "team.billableInfo",
+      "operation": "conversations.requestSharedInvite.list",
+      "id": "conversations.requestSharedInvite.list",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "GET /team.info",
-      "id": "team.info",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "GET /team.integrationLogs",
-      "id": "team.integrationLogs",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "GET /team.profile.get",
-      "id": "team.profile.get",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "GET /usergroups.list",
-      "id": "usergroups.list",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "GET /usergroups.users.list",
-      "id": "usergroups.users.list",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "GET /users.conversations",
-      "id": "users.conversations",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "GET /users.getPresence",
-      "id": "users.getPresence",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "GET /users.identity",
-      "id": "users.identity",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "GET /users.info",
-      "id": "users.info",
-      "status": "implemented",
-      "params": {
-        "include_locale": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
-        "token": {
-          "kind": "missing_param",
-          "severity": "gap"
-        }
-      }
-    },
-    {
-      "operation": "GET /users.list",
-      "id": "users.list",
-      "status": "implemented",
-      "params": {
-        "include_locale": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
-        "token": {
-          "kind": "missing_param",
-          "severity": "gap"
-        }
-      }
-    },
-    {
-      "operation": "GET /users.lookupByEmail",
-      "id": "users.lookupByEmail",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "GET /users.profile.get",
-      "id": "users.profile.get",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "GET /views.open",
-      "id": "views.open",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "GET /views.publish",
-      "id": "views.publish",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "GET /views.push",
-      "id": "views.push",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "GET /views.update",
-      "id": "views.update",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "GET /workflows.stepCompleted",
-      "id": "workflows.stepCompleted",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "GET /workflows.stepFailed",
-      "id": "workflows.stepFailed",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "GET /workflows.updateStep",
-      "id": "workflows.updateStep",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /admin.apps.approve",
-      "id": "admin.apps.approve",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /admin.apps.restrict",
-      "id": "admin.apps.restrict",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /admin.conversations.archive",
-      "id": "admin.conversations.archive",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /admin.conversations.convertToPrivate",
-      "id": "admin.conversations.convertToPrivate",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /admin.conversations.create",
-      "id": "admin.conversations.create",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /admin.conversations.delete",
-      "id": "admin.conversations.delete",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /admin.conversations.disconnectShared",
-      "id": "admin.conversations.disconnectShared",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /admin.conversations.invite",
-      "id": "admin.conversations.invite",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /admin.conversations.rename",
-      "id": "admin.conversations.rename",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /admin.conversations.restrictAccess.addGroup",
-      "id": "admin.conversations.restrictAccess.addGroup",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /admin.conversations.restrictAccess.removeGroup",
-      "id": "admin.conversations.restrictAccess.removeGroup",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /admin.conversations.setConversationPrefs",
-      "id": "admin.conversations.setConversationPrefs",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /admin.conversations.setTeams",
-      "id": "admin.conversations.setTeams",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /admin.conversations.unarchive",
-      "id": "admin.conversations.unarchive",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /admin.emoji.add",
-      "id": "admin.emoji.add",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /admin.emoji.addAlias",
-      "id": "admin.emoji.addAlias",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /admin.emoji.remove",
-      "id": "admin.emoji.remove",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /admin.emoji.rename",
-      "id": "admin.emoji.rename",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /admin.inviteRequests.approve",
-      "id": "admin.inviteRequests.approve",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /admin.inviteRequests.deny",
-      "id": "admin.inviteRequests.deny",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /admin.teams.create",
-      "id": "admin.teams.create",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /admin.teams.settings.setDefaultChannels",
-      "id": "admin.teams.settings.setDefaultChannels",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /admin.teams.settings.setDescription",
-      "id": "admin.teams.settings.setDescription",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /admin.teams.settings.setDiscoverability",
-      "id": "admin.teams.settings.setDiscoverability",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /admin.teams.settings.setIcon",
-      "id": "admin.teams.settings.setIcon",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /admin.teams.settings.setName",
-      "id": "admin.teams.settings.setName",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /admin.usergroups.addChannels",
-      "id": "admin.usergroups.addChannels",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /admin.usergroups.addTeams",
-      "id": "admin.usergroups.addTeams",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /admin.usergroups.removeChannels",
-      "id": "admin.usergroups.removeChannels",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /admin.users.assign",
-      "id": "admin.users.assign",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /admin.users.invite",
-      "id": "admin.users.invite",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /admin.users.remove",
-      "id": "admin.users.remove",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /admin.users.session.invalidate",
-      "id": "admin.users.session.invalidate",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /admin.users.session.reset",
-      "id": "admin.users.session.reset",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /admin.users.setAdmin",
-      "id": "admin.users.setAdmin",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /admin.users.setExpiration",
-      "id": "admin.users.setExpiration",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /admin.users.setOwner",
-      "id": "admin.users.setOwner",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /admin.users.setRegular",
-      "id": "admin.users.setRegular",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /api.test",
-      "id": "api.test",
-      "status": "extra",
-      "kind": "extra_operation",
-      "severity": "breaking",
-      "detail": "the vendor's spec declares no such operation",
-      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
-    },
-    {
-      "operation": "POST /auth.test",
-      "id": "auth.test",
-      "status": "extra",
-      "kind": "extra_operation",
-      "severity": "breaking",
-      "detail": "the vendor's spec declares no such operation",
-      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
-    },
-    {
-      "operation": "POST /calls.add",
-      "id": "calls.add",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /calls.end",
-      "id": "calls.end",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /calls.participants.add",
-      "id": "calls.participants.add",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /calls.participants.remove",
-      "id": "calls.participants.remove",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /calls.update",
-      "id": "calls.update",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /chat.delete",
-      "id": "chat.delete",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /chat.deleteScheduledMessage",
-      "id": "chat.deleteScheduledMessage",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /chat.meMessage",
-      "id": "chat.meMessage",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /chat.postEphemeral",
-      "id": "chat.postEphemeral",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /chat.postMessage",
-      "id": "chat.postMessage",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /chat.scheduleMessage",
-      "id": "chat.scheduleMessage",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /chat.unfurl",
-      "id": "chat.unfurl",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /chat.update",
-      "id": "chat.update",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /conversations.archive",
-      "id": "conversations.archive",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /conversations.close",
-      "id": "conversations.close",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /conversations.create",
-      "id": "conversations.create",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /conversations.history",
-      "id": "conversations.history",
-      "status": "extra",
-      "kind": "extra_operation",
-      "severity": "breaking",
-      "detail": "the vendor's spec declares no such operation",
-      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
-    },
-    {
-      "operation": "POST /conversations.info",
-      "id": "conversations.info",
-      "status": "extra",
-      "kind": "extra_operation",
-      "severity": "breaking",
-      "detail": "the vendor's spec declares no such operation",
-      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
-    },
-    {
-      "operation": "POST /conversations.invite",
-      "id": "conversations.invite",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /conversations.join",
-      "id": "conversations.join",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /conversations.kick",
-      "id": "conversations.kick",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /conversations.leave",
-      "id": "conversations.leave",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /conversations.list",
-      "id": "conversations.list",
-      "status": "extra",
-      "kind": "extra_operation",
-      "severity": "breaking",
-      "detail": "the vendor's spec declares no such operation",
-      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
-    },
-    {
-      "operation": "POST /conversations.mark",
-      "id": "conversations.mark",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /conversations.members",
-      "id": "conversations.members",
-      "status": "extra",
-      "kind": "extra_operation",
-      "severity": "breaking",
-      "detail": "the vendor's spec declares no such operation",
-      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
-    },
-    {
-      "operation": "POST /conversations.open",
-      "id": "conversations.open",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /conversations.rename",
-      "id": "conversations.rename",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "POST /conversations.replies",
-      "id": "conversations.replies",
-      "status": "extra",
-      "kind": "extra_operation",
-      "severity": "breaking",
-      "detail": "the vendor's spec declares no such operation",
-      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
-    },
-    {
-      "operation": "POST /conversations.setPurpose",
+      "operation": "conversations.setPurpose",
       "id": "conversations.setPurpose",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "POST /conversations.setTopic",
+      "operation": "conversations.setTopic",
       "id": "conversations.setTopic",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "POST /conversations.unarchive",
+      "operation": "conversations.unarchive",
       "id": "conversations.unarchive",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "POST /dnd.endDnd",
+      "operation": "dialog.open",
+      "id": "dialog.open",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "dnd.endDnd",
       "id": "dnd.endDnd",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "POST /dnd.endSnooze",
+      "operation": "dnd.endSnooze",
       "id": "dnd.endSnooze",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "POST /dnd.setSnooze",
+      "operation": "dnd.info",
+      "id": "dnd.info",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "dnd.setSnooze",
       "id": "dnd.setSnooze",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "POST /files.comments.delete",
+      "operation": "dnd.teamInfo",
+      "id": "dnd.teamInfo",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "emoji.list",
+      "id": "emoji.list",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "entity.acknowledgeCommentAction",
+      "id": "entity.acknowledgeCommentAction",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "entity.presentComments",
+      "id": "entity.presentComments",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "entity.presentDetails",
+      "id": "entity.presentDetails",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "files.comments.delete",
       "id": "files.comments.delete",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "POST /files.delete",
+      "operation": "files.completeUploadExternal",
+      "id": "files.completeUploadExternal",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "files.delete",
       "id": "files.delete",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "POST /files.remote.add",
+      "operation": "files.getUploadURLExternal",
+      "id": "files.getUploadURLExternal",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "files.info",
+      "id": "files.info",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "files.list",
+      "id": "files.list",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "files.remote.add",
       "id": "files.remote.add",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "POST /files.remote.remove",
+      "operation": "files.remote.info",
+      "id": "files.remote.info",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "files.remote.list",
+      "id": "files.remote.list",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "files.remote.remove",
       "id": "files.remote.remove",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "POST /files.remote.update",
+      "operation": "files.remote.share",
+      "id": "files.remote.share",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "files.remote.update",
       "id": "files.remote.update",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "POST /files.revokePublicURL",
+      "operation": "files.revokePublicURL",
       "id": "files.revokePublicURL",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "POST /files.sharedPublicURL",
+      "operation": "files.sharedPublicURL",
       "id": "files.sharedPublicURL",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "POST /files.upload",
+      "operation": "files.upload",
       "id": "files.upload",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "POST /pins.add",
+      "operation": "functions.completeError",
+      "id": "functions.completeError",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "functions.completeSuccess",
+      "id": "functions.completeSuccess",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "functions.distributions.permissions.add",
+      "id": "functions.distributions.permissions.add",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "functions.distributions.permissions.list",
+      "id": "functions.distributions.permissions.list",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "functions.distributions.permissions.remove",
+      "id": "functions.distributions.permissions.remove",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "functions.distributions.permissions.set",
+      "id": "functions.distributions.permissions.set",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "functions.workflows.steps.list",
+      "id": "functions.workflows.steps.list",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "functions.workflows.steps.responses.export",
+      "id": "functions.workflows.steps.responses.export",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "migration.exchange",
+      "id": "migration.exchange",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "oauth.access",
+      "id": "oauth.access",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "oauth.v2.access",
+      "id": "oauth.v2.access",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "oauth.v2.beginShortTokenRotation",
+      "id": "oauth.v2.beginShortTokenRotation",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "oauth.v2.completeShortTokenRotation",
+      "id": "oauth.v2.completeShortTokenRotation",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "oauth.v2.exchange",
+      "id": "oauth.v2.exchange",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "oauth.v2.user.access",
+      "id": "oauth.v2.user.access",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "openid.connect.token",
+      "id": "openid.connect.token",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "openid.connect.userInfo",
+      "id": "openid.connect.userInfo",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "pins.add",
       "id": "pins.add",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "POST /pins.remove",
+      "operation": "pins.list",
+      "id": "pins.list",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "pins.remove",
       "id": "pins.remove",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "POST /reactions.add",
+      "operation": "reactions.add",
       "id": "reactions.add",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "POST /reactions.remove",
+      "operation": "reactions.get",
+      "id": "reactions.get",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "reactions.list",
+      "id": "reactions.list",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "reactions.remove",
       "id": "reactions.remove",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "POST /reminders.add",
+      "operation": "reminders.add",
       "id": "reminders.add",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "POST /reminders.complete",
+      "operation": "reminders.complete",
       "id": "reminders.complete",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "POST /reminders.delete",
+      "operation": "reminders.delete",
       "id": "reminders.delete",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "POST /search.all",
+      "operation": "reminders.info",
+      "id": "reminders.info",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "reminders.list",
+      "id": "reminders.list",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "rtm.connect",
+      "id": "rtm.connect",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "rtm.start",
+      "id": "rtm.start",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "search.all",
       "id": "search.all",
-      "status": "extra",
-      "kind": "extra_operation",
-      "severity": "breaking",
-      "detail": "the vendor's spec declares no such operation",
-      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
+      "status": "implemented",
+      "params": {
+        "highlight": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "team_id": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "token": {
+          "kind": "missing_param",
+          "severity": "gap",
+          "note": "Backlot does accept `token`: `auth.slack_token` reads it from the query string and from the form on every method, and `search.all?token=<token>` answers `ok: true`. Backlot's declared `openapi_extra` parameters do not name it, which is what this entry records."
+        }
+      },
+      "fields": {
+        "messages.matches[].channel.is_ext_shared": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "messages.matches[].channel.is_mpim": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "messages.matches[].channel.is_org_shared": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "messages.matches[].channel.is_pending_ext_shared": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "messages.matches[].channel.is_shared": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "messages.matches[].channel.pending_shared": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "messages.matches[].iid": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "messages.matches[].next": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "messages.matches[].previous": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "posts": {
+          "kind": "missing_field",
+          "severity": "gap"
+        }
+      }
     },
     {
-      "operation": "POST /search.files",
+      "operation": "search.files",
       "id": "search.files",
-      "status": "extra",
-      "kind": "extra_operation",
-      "severity": "breaking",
-      "detail": "the vendor's spec declares no such operation",
-      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
+      "status": "implemented",
+      "params": {
+        "highlight": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "page": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "sort": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "sort_dir": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "team_id": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "token": {
+          "kind": "missing_param",
+          "severity": "gap",
+          "note": "Backlot does accept `token`: `auth.slack_token` reads it from the query string and from the form on every method, and `search.files?token=<token>` answers `ok: true`. Backlot's declared `openapi_extra` parameters do not name it, which is what this entry records."
+        }
+      }
     },
     {
-      "operation": "POST /search.messages",
+      "operation": "search.messages",
       "id": "search.messages",
-      "status": "extra",
-      "kind": "extra_operation",
-      "severity": "breaking",
-      "detail": "the vendor's spec declares no such operation",
-      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
+      "status": "implemented",
+      "params": {
+        "cursor": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "highlight": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "team_id": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "token": {
+          "kind": "missing_param",
+          "severity": "gap",
+          "note": "Backlot does accept `token`: `auth.slack_token` reads it from the query string and from the form on every method, and `search.messages?token=<token>` answers `ok: true`. Backlot's declared `openapi_extra` parameters do not name it, which is what this entry records."
+        }
+      },
+      "fields": {
+        "messages.matches[].channel.is_ext_shared": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "messages.matches[].channel.is_mpim": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "messages.matches[].channel.is_org_shared": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "messages.matches[].channel.is_pending_ext_shared": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "messages.matches[].channel.is_shared": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "messages.matches[].channel.pending_shared": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "messages.matches[].iid": {
+          "kind": "missing_field",
+          "severity": "gap"
+        }
+      }
     },
     {
-      "operation": "POST /stars.add",
+      "operation": "slackLists.access.delete",
+      "id": "slackLists.access.delete",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "slackLists.access.set",
+      "id": "slackLists.access.set",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "slackLists.create",
+      "id": "slackLists.create",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "slackLists.download.get",
+      "id": "slackLists.download.get",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "slackLists.download.start",
+      "id": "slackLists.download.start",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "slackLists.items.create",
+      "id": "slackLists.items.create",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "slackLists.items.delete",
+      "id": "slackLists.items.delete",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "slackLists.items.deleteMultiple",
+      "id": "slackLists.items.deleteMultiple",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "slackLists.items.info",
+      "id": "slackLists.items.info",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "slackLists.items.list",
+      "id": "slackLists.items.list",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "slackLists.items.update",
+      "id": "slackLists.items.update",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "slackLists.update",
+      "id": "slackLists.update",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "stars.add",
       "id": "stars.add",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "POST /stars.remove",
+      "operation": "stars.list",
+      "id": "stars.list",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "stars.remove",
       "id": "stars.remove",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "POST /usergroups.create",
+      "operation": "team.accessLogs",
+      "id": "team.accessLogs",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "team.billableInfo",
+      "id": "team.billableInfo",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "team.billing.info",
+      "id": "team.billing.info",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "team.externalTeams.disconnect",
+      "id": "team.externalTeams.disconnect",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "team.externalTeams.list",
+      "id": "team.externalTeams.list",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "team.info",
+      "id": "team.info",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "team.integrationLogs",
+      "id": "team.integrationLogs",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "team.preferences.list",
+      "id": "team.preferences.list",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "team.profile.get",
+      "id": "team.profile.get",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "tooling.tokens.rotate",
+      "id": "tooling.tokens.rotate",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "usergroups.create",
       "id": "usergroups.create",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "POST /usergroups.disable",
+      "operation": "usergroups.disable",
       "id": "usergroups.disable",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "POST /usergroups.enable",
+      "operation": "usergroups.enable",
       "id": "usergroups.enable",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "POST /usergroups.update",
+      "operation": "usergroups.list",
+      "id": "usergroups.list",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "usergroups.update",
       "id": "usergroups.update",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "POST /usergroups.users.update",
+      "operation": "usergroups.users.list",
+      "id": "usergroups.users.list",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "usergroups.users.update",
       "id": "usergroups.users.update",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "POST /users.deletePhoto",
+      "operation": "users.conversations",
+      "id": "users.conversations",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "users.deletePhoto",
       "id": "users.deletePhoto",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "POST /users.info",
+      "operation": "users.discoverableContacts.lookup",
+      "id": "users.discoverableContacts.lookup",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "users.getPresence",
+      "id": "users.getPresence",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "users.identity",
+      "id": "users.identity",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "users.info",
       "id": "users.info",
-      "status": "extra",
-      "kind": "extra_operation",
-      "severity": "breaking",
-      "detail": "the vendor's spec declares no such operation",
-      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
+      "status": "implemented",
+      "params": {
+        "include_locale": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "token": {
+          "kind": "missing_param",
+          "severity": "gap",
+          "note": "Backlot does accept `token`: `auth.slack_token` reads it from the query string and from the form on every method, and `users.info?token=<token>` answers `ok: true`. Backlot's declared `openapi_extra` parameters do not name it, which is what this entry records."
+        }
+      },
+      "fields": {
+        "user.always_active": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.enterprise_id": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.enterprise_name": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.enterprise_user": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.first_login": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.is_agentforce_bot": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.is_email_confirmed": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.is_external": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.is_forgotten": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.is_invited_user": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.is_profile_only_user": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.is_stranger": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.is_workflow_bot": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.locale": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.manual_presence": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.presence": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.profile.always_active": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.profile.api_app_id": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.profile.bot_id": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.profile.fields": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.profile.guest_expiration_ts": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.profile.guest_invited_by": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.profile.huddle_state": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.profile.huddle_state_call_id": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.profile.huddle_state_channel_id": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.profile.huddle_state_expiration_ts": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.profile.image_1024": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.profile.image_192": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.profile.image_24": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.profile.image_32": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.profile.image_48": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.profile.image_512": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.profile.image_72": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.profile.image_original": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.profile.is_agentforce_bot": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.profile.is_app_user": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.profile.is_custom_image": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.profile.is_restricted": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.profile.is_sidekick_bot": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.profile.is_ultra_restricted": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.profile.last_avatar_image_hash": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.profile.memberships_count": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.profile.name": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.profile.pronouns": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.profile.restricted_user_type": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.profile.start_date": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.profile.status_clear_on_focus_end": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.profile.status_emoji_display_info": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.profile.status_expiration": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.profile.status_text_canonical": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.profile.team": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.profile.updated": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.profile.user_id": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.profile.username": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.profile.who_can_share_contact_card": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.restricted_user_type": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.suspended": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.team": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.team_profile": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.teams": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.two_factor_type": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "user.who_can_share_contact_card": {
+          "kind": "missing_field",
+          "severity": "gap"
+        }
+      }
     },
     {
-      "operation": "POST /users.list",
+      "operation": "users.list",
       "id": "users.list",
-      "status": "extra",
-      "kind": "extra_operation",
-      "severity": "breaking",
-      "detail": "the vendor's spec declares no such operation",
-      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
+      "status": "implemented",
+      "params": {
+        "include_locale": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "team_id": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "token": {
+          "kind": "missing_param",
+          "severity": "gap",
+          "note": "Backlot does accept `token`: `auth.slack_token` reads it from the query string and from the form on every method, and `users.list?token=<token>` answers `ok: true`. Backlot's declared `openapi_extra` parameters do not name it, which is what this entry records."
+        }
+      },
+      "fields": {
+        "cache_ts": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].always_active": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].enterprise_id": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].enterprise_name": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].enterprise_user": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].first_login": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].is_agentforce_bot": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].is_email_confirmed": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].is_external": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].is_forgotten": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].is_invited_user": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].is_profile_only_user": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].is_stranger": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].is_workflow_bot": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].locale": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].manual_presence": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].presence": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].profile.always_active": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].profile.api_app_id": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].profile.bot_id": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].profile.fields": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].profile.guest_expiration_ts": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].profile.guest_invited_by": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].profile.huddle_state": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].profile.huddle_state_call_id": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].profile.huddle_state_channel_id": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].profile.huddle_state_expiration_ts": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].profile.image_1024": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].profile.image_192": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].profile.image_24": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].profile.image_32": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].profile.image_48": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].profile.image_512": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].profile.image_72": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].profile.image_original": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].profile.is_agentforce_bot": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].profile.is_app_user": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].profile.is_custom_image": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].profile.is_restricted": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].profile.is_sidekick_bot": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].profile.is_ultra_restricted": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].profile.last_avatar_image_hash": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].profile.memberships_count": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].profile.name": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].profile.pronouns": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].profile.restricted_user_type": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].profile.start_date": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].profile.status_clear_on_focus_end": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].profile.status_emoji_display_info": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].profile.status_expiration": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].profile.status_text_canonical": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].profile.team": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].profile.updated": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].profile.user_id": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].profile.username": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].profile.who_can_share_contact_card": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].restricted_user_type": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].suspended": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].team": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].team_profile": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].teams": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].two_factor_type": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "members[].who_can_share_contact_card": {
+          "kind": "missing_field",
+          "severity": "gap"
+        }
+      }
     },
     {
-      "operation": "POST /users.profile.set",
+      "operation": "users.lookupByEmail",
+      "id": "users.lookupByEmail",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "users.profile.get",
+      "id": "users.profile.get",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "users.profile.set",
       "id": "users.profile.set",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "POST /users.setActive",
+      "operation": "users.setActive",
       "id": "users.setActive",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "POST /users.setPhoto",
+      "operation": "users.setPhoto",
       "id": "users.setPhoto",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
     },
     {
-      "operation": "POST /users.setPresence",
+      "operation": "users.setPresence",
       "id": "users.setPresence",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "views.open",
+      "id": "views.open",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "views.publish",
+      "id": "views.publish",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "views.push",
+      "id": "views.push",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "views.update",
+      "id": "views.update",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "workflows.featured.add",
+      "id": "workflows.featured.add",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "workflows.featured.list",
+      "id": "workflows.featured.list",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "workflows.featured.remove",
+      "id": "workflows.featured.remove",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "workflows.featured.set",
+      "id": "workflows.featured.set",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "workflows.triggers.permissions.add",
+      "id": "workflows.triggers.permissions.add",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "workflows.triggers.permissions.list",
+      "id": "workflows.triggers.permissions.list",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "workflows.triggers.permissions.remove",
+      "id": "workflows.triggers.permissions.remove",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "workflows.triggers.permissions.set",
+      "id": "workflows.triggers.permissions.set",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"

@@ -35,6 +35,40 @@ def _error(response, status: int) -> dict:
     return response.json()["error"]
 
 
+_NINES = "9" * 4301  # past the 4,300 digits Python's `int()` reads
+_INCOMPATIBLE = (
+    "Invalid filter clause: A binary operator with incompatible types was detected. Found operand "
+    "types '{}' and '{}' for operator kind '{}'."
+)
+_NODES = (
+    "The query specified in the URI is not valid. The node count limit of '100' has been "
+    "exceeded. To increase the limit, set the 'MaxNodeCount' property on EnableQueryAttribute or "
+    "ODataValidationSettings."
+)
+_DEPTH = "Invalid filter clause: Recursion depth exceeded allowed limit."
+_NESTING = (
+    "The query specified in the URI is not valid. The Any/All nesting limit of '1' has been "
+    "exceeded. 'MaxAnyAllExpressionDepth' can be configured on ODataQuerySettings or "
+    "EnableQueryAttribute."
+)
+_RAW_VALUE = "The argument 'rawValue' is null or empty. (Parameter 'rawValue')"
+_INVALID = (
+    "Invalid value '{}' for ${} query option found. The ${} query option requires a non-negative "
+    "integer value."
+)
+
+
+def _invalid(option: str, value: str) -> str:
+    return _INVALID.format(value, option, option)
+
+
+def _limit(option: str, limit: int, value: str) -> str:
+    return (
+        f"The query specified in the URI is not valid. The limit of '{limit}' for {option} query "
+        f"has been exceeded. The value from the incoming request is '{value}'."
+    )
+
+
 # --- auth ------------------------------------------------------------------------
 
 _UNREADABLE = "Protocol 'Bearer' failed to validate because The token could not be read."
@@ -150,6 +184,64 @@ def test_the_credential_is_read_before_the_path_or_the_method(client, method, pa
         assert _error(r, 401)["code"] == "InvalidAuthenticationToken"
 
 
+@pytest.mark.parametrize(
+    "method,path,headers,status,code,message",
+    [
+        (
+            "POST",
+            "/me",
+            {},
+            400,
+            "BadRequest",
+            "Write requests (excluding DELETE) must contain the Content-Type header declaration.",
+        ),
+        (
+            "PATCH",
+            "/me",
+            {"Content-Type": ""},
+            400,
+            "BadRequest",
+            "Write requests (excluding DELETE) must contain the Content-Type header declaration.",
+        ),
+        (
+            "POST",
+            "/me",
+            {"Content-Type": "text/plain"},
+            400,
+            "BadRequest",
+            "Entity only allows writes with a JSON Content-Type header.",
+        ),
+        (
+            "POST",
+            "/me",
+            {"Content-Type": "application/json"},
+            405,
+            "Request_BadRequest",
+            "Specified HTTP method is not allowed for the request target.",
+        ),
+        # The first segment is read before the content type.
+        ("POST", "/bogus", {}, 400, "BadRequest", "Resource not found for the segment 'bogus'."),
+    ],
+)
+def test_a_write_is_refused_as_graph_refuses_one(
+    client, admin_h, method, path, headers, status, code, message
+):
+    r = client.request(method, f"{V1}{path}", headers={**admin_h, **headers}, content=b"")
+    err = _error(r, status)
+    assert (err["code"], err["message"]) == (code, message)
+
+
+@pytest.mark.parametrize("method", ["OPTIONS", "HEAD"])
+@pytest.mark.parametrize("path", ["/me", "/teams/{team}/channels", "/bogus"])
+def test_a_method_graph_answers_on_no_route_is_an_empty_405(client, admin_h, team_id, method, path):
+    """With a credential or none."""
+    for headers in (admin_h, {}):
+        r = client.request(method, f"{V1}{path.format(team=team_id)}", headers=headers)
+        assert r.status_code == 405
+        assert r.content == b"" and r.headers["content-length"] == "0"
+        uuid.UUID(r.headers["request-id"])
+
+
 _RESOURCE_MISSING = (
     "Resource 'bogus' does not exist or one of its queried reference-property objects are not "
     "present."
@@ -184,6 +276,20 @@ _RESOURCE_MISSING = (
         ("/teams/{team}/channels/abc", 400, "BadRequest", "channelId is not valid."),
         ("/teams/{team}/channels/abc/messages", 400, "BadRequest", "UnknownError"),
         ("/teams/{team}/channels/{channel}/messages/abc", 400, "BadRequest", "UnknownError"),
+        (
+            "/me/joinedTeams/{team}",
+            404,
+            "NotFound",
+            "Requested API is not supported. Please check the path.",
+        ),
+        ("/msgraph/v2.0/me", 404, "ResourceNotFound", "Invalid version: v2.0"),
+        ("/teams/abc", 400, "BadRequest", "teamId needs to be a valid GUID."),
+        (
+            "/teams/00000000-0000-0000-0000-000000000000",
+            404,
+            "NotFound",
+            "No team found with Group Id 00000000-0000-0000-0000-000000000000",
+        ),
     ],
 )
 def test_a_path_nothing_serves_is_refused_once_the_credential_holds(
@@ -194,8 +300,14 @@ def test_a_path_nothing_serves_is_refused_once_the_credential_holds(
         channel=_channels(client, admin_h, team_id)["Platform"],
         user=synth.msteams_user_id("ava@acme.com"),
     )
-    err = _error(client.get(f"{V1}{url}", headers=admin_h), status)
+    err = _error(
+        client.get(url if url.startswith("/msgraph") else f"{V1}{url}", headers=admin_h), status
+    )
     assert (err["code"], err["message"]) == (code, message)
+    if code == "NotFound" and message.startswith("No team"):
+        assert err["innerError"]["code"] == "ItemNotFound"
+        assert err["innerError"]["message"] == message
+        assert list(err["innerError"])[:3] == ["code", "message", "details"]
 
 
 @pytest.mark.parametrize(
@@ -218,11 +330,14 @@ def test_a_path_nothing_serves_is_refused_once_the_credential_holds(
         ),
         ("/teams/{team}/channels/{channel}/MESSAGES/", "/teams/{team}/channels/{channel}/messages"),
         ("/teams/{team}/channels/{channel}/members/", "/teams/{team}/channels/{channel}/members"),
+        ("/me//", "/me"),
+        ("/msgraph/V1.0/me", "/me"),
+        ("/teams('{team}')", "/teams/{team}"),
     ],
 )
 def test_a_path_is_read_in_every_spelling_graph_reads(client, admin_h, team_id, spelled, canonical):
-    """A resource name in any case, an id as an OData key segment or a GUID upper-cased, and one
-    trailing slash are each the same path live."""
+    """The version and a resource name in any case, an id as an OData key segment or a GUID
+    upper-cased, and trailing slashes are each the same path live."""
     user = synth.msteams_user_id("ava@acme.com")
     ids = dict(
         team=team_id,
@@ -231,7 +346,10 @@ def test_a_path_is_read_in_every_spelling_graph_reads(client, admin_h, team_id, 
         user=user,
         USER=user.upper(),
     )
-    got = client.get(f"{V1}{spelled.format(**ids)}", headers=admin_h)
+    spelled = spelled.format(**ids)
+    got = client.get(
+        spelled if spelled.startswith("/msgraph") else f"{V1}{spelled}", headers=admin_h
+    )
     want = client.get(f"{V1}{canonical.format(**ids)}", headers=admin_h)
     assert got.status_code == want.status_code == 200, got.text
     strip = {"@odata.context", "@odata.nextLink"}
@@ -423,6 +541,140 @@ _EVENTUAL = {"ConsistencyLevel": "eventual"}
         ),
         ("$top=2147483648", {}, "Request_BadRequest", "Invalid value for '$top'."),
         ("$top=99999999999", {}, "Request_BadRequest", "Invalid value for '$top'."),
+        ("$top=9223372036854775807", {}, "Request_BadRequest", "Invalid value for '$top'."),
+        # Past Int64 a value is not one, and one past 1,024 characters is echoed cut.
+        ("$top=9223372036854775808", {}, "BadRequest", _INVALID_TOP.format(9223372036854775808)),
+        (f"$top={_NINES}", {}, "BadRequest", _INVALID_TOP.format("9" * 1021 + "...")),
+        # .NET's blanks are read around a value, and the separators Python counts as space are not.
+        ("$top=1%1C", {}, "BadRequest", _INVALID_TOP.format("1\x1c")),
+        ("$top=%E2%80%8B1", {}, "BadRequest", _INVALID_TOP.format("\u200b1")),
+        # `$count` is `true` or `false` exactly, read first.
+        ("$count=TRUE", _EVENTUAL, "BadRequest", "'TRUE' is not a valid count option."),
+        ("$count=yes", {}, "BadRequest", "'yes' is not a valid count option."),
+        ("$count=", _EVENTUAL, "BadRequest", "'' is not a valid count option."),
+        ("$count=TRUE&$top=abc", {}, "BadRequest", "'TRUE' is not a valid count option."),
+        # A `ConsistencyLevel` that is not `eventual` is refused, after `$top`.
+        (
+            "",
+            {"ConsistencyLevel": "bogus"},
+            "Request_BadRequest",
+            "One or more headers are invalid.",
+        ),
+        ("$top=abc", {"ConsistencyLevel": "bogus"}, "BadRequest", _INVALID_TOP.format("abc")),
+        (
+            "$filter=foo eq 'x'",
+            {"ConsistencyLevel": "eventual,eventual"},
+            "Request_BadRequest",
+            "One or more headers are invalid.",
+        ),
+        (
+            "$orderby=displayName,",
+            {},
+            "BadRequest",
+            "Expression expected at position 12 in 'displayName,'.",
+        ),
+        (
+            "$orderby=,displayName",
+            {},
+            "BadRequest",
+            "Expression expected at position 0 in ',displayName'.",
+        ),
+        (
+            "$orderby=displayName asc desc",
+            {},
+            "BadRequest",
+            "Syntax error at position 20 in 'displayName asc desc'.",
+        ),
+        # `$orderby` and `$search` are read before the filter is bound.
+        (
+            "$orderby=displayName,&$filter=foo eq 'x'",
+            {},
+            "BadRequest",
+            "Expression expected at position 12 in 'displayName,'.",
+        ),
+        (
+            "$search=abc&$filter=foo eq 'x'",
+            _EVENTUAL,
+            "Request_UnsupportedQuery",
+            "Clause 'abc' in $search is not of right format \"property:value\"",
+        ),
+        (
+            '$search="abc"',
+            {},
+            "Request_UnsupportedQuery",
+            "Clause 'abc' in $search is not of right format \"property:value\"",
+        ),
+        (
+            '$search="displayName:"',
+            _EVENTUAL,
+            "Request_UnsupportedQuery",
+            "Clause 'displayName:' in $search is of right format \"property:value\" but value is "
+            "empty",
+        ),
+        (
+            "$search=:abc",
+            _EVENTUAL,
+            "BadRequest",
+            "Syntax error: character ':' is not valid at position 0 in ':abc'.",
+        ),
+        ("$search=", _EVENTUAL, "BadRequest", "Expression expected at position 0 in ''."),
+        # Outside an advanced query, `or` joins at most 15 children — an `in` list's values among
+        # them — and `and` 25; a lambda wants the header too.
+        (
+            "$filter=" + " or ".join(["displayName eq 'x'"] * 16),
+            {},
+            "Request_UnsupportedQuery",
+            "Too many child clauses specified in search filter expression containing 'OR' "
+            "operators: 16. Max allowed: 15.",
+        ),
+        (
+            "$filter=displayName in (" + ",".join(f"'{i}'" for i in range(16)) + ")",
+            {},
+            "Request_UnsupportedQuery",
+            "Too many child clauses specified in search filter expression containing 'OR' "
+            "operators: 16. Max allowed: 15.",
+        ),
+        (
+            "$filter=" + " and ".join(["displayName eq 'x'"] * 26),
+            {},
+            "Request_UnsupportedQuery",
+            "Too many child clauses specified in search filter expression containing 'AND' "
+            "operators: 26. Max allowed: 25.",
+        ),
+        (
+            "$filter=businessPhones/any(p:p eq '1')",
+            {},
+            "Request_UnsupportedQuery",
+            "Unsupported or invalid query filter clause specified for property 'businessPhones' of "
+            "resource 'User'.",
+        ),
+        (
+            "$filter=displayName eq 5",
+            {},
+            "BadRequest",
+            _INCOMPATIBLE.format("Edm.String", "Edm.Int32", "Equal"),
+        ),
+        (
+            "$filter=accountEnabled eq 'x'",
+            _EVENTUAL,
+            "BadRequest",
+            _INCOMPATIBLE.format("Edm.Boolean", "Edm.String", "Equal"),
+        ),
+        (
+            "$filter=businessPhones in ('1')",
+            {},
+            "BadRequest",
+            "Invalid filter clause: The left operand for the IN operation is not a single value. "
+            "IN operations require the left operand to be a single value and the right operand to "
+            "be a collection value.",
+        ),
+        (
+            "$filter=businessPhones eq '1'",
+            {},
+            "BadRequest",
+            "Invalid filter clause: The operand for a binary operator 'Equal' is not a single "
+            "value. Binary operators require both operands to be single values.",
+        ),
         ("$skip=1", {}, "Request_BadRequest", "'$skip' is not supported by the service."),
         (
             "$expand=bogus",
@@ -440,16 +692,39 @@ def test_the_directory_refuses_a_query_it_cannot_run(
     assert (err["code"], err["message"]) == (code, message)
 
 
-@pytest.mark.parametrize("top", ["%2B1", "%201", "1%20", "%091", "01", "$TOP=1"])
+@pytest.mark.parametrize(
+    "top",
+    ["%2B1", "%201", "1%20", "%091", "1%09", "%C2%A01", "1%E3%80%80", "%E2%80%A81", "01", "$TOP=1"],
+)
 def test_a_top_graph_reads_is_one_however_it_is_spelled(client, admin_h, team_id, top):
-    """ASCII digits with a sign, leading spaces or tabs and trailing spaces, and the option's name
-    in any case, on the directory and the message methods alike."""
+    """ASCII digits with a sign and .NET's blanks around them — tabs, no-break and ideographic
+    spaces and line separators among them — and the option's name in any case, on the directory
+    and the message methods alike."""
     query = top if top.startswith("$") else f"$top={top}"
     users = client.get(f"{V1}/users?{query}", headers=admin_h).json()
     assert len(users["value"]) == 1
     assert query.split("=")[0] in users["@odata.nextLink"]
     platform = f"{V1}/teams/{team_id}/channels/{_channels(client, admin_h, team_id)['Platform']}"
     assert len(client.get(f"{platform}/messages?{query}", headers=admin_h).json()["value"]) == 1
+
+
+@pytest.mark.parametrize("path", ["/users", "/me", "/users/ava@acme.com"])
+def test_the_directory_answers_in_json_only(client, admin_h, path):
+    for value in ("json", "JSON", "application/json"):
+        assert client.get(f"{V1}{path}?$format={value}", headers=admin_h).status_code == 200
+    for value, message in (
+        ("xml", "The MIME type 'xml' is invalid or unspecified."),
+        ("bogus", "The MIME type 'bogus' is invalid or unspecified."),
+    ):
+        err = _error(client.get(f"{V1}{path}?$format={value}", headers=admin_h), 415)
+        assert (err["code"], err["message"]) == ("Request_BadRequest", message)
+    err = _error(client.get(f"{V1}{path}?$format=application/xml", headers=admin_h), 415)
+    assert err["message"].startswith(
+        "A supported MIME type could not be found that matches the acceptable MIME types"
+    )
+    assert err["message"].endswith(
+        "' do not match any of the acceptable MIME types 'application/xml'."
+    )
 
 
 def test_the_directory_answers_an_advanced_query(client, admin_h):
@@ -470,6 +745,25 @@ def test_the_directory_answers_an_advanced_query(client, admin_h):
     assert [u["id"] for u in both["value"]] == [ava["id"]]
     ends = client.get(f"{V1}/users?$filter=endswith(mail,'@acme.com')", headers=h).json()
     assert len(ends["value"]) == len(everyone)
+    # The header in any case and with blanks around it; a blank one asks for nothing.
+    for value in ("EVENTUAL", " eventual "):
+        loose = {**admin_h, "ConsistencyLevel": value}
+        assert client.get(f"{V1}/users?$count=true", headers=loose).json()["@odata.count"]
+    blank = client.get(f"{V1}/users?$count=true", headers={**admin_h, "ConsistencyLevel": " "})
+    assert "@odata.count" not in blank.json()
+    twice = [*admin_h.items(), ("ConsistencyLevel", "eventual"), ("ConsistencyLevel", "eventual")]
+    err = _error(client.get(f"{V1}/users", headers=twice), 400)
+    assert (err["code"], err["message"]) == (
+        "Request_BadRequest",
+        "One or more headers are invalid.",
+    )
+    # An advanced query lifts the limits on `or` and on a lambda.
+    many = " or ".join(["displayName eq 'x'"] * 16)
+    assert client.get(f"{V1}/users?$filter={many}", headers=h).status_code == 200
+    assert (
+        client.get(f"{V1}/users?$filter=businessPhones/any(p:p eq '1')", headers=h).json()["value"]
+        == []
+    )
 
 
 def test_a_user_resolves_by_object_id_and_by_principal_name(client, admin_h):
@@ -484,7 +778,7 @@ def test_a_user_resolves_by_object_id_and_by_principal_name(client, admin_h):
     )
 
 
-def test_joined_teams_is_the_one_team_the_corpus_models(client, admin_h):
+def test_joined_teams_is_the_one_team_the_corpus_models(client, admin_h, tokens_yaml):
     body = client.get(f"{V1}/me/joinedTeams", headers=admin_h).json()
     assert body["@odata.count"] == len(body["value"]) == 1
     # Only id, displayName, description, isArchived and tenantId are populated; the rest are null.
@@ -495,10 +789,32 @@ def test_joined_teams_is_the_one_team_the_corpus_models(client, admin_h):
         f"{V1}/users/{synth.msteams_user_id('ava@acme.com')}/joinedTeams", headers=admin_h
     ).json()
     assert by_user == body
-    # `$select` projects it and `$filter` is ignored; the paging and shaping options are refused.
+    # Anyone's, to a delegated caller.
+    bob = {"Authorization": f"Bearer {tok(tokens_yaml, 'bob@acme.com')}"}
+    ava = synth.msteams_user_id("ava@acme.com")
+    assert client.get(f"{V1}/users/{ava}/joinedTeams", headers=bob).json() == body
+    # A person the directory does not have, in the words of the lookup that failed.
+    for user, status, message in (
+        ("nobody@acme.com", 404, "Failed to find user with id 'nobody@acme.com' in the tenant"),
+        ("bogus", 400, "userId must be a GUID."),
+    ):
+        err = _error(client.get(f"{V1}/users/{user}/joinedTeams", headers=admin_h), status)
+        assert err["message"] == message
+    unknown = "00000000-0000-0000-0000-00000000000A"
+    err = _error(client.get(f"{V1}/users/{unknown}/joinedTeams", headers=admin_h), 404)
+    assert err["message"].startswith(
+        "Failed to execute MsGraph backend request GetUserGroupsS2SRequest. Workload "
+        "MsGraph_DirectoryServices. Request Url: https://graph.microsoft.com/edu/users/"
+        f"{unknown.lower()}/memberOf/"
+    )
+    assert (err["innerError"]["code"], err["innerError"]["details"]) == ("ItemNotFound", [])
+    # `$select` projects it, keeping a name the type does not declare, and `$filter` is ignored;
+    # the paging and shaping options are refused.
     selected = client.get(f"{V1}/me/joinedTeams?$select=displayName", headers=admin_h).json()
     assert selected["@odata.context"].endswith("#teams(displayName)")
     assert [set(t) for t in selected["value"]] == [{"displayName"}]
+    bogus = client.get(f"{V1}/me/joinedTeams?$select=bogus", headers=admin_h).json()
+    assert bogus["@odata.context"].endswith("#teams(bogus)") and bogus["value"] == [{}]
     ignored = client.get(f"{V1}/me/joinedTeams?$filter=displayName eq 'zzz'", headers=admin_h)
     assert len(ignored.json()["value"]) == 1
     for option, value in (
@@ -509,11 +825,88 @@ def test_joined_teams_is_the_one_team_the_corpus_models(client, admin_h):
         ("Expand", "channels"),
         ("Skip", "1"),
         ("Search", "x"),
+        ("Format", "json"),
     ):
         r = client.get(f"{V1}/me/joinedTeams?${option.lower()}={value}", headers=admin_h)
         assert _error(r, 400)["message"].startswith(
             f"The query specified in the URI is not valid. Query option '{option}' is not allowed."
         ), option
+
+
+def test_a_team_read_by_id_is_shaped_as_graph_sends_one(client, admin_h, team_id, ro_conn):
+    """Its first channel is the one it was created with, and its creation that channel's; nobody
+    owns it here. `$select` keeps a name the type does not declare, as `joinedTeams` does."""
+    team = client.get(f"{V1}/teams/{team_id}", headers=admin_h).json()
+    assert list(team) == [
+        "@odata.context",
+        "id",
+        "createdDateTime",
+        "displayName",
+        "description",
+        "internalId",
+        "classification",
+        "specialization",
+        "visibility",
+        "webUrl",
+        "isArchived",
+        "isMembershipLimitedToOwners",
+        "discoverySettings",
+        "tagSettings",
+        "memberSettings",
+        "guestSettings",
+        "messagingSettings",
+        "funSettings",
+        "summary",
+    ]
+    assert team["@odata.context"].endswith("#teams/$entity")
+    channels = client.get(f"{V1}/teams/{team_id}/channels", headers=admin_h).json()["value"]
+    first = min(channels, key=lambda c: c["createdDateTime"])
+    assert (team["internalId"], team["createdDateTime"]) == (first["id"], first["createdDateTime"])
+    assert team["webUrl"].startswith(
+        f"https://teams.microsoft.com/l/team/{first['id'].replace(':', '%3a').replace('@', '%40')}/"
+    )
+    assert (team["specialization"], team["visibility"]) == ("none", "public")
+    assert team["summary"] == {
+        "ownersCount": 0,
+        "membersCount": len(store.all_user_emails(ro_conn)),
+        "guestsCount": 0,
+    }
+    selected = client.get(f"{V1}/teams/{team_id}?$select=displayName,id", headers=admin_h).json()
+    assert list(selected) == ["@odata.context", "id", "displayName"]
+    assert selected["@odata.context"].endswith("#teams(displayName,id)/$entity")
+    bogus = client.get(f"{V1}/teams/{team_id}?$select=bogus", headers=admin_h).json()
+    assert list(bogus) == ["@odata.context"]
+    unechoed = client.get(f"{V1}/teams/{team_id}?select=displayName", headers=admin_h).json()
+    assert unechoed["@odata.context"].endswith("#teams/$entity")
+    # Every other option is refused, an `$expand` that binds too, and all before the id is read.
+    for query, code, message in (
+        ("$top=1", "", "Top"),
+        ("$filter=isArchived", "", "Filter"),
+        ("$format=json", "", "Format"),
+        (
+            "$expand=channels",
+            "",
+            "The query specified in the URI is not valid. The property 'channels' cannot be used "
+            "in the $expand query option.",
+        ),
+        (
+            "$expand=bogus",
+            "BadRequest",
+            "Parsing OData Select and Expand failed: Could not find a property named 'bogus' on "
+            "type 'microsoft.graph.team'.",
+        ),
+        ("$top=abc", "BadRequest", _invalid("top", "abc")),
+        ("$skiptoken=", "BadRequest", _RAW_VALUE),
+    ):
+        for team in (team_id, "bogus", "00000000-0000-0000-0000-000000000000"):
+            err = _error(client.get(f"{V1}/teams/{team}?{query}", headers=admin_h), 400)
+            if " " not in message:
+                message = (
+                    f"The query specified in the URI is not valid. Query option '{message}' is "
+                    "not allowed. To allow it, set the 'AllowedQueryOptions' property on "
+                    "EnableQueryAttribute or QueryValidationSettings."
+                )
+            assert (err["code"], err["message"]) == (code, message), (query, team)
 
 
 @pytest.mark.parametrize("path", ["/me", "/users/{user}"])
@@ -564,6 +957,9 @@ def test_listing_and_getting_a_channel_differ_where_graph_does(client, admin_h, 
     ]
     assert platform["layoutType"] is None
     assert platform["description"] is None and platform["email"] is None
+    # An option name in ASCII case only: with a Kelvin sign for its k, it is no option Graph reads.
+    kelvin = client.get(f"{V1}/teams/{team_id}/channels?$s\u212aiptoken=abc", headers=admin_h)
+    assert kelvin.status_code == 200
     assert platform["webUrl"].startswith("https://teams.cloud.microsoft/l/channel/")
     # `ngc=True` is on a private channel's address only.
     assert platform["webUrl"].endswith("&allowXTenantAccess=False")
@@ -587,6 +983,9 @@ def test_listing_and_getting_a_channel_differ_where_graph_does(client, admin_h, 
     } == {k: v for k, v in platform.items() if k != "layoutType"}
 
 
+_ALL_CHANNELS = ["Incidents", "People Confidential", "Platform"]
+
+
 @pytest.mark.parametrize(
     "expr,names",
     [
@@ -602,6 +1001,35 @@ def test_listing_and_getting_a_channel_differ_where_graph_does(client, admin_h, 
         ("displayName EQ 'Platform' OR displayName eq 'Incidents'", ["Incidents", "Platform"]),
         ("startswith(DisplayName,'Pl')", ["Platform"]),
         ("displayName in ('Platform','Incidents')", ["Incidents", "Platform"]),
+        ("displayName in ()", []),
+        ("", _ALL_CHANNELS),
+        (" ", _ALL_CHANNELS),
+        # `not` binds tighter than a comparison, and a boolean property is a predicate on its own.
+        ("not isArchived eq true", _ALL_CHANNELS),
+        ("not (displayName eq 'Platform')", ["Incidents", "People Confidential"]),
+        ("isArchived", []),
+        ("not isArchived and displayName eq 'Platform'", ["Platform"]),
+        ("isArchived in (false)", _ALL_CHANNELS),
+        # Typed literals: a date-time, a date, a qualified enum member and an enum's position.
+        ("createdDateTime gt 2026-02-06T00:00:00Z", ["Incidents", "People Confidential"]),
+        ("createdDateTime lt 2026-02-06T13:00+01:00", ["People Confidential", "Platform"]),
+        ("createdDateTime ge 2026-02-10", ["Incidents"]),
+        (
+            "membershipType eq microsoft.graph.channelMembershipType'private'",
+            ["People Confidential"],
+        ),
+        ("membershipType eq 1", ["People Confidential"]),
+        ("displayName eq 'it''s'", []),
+        ("tolower(displayName) eq 'platform'", ["Platform"]),
+        ("length(displayName) eq 8", ["Platform"]),
+        # Strings order with null below every one of them; literals compare with each other.
+        ("displayName gt null", _ALL_CHANNELS),
+        ("null eq displayName", []),
+        ("5 eq 5", _ALL_CHANNELS),
+        # The limits, at the edge: 99 parentheses, 16 terms and 98 `not`s fit.
+        ("(" * 99 + "displayName eq 'Platform'" + ")" * 99, ["Platform"]),
+        (" and ".join(["displayName ne 'x'"] * 16), _ALL_CHANNELS),
+        ("not " * 98 + "isArchived", []),
     ],
 )
 def test_a_channel_filter_selects_what_graph_selects(client, admin_h, team_id, expr, names):
@@ -700,6 +1128,216 @@ def test_a_channel_filter_selects_what_graph_selects(client, admin_h, team_id, e
             "The query specified in the URI is not valid. Query option 'OrderBy' is not allowed. "
             "To allow it, set the 'AllowedQueryOptions' property on EnableQueryAttribute or "
             "QueryValidationSettings.",
+        ),
+        (
+            {"$format": "json"},
+            "",
+            "The query specified in the URI is not valid. Query option 'Format' is not allowed. To "
+            "allow it, set the 'AllowedQueryOptions' property on EnableQueryAttribute or "
+            "QueryValidationSettings.",
+        ),
+        ({"$skiptoken": ""}, "BadRequest", _RAW_VALUE),
+        # ASCII case only: a long s is not an s.
+        (
+            {"$select": "diſplayName"},
+            "BadRequest",
+            "Parsing OData Select and Expand failed: Could not find a property named "
+            "'diſplayName' on type 'microsoft.graph.channel'.",
+        ),
+        (
+            {"$filter": "diſplayName eq 'x'"},
+            "BadRequest",
+            "Invalid filter clause: Could not find a property named 'diſplayName' on type "
+            "'microsoft.graph.channel'.",
+        ),
+        # Operands are typed, each literal as the narrowest type that holds it.
+        (
+            {"$filter": "displayName gt 5"},
+            "BadRequest",
+            _INCOMPATIBLE.format("Edm.String", "Edm.Int32", "GreaterThan"),
+        ),
+        (
+            {"$filter": "createdDateTime gt 5"},
+            "BadRequest",
+            _INCOMPATIBLE.format("Edm.DateTimeOffset", "Edm.Int32", "GreaterThan"),
+        ),
+        (
+            {"$filter": "displayName eq 2147483648"},
+            "BadRequest",
+            _INCOMPATIBLE.format("Edm.String", "Edm.Int64", "Equal"),
+        ),
+        (
+            {"$filter": "displayName eq 99999999999999999999"},
+            "BadRequest",
+            _INCOMPATIBLE.format("Edm.String", "Edm.Decimal", "Equal"),
+        ),
+        (
+            {"$filter": f"displayName eq {_NINES}"},
+            "BadRequest",
+            _INCOMPATIBLE.format("Edm.String", "Edm.Single", "Equal"),
+        ),
+        (
+            {"$filter": "displayName eq 1.5"},
+            "BadRequest",
+            _INCOMPATIBLE.format("Edm.String", "Edm.Single", "Equal"),
+        ),
+        (
+            {"$filter": "isArchived eq 'x'"},
+            "BadRequest",
+            _INCOMPATIBLE.format("Edm.Boolean", "Edm.String", "Equal"),
+        ),
+        (
+            {"$filter": "displayName and isArchived"},
+            "BadRequest",
+            _INCOMPATIBLE.format("Edm.String", "Edm.Boolean", "And"),
+        ),
+        (
+            {"$filter": "displayName add 1 eq 2"},
+            "BadRequest",
+            _INCOMPATIBLE.format("Edm.String", "Edm.Int32", "Add"),
+        ),
+        (
+            {"$filter": "displayName eq 2020-01-01T00:00:00Z"},
+            "BadRequest",
+            _INCOMPATIBLE.format("Edm.String", "Edm.DateTimeOffset", "Equal"),
+        ),
+        (
+            {"$filter": "not displayName eq 'x'"},
+            "BadRequest",
+            "Invalid filter clause: A unary operator with an incompatible type was detected. Found "
+            "operand type 'Edm.String' for operator kind 'Not'.",
+        ),
+        (
+            {"$filter": "displayName"},
+            "BadRequest",
+            "Invalid filter clause: The $filter expression must evaluate to a single boolean value.",
+        ),
+        (
+            {"$filter": "startswith(displayName,5)"},
+            "BadRequest",
+            "Invalid filter clause: No function signature for the function with name 'startswith' "
+            "matches the specified arguments. The function signatures considered are: "
+            "startswith(Edm.String Nullable=true, Edm.String Nullable=true).",
+        ),
+        (
+            {"$filter": "bogus(displayName)"},
+            "BadRequest",
+            "Invalid filter clause: An unknown function with name 'bogus' was found. This may also "
+            "be a function import or a key lookup on a navigation property, which is not allowed.",
+        ),
+        (
+            {"$filter": "displayName has 'x'"},
+            "BadRequest",
+            "Invalid filter clause: An internal error "
+            "'TypePromotionUtils_GetFunctionSignatures_Binary_UnreachableCodepath' occurred.",
+        ),
+        (
+            {"$filter": "isArchived eq True"},
+            "BadRequest",
+            "Invalid filter clause: Could not find a property named 'True' on type "
+            "'microsoft.graph.channel'.",
+        ),
+        (
+            {"$filter": "displayName in (1,2)"},
+            "BadRequest",
+            "Invalid filter clause: String item should be single/double quoted: '1'.",
+        ),
+        # What the parser refuses, and where it stops.
+        (
+            {"$filter": "displayName eq 'x' 'y'"},
+            "BadRequest",
+            "Invalid filter clause: Syntax error at position 22 in 'displayName eq 'x' 'y''.",
+        ),
+        (
+            {"$filter": "displayName eqq 'x'"},
+            "BadRequest",
+            "Invalid filter clause: Syntax error at position 15 in 'displayName eqq 'x''.",
+        ),
+        (
+            {"$filter": "id eq 19:abc"},
+            "BadRequest",
+            "Invalid filter clause: Syntax error at position 9 in 'id eq 19:abc'.",
+        ),
+        (
+            {"$filter": "(displayName eq 'x'"},
+            "BadRequest",
+            "Invalid filter clause: ')' or operator expected at position 19 in "
+            "'(displayName eq 'x''.",
+        ),
+        (
+            {"$filter": 'displayName eq "x"'},
+            "BadRequest",
+            "Invalid filter clause: Syntax error: character '\"' is not valid at position 15 in "
+            "'displayName eq \"x\"'.",
+        ),
+        (
+            {"$filter": "displayName eq 'x''"},
+            "BadRequest",
+            "Invalid filter clause: There is an unterminated string literal at position 19 in "
+            "'displayName eq 'x'''.",
+        ),
+        (
+            {"$filter": "displayName in ('a',)"},
+            "BadRequest",
+            "Invalid filter clause: Invalid JSON. An unexpected comma was found in scope 'Array'. A "
+            "comma is only valid between properties of an object or between elements of an array.",
+        ),
+        (
+            {"$filter": "displayName in ('a' 'b')"},
+            "BadRequest",
+            "Invalid filter clause: Invalid JSON. A comma character ',' was expected in scope "
+            "'Array'. Every two elements in an array and properties of an object must be "
+            "separated by commas.",
+        ),
+        (
+            {"$filter": "displayName IN ('a')"},
+            "BadRequest",
+            "Invalid filter clause: An unexpected 'PrimitiveValue' node was found when reading "
+            "from the JSON reader. A 'StartArray' node was expected.",
+        ),
+        (
+            {"$filter": "createdDateTime gt 2020-13-01T00:00:00Z"},
+            "BadRequest",
+            "Invalid filter clause: The DateTimeOffset text '2020-13-01T00:00:00Z' should be in "
+            "format 'yyyy-mm-ddThh:mm:ss('.'s+)?(zzzzzz)?' and each field value is within valid "
+            "range.",
+        ),
+        (
+            {"$filter": "createdDateTime gt 2020-01-01T00:00:00"},
+            "BadRequest",
+            "Invalid filter clause: The DateTimeOffset text '2020-01-01T00:00:00' should be in "
+            "format 'yyyy-mm-ddThh:mm:ss('.'s+)?(zzzzzz)?' and each field value is within valid "
+            "range.",
+        ),
+        # The parser's recursion limit, reached before the binder reads a property.
+        ({"$filter": "(" * 100 + "bogus eq 'x'" + ")" * 100}, "BadRequest", _DEPTH),
+        ({"$filter": "not " * 1200 + "isArchived"}, "BadRequest", _DEPTH),
+        ({"$filter": "not(" * 89 + "isArchived" + ")" * 89}, "BadRequest", _DEPTH),
+        # The validator's node count: a boolean property weighs 2 here, any other 3.
+        ({"$filter": " and ".join(["displayName ne 'x'"] * 17)}, "", _NODES),
+        ({"$filter": " or ".join(["isArchived"] * 34)}, "", _NODES),
+        ({"$filter": "not " * 99 + "isArchived"}, "", _NODES),
+        ({"$filter": " or ".join(["'x' eq 'x'"] * 26)}, "", _NODES),
+        # The binder before the node count, and the count before the listing's own `$top`.
+        (
+            {"$filter": " or ".join(["displayName eq 'x'"] * 17) + " or displayName gt 5"},
+            "BadRequest",
+            _INCOMPATIBLE.format("Edm.String", "Edm.Int32", "GreaterThan"),
+        ),
+        ({"$filter": " or ".join(["displayName eq 'x'"] * 17), "$top": "1"}, "", _NODES),
+        # A boolean ordered against another binds, and .NET cannot run it.
+        (
+            {"$filter": "isArchived gt true"},
+            "",
+            "The query specified in the URI is not valid. The binary operator GreaterThan is not "
+            "defined for the types 'System.Nullable`1[System.Boolean]' and "
+            "'System.Nullable`1[System.Boolean]'.",
+        ),
+        (
+            {"$filter": "isArchived ge null"},
+            "",
+            "The query specified in the URI is not valid. The binary operator GreaterThanOrEqual "
+            "is not defined for the types 'System.Nullable`1[System.Boolean]' and 'System.Object'.",
         ),
     ],
 )
@@ -832,6 +1470,103 @@ def test_select_is_read_in_every_spelling_and_only_dollar_select_is_echoed(
             "limit of '2147483647' for Top query has been exceeded. The value from the incoming "
             "request is '99999999999'.",
         ),
+        # `$format` is refused on every channel method, and read last.
+        ("", "$format=json", "", "Format"),
+        ("/members", "$format=json", "", "Format"),
+        ("/messages", "$format=json", "", "Format"),
+        ("/messages/{message}", "$format=json", "", "Format"),
+        ("/messages/{message}/replies", "$format=json", "", "Format"),
+        ("", "$format=json&$expand=members", "", "Expand"),
+        ("/messages", "$format=json&$top=51", "", _limit("Top", 50, "51")),
+        ("", "$skip=1", "", "Skip"),
+        # `$top` and `$skip` are 64-bit integers, read before the validator; past Int32 each has
+        # the validator's limit.
+        ("/messages", "$skip=abc", "BadRequest", _invalid("skip", "abc")),
+        ("/messages", "$skip=-1", "BadRequest", _invalid("skip", "-1")),
+        ("/messages", "$skip=", "BadRequest", _invalid("skip", "")),
+        ("/messages", "$skip=2147483648", "", _limit("Skip", 2147483647, "2147483648")),
+        (
+            "/messages",
+            "$skip=9223372036854775808",
+            "BadRequest",
+            _invalid("skip", "9223372036854775808"),
+        ),
+        ("/messages", f"$skip={_NINES}", "BadRequest", _invalid("skip", "9" * 1021 + "...")),
+        ("/messages", f"$top={_NINES}", "BadRequest", _invalid("top", "9" * 1021 + "...")),
+        (
+            "/messages",
+            "$top=9223372036854775807",
+            "",
+            _limit("Top", 2147483647, "9223372036854775807"),
+        ),
+        ("/messages/{message}/replies", "$skip=abc", "BadRequest", _invalid("skip", "abc")),
+        (
+            "/messages/{message}/replies",
+            "$skip=2147483648",
+            "",
+            _limit("Skip", 2147483647, "2147483648"),
+        ),
+        (
+            "/messages/{message}/replies",
+            "$top=9223372036854775808",
+            "BadRequest",
+            _invalid("top", "9223372036854775808"),
+        ),
+        # A value that is not one is read before the option is refused.
+        ("/messages/{message}", "$top=abc", "BadRequest", _invalid("top", "abc")),
+        # An empty page token is refused before anything else.
+        ("/messages", "$skiptoken=", "BadRequest", _RAW_VALUE),
+        ("/messages", "$skiptoken=&$top=51", "BadRequest", _RAW_VALUE),
+        ("/messages/{message}", "$skiptoken=", "BadRequest", _RAW_VALUE),
+        ("/messages/{message}/replies", "$skiptoken=", "BadRequest", _RAW_VALUE),
+        ("/members", "$skiptoken=", "BadRequest", _RAW_VALUE),
+        # A filter over members: a collection is no single value, a lambda's variable is gone after
+        # its parenthesis, lambdas do not nest, and every property weighs 2 in the node count.
+        (
+            "/members",
+            "$filter=roles in ('owner')",
+            "BadRequest",
+            "Invalid filter clause: The left operand for the IN operation is not a single value. "
+            "IN operations require the left operand to be a single value and the right operand to "
+            "be a collection value.",
+        ),
+        (
+            "/members",
+            "$filter=roles eq 'owner'",
+            "BadRequest",
+            "Invalid filter clause: The operand for a binary operator 'Equal' is not a single "
+            "value. Binary operators require both operands to be single values.",
+        ),
+        (
+            "/members",
+            "$filter=roles/any(r:r eq 'owner') or r eq null",
+            "BadRequest",
+            "Invalid filter clause: Could not find a property named 'r' on type "
+            "'microsoft.graph.conversationMember'.",
+        ),
+        (
+            "/members",
+            "$filter=displayName/any(r:r eq 'x')",
+            "BadRequest",
+            "Invalid filter clause: Any/All may only be used following a collection.",
+        ),
+        (
+            "/members",
+            "$filter=roles/any(r:r)",
+            "BadRequest",
+            "Invalid filter clause: The Any/All query expression must evaluate to a single boolean "
+            "value.",
+        ),
+        ("/members", "$filter=roles/any(r:roles/any(s:s eq r))", "", _NESTING),
+        ("/members", "$skip=1&$filter=roles/any(r:roles/any(s:s eq r))", "", "Skip"),
+        ("/members", "$filter=" + " or ".join(["displayName eq 'x'"] * 21), "", _NODES),
+        # A message listing binds a filter before refusing it.
+        (
+            "/messages",
+            "$filter=subject gt 5",
+            "BadRequest",
+            _INCOMPATIBLE.format("Edm.String", "Edm.Int32", "GreaterThan"),
+        ),
     ],
 )
 def test_a_channel_method_refuses_the_options_graph_refuses_on_it(
@@ -892,6 +1627,20 @@ def test_a_channel_method_refuses_the_options_graph_refuses_on_it(
             "property on EnableQueryAttribute or QueryValidationSettings.",
         ),
         ("/teams/abc/channels?$top=1", "teamId needs to be a valid GUID."),
+        ("/teams/{other}/channels?$filter=" + " or ".join(["displayName eq 'x'"] * 17), _NODES),
+        (
+            "/teams/{other}/channels/{channel}/members?$filter=roles/any(r:roles/any(s:s eq r))",
+            _NESTING,
+        ),
+        ("/teams/{team}/channels/{missing}/messages?$skiptoken=", _RAW_VALUE),
+        ("/teams/{team}/channels/{missing}/messages/abc/replies", "UnknownError"),
+        ("/teams/{team}/channels/{channel}/messages/abc/replies?$top=51", _limit("Top", 50, "51")),
+        (
+            "/users/bogus/joinedTeams?$format=json",
+            "The query specified in the URI is not valid. "
+            "Query option 'Format' is not allowed. To allow it, set the 'AllowedQueryOptions' "
+            "property on EnableQueryAttribute or QueryValidationSettings.",
+        ),
     ],
 )
 def test_a_query_is_refused_before_what_it_names_is_looked_up(
@@ -945,6 +1694,8 @@ def test_a_channel_the_team_does_not_have_is_answered_per_method(
     "suffix,message,inner",
     [
         ("/channels", "No threadId found for TeamId {team}", "Unknown"),
+        # A filter .NET cannot run is refused only once the team is found.
+        ("/channels?$filter=isArchived gt true", "No threadId found for TeamId {team}", "Unknown"),
         ("/channels/{channel}", "Channel does not belong to Team.", None),
         ("/channels/{channel}/messages", "Group ID '{team}' is not found.", None),
     ],
@@ -1171,6 +1922,9 @@ def test_a_channel_listing_returns_roots_only_and_replies_newest_first(client, a
     base, root = _incident(client, admin_h, team_id)
     roots = client.get(base, headers=admin_h).json()["value"]
     assert all(m["replyToId"] is None for m in roots)
+    # An empty filter is none, and a blank page token the first page.
+    for params in ({"$filter": ""}, {"$skiptoken": " "}):
+        assert client.get(base, headers=admin_h, params=params).json()["value"] == roots
     replies = client.get(f"{base}/{root['id']}/replies", headers=admin_h).json()
     assert replies["@odata.count"] == len(replies["value"]) == 2
     assert all(r["replyToId"] == root["id"] for r in replies["value"])
@@ -1194,6 +1948,11 @@ def test_a_reply_is_read_under_its_root_and_not_at_the_root_route(client, admin_
         (f"{thread}/1111111111111", 403, "Forbidden", "UnknownError"),
         (f"{thread}/abc", 400, "BadRequest", "UnknownError"),
         (f"{base}/1111111111111/replies/{reply['id']}", 404, "NotFound", "UnknownError"),
+        # A root id that is not an unsigned 64-bit number is a 400 under `/replies` too.
+        (f"{base}/abc/replies", 400, "BadRequest", "UnknownError"),
+        (f"{base}/abc/replies/{reply['id']}", 400, "BadRequest", "UnknownError"),
+        (f"{base}/18446744073709551616/replies", 400, "BadRequest", "UnknownError"),
+        (f"{base}/99999999999999999999/replies/{reply['id']}", 400, "BadRequest", "UnknownError"),
         (
             f"{thread}/{reply['id']}?$expand=replies",
             400,
@@ -1210,6 +1969,13 @@ def test_a_reply_is_read_under_its_root_and_not_at_the_root_route(client, admin_
     # Teams threads are one level deep: a reply's own replies are an empty collection.
     nested = client.get(f"{base}/{reply['id']}/replies", headers=admin_h).json()
     assert (nested["@odata.count"], nested["value"]) == (0, [])
+    # A root id is read as a number, so leading zeros name the same root; past it, an empty thread.
+    padded = client.get(f"{base}/000{root['id']}/replies", headers=admin_h).json()
+    assert [r["id"] for r in padded["value"]] == [
+        r["id"] for r in client.get(thread, headers=admin_h).json()["value"]
+    ]
+    empty = client.get(f"{base}/18446744073709551615/replies", headers=admin_h).json()
+    assert empty["value"] == []
 
 
 def test_expand_replies_inlines_every_thread_and_counts_only_a_nonempty_one(
@@ -1339,14 +2105,23 @@ def test_select_projects_a_message_to_what_was_named(client, admin_h, team_id):
 # --- paging and ordering ---------------------------------------------------------
 
 
-def test_skip_skips_roots_and_leaves_replies_empty(client, admin_h, team_id):
+def test_skip_skips_roots_and_drops_replies_from_the_page_top_reads(client, admin_h, team_id):
+    """On a reply listing, `$skip` drops that many from the `$top` page and never reaches past it,
+    so a skip as long as the page leaves it empty, with no link onward."""
     base, root = _incident(client, admin_h, team_id)
     platform = f"{V1}/teams/{team_id}/channels/{_channels(client, admin_h, team_id)['Platform']}"
     roots = client.get(f"{platform}/messages", headers=admin_h).json()["value"]
     skipped = client.get(f"{platform}/messages?$skip=1", headers=admin_h).json()["value"]
     assert [m["id"] for m in skipped] == [m["id"] for m in roots[1:]]
-    replies = client.get(f"{base}/{root['id']}/replies?$skip=1", headers=admin_h).json()
-    assert replies["value"] == [] and replies["@odata.count"] == 0
+    thread = f"{base}/{root['id']}/replies"
+    every = client.get(thread, headers=admin_h).json()["value"]
+    replies = client.get(f"{thread}?$skip=1", headers=admin_h).json()
+    assert [r["id"] for r in replies["value"]] == [r["id"] for r in every[1:]]
+    assert replies["@odata.count"] == len(every) - 1 and "@odata.nextLink" not in replies
+    first = client.get(f"{thread}?$top=1", headers=admin_h).json()
+    assert "@odata.nextLink" in first
+    none = client.get(f"{thread}?$top=1&$skip=1", headers=admin_h).json()
+    assert none["value"] == [] and "@odata.nextLink" not in none
 
 
 def test_a_page_counts_itself_and_the_next_link_walks_the_channel(

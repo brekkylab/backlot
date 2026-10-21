@@ -510,7 +510,8 @@ async def read_a_graph_request_the_way_graph_does(request: Request, call_next):
     Graph sends.
 
     Two `Authorization` headers are refused by the front Graph sits behind before anything is read,
-    with an HTML page rather than a Graph error. Every other request has its path rewritten to the
+    with an HTML page rather than a Graph error, and an `OPTIONS` or `HEAD` with an empty 405,
+    credential or none. Every other request has its path rewritten to the
     spelling the routes match (``msteams.normalize_path``), and every answer carries the request's
     id as `request-id` and `client-request-id` — the ids its `innerError` names, the second being
     the caller's own where it sent a GUID one — with a 200's JSON served as OData under
@@ -532,7 +533,10 @@ async def read_a_graph_request_the_way_graph_does(request: Request, call_next):
     reset = msgraph_errors.REQUEST_ID.set(request_id)
     reset_client = msgraph_errors.CLIENT_REQUEST_ID.set(client_id)
     try:
-        response = await call_next(request)
+        if request.method in ("OPTIONS", "HEAD"):
+            response = Response(status_code=405)
+        else:
+            response = await call_next(request)
     finally:
         msgraph_errors.REQUEST_ID.reset(reset)
         msgraph_errors.CLIENT_REQUEST_ID.reset(reset_client)

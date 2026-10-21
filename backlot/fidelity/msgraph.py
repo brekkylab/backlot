@@ -127,6 +127,7 @@ def _objects(
     if not teams:
         raise FidelityError("the corpus serves no team, so nothing below it can be compared")
     team_id = quote(teams[0]["id"], safe="")
+    yield f"{_G}.team", _get(client, f"{V1}/teams/{team_id}", roots), "GET /teams/{id}"
 
     channels = _get(client, f"{V1}/teams/{team_id}/channels", roots)["value"]
     for channel in channels:

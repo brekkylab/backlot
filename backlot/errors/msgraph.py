@@ -3,12 +3,12 @@
 The stable machine-readable contract is ``error.code``. Microsoft explicitly warns callers not
 to depend on the human-readable message (https://learn.microsoft.com/graph/errors).
 
-Every body below was read off graph.microsoft.com on 2026-10-20 (the 401s anonymously, the rest
-with app-only and delegated tokens on a Teams tenant). Graph answers an error in one of two
-shapes. Most carry ``code``, ``message`` and an ``innerError`` of ``date``, ``request-id`` and
-``client-request-id``, with ``code`` and ``message`` ahead of those where the inner layer reports
-its own. A request the OData query validator refuses carries an EMPTY ``code``, a ``details``
-list, and the reason again as ``innerError.message``.
+Every body below was read off graph.microsoft.com on 2026-10-20 and 2026-10-21 (the 401s
+anonymously, the rest with app-only and delegated tokens on a Teams tenant). Graph answers an error
+in one of two shapes. Most carry ``code``, ``message`` and an ``innerError`` of ``date``,
+``request-id`` and ``client-request-id``, with ``code`` and ``message`` ahead of those where the
+inner layer reports its own. A request the OData query validator refuses carries an EMPTY ``code``,
+a ``details`` list, and the reason again as ``innerError.message``.
 
 """
 
@@ -62,6 +62,7 @@ class GraphError(HTTPException):
         inner: str | None = None,
         inner_message: str | None = None,
         details: bool = False,
+        inner_details: bool = False,
         headers: dict[str, str] | None = None,
     ):
         super().__init__(status_code=status_code, detail=message, headers=headers)
@@ -69,6 +70,7 @@ class GraphError(HTTPException):
         self.inner = inner
         self.inner_message = inner_message
         self.details = details
+        self.inner_details = inner_details
 
 
 # The code a bare HTTPException on a Graph path renders as, so a route that raises one still
@@ -165,11 +167,68 @@ def top_too_large(limit: int, value: str) -> GraphError:
     )
 
 
-def top_not_integer(value: str) -> GraphError:
-    return bad_request(
-        f"Invalid value '{value}' for $top query option found. The $top query option requires a "
-        "non-negative integer value."
+def skip_too_large(value: str) -> GraphError:
+    return query_option_invalid(
+        f"The limit of '2147483647' for Skip query has been exceeded. The value from the incoming "
+        f"request is '{value}'."
     )
+
+
+def invalid_integer(option: str, value: str) -> GraphError:
+    """``$top`` or ``$skip`` that is not a non-negative 64-bit integer. A value past 1,024
+    characters is echoed as its first 1,021 and ``...``."""
+    shown = value if len(value) <= 1024 else value[:1021] + "..."
+    return bad_request(
+        f"Invalid value '{shown}' for ${option} query option found. The ${option} query option "
+        "requires a non-negative integer value."
+    )
+
+
+def empty_option_value() -> GraphError:
+    """An empty ``$skiptoken`` on a Teams route, refused before the rest of the request is read."""
+    return bad_request("The argument 'rawValue' is null or empty. (Parameter 'rawValue')")
+
+
+def invalid_count(value: str) -> GraphError:
+    return bad_request(f"'{value}' is not a valid count option.")
+
+
+def headers_invalid() -> GraphError:
+    """The directory's refusal of a ``ConsistencyLevel`` it cannot read."""
+    return request_bad_request("One or more headers are invalid.")
+
+
+# What the directory lists as the types a `$format` may name, cut where Graph cuts it.
+_SUPPORTED_TYPES = (
+    "application/json;odata.metadata=minimal;odata.streaming=true;IEEE754Compatible=false, "
+    "application/json;odata.metadata=minimal;odata.streaming=true;IEEE754Compatible=true, "
+    "application/json;odata.metadata=minimal;odata.streaming=true, "
+    "application/json;odata.metadata=minimal;odata.streaming=false;IEEE754Compatible=false, "
+    "application/json;odata.metadata=minimal;odata.streaming=false;IEEE754Compatible=true, "
+    "application/json;odata.metadata=minimal;odata.streaming=false, "
+    "application/json;odata.metadata=minimal;IEEE754Compatible=false, "
+    "application/json;odata.metadata=minimal;IEEE754Compatible=true, "
+    "application/json;odata.metadata=minimal, "
+    "application/json;odata.metadata=full;odata.streaming=true;IEEE754Compatible=false, "
+    "application/json;odata.metadata=full;odata.streaming=true;IEEE754Compatible=true, "
+    "application/json;odata.metadata=full;odata.streaming=true, "
+    "application/json;odata.metadata=full;odata.streaming=false;IEEE754Compatible=false, "
+    "application/json;odata.metadata=full;odata.streaming=false;IEEE754Compatib..."
+)
+
+
+def unsupported_format(value: str) -> GraphError:
+    """The directory's ``$format`` naming something other than JSON: a bare word is not a media
+    type, and a media type is not one it serves."""
+    if "/" not in value:
+        message = f"The MIME type '{value}' is invalid or unspecified."
+    else:
+        message = (
+            "A supported MIME type could not be found that matches the acceptable MIME types for "
+            f"the request. The supported type(s) '{_SUPPORTED_TYPES}' do not match any of the "
+            f"acceptable MIME types '{value}'."
+        )
+    return GraphError(415, "Request_BadRequest", message)
 
 
 def unknown_property(name: str, type_name: str) -> GraphError:
@@ -183,6 +242,27 @@ def unknown_property(name: str, type_name: str) -> GraphError:
 def unknown_segment(segment: str) -> GraphError:
     """A path whose first segment names nothing the service exposes."""
     return bad_request(f"Resource not found for the segment '{segment}'.")
+
+
+def invalid_version(version: str) -> GraphError:
+    return GraphError(404, "ResourceNotFound", f"Invalid version: {version}")
+
+
+def write_without_content_type() -> GraphError:
+    """A ``POST``, ``PUT`` or ``PATCH`` with no ``Content-Type``, refused before its path is."""
+    return bad_request(
+        "Write requests (excluding DELETE) must contain the Content-Type header declaration."
+    )
+
+
+def write_not_json() -> GraphError:
+    return bad_request("Entity only allows writes with a JSON Content-Type header.")
+
+
+def post_not_allowed() -> GraphError:
+    return GraphError(
+        405, "Request_BadRequest", "Specified HTTP method is not allowed for the request target."
+    )
 
 
 # --- 403, 404, 410, 502 ----------------------------------------------------------------------
@@ -206,8 +286,53 @@ def not_in_roster(user_id: str, channel_id: str) -> GraphError:
     )
 
 
-def not_found(message: str, *, inner: str | None = None, inner_message: str | None = None):
-    return GraphError(404, "NotFound", message, inner=inner, inner_message=inner_message)
+def not_found(
+    message: str,
+    *,
+    inner: str | None = None,
+    inner_message: str | None = None,
+    inner_details: bool = False,
+):
+    return GraphError(
+        404,
+        "NotFound",
+        message,
+        inner=inner,
+        inner_message=inner_message,
+        inner_details=inner_details,
+    )
+
+
+def item_not_found(message: str) -> GraphError:
+    """A 404 whose inner layer reports ``ItemNotFound`` in the same words, with a ``details``
+    list."""
+    return not_found(message, inner="ItemNotFound", inner_message=message, inner_details=True)
+
+
+def no_such_team(team_id: str) -> GraphError:
+    """``/teams/{id}`` for a team id that names no team."""
+    return item_not_found(f"No team found with Group Id {team_id}")
+
+
+def no_such_person(user_id: str) -> GraphError:
+    """``/users/{id}/joinedTeams`` for an address the tenant does not have."""
+    return not_found(f"Failed to find user with id '{user_id}' in the tenant")
+
+
+def no_such_member_of(user_id: str) -> GraphError:
+    """``/users/{id}/joinedTeams`` for an object id the directory does not have: the failure of the
+    group lookup behind it, which carries that lookup's own response headers and ids."""
+    backend = uuid.uuid4()
+    when = datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")
+    return item_not_found(
+        "Failed to execute MsGraph backend request GetUserGroupsS2SRequest. Workload "
+        f"MsGraph_DirectoryServices. Request Url: https://graph.microsoft.com/edu/users/{user_id}"
+        "/memberOf/$/microsoft.graph.group?$filter=groupTypes/any(c:c+eq+'Unified')&$top=999, "
+        "Request Method: GET, Response Status Code: NotFound, Response Headers: "
+        f"Strict-Transport-Security: max-age=31536000\r\nrequest-id: {backend}\r\n"
+        f"client-request-id: {backend}\r\nx-ms-resource-unit: 2\r\nDate: {when}\r\n, Reason "
+        f"Phrase: Not Found, Request ID {uuid.uuid4().hex.upper()}."
+    )
 
 
 def unsupported_path() -> GraphError:
@@ -268,6 +393,8 @@ def _inner(exc) -> dict:
         body["code"] = code
     if message:
         body["message"] = message
+    if getattr(exc, "inner_details", False):
+        body["details"] = []
     request_id = REQUEST_ID.get() or str(uuid.uuid4())
     body["date"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
     body["request-id"] = request_id

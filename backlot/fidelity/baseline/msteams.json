@@ -3470,9 +3470,7 @@
     {
       "operation": "GET /teams/{}",
       "id": "teams.team.GetTeam",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
+      "status": "implemented"
     },
     {
       "operation": "GET /teams/{}/allChannels",

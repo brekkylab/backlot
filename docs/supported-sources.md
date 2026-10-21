@@ -23,7 +23,7 @@ Generated from `backlot/schemas/*.schema.json` and the app's own `/openapi.json`
 | `hubspot` | HubSpot | `/hubspot` | 5 | [`hubspot.schema.json`](../backlot/schemas/hubspot.schema.json) | A HubSpot CRM record (contact, company, deal, ticket, note, …). |
 | `jira` | Jira | `/atlassian/rest/api` | 14 | [`jira.schema.json`](../backlot/schemas/jira.schema.json) | A Jira issue. |
 | `linear` | Linear | `/linear/graphql` | GraphQL (one `POST`) | [`linear.schema.json`](../backlot/schemas/linear.schema.json) | A Linear issue. |
-| `msteams` | Microsoft Teams | `/msgraph/v1.0` | 12 | [`msteams.schema.json`](../backlot/schemas/msteams.schema.json) | A Microsoft Teams channel message. |
+| `msteams` | Microsoft Teams | `/msgraph/v1.0` | 13 | [`msteams.schema.json`](../backlot/schemas/msteams.schema.json) | A Microsoft Teams channel message. |
 | `notion` | Notion | `/notion/v1` | 12 | [`notion.schema.json`](../backlot/schemas/notion.schema.json) | A Notion page or database. |
 | `s3` | Amazon S3 | `/s3` | 5 | [`s3.schema.json`](../backlot/schemas/s3.schema.json) | An S3 object. |
 | `slack` | Slack | `/slack/api` | 12 | [`slack.schema.json`](../backlot/schemas/slack.schema.json) | A Slack message. |
@@ -581,15 +581,16 @@ October 2026, with app-only and delegated tokens, on a tenant with a private cha
 | Endpoint | Notes |
 |---|---|
 | `me` | `$select` |
-| `me/joinedTeams` | The one team this corpus models. `$select` |
+| `me/joinedTeams` | The one team this corpus models. `$select`, keeping a name the type does not declare |
 | `users` | `$top` (1–999, default 100), `$skiptoken`, `$select`, `$filter`, `$search`, `$orderby`; `@odata.count` only with `$count=true` and `ConsistencyLevel: eventual` |
 | `users/{id}` | Object id *or* userPrincipalName |
-| `users/{id}/joinedTeams` | The same answer as `me/joinedTeams` |
+| `users/{id}/joinedTeams` | The same answer as `me/joinedTeams`, for anyone in the directory |
+| `teams/{team-id}` | The team, with the settings a new team has. `$select`, keeping a name the type does not declare |
 | `teams/{team-id}/channels` | Every visible channel in one response: no paging. `$select`, `$filter` |
 | `teams/{team-id}/channels/{channel-id}` | `$select`; the method that reports `layoutType` and `summary` |
 | `teams/{team-id}/channels/{channel-id}/messages` | Root messages, newest reply chain first. `$top` (1–50, default 20), `$skip`, `$select`, `$expand=replies` |
 | `.../messages/{message-id}` | A root; a reply's id is a `404` here, and an id that names nothing a `403` |
-| `.../messages/{message-id}/replies` | Newest first, paged as messages are |
+| `.../messages/{message-id}/replies` | Newest first, paged as messages are; `$skip` drops that many from the `$top` page |
 | `.../messages/{message-id}/replies/{reply-id}` | One reply; one of another root is a `404`, and an id that names nothing a `403` |
 | `teams/{team-id}/channels/{channel-id}/members` | `aadUserConversationMember` objects, all of them: `$top` is ignored. `$select`, `$filter` |
 
@@ -603,35 +604,57 @@ sent — and a 200 is served as `application/json;odata.metadata=minimal;…` un
 Query option names match in any case; the Teams routes read them with or without the `$`, the
 directory's (`/me`, `/users`) refuse one without it, and every route refuses one given twice. A
 `$select` without the `$` projects the same but leaves the list out of `@odata.context`. Property
-names and enum members in `$select`, `$filter` and `$orderby` match in any case and are answered in
-the declared spelling, and an `$expand` must name a navigation property. `$top` is ASCII digits with
-an optional sign and surrounding blanks, within Int32.
+names and enum members in `$select`, `$filter` and `$orderby` match in any ASCII case and are
+answered in the declared spelling, and an `$expand` must name a navigation property. `$top` and
+`$skip` are 64-bit integers: ASCII digits with an optional sign and .NET's blanks around them
+(U+001C–U+001F are not among them); past Int64 a value is refused as not one, echoed cut to 1,024
+characters, and past Int32 each option has the validator's limit. An empty `$skiptoken` is refused
+on the Teams routes before anything else, and a blank one is the first page.
 
-A Teams route reads its query in Graph's order: the property names a `$filter`, `$orderby`,
-`$select` or `$expand` uses, then the options the method allows none of, then its own checks, and
-only then the team, channel or message, so a refused query is a `400` whatever it names. The options
-each method refuses: the channel listing `$skip`, `$search`, `$orderby`, `$expand` and `$count`, and
-then `$top` and `$skiptoken` in words of its own; get-channel `$top`, `$skiptoken`, `$orderby`,
-`$filter`, `$count`, `$search` and `$expand`; the message listing `$orderby`, `$count` and
-`$search`, and a `$filter` over declared properties in words of its own; replies `$orderby`,
-`$filter`, `$count` and `$search`; a single message or reply `$top`, `$skip`, `$skiptoken`,
-`$orderby`, `$filter` and `$count`, and `expand=replies`; members `$skip`, `$orderby`, `$count` and
-`$search`, with a `$skiptoken` a `502`; `joinedTeams` every option but `$select` and `$filter`,
-which it ignores. On `/me` and `/users/{id}`, `$filter`, `$search` and `$skiptoken` are refused and
+A Teams route reads its query in Graph's order: the values of `$top` and `$skip`, then the property
+names a `$filter`, `$orderby`, `$select` or `$expand` uses, then the options the method allows none
+of and the validator's limits, then its own checks, and only then the team, channel or message, so a
+refused query is a `400` whatever it names. The options each method refuses: every Teams method
+`$format`; the channel listing `$skip`, `$search`, `$orderby`, `$expand` and `$count`, and then
+`$top` and `$skiptoken` in words of its own; get-channel every option but `$select`; get-team every
+option but `$select` and `$expand`, and then every `$expand` that binds; the message listing
+`$orderby`, `$count` and `$search`, and a `$filter` that binds in words of its own; replies
+`$orderby`, `$filter`, `$count` and `$search`; a single message or reply `$top`, `$skip`,
+`$skiptoken`, `$orderby`, `$filter` and `$count`, and `expand=replies`; members `$skip`, `$orderby`,
+`$count` and `$search`, with a `$skiptoken` a `502`; `joinedTeams` every option but `$select` and
+`$filter`, which it ignores. On `/me` and `/users/{id}`, `$filter`, `$search` and `$skiptoken` are refused and
 `$top`, `$orderby` and `$count` ignored; `/users` refuses `$skip`. A `$skiptoken` that does not
 decode is a `400`, and a `502` on replies, as live.
 
-`$filter` supports `eq`, `ne`, `gt`/`ge`/`lt`/`le`, `in`, `startswith`, `endswith`, `contains`,
-`and`, `or`, `not` and `any`/`all` over a collection (`roles/any(r:r eq 'owner')`), with operators
-in any case; the directory compares strings without regard to case, channels and members with it. On
-`/users`, `contains` is refused; `endswith`, `not` and `$search` (`"property:term"` clauses,
-matching words that start with the term, joined by `AND`/`OR`) need `ConsistencyLevel: eventual`,
-and `ne` needs `$count=true` beside it as well. `$orderby` takes `displayName` and
-`userPrincipalName`, and is refused beside a `$filter` outside an advanced query.
+`$filter` is read as Microsoft's OData library reads it (`backlot/odata.py`): `eq`, `ne`,
+`gt`/`ge`/`lt`/`le`, `has`, `in`, `add`/`sub`/`mul`/`div`/`mod`, `and`, `or`, `not` and
+`any`/`all` over a collection (`roles/any(r:r eq 'owner')`), with operators in any case and `not`
+binding tighter than a comparison; string, number, date, date-time and enum literals, and `true`,
+`false` and `null` in lower case only; the string functions `startswith`, `endswith`, `contains`,
+`indexof`, `concat`, `tolower`, `toupper`, `trim`, `length` and `substring`; and a boolean property
+as a predicate on its own. Each property is typed as Graph's CSDL types it, so a comparison of
+mismatched types, a collection where one value belongs, a function given the wrong arguments and a
+filter that is not a boolean are each refused in the library's words, and an empty filter is none.
+Parsing gives up past 800 levels of the library's recursion (99 parentheses fit), and the validator
+refuses a lambda inside a lambda and, on the channel and member listings, a filter of more than 100
+nodes. A boolean ordered against another binds and is refused once the team or channel is found, as
+.NET cannot run it. The directory compares strings without regard to case, channels and members with
+it, and every route orders them as .NET's culture comparison does. On `/users`, `contains` is
+refused; `endswith`, `not`, a lambda and `$search` (`"property:term"` clauses, matching words that
+start with the term, joined by `AND`/`OR`) need `ConsistencyLevel: eventual`, and `ne` needs
+`$count=true` beside it as well; outside an advanced query a filter joins at most 15 children with
+`or`, an `in` list's values among them, and 25 with `and`. `$orderby` takes `displayName` and
+`userPrincipalName`, and is refused beside a `$filter` outside an advanced query. The directory
+reads `$count` (`true` or `false`, exactly) first, then `$top`, then `ConsistencyLevel` — which it
+refuses twice or naming anything but `eventual` — then `$search` and `$orderby` as written, then the
+filter, and answers a `$format` other than JSON with a `415`.
 
-A path is read as Graph reads it: resource names in any case, an id as an OData key segment
-(`teams('{id}')`), a GUID in either case, and one trailing slash. An id that is not one is a `400`
-(`teamId needs to be a valid GUID.`, `channelId is not valid.`).
+A path is read as Graph reads it: the version and resource names in any case, an id as an OData key
+segment (`teams('{id}')`), a GUID in either case, and trailing slashes. An id that is not one is a
+`400` (`teamId needs to be a valid GUID.`, `channelId is not valid.`, and a message or root id that
+is not an unsigned 64-bit number), another version a `404`, and `OPTIONS` or `HEAD` an empty `405`
+before the credential is read. A write is not served: one with no `Content-Type` is a `400`, and a
+`POST` to `/me` a `405`.
 
 A private channel the caller is not in is left out of the listing, and every method that names it
 by id answers `403 Forbidden` — the status Graph gives, which does tell the caller the id exists.
@@ -651,8 +674,11 @@ own; here, userPrincipalName order), owners (every member's `roles` is empty, an
 `summary.ownersCount` 0), deleted messages (live keeps them in the listing with `deletedDateTime`
 set), a system event's typed `eventDetail`, the `post` channel layout, the
 `19:<base64url>@thread.tacv2` id a private or General channel has live (every channel id here takes
-the 32-hex form), paging of a standard channel's members (all of the directory is one page), chats,
-writes, and real tenant authorization. Imported reply times must advance by a whole second, and at
+the 32-hex form), paging of a standard channel's members (live pages them in pages shorter than
+`$top`; here all of the directory is one page), which unknown message ids live answers `403`, `404`
+or `400` (it depends on the number's range; here every unknown id is a `403`), the beta version and
+the service document at `/v1.0`, the request URI length past which the front end answers `414`,
+chats, writes, and real tenant authorization. Imported reply times must advance by a whole second, and at
 most 1,000 ids fit one channel-second, both because an id is a creation millisecond; an edit must
 not precede its message.
 

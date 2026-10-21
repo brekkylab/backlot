@@ -7594,6 +7594,7 @@ def test_drive_files_list_lists_the_trash_unless_q_leaves_it_out(tmp_path, q, li
         ("'f' in parents and trashed = false", "live"),
         ("trashed = false and 'f' in parents", "live"),
         ("'f' in parents and name = 'a'", None),
+        ("'f' in parents and 'me' in owners", None),
         ("'f' in parents and trashed = true", None),
         ("'f' in parents or name = 'a'", None),
         ("not 'f' in parents", None),

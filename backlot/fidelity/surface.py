@@ -23,7 +23,8 @@ from backlot.fidelity.findings import BREAKING, GAP, Finding
 # answers it only with an error, as it does every S3 write.
 IMPLEMENTED, MISSING, EXTRA, REFUSED = "implemented", "missing", "extra", "refused"
 
-_PARAM_KINDS = ("missing_param", "extra_param")
+_PARAM_KINDS = ("missing_param", "extra_param", "param_type_mismatch")
+_FIELD_KINDS = ("missing_field", "extra_field", "type_mismatch")
 _BATCH_KINDS = ("missing_batch_path", "extra_batch_api", "extra_batch_route")
 
 
@@ -159,7 +160,8 @@ class OperationSurface:
 
     Parameters appear only where they diverge, under the operation they belong to: a parameter is
     not something a vendor names on its own, and listing the matching ones would only repeat the
-    served routes' own declarations."""
+    served routes' own declarations. So do the fields of an operation's answer, where a comparison
+    reads them: a finding about one names ``<operation> <field path>``."""
 
     operations: tuple[OperationEntry, ...]
     batch: BatchSurface | None = None
@@ -189,7 +191,16 @@ class OperationSurface:
         for path, f in _by_path(f for f in findings if f.kind in _PARAM_KINDS).items():
             operation, _, name = path.rpartition("?")
             params[operation][name] = f
-        own = _by_path(f for f in findings if f.kind not in _PARAM_KINDS + _BATCH_KINDS)
+        # An operation's own name can hold a space (`GET /repos`), so a field's is what follows the
+        # longest operation its path opens with.
+        names = sorted((e.operation for e in self.operations), key=len, reverse=True)
+        fields: dict[str, dict[str, Finding]] = defaultdict(dict)
+        for path, f in _by_path(f for f in findings if f.kind in _FIELD_KINDS).items():
+            operation = next((n for n in names if path.startswith(n + " ")), "")
+            fields[operation][path[len(operation) + 1 :]] = f
+        own = _by_path(
+            f for f in findings if f.kind not in _PARAM_KINDS + _FIELD_KINDS + _BATCH_KINDS
+        )
         entries = []
         for e in self.operations:
             entry: dict[str, Any] = {"operation": e.operation}
@@ -199,8 +210,16 @@ class OperationSurface:
             entry |= _accepted(own.pop(e.operation, None))
             if diverging := params.pop(e.operation, None):
                 entry["params"] = {n: _accepted(diverging[n]) for n in sorted(diverging)}
+            if diverging := fields.pop(e.operation, None):
+                entry["fields"] = {n: _accepted(diverging[n]) for n in sorted(diverging)}
             entries.append(entry)
-        _unplaced([*own.values(), *(f for p in params.values() for f in p.values())])
+        _unplaced(
+            [
+                *own.values(),
+                *(f for p in params.values() for f in p.values()),
+                *(f for p in fields.values() for f in p.values()),
+            ]
+        )
         out: dict[str, Any] = {"operations": entries}
         if self.batch is not None:
             out["batch"] = self.batch.to_json(batch)
@@ -221,6 +240,8 @@ class OperationSurface:
             findings += _read(e, e["operation"])
             for name, p in (e.get("params") or {}).items():
                 findings += _read(p, f"{e['operation']}?{name}")
+            for name, p in (e.get("fields") or {}).items():
+                findings += _read(p, f"{e['operation']} {name}")
         batch = None
         if "batch" in raw:
             batch, more = BatchSurface.from_json(raw["batch"])

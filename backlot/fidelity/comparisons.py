@@ -1,12 +1,15 @@
 """Which comparison each source gets, and what it needs to run.
 
-Five kinds, and they differ in what each side of the comparison is. For the two GraphQL sources,
+Six kinds, and they differ in what each side of the comparison is. For the two GraphQL sources,
 Backlot's side is the SDL the server builds its engine from and the vendor's is a live introspection
-response, which needs a credential. For the eight document sources, Backlot's side is the app's own
+response, which needs a credential. For the seven document sources, Backlot's side is the app's own
 ``app.openapi()`` and the vendor's is one or more documents it publishes, which needs none. For
-S3 and Graph, Backlot's side is the answers of a server that ``backlot.serve()`` starts: S3 selects
-operations by query string rather than by path, and Graph publishes a type system rather than a
-route list.
+S3, whose operations are selected by query string rather than by path, both sides are answers from
+a running server that ``backlot.serve()`` starts. Graph publishes a type system rather than a route
+list, so for Teams Backlot's side is such a server's answers, checked against Graph's CSDL, and its
+operations are paired with those of Graph's OpenAPI document. Slack maintains no machine-readable
+description at all, so its vendor side is its reference documentation, and Backlot's is
+``app.openapi()`` for the arguments and a running server's answers for what each method returns.
 
 A document does not always carry one contract. Google names its batch endpoint in a top-level
 ``batchPath`` rather than declaring it under ``resources``, so each Google document is read for two:
@@ -34,6 +37,7 @@ from backlot.fidelity import (
     msgraph,
     openapi_diff,
     s3_probe,
+    slack_docs,
 )
 from backlot.fidelity.errors import CredentialsMissing, FidelityError
 from backlot.fidelity.findings import BREAKING, Finding
@@ -114,9 +118,6 @@ class Spec:
     # into the baseline's identity: a lambda would render as `<function … at 0x…>` and write a
     # fresh memory address into the file on every run.
     resolve_url: hubspot_catalog.Entry | None = None
-    # Set where the vendor's own name for an operation is its path, whatever the verb: see
-    # `operations.inventory`.
-    named_by_path: bool = False
 
     @property
     def endpoint(self) -> str:
@@ -318,19 +319,33 @@ class ProbeComparison:
         return s3_probe.measure(self, timeout=timeout)
 
 
+@dataclass(frozen=True)
+class SlackComparison:
+    """Slack, compared against its reference documentation (:mod:`backlot.fidelity.slack_docs`).
+
+    The one kind named after a source rather than a format, because the format is one vendor's:
+    a markdown page per method, read where the page gives a part one fixed spelling. The OpenAPI
+    document Slack published is archived and last changed 2020-10-06, and an answer read off
+    a live workspace depends on what that workspace holds, so neither is the contract here.
+    """
+
+    name: str
+    # The reference's method index, served as markdown (`docs.slack.dev/llms.txt`).
+    index_url: str
+    mount: tuple[str, ...]
+    credentials: tuple[Credential, ...] = ()
+
+    @property
+    def endpoints(self) -> tuple[str, ...]:
+        return (self.index_url,)
+
+    def measure(
+        self, credentials: Mapping[str, str] | None = None, *, timeout: float = 120.0
+    ) -> Measurement:
+        return slack_docs.measure(self, timeout=timeout)
+
+
 OPENAPI = {
-    "slack": OpenAPIComparison(
-        name="slack",
-        specs=(
-            Spec(
-                spec_url="https://raw.githubusercontent.com/slackapi/slack-api-specs/master/web-api/slack_web_openapi_v2.json",
-                mount=("/slack/api",),
-                strip="/slack/api",
-                # Slack names a method by its path; see `operations.inventory`.
-                named_by_path=True,
-            ),
-        ),
-    ),
     "github": OpenAPIComparison(
         name="github",
         specs=(
@@ -491,6 +506,14 @@ CSDL = {
     ),
 }
 
+SLACK = {
+    "slack": SlackComparison(
+        name="slack",
+        index_url="https://docs.slack.dev/reference/methods.md",
+        mount=("/slack/api",),
+    ),
+}
+
 PROBE = {
     "s3": ProbeComparison(
         name="s3",
@@ -519,17 +542,19 @@ UNCOMPARED = {
     ),
 }
 
-# The kinds differ in what a vendor gives us to compare against, not in what they are for.
+# The six kinds differ in what a vendor gives us to compare against, not in what they are for.
 Comparison = (
     OpenAPIComparison
     | GoogleDiscoveryComparison
     | GraphQLComparison
     | CSDLComparison
     | ProbeComparison
+    | SlackComparison
 )
 
 COMPARISONS: dict[str, Comparison] = {
     **OPENAPI,
+    **SLACK,
     **GOOGLE_DISCOVERY,
     **GRAPHQL,
     **CSDL,
@@ -587,6 +612,7 @@ def measure(
             GraphQLComparison,
             CSDLComparison,
             ProbeComparison,
+            SlackComparison,
         ),
     ):
         raise FidelityError(

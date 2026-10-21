@@ -347,6 +347,12 @@ TEAM = "/msgraph/v1.0/teams/778451ab-3734-4e45-beba-caf1bd343541"
             ("slack", "chat.postMessage", "missing", 404, None, "unsupported"),
         ),
         (
+            "POST",
+            "/slack/api/nonexistent.method",
+            {},
+            ("slack", "unmatched", "unknown", 404, None, "client"),
+        ),
+        (
             "GET",
             "/atlassian/rest/api/3/project/ENG",
             {},

@@ -299,6 +299,55 @@ def test_notion_a_head_is_the_get_without_its_body(client, notion_h):
     assert statuses == [401, 400, 200, 401, 200]
 
 
+def test_notion_json_carries_the_charset_real_sends(client, notion_h):
+    """Every JSON answer names the charset real names — `application/json; charset=utf-8` on a
+    200 and on each refusal alike (``backlot.errors.notion.json_media_type`` records the
+    measurement: the 401s, the 400s and the `HEAD` answer among them). Backlot answered FastAPI's
+    bare `application/json` on its 200s, its `missing_version` 400 and a page's 404 as well, so a
+    client that decodes by the declaration reads a guess here where the vendor names UTF-8."""
+    utf8 = "application/json; charset=utf-8"
+    rows = [
+        ("GET", "/notion/v1/users/me", notion_h, None, 200),
+        ("POST", "/notion/v1/search", notion_h, {}, 200),
+        (
+            "GET",
+            f"/notion/v1/pages/{synth.notion_id('nt-runbook')}",
+            notion_h,
+            None,
+            200,
+        ),
+        ("GET", "/notion/v1/users/me", {"Notion-Version": DATA_SOURCES_VERSION}, None, 401),
+        ("POST", "/notion/v1/search", {"Notion-Version": DATA_SOURCES_VERSION}, {}, 401),
+        (
+            "GET",
+            "/notion/v1/users/me",
+            {"Authorization": notion_h["Authorization"]},
+            None,
+            400,
+        ),
+        ("GET", "/notion/v1/nonexistent_thing/xyz", notion_h, None, 400),
+        (
+            "GET",
+            "/notion/v1/pages/00000000000000000000000000000000",
+            notion_h,
+            None,
+            404,
+        ),
+    ]
+    for method, path, headers, payload, status in rows:
+        r = client.request(method, path, headers=headers, json=payload)
+        assert (r.status_code, r.headers["content-type"]) == (status, utf8), path
+    head = client.head("/notion/v1/users/me", headers={"Notion-Version": DATA_SOURCES_VERSION})
+    assert (head.status_code, head.headers["content-type"]) == (401, utf8)
+    # The OpenAPI document still keys the JSON body as `application/json`, as real's spec does:
+    # the charset is on the wire, not in the contract `backlot diff` compares.
+    op = client.get("/openapi.json").json()["paths"]["/notion/v1/users/me"]["get"]
+    assert list(op["responses"]["200"]["content"]) == ["application/json"]
+    # A JSON answer outside `/notion` is untouched by this rule: the app's own routes stay bare.
+    assert client.get("/openapi.json").headers["content-type"] == "application/json"
+    assert client.get("/health").headers["content-type"] == "application/json"
+
+
 def test_notion_page_retrieve_and_blocks(client, notion_h):
     pid = synth.notion_id("nt-runbook")
     r = client.get(f"/notion/v1/pages/{pid}", headers=notion_h)

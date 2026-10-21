@@ -1014,9 +1014,9 @@ _MISSING_CHANNEL = {
     "messages": lambda cid: msgraph.channel_gone(),
 }
 _HIDDEN_CHANNEL = {
-    "channel": lambda: msgraph.forbidden("Failed to execute GetThreadAsync.", inner="Unknown"),
-    "members": lambda: msgraph.forbidden("InsufficientPrivileges", inner="1"),
-    "messages": lambda: msgraph.forbidden("UnknownError"),
+    "channel": lambda cid, uid: msgraph.not_in_roster(uid, cid),
+    "members": lambda cid, uid: msgraph.not_in_roster(uid, cid),
+    "messages": lambda cid, uid: msgraph.forbidden("UnknownError"),
 }
 _FOREIGN_TEAM = {
     "channel": lambda tid: msgraph.not_found("Channel does not belong to Team."),
@@ -1040,7 +1040,9 @@ def _check_team_id(team_id: str) -> None:
         raise msgraph.bad_request("teamId needs to be a valid GUID.")
 
 
-def _resolve_channel(request: Request, conn, team_id: str, channel_id: str, ids, kind: str):
+def _resolve_channel(
+    request: Request, conn, team_id: str, channel_id: str, ids, kind: str, caller: Caller
+):
     """The channel name behind an id, or the refusal Graph gives ``kind`` of method for it."""
     _check_team_id(team_id)
     if not _CHANNEL_ID.fullmatch(channel_id):
@@ -1051,7 +1053,7 @@ def _resolve_channel(request: Request, conn, team_id: str, channel_id: str, ids,
     if name is None:
         raise _MISSING_CHANNEL[kind](channel_id)
     if not _channel_visibility(request, conn, ids)(name):
-        raise _HIDDEN_CHANNEL[kind]()
+        raise _HIDDEN_CHANNEL[kind](channel_id, synth.msteams_user_id(caller.email or ""))
     return name
 
 
@@ -1324,9 +1326,8 @@ async def channels_get(request: Request, team_id: str, channel_id: str):
     caller = _caller(request)
     _check_team_id(team_id)
     q = _read_query(_options(request), _CHANNEL_GET, enums={"membershipType": _CHANNEL_MEMBERSHIP})
-    name = _resolve_channel(
-        request, conn, team_id, channel_id, auth.visible_ids(request, caller), "channel"
-    )
+    ids = auth.visible_ids(request, caller)
+    name = _resolve_channel(request, conn, team_id, channel_id, ids, "channel", caller)
     return {
         "@odata.context": _context(f"teams('{quote(_team_id(), safe='')}')/channels", q.echoed)
         + "/$entity",
@@ -1361,7 +1362,7 @@ async def channel_messages(request: Request, team_id: str, channel_id: str):
     if (raw_skip := _value(opts, "skip")) is not None:
         offset += _integer(raw_skip)
     ids = auth.visible_ids(request, caller)
-    name = _resolve_channel(request, conn, team_id, channel_id, ids, "messages")
+    name = _resolve_channel(request, conn, team_id, channel_id, ids, "messages", caller)
     expand = "replies" in q.expand
     total = store.count_msteams_top_level(conn, name, ids)
     rows = store.list_msteams_top_level(conn, name, ids, limit=top, offset=offset)
@@ -1400,11 +1401,15 @@ def _single_message_query(opts, *, refer: bool) -> _Query:
     return q
 
 
-def _message_row(conn, name: str, message_id: str, ids):
-    """The row a message id names, refused as Graph refuses it: an id that is not one is a 400, and
-    one that names nothing a 403 to a delegated caller, which is what every Backlot token is."""
+def _check_message_id(message_id: str) -> None:
+    """An id that is not a message id is a 400, before the channel is checked at all."""
     if not message_id.isascii() or not message_id.isdigit():
         raise msgraph.bad_request("UnknownError")
+
+
+def _message_row(conn, name: str, message_id: str, ids):
+    """The row a message id names; one that names nothing is a 403 to a delegated caller, which is
+    what every Backlot token is."""
     row = store.msteams_by_id(conn, name, message_id, ids)
     if row is None:
         raise msgraph.forbidden("UnknownError")
@@ -1423,8 +1428,9 @@ async def channel_message(request: Request, team_id: str, channel_id: str, messa
     caller = _caller(request)
     _check_team_id(team_id)
     q = _single_message_query(_options(request), refer=True)
+    _check_message_id(message_id)
     ids = auth.visible_ids(request, caller)
-    name = _resolve_channel(request, conn, team_id, channel_id, ids, "messages")
+    name = _resolve_channel(request, conn, team_id, channel_id, ids, "messages", caller)
     row = _message_row(conn, name, message_id, ids)
     if row["reply_to_id"] is not None:
         raise msgraph.message_not_found()
@@ -1454,7 +1460,7 @@ async def message_replies(request: Request, team_id: str, channel_id: str, messa
         raise msgraph.bad_request("PageSize needs to be more than 0. (Parameter 'pageSize')")
     offset = _offset(opts, msgraph.backend_failure)
     ids = auth.visible_ids(request, caller)
-    name = _resolve_channel(request, conn, team_id, channel_id, ids, "messages")
+    name = _resolve_channel(request, conn, team_id, channel_id, ids, "messages", caller)
     if "skip" in opts:
         rows, total = [], 0
     else:
@@ -1482,8 +1488,9 @@ async def message_reply(
     caller = _caller(request)
     _check_team_id(team_id)
     q = _single_message_query(_options(request), refer=False)
+    _check_message_id(reply_id)
     ids = auth.visible_ids(request, caller)
-    name = _resolve_channel(request, conn, team_id, channel_id, ids, "messages")
+    name = _resolve_channel(request, conn, team_id, channel_id, ids, "messages", caller)
     row = _message_row(conn, name, reply_id, ids)
     if row["reply_to_id"] != message_id:
         raise msgraph.message_not_found()
@@ -1501,16 +1508,16 @@ async def message_reply(
 )
 async def channel_members(request: Request, team_id: str, channel_id: str):
     """The channel's members, in one response: live answers ``$top`` with the whole list, and a
-    ``$skiptoken`` with a backend failure."""
+    ``$skiptoken`` on a channel the caller may read with a backend failure."""
     conn = auth.conn(request)
     caller = _caller(request)
     _check_team_id(team_id)
     opts = _options(request)
     q = _read_query(opts, _MEMBER_LIST)
+    ids = auth.visible_ids(request, caller)
+    name = _resolve_channel(request, conn, team_id, channel_id, ids, "members", caller)
     if "skiptoken" in opts:
         raise msgraph.backend_failure()
-    ids = auth.visible_ids(request, caller)
-    name = _resolve_channel(request, conn, team_id, channel_id, ids, "members")
     members = [_member(conn, e, channel_id) for e in _member_emails(request, conn, name)]
     if q.keep is not None:
         members = [m for m in members if q.keep(m)]

@@ -188,8 +188,22 @@ def unknown_segment(segment: str) -> GraphError:
 # --- 403, 404, 410, 502 ----------------------------------------------------------------------
 
 
-def forbidden(message: str, *, inner: str | None = None) -> GraphError:
-    return GraphError(403, "Forbidden", message, inner=inner)
+def forbidden(
+    message: str, *, inner: str | None = None, inner_message: str | None = None
+) -> GraphError:
+    return GraphError(403, "Forbidden", message, inner=inner, inner_message=inner_message)
+
+
+def not_in_roster(user_id: str, channel_id: str) -> GraphError:
+    """A private channel the caller is not in, read as a channel or for its members."""
+    return forbidden(
+        "InsufficientPrivileges",
+        inner="1",
+        inner_message=(
+            f"AclCheckFailed-The initiator 8:orgid:{user_id} is not a member of the roster "
+            f"92:{channel_id.removeprefix('19:')} in the generic thread {channel_id}"
+        ),
+    )
 
 
 def not_found(message: str, *, inner: str | None = None, inner_message: str | None = None):

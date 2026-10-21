@@ -962,20 +962,34 @@ def test_a_team_the_corpus_does_not_model_is_answered_per_method(
 
 
 @pytest.mark.parametrize(
-    "suffix,message,inner",
+    "suffix,status,message,inner",
     [
-        ("", "Failed to execute GetThreadAsync.", "Unknown"),
-        ("/members", "InsufficientPrivileges", "1"),
-        ("/messages", "UnknownError", None),
-        ("/messages/{message}", "UnknownError", None),
-        ("/messages/{message}/replies", "UnknownError", None),
+        ("", 403, "InsufficientPrivileges", "1"),
+        ("/members", 403, "InsufficientPrivileges", "1"),
+        ("/messages", 403, "UnknownError", None),
+        ("/messages/{message}", 403, "UnknownError", None),
+        ("/messages/{message}/replies", 403, "UnknownError", None),
+        ("/messages/{message}/replies/1111111111111", 403, "UnknownError", None),
+        # A page token on members is refused for the channel before it is read as a token.
+        ("/members?$skiptoken=x", 403, "InsufficientPrivileges", "1"),
+        # A message id that is not one, and a refused option, are 400s before the channel is.
+        ("/messages/abc", 400, "UnknownError", None),
+        (
+            "?$top=1",
+            400,
+            "The query specified in the URI is not valid. Query option 'Top' is not "
+            "allowed. To allow it, set the 'AllowedQueryOptions' property on EnableQueryAttribute or "
+            "QueryValidationSettings.",
+            None,
+        ),
     ],
 )
 def test_a_private_channel_the_caller_is_not_in_is_listed_to_nobody_and_refused_by_id(
-    client, admin_h, tokens_yaml, team_id, suffix, message, inner
+    client, admin_h, tokens_yaml, team_id, suffix, status, message, inner
 ):
     """The listing leaves it out, and every method that names it by id answers 403 — measured with
-    a delegated token for a person outside the channel."""
+    a delegated token for a person outside the channel. Read as a channel or for its members, the
+    refusal names the caller and the channel's roster."""
     confidential = _channels(client, admin_h, team_id)["People Confidential"]
     root = client.get(
         f"{V1}/teams/{team_id}/channels/{confidential}/messages", headers=admin_h
@@ -983,12 +997,16 @@ def test_a_private_channel_the_caller_is_not_in_is_listed_to_nobody_and_refused_
     bob = {"Authorization": f"Bearer {tok(tokens_yaml, 'bob@acme.com')}"}
     assert "People Confidential" not in _channels(client, bob, team_id)
     path = f"{V1}/teams/{team_id}/channels/{confidential}{suffix.format(message=root)}"
-    err = _error(client.get(path, headers=bob), 403)
-    assert (err["code"], err["message"], err["innerError"].get("code")) == (
-        "Forbidden",
-        message,
-        inner,
-    )
+    err = _error(client.get(path, headers=bob), status)
+    assert (err["message"], err["innerError"].get("code")) == (message, inner)
+    if status == 403:
+        assert err["code"] == "Forbidden"
+    if inner == "1":
+        assert err["innerError"]["message"] == (
+            f"AclCheckFailed-The initiator 8:orgid:{synth.msteams_user_id('bob@acme.com')} is not "
+            f"a member of the roster 92:{confidential.removeprefix('19:')} in the generic thread "
+            f"{confidential}"
+        )
 
 
 # --- members ---------------------------------------------------------------------

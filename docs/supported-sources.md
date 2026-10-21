@@ -741,7 +741,7 @@ Each method answers on `GET` and `POST` alike, as the real Web API does.
 | `search.all` | |
 | `search.files` | |
 | `auth.test` | |
-| `api.test` | Auth-free connectivity check |
+| `api.test` | Auth-free connectivity check; a token it is sent meets the checks of the other methods' tokens, and `args` echoes it as `token` |
 
 A person the [roster](../backlot/schemas/README.md) marks `deactivated: true` is Slack's offboarded
 member: `users.list` and `users.info` answer them `deleted: true`, `conversations.members` and
@@ -755,9 +755,24 @@ answer an id that names nothing gets, so a private room's name, purpose and memb
 readable from its id alone. A required argument that was never sent is `invalid_arguments` rather
 than a `not_found` for something the caller never named.
 
-A POST with a body sent as `application/json` or `text/plain` with no charset is answered with
-real's `missing_charset` warning, and a form or multipart one that names a charset with
-`superfluous_charset`, each in `warning` and in `response_metadata.warnings`.
+A POST's body is read before the method runs, ahead of its credential and its arguments, as the real
+Web API reads it. A body with no Content-Type is `missing_post_type`, one under a media type other
+than `application/json`, `text/plain`, `application/x-www-form-urlencoded` and
+`multipart/form-data`, spelt so, is `invalid_post_type` unless it carries an argument read as a form
+(a Content-Type starting with the form type in any case is read as one) or as multipart (a media
+type that is a prefix of `multipart/form-data` in any case, with a boundary:
+`multipart/form; boundary=b` and `; boundary=b` are read, `multipart/form-datax; boundary=b` is
+not); a charset other than `utf-8`, `utf8` or `iso-8859-1` outside a form or multipart type is
+`invalid_charset`, and a form or multipart body real cannot read is `invalid_form_data`,
+`invalid_arg_name` or `invalid_array_arg`. A multipart body is read as HHVM reads one, which real's
+answers match: a part's name follows a urlencoded form's name rules but for the spaces, tabs and
+line breaks after a `[`, which are dropped (`a[ b` is `a_b`, where a form's is `invalid_arg_name`),
+its value is taken as sent, `+` and `%XX` included, and its `token` is read as a form's is; an
+argument the body sends is read ahead of the same name in the query string.
+
+A POST whose form or multipart type names a charset is answered with real's `superfluous_charset`
+warning, and one with a body under any other type that names none with `missing_charset`, each in
+`warning` and in `response_metadata.warnings`. A body refused as above carries neither.
 
 ## Backlot's own endpoints
 

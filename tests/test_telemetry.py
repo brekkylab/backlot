@@ -342,6 +342,12 @@ GITHUB = "/github/repos/acme/docs-site"
             ("slack", "chat.postMessage", "missing", 404, None, "unsupported"),
         ),
         (
+            "POST",
+            "/slack/api/nonexistent.method",
+            {},
+            ("slack", "unmatched", "unknown", 404, None, "client"),
+        ),
+        (
             "GET",
             "/atlassian/rest/api/3/project/ENG",
             {},

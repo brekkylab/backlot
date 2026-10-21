@@ -400,6 +400,10 @@ def _user(email: str | None, display: str | None, info) -> dict | None:
         "app": False,
         "isMentionable": True,
         "isMe": bool(caller and caller == email),
+        # api.linear.app declared `forCurrentUser` `Boolean! = false`, "Whether to require an active
+        # webhook for sessions started by the current user", a condition added to the answer, and
+        # answered `false` for each of a workspace's three users with it absent, `false` and `true`
+        # on 2026-10-21 (UTC).
         "supportsAgentSessions": False,
         "canAccessAnyPublicTeam": True,
         "createdIssueCount": 0,

@@ -677,8 +677,8 @@ _GMAIL_EMPTY_BEFORE = (
     r'(?=(?:label|in|has|newer_than|older_than):[^\s"]|(?:after|before|newer|older): *[^\s"-])'
 )
 _GMAIL_OP = re.compile(
-    rf'(?:{_GMAIL_EMPTY_BEFORE})?(\w+):(?:(?:{_GMAIL_SPACED})(?:\s|"\s*")*|(?:{_GMAIL_DATED}) *)?'
-    r'("[^"]*"|\S*)',
+    rf"(?:{_GMAIL_EMPTY_BEFORE})?(?:(?<!\S)-+)?(\w+):"
+    rf'(?:(?:{_GMAIL_SPACED})(?:\s|"\s*")*|(?:{_GMAIL_DATED}) *)?("[^"]*"|\S*)',
     re.IGNORECASE,
 )
 # operators we honor; anything else stays as free text
@@ -773,13 +773,53 @@ _GMAIL_NEGATED_DATE = re.compile(r"(?<!\S)-(after|before|newer|older): *(\S+)", 
 # 2026-10-18, so did `bcc:`, and on all four operators `-from: <word>`, `from: -<word>`,
 # `-from:-<word>`, `--from:<word>`, `from:--<word>`, `-FROM:<word>`, `-from:"<word>"`, a whole
 # address, an `@<domain>` and `me`; `from:"-<word>"` answered as `from:<word>`, and `-from:`,
-# `from:-`, `-from:-`, `from:--` and `-from:""` every message. Another operator keeps the `-` in its
-# value: `label:-` answered nothing. Not modelled: `- from:<word>` answered as `from:<word>`, where
-# the `-` standing alone is searched here as a term, and `from:-<word>+update` answered every
-# message, where `-from:<word>+update` answered the messages of `+update` that `from:<word>` leaves
-# out. A negated value is stored under its key with a `-` in front.
+# `from:-`, `-from:-`, `from:--` and `-from:""` every message. `label:` keeps the `-` in its value:
+# `label:-` answered nothing. Not modelled: `from:-<word>+update` answered every message, where
+# `-from:<word>+update` answered the messages of `+update` that `from:<word>` leaves out. A negated
+# value is stored under its key with a `-` in front.
 _GMAIL_NEGATED_ADDRESS = re.compile(r"(?<!\S)-+(from|to|cc|bcc):\s*", re.IGNORECASE)
+# A `-` in front of `subject:`, `label:` or `in:` negates it, and so does a `-` in front of its
+# value after whitespace or a pair of quotes; a `-` touching the colon negates `subject:` and stays
+# in the value of `label:` and `in:`. `NOT` in capitals, and a `-(…)` group around one operator,
+# negate an address operator, `subject:`, `label:` or `in:` as a `-` does, and `NOT` in front of a
+# `-` leaves neither. A `-` standing alone is no search term. Measured on a Workspace mailbox,
+# comparing `messages.list` id sets: on 2026-10-18, `-subject:probe`, `-label:inbox`,
+# `label: -inbox`, `-in:sent` and `in: -sent` answered the messages the operator alone does not,
+# `- from:<word>` the ids of `from:<word>`, and `NOT from:<word>` and `-(from:<word>)` the ids
+# `from:<word>` does not answer, for three words on each of `from:`, `to:`, `cc:` and `bcc:`; on
+# 2026-10-19 `label:"" -probe` answered every message. On 2026-10-20 (637 messages),
+# `-label: inbox`, `-label:<tab>inbox`, `-label: "inbox"`, `-label:"" inbox`, `-label: -inbox`,
+# `-subject: probe`, `subject:-probe`, `-in: sent`, `NOT label:inbox`, `NOT subject:probe`,
+# `NOT in:sent`, `-(label:inbox)` and `-( from:me )` answered the messages the operator alone does
+# not; `NOT -from:me` and `NOT -label:inbox` the ids of the operator alone; `not from:me` those of
+# `from:me not`; `-subject:<word>+probe`, for a word in no subject, those of `probe`;
+# `label:-inbox`, `in:-sent` and `-in:anywhere` nothing; and `-label:-inbox`, `-subject:""`,
+# `-label:" "`, `subject:-`, `subject: -`, `label: -` and `subject: -label:inbox` every message.
+# Not modelled: `subject:-<word>+probe` answered every message, `NOT <word>` and `-(<word>)` the
+# messages `<word>` does not, and `-(from:me to:me)` those `from:me to:me` does not.
+_GMAIL_NEGATABLE = {"subject", "label", "in"}
+_GMAIL_NOT = re.compile(r"(?<!\S)NOT\s+(-*)(?=(?i:from|to|cc|bcc|subject|label|in):)")
+_GMAIL_NOT_GROUP = re.compile(
+    r"(?<!\S)-\(\s*((?:from|to|cc|bcc|subject|label|in):[^()\s]+)\s*\)", re.IGNORECASE
+)
 _GMAIL_NEGATION = {"after": "before", "before": "after", "newer": "older", "older": "newer"}
+# A `-` in front of an empty operator `_GMAIL_OP` drops is moved onto the operator after it.
+# Measured on a Workspace mailbox, comparing `messages.list` id sets: on 2026-10-19,
+# `-subject: label:inbox`, `-label: label:inbox`, `-from: label:inbox` and `-from:label:inbox`
+# answered the ids of `-label:inbox`; on 2026-10-20, so did `-in: label:inbox`, `-to: label:inbox`,
+# `-subject:label:inbox`, `-subject:<tab>label:inbox`, `-SUBJECT: LABEL:inbox`,
+# `-subject:"" label:inbox`, `-from:"" label:inbox` and `-label:" " label:inbox`, and
+# `-subject: in:sent`, `-cc: has:attachment`, `-from: in:anywhere`, `-from: after:2026/10/01` and
+# `-to: newer_than:30d` answered the ids of the operator after the empty one with a `-` in front.
+# Where the empty operator is kept the `-` stays on it: `-from: from:me`, `-subject: subject:probe`,
+# `-label:label:inbox` and `-in:label:inbox` answered every message, and `-has: label:inbox`,
+# `-after: label:inbox` and `-newer: label:inbox` the ids of `label:inbox -has`,
+# `label:inbox -after` and `label:inbox -newer`.
+_GMAIL_NEGATED_EMPTY = re.compile(rf"(?<!\S)-+{_GMAIL_EMPTY_BEFORE}", re.IGNORECASE)
+# A `-` flips an age operator and negates `has:`: on 2026-10-20 `-newer_than:30d` answered the ids
+# of `older_than:30d`, `-older_than:30d` those of `newer_than:30d`, and `-has:attachment` the
+# messages `has:attachment` does not.
+_GMAIL_AGE_NEGATION = {"newer_than": "older_than", "older_than": "newer_than"}
 
 
 def _gmail_q_date(v: str) -> str | None:
@@ -836,6 +876,21 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
                 value, stored = value.lstrip("-"), f"-{key}"
                 if not _GMAIL_ADDRESS_WORD.search(value):
                     return " "
+            if key in _GMAIL_NEGATABLE:
+                spaced = m.start(2) > m.end(1) + 1
+                if value[:1] == "-" and (key == "subject" or spaced):
+                    value, stored = value.lstrip("-"), f"-{key}"
+                    if not value:
+                        return " "
+                elif m.group(0).startswith("-"):
+                    stored = f"-{key}"
+            elif m.group(0).startswith("-"):
+                if key in _GMAIL_AGE_NEGATION:
+                    stored = _GMAIL_AGE_NEGATION[key]
+                elif key == "has":
+                    stored = "-has"
+                else:
+                    return m.group(0)
             if key in _GMAIL_PLUS_ENDS and not value.startswith('"'):
                 value = value.lstrip("+")
                 if re.search(r"[^@]@", value):
@@ -856,13 +911,16 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
             return " "
         return m.group(0)
 
+    q = _GMAIL_NOT.sub(lambda m: "" if m.group(1) else "-", q)
+    q = _GMAIL_NOT_GROUP.sub(lambda m: f"-{m.group(1)}", q)
+    q = _GMAIL_NEGATED_EMPTY.sub("-", q)
     q = _GMAIL_NEGATED_DATE.sub(_gmail_negated_date, q)
     q = _GMAIL_NEGATED_ADDRESS.sub(lambda m: f"{m.group(1)}:-", q)
     free = re.sub(r"\s+", " ", _GMAIL_OP.sub(_take, q)).strip()
-    # A `+` standing alone is no search term, and a word ending in one matches nothing (the
-    # measurement at `_GMAIL_PLUS_ENDS`).
+    # A `+` or a `-` standing alone is no search term, and a word ending in a `+` matches nothing
+    # (the measurements at `_GMAIL_PLUS_ENDS` and `_GMAIL_NEGATABLE`).
     if not (len(free) >= 2 and free[0] == free[-1] == '"'):
-        words = [t for t in free.split(" ") if t != "+"]
+        words = [t for t in free.split(" ") if t not in ("+", "-")]
         if any(t.endswith("+") for t in words):
             ops.setdefault(_GMAIL_NOTHING, []).append(free)
         free = " ".join(words)
@@ -1009,6 +1067,9 @@ def _gmail_op_match(row, ops: dict) -> bool:
     for v in ops.get("subject", []):
         if v.lower() not in (row["title"] or "").lower():
             return False
+    for v in ops.get("-subject", []):
+        if v.lower() in (row["title"] or "").lower():
+            return False
     # `in:` and `label:` ask the same question of a message — Gmail's folders ARE labels — and both
     # have to see the label a message is served under rather than only a stated one. `in:anywhere`
     # is the exception: it widens the search to spam and trash, which Backlot holds none of, so
@@ -1017,7 +1078,16 @@ def _gmail_op_match(row, ops: dict) -> bool:
     for v in ops.get("label", []) + [x for x in ops.get("in", []) if x.lower() != "anywhere"]:
         if v.lower() not in labels:
             return False
+    for v in ops.get("-label", []) + ops.get("-in", []):
+        if v.lower() in labels:
+            return False
+    if any(v.lower() == "anywhere" for v in ops.get("-in", [])):
+        return False
     if any(v.lower() == "attachment" for v in ops.get("has", [])) and not store.jcol(
+        row, "attachments"
+    ):
+        return False
+    if any(v.lower() == "attachment" for v in ops.get("-has", [])) and store.jcol(
         row, "attachments"
     ):
         return False

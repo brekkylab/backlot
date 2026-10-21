@@ -299,11 +299,17 @@ def _masked(view: dict, names: dict[str, bool], parts: set[str]) -> dict:
     return masked
 
 
+def _files(run: Path) -> dict[str, dict]:
+    """``coverage.json``'s files, each named with ``/`` between its parts. Coverage names them with
+    the platform's separator, ``\\`` on Windows, where no path from ``git diff`` would match one."""
+    files = json.loads((run / "coverage.json").read_text(encoding="utf-8"))["files"]
+    return {name.replace("\\", "/"): data for name, data in files.items()}
+
+
 def _coverage(run: Path) -> dict[str, tuple[set, set]]:
-    data = json.loads((run / "coverage.json").read_text(encoding="utf-8"))["files"]
     return {
         name: (set(f["executed_lines"]), {tuple(b) for b in f.get("executed_branches", [])})
-        for name, f in data.items()
+        for name, f in _files(run).items()
     }
 
 
@@ -433,9 +439,9 @@ def _prose(base_ref: str) -> int:
 
 
 def _uncovered(run: Path, paths: list[str]) -> int:
-    files = json.loads((run / "coverage.json").read_text(encoding="utf-8"))["files"]
-    for name, data in sorted(files.items()):
-        if any(name == p or name.startswith(p.rstrip("/") + "/") for p in paths):
+    paths = [p.replace("\\", "/").rstrip("/") for p in paths]
+    for name, data in sorted(_files(run).items()):
+        if any(name == p or name.startswith(p + "/") for p in paths):
             missing = data["missing_lines"]
             print(f"{name}: {len(missing)} lines no test executes: {missing}")
     return 0

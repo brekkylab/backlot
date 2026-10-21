@@ -3,7 +3,7 @@
   "endpoints": [
     "https://api.linear.app/graphql"
   ],
-  "measured": "2026-10-20",
+  "measured": "2026-10-21",
   "root": {
     "query": "Query"
   },
@@ -7785,7 +7785,12 @@
           "status": "implemented"
         },
         "supportsAgentSessions": {
-          "status": "implemented"
+          "status": "implemented",
+          "args": {
+            "forCurrentUser": {
+              "status": "implemented"
+            }
+          }
         },
         "teamMemberships": {
           "status": "missing",

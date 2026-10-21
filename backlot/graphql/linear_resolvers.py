@@ -109,7 +109,7 @@ def _slice(first, after, last, before) -> tuple[int | None, int, int]:
         limit = pagination.clamp_limit(last, PAGE_DEFAULT, PAGE_MAX)
         if before is None:
             return None, limit, start  # resolved against the total by _from_end
-        end = pagination.decode_cursor(before)
+        end = max(0, pagination.decode_cursor(before) - 1)
         return max(start, end - limit), min(limit, max(0, end - start)), start
     return start, pagination.clamp_limit(first, PAGE_DEFAULT, PAGE_MAX), start
 
@@ -119,23 +119,29 @@ def _from_end(offset: int | None, limit: int, floor: int, total: int) -> int:
     return max(floor, total - limit) if offset is None else offset
 
 
-def _connection(nodes: list, offset: int, has_next: bool) -> dict:
-    """A Relay connection page. ``endCursor`` is the offset the next page starts at, which is
-    exactly what ``after`` consumes, so a client can round-trip it without interpreting it.
+def _connection(nodes: list, offset: int, has_next: bool, *, backward: bool = False) -> dict:
+    """A connection whose cursors name the first and last served nodes.
 
-    ``has_next`` comes from a limit+1 probe, NOT from a COUNT of the whole result set. The
-    connection types this schema serves expose no ``totalCount`` — `@linear/sdk`'s fragments do
-    not select one — so a COUNT would be a full scan run only to derive a boolean, and at scale
-    corpus that doubled the cost of every filtered query.
+    The opaque payload is a one-based node position: ``after`` consumes it unchanged,
+    ``before`` excludes that node. Forward end cursors therefore retain their existing value.
+    Backward order was measured on issues, Team.issues, users and Issue.children against
+    api.linear.app on 2026-10-05; only those callers request reversal. Other connections retain
+    their existing order, without asserting unmeasured vendor ordering for them.
+
+    ``has_next`` comes from a limit+1 probe, not a count of the entire result set.
     """
     end = offset + len(nodes)
+    start_cursor, end_cursor = offset + 1, end
+    if backward:
+        nodes = nodes[::-1]
+        start_cursor, end_cursor = end_cursor, start_cursor
     return {
         "nodes": nodes,
         "pageInfo": {
             "hasNextPage": has_next,
             "hasPreviousPage": offset > 0,
-            "startCursor": pagination.encode_cursor(offset) if nodes else None,
-            "endCursor": pagination.encode_cursor(end) if nodes else None,
+            "startCursor": pagination.encode_cursor(start_cursor) if nodes else None,
+            "endCursor": pagination.encode_cursor(end_cursor) if nodes else None,
         },
     }
 
@@ -1001,7 +1007,7 @@ def _issue_page(
         archived=includeArchived,
     )
     rows, has_next = _page(rows, limit)
-    return _connection([_issue(r, info) for r in rows], offset, has_next)
+    return _connection([_issue(r, info) for r in rows], offset, has_next, backward=last is not None)
 
 
 def resolve_issues(_root, info, **kwargs) -> dict:
@@ -1160,7 +1166,12 @@ def resolve_users(
     ]
     users = _sorted_users(users, sort) if sort else _ordered_users(users, orderBy)
     offset = _from_end(offset, limit, floor, len(users))
-    return _connection(users[offset : offset + limit], offset, offset + limit < len(users))
+    return _connection(
+        users[offset : offset + limit],
+        offset,
+        offset + limit < len(users),
+        backward=last is not None,
+    )
 
 
 # --- by-id roots for the SDK's lazy relation accessors ------------------------------------
@@ -1424,7 +1435,7 @@ def resolve_issue_children(
         order_by=orderBy,
     )
     rows, has_next = _page(rows, limit)
-    return _connection([_issue(r, info) for r in rows], offset, has_next)
+    return _connection([_issue(r, info) for r in rows], offset, has_next, backward=last is not None)
 
 
 def _relations_page(issue, info, *, inverse, first, after, last, before) -> dict:

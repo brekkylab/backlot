@@ -4696,3 +4696,129 @@ def test_a_stated_identifier_outranks_another_teams_derived_one(tmp_path):
         h = {"Authorization": settings.admin_token}
         got = gql(c, f'{{ issue(id: "{stated}") {{ identifier title }} }}', h).json()["data"]
         assert got["issue"]["title"] == "states it"
+
+
+@pytest.mark.parametrize("root", ["issues", "team", "users", "children"])
+@pytest.mark.parametrize("operation", ["order", "end", "start", "walk", "edges", "forward"])
+def test_linear_backward_pages_name_the_served_nodes(tmp_path, root, operation):
+    """The measurement on ``linear_resolvers._connection`` covers these four connections.
+
+    Its before endCursor continues backward; before startCursor overlaps the preceding page.
+    Distinct timestamps make position independent of database tie ordering.
+    """
+    records = [
+        {
+            "source_type": "linear",
+            "doc_id": f"page-{i}",
+            "team": "engineering",
+            "group": "engineering",
+            "identifier": f"ENG-{i}",
+            "title": f"Issue {i}",
+            "content": "page",
+            "author_email": f"user{i}@acme.com",
+            "visibility": "public",
+            "created": f"2026-01-{i:02}T00:00:00Z",
+            "updated": f"2026-02-{i:02}T00:00:00Z",
+            **({"parent": "ENG-1"} if i > 1 else {}),
+        }
+        for i in range(1, 9)
+    ]
+    settings = build_corpus(tmp_path, records)
+    with client_for(settings) as client:
+
+        def page(args):
+            selection = "nodes { id } pageInfo { startCursor endCursor hasPreviousPage }"
+            if root == "issues":
+                query = "{ issues(%s, orderBy: updatedAt) { %s } }" % (args, selection)
+                path = ["issues"]
+            elif root == "team":
+                query = '{ team(id: "engineering") { issues(%s, orderBy: updatedAt) { %s } } }' % (
+                    args,
+                    selection,
+                )
+                path = ["team", "issues"]
+            elif root == "children":
+                query = '{ issue(id: "ENG-1") { children(%s, orderBy: updatedAt) { %s } } }' % (
+                    args,
+                    selection,
+                )
+                path = ["issue", "children"]
+            else:
+                query = "{ users(%s) { %s } }" % (args, selection)
+                path = ["users"]
+            response = gql(client, query, {"Authorization": settings.admin_token})
+            assert response.status_code == 200
+            body = response.json()
+            assert "errors" not in body, body
+            result = body["data"]
+            for key in path:
+                result = result[key]
+            return result
+
+        forward = [node["id"] for node in page("first: 50")["nodes"]]
+        backward = page("last: 3")
+
+        def got(result):
+            return [node["id"] for node in result["nodes"]]
+
+        if operation == "order":
+            assert got(backward) == forward[-3:][::-1]
+        elif operation == "end":
+            following = page("last: 3, before: " + lit(backward["pageInfo"]["endCursor"]))
+            assert got(following) == forward[-6:-3][::-1]
+        elif operation == "start":
+            overlapping = page("last: 3, before: " + lit(backward["pageInfo"]["startCursor"]))
+            assert got(overlapping) == forward[-4:-1][::-1]
+        elif operation == "edges":
+            first = page("first: 1")
+            assert first["pageInfo"]["startCursor"] == first["pageInfo"]["endCursor"]
+            empty = page("last: 3, before: " + lit(first["pageInfo"]["startCursor"]))
+            assert empty["nodes"] == []
+            assert empty["pageInfo"]["startCursor"] is None
+            assert empty["pageInfo"]["endCursor"] is None
+            assert got(page("last: 50")) == forward[::-1]
+        elif operation == "forward":
+            current = page("first: 3")
+            after_first = page("first: 2, after: " + lit(current["pageInfo"]["startCursor"]))
+            assert got(after_first) == forward[1:3]
+            seen = []
+            for _ in range(len(forward) + 1):
+                seen.extend(got(current))
+                if not current["nodes"]:
+                    break
+                current = page("first: 3, after: " + lit(current["pageInfo"]["endCursor"]))
+            assert seen == forward
+        else:
+            seen = []
+            for _ in range(len(forward) + 1):
+                seen.extend(got(backward))
+                if not backward["nodes"]:
+                    break
+                backward = page("last: 3, before: " + lit(backward["pageInfo"]["endCursor"]))
+            assert seen == forward[::-1]
+            assert len(seen) == len(set(seen))
+
+
+@pytest.mark.parametrize("endpoint", ["order", "cursor"])
+def test_linear_bundled_backward_page(client, admin_h, endpoint):
+    """The bundled corpus exhibits the measured reversed-last-page and repeated-page defects."""
+
+    def page(arguments):
+        response = gql(
+            client,
+            "{ issues(%s, orderBy: updatedAt, includeArchived: true) { nodes { identifier } "
+            "pageInfo { startCursor endCursor } } }" % arguments,
+            admin_h,
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert "errors" not in body, body
+        return body["data"]["issues"]
+
+    forward = [node["identifier"] for node in page("first: 50")["nodes"]]
+    backward = page("last: 3")
+    if endpoint == "order":
+        assert [node["identifier"] for node in backward["nodes"]] == forward[-3:][::-1]
+    else:
+        following = page("last: 3, before: " + lit(backward["pageInfo"]["endCursor"]))
+        assert [node["identifier"] for node in following["nodes"]] == forward[-6:-3][::-1]

@@ -2487,10 +2487,11 @@ def test_drive_a_blank_fields_mask_selects_nothing(client, admin_h, mask):
     assert about["message"] == "The 'fields' parameter is required for this method."
 
 
-# What real answered each mask with, sent beside the refusals in `_MASKS_REFUSED`: the top-level
-# keys and, for a listing, each entry's keys (an empty list where every entry was left with none).
-# `None` is the default object; a documented field the file has no value for leaves it out of the
-# answer here, where real answers it.
+# What real answered each mask with. The third column is the top-level keys, `None` where the
+# answer was the unmasked one. The fourth is each entry's keys on a listing: `"default"` where each
+# entry was the unmasked one, an empty set where the list came back empty because every entry was
+# left with no key, and `None` where the entries are not compared. A documented field the file has
+# no value for leaves it out of the answer here, where real answers it.
 _MASKS_SERVED = [
     (_DOC, "id , name", {"id", "name"}, None),
     (_DOC, "id,\tname", {"id", "name"}, None),

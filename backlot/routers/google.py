@@ -2411,10 +2411,9 @@ _DRIVE_PERMISSION_UNSERVED = frozenset(
 # What a name in a `fields` mask is made of, as real read each character between `id,b` and `x` on
 # 2026-10-20: the ASCII below, and past ASCII the name characters of XML 1.0's fourth edition
 # (Appendix B), whose table expat's is. None of the 1,345 code points past ASCII it was sent, every
-# one from U+0080 to U+02FF and the rest chosen by category and where that table and `str.isalnum`
-# part (`ª` and `²` are not in it, `·` and U+0308 are), was read otherwise. Every other character it
-# was sent, white space other than a space or a tab among them, made the whole mask the 400's
-# subject, and so did a name ending in `-` or holding `:` other than once between two other
+# one from U+0080 to U+02FF and the rest chosen by category, was read otherwise. Every other
+# character it was sent, white space other than a space or a tab among them, made the whole mask the
+# 400's subject, and so did a name ending in `-` or holding `:` other than once between two other
 # characters (`x-`, `:x`, `x:`, `x::y`, `x:y:z`), where `-x`, `x--y` and `x:y` were names.
 _MASK_NAME = frozenset("$+-.:_" + string.ascii_letters + string.digits)
 # The last name of a path an empty group, `owners()`, ends.
@@ -2561,16 +2560,15 @@ def _drive_refuse_a_trailing_comma(request: Request) -> None:
     range refusals and ahead of the rest, measured 2026-10-20 beside a bad `pageToken`, `q` and
     `orderBy`, an `orderBy` naming a key twice or `starred` after another, `fullText` beside an
     `orderBy`, `includeItemsFromAllDrives` alone, `acknowledgeAbuse`, `useDomainAdminAccess`, a
-    repeated `pageSize` and a file that does not exist. Any other mask that is not one, and a name a
-    resource does not have, came after each of those, and a download read no mask."""
+    repeated `pageSize` and a file that does not exist. A download read no mask."""
     mask = gerr.first_repeat(request.query_params, "fields")
     if mask is not None and mask.rstrip(string.whitespace).endswith(","):
         raise gerr.invalid_parameter("fields", f"Invalid field selection {mask}")
 
 
 def _drive_mask(fields: str | None) -> list[tuple[str, ...]] | None:
-    """A mask's paths; ``None`` for an absent one, and none for one of spaces and tabs alone, the
-    blank mask `_drive_get_field_keys` describes."""
+    """A mask's paths; ``None`` for an absent one, and no paths (``[]``) for one of spaces and tabs
+    alone, the blank mask `_drive_get_field_keys` describes."""
     if fields is None:
         return None
     return _mask_paths(fields) if fields.strip(" \t") else []
@@ -3053,7 +3051,7 @@ async def drive_shared_drives(request: Request):
     if _drive_true(request, "useDomainAdminAccess"):
         raise gerr.domain_admin_privilege_required()
     body = {"kind": "drive#driveList", "drives": []}
-    # The rest of the mask's refusals last: real answered a name a drive does not have after a bad
+    # The rest of the mask's refusals last: real answered a name the list does not have after a bad
     # `q`, a bad `pageToken` and the 403, each sent beside it, measured 2026-10-20.
     mask = gerr.first_repeat(request.query_params, "fields")
     projected = _drive_project_listing(
@@ -3377,7 +3375,7 @@ async def drive_files_permissions(file_id: str, request: Request):
     else:
         permissions = _drive_permissions(conn, row["id"])
     body = _drive_permission_page(permissions, file_id, size, token)
-    # Real answered a name a permission does not have after the `pageToken` refusals, the
+    # Real answered a name the list does not have after the `pageToken` refusals, the
     # domain-administrator 404 and the file lookup, each sent beside it, measured 2026-10-20.
     mask = gerr.first_repeat(request.query_params, "fields")
     projected = _drive_project_listing(

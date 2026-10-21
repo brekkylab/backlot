@@ -2339,15 +2339,20 @@ _DRIVE_PERMISSION_UNSERVED = frozenset(
 _MASK_NAME = frozenset("$+-.:_" + string.ascii_letters + string.digits)
 # The last name of a path an empty group, `owners()`, ends.
 _MASK_EMPTY = "()"
+# How many names of a path `_mask_paths` keeps: a listing, an entry's field and the empty group
+# after it are all `_check_mask` and `_mask_keys` read, so a mask nested a thousand deep costs its
+# length rather than the square of its depth.
+_MASK_DEPTH = 3
 
 
 def _mask_paths(mask: str) -> list[tuple[str, ...]]:
     """The paths a `fields` mask selects, in its order: ``files(id,owners(kind)),kind`` is
     ``files/id``, ``files/owners/kind`` and ``kind``, and ``files()`` is ``files`` then
-    ``_MASK_EMPTY``. A space or a tab may stand beside a name, a ``/`` or a parenthesis. A mask
-    that is not one — an empty entry, a name `_mask_name` does not take, a group never opened or
-    never closed — is the 400 naming the whole mask, as real answered ``id,,name``, ``files(id,)``,
-    ``id,`` and ``owners(``; that refusal comes before any name's.
+    ``_MASK_EMPTY``, each path to its first ``_MASK_DEPTH`` names. A space or a tab may stand beside
+    a name, a ``/`` or a parenthesis. A mask that is not one — an empty entry, a name `_mask_name`
+    does not take, a group never opened or never closed — is the 400 naming the whole mask, as real
+    answered ``id,,name``, ``files(id,)``, ``id,`` and ``owners(``; that refusal comes before any
+    name's.
 
     Read without recursion: real answered a group nested a thousand deep with the name it did not
     take, not a refusal of the mask."""
@@ -2382,7 +2387,7 @@ def _mask_paths(mask: str) -> list[tuple[str, ...]]:
         while mask.startswith("/", i):
             i += 1
             path.append(name())
-        full = prefixes[-1] + tuple(path)
+        full = (prefixes[-1] + tuple(path))[:_MASK_DEPTH]
         if mask.startswith("(", i):
             i += 1
             blank()
@@ -2390,7 +2395,7 @@ def _mask_paths(mask: str) -> list[tuple[str, ...]]:
                 prefixes.append(full)
                 continue
             i += 1
-            paths.append((*full, _MASK_EMPTY))
+            paths.append((*full, _MASK_EMPTY)[:_MASK_DEPTH])
         else:
             paths.append(full)
         blank()

@@ -58,9 +58,7 @@ _JOINED = {
     "\u0f71\u0f74": "\u0f75",
     "\u0f71\u0f80": "\u0f81",
     "\u0fb2\u0f80": "\u0f76",
-    "\u0fb2\u0f81": "\u0f77",
     "\u0fb3\u0f80": "\u0f78",
-    "\u0fb3\u0f81": "\u0f79",
 }
 _JOIN = re.compile("|".join(_JOINED))
 # Unicode's Logical_Order_Exception property (PropList.txt): the Thai, Lao, New Tai Lue and Tai
@@ -86,7 +84,7 @@ _VARIABLE = (
     "\u300e\u300f\u3010\u3011\u3014\u3015\u2016\xa7\xb6@*/\\&#%\u2020\u2021\u2022\u2023\u2027"
     "\u3003`\xb4^\xaf\xa8\xb8\xb0\xa9\xae\u2190\u2192\u2191\u2193\u2194\u2195\u2196"
     "\u2197\u2198\u2199\u219c\u219d\u219e\u219f+\xb1\xf7\xd7<=>\xac|\xa6~\u0e46\u0ec6\u3005"
-    "\u303b\u309d\u30fc\u30fd\xa4\xa2$\xa3\xa5\u20ac\u3006"
+    "\u303b\u309d\u30fc\u30fd\xa4\xa2$\xa3\xa5\u20ac"
 )
 _VAR_RANK = {c: i for i, c in enumerate(_VARIABLE)}
 
@@ -108,23 +106,28 @@ _ACCENTS = (
     + _JOIN_ACCENT
 )
 _ACCENT_RANK = {c: i + 1 for i, c in enumerate(_ACCENTS)}
-# Ranges of marks every one of which the table weighs as an accent, once ``_IGNORED`` has taken out
-# the ones it ignores. A mark outside them, such as a Tibetan vowel sign, is a letter of its own.
+# Ranges of marks, and nothing else, every one of which the table weighs as an accent once
+# ``_IGNORED`` has taken out the ones it ignores. A mark outside them, such as a Tibetan vowel sign,
+# is a letter of its own.
 _ACCENT_RANGES = (
     (0x0300, 0x0362),  # Combining Diacritical Marks, without the combining Latin letters
-    (0x0591, 0x05C7),  # Hebrew
+    (0x05B0, 0x05BC),  # Hebrew points
+    (0x05BF, 0x05BF),
+    (0x05C1, 0x05C2),
+    (0x05C7, 0x05C7),
     (0x064B, 0x065F),  # Arabic
     (0x0670, 0x0670),
     (0x0E47, 0x0E4E),  # Thai
     (0x0EC8, 0x0ECE),  # Lao
-    (0x20D0, 0x20FF),  # Combining Diacritical Marks for Symbols
+    (0x20D0, 0x20F0),  # Combining Diacritical Marks for Symbols
     (0xFE20, 0xFE2F),  # Combining Half Marks
     (0x3099, 0x309A),  # kana voicing marks
 )
 
 # The letters of the Latin-1 Supplement and Latin Extended-A blocks that no decomposition maps onto
 # an ASCII letter, as the table weighs them: two letters joined, an ASCII letter and an accent, or
-# a letter of its own right after an ASCII letter.
+# a letter of its own right after an ASCII letter. The table puts þ after z, where its code point
+# already sorts it.
 _LIGATURES = {"\xe6": "ae", "\u0153": "oe", "\xdf": "ss"}
 _WITH = {
     "\xf0": "d" + _JOIN_ACCENT,
@@ -133,9 +136,9 @@ _WITH = {
     "\u0142": "l\u0335",
     "\xf8": "o\u0338",
 }
-_AFTER = {"\u0131": "i", "\u0138": "q", "\u014b": "n", "\u0167": "t", "\xfe": "z"}
+_AFTER = {"\u0131": "i", "\u0138": "q", "\u014b": "n", "\u0167": "t"}
 # A middle dot after an l is the accent of the join, and ŀ is weighed as l and that middle dot.
-_MIDDLE_DOTS = "\xb7\u0387"
+_MIDDLE_DOT = "\xb7"
 _L_DOT = {0x0140: "l\xb7", 0x013F: "L\xb7"}
 
 # Tibetan: a subjoined consonant sorts right after its consonant, and the vowel signs, in this
@@ -187,8 +190,7 @@ def _primary(b: str) -> tuple:
         return (3, ord(b) - 0x50, 1)
     if b in _TIBETAN_VOWEL_RANK:
         return (3, _TIBETAN_LETTERS_END, _TIBETAN_VOWEL_RANK[b])
-    lower = b.lower()
-    return (3, ord(lower if len(lower) == 1 else b), 0)
+    return (3, ord(b.lower()), 0)
 
 
 def _tertiary(tag: str, b: str) -> int:
@@ -250,7 +252,7 @@ def sort_key(name: str) -> tuple[tuple, tuple, tuple]:
         i += 1
         if unicodedata.category(c) in ("Cc", "Cf") and c not in _VAR_RANK:
             continue  # ignorable
-        lower = c.lower() if len(c.lower()) == 1 else c
+        lower = c.lower()
         if lower in _LIGATURES:
             first, second = _LIGATURES[lower]
             letter(_primary(first), _tertiary("<compat>", c))
@@ -258,11 +260,11 @@ def sort_key(name: str) -> tuple[tuple, tuple, tuple]:
             letter(_primary(second), _tertiary("<compat>", c))
         elif lower in _WITH:
             base, accent = _WITH[lower]
-            letter(_primary(base), _tertiary("<compat>" if accent == _JOIN_ACCENT else "", c))
+            letter(_primary(base), _tertiary("", c))
             secondaries.append(_ACCENT_RANK[accent])
         elif lower in _AFTER:
             letter((3, ord(_AFTER[lower]), 1), _tertiary("", c))
-        elif c in _MIDDLE_DOTS and i >= 2 and text[i - 2] in "lL":
+        elif c == _MIDDLE_DOT and i >= 2 and text[i - 2] in "lL":
             secondaries.append(_ACCENT_RANK[_JOIN_ACCENT])
         else:
             decomposition = unicodedata.decomposition(c)
@@ -270,9 +272,7 @@ def sort_key(name: str) -> tuple[tuple, tuple, tuple]:
             # A spacing accent, a space and a mark under its decomposition, is a symbol of its own.
             whole = c in _WHOLE or decomposition.startswith("<compat> 0020 ")
             for b in c if whole else unicodedata.normalize("NFKD", c):
-                if unicodedata.category(b) in ("Mn", "Me") and any(
-                    lo <= ord(b) <= hi for lo, hi in _ACCENT_RANGES
-                ):
+                if any(lo <= ord(b) <= hi for lo, hi in _ACCENT_RANGES):
                     secondaries.append(_ACCENT_RANK.get(b, len(_ACCENTS) + 1 + ord(b)))
                 elif kana := _kana(b, tag):
                     letter(_primary(kana[0]), kana[1])

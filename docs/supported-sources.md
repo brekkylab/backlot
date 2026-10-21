@@ -790,10 +790,9 @@ for those that answer `invalid_code`. `blocks.validate`, `oauth.v2.exchange` and
 credential sent that does not resolve, which the first and last refuse as any method does, and a
 `GET` of `blocks.validate`, which is `unsupported_http_method`; so are a path ending in `/`, the
 names `.` and `..`, and a name after two `/`s or a `\`, which real reads as that name. A name
-holding `%00`, `%0A`, `%2F`, `%3F`, `%5C` or a `%` that starts no escape, which real's front end
-answers itself, or ending in `%09`, `%0A`, `%0B`, `%0D`, `%20` or `%2B`, which real drops from a
-name's end, gets real's 404 page, but for a `%2F` or `%5C` before a method's name, and a `%2F` at
-its end, which leave the path to the router.
+holding a byte real's front end answers itself, or ending in one real drops from a name's end, gets
+real's 404 page (`backlot.routers.slack._METHOD_NAME` lists those measured), but for a `%2F` or
+`%5C` before a method's name, and a `%2F` at its end, which leave the path to the router.
 
 A POST whose form or multipart type names a charset is answered with real's `superfluous_charset`
 warning, and one with a body under any other type that names none with `missing_charset`, each in

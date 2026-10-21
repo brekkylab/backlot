@@ -5005,9 +5005,8 @@ _BY_NAME_NATURAL_DESC_8 = [_MADE_8[i] for i in (3, 2, 5, 4, 1, 0)]
 # Korean-language account; `name_natural desc` was the exact reverse. None holds Hangul or Han,
 # which a Korean-language account orders otherwise than an English-language one.
 _ELEVEN = ["2²3", "10²", "²", "a", "x2", "x2①", "x2²", "x3", "x10", "x22", "x²"]
-# Three folders made on 2026-10-21 in the Workspace member's Drive, with the account set to English,
-# and listed the same three times each. The ninth: for each table of `backlot.collation`, names
-# whose order turns on its entries, made in code point order.
+# The ninth folder `backlot.collation` describes: names whose order turns on the entries of its
+# tables, made in code point order.
 # fmt: off
 _MADE_9 = [f"a{c}b" for c in (
     "\t\n\x0b\x0c\r !\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~\x85\xa1\xa2\xa3\xa4\xa5\xa6\xa7"
@@ -5096,6 +5095,7 @@ _BY_NAME_NATURAL_DESC_9 = [_MADE_9[int(i)] for i in (
     "39 4 3 2 1 0 353 352 351"
 ).split()]
 # fmt: on
+
 # The tenth: a digit with no decomposition, Tibetan subjoined consonants beside their consonants, a
 # middle dot ahead of an l, control characters, the Hebrew maqaf and paseq, and `가`, which
 # an English-language account lists after the Latin names.

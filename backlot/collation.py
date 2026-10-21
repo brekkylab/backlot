@@ -5,9 +5,10 @@ capitals lowered, so ``A`` ties ``a`` where ``Ä`` sorts after ``ä`` and ``ⓐ`
 Measured against Drive v3 on 2026-10-20 and 2026-10-21, real collates by the language the caller's
 Google account is set to. Two Korean-language accounts listed their 21,872 files in ICU's ``ko``
 order, Hangul and Han ahead of Latin, apart from rows a page boundary repeated; one of them, set to
-English, then listed its 228 files, and eight folders of 58, 32, 6, 6, 16, 19, 9 and 6 names made
-for it, in the root order. Backlot collates as the English-language account did. Names the collation
-ties, such as ``A`` and ``a``, keep the order ``backlot.routers.google._drive_sort`` gives ties.
+English, then listed its 228 files, and eleven folders of 58, 32, 6, 6, 16, 19, 9, 6, 366, 24 and 3
+names made for it, in the root order. Backlot collates as the English-language account did. Names
+the collation ties, such as ``A`` and ``a``, keep the order ``backlot.routers.google._drive_sort``
+gives ties.
 
 :func:`sort_key` builds that order out of ``unicodedata`` and the tables below, each checked against
 the root collation table ICU 78.3 implements, CLDR 48's ``allkeys_CLDR.txt``. It reads a name in

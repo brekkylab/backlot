@@ -6732,6 +6732,80 @@ def test_drive_files_list_excludes_trashed_with_no_query_at_all(tmp_path):
         assert [f["id"] for f in asked["files"]] == [gone_id]
 
 
+#: Two folders whose synthesized times (``synth.epoch``) fall between their files', a file whose
+#: time ties the `ops` folder's to the second, two files newer than every folder that tie each
+#: other, stored in the opposite order to their ids, and a file only its author's token lists.
+_NEWEST_FIRST_RECORDS = [
+    {
+        "source_type": "google_drive",
+        "doc_id": doc,
+        "folder": folder,
+        "title": title,
+        "content": content,
+        "author_email": author,
+        "visibility": visibility,
+        "created": "2022-12-01T00:00:00Z",
+        "updated": updated,
+    }
+    for doc, folder, title, content, author, visibility, updated in [
+        ("old", "mk", "Old", "beta beta beta beta", "a@x.com", "public", "2023-01-01T00:00:00Z"),
+        ("mid", "ops", "Mid", "gamma", "a@x.com", "private", "2023-03-01T00:00:00Z"),
+        ("same", "ops", "Same", "gamma", "b@x.com", "public", "2023-06-06T01:18:43Z"),
+        ("new", "mk", "New", "alpha beta gamma delta", "a@x.com", "public", "2024-01-01T00:00:00Z"),
+        ("twin-a", "mk", "Twin A", "delta", "a@x.com", "public", "2025-01-01T00:00:00Z"),
+        ("twin-b", "mk", "Twin B", "delta", "a@x.com", "public", "2025-01-01T00:00:00Z"),
+    ]
+]
+_NEWEST_FIRST = ["Twin B", "Twin A", "New", "ops", "Same", "Mid", "mk", "Old"]
+
+
+@pytest.mark.parametrize(
+    "params,caller,names",
+    [
+        ({}, "admin", _NEWEST_FIRST),
+        ({"orderBy": ""}, "admin", _NEWEST_FIRST),
+        ({"q": "trashed = false"}, "admin", _NEWEST_FIRST),
+        ({}, "b@x.com", ["Twin B", "Twin A", "New", "ops", "Same", "mk", "Old"]),
+        ({"q": "'root' in parents"}, "admin", ["ops", "mk"]),
+        ({"q": "'{mk}' in parents"}, "admin", ["Twin B", "Twin A", "New", "Old"]),
+        ({"q": "name contains 'twin'"}, "admin", ["Twin B", "Twin A"]),
+        (
+            {"q": "mimeType != 'application/vnd.google-apps.folder'"},
+            "admin",
+            ["Twin B", "Twin A", "New", "Same", "Mid", "Old"],
+        ),
+        # the index's rank order, the older file first
+        ({"q": "fullText contains 'beta'"}, "admin", ["Old", "New"]),
+    ],
+)
+def test_drive_files_list_with_no_order_by_lists_the_newest_first(tmp_path, params, caller, names):
+    """Pins the order ``_drive_newest_first`` serves and the `fullText` listing it leaves alone, at
+    every page size, so each folder falls inside a page's window and outside one."""
+    from backlot import synth
+    from tests._helpers import corpus_client
+
+    if "q" in params:
+        params = {**params, "q": params["q"].format(mk=synth.drive_folder_id("mk"))}
+    with corpus_client(tmp_path, _NEWEST_FIRST_RECORDS) as (client, settings):
+        token = settings.admin_token
+        if caller != "admin":
+            users = client.get("/_meta/users").json()["users"]
+            token = next(u["token"] for u in users if u["email"] == caller)
+        h = {"Authorization": f"Bearer {token}"}
+        for size in range(1, len(names) + 2):
+            listed, page_token = [], None
+            for _ in range(len(names) + 1):
+                p = {**params, "pageSize": size, "fields": "nextPageToken,files(name)"}
+                if page_token:
+                    p["pageToken"] = page_token
+                body = client.get("/drive/v3/files", headers=h, params=p).json()
+                listed += [f["name"] for f in body["files"]]
+                page_token = body.get("nextPageToken")
+                if not page_token:
+                    break
+            assert listed == names, size
+
+
 _Q_RECORDS = [
     {
         "source_type": "google_drive",

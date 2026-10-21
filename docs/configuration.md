@@ -2,9 +2,10 @@
 
 [← README](../README.md)
 
-Every setting is an env var with a `BACKLOT_` prefix, and a `.env` file in the working directory is
-read too — copy [`.env.example`](../.env.example) and edit. Defaults are what the server uses when
-the var is unset. There are ten, and this page is all of them.
+Every setting is an env var with a `BACKLOT_` prefix but `DO_NOT_TRACK`, which is the cross-tool
+convention's own name, and a `.env` file in the working directory is read too — copy
+[`.env.example`](../.env.example) and edit. Defaults are what the server uses when the var is unset.
+There are twelve, and this page is all of them.
 
 ## Corpus and identity
 
@@ -35,6 +36,15 @@ that breaks in production.
 | Env var | Default | What it does |
 |---|---|---|
 | `BACKLOT_GITHUB_ENFORCE_RATE_LIMITS` | `true` | Refuse a `/github` request once the caller's rate-limit window is spent, 403, the way api.github.com does — for a caller with no credential and for a token alike. Turn it off for a long-lived `serve()` whose own test volume would rather not meet real's 10-a-minute code search window than fix the tests that cross it |
+
+## Telemetry
+
+What is sent, and what never is, is [docs/telemetry.md](telemetry.md).
+
+| Env var | Default | What it does |
+|---|---|---|
+| `BACKLOT_TELEMETRY` | `true` | `false` turns usage telemetry off. `backlot serve --disable-telemetry`, `backlot mcp --disable-telemetry` and `backlot.serve(telemetry=False)` set it for the server they start |
+| `DO_NOT_TRACK` | unset | Any non-empty value but `0` or `false` turns usage telemetry off, as it does in many developer tools |
 
 ## SQLite
 

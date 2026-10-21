@@ -120,15 +120,20 @@ def _from_end(offset: int | None, limit: int, floor: int, total: int) -> int:
 
 
 def _connection(nodes: list, offset: int, has_next: bool, *, backward: bool = False) -> dict:
-    """A connection whose cursors name the first and last served nodes.
+    """A Relay connection page whose cursors name the first and the last node it serves, as real's
+    do: real's are node ids, these a node's one-based position, which ``after`` reads as the offset
+    the next page starts at and ``before`` as the node the page ends just before. Measured on
+    api.linear.app on 2026-10-05 and 2026-10-21: `after:` a `first: 3` page's `startCursor` serves
+    from its second node on, and `before:` a `last: 3` page's `endCursor` the three nodes before it.
 
-    The opaque payload is a one-based node position: ``after`` consumes it unchanged,
-    ``before`` excludes that node. Forward end cursors therefore retain their existing value.
-    Backward order was measured on issues, Team.issues, users and Issue.children against
-    api.linear.app on 2026-10-05; only those callers request reversal. Other connections retain
-    their existing order, without asserting unmeasured vendor ordering for them.
+    ``backward`` serves a ``last:`` page last node first, as real does on `issues`, `Team.issues`,
+    `users` and `Issue.children` (2026-10-05). The other connections' order is unmeasured, and they
+    keep the connection's.
 
-    ``has_next`` comes from a limit+1 probe, not a count of the entire result set.
+    ``has_next`` comes from a limit+1 probe, NOT from a COUNT of the whole result set. The
+    connection types this schema serves expose no ``totalCount`` — `@linear/sdk`'s fragments do
+    not select one — so a COUNT would be a full scan run only to derive a boolean, and at scale
+    corpus that doubled the cost of every filtered query.
     """
     end = offset + len(nodes)
     start_cursor, end_cursor = offset + 1, end
@@ -406,6 +411,10 @@ def _user(email: str | None, display: str | None, info) -> dict | None:
         "app": False,
         "isMentionable": True,
         "isMe": bool(caller and caller == email),
+        # api.linear.app declared `forCurrentUser` `Boolean! = false`, "Whether to require an active
+        # webhook for sessions started by the current user", a condition added to the answer, and
+        # answered `false` for each of a workspace's three users with it absent, `false` and `true`
+        # on 2026-10-21 (UTC).
         "supportsAgentSessions": False,
         "canAccessAnyPublicTeam": True,
         "createdIssueCount": 0,

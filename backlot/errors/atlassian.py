@@ -237,7 +237,14 @@ def _instance(path: str) -> str:
 #: 404 at `nope%5Bx` into the dead-link page (:func:`no_endpoint`), and the conversion 400 at
 #: `issue/A%5BB/comment?maxResults=abc` into :data:`_JIRA_NULL_ERROR_PAGE`; the same for `%5D`. At
 #: `issue/A%5BB` the issue's own JSON 404 stands. On 2026-10-19 `nope%5bx` and the bare `nope[x`
-#: were the dead-link page, and `issue/A[B/comment?maxResults=abc` the `(null)` page.
+#: were the dead-link page, and `issue/A[B/comment?maxResults=abc` the `(null)` page. Its 405, 415
+#: and 406 are Tomcat's pages instead (:func:`_jira_tomcat_refusal`), whatever the `Accept`:
+#: measured on Jira Cloud on 2026-10-21 on `POST issue/A%5BB`, `DELETE issue/A%5BB/comment` and
+#: `POST issue/A%5BB/comment` with a `text/plain` body under `application/json`, `*/*`, `text/html`,
+#: `application/xml`, `foo` and none, and on `GET issue/A%5BB` under `text/html`, `application/xml`
+#: and `foo`, with a credential and without, the page each time, where `foo` leaves the RFC 7807
+#: answer at `A-1` with no body (:func:`rendered`). The key spelled `A%5DB`, `A%5bB`, `A[B` or
+#: `A]B`, and `/rest/api/2`, answered alike.
 _JIRA_BRACKET = re.compile(r"%5[BD]|[\[\]]", re.IGNORECASE)
 #: That 400's page: real's is 66,815 bytes on `text/html;charset=utf-8`, titled `(null)`; this is a
 #: stub with the status, the media type, the title and the one line it reads.
@@ -245,6 +252,17 @@ _JIRA_NULL_ERROR_PAGE = (
     "<!DOCTYPE html><html><head><title>(null)</title></head><body>"
     '<p>Encountered a "null - null" error while loading this page.</p></body></html>'
 )
+
+
+def _jira_tomcat_refusal(status: int, headers: dict[str, str]) -> AtlassianError:
+    """Tomcat's page for Jira's ``status`` on a path carrying a bracket (:data:`_JIRA_BRACKET`), on
+    :data:`TOMCAT_MEDIA_TYPE` with `Content-Language: en` and ``headers`` beside it: the ones the
+    RFC 7807 answer carries, `Allow` on the 405 and `Accept` on the 415 and the 406."""
+    return AtlassianError(
+        status,
+        tomcat_page(status).encode(),
+        headers={"Content-Type": TOMCAT_MEDIA_TYPE, "Content-Language": "en", **headers},
+    )
 
 
 def integer_conversion_failure(path: str, name: str, values: list[str]) -> AtlassianError:
@@ -851,6 +869,7 @@ def refuse_a_media_type(
       after a bare `;`, `TEXT/Plain;Charset=UTF-8;X=Y` as `text/plain;Charset=UTF-8;X=Y`
     - `Accept` names ``consumes``, joined by `, `, on every 415; `Accept` on the request changes
       none of it, though an unreadable one leaves the body out (:func:`rendered`)
+    - a path carrying a bracket is Tomcat's 415 page instead (:func:`_jira_tomcat_refusal`)
 
     Where the operation's entry names a ``charset``, ``detail`` adds `;charset=<it>` to a type read
     without one, as `DOCUMENTED_OTHERWISE` in ``scripts/gen_jira_unserved.py`` records.
@@ -876,6 +895,8 @@ def refuse_a_media_type(
             if charset is not None and "charset" not in names:
                 media_type = f"{media_type};charset={charset}"
             detail = f"Content-Type '{media_type}' is not supported."
+    if _JIRA_BRACKET.search(path):
+        return _jira_tomcat_refusal(415, {"Accept": ", ".join(consumes)})
     return AtlassianError(
         415,
         {
@@ -1563,7 +1584,8 @@ def not_acceptable(
 
     - Jira: RFC 7807 under :data:`PROBLEM_JSON`, ``detail`` naming ``produces``
       (`Acceptable representations: [application/json].`) and `Accept` naming them beside it, the
-      request's path in ``instance``
+      request's path in ``instance``; on a path carrying a bracket, Tomcat's 406 page instead
+      (:func:`_jira_tomcat_refusal`)
     - Confluence's Spring services: the `errors` list :func:`confluence_refusal` renders, Tomcat's
       page for every value measured but a `+json` type
     - its JAX-RS services (``jaxrs``): no body under no `content-type`, and for a header they
@@ -1596,6 +1618,8 @@ def not_acceptable(
     if accepts(accept, reader="jira", produces=produces):
         return None
     named = ", ".join(produces)
+    if _JIRA_BRACKET.search(path):
+        return _jira_tomcat_refusal(406, {"Accept": named})
     return AtlassianError(
         406,
         {
@@ -2119,6 +2143,7 @@ def method_not_allowed(path: str, method: str) -> AtlassianError:
     directions — Confluence's `errors` is a LIST carrying no `Allow` (Tomcat's page names one,
     :data:`_CONFLUENCE_ALLOW`, which :func:`confluence_refusal` says an `Accept` draws), Jira's is
     RFC 7807 on `application/problem+json` naming the methods that path takes (:data:`_JIRA_ALLOW`).
+    A Jira path carrying a bracket is Tomcat's 405 page instead (:func:`_jira_tomcat_refusal`).
     A client reading `errors[0]["code"]` is the one Confluence's 405 serves; Confluence's
     served-route envelope (:func:`_confluence_envelope`) has no `errors` at all. Confluence's
     `search` is neither (:data:`_CONFLUENCE_SEARCH_ALLOW`).
@@ -2159,6 +2184,8 @@ def method_not_allowed(path: str, method: str) -> AtlassianError:
             headers={} if allow is None else {"Allow": allow},
         )
     allow = jira_allow(path)
+    if _JIRA_BRACKET.search(path):
+        return _jira_tomcat_refusal(405, {} if allow is None else {"Allow": allow})
     return AtlassianError(
         405,
         {

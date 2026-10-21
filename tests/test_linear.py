@@ -3720,6 +3720,56 @@ def test_fields_the_sdk_fragments_select_resolve_to_what_backlot_serves(fclient)
     assert served == (False, False, True, 0)
 
 
+_AGENT_SESSIONS = "query($v: Boolean) { viewer { supportsAgentSessions(forCurrentUser: $v) } }"
+
+
+@pytest.mark.parametrize(
+    "query,variables,expected",
+    [
+        (
+            "{ viewer { supportsAgentSessions } }",
+            None,
+            {"viewer": {"supportsAgentSessions": False}},
+        ),
+        (
+            "{ viewer { f: supportsAgentSessions(forCurrentUser: false)"
+            " t: supportsAgentSessions(forCurrentUser: true) } }",
+            None,
+            {"viewer": {"f": False, "t": False}},
+        ),
+        (_AGENT_SESSIONS, {}, {"viewer": {"supportsAgentSessions": False}}),
+        (_AGENT_SESSIONS, {"v": False}, {"viewer": {"supportsAgentSessions": False}}),
+        (_AGENT_SESSIONS, {"v": True}, {"viewer": {"supportsAgentSessions": False}}),
+    ],
+    ids=["absent", "literals", "variable omitted", "variable false", "variable true"],
+)
+def test_supports_agent_sessions_answers_false_under_each_for_current_user(
+    fclient, query, variables, expected
+):
+    """Each row is api.linear.app's answer to the same document and variables, measured when the
+    comment in ``_user`` says."""
+    r = post(fclient, query, variables)
+    assert (r.status_code, r.json()) == (200, {"data": expected})
+
+
+def test_supports_agent_sessions_declares_linears_default(fclient):
+    """Introspection rather than an answer, which is ``false`` under either value; the comment in
+    ``_user`` has the vendor's declaration."""
+    fields = post(
+        fclient,
+        '{ __type(name: "User") { fields { name args { name defaultValue'
+        " type { kind ofType { name } } } } } }",
+    ).json()["data"]["__type"]["fields"]
+    (field,) = (f for f in fields if f["name"] == "supportsAgentSessions")
+    assert field["args"] == [
+        {
+            "name": "forCurrentUser",
+            "defaultValue": "false",
+            "type": {"kind": "NON_NULL", "ofType": {"name": "Boolean"}},
+        }
+    ]
+
+
 _MEMBERSHIP = "id createdAt updatedAt archivedAt owner sortOrder user { id } team { id }"
 
 
@@ -4797,28 +4847,3 @@ def test_linear_backward_pages_name_the_served_nodes(tmp_path, root, operation):
                 backward = page("last: 3, before: " + lit(backward["pageInfo"]["endCursor"]))
             assert seen == forward[::-1]
             assert len(seen) == len(set(seen))
-
-
-@pytest.mark.parametrize("endpoint", ["order", "cursor"])
-def test_linear_bundled_backward_page(client, admin_h, endpoint):
-    """The bundled corpus exhibits the measured reversed-last-page and repeated-page defects."""
-
-    def page(arguments):
-        response = gql(
-            client,
-            "{ issues(%s, orderBy: updatedAt, includeArchived: true) { nodes { identifier } "
-            "pageInfo { startCursor endCursor } } }" % arguments,
-            admin_h,
-        )
-        assert response.status_code == 200
-        body = response.json()
-        assert "errors" not in body, body
-        return body["data"]["issues"]
-
-    forward = [node["identifier"] for node in page("first: 50")["nodes"]]
-    backward = page("last: 3")
-    if endpoint == "order":
-        assert [node["identifier"] for node in backward["nodes"]] == forward[-3:][::-1]
-    else:
-        following = page("last: 3, before: " + lit(backward["pageInfo"]["endCursor"]))
-        assert [node["identifier"] for node in following["nodes"]] == forward[-6:-3][::-1]

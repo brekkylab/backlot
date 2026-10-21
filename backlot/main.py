@@ -877,13 +877,23 @@ async def report_atlassian_headers(request: Request, call_next):
     return response
 
 
+def _a_slack_route_serves(scope: Scope) -> bool:
+    """Whether a Slack route serves this scope's method and path. Asked of
+    ``backlot.routers.slack.router``, which holds the Slack routes and nothing else."""
+    return any(route.matches(scope)[0] is Match.FULL for route in slack.router.routes)
+
+
 @app.middleware("http")
 async def parse_slack_form(request: Request, call_next):
-    """Slack SDK POSTs urlencoded params; stash them for the router's param lookup."""
-    if request.url.path.startswith("/slack/") and request.method == "POST":
-        ctype = request.headers.get("content-type", "")
-        if "application/x-www-form-urlencoded" in ctype:
-            request.state._form = dict(await request.form())
+    """Read a Slack POST's body before the method runs, as real does (``slack.read_post_body``):
+    answer one real refuses with its error, or stash the arguments it carries for the router's
+    param lookup and the token's (``slack._param``, ``auth.slack_token``)."""
+    if request.method == "POST" and _a_slack_route_serves(request.scope):
+        args, error = slack.read_post_body(slack.post_content_type(request), await request.body())
+        if error is not None:
+            request.state.slack_body_refused = True
+            return JSONResponse({"ok": False, "error": error})
+        request.state._form = args
     return await call_next(request)
 
 
@@ -894,16 +904,18 @@ async def warn_slack_post_charset(request: Request, call_next):
     Middleware because the answers it goes on are built all over the router, the refusals of
     ``slack._caller_or_error`` and ``slack._missing_argument`` among them. The body is rendered
     again by ``JSONResponse``, which renders every Slack answer, so a warned answer is the unwarned
-    one's bytes with the two keys added; ``slack.attach_warning`` says where they go.
+    one's bytes with the two keys added; ``slack.attach_warning`` says where they go. A body
+    ``parse_slack_form`` refuses is answered with no warning, as real answers it.
     """
     if not (request.url.path.startswith("/slack/") and request.method == "POST"):
         return await call_next(request)
 
     warning = slack.post_charset_warning(
-        request.headers.get("content-type"), bool(await request.body())
+        slack.post_content_type(request), bool(await request.body())
     )
     response = await call_next(request)
-    if warning is None or response.status_code != 200:
+    refused = getattr(request.state, "slack_body_refused", False)
+    if warning is None or response.status_code != 200 or refused:
         return response
 
     body = b"".join([chunk async for chunk in response.body_iterator])

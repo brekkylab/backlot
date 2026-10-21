@@ -1825,11 +1825,17 @@ def hubspot_associations(
     return conn.execute(sql, params).fetchall()
 
 
-def list_drive_folder(conn, folder, visible_ids=None, limit=100, offset=0) -> list[sqlite3.Row]:
-    """Non-trashed files directly in a Drive folder — SQL-scoped + SQL-paginated, so listing a
-    big folder costs one page of rows per request, not a full-corpus scan on every page."""
-    sql = "SELECT * FROM gdrive_files WHERE folder = ? AND COALESCE(trashed, 0) = 0"
+def list_drive_folder(
+    conn, folder, visible_ids=None, limit=100, offset=0, trash=False, exclude_ids=()
+) -> list[sqlite3.Row]:
+    """The files directly in a Drive folder, the trashed ones too when ``trash``, less
+    ``exclude_ids`` — SQL-scoped + SQL-paginated, so listing a big folder costs one page of rows
+    per request, not a full-corpus scan on every page."""
+    sql = "SELECT * FROM gdrive_files WHERE folder = ?"
+    if not trash:
+        sql += " AND COALESCE(trashed, 0) = 0"
     params: list = [folder]
+    sql = _exclude_ids(sql, params, exclude_ids)
     clause, cparams = _acl_clause("google_drive", visible_ids=visible_ids)
     # No ORDER BY: the folder index already yields a stable order for pagination, and adding
     # ORDER BY id forces a per-page sort of the whole folder (≈30x slower on a big folder).
@@ -1891,9 +1897,13 @@ def list_drive_by_name(
     return conn.execute(sql, params).fetchall()
 
 
-def count_drive_folder(conn, folder, visible_ids=None) -> int:
-    sql = "SELECT COUNT(*) FROM gdrive_files WHERE folder = ? AND COALESCE(trashed, 0) = 0"
+def count_drive_folder(conn, folder, visible_ids=None, trash=False, exclude_ids=()) -> int:
+    """How many files `list_drive_folder` lists for the same arguments."""
+    sql = "SELECT COUNT(*) FROM gdrive_files WHERE folder = ?"
+    if not trash:
+        sql += " AND COALESCE(trashed, 0) = 0"
     params: list = [folder]
+    sql = _exclude_ids(sql, params, exclude_ids)
     clause, cparams = _acl_clause("google_drive", visible_ids=visible_ids)
     sql += clause
     params += cparams

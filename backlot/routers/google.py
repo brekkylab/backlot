@@ -2672,15 +2672,17 @@ def _drive_starred_after_another_key(order_by: str | None) -> bool:
     return "starred" in keys[1:]
 
 
-def _drive_q_plain_folder(query) -> bool:
-    """True when the query is just a folder scope, ``'<id>' in parents and trashed = false`` with
-    no other clause — the shape a tree-walking client sends, servable straight from SQL, whose
-    folder listing leaves out the trash as that query does."""
+def _drive_q_plain_folder(query) -> str | None:
+    """Whether the query is just a folder scope, the shape a tree-walking client sends, servable
+    straight from SQL: ``"live"`` for ``'<id>' in parents and trashed = false``, whose listing
+    leaves the trash out, ``"all"`` for ``'<id>' in parents`` alone, as LlamaIndex's Google Drive
+    reader sends it, whose listing holds the caller's own trash too, and ``None`` for any other
+    clause."""
     conjuncts = _drive_q_conjuncts(query) if _drive_q_is_conjunction(query) else []
     trashed_false = _QTerm("trashed", "=", "false")
-    return trashed_false in conjuncts and all(
-        t.field == "parents" or t == trashed_false for t in conjuncts
-    )
+    if not conjuncts or not all(t.field == "parents" or t == trashed_false for t in conjuncts):
+        return None
+    return "live" if trashed_false in conjuncts else "all"
 
 
 def _drive_q_excludes_folders(conjuncts: list[_QTerm]) -> bool:
@@ -3050,10 +3052,14 @@ async def drive_files_list(request: Request):
     # of rows per request, not a full-corpus scan re-run for every page.
     if "root" in parent_ids:
         total_rows, fetch = 0, lambda o, n: []  # every stored file lives in a folder
-    elif container is not None and _drive_q_plain_folder(query):
+    elif container is not None and (scope := _drive_q_plain_folder(query)):
         # The common case: a client walking the tree wants just this folder's files.
-        total_rows = store.count_drive_folder(conn, container, ids)
-        fetch = lambda o, n: store.list_drive_folder(conn, container, ids, limit=n, offset=o)  # noqa: E731
+        trash = scope == "all"
+        unlisted = _drive_unlisted(conn, ids, me) if trash else set()
+        total_rows = store.count_drive_folder(conn, container, ids, trash, unlisted)
+        fetch = lambda o, n: store.list_drive_folder(  # noqa: E731
+            conn, container, ids, limit=n, offset=o, trash=trash, exclude_ids=unlisted
+        )
     elif query is not None:  # filter the visible set by the query, then paginate
         unlisted = _drive_unlisted(conn, ids, me)
         matched = [

@@ -7689,6 +7689,59 @@ def test_drive_files_list_lists_the_trash_unless_q_leaves_it_out(tmp_path, q, li
         assert "nextPageToken" not in r.json()
 
 
+@pytest.mark.parametrize(
+    "q, scope",
+    [
+        ("'f' in parents", "all"),
+        ("('f' in parents)", "all"),
+        ("'f' in parents and trashed = false", "live"),
+        ("trashed = false and 'f' in parents", "live"),
+        ("'f' in parents and name = 'a'", None),
+        ("'f' in parents and trashed = true", None),
+        ("'f' in parents or name = 'a'", None),
+        ("not 'f' in parents", None),
+    ],
+)
+def test_drive_q_plain_folder_reads_a_folder_scope(q, scope):
+    from backlot.routers import google
+
+    assert google._drive_q_plain_folder(google._drive_q_parse(q)) == scope
+
+
+def test_drive_a_bare_folder_scope_is_listed_from_sql(tmp_path, monkeypatch):
+    """`'<id>' in parents`, LlamaIndex's Google Drive reader's `q`, is served by
+    `store.list_drive_folder`, with its owner's trash: with `_drive_q_rows` patched to fail, the
+    listing still answers, where the rows it would build stop at 100,000 candidates."""
+    from backlot import synth
+    from backlot.routers import google
+
+    def fail(*args, **kwargs):
+        raise AssertionError("a bare folder scope reached _drive_q_rows")
+
+    monkeypatch.setattr(google, "_drive_q_rows", fail)
+    record = {
+        "source_type": "google_drive",
+        "folder": "mk",
+        "content": "x",
+        "visibility": "private",
+    }
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {**record, "doc_id": "live", "title": "Live", "author_email": "mia@acme.com"},
+            {**record, "doc_id": "gone", "title": "Gone", "author_email": "mia@acme.com"}
+            | {"trashed": True},
+        ],
+    )
+    tokens = yaml.safe_load(s.tokens_path.read_text(encoding="utf-8"))
+    mia = {"Authorization": f"Bearer {tok(tokens, 'mia@acme.com')}"}
+    q = f"'{synth.drive_folder_id('mk')}' in parents"
+    with client_for(s, reload=True) as c:
+        r = c.get("/drive/v3/files", headers=mia, params={"q": q, "fields": "files(name)"})
+        assert r.status_code == 200, r.text
+        assert {f["name"] for f in r.json()["files"]} == {"Live", "Gone"}
+
+
 def test_drive_lists_only_the_trash_its_caller_may_see(tmp_path):
     """A trashed file is listed to its owner alone, as `_drive_unlisted` says: Mia gets her own, and
     neither Ava's private one nor the two of Ava's she can read, which `files.get` still answers.

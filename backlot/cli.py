@@ -259,6 +259,23 @@ def _root(
 # --------------------------------------------------------------------------- serve
 
 
+DisableTelemetry = Annotated[
+    bool,
+    typer.Option(
+        "--disable-telemetry",
+        help="send no usage telemetry from the server this starts (docs/telemetry.md)",
+    ),
+]
+
+
+def _disable_telemetry() -> None:
+    """Turn telemetry off for this process and every server it starts, which inherit its env."""
+    os.environ["BACKLOT_TELEMETRY"] = "0"
+    from backlot.config import get_settings
+
+    get_settings.cache_clear()
+
+
 @app.command()
 def serve(
     host: Annotated[str, typer.Option(help="bind address")] = "127.0.0.1",
@@ -291,6 +308,7 @@ def serve(
         ),
     ] = None,
     data_dir: DataDir = None,
+    disable_telemetry: DisableTelemetry = False,
     # `serve()` passes this, for the stdin pipe it starts the server on, and nothing else in Backlot
     # does; it is not an option to type, so `--help` leaves it out.
     exit_on_stdin_close: Annotated[
@@ -307,6 +325,8 @@ def serve(
     Every default here is uvicorn's own, so this is a shorter spelling of `python -m uvicorn backlot.main:app` rather than a second set of behaviour to keep in step with it.
     """  # noqa: E501 — one source line per paragraph: typer renders a docstring newline as a line break, so a wrapped paragraph reaches the help screen broken mid-sentence.
     _use_data_dir(data_dir)
+    if disable_telemetry:
+        _disable_telemetry()
     from backlot.config import get_settings
 
     settings = get_settings()
@@ -686,6 +706,7 @@ def mcp(
         ),
     ] = None,
     data_dir: DataDir = None,
+    disable_telemetry: DisableTelemetry = False,
 ) -> None:
     """Serve Backlot's sources as MCP tools over stdio, starting a server if none is running.
 
@@ -704,6 +725,8 @@ def mcp(
     if depth is not None and depth < 1:
         raise typer.BadParameter("must be at least 1", param_hint="'--depth'")
     _use_data_dir(data_dir)
+    if disable_telemetry:
+        _disable_telemetry()
     _mcp.run(sources, url=url, user=user, depth=depth)
 
 

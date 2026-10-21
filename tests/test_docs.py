@@ -280,9 +280,15 @@ def test_configuration_page_names_exactly_the_settings():
     from backlot.config import Settings
 
     page = (REPO / "docs" / "configuration.md").read_text(encoding="utf-8")
-    expected = {f"BACKLOT_{name.upper()}" for name in Settings.model_fields}
-    assert set(re.findall(r"BACKLOT_[A-Z_]+", page)) == expected
-    assert len(re.findall(r"^\| `BACKLOT_", page, re.M)) == len(expected)
+    # A setting read under a name of its own (`DO_NOT_TRACK`) is listed by that name.
+    expected = {
+        field.validation_alias or f"BACKLOT_{name.upper()}"
+        for name, field in Settings.model_fields.items()
+    }
+    named = set(re.findall(r"BACKLOT_[A-Z_]+", page)) | {n for n in expected if n in page}
+    assert named == expected
+    rows = re.findall(r"^\| `([A-Z_]+)`", page, re.M)
+    assert sorted(rows) == sorted(expected)
     stated = re.search(r"There are (\w+), and this page is all of them", page)
     assert stated, "the page no longer says how many settings there are"
     words = "zero one two three four five six seven eight nine ten eleven twelve".split()

@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import sys
 import threading
 from contextlib import asynccontextmanager
 
@@ -20,7 +21,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.routing import Match
 from starlette.types import Scope
 
-from backlot import auth, errors, openapi, store, synth
+from backlot import auth, errors, openapi, store, synth, telemetry
 from backlot.acl import Acl
 from backlot.config import get_settings
 from backlot.oauth import Oauth
@@ -36,6 +37,8 @@ from backlot.routers import (
     s3,
     slack,
 )
+from backlot.telemetry import naming, recorder
+from backlot.telemetry.middleware import TelemetryMiddleware
 
 
 @asynccontextmanager
@@ -118,9 +121,18 @@ async def lifespan(app: FastAPI):
     # On app.state, not fire-and-forget, so tests can join it instead of polling /health.
     app.state.warm_thread = threading.Thread(target=_warm_caches, daemon=True)
     app.state.warm_thread.start()
+    exporter = None
+    if telemetry.enabled(settings):
+        exporter = recorder.Exporter(
+            recorder.RECORDER, recorder.ENDPOINT, recorder.INTERVAL, surface=naming.surface
+        )
+        exporter.start()
+        print(telemetry.notice(recorder.ENDPOINT), file=sys.stderr)
     try:
         yield
     finally:
+        if exporter is not None:
+            exporter.stop()
         conn.close()
 
 
@@ -455,6 +467,19 @@ async def refuse_a_trailing_slash_on_github(request: Request, call_next):
                 response.headers[name] = value
         return response
     return await call_next(request)
+
+
+@app.middleware("http")
+async def read_a_notion_body_as_express_does(request: Request, call_next):
+    """Read a `/notion` request's body the way Express reads one in front of every Notion route,
+    and answer the refusal it draws there, ahead of the route, the credential and the version
+    (``notion.front_door_body``). Registered before the trailing-slash rewrite below, which makes it
+    the inner of the two, so the path it derives an answer's ids from is the one the route sees."""
+    path = request.url.path
+    if not (path == "/notion" or path.startswith("/notion/")):
+        return await call_next(request)
+    refusal = await notion.front_door_body(request)
+    return refusal if refusal is not None else await call_next(request)
 
 
 @app.middleware("http")
@@ -852,13 +877,23 @@ async def report_atlassian_headers(request: Request, call_next):
     return response
 
 
+def _a_slack_route_serves(scope: Scope) -> bool:
+    """Whether a Slack route serves this scope's method and path. Asked of
+    ``backlot.routers.slack.router``, which holds the Slack routes and nothing else."""
+    return any(route.matches(scope)[0] is Match.FULL for route in slack.router.routes)
+
+
 @app.middleware("http")
 async def parse_slack_form(request: Request, call_next):
-    """Slack SDK POSTs urlencoded params; stash them for the router's param lookup."""
-    if request.url.path.startswith("/slack/") and request.method == "POST":
-        ctype = request.headers.get("content-type", "")
-        if "application/x-www-form-urlencoded" in ctype:
-            request.state._form = dict(await request.form())
+    """Read a Slack POST's body before the method runs, as real does (``slack.read_post_body``):
+    answer one real refuses with its error, or stash the arguments it carries for the router's
+    param lookup and the token's (``slack._param``, ``auth.slack_token``)."""
+    if request.method == "POST" and _a_slack_route_serves(request.scope):
+        args, error = slack.read_post_body(slack.post_content_type(request), await request.body())
+        if error is not None:
+            request.state.slack_body_refused = True
+            return JSONResponse({"ok": False, "error": error})
+        request.state._form = args
     return await call_next(request)
 
 
@@ -869,16 +904,18 @@ async def warn_slack_post_charset(request: Request, call_next):
     Middleware because the answers it goes on are built all over the router, the refusals of
     ``slack._caller_or_error`` and ``slack._missing_argument`` among them. The body is rendered
     again by ``JSONResponse``, which renders every Slack answer, so a warned answer is the unwarned
-    one's bytes with the two keys added; ``slack.attach_warning`` says where they go.
+    one's bytes with the two keys added; ``slack.attach_warning`` says where they go. A body
+    ``parse_slack_form`` refuses is answered with no warning, as real answers it.
     """
     if not (request.url.path.startswith("/slack/") and request.method == "POST"):
         return await call_next(request)
 
     warning = slack.post_charset_warning(
-        request.headers.get("content-type"), bool(await request.body())
+        slack.post_content_type(request), bool(await request.body())
     )
     response = await call_next(request)
-    if warning is None or response.status_code != 200:
+    refused = getattr(request.state, "slack_body_refused", False)
+    if warning is None or response.status_code != 200 or refused:
         return response
 
     body = b"".join([chunk async for chunk in response.body_iterator])
@@ -969,6 +1006,11 @@ async def vendor_json_media_type(request: Request, call_next):
         if media_type is not None:
             response.headers["content-type"] = media_type
     return response
+
+
+# Registered after every middleware above, which makes it the outermost: it sees every answer,
+# including one a middleware gives without reaching a route.
+app.add_middleware(TelemetryMiddleware)
 
 
 @app.get("/health")

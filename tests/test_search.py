@@ -614,6 +614,92 @@ def test_gmail_empty_operator_over_the_wire(tmp_path):
         assert ids('subject: label:"inbox"') == ids('subject: label:""') == set()
 
 
+@pytest.mark.parametrize(
+    "q, want",
+    [
+        ("-subject:plan", ("", {"-subject": ["plan"]})),
+        ("-subject: plan", ("", {"-subject": ["plan"]})),
+        ("subject:-plan", ("", {"-subject": ["plan"]})),
+        ("-label:inbox", ("", {"-label": ["inbox"]})),
+        ("-label: inbox", ("", {"-label": ["inbox"]})),
+        ("-label:\tinbox", ("", {"-label": ["inbox"]})),
+        ('-label: "inbox"', ("", {"-label": ["inbox"]})),
+        ('-label:"" inbox', ("", {"-label": ["inbox"]})),
+        ("label: -inbox", ("", {"-label": ["inbox"]})),
+        ("-label: -inbox", ("", {"-label": ["inbox"]})),
+        ('label:"" -probe', ("", {"-label": ["probe"]})),
+        ("label:-inbox", ("", {"label": ["-inbox"]})),
+        ("-label:-inbox", ("", {"-label": ["-inbox"]})),
+        ("-in:sent", ("", {"-in": ["sent"]})),
+        ("-in: sent", ("", {"-in": ["sent"]})),
+        ("in: -sent", ("", {"-in": ["sent"]})),
+        ("in:-sent", ("", {"in": ["-sent"]})),
+        ('-subject:""', ("", {})),
+        ('-label:" "', ("", {})),
+        ("subject:-", ("", {})),
+        ("label: -", ("", {})),
+        ("-subject:plan+probe", ("+probe", {"-subject": ["plan"]})),
+        ("subject: -label:inbox", ("", {"-subject": ["label:inbox"]})),
+        ("- from:bob", ("", {"from": ["bob"]})),
+        ("NOT from:bob", ("", {"-from": ["bob"]})),
+        ("NOT bcc:lena", ("", {"-bcc": ["lena"]})),
+        ("NOT label:inbox", ("", {"-label": ["inbox"]})),
+        ("NOT -from:bob", ("", {"from": ["bob"]})),
+        ("NOT -label:inbox", ("", {"label": ["inbox"]})),
+        ("-(from:bob)", ("", {"-from": ["bob"]})),
+        ("-( subject:plan )", ("", {"-subject": ["plan"]})),
+        ("not from:bob", ("not", {"from": ["bob"]})),
+        ("label:-", ("", {"label": ["-"]})),
+        ("mary-jane", ("mary-jane", {})),
+        # Not modelled; the comment on `_GMAIL_NEGATABLE` lists these.
+        ("NOT probe", ("NOT probe", {})),
+        ("-has:attachment", ("-has:attachment", {})),
+    ],
+)
+def test_gmail_negation_of_subject_label_in_and_not(q, want):
+    """The readings the comment on `_GMAIL_NEGATABLE` measures."""
+    from backlot.routers.google import _parse_gmail_q
+
+    assert _parse_gmail_q(q) == want
+
+
+def test_gmail_negation_of_subject_label_in_over_the_wire(tmp_path):
+    """The issue's reproduction: one message in the inbox from bob, one sent by mia."""
+    from tests._helpers import client_for, tiny_corpus
+
+    base = {"source_type": "gmail", "mailbox": "ava", "to": "ava@acme.com"}
+    records = [
+        {**base, "doc_id": "plan", "title": "Rollout plan", "content": "attached",
+         "author_email": "bob@acme.com", "label_ids": ["INBOX"], "readers": ["ava@acme.com"],
+         "created": "2026-03-01T09:00:00Z"},
+        {**base, "doc_id": "lunch", "title": "Lunch", "content": "Friday?",
+         "author_email": "mia@acme.com", "label_ids": ["SENT"], "readers": ["ava@acme.com"],
+         "created": "2026-03-02T09:00:00Z"},
+    ]  # fmt: skip
+    settings = tiny_corpus(tmp_path, records)
+    with client_for(settings, reload=True) as c:
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+
+        def ids(q):
+            r = c.get("/gmail/v1/users/ava@acme.com/messages", headers=h, params={"q": q})
+            return {m["id"] for m in r.json().get("messages", [])}
+
+        every = ids("")
+        for plain, negated in (
+            ("subject:plan", ("-subject:plan", "-subject: plan", "subject:-plan")),
+            ("label:inbox", ("-label:inbox", "-label: inbox", "label: -inbox", "NOT label:inbox")),
+            ("in:sent", ("-in:sent", "-in: sent", "in: -sent", "-(in:sent)")),
+            ("from:bob", ("NOT from:bob", "-(from:bob)")),
+        ):
+            matched = ids(plain)
+            assert matched and matched != every, plain
+            for q in negated:
+                assert ids(q) == every - matched, q
+        assert ids("- from:bob") == ids("NOT -from:bob") == ids("from:bob")
+        assert ids("in:anywhere") == every
+        assert ids("label:-inbox") == ids("in:-sent") == ids("-in:anywhere") == set()
+
+
 def test_github_search_q_parse():
     """One parser, a qualifier vocabulary per endpoint: a key the endpoint does not honor stays
     free text, so the FTS still gets a chance at it."""

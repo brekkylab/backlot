@@ -318,7 +318,7 @@ def slack_token(request: Request) -> str | None:
     ``Authorization: Bearer`` header (:func:`slack_bearer_token`).
 
     The form field is where the official slack-go SDK and Slack's own clients put the token; the
-    slack-form middleware stashes the form on ``request.state._form``, keeping a field's last
+    urlencoded or multipart body is read by ``routers.slack.read_post_body``, keeping a field's last
     value. Real serves a bogus header beside a valid form token as the form token, and answers
     ``invalid_auth`` to a valid header beside a bogus one. The last value is the one read
     (``token=<valid>&token=<bogus>`` is ``invalid_auth``), an empty one is no field, and a space
@@ -338,14 +338,21 @@ def slack_query_token_refused(request: Request) -> bool:
     2021; Backlot answers as such an app. The user token of an app created on 2026-09-17 drew
     these answers from slack.com/api on 2026-10-11 and 2026-10-13, on each method
     ``routers.slack`` authenticates. The parameter's last value is the one read. A non-empty
-    value is refused whatever else the request carries, valid or bogus, and a space or a tab is
-    not empty. An empty one, or ``?token`` with no ``=``, is refused beside a token
-    :func:`slack_token` reads, from the bearer header or the form, and changes nothing otherwise:
+    value is refused whatever else the request carries, valid or bogus, unless a ``token`` form
+    field takes its place (below); a space or a tab is not empty. An empty one, or ``?token`` with
+    no ``=``, is refused beside a token :func:`slack_token` reads, and changes nothing otherwise:
     alone it is ``not_authed``, and so it is beside a header :func:`slack_bearer_token` does not
-    read (``bearer <t>``, ``Basic <c>``). ``?TOKEN=<t>`` is not this parameter."""
+    read (``bearer <t>``, ``Basic <c>``). A ``token`` form field, an empty one included, takes the
+    parameter's place, which is then refused as an empty one is: real answered ``?token=<valid>``
+    beside an empty field, urlencoded or a multipart part, with ``not_authed``, and beside it and a
+    valid bearer header with ``invalid_auth``, on 2026-10-20. ``?TOKEN=<t>`` is not this parameter.
+    """
     if "token" not in request.query_params:
         return False
-    return request.query_params["token"] != "" or slack_token(request) is not None
+    form = getattr(request.state, "_form", None)
+    if request.query_params["token"] != "" and not (form and "token" in form):
+        return True
+    return slack_token(request) is not None
 
 
 def resolve_bearer(request: Request) -> Caller | None:

@@ -2379,10 +2379,10 @@ def fts_add_docs(conn, source_type: str, doc_keys: list) -> int:
         values = ",".join("(" + ",".join("?" for _ in cols) + ")" for _ in chunk)
         flat = [v for row in chunk for v in row]
         conn.execute(f"DELETE FROM {fts} WHERE ({key}) IN (VALUES {values})", flat)
-        cols = ", ".join(_fts_text_columns(source_type))
+        text_cols = ", ".join(_fts_text_columns(source_type))
         conn.execute(
-            f"INSERT INTO {fts}({key}, {cols}) "
-            f"SELECT {key}, {cols} FROM {tbl} WHERE ({key}) IN (VALUES {values})",
+            f"INSERT INTO {fts}({key}, {text_cols}) "
+            f"SELECT {key}, {text_cols} FROM {tbl} WHERE ({key}) IN (VALUES {values})",
             flat,
         )
         n += len(chunk)

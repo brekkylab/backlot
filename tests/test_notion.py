@@ -6,14 +6,18 @@ or call the response builder directly.
 
 from __future__ import annotations
 
+import gzip
+import json
 import re
+import zlib
+from urllib.parse import quote
 
 import pytest
 
 from backlot import store, synth
 from backlot.routers.notion import DATA_SOURCES_VERSION, PUBLISHED_VERSIONS
 from backlot.routers.notion import router as notion_router
-from tests._helpers import corpus_client, served_id, tiny_corpus, tok
+from tests._helpers import corpus_client, sent_as, served_id, tiny_corpus, tok
 
 
 @pytest.fixture
@@ -336,10 +340,11 @@ _RUNBOOK = synth.notion_id("nt-runbook")
 _SECRET = synth.notion_id("nt-secret")
 _ZERO = "00000000-0000-0000-0000-000000000000"
 _NOT_A_UUID = "query failed validation: query.block_id should be a valid uuid, instead was "
+_NOT_A_STRING_ID = "query failed validation: query.block_id should be a string, instead was "
 
 # label, who asks, the query string, and what comes back: the status, then a refusal's code and
 # message, or the text of each comment in a list
-_COMMENTS_BLOCK_ID_ROWS = [
+_COMMENTS_QUERY_ROWS = [
     (
         "absent",
         "admin",
@@ -366,6 +371,156 @@ _COMMENTS_BLOCK_ID_ROWS = [
         _NOT_A_UUID + f'`"{{{_ZERO}}}"`.',
     ),
     ("a quote", "admin", "?block_id=a%22b", 400, "validation_error", _NOT_A_UUID + '`"a\\"b"`.'),
+    ("a number", "admin", "?block_id=5", 400, "validation_error", _NOT_A_STRING_ID + "`5`."),
+    (
+        "an exponent",
+        "admin",
+        "?block_id=1e3",
+        400,
+        "validation_error",
+        _NOT_A_STRING_ID + "`1000`.",
+    ),
+    ("true", "admin", "?block_id=true", 400, "validation_error", _NOT_A_STRING_ID + "`true`."),
+    ("null", "admin", "?block_id=null", 400, "validation_error", _NOT_A_UUID + '`"null"`.'),
+    (
+        "dashless",
+        "admin",
+        "?block_id=" + _RUNBOOK.replace("-", ""),
+        200,
+        None,
+        ["add rate-limiter step"],
+    ),
+    (
+        "dashless in upper case",
+        "admin",
+        "?block_id=" + _RUNBOOK.replace("-", "").upper(),
+        400,
+        "validation_error",
+        _NOT_A_UUID + '`"' + _RUNBOOK.replace("-", "").upper() + '"`.',
+    ),
+    (
+        "a cursor on a block's list",
+        "admin",
+        f"?block_id={synth.notion_block_id(_RUNBOOK, 0)}&start_cursor={synth.notion_block_id(_RUNBOOK, 0)}",
+        400,
+        "validation_error",
+        f"The start_cursor provided is invalid: {synth.notion_block_id(_RUNBOOK, 0)}",
+    ),
+    (
+        "54 a's, cut",
+        "admin",
+        "?block_id=" + "a" * 54,
+        400,
+        "validation_error",
+        _NOT_A_UUID + '`"' + "a" * 54 + "...`.",
+    ),
+    (
+        "twice",
+        "admin",
+        f"?block_id={_RUNBOOK}&block_id={_RUNBOOK}",
+        400,
+        "validation_error",
+        'Conflicting values for "block_id" in query parameters.',
+    ),
+    (
+        "a key it does not read",
+        "admin",
+        f"?block_id={_RUNBOOK}&foo=1",
+        200,
+        None,
+        ["add rate-limiter step"],
+    ),
+    (
+        "a key that is an object",
+        "admin",
+        f"?block_id={_RUNBOOK}&foo[a]=1",
+        400,
+        "validation_error",
+        'The value of "foo" in query parameters must be a string, number, or boolean.',
+    ),
+    (
+        "page_size 0",
+        "admin",
+        f"?block_id={_RUNBOOK}&page_size=0",
+        400,
+        "validation_error",
+        "query failed validation: query.page_size should be ≥ `1` or `undefined`, instead was `0`.",
+    ),
+    (
+        "page_size empty",
+        "admin",
+        f"?block_id={_RUNBOOK}&page_size=",
+        400,
+        "validation_error",
+        "query failed validation: query.page_size should be ≥ `1` or `undefined`, instead was `0`.",
+    ),
+    (
+        "page_size 1e3",
+        "admin",
+        f"?block_id={_RUNBOOK}&page_size=1e3",
+        400,
+        "validation_error",
+        "query failed validation: query.page_size should be ≤ `100` or `undefined`, instead was "
+        "`1000`.",
+    ),
+    (
+        "page_size 5.0",
+        "admin",
+        f"?block_id={_RUNBOOK}&page_size=5.0",
+        200,
+        None,
+        ["add rate-limiter step"],
+    ),
+    (
+        "page_size 1.5",
+        "admin",
+        f"?block_id={_RUNBOOK}&page_size=1.5",
+        400,
+        "validation_error",
+        'query failed validation: query.page_size should be a number or `undefined`, instead was `"1.5"`.',
+    ),
+    (
+        "a cursor that is a number, ahead of the page size",
+        "admin",
+        f"?block_id={_RUNBOOK}&page_size=abc&start_cursor=5",
+        400,
+        "validation_error",
+        "query failed validation: query.start_cursor should be a string or `undefined`, instead was "
+        "`5`.",
+    ),
+    (
+        "a cursor that is not a uuid, ahead of the page size",
+        "admin",
+        f"?block_id={_RUNBOOK}&page_size=abc&start_cursor=bogus",
+        400,
+        "validation_error",
+        "query failed validation: query.start_cursor should be a valid uuid or `undefined`, instead "
+        'was `"bogus"`.',
+    ),
+    (
+        "block_id ahead of the cursor",
+        "admin",
+        "?block_id=5&start_cursor=5",
+        400,
+        "validation_error",
+        _NOT_A_STRING_ID + "`5`.",
+    ),
+    (
+        "a cursor no comment has",
+        "admin",
+        f"?block_id={_RUNBOOK}&start_cursor={_ZERO}",
+        400,
+        "validation_error",
+        f"The start_cursor provided is invalid: {_ZERO}",
+    ),
+    (
+        "a cursor on no block, after the lookup",
+        "admin",
+        f"?block_id={_ZERO}&start_cursor={_ZERO}",
+        404,
+        "object_not_found",
+        f"Could not find block with ID: {_ZERO}.",
+    ),
     (
         "no such block",
         "admin",
@@ -405,18 +560,16 @@ _COMMENTS_BLOCK_ID_ROWS = [
 
 @pytest.mark.parametrize(
     "label, who, query, status, code, expected",
-    _COMMENTS_BLOCK_ID_ROWS,
-    ids=[r[0] for r in _COMMENTS_BLOCK_ID_ROWS],
+    _COMMENTS_QUERY_ROWS,
+    ids=[r[0] for r in _COMMENTS_QUERY_ROWS],
 )
-def test_notion_comments_answers_a_block_id_the_way_real_does(
+def test_notion_comments_reads_its_query_string_as_real_does(
     client, notion_h, tokens, label, who, query, status, code, expected
 ):
-    """Measured against api.notion.com on 2026-10-01 and 2026-10-02 with `Notion-Version:
-    2025-09-03`: a `block_id` that is absent, empty or not a uuid is 400 `validation_error`, with
-    the value quoted as JSON; a uuid that names nothing is 404 `object_not_found`; a database's id
-    is 403 `restricted_resource`; and a page's or a block's id is the comment list, empty for a
-    block. A block is found only on a page the token can see, so `nt-secret`'s splits the way
-    that page does."""
+    """Real's answer to each query string, read in ``notion_request.COMMENTS_QUERY``'s order: a
+    uuid that names nothing is 404 `object_not_found`, a database's id 403 `restricted_resource`,
+    and a page's or a block's id the comment list, empty for a block. A block is found only on a
+    page the token can see, so `nt-secret`'s splits the way that page does."""
     headers = notion_h if who == "admin" else {**notion_h, "Authorization": f"Bearer {tokens[who]}"}
     r = client.get(f"/notion/v1/comments{query}", headers=headers)
     assert r.status_code == status, r.text
@@ -437,18 +590,27 @@ _NO_VERSION = (
     "instead was `undefined`."
 )
 
-# label, body, whether to send Notion-Version, status, error code, message
+_NEW, _OLD = DATA_SOURCES_VERSION, "2022-06-28"
+_FIX_ONE = "body failed validation. Fix one:\n"
+_IN_TRASH = "body.filter.in_trash should be defined, instead was `undefined`."
+_SORT_EITHER = (
+    'body.sort should specify either `{ "property": "relevance" }` or '
+    '`{ "timestamp": "last_edited_time", "direction": "ascending" | "descending" }`.'
+)
+_ASC_DESC = '`"ascending"`, `"descending"`'
+
+# label, body, the Notion-Version sent (None for none), status, error code, message
 _SEARCH_BODY_TYPE_ROWS = [
-    ("neither member", {}, True, 200, None, None),
-    ("string query", {"query": "on-call"}, True, 200, None, None),
-    ("object filter", {"filter": {"property": "object", "value": "page"}}, True, 200, None, None),
-    ("numeric query", {"query": 5}, True, 400, "validation_error", _NOT_A_STRING + "`5`."),
-    ("list query", {"query": ["x"]}, True, 400, "validation_error", _NOT_A_STRING + '`["x"]`.'),
-    ("null query", {"query": None}, True, 400, "validation_error", _NOT_A_STRING + "`null`."),
+    ("neither member", {}, _NEW, 200, None, None),
+    ("string query", {"query": "on-call"}, _NEW, 200, None, None),
+    ("object filter", {"filter": {"property": "object", "value": "page"}}, _NEW, 200, None, None),
+    ("numeric query", {"query": 5}, _NEW, 400, "validation_error", _NOT_A_STRING + "`5`."),
+    ("list query", {"query": ["x"]}, _NEW, 400, "validation_error", _NOT_A_STRING + '`["x"]`.'),
+    ("null query", {"query": None}, _NEW, 400, "validation_error", _NOT_A_STRING + "`null`."),
     (
         "object query",
         {"query": {"a": 1, "b": [1, 2]}},
-        True,
+        _NEW,
         400,
         "validation_error",
         _NOT_A_STRING + '`{"a":1,"b":[1,2]}`.',
@@ -456,50 +618,383 @@ _SEARCH_BODY_TYPE_ROWS = [
     (
         "string filter",
         {"filter": "page"},
-        True,
+        _NEW,
         400,
         "validation_error",
         _NOT_AN_OBJECT + '`"page"`.',
     ),
-    ("non-ascii filter", {"filter": "é"}, True, 400, "validation_error", _NOT_AN_OBJECT + '`"é"`.'),
+    ("non-ascii filter", {"filter": "é"}, _NEW, 400, "validation_error", _NOT_AN_OBJECT + '`"é"`.'),
     (
         "list filter",
         {"filter": ["page"]},
-        True,
+        _NEW,
         400,
         "validation_error",
         _NOT_AN_OBJECT + '`["page"]`.',
     ),
-    ("null filter", {"filter": None}, True, 400, "validation_error", _NOT_AN_OBJECT + "`null`."),
+    ("null filter", {"filter": None}, _NEW, 400, "validation_error", _NOT_AN_OBJECT + "`null`."),
     (
         "both, filter first",
         {"filter": "page", "query": 5},
-        True,
+        _NEW,
         400,
         "validation_error",
         _NOT_A_STRING + "`5`.",
     ),
-    ("no version", {"query": 5}, False, 400, "missing_version", _NO_VERSION),
+    ("no version", {"query": 5}, None, 400, "missing_version", _NO_VERSION),
+    # `sort`, its schema and then what it serves
+    ("relevance", {"sort": {"property": "relevance"}}, _NEW, 200, None, None),
+    (
+        "last edited, ascending",
+        {"sort": {"timestamp": "last_edited_time", "direction": "ascending"}},
+        _NEW,
+        200,
+        None,
+        None,
+    ),
+    (
+        "sort null",
+        {"sort": None},
+        _NEW,
+        400,
+        "validation_error",
+        "body failed validation: body.sort should be an object or `undefined`, instead was `null`.",
+    ),
+    ("sort empty", {"sort": {}}, _NEW, 400, "validation_error", _SORT_EITHER),
+    (
+        "relevance with a timestamp",
+        {"sort": {"property": "relevance", "timestamp": "last_edited_time"}},
+        _NEW,
+        400,
+        "validation_error",
+        'body.sort with `{ "property": "relevance" }` cannot include `timestamp` or `direction`.',
+    ),
+    (
+        "a property not relevance, with a direction",
+        {"sort": {"property": "x", "direction": "ascending"}},
+        _NEW,
+        400,
+        "validation_error",
+        'body.sort.property should be "relevance", instead was `x`.',
+    ),
+    (
+        "a property not relevance, with the timestamp",
+        {"sort": {"property": "x", "timestamp": "last_edited_time"}},
+        _NEW,
+        400,
+        "validation_error",
+        'body.sort.property should be "relevance", instead was `x`.',
+    ),
+    (
+        "another timestamp, and no direction",
+        {"sort": {"timestamp": "created_time"}},
+        _NEW,
+        400,
+        "validation_error",
+        'body.sort.timestamp should be "last_edited_time" when sorting by timestamp.',
+    ),
+    (
+        "relevance with a timestamp it does not take",
+        {"sort": {"property": "relevance", "timestamp": "x"}},
+        _NEW,
+        400,
+        "validation_error",
+        'body.sort with `{ "property": "relevance" }` cannot include `timestamp` or `direction`.',
+    ),
+    (
+        "relevance with a direction",
+        {"sort": {"property": "relevance", "direction": "ascending"}},
+        _NEW,
+        400,
+        "validation_error",
+        'body.sort with `{ "property": "relevance" }` cannot include `timestamp` or `direction`.',
+    ),
+    (
+        "relevance with a direction real has not",
+        {"sort": {"property": "relevance", "direction": "up"}},
+        _NEW,
+        400,
+        "validation_error",
+        _FIX_ONE
+        + "body.sort.timestamp should be defined, instead was `undefined`.\nbody.sort.direction should be not present, "
+        + _ASC_DESC
+        + ', or `undefined`, instead was `"up"`.',
+    ),
+    (
+        "a property not relevance",
+        {"sort": {"property": "x"}},
+        _NEW,
+        400,
+        "validation_error",
+        'body.sort.property should be "relevance", instead was `x`.',
+    ),
+    (
+        "a timestamp alone",
+        {"sort": {"timestamp": "last_edited_time"}},
+        _NEW,
+        400,
+        "validation_error",
+        'body.sort.direction should be defined when body.sort.timestamp is "last_edited_time".',
+    ),
+    (
+        "a direction real has not",
+        {"sort": {"timestamp": "last_edited_time", "direction": "up"}},
+        _NEW,
+        400,
+        "validation_error",
+        _FIX_ONE
+        + "body.sort.direction should be "
+        + _ASC_DESC
+        + ', or `undefined`, instead was `"up"`.\nbody.sort.property should be defined, instead was `undefined`.',
+    ),
+    (
+        "created time",
+        {"sort": {"timestamp": "created_time", "direction": "ascending"}},
+        _NEW,
+        400,
+        "validation_error",
+        'body.sort.timestamp should be "last_edited_time" when sorting by timestamp.',
+    ),
+    (
+        "a direction alone",
+        {"sort": {"direction": "up"}},
+        _NEW,
+        400,
+        "validation_error",
+        _FIX_ONE
+        + "body.sort.timestamp should be defined, instead was `undefined`.\nbody.sort.property should be defined, instead was `undefined`.\nbody.sort.direction should be "
+        + _ASC_DESC
+        + ', or `undefined`, instead was `"up"`.',
+    ),
+    (
+        "all three, a direction real has not",
+        {"sort": {"timestamp": "last_edited_time", "direction": "up", "property": "relevance"}},
+        _NEW,
+        400,
+        "validation_error",
+        _FIX_ONE
+        + "body.sort.direction should be "
+        + _ASC_DESC
+        + ', not present, or `undefined`, instead was `"up"`.\nbody.sort.timestamp should be not present, instead was `"last_edited_time"`.',
+    ),
+    (
+        "a timestamp that is a number",
+        {"sort": {"timestamp": 1}},
+        _NEW,
+        400,
+        "validation_error",
+        _FIX_ONE
+        + 'body.sort.timestamp should be `"last_edited_time"`, a string, or `undefined`, instead was `1`.\nbody.sort.property should be defined, instead was `undefined`.',
+    ),
+    (
+        "a member sort does not take",
+        {"sort": {"timestamp": "last_edited_time", "direction": "ascending", "foo": 1}},
+        _NEW,
+        400,
+        "validation_error",
+        _FIX_ONE
+        + "body.sort.foo should be not present, instead was `1`.\nbody.sort.property should be defined, instead was `undefined`.",
+    ),
+    (
+        "a created time with a member sort does not take",
+        {"sort": {"timestamp": "created_time", "foo": 1}},
+        _NEW,
+        400,
+        "validation_error",
+        _FIX_ONE
+        + 'body.sort.timestamp should be `"last_edited_time"`, instead was `"created_time"`.\nbody.sort.property should be defined, instead was `undefined`.\nbody.sort.foo should be not present, instead was `1`.',
+    ),
+    # `filter`
+    ("pages", {"filter": {"property": "object", "value": "page"}}, _NEW, 200, None, None),
+    ("the trash", {"filter": {"in_trash": True}}, _NEW, 200, None, None),
+    (
+        "an empty filter",
+        {"filter": {}},
+        _NEW,
+        400,
+        "validation_error",
+        _FIX_ONE
+        + "body.filter.property should be defined, instead was `undefined`."
+        + "\n"
+        + _IN_TRASH,
+    ),
+    (
+        "a value alone",
+        {"filter": {"value": "page"}},
+        _NEW,
+        400,
+        "validation_error",
+        _FIX_ONE
+        + "body.filter.property should be defined, instead was `undefined`."
+        + "\n"
+        + _IN_TRASH,
+    ),
+    (
+        "database, which 2025-09-03 does not read",
+        {"filter": {"property": "object", "value": "database"}},
+        _NEW,
+        400,
+        "validation_error",
+        _FIX_ONE
+        + 'body.filter.value should be `"page"` or `"data_source"`, instead was `"database"`.\n'
+        + _IN_TRASH,
+    ),
+    (
+        "database, which 2022-06-28 serves",
+        {"filter": {"property": "object", "value": "database"}},
+        _OLD,
+        200,
+        None,
+        None,
+    ),
+    (
+        "database beside the trash, quoted as sent",
+        {"filter": {"in_trash": False, "value": "database"}},
+        _OLD,
+        400,
+        "validation_error",
+        _FIX_ONE
+        + "body.filter.property should be defined, instead was `undefined`."
+        + '\nbody.filter.value should be not present, instead was `"database"`.',
+    ),
+    (
+        "another property",
+        {"filter": {"property": "type", "value": "page"}},
+        _NEW,
+        400,
+        "validation_error",
+        _FIX_ONE + 'body.filter.property should be `"object"`, instead was `"type"`.\n' + _IN_TRASH,
+    ),
+    (
+        "another property beside the trash",
+        {"filter": {"property": "type", "in_trash": True}},
+        _NEW,
+        400,
+        "validation_error",
+        'body failed validation: body.filter.property should be `"object"` or not present, instead was `"type"`.',
+    ),
+    (
+        "a trash that is not a boolean",
+        {"filter": {"property": "object", "value": "page", "in_trash": "x"}},
+        _NEW,
+        400,
+        "validation_error",
+        'body failed validation: body.filter.in_trash should be a boolean or `undefined`, instead was `"x"`.',
+    ),
+    (
+        "all of it and a member more",
+        {"filter": {"property": "object", "value": "page", "in_trash": True, "foo": 1}},
+        _NEW,
+        400,
+        "validation_error",
+        _FIX_ONE
+        + 'body.filter.foo should be not present, instead was `1`.\nbody.filter.property should be not present, instead was `"object"`.\nbody.filter.value should be not present, instead was `"page"`.',
+    ),
+    # the members in the order they are read, whatever order they are sent in
+    (
+        "sort ahead of query",
+        {"query": 1, "sort": "x"},
+        _NEW,
+        400,
+        "validation_error",
+        'body failed validation: body.sort should be an object or `undefined`, instead was `"x"`.',
+    ),
+    (
+        "query ahead of a sort the schema admits",
+        {"sort": {"timestamp": "created_time", "direction": "ascending"}, "query": 1},
+        _NEW,
+        400,
+        "validation_error",
+        _NOT_A_STRING + "`1`.",
+    ),
+    (
+        "query ahead of the cursor",
+        {"start_cursor": 5, "query": 1},
+        _NEW,
+        400,
+        "validation_error",
+        _NOT_A_STRING + "`1`.",
+    ),
+    (
+        "the cursor ahead of the page size",
+        {"page_size": "x", "start_cursor": 5},
+        _NEW,
+        400,
+        "validation_error",
+        "body failed validation: body.start_cursor should be a string or `undefined`, instead was `5`.",
+    ),
+    (
+        "a cursor not a uuid ahead of the page size",
+        {"page_size": "x", "start_cursor": "bogus"},
+        _NEW,
+        400,
+        "validation_error",
+        'body failed validation: body.start_cursor should be a valid uuid or `undefined`, instead was `"bogus"`.',
+    ),
+    (
+        "the page size ahead of the filter",
+        {"filter": 1, "page_size": "x"},
+        _NEW,
+        400,
+        "validation_error",
+        'body failed validation: body.page_size should be a number or `undefined`, instead was `"x"`.',
+    ),
+    (
+        "the filter ahead of a member search does not take",
+        {"foo": 1, "filter": 1},
+        _NEW,
+        400,
+        "validation_error",
+        _NOT_AN_OBJECT + "`1`.",
+    ),
+    (
+        "two members search does not take",
+        {"bar": 2, "foo": 1},
+        _NEW,
+        400,
+        "validation_error",
+        _FIX_ONE
+        + "body.bar should be not present, instead was `2`.\nbody.foo should be not present, instead was `1`.",
+    ),
+    (
+        "a page size that is null",
+        {"page_size": None},
+        _NEW,
+        400,
+        "validation_error",
+        "body failed validation: body.page_size should be a number or `undefined`, instead was `null`.",
+    ),
+    (
+        "a value cut at 55 units",
+        {"foo": "x" * 60},
+        _NEW,
+        400,
+        "validation_error",
+        'body failed validation: body.foo should be not present, instead was `"'
+        + "x" * 54
+        + "...`.",
+    ),
 ]
 
 
 @pytest.mark.parametrize(
-    "label, body, versioned, status, code, message",
+    "label, body, version, status, code, message",
     _SEARCH_BODY_TYPE_ROWS,
     ids=[row[0] for row in _SEARCH_BODY_TYPE_ROWS],
 )
-def test_notion_search_reads_query_and_filter_by_their_types_like_real(
-    client, admin_h, notion_h, monkeypatch, label, body, versioned, status, code, message
+def test_notion_search_reads_its_body_as_real_does(
+    client, admin_h, monkeypatch, label, body, version, status, code, message
 ):
-    """The rule the comment in ``search`` states: a string query, a filter object and an
-    omitted member are accepted; query errors precede filter errors, and version comes first.
-    A refused request is answered before ``auth.visible_ids`` runs; a served one runs it."""
+    """Real's answer to each body, read by ``notion_request.search_body`` and then
+    ``search_sort_refusal``, the version ahead of both. A refusal comes ahead of
+    ``auth.visible_ids``, and a 200 runs it."""
     from backlot import auth
 
     looked_up = []
     see = auth.visible_ids
     monkeypatch.setattr(auth, "visible_ids", lambda *a, **k: looked_up.append(a) or see(*a, **k))
-    r = client.post("/notion/v1/search", json=body, headers=notion_h if versioned else admin_h)
+    headers = admin_h if version is None else {**admin_h, "Notion-Version": version}
+    r = client.post("/notion/v1/search", json=body, headers=headers)
     assert r.status_code == status, (label, r.text)
     assert bool(looked_up) is (code is None), label
     payload = r.json()
@@ -546,35 +1041,48 @@ def test_notion_search_lists_the_databases_in_the_versions_shape(
 
 
 @pytest.mark.parametrize(
-    "query, row_keys",
+    "route, query, row_keys",
     [
-        ("", {"title", "Status", "Priority"}),
-        ("?filter_properties=Status", {"Status"}),
-        ("?filter_properties=title", {"title"}),
-        ("?filter_properties=Status&filter_properties=Priority", {"Status", "Priority"}),
-        ("?filter_properties=nope", set()),
-        ("?filter_properties=", set()),
-        ("?filter_properties[]=Status", {"Status"}),
-        ("?filter_properties%5B%5D=Status", {"Status"}),
-        ("?filter_properties[20]=Status&filter_properties=Priority", {"Status", "Priority"}),
-        ("?filter_properties=Status&filter_properties[x]=Priority", {"Status"}),
-        ("?filter_properties=Status&filter_properties[0][x]=Priority", {"Status"}),
-        ("?filter_properties[0][x]=Status", set()),
-        ("?filter_properties[0]=Status&filter_properties[0]=Priority", set()),
-        ("?filter_properties[x]=Status", None),
-        ("?filter_properties[21]=Status", None),
-        ("?filter_properties[01]=Status", None),
-        ("?filter_properties[]=Status&filter_properties[x]=Priority", None),
-        ("?filter_properties[x]=Status&filter_properties=Priority", None),
+        ("query", "", {"title", "Status", "Priority"}),
+        ("query", "?filter_properties=Status", {"Status"}),
+        ("query", "?filter_properties=title", {"title"}),
+        ("query", "?filter_properties[]=Status&filter_properties[]=title", {"Status", "title"}),
+        ("query", "?filter_properties=", set()),
+        ("search", "", {"title", "Status", "Priority"}),
+        ("search", "?filter_properties=Status", {"Status"}),
+        ("search", "?filter_properties=title", {"title"}),
+        ("search", "?filter_properties=Status&filter_properties=Priority", {"Status", "Priority"}),
+        ("search", "?filter_properties=nope", set()),
+        ("search", "?filter_properties=", set()),
+        ("search", "?filter_properties[]=Status", {"Status"}),
+        ("search", "?filter_properties%5B%5D=Status", {"Status"}),
+        (
+            "search",
+            "?filter_properties[20]=Status&filter_properties=Priority",
+            {"Status", "Priority"},
+        ),
+        ("search", "?filter_properties=Status&filter_properties[x]=Priority", {"Status"}),
+        ("search", "?filter_properties=Status&filter_properties[0][x]=Priority", {"Status"}),
+        ("search", "?filter_properties[0][x]=Status", set()),
+        ("search", "?filter_properties[0]=Status&filter_properties[0]=Priority", set()),
+        ("search", "?filter_properties[x]=Status", None),
+        ("search", "?filter_properties[21]=Status", None),
+        ("search", "?filter_properties[01]=Status", None),
+        ("search", "?filter_properties[]=Status&filter_properties[x]=Priority", None),
+        ("search", "?filter_properties[x]=Status&filter_properties=Priority", None),
     ],
 )
-def test_notion_search_filter_properties_keeps_only_the_named_row_properties(
-    client, notion_h, query, row_keys
+def test_notion_filter_properties_keeps_only_the_named_row_properties(
+    client, notion_h, route, query, row_keys
 ):
-    """``row_keys`` of ``None`` is real's 400, answered ahead of the body's own error."""
-    body = {"query": "", "filter": {"property": "object", "value": "page"}}
+    """The properties a row of `search` or of a data source query comes back with; ``row_keys`` of
+    ``None`` is real's 400, answered ahead of the body's own error."""
+    if route == "search":
+        path, body = "search", {"query": "", "filter": {"property": "object", "value": "page"}}
+    else:
+        path, body = f"data_sources/{synth.notion_data_source_id('nt-tasks-db')}/query", {}
     r = client.post(
-        f"/notion/v1/search{query}",
+        f"/notion/v1/{path}{query}",
         json=body if row_keys is not None else {**body, "query": 5},
         headers=notion_h,
     )
@@ -593,12 +1101,13 @@ def test_notion_search_filter_properties_keeps_only_the_named_row_properties(
         r = client.post(f"/notion/v1/search{query}", json=body, headers=unversioned)
         assert (r.status_code, r.json()["code"]) == (400, "missing_version")
         return
-    # A row outside a database is the workspace page and keeps its title.
     results = r.json()["results"]
     row = next(r for r in results if r["id"] == synth.notion_id("nt-task-1"))
     assert set(row["properties"]) == row_keys
-    outside = next(r for r in results if r["parent"]["type"] == "workspace")
-    assert "title" in outside["properties"]
+    if route == "search":
+        # A row outside a database is the workspace page and keeps its title.
+        outside = next(r for r in results if r["parent"]["type"] == "workspace")
+        assert "title" in outside["properties"]
 
 
 def test_notion_users(client, notion_h):
@@ -761,6 +1270,14 @@ def test_notion_refuses_a_version_it_does_not_publish(client, admin_h):
             "code": "missing_version",
             "message": message,
         }, (method, url)
+    # The value comes back as every refusal quotes one (``notion_request.quoted``).
+    for sent, quoted in (
+        ('a"b', '"a\\"b"'),
+        ("x" * 53, '"' + "x" * 53 + '"'),
+        ("x" * 60, '"' + "x" * 54 + "..."),
+    ):
+        r = client.get("/notion/v1/users/me", headers={**admin_h, "Notion-Version": sent})
+        assert r.json()["message"].endswith(f"instead was `{quoted}`."), sent
     # The seven pass, so what is refused above is the value and not the check: each reads a page,
     # a route every version mounts.
     page = f"/notion/v1/pages/{synth.notion_id('nt-runbook')}"
@@ -826,10 +1343,21 @@ def test_notion_data_source_retrieve_is_mounted_only_above_the_cut(client, notio
 # --- Notion: typed response schema ---------------------------------------------------------
 
 
-def test_notion_search_documents_body_param(client):
-    op = client.get("/openapi.json").json()["paths"]["/notion/v1/search"]["post"]
+_QUERY_MEMBERS = ["sorts", "filter", "start_cursor", "page_size", "result_type"]
+
+
+@pytest.mark.parametrize(
+    "path, members",
+    [
+        ("/notion/v1/search", ["query", "filter", "sort", "start_cursor", "page_size"]),
+        ("/notion/v1/data_sources/{data_source_id}/query", _QUERY_MEMBERS),
+        ("/notion/v1/databases/{database_id}/query", _QUERY_MEMBERS),
+    ],
+)
+def test_notion_a_body_route_declares_the_members_it_reads(client, path, members):
+    op = client.get("/openapi.json").json()["paths"][path]["post"]
     props = op["requestBody"]["content"]["application/json"]["schema"]["properties"]
-    assert "query" in props and "filter" in props
+    assert list(props) == members
 
 
 def test_notion_every_route_declares_the_version_header_it_enforces(client):
@@ -1361,3 +1889,2508 @@ def test_notion_bot_names_its_workspace(client, notion_h):
     assert list(bot) == ["owner", "workspace_name", "workspace_id", "workspace_limits"]
     assert uuid.UUID(bot["workspace_id"]).version == 4
     assert bot["workspace_limits"] == {"max_file_upload_size_in_bytes": 5242880}
+
+
+# --- what a request carries, ahead of what it asks for -----------------------------------------
+#
+# Each row is api.notion.com's answer to the request under 2025-09-03 (and 2022-06-28 for the
+# database query): status, then the message of a refusal, or the members a body Express refuses
+# carries, or None for a 200. `{page}`, `{ds}`, `{db}` and `{user}` are a page, the
+# data source, its database and a user the corpus serves, and `{rand}` a uuid naming nothing.
+
+_RAND = "11111111-2222-4333-8444-555555555555"
+_FIX = "query failed validation. Fix one:\n"
+_BODY_FIX = "body failed validation. Fix one:\n"
+
+
+def _absent(where: str, key: str, value: str) -> str:
+    return f"{where} failed validation: {where}.{key} should be not present, instead was `{value}`."
+
+
+def _foo(value: str) -> str:
+    return _absent("query", "foo", value)
+
+
+_CONFLICT = 'Conflicting values for "{}" in query parameters.'
+_OBJECT = 'The value of "{}" in query parameters must be a string, number, or boolean.'
+_NOT_A_NUMBER = (
+    "query failed validation: query.page_size should be a number or `undefined`, instead was "
+)
+_NOT_A_CURSOR = (
+    "query failed validation: query.start_cursor should be a string or `undefined`, instead was "
+)
+_NOT_A_UUID_CURSOR = "query failed validation: query.start_cursor should be a valid uuid or `undefined`, instead was "
+_INVALID = "The start_cursor provided is invalid: "
+_NOT_A_LIST = (
+    'The value of "filter_properties" in query parameters must be a string or list of strings'
+)
+_UNKNOWN_API = {
+    "isNotionError": False,
+    "name": "UnknownApiError",
+    "message": "Something went wrong.",
+}
+_TOO_LARGE = {
+    "isNotionError": False,
+    "name": "PayloadTooLargeError",
+    "message": "Request body too large.",
+    "code": 413,
+}
+_INVALID_JSON = "Error parsing JSON body."
+_JSON = {"Content-Type": "application/json"}
+_LONE_HIGH = chr(0xD83D)
+_EMOJI = "%F0%9F%98%80"
+
+#: What a data source query's filter is refused with when it names none of the filter types: the
+#: lines, at the top or inside a compound, in the order real listed them.
+_FILTER_TYPES = [
+    "title",
+    "rich_text",
+    "number",
+    "checkbox",
+    "select",
+    "multi_select",
+    "status",
+    "date",
+    "people",
+    "files",
+    "url",
+    "email",
+    "phone_number",
+    "relation",
+    "created_by",
+    "created_time",
+    "last_edited_by",
+    "last_edited_time",
+    "formula",
+    "unique_id",
+    "rollup",
+    "verification",
+]
+
+
+def _defined(where: str, keys: list[str]) -> str:
+    return _BODY_FIX + "\n".join(
+        f"{where}.{k} should be defined, instead was `undefined`." for k in keys
+    )
+
+
+_TOP = ["or", "and", *_FILTER_TYPES]
+_INSIDE = [*_FILTER_TYPES, "or", "and"]
+_TIMESTAMP_INSIDE = [
+    *(("property" if k == "created_time" else k) for k in _FILTER_TYPES),
+    "timestamp",
+    "or",
+    "and",
+]
+_Q = "/data_sources/{ds}/query"
+
+# label, method, path under /notion/v1 (or `/notion`, the root itself), query string, what the
+# body is (a dict sent as JSON, bytes or a str sent as they stand, None for no body), headers
+# beyond the token and the version (None drops one; a list of pairs to send one twice), each sent
+# byte for byte, status, and what is expected; a 404's words are their own gap, so a 404 row
+# names only its status
+_REQUEST_ROWS = [
+    # the query string as `qs` parses it, and each value as the validator coerces it
+    ("unknown key", "GET", "/users", "foo=1", None, {}, 400, _foo("1")),
+    ("a string", "GET", "/users", "foo=abc", None, {}, 400, _foo('"abc"')),
+    ("empty", "GET", "/users", "foo=", None, {}, 400, _foo("0")),
+    ("no equals", "GET", "/users", "foo", None, {}, 400, _foo("0")),
+    ("a space", "GET", "/users", "foo=%20", None, {}, 400, _foo("0")),
+    ("zero-padded", "GET", "/users", "foo=01", None, {}, 400, _foo("1")),
+    ("a point zero", "GET", "/users", "foo=1.0", None, {}, 400, _foo("1")),
+    ("a fraction", "GET", "/users", "foo=1.5", None, {}, 400, _foo('"1.5"')),
+    ("a fraction alone", "GET", "/users", "foo=.5", None, {}, 400, _foo('".5"')),
+    ("TRUE", "GET", "/users", "foo=TRUE", None, {}, 400, _foo("true")),
+    ("False", "GET", "/users", "foo=False", None, {}, 400, _foo("false")),
+    ("true after a space", "GET", "/users", "foo=%20true", None, {}, 400, _foo('" true"')),
+    ("null", "GET", "/users", "foo=null", None, {}, 400, _foo('"null"')),
+    ("1e21", "GET", "/users", "foo=1e21", None, {}, 400, _foo("1e+21")),
+    ("1e20", "GET", "/users", "foo=1e20", None, {}, 400, _foo("100000000000000000000")),
+    ("1e-7", "GET", "/users", "foo=1e-7", None, {}, 400, _foo('"1e-7"')),
+    ("1e400", "GET", "/users", "foo=1e400", None, {}, 400, _foo('"1e400"')),
+    ("Infinity", "GET", "/users", "foo=Infinity", None, {}, 400, _foo('"Infinity"')),
+    ("hexadecimal", "GET", "/users", "foo=0x10", None, {}, 400, _foo("16")),
+    ("signed hexadecimal", "GET", "/users", "foo=-0x10", None, {}, 400, _foo('"-0x10"')),
+    ("binary", "GET", "/users", "foo=0b11", None, {}, 400, _foo("3")),
+    ("a hexadecimal prefix alone", "GET", "/users", "foo=0x", None, {}, 400, _foo('"0x"')),
+    ("a hexadecimal prefix and no digit", "GET", "/users", "foo=0xg", None, {}, 400, _foo('"0xg"')),
+    ("hexadecimal in upper case", "GET", "/users", "foo=0xFF", None, {}, 400, _foo("255")),
+    (
+        "hexadecimal under an upper-case prefix",
+        "GET",
+        "/users",
+        "foo=0XfF",
+        None,
+        {},
+        400,
+        _foo("255"),
+    ),
+    ("octal", "GET", "/users", "foo=0o17", None, {}, 400, _foo("15")),
+    ("octal under an upper-case prefix", "GET", "/users", "foo=0O17", None, {}, 400, _foo("15")),
+    ("octal with an 8", "GET", "/users", "foo=0o8", None, {}, 400, _foo('"0o8"')),
+    ("binary under an upper-case prefix", "GET", "/users", "foo=0B11", None, {}, 400, _foo("3")),
+    ("binary with a 2", "GET", "/users", "foo=0b2", None, {}, 400, _foo('"0b2"')),
+    ("hexadecimal after a space", "GET", "/users", "foo=%200x10", None, {}, 400, _foo("16")),
+    ("hexadecimal before a space", "GET", "/users", "foo=0x10%20", None, {}, 400, _foo("16")),
+    (
+        "hexadecimal with a space inside",
+        "GET",
+        "/users",
+        "foo=0x%2010",
+        None,
+        {},
+        400,
+        _foo('"0x 10"'),
+    ),
+    (
+        "hexadecimal with an underscore",
+        "GET",
+        "/users",
+        "foo=0x1_0",
+        None,
+        {},
+        400,
+        _foo('"0x1_0"'),
+    ),
+    (
+        "a hexadecimal past every double",
+        "GET",
+        "/users",
+        "foo=0x" + "f" * 260,
+        None,
+        {},
+        400,
+        _foo('"0x' + "f" * 52 + "..."),
+    ),
+    (
+        "a hexadecimal below the largest double",
+        "GET",
+        "/users",
+        "foo=0x" + "f" * 255,
+        None,
+        {},
+        400,
+        _foo("1.1235582092889474e+307"),
+    ),
+    ("an underscore", "GET", "/users", "foo=1_0", None, {}, 400, _foo('"1_0"')),
+    ("minus zero", "GET", "/users", "foo=-0", None, {}, 400, _foo("0")),
+    ("a plus, read as a space", "GET", "/users", "foo=+1", None, {}, 400, _foo("1")),
+    ("an escaped plus", "GET", "/users", "foo=%2B.5", None, {}, 400, _foo('"+.5"')),
+    (
+        "past 2**53",
+        "GET",
+        "/users",
+        "foo=9007199254740993",
+        None,
+        {},
+        400,
+        _foo("9007199254740992"),
+    ),
+    (
+        "thirty digits",
+        "GET",
+        "/users",
+        "foo=123456789012345678901234567890",
+        None,
+        {},
+        400,
+        _foo("1.2345678901234568e+29"),
+    ),
+    ("a no-break space trimmed", "GET", "/users", "foo=%C2%A01", None, {}, 400, _foo("1")),
+    ("U+0085 kept", "GET", "/users", "foo=%C2%851", None, {}, 400, _foo('"' + chr(0x85) + '1"')),
+    ("U+001C kept", "GET", "/users", "foo=%1C1", None, {}, 400, _foo('"\\u001c1"')),
+    *[
+        (f"U+{cp:04X} trimmed", "GET", "/users", f"foo={quote(chr(cp))}1", None, {}, 400, _foo("1"))
+        for cp in (
+            0x09,
+            0x0B,
+            0x0C,
+            0x0D,
+            0x1680,
+            0x2000,
+            0x2003,
+            0x200A,
+            0x2028,
+            0x2029,
+            0x202F,
+            0x205F,
+            0x3000,
+            0xFEFF,
+        )
+    ],
+    ("a line feed after, trimmed", "GET", "/users", "foo=1%0A", None, {}, 400, _foo("1")),
+    ("a carriage return after, trimmed", "GET", "/users", "foo=1%0D", None, {}, 400, _foo("1")),
+    (
+        "U+200B kept",
+        "GET",
+        "/users",
+        "foo=1%E2%80%8B",
+        None,
+        {},
+        400,
+        _foo('"1' + chr(0x200B) + '"'),
+    ),
+    (
+        "U+2060 kept",
+        "GET",
+        "/users",
+        "foo=%E2%81%A01",
+        None,
+        {},
+        400,
+        _foo('"' + chr(0x2060) + '1"'),
+    ),
+    ("a quote", "GET", "/users", "foo=x%22y", None, {}, 400, _foo('"x\\"y"')),
+    ("a bad escape", "GET", "/users", "foo=%ZZ", None, {}, 400, _foo('"%ZZ"')),
+    (
+        "a bad escape, then a good one",
+        "GET",
+        "/users",
+        "foo=%zz%41",
+        None,
+        {},
+        400,
+        _foo('"%zz%41"'),
+    ),
+    (
+        "a good escape, then a bad one",
+        "GET",
+        "/users",
+        "foo=%41%zz",
+        None,
+        {},
+        400,
+        _foo('"%41%zz"'),
+    ),
+    ("an escape", "GET", "/users", "foo=%41", None, {}, 400, _foo('"A"')),
+    ("an escape that is not UTF-8", "GET", "/users", "foo=%FF", None, {}, 400, _foo('"%FF"')),
+    ("54 x, cut", "GET", "/users", "foo=" + "x" * 54, None, {}, 400, _foo('"' + "x" * 54 + "...")),
+    (
+        "53 x and U+1F600, cut inside it",
+        "GET",
+        "/users",
+        "foo=" + "x" * 53 + _EMOJI,
+        None,
+        {},
+        400,
+        _foo('"' + "x" * 53 + _LONE_HIGH + "..."),
+    ),
+    (
+        "52 x and U+1F600, cut after it",
+        "GET",
+        "/users",
+        "foo=" + "x" * 52 + _EMOJI,
+        None,
+        {},
+        400,
+        _foo('"' + "x" * 52 + chr(0x1F600) + "..."),
+    ),
+    (
+        "two unknown keys",
+        "GET",
+        "/users",
+        "bar=2&foo=1",
+        None,
+        {},
+        400,
+        _FIX
+        + "query.bar should be not present, instead was `2`.\nquery.foo should be not present, instead was `1`.",
+    ),
+    (
+        "a key in another case",
+        "GET",
+        "/users",
+        "foo=1&FOO=2",
+        None,
+        {},
+        400,
+        _FIX
+        + "query.foo should be not present, instead was `1`.\nquery.FOO should be not present, instead was `2`.",
+    ),
+    (
+        "a long key, whole",
+        "GET",
+        "/users",
+        "k" * 70 + "=1",
+        None,
+        {},
+        400,
+        _absent("query", "k" * 70, "1"),
+    ),
+    ("repeated", "GET", "/users", "foo=1&foo=1", None, {}, 400, _CONFLICT.format("foo")),
+    ("[]", "GET", "/users", "foo[]=1", None, {}, 400, _CONFLICT.format("foo")),
+    ("[20]", "GET", "/users", "foo[20]=1", None, {}, 400, _CONFLICT.format("foo")),
+    ("[21]", "GET", "/users", "foo[21]=1", None, {}, 400, _OBJECT.format("foo")),
+    ("[-1]", "GET", "/users", "foo[-1]=1", None, {}, 400, _OBJECT.format("foo")),
+    ("[a]", "GET", "/users", "foo[a]=1", None, {}, 400, _OBJECT.format("foo")),
+    (
+        "an equals sign inside the bracket",
+        "GET",
+        "/users",
+        "foo[a=b]=1",
+        None,
+        {},
+        400,
+        _OBJECT.format("foo"),
+    ),
+    ("a closing bracket after", "GET", "/users", "foo[a]]=1", None, {}, 400, _OBJECT.format("foo")),
+    (
+        "a bracket inside a bracket",
+        "GET",
+        "/users",
+        "foo[a[b]]=1",
+        None,
+        {},
+        400,
+        _OBJECT.format("foo[a"),
+    ),
+    ("[01]", "GET", "/users", "foo[01]=1", None, {}, 400, _OBJECT.format("foo")),
+    ("[00]", "GET", "/users", "foo[00]=1", None, {}, 400, _OBJECT.format("foo")),
+    ("a superscript digit", "GET", "/users", "foo[%C2%B2]=1", None, {}, 400, _OBJECT.format("foo")),
+    (
+        "an Arabic-Indic digit",
+        "GET",
+        "/users",
+        "foo[%D9%A3]=1",
+        None,
+        {},
+        400,
+        _OBJECT.format("foo"),
+    ),
+    ("a value, then []", "GET", "/users", "foo=1&foo[]=2", None, {}, 400, _CONFLICT.format("foo")),
+    ("[], then a value", "GET", "/users", "foo[]=1&foo=2", None, {}, 400, _CONFLICT.format("foo")),
+    ("[] twice", "GET", "/users", "foo[]=1&foo[]=2", None, {}, 400, _CONFLICT.format("foo")),
+    (
+        "[0], then a value",
+        "GET",
+        "/users",
+        "foo[0]=1&foo=2",
+        None,
+        {},
+        400,
+        _CONFLICT.format("foo"),
+    ),
+    ("[a], then []", "GET", "/users", "foo[a]=1&foo[]=2", None, {}, 400, _OBJECT.format("foo")),
+    ("two objects", "GET", "/users", "foo[a]=1&foo[b]=2", None, {}, 400, _OBJECT.format("foo")),
+    ("an empty part", "GET", "/users", "&&foo=1", None, {}, 400, _foo("1")),
+    ("escaped []", "GET", "/users", "foo%5B%5D=1", None, {}, 400, _CONFLICT.format("foo")),
+    ("an open bracket", "GET", "/users", "foo[=1", None, {}, 400, _absent("query", "foo[", "1")),
+    (
+        "a key that is a bracket",
+        "GET",
+        "/users",
+        "[a]=1",
+        None,
+        {},
+        400,
+        _absent("query", "a", "1"),
+    ),
+    ("a key that is []", "GET", "/users", "[]=1", None, {}, 400, _absent("query", "0", "1")),
+    ("no key", "GET", "/users", "=1", None, {}, 200, None),
+    (
+        "a value then an object",
+        "GET",
+        "/users",
+        "foo=1&foo[a]=2",
+        None,
+        {},
+        400,
+        _CONFLICT.format("foo"),
+    ),
+    (
+        "an object then a value",
+        "GET",
+        "/users",
+        "foo[a]=2&foo=1",
+        None,
+        {},
+        400,
+        _OBJECT.format("foo"),
+    ),
+    (
+        "a list then an object",
+        "GET",
+        "/users",
+        "foo[]=1&foo[a]=2",
+        None,
+        {},
+        400,
+        _OBJECT.format("foo"),
+    ),
+    (
+        "the first key's shape",
+        "GET",
+        "/users",
+        "bar[a]=1&foo=1&foo=2",
+        None,
+        {},
+        400,
+        _OBJECT.format("bar"),
+    ),
+    (
+        "the first key's shape, the other way",
+        "GET",
+        "/users",
+        "foo=1&foo=2&bar[a]=1",
+        None,
+        {},
+        400,
+        _CONFLICT.format("foo"),
+    ),
+    (
+        "a shape ahead of a member",
+        "GET",
+        "/users",
+        "foo[a]=1&page_size=abc",
+        None,
+        {},
+        400,
+        _OBJECT.format("foo"),
+    ),
+    # `users`
+    (
+        "page size not a number",
+        "GET",
+        "/users",
+        "page_size=abc",
+        None,
+        {},
+        400,
+        _NOT_A_NUMBER + '`"abc"`.',
+    ),
+    ("page size true", "GET", "/users", "page_size=true", None, {}, 400, _NOT_A_NUMBER + "`true`."),
+    (
+        "page size 1e309",
+        "GET",
+        "/users",
+        "page_size=1e309",
+        None,
+        {},
+        400,
+        _NOT_A_NUMBER + '`"1e309"`.',
+    ),
+    (
+        "page size ahead of an unknown key",
+        "GET",
+        "/users",
+        "foo=1&page_size=abc",
+        None,
+        {},
+        400,
+        _NOT_A_NUMBER + '`"abc"`.',
+    ),
+    (
+        "cursor ahead of page size",
+        "GET",
+        "/users",
+        "page_size=abc&start_cursor=5",
+        None,
+        {},
+        400,
+        _NOT_A_CURSOR + "`5`.",
+    ),
+    ("cursor empty", "GET", "/users", "start_cursor=", None, {}, 400, _NOT_A_CURSOR + "`0`."),
+    (
+        "cursor of 32 digits",
+        "GET",
+        "/users",
+        "start_cursor=11111111222243338444555555555555",
+        None,
+        {},
+        400,
+        _NOT_A_CURSOR + "`1.111111122224334e+31`.",
+    ),
+    (
+        "unknown key ahead of a cursor naming nothing",
+        "GET",
+        "/users",
+        "start_cursor=bogus&foo=1",
+        None,
+        {},
+        400,
+        _foo("1"),
+    ),
+    (
+        "cursor naming nothing",
+        "GET",
+        "/users",
+        "start_cursor=bogus",
+        None,
+        {},
+        400,
+        _INVALID + "bogus",
+    ),
+    ("cursor null", "GET", "/users", "start_cursor=null", None, {}, 400, _INVALID + "null"),
+    (
+        "a long cursor, whole",
+        "GET",
+        "/users",
+        "start_cursor=" + "x" * 70,
+        None,
+        {},
+        400,
+        _INVALID + "x" * 70,
+    ),
+    (
+        "cursor naming nothing ahead of -2",
+        "GET",
+        "/users",
+        "page_size=-2&start_cursor=bogus",
+        None,
+        {},
+        400,
+        _INVALID + "bogus",
+    ),
+    (
+        "page size -2",
+        "GET",
+        "/users",
+        "page_size=-2",
+        None,
+        {},
+        503,
+        "Public API service is temporarily unavailable, please try again later.",
+    ),
+    # `blocks/{id}/children`
+    (
+        "children: a cursor of a space, a number",
+        "GET",
+        "/blocks/{page}/children",
+        "start_cursor=%20",
+        None,
+        {},
+        400,
+        _NOT_A_CURSOR + "`0`.",
+    ),
+    (
+        "children: a cursor naming a block, in upper case",
+        "GET",
+        "/blocks/{page}/children",
+        "start_cursor=" + synth.notion_block_id(_RUNBOOK, 0).upper(),
+        None,
+        {},
+        400,
+        _INVALID + synth.notion_block_id(_RUNBOOK, 0).upper(),
+    ),
+    (
+        "children: a cursor not a uuid",
+        "GET",
+        "/blocks/{page}/children",
+        "start_cursor=bogus",
+        None,
+        {},
+        400,
+        _NOT_A_UUID_CURSOR + '`"bogus"`.',
+    ),
+    (
+        "children: a cursor without its dashes",
+        "GET",
+        "/blocks/{page}/children",
+        "start_cursor=11111111222243338444555555555abc",
+        None,
+        {},
+        400,
+        _NOT_A_UUID_CURSOR + '`"11111111222243338444555555555abc"`.',
+    ),
+    (
+        "children: the cursor ahead of the page size",
+        "GET",
+        "/blocks/{page}/children",
+        "page_size=abc&start_cursor=bogus",
+        None,
+        {},
+        400,
+        _NOT_A_UUID_CURSOR + '`"bogus"`.',
+    ),
+    (
+        "children: the cursor's shape ahead of an unknown key",
+        "GET",
+        "/blocks/{page}/children",
+        "foo=1&start_cursor=bogus",
+        None,
+        {},
+        400,
+        _NOT_A_UUID_CURSOR + '`"bogus"`.',
+    ),
+    (
+        "children: a cursor naming nothing",
+        "GET",
+        "/blocks/{page}/children",
+        "start_cursor={rand}",
+        None,
+        {},
+        400,
+        _INVALID + _RAND,
+    ),
+    (
+        "children: a cursor in upper case",
+        "GET",
+        "/blocks/{page}/children",
+        "start_cursor=" + _RAND.upper(),
+        None,
+        {},
+        400,
+        _INVALID + _RAND.upper(),
+    ),
+    (
+        "children: no block, a cursor not a uuid",
+        "GET",
+        "/blocks/{rand}/children",
+        "start_cursor=bogus",
+        None,
+        {},
+        400,
+        _NOT_A_UUID_CURSOR + '`"bogus"`.',
+    ),
+    (
+        "children: no block, an unknown key",
+        "GET",
+        "/blocks/{rand}/children",
+        "foo=1",
+        None,
+        {},
+        400,
+        _foo("1"),
+    ),
+    (
+        "children: no block, a uuid cursor",
+        "GET",
+        "/blocks/{rand}/children",
+        "start_cursor={rand}",
+        None,
+        {},
+        404,
+        None,
+    ),
+    (
+        "children: no block, page size -1",
+        "GET",
+        "/blocks/{rand}/children",
+        "page_size=-1",
+        None,
+        {},
+        404,
+        None,
+    ),
+    # the routes that read no query member, and the page, which serves one
+    (
+        "block",
+        "GET",
+        "/blocks/{page}",
+        "foo=1&bar=2",
+        None,
+        {},
+        400,
+        _FIX
+        + "query.foo should be not present, instead was `1`.\nquery.bar should be not present, instead was `2`.",
+    ),
+    (
+        "me: a page size",
+        "GET",
+        "/users/me",
+        "page_size=1",
+        None,
+        {},
+        400,
+        _absent("query", "page_size", "1"),
+    ),
+    (
+        "me: filter_properties, a list",
+        "GET",
+        "/users/me",
+        "filter_properties=title",
+        None,
+        {},
+        400,
+        _absent("query", "filter_properties", '["title"]'),
+    ),
+    (
+        "block: filter_properties twice, one list",
+        "GET",
+        "/blocks/{page}",
+        "filter_properties=a&filter_properties=b",
+        None,
+        {},
+        400,
+        _absent("query", "filter_properties", '["a","b"]'),
+    ),
+    (
+        "block: filter_properties[], a list",
+        "GET",
+        "/blocks/{page}",
+        "filter_properties[]=a",
+        None,
+        {},
+        400,
+        _absent("query", "filter_properties", '["a"]'),
+    ),
+    (
+        "block: filter_properties as an object",
+        "GET",
+        "/blocks/{page}",
+        "filter_properties[x]=a",
+        None,
+        {},
+        400,
+        _NOT_A_LIST,
+    ),
+    (
+        "block: an object, then filter_properties as one",
+        "GET",
+        "/blocks/{page}",
+        "foo[a]=1&filter_properties[x]=a",
+        None,
+        {},
+        400,
+        _OBJECT.format("foo"),
+    ),
+    (
+        "block: filter_properties as an object, then an object",
+        "GET",
+        "/blocks/{page}",
+        "filter_properties[x]=a&foo[a]=1",
+        None,
+        {},
+        400,
+        _NOT_A_LIST,
+    ),
+    (
+        "search: an unknown key, then filter_properties as an object",
+        "POST",
+        "/search",
+        "foo=1&filter_properties[x]=a",
+        {},
+        _JSON,
+        400,
+        _NOT_A_LIST,
+    ),
+    (
+        "search: a repeated key, then filter_properties as an object",
+        "POST",
+        "/search",
+        "foo=1&foo=2&filter_properties[x]=a",
+        {},
+        _JSON,
+        400,
+        _CONFLICT.format("foo"),
+    ),
+    (
+        "search: filter_properties as an object, then a repeated key",
+        "POST",
+        "/search",
+        "filter_properties[x]=a&foo=1&foo=2",
+        {},
+        _JSON,
+        400,
+        _NOT_A_LIST,
+    ),
+    (
+        "search: filter_properties as an object, and a body it refuses",
+        "POST",
+        "/search",
+        "filter_properties[x]=a",
+        {"page_size": "x"},
+        _JSON,
+        400,
+        _NOT_A_LIST,
+    ),
+    (
+        "query: an unknown key, then filter_properties as an object",
+        "POST",
+        _Q,
+        "foo=1&filter_properties[x]=a",
+        {},
+        _JSON,
+        400,
+        _NOT_A_LIST,
+    ),
+    (
+        "query: filter_properties as an object, and a body it refuses",
+        "POST",
+        _Q,
+        "filter_properties[x]=a",
+        {"page_size": "x"},
+        _JSON,
+        400,
+        _NOT_A_LIST,
+    ),
+    (
+        "query: filter_properties[], then an object",
+        "POST",
+        _Q,
+        "filter_properties[]=a&foo[a]=1",
+        {},
+        _JSON,
+        400,
+        _OBJECT.format("foo"),
+    ),
+    (
+        "page: a page size, then filter_properties as an object",
+        "GET",
+        "/pages/{page}",
+        "page_size=x&filter_properties[x]=a",
+        None,
+        {},
+        400,
+        _NOT_A_LIST,
+    ),
+    ("user", "GET", "/users/{user}", "foo=1", None, {}, 400, _foo("1")),
+    ("database", "GET", "/databases/{db}", "foo=1", None, {}, 400, _foo("1")),
+    ("data source", "GET", "/data_sources/{ds}", "foo=1", None, {}, 400, _foo("1")),
+    ("page: an unknown key", "GET", "/pages/{page}", "foo=1&bar=2", None, {}, 200, None),
+    (
+        "page: repeated",
+        "GET",
+        "/pages/{page}",
+        "foo=1&foo=2",
+        None,
+        {},
+        400,
+        _CONFLICT.format("foo"),
+    ),
+    ("page: an object", "GET", "/pages/{page}", "foo[a]=1", None, {}, 400, _OBJECT.format("foo")),
+    ("search: an unknown key", "POST", "/search", "foo=1", {}, _JSON, 400, _foo("1")),
+    (
+        "search: a page size in the query string",
+        "POST",
+        "/search",
+        "page_size=1",
+        {},
+        _JSON,
+        400,
+        _absent("query", "page_size", "1"),
+    ),
+    (
+        "search: the query string ahead of the body",
+        "POST",
+        "/search",
+        "foo=1",
+        {"page_size": "x"},
+        _JSON,
+        400,
+        _foo("1"),
+    ),
+    # a body on a `GET`
+    (
+        "a body member on users",
+        "GET",
+        "/users",
+        "",
+        b'{"a":1}',
+        _JSON,
+        400,
+        _absent("body", "a", "1"),
+    ),
+    (
+        "a page size in a GET's body",
+        "GET",
+        "/users/me",
+        "",
+        b'{"page_size":1}',
+        _JSON,
+        400,
+        _absent("body", "page_size", "1"),
+    ),
+    (
+        "a GET's array body",
+        "GET",
+        "/pages/{page}",
+        "",
+        b"[]",
+        _JSON,
+        400,
+        "body failed validation: body should be an object, instead was `[]`.",
+    ),
+    (
+        "a GET's body after its query string",
+        "GET",
+        "/users",
+        "foo=1",
+        b'{"a":1}',
+        _JSON,
+        400,
+        _foo("1"),
+    ),
+    (
+        "a GET's body ahead of the lookup",
+        "GET",
+        "/blocks/{rand}/children",
+        "",
+        b'{"a":1}',
+        _JSON,
+        400,
+        _absent("body", "a", "1"),
+    ),
+    (
+        "a GET's body after the credential",
+        "GET",
+        "/users",
+        "",
+        b'{"a":1}',
+        {**_JSON, "Authorization": None},
+        401,
+        'Authorization header must use the format "Bearer <token>".',
+    ),
+    # the body as Express reads it, ahead of everything
+    ("invalid JSON", "POST", "/search", "", b"{", _JSON, 400, _INVALID_JSON),
+    (
+        "invalid JSON with no credential",
+        "POST",
+        "/search",
+        "",
+        b"{",
+        {**_JSON, "Authorization": None},
+        400,
+        _INVALID_JSON,
+    ),
+    (
+        "invalid JSON with a token that does not resolve",
+        "POST",
+        "/search",
+        "",
+        b"{",
+        {**_JSON, "Authorization": "Bearer ntn_bogus"},
+        400,
+        _INVALID_JSON,
+    ),
+    (
+        "invalid JSON with no version",
+        "POST",
+        "/search",
+        "",
+        b"{",
+        {**_JSON, "Notion-Version": None},
+        400,
+        _INVALID_JSON,
+    ),
+    (
+        "invalid JSON with a version not published",
+        "POST",
+        "/search",
+        "",
+        b"{",
+        {**_JSON, "Notion-Version": "banana"},
+        400,
+        _INVALID_JSON,
+    ),
+    (
+        "invalid JSON ahead of the query string",
+        "POST",
+        "/search",
+        "foo=1&foo=2",
+        b"{",
+        _JSON,
+        400,
+        _INVALID_JSON,
+    ),
+    (
+        "invalid JSON on a path no route serves",
+        "POST",
+        "/nope",
+        "",
+        b"{",
+        _JSON,
+        400,
+        _INVALID_JSON,
+    ),
+    ("invalid JSON on a GET", "GET", "/users", "", b"{", _JSON, 400, _INVALID_JSON),
+    (
+        "invalid JSON ahead of an unknown data source",
+        "POST",
+        "/data_sources/{rand}/query",
+        "",
+        b"{",
+        _JSON,
+        400,
+        _INVALID_JSON,
+    ),
+    (
+        "an array with no credential is the credential's",
+        "POST",
+        "/search",
+        "",
+        b"[]",
+        {**_JSON, "Authorization": None},
+        401,
+        'Authorization header must use the format "Bearer <token>".',
+    ),
+    ("a scalar", "POST", "/search", "", b"null", _JSON, 400, _INVALID_JSON),
+    ("a string", "POST", "/search", "", b'"x"', _JSON, 400, _INVALID_JSON),
+    ("spaces", "POST", "/search", "", b"   ", _JSON, 400, _INVALID_JSON),
+    ("NaN", "POST", "/search", "", b'{"page_size":NaN}', _JSON, 400, _INVALID_JSON),
+    ("a trailing comma", "POST", "/search", "", b'{"foo":1,}', _JSON, 400, _INVALID_JSON),
+    ("text after it", "POST", "/search", "", b"{} x", _JSON, 400, _INVALID_JSON),
+    ("empty", "POST", "/search", "", b"", _JSON, 200, None),
+    ("a byte-order mark", "POST", "/search", "", "﻿{}".encode(), _JSON, 200, None),
+    (
+        "an array",
+        "POST",
+        "/search",
+        "",
+        b"[1]",
+        _JSON,
+        400,
+        "body failed validation: body should be an object, instead was `[1]`.",
+    ),
+    (
+        "__proto__ is a member",
+        "POST",
+        "/search",
+        "",
+        b'{"__proto__":{"a":1}}',
+        _JSON,
+        400,
+        _absent("body", "__proto__", '{"a":1}'),
+    ),
+    (
+        "a member repeated, the last read",
+        "POST",
+        "/search",
+        "",
+        b'{"page_size":1,"page_size":"x"}',
+        _JSON,
+        400,
+        'body failed validation: body.page_size should be a number or `undefined`, instead was `"x"`.',
+    ),
+    (
+        "a parameter",
+        "POST",
+        "/search",
+        "",
+        b'{"foo":1}',
+        {"Content-Type": "application/json; foo=bar"},
+        400,
+        _absent("body", "foo", "1"),
+    ),
+    (
+        "in another case",
+        "POST",
+        "/search",
+        "",
+        b'{"foo":1}',
+        {"Content-Type": "Application/Json; Charset=UTF-8"},
+        400,
+        _absent("body", "foo", "1"),
+    ),
+    (
+        "text/plain is not read",
+        "POST",
+        "/search",
+        "",
+        b'{"foo":1}',
+        {"Content-Type": "text/plain"},
+        200,
+        None,
+    ),
+    (
+        "text/plain invalid is not read",
+        "POST",
+        "/search",
+        "",
+        b"{",
+        {"Content-Type": "text/plain"},
+        200,
+        None,
+    ),
+    ("no type is not read", "POST", "/search", "", b'{"foo":1}', {}, 200, None),
+    (
+        "merge-patch is not read",
+        "POST",
+        "/search",
+        "",
+        b'{"foo":1}',
+        {"Content-Type": "application/merge-patch+json"},
+        200,
+        None,
+    ),
+    (
+        "text/json is not read",
+        "POST",
+        "/search",
+        "",
+        b'{"foo":1}',
+        {"Content-Type": "text/json"},
+        200,
+        None,
+    ),
+    (
+        "a type that does not parse is not read",
+        "POST",
+        "/search",
+        "",
+        b'{"foo":1}',
+        {"Content-Type": "application/json;"},
+        200,
+        None,
+    ),
+    (
+        "an empty charset is not read",
+        "POST",
+        "/search",
+        "",
+        b'{"foo":1}',
+        {"Content-Type": "application/json; charset="},
+        200,
+        None,
+    ),
+    (
+        "latin1",
+        "POST",
+        "/search",
+        "",
+        b'{"foo":1}',
+        {"Content-Type": "application/json; charset=latin1"},
+        415,
+        _UNKNOWN_API,
+    ),
+    (
+        "utf8",
+        "POST",
+        "/search",
+        "",
+        b'{"foo":1}',
+        {"Content-Type": "application/json; charset=utf8"},
+        415,
+        _UNKNOWN_API,
+    ),
+    (
+        "utf-nope",
+        "POST",
+        "/search",
+        "",
+        b'{"foo":1}',
+        {"Content-Type": "application/json; charset=utf-nope"},
+        415,
+        _UNKNOWN_API,
+    ),
+    (
+        "latin1 with no credential",
+        "POST",
+        "/search",
+        "",
+        b"{}",
+        {"Content-Type": "application/json; charset=latin1", "Authorization": None},
+        415,
+        _UNKNOWN_API,
+    ),
+    (
+        "latin1 on text/plain is not read",
+        "POST",
+        "/search",
+        "",
+        b'{"foo":1}',
+        {"Content-Type": "text/plain; charset=latin1"},
+        200,
+        None,
+    ),
+    (
+        "UTF-8 read as utf-16le",
+        "POST",
+        "/search",
+        "",
+        b'{"foo":1}',
+        {"Content-Type": "application/json;charset=utf-16le"},
+        400,
+        _INVALID_JSON,
+    ),
+    (
+        "utf-16le with its mark",
+        "POST",
+        "/search",
+        "",
+        "﻿".encode("utf-16-le") + '{"foo":1}'.encode("utf-16-le"),
+        {"Content-Type": "application/json; charset=utf-16le"},
+        400,
+        _absent("body", "foo", "1"),
+    ),
+    (
+        "gzip",
+        "POST",
+        "/search",
+        "",
+        gzip.compress(b'{"foo":1}'),
+        {**_JSON, "Content-Encoding": "gzip"},
+        400,
+        _absent("body", "foo", "1"),
+    ),
+    (
+        "deflate",
+        "POST",
+        "/search",
+        "",
+        zlib.compress(b'{"foo":1}'),
+        {**_JSON, "Content-Encoding": "deflate"},
+        400,
+        _absent("body", "foo", "1"),
+    ),
+    (
+        "an encoding not read",
+        "POST",
+        "/search",
+        "",
+        b'{"foo":1}',
+        {**_JSON, "Content-Encoding": "bogus"},
+        415,
+        _UNKNOWN_API,
+    ),
+    (
+        "gzip that is not",
+        "POST",
+        "/search",
+        "",
+        b'{"foo":1}',
+        {**_JSON, "Content-Encoding": "gzip"},
+        400,
+        _UNKNOWN_API,
+    ),
+    (
+        "br, which this parser does not read",
+        "POST",
+        "/search",
+        "",
+        b'{"foo":1}',
+        {**_JSON, "Content-Encoding": "br"},
+        415,
+        _UNKNOWN_API,
+    ),
+    (
+        "an empty encoding, then gzip",
+        "POST",
+        "/search",
+        "",
+        gzip.compress(b'{"foo":1}'),
+        [
+            ("Content-Type", "application/json"),
+            ("Content-Encoding", ""),
+            ("Content-Encoding", "gzip"),
+        ],
+        400,
+        _absent("body", "foo", "1"),
+    ),
+    (
+        "gzip, then an empty encoding",
+        "POST",
+        "/search",
+        "",
+        gzip.compress(b'{"foo":1}'),
+        [
+            ("Content-Type", "application/json"),
+            ("Content-Encoding", "gzip"),
+            ("Content-Encoding", ""),
+        ],
+        415,
+        _UNKNOWN_API,
+    ),
+    (
+        "identity twice",
+        "POST",
+        "/search",
+        "",
+        b'{"foo":1}',
+        [
+            ("Content-Type", "application/json"),
+            ("Content-Encoding", "identity"),
+            ("Content-Encoding", "identity"),
+        ],
+        415,
+        _UNKNOWN_API,
+    ),
+    (
+        "gzip between a space and a tab",
+        "POST",
+        "/search",
+        "",
+        gzip.compress(b'{"foo":1}'),
+        {**_JSON, "Content-Encoding": " gzip\t"},
+        400,
+        _absent("body", "foo", "1"),
+    ),
+    (
+        "an empty type, then JSON",
+        "POST",
+        "/search",
+        "",
+        b'{"foo":1}',
+        [("Content-Type", ""), ("Content-Type", "application/json")],
+        400,
+        _absent("body", "foo", "1"),
+    ),
+    (
+        "JSON, then an empty type",
+        "POST",
+        "/search",
+        "",
+        b'{"foo":1}',
+        [("Content-Type", "application/json"), ("Content-Type", "")],
+        200,
+        None,
+    ),
+    ("an empty type", "POST", "/search", "", b'{"foo":1}', {"Content-Type": ""}, 200, None),
+    (
+        "utf-16be",
+        "POST",
+        "/search",
+        "",
+        '{"foo":1}'.encode("utf-16-be"),
+        {"Content-Type": "application/json; charset=utf-16be"},
+        400,
+        _absent("body", "foo", "1"),
+    ),
+    (
+        "a charset it does not know, past the limit",
+        "POST",
+        "/search",
+        "",
+        b'{"query":"' + b"a" * 600000 + b'"}',
+        {"Content-Type": "application/json; charset=utf-nope"},
+        413,
+        _TOO_LARGE,
+    ),
+    (
+        "a list of a small number, quoted",
+        "POST",
+        "/search",
+        "",
+        b'{"query":[0.000001]}',
+        _JSON,
+        400,
+        _NOT_A_STRING + "`[0.000001]`.",
+    ),
+    (
+        "an object of numbers, quoted",
+        "POST",
+        "/search",
+        "",
+        b'{"query":{"a":1e-7,"b":[1.5e300]}}',
+        _JSON,
+        400,
+        _NOT_A_STRING + '`{"a":1e-7,"b":[1.5e+300]}`.',
+    ),
+    (
+        "a list of large and signed numbers, quoted",
+        "POST",
+        "/search",
+        "",
+        b'{"query":[1e16,1e21,-0.0,5]}',
+        _JSON,
+        400,
+        _NOT_A_STRING + "`[10000000000000000,1e+21,0,5]`.",
+    ),
+    (
+        "page: no credential, and a key that is an object",
+        "GET",
+        "/pages/{page}",
+        "foo[a]=1",
+        None,
+        {"Authorization": None},
+        401,
+        _NOT_A_BEARER,
+    ),
+    (
+        "page: no version, and a key that is an object",
+        "GET",
+        "/pages/{page}",
+        "foo[a]=1",
+        None,
+        {"Notion-Version": None},
+        400,
+        _NO_VERSION,
+    ),
+    (
+        "children: no credential, and a cursor not a uuid",
+        "GET",
+        "/blocks/{page}/children",
+        "start_cursor=bogus",
+        None,
+        {"Authorization": None},
+        401,
+        _NOT_A_BEARER,
+    ),
+    (
+        "children: no version, and a cursor not a uuid",
+        "GET",
+        "/blocks/{page}/children",
+        "start_cursor=bogus",
+        None,
+        {"Notion-Version": None},
+        400,
+        _NO_VERSION,
+    ),
+    (
+        "gzip inflating past the limit",
+        "POST",
+        "/search",
+        "",
+        gzip.compress(b'{"query":"' + b"a" * 520000 + b'"}'),
+        {**_JSON, "Content-Encoding": "gzip"},
+        413,
+        _TOO_LARGE,
+    ),
+    (
+        "two types are not read",
+        "POST",
+        "/search",
+        "",
+        b'{"foo":1}',
+        [("Content-Type", "application/json"), ("Content-Type", "text/plain")],
+        200,
+        None,
+    ),
+    (
+        "two types the other way round are not read",
+        "POST",
+        "/search",
+        "",
+        b'{"foo":1}',
+        [("Content-Type", "text/plain"), ("Content-Type", "application/json")],
+        200,
+        None,
+    ),
+    (
+        "one type twice is not read",
+        "POST",
+        "/search",
+        "",
+        b'{"foo":1}',
+        [("Content-Type", "application/json"), ("Content-Type", "application/json")],
+        200,
+        None,
+    ),
+    (
+        "a space and a tab after the type",
+        "POST",
+        "/search",
+        "",
+        b'{"foo":1}',
+        {"Content-Type": "application/json \t"},
+        400,
+        _absent("body", "foo", "1"),
+    ),
+    (
+        "a no-break space after the type",
+        "POST",
+        "/search",
+        "",
+        b'{"foo":1}',
+        {"Content-Type": "application/json\xa0"},
+        200,
+        None,
+    ),
+    (
+        "0x85 after the type",
+        "POST",
+        "/search",
+        "",
+        b'{"foo":1}',
+        {"Content-Type": "application/json\x85"},
+        200,
+        None,
+    ),
+    ("the root, invalid JSON", "POST", "/notion", "", b"{", _JSON, 400, _INVALID_JSON),
+    (
+        "the root, a charset it cannot read",
+        "POST",
+        "/notion",
+        "",
+        b"{",
+        {"Content-Type": "application/json; charset=latin1"},
+        415,
+        _UNKNOWN_API,
+    ),
+    (
+        "512000 bytes",
+        "POST",
+        "/search",
+        "",
+        b'{"query":"' + b"a" * 511988 + b'"}',
+        _JSON,
+        200,
+        None,
+    ),
+    (
+        "512001 bytes",
+        "POST",
+        "/search",
+        "",
+        b'{"query":"' + b"a" * 511989 + b'"}',
+        _JSON,
+        413,
+        _TOO_LARGE,
+    ),
+    (
+        "512001 bytes with no credential",
+        "POST",
+        "/search",
+        "",
+        b'{"query":"' + b"a" * 511989 + b'"}',
+        {**_JSON, "Authorization": None},
+        413,
+        _TOO_LARGE,
+    ),
+    # a data source query's query string and body, ahead of its lookup
+    ("query: an unknown key", "POST", _Q, "foo=1", {}, _JSON, 400, _foo("1")),
+    (
+        "query: a cursor in the query string",
+        "POST",
+        _Q,
+        "start_cursor=x",
+        {},
+        _JSON,
+        400,
+        _absent("query", "start_cursor", '"x"'),
+    ),
+    (
+        "query: an unknown key ahead of an unknown data source",
+        "POST",
+        "/data_sources/{rand}/query",
+        "foo=1",
+        {},
+        _JSON,
+        400,
+        _foo("1"),
+    ),
+    (
+        "query: a member it does not take",
+        "POST",
+        _Q,
+        "",
+        {"foo": 1},
+        _JSON,
+        400,
+        _absent("body", "foo", "1"),
+    ),
+    (
+        "query: in_trash, which search takes",
+        "POST",
+        _Q,
+        "",
+        {"in_trash": True},
+        _JSON,
+        400,
+        _absent("body", "in_trash", "true"),
+    ),
+    (
+        "query: page size 0",
+        "POST",
+        _Q,
+        "",
+        {"page_size": 0},
+        _JSON,
+        400,
+        "body failed validation: body.page_size should be ≥ `1` or `undefined`, instead was `0`.",
+    ),
+    (
+        "query: page size -1",
+        "POST",
+        _Q,
+        "",
+        {"page_size": -1},
+        _JSON,
+        400,
+        "body failed validation: body.page_size should be ≥ `1` or `undefined`, instead was `-1`.",
+    ),
+    (
+        "query: page size 1.5",
+        "POST",
+        _Q,
+        "",
+        {"page_size": 1.5},
+        _JSON,
+        400,
+        "body failed validation: body.page_size should be an integer or `undefined`, instead was `1.5`.",
+    ),
+    (
+        "query: page size 1e400",
+        "POST",
+        _Q,
+        "",
+        b'{"page_size":1e400}',
+        _JSON,
+        400,
+        "body failed validation: body.page_size should be an integer or `undefined`, instead was `null`.",
+    ),
+    (
+        "query: page size a string",
+        "POST",
+        _Q,
+        "",
+        {"page_size": "5"},
+        _JSON,
+        400,
+        'body failed validation: body.page_size should be a number or `undefined`, instead was `"5"`.',
+    ),
+    (
+        "query: page size true",
+        "POST",
+        _Q,
+        "",
+        {"page_size": True},
+        _JSON,
+        400,
+        "body failed validation: body.page_size should be a number or `undefined`, instead was `true`.",
+    ),
+    (
+        "query: a result type it does not know",
+        "POST",
+        _Q,
+        "",
+        {"result_type": "bogus"},
+        _JSON,
+        400,
+        'body failed validation: body.result_type should be `"page"`, `"data_source"`, or `undefined`, instead was `"bogus"`.',
+    ),
+    (
+        "query: a filter not an object",
+        "POST",
+        _Q,
+        "",
+        {"filter": "x"},
+        _JSON,
+        400,
+        'body failed validation: body.filter should be an object or `undefined`, instead was `"x"`.',
+    ),
+    (
+        "query: an empty filter",
+        "POST",
+        _Q,
+        "",
+        {"filter": {}},
+        _JSON,
+        400,
+        _defined("body.filter", _TOP),
+    ),
+    (
+        "query: a filter of a property alone",
+        "POST",
+        _Q,
+        "",
+        {"filter": {"property": "Nope"}},
+        _JSON,
+        400,
+        _defined("body.filter", _TOP),
+    ),
+    (
+        "query: an empty condition in a compound",
+        "POST",
+        _Q,
+        "",
+        {"filter": {"and": [{}]}},
+        _JSON,
+        400,
+        _defined("body.filter.and[0]", _INSIDE),
+    ),
+    (
+        "query: an empty condition two compounds deep",
+        "POST",
+        _Q,
+        "",
+        {"filter": {"and": [{"or": [{}]}]}},
+        _JSON,
+        400,
+        _defined("body.filter.and[0].or[0]", _FILTER_TYPES),
+    ),
+    (
+        "query: a timestamp's filter with neither name in a compound",
+        "POST",
+        _Q,
+        "",
+        {"filter": {"and": [{"created_time": {"after": "2020-01-01"}}]}},
+        _JSON,
+        400,
+        _defined("body.filter.and[0]", _TIMESTAMP_INSIDE),
+    ),
+    (
+        "query: a compound not an array",
+        "POST",
+        _Q,
+        "",
+        {"filter": {"and": "x"}},
+        _JSON,
+        400,
+        _defined("body.filter", _TOP).replace(
+            "body.filter.and should be defined, instead was `undefined`.",
+            'body.filter.and should be an array, instead was `"x"`.',
+        ),
+    ),
+    (
+        "query: a condition not an object",
+        "POST",
+        _Q,
+        "",
+        {"filter": {"property": 1, "number": "x"}},
+        _JSON,
+        400,
+        _defined("body.filter", _TOP).replace(
+            "body.filter.number should be defined, instead was `undefined`.",
+            'body.filter.number should be an object, instead was `"x"`.',
+        ),
+    ),
+    (
+        "query: a property that is a number",
+        "POST",
+        _Q,
+        "",
+        {"filter": {"property": 1, "number": {"equals": 1}}},
+        _JSON,
+        400,
+        _defined("body.filter", _TOP).replace(
+            "body.filter.number should be defined, instead was `undefined`.",
+            "body.filter.property should be a string, instead was `1`.",
+        ),
+    ),
+    (
+        "query: two filter types",
+        "POST",
+        _Q,
+        "",
+        {"filter": {"title": {"equals": "x"}, "number": {"equals": 1}, "property": "Priority"}},
+        _JSON,
+        400,
+        _defined("body.filter", _TOP)
+        .replace(
+            "body.filter.title should be defined, instead was `undefined`.",
+            'body.filter.number should be not present, instead was `{"equals":1}`.',
+        )
+        .replace(
+            "body.filter.number should be defined, instead was `undefined`.",
+            'body.filter.title should be not present, instead was `{"equals":"x"}`.',
+        ),
+    ),
+    (
+        "query: a compound's own property is read by nothing",
+        "POST",
+        _Q,
+        "",
+        {"filter": {"and": [], "property": "Nope"}},
+        _JSON,
+        200,
+        None,
+    ),
+    (
+        "query: sorts not an array",
+        "POST",
+        _Q,
+        "",
+        {"sorts": "x"},
+        _JSON,
+        400,
+        'body failed validation: body.sorts should be an array or `undefined`, instead was `"x"`.',
+    ),
+    (
+        "query: a sort not an object",
+        "POST",
+        _Q,
+        "",
+        {"sorts": ["x"]},
+        _JSON,
+        400,
+        'body failed validation: body.sorts[0] should be an object, instead was `"x"`.',
+    ),
+    (
+        "query: the second sort not an object",
+        "POST",
+        _Q,
+        "",
+        {"sorts": [{"property": "Priority", "direction": "ascending"}, "x"]},
+        _JSON,
+        400,
+        'body failed validation: body.sorts[1] should be an object, instead was `"x"`.',
+    ),
+    (
+        "query: an empty sort, the first named",
+        "POST",
+        _Q,
+        "",
+        {"sorts": [{}, {}]},
+        _JSON,
+        400,
+        _BODY_FIX
+        + "body.sorts[0].property should be defined, instead was `undefined`.\nbody.sorts[0].timestamp should be defined, instead was `undefined`.",
+    ),
+    (
+        "query: a sort with no direction",
+        "POST",
+        _Q,
+        "",
+        {"sorts": [{"property": "Nope"}]},
+        _JSON,
+        400,
+        _BODY_FIX
+        + "body.sorts[0].direction should be defined, instead was `undefined`.\nbody.sorts[0].timestamp should be defined, instead was `undefined`.",
+    ),
+    (
+        "query: a timestamp sort with no direction",
+        "POST",
+        _Q,
+        "",
+        {"sorts": [{"timestamp": "created_time"}]},
+        _JSON,
+        400,
+        _BODY_FIX
+        + "body.sorts[0].property should be defined, instead was `undefined`.\nbody.sorts[0].direction should be defined, instead was `undefined`.",
+    ),
+    (
+        "query: a timestamp it does not sort by",
+        "POST",
+        _Q,
+        "",
+        {"sorts": [{"timestamp": "bogus", "direction": "ascending"}]},
+        _JSON,
+        400,
+        _BODY_FIX
+        + 'body.sorts[0].property should be defined, instead was `undefined`.\nbody.sorts[0].timestamp should be `"created_time"` or `"last_edited_time"`, instead was `"bogus"`.',
+    ),
+    (
+        "query: a direction it does not have",
+        "POST",
+        _Q,
+        "",
+        {"sorts": [{"property": "Priority", "direction": "up"}]},
+        _JSON,
+        400,
+        _BODY_FIX
+        + 'body.sorts[0].direction should be `"ascending"` or `"descending"`, instead was `"up"`.\nbody.sorts[0].timestamp should be defined, instead was `undefined`.',
+    ),
+    (
+        "query: a member beside a sort",
+        "POST",
+        _Q,
+        "",
+        {"sorts": [{"property": "Priority", "direction": "ascending", "foo": 1}]},
+        _JSON,
+        200,
+        None,
+    ),
+    (
+        "query: a sort by a timestamp",
+        "POST",
+        _Q,
+        "",
+        {"sorts": [{"timestamp": "created_time", "direction": "ascending"}]},
+        _JSON,
+        200,
+        None,
+    ),
+    (
+        "query: a filter on a property it has",
+        "POST",
+        _Q,
+        "",
+        {"filter": {"property": "Priority", "select": {"equals": "x"}}},
+        _JSON,
+        200,
+        None,
+    ),
+    (
+        "query under 2022-06-28, with a key it refuses",
+        "POST",
+        _Q,
+        "foo=1",
+        {},
+        {**_JSON, "Notion-Version": "2022-06-28"},
+        400,
+        "Invalid request URL.",
+    ),
+    (
+        "query under 2022-06-28, with a body it refuses",
+        "POST",
+        _Q,
+        "",
+        {"page_size": "x"},
+        {**_JSON, "Notion-Version": "2022-06-28"},
+        400,
+        "Invalid request URL.",
+    ),
+    (
+        "a database query under 2025-09-03, with a key it refuses",
+        "POST",
+        "/databases/{db}/query",
+        "foo=1",
+        {},
+        _JSON,
+        400,
+        "Invalid request URL.",
+    ),
+    (
+        "a data source under 2022-06-28, with a key it refuses",
+        "GET",
+        "/data_sources/{ds}",
+        "foo=1",
+        None,
+        {"Notion-Version": "2022-06-28"},
+        400,
+        "Invalid request URL.",
+    ),
+    (
+        "query: sorts ahead of filter",
+        "POST",
+        _Q,
+        "",
+        {"filter": "x", "sorts": "x"},
+        _JSON,
+        400,
+        'body failed validation: body.sorts should be an array or `undefined`, instead was `"x"`.',
+    ),
+    (
+        "query: filter ahead of the page size",
+        "POST",
+        _Q,
+        "",
+        {"page_size": "x", "filter": "x"},
+        _JSON,
+        400,
+        'body failed validation: body.filter should be an object or `undefined`, instead was `"x"`.',
+    ),
+    (
+        "query: the cursor ahead of the page size",
+        "POST",
+        _Q,
+        "",
+        {"page_size": "x", "start_cursor": 5},
+        _JSON,
+        400,
+        "body failed validation: body.start_cursor should be a string or `undefined`, instead was `5`.",
+    ),
+    (
+        "query: the page size ahead of a cursor naming nothing",
+        "POST",
+        _Q,
+        "",
+        {"start_cursor": "bogus", "page_size": "x"},
+        _JSON,
+        400,
+        'body failed validation: body.page_size should be a number or `undefined`, instead was `"x"`.',
+    ),
+    (
+        "query: a body's schema ahead of the lookup",
+        "POST",
+        "/data_sources/{rand}/query",
+        "",
+        {"sorts": [{}]},
+        _JSON,
+        400,
+        _BODY_FIX
+        + "body.sorts[0].property should be defined, instead was `undefined`.\nbody.sorts[0].timestamp should be defined, instead was `undefined`.",
+    ),
+    (
+        "query: a cursor after the lookup",
+        "POST",
+        "/data_sources/{rand}/query",
+        "",
+        {"start_cursor": "bogus"},
+        _JSON,
+        404,
+        None,
+    ),
+    (
+        "query: a property after the lookup",
+        "POST",
+        "/data_sources/{rand}/query",
+        "",
+        {"filter": {"property": "Nope", "title": {"equals": "x"}}},
+        _JSON,
+        404,
+        None,
+    ),
+    (
+        "query: filter_properties after the lookup",
+        "POST",
+        "/data_sources/{rand}/query",
+        "filter_properties=x",
+        {},
+        _JSON,
+        404,
+        None,
+    ),
+    # after the lookup
+    (
+        "query: a sort on a property it does not have",
+        "POST",
+        _Q,
+        "",
+        {"sorts": [{"property": "Nope", "direction": "ascending"}]},
+        _JSON,
+        400,
+        "Could not find sort property with name or id: Nope",
+    ),
+    (
+        "query: a filter on a property it does not have",
+        "POST",
+        _Q,
+        "",
+        {"filter": {"property": "Nope", "title": {"equals": "x"}}},
+        _JSON,
+        400,
+        "Could not find property with name or id: Nope",
+    ),
+    (
+        "query: the sort's property ahead of the filter's",
+        "POST",
+        _Q,
+        "",
+        {
+            "sorts": [{"property": "Nope", "direction": "ascending"}],
+            "filter": {"property": "Nope2", "title": {"equals": "x"}},
+        },
+        _JSON,
+        400,
+        "Could not find sort property with name or id: Nope",
+    ),
+    (
+        "query: a property under `or`",
+        "POST",
+        _Q,
+        "",
+        {"filter": {"or": [{"property": "Nope", "number": {"equals": 1}}]}},
+        _JSON,
+        400,
+        "Could not find property with name or id: Nope",
+    ),
+    (
+        "query: `and` ahead of `or`",
+        "POST",
+        _Q,
+        "",
+        {
+            "filter": {
+                "or": [{"property": "Nope2", "title": {"equals": "y"}}],
+                "and": [{"property": "Nope", "title": {"equals": "x"}}],
+            }
+        },
+        _JSON,
+        400,
+        "Could not find property with name or id: Nope",
+    ),
+    (
+        "query: the filter's property ahead of the cursor",
+        "POST",
+        _Q,
+        "",
+        {"start_cursor": "bogus", "filter": {"property": "Nope", "title": {"equals": "x"}}},
+        _JSON,
+        400,
+        "Could not find property with name or id: Nope",
+    ),
+    (
+        "query: a cursor naming nothing",
+        "POST",
+        _Q,
+        "",
+        {"start_cursor": "bogus"},
+        _JSON,
+        400,
+        _INVALID + "bogus",
+    ),
+    (
+        "query: the cursor ahead of filter_properties",
+        "POST",
+        _Q,
+        "filter_properties=x",
+        {"start_cursor": "bogus"},
+        _JSON,
+        400,
+        _INVALID + "bogus",
+    ),
+    (
+        "query: filter_properties naming nothing",
+        "POST",
+        _Q,
+        "filter_properties=title&filter_properties=Nope",
+        {},
+        _JSON,
+        400,
+        "The schema for the data source with the following ID is malformed: {ds}. The provided `filter_properties` contains an invalid attribute: Nope.",
+    ),
+    (
+        "query: no rows of a data source's",
+        "POST",
+        _Q,
+        "",
+        {"result_type": "data_source", "start_cursor": "bogus"},
+        _JSON,
+        400,
+        _INVALID + "bogus",
+    ),
+    # 2022-06-28's database query reads the same body
+    (
+        "database query: page size 1.5",
+        "POST",
+        "/databases/{db}/query",
+        "",
+        {"page_size": 1.5},
+        {**_JSON, "Notion-Version": "2022-06-28"},
+        400,
+        "body failed validation: body.page_size should be an integer or `undefined`, instead was `1.5`.",
+    ),
+    (
+        "database query: an unknown key",
+        "POST",
+        "/databases/{db}/query",
+        "foo=1",
+        {},
+        {**_JSON, "Notion-Version": "2022-06-28"},
+        400,
+        _foo("1"),
+    ),
+    (
+        "database query: filter_properties naming nothing",
+        "POST",
+        "/databases/{db}/query",
+        "filter_properties=x",
+        {},
+        {**_JSON, "Notion-Version": "2022-06-28"},
+        400,
+        "The schema for the data source with the following ID is malformed: {ds}. The provided `filter_properties` contains an invalid attribute: x.",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "label, method, path, query, send, headers, status, expected",
+    _REQUEST_ROWS,
+    ids=[row[0] for row in _REQUEST_ROWS],
+)
+def test_notion_reads_a_request_as_real_does(
+    client, notion_h, label, method, path, query, send, headers, status, expected
+):
+    """Real's answer to each request: the body Express reads first (``notion_request.read_body``),
+    then the credential, the version and whether the version mounts the route, then the query
+    string and the body against the route's schema, then what names a property or a row."""
+    ids = {
+        "page": _RUNBOOK,
+        "ds": synth.notion_data_source_id("nt-tasks-db"),
+        "db": synth.notion_id("nt-tasks-db"),
+        "user": client.get("/notion/v1/users", headers=notion_h).json()["results"][0]["id"],
+        "rand": _RAND,
+    }
+    if isinstance(headers, list):  # a header sent more than once
+        sent = [*notion_h.items(), *headers]
+    else:
+        sent = {**notion_h, **{k: v for k, v in headers.items() if v is not None}}
+        for k, v in headers.items():
+            if v is None:
+                sent.pop(k, None)
+    path = path if path == "/notion" else f"/notion/v1{path.format(**ids)}"
+    url = path + (f"?{query.format(**ids)}" if query else "")
+    content = json.dumps(send).encode() if isinstance(send, dict) else send
+    r = sent_as(client, method, url, sent, content)
+    assert r.status_code == status, r.text
+    body = r.json()
+    if isinstance(expected, dict):
+        assert list(body) == [
+            "isNotionError",
+            "errorId",
+            *(k for k in expected if k != "isNotionError"),
+        ]
+        assert {k: body[k] for k in expected} == expected
+    elif isinstance(expected, str):
+        assert body["message"] == expected.replace("{ds}", ids["ds"]), label
+
+
+# --- where a page starts, and how long it is ---------------------------------------------------
+
+_PAGING_RECORDS = [
+    {
+        "source_type": "notion",
+        "doc_id": "np-page",
+        "title": "Paged",
+        "content": "one\n\ntwo\n\nthree",
+        "author_email": "ava@acme.com",
+        "visibility": "public",
+        "comments": [
+            {"body": "first", "author_email": "ava@acme.com"},
+            {"body": "second", "author_email": "bob@acme.com"},
+            {"body": "third", "author_email": "carol@acme.com"},
+        ],
+    },
+    {
+        "source_type": "notion",
+        "doc_id": "np-db",
+        "subtype": "database",
+        "title": "Rows",
+        "content": "Tracker",
+        "author_email": "ava@acme.com",
+        "visibility": "public",
+        "properties": {"Status": {"type": "select"}},
+    },
+    *(
+        {
+            "source_type": "notion",
+            "doc_id": f"np-row-{n}",
+            "parent": "np-db",
+            "title": f"Row {n}",
+            "content": "body",
+            "author_email": "ava@acme.com",
+            "visibility": "public",
+            "properties": {"Status": "Open"},
+        }
+        for n in (1, 2, 3)
+    ),
+]
+
+
+def _lister(route: str):
+    """How to ask one list for a page: a function of the client, the headers and the paging members,
+    answering the response."""
+    page = synth.notion_id("np-page")
+    ds = synth.notion_data_source_id("np-db")
+    if route == "users":
+        return lambda c, h, m: c.get("/notion/v1/users", params=m, headers=h)
+    if route == "children":
+        return lambda c, h, m: c.get(f"/notion/v1/blocks/{page}/children", params=m, headers=h)
+    if route == "comments":
+        return lambda c, h, m: c.get(
+            "/notion/v1/comments", params={"block_id": page, **m}, headers=h
+        )
+    if route == "search":
+        return lambda c, h, m: c.post("/notion/v1/search", json=m, headers=h)
+    return lambda c, h, m: c.post(f"/notion/v1/data_sources/{ds}/query", json=m, headers=h)
+
+
+@pytest.mark.parametrize("route", ["users", "children", "comments", "search", "query"])
+def test_notion_a_cursor_starts_the_page_at_the_item_it_names(tmp_path, route):
+    """The page a cursor asks for starts with the item it names, and the cursor after a page is the
+    next item's id (``routers.notion._start``). A cursor naming nothing is refused, `comments` with
+    the three members real adds there."""
+    ask = _lister(route)
+    with corpus_client(tmp_path, _PAGING_RECORDS) as (client, settings):
+        h = {
+            "Authorization": f"Bearer {settings.admin_token}",
+            "Notion-Version": DATA_SOURCES_VERSION,
+        }
+        ids = [x["id"] for x in ask(client, h, {}).json()["results"]]
+        assert len(ids) >= 3, ids
+        first = ask(client, h, {"page_size": 1}).json()
+        assert [x["id"] for x in first["results"]] == ids[:1]
+        assert first["has_more"] is True
+        assert first["next_cursor"].endswith(ids[1])  # the query's names a session first
+        second = ask(client, h, {"page_size": 1, "start_cursor": ids[1]}).json()
+        assert [x["id"] for x in second["results"]] == ids[1:2]
+        assert second["next_cursor"] == ids[2]
+        refused = ask(client, h, {"start_cursor": "11111111-2222-4333-8444-555555555555"})
+        assert refused.status_code == 400, refused.text
+        assert refused.json()["message"] == (
+            "The start_cursor provided is invalid: 11111111-2222-4333-8444-555555555555"
+        )
+        extra = refused.json().get("additional_data")
+        assert extra == (
+            {
+                "tool_error_code": "invalid_cursor",
+                "tool_error_class": "validation",
+                "tool_error_retryable": "false",
+            }
+            if route == "comments"
+            else None
+        )
+
+
+@pytest.mark.parametrize(
+    "route, members, shown",
+    [
+        # the route, the members sent (`{2nd}` the second item's id), and the results shown: a
+        # count, `all` of them, or which of the empty pages ``routers.notion._paged`` answers
+        ("users", {"page_size": -1}, "empty"),
+        ("users", {"page_size": -1, "start_cursor": "{2nd}"}, "empty at the 2nd"),
+        ("users", {"page_size": "-1.0"}, "empty"),
+        ("users", {"page_size": 0}, "all"),
+        ("users", {"page_size": "-0"}, "all"),
+        ("users", {"page_size": 101}, "all"),
+        ("users", {"page_size": "0x2"}, 2),
+        ("children", {"page_size": -5}, "empty"),
+        ("children", {"page_size": " "}, "all"),
+        ("search", {"page_size": 0.5}, "empty"),
+        ("search", {"page_size": -0.5}, "empty"),
+        ("search", {"page_size": 1.5}, 1),
+        ("search", {"page_size": 2.5}, 2),
+        ("search", {"page_size": 0}, "all"),
+        ("search", {"page_size": 1e308}, "all"),
+        ("search", {"filter": {"in_trash": True}}, 0),
+        ("search", {"filter": {"in_trash": False}, "page_size": 2}, 2),
+        ("query", {"page_size": 101}, "all"),
+        ("query", {"result_type": "data_source"}, 0),
+        ("search", {"query": "zzzqqq", "page_size": -1}, "nothing"),
+    ],
+)
+def test_notion_a_page_is_as_long_as_real_reads_its_page_size(tmp_path, route, members, shown):
+    """Real's page for each `page_size`, as ``routers.notion._size`` reads it; the trash holds
+    nothing here, and a data source holds no data source."""
+    ask = _lister(route)
+    with corpus_client(tmp_path, _PAGING_RECORDS) as (client, settings):
+        h = {
+            "Authorization": f"Bearer {settings.admin_token}",
+            "Notion-Version": DATA_SOURCES_VERSION,
+        }
+        everything = [x["id"] for x in ask(client, h, {}).json()["results"]]
+        sent = {k: everything[1] if v == "{2nd}" else v for k, v in members.items()}
+        r = ask(client, h, sent)
+        assert r.status_code == 200, r.text
+        page = r.json()
+        if shown in ("empty", "empty at the 2nd", "nothing"):
+            named = {"empty": everything[:1], "empty at the 2nd": everything[1:2]}.get(
+                shown, [None]
+            )
+            assert page["results"] == []
+            assert (page["next_cursor"], page["has_more"]) == (named[0], shown != "nothing")
+        else:
+            assert [x["id"] for x in page["results"]] == everything[
+                : len(everything) if shown == "all" else shown
+            ]
+
+
+def test_notion_data_source_query_reads_its_cursor_as_real_does(tmp_path):
+    """Each spelling of a data source query's cursor, as ``routers.notion._row_start`` reads it:
+    where the page starts, or what the refusal names, and the cursor after it."""
+    ds = synth.notion_data_source_id("np-db")
+    with corpus_client(tmp_path, _PAGING_RECORDS) as (client, settings):
+        h = {
+            "Authorization": f"Bearer {settings.admin_token}",
+            "Notion-Version": DATA_SOURCES_VERSION,
+        }
+
+        def ask(cursor):
+            body = {"page_size": 1} if cursor is None else {"page_size": 1, "start_cursor": cursor}
+            return client.post(f"/notion/v1/data_sources/{ds}/query", json=body, headers=h)
+
+        first = ask(None).json()
+        rows = [
+            r["id"]
+            for r in client.post(f"/notion/v1/data_sources/{ds}/query", json={}, headers=h).json()[
+                "results"
+            ]
+        ]
+        issued = first["next_cursor"].split(":")[1]
+        assert first["next_cursor"] == f"s:{issued}:{rows[1]}"
+        dashless = rows[1].replace("-", "")
+        cases = [
+            # the cursor, then the row the page starts at and the cursor after it, or the refusal's
+            # name for the cursor
+            ("", (0, f"s:{issued}:{rows[1]}")),
+            (rows[1], (1, rows[2])),
+            (f"s:{issued}:{rows[1]}", (1, f"s:{issued}:{rows[2]}")),
+            (f"s:{issued}:{rows[2]}", (2, None)),
+            (f"s:{issued}:{dashless}", dashless),
+            (f"s:{issued}:y", "y"),
+            (f"s:fresh:{dashless}", (1, f"s:fresh:{rows[2]}")),
+            (f"s:fresh:{rows[1].upper()}", (0, f"s:fresh:{rows[1]}")),
+            (f"s:fresh:{dashless.upper()}", (0, f"s:fresh:{rows[1]}")),
+            ("s:fresh:y", (0, f"s:fresh:{rows[1]}")),
+            (f"s:fresh:b:{rows[1]}", (0, f"s:fresh:{rows[1]}")),
+            ("s:", "s:"),
+            ("s:x:", "s:x:"),
+            (f"s::{rows[1]}", f"s::{rows[1]}"),
+            (f"S:x:{rows[1]}", f"S:x:{rows[1]}"),
+            (dashless, dashless),
+            (rows[1].upper(), rows[1].upper()),
+        ]
+        for cursor, want in cases:
+            r = ask(cursor)
+            if isinstance(want, str):
+                assert r.status_code == 400, (cursor, r.text)
+                assert r.json()["message"] == f"The start_cursor provided is invalid: {want}"
+            else:
+                assert r.status_code == 200, (cursor, r.text)
+                page = r.json()
+                assert ([x["id"] for x in page["results"]], page["next_cursor"]) == (
+                    [rows[want[0]]],
+                    want[1],
+                ), cursor
+
+
+def test_notion_a_cursor_naming_a_page_the_caller_cannot_see_names_nothing(
+    client, notion_h, tokens
+):
+    """A search cursor naming a page the caller cannot see is refused as a cursor naming nothing,
+    so a refusal tells an outsider nothing the page's absence from the results did not. The admin's
+    page starting at it is the control."""
+    seen = client.post("/notion/v1/search", json={"start_cursor": _SECRET}, headers=notion_h)
+    assert seen.status_code == 200 and seen.json()["results"][0]["id"] == _SECRET
+    outsider = {**notion_h, "Authorization": f"Bearer {tokens['ava@acme.com']}"}
+    hidden = client.post("/notion/v1/search", json={"start_cursor": _SECRET}, headers=outsider)
+    made_up = client.post("/notion/v1/search", json={"start_cursor": _RAND}, headers=outsider)
+    assert hidden.status_code == made_up.status_code == 400
+    assert hidden.json()["message"].replace(_SECRET, _RAND) == made_up.json()["message"]
+
+
+@pytest.mark.parametrize("value", ["page", "data_source", None])
+def test_notion_search_fills_a_page_of_the_object_type_it_filters_to(tmp_path, monkeypatch, value):
+    """A page of one object type, or of any with no filter, holds the next results and names the
+    one after it, an empty page names the first, and a cursor starts at its result wherever that
+    sits in the corpus. With the window ``routers.notion._OVERFETCH`` sizes cut to the page and one
+    more, the corpus's one database and four pages leave at least one of the two filters short of a
+    page in the first window, so the search has to read on, and the last result lies past it."""
+    from backlot.routers import notion as notion_routes
+
+    monkeypatch.setattr(notion_routes, "_OVERFETCH", 1)
+    with corpus_client(tmp_path, _PAGING_RECORDS) as (client, settings):
+        h = {
+            "Authorization": f"Bearer {settings.admin_token}",
+            "Notion-Version": DATA_SOURCES_VERSION,
+        }
+        flt = {"filter": {"property": "object", "value": value}} if value else {}
+        every = client.post("/notion/v1/search", json=flt, headers=h).json()["results"]
+        assert {x["object"] for x in every} == ({value} if value else {"page", "data_source"})
+        ids = [x["id"] for x in every]
+        page = client.post("/notion/v1/search", json={**flt, "page_size": 1}, headers=h).json()
+        assert [x["id"] for x in page["results"]] == ids[:1]
+        assert page["next_cursor"] == (ids[1] if len(ids) > 1 else None)
+        empty = client.post("/notion/v1/search", json={**flt, "page_size": -1}, headers=h).json()
+        assert (empty["results"], empty["next_cursor"]) == ([], ids[0])
+        last = client.post(
+            "/notion/v1/search",
+            json={**flt, "page_size": 1, "start_cursor": ids[-1]},
+            headers=h,
+        ).json()
+        assert ([x["id"] for x in last["results"]], last["next_cursor"]) == (ids[-1:], None)
+
+
+@pytest.mark.parametrize(
+    "version, by, starts",
+    [
+        # the version, which id the cursor names the database by, and whether the page starts there
+        ("2022-06-28", "database", True),
+        ("2022-06-28", "data_source", True),
+        (DATA_SOURCES_VERSION, "data_source", True),
+        (DATA_SOURCES_VERSION, "database", False),
+    ],
+)
+def test_notion_search_starts_at_a_database_by_the_ids_its_version_reads(
+    tmp_path, version, by, starts
+):
+    """Real's search starts at a database named by the id each version lists it under, and under
+    2022-06-28 by its data source's too."""
+    db, ds = synth.notion_id("np-db"), synth.notion_data_source_id("np-db")
+    listed = ds if version == DATA_SOURCES_VERSION else db
+    with corpus_client(tmp_path, _PAGING_RECORDS) as (client, settings):
+        h = {"Authorization": f"Bearer {settings.admin_token}", "Notion-Version": version}
+        body = {"start_cursor": db if by == "database" else ds, "page_size": 1}
+        r = client.post("/notion/v1/search", json=body, headers=h)
+        if starts:
+            assert r.status_code == 200, r.text
+            assert r.json()["results"][0]["id"] == listed
+        else:
+            assert r.status_code == 400 and r.json()["message"].endswith(db)
+
+
+@pytest.mark.parametrize(
+    "text, every",
+    [
+        # a `query` of each, and whether real answered every result or none
+        ("\n", True),
+        ("\t", True),
+        (" ", True),
+        ("\u00a0", True),
+        ("\u3000", True),
+        ("\u2028", True),
+        ("\ufeff", True),
+        ("\x1c", False),
+        ("\x85", False),
+        ("\u200b", False),
+    ],
+)
+def test_notion_search_trims_its_query_as_javascript_does(client, notion_h, text, every):
+    """A `query` of nothing but what JavaScript trims (``notion_request.JS_SPACE``) is no query
+    at all, and anything else is searched for, which finds nothing here."""
+    everything = client.post("/notion/v1/search", json={}, headers=notion_h).json()["results"]
+    r = client.post("/notion/v1/search", json={"query": text}, headers=notion_h)
+    assert r.status_code == 200, r.text
+    assert r.json()["results"] == (everything if every else [])

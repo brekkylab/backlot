@@ -1802,10 +1802,7 @@ def _gmail_message(
 # A term Backlot cannot evaluate is a 400 on `q`, never a silence. Two kinds: a term the listing
 # does not take (`bogusField = 'x'`), which real Drive refuses too with the bare `Invalid Value` of
 # the parameter envelope, and a term `_FILES_Q.unmodelled` names, which `files.list` documents and
-# Backlot holds no fact for, refused with a message that says so. `viewedByMeTime` and `starred` are
-# not that kind: nothing in the corpus is viewed or starred, as every file's `viewedByMe` and
-# `starred` say, and real answers a file never viewed and never starred the way `_drive_q_eval`
-# does.
+# Backlot holds no fact for, refused with a message that says so.
 
 _TIME_OPS = frozenset({"<=", "<", "=", "!=", ">", ">="})
 _TIME_FIELDS = frozenset({"modifiedTime", "createdTime", "viewedByMeTime"})
@@ -2124,6 +2121,7 @@ def _drive_q_eval(node, f: dict, me: str | None, fulltext: dict[str, set[str]]) 
     if field == "trashed":
         return ((value == "true") == f["trashed"]) == (op == "=")
     if field == "starred":
+        # Nothing here is starred, as every file's `starred` says.
         return (value == "false") == (op == "=")
     if field == "viewedByMeTime":
         # No file has one: real matched a file its caller never viewed under `!=` and under no
@@ -5464,8 +5462,8 @@ def _drive_listing_page_token(request: Request) -> None:
     """Refuse a `pageToken` sent to `drives.list`, which is empty and issues no `nextPageToken`,
     so every token is one it did not issue. Presence is the whole test: `decode_cursor_or_none`,
     which `files.list` calls, reads `bzow` and that route's own tokens as offsets. Read from the
-    first repeat, after the typed and range refusals and a `q` it does not take, and ahead of the
-    `useDomainAdminAccess=true` refusal. What real answers is the `drives.list` column of the table
+    first repeat, ahead of the `useDomainAdminAccess=true` refusal; the route comment says what
+    precedes it. What real answers is the `drives.list` column of the table
     `_drive_permissions_page_token` records."""
     token = gerr.first_repeat(request.query_params, "pageToken")
     if token:
